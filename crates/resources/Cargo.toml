@@ -1,0 +1,12 @@
+[package]
+name = "resources"
+description = "BW-01 DataSection sections and the resource search path"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation = { workspace = true }
+

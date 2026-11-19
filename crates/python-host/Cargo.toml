@@ -1,0 +1,11 @@
+[package]
+name = "python-host"
+description = "BW-03 CPython host and object bridging"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# foundation = { workspace = true }  # re-add with first consumer

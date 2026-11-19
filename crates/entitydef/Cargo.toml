@@ -1,0 +1,12 @@
+[package]
+name = "entitydef"
+description = "BW-04 entity definitions and data contracts"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation = { workspace = true }
+# resources = { workspace = true }  # re-add when entity tables load from xml

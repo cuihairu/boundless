@@ -1,0 +1,17 @@
+[package]
+name = "boundless-server"
+description = "BW-05-09 server role entry point"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# foundation = { workspace = true }  # re-add with first consumer
+# platform = { workspace = true }  # re-add with first consumer
+server-runtime = { workspace = true }
+
+[[bin]]
+name = "boundless-server"
+path = "src/main.rs"
