@@ -168,7 +168,8 @@
 
 - [x] **BW-01-03-01 实现 XML DataSection**。**验收** 重复子节点和空值查询与原版一致。
   - 证据：crates/resources datasection.rs 80 测试钉死 xml_section.cpp 语义（重复子节点取首、空值返回空串、转义表、保存布局）；llvm-cov 全部核心 crate 行覆盖 100%。
-- [ ] **BW-01-03-02 实现 Binary/Packed 读写**。**验收** 原版生成物被正确解析且能往返。
+- [x] **BW-01-03-02 实现 Binary/Packed 读写**。**验收** 原版生成物被正确解析且能往返。
+  - 证据：packed.rs 手搭字节级夹具复现原版生成物（magic 0x62a14e45、排序字符串表双 NUL、错位一格记录布局 R0.dataPos=own end|type、child k 的 end|type 存 R(k+1)）并解析通过；写入→读取全树往返（int 全宽/bool/float/vector/矩阵 row0-3/加密 blob/base64）字节精确；120 测试全绿。原版为 Windows 工程不可在 Linux 运行，以 packed_section.cpp 逐行精读钉死语义（含 addBestGuess 分支顺序 empty→bool→大u64→int→float→blob→string）。llvm-cov：packed.rs 99.84%（仅 3 行为原版自身 asString↔asInt64 无限递归分支，注释留档），base64/binary/special_chars/datasection 100%。
 - [ ] **BW-01-03-03 实现 ZIP 资源挂载**。**验收** 压缩和未压缩条目可查。
 - [ ] **BW-01-03-04 实现资源根搜索和路径映射**。**验收** 同名资源优先级吻合。
 - [ ] **BW-01-03-05 实现 DataSection 缓存失效**。**验收** 覆盖写入后读取新值。

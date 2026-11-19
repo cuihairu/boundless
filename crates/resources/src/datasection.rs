@@ -688,6 +688,13 @@ impl DataSection {
         self.as_double(default as f64) as f32
     }
 
+    /// `XMLSection::asBlob`: the value is assumed to be base64 and decoded
+    /// with the lenient buffer variant. The reference's `defaultVal`
+    /// parameter is ignored.
+    pub fn as_blob(&self) -> Vec<u8> {
+        crate::base64::decode_lenient(&self.value)
+    }
+
     /// iostream extraction of exactly two floats plus the eof check:
     /// `"1 2 "` (trailing space) and `"1 2 3"` both fail to the default.
     pub fn as_vector2(&self, default: Vector2) -> Vector2 {
@@ -1057,7 +1064,7 @@ fn strtod_from(bytes: &[u8], from: usize) -> Option<(f64, usize)> {
 /// iostream float extraction: like `strtod_from` but the whole remainder
 /// after the number must be exactly the end (the caller checks), and the
 /// value must fit in f32 (out-of-range sets failbit).
-fn stream_float(bytes: &[u8], from: usize) -> Option<(f64, usize)> {
+pub(crate) fn stream_float(bytes: &[u8], from: usize) -> Option<(f64, usize)> {
     let (v, np) = strtod_from(bytes, from)?;
     // Literal infinities pass; numeric overflow to infinity fails
     // extraction in C++.
