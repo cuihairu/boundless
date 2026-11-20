@@ -17,7 +17,10 @@
 //! - `runApp` always calls `fini()`, init-success or not.
 
 use crate::config::BwConfig;
+use crate::signals::{HandlerId, SignalHandler, SignalHandlerFn, SignalProcessor};
 use resources::bwresource::BwResource;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// `DEFAULT_GAME_UPDATE_HERTZ` (server/common.hpp).
 pub const DEFAULT_GAME_UPDATE_HERTZ: i32 = 10;
@@ -306,8 +309,9 @@ fn read_option_f32(config: &BwConfig, path: &str, value: &mut f32, unread: &mut 
 }
 
 /// The `ServerApp` lifecycle surface used by the startup pipeline
-/// (`runApp`'s calls into the app). Signal handling (`BW-01-04-04`) and
-/// the Mercury interface (`BW-02`) join later.
+/// (`runApp`'s calls into the app) plus the control surface: shutdown
+/// requests and signals (`BW-01-04-04`). The Mercury interface joins at
+/// `BW-02`.
 pub trait ServerApp {
     /// `getAppName`.
     fn app_name(&self) -> &str;
@@ -320,6 +324,60 @@ pub trait ServerApp {
 
     /// `ServerApp::fini` (a no-op in the base class).
     fn fini(&mut self) {}
+
+    /// `ServerApp::shutDown`: the base class logs the request and breaks
+    /// `mainDispatcher_`; the break flag lives in the app (it owns its
+    /// dispatcher), so overrides log + break themselves -- this default
+    /// keeps the base INFO line, exactly what
+    /// `ServerApp::shutDown()` does before `breakProcessing()`.
+    fn shut_down(&mut self) {
+        eprintln!("ServerApp::shutDown: shutting down");
+    }
+
+    /// `ServerApp::onSignalled`: the default only reacts to SIGINT (the
+    /// base implementation's switch has no other arm). Role apps that
+    /// need more (e.g. the EntityApp SIGQUIT CRITICAL) override this and
+    /// call [`base_on_signalled`] for the base arm.
+    fn on_signalled(&mut self, sig_num: i32) {
+        base_on_signalled(sig_num);
+    }
+}
+
+/// `ServerApp::onSignalled`, the base arm: on SIGINT reset the
+/// disposition to `SIG_DFL` and re-raise. The reference comment says it
+/// all: "This is really just to make sure that Python does not install
+/// its own SIGINT handler." The re-raised signal kills the process with
+/// the default action (during `dispatch` it stays blocked until the
+/// Blocker restores the mask).
+pub fn base_on_signalled(sig_num: i32) {
+    if sig_num == libc::SIGINT {
+        unsafe {
+            libc::signal(sig_num, libc::SIG_DFL);
+            libc::raise(sig_num);
+        }
+    }
+}
+
+/// The anonymous-namespace `ServerAppSignalHandler`: forwards every
+/// dispatched signal into `app.on_signalled`.
+pub fn app_signal_handler(
+    app: &Rc<RefCell<dyn ServerApp>>,
+) -> Rc<RefCell<dyn SignalHandler>> {
+    let app = Rc::clone(app);
+    Rc::new(RefCell::new(SignalHandlerFn(move |sig_num| {
+        app.borrow_mut().on_signalled(sig_num);
+    })))
+}
+
+/// `ServerApp::init`'s signal setup in one call:
+/// `pSignalHandler_.reset( this->createSignalHandler() );` followed by
+/// `this->enableSignalHandler( SIGINT );`. The returned id mirrors the
+/// stored `pSignalHandler_` for later `clearSignalHandler` calls.
+pub fn install_app_signal_handler(
+    processor: &mut SignalProcessor,
+    app: &Rc<RefCell<dyn ServerApp>>,
+) -> HandlerId {
+    processor.add_signal_handler(libc::SIGINT, app_signal_handler(app))
 }
 
 /// `ServerApp::runApp`: init gates run; fini always happens; the bool is
@@ -613,6 +671,10 @@ mod tests {
         assert_eq!(ServerApp::app_name(&app), "bareapp");
         assert_eq!(run_app(&mut app, &[]), true);
         assert!(app.ran.get());
+
+        // The base shutDown: the INFO line only; the override breaks the
+        // loop (the app owns its dispatcher).
+        ServerApp::shut_down(&mut app);
     }
 
     /// Every option missing from the chain warns and keeps its default.
@@ -663,5 +725,385 @@ mod tests {
         let args: Vec<String> = ["prog".to_string(), "-machined".to_string()].to_vec();
         assert_eq!(do_bw_main_t(&mut app, &config, &args), EXIT_SUCCESS);
         assert_eq!(app.received_args, args);
+    }
+
+    // ---- BW-01-04-04: stop signals and control events ----
+
+    use crate::dispatcher::{Dispatcher, FrequentTaskFn};
+    use crate::signals::{
+        disposition_of, kernel_pending_signals, pending_signals,
+        signal_number_to_string, Blocker, HandlerId, Set, SignalDispatchTask,
+        SignalProcessor,
+    };
+
+    /// A role-app skeleton: owns its dispatcher (the `mainDispatcher_`
+    /// member) and registers a control-event handler as a frequent task
+    /// -- the BW-02 stand-in for the Mercury shutDown message handler.
+    /// The handler body is `ServerApp::shutDown`'s two effects (INFO
+    /// line + breakProcessing), flattened through the shared break flag
+    /// because the app is `&mut`-borrowed while its loop runs (the C++
+    /// original reaches its own members re-entrantly).
+    struct ControlApp {
+        dispatcher: Dispatcher,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl ControlApp {
+        fn new(log: &Rc<RefCell<Vec<String>>>) -> Self {
+            Self {
+                dispatcher: Dispatcher::new(),
+                log: Rc::clone(log),
+            }
+        }
+    }
+
+    impl ServerApp for ControlApp {
+        fn app_name(&self) -> &str {
+            "cellapp"
+        }
+
+        fn init(&mut self, _args: &[String]) -> bool {
+            self.log.borrow_mut().push("init".to_string());
+
+            let log = Rc::clone(&self.log);
+            let break_flag = self.dispatcher.break_flag();
+            self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                FrequentTaskFn(
+                    move || {
+                        log.borrow_mut().push("control event".to_string());
+                        log.borrow_mut().push(
+                            "ServerApp::shutDown: shutting down".to_string(),
+                        );
+                        break_flag.set(true);
+                    },
+                    "control event",
+                ),
+            )));
+            true
+        }
+
+        fn run(&mut self) -> bool {
+            self.dispatcher.process_until_break();
+            true
+        }
+
+        fn shut_down(&mut self) {
+            self.log
+                .borrow_mut()
+                .push("ServerApp::shutDown: shutting down".to_string());
+            self.dispatcher.break_processing(true);
+        }
+    }
+
+    /// Acceptance (BW-01-04-04): a control event breaks the processing
+    /// loop, the app leaves `processUntilBreak` and exits 0 -- the app
+    /// entered its shutdown stage.
+    #[test]
+    fn control_event_enters_the_shutdown_stage() {
+        let (_r, config, _k) = config_over("ctl_event", &valid_bw_xml());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut app = ControlApp::new(&log);
+
+        assert_eq!(ServerApp::app_name(&app), "cellapp");
+        assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
+        assert_eq!(
+            *log.borrow(),
+            [
+                "init",
+                "control event",
+                "ServerApp::shutDown: shutting down",
+            ]
+        );
+    }
+
+    /// The trait's control surface: an app that owns its dispatcher
+    /// implements `shut_down` as the base body (INFO line) plus breaking
+    /// the loop via the shared flag.
+    #[test]
+    fn shut_down_override_breaks_via_the_shared_flag() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut app = ControlApp::new(&log);
+
+        let break_flag = app.dispatcher.break_flag();
+        ServerApp::shut_down(&mut app);
+        assert!(break_flag.get());
+        assert_eq!(
+            *log.borrow(),
+            ["ServerApp::shutDown: shutting down"]
+        );
+    }
+
+    /// The base `onSignalled` SIGINT arm: reset the disposition to
+    /// SIG_DFL and re-raise ("make sure that Python does not install its
+    /// own SIGINT handler"). The re-raise happens while SIGINT is blocked
+    /// -- exactly like inside `dispatch()` -- so it waits kernel-pending
+    /// instead of killing the process.
+    #[test]
+    fn sigint_resets_the_disposition_and_reraises() {
+        let _guard = crate::signals::disposition_guard();
+
+        let mut blocked = Set::empty();
+        blocked.set(libc::SIGINT);
+        let _blocker = Blocker::new(&blocked);
+
+        base_on_signalled(libc::SIGINT);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
+        assert!(
+            kernel_pending_signals() & (1 << libc::SIGINT) != 0,
+            "the re-raised SIGINT waits blocked"
+        );
+
+        // Consume the pending signal so unblocking is safe (the
+        // reference lets the default action kill the process; the test
+        // must survive).
+        let mut wait_set = Set::empty();
+        wait_set.set(libc::SIGINT);
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
+                libc::SIGINT
+            );
+        }
+    }
+
+    /// The default `on_signalled` (and the base arm for non-SIGINT
+    /// signals) does nothing: the switch has no other arm.
+    #[test]
+    fn on_signalled_default_ignores_other_signals() {
+        let _guard = crate::signals::disposition_guard();
+
+        let before = kernel_pending_signals();
+        base_on_signalled(libc::SIGTERM);
+        base_on_signalled(libc::SIGUSR2);
+        assert_eq!(kernel_pending_signals(), before);
+        assert_eq!(
+            disposition_of(libc::SIGTERM),
+            libc::SIG_DFL as usize
+        );
+
+        // The trait default routes straight into the base arm.
+        struct BareSignalApp;
+        impl ServerApp for BareSignalApp {
+            fn app_name(&self) -> &str {
+                "baresignalapp"
+            }
+            fn init(&mut self, _args: &[String]) -> bool {
+                true
+            }
+            fn run(&mut self) -> bool {
+                true
+            }
+        }
+        let mut bare = BareSignalApp;
+        assert_eq!(ServerApp::app_name(&bare), "baresignalapp");
+        assert!(ServerApp::init(&mut bare, &[]));
+        assert!(ServerApp::run(&mut bare));
+        ServerApp::on_signalled(&mut bare, libc::SIGUSR1);
+        assert_eq!(kernel_pending_signals(), before);
+        assert_eq!(pending_signals(), 0);
+    }
+
+    /// A role app whose onSignalled body runs through the dispatcher:
+    /// the raised signal is drained by the SignalProcessor frequent
+    /// task, the handler runs on the loop thread and breaks processing.
+    /// This is the signal half of the BW-01-04-04 acceptance.
+    #[test]
+    fn signal_delivers_through_the_dispatcher_into_the_app() {
+        let _guard = crate::signals::disposition_guard();
+
+        // The SignalProcessor-as-FrequentTask binding uses the
+        // reference's profiler label.
+        let probe = Rc::new(RefCell::new(SignalProcessor::new()));
+        let probe_task = SignalDispatchTask::new_task(&probe);
+        assert_eq!(probe_task.borrow().task_name(), "SignalProcessor");
+
+        struct SignalApp {
+            dispatcher: Dispatcher,
+            log: Rc<RefCell<Vec<String>>>,
+            _processor: Option<Rc<RefCell<SignalProcessor>>>,
+            _handler_id: Option<HandlerId>,
+        }
+
+        impl ServerApp for SignalApp {
+            fn app_name(&self) -> &str {
+                "cellapp"
+            }
+
+            fn init(&mut self, _args: &[String]) -> bool {
+                self.log.borrow_mut().push("init".to_string());
+
+                let processor = Rc::new(RefCell::new(SignalProcessor::new()));
+                let log = Rc::clone(&self.log);
+                let break_flag = self.dispatcher.break_flag();
+                let handler = Rc::new(RefCell::new(SignalHandlerFn(move |sig| {
+                    log.borrow_mut().push(format!(
+                        "onSignalled {}",
+                        signal_number_to_string(sig)
+                    ));
+                    break_flag.set(true);
+                })));
+                let id =
+                    processor.borrow_mut().add_signal_handler(libc::SIGTERM, handler);
+
+                self.dispatcher
+                    .add_frequent_task(SignalDispatchTask::new_task(&processor));
+
+                // The stop signal arrives while the loop runs (an async
+                // SIGTERM raised mid-processing, exactly when a real
+                // stop request lands).
+                let raised = Cell::new(false);
+                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                    FrequentTaskFn(
+                        move || {
+                            if !raised.get() {
+                                raised.set(true);
+                                unsafe {
+                                    libc::raise(libc::SIGTERM);
+                                }
+                            }
+                        },
+                        "stop signal",
+                    ),
+                )));
+
+                self._processor = Some(processor);
+                self._handler_id = Some(id);
+                true
+            }
+
+            fn run(&mut self) -> bool {
+                self.dispatcher.process_until_break();
+                true
+            }
+        }
+
+        let (_r, config, _k) = config_over("signal_app", &valid_bw_xml());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut app = SignalApp {
+            dispatcher: Dispatcher::new(),
+            log: Rc::clone(&log),
+            _processor: None,
+            _handler_id: None,
+        };
+
+        assert_eq!(ServerApp::app_name(&app), "cellapp");
+        // The raise happens mid-loop (inside init's "stop signal" task);
+        // the next pass drains it into the handler and the app exits its
+        // loop cleanly.
+        assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
+        assert_eq!(
+            *log.borrow(),
+            ["init", "onSignalled SIGTERM"]
+        );
+        assert_eq!(pending_signals(), 0, "the drain empties the set");
+    }
+
+    /// `install_app_signal_handler` routes dispatched signals into
+    /// `app.on_signalled` (the `ServerAppSignalHandler` wiring), and the
+    /// routed SIGINT hits the base arm's disposition reset + re-raise.
+    #[test]
+    fn app_signal_handler_routes_into_on_signalled() {
+        let _guard = crate::signals::disposition_guard();
+
+        // SIGINT stays blocked for the whole test: the base arm's
+        // re-raise must park kernel-pending instead of killing us.
+        let mut blocked = Set::empty();
+        blocked.set(libc::SIGINT);
+        let _blocker = Blocker::new(&blocked);
+
+        struct RoutedApp {
+            log: Rc<RefCell<Vec<String>>>,
+        }
+        impl ServerApp for RoutedApp {
+            fn app_name(&self) -> &str {
+                "routedapp"
+            }
+            fn init(&mut self, _args: &[String]) -> bool {
+                true
+            }
+            fn run(&mut self) -> bool {
+                true
+            }
+            fn on_signalled(&mut self, sig_num: i32) {
+                self.log.borrow_mut().push(format!(
+                    "onSignalled {}",
+                    signal_number_to_string(sig_num)
+                ));
+                base_on_signalled(sig_num);
+            }
+        }
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let app: Rc<RefCell<dyn ServerApp>> = Rc::new(RefCell::new(RoutedApp {
+            log: Rc::clone(&log),
+        }));
+
+        let mut processor = SignalProcessor::new();
+        let id = install_app_signal_handler(&mut processor, &app);
+
+        assert_eq!(ServerApp::app_name(&*app.borrow()), "routedapp");
+        // The wiring test's app still runs a plain lifecycle through
+        // run_app (init -> run -> fini) before the signal round.
+        {
+            let mut borrowed = app.borrow_mut();
+            assert!(run_app(&mut *borrowed, &[]));
+        }
+
+        // The libtest harness blocks SIGINT on its worker threads; a
+        // real server thread does not. Unblock so the raise reaches the
+        // C handler.
+        let mut unblock = Set::empty();
+        unblock.set(libc::SIGINT);
+        unsafe {
+            libc::pthread_sigmask(
+                libc::SIG_UNBLOCK,
+                unblock.raw(),
+                std::ptr::null_mut(),
+            );
+        }
+
+        // The raise must be unblocked so the C handler marks the pending
+        // bit; the block starts before dispatch, so the routed base arm's
+        // re-raise parks instead of killing us, and stays up until the
+        // parked signal is consumed.
+        unsafe {
+            libc::raise(libc::SIGINT);
+        }
+        let mut blocked = Set::empty();
+        blocked.set(libc::SIGINT);
+        let blocker = Blocker::new(&blocked);
+        processor.dispatch();
+
+        assert_eq!(*log.borrow(), ["onSignalled SIGINT"]);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
+        assert!(
+            kernel_pending_signals() & (1 << libc::SIGINT) != 0,
+            "the routed re-raise parks blocked"
+        );
+
+        // Consume the parked signal while still blocked.
+        let mut wait_set = Set::empty();
+        wait_set.set(libc::SIGINT);
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
+                libc::SIGINT
+            );
+        }
+        drop(blocker);
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+        assert!(processor.clear_signal_handler(libc::SIGINT, id));
     }
 }

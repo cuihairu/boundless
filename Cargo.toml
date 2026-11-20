@@ -19,6 +19,9 @@ license = "LGPL-3.0-or-later"
 repository = "https://github.com/cuihairu/boundless"
 
 [workspace.dependencies]
+# External dependencies.
+libc = "0.2"
+
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
