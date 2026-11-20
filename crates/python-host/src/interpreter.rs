@@ -474,6 +474,7 @@ mod tests {
     use crate::gil;
     use crate::import_paths;
     use crate::keepalive;
+    use crate::manifest;
     use crate::pyref::PyRef;
     use crate::sequence;
     use std::path::PathBuf;
@@ -561,6 +562,7 @@ mod tests {
         "interpreter::tests::scenario_finishing_the_script_system_leaves_no_callback_behind",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
+        "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -2434,5 +2436,44 @@ mod tests {
         assert!(!Interpreter::is_initialized());
         assert!(!Interpreter::is_finalized());
         Interpreter.fini();
+    }
+
+    /// The export manifest agrees with the live interpreter: the surface it
+    /// marks ported imports and resolves, and its scoping records read true
+    /// against the modules that exist today -- `BigWorld.component` is
+    /// present, the client-only `BigWorld.callback` is not, and `Math` is
+    /// absent entirely because the port has not delivered it yet.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_manifest_matches_the_interpreter() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            assert_eq!(unsafe { manifest::check() }, Ok(()));
+            let _ = interpreter;
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let big_world = unsafe { capi::PyImport_ImportModule(c"BigWorld".as_ptr()) };
+            assert!(!big_world.is_null(), "BigWorld imports");
+            // SAFETY: BigWorld is a live module object.
+            let component =
+                unsafe { capi::PyObject_GetAttrString(big_world, c"component".as_ptr()) };
+            assert!(!component.is_null(), "BigWorld.component is present");
+            // SAFETY: both results are owned references from the calls above.
+            unsafe {
+                capi::dec_ref(component);
+                // `callback` is client-only surface: its absence is the
+                // scoping fact the manifest pins for BW-03-03-03.
+                let callback = capi::PyObject_GetAttrString(big_world, c"callback".as_ptr());
+                assert!(callback.is_null(), "BigWorld.callback is not here");
+                capi::clear_error();
+                capi::dec_ref(big_world);
+            }
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let math = unsafe { capi::PyImport_ImportModule(c"Math".as_ptr()) };
+            // The port has not delivered Math: the module is absent, exactly
+            // what its pending row records.
+            assert!(math.is_null(), "Math is still pending");
+            // SAFETY: a failed import leaves an exception set; clear it.
+            unsafe { capi::clear_error() };
+        });
     }
 }

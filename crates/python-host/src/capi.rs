@@ -368,6 +368,7 @@ unsafe extern "C" {
     pub fn PyImport_ImportModule(name: *const c_char) -> *mut PyObject;
     pub fn PyObject_Str(obj: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GetAttrString(obj: *mut PyObject, attr_name: *const c_char) -> *mut PyObject;
+    pub fn PyObject_HasAttrString(obj: *mut PyObject, attr_name: *const c_char) -> c_int;
     pub fn PyObject_SetAttrString(
         obj: *mut PyObject,
         attr_name: *const c_char,
