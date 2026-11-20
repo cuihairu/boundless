@@ -1639,7 +1639,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **BW-28-01-01 提取公开 VitePress 章节**。**验收** 标题、锚点及语言可定位。
   - 证据：原版结果——引用仓库文档是散落的 markdown/HTML（`BigWorld/docs/` 有 `.vitepress` 的 zh locale 树），但没有任何机器可定位的章节索引，标题、锚点、语言全靠人眼。新版结果——`integrations/mcp/docs/`（独立 crate `boundless-docs-mcp`，不入根 workspace 以免和他席位冲突）的 `src/markdown.rs` 把 `docs/**/*.md` 抽成结构化章节：front matter 的 `title`/`lang`/`private`、标题行内标记剥离、VitePress/GitHub 锚点规则（CJK 保留、空格转 `-`、去标点）、代码围栏内的 `#` 不当标题、章节体止于同级或更高级标题、行号为含 front matter 的全文档 0 基行、locale 目录（如 `zh/guide/x.md`）推断语言、`private: true` 打标记供公开边界使用。证据链接——`cargo test` 17 例全绿（tests/extract.rs）；`cargo llvm-cov` 行覆盖 100%（141/141），clippy 0 警告（仅 serde 依赖暂待下一项启用）。
-- [ ] **BW-28-01-02 按 Git 版本建索引**。**验收** 两个版本同名文档可区分。
+- [x] **BW-28-01-02 按 Git 版本建索引**。**验收** 两个版本同名文档可区分。
+  - 证据：原版结果——引用仓库文档树没有版本维度，读者只能看当前工作区，同一个页面路径在不同发布之间无法区分。新版结果——`src/source.rs` 的 `GitSource` 只从 Git 读内容（`git ls-tree -r <ref>:docs` 列文件、`git show <ref>:<path>` 取内容、`git rev-parse --short <ref>` 解析版本键，路径全部经 Git 解析而非磁盘文件，磁盘改动不改变版本含义）；`src/index.rs` 的 `DocIndex` 按版本分区，`VersionDocs { label, commit, docs }` 既按 ref 标签（`v1`/`v2`/`HEAD`）也按 commit 哈希可查，同一页面路径在两个版本下并存。证据链接——`cargo test --test version_index` 6 例全绿（真实 git 仓库夹具）：同一 `guide/entities.md` 在 v1/v2 下内容互不相等、标签解析为 ≥7 位十六进制 commit 且用该 commit 亦能查到同一页、索引经 `to_json`/`from_json` 往返相等、`private: true` 页不入索引而公开页在、`.vitepress/config.ts` 与 `img/logo.png` 被跳过只留 `guide/page.md`、不存在的 ref 返回错误（含 ref 名）而非 panic。
 - [ ] **BW-28-01-03 更新修改过的文档章节**。**验收** 增量刷新后搜索命中新文本及当前锚点。
 - [ ] **BW-28-01-04 移除删除的文档章节**。**验收** 增量刷新后检索结果和链接都不再包含被删除章节。
 - [ ] **BW-28-01-05 验证公开边界**。**验收** 私有夹具不会进入索引。
