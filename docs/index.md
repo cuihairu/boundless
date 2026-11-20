@@ -23,6 +23,7 @@ starts here.
 | See what each crate exports | [Script and SDK API](/reference/api) |
 | Plan a MySQL to PostgreSQL migration | [Database migration and recovery](/operations/database) |
 | Plan a load test | [Load testing with bots](/operations/load-testing) |
+| Reproduce the build gates locally | [Testing and release](/operations/testing-and-release) |
 
 ## Repository layout
 
@@ -88,7 +89,9 @@ pnpm run check:links    # fail on any dead internal link
 The build is a real gate: `ignoreDeadLinks: false` in `.vitepress/config.mjs`
 makes a broken internal link fail `pnpm run build`, and `check:links` is the
 second gate behind it. Both run from `docs/`, where `docs/package.json` lives,
-so CI invokes them as `pnpm --dir docs run build`.
+so CI invokes them as `pnpm --dir docs run build`. See
+[Testing and release](/operations/testing-and-release) for the same commands as
+run by the planned CI gate.
 
 Build output is `.vitepress/dist/`, which is ignored by `docs/.gitignore`. The
 site is a private-repo artifact only: it is built and previewed, never published

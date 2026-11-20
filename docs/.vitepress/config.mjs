@@ -110,6 +110,12 @@ const operationsSidebar = [
     items: [
       { text: "Load testing with bots", link: "/operations/load-testing" }
     ]
+  },
+  {
+    text: "Release",
+    items: [
+      { text: "Testing and release", link: "/operations/testing-and-release" }
+    ]
   }
 ];
 
