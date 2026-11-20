@@ -26,12 +26,12 @@ libc = "0.2"
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
-# platform = { path = "crates/platform" }  # re-add with first consumer
+platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
 # mercury = { path = "crates/mercury" }  # re-add at BW-02
 # contracts = { path = "crates/contracts" }  # re-add when a role runtime consumes it
 # entitydef = { path = "crates/entitydef" }  # re-add at BW-02+
-# python-host = { path = "crates/python-host" }  # re-add at BW-03
+python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 
