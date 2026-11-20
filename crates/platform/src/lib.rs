@@ -4,3 +4,9 @@ pub mod clock;
 
 #[cfg(unix)]
 pub mod socket;
+
+/// `epoll` primitives for the Mercury event poller. Linux only: the
+/// reference compiles `EPoller` only when `HAS_EPOLL` is defined
+/// (`__linux__ && !EMSCRIPTEN`).
+#[cfg(target_os = "linux")]
+pub mod poller;

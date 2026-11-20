@@ -197,6 +197,26 @@ pub fn descriptor_limit() -> RawFd {
     limit.rlim_cur as RawFd
 }
 
+/// `pipe(fds)`: the connected pair the reference's poller fixtures use as
+/// stand-in file descriptors. `None` when the kernel refused.
+pub fn create_pipe() -> Option<(RawFd, RawFd)> {
+    let mut fds: [RawFd; 2] = [-1, -1];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    Some((fds[0], fds[1]))
+}
+
+/// `::read` -- `recvAll` and the poller fixtures drain through this.
+pub fn read(fd: RawFd, buf: &mut [u8]) -> i32 {
+    unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) as i32 }
+}
+
+/// `::write`.
+pub fn write(fd: RawFd, data: &[u8]) -> i32 {
+    unsafe { libc::write(fd, data.as_ptr() as *const _, data.len()) as i32 }
+}
+
 /// `fcntl(fd, F_SETFL, flags)` -- `setnonblocking`. The reference passes
 /// `O_NONBLOCK` or 0 straight to `F_SETFL`, which silently clears every
 /// other flag; this keeps the current flags so the port does not lose the
