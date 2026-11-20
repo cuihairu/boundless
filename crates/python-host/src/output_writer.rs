@@ -564,6 +564,7 @@ mod tests {
     /// the assembled line to the sink, stdout carrying the info level.
     #[test]
     fn partial_lines_buffer_until_the_newline() {
+        let _lock = writer_serial();
         *writer() = WriterState::new();
         clear_capture();
         set_log_sink(Box::new(capture_sink));
@@ -580,6 +581,7 @@ mod tests {
     /// separately.
     #[test]
     fn stderr_lines_flag_the_error_level() {
+        let _lock = writer_serial();
         *writer() = WriterState::new();
         clear_capture();
         set_log_sink(Box::new(capture_sink));
@@ -594,9 +596,21 @@ mod tests {
         );
     }
 
+    /// The writer, the log sink and the capture are all process globals, so
+    /// the tests that read or mutate them run one at a time: a parallel
+    /// sibling would buffer into the same writer state and blur the very
+    /// lines they assert on.
+    fn writer_serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// A write with several newlines logs every complete line.
     #[test]
     fn multi_line_writes_log_each_line() {
+        let _lock = writer_serial();
         *writer() = WriterState::new();
         clear_capture();
         set_log_sink(Box::new(capture_sink));
@@ -611,6 +625,7 @@ mod tests {
     /// stream and completes later.
     #[test]
     fn the_two_streams_buffer_independently() {
+        let _lock = writer_serial();
         *writer() = WriterState::new();
         clear_capture();
         set_log_sink(Box::new(capture_sink));
@@ -636,6 +651,7 @@ mod tests {
     /// reference's `getCurrentStdio() == NULL` case.
     #[test]
     fn hooks_refuse_without_the_redirect() {
+        let _lock = writer_serial();
         *writer() = WriterState::new();
         assert!(!stdio_is_redirected());
         assert_eq!(
@@ -649,6 +665,7 @@ mod tests {
     /// skips the line in those cases.
     #[test]
     fn source_lines_are_read_and_trimmed() {
+        let _lock = writer_serial();
         let directory =
             std::env::temp_dir().join(format!("boundless-output-writer-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("create the directory");
@@ -666,6 +683,7 @@ mod tests {
     /// skips frames whose line it cannot show.
     #[test]
     fn a_blank_source_line_reads_as_none() {
+        let _lock = writer_serial();
         let directory =
             std::env::temp_dir().join(format!("boundless-output-writer-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("create the directory");
@@ -682,6 +700,7 @@ mod tests {
     /// other process-wide registries in the reference behave.
     #[test]
     fn a_poisoned_writer_lock_recovers() {
+        let _lock = writer_serial();
         let poisoner = std::thread::spawn(|| {
             let _guard = writer();
             panic!("poison the writer lock");
@@ -694,6 +713,7 @@ mod tests {
     /// `MF_ASSERT( Py_IsInitialized() )` aborts, the port reports instead.
     #[test]
     fn installs_refuse_without_an_interpreter() {
+        let _lock = writer_serial();
         assert!(!install());
         assert!(!install_exception_hook());
     }
