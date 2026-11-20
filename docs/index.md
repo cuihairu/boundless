@@ -13,6 +13,7 @@ starts here.
 | You want to... | Read |
 | --- | --- |
 | Build and install on Linux, Windows or macOS | [Installing on three platforms](/guide/install) |
+| Log in and enter a world with the FantasyDemo | [FantasyDemo quick start](/guide/fantasy-demo) |
 
 ## Repository layout
 

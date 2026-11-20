@@ -28,6 +28,12 @@ const guideSidebar = [
     items: [
       { text: "Installing on three platforms", link: "/guide/install" }
     ]
+  },
+  {
+    text: "Getting started",
+    items: [
+      { text: "FantasyDemo quick start", link: "/guide/fantasy-demo" }
+    ]
   }
 ];
 
