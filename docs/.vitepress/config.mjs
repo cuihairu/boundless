@@ -46,6 +46,13 @@ const guideSidebar = [
     items: [
       { text: "Entity scripting", link: "/guide/entity-authoring" }
     ]
+  },
+  {
+    text: "Client",
+    items: [
+      { text: "Client SDK", link: "/guide/client-sdk" },
+      { text: "Engine integration", link: "/guide/engine-integration" }
+    ]
   }
 ];
 

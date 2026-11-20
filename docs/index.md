@@ -16,6 +16,7 @@ starts here.
 | Log in and enter a world with the FantasyDemo | [FantasyDemo quick start](/guide/fantasy-demo) |
 | Start and stop one server role today | [Running a standalone server](/guide/standalone-server) |
 | Write your own entity scripts | [Entity scripting](/guide/entity-authoring) |
+| Connect a client or an engine | [Client SDK](/guide/client-sdk) and [Engine integration](/guide/engine-integration) |
 
 ## Repository layout
 
