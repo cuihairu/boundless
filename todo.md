@@ -1348,7 +1348,8 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 提供 VSIX、扩展宿主集成测试及安装说明，在 Linux、Windows、macOS 用 Demo 工作区检查核心流程。源码和发布包在插件目录独立构建。
 
-- [ ] **BW-20-03-01 独立构建 VSIX**。**验收** 可在干净编辑器安装。
+- [x] **BW-20-03-01 独立构建 VSIX**。**验收** 可在干净编辑器安装。
+  - 证据：原版结果——引用端是 C++ 服务器加 Python 脚本，编辑器侧没有 VS Code 扩展包，要用编辑器只能手配 launch.json 并自起进程。新版结果——`extensions/vscode` 独立成包：`pnpm run package` 调 `vsce package --no-dependencies` 产出 `boundless-vscode-0.0.1.vsix`；新增 `.vscodeignore` 把 `src/`、`test/`、`tools/`、`tsconfig*.json`、`vitest.config.ts`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`out/**/*.map` 挡在包外（88 文件 168.83 KB → 24 文件 42.4 KB，包内 22 个文件）；`tools/verify/vsix.cjs` 只用扩展目录自带的 `node_modules/.bin/vsce` 打包（不依赖全局工具），解包后逐条核对：manifest 存在、`main` 指向的 `out/extension.js` 在包内、语言/片段/语法齐全、入口加载的 `out/workspace/{docsMcp,launchConfig,cluster}.js` 齐全、不含 src/test/开发清单、不含指向未随包源码的 .map。证据链接——`pnpm run verify` 输出 `vsix: all checks passed`（8 项全 PASS）；干净编辑器实装：`code --user-data-dir <新> --extensions-dir <新> --install-extension boundless-vscode-0.0.1.vsix` 返回 `Extension 'boundless-vscode-0.0.1.vsix' was successfully installed`，`--list-extensions --show-versions` 列出 `boundless.boundless-vscode@0.0.1`，扩展目录内解出 `out/ package.json readme.md snippets syntaxes language-configuration.json`。如实登记——包只在本地构建：`package.json` 仍是 `private: true`、版本仍 0.0.1，未打 tag、未建 GitHub Release、未发 marketplace（发版由用户手动触发）。
 - [ ] **BW-20-03-02 编写安装和配置说明**。**验收** 能从空工作区启用。
 - [ ] **BW-20-03-03 验证三端扩展宿主**。**验收** Demo 工作区核心动作均通过。
 
