@@ -1316,7 +1316,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 - [x] **BW-19-01-01 构建 VitePress 配置及导航**。**验收** 关键页面可访问。
   - 证据：原版 BigWorld `docs/.vitepress/config.mjs` 用 `locales{root:en, zh}` 双语、nav 5 项、`ignoreDeadLinks: false`；新版为 `docs/.vitepress/config.mjs` 单语 `en-US`、`ignoreDeadLinks: false`、`cleanUrls: false`、`base: "/"`，`themeConfig.nav` 挂 Overview/Guide，`sidebar` 键 `/guide/`，`search` 与其余栏目随后续条目增量生长。依赖由 `docs/package.json`（pnpm 管，仓内装）解析 vitepress 1.6.4（125 包，102 复用离线 store）。`pnpm --dir docs run build` 绿；`/` 与 `/guide/` 关键页面在 dev 与 preview 两入口均 HTTP 200。
-- [ ] **BW-19-01-02 配置搜索与静态资源**。**验收** 搜索命中且资源路径可用。
+- [x] **BW-19-01-02 配置搜索与静态资源**。**验收** 搜索命中且资源路径可用。
+  - 证据：原版 `docs/.vitepress/config.mjs` 在两个 locale 的 `themeConfig` 内各写 `search: { provider: "local" }`，静态资源放 `docs/public/`；新版为 `themeConfig.search = { provider: "local" }`（纯客户端本地索引，不引外部搜索服务），并接 `docs/public/`。产物含本地搜索索引 `.vitepress/dist/assets/chunks/@localSearchIndexroot.*.js`（91755 字节，实测命中 FantasyDemo ×6、ServerAppConfig、beeline、capacity），静态资源 `docs/public/examples/bw.standalone.xml` 与 `docs/public/robots.txt` 均打包进 dist 并可由 preview 以 HTTP 200 取到（字节数与 dist 内一致）。`bw.standalone.xml` 非填充物：XML 可解析，8 个取值与 `crates/server-runtime/src/server_app.rs` 默认值逐一对齐。`pnpm --dir docs run build` 绿（8.77s）。
 - [ ] **BW-19-01-03 接入链接检查**。**验收** 坏内部链接使检查失败。
 - [ ] **BW-19-01-04 生成预览与生产产物**。**验收** 两种入口都能加载站点。
 
