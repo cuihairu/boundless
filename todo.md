@@ -1645,7 +1645,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据：原版结果——引用仓库没有索引，也就没有「改了文档还能检索到」这一层。新版结果——`DocIndex::refresh` 用 `git ls-tree -r <ref>:docs` 的 blob 哈希做变更指纹：blob 未变的页整页沿用（`unchanged` 计数），变了才重新读盘抽取，返回 `RefreshReport { updated, removed, unchanged }`，同一 ref（`HEAD` 移动）原地覆盖。证据链接——`tests/incremental.rs` 4 例（编辑一页只更新那页、锚点与正文随标题改写更新、重复刷新零变更）；`tests/refresh_search.rs` 把刷新接到搜索上取证：页内容从 `## Old heading` / `Obsolete marker wording.` 改为 `## **New** heading` / `Current marker wording.` 后，`RefreshReport.updated == ["guide/entities.md"]`、`unchanged == 1`，搜索 `Current marker` 命中章节 `New heading`（`anchor == new-heading`，snippet 含 `Current marker`），搜索 `obsolete` 返回空。
 - [x] **BW-28-01-04 移除删除的文档章节**。**验收** 增量刷新后检索结果和链接都不再包含被删除章节。
   - 证据：原版结果——被删文档没有「删了就消失」的保证，读取接口会指向一个已不存在的对象。新版结果——刷新把消失的页从版本里摘出（`RefreshReport.removed == ["guide/gone.md"]`），`Session::find` 取不到它、`Session::paths` 不再列它；对它的 `read_doc` 返回 `isError: true`（链接即报错）；一节被删后该页锚点收敛为 `["two","keep"]`，该节正文再无命中。证据链接——`integrations/mcp/docs/tests/refresh_search.rs`：`a_deleted_page_is_out_of_the_index_and_the_results`、`a_deleted_section_leaves_no_hit_or_link`；`tests/incremental.rs` 的删除路径。
-- [ ] **BW-28-01-05 验证公开边界**。**验收** 私有夹具不会进入索引。
+- [x] **BW-28-01-05 验证公开边界**。**验收** 私有夹具不会进入索引。
+  - 证据：原版结果——引用仓库的 `private: true` 只是文档约定，没有机器可校验的公开边界，抓取器和读者一样能看到私有页。新版结果——front matter 的 `private: true` 在 `DocEntry::from_source` 直接返回 `None`，该页根本不进 `DocIndex`，因此索引路径、搜索命中、`read_doc` 三层都取不到它；边界由内容驱动而非缓存——同一页去掉标记（`private: false`）刷新后即重新出现并被检索到。证据链接——`integrations/mcp/docs/tests/public_boundary.rs` 2 例：`a_private_page_never_enters_the_index`（`guide/draft.md` 与 `zh/guide/internal.md` 两个私有夹具都不在 `DocIndex::paths` 里，全索引正文/直接体无一处含 `Vault clearance phrase`，搜索该短语返回空，`read_doc` 对私有页回 `isError`、对公开页回 `isError: false`）；`a_page_becomes_public_when_the_private_flag_is_dropped`（去掉标记后 `RefreshReport.updated == ["guide/draft.md"]`，搜索命中、`read_doc` 成功）。
 
 #### BW-28-02 MCP 文档查询
 
