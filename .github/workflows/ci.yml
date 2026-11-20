@@ -368,10 +368,11 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # BW-22-02-02 — the storage cases run against a real backend. The workflow
-  # supplies mysql:8 and postgres:16 as service containers because a clean
-  # runner has neither server; ci/store.sh reaches them over the mapped ports
-  # and provisions nothing itself.
+  # BW-22-02-02 / 03 — the storage cases run against a real backend. MySQL and
+  # PostgreSQL arrive as service containers, because a clean runner has neither
+  # server; ci/store.sh reaches them over the mapped ports and provisions
+  # nothing itself. SQLite and XML need no server at all — a private file and a
+  # private directory — so they run wherever the lane runs.
   #
   # A change that only moves a case file still runs the lane: the cases are the
   # contract, and a case that no backend can satisfy is exactly what must be
@@ -415,6 +416,7 @@ jobs:
             missing+=("default-mysql-client")
           fi
           command -v psql >/dev/null 2>&1 || missing+=("postgresql-client")
+          command -v sqlite3 >/dev/null 2>&1 || missing+=("sqlite3")
           if [ ${#missing[@]} -gt 0 ]; then
             if command -v sudo >/dev/null 2>&1; then
               sudo apt-get update -qq && sudo apt-get install -y -qq "${missing[@]}"
@@ -422,6 +424,13 @@ jobs:
               apt-get update -qq && apt-get install -y -qq "${missing[@]}"
             fi
           fi
+
+      # The XML leg validates its cases with the standard library, so it needs
+      # a known Python rather than whatever the image happens to ship.
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
 
       - name: Run the storage cases
         env:

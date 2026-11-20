@@ -57,16 +57,25 @@ record_path() { printf '%s/store/%s.tsv' "$CI_OUT" "$1"; }
 
 # The shared cases plus the ones a backend brings of its own. A case is green
 # only if every statement in it succeeded.
-case_files() {
-    local backend="$1"
+case_files() { # $1 backend $2 glob
+    local backend="$1" glob="$2"
     [ -d "$CASES_DIR" ] || return 1
     {
-        ls "$CASES_DIR/common/"*.sql 2>/dev/null
-        ls "$CASES_DIR/$backend/"*.sql 2>/dev/null
+        ls "$CASES_DIR/common/"$glob 2>/dev/null
+        ls "$CASES_DIR/$backend/"$glob 2>/dev/null
     } 2>/dev/null | sort -u
     # The missing dialect directory is an ordinary outcome, not a failure:
     # with pipefail the failing ls would sink the whole pipeline.
     return 0
+}
+
+# Which ticket owns the substrate a backend needs. A SKIP has to point at the
+# work that turns it on, not at the lane itself.
+tracker_for() {
+    case "$1" in
+    xml | sqlite) printf 'BW-09-03' ;;
+    *)            printf 'BW-09-02 and BW-09-06' ;;
+    esac
 }
 
 which_first() {
@@ -280,21 +289,96 @@ mysql_create_db() {
     "$(mysql_cli)" "${MYSQL_ARGS[@]}" -N -e "CREATE DATABASE \`$2\`" >/dev/null 2>&1
 }
 
-# --- the lane --------------------------------------------------------------
+# --- sqlite ---------------------------------------------------------------
+
+# The reference secondary store reads its columns back with
+# sqlite3_column_int64, so the i64 vocabulary applies here too. A private file
+# is the whole server: nothing to start, and nothing left when it is removed.
+provision_sqlite() {
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        echo "no sqlite3 on this runner" >&2
+        return "$MISSING_TOOLS"
+    fi
+    local dir="$SANDBOX/sqlite"
+    mkdir -p "$dir"
+    printf '%s' "$dir"
+}
+
+sqlite_create_db() { : >"$1/$2"; }
+sqlite_drop_db()  { rm -f "$1/$2"; }
+sqlite_db_exists() { [ -f "$1/$2" ]; }
+
+sqlite_apply() { # $1 dir $2 db $3 case
+    # -bail: without it sqlite3 runs on past a failing statement and reports
+    # success for a case that only half applied.
+    sqlite3 -bail "$1/$2" <"$3"
+}
+
+# --- xml ------------------------------------------------------------------
+
+# The reference XML backend writes an id out as a decimal attribute and reads it
+# back, so what the lane checks is that the decimal representation of the i64
+# domain round-trips. python3 is already a dependency of this workflow.
+provision_xml() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "no python3 on this runner, so the xml id vocabulary cannot be checked" >&2
+        return "$MISSING_TOOLS"
+    fi
+    local dir="$SANDBOX/xml"
+    mkdir -p "$dir"
+    printf '%s' "$dir"
+}
+
+xml_create_db() { mkdir -p "$1/$2"; }
+xml_drop_db()  { rm -rf "${1:?handle}/${2:?db}"; }
+xml_db_exists() { [ -d "$1/$2" ]; }
+
+xml_apply() { # $1 dir $2 db $3 case
+    # The case is accepted only when every id fits the i64 domain and at least
+    # one is present — a file with no ids would otherwise pass vacuously.
+    python3 -c '
+import os, sys, xml.etree.ElementTree as ET
+I64_MIN, I64_MAX = -(1 << 63), (1 << 63) - 1
+outdir, path = sys.argv[1], sys.argv[2]
+try:
+    root = ET.parse(path).getroot()
+except ET.ParseError as e:
+    print("ERROR: not well-formed xml: %s" % e); sys.exit(1)
+ids = []
+for el in root.iter():
+    for k, v in el.attrib.items():
+        if k.lower() in ("id", "entityid"):
+            try: ids.append(int(v, 10))
+            except ValueError:
+                print("ERROR: id %r is not a decimal integer" % v); sys.exit(1)
+if not ids:
+    print("ERROR: no id attributes, so this case would pass vacuously"); sys.exit(1)
+bad = [i for i in ids if not (I64_MIN <= i <= I64_MAX)]
+if bad:
+    print("ERROR: %d id(s) outside the i64 domain, e.g. %d" % (len(bad), bad[0])); sys.exit(1)
+name = os.path.basename(path)
+name = name[:-len(".xml")] if name.endswith(".xml") else name
+with open(os.path.join(outdir, name + ".ids"), "w") as f:
+    for i in ids:
+        f.write("%d\n" % i)
+print("ok %d id(s), min=%d max=%d" % (len(ids), min(ids), max(ids)))
+' "$1/$2" "$3"
+}
 
 # --- the lane --------------------------------------------------------------
 
-run_backend() {
+run_backend() { # $1..$6 backend + its helpers, $7 the case glob
     local backend="$1" provision="$2" create_db="$3" drop_db="$4" apply="$5" db_exists="$6"
+    local glob="$7"
     local rec db cases ok=0 total=0 failed="" residue where err rc
 
     ci_step "$backend"
     rec="$(record_path "$backend")"
     mkdir -p "$CI_OUT/store" "$CI_LOG_DIR"
 
-    cases="$(case_files "$backend" || true)"
+    cases="$(case_files "$backend" "$glob" || true)"
     if [ -z "$cases" ]; then
-        ci_skip "store-$backend" "no cases under $CASES_DIR (common/ or $backend/); storage work is tracked by BW-09"
+        ci_skip "store-$backend" "no cases under $CASES_DIR (common/ or $backend/); this backend is tracked by $(tracker_for "$backend")"
         return 0
     fi
 
@@ -323,7 +407,8 @@ run_backend() {
     local file name out rc
     while IFS= read -r file; do
         [ -n "$file" ] || continue
-        name="$(basename "$file" .sql)"
+        name="$(basename "$file")"
+        name="${name%.*}"
         total=$((total + 1))
         out="$("$apply" "$where" "$db" "$file" 2>&1)"
         rc=$?
@@ -358,17 +443,23 @@ run() {
     mkdir -p "$CI_OUT" "$CI_LOG_DIR"
     [ -n "${GITHUB_ENV:-}" ] && ci_out_env >>"$GITHUB_ENV"
 
-    local wanted="${*:-mysql postgres}" b
+    local wanted="${*:-mysql postgres sqlite xml}" b
     for b in $wanted; do
         case "$b" in
         mysql | mariadb)
-            run_backend mysql provision_mysql mysql_create_db mysql_drop_db mysql_apply mysql_db_exists
+            run_backend mysql provision_mysql mysql_create_db mysql_drop_db mysql_apply mysql_db_exists '*.sql'
             ;;
         postgres | postgresql)
-            run_backend postgres provision_postgres pg_create_db pg_drop_db pg_exec pg_db_exists
+            run_backend postgres provision_postgres pg_create_db pg_drop_db pg_exec pg_db_exists '*.sql'
+            ;;
+        sqlite)
+            run_backend sqlite provision_sqlite sqlite_create_db sqlite_drop_db sqlite_apply sqlite_db_exists '*.sql'
+            ;;
+        xml)
+            run_backend xml provision_xml xml_create_db xml_drop_db xml_apply xml_db_exists '*.xml'
             ;;
         *)
-            ci_skip "store-$b" "unknown backend '$b' (mysql, postgres)"
+            ci_skip "store-$b" "unknown backend '$b' (mysql, postgres, sqlite, xml)"
             ;;
         esac
     done
@@ -441,7 +532,7 @@ main() {
         self_test
         return $?
     fi
-    run "${@:-mysql postgres}"
+    run "${@:-mysql postgres sqlite xml}"
 }
 
 main "$@"
