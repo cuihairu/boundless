@@ -12,10 +12,11 @@ covers building the server from source on each.
 | Windows x86-64 | Prerequisites only | Not verified here | BW-15-03 |
 | macOS arm64 | Prerequisites only | Not verified here | BW-15-04 |
 
-Windows and macOS items are listed as *not started* in `todo.md`, and
-`crates/platform/` currently contains only `clock.rs`. The build instructions
-below for those two platforms describe the intended path and have not been run
-against this tree.
+Windows and macOS items are listed as *not started* in `todo.md`, and the
+platform-specific modules that exist in `crates/platform/` (`socket`, `poller`)
+are `unix`/`linux`-gated — only `clock` and `interface` compile everywhere. The
+build instructions below for those two platforms describe the intended path and
+have not been run against this tree.
 
 ## Prerequisites
 
