@@ -23,7 +23,7 @@ repository = "https://github.com/cuihairu/boundless"
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
 # platform = { path = "crates/platform" }  # re-add with first consumer
-# resources = { path = "crates/resources" }  # re-add with first consumer
+resources = { path = "crates/resources" }
 # mercury = { path = "crates/mercury" }  # re-add at BW-02
 # contracts = { path = "crates/contracts" }  # re-add when a role runtime consumes it
 # entitydef = { path = "crates/entitydef" }  # re-add at BW-02+

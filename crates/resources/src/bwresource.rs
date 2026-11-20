@@ -737,6 +737,20 @@ impl BwResource {
         let cache = self.section_cache.borrow();
         (cache.hits(), cache.misses(), cache.current_bytes())
     }
+
+    /// Re-join an already-built section with the cache under
+    /// `resource_id`, sized by its serialised form, without writing to
+    /// disk. The reference mutates sections in place, so the cache (and
+    /// census) observe every change through the shared object; Rust `Arc`
+    /// hands out immutable trees, and callers that replace a mutated clone
+    /// (BWConfig's `+key value` command-line overrides) re-add it here to
+    /// keep later `open_section` calls serving the mutated tree.
+    pub fn readd_section(&self, resource_id: &str, section: &DataSection) {
+        let bytes = section.clone().write_to_string();
+        self.section_cache
+            .borrow_mut()
+            .add(resource_id, bytes.len(), Arc::new(section.clone()));
+    }
 }
 
 /// `::getenv("BW_CACHE_SIZE")` + `atoi` from postAddPaths: a missing
@@ -785,7 +799,7 @@ fn executable_directory() -> String {
 /// `getUserId()`: the `UID` environment variable parsed with atoi when
 /// present (even when it does not name a number -- atoi yields 0), else
 /// the process's real uid, read from the `/proc/self` owner.
-fn current_uid() -> u32 {
+pub fn current_uid() -> u32 {
     current_uid_from(std::env::var("UID").ok().as_deref())
 }
 

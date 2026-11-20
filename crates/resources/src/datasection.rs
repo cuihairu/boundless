@@ -762,6 +762,89 @@ impl DataSection {
     }
 
     // ------------------------------------------------------------------
+    // Path walking (DataSection::openSection / readString, datasection.cpp)
+    // ------------------------------------------------------------------
+
+    /// `DataSection::openSection` with `makeNewSection = false`: walks a
+    /// `'/'`-separated tag path down to a child. Quirks preserved: an
+    /// empty path is `self`; a path ending in a slash resolves to the
+    /// child before the slash; consecutive slashes collapse
+    /// (`find_first_not_of`).
+    pub fn open_section(&self, path: &str) -> Option<&DataSection> {
+        if path.is_empty() {
+            return Some(self);
+        }
+        match path.find('/') {
+            Some(slash) => {
+                let child = self.find_child(&path[..slash])?;
+                match path[slash..].find(|c: char| c != '/') {
+                    // The string ended with a slash.
+                    None => Some(child),
+                    Some(rest) => child.open_section(&path[slash + rest..]),
+                }
+            }
+            None => self.find_child(path),
+        }
+    }
+
+    /// `DataSection::readString`: the dotted-path lookup; the value of the
+    /// found section (`XMLSection::asString` ignores the default, so an
+    /// empty tag yields an empty string), or `default` when the path
+    /// misses.
+    pub fn read_string(&self, path: &str, default: &str) -> String {
+        match self.open_section(path) {
+            Some(section) => section.as_string().to_string(),
+            None => default.to_string(),
+        }
+    }
+
+    /// The `makeNewSection = true` half of [`DataSection::open_section`]:
+    /// missing intermediate and leaf tags are appended (`newSection`).
+    fn open_or_make(&mut self, path: &str) -> Option<&mut DataSection> {
+        if path.is_empty() {
+            return Some(self);
+        }
+        match path.find('/') {
+            Some(slash) => {
+                let head = &path[..slash];
+                if self.find_child(head).is_none() {
+                    self.add_child(head);
+                }
+                let child = self
+                    .find_child_mut(head)
+                    .expect("child ensured just above");
+                match path[slash..].find(|c: char| c != '/') {
+                    None => Some(child),
+                    Some(rest) => child.open_or_make(&path[slash + rest..]),
+                }
+            }
+            None => {
+                if self.find_child(path).is_none() {
+                    return Some(self.add_child(path));
+                }
+                self.find_child_mut(path)
+            }
+        }
+    }
+
+    fn find_child_mut(&mut self, tag: &str) -> Option<&mut DataSection> {
+        self.children.iter_mut().find(|c| c.name == tag)
+    }
+
+    /// `DataSection::writeString`: create the path as needed and set its
+    /// string value. Writing through the empty path sets this section's
+    /// own value (`openSection("")` is `this`).
+    pub fn write_string(&mut self, path: &str, value: &str) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_string(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Writers (setX / writeToStream formats, pinned from xml_section.cpp)
     // ------------------------------------------------------------------
 
@@ -1948,5 +2031,79 @@ mod tests {
         doc.child_mut(1).unwrap().set_string("renamed");
         assert_eq!(doc.open_child(1).unwrap().as_string(), "renamed");
         assert!(doc.child_mut(2).is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Path walking (openSection / readString / writeString)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn open_section_walks_slashed_paths() {
+        let doc = parse_doc("<r><a><b x='attr'><c>deep</c></b></a></r>");
+        // The empty path is the section itself.
+        assert_eq!(
+            doc.open_section("").unwrap().section_name(),
+            doc.section_name()
+        );
+        assert_eq!(
+            doc.open_section("a/b/c").unwrap().as_string(),
+            "deep"
+        );
+        assert_eq!(
+            doc.open_section("a/b/x").unwrap().as_string(),
+            "attr"
+        );
+        assert_eq!(
+            doc.open_section("a").unwrap().section_name(),
+            "a"
+        );
+        // Missing intermediate or leaf: None, no creation.
+        assert!(doc.open_section("z/c").is_none());
+        assert!(doc.open_section("a/z").is_none());
+    }
+
+    #[test]
+    fn open_section_slash_quirks_match_find_first_not_of() {
+        let doc = parse_doc("<r><a><b>v</b></a></r>");
+        // A trailing slash resolves to the child before it.
+        assert_eq!(doc.open_section("a/").unwrap().section_name(), "a");
+        assert_eq!(doc.open_section("a/b/").unwrap().as_string(), "v");
+        // Consecutive slashes collapse like find_first_not_of.
+        assert_eq!(doc.open_section("a//b").unwrap().as_string(), "v");
+        // A leading slash makes the head tag empty: no match.
+        assert!(doc.open_section("/a").is_none());
+    }
+
+    #[test]
+    fn read_string_returns_the_value_and_ignores_defaults_on_hits() {
+        let doc = parse_doc("<r><a></a><b>x</b></r>");
+        // XMLSection::asString ignores the default: an empty tag yields
+        // an empty string, not the default.
+        assert_eq!(doc.read_string("a", "def"), "");
+        assert_eq!(doc.read_string("b", "def"), "x");
+        assert_eq!(doc.read_string("missing", "def"), "def");
+        assert_eq!(doc.read_string("missing/deeper", ""), "");
+    }
+
+    #[test]
+    fn write_string_creates_missing_intermediates_in_place() {
+        let mut doc = parse_doc("<r><a><b>v</b></a></r>");
+        // A brand-new dotted path: every level is appended.
+        assert!(doc.write_string("x/y/z", "made"));
+        assert_eq!(
+            doc.write_to_string(),
+            "<root>\n\t<a>\n\t\t<b>\tv\t</b>\n\t</a>\n\t<x>\n\t\t<y>\n\t\t\t<z>\tmade\t</z>\n\t\t</y>\n\t</x>\n</root>\n"
+        );
+        // An existing leaf is replaced, not duplicated.
+        assert!(doc.write_string("a/b", "new"));
+        assert_eq!(doc.open_section("a/b").unwrap().as_string(), "new");
+        assert_eq!(doc.count_children(), 2);
+        // A trailing slash writes into the child before it, not a new tag.
+        assert!(doc.write_string("a/", "tail"));
+        assert_eq!(doc.open_section("a").unwrap().as_string(), "tail");
+        assert_eq!(doc.count_children(), 2);
+        // The empty path writes the section's own value.
+        assert!(doc.write_string("", "root value"));
+        assert_eq!(doc.as_string(), "root value");
     }
 }

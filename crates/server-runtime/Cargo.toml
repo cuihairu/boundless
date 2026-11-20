@@ -10,4 +10,4 @@ repository.workspace = true
 [dependencies]
 # foundation = { workspace = true }  # re-add with the game clock wiring
 # platform = { workspace = true }  # re-add at BW-01-04 signals
-# resources = { workspace = true }  # re-add at BW-01-04 bw.xml
+resources = { workspace = true }
