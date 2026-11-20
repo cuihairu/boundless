@@ -51,6 +51,9 @@ pub enum PropertyValue {
     /// A tuple is just a fixed-length array, so both share this variant; the
     /// distinction lives on the type (`Kind::Sequence { is_tuple, .. }`).
     Sequence(Vec<PropertyValue>),
+    /// `FIXED_DICT` (`FixedDictDataType`): `None` for the `<AllowNone>` value,
+    /// else the fields as `(name, value)` pairs in the type's own field order.
+    FixedDict(Option<Vec<(String, PropertyValue)>>),
 }
 
 /// The `SimpleStreamElement` / `BlobStreamElement` truncation text.
@@ -98,6 +101,14 @@ pub enum PropertyError {
     /// As above, but with fixed-sized elements (the count * element size
     /// exceeds the bytes left).
     ExpectedSequenceBytes { bytes: usize, remaining: i32 },
+    /// `FixedDictDataType::createFromSection`: called with a null section.
+    NullSection,
+    /// `FixedDictStartStreamElement::fromStreamToSink`: the None indicator
+    /// byte was not on the stream.
+    MissingNoneIndicator,
+    /// `ClassDataType::Field::createDefaultValue`: the field's default
+    /// section would not build.
+    FieldDefaultFailed { name: String },
     /// A composite meta type, handled outside this module.
     Unsupported(&'static str),
 }
@@ -144,6 +155,17 @@ impl std::fmt::Display for PropertyError {
             Self::ExpectedSequenceBytes { bytes, remaining } => writeln!(
                 f,
                 "SequenceStartStreamElement::fromSourceToStream: Expected bytes on stream: {bytes} ({remaining} bytes remaining)"
+            ),
+            Self::NullSection => {
+                writeln!(f, "FixedDictDataType::createFromSection: Section is NULL.")
+            }
+            Self::MissingNoneIndicator => writeln!(
+                f,
+                "FixedDictStartStreamElement::fromStreamToSink Missing None/values indicator on stream"
+            ),
+            Self::FieldDefaultFailed { name } => writeln!(
+                f,
+                "ClassDataType::Field::createDefaultValue: Failed to create {name} from default section"
             ),
             Self::Unsupported(meta) => write!(f, "{meta} values are not supported here"),
         }
@@ -292,6 +314,32 @@ fn check_value(kind: &Kind, value: &PropertyValue) -> Result<(), PropertyError> 
                 None => Ok(()),
             }
         }
+        // `FixedDictDataType::isSameType`: None only counts when the type
+        // allows it, and otherwise every field must carry a value the field's
+        // own type accepts. The reference fails silently here.
+        Kind::FixedDict {
+            allow_none, fields, ..
+        } => match value {
+            PropertyValue::FixedDict(None) => {
+                if *allow_none {
+                    Ok(())
+                } else {
+                    Err(PropertyError::TypeMismatch { meta: "fixed_dict" })
+                }
+            }
+            PropertyValue::FixedDict(Some(values)) => {
+                if values.len() != fields.len() {
+                    return Err(PropertyError::TypeMismatch { meta: "fixed_dict" });
+                }
+                for ((name, value), field) in values.iter().zip(fields.iter()) {
+                    if name != &field.name || check_value(field.type_.kind(), value).is_err() {
+                        return Err(PropertyError::TypeMismatch { meta: "fixed_dict" });
+                    }
+                }
+                Ok(())
+            }
+            _ => Err(PropertyError::TypeMismatch { meta: "fixed_dict" }),
+        },
         _ => Err(PropertyError::Unsupported(kind.meta_name())),
     }
 }
@@ -301,9 +349,10 @@ fn check_value(kind: &Kind, value: &PropertyValue) -> Result<(), PropertyError> 
 fn initial_value_from(
     kind: &Kind,
     sections: [Option<DataSection>; 2],
+    default_section: Option<&DataSection>,
 ) -> Result<PropertyValue, PropertyError> {
     if let Some(section) = sections.into_iter().flatten().next() {
-        return value_from_section(kind, &section);
+        return value_from_section(kind, &section, default_section);
     }
     Ok(default_value(kind))
 }
@@ -311,7 +360,14 @@ fn initial_value_from(
 /// `DataType::createFromSection` for the scalar metas, over the value text of
 /// `section` (the reference reads `pSection->as< INT_TYPE >()` and friends on
 /// the `<Default>` section itself).
-fn value_from_section(kind: &Kind, section: &DataSection) -> Result<PropertyValue, PropertyError> {
+fn value_from_section(
+    kind: &Kind,
+    section: &DataSection,
+    // The `<Default>` section stored on the type being built
+    // (`DataType::pDefaultSection_`), which `Field::createDefaultValue`
+    // consults for a missing field.
+    default_section: Option<&DataSection>,
+) -> Result<PropertyValue, PropertyError> {
     match kind {
         Kind::Int { bytes, signed } => Ok(if *signed {
             PropertyValue::Int(match *bytes {
@@ -358,12 +414,52 @@ fn value_from_section(kind: &Kind, section: &DataSection) -> Result<PropertyValu
             let mut values = Vec::with_capacity(count);
             for i in 0..count {
                 let value = match section.open_child(i) {
-                    Some(child) => value_from_section(element.kind(), child)?,
+                    Some(child) => {
+                        value_from_section(element.kind(), child, element.default_section())?
+                    }
                     None => default_value(element.kind()),
                 };
                 values.push(value);
             }
             Ok(PropertyValue::Sequence(values))
+        }
+        // `FixedDictDataType::createFromSection`: an empty section is the None
+        // value when the type allows it, else one value per field, in the type's
+        // own field order.
+        Kind::FixedDict {
+            allow_none, fields, ..
+        } => {
+            if *allow_none && section.count_children() == 0 {
+                return Ok(PropertyValue::FixedDict(None));
+            }
+            let mut values = Vec::with_capacity(fields.len());
+            for field in fields.iter() {
+                let value = match section.open_section(&field.name) {
+                    Some(child) => value_from_section(
+                        field.type_.kind(),
+                        child,
+                        field.type_.default_section(),
+                    )?,
+                    // `Field::createDefaultValue`: the field's own section
+                    // inside this type's `<Default>`, else the field type's
+                    // default.
+                    None => match default_section.and_then(|d| d.open_section(&field.name)) {
+                        Some(child) => value_from_section(
+                            field.type_.kind(),
+                            child,
+                            field.type_.default_section(),
+                        )
+                        .map_err(|_| {
+                            PropertyError::FieldDefaultFailed {
+                                name: field.name.clone(),
+                            }
+                        })?,
+                        None => field.type_.default_value()?,
+                    },
+                };
+                values.push((field.name.clone(), value));
+            }
+            Ok(PropertyValue::FixedDict(Some(values)))
         }
         _ => Err(PropertyError::Unsupported(kind.meta_name())),
     }
@@ -386,6 +482,22 @@ fn default_value(kind: &Kind) -> PropertyValue {
                 .map(|_| default_value(element.kind()))
                 .collect(),
         ),
+        // `FixedDictDataType::getDefaultValue`: None when the type allows it,
+        // else one default per field, in field order.
+        Kind::FixedDict {
+            allow_none, fields, ..
+        } => {
+            if *allow_none {
+                PropertyValue::FixedDict(None)
+            } else {
+                PropertyValue::FixedDict(Some(
+                    fields
+                        .iter()
+                        .map(|field| (field.name.clone(), default_value(field.type_.kind())))
+                        .collect(),
+                ))
+            }
+        }
         _ => PropertyValue::Int(0),
     }
 }
@@ -400,7 +512,7 @@ impl DataType {
     /// child of the `<Type>` section (`setDefaultValue`).
     pub fn default_value(&self) -> Result<PropertyValue, PropertyError> {
         match self.default_section() {
-            Some(section) => value_from_section(self.kind(), section),
+            Some(section) => value_from_section(self.kind(), section, Some(section)),
             None => Ok(default_value(self.kind())),
         }
     }
@@ -415,7 +527,7 @@ impl DataType {
         &self,
         section: &DataSection,
     ) -> Result<PropertyValue, PropertyError> {
-        value_from_section(self.kind(), section)
+        value_from_section(self.kind(), section, self.default_section())
     }
 
     /// `DataType::addToStream` for the scalar metas.
@@ -447,6 +559,7 @@ impl DataDescription {
                 self.initial_value_section.clone(),
                 self.default_section.clone(),
             ],
+            self.data_type.default_section(),
         )
     }
 }
@@ -527,6 +640,29 @@ fn add_to_stream(
             }
             _ => return Err(PropertyError::TypeMismatch { meta: "sequence" }),
         },
+        // `FixedDictStartStreamElement::fromSourceToStream`: one byte naming
+        // the None state when the type allows it, then every field in the
+        // type's own order. The enter/leave/end elements write nothing.
+        Kind::FixedDict {
+            allow_none, fields, ..
+        } => match value {
+            PropertyValue::FixedDict(None) => {
+                if !*allow_none {
+                    return Err(PropertyError::TypeMismatch { meta: "fixed_dict" });
+                }
+                // `uint8( isNone_ ? 0 : 1 )` — 0 means None.
+                let _ = stream.write_u8(0);
+            }
+            PropertyValue::FixedDict(Some(values)) => {
+                if *allow_none {
+                    let _ = stream.write_u8(1);
+                }
+                for (field, (_, field_value)) in fields.iter().zip(values.iter()) {
+                    add_to_stream(field.type_.kind(), field_value, stream)?;
+                }
+            }
+            _ => return Err(PropertyError::TypeMismatch { meta: "fixed_dict" }),
+        },
         _ => return Err(PropertyError::Unsupported(kind.meta_name())),
     }
     Ok(())
@@ -592,6 +728,31 @@ fn create_from_stream(
                 components.push(stream.read_f32().map_err(|_| truncated())?);
             }
             Ok(PropertyValue::Vector(components))
+        }
+        // `FixedDictStartStreamElement::fromStreamToSink`: the None indicator,
+        // then every field in the type's own order.
+        Kind::FixedDict {
+            allow_none, fields, ..
+        } => {
+            let is_none = if *allow_none {
+                let has_values = stream
+                    .read_u8()
+                    .map_err(|_| PropertyError::MissingNoneIndicator)?;
+                has_values == 0
+            } else {
+                false
+            };
+            if is_none {
+                return Ok(PropertyValue::FixedDict(None));
+            }
+            let mut values = Vec::with_capacity(fields.len());
+            for field in fields.iter() {
+                values.push((
+                    field.name.clone(),
+                    create_from_stream(field.type_.kind(), stream)?,
+                ));
+            }
+            Ok(PropertyValue::FixedDict(Some(values)))
         }
         _ => Err(PropertyError::Unsupported(kind.meta_name())),
     }
@@ -1007,6 +1168,201 @@ mod tests {
         assert_eq!(array.create_from_stream(&mut stream).unwrap(), value);
     }
 
+    fn fixed_dict_type() -> DataType {
+        build_type(
+            "<a> FIXED_DICT <Properties> \
+             <ammo> <Type> UINT8 </Type> </ammo> \
+             <label> <Type> STRING </Type> </label> \
+             </Properties> </a>",
+        )
+    }
+
+    fn fixed_dict_value() -> PropertyValue {
+        PropertyValue::FixedDict(Some(vec![
+            ("ammo".to_string(), PropertyValue::Uint(7)),
+            ("label".to_string(), PropertyValue::String("x".into())),
+        ]))
+    }
+
+    #[test]
+    fn a_fixed_dict_round_trips_its_fields_in_order() {
+        // No <AllowNone>: no indicator byte, and the fields follow the type's
+        // own field order — `FixedDictEnterFieldStreamElement` writes nothing.
+        let dict = fixed_dict_type();
+        let value = fixed_dict_value();
+        let mut stream = BinaryStream::new();
+        dict.add_to_stream(&value, &mut stream).unwrap();
+        assert_eq!(stream.as_bytes(), &[7, 1, b'x']);
+        assert_eq!(dict.create_from_stream(&mut stream).unwrap(), value);
+    }
+
+    #[test]
+    fn an_allow_none_fixed_dict_writes_its_none_indicator() {
+        let dict = build_type(
+            "<a> FIXED_DICT <AllowNone> true </AllowNone> <Properties> \
+             <ammo> <Type> UINT8 </Type> </ammo> \
+             </Properties> </a>",
+        );
+        // `uint8( isNone_ ? 0 : 1 )` — 0 names the None value.
+        let mut stream = BinaryStream::new();
+        dict.add_to_stream(&PropertyValue::FixedDict(None), &mut stream)
+            .unwrap();
+        assert_eq!(stream.as_bytes(), &[0]);
+        assert_eq!(
+            dict.create_from_stream(&mut stream).unwrap(),
+            PropertyValue::FixedDict(None)
+        );
+
+        stream = BinaryStream::new();
+        let value =
+            PropertyValue::FixedDict(Some(vec![("ammo".to_string(), PropertyValue::Uint(9))]));
+        dict.add_to_stream(&value, &mut stream).unwrap();
+        assert_eq!(stream.as_bytes(), &[1, 9]);
+        assert_eq!(dict.create_from_stream(&mut stream).unwrap(), value);
+    }
+
+    #[test]
+    fn a_fixed_dict_default_depends_on_allow_none() {
+        // `getDefaultValue`: None when the type allows it, else one default
+        // per field, in field order.
+        assert_eq!(
+            build_type(
+                "<a> FIXED_DICT <AllowNone> true </AllowNone> <Properties> \
+                 <ammo> <Type> UINT8 </Type> </ammo> \
+                 </Properties> </a>"
+            )
+            .initial_value(),
+            Ok(PropertyValue::FixedDict(None))
+        );
+        assert_eq!(
+            fixed_dict_type().initial_value(),
+            Ok(PropertyValue::FixedDict(Some(vec![
+                ("ammo".to_string(), PropertyValue::Uint(0)),
+                ("label".to_string(), PropertyValue::String(String::new())),
+            ])))
+        );
+    }
+
+    #[test]
+    fn a_fixed_dict_reads_its_field_sections_and_fills_the_gaps() {
+        // Only `ammo` is present, so `label` takes the field type's default.
+        let dict = fixed_dict_type();
+        let section = parse_xml("<v> <ammo> 5 </ammo> </v>");
+        assert_eq!(
+            dict.value_from_section(&section),
+            Ok(PropertyValue::FixedDict(Some(vec![
+                ("ammo".to_string(), PropertyValue::Uint(5)),
+                ("label".to_string(), PropertyValue::String(String::new())),
+            ])))
+        );
+    }
+
+    #[test]
+    fn an_empty_section_is_the_none_value_of_an_allow_none_dict() {
+        let dict = build_type(
+            "<a> FIXED_DICT <AllowNone> true </AllowNone> <Properties> \
+             <ammo> <Type> UINT8 </Type> </ammo> \
+             </Properties> </a>",
+        );
+        // `createFromSection`: `countChildren() == 0` means None.
+        assert_eq!(
+            dict.value_from_section(&parse_xml("<v> </v>")),
+            Ok(PropertyValue::FixedDict(None))
+        );
+    }
+
+    #[test]
+    fn a_fixed_dict_rejects_a_wrong_field_set() {
+        let dict = fixed_dict_type();
+        assert_eq!(dict.check_value(&fixed_dict_value()), Ok(()));
+
+        // Too few fields, and a field the type does not have.
+        assert_eq!(
+            dict.check_value(&PropertyValue::FixedDict(Some(vec![(
+                "ammo".to_string(),
+                PropertyValue::Uint(7),
+            )]))),
+            Err(PropertyError::TypeMismatch { meta: "fixed_dict" })
+        );
+        assert_eq!(
+            dict.check_value(&PropertyValue::FixedDict(Some(vec![
+                ("ammo".to_string(), PropertyValue::Uint(7)),
+                ("other".to_string(), PropertyValue::String("x".into())),
+            ]))),
+            Err(PropertyError::TypeMismatch { meta: "fixed_dict" })
+        );
+        // UINT8 rejects 300.
+        assert_eq!(
+            dict.check_value(&PropertyValue::FixedDict(Some(vec![
+                ("ammo".to_string(), PropertyValue::Uint(300)),
+                ("label".to_string(), PropertyValue::String("x".into())),
+            ]))),
+            Err(PropertyError::TypeMismatch { meta: "fixed_dict" })
+        );
+        // None is only a value of a type that allows it, and a non-dictionary
+        // is not a dictionary at all.
+        assert_eq!(
+            dict.check_value(&PropertyValue::FixedDict(None)),
+            Err(PropertyError::TypeMismatch { meta: "fixed_dict" })
+        );
+        assert_eq!(
+            dict.check_value(&PropertyValue::Int(1)),
+            Err(PropertyError::TypeMismatch { meta: "fixed_dict" })
+        );
+        let mut stream = BinaryStream::new();
+        assert_eq!(
+            dict.add_to_stream(&PropertyValue::Int(1), &mut stream),
+            Err(PropertyError::TypeMismatch { meta: "fixed_dict" })
+        );
+        // The None value cannot be written by a type that does not allow it.
+        assert_eq!(
+            dict.add_to_stream(&PropertyValue::FixedDict(None), &mut stream),
+            Err(PropertyError::TypeMismatch { meta: "fixed_dict" })
+        );
+    }
+
+    #[test]
+    fn a_fixed_dict_allowing_none_accepts_the_none_value() {
+        let dict = build_type(
+            "<a> FIXED_DICT <AllowNone> true </AllowNone> <Properties> \
+             <ammo> <Type> UINT8 </Type> </ammo> \
+             </Properties> </a>",
+        );
+        assert_eq!(dict.check_value(&PropertyValue::FixedDict(None)), Ok(()));
+    }
+
+    #[test]
+    fn a_failed_field_default_reports_the_reference_message() {
+        // `Field::createDefaultValue` reports the field name when its default
+        // section would not build. CLASS is not implemented here yet, so it
+        // stands in for the reference's "failed to create from default
+        // section" failure.
+        let dict = build_type(
+            "<a> FIXED_DICT <Properties> \
+             <sub> <Type> CLASS <Properties> \
+             <x> <Type> INT8 </Type> </x> </Properties> </Type> </sub> \
+             </Properties> <Default> <sub> <x> 1 </x> </sub> </Default> </a>",
+        );
+        assert_eq!(
+            dict.value_from_section(&parse_xml("<v> </v>")),
+            Err(PropertyError::FieldDefaultFailed { name: "sub".into() })
+        );
+    }
+
+    #[test]
+    fn a_fixed_dict_missing_its_none_indicator_reports_the_reference_message() {
+        let dict = build_type(
+            "<a> FIXED_DICT <AllowNone> true </AllowNone> <Properties> \
+             <ammo> <Type> UINT8 </Type> </ammo> \
+             </Properties> </a>",
+        );
+        let mut stream = BinaryStream::new();
+        assert_eq!(
+            dict.create_from_stream(&mut stream),
+            Err(PropertyError::MissingNoneIndicator)
+        );
+    }
+
     #[test]
     fn add_to_stream_rejects_the_wrong_payload() {
         let int32 = build_type("<a> INT32 </a>");
@@ -1267,46 +1623,68 @@ mod tests {
             "SequenceStartStreamElement::fromSourceToStream: Expected bytes on stream: 100 \
              (2 bytes remaining)\n"
         );
+
+        // The fixed-dictionary family.
+        assert_eq!(
+            PropertyError::NullSection.to_string(),
+            "FixedDictDataType::createFromSection: Section is NULL.\n"
+        );
+        // The reference's two adjacent literals concatenate, so there is no
+        // colon after "fromStreamToSink".
+        assert_eq!(
+            PropertyError::MissingNoneIndicator.to_string(),
+            "FixedDictStartStreamElement::fromStreamToSink Missing None/values \
+             indicator on stream\n"
+        );
+        assert_eq!(
+            PropertyError::FieldDefaultFailed {
+                name: "ammo".into()
+            }
+            .to_string(),
+            "ClassDataType::Field::createDefaultValue: Failed to create ammo \
+             from default section\n"
+        );
     }
 
     #[test]
     fn a_composite_default_section_falls_to_the_unsupported_arm() {
         // `pInitialValue` hands a `<Default>` section to `value_from_section`,
-        // so a composite type with one lands on the unsupported arm.
-        let fixed_dict = build_type(
-            "<a> FIXED_DICT <Properties> <name> <Type> STRING </Type> </name> \
+        // so a composite type with one lands on the unsupported arm. CLASS is
+        // the last composite in the family to be implemented.
+        let class_ = build_type(
+            "<a> CLASS <Properties> <name> <Type> STRING </Type> </name> \
              </Properties> <Default> x </Default> </a>",
         );
         assert_eq!(
-            fixed_dict.initial_value(),
-            Err(PropertyError::Unsupported("FIXED_DICT"))
+            class_.initial_value(),
+            Err(PropertyError::Unsupported("CLASS"))
         );
     }
 
     #[test]
     fn composite_types_report_unsupported() {
-        // FIXED_DICT is the next composite in the family, and is not
-        // implemented yet, so it still lands on the documented error.
-        let fixed_dict = build_type(
-            "<a> FIXED_DICT <Properties> <name> <Type> STRING </Type> </name> \
+        // CLASS is the last composite in the family to be implemented, so it
+        // still lands on the documented error.
+        let class_ = build_type(
+            "<a> CLASS <Properties> <name> <Type> STRING </Type> </name> \
              </Properties> </a>",
         );
         assert_eq!(
-            fixed_dict.check_value(&PropertyValue::String("x".into())),
-            Err(PropertyError::Unsupported("FIXED_DICT"))
+            class_.check_value(&PropertyValue::String("x".into())),
+            Err(PropertyError::Unsupported("CLASS"))
         );
         // The composite type default lands on the documented stand-in;
-        // FIXED_DICT's own default arrives with its own item.
-        assert_eq!(fixed_dict.initial_value(), Ok(PropertyValue::Int(0)));
+        // CLASS's own default arrives with its own item.
+        assert_eq!(class_.initial_value(), Ok(PropertyValue::Int(0)));
 
         let mut stream = BinaryStream::new();
         assert_eq!(
-            fixed_dict.add_to_stream(&PropertyValue::Int(1), &mut stream),
-            Err(PropertyError::Unsupported("FIXED_DICT"))
+            class_.add_to_stream(&PropertyValue::Int(1), &mut stream),
+            Err(PropertyError::Unsupported("CLASS"))
         );
         assert_eq!(
-            fixed_dict.create_from_stream(&mut stream),
-            Err(PropertyError::Unsupported("FIXED_DICT"))
+            class_.create_from_stream(&mut stream),
+            Err(PropertyError::Unsupported("CLASS"))
         );
     }
     #[test]

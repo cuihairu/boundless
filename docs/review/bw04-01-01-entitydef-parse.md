@@ -171,3 +171,33 @@
 2. `check_sequence_capacity` 中 `remaining < 0` 分支在实现内不可达：`BinaryStream::remaining()` 为 `buf.len() - read`，`read` 在截断时被钳制到 `buf.len()`，恒非负。该判断保留是为了与参考的 `remaining < 0` 防御同形。
 3. `value.rs` 残余未覆盖 3 行：`349` 是解析器不变式（同 BW-04-02-01 备注 3）；`521`/`522` 是定长/变长序列写路径上 `write_packed_int` 的 `map_err` 闭包 —— 只在 packed 计数超过 `MAX_PACKED_INT`（16 MiB）时触发，即需要 >1600 万个元素，单元测试不可行。
 4. 元素 `streamSize() == 0` 时参考两条闸门都不取（`if (elementSize < 0)` / `else if (elementSize > 0)` 皆假），故直接通过。本实现保留同一空臂，并以此为由**不**把该情况当作非法。
+
+---
+
+# BW-04-02-03 实现 FIXED_DICT — 复核证据
+
+- **任务编号**: BW-04-02-03（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 368）
+- **原版源码**: `lib/entitydef/data_types/fixed_dict_data_type.cpp` —— 构造器 424（`streamSize_ = allowNone_ ? -1 : 0` 后逐字段累加，字段为 `-1` 即整体 `-1`）、`isSameType` 611、`getDefaultValue` 726、`streamSize` 769、`addToSection` 787、`createFromSection` 840、`getStreamElement` 1201（`index 0` = start，`index 2k+1` = `FixedDictEnterFieldStreamElement`，`index 2k+2` = `FixedDictLeaveFieldStreamElement`，`index size*2+1` = end）、四个 StreamElement 类 29/146/251/295/320；`lib/entitydef/data_types/class_data_type.cpp:588`（`Field::createDefaultValue`：先在本类型的 `<Default>` 里按字段名找子节，找不到才用字段类型默认值，失败报 "ClassDataType::Field::createDefaultValue: Failed to create %s from default section\n"）。
+- **Boundless 模块**: `crates/entitydef::value`（`PropertyValue::FixedDict(Option<Vec<(String, PropertyValue)>>)`；`PropertyError::{NullSection, MissingNoneIndicator, FieldDefaultFailed}` 及各自逐字节复刻的 `Display`；`check_value` / `value_from_section` / `default_value` / `add_to_stream` / `create_from_stream` 五个 `Kind::FixedDict` 臂；`value_from_section` 新增「本类型的 `<Default>` 节」参数以支持缺字段的默认值查找）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**190 单元测试 + 4 差分测试**全部通过。
+  - **字段次序**：`a_fixed_dict_round_trips_its_fields_in_order` 钉住无 `<AllowNone>` 时的线格式 —— 无指示字节，字段按类型自身顺序直排（`UINT8 7` + `STRING "x"` = `[7, 1, 'x']`）；`FixedDictEnterField/LeaveField/EndStreamElement` 三者均不写字节（参考 `fromSourceToStream` 只做 `enterField`/`leaveField`/`return true`）。
+  - **None 指示字节**：`an_allow_none_fixed_dict_writes_its_none_indicator` 钉住 `uint8( isNone_ ? 0 : 1 )` —— `None` 写 `[0]` 且到此为止，有值写 `[1]` 再接字段。
+  - **缺省行为**：`a_fixed_dict_default_depends_on_allow_none` 钉住 `getDefaultValue` 的双分支（`allowNone` → `writeNone(true)` 即 None；否则逐字段一个默认值，按字段序）；`a_fixed_dict_reads_its_field_sections_and_fills_the_gaps` 钉住 `createFromSection` 按字段名开子节、缺失字段取字段类型默认值；`an_empty_section_is_the_none_value_of_an_allow_none_dict` 钉住 `countChildren() == 0` 即 None。
+  - **`Field::createDefaultValue` 的查找顺序**：`a_failed_field_default_reports_the_reference_message` 钉住「缺失字段先在本类型 `<Default>` 里按字段名找子节，找不到才用字段类型默认值」，并在该子节构建失败时报参考的错误串。
+  - **类型校验**：`a_fixed_dict_rejects_a_wrong_field_set` 钉住 `isSameType` 的静默失败（字段数不符、字段名不符、字段值不过字段类型校验、非字典值、以及 `<AllowNone>` 为假时给 None）；`a_fixed_dict_allowing_none_accepts_the_none_value` 钉住 `allowNone && isNone` 直通。
+  - **错误串**：`error_text_matches_the_reference_messages` 追加三条 FIXED_DICT 模板的逐字节锚定（含结尾 `\n`），其中 `Missing None/values indicator` 一条钉住参考源码中两段相邻字面量的拼接形态（`fromStreamToSink` 后**无**冒号）。
+  - clippy `-D warnings`：entitydef **0 findings**（依赖 `crates/resources` 的 32 条既有 findings 属其他席位 lane，按隔离清单 `-A` 放行）。
+  - rustfmt：`value.rs` 干净（仅对本次触碰文件检查）。
+  - 覆盖率：`value.rs` **99.27%** 行、crate 合计 **99.47%**（门槛 ≥98%）。
+- **证据链接**: `crates/entitydef/src/value.rs`（实现与全部单测）。
+- **状态**: 已交付（源码级对齐 + 线格式/错误串/缺省行为锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **仍无字节级参考 oracle**（同 BW-04-02-01/02 备注 1）：本项的「逐字节」证据是**与参考源码推出的线格式一致的自钉测试**，不是与参考二进制产物的比对。
+2. `PropertyError::NullSection`（`FixedDictDataType::createFromSection: Section is NULL.`）在本实现中**不可达**：`value_from_section` 取 `&DataSection` 引用，无法为 null。该错误通道按参考保留命名与文案，仅测试其 `Display`。
+3. 参考 `getStreamElement` 的 `isPersistentOnly` 分支（`getNumPersistentFields` / `getFieldIndexForPersistentFieldIndex` 的持久化投影）属 **BW-04-02-07**，本项未实现；本项的 `stream_size` 已含持久化口径（`allowNone` → `-1`）。
+4. 自定义类路径（`<implementedBy>` + `FixedDictStreamedStreamElement` 的 `readCustomType`/`writeCustomType`）未移植 —— 无 Python 宿主，参考在同构建下同样走空路径。
+5. `value.rs` 残余未覆盖 3 行：`405` 是解析器不变式（同 BW-04-02-01 备注 3）；`634`/`635` 是变长序列 `write_packed_int` 的 `map_err` 闭包 —— 只在 packed 计数超过 `MAX_PACKED_INT`（16 MiB）时触发，即需要 >1600 万个元素，单元测试不可行（同 BW-04-02-02 备注 3）。
