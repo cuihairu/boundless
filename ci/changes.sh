@@ -79,7 +79,7 @@ main() {
 
     local p owner
     local rust_pkgs=""
-    local py=0 ts=0 md=0 rs=0 ci=0 tc=0
+    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0
     local rust_all=0
 
     while IFS= read -r p; do
@@ -98,6 +98,13 @@ main() {
 
         case "$p" in
         *.rs | crates/*/Cargo.toml | apps/*/Cargo.toml) rs=1 ;;
+        esac
+        # The three-leg runner matrix is expensive, so it follows the code that
+        # a runner actually executes: the platform interface, the role entry
+        # point, the runtime it runs in, or the toolchain that compiles it.
+        case "$p" in
+        crates/platform/* | apps/server/* | crates/server-runtime/* \
+            | rust-toolchain.toml | Cargo.toml | Cargo.lock) run=1 ;;
         esac
         case "$p" in
         *.py) py=1 ;;
@@ -130,6 +137,11 @@ main() {
         [ "$ts" -eq 1 ] && add_lane typescript
         [ "$md" -eq 1 ] && add_lane docs
     fi
+
+    # Outside the ci=1 branch on purpose: a change to ci/ proves the harness
+    # bites via the harness job's self-tests, which is the cheap half. The
+    # three-leg matrix follows the code a runner executes, whatever else moved.
+    [ "$run" -eq 1 ] && add_lane runners
 
     # A Rust source change whose owning package could not be resolved (a crate
     # directory that has no Cargo.toml yet, a stray .rs outside crates/ and

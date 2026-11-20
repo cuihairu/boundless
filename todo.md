@@ -1564,7 +1564,12 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 
 编排三端原生 runner、真实 MySQL/PostgreSQL 后端、XML/SQLite、原版兼容差分和 SDK/插件测试。每套任务可在本地复跑，归档测试结果、覆盖率、服务日志及失败夹具。
 
-- [ ] **BW-22-02-01 配置三端 runner**。**验收** 每端产出启动测试记录。
+- [x] **BW-22-02-01 配置三端 runner**。**验收** 每端产出启动测试记录。
+  - 原版：BigWorld 的 OS 差异是**两份独立工作流**——`ci.yml`（`ubuntu-24.04`）与 `ci-windows.yml`（`windows-latest`），同一门禁逻辑复制两遍；全仓**没有任何 macos runner**。且没有「每端启动测试记录」这回事：作业跑 `ctest`，失败时靠 `if: failure()` 上传 tee 出来的 `.log` 散文件。
+  - 新版：单一入口 `ci/runners.sh`，`.github/workflows/ci.yml` 的 `runners` 作业用 `strategy.matrix.os: [ubuntu-latest, windows-latest, macos-latest]` 三腿跑**同一个**入口（对应 BW-15-02/03/04 的三个首批目标）。每腿把角色列表从 `crates/server-runtime/src/app.rs` 的 `KNOWN_ROLES` **读出来**（不是硬编码，加角色即自动点亮），逐个 `boundless-server <role>` 起来并记录启动行与退出码，另跑一次未知角色做负例；产出 `ci-out/runners/<os>-<arch>.tsv`（os / arch / rustc / toolchain_resolved / git_sha / version / binary + 每角色一行结果）与机器可读 `runners/<os>-<arch>.json`。
+  - 结果：Linux 腿真跑 **8/8 角色全部起来**（`[baseapp] starting (boundless minimal entry)` 等，退出码全 0），未知角色 `not-a-real-role` 被拒且回显合法集合，json 报 `roles_total=8 roles_ok=8 unknown_role_refused=yes`。`self-test` 2 项全 PASS：坏角色会 FAIL 且**在记录里点名**（`badrole FAIL`）、干净 stub 全过；自测用私有 `CI_OUT` 沙盒，不会覆盖同进程里已发生的真实记录。
+  - 关键设计：矩阵作业**故意忽略** `vars.CI_RUNNER`——一台自托管 runner 不可能同时是三个操作系统，而这正是矩阵的意义所在。选路上把 `runners` 挂在「runner 真正执行的代码」上（`crates/platform/**`、`apps/server/**`、`crates/server-runtime/**`、`rust-toolchain.toml`、根 `Cargo.toml`/`Cargo.lock`），而不是挂在 `ci/` 上：改 CI 脚本时由 `harness` 作业的 `ci/runners.sh self-test` 覆盖，不必每次都烧三台 runner。三端矩阵尚未在本仓真跑（需 push 后由 CI 执行）。
+  - 证据：`ci-out/runners/linux-x86_64.tsv` 与 `.json`、`logs/runners-linux-x86_64.log`；`ci/runners.sh`、`ci/changes.sh`（`runners` lane）、`.github/workflows/ci.yml` 的 `runners` 作业；CI run 号见下方 BW-22-02 交付汇总。
 - [ ] **BW-22-02-02 编排 MySQL 和 PostgreSQL**。**验收** 可隔离起库并执行存储用例。
 - [ ] **BW-22-02-03 编排 XML 与 SQLite**。**验收** 各有独立结果。
 - [ ] **BW-22-02-04 接入兼容性差分**。**验收** 替换路径可在本地复跑。

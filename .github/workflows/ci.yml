@@ -16,6 +16,14 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      # The three-leg matrix follows the code a runner executes, so it is
+      # quiet on a markdown or ci/ change. This knob runs it on demand, which is
+      # also how a new runner image gets smoke-tested.
+      runners:
+        description: Run the three-leg runner matrix
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -302,6 +310,52 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-02-01 — one leg per operating system. Every leg calls the same
+  # entrypoint, so the three startup records come out of one code path; a leg
+  # that cannot build yet records why instead of being averaged away.
+  #
+  # This job deliberately ignores vars.CI_RUNNER: one self-hosted runner cannot
+  # be three operating systems at once, and that is the whole point of the
+  # matrix.
+  runners:
+    name: Server startup on every runner
+    needs: changes
+    if: >-
+      contains(needs.changes.outputs.lanes, 'runners') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.runners == 'true')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The three first-batch targets of BW-15-02..04.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust (pinned by rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Start every server role
+        run: ci/runners.sh
+
+      - name: Bundle results
+        # Always: a green run's manifest is what the archive lane verifies, and
+        # a red one is the whole point of keeping it retrievable.
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-runners-${{ matrix.os }}-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -340,6 +394,8 @@ jobs:
           ci/check-python.sh self-test
           ci/check-typescript.sh self-test
           ci/check-docs.sh self-test
+          ci/runners.sh self-test
+          ci/archive-results.sh self-test
 
       - name: Bundle results
         # Always: a green run's manifest is what the archive lane verifies, and
