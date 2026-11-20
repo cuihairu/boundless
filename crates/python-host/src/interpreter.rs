@@ -30,6 +30,7 @@ use super::capi::{self, PyObject};
 use super::import_paths::ImportPaths;
 use super::init_time_job;
 use super::output_writer;
+use super::wrapper;
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -222,6 +223,10 @@ impl Interpreter {
         // last item here". A double drain only logs in the reference; the
         // port ignores the error and finalises regardless.
         let _ = init_time_job::run_fini_time_jobs();
+        // The native registries die before the script system finalises --
+        // `CellApp::shutDown` deletes its entities before `Script::fini` --
+        // so every native wrapper `Py_DecRef`s here, allocator still alive.
+        wrapper::reset();
         // The snapshot goes before the collect loop, the reference's DECREF
         // between `runFiniTimeJobs` and `while (PyGC_Collect() > 0);`.
         let snapshot = INIT_TIME_MODULES.swap(std::ptr::null_mut(), Ordering::SeqCst);
@@ -488,6 +493,11 @@ mod tests {
         "interpreter::tests::scenario_init_time_jobs_run_once_in_rung_order",
         "interpreter::tests::scenario_fini_time_jobs_run_once_in_rung_order",
         "interpreter::tests::scenario_fini_runs_the_fini_time_jobs",
+        "interpreter::tests::scenario_the_same_native_id_wraps_to_one_object",
+        "interpreter::tests::scenario_a_forgotten_id_wraps_to_a_new_object",
+        "interpreter::tests::scenario_a_foreign_object_carries_no_native_id",
+        "interpreter::tests::scenario_different_ids_are_distinct_wrappers",
+        "interpreter::tests::scenario_the_cache_holds_one_reference_per_identity",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
     ];
@@ -1181,6 +1191,114 @@ mod tests {
             "{recorded:?}"
         );
         assert!(Interpreter::is_finalized());
+    }
+
+    /// The reference identity rule, one scenario per facet of it: the same
+    /// native id always yields the same wrapper instance (`PyEntities::
+    /// subscript` hands back the one embedded `PyObjectPlus` with
+    /// `Py_XINCREF`), a forgotten id rewraps to a new object, a foreign
+    /// object carries no native id, and the cache holds exactly one
+    /// reference per registered identity.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_same_native_id_wraps_to_one_object() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let native = 0x1000 as *mut std::os::raw::c_void;
+            let first = unsafe { wrapper::wrap(native, 100) }.expect("wrap the native object");
+            let second = unsafe { wrapper::wrap(native, 100) }.expect("wrap it again");
+            // Same pointer, so Python sees `is` identity: the subscript
+            // layer's `Py_XINCREF` and return.
+            assert_eq!(first, second);
+            assert_eq!(unsafe { wrapper::native(&first) }, Some(native));
+            // The capsule carries the wrapper name.
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"one".as_ptr(), first.as_ptr());
+                capi::PyObject_SetAttrString(main, c"two".as_ptr(), second.as_ptr());
+            }
+            // The reference's `is` check, on the Python side.
+            assert_eq!(probe(interpreter, "__probe = (one is two)"), "True");
+        });
+    }
+
+    /// A forgotten id wraps again -- the reference has no second wrapper to
+    /// hand back, and neither does the port.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_forgotten_id_wraps_to_a_new_object() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let native = 0x2000 as *mut std::os::raw::c_void;
+            let first = unsafe { wrapper::wrap(native, 200) }.expect("wrap");
+            let first_address = first.as_ptr() as usize;
+            assert!(wrapper::release(200));
+            let second = unsafe { wrapper::wrap(native, 200) }.expect("rewrap");
+            assert_ne!(second.as_ptr() as usize, first_address);
+            // The first wrapper is still alive while Python holds it: the
+            // host dropping the identity only forgets the cache entry.
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"kept".as_ptr(), first.as_ptr());
+                capi::PyObject_SetAttrString(main, c"fresh".as_ptr(), second.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = (kept is fresh)"), "False");
+        });
+    }
+
+    /// A foreign object (a plain `str`) is not one of this module's
+    /// capsules: `PyCapsule_IsValid` refuses it.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_foreign_object_carries_no_native_id() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let text = unsafe { capi::PyUnicode_FromString(c"not a native object".as_ptr()) };
+            let borrowed = PyRef::borrowed(text);
+            assert_eq!(unsafe { wrapper::native(&borrowed) }, None);
+        });
+    }
+
+    /// Two ids over one address are two wrappers: the registry keys
+    /// identity, not the pointer.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_different_ids_are_distinct_wrappers() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let native = 0x3000 as *mut std::os::raw::c_void;
+            let left = unsafe { wrapper::wrap(native, 301) }.expect("wrap the first identity");
+            let right = unsafe { wrapper::wrap(native, 302) }.expect("wrap the second");
+            assert_ne!(left, right);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"left".as_ptr(), left.as_ptr());
+                capi::PyObject_SetAttrString(main, c"right".as_ptr(), right.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = (left is right)"), "False");
+        });
+    }
+
+    /// The cache holds exactly one reference per registered identity:
+    /// wrapping is a clone (a fresh reference), dropping it goes back to
+    /// the cache's own.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_cache_holds_one_reference_per_identity() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let native = 0x4000 as *mut std::os::raw::c_void;
+            let first = unsafe { wrapper::wrap(native, 400) }.expect("wrap");
+            // The cache owns one and the caller owns one.
+            assert_eq!(unsafe { capi::refcount(first.as_ptr()) }, 2);
+            {
+                let second = unsafe { wrapper::wrap(native, 400) }.expect("wrap again");
+                assert_eq!(unsafe { capi::refcount(second.as_ptr()) }, 3);
+            }
+            assert_eq!(unsafe { capi::refcount(first.as_ptr()) }, 2);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"kept".as_ptr(), first.as_ptr());
+            }
+            // `__main__` holds a third reference while the interpreter is
+            // up; the cache's release happens at fini, before the
+            // finaliser.
+        });
     }
 
     /// `Script::init` drains the init-time jobs itself, after the

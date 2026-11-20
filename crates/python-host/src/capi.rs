@@ -110,8 +110,24 @@ pub unsafe fn py_traceback_check(obj: *mut PyObject) -> bool {
     unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTraceBack_Type)) == 1 }
 }
 
+/// `PyObjectPlus::refCount()` (`pyobject_plus.hpp:1100`) and the cstdmf
+/// `hasZeroReferenceCount` specialisation that reads `ob_refcnt` directly
+/// (`pyobject_pointer.hpp:40`): the reference inspects the count for its own
+/// assertions, and the port's tests do the same.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn refcount(obj: *mut PyObject) -> isize {
+    if obj.is_null() {
+        return 0;
+    }
+    unsafe { std::ptr::addr_of!((*obj).ob_refcnt).read() }
+}
+
 /// `PyCFunction`: a builtin function object's implementation (`ml_meth`).
 pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+
+/// `PyCapsule_Destructor`, the `destructor` argument of `PyCapsule_New`.
+pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
 
 /// `METH_VARARGS` from `Include/methodobject.h`.
 pub const METH_VARARGS: c_int = 0x0001;
@@ -246,6 +262,16 @@ unsafe extern "C" {
     pub fn PyObject_Repr(obj: *mut PyObject) -> *mut PyObject;
     pub fn PyErr_Display(type_: *mut PyObject, value: *mut PyObject, traceback: *mut PyObject);
     pub fn PySys_WriteStderr(format: *const c_char, ...);
+    pub fn PyCapsule_New(
+        pointer: *mut std::os::raw::c_void,
+        name: *const c_char,
+        destructor: Option<PyCapsuleDestructor>,
+    ) -> *mut PyObject;
+    pub fn PyCapsule_GetPointer(
+        capsule: *mut PyObject,
+        name: *const c_char,
+    ) -> *mut std::os::raw::c_void;
+    pub fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int;
 }
 
 #[cfg(test)]
@@ -304,5 +330,11 @@ mod tests {
             std::mem::size_of::<PyMethodDef>(),
             4 * std::mem::size_of::<usize>()
         );
+    }
+
+    /// `refcount` on a null result is zero, never a dereference.
+    #[test]
+    fn refcount_rejects_null() {
+        assert_eq!(unsafe { refcount(std::ptr::null_mut()) }, 0);
     }
 }

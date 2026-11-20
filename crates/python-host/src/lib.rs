@@ -21,6 +21,7 @@ pub mod init_time_job;
 pub mod interpreter;
 pub mod output_writer;
 pub mod pyref;
+pub mod wrapper;
 
 pub use import_paths::ImportPaths;
 pub use init_time_job::{
@@ -29,3 +30,4 @@ pub use init_time_job::{
 };
 pub use interpreter::{InitConfig, InitError, Interpreter};
 pub use output_writer::{HookError, LogSink, ScriptOutputHook, set_log_sink};
+pub use wrapper::WrapError;
