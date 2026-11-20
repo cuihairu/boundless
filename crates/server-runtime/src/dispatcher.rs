@@ -6,22 +6,27 @@
 //! - `processContinuously()` resets `breakProcessing_` and loops
 //!   `processOnce( shouldIdle )` until a break;
 //! - `processOnce` resets `breakProcessing_ = false` *at entry*, then
-//!   runs the frequent tasks -- a break raised inside a frequent task
-//!   skips the rest of the pass (timers/network) and unwinds the outer
-//!   loop, exactly like the reference;
+//!   runs the frequent tasks, then the timer pass
+//!   (`if (!breakProcessing_) processTimers()`) -- a break raised inside a
+//!   frequent task skips the rest of the pass (timers/network) and unwinds
+//!   the outer loop, exactly like the reference;
 //! - `FrequentTasks::process` stops the current pass when the task list
 //!   was modified during a `doTask` (the `isDirty_` guard);
-//! - `cancelFrequentTask` returns whether the task existed.
+//! - `cancelFrequentTask` returns whether the task existed;
+//! - the dispatcher owns the `TimeQueue64` and the `ClockFn` exactly like
+//!   `EventDispatcher` (`pTimeQueue_`, `clock_`, `numTimerCalls_`).
 //!
-//! The timers (BW-01-05), the epoll poller and the network pass (BW-02)
-//! land in their own tasks; until then `processOnce` idles with a short
-//! sleep so a never-broken loop does not busy-spin. `stats` processing
-//! is instrumentation-only and not ported.
+//! The epoll poller and the network pass (BW-02) land in their own tasks;
+//! until then the network step idles with a short sleep so a never-broken
+//! loop does not busy-spin. `stats` processing is instrumentation-only and
+//! not ported.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
+
+use crate::timers::{DispatcherTimers, TimerHandle, TimerHandler};
 
 /// `Mercury::FrequentTask`: run once per `processOnce`.
 pub trait FrequentTask {
@@ -58,6 +63,9 @@ pub struct Dispatcher {
     /// (the `mainDispatcher_` member flattened to an `Rc`) can break the
     /// loop.
     break_flag: Rc<Cell<bool>>,
+    /// `pTimeQueue_` + `clock_` + `numTimerCalls_` (the event dispatcher's
+    /// timer surface, see `crate::timers`).
+    timers: DispatcherTimers,
 }
 
 impl Default for Dispatcher {
@@ -68,11 +76,50 @@ impl Default for Dispatcher {
 
 impl Dispatcher {
     pub fn new() -> Self {
+        Self::with_timers(DispatcherTimers::new())
+    }
+
+    /// `EventDispatcher( ClockFn )`: build the loop around an injected
+    /// timer clock for virtual-clock tests.
+    pub fn with_timers(timers: DispatcherTimers) -> Self {
         Self {
             tasks: Vec::new(),
             tasks_dirty: Rc::new(Cell::new(false)),
             break_flag: Rc::new(Cell::new(false)),
+            timers,
         }
+    }
+
+    /// The timer surface (`pTimeQueue_` etc.).
+    pub fn timers(&self) -> &DispatcherTimers {
+        &self.timers
+    }
+
+    pub fn timers_mut(&mut self) -> &mut DispatcherTimers {
+        &mut self.timers
+    }
+
+    /// `EventDispatcher::addTimer( microseconds, handler, arg, name )`.
+    pub fn add_timer(
+        &mut self,
+        microseconds: i64,
+        handler: Rc<dyn TimerHandler<u64>>,
+        user: usize,
+        name: &'static str,
+    ) -> TimerHandle<u64> {
+        self.timers.add_timer(microseconds, handler, user, name)
+    }
+
+    /// `EventDispatcher::addOnceOffTimer`.
+    pub fn add_once_off_timer(
+        &mut self,
+        microseconds: i64,
+        handler: Rc<dyn TimerHandler<u64>>,
+        user: usize,
+        name: &'static str,
+    ) -> TimerHandle<u64> {
+        self.timers
+            .add_once_off_timer(microseconds, handler, user, name)
     }
 
     /// `addFrequentTask`.
@@ -133,14 +180,19 @@ impl Dispatcher {
         }
     }
 
-    /// `processOnce( shouldIdle )`: the frequent-task pass, then (BW-02)
-    /// the network pass. Returns the number of network events processed
-    /// (0 until the poller lands).
+    /// `processOnce( shouldIdle )`: the frequent-task pass, then the
+    /// timer pass, then (BW-02) the network pass. Returns the number of
+    /// network events processed (0 until the poller lands).
     pub fn process_once(&mut self, should_idle: bool) -> u32 {
         // The reference resets the break flag on every entry.
         self.break_flag.set(false);
 
         self.process_frequent_tasks();
+
+        // `if (!breakProcessing_) this->processTimers();`
+        if !self.break_flag.get() {
+            self.timers.process_timers();
+        }
 
         if !self.break_flag.get() && should_idle {
             // BW-02: this becomes the poller wait (epoll + timeouts).
@@ -350,5 +402,14 @@ mod tests {
 
         dispatcher.process_until_signalled(&signal);
         assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    /// The dispatcher's timer surface is reachable directly: an empty
+    /// timer pass fires nothing.
+    #[test]
+    fn the_timer_surface_is_reachable_from_the_dispatcher() {
+        let mut dispatcher = Dispatcher::new();
+        assert_eq!(dispatcher.timers_mut().process_timers(), 0);
+        assert_eq!(dispatcher.timers().num_timer_calls(), 0);
     }
 }

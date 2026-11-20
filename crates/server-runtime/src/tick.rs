@@ -463,8 +463,9 @@ fn stamps_to_seconds(stamps: u64, stamps_per_second: u64) -> f64 {
 }
 
 /// The default `timestamp()`: monotonic nanoseconds since an arbitrary
-/// epoch (the reference reads the CPU stamp counter).
-fn stamp_now() -> u64 {
+/// epoch (the reference reads the CPU stamp counter). Shared with the
+/// dispatcher's `realClock` default.
+pub fn stamp_now() -> u64 {
     use std::sync::OnceLock;
     use std::time::Instant;
     static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -952,6 +953,10 @@ mod tests {
         let log = Log::new(RefCell::new(Vec::new()));
         let periods = Rc::new(RefCell::new(Vec::new()));
         let mut app = HookApp::new(&log, &periods);
+        // The fixture's plain trait methods behave like the reference's.
+        assert_eq!(app.app_name(), "cellapp");
+        assert!(app.init(&[]));
+        assert!(app.run());
 
         let clock = Rc::new(Cell::new(0u64));
         let mut state = TickState::with_clock(10, Box::new({
@@ -1030,6 +1035,10 @@ mod tests {
         }
 
         let mut app = BareTickApp;
+        assert_eq!(app.app_name(), "bareapp");
+        assert!(app.init(&[]));
+        assert!(app.run());
+
         let mut state = TickState::with_clock(10, Box::new(|| 0));
         state.advance_time(&mut app);
         // 0.3 s at 10 Hz -> period * hertz = 3.0 > 2.0: the base
@@ -1037,6 +1046,12 @@ mod tests {
         state.advance_time(&mut app); // period 0? now stays 0 -> 0.0
         state.advance_time(&mut app);
         assert_eq!(state.time(), 3);
+
+        // The default onSetStartTime and the default onTickPeriod body
+        // run through the base arms.
+        state.set_start_time(&mut app, 7);
+        app.on_tick_period(0.5, 10);
+        assert_eq!(state.time(), 7);
     }
 
     /// `setStartTime` informs the hook with the old time before the
@@ -1082,5 +1097,91 @@ mod tests {
 
         state.advance_time(&mut app);
         assert_eq!(*log.borrow(), ["end-of-tick", "start-of-tick", "a", "processing-complete"]);
+    }
+
+    /// `deregisterForUpdate` outside a pass compacts the level: the
+    /// object at the back of the level moves into the hole and its
+    /// handle follows it (the reference's level walk).
+    #[test]
+    fn remove_outside_a_pass_compacts_the_level_and_remaps_the_handle() {
+        let log = Log::new(RefCell::new(Vec::new()));
+        let mut updatables = Updatables::new(1);
+
+        let a = Tagged::simple("a", &log);
+        let b = Tagged::simple("b", &log);
+        let c = Tagged::simple("c", &log);
+        updatables.add(boxed(a), 0);
+        updatables.add(boxed(Rc::clone(&b)), 0);
+        updatables.add(boxed(c), 0);
+        assert_eq!(updatables.size(), 3);
+
+        // b sits in the middle: its hole is filled from the level back.
+        assert!(updatables.remove(&boxed(b)));
+        assert_eq!(updatables.size(), 2);
+
+        updatables.call();
+        assert_eq!(
+            *log.borrow(),
+            ["a", "c"],
+            "c moved into b's hole and still updates in order"
+        );
+    }
+
+    /// The pending-tail scan walks past non-matching entries: removing
+    /// the SECOND pending object skips the first.
+    #[test]
+    fn remove_of_the_second_pending_object_skips_the_first() {
+        let log = Log::new(RefCell::new(Vec::new()));
+        let mut updatables = Updatables::new(2);
+
+        let first = Tagged::simple("first-pending", &log);
+        let second = Tagged::simple("second-pending", &log);
+        let first_for_add = Rc::clone(&first);
+        let second_for_add = Rc::clone(&second);
+        let second_for_remove = Rc::clone(&second);
+        let removed_ok = Rc::new(Cell::new(false));
+
+        // The adder runs once: a re-add of the removed pending object
+        // hits its stale handle and aborts exactly like the reference's
+        // CRITICAL check, so pass 2 must not add again.
+        let ran = Rc::new(Cell::new(false));
+        let ran_for_adder = Rc::clone(&ran);
+        let adder = Tagged::behaving(
+            "adder",
+            &log,
+            Box::new(move |updatables| {
+                if ran_for_adder.get() {
+                    return;
+                }
+                ran_for_adder.set(true);
+                updatables.add(boxed(Rc::clone(&first_for_add)), 1);
+                updatables.add(boxed(Rc::clone(&second_for_add)), 1);
+            }),
+        );
+        let remover_flag = Rc::clone(&removed_ok);
+        let remover = Tagged::behaving(
+            "remover",
+            &log,
+            Box::new(move |updatables| {
+                if updatables.remove(&boxed(Rc::clone(&second_for_remove))) {
+                    remover_flag.set(true);
+                }
+            }),
+        );
+
+        updatables.add(adder, 0);
+        updatables.add(remover, 1);
+
+        updatables.call();
+        assert!(removed_ok.get(), "the second pending object was removed");
+        assert_eq!(updatables.size(), 3, "adder + remover + first-pending");
+
+        // The first pending object survived and updates on the next pass
+        // (after the recurring adder/remover have run again).
+        updatables.call();
+        assert_eq!(
+            *log.borrow(),
+            ["adder", "remover", "adder", "remover", "first-pending"]
+        );
     }
 }

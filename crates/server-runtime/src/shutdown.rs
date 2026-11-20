@@ -419,6 +419,11 @@ mod tests {
         assert_eq!(silent.borrow().name(), "SilentTask");
         assert!(mgr.has_tasks());
 
+        // The background phase of a task queued for the main thread still
+        // runs when reached directly (the reference's FORCE_MAIN_THREAD
+        // tasks do their background work inline at add time).
+        silent.borrow_mut().do_background_task(&mut mgr);
+
         mgr.tick();
         assert_eq!(*log.borrow(), ["first", "second", "third"]);
         assert!(!mgr.has_tasks());
@@ -500,12 +505,15 @@ mod tests {
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let mut mgr = TaskManager::new();
 
-        let follower = ChainedCompletionTask {
+        let follower = Rc::new(RefCell::new(ChainedCompletionTask {
             log: Rc::clone(&log),
             chained: false,
-        };
-        assert_eq!(follower.name(), "ChainedCompletionTask");
-        mgr.add_main_thread_task(Rc::new(RefCell::new(follower)));
+        }));
+        assert_eq!(follower.borrow().name(), "ChainedCompletionTask");
+        // The background phase runs inline before the completion is
+        // queued (the reference's addBackgroundTask flattening).
+        follower.borrow_mut().do_background_task(&mut mgr);
+        mgr.add_main_thread_task(Rc::clone(&follower) as Rc<RefCell<dyn BackgroundTask>>);
 
         mgr.tick();
         // The first tick ran the task, whose completion chained another
