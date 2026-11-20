@@ -47,6 +47,10 @@ pub enum PropertyValue {
     Blob(Vec<u8>),
     /// `VECTOR2`, `VECTOR3`, `VECTOR4`.
     Vector(Vec<f32>),
+    /// `ARRAY` and `TUPLE` (`SequenceDataType`): the elements in order.
+    /// A tuple is just a fixed-length array, so both share this variant; the
+    /// distinction lives on the type (`Kind::Sequence { is_tuple, .. }`).
+    Sequence(Vec<PropertyValue>),
 }
 
 /// The `SimpleStreamElement` / `BlobStreamElement` truncation text.
@@ -69,6 +73,31 @@ pub enum PropertyError {
     TypeMismatch { meta: &'static str },
     /// `SimpleStreamElement` / `BlobStreamElement`: the stream ran dry.
     StreamTruncated { element: &'static str },
+    /// `SequenceDataType::isSameType`: a fixed-length sequence holding the
+    /// wrong number of elements.
+    WrongSequenceSize { size: i32, expected: i32 },
+    /// `SequenceDataType::isSameType`: an element of the wrong type. The
+    /// reference prints the Python `str()` of the value; ours prints the Rust
+    /// `Debug` rendering, since this build has no Python host.
+    BadSequenceElement {
+        index: usize,
+        expected: String,
+        value: String,
+    },
+    /// `SequenceStartStreamElement::fromSourceToStream`: a fixed-length
+    /// sequence whose value carries a different number of elements.
+    FixedSequenceSize { size: i32, expected: i32 },
+    /// `SequenceStartStreamElement::fromStreamToSink`: a variable-length
+    /// sequence whose count prefix is missing (the stream ran dry).
+    MissingSequenceSize,
+    /// `SequenceStartStreamElement::fromStreamToSink`: the count exceeds the
+    /// bytes left, with variable-sized elements. The reference prints
+    /// "fromSourceToStream" here — a copy-paste bug in the original — so we
+    /// reproduce it verbatim.
+    InvalidSequenceSize { size: usize, remaining: i32 },
+    /// As above, but with fixed-sized elements (the count * element size
+    /// exceeds the bytes left).
+    ExpectedSequenceBytes { bytes: usize, remaining: i32 },
     /// A composite meta type, handled outside this module.
     Unsupported(&'static str),
 }
@@ -88,6 +117,34 @@ impl std::fmt::Display for PropertyError {
             Self::StreamTruncated { element } => {
                 writeln!(f, "{element}: Not enough data on stream to read value")
             }
+            Self::WrongSequenceSize { size, expected } => writeln!(
+                f,
+                "SequenceDataType::isSameType: Wrong size {size} instead of {expected}."
+            ),
+            Self::BadSequenceElement {
+                index,
+                expected,
+                value,
+            } => writeln!(
+                f,
+                "SequenceDataType::isSameType: Bad element {index}. Expected type {expected}, but element was \"{value}\"."
+            ),
+            Self::FixedSequenceSize { size, expected } => writeln!(
+                f,
+                "SequenceStartStreamElement::fromSourceToStream: Fixed-length sequence reported size {size}, but datatype expected size {expected}"
+            ),
+            Self::MissingSequenceSize => writeln!(
+                f,
+                "SequenceStartStreamElement::fromStreamToSink: Missing size parameter on stream"
+            ),
+            Self::InvalidSequenceSize { size, remaining } => writeln!(
+                f,
+                "SequenceStartStreamElement::fromSourceToStream: Invalid size on stream: {size} ({remaining} bytes remaining)"
+            ),
+            Self::ExpectedSequenceBytes { bytes, remaining } => writeln!(
+                f,
+                "SequenceStartStreamElement::fromSourceToStream: Expected bytes on stream: {bytes} ({remaining} bytes remaining)"
+            ),
             Self::Unsupported(meta) => write!(f, "{meta} values are not supported here"),
         }
     }
@@ -138,6 +195,42 @@ fn truncate_integer(value: i64, bytes: i32, signed: bool) -> i64 {
     }
 }
 
+/// `SequenceStartStreamElement::fromStreamToSink`: the count is read off the
+/// stream, so a hostile count must not get to allocate before we have checked
+/// the bytes are there. The reference reports the failure out of the read path
+/// as "fromSourceToStream" — a copy-paste slip in the original — and we
+/// reproduce it verbatim.
+fn check_sequence_capacity(
+    element_size: i32,
+    count: usize,
+    remaining: i32,
+) -> Result<(), PropertyError> {
+    if element_size < 0 {
+        // Variable-sized elements: at least one byte per element.
+        if remaining < count as i32 {
+            return Err(PropertyError::InvalidSequenceSize {
+                size: count,
+                remaining,
+            });
+        }
+        return Ok(());
+    }
+    if element_size > 0 && (remaining < 0 || (remaining as usize) / (element_size as usize) < count)
+    {
+        // Fixed-size elements: compare byte counts without overflowing.
+        // remaining < count * elementSize  <=>  remaining / elementSize < count
+        // (`remaining` is a non-negative stream position, so `remaining < 0`
+        // guards only against an out-of-range caller.)
+        return Err(PropertyError::ExpectedSequenceBytes {
+            bytes: count * element_size as usize,
+            remaining,
+        });
+    }
+    // An element `streamSize()` of 0 needs no guard, as in the reference:
+    // neither branch of its guard is taken.
+    Ok(())
+}
+
 /// `DataType::isSameType` for the scalar meta types.
 fn check_value(kind: &Kind, value: &PropertyValue) -> Result<(), PropertyError> {
     match kind {
@@ -170,6 +263,35 @@ fn check_value(kind: &Kind, value: &PropertyValue) -> Result<(), PropertyError> 
             PropertyValue::Vector(v) if v.len() == *elements as usize => Ok(()),
             _ => Err(PropertyError::TypeMismatch { meta: "vector" }),
         },
+        // `SequenceDataType::isSameType`: the wrong length fails before any
+        // element is inspected, and each element is checked in turn.
+        Kind::Sequence { size, element, .. } => {
+            let elements = match value {
+                PropertyValue::Sequence(elements) => elements,
+                _ => return Err(PropertyError::TypeMismatch { meta: "sequence" }),
+            };
+            if *size != 0 && elements.len() != *size as usize {
+                return Err(PropertyError::WrongSequenceSize {
+                    size: elements.len() as i32,
+                    expected: *size,
+                });
+            }
+            let mut bad = None;
+            for (index, element_value) in elements.iter().enumerate() {
+                if check_value(element.kind(), element_value).is_err() {
+                    bad = Some((index, element_value));
+                    break;
+                }
+            }
+            match bad {
+                Some((index, element_value)) => Err(PropertyError::BadSequenceElement {
+                    index,
+                    expected: element.type_name(),
+                    value: format!("{element_value:?}"),
+                }),
+                None => Ok(()),
+            }
+        }
         _ => Err(PropertyError::Unsupported(kind.meta_name())),
     }
 }
@@ -228,6 +350,21 @@ fn value_from_section(kind: &Kind, section: &DataSection) -> Result<PropertyValu
             };
             Ok(PropertyValue::Vector(components))
         }
+        // `SequenceDataType::createFromSection`: one element per `<item>`
+        // child, and the element default for any missing trailing ones.
+        Kind::Sequence { size, element, .. } => {
+            let children = section.count_children();
+            let count = if *size == 0 { children } else { *size as usize };
+            let mut values = Vec::with_capacity(count);
+            for i in 0..count {
+                let value = match section.open_child(i) {
+                    Some(child) => value_from_section(element.kind(), child)?,
+                    None => default_value(element.kind()),
+                };
+                values.push(value);
+            }
+            Ok(PropertyValue::Sequence(values))
+        }
         _ => Err(PropertyError::Unsupported(kind.meta_name())),
     }
 }
@@ -242,6 +379,13 @@ fn default_value(kind: &Kind) -> PropertyValue {
         Kind::String | Kind::UnicodeString => PropertyValue::String(String::new()),
         Kind::Blob => PropertyValue::Blob(Vec::new()),
         Kind::Vector { elements } => PropertyValue::Vector(vec![0.0; *elements as usize]),
+        // `createDefaultValue`: `size` element defaults — so a variable-length
+        // sequence (size 0) defaults to the empty sequence.
+        Kind::Sequence { size, element, .. } => PropertyValue::Sequence(
+            (0..*size as usize)
+                .map(|_| default_value(element.kind()))
+                .collect(),
+        ),
         _ => PropertyValue::Int(0),
     }
 }
@@ -359,6 +503,30 @@ fn add_to_stream(
             }
             _ => return Err(PropertyError::TypeMismatch { meta: "vector" }),
         },
+        // `SequenceStartStreamElement::fromSourceToStream`. A fixed-length
+        // sequence writes **no count prefix** — the count is implicit — while a
+        // variable one prefixes a packed int.
+        Kind::Sequence { size, element, .. } => match value {
+            PropertyValue::Sequence(elements) => {
+                if *size != 0 && elements.len() != *size as usize {
+                    return Err(PropertyError::FixedSequenceSize {
+                        size: elements.len() as i32,
+                        expected: *size,
+                    });
+                }
+                if *size == 0 {
+                    let _ = stream
+                        .write_packed_int(elements.len() as u32)
+                        .map_err(|_| PropertyError::StreamTruncated {
+                            element: SIMPLE_STREAM_ELEMENT,
+                        })?;
+                }
+                for element_value in elements.iter() {
+                    add_to_stream(element.kind(), element_value, stream)?;
+                }
+            }
+            _ => return Err(PropertyError::TypeMismatch { meta: "sequence" }),
+        },
         _ => return Err(PropertyError::Unsupported(kind.meta_name())),
     }
     Ok(())
@@ -401,6 +569,23 @@ fn create_from_stream(
                 element: BLOB_STREAM_ELEMENT,
             })
             .map(PropertyValue::Blob),
+        // `SequenceStartStreamElement::fromStreamToSink`.
+        Kind::Sequence { size, element, .. } => {
+            let count = if *size == 0 {
+                stream
+                    .read_packed_int()
+                    .map_err(|_| PropertyError::MissingSequenceSize)? as usize
+            } else {
+                *size as usize
+            };
+            let element_size = element.stream_size();
+            check_sequence_capacity(element_size, count, stream.remaining() as i32)?;
+            let mut values = Vec::with_capacity(count);
+            for _ in 0..count {
+                values.push(create_from_stream(element.kind(), stream)?);
+            }
+            Ok(PropertyValue::Sequence(values))
+        }
         Kind::Vector { elements } => {
             let mut components = Vec::with_capacity(*elements as usize);
             for _ in 0..*elements {
@@ -620,13 +805,206 @@ mod tests {
             float64.value_from_section(&parse_xml("<v> 2.5 </v>")),
             Ok(PropertyValue::Float(2.5))
         );
+    }
 
-        // A composite type has no section reader yet.
-        let array = build_type("<a> ARRAY <of> INT8 </of> </a>");
+    #[test]
+    fn a_sequence_reads_its_item_sections_and_fills_the_gaps() {
+        // Two items read, the third missing, so it takes the element default.
+        let array = build_type("<a> ARRAY <size> 3 </size> <of> INT8 </of> </a>");
+        let section = parse_xml("<v> <item> 1 </item> <item> 2 </item> </v>");
         assert_eq!(
-            array.value_from_section(&parse_xml("<v> 7 </v>")),
-            Err(PropertyError::Unsupported("ARRAY"))
+            array.value_from_section(&section),
+            Ok(PropertyValue::Sequence(vec![
+                PropertyValue::Int(1),
+                PropertyValue::Int(2),
+                PropertyValue::Int(0),
+            ]))
         );
+    }
+
+    #[test]
+    fn a_sequence_default_has_one_default_element_per_slot() {
+        // createDefaultValue: `size` element defaults, so a variable-length
+        // sequence defaults to the empty sequence.
+        assert_eq!(
+            build_type("<a> ARRAY <of> INT8 </of> </a>").initial_value(),
+            Ok(PropertyValue::Sequence(Vec::new()))
+        );
+        assert_eq!(
+            build_type("<a> TUPLE <size> 2 </size> <of> INT8 </of> </a>").initial_value(),
+            Ok(PropertyValue::Sequence(vec![PropertyValue::Int(0); 2]))
+        );
+    }
+
+    #[test]
+    fn a_sequence_type_rejects_a_wrong_length_or_element() {
+        let array = build_type("<a> ARRAY <size> 2 </size> <of> INT8 </of> </a>");
+
+        assert_eq!(
+            array.check_value(&PropertyValue::Sequence(vec![
+                PropertyValue::Int(1),
+                PropertyValue::Int(2),
+            ])),
+            Ok(())
+        );
+        assert_eq!(
+            array.check_value(&PropertyValue::Sequence(vec![PropertyValue::Int(1)])),
+            Err(PropertyError::WrongSequenceSize {
+                size: 1,
+                expected: 2
+            })
+        );
+        // INT8's isSameType rejects 200, so the element is named in the message.
+        assert_eq!(
+            array.check_value(&PropertyValue::Sequence(vec![
+                PropertyValue::Int(1),
+                PropertyValue::Int(200),
+            ])),
+            Err(PropertyError::BadSequenceElement {
+                index: 1,
+                // The element's own meta name (DataType::typeName), not the
+                // sequence's "ARRAY size 2 of (...)" form.
+                expected: "INT8".to_string(),
+                value: "Int(200)".to_string(),
+            })
+        );
+
+        // A non-sequence is not a sequence type at all.
+        assert_eq!(
+            array.check_value(&PropertyValue::Int(1)),
+            Err(PropertyError::TypeMismatch { meta: "sequence" })
+        );
+    }
+
+    #[test]
+    fn a_fixed_length_sequence_has_no_count_prefix() {
+        // SequenceStartStreamElement writes no prefix for a fixed size.
+        let tuple = build_type("<a> TUPLE <size> 2 </size> <of> INT8 </of> </a>");
+        let mut stream = BinaryStream::new();
+        tuple
+            .add_to_stream(
+                &PropertyValue::Sequence(vec![PropertyValue::Int(1), PropertyValue::Int(2)]),
+                &mut stream,
+            )
+            .unwrap();
+        assert_eq!(stream.as_bytes(), &[1, 2]);
+
+        let back = tuple.create_from_stream(&mut stream).unwrap();
+        assert_eq!(
+            back,
+            PropertyValue::Sequence(vec![PropertyValue::Int(1), PropertyValue::Int(2)])
+        );
+
+        // A variable-length sequence does write its count as a packed int.
+        let array = build_type("<a> ARRAY <of> INT8 </of> </a>");
+        let mut stream = BinaryStream::new();
+        array
+            .add_to_stream(
+                &PropertyValue::Sequence(vec![PropertyValue::Int(1), PropertyValue::Int(2)]),
+                &mut stream,
+            )
+            .unwrap();
+        assert_eq!(stream.as_bytes(), &[2, 1, 2]);
+        assert_eq!(
+            array.create_from_stream(&mut stream).unwrap(),
+            PropertyValue::Sequence(vec![PropertyValue::Int(1), PropertyValue::Int(2)])
+        );
+    }
+
+    #[test]
+    fn a_sequence_rejects_a_length_that_does_not_fit_the_stream() {
+        let array = build_type("<a> ARRAY <of> INT8 </of> </a>");
+        let mut stream = BinaryStream::new();
+        // Claim 100 elements but write only two bytes.
+        let _ = stream.write_packed_int(100);
+        let _ = stream.write_bytes(&[1, 2]);
+        assert_eq!(
+            array.create_from_stream(&mut stream),
+            Err(PropertyError::ExpectedSequenceBytes {
+                bytes: 100,
+                remaining: 2
+            })
+        );
+
+        // A variable-sized element needs at least one byte per element.
+        let strings = build_type("<a> ARRAY <of> STRING </of> </a>");
+        let mut stream = BinaryStream::new();
+        let _ = stream.write_packed_int(3);
+        assert_eq!(
+            strings.create_from_stream(&mut stream),
+            Err(PropertyError::InvalidSequenceSize {
+                size: 3,
+                remaining: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_fixed_sequence_rejects_a_value_of_the_wrong_length() {
+        let tuple = build_type("<a> TUPLE <size> 2 </size> <of> INT8 </of> </a>");
+        let mut stream = BinaryStream::new();
+        assert_eq!(
+            tuple.add_to_stream(
+                &PropertyValue::Sequence(vec![
+                    PropertyValue::Int(1),
+                    PropertyValue::Int(2),
+                    PropertyValue::Int(3),
+                ]),
+                &mut stream,
+            ),
+            Err(PropertyError::FixedSequenceSize {
+                size: 3,
+                expected: 2
+            })
+        );
+        // Nothing was written: the reference bails before the payload.
+        assert_eq!(stream.as_bytes(), &[]);
+
+        // A non-sequence is not a sequence value at all.
+        assert_eq!(
+            tuple.add_to_stream(&PropertyValue::Int(1), &mut stream),
+            Err(PropertyError::TypeMismatch { meta: "sequence" })
+        );
+    }
+
+    #[test]
+    fn a_variable_element_sequence_round_trips_byte_exact() {
+        // ARRAY of STRING: both the sequence and its elements are variable
+        // length, so the packed count is written and the per-byte guard applies.
+        let array = build_type("<a> ARRAY <of> STRING </of> </a>");
+        let value = PropertyValue::Sequence(vec![
+            PropertyValue::String("a".into()),
+            PropertyValue::String("bc".into()),
+        ]);
+        let mut stream = BinaryStream::new();
+        array.add_to_stream(&value, &mut stream).unwrap();
+        assert_eq!(stream.as_bytes(), &[2, 1, b'a', 2, b'b', b'c']);
+        assert_eq!(array.create_from_stream(&mut stream).unwrap(), value);
+    }
+
+    #[test]
+    fn a_variable_sequence_missing_its_count_reports_the_reference_message() {
+        // An empty stream: the packed count itself is missing.
+        let array = build_type("<a> ARRAY <of> INT8 </of> </a>");
+        let mut stream = BinaryStream::new();
+        assert_eq!(
+            array.create_from_stream(&mut stream),
+            Err(PropertyError::MissingSequenceSize)
+        );
+    }
+
+    #[test]
+    fn a_nested_sequence_round_trips_byte_exact() {
+        // ARRAY of (TUPLE of 2 INT16s), both variable length.
+        let array = build_type("<a> ARRAY <of> TUPLE <size> 2 </size> <of> INT16 </of> </of> </a>");
+        let value = PropertyValue::Sequence(vec![
+            PropertyValue::Sequence(vec![PropertyValue::Int(1), PropertyValue::Int(2)]),
+            PropertyValue::Sequence(vec![PropertyValue::Int(3), PropertyValue::Int(4)]),
+        ]);
+        let mut stream = BinaryStream::new();
+        array.add_to_stream(&value, &mut stream).unwrap();
+        assert_eq!(stream.as_bytes(), &[2, 1, 0, 2, 0, 3, 0, 4, 0]);
+        assert_eq!(array.create_from_stream(&mut stream).unwrap(), value);
     }
 
     #[test]
@@ -835,27 +1213,100 @@ mod tests {
             PropertyError::Unsupported("ARRAY").to_string(),
             "ARRAY values are not supported here"
         );
+
+        // The sequence family (`sequence_data_type.cpp`), one per site.
+        assert_eq!(
+            PropertyError::WrongSequenceSize {
+                size: 1,
+                expected: 2
+            }
+            .to_string(),
+            "SequenceDataType::isSameType: Wrong size 1 instead of 2.\n"
+        );
+        assert_eq!(
+            PropertyError::BadSequenceElement {
+                index: 1,
+                expected: "INT8".to_string(),
+                value: "Int(200)".to_string(),
+            }
+            .to_string(),
+            "SequenceDataType::isSameType: Bad element 1. Expected type INT8, but \
+             element was \"Int(200)\".\n"
+        );
+        assert_eq!(
+            PropertyError::FixedSequenceSize {
+                size: 3,
+                expected: 2
+            }
+            .to_string(),
+            "SequenceStartStreamElement::fromSourceToStream: Fixed-length sequence \
+             reported size 3, but datatype expected size 2\n"
+        );
+        assert_eq!(
+            PropertyError::MissingSequenceSize.to_string(),
+            "SequenceStartStreamElement::fromStreamToSink: Missing size parameter \
+             on stream\n"
+        );
+        // The reference prints "fromSourceToStream" from inside the read path —
+        // a copy-paste slip in the original, reproduced verbatim.
+        assert_eq!(
+            PropertyError::InvalidSequenceSize {
+                size: 3,
+                remaining: 0
+            }
+            .to_string(),
+            "SequenceStartStreamElement::fromSourceToStream: Invalid size on stream: 3 \
+             (0 bytes remaining)\n"
+        );
+        assert_eq!(
+            PropertyError::ExpectedSequenceBytes {
+                bytes: 100,
+                remaining: 2
+            }
+            .to_string(),
+            "SequenceStartStreamElement::fromSourceToStream: Expected bytes on stream: 100 \
+             (2 bytes remaining)\n"
+        );
+    }
+
+    #[test]
+    fn a_composite_default_section_falls_to_the_unsupported_arm() {
+        // `pInitialValue` hands a `<Default>` section to `value_from_section`,
+        // so a composite type with one lands on the unsupported arm.
+        let fixed_dict = build_type(
+            "<a> FIXED_DICT <Properties> <name> <Type> STRING </Type> </name> \
+             </Properties> <Default> x </Default> </a>",
+        );
+        assert_eq!(
+            fixed_dict.initial_value(),
+            Err(PropertyError::Unsupported("FIXED_DICT"))
+        );
     }
 
     #[test]
     fn composite_types_report_unsupported() {
-        let array = build_type("<a> ARRAY <of> INT8 </of> </a>");
+        // FIXED_DICT is the next composite in the family, and is not
+        // implemented yet, so it still lands on the documented error.
+        let fixed_dict = build_type(
+            "<a> FIXED_DICT <Properties> <name> <Type> STRING </Type> </name> \
+             </Properties> </a>",
+        );
         assert_eq!(
-            array.check_value(&PropertyValue::Int(1)),
-            Err(PropertyError::Unsupported("ARRAY"))
+            fixed_dict.check_value(&PropertyValue::String("x".into())),
+            Err(PropertyError::Unsupported("FIXED_DICT"))
         );
         // The composite type default lands on the documented stand-in;
-        // ARRAY/TUPLE/FIXED_DICT defaults arrive with their own items.
-        assert_eq!(array.initial_value(), Ok(PropertyValue::Int(0)));
+        // FIXED_DICT's own default arrives with its own item.
+        assert_eq!(fixed_dict.initial_value(), Ok(PropertyValue::Int(0)));
 
         let mut stream = BinaryStream::new();
         assert_eq!(
-            array.add_to_stream(&PropertyValue::Int(1), &mut stream),
-            Err(PropertyError::Unsupported("ARRAY"))
+            fixed_dict.add_to_stream(&PropertyValue::Int(1), &mut stream),
+            Err(PropertyError::Unsupported("FIXED_DICT"))
         );
         assert_eq!(
-            array.create_from_stream(&mut stream),
-            Err(PropertyError::Unsupported("ARRAY"))
+            fixed_dict.create_from_stream(&mut stream),
+            Err(PropertyError::Unsupported("FIXED_DICT"))
         );
     }
     #[test]

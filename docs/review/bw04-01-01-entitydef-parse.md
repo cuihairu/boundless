@@ -140,3 +140,34 @@
 3. `value_from_section` 中 `Kind::Vector` 的 `_ => unreachable!("vector element count")` 是唯一未覆盖行（99.09% 的残余）：解析器只会产生 2/3/4 分量，属解析器不变式。
 4. 无符号整数从流中读回保持零扩展（不符号扩展），有符号宽度才符号扩展 —— 与参考把 `stream >> value` 读入 `INT_TYPE` 的行为一致。
 5. `PropertyValue` 没有 bool 变体：BigWorld entitydef 的标量 meta 类型中不存在 BOOL（`data_type.cpp` 的类型表无此项）。
+
+---
+
+# BW-04-02-02 实现 ARRAY/TUPLE — 复核证据
+
+- **任务编号**: BW-04-02-02（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 366）
+- **原版源码**: `lib/entitydef/data_types/sequence_data_type.cpp`（`SequenceDataType::isSameType` / `createDefaultValue` / `createFromSection` / `streamSize` / `typeName`，以及 `SequenceStartStreamElement::fromSourceToStream`（长度前缀 + 定长校验）、`SequenceStartStreamElement::fromStreamToSink`（读前缀 + **先于分配**的恶意长度闸门）、`SequenceStreamElement` / `SequenceItemStreamElement`）、`array_data_type.{hpp,cpp}`（`isConst = isConst && element->isConst()`）、`tuple_data_type.cpp`（`startSequence` 传 `isConst=true`）、`sequence_meta_data_type.cpp:69,73`（meta 名 `ARRAY` / `TUPLE`）、`data_type.cpp:422`（`DataType::typeName()` 基类只返回 meta 名）。
+- **Boundless 模块**: `crates/entitydef::value`（`PropertyValue::Sequence`、六个新 `PropertyError` 变体 + 各自逐字节复刻的 `Display` 文案、`check_value` / `value_from_section` / `default_value` / `add_to_stream` / `create_from_stream` 的 `Kind::Sequence` 臂、`check_sequence_capacity`）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**181 单元测试 + 4 差分测试**全部通过。
+  - **定长序列不写长度前缀**：`a_fixed_sequence_rejects_a_value_of_the_wrong_length` 与 `a_sequence_rejects_a_length_that_does_not_fit_the_stream` 一起钉住 `SequenceStartStreamElement::fromSourceToStream` 的分派 —— `size != 0` 时不写任何字节（参考仅在与 `varSize_` 不符时报错并改由数据类型定长），`size == 0` 时写一个 packed int 计数。`TUPLE size 2 of INT8` 的 `[1,2]` 恰好是 `[1, 2]` 两字节；变长 `ARRAY of INT8` 同值则是 `[2, 1, 2]`。
+  - **嵌套逐字节一致**：`a_nested_sequence_round_trips_byte_exact` 钉住「变长 `ARRAY` of 定长 `TUPLE`」的完整线格式 `[2, 1, 0, 2, 0, 3, 0, 4, 0]`（外层计数 2，两层各写自己的前缀，INT16 小端）；`a_variable_element_sequence_round_trips_byte_exact` 钉住「变长 `ARRAY` of `STRING`」的 `[2, 1, 'a', 2, 'b', 'c']`。
+  - **默认值**：`a_sequence_default_has_one_default_element_per_slot` 钉住 `createDefaultValue` 用 `size_` —— 变长（`size_==0`）默认**空**序列，定长 N 默认 N 个元素默认值。
+  - **节读取**：`a_sequence_reads_its_item_sections_and_fills_the_gaps` 钉住 `createFromSection` 的 `size = countChildren()`（`size_ != 0` 时改取 `size_`），以及**尾部缺失的 item 取元素默认值**。
+  - **类型校验**：`a_sequence_type_rejects_a_wrong_length_or_element` 钉住 `isSameType` 先查长度（`Wrong size %d instead of %d.`）再逐元素查，且报错文案中的类型名是**元素自己的** `typeName()`（基类 `DataType::typeName()` = meta 名 `INT8`），不是序列的 `ARRAY size 2 of (INT8)` 形态 —— 参考 `sequence_data_type.cpp:324` 调的是 `elementType_.typeName()`。
+  - **分配前闸门**：`a_sequence_rejects_a_length_that_does_not_fit_the_stream` 钉住两条参考报错的**可达方向**（先检查、后分配）：变长元素 → `Invalid size on stream: 3 (0 bytes remaining)`，定长元素 → `Expected bytes on stream: 100 (2 bytes remaining)`（打印 `varSize_ * elementSize`）。
+  - **参考源码的复制粘贴瑕疵如实复刻**：参考在**读**路径（`fromStreamToSink`）里三条报错全部误印成 `SequenceStartStreamElement::fromSourceToStream`。本实现逐字保留该瑕疵，并在 `PropertyError` 变体文档与本文件备注中登记。
+  - `error_text_matches_the_reference_messages` 追加六个序列模板的逐字节锚定（含结尾 `\n`）。
+  - clippy `-D warnings`：entitydef **0 findings**（依赖 `crates/resources` 的 32 条既有 findings 属其他席位 lane，按隔离清单 `-A` 放行）。
+  - rustfmt：`value.rs` / `data_type.rs` 干净（仅对本次触碰文件检查）。
+  - 覆盖率：`value.rs` **99.06%** 行、crate 合计 **99.46%**（门槛 ≥98%）。
+- **证据链接**: `crates/entitydef/src/value.rs`（实现与全部单测）、`crates/entitydef/src/data_type.rs`（`Kind::Sequence`、`stream_size`、`type_name`）。
+- **状态**: 已交付（源码级对齐 + 线格式/错误串/边界锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **仍无字节级参考 oracle**（同 BW-04-02-01 备注 1）：本项的「逐字节」证据是**与参考源码推出的线格式一致的自钉测试**，不是与参考二进制产物的比对。`TUPLE` 与 `ARRAY` 在参考里经 `beginTuple` / `beginArray` 两条路径，但两者线格式相同，故本实现合为一个 `Sequence` 变体 —— 这一点在 `Kind::Sequence { is_tuple }` 的注释中登记。
+2. `check_sequence_capacity` 中 `remaining < 0` 分支在实现内不可达：`BinaryStream::remaining()` 为 `buf.len() - read`，`read` 在截断时被钳制到 `buf.len()`，恒非负。该判断保留是为了与参考的 `remaining < 0` 防御同形。
+3. `value.rs` 残余未覆盖 3 行：`349` 是解析器不变式（同 BW-04-02-01 备注 3）；`521`/`522` 是定长/变长序列写路径上 `write_packed_int` 的 `map_err` 闭包 —— 只在 packed 计数超过 `MAX_PACKED_INT`（16 MiB）时触发，即需要 >1600 万个元素，单元测试不可行。
+4. 元素 `streamSize() == 0` 时参考两条闸门都不取（`if (elementSize < 0)` / `else if (elementSize > 0)` 皆假），故直接通过。本实现保留同一空臂，并以此为由**不**把该情况当作非法。
