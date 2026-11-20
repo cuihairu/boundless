@@ -7,8 +7,9 @@
 //! length occupies; callback messages defer the decision to a handler.
 //!
 //! The framing side (`compressLength`, `expandLength`,
-//! `unexpandLength`, and the `special*` helpers) is BW-02-02-02; this item
-//! owns the id and length tables the framing reads.
+//! `unexpandLength`, and the `special*` helpers) lives in
+//! [`crate::message_framing`]; this module owns the id and length tables the
+//! framing reads.
 
 use std::cell::Cell;
 use std::rc::Rc;

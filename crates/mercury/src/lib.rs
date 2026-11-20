@@ -8,6 +8,7 @@ pub mod interface_element;
 pub mod interface_minder;
 pub mod interface_table;
 pub mod interfaces;
+pub mod message_framing;
 pub mod misc;
 #[cfg(target_os = "linux")]
 pub mod network_interface;
