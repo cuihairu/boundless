@@ -111,6 +111,7 @@
 - [x] **BW-00-03-01 创建 Cargo workspace**。**验收** 干净检出可枚举和编译成员。
   - 证据：`cargo build --workspace` 9 个成员 0 警告（根 Cargo.toml）。
 - [ ] **BW-00-03-02 固定 Rust、Python 工具链与依赖**。**验收** 本地与 CI 解析同一版本。
+  （Rust 侧已固定：`rust-toolchain.toml` channel=1.100.0（含 BW-00-03-02 指向注释）、`Cargo.lock` 17 包入库；CI 侧依赖 BW-22 席位 `.github/workflows` 未建，rustup 读同一 toolchain 文件后同源解析——依赖 BW-22 立项解锁；Python 工具链随 BW-03 席位。）
 - [ ] **BW-00-03-03 配置 Python 模块构建与导入**。**验收** 安装后能导入最小模块。
 - [ ] **BW-00-03-04 分离资源、配置、原版产物和测试路径**。**验收** 同机两套环境互不覆盖。
 - [x] **BW-00-03-05 提供最小启动与关闭入口**。**验收** 进程退出且留存启动日志。
