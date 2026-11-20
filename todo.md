@@ -1427,7 +1427,11 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
   - 新版：`ci/check-rust.sh {fmt|lint|build|test|all|self-test}` 单入口，`--packages a,b` 作用域；CI 作业 `rust-static` / `rust-build-test` 调同一入口。
   - 结果：build PASS（0 警告）、test PASS（502 用例）；fmt FAIL 284 处（foundation 17 / mercury 23 / platform 18 / resources 129 / server-runtime 97）、lint FAIL（deny 级 foundation/src/math/quaternion.rs:64:9、foundation/src/time.rs:6:1；resources/src/zip.rs:1140 因依赖 crate 先失败未及编译）——属各 crate 所属 lane，不属 CI 面。
   - 证据：失败定位到 `path:line:col`（manifest.tsv + logs/rust-<lane>.log）；`ci/check-rust.sh self-test` 5 项全 PASS：fmt/lint/build/test 各能咬住注入缺陷、clean 夹具放行。
-- [ ] **BW-22-01-03 接入 Python 检查**。**验收** 失败定位模块。
+- [x] **BW-22-01-03 接入 Python 检查**。**验收** 失败定位模块。
+  - 原版：BigWorld `scripts/package-daily.sh` 只做打包，Python 侧由 `make bw-run-all-unit-tests`（C++ 单测）带过，无 pytest 门禁。
+  - 新版：`ci/check-python.sh` 提供 compile / test 两条 lane（compileall + pytest），pytest 退出码 4（用法错）与 5（未收集到用例）单独解释；CI 作业 `python`。
+  - 结果：当前仓 tests/python、scripts、python、tools 均无 Python，两 lane SKIP 并注明由 BW-18 开启；注入 `tests/python/scratch_probe.py`（语法错误）后 python-compile FAIL 定位 `tests/python/scratch_probe.py:1`、python-test 报 no tests collected 并指向 compile lane；注入失败断言后 python-test FAIL 定位 `tests/python/test_bad.py::test_fails`。
+  - 证据：`ci-out/manifest.tsv` 上述三行 + `logs/python-{compile,test}.log`；`ci/check-python.sh self-test` 3 项全 PASS（syntax defect 定位到 broken_module.py:1、failing test 检出、clean 树放行）。
 - [ ] **BW-22-01-04 接入 TypeScript 检查**。**验收** 失败定位扩展源码。
 - [ ] **BW-22-01-05 配置变更路径条件**。**验收** 文档和代码改动触发对应作业。
 
