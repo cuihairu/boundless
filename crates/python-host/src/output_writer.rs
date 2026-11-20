@@ -560,10 +560,23 @@ mod tests {
         capture().push((line.to_owned(), is_stderr));
     }
 
+    /// `writer()` is a process-wide static, so the tests that rewrite it
+    /// (or wipe the shared capture) must not overlap: they take this turn
+    /// lock, one test at a time.
+    static WRITER_TURN: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn writer_turn() -> std::sync::MutexGuard<'static, ()> {
+        WRITER_TURN
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// A write without its newline stays in the buffer; the newline flushes
     /// the assembled line to the sink, stdout carrying the info level.
     #[test]
     fn partial_lines_buffer_until_the_newline() {
+        let _turn = writer_turn();
         *writer() = WriterState::new();
         clear_capture();
         set_log_sink(Box::new(capture_sink));
@@ -580,6 +593,7 @@ mod tests {
     /// separately.
     #[test]
     fn stderr_lines_flag_the_error_level() {
+        let _turn = writer_turn();
         *writer() = WriterState::new();
         clear_capture();
         set_log_sink(Box::new(capture_sink));
@@ -597,6 +611,7 @@ mod tests {
     /// A write with several newlines logs every complete line.
     #[test]
     fn multi_line_writes_log_each_line() {
+        let _turn = writer_turn();
         *writer() = WriterState::new();
         clear_capture();
         set_log_sink(Box::new(capture_sink));
@@ -611,6 +626,7 @@ mod tests {
     /// stream and completes later.
     #[test]
     fn the_two_streams_buffer_independently() {
+        let _turn = writer_turn();
         *writer() = WriterState::new();
         clear_capture();
         set_log_sink(Box::new(capture_sink));
@@ -636,6 +652,7 @@ mod tests {
     /// reference's `getCurrentStdio() == NULL` case.
     #[test]
     fn hooks_refuse_without_the_redirect() {
+        let _turn = writer_turn();
         *writer() = WriterState::new();
         assert!(!stdio_is_redirected());
         assert_eq!(
@@ -682,6 +699,7 @@ mod tests {
     /// other process-wide registries in the reference behave.
     #[test]
     fn a_poisoned_writer_lock_recovers() {
+        let _turn = writer_turn();
         let poisoner = std::thread::spawn(|| {
             let _guard = writer();
             panic!("poison the writer lock");
