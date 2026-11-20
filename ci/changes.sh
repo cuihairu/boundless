@@ -79,7 +79,7 @@ main() {
 
     local p owner
     local rust_pkgs=""
-    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0 report=0
+    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0 report=0 package=0
     local rust_all=0
 
     while IFS= read -r p; do
@@ -143,6 +143,11 @@ main() {
         case "$p" in
         ci/report.sh) report=1 ;;
         esac
+        # The installer lane packages the server binary, so it follows the
+        # entry crate, the runtime it ships and the lane.
+        case "$p" in
+        apps/server/* | crates/server-runtime/* | ci/package.sh) package=1 ;;
+        esac
 
         if owner="$(owning_package "$p")" && [ "$owner" != workspace-root ] && [ -n "$owner" ]; then
             if [[ "$rust_pkgs" != *"$owner"* ]]; then
@@ -176,6 +181,7 @@ main() {
     [ "$load" -eq 1 ] && add_lane load
     [ "$fault" -eq 1 ] && add_lane fault
     [ "$report" -eq 1 ] && add_lane report
+    [ "$package" -eq 1 ] && add_lane package
 
     # A Rust source change whose owning package could not be resolved (a crate
     # directory that has no Cargo.toml yet, a stray .rs outside crates/ and

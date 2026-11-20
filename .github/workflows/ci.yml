@@ -651,6 +651,41 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-04-01 — the installer lane: build, stage, archive and smoke-launch
+  # the server package for this platform. The full three-target face lives in
+  # package-daily.yml; this job proves the lane on push for the one target
+  # that compiles today (Linux — see the runners job for the other two).
+  package:
+    name: Installer package and launch smoke
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'package')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust (pinned by rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Package and smoke-launch
+        run: ci/package.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-package-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -697,6 +732,7 @@ jobs:
           ci/load.sh self-test
           ci/fault.sh self-test
           ci/report.sh self-test
+          ci/package.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results

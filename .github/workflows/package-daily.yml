@@ -1,0 +1,111 @@
+name: Package daily
+
+# BW-22-04-01 — the installer lane across the three targets, on a schedule.
+#
+# Every leg calls the same entrypoint (ci/package.sh): build the server in
+# release, stage the install prefix, archive it, then install into a clean
+# prefix and launch what was installed. Like the runners matrix, the legs
+# report rather than gate: only Linux compiles today (crates/server-runtime/
+# src/signals.rs uses Linux-only signal APIs; see the runners job in ci.yml),
+# so Windows and macOS legs are expected to fail at build until BW-15-03/04
+# start those targets. Flip continue-on-error off when they do.
+#
+# Repo rules honoured here (they are also global red lines):
+#   * no git tags are created;
+#   * no GitHub releases are published — results are workflow ARTIFACTS
+#     only; versioned releases stay user-triggered.
+#
+# Freshness: a scheduled run only builds when the branch moved in the last
+# 48 hours (the original daily-build's rule; a quiet branch skips the heavy
+# release build). workflow_dispatch builds unconditionally.
+#
+# Schedule events run against the default branch only — this workflow
+# activates when it lands on main.
+
+on:
+  schedule:
+    # Daily at 03:19 UTC — off the round minutes every other job piles onto.
+    - cron: '19 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-daily
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Installer package on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    continue-on-error: ${{ matrix.report_only }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            report_only: false
+          - os: windows-latest
+            report_only: true
+          - os: macos-latest
+            report_only: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # The freshness check counts commits by date.
+          fetch-depth: 0
+
+      - name: Check for commits in the last 48 hours
+        id: freshness
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            echo "Manual dispatch: build unconditionally."
+            exit 0
+          fi
+          count="$(git rev-list --count --since='48 hours' HEAD)"
+          echo "commits in last 48h: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "stale=true" >>"$GITHUB_OUTPUT"
+            echo "No commits in the last 48 hours — skipping this daily package."
+          else
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Rust (pinned by rust-toolchain.toml)
+        if: steps.freshness.outputs.stale != 'true'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Package and smoke-launch
+        if: steps.freshness.outputs.stale != 'true'
+        shell: bash
+        run: ci/package.sh
+
+      - name: Upload the package
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: package-${{ matrix.os }}-${{ github.run_id }}
+          path: ci-out/package/*.tar.gz
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        shell: bash
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-package-daily-${{ matrix.os }}-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
