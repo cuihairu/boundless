@@ -1137,7 +1137,9 @@ fn inflate_exact(data: &[u8], expected: usize) -> Option<Vec<u8>> {
     let mut out = vec![0u8; expected];
     decoder.read_exact(&mut out).ok()?;
     // The stream must terminate exactly at the expected length.
-    decoder.read(&mut [0u8; 1]).ok()?;
+    if decoder.read(&mut [0u8; 1]).ok()? != 0 {
+        return None;
+    }
     Some(out)
 }
 
