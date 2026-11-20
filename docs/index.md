@@ -8,6 +8,12 @@ explicit new design.
 This site documents how to build, run and operate the server. The [Guide](/guide/)
 starts here.
 
+## Where to start
+
+| You want to... | Read |
+| --- | --- |
+| Build and install on Linux, Windows or macOS | [Installing on three platforms](/guide/install) |
+
 ## Repository layout
 
 ```

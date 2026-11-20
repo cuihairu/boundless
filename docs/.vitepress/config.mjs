@@ -21,8 +21,18 @@ const nav = [
   { text: "Guide", link: "/guide/" }
 ];
 
+const guideSidebar = [
+  { text: "Guide", link: "/guide/" },
+  {
+    text: "Installation",
+    items: [
+      { text: "Installing on three platforms", link: "/guide/install" }
+    ]
+  }
+];
+
 const sidebar = {
-  "/guide/": [{ text: "Guide", link: "/guide/" }]
+  "/guide/": guideSidebar
 };
 
 export default {

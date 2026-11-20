@@ -3,6 +3,11 @@
 Practical, command-level documentation: getting a build, getting a login in, and
 getting a world running.
 
+## Sections
+
+- [Installing on three platforms](/guide/install) — Linux, Windows and macOS
+  prerequisites and a clean-install checklist.
+
 ## How honest this guide is
 
 Every page states which parts are implemented in the working tree and which
