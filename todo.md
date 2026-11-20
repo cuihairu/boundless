@@ -1278,10 +1278,10 @@ boundless/
 
 OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `storage`，CPython FFI 进 `python-host`。应用入口装配具体实现，通过 workspace 依赖图检查循环及跨层引用。
 
-- [ ] **BW-16-02-01 收敛系统调用至 platform**。**验收** 依赖扫描确认调用位置。
-- [ ] **BW-16-02-02 隔离图形后端**。**验收** 服务端构建不加载图形后端。
-- [ ] **BW-16-02-03 隔离数据库驱动**。**验收** 可单独启用后端。
-- [ ] **BW-16-02-04 隔离 CPython FFI**。**验收** 绑定与解释器所有权有测试。
+- [ ] **BW-16-02-01 收敛系统调用至 platform**。**验收** 依赖扫描确认调用位置。（依赖 crates/platform 改动冻结，主席位 flake 调查在途，解禁后解锁）
+- [ ] **BW-16-02-02 隔离图形后端**。**验收** 服务端构建不加载图形后端。（依赖 rendering crate 未建，随 BW-11 立项解锁）
+- [ ] **BW-16-02-03 隔离数据库驱动**。**验收** 可单独启用后端。（依赖 storage crate 未建，随 BW-09 立项解锁）
+- [ ] **BW-16-02-04 隔离 CPython FFI**。**验收** 绑定与解释器所有权有测试。（依赖 python-host crate 未建，现为 4 行空壳，随 BW-03 立项解锁）
 - [x] **BW-16-02-05 接入依赖检查**。**验收** 跨层违规产生可定位报告。
   - 证据：原版 GNU Make/CMake 无依赖方向检查（仅编译顺序）；新版 `cargo run -p test-support --bin check-deps` 输出 `manifest:line: kind: detail`，同规则由 cargo test 常驻。实测合成 workspace 得 `crates/above/Cargo.toml:7: unregistered crate` 并退出码 2。
 
@@ -1289,18 +1289,18 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 实现各角色的模块注册和部署搜索路径，保留 `BigWorld` 等公开导入名称及原版资源定位。用 Demo 原样导入测试检验构建目录和安装目录。
 
-- [ ] **BW-16-03-01 布置按角色加载的 Python 模块**。**验收** 角色之间公开 API 正确隔离。
-- [ ] **BW-16-03-02 实现原版导入名称和路径**。**验收** Demo 无需改导入。
-- [ ] **BW-16-03-03 复测构建目录及安装目录**。**验收** 两种启动均找到同一资源。
+- [ ] **BW-16-03-01 布置按角色加载的 Python 模块**。**验收** 角色之间公开 API 正确隔离。（依赖 python/ 模块目录与 python-host crate 未建，随 BW-03 立项解锁）
+- [ ] **BW-16-03-02 实现原版导入名称和路径**。**验收** Demo 无需改导入。（依赖 python/ 模块目录与 python-host crate 未建，随 BW-03 立项解锁）
+- [ ] **BW-16-03-03 复测构建目录及安装目录**。**验收** 两种启动均找到同一资源。（依赖 python/ 模块目录与安装脚本未建，随 BW-03 立项解锁）
 
 #### BW-16-04 源码映射与扩展接口
 
 登记原版构建目标、功能编号、新 crate/模块及测试位置。编辑器和工具复用世界/资源/转换库。明确 Rust 原生扩展与 Python 扩展各自入口，验证加载和错误传播。
 
-- [ ] **BW-16-04-01 登记原版目标到新版目录**。**验收** 每个目标有模块与测试路径。
-- [ ] **BW-16-04-02 统一编辑器和工具的资源入口**。**验收** 两类应用可加载同一产物。
-- [ ] **BW-16-04-03 定义 Rust 扩展入口**。**验收** 成功及错误能正确传播。
-- [ ] **BW-16-04-04 定义 Python 扩展入口**。**验收** 导入失败可定位且状态可清理。
+- [ ] **BW-16-04-01 登记原版目标到新版目录**。**验收** 每个目标有模块与测试路径。（依赖各角色 crate 与目标树未建，随 BW-03/BW-09/BW-11/BW-13 逐项解锁）
+- [ ] **BW-16-04-02 统一编辑器和工具的资源入口**。**验收** 两类应用可加载同一产物。（依赖 editor/tools 应用未建，apps/ 现仅 server，随 BW-13 立项解锁）
+- [ ] **BW-16-04-03 定义 Rust 扩展入口**。**验收** 成功及错误能正确传播。（依赖 editor/tools 应用与扩展宿主未建，随 BW-13 立项解锁）
+- [ ] **BW-16-04-04 定义 Python 扩展入口**。**验收** 导入失败可定位且状态可清理。（依赖 python-host crate 与 python/ 模块未建，随 BW-03 立项解锁）
 
 ### BW-17 Bots 压测
 
@@ -1993,45 +1993,62 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 验证 KBEngine `navigation/` 中的 Recast/Detour、平铺数据及 CellApp 异步加载是否在当前构建与脚本入口可达。用跳点、跨 tile、不可达及异步加载期的地图夹具与 BW-10 对照，记录旧 KBEngine 导航资源导入是否进入范围。
 
-- [ ] **BW-29-01-01 核对 Recast/Detour 构建及脚本入口**。**验收** 记录可达性及目标。
-- [ ] **BW-29-01-02 对照 KBEngine 平铺导航查询**。**验收** 跨 tile 与不可达样本有结果。
-- [ ] **BW-29-01-03 对照异步地图加载**。**验收** 加载期调用状态有证据。
-- [ ] **BW-29-01-04 记录旧导航资源导入决策**。**验收** 列明纳入或暂缓及理由。
+- [x] **BW-29-01-01 核对 Recast/Detour 构建及脚本入口**。**验收** 记录可达性及目标。
+  - 证据：Recast/Detour 在 KBEngine 是 **vendored 源码内嵌**，非外部依赖——`kbe/src/lib/navigation/` 45 个文件（`Recast{,Contour,Mesh,MeshDetail,Rasterization,Region,Filter,Layers,Alloc,Area,Assert}.*`、`Detour{NavMesh,NavMeshQuery,NavMeshBuilder,TileCache,TileCacheBuilder,Crowd,ObstacleAvoidance,ProximityGrid,PathCorridor,PathQueue,LocalBoundary,Node,Alloc,Assert,Common}.*`，KBEngine 自有薄层 `navigation.*`、`navigation_handle.*`、`navigation_mesh_handle.*`、`navigation_tile_handle.*`、`findpath_9tile_bak.cpp`，`Readme.txt` 记 Recast & Detour Version 1.4, 2009-08-24）。构建入口两份且**无条件编入、无独立开关**：`kbe/src/lib/CMakeLists.txt:1996-2031`（`add_library(kbe_navigation STATIC ...)` 逐文件列出 + `KBEngine::navigation` ALIAS）、`kbe/src/lib/navigation/Makefile`（`LIB=navigation`，末尾 `include .../common.mak`）；消费方 `kbe/src/CMakeLists.txt:197`（`kbe_cellapp` 链 `KBEngine::navigation`）；开关核查：`cmake/KBEngineOptions.cmake` 仅 8 个 option（KBE_ENABLE_WATCHERS/USE_OPENSSL/USE_LOG4CXX/USE_JEMALLOC/BUILD_BOOTSTRAP_ONLY/ENABLE_TESTING/ENABLE_CODE_COVERAGE/BUILD_LEGACY_XML_TARGET）无 navigation 项，全仓 `find_package` 无 Recast/Detour 命中，`CMakePresets.json`、`DEPENDENCY_UPGRADE_PLAN.md` 亦无，唯一 submodule 是 `BigWorld-Engine-14.4.1`。**脚本入口不可达**：该 worktree 是引擎仓（`kbe/{bin,res,src,tools}` + `typings/`、`docs/`、`tools/`、`tests/`），无 `assets/`、`interfaces/` 目录，也无 `recastnavigation.py`/`navigation_tile.py`/`navigation_mesh.py`/`engine.py`；脚本面仅存于 typing 桩 `typings/_KBEngine_common.pyi:129`(`canNavigate`)/`:139`(`navigate`)/`:150`(`navigatePathPoints`)，矩阵在 `typings/API_MATRIX.md:323`（签名源 `server/cellapp/entity.cpp:52-64`）；C++ 可达链 `cellapp/entity.cpp:2588-2599`（`Entity::navigatePathPoints()` → `pSpace->pNavHandle()` → `findStraightPath(...)`）。**目标记录**：导航生成与运行时在 Boundless 已由 BW-10-05（生成）、BW-10-04（waypoint 寻路）、BW-10-06（cellapp/Python 寻路）承载且均待办，故本条判定与 BW-10 同源、列入后续，不新增范围。
+- [ ] **BW-29-01-02 对照 KBEngine 平铺导航查询**。**验收** 跨 tile 与不可达样本有结果。（参考面已定位：平铺查询为 `kbe/src/lib/navigation/navigation_tile_handle.cpp:325`（`listPathRes(wspath, L"tmx", results)`）+ `findpath_9tile_bak.cpp`；依赖平铺导航查询与 tile 缓存实现未建（属 BW-10-06 cellapp/Python 寻路），跨 tile 与不可达样本夹具需其承载，随 BW-10-06 立项解锁）
+- [ ] **BW-29-01-03 对照异步地图加载**。**验收** 加载期调用状态有证据。（参考面已定位：异步加载在 `kbe/src/server/cellapp/loadnavmesh_threadtasks.cpp`，与 `navigate_handler.cpp`、`spacememory.cpp` 同组；依赖 CellApp 空间与导航句柄实现未建（属 BW-10-06/BW-10-04），加载期调用状态需真实运行取证，随其立项解锁）
+- [x] **BW-29-01-04 记录旧导航资源导入决策**。**验收** 列明纳入或暂缓及理由。
+  - 证据：两侧都**不存在独立导入/转换脚本**，故无脚本可纳入。KBEngine 是运行时二进制直读——`kbe/src/lib/navigation/navigation_mesh_handle.cpp:428`（`Resmgr::getSingleton().listPathRes(wspath, L"navmesh", results)`）→ `:443` `_create(layer++, ...)` 逐文件读，`tryReadNavmesh()`（`:473` 起）按 `NavMeshSetHeader{version, tileCount, dtNavMeshParams}` + `NavMeshTileHeader{tileRef, dataSize}` 直读，版本常量 `RCN_NAVMESH_VERSION = 1`；tile 版 `navigation_tile_handle.cpp:325`（`listPathRes(wspath, L"tmx", results)`）；仓内无任何 `*.py` 提及 navmesh/detourtilecache（零命中），生成端由外部 recastnavigation 插件导出（`docs/api/kbengine/cellapp/KBEngine.md:95`）。BigWorld 侧是**工具端生成器而非导入器**——`tools/common/recast_processor.cpp:23`（`RecastGenerator::collectTriangles(chunk)`）、`:140`（`navmeshCache_->calcDone(...)`），离线入口 `tools/offline_processor/command_process_chunks.cpp:492-506`（`space.settings` 的 `navmeshGenerator` 只接受 `"recast"`），旧资源往返靠 `editor_chunk_navmesh_cache_*` + `navmesh_processor.*`。**决策：暂缓**（不纳入本轮）——没有独立导入脚本可对齐，两侧语义分别是「运行时直读二进制 navmesh」与「从 chunk 几何重算」，Boundless 的对应验收已在 BW-10-05-05「验证旧导航资产读取」与 BW-10-05-06「验证新产物往返」承载，本条不重复立项；若届时需要 KBEngine navmesh 二进制格式兼容，作为 BW-10-05-05 的子验收登记，不在此开新任务。
 
 #### BW-29-02 运维工具差异
 
 按 `kbcmd`、GUIConsole、WebConsole、pycluster 分别核对进程发现、日志、状态、profile 和集群管理，记录对应 BW-23~27 或可选独立控制台需求。
 
-- [ ] **BW-29-02-01 复核 kbcmd**。**验收** 为已确认命令关联任务或记范围项。
-- [ ] **BW-29-02-02 复核 GUIConsole**。**验收** 为状态及管理工作流记录差距。
-- [ ] **BW-29-02-03 复核 WebConsole**。**验收** 为日志、状态和 profile 记录差距。
-- [ ] **BW-29-02-04 复核 pycluster**。**验收** 为集群管理工作流判定范围。
+- [x] **BW-29-02-01 复核 kbcmd**。**验收** 为已确认命令关联任务或记范围项。
+  - 证据：入口 `kbe/src/server/tools/kbcmd/main.cpp`（`main()` 461 行、命令分派 473-481 逐一字符串匹配，无第三方框架），全部子命令仅四个：`--clientsdk=<unity|ue4>`（`process_make_client_sdk` 139 行，支持 `--outpath=`/`--zip=`/`--tar=`）、`--getuid`（427 行，取服务器组 UID）、`--newassets=python`（301 行，工程脚手架）、`--help`（439 行）；同目录 `profile.cpp` 仅 11 行，只是 PythonApp 定时基类挂钩，**无 profile 命令**。据此纠正 KB-11 条目预设：**kbcmd 是纯代码生成/脚手架工具，不承担进程发现、日志、状态或 profile**——后者在 KBEngine 由 pycluster + pycommon 承担。关联任务：`--clientsdk` → BW-21（多引擎客户端 SDK）与 BW-29-04-01；`--newassets` → BW-29-05-03 脚手架（模板树随 BW-03）；`--getuid` 依赖 KBEngine 服务器组 UID 概念，Boundless 无对应物，**记范围项不立项**。补充：四项工具在 BigWorld 原版均不存在（`tools/` 只有 asset/editor 工具），是 KBEngine 自有增量，本条复核定位正确。
+- [x] **BW-29-02-02 复核 GUIConsole**。**验收** 为状态及管理工作流记录差距。
+  - 证据：入口 `kbe/src/server/tools/guiconsole/guiconsole.cpp` 为 MFC Win32 桌面程序，**仅 Windows**（启动脚本 `kbe/tools/server/guiconsole/!(win)start.bat`）；Tab 创建见 `guiconsoleDlg.cpp:429-447`，功能模块按窗口成组：状态 `StatusWindow.cpp`(397 行)、日志 `LogWindow.cpp`(706)、Profile `ProfileWindow.cpp`(494)、Watcher `WatcherWindow.cpp`(579)、空间视图 `SpaceViewWindow.cpp`、图表 `GraphsWindow.cpp`+`LineChartCtrl.cpp`（tick/负载曲线）、调试与远程 `DebugWindow.cpp`/`ConnectRemoteMachineWindow.cpp`、进程启动布局 `StartServerWindow.cpp`/`StartServerLayoutWindow.cpp`/`SetLayoutNameWindow.cpp`/`TimingLengthWindow.cpp`。Boundless 侧运维界面在 VS Code 插件（BW-20）：`extensions/vscode/src/workspace/cluster.ts` 的 `CLUSTER_ROLES`(13 行) 与 `ClusterControl.roles()`(77/83 行，返回 `{role, pid, commandLine, logPath}`)、`extension.ts` 的 `showClusterStatus`/`showClusterLogs`，覆盖进程发现+状态+日志查看。**差距登记**：GUIConsole 的状态窗口、日志窗口、Profile 窗口有插件侧等价面（对应 BW-23/BW-24/BW-25 各自章节）；三项无对应物——tick/负载曲线图、Cell Viewer 空间视图、远程机器连接——**记范围项**，随 BW-25 进程与集群运行状态立项时决定是否纳入，本轮不另立任务。
+- [x] **BW-29-02-03 复核 WebConsole**。**验收** 为日志、状态和 profile 记录差距。
+  - 证据：入口为 Django 工程 `kbe/tools/server/webconsole/`（`manage.py` + `run_server.sh/.bat`），路由挂 `KBESettings/urls.py:20`（`^wc/` → `WebConsole.urls`），端点清单在 `WebConsole/urls.py:18-69`——日志组（`views_log.py`）`/log/connect`(websocket 实时日志)、`/log/process_cmd`、`/log/connect/pull`；状态组（`views_status.py`）`/status/show_components`、`/status/connect`、`/status/process_cmd`；Profile 组（`views_profile.py`）`/profile/show_components`、`/profile/connect`、`/profile/process_cmd`；其余为组件管理/启停/布局、Telnet 控制台 `views_console.py`、Watcher `views_watcher.py`、空间视图 `views_spaceviewer.py`、用户权限 `auth.py`，依赖 `machines_mgr.py` 与 `dwebsocket/`。差距：日志、状态两组在插件侧 `showClusterLogs`/`showClusterStatus` 有部分等价；Profile 组无等价物（BW-23 Profiler 面向性能分析，非浏览器可达查询）；组件启停/布局、Telnet 控制台、Watcher、空间视图、用户权限**均无对应物**。**判定**：WebConsole 的整体形态（Django+WebSocket 浏览器控制台）**记范围项**，是否纳入随 BW-25 立项决定；本轮不登记为独立任务，不写兼容验收。
+- [x] **BW-29-02-04 复核 pycluster**。**验收** 为集群管理工作流判定范围。
+  - 证据：单文件控制器 `kbe/tools/server/pycluster/cluster_controller.py`（`__main__` 741 行），集群工作流即其 Handler 清单——状态查询 `ClusterQueryHandler`(88，按 UID 查全网机器进程)、启动 `ClusterStartHandler`(146，按模板+机器 IP+gid 起整套进程) 与 `ClusterStartServerHandler`(559，起 machine 守护)、停止 `ClusterStopHandler`(210，`sendStop` 222)、日志 `ClusterLogWatchHandler`(327)/`ClusterSendLogHandler`(368，本地日志注入)、布局保存与加载 `ClusterSaveProcessHandler`(406)/`ClusterLoadProcessHandler`(460，即 role/进程布局下发)、Flags 下发 `ClusterSetFlagsHandler`(617，`sendSet` 627)；CLI 动词 `start`/`stop`/`startserver`/`save`/`load`/`setflag`/默认 query（741-820 行），外部引用见 `sdk_templates/server/python_assets/safe_kill.sh:31`（`stop $XUID`）；公共层在 `kbe/tools/server/pycommon/`（`Machines.py`、`Component_Status.py`、`LoggerWatcher.py`、`ServerApp.py`、`Watcher.py`、`SpaceViews.py`）。Boundless 侧 `crates/`、`apps/` 全量 grep `kbcmd|guiconsole|webconsole|pycluster|cluster|process_tree|log_tail` 为空，无集群控制器代码。**范围判定**：单机进程发现/状态/日志已由 BW-20 插件侧覆盖并归 BW-25 收口；跨机集群启停、Flags 下发、布局保存加载三项**记范围项**，作为独立控制台/集群管控需求随 BW-25 立项评估，本轮不立项。
 
 #### BW-29-03 存储与外部服务差异
 
 分别复核 Redis 后端、`interfaces` 外部服务、订单/回调和邮件辅助的适用场景及启用条件。若纳入，逐项定义兼容性和端到端验收。
 
-- [ ] **BW-29-03-01 复核 Redis 后端**。**验收** 记录构建可达性及纳入决策。
-- [ ] **BW-29-03-02 复核 Interfaces 外部服务**。**验收** 记录入口、用途及取舍。
-- [ ] **BW-29-03-03 复核订单与回调**。**验收** 记录端到端路径和范围。
-- [ ] **BW-29-03-04 复核邮件辅助**。**验收** 记录依赖和范围。
+- [x] **BW-29-03-01 复核 Redis 后端**。**验收** 记录构建可达性及纳入决策。
+  - 证据：KBEngine 的 Redis 后端是**自有纯 C++ 实现**（非 BigWorld 能力）：源文件 `kbe/src/lib/db_redis/`（`db_interface_redis.h`（`class DBInterfaceRedis : public DBInterface`，头注释给出 `tbl_Account:1 = hashes(...)` 的键设计）、`db_interface_redis.cpp`、`entity_table_redis.h/.cpp/.inl`、`kbe_table_redis.h/.cpp`、`db_transaction.cpp`、`redis_watcher.cpp`、`redis_helper.h`、`db_exception.cpp`）。构建可达性：**该树已无 SConscript**（`find` 零命中，仅 CMake）——`kbe/src/lib/CMakeLists.txt:2114-2124` 定义 `kbe_db_redis` 静态库 + `KBEngine::db_redis` alias，`:2126-2132` 链 `KBEngine::dependency_hiredis`，`:2134-2137` `target_compile_definitions(... KBE_USE_REDIS)`，`:2155-2163` 的 `kbe_db_runtime` 同时链 `KBEngine::db_mysql` + `KBEngine::db_redis`；外部依赖 hiredis 在 `vcpkg.json:14` 声明并有 vendored 副本 `kbe/src/lib/dependencies/hiredis/`。运行时由配置字符串选择：`db_interface/db_interface.cpp:145-156`（`strcmp(db_type,"mysql")`/`"redis"` → `new DBInterfaceRedis(name)`）、`:215` `initInterface`；配置入口 `res/server/kbengine_defaults.xml:330-331`（`databaseInterfaces/<default>` 注释「数据库类型（mysql、redis）」）。BigWorld 侧 `\bredis\b` 与 `hiredis` 命中均为 **0**。纳入决策：**暂缓**——Redis 非原版能力，Boundless 主存储由 BW-09-06 PostgreSQL 承载（含事务/并发锁/连接恢复），如后续需要 Redis 作为可选后端，在 BW-09 的存储后端扩展点上评估，本轮不立项。
+- [x] **BW-29-03-02 复核 Interfaces 外部服务**。**验收** 记录入口、用途及取舍。
+  - 证据：Interfaces 是**独立网关进程**（C++ + Python 脚本驱动）：进程代码 `kbe/src/server/tools/interfaces/`（`interfaces.cpp/.h`、`interfaces_tasks.cpp`、`interfaces_interface.cpp`、`orders.cpp/.h`、`profile.cpp`、`main.cpp`、`Makefile`）；进程配置 `res/server/kbengine_defaults.xml:234-270` 的 `<interfaces>`（`entryScriptFile=kbemain`、`host=localhost`、`port_min=30099`、`port_max=30199`、`orders_timeout=3600`、`telnet_service/port=33000`）；dbmgr 侧转发开关 `kbengine_defaults.xml:296-313` 的 `<InterfacesServiceAddr>`（`enable`/`addDefaultAddress`/`<item><host>+</port>` 地址池），结构体在 `kbe/src/lib/server/serverconfig.h`（`getInterfaces()`、`getDBMgr().InterfacesServiceAddr`；另 `serverconfig.h:165` 的 `externalInterface` 是**对外网卡名/IP**，与外部服务无关）。用途实现：`kbe/src/server/dbmgr/interfaces_handler.cpp:262`(`createAccount`)/`:361`(`loginAccount`)/`:544`(`charge`)/`:585`(`onChargeCB`)，脚本侧注册 `interfaces.cpp:186-189`（`chargeResponse`、`accountLoginResponse`、`createAccountResponse`、`executeRawDatabaseCommand`），脚本入口模板 `sdk_templates/server/python_assets/scripts/base/kbemain.py`。取舍：**不照搬**——它的存在是为了对接第三方平台（账号创建/登录、订单 charge、原始 SQL），属运营侧扩展而非原版兼容要求（BigWorld 无对应物）；Boundless 侧的账号/Billing 扩展点在 BW-09-04「Billing 与扩展」，如需第三方平台对接，在该章节下按「可关闭的适配器」形态立项，本轮记范围项。
+- [x] **BW-29-03-03 复核订单与回调**。**验收** 记录端到端路径和范围。
+  - 证据：端到端路径已逐段定位——Python `KBEngine.charge()` → `kbe/src/server/baseapp/baseapp.cpp:3495` `__py_charge`（参数校验 `ordersID, dbid, datas, pycallback`）、`:3577` `Baseapp::charge`、`:3590` 发 `DbmgrInterface::charge`（声明 `baseapp.h:399`）→ Dbmgr `kbe/src/server/dbmgr/dbmgr.h:179,184`、`interfaces_handler.cpp:544` `InterfacesHandler_Interfaces::charge`（`:575` 打包 `InterfacesInterface::charge` 发给 interfaces 进程；空实现对照 `:117-125` 的 `InterfacesHandler_Dbmgr::charge/onChargeCB = "no implement!"`）→ Interfaces 侧记账 `tools/interfaces/orders.h:19-46`（`address/ordersID/cbid/dbid/baseappID/dbmgrID/state(FAILED|SUCCESS)/postDatas/getDatas/timeout`、`OrdersCharge`），`interfaces.cpp:465`(`eraseOrders`)/`:477`(`hasOrders`)/`:512`（写 `postDatas`）/`:563`（`appendBlob(task->postDatas)` 外发），`:186` 注册 `KBEngine.chargeResponse` → 回调接收 `interfaces_handler.cpp:585` `onChargeCB` → `baseapp.cpp:3609` `Baseapp::onChargeCB`（`:3632` 构造 Python 回调）。LoginApp 侧的 HTTP 回调服务是另一条通路：`kbengine_defaults.xml:793-797` 的 `http_cbhost`/`http_cbport=21103`（注释「http回调接口，处理认证、密码重置等」），`loginapp/http_cb_handler.h:21-23`（`onAccountActivated`/`onAccountBindedEmail`/`onAccountResetPassword`）、`http_cb_handler.cpp:32`（绑定端口）、`:316-335`（回填 `backlink_hello_message`）、`:344/370/396`（三个回调实现）、`:296-306`（`DbmgrInterface::accountBindMail` 转发）。BigWorld 侧对照：`\borders\b` 7 个文件全部是可靠消息顺序字段（`lib/network/udp_bundle.cpp:59-60,87-88` 的 `reliableOrders_`/`reliableOrdersExtracted_`、`lib/cstdmf/main_loop_task.cpp:460` 注释），`\bpurchase\b` 为 0——订单/购买在原版不存在。范围：**记范围项，随 BW-09-04「Billing 与扩展」立项**，本轮不落地、不写兼容验收。
+- [x] **BW-29-03-04 复核邮件辅助**。**验收** 记录依赖和范围。
+  - 证据：邮件辅助是独立的 curl/SMTP 线程任务，代码 `kbe/src/lib/server/sendmail_threadtasks.h`（`SendEMailTask` 基类含 `smtpUrl/fromAddress/toAddress/messageHtml/useSsl`，`:66` `SendActivateEMailTask`、`:88` `SendResetPasswordEMailTask`、`:110` `SendBindEMailTask`）与 `sendmail_threadtasks.cpp`（`:6` `#include "curl/curl.h"`、`:50-56` `buildSmtpUrl` 生成 `smtp://`/`smtps://`(465)、`:77` `useSsl`、`:94-98` `smtp_auth` 分支）；触发点 `baseapp.cpp:5729`（`new SendBindEMailTask`）、`loginapp.cpp:669`（`new SendActivateEMailTask`）、`loginapp.cpp:825`（`new SendResetPasswordEMailTask`）、`dbmgr/dbtasks.cpp:1310`（`bindEMail`）。依赖：运行时 **libcurl** + SMTP 配置；配置入口 `kbengine_defaults.xml:232` 引入 `kbe/res/server/email_service_defaults.xml`，SMTP 字段解析 `serverconfig.cpp:1589-1609`（`smtp_server`/`smtp_port`/`smtp_auth`）、`serverconfig.h:63-67`；回调落在 LoginApp 的 `http_cb` HTTP 服务（见 BW-29-03-03）。BigWorld 侧对照：`\bsmtp\b` 为 0，`\bmail\b` 5 个文件全部是实体 mailbox 消息通道（`lib/entitydef/mailbox_base.hpp/.cpp`、`server/baseapp/client_entity_mailbox_wrapper.cpp`、`lib/input/key_code.hpp/.cpp`），与邮件发送无关。范围：**暂缓**——账号激活/重置密码/绑定邮箱的邮件通知是运营侧增值能力，Boundless 无对应计划；如纳入需先有 BW-09-04 的账号体系与 libcurl 依赖登记，本轮不立项。
 
 #### BW-29-04 SDK 和 Python 开发差异
 
 分别复核在线 SDK 下载、JavaScript 模板、Python assets 模板、类型存根。比对 BW-21/27 已覆盖工作流后登记剩余项。
 
-- [ ] **BW-29-04-01 复核 LoginApp SDK 下载**。**验收** 登记支持传输与范围。
-- [ ] **BW-29-04-02 复核 JavaScript SDK 模板**。**验收** 登记兼容性需求与取舍。
-- [ ] **BW-29-04-03 复核 Python assets 模板**。**验收** 登记已有工作流和缺口。
-- [ ] **BW-29-04-04 复核类型存根**。**验收** 登记生成及 IDE 接入范围。
+- [x] **BW-29-04-01 复核 LoginApp SDK 下载**。**验收** 登记支持传输与范围。
+  - 证据：KBEngine `loginapp/clientsdk_downloader.cpp`（`.h` 50 行/`.cpp` 288 行）全库无 HTTP/FTP/OBS 分支——唯一传输是把已登录的自有网络通道当下载通道：`loginapp.cpp:1540-1575` 收 `importClientSDK` 后 fork/exec `kbcmd --clientsdk=` 本地生成到 `{assets}/_tmp/{options}`（Windows 走 CreateProcessW、Linux 走 fork+execv），再按 `clientWindowSize` 分片沿 `Network::Channel` 推回（`clientsdk_downloader.cpp:227-284`，60 秒超时自删）；产物为 `sdk_templates/client/{unity|ue4}` 生成的客户端 SDK 源码目录（kbcmd `--zip=`/`--tar=` 可打包，`kbcmd/main.cpp:207-275`）。判定：**暂缓照搬**——在线推送深度绑定 KBEngine 自有 Channel 协议与 kbcmd 生成器，Boundless SDK 交付走 BW-21 多引擎发布矩阵（离线产物）；如未来需要在线推送，在 BW-21-06 SDK 发布与矩阵下另立任务，不在此复刻。
+- [x] **BW-29-04-02 复核 JavaScript SDK 模板**。**验收** 登记兼容性需求与取舍。
+  - 证据：KBEngine js 侧模板仅 2 个文件（`kbe/res/sdk_templates/client/js/kbengine.js` + `README.md`），是静态手写的浏览器 JS 客户端库；`kbcmd/client_sdk.cpp:48-64` 的 `createClientSDK()` 只认 `unity`/`ue4`（分别 `ClientSDKUnity`/`ClientSDKUE4`，其余返 NULL），无 `"js"` 分支——故 js SDK 不参与代码生成、与实体定义改动不同步。兼容性需求登记：若纳入，必须先接入 BW-21-01 公共核心 SDK 的生成管线（否则每次实体变更都要手改 js）；取舍：**暂缓纳入**，按「仅示例、明确不同步」定位收录，不作为兼容验收项；对照 BigWorld 原版 `grep -rli "sdk_template|clientsdk"` 零命中，确认此为 KBEngine 侧新增能力。
+- [x] **BW-29-04-03 复核 Python assets 模板**。**验收** 登记已有工作流和缺口。
+  - 证据：KBEngine 脚手架是 `kbcmd --newassets=python`（`kbcmd/main.cpp:301-330`，分派 476 行；根入口 `new_assets.sh`/`.bat`）从 `kbe/res/sdk_templates/server/python_assets/` 整树复制，真实清单含启动脚本 `start_server*.bat/.sh`、`kill_server`、`safe_kill`、`guiconsole.bat`、`gensdk.sh`、`start_bots`、配置 `res/server/kbengine.xml`/`server_errors.xml`、脚本 `entities.xml`、`entity_defs/{Account.def,types.xml}`、`{base,bots,cell,db,interface,logger}/kbemain.py`、`interface/Poller.py`、`common/{Functor,KBEDebug}.py` 及各占位目录 `.gitignore`。已有工作流对照：Boundless 服务端 python 布局与 `python/` 模块目录由 BW-03 承载（现 `python-host` 为 4 行空壳、`python/` 目录未建），故模板树与脚手架命令归 BW-03 立项；缺口登记：工程脚手架入口（新工程目录生成）、`entity_defs` 模板、`start/kill` 运维脚本三项均无对应物，暂不另立，随 BW-03 python 布局一起交付。
+- [x] **BW-29-04-04 复核类型存根**。**验收** 登记生成及 IDE 接入范围。
+  - 证据：KBEngine 的 `.pyi` 是**旁路静态桩**（adjacent 模式，与 `.py` 同名同目录、运行时不导入），由 `tools/generate_kbengine_entity_stubs.py`（`generate_outputs()` 1117-1206、`write_outputs()` 1209-1232，默认 `--scripts-dir kbe/res/sdk_templates/server/python_assets/scripts`、`--mode adjacent`、`--check`）从 `entities.xml`/`entity_defs` 生成，产物落 `typings/`（`_KBEngine_common.pyi`、`_KBEngine_{baseapp,cellapp,loginapp,dbmgr,logger,bots,interfaces}.pyi`、`KBEngine/{__init__.pyi,hooks.pyi}`、`stubs/`、`examples/`）与 `scripts/{side}/<Entity>.pyi`、`components/<Component>.pyi`；配套 `generate_kbengine_server_errors_stub.py`（`server_errors.h` → `SERVER_ERR_*`）、`validate_kbengine_typing.py`、`build_kbengine_typing_bundle.py`（`COMPONENT_NAMES = base/cell/interface/login/db/logger/bots`）与 `install_kbengine_typing_bundle.py`。IDE 接入靠仓库根 `pyrightconfig.json` 的 `stubPath: typings/stubs` + 7 组件与 6 examples 的 `executionEnvironments`/`extraPaths`、`typeCheckingMode: basic`，**不塞进 client_sdk**。范围登记：存根生成器与旁路桩体系为 KBEngine 特有，Boundless 的 IDE 接入面是 BW-27-01 LSP（`integrations/` 目前仅 `mcp`，无 LSP/DAP 落地）；生成管线依赖 `entity_defs`，属 BW-03/BW-27-01 的公共依赖——**列入后续**，在 BW-27-01 LSP 立项时一并定义「从实体定义生成类型信息」，不在本轮单独立项。
 
 #### BW-29-05 工作流差异
 
 分别复核 `xlsx2py`、安装脚本和新工程脚手架。确认是否纳入，并为选中的功能登记样例输入、输出与平台。
 
-- [ ] **BW-29-05-01 复核 xlsx2py**。**验收** 记录代表性表格及输出和范围。
-- [ ] **BW-29-05-02 复核安装脚本**。**验收** 登记与 BW-14/15 的重合及差距。
-- [ ] **BW-29-05-03 复核 assets 脚手架**。**验收** 登记可复用输入输出及范围。
+- [x] **BW-29-05-01 复核 xlsx2py**。**验收** 记录代表性表格及输出和范围。
+  - 证据：转换器在 `kbe/tools/xlsx2py/xlsx2py/xlsx2py.py`（用法 `python xlsx2py <data_file> <excel_file>`），配套 `ExcelTool.py`、`xlsxtool.py`、`xlsxError.py`、`config.py`、`py2excel.py`（反向）与表域后处理器 `character.py`、`itemchar.py`、`petchar.py`、`syschar.py`、`functions.py`。输入约定（`config.py`）：`EXPORT_PREFIX_CHAR = '@'`（**sheet 名以 `@` 前缀才导出**）、`EXPORT_DEFINE_ROW = 1`（表头第 1 行）、`EXPORT_KEY_NUMS = 1`（首列主键）、`EXPORT_MAP_SHEET = '映射表='`、单元格签名 `.`=非空校验/`$`=替换/`!`=主键标记（`xlsx2py.py:401-403` 绑定 `isNotEmpty`/`needReplace`/`isKey`）。输出：`openFile()`（`xlsx2py.py:379`）`codecs.open(self.outfile,"w+",'utf-8')` 写**单个 UTF-8 `.py` 数据模块**，`main()` 支持一个输出 py 对多个 xlsx。代表性表格（`kbe/tools/xlsx2py/rpgdemo/xlsxs/`）：`spaces.xlsx`、`dialogs.xlsx`、`skills.xlsx`、`entities.xlsx`、`avatar_init.xlsx`，驱动脚本 `rpgdemo/{all,basePath,entities,dialogs,skills,spaces,avatar_init}.bat` + 清单 `rpgdemo/nfiles`，示例命令 `python ../xlsx2py/xlsx2py.py pydatas/d_entities.py xlsxs/entities.xlsx`。平台：已从 win32com/MS Office 迁到 `openpyxl`（`readme.txt` L3-4、`ExcelTool.py` L4/L15），跨平台纯 Python 3，脚本本身仍 `gb2312` 编码。**范围：暂缓**——BigWorld 原版无表格转码工作流（`find -iname "*xlsx*|*csv*"` 在非 third_party 区零命中，资产描述是 XML：`tools/res_packer/xml_packer.cpp`、`packer_helper.cpp:78` `AutoConfig::configureAllFrom("resources.xml")`、`entities.xml` + `entity_defs/*.def`），策划表驱动在原版不存在，Boundless 的实体/资源定义走 BW-13 资源管线；如后续需要 xlsx 策划表导入，按独立工具立项，不在此登记兼容项。
+- [x] **BW-29-05-02 复核安装脚本**。**验收** 登记与 BW-14/15 的重合及差距。
+  - 证据：KBEngine 14.4.1 的"安装"由三段组成——CMake 构建（根 `CMakeLists.txt:1` `cmake_minimum_required(VERSION 3.21)`、`:7-8` `CMAKE_CXX_STANDARD 17`/`_REQUIRED ON`，另有 `kbe/src/CMakeLists.txt` 与 `kbe/src/kbengine.sln`）、**vcpkg manifest 依赖清单**（`vcpkg.json`：apr、apr-util、curl、fmt、gtest、libmariadb、openssl、python3、hiredis、tinyxml2、utfcpp、zlib + `vcpkg-ports/`、`vcpkg-configuration.json`、`CMakePresets.json`）、shell 包装器（`new_assets.sh` 推导 `KBE_ROOT` 并设 `KBE_RES_PATH`/`KBE_BIN_PATH` 后调 `kbcmd --newassets=python`）。**全库已无 SConstruct**（`find -iname SConstruct` 计数 0）。BigWorld 原版**无 install.sh**：顶层 `BigWorld/scripts/` 只有构建与打包脚本（`build-{cstdmf,entitydef,network,python,resmgr}-cmake.sh`、`build-windows-server.ps1`、`package-daily.sh`、`package-daily-windows.ps1`、`check-docs-links.py`），安装说明是 PDF（`docs/pdf/Server Installation Guide.pdf`、`Server Build Guide.pdf`，`README.md:68-69` 引用），构建产物为 `bigworld-{bwmachined,devel,web-integration}-14.4.1.el7.x86_64.rpm`。**重合**：Boundless 的构建/平台入口是 `rust-toolchain.toml`（`channel = "1.100.0"`）+ workspace `Cargo.toml`（依赖方向注释 BW-16-01），发行面归 BW-14-04 可安装发布物、平台面归 BW-15-01 平台接口，两者已由编号覆盖。**差距登记**：依赖清单形态从 vcpkg manifest 换成 Rust workspace 依赖（已在 Cargo.toml 内以注释登记），安装文档从 PDF 换成 `docs/` 文档站（BW-19）——均无需新增任务；本轮不立项。
+- [x] **BW-29-05-03 复核 assets 脚手架**。**验收** 登记可复用输入输出及范围。
+  - 证据：入口 `kbcmd --newassets=python --outpath=...`，实现 `kbe/src/server/tools/kbcmd/main.cpp:301` `process_newassets()`（命令注册 476 行、帮助 452-454 行）；模板源 `main.cpp:312` → `kbe/res/sdk_templates/server/python_assets/`，类实现 `server/tools/kbcmd/server_assets.cpp`（`ServerAssets::create()` 用 `Resmgr::matchPath("sdk_templates/server/" + name())` + `copyAssetsSourceToPath()` 整树复制）；模板树内容 `README.md`、`gensdk.{bat,sh}`、`guiconsole.bat`、`kill_server.{bat,sh}`、`safe_kill.{bat,sh}`、`start_server.{bat,sh}`、`start_server_background.{bat,sh}`、`start_bots.{bat,sh}`、`res/`、`scripts/`；默认配置来自 `kbe/res/server/{kbengine_defaults.xml,email_service_defaults.xml,log4cxx_properties_defaults,messages_fixed_defaults.xml,server_errors_defaults.xml}` + `kbe/res/scripts/`、`kbe/res/client/`。**可复用输入输出登记**：输入 = 引擎树内 `sdk_templates/server/python_assets/` 模板 + `kbe/res` 默认配置；输出 = 一份新工程目录树（脚本 + 配置 + 占位 `.gitignore`），**无代码生成**。对照：BigWorld 无 `--newassets`，唯一近似物是 `BigWorld/programming/bigworld/scripts/generate-fantasydemo-assets.py`（重写 `programming/fantasydemo/res/` 下的 `server/bw.xml`、`scripts/{entities.xml,db.xml}`、`scripts/entity_defs/{alias.xml,*.def}`、`scripts/{base,cell,client}/*.py`，已提交进仓库、可字节级复现）与 `cmake/samples/{cstdmf,entitydef,network,python,resmgr}/CMakeLists.txt`（构建样例非工程脚手架）。**范围：暂缓**——工程脚手架依赖 `python_assets` 模板树与 `kbengine_defaults.xml` 配置体系，二者分别随 BW-03（python 模块布局）与 BW-09/BW-13（配置与资源管线）立项；模板树的等价物（原 fantasydemo 资产树）已在 BW-14-01 Demo 脚本和数据覆盖，本轮不单独立项。
 
 ## 4. 第二轮 · 保持兼容的优化
 
