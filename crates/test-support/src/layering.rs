@@ -197,10 +197,8 @@ fn member_paths(root_text: &str) -> Vec<String> {
         let trimmed = raw.trim();
 
         if trimmed.starts_with('[') {
-            let section = trimmed.trim_matches(|c| c == '[' || c == ']');
-            // `[workspace]` opens the table; a `members = [` inside it opens
-            // the array, handled below.
-            in_members = section == "workspace" && trimmed.contains("members");
+            // A new table closes any open members array.
+            in_members = false;
             continue;
         }
 
@@ -518,6 +516,22 @@ fn extract_manifest_paths(json: &str) -> Vec<PathBuf> {
     paths
 }
 
+/// Walk up from `start` to the directory holding the root workspace manifest.
+pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    if !dir.is_dir() {
+        dir = start.parent()?.to_path_buf();
+    }
+    loop {
+        let is_workspace = std::fs::read_to_string(dir.join("Cargo.toml"))
+            .is_ok_and(|text| text.lines().any(|line| line.trim() == "[workspace]"));
+        if is_workspace {
+            return Some(dir);
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+}
+
 /// Scan the workspace at `root`, run all rules and cross-check with cargo.
 pub fn check_workspace(root: &Path) -> Vec<Violation> {
     let manifests = scan_workspace(root);
@@ -552,6 +566,14 @@ mod tests {
             deps: deps.iter().map(|(d, l)| (d.to_string(), *l)).collect(),
             dev_deps: Vec::new(),
         }
+    }
+
+    #[test]
+    fn find_workspace_root_from_a_nested_directory() {
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = find_workspace_root(crate_dir).expect("workspace root");
+        assert!(root.join("Cargo.toml").exists());
+        assert!(root.join("crates/test-support").is_dir());
     }
 
     #[test]

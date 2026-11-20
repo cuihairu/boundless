@@ -1172,7 +1172,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [ ] **BW-16-02-02 隔离图形后端**。**验收** 服务端构建不加载图形后端。
 - [ ] **BW-16-02-03 隔离数据库驱动**。**验收** 可单独启用后端。
 - [ ] **BW-16-02-04 隔离 CPython FFI**。**验收** 绑定与解释器所有权有测试。
-- [ ] **BW-16-02-05 接入依赖检查**。**验收** 跨层违规产生可定位报告。
+- [x] **BW-16-02-05 接入依赖检查**。**验收** 跨层违规产生可定位报告。
+  - 证据：原版 GNU Make/CMake 无依赖方向检查（仅编译顺序）；新版 `cargo run -p test-support --bin check-deps` 输出 `manifest:line: kind: detail`，同规则由 cargo test 常驻。实测合成 workspace 得 `crates/above/Cargo.toml:7: unregistered crate` 并退出码 2。
 
 #### BW-16-03 Python 布局与资源交付
 
