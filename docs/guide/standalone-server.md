@@ -86,8 +86,7 @@ Starting a *set* of roles — a cell side plus a center side, or a real login
 flow — needs role-to-role messages, which is why `crates/contracts` is still a
 placeholder. Until it lands, each role in a standalone deployment is an
 independent process that starts, reports itself and exits. The role set and its
-canonical order are the process topology documented in the architecture
-section.
+canonical order are the [process topology](/architecture/process-topology).
 
 ## The reference baseline for comparing against
 

@@ -72,5 +72,5 @@ already exist:
 - `crates/entitydef/src/entities.rs` — type ids assigned in load order from `0`,
   with `0xFFFF` as the sentinel.
 
-The architecture section's compatibility matrix carries the list of engine and
-SDK targets and their current status.
+See the [Compatibility matrix](/architecture/compatibility-matrix) for the list of
+engine and SDK targets and their current status.

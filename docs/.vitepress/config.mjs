@@ -18,7 +18,8 @@ const siteTitle = "Boundless";
 
 const nav = [
   { text: "Overview", link: "/" },
-  { text: "Guide", link: "/guide/" }
+  { text: "Guide", link: "/guide/" },
+  { text: "Architecture", link: "/architecture/" }
 ];
 
 const guideSidebar = [
@@ -56,8 +57,25 @@ const guideSidebar = [
   }
 ];
 
+const architectureSidebar = [
+  { text: "Architecture", link: "/architecture/" },
+  {
+    text: "Topology",
+    items: [
+      { text: "Process topology", link: "/architecture/process-topology" }
+    ]
+  },
+  {
+    text: "Compatibility",
+    items: [
+      { text: "Compatibility matrix", link: "/architecture/compatibility-matrix" }
+    ]
+  }
+];
+
 const sidebar = {
-  "/guide/": guideSidebar
+  "/guide/": guideSidebar,
+  "/architecture/": architectureSidebar
 };
 
 export default {
