@@ -15,3 +15,6 @@ repository.workspace = true
 # through BwResource and BwConfig (BW-18-01-03).
 resources = { workspace = true }
 server-runtime = { workspace = true }
+# libc: kill(2) against a role's process group when tearing the process
+# tree down (BW-18-02-05).
+libc = { workspace = true }

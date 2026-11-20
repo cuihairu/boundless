@@ -1262,7 +1262,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：原版测试硬编码端口段并共用检出内数据目录，并跑必撞；新版 crates/test-support/src/allocation.rs 提供 PortAllocator（bind 127.0.0.1:0 由内核发号、PortLease 持有监听期间无人可拿同号）与 RunRoot（logs/db/artifacts 布局）+ database_slot（同标签也各得独立空 db/+journal/ 槽位），`port_leases_are_distinct_while_held`/`bulk_leases_come_back_all_distinct`/`two_parallel_runs_never_overlap`（双 run 根+双分配器 6 端口 2 槽位全不相交）常驻验证并跑互不干扰。
 - [x] **BW-18-02-04 保留日志与失败目录**。**验收** 失败报告可打开原始产物。
   - 证据：原版 MultiProcTestCase 子进程输出直接进测试 stdout，失败后无现场可查；新版 multiproc.rs 提供 `start_logged`（每角色 stdout+stderr 汇入 RunRoot logs/&lt;role&gt;.log，保持角色实际输出顺序）与 `preserve_failure`（artifacts/failure-report.txt 记录原因、启动顺序、各角色退出状态与日志路径，并 keep 整个 RunRoot），`role_output_is_captured_in_the_run_log` 用日志就绪探针证明输出进的是运行日志，`a_failure_scene_keeps_the_original_logs_and_a_report` 验证报告可打开且原始日志可读、RunRoot 在 drop 后仍存活；另补 `kill_all` 让测试不再空等长驻角色。
-- [ ] **BW-18-02-05 清理整个进程树**。**验收** 三端测试退出无残留进程。
+- [x] **BW-18-02-05 清理整个进程树**。**验收** 三端测试退出无残留进程。
+  - 证据：原版 `killChildren` 只 SIGKILL 直接子进程，角色再 fork 的孙进程泄漏；新版 multiproc.rs spawn 时给每角色 `process_group(0)`（自成为进程组长），`kill_tree` 用 `kill(-pid)` 打全组（libc），Drop 兜底未显式清理的组，`kill_tree_takes_out_grandchildren` 验证角色 fork 的孙进程一起死，`three_roles_leave_nothing_behind` 三端各带 helper 全清无残留（ps 按 marker 扫描），`parallel_groups_clean_up_independently` 验证并跑两组互不误伤，`a_dropped_group_tears_itself_down` 验证测试 panic 掉组也不泄漏。
 
 #### BW-18-03 可控时间与消息故障
 

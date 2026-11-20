@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::TcpStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
@@ -233,6 +234,15 @@ impl Readiness {
 /// Poll interval of the readiness loop.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+/// SIGKILL a role's whole process group (`kill(-pid)`), then the direct
+/// pid in case the group was already gone.
+fn kill_process_group(pid: i32) {
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
 /// A live topology: every role's process, plus the order they were started
 /// in, observable to the test.
 #[derive(Debug)]
@@ -274,6 +284,10 @@ impl ProcessGroup {
             let log_file = logs_dir.map(|dir| dir.join(format!("{}.log", spec.name)));
             let mut command = Command::new(&spec.program);
             command.args(&spec.args);
+            // Each role leads its own process group, so tearing the role
+            // down can take its whole subtree with it -- the reference
+            // tests SIGKILL only the direct child and leak grandchildren.
+            command.process_group(0);
             if let Some(path) = &log_file {
                 let file = std::fs::File::create(path).map_err(|error| {
                     for (_, mut child) in children.drain(..) {
@@ -388,6 +402,31 @@ impl ProcessGroup {
             .collect()
     }
 
+    /// Tear every role down *with its whole process tree*: the role led its
+    /// own process group since spawn, so a group-wide SIGKILL reaches the
+    /// children the role spawned too. Returns `(role, status)` in start
+    /// order.
+    pub fn kill_tree(&mut self) -> Vec<(String, ExitStatus)> {
+        self.children
+            .drain(..)
+            .map(|(role, mut child)| {
+                let pid = child.id() as i32;
+                kill_process_group(pid);
+                let _ = child.kill();
+                let status = child.wait().expect("wait on killed role");
+                (role, status)
+            })
+            .collect()
+    }
+
+    /// The `(role, pid)` pairs of all still-unreaped roles.
+    pub fn role_pids(&self) -> Vec<(String, u32)> {
+        self.children
+            .iter()
+            .map(|(role, child)| (role.clone(), child.id()))
+            .collect()
+    }
+
     /// Wait for every role to exit, returning `(role, status)` in start
     /// order.
     pub fn wait_all(&mut self) -> Vec<(String, ExitStatus)> {
@@ -459,6 +498,16 @@ impl ProcessGroup {
             .iter_mut()
             .find(|(role, _)| role == name)
             .map(|(_, child)| child)
+    }
+}
+
+/// A dropped group never leaks roles: whatever was still running is torn
+/// down tree and all.
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if !self.children.is_empty() {
+            self.kill_tree();
+        }
     }
 }
 
@@ -888,5 +937,131 @@ mod tests {
         let _ = group.kill_all();
         drop(run);
         let _ = std::fs::remove_dir_all(&root_path);
+    }
+
+    /// `ps` for a marker string; the bracketed pattern keeps grep and the
+    /// shell from matching themselves.
+    fn scan_for(marker: &str) -> bool {
+        let mut chars = marker.chars();
+        let first = chars.next().expect("marker");
+        let rest: String = chars.collect();
+        let scan = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("ps -eo args | grep '[{first}]{rest}' || true"))
+            .output()
+            .expect("run ps");
+        String::from_utf8_lossy(&scan.stdout).contains(marker)
+    }
+
+    /// A role that spawned its own child dies together with it: killing the
+    /// tree reaches the grandchild, not just the direct child.
+    #[test]
+    fn kill_tree_takes_out_grandchildren() {
+        const MARKER: &str = "bw18-tree-grand-194331";
+        let topology = Topology::new().add(
+            ProcessSpec::new("nested", "/bin/sh")
+                .arg("-c")
+                .arg(format!("sleep 194331 & wait  # {MARKER}")),
+        );
+        let mut group = ProcessGroup::start(&topology).expect("starts");
+        std::thread::sleep(Duration::from_millis(150)); // let the shell fork
+        assert!(scan_for(MARKER), "grandchild running before teardown");
+
+        let results = group.kill_tree();
+        assert_eq!(results.len(), 1);
+        std::thread::sleep(Duration::from_millis(150)); // SIGKILL delivery
+        assert!(!scan_for(MARKER), "grandchild survived kill_tree");
+    }
+
+    /// The three-role acceptance: three ends, each with its own spawned
+    /// helper, leave nothing running after the tree teardown.
+    #[test]
+    fn three_roles_leave_nothing_behind() {
+        let markers = [
+            "bw18-end-a-194332",
+            "bw18-end-b-194333",
+            "bw18-end-c-194334",
+        ];
+        let topology = Topology::new()
+            .add(
+                ProcessSpec::new("machined", "/bin/sh")
+                    .arg("-c")
+                    .arg(format!("sleep 194332 & wait  # {}", markers[0])),
+            )
+            .add(
+                ProcessSpec::new("baseapp", "/bin/sh")
+                    .arg("-c")
+                    .arg(format!("sleep 194333 & wait  # {}", markers[1])),
+            )
+            .add(
+                ProcessSpec::new("cellapp", "/bin/sh")
+                    .arg("-c")
+                    .arg(format!("sleep 194334 & wait  # {}", markers[2])),
+            );
+        let mut group = ProcessGroup::start(&topology).expect("starts");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(markers.iter().all(|m| scan_for(m)), "helpers running");
+
+        group.kill_tree();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !markers.iter().any(|m| scan_for(m)),
+            "some end leaked after kill_tree"
+        );
+    }
+
+    /// Two parallel groups clean up independently: tearing one down must
+    /// not touch the other's processes.
+    #[test]
+    fn parallel_groups_clean_up_independently() {
+        let survivor_marker = "bw18-par-survivor-194335";
+        let victim_marker = "bw18-par-victim-194336";
+
+        let survivor_topology = Topology::new().add(
+            ProcessSpec::new("survivor", "/bin/sh")
+                .arg("-c")
+                .arg(format!("sleep 194335 & wait  # {survivor_marker}")),
+        );
+        let victim_topology = Topology::new().add(
+            ProcessSpec::new("victim", "/bin/sh")
+                .arg("-c")
+                .arg(format!("sleep 194336 & wait  # {victim_marker}")),
+        );
+        let mut survivor = ProcessGroup::start(&survivor_topology).expect("starts");
+        let mut victim = ProcessGroup::start(&victim_topology).expect("starts");
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(scan_for(survivor_marker) && scan_for(victim_marker));
+
+        victim.kill_tree();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!scan_for(victim_marker), "victim leaked");
+        assert!(
+            scan_for(survivor_marker),
+            "victim teardown hit the survivor"
+        );
+
+        survivor.kill_tree();
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!scan_for(survivor_marker), "survivor leaked");
+    }
+
+    /// Dropping a group without an explicit teardown still cleans up, so a
+    /// panicking test cannot leak roles either.
+    #[test]
+    fn a_dropped_group_tears_itself_down() {
+        const MARKER: &str = "bw18-drop-194337";
+        let topology = Topology::new().add(
+            ProcessSpec::new("leaker", "/bin/sh")
+                .arg("-c")
+                .arg(format!("sleep 194337 & wait  # {MARKER}")),
+        );
+        {
+            let group = ProcessGroup::start(&topology).expect("starts");
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(scan_for(MARKER));
+            // Implicit drop here, no kill call.
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!scan_for(MARKER), "drop leaked the role tree");
     }
 }
