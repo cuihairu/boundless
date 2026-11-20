@@ -545,6 +545,54 @@ impl BwResource {
         self.section_cache.borrow_mut().clear();
     }
 
+    /// The `DirSection::saveChild`/`XMLSection::save` flow for a flat
+    /// resource path: serialises the section (byte-exact with
+    /// `XMLSection::asBinary`) and writes it through the multiplexer,
+    /// whose first root that can write wins and whose parent directory is
+    /// marked modified. On success the freshly saved tree joins the cache
+    /// under `resource_id` -- the reference gets this for free from the
+    /// census holding the same object the cache points at; `save as`
+    /// (splitSaveAsFileName) and census bookkeeping arrive with the
+    /// dir-section/census tasks. The `isBinary` flag of the reference is a
+    /// Windows text-mode concern and has no unix equivalent.
+    ///
+    /// A failed write leaves the cache untouched.
+    pub fn save_section(&self, resource_id: &str, section: &mut DataSection) -> bool {
+        let bytes = section.write_to_string();
+        if !self.file_system.write_file(resource_id, bytes.as_bytes()) {
+            return false;
+        }
+        self.section_cache.borrow_mut().add(
+            resource_id,
+            bytes.len(),
+            Arc::new(section.clone()),
+        );
+        true
+    }
+
+    /// `XMLSection::saveIfExists`: like [`BwResource::save_section`], but
+    /// the write lands in the first root that already holds the path, and
+    /// a path no root holds fails without touching the cache.
+    pub fn save_section_if_exists(
+        &self,
+        resource_id: &str,
+        section: &mut DataSection,
+    ) -> bool {
+        let bytes = section.write_to_string();
+        if !self
+            .file_system
+            .write_file_if_exists(resource_id, bytes.as_bytes())
+        {
+            return false;
+        }
+        self.section_cache.borrow_mut().add(
+            resource_id,
+            bytes.len(),
+            Arc::new(section.clone()),
+        );
+        true
+    }
+
     /// Reads the whole cache (hits/misses/order) for diagnostics and tests,
     /// the way the reference watcher exposes `cache/*`.
     pub fn section_cache_stats(&self) -> (usize, usize, usize) {
@@ -1166,6 +1214,122 @@ mod tests {
         let mut section = DataSection::new("padded.xml");
         section.set_string("pad");
         section.write_to_string().len()
+    }
+
+    #[test]
+    fn saved_xml_is_byte_exact_with_the_reference_layout() {
+        let a = temp_root("save_exact");
+        let resource = BwResource::init_paths(&[&a]);
+
+        let source = "<npc name=\"Bob\">\n\t<position>12.5 3 -7</position>\
+\n\t<inventory>\n\t\t<item />\n\t\t<item>sword</item>\n\t</inventory>\
+\n\t<flags/>\n</npc>";
+        let mut tree = datasection::parse("", source.as_bytes()).unwrap();
+        assert!(resource.save_section("npc.xml", &mut tree));
+
+        // The file on disk is byte-exact with XMLSection::writeToStream:
+        // attribute lines carry level+2 tabs, leaf values sit inline after
+        // one tab and keep the closing tab, empty nodes collapse to
+        // `<tag />`, and every element ends with a newline.
+        let raw = fs::read(format!("{}/npc.xml", a)).unwrap();
+        let expected = "<npc\n\t\tname=\"Bob\">\n\
+\t<position>\t12.5 3 -7\t</position>\n\
+\t<inventory>\n\
+\t\t<item />\n\
+\t\t<item>\tsword\t</item>\n\
+\t</inventory>\n\
+\t<flags />\n\
+</npc>\n";
+        assert_eq!(raw, expected.as_bytes());
+
+        // The original engine reads what we wrote: re-parsing the saved
+        // bytes (the pinned createFromBinary semantics) rebuilds the same
+        // tree, attribute and repeated children included.
+        let reread = datasection::parse("", &raw).unwrap();
+        let original = datasection::parse("", source.as_bytes()).unwrap();
+        assert_eq!(reread, original);
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn save_then_update_flows_through_the_cache() {
+        let a = temp_root("save_update");
+        write(&a, "/cfg/old.xml", b"<cfg><speed>1</speed></cfg>");
+        let resource = BwResource::init_paths(&[&a]);
+
+        // Saving a v2 tree over an existing file: the cache immediately
+        // serves the saved tree, no purge needed.
+        let mut tree = datasection::parse("", b"<cfg><speed>2</speed></cfg>").unwrap();
+        assert!(resource.save_section("cfg/old.xml", &mut tree));
+        let opened = resource.open_section("cfg/old.xml", false).unwrap();
+        assert_eq!(opened.find_child("speed").unwrap().as_string(), "2");
+        // The disk copy carries the serialised form.
+        assert_eq!(
+            fs::read(format!("{}/cfg/old.xml", a)).unwrap(),
+            b"<cfg>\n\t<speed>\t2\t</speed>\n</cfg>\n"
+        );
+
+        // Update: mutate and save again; opens serve the new tree.
+        tree.child_mut(0).unwrap().set_string("3");
+        assert!(resource.save_section("cfg/old.xml", &mut tree));
+        let opened = resource.open_section("cfg/old.xml", false).unwrap();
+        assert_eq!(opened.find_child("speed").unwrap().as_string(), "3");
+
+        // After a purge the disk copy confirms the same value: write and
+        // cache agree.
+        resource.purge("cfg/old.xml", false);
+        let reopened = resource.open_section("cfg/old.xml", false).unwrap();
+        assert_eq!(reopened.find_child("speed").unwrap().as_string(), "3");
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn save_if_exists_lands_in_the_root_that_holds_the_file() {
+        let first = temp_root("save_if_first");
+        let second = temp_root("save_if_second");
+        write(&second, "/keep/old.xml", b"<cfg><v>1</v></cfg>");
+
+        let resource = BwResource::init_paths(&[&first, &second]);
+        let mut tree = datasection::parse("", b"<cfg><v>2</v></cfg>").unwrap();
+
+        // Plain save writes through the first base that accepts: the first
+        // root has no keep/ directory (fopen("w") fails), so the fall-through
+        // overwrites the file in the second root.
+        assert!(resource.save_section("keep/old.xml", &mut tree));
+        assert_eq!(
+            fs::read(format!("{}/keep/old.xml", second)).unwrap(),
+            b"<cfg>\n\t<v>\t2\t</v>\n</cfg>\n"
+        );
+        assert!(!std::path::Path::new(&format!("{}/keep/old.xml", first)).exists());
+
+        // When both roots hold the file, the Exists variant writes the
+        // first root and leaves the second untouched.
+        write(&first, "/keep/shared.xml", b"<cfg><v>1</v></cfg>");
+        assert!(resource.save_section_if_exists("keep/shared.xml", &mut tree));
+        assert_eq!(
+            fs::read(format!("{}/keep/shared.xml", first)).unwrap(),
+            b"<cfg>\n\t<v>\t2\t</v>\n</cfg>\n"
+        );
+        assert_eq!(
+            fs::read(format!("{}/keep/shared.xml", second))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        // A path no root holds fails and stays out of the cache; plain
+        // save fails the same way when no root can create the parents.
+        let (hits, misses, bytes) = resource.section_cache_stats();
+        assert!(bytes > 0);
+        assert!(!resource.save_section_if_exists("absent.xml", &mut tree));
+        assert!(!resource.save_section("no/such/dir.xml", &mut tree));
+        assert_eq!(resource.section_cache_stats(), (hits, misses, bytes));
+        assert_eq!(resource.open_section("absent.xml", false), None);
+
+        fs::remove_dir_all(&first).unwrap();
+        fs::remove_dir_all(&second).unwrap();
     }
 }
 

@@ -167,6 +167,21 @@ impl MultiFileSystem {
         false
     }
 
+    /// `writeFileIfExists`: writes into the first base that already holds
+    /// the path -- not necessarily the first base overall, unlike
+    /// `write_file`. Marks the parent directory modified.
+    pub fn write_file_if_exists(&self, path: &str, data: &[u8]) -> bool {
+        for base in &self.base_file_systems {
+            if base.get_file_type(path, None) == FileType::File
+                && base.write_file(path, data)
+            {
+                self.add_modified_directory(&crate::bwresource::get_file_path(path));
+                return true;
+            }
+        }
+        false
+    }
+
     /// `eraseFileOrDirectory`: erases from the first base that has it and
     /// marks the parent directory modified.
     pub fn erase_file_or_directory(&self, path: &str) -> bool {
