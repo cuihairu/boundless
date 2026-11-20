@@ -364,3 +364,26 @@
 2. **`CELL_PRIVATE` 而非空标志**：参考 `setEntityDataFlags` 查表，`CELL_PRIVATE` 名对应 0 位；空 `<Flags>` 在两侧都是解析失败（已交付测 `missing_flags_is_a_parse_failure` 钉住），故「无接收方」只能以该名字表达。
 3. **分发位的解析层叠已在位**（`<Persistent>`/`<Identifier>`/`<Indexed>`/`ExposedForReplay` 缺省 `isOtherClientData()` 且仅 `isClientServerData()` 生效）——本项只补接收方谓词面向属性层的入口，不重复建模。
 4. 无字节级 oracle（同前项备注）：分发标志不产生流字节；证据为源码级对齐 + 自钉矩阵测试。
+
+---
+
+# BW-04-03-03 验证参数与权限失败 — 复核证据
+
+- **任务编号**: BW-04-03-03（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 382；验收：返回同类错误且业务回调未执行）
+- **原版源码**: `lib/entitydef/method_description.cpp` `MethodDescription::areValidArgs( exposedExplicit, args, generateException )` —— `firstOrdinaryArg = exposedExplicit && isExposed() && component() == CELL`（暴露的 CELL 方法带隐式实体参数）后交 `MethodArgs::checkValid`；`lib/entitydef/method_args.cpp` `MethodArgs::checkValid` —— **先数个数**：`expectedArgs = args_.size() + firstOrdinaryArg`，不等即 `PyErr_Format( PyExc_TypeError, "Method %s requires exactly %d argument%s; %d given", name, expectedArgs, (expectedArgs == 1) ? "" : "s", args.size() )` 并返回 false（**在逐参数类型检查之前**）；`firstOrdinaryArg == 1` 时再验隐式参数是 None/id/带 `id` 的对象（`"Method %s requires None, an id, or an object with an id as its first argument"`）；逐参数 `isSameType` 失败报 `"Method %s, argument %d: Expected %s, ..."`（两分支，按 Python 类型对象取措辞）。权限侧（客户端只能调用暴露方法）由 BW-04-03-01 的暴露表解析门承担。
+- **Boundless 模块**: `crates/entitydef/src/method.rs`（新增 `ArgCountError`（参考原话 Display，含 `expectedArgs == 1 ? "" : "s"` 单复数）与 `MethodDescription::first_ordinary_arg` / `expected_args` / `check_arg_count`）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**228 单元测试 + 4 差分测试**全部通过（本项新增 1 测）。
+  - **验收钉**：`an_argument_count_mismatch_rejects_the_call` 钉住暴露 CELL 方法 `jump(INT32)`——`first_ordinary_arg(true)==1`、`expected_args(true)==2`（隐式实体参数）、给 2 通过、给 1 拒：`"Method jump requires exactly 2 arguments; 1 given"`；基座方法 `spin(INT32)` 无隐式参数（`first_ordinary_arg==0`、期望 1），多给一个拒且**单数措辞**钉住三元：`"Method spin requires exactly 1 argument; 2 given"`。计数门在逐参数类型检查之前，故错误即返回、调用不外传。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt 干净；覆盖率全部文件 **≥98%**。
+- **证据链接**: `crates/entitydef/src/method.rs`（`ArgCountError`、三个访问器与验收测）、BW-04-03-01 节（权限侧暴露门）。
+- **状态**: 已交付（源码级对齐 + 计数门/错误原话/单复数锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **Python 宿主分支未建模**：参考 `PyErr_Format` 把错误设进 Python 异常状态、`generateException` 为假时 `PyErr_Clear()`；Rust 以 `Result<(), ArgCountError>` 表达同一决定（错误即拒绝、不执行后续），无 Python 宿主可清。
+2. **隐式实体参数的类型检查未建模**：`firstOrdinaryArg == 1` 分支要求 arg0 是 None/`int`/带 `id` 属性的对象，其判定与错误串依赖 Python 对象身份，静态定义域内不可表达（参数计数与期望个数已完整建模）。
+3. **逐参数类型不匹配消息未建模**：`"Method %s, argument %d: Expected %s, ..."` 两分支的措辞取自 Python 类型对象（`PyObject_Str` / `tp_name`），同属宿主依赖；参数类型本身的静态类型与流尺寸已交付。
+4. **「业务回调未执行」的建模口径**：计数门在逐参数检查之前返回，与参考一致——错误一旦产生即终结调用路径，本 crate 无分派回调可执行，故以「错误结果即拒绝」等价表达，登记为口径说明而非行为差异。
+5. 无字节级 oracle（同前项备注）：参数校验不产生流字节。

@@ -46,6 +46,37 @@ pub enum ReplayExposureLevel {
 const DEFAULT_DETAIL_DISTANCE: f32 = f32::MAX;
 
 // ---------------------------------------------------------------------------
+// Argument validation
+// ---------------------------------------------------------------------------
+
+/// The reference's `MethodArgs::checkValid` argument-count failure: the count
+/// is checked before anything else, so a mismatch refuses the call and no
+/// callback ever runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgCountError {
+    /// The method name (`name_`).
+    pub method: String,
+    /// `args_.size() + firstOrdinaryArg`.
+    pub expected: usize,
+    /// The call's argument count.
+    pub given: usize,
+}
+
+impl std::fmt::Display for ArgCountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `expectedArgs == 1 ? "" : "s"`.
+        let plural = if self.expected == 1 { "" } else { "s" };
+        write!(
+            f,
+            "Method {} requires exactly {} argument{}; {} given",
+            self.method, self.expected, plural, self.given
+        )
+    }
+}
+
+impl std::error::Error for ArgCountError {}
+
+// ---------------------------------------------------------------------------
 // MethodArgs
 // ---------------------------------------------------------------------------
 
@@ -321,6 +352,36 @@ impl MethodDescription {
 
     pub fn args(&self) -> &MethodArgs {
         &self.args
+    }
+
+    /// `MethodDescription::areValidArgs`: the index of the first ordinary
+    /// argument — an exposed cell method takes its implicit entity
+    /// argument, so ordinary arguments start at one.
+    pub fn first_ordinary_arg(&self, exposed_explicit: bool) -> usize {
+        usize::from(exposed_explicit && self.is_exposed() && self.component() == Component::Cell)
+    }
+
+    /// `MethodArgs::checkValid`: the argument count a call must supply.
+    pub fn expected_args(&self, exposed_explicit: bool) -> usize {
+        self.args.len() + self.first_ordinary_arg(exposed_explicit)
+    }
+
+    /// The argument-count half of `MethodArgs::checkValid`.
+    pub fn check_arg_count(
+        &self,
+        given: usize,
+        exposed_explicit: bool,
+    ) -> Result<(), ArgCountError> {
+        let expected = self.expected_args(exposed_explicit);
+        if given == expected {
+            Ok(())
+        } else {
+            Err(ArgCountError {
+                method: self.name().to_string(),
+                expected,
+                given,
+            })
+        }
     }
 
     pub fn return_values(&self) -> &MethodArgs {
@@ -1349,6 +1410,62 @@ mod tests {
 
         // A message id that maps past the last exposed id refuses the call.
         assert!(methods.exposed_method_from_msg_id(200, 0, &range).is_none());
+    }
+
+    #[test]
+    fn an_argument_count_mismatch_rejects_the_call() {
+        // `MethodDescription::areValidArgs` -> `MethodArgs::checkValid`: the
+        // argument count is checked before anything else, so a mismatch
+        // refuses the call and no callback ever runs.
+        let ctx = ctx();
+        let mut methods = EntityMethodDescriptions::new();
+        let mut diag = Diagnostics::new();
+        assert!(methods.init(
+            Some(&parse_xml(
+                "<root> <jump> <Arg> INT32 </Arg> <Exposed> </Exposed> </jump> \
+                 </root>",
+            )),
+            Component::Cell,
+            "Avatar",
+            "",
+            None,
+            &ctx,
+            &mut diag
+        ));
+        let jump = methods.find("jump").expect("jump parses");
+
+        // An exposed cell method carries its implicit entity argument, so the
+        // call must supply two.
+        assert_eq!(jump.first_ordinary_arg(true), 1);
+        assert_eq!(jump.expected_args(true), 2);
+        assert!(jump.check_arg_count(2, true).is_ok());
+        assert_eq!(
+            jump.check_arg_count(1, true).unwrap_err().to_string(),
+            "Method jump requires exactly 2 arguments; 1 given"
+        );
+
+        // A base method has no implicit argument; note the singular wording.
+        let mut plain = EntityMethodDescriptions::new();
+        let mut diag = Diagnostics::new();
+        assert!(plain.init(
+            Some(&parse_xml(
+                "<root> <spin> <Arg> INT32 </Arg> </spin> </root>"
+            )),
+            Component::Base,
+            "Avatar",
+            "",
+            None,
+            &ctx,
+            &mut diag
+        ));
+        let spin = plain.find("spin").expect("spin parses");
+        assert_eq!(spin.first_ordinary_arg(true), 0);
+        assert_eq!(spin.expected_args(true), 1);
+        assert!(spin.check_arg_count(1, true).is_ok());
+        assert_eq!(
+            spin.check_arg_count(2, true).unwrap_err().to_string(),
+            "Method spin requires exactly 1 argument; 2 given"
+        );
     }
 
     #[test]
