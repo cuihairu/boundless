@@ -26,6 +26,7 @@
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
+use super::binding;
 use super::capi::{self, PyObject};
 use super::import_paths::ImportPaths;
 use super::init_time_job;
@@ -227,6 +228,10 @@ impl Interpreter {
         // `CellApp::shutDown` deletes its entities before `Script::fini` --
         // so every native wrapper `Py_DecRef`s here, allocator still alive.
         wrapper::reset();
+        // The type registry's references go the same way: the static
+        // `s_type_` objects outlive every script object, and the port holds
+        // its registry references until here.
+        binding::reset();
         // The snapshot goes before the collect loop, the reference's DECREF
         // between `runFiniTimeJobs` and `while (PyGC_Collect() > 0);`.
         let snapshot = INIT_TIME_MODULES.swap(std::ptr::null_mut(), Ordering::SeqCst);
@@ -498,6 +503,12 @@ mod tests {
         "interpreter::tests::scenario_a_foreign_object_carries_no_native_id",
         "interpreter::tests::scenario_different_ids_are_distinct_wrappers",
         "interpreter::tests::scenario_the_cache_holds_one_reference_per_identity",
+        "interpreter::tests::scenario_a_bound_attribute_round_trips",
+        "interpreter::tests::scenario_a_bound_type_refuses_the_wrong_access",
+        "interpreter::tests::scenario_a_bound_method_parses_its_arguments",
+        "interpreter::tests::scenario_a_script_cannot_construct_a_native_type",
+        "interpreter::tests::scenario_an_instance_renders_with_the_reference_format",
+        "interpreter::tests::scenario_a_type_name_creates_one_type_object",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
     ];
@@ -1298,6 +1309,262 @@ mod tests {
             // `__main__` holds a third reference while the interpreter is
             // up; the cache's release happens at fini, before the
             // finaliser.
+        });
+    }
+
+    /// The native type the binding scenarios bind: one attribute with a
+    /// setter, one read-only attribute and one `METH_VARARGS` method -- the
+    /// shape of one reference class' getset table and method table. The
+    /// handlers read a process global instead of the instance, the port's
+    /// stand-in for the reference's embedded-header `this` pointer.
+    mod demo {
+        use std::os::raw::c_int;
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        use crate::capi;
+
+        static VALUE: AtomicI64 = AtomicI64::new(4);
+
+        /// The demo type's description, one name for the whole process.
+        pub(super) fn spec() -> crate::binding::TypeSpec {
+            crate::binding::TypeSpec::new("boundless.Demo")
+                .attribute("value", value_get, Some(value_set))
+                .attribute("label", label_get, None)
+                .method("twist", twist)
+        }
+
+        /// `value`, read: the reference's `pyGetAttribute` hands the call to
+        /// this descriptor.
+        unsafe extern "C" fn value_get(
+            _self_: *mut capi::PyObject,
+            _closure: *mut std::os::raw::c_void,
+        ) -> *mut capi::PyObject {
+            // SAFETY: the getter only builds a new long from a stored value.
+            unsafe { capi::PyLong_FromLong(VALUE.load(Ordering::SeqCst) as std::os::raw::c_long) }
+        }
+
+        /// `value`, write: an unparseable value keeps the stored one and
+        /// returns negative with the error CPython already set. A delete
+        /// reaches the same setter with a null value -- `pyDelAttribute`
+        /// is `PyObject_GenericSetAttr(pObject, pAttr, NULL)` -- and is
+        /// refused the way the C API convention refuses it.
+        unsafe extern "C" fn value_set(
+            _self_: *mut capi::PyObject,
+            value: *mut capi::PyObject,
+            _closure: *mut std::os::raw::c_void,
+        ) -> c_int {
+            if value.is_null() {
+                // SAFETY: the refusal only sets the error.
+                unsafe {
+                    capi::PyErr_SetString(
+                        capi::PyExc_TypeError,
+                        c"cannot delete the value attribute".as_ptr(),
+                    );
+                }
+                return -1;
+            }
+            let parsed = unsafe { capi::PyLong_AsLong(value) };
+            // A value of -1 with no pending error is -1 itself, not a
+            // failure: only an actual conversion error returns negative.
+            let failed = unsafe { !capi::PyErr_Occurred().is_null() };
+            if parsed == -1 && failed {
+                return -1;
+            }
+            VALUE.store(parsed as i64, Ordering::SeqCst);
+            0
+        }
+
+        /// `label`, read-only: no setter, so `pySetAttribute` refuses it.
+        unsafe extern "C" fn label_get(
+            _self_: *mut capi::PyObject,
+            _closure: *mut std::os::raw::c_void,
+        ) -> *mut capi::PyObject {
+            // SAFETY: the getter only builds a new string.
+            unsafe { capi::PyUnicode_FromString(c"fixture".as_ptr()) }
+        }
+
+        /// `twist`, the agreed-convention method: the tuple is parsed with a
+        /// `PyArg_ParseTuple` format string and a wrong argument raises the
+        /// `TypeError` the API sets, never a panic.
+        unsafe extern "C" fn twist(
+            _self_: *mut capi::PyObject,
+            args: *mut capi::PyObject,
+        ) -> *mut capi::PyObject {
+            let mut amount: c_int = 0;
+            // SAFETY: the parse leaves either a value or a pending error.
+            let parsed = unsafe { capi::PyArg_ParseTuple(args, c"i:twist".as_ptr(), &mut amount) };
+            if parsed == 0 {
+                return std::ptr::null_mut();
+            }
+            unsafe { capi::PyLong_FromLong(amount as i64 * 2) }
+        }
+    }
+
+    /// The reference's attribute protocol end to end: a bound attribute
+    /// round-trips through its getter and setter, so a script can read and
+    /// write native state the way `Personality.onInit` reads class state.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_bound_attribute_round_trips() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            // The engine builds the instance: scripts may not.
+            let instance = unsafe { binding::instantiate(&demo_type) }.expect("the instance");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"demo".as_ptr(), instance.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = demo.value"), "4");
+            assert_eq!(
+                probe(interpreter, "demo.value = 7; __probe = (demo.value == 7)"),
+                "True"
+            );
+        });
+    }
+
+    /// The reference's three rejections: assigning a read-only attribute,
+    /// reading an unknown one, and deleting a bound one -- the last is the
+    /// `pyDelAttribute` path, which a getset table answers with `TypeError`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_bound_type_refuses_the_wrong_access() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            let instance = unsafe { binding::instantiate(&demo_type) }.expect("the instance");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"demo".as_ptr(), instance.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    demo.label = 1\nexcept AttributeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    demo.missing\nexcept AttributeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    del demo.value\nexcept TypeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// The agreed convention for a native method: a good argument parses and
+    /// returns, a wrong count or a wrong type raises `TypeError` from the
+    /// `PyArg_ParseTuple` call, never a Rust panic.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_bound_method_parses_its_arguments() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            let instance = unsafe { binding::instantiate(&demo_type) }.expect("the instance");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"demo".as_ptr(), instance.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = demo.twist(5)"), "10");
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    demo.twist()\nexcept TypeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    demo.twist('not a number')\nexcept TypeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// `_pyNew`: a script cannot construct a native type, and the error
+    /// carries the reference's message with the dotted type name.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_script_cannot_construct_a_native_type() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"native".as_ptr(), demo_type.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    native()\nexcept TypeError as error:\n    __probe = \
+                     'Cannot directly construct objects of this type' in str(error)\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+            // The refusal names the type, `%s()` with the dotted name.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    native()\nexcept TypeError as error:\n    __probe = \
+                     str(error).startswith('boundless.Demo()')\nelse:\n    __probe = False",
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// `pyRepr`: the instance renders as the dotted type name and its
+    /// address, the reference's `"%s at %p"` with this platform's `%p`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_instance_renders_with_the_reference_format() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            let instance = unsafe { binding::instantiate(&demo_type) }.expect("the instance");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"demo".as_ptr(), instance.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "__probe = repr(demo).startswith('boundless.Demo at 0x')",
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// The `s_type_` rule: one name is one type object for the process, and
+    /// every instance the engine builds is a distinct allocation of it.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_type_name_creates_one_type_object() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let first = binding::create_type(&demo::spec()).expect("build the demo type");
+            let second = binding::create_type(&demo::spec()).expect("the same name again");
+            assert_eq!(first.as_ptr(), second.as_ptr());
+            let left = unsafe { binding::instantiate(&first) }.expect("one instance");
+            let right = unsafe { binding::instantiate(&first) }.expect("another instance");
+            assert_ne!(left.as_ptr(), right.as_ptr());
+            // A type this module never created answers through the C API
+            // instead of the registry.
+            let foreign = unsafe { capi::Py_TYPE(capi::py_true()) };
+            assert_eq!(unsafe { binding::qualified_name(foreign) }, "bool");
         });
     }
 

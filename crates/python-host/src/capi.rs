@@ -18,11 +18,12 @@
 #![allow(
     non_snake_case,
     non_camel_case_types,
+    non_upper_case_globals,
     missing_docs,
     clippy::missing_safety_doc
 )]
 
-use std::os::raw::{c_char, c_int};
+use std::os::raw::{c_char, c_int, c_uint};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Set once `Py_Finalize` has run. `PyRef::drop` consults it so a handle that
@@ -129,8 +130,77 @@ pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mu
 /// `PyCapsule_Destructor`, the `destructor` argument of `PyCapsule_New`.
 pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
 
+/// A `PyGetSetDef` getter (`descrobject.h`).
+pub type Getter = unsafe extern "C" fn(*mut PyObject, *mut std::os::raw::c_void) -> *mut PyObject;
+
+/// A `PyGetSetDef` setter (`descrobject.h`); a negative return means the
+/// assignment failed with a pending exception.
+pub type Setter =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut std::os::raw::c_void) -> c_int;
+
+/// `tp_new`: the construction entry a type may refuse.
+pub type NewFunction =
+    unsafe extern "C" fn(*mut PyTypeObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+
+/// `reprfunc`.
+pub type ReprFunction = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+
 /// `METH_VARARGS` from `Include/methodobject.h`.
 pub const METH_VARARGS: c_int = 0x0001;
+
+/// `PyGetSetDef`, one attribute descriptor of a type.
+#[repr(C)]
+pub struct PyGetSetDef {
+    /// `name`.
+    pub name: *const c_char,
+    /// `get`.
+    pub get: Option<Getter>,
+    /// `set`, absent for a read-only attribute.
+    pub set: Option<Setter>,
+    /// `doc`.
+    pub doc: *const c_char,
+    /// `closure`, handed to every call of this attribute.
+    pub closure: *mut std::os::raw::c_void,
+}
+
+/// One `PyType_Slot` entry of a `PyType_Spec` (`object.h`).
+#[repr(C)]
+pub struct PyTypeSlot {
+    /// The slot id, one of the `Py_tp_*` values.
+    pub slot: c_int,
+    /// The slot's function or data pointer.
+    pub pfunc: *mut std::os::raw::c_void,
+}
+
+/// `PyType_Spec`, the `PyType_FromSpec` description of a heap type.
+#[repr(C)]
+pub struct PyTypeSpec {
+    /// The dotted type name.
+    pub name: *const c_char,
+    /// Zero takes the base's size.
+    pub basicsize: c_int,
+    /// Zero for a fixed-size type.
+    pub itemsize: c_int,
+    /// `Py_TPFLAGS_*`; the default set is zero on this build.
+    pub flags: c_uint,
+    /// Terminated by `slot == 0`.
+    pub slots: *mut PyTypeSlot,
+}
+
+/// `Py_tp_getattro` (`typeslots.h`).
+pub const Py_tp_getattro: c_int = 58;
+/// `Py_tp_setattro` (`typeslots.h`).
+pub const Py_tp_setattro: c_int = 69;
+/// `Py_tp_doc` (`typeslots.h`).
+pub const Py_tp_doc: c_int = 56;
+/// `Py_tp_methods` (`typeslots.h`).
+pub const Py_tp_methods: c_int = 64;
+/// `Py_tp_new` (`typeslots.h`).
+pub const Py_tp_new: c_int = 65;
+/// `Py_tp_repr` (`typeslots.h`).
+pub const Py_tp_repr: c_int = 66;
+/// `Py_tp_getset` (`typeslots.h`).
+pub const Py_tp_getset: c_int = 73;
 
 /// `PyMethodDef`, the descriptor a `PyCFunction` is created from.
 #[repr(C)]
@@ -244,7 +314,9 @@ unsafe extern "C" {
         traceback: *mut *mut PyObject,
     );
     pub fn PyErr_Restore(type_: *mut PyObject, value: *mut PyObject, traceback: *mut PyObject);
-    pub fn PyErr_Format(exception: *mut PyTypeObject, message: *const c_char) -> c_int;
+    pub fn PyUnicode_FromFormat(format: *const c_char, ...) -> *mut PyObject;
+    pub fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) -> c_int;
+    pub fn PyErr_SetString(exception: *mut PyObject, message: *const c_char);
     pub fn PyThreadState_Get() -> *mut std::os::raw::c_void;
     pub fn PyImport_AddModule(name: *const c_char) -> *mut PyObject;
     pub fn PyImport_ImportModule(name: *const c_char) -> *mut PyObject;
@@ -272,6 +344,18 @@ unsafe extern "C" {
         name: *const c_char,
     ) -> *mut std::os::raw::c_void;
     pub fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int;
+    pub static mut PyExc_TypeError: *mut PyObject;
+    pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
+    pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
+    pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
+    pub fn PyObject_GenericGetAttr(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
+    pub fn PyObject_GenericSetAttr(
+        obj: *mut PyObject,
+        name: *mut PyObject,
+        value: *mut PyObject,
+    ) -> c_int;
+    pub fn PyLong_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
+    pub fn PyLong_AsLong(obj: *mut PyObject) -> std::os::raw::c_long;
 }
 
 #[cfg(test)]
@@ -336,5 +420,27 @@ mod tests {
     #[test]
     fn refcount_rejects_null() {
         assert_eq!(unsafe { refcount(std::ptr::null_mut()) }, 0);
+    }
+
+    /// The descriptor structs the host assembles are `repr(C)` pointer
+    /// tables: five words for `PyGetSetDef`, two for a slot, and the spec
+    /// header carries the slot pointer last. A CPython revision that shifts
+    /// one of these breaks the size check here, not at runtime.
+    #[test]
+    fn the_binding_struct_layouts_are_stable() {
+        assert_eq!(
+            std::mem::size_of::<PyGetSetDef>(),
+            5 * std::mem::size_of::<usize>()
+        );
+        assert_eq!(
+            std::mem::size_of::<PyTypeSlot>(),
+            2 * std::mem::size_of::<usize>()
+        );
+        // The spec header packs `basicsize`, `itemsize` and `flags` into
+        // two words between the name and the slot pointer.
+        assert_eq!(
+            std::mem::size_of::<PyTypeSpec>(),
+            4 * std::mem::size_of::<usize>()
+        );
     }
 }

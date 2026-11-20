@@ -15,6 +15,7 @@
 //! behaviour-level change in the ledger, and this port keeps the globals to
 //! match.
 
+pub mod binding;
 pub mod capi;
 pub mod import_paths;
 pub mod init_time_job;
@@ -23,6 +24,7 @@ pub mod output_writer;
 pub mod pyref;
 pub mod wrapper;
 
+pub use binding::BindError;
 pub use import_paths::ImportPaths;
 pub use init_time_job::{
     JobError, add_fini_time_job, add_fini_time_job_at, add_init_time_job, run_fini_time_jobs,
