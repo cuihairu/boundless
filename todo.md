@@ -1636,6 +1636,7 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 | 44789687782 | `b69126b` | push | completed/**failure** | BW-22-03-04 的 docs 提交：唯一红仍为 `Rust format and lint`（lane 分支 push 的 diff 基线是与 main 的 fork 点，故全仓 lint 债每跑必现），报告条目不受影响 |
 | **44790503820** | `02d90bb` | push | completed/**success** | BW-22-04-01 上线首跑：`Installer package and launch smoke` **success**（release 构建→前缀→2.6M tarball→干净前缀安装→启动烟测全 PASS）、`Harness self-tests` 含 `ci/package.sh self-test` 3/3。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 | **44791771769** | `4e4590c` | push | completed/**success** | BW-22-04-02 上线首跑：`Docs site package and version index` **success**（构建 20 页→index 戳 0.1.0/4e4590c→864K tarball→版本元数据对账 PASS）；`Documentation site and links` 的 docs-build 腿首次真跑 PASS（修掉门错根 package.json 的旧条件 + link checker 排除 node_modules）。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
+| **44792575020** | `a051884` | push | completed/**success** | BW-22-04-03 上线首跑：`Engine SDK archives and import smoke` **success**（`sdk/engines/` 不在 → 如实 SKIP 点名 BW-21-01-01）；`Harness self-tests` 含 `ci/sdk-archive.sh self-test` 4/4。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 
 本地等价门（`CI_OUT` 走默认仓根路径，与 CI 一致）在 `a2c0f66` 上全跑一次：28 PASS / 3 SKIP / 2 FAIL，两条 FAIL 均为 `rust-fmt`（211 处）与 `rust-lint`（32 处，全在 `crates/resources`），属各 crate 所属席位的历史债务，不属 CI 面；`archive` 行 `ok: 32 manifest row(s) round-tripped, bundle 60K`。
 
@@ -1693,7 +1694,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - workflow：`ci.yml` 新增 `Docs site package and version index` 作业（node+pnpm，产物另传 `docs-package-*` artifact）；docs 作业简化为只装 pnpm 工具（依赖由 lane 自己装，本地与 CI 同一代码路径）；`package-daily.yml` 新增 `docs-package` 作业（同一 48 小时保鲜规则，Ubuntu 一腿即可，产物 `package-docs-*`）；`ci/changes.sh` 新增 `docspkg` lane（`docs/* | ci/docs-package.sh`）；harness 作业补 `ci/docs-package.sh self-test`。
   - 结果：本地 `ci/docs-package.sh` rc=0（真构建 20 页、860K tarball、index 戳 0.1.0/commit、consistency PASS 如实记 `docs/package.json declares no version (absent is recorded, not invented)`）、`ci/check-docs.sh` rc=0（links+build 双 PASS）、self-test 3/3、`shellcheck -S warning` 与 `actionlint` 双绿。
   - 证据：CI run **44791771769**（HEAD `4e4590c`）：`Docs site package and version index` **success**（docs-site/docs-index `version=0.1.0 commit=4e4590c`/docs-package 864K/docs-consistency 四行 PASS 照录）；`Documentation site and links` **success**（docs-build 腿首次在托管 runner 上真跑 PASS）；`Harness self-tests` **success** 含 docspkg 自测三行。唯一红仍为 `rust-lint` 历史债。本地等价命令均 rc=0。详见下方 BW-22 交付汇总。
-- [ ] **BW-22-04-03 归档各引擎 SDK**。**验收** 可以从空项目导入。
+- [x] **BW-22-04-03 归档各引擎 SDK**。**验收** 可以从空项目导入。
+  - 原版：BigWorld 无引擎 SDK 归档面——Unity/Unreal 接入只有源码示例（`programming/bigworld/sdk/`、`examples/client_integration/`），交付走 RPM（`bigworld-devel`）与人工拷贝，CI 从不打包也从不验「空项目可导入」；首批拟支持引擎 Unity/Unreal/Godot 的说法见 todo.md BW-21 总纲。
+  - 新版：`ci/sdk-archive.sh`——三引擎（`sdk/engines/{unity,unreal,godot}`）逐一处理：树不存在 → SKIP 点名各自的打包 ticket（unity=BW-21-03-03、unreal=BW-21-04-01、godot=BW-21-05-01，与 todo.md 1492/1508/1523 行的验收原文「空项目可导入/加载」逐字对上）；树存在而无包清单（unity 认 `package.json`、unreal 认 `*.uplugin`、godot 认 `plugin.cfg`/`project.godot`）→ **FAIL**——开建了就必须查，不许报走（与 `ci/sdk.sh` 同一纪律）；齐备 → 归档 `ci-out/sdk/boundless-sdk-<engine>-<版本>-<commit>.tar.gz` 并做**空项目导入烟测**：mktemp 出干净项目目录，在其中执行适配器自带的 `import-check` 可执行文件（唯一参数为 SDK 路径），exit 0 即验收成立——「可从空项目导入」落成可执行契约，BW-21 三家将来直接对着它写。
+  - 关键设计：**烟测门专咬两条偷懒路**——包清单在而 `import-check` 不在 → FAIL（不许靠删掉检查来假装可导入）；`import-check` 在空项目里 exit 3 → FAIL 点名退出码。自测四路：绿适配器走完归档+导入（tarball 真含 `import-check`）、缺席两引擎如实 SKIP 并点名 ticket、无 import-check 的包 FAIL、失败的导入 FAIL——rc=0（收口时 rc=1 抓到自测子进程把 FAIL 行写进共享 manifest 的账，同 package.sh 修法：子进程拿私有 `CI_OUT`）。
+  - 选路与 workflow：`ci/changes.sh` 新增 `sdkarc` lane（`sdk/engines/* | ci/sdk-archive.sh`）；`ci.yml` 新增 `Engine SDK archives and import smoke` 作业（无 Rust，纯归档+烟测）；`package-daily.yml` 新增 `sdk-archive` 作业（同一 48 小时保鲜规则，产物 `package-sdk-engines-*`）；harness 作业补 `ci/sdk-archive.sh self-test`。版本号只读 workspace 现值用于文件名——不 bump、不打 tag、不发 Release（红线）。
+  - 结果：本地 `ci/sdk-archive.sh` rc=0（真树现状：`sdk/engines/` 整树不在 → 单行 SKIP 点名 BW-21-01-01）、self-test 4/4 PASS、`shellcheck -S warning` 与 `actionlint` 双绿。
+  - 证据：CI run **44792575020**（HEAD `a051884`）：`Engine SDK archives and import smoke` **success**（托管 runner 上 `sdk-archive SKIP no sdk/engines/ tree ... tracked by BW-21-01-01` 照录——诚实登记而非假 PASS）；同 run `Harness self-tests` **success** 含 `ci/sdk-archive.sh self-test` 四行 PASS。唯一红仍为 `rust-lint` 历史债。本地等价命令均 rc=0。详见下方 BW-22 交付汇总。
 - [ ] **BW-22-04-04 归档 VSIX**。**验收** 可以在干净宿主安装。
 - [ ] **BW-22-04-05 校验发布元数据与散列**。**验收** 改动产物会检测失败。
 
