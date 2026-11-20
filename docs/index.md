@@ -22,6 +22,7 @@ starts here.
 | Look up a config key or a CLI flag | [Configuration reference](/reference/configuration) and [CLI reference](/reference/cli) |
 | See what each crate exports | [Script and SDK API](/reference/api) |
 | Plan a MySQL to PostgreSQL migration | [Database migration and recovery](/operations/database) |
+| Plan a load test | [Load testing with bots](/operations/load-testing) |
 
 ## Repository layout
 
