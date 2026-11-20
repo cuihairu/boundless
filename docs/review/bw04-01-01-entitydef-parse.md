@@ -459,3 +459,26 @@
 5. **多 `-r`**：全部按序收集，首个作加载根（`load_and_dump` 单根），其余保留——与参考逐个 `addPaths` 的差异登记。
 6. **bin 目标不计入 lib 覆盖率**（`--lib` 门禁）：其行为由端到端逐字节比对背书；`run()` 由泛型 `IntoIterator` 改收 `Vec<String>`，消除 llvm-cov 多实例化（23 实例仅 15 覆盖）导致的行覆盖聚合伪影（97.60% → 163/163）。
 7. **stock `--help` 运行观察**：模块 `help()` 的 print 本次未见于 stdout/stderr（`ProcessDefsHelpMsgHandler` 脚本输出重定向链），如实登记。
+
+---
+
+# BW-04-04-02 兼容定义诊断 — 复核证据
+
+- **任务编号**: BW-04-04-02（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 400；验收：坏 .def 显示对应文件和字段）。
+- **原版源码**: `lib/entitydef/data_type.cpp` —— `DataType::buildDataType` 首次调用时经 `s_aliasesDone` 惰性触发 `DataType::initAliases`（data_type.cpp:243-245），别名文件 `scripts/entity_defs/alias.xml`；打不开 → `WARNING: Couldn't open aliases file '...'`；查无类型 → `ERROR: DataType::buildDataType: Could not find MetaDataType '<名>'`。`data_description.cpp` `DataDescription::parse` → `ERROR: DataDescription::parse: Unable to find data type '<名>' for <实体>.<字段>`；属性汇总失败 → `WARNING: Error parsing properties for <实体>`；`entity_description.cpp` `EntityDescriptionMap::load` → `ERROR: EntityDescriptionMap: Failed to load or parse def for entity type <实体>`；最前有 `EntityDescriptionMap::parse` 旧式解析 `NOTICE`；`process_defs/main.cpp` 收尾 `ERROR: Failed to parse .def files` + exit 1。**活基准**（本机 stock 二进制 `game/bin/server/el7/tools/process_defs`，坏定义 fixture：`Bad.def` 字段 `hp` 用不存在的 `NOSUCHTYPE`）：七行诊断链逐字捕获于 `docs/review/reference/bad_def_diagnostics.txt`（NOTICE 旧式 → WARNING 别名 → ERROR buildDataType → ERROR DataDescription（含 `Bad.hp` 文件.字段）→ WARNING 属性 → ERROR 载入失败 → ERROR 收尾）。
+- **Boundless 模块**: `crates/entitydef/src/data_type.rs`（`TypeContext` 增 `aliases_done`/`aliases_opener`，`ensure_aliases` 在**首次** `build_type` 时打开 alias.xml 并按参考原文告警；`init_aliases` 只挂源）+ `crates/entitydef/src/dump.rs`、`entity_map.rs`（接线：`FsResolver::open_section(constants::ALIASES_FILE)`）+ `crates/entitydef/tests/diagnostics.rs`（差分测试：对 fixture 全链跑 `load_and_dump`，剥离控制台前缀后与 oracle 逐行断言，含 `Bad.hp` 文件.字段行与末行 exit 语义）。
+- **平台**: Linux x86_64（el7 参考二进制实测；Rust 工具链 1.100.0，llvm-cov 0.9.1）。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**238 单元 + 1 诊断差分（tests/diagnostics.rs）+ 4 差分**全部通过。
+  - 诊断差分断言六行 `[DataDescription]` 链**顺序与文本逐行等于** stock 输出（剥离 `LEVEL: [Component] ` 前缀后），加载结果 `Failed to parse .def files` 与末行一致。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt（仅触达文件）干净；覆盖率（`--lib`）data_type.rs **943/962 = 98.02%**，全部文件 **≥98%**（cli.rs/entity_description.rs 等余量见本节前次记录）。
+- **证据链接**: `docs/review/fixtures/bad_def/res/scripts/`（entities.xml + entity_defs/Bad.def）、`docs/review/reference/bad_def_diagnostics.txt`（stock 七行 oracle）、`crates/entitydef/tests/diagnostics.rs`、`crates/entitydef/src/data_type.rs`。
+- **状态**: 已交付（坏 .def 按参考顺序报出对应文件（Bad.def→Bad）与字段（hp），链路文本/顺序与 stock 逐行一致）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **惰性加载即本项核心修复**：Rust 原实现 eager 初始化别名，告警出现在旧式 NOTICE 之前，与 stock 链序不符；改为 `ensure_aliases` 首建触发（`s_aliasesDone` 等价物）后全链顺序对齐——TDD red（差分测试先红）→ green。
+2. **无 opener 时静默**：嵌入方不接 `init_aliases` 时 `ensure_aliases` 跳过加载不告警（参考中 ResMgr 总会尝试默认路径）；属宿主接线适配，登记。
+3. **ResMgr XML 语法错误行未建模**：参考对坏 XML 会先出 XMLSection 解析行（如 "Unclosed tag"）；本项 fixture 用语义错误（查无类型），语法层错误归解析器域，登记不建模。
+4. **控制台前缀是装饰**：`LEVEL: [Component] ` 为 debug filter 输出层修饰，oracle 原样保存，差分比较剥离前缀后的正文。
+5. **tests/ 目标不计入 `--lib` 门禁**：差分测试走公共加载路径（真实 fixture 磁盘树），其覆盖由 lib 内被调路径背书。

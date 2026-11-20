@@ -316,7 +316,8 @@ pub fn load_and_dump(root: &Path, diag: &mut Diagnostics) -> Result<String, Stri
     let resolver = FsResolver::new(root);
 
     let mut ctx = TypeContext::default();
-    ctx.init_aliases(|| resolver.open_section(ALIASES_FILE), diag);
+    let aliases_resolver = resolver.clone();
+    ctx.init_aliases(move || aliases_resolver.open_section(ALIASES_FILE));
 
     let entities = resolver
         .open_section(ENTITIES_FILE)

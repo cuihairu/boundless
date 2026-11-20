@@ -280,15 +280,11 @@ mod tests {
 
     fn ctx_with_alias() -> TypeContext {
         let mut ctx = TypeContext::default();
-        let mut diag = Diagnostics::new();
-        ctx.init_aliases(
-            || {
-                Some(parse_xml(
-                    "<root> <HP> INT32 <Default> 100 </Default> </HP> </root>",
-                ))
-            },
-            &mut diag,
-        );
+        let diag = Diagnostics::new();
+        let aliases = parse_xml("<root> <HP> INT32 <Default> 100 </Default> </HP> </root>");
+        ctx.init_aliases(move || Some(aliases));
+        // The alias load is deferred, so the helper's diag stays empty.
+        assert!(diag.is_empty());
         ctx
     }
 

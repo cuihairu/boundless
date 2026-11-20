@@ -14,7 +14,7 @@ use resources::datasection::DataSection;
 
 use crate::constants;
 use crate::data_description::DataDescription;
-use crate::data_type::{children, TypeContext};
+use crate::data_type::{TypeContext, children};
 use crate::diagnostics::Diagnostics;
 use crate::digest::Md5;
 use crate::flags::{EXACT_MATCH, ONLY_OTHER_CLIENT_DATA, ONLY_PERSISTENT_DATA};
@@ -38,6 +38,7 @@ pub trait DefResolver {
 }
 
 /// A resolver rooted at a real directory on disk.
+#[derive(Clone)]
 pub struct FsResolver {
     root: PathBuf,
 }
@@ -1339,10 +1340,11 @@ mod tests {
         let hp = desc.property(0).expect("hp");
         assert_eq!(hp.data_type.meta_name(), "INT64", "child wins");
         assert_eq!(hp.index, 0);
-        assert!(diag
-            .messages()
-            .iter()
-            .any(|m| m.contains("property Child.hp is being overridden.")));
+        assert!(
+            diag.messages()
+                .iter()
+                .any(|m| m.contains("property Child.hp is being overridden."))
+        );
     }
 
     #[test]
@@ -1430,10 +1432,11 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(diag
-            .errors()
-            .iter()
-            .any(|m| m.contains("Method 'jump' already defined with a different signature")));
+        assert!(
+            diag.errors()
+                .iter()
+                .any(|m| m.contains("Method 'jump' already defined with a different signature"))
+        );
     }
 
     /// The same method through an `<Implements>` interface conflicts the same
@@ -1471,10 +1474,11 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(diag
-            .errors()
-            .iter()
-            .any(|m| m.contains("Method 'shout' already defined with a different signature")));
+        assert!(
+            diag.errors()
+                .iter()
+                .any(|m| m.contains("Method 'shout' already defined with a different signature"))
+        );
     }
 
     /// Volatile priorities are sticky: a child keeps its parent's values
@@ -1819,10 +1823,11 @@ mod tests {
 
         // Not a proxy (no scripts/base/Npc.py): exposed base method warns.
         assert!(!desc.check_exposed_methods(false, &mut diag));
-        assert!(diag
-            .warnings()
-            .iter()
-            .any(|m| m.contains("Base method boom in non-proxy entity Npc cannot be exposed")));
+        assert!(
+            diag.warnings()
+                .iter()
+                .any(|m| m.contains("Base method boom in non-proxy entity Npc cannot be exposed"))
+        );
     }
 
     #[test]
@@ -1887,10 +1892,11 @@ mod tests {
         let mut desc = EntityDescription::new();
         let mut diag = Diagnostics::new();
         assert!(!desc.parse("Avatar", "", None, &resolver, &ctx(), &mut diag));
-        assert!(diag
-            .errors()
-            .iter()
-            .any(|m| m.contains("Could not parse definitely-not-a-def, parent of Avatar")));
+        assert!(
+            diag.errors()
+                .iter()
+                .any(|m| m.contains("Could not parse definitely-not-a-def, parent of Avatar"))
+        );
     }
 
     #[test]
@@ -2058,10 +2064,11 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(diag
-            .warnings()
-            .iter()
-            .any(|m| m.contains("IsManualAOI is deprecated, use IsManualAoI instead")));
+        assert!(
+            diag.warnings()
+                .iter()
+                .any(|m| m.contains("IsManualAOI is deprecated, use IsManualAoI instead"))
+        );
         assert!(
             !desc.appeal_radius.is_nan(),
             "parse kept going after the deprecated tag"
@@ -2154,10 +2161,11 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(diag
-            .errors()
-            .iter()
-            .any(|m| m.contains("Component with name 'movement' is duplicated.")));
+        assert!(
+            diag.errors()
+                .iter()
+                .any(|m| m.contains("Component with name 'movement' is duplicated."))
+        );
 
         // A missing component def file errors out.
         let resolver = MemoryResolver::new(&[
@@ -2249,10 +2257,11 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(diag
-            .warnings()
-            .iter()
-            .any(|m| m.contains("Error parsing properties for Guard")));
+        assert!(
+            diag.warnings()
+                .iter()
+                .any(|m| m.contains("Error parsing properties for Guard"))
+        );
     }
 
     #[test]
@@ -2319,10 +2328,11 @@ mod tests {
             "{:?}",
             diag.messages()
         );
-        assert!(diag
-            .messages()
-            .iter()
-            .any(|m| m.contains("property Avatar.hp is being overridden.")));
+        assert!(
+            diag.messages()
+                .iter()
+                .any(|m| m.contains("property Avatar.hp is being overridden."))
+        );
         assert_eq!(desc.property_count(), 2, "hp replaces its interface slot");
         assert_eq!(
             desc.client_server_property_count(),

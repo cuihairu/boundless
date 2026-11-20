@@ -737,8 +737,11 @@ pub fn build_type(
 
     let type_name = section.as_string();
 
+    // The first type build triggers the alias load.
+    ctx.ensure_aliases(diag);
+
     // See if it is an alias.
-    if let Some(alias) = ctx.aliases.get(type_name) {
+    if let Some(alias) = ctx.aliases.borrow().get(type_name) {
         if section.find_child("Default").is_some() {
             diag.warning(format!(
                 "DataType::buildDataType: New default value for aliased data type '{type_name}' is ignored. The default value of an aliased data type can only be overridden by the default value of an entity property.\n"
@@ -812,24 +815,60 @@ pub fn build_type(
 
 /// The alias table, built once from `scripts/entity_defs/alias.xml`
 /// (`DataType::s_aliases_`).
-#[derive(Debug, Default)]
+type AliasOpener = Box<dyn FnOnce() -> Option<DataSection>>;
+
+#[derive(Default)]
 pub struct TypeContext {
-    aliases: HashMap<String, Arc<DataType>>,
+    aliases: std::cell::RefCell<HashMap<String, Arc<DataType>>>,
+    /// `s_aliasesDone` and the pending `alias.xml` source: the reference
+    /// triggers `DataType::initAliases` on the first `buildDataType` call,
+    /// so the file opens (and its warning fires) only once a type is built.
+    /// Interior-mutable because `build_type` sees the context read-only.
+    aliases_done: std::cell::Cell<bool>,
+    aliases_opener: std::cell::RefCell<Option<AliasOpener>>,
     /// `FixedDictMetaDataType::typeNames_`, the `<TypeName>` uniqueness set.
     /// A `RefCell` because the reference stores this in a static that every
     /// `parseTypeName` call mutates while the context is shared read-only.
     custom_type_names: std::cell::RefCell<std::collections::HashSet<String>>,
 }
 
+impl std::fmt::Debug for TypeContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TypeContext")
+            .field("aliases", &self.aliases.borrow())
+            .field("aliases_done", &self.aliases_done.get())
+            .finish_non_exhaustive()
+    }
+}
+
 impl TypeContext {
-    /// `DataType::initAliases`: the internal `FLOAT` alias plus every
-    /// `alias.xml` child (full data type instances, not just labels).
-    pub fn init_aliases(
-        &mut self,
-        open_aliases: impl FnOnce() -> Option<DataSection>,
-        diag: &mut Diagnostics,
-    ) {
-        let Some(aliases) = open_aliases() else {
+    /// Wires the `alias.xml` source. The reference calls `DataType::initAliases`
+    /// itself; here the source is staged and only consumed by the first type
+    /// build (`ensure_aliases`), so diagnostics carry the reference's order.
+    pub fn init_aliases(&mut self, open_aliases: impl FnOnce() -> Option<DataSection> + 'static) {
+        *self.aliases_opener.borrow_mut() = Some(Box::new(open_aliases));
+    }
+
+    /// `DataType::buildDataType`'s lazy `initAliases`:
+    ///
+    /// ```cpp
+    /// if (!s_aliasesDone) { s_aliasesDone = true; DataType::initAliases(); }
+    /// ```
+    ///
+    /// The done flag is set before the source is consumed, so the alias
+    /// entries' own `buildDataType` recursion cannot re-trigger. A context
+    /// with no wired source stays silent: the reference has no such state
+    /// (its file path is a constant), so this is a wiring adaptation.
+    fn ensure_aliases(&self, diag: &mut Diagnostics) {
+        if self.aliases_done.get() {
+            return;
+        }
+        self.aliases_done.set(true);
+        let opener = self.aliases_opener.borrow_mut().take();
+        let Some(opener) = opener else {
+            return;
+        };
+        let Some(aliases) = opener() else {
             diag.warning(format!(
                 "Couldn't open aliases file '{}'\n",
                 crate::constants::ALIASES_FILE
@@ -840,7 +879,7 @@ impl TypeContext {
             let name = child.section_name().to_string();
             match build_type(self, Some(child), diag) {
                 Some(data_type) => {
-                    self.aliases.insert(name, Arc::new(data_type));
+                    self.aliases.borrow_mut().insert(name, Arc::new(data_type));
                 }
                 None => {
                     diag.error(format!("DataType::initAliases: Failed to add {name}\n"));
@@ -849,13 +888,13 @@ impl TypeContext {
         }
     }
 
-    pub fn alias(&self, name: &str) -> Option<&Arc<DataType>> {
-        self.aliases.get(name)
+    pub fn alias(&self, name: &str) -> Option<Arc<DataType>> {
+        self.aliases.borrow().get(name).cloned()
     }
 
-    pub fn alias_names(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = self.aliases.keys().map(String::as_str).collect();
-        names.sort_unstable();
+    pub fn alias_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.aliases.borrow().keys().map(String::clone).collect();
+        names.sort();
         names
     }
 }
@@ -1268,15 +1307,27 @@ mod tests {
                  <STATS_MATRIX> ARRAY <of> UINT16 </of> </STATS_MATRIX> \
              </root>",
         );
-        ctx.init_aliases(|| Some(alias_file), &mut diag);
+        ctx.init_aliases(|| Some(alias_file));
+        // The reference opens the file only once a type build needs it.
+        assert!(ctx.alias_names().is_empty());
 
-        assert_eq!(ctx.alias_names(), vec!["OBJECT_ID", "STATS_MATRIX"]);
+        // Aliases resolve through build_type and beat the meta registry; the
+        // OBJECT_ID build is what triggers the load.
+        let section = parse_xml("<a> OBJECT_ID </a>");
+        let built = build_type(&ctx, Some(&section), &mut diag);
+        assert_eq!(built.expect("alias resolves").type_name(), "INT32");
+
+        assert_eq!(
+            ctx.alias_names(),
+            vec!["OBJECT_ID".to_string(), "STATS_MATRIX".to_string()]
+        );
         let object_id = ctx.alias("OBJECT_ID").expect("alias entry");
         assert_eq!(object_id.meta_name(), "INT32");
         assert_eq!(object_id.type_name(), "INT32");
+        let again = ctx.alias("OBJECT_ID").expect("stable instance");
         assert!(Arc::ptr_eq(
-            ctx.alias("OBJECT_ID").expect("stable instance"),
-            &ctx.aliases["OBJECT_ID"]
+            &again,
+            ctx.aliases.borrow().get("OBJECT_ID").expect("table entry")
         ));
 
         let matrix = ctx.alias("STATS_MATRIX").expect("alias entry");
@@ -1285,12 +1336,6 @@ mod tests {
             "ARRAY of (UINT16)",
             "aliases are whole data types, not labels"
         );
-
-        // Aliases resolve through build_type and beat the meta registry.
-        let mut diag = Diagnostics::new();
-        let section = parse_xml("<a> OBJECT_ID </a>");
-        let built = build_type(&ctx, Some(&section), &mut diag);
-        assert_eq!(built.expect("alias resolves").type_name(), "INT32");
 
         // A <Default> on an aliased use is ignored with a warning.
         let mut diag = Diagnostics::new();
@@ -1308,7 +1353,14 @@ mod tests {
     fn missing_alias_file_is_a_warning_and_empty_names_still_build() {
         let mut diag = Diagnostics::new();
         let mut ctx = TypeContext::default();
-        ctx.init_aliases(|| None, &mut diag);
+        ctx.init_aliases(|| None);
+        assert!(
+            diag.warnings().is_empty(),
+            "nothing opens until a type builds"
+        );
+        // The first buildDataType triggers the load and reports the warning.
+        let section = parse_xml("<a> UINT8 </a>");
+        assert!(build_type(&ctx, Some(&section), &mut diag).is_some());
         assert_eq!(
             diag.warnings(),
             vec!["Couldn't open aliases file 'scripts/entity_defs/alias.xml'\n"]
@@ -1319,7 +1371,10 @@ mod tests {
         let mut diag = Diagnostics::new();
         let mut ctx = TypeContext::default();
         let alias_file = parse_xml("<root> <GOOD> INT8 </GOOD> <BAD> NONSENSE </BAD> </root>");
-        ctx.init_aliases(|| Some(alias_file), &mut diag);
+        ctx.init_aliases(|| Some(alias_file));
+        // Any build triggers the (partial) load.
+        let section = parse_xml("<a> UINT8 </a>");
+        assert!(build_type(&ctx, Some(&section), &mut diag).is_some());
         assert!(ctx.alias("GOOD").is_some());
         assert!(ctx.alias("BAD").is_none());
         assert!(
