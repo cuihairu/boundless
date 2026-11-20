@@ -8,6 +8,8 @@ gates that decide whether a build is trustworthy.
 - [Database migration and recovery](/operations/database) — the four backends,
   the MySQL → PostgreSQL migration steps and the recovery procedure, tracked by
   **BW-09**.
+- [Load testing with bots](/operations/load-testing) — the bot runtime,
+  fixed-seed scenarios and the report contract, tracked by **BW-17**.
 
 ## Status warning
 

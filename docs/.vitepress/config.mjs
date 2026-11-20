@@ -104,6 +104,12 @@ const operationsSidebar = [
     items: [
       { text: "Database migration and recovery", link: "/operations/database" }
     ]
+  },
+  {
+    text: "Load",
+    items: [
+      { text: "Load testing with bots", link: "/operations/load-testing" }
+    ]
   }
 ];
 
