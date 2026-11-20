@@ -499,6 +499,52 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-02-05 — SDK and plugin cases: does a produced artifact load in a
+  # host? Three of the four substrates do not exist yet, so those cases SKIP
+  # and name the ticket that turns them on (BW-21-01-01, BW-13-06-03,
+  # BW-20-03-03). The fourth — a produced artifact loaded by a host process —
+  # runs for real: the extension core is built here and then loaded by node.
+  sdk:
+    name: SDK and plugin host-load cases
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'sdk')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # The lane's one live case loads the compiled extension core, so the
+      # core has to be produced here — out/ is not checked in.
+      - name: pnpm
+        run: npm install --no-fund --no-audit --global pnpm@12
+
+      - name: Build the extension core
+        run: |
+          cd extensions/vscode
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Run the SDK and plugin cases
+        run: ci/sdk.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-sdk-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -539,6 +585,7 @@ jobs:
           ci/check-docs.sh self-test
           ci/runners.sh self-test
           ci/parity.sh self-test
+          ci/sdk.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results

@@ -79,7 +79,7 @@ main() {
 
     local p owner
     local rust_pkgs=""
-    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0
+    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0
     local rust_all=0
 
     while IFS= read -r p; do
@@ -125,6 +125,11 @@ main() {
         case "$p" in
         tests/parity/* | ci/parity.sh) parity=1 ;;
         esac
+        # The SDK and plugin cases gate on artifacts a host loads, so they
+        # follow the SDK tree, the plugin crates and the lane.
+        case "$p" in
+        sdk/* | tests/sdk/* | crates/plugin*/* | tests/plugins/* | ci/sdk.sh) sdk=1 ;;
+        esac
 
         if owner="$(owning_package "$p")" && [ "$owner" != workspace-root ] && [ -n "$owner" ]; then
             if [[ "$rust_pkgs" != *"$owner"* ]]; then
@@ -154,6 +159,7 @@ main() {
     [ "$run" -eq 1 ] && add_lane runners
     [ "$store" -eq 1 ] && add_lane store
     [ "$parity" -eq 1 ] && add_lane parity
+    [ "$sdk" -eq 1 ] && add_lane sdk
 
     # A Rust source change whose owning package could not be resolved (a crate
     # directory that has no Cargo.toml yet, a stray .rs outside crates/ and
