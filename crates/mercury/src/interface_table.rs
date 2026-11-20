@@ -164,7 +164,15 @@ mod tests {
 
     struct CountingHandler;
 
-    impl InputMessageHandler for CountingHandler {}
+    impl InputMessageHandler for CountingHandler {
+        fn handle_message(
+            &self,
+            _source: &crate::endpoint::Address,
+            _header: &mut crate::unpacked_message_header::UnpackedMessageHeader,
+            _data: &mut foundation::stream::BinaryStream,
+        ) {
+        }
+    }
 
     /// The table is the socket's registry: serving puts the element at its
     /// message id with the handler the caller chose, and `msgName` answers

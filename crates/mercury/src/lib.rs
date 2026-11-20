@@ -14,6 +14,7 @@ pub mod misc;
 pub mod network_interface;
 pub mod network_stats;
 pub mod network_utils;
+pub mod nub_exception;
 pub mod packet;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
@@ -23,3 +24,8 @@ pub mod packet_receiver;
 /// `HAS_EPOLL` and no other backend is ported yet.
 #[cfg(target_os = "linux")]
 pub mod poller;
+
+pub mod reply_order;
+pub mod request;
+pub mod request_manager;
+pub mod unpacked_message_header;

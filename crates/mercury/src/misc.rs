@@ -5,6 +5,19 @@
 /// `REPLY_MESSAGE_IDENTIFIER` reserves the top one.
 pub type MessageID = u8;
 
+/// `ReplyID` (`misc.hpp:110`): the number a request carries so that its
+/// reply can find it again. Four bytes on the wire, so a reply id is not
+/// the one byte a message id is.
+pub type ReplyID = i32;
+
+/// `REPLY_ID_NONE` (`misc.hpp:111`): no reply expected, and the value a
+/// header carries until one is handed out.
+pub const REPLY_ID_NONE: ReplyID = -1;
+
+/// `REPLY_ID_MAX` (`misc.hpp:112`): the top of the range the id generator
+/// hands out before it wraps back down.
+pub const REPLY_ID_MAX: ReplyID = 1_000_000;
+
 /// `Mercury::Reason`: reasons for Mercury errors, exceptions, and return
 /// codes. The reference numbers them downwards from 0 so that
 /// `-reason` indexes the string table; the port keeps the exact values

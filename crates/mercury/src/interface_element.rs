@@ -423,6 +423,14 @@ mod tests {
     }
 
     impl InputMessageHandler for SizingHandler {
+        fn handle_message(
+            &self,
+            _source: &crate::endpoint::Address,
+            _header: &mut crate::unpacked_message_header::UnpackedMessageHeader,
+            _data: &mut foundation::stream::BinaryStream,
+        ) {
+        }
+
         fn get_message_stream_size(&self, _msg_id: MessageID) -> i32 {
             self.stream_size
         }

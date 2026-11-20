@@ -145,7 +145,15 @@ mod tests {
 
     struct NullHandler;
 
-    impl InputMessageHandler for NullHandler {}
+    impl InputMessageHandler for NullHandler {
+        fn handle_message(
+            &self,
+            _source: &crate::endpoint::Address,
+            _header: &mut crate::unpacked_message_header::UnpackedMessageHeader,
+            _data: &mut foundation::stream::BinaryStream,
+        ) {
+        }
+    }
 
     fn login_minder() -> InterfaceMinder {
         let minder = InterfaceMinder::new("LoginInterface");
