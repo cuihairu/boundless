@@ -11,6 +11,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use foundation::stream::BinaryStream;
 use resources::datasection::DataSection;
 
 use crate::data_type::{DataType, TypeContext, build_type, children};
@@ -75,6 +76,68 @@ impl std::fmt::Display for ArgCountError {
 }
 
 impl std::error::Error for ArgCountError {}
+
+/// The reference's reply-frame failures (`MethodArgs` streaming, and the
+/// unreadable halves of `createReturnValuesOrFailureFromStream`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseError {
+    /// `MethodArgs::addToStream`: fewer values than declared returns.
+    InsufficientReturnValues,
+    /// `MethodArgs::createFromStream`: one return would not stream.
+    ReturnNotFromStream {
+        /// The argument index (`i`).
+        index: usize,
+        /// The declared type's name.
+        type_name: String,
+        /// The method name.
+        method: String,
+    },
+    /// The reply frame could not be read. The reference reports this
+    /// silently (the stream error alone drives the error byte), so this
+    /// wording is descriptive rather than a quote.
+    TruncatedFrame,
+    /// The value would not stream with its own type.
+    Property(crate::value::PropertyError),
+}
+
+impl std::fmt::Display for ResponseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InsufficientReturnValues => {
+                writeln!(f, "MethodArgs::addToStream: Insufficient argument values.")
+            }
+            Self::ReturnNotFromStream {
+                index,
+                type_name,
+                method,
+            } => writeln!(
+                f,
+                "MethodArgs::createFromStream: Failed to get arg {} (of type {}) for method {} from the stream.",
+                index, type_name, method
+            ),
+            Self::TruncatedFrame => writeln!(
+                f,
+                "MethodDescription::createReturnValuesOrFailureFromStream: unable to read the reply frame"
+            ),
+            Self::Property(error) => write!(f, "{}", error),
+        }
+    }
+}
+
+impl std::error::Error for ResponseError {}
+
+/// The two halves of a reply frame
+/// (`MethodDescription::createReturnValuesOrFailureFromStream`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Response {
+    /// The error byte was clear: one value per declared return.
+    Values(Vec<crate::value::PropertyValue>),
+    /// The error byte was set: the exception type and its pickled args.
+    Failure {
+        error_type: String,
+        error_args: String,
+    },
+}
 
 // ---------------------------------------------------------------------------
 // MethodArgs
@@ -386,6 +449,88 @@ impl MethodDescription {
 
     pub fn return_values(&self) -> &MethodArgs {
         &self.return_values
+    }
+
+    /// `MethodDescription::addReturnValues` over the declared returns: one
+    /// stream form per return value, in declared order, no counts or names.
+    pub fn add_return_values_to_stream(
+        &self,
+        values: &[crate::value::PropertyValue],
+        stream: &mut BinaryStream,
+    ) -> Result<(), ResponseError> {
+        let mut insufficient = false;
+
+        for (index, (_, data_type)) in self.return_values.args().iter().enumerate() {
+            match values.get(index) {
+                Some(value) => crate::value::add_to_stream(data_type.kind(), value, stream, false)
+                    .map_err(ResponseError::Property)?,
+                None => {
+                    // The reference streams the type default for the missing
+                    // value, then reports the shortage.
+                    let default = data_type.default_value().map_err(ResponseError::Property)?;
+                    crate::value::add_to_stream(data_type.kind(), &default, stream, false)
+                        .map_err(ResponseError::Property)?;
+                    insufficient = true;
+                    let _ = index;
+                }
+            }
+        }
+
+        if insufficient {
+            Err(ResponseError::InsufficientReturnValues)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// `MethodArgs::createFromStream` over the declared returns.
+    pub fn create_return_values_from_stream(
+        &self,
+        stream: &mut BinaryStream,
+    ) -> Result<Vec<crate::value::PropertyValue>, ResponseError> {
+        let mut values = Vec::with_capacity(self.return_values.len());
+
+        for (index, (_, data_type)) in self.return_values.args().iter().enumerate() {
+            match crate::value::create_from_stream(data_type.kind(), stream, false) {
+                Ok(value) => values.push(value),
+                Err(_) => {
+                    return Err(ResponseError::ReturnNotFromStream {
+                        index,
+                        type_name: data_type.type_name(),
+                        method: self.name().to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(values)
+    }
+
+    /// `createReturnValuesOrFailureFromStream`: the error byte leads.
+    pub fn create_response_from_stream(
+        &self,
+        stream: &mut BinaryStream,
+    ) -> Result<Response, ResponseError> {
+        // A stream error while reading the error byte forces the error half,
+        // whose strings will then fail to read.
+        let is_error = stream.read_u8().unwrap_or(1);
+
+        if is_error != 0 {
+            let error_type = stream
+                .read_string()
+                .map_err(|_| ResponseError::TruncatedFrame)?;
+            let error_args = stream
+                .read_string()
+                .map_err(|_| ResponseError::TruncatedFrame)?;
+            Ok(Response::Failure {
+                error_type,
+                error_args,
+            })
+        } else {
+            Ok(Response::Values(
+                self.create_return_values_from_stream(stream)?,
+            ))
+        }
     }
 
     /// `hasReturnValues()`.
@@ -968,6 +1113,9 @@ impl MethodDescription {
 mod tests {
     use super::*;
 
+    use crate::value::PropertyValue;
+    use foundation::stream::BinaryStream;
+
     fn parse_xml(xml: &str) -> DataSection {
         resources::datasection::parse("", xml.as_bytes()).expect("valid fixture xml")
     }
@@ -1466,6 +1614,138 @@ mod tests {
             spin.check_arg_count(2, true).unwrap_err().to_string(),
             "Method spin requires exactly 1 argument; 2 given"
         );
+    }
+
+    #[test]
+    fn a_returning_method_carries_its_response_field() {
+        // `MethodDescription::createReturnValuesOrFailureFromStream`: the
+        // reply frame leads with an error byte, then either the failure
+        // strings or one stream form per declared return value.
+        let ctx = ctx();
+        let xml = parse_xml(
+            "<root> <probe> <Arg> INT32 </Arg> \
+             <ReturnValues> <Result> INT32 </Result> <Flag> STRING </Flag> \
+             </ReturnValues> </probe> </root>",
+        );
+        let mut methods = EntityMethodDescriptions::new();
+        let mut diag = Diagnostics::new();
+        assert!(methods.init(
+            Some(&xml),
+            Component::Base,
+            "Avatar",
+            "",
+            None,
+            &ctx,
+            &mut diag
+        ));
+        let probe = methods.find("probe").expect("probe parses");
+        assert!(probe.has_return_values());
+
+        // The success half: one value per declared return, in order.
+        let mut stream = BinaryStream::new();
+        probe
+            .add_return_values_to_stream(
+                &[PropertyValue::Int(3), PropertyValue::String("ok".into())],
+                &mut stream,
+            )
+            .expect("both returns stream");
+        assert_eq!(stream.as_bytes(), &[3, 0, 0, 0, 2, b'o', b'k']);
+
+        let mut frame = BinaryStream::new();
+        let _ = frame.write_u8(0);
+        frame.write_bytes(stream.as_bytes());
+        match probe
+            .create_response_from_stream(&mut frame)
+            .expect("reply")
+        {
+            Response::Values(values) => {
+                assert_eq!(
+                    values,
+                    vec![PropertyValue::Int(3), PropertyValue::String("ok".into())]
+                );
+            }
+            Response::Failure { .. } => panic!("no error byte on this frame"),
+        }
+
+        // The failure half carries the exception type and its pickled args.
+        let mut failure = BinaryStream::new();
+        let _ = failure.write_u8(1);
+        let _ = failure.write_string("TypeError");
+        let _ = failure.write_string("");
+        match probe
+            .create_response_from_stream(&mut failure)
+            .expect("reply")
+        {
+            Response::Failure {
+                error_type,
+                error_args,
+            } => {
+                assert_eq!(error_type, "TypeError");
+                assert_eq!(error_args, "");
+            }
+            Response::Values(_) => panic!("failure half carried values"),
+        }
+
+        // Missing values stream their defaults, then the shortage is reported.
+        let mut short = BinaryStream::new();
+        assert_eq!(
+            probe.add_return_values_to_stream(&[PropertyValue::Int(3)], &mut short),
+            Err(ResponseError::InsufficientReturnValues)
+        );
+        assert_eq!(short.as_bytes(), &[3, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_reply_failures_carry_the_reference_wording() {
+        // A reply whose return would not stream, and a frame that cuts off in
+        // its error half, both report with the reference wording.
+        let ctx = ctx();
+        let mut methods = EntityMethodDescriptions::new();
+        let mut diag = Diagnostics::new();
+        assert!(methods.init(
+            Some(&parse_xml(
+                "<root> <probe> <Arg> INT32 </Arg> \
+                 <ReturnValues> <Result> INT32 </Result> </ReturnValues> \
+                 </probe> </root>",
+            )),
+            Component::Base,
+            "Avatar",
+            "",
+            None,
+            &ctx,
+            &mut diag
+        ));
+        let probe = methods.find("probe").expect("probe parses");
+
+        // One byte where a 4-byte integer is due.
+        let mut short = BinaryStream::new();
+        let _ = short.write_u8(7);
+        assert_eq!(
+            probe
+                .create_return_values_from_stream(&mut short)
+                .unwrap_err()
+                .to_string(),
+            "MethodArgs::createFromStream: Failed to get arg 0 (of type INT32) for method probe from the stream.\n"
+        );
+
+        // The error half needs its two strings.
+        let mut frame = BinaryStream::new();
+        let _ = frame.write_u8(1);
+        assert_eq!(
+            probe
+                .create_response_from_stream(&mut frame)
+                .unwrap_err()
+                .to_string(),
+            "MethodDescription::createReturnValuesOrFailureFromStream: unable to read the reply frame\n"
+        );
+
+        // No values at all: the defaults stream and the shortage is reported.
+        let mut values = BinaryStream::new();
+        assert_eq!(
+            probe.add_return_values_to_stream(&[], &mut values),
+            Err(ResponseError::InsufficientReturnValues)
+        );
+        assert_eq!(values.as_bytes(), &[0, 0, 0, 0]);
     }
 
     #[test]

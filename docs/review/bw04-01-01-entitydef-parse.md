@@ -387,3 +387,26 @@
 3. **逐参数类型不匹配消息未建模**：`"Method %s, argument %d: Expected %s, ..."` 两分支的措辞取自 Python 类型对象（`PyObject_Str` / `tp_name`），同属宿主依赖；参数类型本身的静态类型与流尺寸已交付。
 4. **「业务回调未执行」的建模口径**：计数门在逐参数检查之前返回，与参考一致——错误一旦产生即终结调用路径，本 crate 无分派回调可执行，故以「错误结果即拒绝」等价表达，登记为口径说明而非行为差异。
 5. 无字节级 oracle（同前项备注）：参数校验不产生流字节。
+
+---
+
+# BW-04-03-04 实现带返回值的方法应答 — 复核证据
+
+- **任务编号**: BW-04-03-04（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 383；验收：响应字段和超时行为一致）
+- **原版源码**: `lib/entitydef/method_description.cpp` —— `addReturnValues`（`returnValues_.addToStream( source, stream )`）；`createReturnValuesFromStream` / `createReturnValuesOrFailureFromStream`：应答帧以 `uint8 isError` 起头，置位则读两个字符串（`errorType` + 可 unpickle 的 `errorArgsStr`，空串视作 0 元组）并造错误对象，清零则按声明顺序逐返回值 `MethodArgs::createFromStream`。`lib/entitydef/method_args.cpp` `MethodArgs::addToStream`（逐个 `type_->addToStream( source, stream, false )`，**无计数无名字**；源里缺值时用该类型的 `getDefaultValue` 照样写入并记 `ERROR_MSG( "MethodArgs::addToStream: Insufficient argument values.\n" )`）与 `createFromStream`（逐返回值失败报 `"MethodArgs::createFromStream: Failed to get arg %d (of type %s) for method %s from the stream.\n"`，`sink` 侧另有 enterItem/write 三处失败文案）。
+- **Boundless 模块**: `crates/entitydef/src/method.rs`（新增 `Response::{Values, Failure}`、`ResponseError::{InsufficientReturnValues, ReturnNotFromStream, TruncatedFrame, Property}`（Display 钉参考原话，`write_with_newline` 依 `writeln!` 改写）与 `MethodDescription::add_return_values_to_stream` / `create_return_values_from_stream` / `create_response_from_stream`；`foundation::stream::BinaryStream` 引入）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**230 单元测试 + 4 差分测试**全部通过（本项新增 2 测）。
+  - **验收钉**：`a_returning_method_carries_its_response_field` 钉住 `probe(INT32)` 声明 `Result: INT32` + `Flag: STRING` 的应答字段形态——两个返回值按声明序各自的流形态拼成 `[3,0,0,0, 2,'o','k']`（STRING 长度是 packed 编码，故为 2 而非 1），成功帧 `[0, ...]` 读回两个值；失败帧 `[1, "TypeError", ""]` 读回 `Failure { error_type, error_args }`；缺值时缺省照常入流 `[3,0,0,0, 0]` 并报 `InsufficientReturnValues`。
+  - **措辞钉**：`the_reply_failures_carry_the_reference_wording` 钉住三条原话——逐返回值失败 `"MethodArgs::createFromStream: Failed to get arg 0 (of type INT32) for method probe from the stream.\n"`、帧截断（描述性文案，见备注 4）、缺值 `"MethodArgs::addToStream: Insufficient argument values.\n"`，且缺值帧仍写出缺省字节 `[0,0,0,0]`。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt 干净；覆盖率全部文件 **≥98%**（method.rs 1340/1349 = 99.33%）。
+- **证据链接**: `crates/entitydef/src/method.rs`（应答帧类型/三访问器/两测）。
+- **状态**: 已交付（源码级对齐 + 应答字段字节/帧分支/原话锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **「超时行为」在参考定义层无对应物（关键登记）**：验收句含「超时行为一致」，但参考 entitydef / delegate 层内**不存在**应答超时机制——`lib/entitydef_script`、`lib/delegate_interface`、`lib/entitydef` 全无 `timeout` 字面（已全树检索）；应答时限属消息/网络层（Mercury 侧），不在定义域内。故本项只对齐应答**字段**形态，超时无参考源码可移植，如实登记，不虚勾。
+2. **`DataSource` 侧形态未建模**：参考 `MethodArgs::addToStream` 走 `source.beginSequence`/`enterItem`/`leaveItem`，逐处失败各有文案（`enterItem failed for arg %zu.\n` 等）；Rust 在静态 `PropertyValue` 序列上组合，同一无计数无名字形态，进入/离开元素的文案与失败位点不可复现。
+3. **应答元组的隐式源实体 id 未建模**：参考 `MethodArgs::createFromStream` 在 `pImplicitSource != NULL` 时把源实体 id 写成元组第 0 项（`tupleSize = numArgs + 1`）——属 Python 元组形状，静态定义域内无对应物。
+4. **`TruncatedFrame` 文案是描述性的**：参考该路径不打印任何消息（流错误只翻成 error 字节），Rust 以说明性文案表达同一拒绝，已登记为差异而非原话引用。
