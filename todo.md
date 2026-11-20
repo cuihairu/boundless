@@ -364,7 +364,8 @@
 
 - [x] **BW-04-02-01 实现标量与默认值转换**。**验收** 数值边界和异常对照通过。
   - 证据：`crates/entitydef::value` 落地 `PropertyValue`/`PropertyError` 与 `check_integer`/`value_from_section`/`default_value`/`add_to_stream`/`create_from_stream`；数值边界钉住 `Script_intOverflow` 四边界（INT32 收 0x7fffffff 与 -0x80000000、拒 0x80000000 与 -0x80000001），四条参考错误模板逐字节锚定（含结尾 `\n`），`pInitialValue` 三槽顺序与 `setDefaultValue` 语义各有一测；171 单测 + 4 差分通过，value.rs 行覆盖 99.09%。无字节级参考 oracle（process_defs 不遍历属性流），本项证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-01 节。commit `c7c2e45`。
-- [ ] **BW-04-02-02 实现 ARRAY/TUPLE**。**验收** 长度、元素及嵌套字节一致。
+- [x] **BW-04-02-02 实现 ARRAY/TUPLE**。**验收** 长度、元素及嵌套字节一致。
+  - 证据：`crates/entitydef::value` 新增 `PropertyValue::Sequence` 与 `Kind::Sequence` 的五个入口（`check_value`/`value_from_section`/`default_value`/`add_to_stream`/`create_from_stream`）+ `check_sequence_capacity`；定长序列**不写**长度前缀、变长写 packed int 计数，钉住 `TUPLE size 2 of INT8` 的 `[1,2]` 与 `ARRAY of INT8` 的 `[2,1,2]`；嵌套「变长 ARRAY of 定长 TUPLE」字节钉为 `[2,1,0,2,0,3,0,4,0]`，「ARRAY of STRING」钉为 `[2,1,'a',2,'b','c']`；六个参考错误模板逐字节锚定（含结尾 `\n`），参考在读路径误印 `fromSourceToStream` 的复制粘贴瑕疵逐字复刻；默认值按 `size_`（变长空、定长 N 个元素默认值），节读取按 `countChildren()` 且尾部缺失取元素默认值；报错中的类型名是元素自己的 `typeName()`（`INT8`）而非 `ARRAY size 2 of (INT8)`；181 单测 + 4 差分通过，value.rs 行覆盖 99.06%、crate 99.46%，clippy 0 findings。仍无字节级参考 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-02 节。commit `e4a2997`。
 - [ ] **BW-04-02-03 实现 FIXED_DICT**。**验收** 字段次序和缺省行为一致。
 - [ ] **BW-04-02-04 实现 USER_TYPE 与 MAILBOX**。**验收** 转换及序列化夹具一致。
 - [ ] **BW-04-02-05 编码嵌套属性增量**。**验收** 修改一个 FIXED_DICT 子字段时，更新切片的路径和负载与原版逐字节一致。
