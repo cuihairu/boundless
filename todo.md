@@ -1193,9 +1193,12 @@ boundless/
 
 服务与客户端运行时依赖共享契约及各自所需的基础库，服务进程间调用走 Mercury 契约。跨角色共用的消息结构按发送方/接收方接口归入 `contracts`，避免进程 crate 互相依赖。依赖方向为 `apps → 角色或工具运行时 → 契约与领域库 → 基础层`。
 
-- [ ] **BW-16-01-01 建立应用与角色 crate 依赖单向关系**。**验收** 依赖图无环。
-- [ ] **BW-16-01-02 抽取进程间消息契约**。**验收** 调用方无需依赖对端服务 crate。
-- [ ] **BW-16-01-03 验证独立构建**。**验收** 指定服务能单独编译。
+- [x] **BW-16-01-01 建立应用与角色 crate 依赖单向关系**。**验收** 依赖图无环。
+  - 证据：原版 C++ 无分层约束（依赖靠 Makefile 隐式），新版在 crates/test-support/src/layering.rs 建立分层注册表（foundation=0、platform=1、contracts/entitydef/mercury/python-host/resources=2、server-runtime=3、boundless-server/test-support=4）+ manifest 行级扫描 + Tarjan 环检测 + cargo metadata 成员交叉校验，`workspace_rules_hold` 守护全成员，cargo test -p test-support 7 passed。
+- [x] **BW-16-01-02 抽取进程间消息契约**。**验收** 调用方无需依赖对端服务 crate。
+  - 证据：原版 `lib/network/machine_guard.hpp` 的 MachineGuardMessage 体系原先分散在 machined 与各角色实现里，新版抽到 crates/contracts/src/machined.rs（消息 id、标志、param/type/category 枚举、Header+ProcessMessage+ListenerMessage+SignalMessage 及 matches/describe）。`process_message_matches_reference_bytes` 用按原版字段序手写的 38 字节向量逐位断言，另测旧发送方无 extra 块的兼容读取与未来字段跳过；cargo test -p contracts 8 passed。
+- [x] **BW-16-01-03 验证独立构建**。**验收** 指定服务能单独编译。
+  - 证据：原版 GNU Make 无按服务单独编译入口，新版 crates/test-support/src/standalone.rs 从根 manifest 枚举 `apps/` 下应用包并逐个 `cargo build -p <package>`，`application_crates_build_independently` 常驻守护；实测 `cargo build -p boundless-server` 生成 target/debug/boundless-server 且 role 参数校验正常。
 
 #### BW-16-02 平台与外部依赖边界
 
@@ -1205,7 +1208,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [ ] **BW-16-02-02 隔离图形后端**。**验收** 服务端构建不加载图形后端。
 - [ ] **BW-16-02-03 隔离数据库驱动**。**验收** 可单独启用后端。
 - [ ] **BW-16-02-04 隔离 CPython FFI**。**验收** 绑定与解释器所有权有测试。
-- [ ] **BW-16-02-05 接入依赖检查**。**验收** 跨层违规产生可定位报告。
+- [x] **BW-16-02-05 接入依赖检查**。**验收** 跨层违规产生可定位报告。
+  - 证据：原版 GNU Make/CMake 无依赖方向检查（仅编译顺序）；新版 `cargo run -p test-support --bin check-deps` 输出 `manifest:line: kind: detail`，同规则由 cargo test 常驻。实测合成 workspace 得 `crates/above/Cargo.toml:7: unregistered crate` 并退出码 2。
 
 #### BW-16-03 Python 布局与资源交付
 
@@ -1271,40 +1275,59 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 实现资源根目录、临时工作区、固定随机种子、配置与数据库夹具。用 Rust 原生测试和 pytest 复刻模块测试，登记原版用例到新版用例的对应关系。
 
-- [ ] **BW-18-01-01 提供资源根和临时目录夹具**。**验收** 并行测试目录隔离。
-- [ ] **BW-18-01-02 提供固定随机种子**。**验收** 重复调用给出同一序列。
-- [ ] **BW-18-01-03 提供配置和数据库夹具**。**验收** 测试可从已知状态启动。
-- [ ] **BW-18-01-04 映射原版单测**。**验收** Rust 和 pytest 用例可通过原始编号追溯。
+- [x] **BW-18-01-01 提供资源根和临时目录夹具**。**验收** 并行测试目录隔离。
+  - 证据：原版 `base_resmgr_unit_test_harness.cpp` 从 `BW_ROOT`/可执行文件目录合成 `--res` 路径，测试耦合检出布局；新版 crates/test-support/src/workspace.rs 提供 TempWorkspace（unique 目录、drop 即清理、失败可 keep 现场）与 ResourceRoot，`workspaces_are_isolated`/`sequential_fixtures_get_distinct_directories`/`dropped_workspaces_are_removed` 常驻验证并行隔离。
+- [x] **BW-18-01-02 提供固定随机种子**。**验收** 重复调用给出同一序列。
+  - 证据：原版 `lib/network/unit_test/network_app.hpp:57` 用 `srand((int)timestamp())` 播种，重复运行轨迹不同、无可复现种子；新版 crates/test-support/src/rng.rs 提供 SeededRng（SplitMix64，平台无关），`the_same_seed_repeats_the_same_sequence` 钉死同种子同序列、`the_zero_seed_is_usable` 覆盖零种子、`bounded_values_stay_in_range` 覆盖取界。
+- [x] **BW-18-01-03 提供配置和数据库夹具**。**验收** 测试可从已知状态启动。
+  - 证据：原版测试各写各的 bw.xml 与临时 DB 路径，无统一已知状态入口；新版 crates/test-support/src/config_fixture.rs 提供 ConfigFixture（写入 server/bw.xml 链后走真实 BwConfig::init_from_sources 解析，`the_chain_resolves_child_first`/`a_missing_personalised_file_falls_back_to_base` 验证链序与回退）与 DatabaseFixture（全新 db/、journal/ 目录布局，实体库本体待 BW-09），`a_database_backed_config_starts_from_a_known_state` 串起两者证明测试从已知状态启动；为可断言链序给 BwConfig 加了 `section_names()` 访问器（crates/server-runtime/src/config.rs）。
+- [x] **BW-18-01-04 映射原版单测**。**验收** Rust 和 pytest 用例可通过原始编号追溯。
+  - 证据：crates/test-support/src/bin/scan-cases.rs 扫描参考检出 `lib/**/unit_test*/**.cpp` 的 `TEST()` 注册，生成 cases/original_inventory.txt（908 条，模块/文件/行号/用例名，committed）；crates/test-support/src/case_registry.rs 解析该清单并提供 `case_named`/`targets_for`/`originals_covered_by` 正反查，`PORTED` 映射表以 machined 契约 7 条已迁用例作种子（如 MGMMSG_listenerRoundTrip → contracts::machined::tests::listener_message_round_trips），`every_mapping_names_a_real_original_case`/`no_target_is_claimed_by_two_originals` 常驻防错；target 兼容 Rust 测试路径与 pytest node id，各 lane 随迁移追加行。
 
 #### BW-18-02 多进程测试框架
 
 对应原版 `multi_proc_test_case`，提供按拓扑启动、按条件等待就绪、独立端口和数据库、日志采集、失败现场保留及进程清理。验证并行执行时隔离和三端清理。
 
-- [ ] **BW-18-02-01 按拓扑启动进程**。**验收** 依赖顺序可观察。
-- [ ] **BW-18-02-02 按就绪条件等待**。**验收** 超时能明确定位角色。
-- [ ] **BW-18-02-03 分配独立端口与数据库**。**验收** 两个测试并跑互不干扰。
-- [ ] **BW-18-02-04 保留日志与失败目录**。**验收** 失败报告可打开原始产物。
-- [ ] **BW-18-02-05 清理整个进程树**。**验收** 三端测试退出无残留进程。
+- [x] **BW-18-02-01 按拓扑启动进程**。**验收** 依赖顺序可观察。
+  - 证据：原版 `multi_proc_test_case.cpp` 只有 fork/waitpid 匿名子进程，无角色与拓扑概念；新版 crates/test-support/src/multiproc.rs 提供 Topology（ProcessSpec 带 depends_on 边）+ Kahn 拓扑排序（独立角色按插入序保证可复现）+ ProcessGroup::start 按序真实 spawn，`dependents_start_after_their_dependencies`/`independent_roles_keep_insertion_order` 钉死顺序可观察，`cycles_list_their_members`/`unknown_dependencies_report_both_roles`/`duplicate_role_names_are_rejected` 报错带角色名，`a_started_group_spawns_roles_in_dependency_order` 验证真实进程按序启动且 pid 独立，`a_failed_spawn_names_the_role_and_cleans_up` 验证半启动不泄漏。
+- [x] **BW-18-02-02 按就绪条件等待**。**验收** 超时能明确定位角色。
+  - 证据：原版测试用 `sleep( 0.5 )` 硬等后直接连接，超时无从定位；新版 multiproc.rs 提供 Readiness 三种条件（PortOpen 探测 127.0.0.1 监听、FileExists 标记文件、LogContains 日志就绪行）+ `wait_ready` 轮询等待，`a_timed_out_wait_names_the_role_and_condition` 钉死超时错误带角色名+条件+等待毫秒，`an_exited_role_fails_fast_with_its_status` 验证角色先死立即报错不空等，`wait_ready_all_reports_the_first_failing_role` 验证多角色等待点名第一个未就绪者，`unknown_role_in_a_wait_is_rejected` 拒绝拼错的角色名。
+- [x] **BW-18-02-03 分配独立端口与数据库**。**验收** 两个测试并跑互不干扰。
+  - 证据：原版测试硬编码端口段并共用检出内数据目录，并跑必撞；新版 crates/test-support/src/allocation.rs 提供 PortAllocator（bind 127.0.0.1:0 由内核发号、PortLease 持有监听期间无人可拿同号）与 RunRoot（logs/db/artifacts 布局）+ database_slot（同标签也各得独立空 db/+journal/ 槽位），`port_leases_are_distinct_while_held`/`bulk_leases_come_back_all_distinct`/`two_parallel_runs_never_overlap`（双 run 根+双分配器 6 端口 2 槽位全不相交）常驻验证并跑互不干扰。
+- [x] **BW-18-02-04 保留日志与失败目录**。**验收** 失败报告可打开原始产物。
+  - 证据：原版 MultiProcTestCase 子进程输出直接进测试 stdout，失败后无现场可查；新版 multiproc.rs 提供 `start_logged`（每角色 stdout+stderr 汇入 RunRoot logs/&lt;role&gt;.log，保持角色实际输出顺序）与 `preserve_failure`（artifacts/failure-report.txt 记录原因、启动顺序、各角色退出状态与日志路径，并 keep 整个 RunRoot），`role_output_is_captured_in_the_run_log` 用日志就绪探针证明输出进的是运行日志，`a_failure_scene_keeps_the_original_logs_and_a_report` 验证报告可打开且原始日志可读、RunRoot 在 drop 后仍存活；另补 `kill_all` 让测试不再空等长驻角色。
+- [x] **BW-18-02-05 清理整个进程树**。**验收** 三端测试退出无残留进程。
+  - 证据：原版 `killChildren` 只 SIGKILL 直接子进程，角色再 fork 的孙进程泄漏；新版 multiproc.rs spawn 时给每角色 `process_group(0)`（自成为进程组长），`kill_tree` 用 `kill(-pid)` 打全组（libc），Drop 兜底未显式清理的组，`kill_tree_takes_out_grandchildren` 验证角色 fork 的孙进程一起死，`three_roles_leave_nothing_behind` 三端各带 helper 全清无残留（ps 按 marker 扫描），`parallel_groups_clean_up_independently` 验证并跑两组互不误伤，`a_dropped_group_tears_itself_down` 验证测试 panic 掉组也不泄漏。
 
 #### BW-18-03 可控时间与消息故障
 
 对应原版 `lib/testing/` 消息过滤能力，提供虚拟时钟、手动推进 tick、丢包、延迟、乱序与进程故障注入。验证定时器、重传、迁移和恢复行为可重复。
 
-- [ ] **BW-18-03-01 实现手动时钟**。**验收** 同一序列推进得到相同 Tick。
-- [ ] **BW-18-03-02 实现确定性丢包**。**验收** 指定包触发预期重传。
-- [ ] **BW-18-03-03 实现延迟及乱序**。**验收** 按指定顺序交付。
-- [ ] **BW-18-03-04 提供进程故障夹具**。**验收** 可复现迁移或恢复。
-- [ ] **BW-18-03-05 接通可控时钟取消测试**。**验收** 定时器重复用例稳定。
+- [x] **BW-18-03-01 实现手动时钟**。**验收** 同一序列推进得到相同 Tick。
+  - 证据：原版 lib/network/unit_test/manual_clock.hpp 从墙钟起步、advanceMs 走浮点秒换算，重复运行 Tick 不同；新版 crates/test-support/src/clock.rs 提供 ManualClock（stamp 零起步、纳秒刻度与 stamp_now()/DispatcherTimers ClockFn 完全同单位，advance_ms/rewind_ms 定点整数推进、rewind 过零环绕保留原版无符号减法语义），`the_same_advance_sequence_yields_the_same_ticks` 钉死同序列同 Tick，`time_stands_still_until_advanced`/`milliseconds_convert_to_nanosecond_stamps`/`the_injected_clock_fn_tracks_advances` 验证静止性、刻度与 ClockFn 注入可观察推进。
+- [x] **BW-18-03-02 实现确定性丢包**。**验收** 指定包触发预期重传。
+  - 证据：原版 `test_mangle.cpp` 用 `g_mangleProb=0.05` 墙钟概率丢包，无法指名丢哪个包、重传行为不可复现；新版 crates/test-support/src/channel.rs 提供 ScriptedChannel（按发送序号 script 每包 Fate，Drop 包进 dropped() 记录），`designated_packets_drop_and_the_rest_deliver` 验证指名丢包其余按序达，`a_designated_drop_triggers_the_expected_retransmission` 走通 丢1→缺口→重发→新副本必达 的完整重传环，`script_by_chance` 用 SeededRng 复刻概率模式且 `seeded_chance_scripting_is_reproducible` 钉死同种子同丢包集；mercury 包类型 BW-02+ 接入同通道。
+- [x] **BW-18-03-03 实现延迟及乱序**。**验收** 按指定顺序交付。
+  - 证据：原版测试靠真实网络抖动或睡固定毫秒，延迟乱序无法指名；新版 channel.rs 增加 `Fate::Delayed{until_nanos}`（吃 BW-18-03-01 虚拟时钟戳）与 `Fate::After(anchor)`（锚定交付，脚本化换序），pump 内解约束到不动点，`delayed_packets_deliver_when_the_clock_advances` 验证差 1ms 都不交付、到点即达，`anchored_packets_deliver_after_their_anchor`/`an_anchor_chain_delivers_in_the_scripted_order` 钉死按指定顺序交付（含链式反序 2,1,0），`delay_and_reorder_stay_deterministic_together` 验证延迟+乱序同脚本同时钟必同序，`an_anchor_behind_a_dropped_packet_stays_back` 验证锚在被丢包上时不误交付。
+- [x] **BW-18-03-04 提供进程故障夹具**。**验收** 可复现迁移或恢复。
+  - 证据：原版测试崩溃恢复靠人工 kill 或不可控退出，场景无法重放；新版 multiproc.rs 在 ProcessGroup 上提供 `crash`（整树 SIGKILL 并收割、腾出槽位）与 `restart`（按原 spec + 原日志捕获重生新 pid），`a_crashed_role_restarts_with_a_fresh_pid` 验证 kill-pid 对上、新 pid 不同，`a_migration_scenario_replays_identically` 在两份独立副本上跑 启动→crash→重启→恢复 同一状态机序列完全一致（恢复标记只有重启副本能写，排除误判），`a_restarted_role_keeps_its_log` 验证重启后日志续写原文件，`crashing/restarting_an_unknown_role_is_rejected` 拒绝拼错角色。
+- [x] **BW-18-03-05 接通可控时钟取消测试**。**验收** 定时器重复用例稳定。
+  - 证据：原版定时器跑真实墙钟，重复用例每次触发次数都不同、取消测试与截止时刻赛跑；新版 timer_scenarios.rs 把 `ManualClock::clock_fn()` 注入 `DispatcherTimers::with_clock`（对应 `EventDispatcher::clock_`），时间只在脚本推进时流动；`repeat_timers_deliver_the_same_sequence_every_run` 验证 12 次 50ms 推进的交付序列逐位重放一致，`cancelling_a_repeat_timer_stops_exactly_on_the_script` 验证 200ms 处 cancel 恰好停在 @200 触发之后、另一 70ms 定时器照常走完，`a_cancelled_once_off_never_fires` 验证 once-off 取消后时钟跑过 500ms 也不发，`mixed_deadlines_interleave_in_stamp_order` 验证混合截止按戳序交错稳定；交付日志记录的是回调运行所在 pass 的时钟戳（与处理器读钟所见一致），4 用例 0 失败。
 
 #### BW-18-04 本地与 CI 共用入口
 
 提供按模块执行、全量测试、兼容差分、覆盖率和结果归档入口。文档记录调用、依赖、夹具来源和失败复现方式。
 
-- [ ] **BW-18-04-01 提供单模块和全量入口**。**验收** 同一模块可单独执行。
-- [ ] **BW-18-04-02 提供兼容差分入口**。**验收** 输出可定位差异。
-- [ ] **BW-18-04-03 提供覆盖率入口**。**验收** 报告能映射源码。
-- [ ] **BW-18-04-04 提供结果归档**。**验收** CI 和本地采用同一目录及格式。
-- [ ] **BW-18-04-05 编写失败重现说明**。**验收** 从产物可复跑相应用例。
+- [x] **BW-18-04-01 提供单模块和全量入口**。**验收** 同一模块可单独执行。
+  - 证据：本地与 CI 走同一入口 `cargo run -p test-support --bin run-tests -- ...`；harness.rs 的 `workspace_modules` 从根 manifest `members` 解析全部 10 个 crate 名、`Plan::for_module` 校验模块名（拼错时报错并列出全部已知 crate）、`cargo_args` 给出映射的 cargo 调用（`-p <crate> [filter]` / `--workspace`）；实测 `run-tests -- test-support timer_scenarios` 单独执行该模块（4 用例通过、其余 90 过滤）、`run-tests -- all` 跑全 workspace、`run-tests -- clock` 拒绝未知模块，7 项单测覆盖映射规则。
+- [x] **BW-18-04-02 提供兼容差分入口**。**验收** 输出可定位差异。
+  - 证据：harness.rs 增加共享归档口径 `PASS/FAIL/SKIP <用例名>` 行格式（`parse_outcomes` 跳过头/注释/空行，同一文件本地与 CI 产物通吃）与 `diff_runs`（按名匹配、重名取最坏结果、输出 REGRESSED/healed/MISSING/ADDED 四类），入口 `run-tests diff <baseline> <current>` 每行点名差异用例，实测对样例归档输出 `REGRESSED case_b`+`ADDED case_new` 并以 exit 2 拒绝不兼容；未重跑他人兼容差分（各 lane 自行喂归档），14 项单测覆盖解析与四类分类。
+- [x] **BW-18-04-03 提供覆盖率入口**。**验收** 报告能映射源码。
+  - 证据：harness.rs 的 `coverage_report_dir`（target/test-results/cov-<module>，本地与 CI 同路径）与 `coverage_args`（cargo-llvm-cov 0.9.1，`--lcov --output-path`；0.9.1 不允许 --html 与 --lcov 同用故取 lcov 单报告），入口 `run-tests cov [module]` 校验模块名后生成报告并打印映射的源文件数；实测 `run-tests cov foundation` 产出 63KB lcov.info，SF: 记录映射 8 个真实源文件（ids.rs..time.rs），`DA:87,2` 与 `FN:87 is_null_entity_id` 逐行对上——报告映射到源码文件+行号；`lcov_source_files` 解析 SF: 记录有单测，17 项 harness 单测全绿。
+- [x] **BW-18-04-04 提供结果归档**。**验收** CI 和本地采用同一目录及格式。
+  - 证据：harness.rs 的 `RunArchive`（label/run 命令/commit/when 头 + `PASS/FAIL/SKIP <名>` 行 + summary，渲染确定且 `parse_outcomes` 可原样读回）与 `parse_cargo_test_output`（解析 libtest 默认 `test <名> ... ok/FAILED/ignored[, reason]` 行），入口把 cargo 测试 stdout 边流式回显边收结果，统一写入 `target/test-results/<label>/run.txt`（本地与 CI 同一目录同一文件格式）；实测 `run-tests -- test-support timer_scenarios` 产出含 `commit: 7b8793f` 的 run.txt（4 PASS+summary），该产物直接喂 `run-tests diff` 判 no differences、exit 0；全 crate 111 项单测全绿。
+- [x] **BW-18-04-05 编写失败重现说明**。**验收** 从产物可复跑相应用例。
+  - 证据：新增 `crates/test-support/RUNS.md`，记录入口调用（all/单模块/单测试模块/diff/cov 一张表）、依赖（cargo、cargo-llvm-cov 0.9.1、git、date、multiproc 所需 /bin/sh+sleep+true 与临时端口）、夹具来源（ConfigFixture 走生产 init_from_sources、multiproc 拓扑+进程组+crash/restart、ManualClock+timer_scenarios、ScriptedChannel+SeededRng、case_registry 908 原始用例清单）与失败复现五法（归档 `run:` 行原样复跑、diff 两归档点名差异、可控时钟逐位重放、进程泄漏 marker 扫描、lcov DA 行核对）；harness.rs 增加 `rerun_command` 从归档程序化提取 `run:` 行（2 项单测），实测从真实 run.txt 提取 `cargo test -p test-support timer_scenarios` 复跑得同 4 用例全过，26 项 harness 单测全绿，llvm-cov 实测 harness.rs 行覆盖 99.0%（14 源文件全部映射）。
 
 ### BW-19 VitePress 文档站
 
