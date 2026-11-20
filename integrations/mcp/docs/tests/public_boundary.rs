@@ -22,7 +22,8 @@ fn session_with(index: DocIndex) -> Session {
             prefix: "docs".into(),
             locales: vec!["zh".into()],
             version: VERSION.into(),
-        },
+                    docs_url: String::new(),
+        }
     )
 }
 

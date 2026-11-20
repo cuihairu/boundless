@@ -8,6 +8,7 @@
 
 pub mod errors;
 pub mod index;
+pub mod links;
 pub mod markdown;
 pub mod mcp;
 pub mod search;

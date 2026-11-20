@@ -40,7 +40,8 @@ fn session() -> Session {
             prefix: "docs".into(),
             locales: vec!["zh".to_string()],
             version: "v1".into(),
-        },
+                    docs_url: String::new(),
+        }
     )
 }
 

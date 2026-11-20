@@ -14,6 +14,7 @@ struct Options {
     prefix: String,
     version: String,
     locales: Vec<String>,
+    docs_url: String,
 }
 
 fn parse_args(args: Vec<String>) -> Result<Options, String> {
@@ -22,11 +23,12 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
         prefix: "docs".to_string(),
         version: "HEAD".to_string(),
         locales: vec!["zh".to_string()],
+        docs_url: String::new(),
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let value = match arg.as_str() {
-            "--root" | "--prefix" | "--version" | "--langs" => {
+            "--root" | "--prefix" | "--version" | "--langs" | "--docs-url" => {
                 args.next().ok_or_else(|| format!("{arg} needs a value"))?
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -35,6 +37,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
             "--root" => options.root = value,
             "--prefix" => options.prefix = value,
             "--version" => options.version = value,
+            "--docs-url" => options.docs_url = value,
             "--langs" => {
                 options.locales = value
                     .split(',')
@@ -70,6 +73,7 @@ fn main() {
             prefix: options.prefix,
             locales: options.locales,
             version: options.version,
+            docs_url: options.docs_url,
         },
     );
     if let Err(err) = serve(session, io::stdin().lock(), io::stdout().lock()) {

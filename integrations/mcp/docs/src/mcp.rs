@@ -7,6 +7,7 @@ use std::io::{BufRead, Write};
 use serde_json::{json, Value};
 
 use crate::index::DocIndex;
+use crate::links::source_link;
 use crate::search::{search, DEFAULT_LIMIT};
 use crate::DocsError;
 
@@ -22,6 +23,9 @@ pub struct ServerConfig {
     pub locales: Vec<String>,
     /// The ref label that tools default to.
     pub version: String,
+    /// The base URL of the rendered docs site, for source links. Empty keeps
+    /// links repository-relative.
+    pub docs_url: String,
 }
 
 impl Default for ServerConfig {
@@ -30,6 +34,7 @@ impl Default for ServerConfig {
             prefix: "docs".to_string(),
             locales: vec!["zh".to_string()],
             version: "HEAD".to_string(),
+            docs_url: String::new(),
         }
     }
 }
@@ -179,7 +184,12 @@ impl Session {
         let Some(page) = pages.docs.iter().find(|doc| doc.path == path) else {
             return tool_error(&format!("no page at {path} in version {version}"));
         };
-        let sections: Vec<Value> = page.sections.iter().map(section_json).collect();
+        let base = &self.config.docs_url;
+        let sections: Vec<Value> = page
+            .sections
+            .iter()
+            .map(|section| section_json(section, base, &page.path))
+            .collect();
         let sections = match args.get("anchor").and_then(Value::as_str) {
             Some(anchor) => {
                 let picked: Vec<Value> = sections
@@ -202,18 +212,20 @@ impl Session {
             "path": page.path,
             "lang": page.lang,
             "title": page.title,
+            "source": source_link(base, &page.path, None),
             "sections": sections,
         }))
     }
 }
 
-fn section_json(section: &crate::index::SectionEntry) -> Value {
+fn section_json(section: &crate::index::SectionEntry, docs_url: &str, page: &str) -> Value {
     json!({
         "title": section.title,
         "anchor": section.anchor,
         "level": section.level,
         "line": section.line,
         "body": section.body,
+        "source": source_link(docs_url, page, Some(&section.anchor)),
     })
 }
 
