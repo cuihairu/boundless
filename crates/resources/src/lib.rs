@@ -3,6 +3,7 @@
 pub mod base64;
 pub mod binary;
 pub mod bwresource;
+pub mod data_section_cache;
 pub mod datasection;
 pub mod file_system;
 pub mod multi_file_system;

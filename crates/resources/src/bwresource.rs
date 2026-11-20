@@ -14,6 +14,11 @@
 //! - `formatSearchPath` replaces backslashes and strips one trailing slash;
 //! - `resolveToAbsolutePath` appends `'/'` to resolved directories.
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
+use crate::data_section_cache::{DataSectionCache, DEFAULT_CACHE_SIZE};
+use crate::datasection::{self, DataSection};
 use crate::file_system::{NativeFileSystem, ZipArchiveFs};
 use crate::file_system::FileSystem;
 use crate::multi_file_system::MultiFileSystem;
@@ -138,6 +143,9 @@ pub struct BwResource {
     /// The `#ifdef EDITOR_ENABLED` branch of `postAddPaths`: an empty-base
     /// native root is appended so absolute paths resolve in the tools.
     editor_default_root: bool,
+    /// `DataSectionCache::instance()`: the LRU behind `openSection`,
+    /// keyed by full resource path.
+    section_cache: RefCell<DataSectionCache<DataSection>>,
 }
 
 impl Default for BwResource {
@@ -155,6 +163,7 @@ impl BwResource {
             native_file_system: NativeFileSystem::new(""),
             file_system_built: false,
             editor_default_root: false,
+            section_cache: RefCell::new(DataSectionCache::new()),
         }
     }
 
@@ -242,6 +251,15 @@ impl BwResource {
     /// - anything else is skipped (the reference aborts on it).
     pub fn refresh_paths(&mut self) {
         self.file_system = MultiFileSystem::new();
+        {
+            // postAddPaths: BW_CACHE_SIZE overrides the default, then the
+            // cache is emptied before the root section is rebuilt.
+            let mut cache = self.section_cache.borrow_mut();
+            cache.set_size(cache_size_from(
+                std::env::var("BW_CACHE_SIZE").ok().as_deref(),
+            ));
+            cache.clear();
+        }
         let paths = self.paths.clone();
         for path in &paths {
             let base = self.native_file_system.get_file_type(path, None);
@@ -436,6 +454,133 @@ impl BwResource {
         } else {
             false
         }
+    }
+
+    /// `BWResource::openSection`: returns the section for `resource_id`,
+    /// serving cache hits straight from the LRU. `DataSectionCensus` —
+    /// which the reference consults before the cache — is a later task.
+    ///
+    /// Loading follows `DirSection::findChild` +
+    /// `createAppropriateSection` at the level implemented so far: file
+    /// content that starts (after whitespace) with `'<'` parses as an XML
+    /// section rooted under the leaf file name. Binary (`BinSection`),
+    /// archive (`ZipSection`) and directory (`DirSection`) branches are
+    /// later tasks, as is `makeNewSection` for undotted (directory) tags.
+    pub fn open_section(
+        &self,
+        resource_id: &str,
+        make_new_section: bool,
+    ) -> Option<Arc<DataSection>> {
+        // If it's cached, return the cached copy.
+        if let Some(section) = self.section_cache.borrow_mut().find(resource_id) {
+            return Some(section);
+        }
+
+        let (section, bytes) = match self.file_system.get_file_type_ex(resource_id, None)
+        {
+            FileType::File => {
+                let raw = self.file_system.read_file(resource_id)?;
+                // createAppropriateSection ignores the extension and sniffs
+                // the content: whitespace then '<' means XML. Invalid XML
+                // yields no section and stays uncached (the
+                // `allowModifyData` branch keeps the NULL); other content
+                // would become a BinSection -- a later task.
+                let is_xml = raw
+                    .iter()
+                    .find(|&&b| b != b' ' && b != b'\t' && b != b'\r' && b != b'\n')
+                    == Some(&b'<');
+                if !is_xml {
+                    return None;
+                }
+                let mut parsed =
+                    datasection::parse(get_filename(resource_id), &raw).ok()?;
+                // Sized like the reference's `dataSection->bytes()`: the
+                // serialised form, not the raw file length.
+                let bytes = parsed.write_to_string().len();
+                (Arc::new(parsed), bytes)
+            }
+            FileType::NotFound
+                // DirSection::newSection: a dotted tag creates a fresh XML
+                // section, cached under the full path with its serialised
+                // size; undotted tags create directories instead.
+                if make_new_section && get_filename(resource_id).contains('.') =>
+            {
+                let mut section = DataSection::new(get_filename(resource_id));
+                let bytes = section.write_to_string().len();
+                (Arc::new(section), bytes)
+            }
+            _ => return None,
+        };
+
+        // A freshly loaded section joins the cache under its full path.
+        self.section_cache
+            .borrow_mut()
+            .add(resource_id, bytes, Arc::clone(&section));
+        Some(section)
+    }
+
+    /// `BWResource::purge`: drops `path` from the section cache. With
+    /// `recursive`, directory children are purged first, innermost paths
+    /// before their parents. The census half of the reference (`del` from
+    /// `DataSectionCensus`) is a later task.
+    pub fn purge(&self, path: &str, recursive: bool) {
+        if recursive && self.get_file_type(path, None) == FileType::Directory {
+            if let Some(entries) = self.file_system.read_directory(path) {
+                for entry in entries {
+                    let child = if path.is_empty() {
+                        entry
+                    } else {
+                        format!("{}/{}", path, entry)
+                    };
+                    self.purge(&child, true);
+                }
+            }
+        }
+        self.section_cache.borrow_mut().remove(path);
+    }
+
+    /// `BWResource::purgeAll`: empties the cache (and the census, once it
+    /// exists).
+    pub fn purge_all(&self) {
+        self.section_cache.borrow_mut().clear();
+    }
+
+    /// Reads the whole cache (hits/misses/order) for diagnostics and tests,
+    /// the way the reference watcher exposes `cache/*`.
+    pub fn section_cache_stats(&self) -> (usize, usize, usize) {
+        let cache = self.section_cache.borrow();
+        (cache.hits(), cache.misses(), cache.current_bytes())
+    }
+}
+
+/// `::getenv("BW_CACHE_SIZE")` + `atoi` from postAddPaths: a missing
+/// variable keeps `DEFAULT_CACHE_SIZE`; a present one parses as C `atoi`
+/// (see `atoi_or_zero`).
+fn cache_size_from(raw: Option<&str>) -> usize {
+    match raw {
+        Some(raw) => atoi_or_zero(raw),
+        None => DEFAULT_CACHE_SIZE,
+    }
+}
+
+/// C `atoi` on decimal input.
+fn atoi_or_zero(raw: &str) -> usize {
+    let trimmed = raw.trim_start();
+    let (negative, digits_start) = match trimmed.as_bytes().first() {
+        Some(b'-') => (true, 1),
+        Some(b'+') => (false, 1),
+        _ => (false, 0),
+    };
+    let rest = &trimmed[digits_start..];
+    let digits = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .unwrap_or("");
+    let value: usize = digits.parse().unwrap_or(0);
+    if negative {
+        0
+    } else {
+        value
     }
 }
 
@@ -835,6 +980,192 @@ mod tests {
         assert!(!resource.is_file_older("missing.bin", "new.bin", 0));
 
         fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn open_section_serves_cache_hits_and_counts_them() {
+        let a = temp_root("cache_hits");
+        write(&a, "/etc/chars/server.xml", b"<server><value>old</value></server>");
+
+        let resource = BwResource::init_paths(&[&a]);
+        // First open: a miss that loads from disk and caches the section.
+        let first = resource.open_section("etc/chars/server.xml", false).unwrap();
+        assert_eq!(first.section_name(), "server.xml");
+        assert_eq!(first.find_child("value").unwrap().as_string(), "old");
+        assert_eq!(resource.section_cache_stats(), (0, 1, first_size()));
+
+        // Second open: the same Arc comes straight out of the LRU.
+        let second = resource.open_section("etc/chars/server.xml", false).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(resource.section_cache_stats(), (1, 1, first_size()));
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn overwrite_only_becomes_visible_after_purge() {
+        let a = temp_root("cache_overwrite");
+        write(&a, "/game.xml", b"<game><speed>1</speed></game>");
+
+        let resource = BwResource::init_paths(&[&a]);
+        let stale = resource.open_section("game.xml", false).unwrap();
+        assert_eq!(stale.find_child("speed").unwrap().as_string(), "1");
+
+        // Overwrite behind the cache's back: opens keep serving the stale
+        // section -- this is the acceptance proof that the cache exists.
+        write(&a, "/game.xml", b"<game><speed>2</speed></game>");
+        let still_stale = resource.open_section("game.xml", false).unwrap();
+        assert!(Arc::ptr_eq(&stale, &still_stale));
+        assert_eq!(
+            still_stale.find_child("speed").unwrap().as_string(),
+            "1"
+        );
+
+        // purge drops exactly this path; the next open re-reads the file.
+        resource.purge("game.xml", false);
+        let fresh = resource.open_section("game.xml", false).unwrap();
+        assert!(!Arc::ptr_eq(&stale, &fresh));
+        assert_eq!(fresh.find_child("speed").unwrap().as_string(), "2");
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn recursive_purge_clears_directory_subtrees() {
+        let a = temp_root("cache_recursive");
+        write(&a, "/root.xml", b"<r><a>1</a></r>");
+        write(&a, "/scripts/inner.xml", b"<s><b>1</b></s>");
+        write(&a, "/scripts/deep/leaf.xml", b"<l><c>1</c></l>");
+
+        let resource = BwResource::init_paths(&[&a]);
+        for path in ["root.xml", "scripts/inner.xml", "scripts/deep/leaf.xml"] {
+            resource.open_section(path, false).unwrap();
+        }
+        let (_, _, bytes_before) = resource.section_cache_stats();
+        assert!(bytes_before > 0);
+
+        // Non-recursive purge of the directory touches nothing inside.
+        resource.purge("scripts", false);
+        let cached = resource.open_section("scripts/inner.xml", false).unwrap();
+        assert_eq!(cached.find_child("b").unwrap().as_string(), "1");
+
+        // Recursive purge walks the whole subtree, then the directory.
+        write(&a, "/scripts/inner.xml", b"<s><b>2</b></s>");
+        write(&a, "/scripts/deep/leaf.xml", b"<l><c>2</c></l>");
+        resource.purge("scripts", true);
+        let inner = resource.open_section("scripts/inner.xml", false).unwrap();
+        let leaf = resource.open_section("scripts/deep/leaf.xml", false).unwrap();
+        assert_eq!(inner.find_child("b").unwrap().as_string(), "2");
+        assert_eq!(leaf.find_child("c").unwrap().as_string(), "2");
+        // root.xml was never purged: it still serves the cached copy.
+        let root = resource.open_section("root.xml", false).unwrap();
+        assert_eq!(root.find_child("a").unwrap().as_string(), "1");
+
+        // Purging the empty root path recurses over every top entry.
+        write(&a, "/scripts/inner.xml", b"<s><b>3</b></s>");
+        resource.purge("", true);
+        let inner = resource.open_section("scripts/inner.xml", false).unwrap();
+        assert_eq!(inner.find_child("b").unwrap().as_string(), "3");
+        let root = resource.open_section("root.xml", false).unwrap();
+        assert_eq!(root.find_child("a").unwrap().as_string(), "1");
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn purge_all_and_cache_size_rebuild() {
+        let a = temp_root("cache_purge_all");
+        write(&a, "/one.xml", b"<one/>");
+        write(&a, "/two.xml", b"<two/>");
+
+        let resource = BwResource::init_paths(&[&a]);
+        resource.open_section("one.xml", false).unwrap();
+        resource.open_section("two.xml", false).unwrap();
+        assert!(resource.section_cache_stats().2 > 0);
+
+        // purgeAll empties the cache *and* the statistics.
+        resource.purge_all();
+        assert_eq!(resource.section_cache_stats(), (0, 0, 0));
+        resource.open_section("one.xml", false).unwrap();
+        assert_eq!(resource.section_cache_stats(), (0, 1, one_size()));
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn content_sniffing_and_uncached_sections_match_the_reference() {
+        let a = temp_root("cache_sniff");
+        write(&a, "/looks.xml", b"definitely not xml");
+        // Leading whitespace before '<' still parses as XML.
+        write(&a, "/padded.xml", b"  \r\n\t<value>pad</value>");
+        // A parse failure leaves nothing in the cache.
+        write(&a, "/broken.xml", b"<unclosed>oops");
+
+        let resource = BwResource::init_paths(&[&a]);
+        // BinSection content has no section at this level and never caches.
+        assert_eq!(resource.open_section("looks.xml", false), None);
+        assert_eq!(resource.section_cache_stats(), (0, 1, 0));
+        // The padded file parses; its root keeps the leaf name.
+        let padded = resource.open_section("padded.xml", false).unwrap();
+        assert_eq!(padded.section_name(), "padded.xml");
+        assert_eq!(padded.as_string(), "pad");
+        // Invalid XML: no section, no cache entry.
+        assert_eq!(resource.open_section("broken.xml", false), None);
+        assert_eq!(resource.section_cache_stats(), (0, 3, padded_size()));
+
+        // Missing paths return nothing unless makeNewSection asks for an
+        // empty dotted section, which then lives in the cache.
+        assert_eq!(resource.open_section("settings/missing.xml", false), None);
+        let created =
+            resource.open_section("settings/missing.xml", true).unwrap();
+        assert_eq!(created.section_name(), "missing.xml");
+        assert_eq!(created.count_children(), 0);
+        let again =
+            resource.open_section("settings/missing.xml", false).unwrap();
+        assert!(Arc::ptr_eq(&created, &again));
+        // Undotted tags would create directories (DirSection, later task).
+        assert_eq!(resource.open_section("settings/plaindir", true), None);
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn atoi_reads_the_bw_cache_size_like_c() {
+        assert_eq!(atoi_or_zero("1024"), 1024);
+        assert_eq!(atoi_or_zero(" 96"), 96);
+        assert_eq!(atoi_or_zero("+7"), 7);
+        assert_eq!(atoi_or_zero("12trailing"), 12);
+        // Negative budgets cache nothing (nothing fits), like the int math.
+        assert_eq!(atoi_or_zero("-5"), 0);
+        assert_eq!(atoi_or_zero(""), 0);
+        assert_eq!(atoi_or_zero("junk"), 0);
+        // A missing variable keeps the default; a present one goes through
+        // the atoi path.
+        assert_eq!(cache_size_from(None), DEFAULT_CACHE_SIZE);
+        assert_eq!(cache_size_from(Some("64")), 64);
+        assert_eq!(DEFAULT_CACHE_SIZE, 100 * 1024);
+    }
+
+    /// Serialised size of `<server><value>old</value></server>`.
+    fn first_size() -> usize {
+        let mut section =
+            DataSection::new("server.xml");
+        let value = section.add_child("value");
+        value.set_string("old");
+        section.write_to_string().len()
+    }
+
+    /// Serialised size of `<one/>` written back out.
+    fn one_size() -> usize {
+        let mut section = DataSection::new("one.xml");
+        section.write_to_string().len()
+    }
+
+    /// Serialised size of `  \r\n\t<value>pad</value>`.
+    fn padded_size() -> usize {
+        let mut section = DataSection::new("padded.xml");
+        section.set_string("pad");
+        section.write_to_string().len()
     }
 }
 
