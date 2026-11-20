@@ -44,15 +44,22 @@ record_path() { printf '%s/parity/%s.tsv' "$CI_OUT" "$1"; }
 
 # --- substrates ------------------------------------------------------------
 
-REFERENCE="${CI_PARITY_REFERENCE:-${BW_REFERENCE:-/home/cui/workspaces/BigWorld}}"
+# The reference tree defaults to a home-relative checkout, so the lane runs
+# locally with no setup. BW_REFERENCE or CI_PARITY_REFERENCE overrides it.
+REFERENCE="${CI_PARITY_REFERENCE:-${BW_REFERENCE:-$HOME/workspaces/BigWorld}}"
 REFERENCE_TOOL="${CI_PARITY_REFERENCE_TOOL:-$REFERENCE/game/bin/server/el7/tools/process_defs}"
 REFERENCE_RES="${CI_PARITY_REFERENCE_RES:-$REFERENCE/programming/bigworld/examples/client_integration/python/simple/res}"
 RES_ROOT="${CI_PARITY_RES_ROOT:-$REFERENCE/game/res/bigworld}"
 ALIAS="$REFERENCE_RES/scripts/entity_defs/alias.xml"
 
 # Everything the probe needs. Collected together so one SKIP names every piece
-# rather than reporting the first one and hiding the rest.
+# rather than reporting the first one and hiding the rest. No tree at all is
+# reported as such, rather than as a string of paths under an empty prefix.
 missing_substrates() {
+    if [ -z "$REFERENCE" ]; then
+        echo "no reference tree (set BW_REFERENCE or CI_PARITY_REFERENCE)"
+        return 0
+    fi
     local missing=""
     [ -x "$REFERENCE_TOOL" ] || missing="$missing original tool $REFERENCE_TOOL"
     [ -f "$ALIAS" ] || missing="$missing alias table $ALIAS"
