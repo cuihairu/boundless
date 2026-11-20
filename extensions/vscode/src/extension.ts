@@ -12,6 +12,9 @@ import * as vscode from "vscode";
 
 import { nodeProbe } from "./workspace/nodeProbe";
 import { definitionTargets } from "./workspace/navigation";
+import { ScriptProbe, checkDefText } from "./workspace/diagnostics";
+import { AliasRegistry } from "./def/registry";
+import { ScriptRole, scriptPath } from "./workspace/resourceRoot";
 import {
   ResourceRoot,
   displayPath,
@@ -23,6 +26,22 @@ let roots: ResourceRoot[] = [];
 /** The workspace folders the editor gives us, in editor order. */
 function folderPaths(): string[] {
   return (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+}
+
+/** The alias table of `root`, empty when the file is absent. */
+function aliasesFor(root: ResourceRoot): AliasRegistry {
+  return AliasRegistry.parse(nodeProbe().read(root.aliasFile) ?? "");
+}
+
+/** Whether the entity has a role script, the reference's component test
+ * (`HasScriptOrTagDistributionDecider` probes `scripts/<role>/<Name>.py`). */
+function scriptProbeFor(root: ResourceRoot, defName: string): ScriptProbe {
+  const probe = nodeProbe();
+  return {
+    hasScript(role) {
+      return probe.isFile(scriptPath(root, role as ScriptRole, defName));
+    },
+  };
 }
 
 /** The deepest resource root that contains `file`, if any. */
@@ -78,6 +97,58 @@ export function activate(context: vscode.ExtensionContext): void {
       output.show();
     }),
   );
+
+  const diagnostics = vscode.languages.createDiagnosticCollection(
+    "boundless-entitydef",
+  );
+  context.subscriptions.push(diagnostics);
+
+  /** Checks one `.def` document and publishes what it finds. */
+  function publish(document: vscode.TextDocument): void {
+    const file = document.fileName;
+    if (!file.endsWith(".def")) return;
+    let root = rootFor(file);
+    if (!root) {
+      refresh();
+      root = rootFor(file);
+    }
+    if (!root) return;
+
+    const defName = basename(file, ".def");
+    const found = checkDefText(
+      aliasesFor(root),
+      document.getText(),
+      defName,
+      basename(dirname(file)) === "service_defs",
+      scriptProbeFor(root, defName),
+    );
+    diagnostics.set(
+      document.uri,
+      found.map(
+        (d) =>
+          new vscode.Diagnostic(
+            new vscode.Range(
+              d.range.startLine,
+              d.range.startCharacter,
+              d.range.endLine,
+              d.range.endCharacter,
+            ),
+            d.message,
+            d.severity === "error"
+              ? vscode.DiagnosticSeverity.Error
+              : vscode.DiagnosticSeverity.Warning,
+          ),
+      ),
+    );
+  }
+
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(publish),
+    vscode.workspace.onDidChangeTextDocument((e) => publish(e.document)),
+    vscode.workspace.onDidSaveTextDocument(publish),
+    vscode.workspace.onDidCloseTextDocument((d) => diagnostics.delete(d.uri)),
+  );
+  for (const doc of vscode.workspace.textDocuments) publish(doc);
 
   context.subscriptions.push(
     vscode.languages.registerDefinitionProvider("entities", {
