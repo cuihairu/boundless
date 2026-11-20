@@ -14,4 +14,5 @@ pub mod layering;
 pub mod multiproc;
 pub mod rng;
 pub mod standalone;
+pub mod timer_scenarios;
 pub mod workspace;

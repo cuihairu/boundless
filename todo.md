@@ -1277,7 +1277,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：原版测试靠真实网络抖动或睡固定毫秒，延迟乱序无法指名；新版 channel.rs 增加 `Fate::Delayed{until_nanos}`（吃 BW-18-03-01 虚拟时钟戳）与 `Fate::After(anchor)`（锚定交付，脚本化换序），pump 内解约束到不动点，`delayed_packets_deliver_when_the_clock_advances` 验证差 1ms 都不交付、到点即达，`anchored_packets_deliver_after_their_anchor`/`an_anchor_chain_delivers_in_the_scripted_order` 钉死按指定顺序交付（含链式反序 2,1,0），`delay_and_reorder_stay_deterministic_together` 验证延迟+乱序同脚本同时钟必同序，`an_anchor_behind_a_dropped_packet_stays_back` 验证锚在被丢包上时不误交付。
 - [x] **BW-18-03-04 提供进程故障夹具**。**验收** 可复现迁移或恢复。
   - 证据：原版测试崩溃恢复靠人工 kill 或不可控退出，场景无法重放；新版 multiproc.rs 在 ProcessGroup 上提供 `crash`（整树 SIGKILL 并收割、腾出槽位）与 `restart`（按原 spec + 原日志捕获重生新 pid），`a_crashed_role_restarts_with_a_fresh_pid` 验证 kill-pid 对上、新 pid 不同，`a_migration_scenario_replays_identically` 在两份独立副本上跑 启动→crash→重启→恢复 同一状态机序列完全一致（恢复标记只有重启副本能写，排除误判），`a_restarted_role_keeps_its_log` 验证重启后日志续写原文件，`crashing/restarting_an_unknown_role_is_rejected` 拒绝拼错角色。
-- [ ] **BW-18-03-05 接通可控时钟取消测试**。**验收** 定时器重复用例稳定。
+- [x] **BW-18-03-05 接通可控时钟取消测试**。**验收** 定时器重复用例稳定。
+  - 证据：原版定时器跑真实墙钟，重复用例每次触发次数都不同、取消测试与截止时刻赛跑；新版 timer_scenarios.rs 把 `ManualClock::clock_fn()` 注入 `DispatcherTimers::with_clock`（对应 `EventDispatcher::clock_`），时间只在脚本推进时流动；`repeat_timers_deliver_the_same_sequence_every_run` 验证 12 次 50ms 推进的交付序列逐位重放一致，`cancelling_a_repeat_timer_stops_exactly_on_the_script` 验证 200ms 处 cancel 恰好停在 @200 触发之后、另一 70ms 定时器照常走完，`a_cancelled_once_off_never_fires` 验证 once-off 取消后时钟跑过 500ms 也不发，`mixed_deadlines_interleave_in_stamp_order` 验证混合截止按戳序交错稳定；交付日志记录的是回调运行所在 pass 的时钟戳（与处理器读钟所见一致），4 用例 0 失败。
 
 #### BW-18-04 本地与 CI 共用入口
 
