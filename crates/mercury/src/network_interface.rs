@@ -197,6 +197,18 @@ impl NetworkInterface {
         self.udp_socket.borrow().set_nonblocking(true);
         self.udp_socket.borrow().enable_error_queue(true);
 
+        // MF_SERVER (network_interface.cpp:449-462): the server build
+        // asks for the process-wide wanted buffer sizes and warns with
+        // what the kernel granted when it refuses. This port is a
+        // server port, so the block is unconditional; the `__APPLE__`
+        // SO_NOSIGPIPE line before it has no Linux counterpart.
+        apply_server_buffer_sizes(
+            &self.udp_socket.borrow(),
+            crate::network_utils::buffer_sizes(),
+        );
+
+        // registerWithMachined has no machined to talk to.
+
         true
     }
 
@@ -335,6 +347,36 @@ fn resolve_listening_interface(
     }
 
     ifaddr
+}
+
+/// The `MF_SERVER` buffer block of `recreateListeningSocket`
+/// (network_interface.cpp:449-462): request the wanted sizes, warn with
+/// the granted ones when the kernel caps them. Split so tests can drive
+/// both arms; returns whether each request was honoured.
+fn apply_server_buffer_sizes(udp_socket: &Endpoint, wanted: (i32, i32)) -> (bool, bool) {
+    let (recv_wanted, send_wanted) = wanted;
+
+    let received = udp_socket.set_buffer_size(socket::SO_RCVBUF, recv_wanted);
+    if !received {
+        eprintln!(
+            "NetworkInterface::recreateListeningSocket: \
+             Operating with a receive buffer of only {} bytes (instead of {})",
+            udp_socket.get_buffer_size(socket::SO_RCVBUF),
+            recv_wanted
+        );
+    }
+
+    let sent = udp_socket.set_buffer_size(socket::SO_SNDBUF, send_wanted);
+    if !sent {
+        eprintln!(
+            "NetworkInterface::recreateListeningSocket: \
+             Operating with a send buffer of only {} bytes (instead of {})",
+            udp_socket.get_buffer_size(socket::SO_SNDBUF),
+            send_wanted
+        );
+    }
+
+    (received, sent)
 }
 
 /// The INADDR_ANY branch of `recreateListeningSocket`
@@ -567,6 +609,43 @@ mod tests {
         assert!(!interface.is_good());
         assert!(!interface.poller().is_registered(fd, true));
         assert_eq!(interface.udp_socket().fileno(), NO_SOCKET);
+    }
+
+    /// The server buffer block: recreate asks for the process-wide
+    /// wanted sizes and the kernel honours them when they sit inside the
+    /// maxima (network_interface.cpp:449-462, success arm).
+    #[test]
+    fn recreate_applies_the_wanted_buffer_sizes() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+        let (recv_wanted, send_wanted) = crate::network_utils::buffer_sizes();
+
+        assert!(
+            interface.udp_socket().get_buffer_size(socket::SO_RCVBUF)
+                >= recv_wanted,
+            "the receive buffer was raised to the wanted size"
+        );
+        assert!(
+            interface.udp_socket().get_buffer_size(socket::SO_SNDBUF)
+                >= send_wanted,
+            "the send buffer was raised to the wanted size"
+        );
+    }
+
+    /// An impossible request is refused and warned about: the kernel
+    /// caps the buffer below the wanted size
+    /// (network_interface.cpp:450-461, warning arm).
+    #[test]
+    fn impossible_buffer_requests_warn_and_fall_back() {
+        let mut ep = Endpoint::new();
+        ep.socket(socket::SOCK_DGRAM);
+
+        assert_eq!(
+            apply_server_buffer_sizes(&ep, (1 << 30, 1 << 30)),
+            (false, false),
+            "1 GiB is beyond the kernel maxima"
+        );
+        // A reachable request passes quietly.
+        assert_eq!(apply_server_buffer_sizes(&ep, (4096, 4096)), (true, true));
     }
 
     /// `recreateListeningSocket` replaces the socket: the interface stays

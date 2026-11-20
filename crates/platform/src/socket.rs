@@ -26,6 +26,10 @@ pub const SOL_IP: i32 = libc::IPPROTO_IP;
 pub const SO_BROADCAST: i32 = libc::SO_BROADCAST;
 /// `SO_REUSEADDR`.
 pub const SO_REUSEADDR: i32 = libc::SO_REUSEADDR;
+/// `SO_RCVTIMEO`.
+pub const SO_RCVTIMEO: i32 = libc::SO_RCVTIMEO;
+/// `SO_SNDTIMEO`.
+pub const SO_SNDTIMEO: i32 = libc::SO_SNDTIMEO;
 /// `SO_KEEPALIVE`.
 pub const SO_KEEPALIVE: i32 = libc::SO_KEEPALIVE;
 /// `SO_SNDBUF`.
@@ -310,6 +314,24 @@ pub fn set_int_option(fd: RawFd, level: i32, optname: i32, value: i32) -> i32 {
     }
 }
 
+/// `::setsockopt` with a `timeval` value (`SO_RCVTIMEO`/`SO_SNDTIMEO`),
+/// the wait bound for blocking receives.
+pub fn set_timeout_option(fd: RawFd, optname: i32, seconds: i64) -> i32 {
+    let tv = libc::timeval {
+        tv_sec: seconds,
+        tv_usec: 0,
+    };
+    unsafe {
+        libc::setsockopt(
+            fd,
+            SOL_SOCKET,
+            optname,
+            &tv as *const libc::timeval as *const _,
+            std::mem::size_of::<libc::timeval>() as u32,
+        )
+    }
+}
+
 /// One `MSG_ERRQUEUE` entry: the kernel error number, the offending peer
 /// in network byte order, and the ICMP `ee_info` code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -512,7 +534,6 @@ mod tests {
     fn udp_round_trip_and_local_address() {
         let fd = create_socket(SOCK_DGRAM);
         assert!(fd >= 0, "socket() failed: {}", std::io::Error::last_os_error());
-
         // Port 0 asks the kernel to pick a free one; ip 0 is INADDR_ANY.
         assert_eq!(bind(fd, 0, 0), 0, "bind() failed");
         let (port, ip) = local_address(fd).expect("getsockname");
@@ -521,8 +542,16 @@ mod tests {
 
         let mut buffer = [0u8; 16];
         assert_eq!(sendto(fd, b"hello", port, LOOPBACK), 5, "sendto() failed");
+        // Bound the blocking read so a lost datagram surfaces as an
+        // errno-carrying failure instead of a hung test binary.
+        assert_eq!(set_timeout_option(fd, SO_RCVTIMEO, 5), 0);
         let (received, reply_port, reply_ip) = recvfrom(fd, &mut buffer);
-        assert_eq!(received, 5, "recvfrom() failed");
+        assert_eq!(
+            received,
+            5,
+            "recvfrom() failed: {}",
+            std::io::Error::last_os_error()
+        );
         assert_eq!(&buffer[..5], b"hello");
         // The port travels in network byte order, so it comes back as sent.
         assert_eq!(reply_port, port);
@@ -532,8 +561,12 @@ mod tests {
         assert_eq!(bytes_available(fd), 0);
 
         assert_eq!(close(fd), 0);
-        // A closed descriptor cannot be read.
-        assert_eq!(recv(fd, &mut buffer), -1);
+        // A closed descriptor cannot be read -- but this descriptor's
+        // number may already belong to another test's socket by now, so
+        // the probe uses a number the kernel never hands out (the same
+        // discipline as `dead_fd`): reading the just-closed number here
+        // once blocked forever on whichever socket recycled it.
+        assert_eq!(recv(descriptor_limit(), &mut buffer), -1);
     }
 
     /// `connect`/`listen`/`accept_address` hand back the peer port and
@@ -546,26 +579,43 @@ mod tests {
         assert_eq!(bind(listener, 0, 0), 0);
         let (port, _) = local_address(listener).expect("getsockname");
         assert_eq!(listen(listener, 1), 0);
+        // `SO_RCVTIMEO` also bounds `accept`; keep both waits loud.
+        assert_eq!(set_timeout_option(listener, SO_RCVTIMEO, 5), 0);
 
         let client = create_socket(SOCK_STREAM);
         assert!(client >= 0);
         assert_eq!(connect(client, port, LOOPBACK), 0);
 
         let (accepted, peer_port, peer_ip) = accept_address(listener);
-        assert!(accepted >= 0, "accept() failed");
+        assert!(
+            accepted >= 0,
+            "accept() failed: {}",
+            std::io::Error::last_os_error()
+        );
         assert_eq!(peer_ip, LOOPBACK);
         assert_ne!(peer_port, 0);
 
         // `recvAll`'s loop depends on `recv` reporting the connection
         // loss as zero.
+        assert_eq!(set_timeout_option(accepted, SO_RCVTIMEO, 5), 0);
         let mut buffer = [0u8; 4];
         assert_eq!(send(client, b"ab"), 2);
-        assert_eq!(recv(accepted, &mut buffer), 2);
+        assert_eq!(
+            recv(accepted, &mut buffer),
+            2,
+            "{}",
+            std::io::Error::last_os_error()
+        );
         assert_eq!(&buffer[..2], b"ab");
 
         close(client);
         // EOF on the closed peer reads as zero.
-        assert_eq!(recv(accepted, &mut buffer), 0);
+        assert_eq!(
+            recv(accepted, &mut buffer),
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
         close(accepted);
         close(listener);
     }

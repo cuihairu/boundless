@@ -225,10 +225,12 @@ mod tests {
     }
 
     /// A fresh updater that will not trigger a kernel read: the tests
-    /// below drive the parse loop directly.
+    /// below drive the parse loop directly. `u64::MAX` keeps the gate's
+    /// saturating age at zero forever -- a plain "now" stamp goes stale
+    /// if the test thread is descheduled past the interval mid-test.
     fn quiet_updater() -> Updater {
         let mut updater = Updater::new();
-        updater.last_update_micros = platform::clock::monotonic_now_micros().micros();
+        updater.last_update_micros = u64::MAX;
         updater
     }
 

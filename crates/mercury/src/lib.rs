@@ -5,6 +5,7 @@ pub mod misc;
 #[cfg(target_os = "linux")]
 pub mod network_interface;
 pub mod network_stats;
+pub mod network_utils;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
 pub mod packet;
