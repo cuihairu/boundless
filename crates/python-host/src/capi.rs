@@ -145,6 +145,16 @@ pub type NewFunction =
 /// `reprfunc`.
 pub type ReprFunction = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
 
+/// `lenfunc`, the `sq_length`/`mp_length` handler.
+pub type LenFunction = unsafe extern "C" fn(*mut PyObject) -> PySsize;
+
+/// `ssizeargfunc`, the `sq_item`/`sq_repeat` handler.
+pub type SsizeArgFunction = unsafe extern "C" fn(*mut PyObject, PySsize) -> *mut PyObject;
+
+/// `ssizeobjargproc`, the `sq_ass_item` handler; a `NULL` value is the
+/// sequence protocol's spelling of deletion.
+pub type SsizeObjArgFunction = unsafe extern "C" fn(*mut PyObject, PySsize, *mut PyObject) -> c_int;
+
 /// `METH_VARARGS` from `Include/methodobject.h`.
 pub const METH_VARARGS: c_int = 0x0001;
 
@@ -199,8 +209,31 @@ pub const Py_tp_methods: c_int = 64;
 pub const Py_tp_new: c_int = 65;
 /// `Py_tp_repr` (`typeslots.h`).
 pub const Py_tp_repr: c_int = 66;
+/// `PyMappingMethods` (`cpython/object.h`): the mapping protocol table.
+#[repr(C)]
+pub struct PyMappingMethods {
+    /// `len(obj)`.
+    pub mp_length: Option<LenFunction>,
+    /// `obj[key]`.
+    pub mp_subscript: Option<ReprFunction>,
+    /// `obj[key] = value`, with a `NULL` value spelling deletion.
+    pub mp_ass_subscript: Option<SsizeObjArgFunction>,
+}
+
 /// `Py_tp_getset` (`typeslots.h`).
 pub const Py_tp_getset: c_int = 73;
+/// `Py_mp_length` (`typeslots.h`).
+pub const Py_mp_length: c_int = 4;
+/// `Py_mp_subscript` (`typeslots.h`).
+pub const Py_mp_subscript: c_int = 5;
+/// `Py_mp_ass_subscript` (`typeslots.h`).
+pub const Py_mp_ass_subscript: c_int = 3;
+/// `Py_sq_length` (`typeslots.h`).
+pub const Py_sq_length: c_int = 45;
+/// `Py_sq_item` (`typeslots.h`).
+pub const Py_sq_item: c_int = 44;
+/// `Py_sq_ass_item` (`typeslots.h`).
+pub const Py_sq_ass_item: c_int = 39;
 
 /// `PyMethodDef`, the descriptor a `PyCFunction` is created from.
 #[repr(C)]
@@ -259,6 +292,16 @@ pub unsafe fn to_string(obj: *mut PyObject) -> String {
     }
 }
 
+/// The unicode form of a byte string that carries no terminator. Rust
+/// strings are length-delimited, so handing their pointer to
+/// `PyUnicode_FromString` reads past the allocation; the length must cross
+/// with the bytes.
+pub unsafe fn unicode_from_bytes(bytes: &[u8]) -> *mut PyObject {
+    // SAFETY: the bytes stay valid for the call's duration, and the C API
+    // copies them.
+    unsafe { PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as PySsize) }
+}
+
 unsafe extern "C" {
     pub static mut _Py_NoneStruct: PyObject;
     pub static mut _Py_TrueStruct: PyObject;
@@ -284,6 +327,7 @@ unsafe extern "C" {
     pub fn PyList_New(size: PySsize) -> *mut PyObject;
     pub fn PyList_SetItem(list: *mut PyObject, index: PySsize, item: *mut PyObject) -> c_int;
     pub fn PyUnicode_FromString(string: *const c_char) -> *mut PyObject;
+    pub fn PyUnicode_FromStringAndSize(string: *const c_char, length: PySsize) -> *mut PyObject;
     pub fn PyDict_Copy(obj: *mut PyObject) -> *mut PyObject;
     pub fn PyDict_SetItem(dict: *mut PyObject, key: *mut PyObject, value: *mut PyObject) -> c_int;
     pub fn PyGC_Collect() -> PySsize;
@@ -345,6 +389,9 @@ unsafe extern "C" {
     ) -> *mut std::os::raw::c_void;
     pub fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int;
     pub static mut PyExc_TypeError: *mut PyObject;
+    pub static mut PyExc_IndexError: *mut PyObject;
+    pub fn PyIndex_Check(obj: *mut PyObject) -> c_int;
+    pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
     pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
@@ -441,6 +488,13 @@ mod tests {
         assert_eq!(
             std::mem::size_of::<PyTypeSpec>(),
             4 * std::mem::size_of::<usize>()
+        );
+        // The mapping table the port's sequence bridge lives in is three
+        // function pointers wide; a revision that grows it breaks the
+        // slot wiring, so the size is asserted.
+        assert_eq!(
+            std::mem::size_of::<PyMappingMethods>(),
+            3 * std::mem::size_of::<usize>()
         );
     }
 }

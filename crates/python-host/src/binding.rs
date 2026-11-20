@@ -24,6 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
+use std::os::raw::c_int;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::capi;
@@ -54,6 +55,17 @@ struct Method {
     handler: capi::PyCFunction,
 }
 
+/// The three sequence-protocol handlers of a container proxy, the mutable
+/// `PySTLSequence` shape of `stl_to_py.cpp`: a length, an indexed read and
+/// an indexed write whose `NULL` value is the protocol's spelling of
+/// deletion.
+#[derive(Clone, Copy)]
+struct SequenceHandlers {
+    length: capi::LenFunction,
+    item: capi::SsizeArgFunction,
+    ass_item: capi::SsizeObjArgFunction,
+}
+
 /// The description of one native type, the builder-side stand-in for the
 /// reference's `PY_TYPEOBJECT` macro body.
 ///
@@ -66,6 +78,10 @@ pub struct TypeSpec {
     name: String,
     attributes: Vec<Attribute>,
     methods: Vec<Method>,
+    /// Sequence handlers, or a bare wrapper when absent.
+    sequence: Option<SequenceHandlers>,
+    /// Extra bytes of instance body the allocated objects carry.
+    instance_size: usize,
 }
 
 impl TypeSpec {
@@ -75,6 +91,8 @@ impl TypeSpec {
             name: name.to_owned(),
             attributes: Vec::new(),
             methods: Vec::new(),
+            sequence: None,
+            instance_size: 0,
         }
     }
 
@@ -105,6 +123,33 @@ impl TypeSpec {
         });
         self
     }
+
+    /// Turn the type into a sequence proxy: the three indexed handlers are
+    /// wired straight onto `sq_length`/`sq_item`/`sq_ass_item`, and the
+    /// `mp_subscript`/`mp_ass_subscript` slots get the reference's bridge
+    /// so the mapping protocol (`obj[i]`) reaches the same handlers.
+    #[must_use]
+    pub fn sequence(
+        mut self,
+        length: capi::LenFunction,
+        item: capi::SsizeArgFunction,
+        ass_item: capi::SsizeObjArgFunction,
+    ) -> Self {
+        self.sequence = Some(SequenceHandlers {
+            length,
+            item,
+            ass_item,
+        });
+        self
+    }
+
+    /// The instance body the allocated objects carry beyond the `PyObject`
+    /// header. The default of zero is the bare wrapper.
+    #[must_use]
+    pub fn instance_size(mut self, bytes: usize) -> Self {
+        self.instance_size = bytes;
+        self
+    }
 }
 
 /// One name's type object, the registry the static `s_type_` declarations
@@ -115,6 +160,7 @@ impl TypeSpec {
 struct Registry {
     types: BTreeMap<String, usize>,
     names: BTreeMap<usize, String>,
+    sequences: BTreeMap<usize, SequenceHandlers>,
 }
 
 fn registry() -> MutexGuard<'static, Registry> {
@@ -124,6 +170,7 @@ fn registry() -> MutexGuard<'static, Registry> {
             Mutex::new(Registry {
                 types: BTreeMap::new(),
                 names: BTreeMap::new(),
+                sequences: BTreeMap::new(),
             })
         })
         .lock()
@@ -176,7 +223,7 @@ unsafe extern "C" fn refuse_new(
         let name = qualified_name(type_);
         let message = capi::PyUnicode_FromFormat(
             c"%U() Cannot directly construct objects of this type".as_ptr(),
-            capi::PyUnicode_FromString(name.as_ptr().cast()),
+            capi::unicode_from_bytes(name.as_bytes()),
         );
         // A refused construction always returns null with the error pending;
         // any other return makes `type_call` raise `SystemError` for
@@ -198,8 +245,207 @@ unsafe extern "C" fn default_repr(object: *mut capi::PyObject) -> *mut capi::PyO
     unsafe {
         let name = qualified_name(capi::Py_TYPE(object));
         let rendered = format!("{name} at 0x{:x}", object as usize);
-        capi::PyUnicode_FromString(rendered.as_ptr().cast())
+        capi::unicode_from_bytes(rendered.as_bytes())
     }
+}
+
+/// The negative-index normalisation of `seqIndexKey` (`pyobject_plus.cpp:203`)
+/// in the direction the bridges need it: `key` is the script's subscript and
+/// `self` the proxy, and the answer is the handler's own index space. A
+/// non-integer key raises the reference's `TypeError`; an integer that is
+/// still out of range after normalising raises the `IndexError` the handler
+/// itself would raise, which is what the C++ `sq_item` arm does next.
+///
+/// # Safety
+///
+/// `self` and `key` must be borrowed objects the interpreter handed out,
+/// held while it is up.
+unsafe fn seq_index_key(self_: *mut capi::PyObject, key: *mut capi::PyObject) -> capi::PySsize {
+    // CPython never hands a bridge a null self; a null is a caller error,
+    // answered as an index the handler will refuse.
+    if self_.is_null() || key.is_null() {
+        return -1;
+    }
+    // SAFETY: the type lookups only read the type objects.
+    let self_name = unsafe { qualified_name(capi::Py_TYPE(self_)) };
+    let key_name = unsafe { qualified_name(capi::Py_TYPE(key)) };
+    if unsafe { capi::PyIndex_Check(key) } == 0 {
+        let rendered = format!("{self_name} indices must be integers, not {key_name}");
+        raise_type_error(&rendered);
+        return -1;
+    }
+    // SAFETY: the exception constant is the global `IndexError` and `key`
+    // is a borrowed object the interpreter handed out.
+    let index = unsafe { capi::PyNumber_AsSsize_t(key, capi::PyExc_IndexError) };
+    // `-1` is the conversion's error sentinel, but it is also the value of
+    // the key `-1`: only a pending error means failure.
+    if index == -1 && !unsafe { capi::PyErr_Occurred() }.is_null() {
+        return -1;
+    }
+    if index < 0 {
+        // SAFETY: the handlers are registry entries for this process.
+        let count = unsafe { registry_handlers(self_) }.length;
+        // SAFETY: `count` is a registry handler running on an instance.
+        let length = unsafe { count(self_) };
+        if length < 0 {
+            let rendered = format!("cannot normalise {self_name} without a length");
+            raise_type_error(&rendered);
+            return -1;
+        }
+        // Still negative after adding the length: out of range, and the
+        // handler is what reports it.
+        return length + index;
+    }
+    index
+}
+
+/// Look a type object's sequence handlers up. The bridges call into the
+/// handlers through one copy so no lock is held across the C calls.
+///
+/// # Safety
+///
+/// `self_` must be a borrowed object the interpreter handed out.
+unsafe fn registry_handlers(self_: *mut capi::PyObject) -> SequenceHandlers {
+    // The same null guard as the index normalisation above: `Py_TYPE`
+    // dereferences its argument, so a null must not reach the lookup.
+    if self_.is_null() {
+        return SequenceHandlers {
+            length: zero_bridge_length,
+            item: miss_bridge_item,
+            ass_item: miss_bridge_ass_item,
+        };
+    }
+    let address = unsafe { capi::Py_TYPE(self_) } as usize;
+    // SAFETY: `self_` is a borrowed object the interpreter handed out.
+    let registry = registry();
+    registry
+        .sequences
+        .get(&address)
+        .copied()
+        .unwrap_or(SequenceHandlers {
+            length: zero_bridge_length,
+            item: miss_bridge_item,
+            ass_item: miss_bridge_ass_item,
+        })
+}
+
+/// The miss arm of `sq_length` on a type the registry did not fill. The
+/// bridges only run on types the registry filled, so this is defensive.
+unsafe extern "C" fn zero_bridge_length(_self_: *mut capi::PyObject) -> capi::PySsize {
+    0
+}
+
+/// The miss arm of `sq_item` on a type the registry did not fill: the
+/// reference's not-subscriptable refusal.
+///
+/// # Safety
+///
+/// `self_` is a borrowed object the interpreter handed out.
+unsafe extern "C" fn miss_bridge_item(
+    self_: *mut capi::PyObject,
+    _index: capi::PySsize,
+) -> *mut capi::PyObject {
+    if unsafe { capi::Py_IsInitialized() } == 0 {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the interpreter is up and `self_` is a borrowed object it
+    // handed out.
+    let name = unsafe { qualified_name(capi::Py_TYPE(self_)) };
+    let rendered = format!("'{name}' object is not subscriptable");
+    raise_type_error(&rendered);
+    std::ptr::null_mut()
+}
+
+/// The miss arm of `sq_ass_item` on a type the registry did not fill: the
+/// reference's does-not-support-item-assignment refusal.
+///
+/// # Safety
+///
+/// `self_` is a borrowed object the interpreter handed out.
+unsafe extern "C" fn miss_bridge_ass_item(
+    self_: *mut capi::PyObject,
+    _index: capi::PySsize,
+    _value: *mut capi::PyObject,
+) -> c_int {
+    if unsafe { capi::Py_IsInitialized() } == 0 {
+        return c_int::MAX;
+    }
+    // SAFETY: the interpreter is up and `self_` is a borrowed object it
+    // handed out.
+    let name = unsafe { qualified_name(capi::Py_TYPE(self_)) };
+    let rendered = format!("'{name}' object does not support item assignment");
+    raise_type_error(&rendered);
+    c_int::MAX
+}
+
+/// Raise the reference's `TypeError`, the message already formatted.
+fn raise_type_error(rendered: &str) {
+    // SAFETY: the message object is a fresh unicode and the exception
+    // constant is the global `TypeError`.
+    unsafe {
+        let message = capi::unicode_from_bytes(rendered.as_bytes());
+        capi::PyErr_SetObject(capi::PyExc_TypeError, message);
+        capi::dec_ref(message);
+    }
+}
+
+/// `mp_subscript` (`pyobject_plus.cpp:294`'s `seqMappingMethods`): normalise
+/// the key exactly the way the reference's bridge does, then dispatch to the
+/// type's own `sq_item`. Public so a host can dispatch it itself.
+///
+/// # Safety
+///
+/// CPython calls this with a borrowed self and key; both are held by the
+/// caller while the interpreter is up.
+pub unsafe extern "C" fn seq_subscript(
+    self_: *mut capi::PyObject,
+    key: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    // Without an interpreter there is no error state to consult and no
+    // registry behind the type, so the bridge refuses before touching
+    // either.
+    if unsafe { capi::Py_IsInitialized() } == 0 {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the registry only stores handler tables of this process.
+    let handlers = unsafe { registry_handlers(self_) };
+    let index = unsafe { seq_index_key(self_, key) };
+    // An error set by the normalisation above outruns the index: it is the
+    // caller's to see, and the index is meaningless.
+    if !unsafe { capi::PyErr_Occurred() }.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the handler is a registry entry for this type object.
+    unsafe { (handlers.item)(self_, index) }
+}
+
+/// `mp_ass_subscript` with a non-`NULL` value: the reference's bridge
+/// normalises the key and dispatches to `sq_ass_item`, keeping the
+/// `NULL`-means-delete spelling intact. Public so a host can dispatch it
+/// itself.
+///
+/// # Safety
+///
+/// CPython calls this with borrowed self, key and value; all are held by the
+/// caller while the interpreter is up.
+pub unsafe extern "C" fn seq_ass_subscript(
+    self_: *mut capi::PyObject,
+    key: *mut capi::PyObject,
+    value: *mut capi::PyObject,
+) -> c_int {
+    // The same pre-init refusal as the read bridge.
+    if unsafe { capi::Py_IsInitialized() } == 0 {
+        return c_int::MAX;
+    }
+    // SAFETY: the registry only stores handler tables of this process.
+    let handlers = unsafe { registry_handlers(self_) };
+    let index = unsafe { seq_index_key(self_, key) };
+    // The same error check as the read bridge.
+    if !unsafe { capi::PyErr_Occurred() }.is_null() {
+        return c_int::MAX;
+    }
+    // SAFETY: the handler is a registry entry for this type object.
+    unsafe { (handlers.ass_item)(self_, index, value) }
 }
 
 /// Create the type object a name describes, or hand back the one that
@@ -307,6 +553,52 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
                 pfunc: default_repr as *mut std::os::raw::c_void,
             },
             capi::PyTypeSlot {
+                slot: capi::Py_sq_length,
+                pfunc: spec
+                    .sequence
+                    .as_ref()
+                    .map_or(std::ptr::null_mut(), |sequence| {
+                        sequence.length as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_sq_item,
+                pfunc: spec
+                    .sequence
+                    .as_ref()
+                    .map_or(std::ptr::null_mut(), |sequence| {
+                        sequence.item as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_sq_ass_item,
+                pfunc: spec
+                    .sequence
+                    .as_ref()
+                    .map_or(std::ptr::null_mut(), |sequence| {
+                        sequence.ass_item as *mut std::os::raw::c_void
+                    }),
+            },
+            // The mapping protocol wins `obj[i]` for heap types, so the
+            // reference bridges it back into the sequence handlers instead
+            // of filling a second table (`pyobject_plus.cpp:294`).
+            capi::PyTypeSlot {
+                slot: capi::Py_mp_subscript,
+                pfunc: if spec.sequence.is_some() {
+                    seq_subscript as *mut std::os::raw::c_void
+                } else {
+                    std::ptr::null_mut()
+                },
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_mp_ass_subscript,
+                pfunc: if spec.sequence.is_some() {
+                    seq_ass_subscript as *mut std::os::raw::c_void
+                } else {
+                    std::ptr::null_mut()
+                },
+            },
+            capi::PyTypeSlot {
                 slot: capi::Py_tp_methods,
                 pfunc: methods.as_mut_ptr().cast(),
             },
@@ -322,12 +614,12 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
         .into_boxed_slice(),
     );
 
-    // The instance body is the bare `PyObject` header: the port's wrapper
-    // state lives in the identity cache, not in the instance, so the base
-    // size is the whole size.
+    // The instance body is the `PyObject` header plus whatever the spec
+    // asked for: a container proxy carries its state pointer there.
     let type_spec: &'static mut capi::PyTypeSpec = Box::leak(Box::new(capi::PyTypeSpec {
         name: names[0].as_ptr(),
-        basicsize: std::mem::size_of::<capi::PyObject>() as std::os::raw::c_int,
+        basicsize: (std::mem::size_of::<capi::PyObject>() + spec.instance_size)
+            as std::os::raw::c_int,
         itemsize: 0,
         flags: 0,
         slots: slots.as_mut_ptr(),
@@ -348,6 +640,18 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
     // one type object per name outlives every caller's handle.
     let cached = object.clone();
     let address = cached.as_ptr() as usize;
+    if let Some(ref sequence) = spec.sequence {
+        // The handler table is copied into the registry: the bridges run
+        // under the C call, so nothing may borrow across it.
+        registry.sequences.insert(
+            address,
+            SequenceHandlers {
+                length: sequence.length,
+                item: sequence.item,
+                ass_item: sequence.ass_item,
+            },
+        );
+    }
     registry.types.insert(spec.name.clone(), address);
     registry.names.insert(address, spec.name.clone());
     std::mem::forget(cached);
@@ -381,6 +685,7 @@ pub fn reset() {
     let mut registry = registry();
     let types = std::mem::take(&mut registry.types);
     registry.names.clear();
+    registry.sequences.clear();
     for (_, address) in types {
         let pointer = address as *mut capi::PyObject;
         // `Interpreter::fini` runs this before `Py_Finalize`, so the
@@ -450,5 +755,57 @@ mod tests {
         _closure: *mut std::os::raw::c_void,
     ) -> *mut capi::PyObject {
         std::ptr::null_mut()
+    }
+
+    /// The bridge miss arms refuse before they read a type name while the
+    /// interpreter is down: the exception constants are null until init, so
+    /// the arms bail out first.
+    #[test]
+    fn the_bridge_miss_arms_refuse_without_an_interpreter() {
+        // SAFETY: the stub object is never dereferenced; both arms return
+        // before touching it.
+        let object: *mut capi::PyObject = std::ptr::null_mut();
+        let key: *mut capi::PyObject = std::ptr::null_mut();
+        // The subscript bridge refuses on a registry miss.
+        assert!(unsafe { seq_subscript(object, key) }.is_null());
+        // The assignment bridge refuses the same way.
+        assert_eq!(
+            unsafe { seq_ass_subscript(object, key, std::ptr::null_mut()) },
+            c_int::MAX
+        );
+    }
+
+    /// A null self reaches the defensive handler table rather than the
+    /// registry: the lookup would dereference the type pointer.
+    #[test]
+    fn a_null_self_falls_back_to_the_miss_table() {
+        // SAFETY: the table is a value; nothing dereferences the null.
+        let handlers = unsafe { registry_handlers(std::ptr::null_mut()) };
+        assert!(unsafe { (handlers.item)(std::ptr::null_mut(), 0) }.is_null());
+        assert_eq!(
+            unsafe { (handlers.ass_item)(std::ptr::null_mut(), 0, std::ptr::null_mut()) },
+            c_int::MAX
+        );
+        assert_eq!(unsafe { (handlers.length)(std::ptr::null_mut()) }, 0);
+    }
+
+    /// The index normalisation refuses a null self or key as an index the
+    /// handler will reject, with no error set.
+    #[test]
+    fn the_index_normalisation_refuses_null_arguments() {
+        // SAFETY: both guards return before either argument is used. The
+        // assertions stop before consulting the error state, which does not
+        // exist while the interpreter is down.
+        let object: *mut capi::PyObject = std::ptr::null_mut();
+        assert_eq!(unsafe { seq_index_key(object, object) }, -1);
+    }
+
+    /// The defensive length arm answers zero rather than raising: a
+    /// length-only bridge is never wired by a spec.
+    #[test]
+    fn the_defensive_length_arm_answers_zero() {
+        // SAFETY: the stub object is never dereferenced.
+        let object: *mut capi::PyObject = std::ptr::null_mut();
+        assert_eq!(unsafe { zero_bridge_length(object) }, 0);
     }
 }

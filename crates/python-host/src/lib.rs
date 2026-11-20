@@ -22,6 +22,7 @@ pub mod init_time_job;
 pub mod interpreter;
 pub mod output_writer;
 pub mod pyref;
+pub mod sequence;
 pub mod wrapper;
 
 pub use binding::BindError;

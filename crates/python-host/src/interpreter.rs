@@ -455,8 +455,23 @@ mod tests {
     use super::*;
     use crate::import_paths;
     use crate::pyref::PyRef;
+    use crate::sequence;
     use std::path::PathBuf;
     use std::process::Command;
+
+    /// One container state plus the view over it: the sequence scenarios
+    /// build a proxy on it and park the view in `__main__`, the same way the
+    /// engine parks a native object.
+    fn sequence_view(values: &[i64], writable: bool) -> (Box<sequence::SequenceState>, PyRef) {
+        let mut state = if writable {
+            Box::new(sequence::SequenceState::new(values))
+        } else {
+            Box::new(sequence::SequenceState::read_only(values))
+        };
+        let view = unsafe { sequence::wrap(state.as_mut() as *mut sequence::SequenceState) }
+            .expect("wrap the native state");
+        (state, view)
+    }
 
     /// BW-03-01-01. One scenario per process, because CPython 3.13 and later
     /// refuse to initialise a process that has already finalised (`Fatal
@@ -509,6 +524,12 @@ mod tests {
         "interpreter::tests::scenario_a_script_cannot_construct_a_native_type",
         "interpreter::tests::scenario_an_instance_renders_with_the_reference_format",
         "interpreter::tests::scenario_a_type_name_creates_one_type_object",
+        "interpreter::tests::scenario_a_sequence_proxy_round_trips_native_state",
+        "interpreter::tests::scenario_two_sequence_views_share_native_state",
+        "interpreter::tests::scenario_a_sequence_proxy_normalises_negative_indices",
+        "interpreter::tests::scenario_a_sequence_proxy_bounds_are_checked",
+        "interpreter::tests::scenario_a_read_only_sequence_refuses_assignment",
+        "interpreter::tests::scenario_a_non_integer_subscript_refuses",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
     ];
@@ -1565,6 +1586,155 @@ mod tests {
             // instead of the registry.
             let foreign = unsafe { capi::Py_TYPE(capi::py_true()) };
             assert_eq!(unsafe { binding::qualified_name(foreign) }, "bool");
+        });
+    }
+
+    /// The acceptance probe: a script's writes through the proxy land in
+    /// the native state, and its reads report the native state -- the
+    /// `PySTLSequence` contract, a mutation seen from Python applied to the
+    /// native object.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_sequence_proxy_round_trips_native_state() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (mut _state, view) = sequence_view(&[10, 20, 30], true);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = len(seq)"), "3");
+            assert_eq!(probe(interpreter, "__probe = seq[1]"), "20");
+            probe(interpreter, "seq[1] = 25");
+            assert_eq!(probe(interpreter, "__probe = seq[1]"), "25");
+            // The native state carries the script's write.
+            assert_eq!(_state.values(), &[10, 25, 30]);
+            // And the script sees a native-side write.
+            _state.values_mut()[0] = 5;
+            assert_eq!(probe(interpreter, "__probe = seq[0]"), "5");
+        });
+    }
+
+    /// Two views of one state share it: the reference's every view of one
+    /// `PyObjectPlus` holder reports on the same native container.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_two_sequence_views_share_native_state() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (mut state, left) = sequence_view(&[1, 2], true);
+            let right = unsafe { sequence::wrap(state.as_mut() as *mut sequence::SequenceState) }
+                .expect("the second view");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"left".as_ptr(), left.as_ptr());
+                capi::PyObject_SetAttrString(main, c"right".as_ptr(), right.as_ptr());
+            }
+            probe(interpreter, "left[0] = 9");
+            assert_eq!(probe(interpreter, "__probe = right[0]"), "9");
+            assert_eq!(probe(interpreter, "__probe = (left is right)"), "False");
+        });
+    }
+
+    /// The bridge's negative-index normalisation, `seqIndexKey` on the
+    /// mapping path: `seq[-1]` is the last item, and a deletion through a
+    /// negative index removes the same item a positive one would.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_sequence_proxy_normalises_negative_indices() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (state, view) = sequence_view(&[1, 2, 3], true);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = seq[-1]"), "3");
+            probe(interpreter, "del seq[-1]");
+            assert_eq!(state.values(), &[1, 2]);
+            assert_eq!(probe(interpreter, "__probe = seq[-1]"), "2");
+        });
+    }
+
+    /// Out-of-range reads and writes raise the reference's two index
+    /// errors, verbatim with the type name in the `%s`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_sequence_proxy_bounds_are_checked() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (_state, view) = sequence_view(&[1], true);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    seq[3]\nexcept IndexError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "IndexError: boundless.Sequence index out of range"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    seq[3] = 4\nexcept IndexError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "IndexError: boundless.Sequence assignment index out of range"
+            );
+        });
+    }
+
+    /// A read-only state refuses the write with the reference's message.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_read_only_sequence_refuses_assignment() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (_state, view) = sequence_view(&[1], false);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    seq[0] = 2\nexcept TypeError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "TypeError: Cannot assign an item in a read-only boundless.Sequence"
+            );
+        });
+    }
+
+    /// A non-integer subscript raises the reference's `TypeError`, and a
+    /// foreign object through the bridge raises the reference's
+    /// not-subscriptable refusal: the message a plain `str` produces is the
+    /// `PyType_GetName` arm of the qualified-name lookup.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_non_integer_subscript_refuses() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (_state, view) = sequence_view(&[1], true);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    seq['one']\nexcept TypeError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "TypeError: boundless.Sequence indices must be integers, not str"
+            );
+            // The bridge's own miss arm renders the same sentence; CPython's
+            // own wording for a `str` here is the independent check of it.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    'text'[0] = 1\nexcept TypeError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "TypeError: 'str' object does not support item assignment"
+            );
         });
     }
 
