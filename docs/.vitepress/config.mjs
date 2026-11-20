@@ -48,6 +48,10 @@ export default {
   ],
   themeConfig: {
     siteTitle,
+    search: {
+      // Pure client-side local search index; no external search service.
+      provider: "local"
+    },
     nav,
     sidebar,
     outline: { level: [2, 3], label: "On this page" },
