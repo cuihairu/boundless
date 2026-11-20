@@ -402,7 +402,8 @@
   - 证据：坏定义 fixture（Bad.def 字段 hp 用 NOSUCHTYPE）在 stock 二进制七行诊断链逐字捕获（docs/review/reference/bad_def_diagnostics.txt），Rust 经惰性别名加载（data_type.cpp s_aliasesDone 等价）后差分测试断言六行 [DataDescription] 链顺序与文本逐行一致，含 `Unable to find data type 'NOSUCHTYPE' for Bad.hp` 文件.字段行；238 单元 + 1 诊断差分 + 4 差分通过，clippy 0 findings，覆盖率 data_type.rs 943/962=98.02% 全部 ≥98%（commit 7af5fd6）。
 - [x] **BW-04-04-03 复现生成产物**。**验收** 对照 ID、摘要及引用关系。
   - 证据：新建 full_def fixture（3 实体、alias/ARRAY/FIXED_DICT、九个 Flags 族、identifier 链、base/cell/client 脚本三向），stock 产物 docs/review/reference/full_entitydef.json（11,763 字节，digest 6FA9B4C32162519E4A50B9C98136791B），Rust bin stdout 与之逐字节相等（diff 空，exit 0）；ID（实体/属性/clientServerFull index、65535 哨兵）、摘要（全 flag 组合、streamSize、方法 args/returnValues）、引用关系（别名解析、类型组合、脚本存在性、全树 digest）三轴一致，差分测试 full_dump_matches_the_process_defs_oracle 无条件锚定；238 单元 + 6 差分通过，clippy 0，覆盖率全部 ≥98%（commit 4912826）。
-- [ ] **BW-04-04-04 验证 bwentity 与集成示例**。**验收** 用产物成功加载脚本定义。
+- [x] **BW-04-04-04 验证 bwentity 与集成示例**。**验收** 用产物成功加载脚本定义。
+  - 证据：bwentity 等价工厂路径（tests/bwentity_load.rs，镜像 EntityDescriptionMapFactory::create：开 scripts/entities.xml → parse → nameToIndex/entityDescription 导航）在 full_def（无条件）、client_integration 示例与 fantasydemo（BW04_CI_RES/BW04_FD_RES 本环境实跑）三棵树加载成功，digest 与 BW-04-04-03 产物逐字节核对一致；锚定测试先红后依参考语义改正（EDITOR_ONLY 属性不进运行时属性集，secret 不占 propertyCount）；238 单元 + 9 差分/工厂测试通过，clippy 0，覆盖率全部 ≥98%（commit 5539da6）。
 
 ### BW-05 集群控制、进程发现和恢复
 
