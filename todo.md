@@ -1417,7 +1417,11 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 固定工具链与锁文件，提供 Rust 格式、lint、编译、Python 检查和 TypeScript 检查入口。按变更路径选择检查，文档变更触发站点检查。
 
-- [ ] **BW-22-01-01 固定 CI 工具链和锁文件**。**验收** 本地解析结果一致。
+- [x] **BW-22-01-01 固定 CI 工具链和锁文件**。**验收** 本地解析结果一致。
+  - 原版：BigWorld `.github/workflows/{ci,daily-build}.yml` 只钉 vcpkg `builtin-baseline` 与系统 `gcc-14`，无 Rust 侧约束（原版不含 Rust）。
+  - 新版：钉位沿用 BW-00-03-02 的 `rust-toolchain.toml` channel=1.100.0（未重做），新增 `ci/toolchain-check.sh` 断言 rustup 依该文件解析出的 `rustc`/`cargo` 等于 pin、`Cargo.lock` 已入库且未被 gitignore、`cargo metadata --locked` 一致，并把解析结果写成 `ci-out/toolchain.json`。
+  - 结果：`ci/toolchain-check.sh --offline` 退出码 0，报 pinned=1.100.0 / resolved=1.100.0 / members=9 / offline build resolved；负例 `RUSTUP_TOOLCHAIN=1.99.0` 退出码 1，报 `resolved 1.99.0 but rust-toolchain.toml pins 1.100.0`。
+  - 证据：`ci/toolchain-check.sh`、`ci-out/toolchain.json`（pinned、resolved、members、cargo_lock_tracked、offline、checked_at、git_sha=0cd68ff）；CI 作业 `toolchain` 见 `.github/workflows/ci.yml`（run 号见 BW-22 交付汇总）。
 - [ ] **BW-22-01-02 接入 Rust 格式、lint 与构建**。**验收** 各有可复跑入口。
 - [ ] **BW-22-01-03 接入 Python 检查**。**验收** 失败定位模块。
 - [ ] **BW-22-01-04 接入 TypeScript 检查**。**验收** 失败定位扩展源码。
