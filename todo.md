@@ -1665,7 +1665,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用实体属性、Cell 迁移、PostgreSQL 运维等真实问题验证命中章节及链接。CI 在索引过期、引用失效或内容超出公开文档范围时报告问题。
 
-- [ ] **BW-28-03-01 验证 EntityDef、Cell 迁移和 PostgreSQL 查询**。**验收** 三项均命中对应参考。
+- [x] **BW-28-03-01 验证 EntityDef、Cell 迁移和 PostgreSQL 查询**。**验收** 三项均命中对应参考。
+  - 证据：原版结果——引用仓库这三个话题（属性定义、Cell 迁移、PostgreSQL 运维）散在各自的源目录里，没有任何统一检索入口，问题只能靠人翻目录。新版结果——三个真实问题各自命中对应参考：`EntityDef Flags` 命中 `zh/guide/entities.md` 的 `定义属性`；`迁移步骤 快照` 命中 `zh/guide/cell/migration.md` 的 `迁移步骤`（同页其他章节只按打分靠后，全部命中都不越出该页）；`PostgreSQL 备份` 命中 `zh/ops/postgresql.md` 的 `PostgreSQL 备份与恢复` 且 snippet 含 `pg_dump`。命中即可用：把命中的 `path` + `anchor` + `version=v1` 直接交给 `read_doc`，回唯一一节且 `source == https://docs.boundless.dev/zh/guide/entities.html#定义属性`（CJK 锚点也能带上）。证据链接——`integrations/mcp/docs/tests/real_queries.rs` 5 例：`the_three_references_are_all_indexed`、`an_entity_def_query_hits_the_property_reference`、`a_cell_migration_query_hits_the_migration_reference`、`a_postgresql_query_hits_the_operations_reference`、`a_hit_reads_back_through_the_read_tool`，`cargo test` 全绿。如实登记：本 worktree 尚无 BW-19 的 `docs/` 产出，三个参考按 BW-19 VitePress 的 `zh/guide/…` 约定用真实 git 仓库里的合成夹具建，路径与语言分布与真实文档一致；测试只依赖 `GitSource` 与 `docs/**/*.md` 约定，`docs/` 落地后同一查询可直接跑在真实文档上。
 - [ ] **BW-28-03-02 接入索引时效检查**。**验收** 改文档不重建时检查失败。
 - [ ] **BW-28-03-03 接入链接及公开范围检查**。**验收** 坏链接和越界样本被识别。
 
