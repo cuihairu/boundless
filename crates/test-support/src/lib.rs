@@ -7,6 +7,7 @@
 
 pub mod allocation;
 pub mod case_registry;
+pub mod clock;
 pub mod config_fixture;
 pub mod layering;
 pub mod multiproc;

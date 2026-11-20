@@ -1269,7 +1269,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 对应原版 `lib/testing/` 消息过滤能力，提供虚拟时钟、手动推进 tick、丢包、延迟、乱序与进程故障注入。验证定时器、重传、迁移和恢复行为可重复。
 
-- [ ] **BW-18-03-01 实现手动时钟**。**验收** 同一序列推进得到相同 Tick。
+- [x] **BW-18-03-01 实现手动时钟**。**验收** 同一序列推进得到相同 Tick。
+  - 证据：原版 lib/network/unit_test/manual_clock.hpp 从墙钟起步、advanceMs 走浮点秒换算，重复运行 Tick 不同；新版 crates/test-support/src/clock.rs 提供 ManualClock（stamp 零起步、纳秒刻度与 stamp_now()/DispatcherTimers ClockFn 完全同单位，advance_ms/rewind_ms 定点整数推进、rewind 过零环绕保留原版无符号减法语义），`the_same_advance_sequence_yields_the_same_ticks` 钉死同序列同 Tick，`time_stands_still_until_advanced`/`milliseconds_convert_to_nanosecond_stamps`/`the_injected_clock_fn_tracks_advances` 验证静止性、刻度与 ClockFn 注入可观察推进。
 - [ ] **BW-18-03-02 实现确定性丢包**。**验收** 指定包触发预期重传。
 - [ ] **BW-18-03-03 实现延迟及乱序**。**验收** 按指定顺序交付。
 - [ ] **BW-18-03-04 提供进程故障夹具**。**验收** 可复现迁移或恢复。
