@@ -203,6 +203,13 @@ jobs:
         with:
           node-version: 24
 
+      # The lane installs each project's own devDependencies before
+      # typechecking — a tsconfig without its types reports missing @types
+      # instead of defects. A pnpm-locked project needs pnpm to do that
+      # reproducibly; npm projects use the npm that setup-node provides.
+      - name: pnpm for pnpm-locked projects
+        run: npm install --no-fund --no-audit --global pnpm@12
+
       - name: Check
         run: ci/check-typescript.sh
 

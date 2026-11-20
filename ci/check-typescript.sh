@@ -10,9 +10,12 @@
 # every tsconfig.json in the tree, typechecks each project, and runs the
 # package's own test script when one exists.
 #
-# Nothing is there yet, so the lanes SKIP until a tsconfig lands — and say
-# which directory will turn them on. Failures are reduced to `file(line,col)`
-# lists, which is how tsc reports them.
+# A tsconfig without its node_modules gates nothing useful: the report is a
+# wall of "Cannot find name 'Buffer'" instead of defects, because the types the
+# code was written against live in devDependencies. The lane installs a
+# project's own dependencies first (pnpm when locked with pnpm, npm otherwise)
+# so the gate reads the code with its own toolchain. Failures are reduced to
+# `file(line,col)` lists, which is how tsc reports them.
 
 set -uo pipefail
 # shellcheck source=ci/lib.sh
@@ -51,6 +54,30 @@ resolve_tsc() {
         return 0
     fi
     return 1
+}
+
+# Install a project's devDependencies when its own toolchain is absent.
+#
+# The success test is the project toolchain existing afterwards, not the
+# installer's exit code: pnpm reports ignored postinstall scripts (esbuild,
+# keytar) as ERR_PNPM_IGNORED_BUILDS while everything tsc needs is already in
+# place, and npm can leave a usable tree after a partial native-build failure.
+ensure_deps() {
+    local dir="$1" safe="$2"
+    [ -f "$dir/package.json" ] || return 0
+    [ -x "$dir/node_modules/.bin/tsc" ] && return 0
+
+    if [ -f "$dir/pnpm-lock.yaml" ] && command -v pnpm >/dev/null 2>&1; then
+        ci_step "install dependencies (pnpm) $dir"
+        ci_pipe "ts-deps-$safe" pnpm -C "$dir" install --frozen-lockfile --prefer-offline
+    elif [ -f "$dir/package-lock.json" ]; then
+        ci_step "install dependencies (npm ci) $dir"
+        ci_pipe "ts-deps-$safe" npm ci --prefix "$dir" --no-audit --no-fund
+    else
+        ci_step "install dependencies (npm install) $dir"
+        ci_pipe "ts-deps-$safe" npm install --prefix "$dir" --no-audit --no-fund
+    fi
+    [ -x "$dir/node_modules/.bin/tsc" ]
 }
 
 # tsc prints `src/foo.ts(12,3): error TS2322: ...`; keep the leading part.
@@ -95,18 +122,28 @@ main() {
     fi
 
     ci_note "$n tsconfig project(s)"
-    local proj tsc dir
+    local proj tsc dir safe report detail
     while IFS= read -r proj; do
         [ -n "$proj" ] || continue
         dir="$(dirname "$proj")"
+        # Lane and log names flatten the directory. A nested project would
+        # otherwise write its log under a path containing a slash, and a log
+        # that never got written turns a failure into a blank detail.
+        safe="${dir//\//-}"
+
+        if ! ensure_deps "$dir" "$safe"; then
+            ci_skip ts-typecheck "dependencies missing for $dir and the install failed (log logs/ts-deps-$safe.log)"
+            ci_skip ts-test "dependencies missing for $dir"
+            continue
+        fi
+
         ci_step "typecheck $dir"
         if ! tsc="$(resolve_tsc "$dir")"; then
             ci_fail ts-typecheck "no tsc available for $dir — install typescript as a devDependency"
             continue
         fi
-        local report="$CI_LOG_DIR/ts-typecheck-$dir.log"
-        mkdir -p "$(dirname "$report")"
-        ci_pipe "ts-typecheck-$dir" "$tsc" --noEmit -p "$proj"
+        report="$CI_LOG_DIR/ts-typecheck-$safe.log"
+        ci_pipe "ts-typecheck-$safe" "$tsc" --noEmit -p "$proj"
         if [ "${CI_RC:-1}" -eq 0 ]; then
             ci_pass ts-typecheck "ok ($dir)"
         else
@@ -117,12 +154,20 @@ main() {
         # has no substrate for it yet.
         if grep -q '"test"' "$dir/package.json" 2>/dev/null; then
             ci_step "test $dir"
-            local pkg_report="$CI_LOG_DIR/ts-test-$dir.log"
-            ci_pipe "ts-test-$dir" npm test --prefix "$dir" --silent
+            report="$CI_LOG_DIR/ts-test-$safe.log"
+            ci_pipe "ts-test-$safe" npm test --prefix "$dir" --silent
             if [ "${CI_RC:-1}" -eq 0 ]; then
                 ci_pass ts-test "ok ($dir)"
             else
-                ci_fail ts-test "$(first_errors "$pkg_report" | sed 's/, */, /g' | sed 's/^$/see logs/' )"
+                # A test runner does not speak tsc's `file(line,col)` form; a
+                # vitest failure prints ` FAIL  src/x.test.ts > case`. Fall
+                # back to the first failing line so the manifest names a file.
+                detail="$(first_errors "$report")"
+                if [ -z "$detail" ] && [ -f "$report" ]; then
+                    detail="$(grep -m1 -E 'FAIL|✗|×' "$report" | cut -c1-140)"
+                fi
+                [ -n "$detail" ] || detail="see logs/ts-test-$safe.log"
+                ci_fail ts-test "$detail"
             fi
         else
             ci_skip ts-test "no test script in $dir"
