@@ -4,6 +4,10 @@ pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;
 pub mod frequent_tasks;
+pub mod interface_element;
+pub mod interface_minder;
+pub mod interface_table;
+pub mod interfaces;
 pub mod misc;
 #[cfg(target_os = "linux")]
 pub mod network_interface;

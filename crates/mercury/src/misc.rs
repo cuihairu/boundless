@@ -1,5 +1,10 @@
 //! `Mercury::Reason` and its string table (`lib/network/misc.hpp`).
 
+/// `MessageID` (`misc.hpp:90`): the identifier of the message inside the
+/// packet. One byte, so an interface owns at most 256 messages and
+/// `REPLY_MESSAGE_IDENTIFIER` reserves the top one.
+pub type MessageID = u8;
+
 /// `Mercury::Reason`: reasons for Mercury errors, exceptions, and return
 /// codes. The reference numbers them downwards from 0 so that
 /// `-reason` indexes the string table; the port keeps the exact values
