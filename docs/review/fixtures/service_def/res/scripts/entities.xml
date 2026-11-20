@@ -1,0 +1,9 @@
+<root>
+	<ClientServerEntities>
+		<Ghost/>
+	</ClientServerEntities>
+
+	<ServerOnlyEntities>
+		<Solo/>
+	</ServerOnlyEntities>
+</root>

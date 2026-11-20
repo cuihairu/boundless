@@ -1,0 +1,20 @@
+<root>
+	<Implements>	<i>	Sweep	</i>	</Implements>
+
+	<Properties>
+		<mop>
+			<Type>	INT32	</Type>
+			<Flags>	BASE	</Flags>
+		</mop>
+	</Properties>
+
+	<Methods>
+		<sweep>
+			<Args>	<room>	STRING	</room>	</Args>
+			<Exposed/>
+		</sweep>
+		<tally>
+			<ReturnValues>	<total>	INT32	</total>	</ReturnValues>
+		</tally>
+	</Methods>
+</root>

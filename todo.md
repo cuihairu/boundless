@@ -351,7 +351,8 @@
   - 证据：crates/entitydef 差分测试对参考 process_defs dump（fantasydemo / client_integration 两棵 res 树）逐字节相等，149 单测通过，行覆盖 99.41%；详见 docs/review/bw04-01-01-entitydef-parse.md。commit `0023108`。
 - [x] **BW-04-01-02 合并父类和接口**。**验收** 继承冲突与优先级吻合。
   - 证据：父类同名方法签名冲突失败、接口成员先于自身并入、Volatile 缺省继承父值、接口链自深向浅合并；差分 oracle 仍逐字节相等。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-02 节。commit `da3b2ff`（前置 clippy 修复 `ca51862`）。
-- [ ] **BW-04-01-03 处理 Service 定义**。**验收** 公开方法与原版清单一致。
+- [x] **BW-04-01-03 处理 Service 定义**。**验收** 公开方法与原版清单一致。
+  - 证据：自建 res 夹具（services.xml 两服务 + service_defs + 服务脚本 + 服务接口链）上跑参考 process_defs 生成 oracle `docs/review/reference/service_entitydef.json`（MD5 012FC1AB…），Rust `dump_map` 逐字节相等；服务公开方法清单 = `<Implements>` 接口方法在前 + `<Methods>`（vacuum/sweep/tally），`sweep` exposedIndex=0，cell/client 半边为空，服务自带 `<Properties>` 被忽略。同时修正 `EntityDistribution` 标签名对齐参考 `readBool("Client"/"Base"/"Cell")`。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-03 节。
 - [ ] **BW-04-01-04 分配属性和方法索引**。**验收** Base、Cell、Client 索引吻合。
 - [ ] **BW-04-01-05 计算定义摘要**。**验收** 同输入得到与原版相同字节。
 

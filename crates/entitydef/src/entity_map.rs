@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use resources::datasection::DataSection;
 
 use crate::constants;
-use crate::data_type::{TypeContext, children};
+use crate::data_type::{children, TypeContext};
 use crate::diagnostics::Diagnostics;
 use crate::digest::Md5;
 use crate::entity_description::{
@@ -740,11 +740,10 @@ mod tests {
         let mut diag = Diagnostics::new();
         let (map, ok) = parse_map(&resolver, &mut diag);
         assert!(ok, "{:?}", diag.messages());
-        assert!(
-            diag.messages()
-                .iter()
-                .any(|m| m.contains("Grunt is aliased as Guard\n"))
-        );
+        assert!(diag
+            .messages()
+            .iter()
+            .any(|m| m.contains("Grunt is aliased as Guard\n")));
         // Grunt adopts Guard's clientIndex (0) while keeping its own index.
         assert_eq!(map.entity_description(1).unwrap().client_index(), 0);
     }
@@ -777,11 +776,10 @@ mod tests {
         assert!(diag.errors().iter().any(|m| {
             m.contains("EntityDescriptionMap::parse: Grunt has mismatched ClientName Guard\n")
         }));
-        assert!(
-            diag.errors()
-                .iter()
-                .any(|m| m.contains("There are 0 methods and 0 props instead of 0 and 1\n"))
-        );
+        assert!(diag
+            .errors()
+            .iter()
+            .any(|m| m.contains("There are 0 methods and 0 props instead of 0 and 1\n")));
         assert_eq!(
             map.entity_description(1).unwrap().client_index(),
             INVALID_ENTITY_TYPE_ID
@@ -947,6 +945,67 @@ mod tests {
         );
     }
 
+    /// The committed service fixture
+    /// (`docs/review/fixtures/service_def`): a service's public method list is
+    /// its `<Methods>` section plus the methods of its `<Implements>` chain, in
+    /// that order, and services never gain cell or client methods.
+    #[test]
+    fn a_service_lists_its_public_methods_from_the_methods_section() {
+        let root = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/review/fixtures/service_def/res"
+        ));
+        let resolver = crate::entity_description::FsResolver::new(root);
+        let mut ctx = crate::data_type::TypeContext::default();
+        let mut diag = Diagnostics::new();
+        ctx.init_aliases(
+            || resolver.open_section(crate::constants::ALIASES_FILE),
+            &mut diag,
+        );
+
+        let entities = resolver
+            .open_section(crate::constants::ENTITIES_FILE)
+            .expect("the fixture has scripts/entities.xml");
+        let mut map = EntityDescriptionMap::new();
+        assert!(
+            map.parse(
+                Some(&entities),
+                &resolver,
+                &ctx,
+                &mut diag,
+                &MessageRanges::default(),
+            ),
+            "{:?}",
+            diag.messages()
+        );
+
+        // Services load after every entity, so their ids start at 2 here.
+        assert_eq!(map.name_to_index("Cleaner"), Some(2));
+        let cleaner = map.entity_description(2).expect("the service exists");
+        assert!(cleaner.is_service());
+        assert!(!cleaner.can_be_on_cell());
+        assert!(!cleaner.can_be_on_client());
+        assert!(cleaner.can_be_on_base());
+
+        let methods = cleaner.base().internal_methods();
+        assert_eq!(
+            methods.iter().map(|m| m.name()).collect::<Vec<_>>(),
+            // The interface method precedes the service's own.
+            ["vacuum", "sweep", "tally"]
+        );
+        assert_eq!(
+            methods.iter().map(|m| m.is_exposed()).collect::<Vec<_>>(),
+            [false, true, false]
+        );
+        assert_eq!(cleaner.cell().size(), 0, "services have no cell half");
+        assert_eq!(cleaner.client().size(), 0, "services have no client half");
+        assert_eq!(
+            cleaner.property_count(),
+            0,
+            "service properties are dropped"
+        );
+    }
+
     #[test]
     fn service_without_script_fails() {
         let resolver = MemoryResolver::new(&[
@@ -969,11 +1028,10 @@ mod tests {
             &mut diag,
             &MessageRanges::default(),
         ));
-        assert!(
-            diag.errors()
-                .iter()
-                .any(|m| m.contains("Service 'Lost' does not have a service script.\n"))
-        );
+        assert!(diag
+            .errors()
+            .iter()
+            .any(|m| m.contains("Service 'Lost' does not have a service script.\n")));
     }
 
     #[test]

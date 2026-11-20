@@ -1,0 +1,14 @@
+<root>
+	<Properties>
+		<brush>
+			<Type>	INT32	</Type>
+			<Flags>	BASE	</Flags>
+		</brush>
+	</Properties>
+
+	<Methods>
+		<vacuum>
+			<Args>	<room>	STRING	</room>	</Args>
+		</vacuum>
+	</Methods>
+</root>

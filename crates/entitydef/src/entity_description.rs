@@ -14,7 +14,7 @@ use resources::datasection::DataSection;
 
 use crate::constants;
 use crate::data_description::DataDescription;
-use crate::data_type::{TypeContext, children};
+use crate::data_type::{children, TypeContext};
 use crate::diagnostics::Diagnostics;
 use crate::digest::Md5;
 use crate::flags::{EXACT_MATCH, ONLY_OTHER_CLIENT_DATA, ONLY_PERSISTENT_DATA};
@@ -76,8 +76,8 @@ impl<T: DefResolver + ?Sized> DefResolver for &T {
     }
 }
 
-/// The `<Distribution>` tags (`EntityDistribution`): `Unspecified` when the
-/// tag is absent.
+/// The `<Distribution>` tags (`EntityDistribution`): `None` ("Unspecified")
+/// only when the whole `<Distribution>` section is missing.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EntityDistribution {
     pub client_tag: Option<bool>,
@@ -85,13 +85,23 @@ pub struct EntityDistribution {
     pub cell_tag: Option<bool>,
 }
 
+/// `readBool( name )`: the reference treats a present-but-empty tag as false.
+fn read_tag(section: &DataSection, name: &str) -> bool {
+    section
+        .find_child(name)
+        .is_some_and(|child| child.as_bool(false))
+}
+
 impl EntityDistribution {
     fn parse(section: Option<&DataSection>) -> Self {
+        // `readBool( "Cell" )` and friends: a `<Distribution>` section decides
+        // all three roles, so a missing tag means `false` rather than
+        // "unspecified".
         match section {
             Some(section) => Self {
-                client_tag: section.find_child("clientTag").map(|s| s.as_bool(false)),
-                base_tag: section.find_child("baseTag").map(|s| s.as_bool(false)),
-                cell_tag: section.find_child("cellTag").map(|s| s.as_bool(false)),
+                client_tag: Some(read_tag(section, "Client")),
+                base_tag: Some(read_tag(section, "Base")),
+                cell_tag: Some(read_tag(section, "Cell")),
             },
             None => Self::default(),
         }
@@ -1329,11 +1339,10 @@ mod tests {
         let hp = desc.property(0).expect("hp");
         assert_eq!(hp.data_type.meta_name(), "INT64", "child wins");
         assert_eq!(hp.index, 0);
-        assert!(
-            diag.messages()
-                .iter()
-                .any(|m| m.contains("property Child.hp is being overridden."))
-        );
+        assert!(diag
+            .messages()
+            .iter()
+            .any(|m| m.contains("property Child.hp is being overridden.")));
     }
 
     #[test]
@@ -1421,11 +1430,10 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(
-            diag.errors()
-                .iter()
-                .any(|m| m.contains("Method 'jump' already defined with a different signature"))
-        );
+        assert!(diag
+            .errors()
+            .iter()
+            .any(|m| m.contains("Method 'jump' already defined with a different signature")));
     }
 
     /// The same method through an `<Implements>` interface conflicts the same
@@ -1463,11 +1471,10 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(
-            diag.errors()
-                .iter()
-                .any(|m| m.contains("Method 'shout' already defined with a different signature"))
-        );
+        assert!(diag
+            .errors()
+            .iter()
+            .any(|m| m.contains("Method 'shout' already defined with a different signature")));
     }
 
     /// Volatile priorities are sticky: a child keeps its parent's values
@@ -1812,11 +1819,10 @@ mod tests {
 
         // Not a proxy (no scripts/base/Npc.py): exposed base method warns.
         assert!(!desc.check_exposed_methods(false, &mut diag));
-        assert!(
-            diag.warnings()
-                .iter()
-                .any(|m| m.contains("Base method boom in non-proxy entity Npc cannot be exposed"))
-        );
+        assert!(diag
+            .warnings()
+            .iter()
+            .any(|m| m.contains("Base method boom in non-proxy entity Npc cannot be exposed")));
     }
 
     #[test]
@@ -1833,8 +1839,8 @@ mod tests {
                 &format!("{DEFS}/Account.def"),
                 "<root> \
                      <Distribution> \
-                         <cellTag> true </cellTag> \
-                         <baseTag> false </baseTag> \
+                         <Cell> true </Cell> \
+                         <Base> false </Base> \
                      </Distribution> \
                  </root>",
             ),
@@ -1855,12 +1861,12 @@ mod tests {
 
         assert!(
             desc.can_be_on_cell(),
-            "cellTag wins over the missing script"
+            "the Cell tag wins over the missing script"
         );
-        assert!(!desc.can_be_on_base(), "baseTag wins over any script");
+        assert!(!desc.can_be_on_base(), "the Base tag wins over any script");
         assert!(
             !desc.can_be_on_client(),
-            "no clientTag: falls through to script detection (absent)"
+            "an absent Client tag means false: a <Distribution> decides"
         );
         assert_eq!(desc.client_name(), "", "no client, no client name");
     }
@@ -1881,11 +1887,10 @@ mod tests {
         let mut desc = EntityDescription::new();
         let mut diag = Diagnostics::new();
         assert!(!desc.parse("Avatar", "", None, &resolver, &ctx(), &mut diag));
-        assert!(
-            diag.errors()
-                .iter()
-                .any(|m| m.contains("Could not parse definitely-not-a-def, parent of Avatar"))
-        );
+        assert!(diag
+            .errors()
+            .iter()
+            .any(|m| m.contains("Could not parse definitely-not-a-def, parent of Avatar")));
     }
 
     #[test]
@@ -2053,11 +2058,10 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(
-            diag.warnings()
-                .iter()
-                .any(|m| m.contains("IsManualAOI is deprecated, use IsManualAoI instead"))
-        );
+        assert!(diag
+            .warnings()
+            .iter()
+            .any(|m| m.contains("IsManualAOI is deprecated, use IsManualAoI instead")));
         assert!(
             !desc.appeal_radius.is_nan(),
             "parse kept going after the deprecated tag"
@@ -2150,11 +2154,10 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(
-            diag.errors()
-                .iter()
-                .any(|m| m.contains("Component with name 'movement' is duplicated."))
-        );
+        assert!(diag
+            .errors()
+            .iter()
+            .any(|m| m.contains("Component with name 'movement' is duplicated.")));
 
         // A missing component def file errors out.
         let resolver = MemoryResolver::new(&[
@@ -2246,11 +2249,10 @@ mod tests {
             &ctx(),
             &mut diag
         ));
-        assert!(
-            diag.warnings()
-                .iter()
-                .any(|m| m.contains("Error parsing properties for Guard"))
-        );
+        assert!(diag
+            .warnings()
+            .iter()
+            .any(|m| m.contains("Error parsing properties for Guard")));
     }
 
     #[test]
@@ -2317,11 +2319,10 @@ mod tests {
             "{:?}",
             diag.messages()
         );
-        assert!(
-            diag.messages()
-                .iter()
-                .any(|m| m.contains("property Avatar.hp is being overridden."))
-        );
+        assert!(diag
+            .messages()
+            .iter()
+            .any(|m| m.contains("property Avatar.hp is being overridden.")));
         assert_eq!(desc.property_count(), 2, "hp replaces its interface slot");
         assert_eq!(
             desc.client_server_property_count(),
@@ -2581,7 +2582,7 @@ mod tests {
         assert_eq!(desc.exposed_cell_method_count(), 0);
     }
 
-    /// A `&Resolver` acts as a resolver itself, and the `clientTag` override
+    /// A `&Resolver` acts as a resolver itself, and the `Client` tag override
     /// beats the script-file lookup.
     #[test]
     fn resolver_references_forward_and_client_tags_win() {
@@ -2594,7 +2595,7 @@ mod tests {
             (
                 &format!("{DEFS}/Ghost.def"),
                 "<root> \
-                     <Distribution> <clientTag> true </clientTag> </Distribution> \
+                     <Distribution> <Client> true </Client> </Distribution> \
                      <BaseMethods> <logOff> <Exposed/> </logOff> </BaseMethods> \
                  </root>",
             ),
