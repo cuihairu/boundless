@@ -1637,7 +1637,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 按 Git 版本、语言、文档路径及标题锚点建立索引，从 VitePress 公开源生成。验证章节拆分、增量重建、删除和版本切换。
 
-- [ ] **BW-28-01-01 提取公开 VitePress 章节**。**验收** 标题、锚点及语言可定位。
+- [x] **BW-28-01-01 提取公开 VitePress 章节**。**验收** 标题、锚点及语言可定位。
+  - 证据：原版结果——引用仓库文档是散落的 markdown/HTML（`BigWorld/docs/` 有 `.vitepress` 的 zh locale 树），但没有任何机器可定位的章节索引，标题、锚点、语言全靠人眼。新版结果——`integrations/mcp/docs/`（独立 crate `boundless-docs-mcp`，不入根 workspace 以免和他席位冲突）的 `src/markdown.rs` 把 `docs/**/*.md` 抽成结构化章节：front matter 的 `title`/`lang`/`private`、标题行内标记剥离、VitePress/GitHub 锚点规则（CJK 保留、空格转 `-`、去标点）、代码围栏内的 `#` 不当标题、章节体止于同级或更高级标题、行号为含 front matter 的全文档 0 基行、locale 目录（如 `zh/guide/x.md`）推断语言、`private: true` 打标记供公开边界使用。证据链接——`cargo test` 17 例全绿（tests/extract.rs）；`cargo llvm-cov` 行覆盖 100%（141/141），clippy 0 警告（仅 serde 依赖暂待下一项启用）。
 - [ ] **BW-28-01-02 按 Git 版本建索引**。**验收** 两个版本同名文档可区分。
 - [ ] **BW-28-01-03 更新修改过的文档章节**。**验收** 增量刷新后搜索命中新文本及当前锚点。
 - [ ] **BW-28-01-04 移除删除的文档章节**。**验收** 增量刷新后检索结果和链接都不再包含被删除章节。
