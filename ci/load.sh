@@ -120,7 +120,7 @@ run_one() { # $1 the scenario file
 }
 
 run_scenarios() {
-    ci_step "PR short load scenarios"
+    ci_step "PR short load scenarios (budget ${CI_LOAD_DURATION:-30}s, clients ${CI_LOAD_CLIENTS:-4})"
     local sc_out sc_rc dr_out dr_rc
     sc_out="$(detect_scenarios)"
     sc_rc=$?
@@ -157,7 +157,7 @@ run_scenarios() {
 }
 
 run_all() {
-    ci_step "PR short load test"
+    ci_step "PR short load test (budget ${CI_LOAD_DURATION:-30}s, clients ${CI_LOAD_CLIENTS:-4})"
     mkdir -p "$CI_OUT"
     local out rc
     out="$(detect_scenarios 2>&1)"
