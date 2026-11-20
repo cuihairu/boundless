@@ -57,3 +57,23 @@ deliberately ships none. VitePress uses its default theme chrome. When a logo is
 authored, add it under `docs/public/` and reference it from
 `.vitepress/config.mjs` rather than substituting a placeholder image.
 :::
+
+## Building this site
+
+```bash
+cd docs
+pnpm install
+pnpm run dev            # preview at http://localhost:5173
+pnpm run build          # production bundle into .vitepress/dist
+pnpm run preview        # serve the production bundle
+pnpm run check:links    # fail on any dead internal link
+```
+
+The build is a real gate: `ignoreDeadLinks: false` in `.vitepress/config.mjs`
+makes a broken internal link fail `pnpm run build`, and `check:links` is the
+second gate behind it. Both run from `docs/`, where `docs/package.json` lives,
+so CI invokes them as `pnpm --dir docs run build`.
+
+Build output is `.vitepress/dist/`, which is ignored by `docs/.gitignore`. The
+site is a private-repo artifact only: it is built and previewed, never published
+to GitHub Pages.
