@@ -1,10 +1,11 @@
 //! `lib/network/udp_channel.cpp` -- the registration-and-lifecycle slice
-//! of `Mercury::UDPChannel` (BW-02-03-02): construction registers a
-//! non-indexed channel with its interface, `condemn` hands it to the
-//! condemned list, and `destroy` closes it for good. The sequence-window
-//! state (BW-02-03-03/05) and the resend timers (BW-02-03-04) carry their
-//! fields from the reference constructor but stay inert until their
-//! tasks land.
+//! of `Mercury::UDPChannel` (BW-02-03-02) plus the send window and its acks
+//! (BW-02-03-03): construction registers a non-indexed channel with its
+//! interface, `condemn` hands it to the condemned list, `destroy` closes it
+//! for good, and `addResendTimer`/`handleAck` keep the unacked ring honest
+//! across the `SEQ_SIZE` seam. The resend timers (BW-02-03-04) and the
+//! receive-window filtering (BW-02-03-05) carry their fields from the
+//! reference constructor but stay inert until their tasks land.
 //!
 //! The reference's `Channel` base (`channel.hpp`) is folded in: its state
 //! is the leading fields and its `destroy`/inactivity flow is the
@@ -16,10 +17,21 @@ use std::rc::{Rc, Weak};
 use foundation::time_queue::{TimerHandle, TimerHandler};
 
 use crate::channel_listener::ChannelListener;
+use crate::circular_array::CircularArray;
 use crate::endpoint::{Address, NONE};
-use crate::misc::{CHANNEL_ID_NULL, ChannelID, ChannelVersion, SEQ_NULL, SeqNum, seq_mask};
+use crate::misc::{
+    CHANNEL_ID_NULL, ChannelID, ChannelVersion, SEQ_NULL, SeqNum, seq_less_than, seq_mask,
+};
 use crate::network_interface::{ChannelRef, NetworkInterface};
+use crate::packet::Packet;
+use crate::reply_order::ReplyOrder;
 use crate::udp_bundle::UdpBundle;
+use crate::unacked_packet::UnackedPacket;
+
+/// `s_maxOverflowPackets_` (udp_channel.cpp:34-38): how many *unsent*
+/// packets may pile up past the send window before the channel starts
+/// complaining -- external, internal, indexed.
+const MAX_OVERFLOW_PACKETS: [usize; 3] = [1024, 8192, 4096];
 
 /// `DEFAULT_INACTIVITY_RESEND_DELAY` (udp_channel.hpp).
 pub const DEFAULT_INACTIVITY_RESEND_DELAY: f32 = 1.0;
@@ -126,6 +138,16 @@ pub struct UdpChannel {
     /// `isAnonymous_`.
     is_anonymous: bool,
 
+    /// `unackedPackets_` (udp_channel.hpp:415): the sent-but-unacked ring,
+    /// addressed by sequence number.
+    unacked_packets: CircularArray<Option<UnackedPacket>>,
+    /// `unackedCriticalSeq_` (udp_channel.hpp:448).
+    unacked_critical_seq: SeqNum,
+    /// `hasSeenOverflowWarning_`.
+    has_seen_overflow_warning: bool,
+    /// `lastReliableResendTime_`, in micros.
+    last_reliable_resend_time: u64,
+
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
     network_interface: Weak<NetworkInterface>,
@@ -144,6 +166,9 @@ impl UdpChannel {
         min_inactivity_resend_delay: f32,
         id: ChannelID,
     ) -> ChannelPtr {
+        // `unackedPackets_( windowSize_ )` (udp_channel.cpp:105): the ring
+        // opens at the window size, which is a power of two by construction.
+        let size = window_size(traits, id);
         let channel = Rc::new(RefCell::new(UdpChannel {
             addr: NONE,
             bundle: UdpBundle::new(0),
@@ -160,7 +185,8 @@ impl UdpChannel {
             id,
             version: 0,
             creation_version: 0,
-            window_size: window_size(traits, id),
+            window_size: size,
+            unacked_packets: CircularArray::new(size),
             small_out_seq_at: 0,
             large_out_seq_at: 0,
             oldest_unacked_seq: SEQ_NULL,
@@ -177,6 +203,9 @@ impl UdpChannel {
             is_condemned: false,
             has_remote_failed: false,
             is_anonymous: false,
+            unacked_critical_seq: SEQ_NULL,
+            has_seen_overflow_warning: false,
+            last_reliable_resend_time: 0,
             network_interface: Rc::downgrade(interface),
         }));
 
@@ -439,6 +468,353 @@ impl UdpChannel {
             .unwrap_or(0)
     }
 
+    // -- The send window and its acks (BW-02-03-03) -----------------------
+
+    /// `useNextSequenceID()` (udp_channel.cpp:1728), minus the
+    /// warn-threshold/callback bookkeeping (BW-02-03-06): hand out the
+    /// next outgoing sequence number, advancing the allocator through the
+    /// mask.
+    pub fn use_next_sequence_id(channel: &ChannelPtr) -> SeqNum {
+        let mut this = channel.borrow_mut();
+        let seq_num = this.large_out_seq_at;
+        this.large_out_seq_at = seq_mask(seq_num.wrapping_add(1));
+        seq_num
+    }
+
+    /// `isInSentWindow( seq )` (udp_channel.ipp:29): whether `seq` falls in
+    /// `[oldestUnackedSeq_, smallOutSeqAt_)`. Both ends are wrap-aware.
+    pub fn is_in_sent_window(&self, seq: SeqNum) -> bool {
+        self.oldest_unacked_seq != SEQ_NULL
+            && !seq_less_than(seq, self.oldest_unacked_seq)
+            && seq_less_than(seq, self.small_out_seq_at)
+    }
+
+    /// `unackedPackets_[ seq ] != NULL`, spelled out: whether the seq holds
+    /// an unacked packet. The reference inlines this test at three sites
+    /// (udp_channel.cpp:989, 1019, 1103).
+    pub fn is_unacked(&self, seq: SeqNum) -> bool {
+        self.unacked_packets.get(seq as usize).is_some()
+    }
+
+    /// `sendWindowUsage()` (udp_channel.hpp:237): how much of the send
+    /// window is in use. "This includes the overflow packets and so can be
+    /// larger than windowSize_."
+    pub fn send_window_usage(&self) -> i32 {
+        if self.has_unacked_packets() {
+            seq_mask(self.large_out_seq_at.wrapping_sub(self.oldest_unacked_seq)) as i32
+        } else {
+            0
+        }
+    }
+
+    /// `sendWindowSize()` (udp_channel.hpp:416): the ring's current
+    /// capacity -- it doubles past the window size.
+    pub fn send_window_size(&self) -> usize {
+        self.unacked_packets.size()
+    }
+
+    /// `numOutstandingPackets()` (udp_channel.cpp:1692).
+    pub fn num_outstanding_packets(&self) -> i32 {
+        self.bundle.num_data_units() as i32 + self.send_window_usage()
+    }
+
+    /// `hasSeenOverflowWarning_`.
+    pub fn has_seen_overflow_warning(&self) -> bool {
+        self.has_seen_overflow_warning
+    }
+
+    /// `getMaxOverflowPackets()` (udp_channel.hpp:423).
+    fn get_max_overflow_packets(&self) -> usize {
+        if self.is_external() {
+            MAX_OVERFLOW_PACKETS[0]
+        } else {
+            MAX_OVERFLOW_PACKETS[usize::from(self.is_indexed()) * 2]
+        }
+    }
+
+    /// `checkOverflowErrors()` (udp_channel.cpp:421) minus the
+    /// `s_assertOnMaxOverflowPackets` assert (off by default; the port has
+    /// no interactive-debugging switch): warn once when the unsent overflow
+    /// passes half the ceiling, clear once it drains under a third.
+    fn check_overflow_errors(&mut self) {
+        let max_overflow_packets = self.get_max_overflow_packets() as SeqNum;
+        let num_overflow_packets =
+            seq_mask(self.large_out_seq_at.wrapping_sub(self.small_out_seq_at));
+
+        if max_overflow_packets != 0 {
+            // Warn if the overflow size has grown to 1/2 of the MAX size
+            if num_overflow_packets > (max_overflow_packets / 2) {
+                if !self.has_seen_overflow_warning {
+                    eprintln!(
+                        "UDPChannel::checkOverflowErrors({}): Overflow packet list size ({}) exceeding safety threshold ({}).",
+                        self.c_str(),
+                        num_overflow_packets,
+                        max_overflow_packets / 2
+                    );
+                    self.has_seen_overflow_warning = true;
+                }
+            } else if self.has_seen_overflow_warning
+                && num_overflow_packets < (max_overflow_packets / 3)
+            {
+                self.has_seen_overflow_warning = false;
+            }
+        }
+    }
+
+    /// `sendUnacked( unacked )` (udp_channel.cpp:1187): push a packet in
+    /// the window out again, stamping the bookkeeping the ack and resend
+    /// paths read. The channel-version refresh
+    /// (`pPacket_->updateChannelVersion`) and the hand to the interface
+    /// (`pNetworkInterface_->sendPacket`) arrive with the send path
+    /// (BW-02-03-06); an absent slot is a no-op where the reference would
+    /// dereference null.
+    fn send_unacked(channel: &ChannelPtr, seq: SeqNum) {
+        let now = UdpChannel::now(channel);
+        let mut this = channel.borrow_mut();
+        let small = this.small_out_seq_at;
+        if let Some(unacked) = this.unacked_packets.get_mut(seq as usize).as_mut() {
+            unacked.set_last_sent_at_out_seq(small);
+            unacked.set_was_resent(true);
+            unacked.set_last_sent_time(now);
+        }
+        this.last_reliable_resend_time = now;
+    }
+
+    /// `addResendTimer( seq, p, roBeg, roEnd )` (udp_channel.cpp:817):
+    /// file a sent packet in the window and say whether the caller should
+    /// send now -- false means the window is full and the packet is queued
+    /// as overflow (`REASON_WINDOW_OVERFLOW`).
+    pub fn add_resend_timer(
+        channel: &ChannelPtr,
+        seq: SeqNum,
+        packet: Rc<Packet>,
+        reply_orders: &[Rc<ReplyOrder>],
+    ) -> bool {
+        let now = UdpChannel::now(channel);
+        let mut this = channel.borrow_mut();
+        assert!(
+            this.oldest_unacked_seq == SEQ_NULL
+                || this
+                    .unacked_packets
+                    .get(this.oldest_unacked_seq as usize)
+                    .is_some(),
+            "addResendTimer: the oldest unacked slot is occupied"
+        );
+        assert!(
+            seq == packet.seq(),
+            "addResendTimer: MF_ASSERT( seq == p->seq() )"
+        );
+
+        let mut unacked = UnackedPacket::new(packet);
+
+        // If this channel has no unacked packets, record this as the oldest.
+        if this.oldest_unacked_seq == SEQ_NULL {
+            this.oldest_unacked_seq = seq;
+        }
+
+        // Fill it in
+        unacked.set_last_sent_at_out_seq(seq);
+        unacked.set_last_sent_time(now);
+        this.last_reliable_send_time = now;
+        unacked.set_was_resent(false);
+        if !reply_orders.is_empty() {
+            unacked.set_reliable_orders(reply_orders.to_vec());
+        }
+
+        // Grow the unackedPackets_ array, if necessary.
+        let old_unacked_seq = this.oldest_unacked_seq;
+        if seq_mask(seq.wrapping_sub(old_unacked_seq).wrapping_add(1)) as usize
+            > this.unacked_packets.size()
+        {
+            this.unacked_packets.double_size(old_unacked_seq as usize);
+        }
+
+        assert!(
+            this.unacked_packets.get(seq as usize).is_none(),
+            "addResendTimer: the slot is free"
+        );
+        *this.unacked_packets.get_mut(seq as usize) = Some(unacked);
+
+        if seq_mask(this.large_out_seq_at.wrapping_sub(this.oldest_unacked_seq)) as usize
+            >= this.window_size
+        {
+            // Make sure that we at least send occasionally.
+            let prev = seq_mask(this.small_out_seq_at.wrapping_sub(1));
+            let min_inactivity_resend_delay = this.min_inactivity_resend_delay;
+            let prev_old_enough = match this.unacked_packets.get(prev as usize) {
+                Some(prev) => {
+                    now.saturating_sub(prev.last_sent_time()) > min_inactivity_resend_delay
+                }
+                None => true,
+            };
+
+            if prev_old_enough {
+                let small = this.small_out_seq_at;
+                drop(this);
+                UdpChannel::send_unacked(channel, small);
+                let mut this = channel.borrow_mut();
+                this.small_out_seq_at = seq_mask(small.wrapping_add(1));
+                this.check_overflow_errors();
+            } else {
+                this.check_overflow_errors();
+            }
+
+            // We shouldn't send now
+            false
+        } else {
+            // We should send now
+            this.small_out_seq_at = this.large_out_seq_at;
+            true
+        }
+    }
+
+    /// `handleAck( seq )` (udp_channel.cpp:964): the single place an ack
+    /// lands -- the RTT average, the critical slot, the oldest-unacked
+    /// rescan and the highest-ack advance all happen here, in that order.
+    /// False only for an out-of-range sequence number.
+    pub fn handle_ack(channel: &ChannelPtr, seq: SeqNum) -> bool {
+        let now = UdpChannel::now(channel);
+        let mut this = channel.borrow_mut();
+        assert!(
+            this.oldest_unacked_seq == SEQ_NULL
+                || this
+                    .unacked_packets
+                    .get(this.oldest_unacked_seq as usize)
+                    .is_some(),
+            "handleAck: the oldest unacked slot is occupied"
+        );
+
+        // Make sure the sequence number is valid
+        if seq_mask(seq) != seq {
+            eprintln!(
+                "UDPChannel::handleAck( {} ): Got out-of-range seq #{} (outseq: #{})",
+                this.c_str(),
+                seq,
+                this.small_out_seq_at
+            );
+            return false;
+        }
+
+        if !this.is_in_sent_window(seq) {
+            return true;
+        }
+
+        // now make sure there's actually a packet there
+        let (was_resent, last_sent_time) = match this.unacked_packets.get(seq as usize) {
+            Some(unacked) => (unacked.was_resent(), unacked.last_sent_time()),
+            None => return true,
+        };
+
+        // Update the average RTT for this channel, if this packet hadn't
+        // already been resent.
+        if !was_resent {
+            const RTT_AVERAGE_DENOM: u64 = 10;
+            this.round_trip_time = (this.round_trip_time * (RTT_AVERAGE_DENOM - 1)
+                + now.saturating_sub(last_sent_time))
+                / RTT_AVERAGE_DENOM;
+        }
+
+        // If this packet was the critical one, we're no longer in a
+        // critical state!
+        if this.unacked_critical_seq == seq {
+            this.unacked_critical_seq = SEQ_NULL;
+        }
+
+        // If we released the oldest unacked packet, figure out the new one
+        if seq == this.oldest_unacked_seq {
+            this.oldest_unacked_seq = SEQ_NULL;
+            let mut i = seq_mask(seq.wrapping_add(1));
+            while i != this.large_out_seq_at {
+                if this.unacked_packets.get(i as usize).is_some() {
+                    this.oldest_unacked_seq = i;
+                    break;
+                }
+                i = seq_mask(i.wrapping_add(1));
+            }
+        }
+
+        // If the incoming seq is after the last ack, then it is the new
+        // last ack
+        if seq_less_than(this.highest_ack, seq) {
+            this.highest_ack = seq;
+        }
+
+        // Now we can release the unacked packet
+        *this.unacked_packets.get_mut(seq as usize) = None;
+        drop(this);
+
+        // While the window has room and something waits at smallOutSeqAt_,
+        // send it and advance (udp_channel.cpp:1040).
+        loop {
+            let (send_it, small) = {
+                let this = channel.borrow();
+                let small = this.small_out_seq_at;
+                let window_size = this.window_size;
+                let roomy =
+                    (seq_mask(small.wrapping_sub(this.oldest_unacked_seq)) as usize) < window_size;
+                (
+                    roomy && this.unacked_packets.get(small as usize).is_some(),
+                    small,
+                )
+            };
+            if !send_it {
+                break;
+            }
+            UdpChannel::send_unacked(channel, small);
+            channel.borrow_mut().small_out_seq_at = seq_mask(small.wrapping_add(1));
+        }
+
+        true
+    }
+
+    /// `handleCumulativeAck( endSeq )` (udp_channel.cpp:899): decompose a
+    /// cumulative ack into one `handleAck` per seq, up to but not including
+    /// `endSeq`. False for an out-of-range `endSeq` or one that acks
+    /// packets not yet sent.
+    pub fn handle_cumulative_ack(channel: &ChannelPtr, end_seq: SeqNum) -> bool {
+        {
+            let this = channel.borrow();
+
+            // Make sure the sequence number is valid
+            if seq_mask(end_seq) != end_seq {
+                eprintln!(
+                    "UDPChannel::handleCumulativeAck( {} ): Got out-of-range endSeq #{} (outseq: #{})",
+                    this.c_str(),
+                    end_seq,
+                    this.small_out_seq_at
+                );
+                return false;
+            }
+
+            if !this.has_unacked_packets() {
+                return true;
+            }
+
+            // Check that the ACK is not in the future.
+            // Note: endSeq is first seqNum after what's been received.
+            if seq_less_than(this.small_out_seq_at, end_seq) {
+                // ERROR on external, CRITICAL otherwise (same text).
+                eprintln!(
+                    "UDPChannel::handleCumulativeAck( {} ): Received ACK for packets not yet sent. endSeq: #{} outSeq: #{}",
+                    this.c_str(),
+                    end_seq,
+                    this.small_out_seq_at
+                );
+                return false;
+            }
+        }
+
+        let mut seq = channel.borrow().oldest_unacked_seq;
+
+        // Note: Up to but not including endSeq
+        while seq_less_than(seq, end_seq) {
+            UdpChannel::handle_ack(channel, seq);
+            seq = seq_mask(seq.wrapping_add(1));
+        }
+
+        true
+    }
+
     // -- Channel base accessors (channel.hpp) ----------------------------
 
     /// `addr()`.
@@ -622,6 +998,18 @@ impl UdpChannel {
         self.last_reliable_send_time
     }
 
+    /// `lastReliableResendTime_`, in micros: the last time a windowed
+    /// packet went back out. The resend timing reads this (BW-02-03-04).
+    pub fn last_reliable_resend_time(&self) -> u64 {
+        self.last_reliable_resend_time
+    }
+
+    /// `unackedCriticalSeq()`: the seq holding the critical unacked
+    /// message, or `SEQ_NULL`. Cleared by [`UdpChannel::handle_ack`].
+    pub fn unacked_critical_seq(&self) -> SeqNum {
+        self.unacked_critical_seq
+    }
+
     /// `c_str()` (udp_channel.cpp:1465): `udp:` plus the address, the id
     /// for indexed channels, and an exclamation mark for condemned ones.
     pub fn c_str(&self) -> String {
@@ -635,17 +1023,41 @@ impl UdpChannel {
         string
     }
 
-    /// A test hook driving `oldestUnackedSeq_` until the send window
-    /// (BW-02-03-03) manages it for real.
+    /// A test hook driving `oldestUnackedSeq_` past the seq ring seam.
     #[cfg(test)]
     pub fn force_unacked(&mut self, seq: SeqNum) {
         self.oldest_unacked_seq = seq;
+    }
+
+    /// A test hook parking the outgoing sequence at `seq` (the reference
+    /// reaches this state through `initFromStream`, udp_channel.cpp:107),
+    /// so the sends that follow land where the test wants them.
+    #[cfg(test)]
+    pub fn force_out_seq_at(&mut self, seq: SeqNum) {
+        self.small_out_seq_at = seq;
+        self.large_out_seq_at = seq;
+        self.highest_ack = seq_mask(seq.wrapping_sub(1));
     }
 
     /// A test hook ageing `lastReceivedTime_` for the condemned sweep.
     #[cfg(test)]
     pub fn force_last_received_time(&mut self, micros: u64) {
         self.last_received_time = micros;
+    }
+
+    /// A test hook exposing the unacked ring's slots.
+    #[cfg(test)]
+    pub fn unacked_packets(&self) -> &CircularArray<Option<UnackedPacket>> {
+        &self.unacked_packets
+    }
+
+    /// A test hook marking `seq` critical until an ack clears it. The real
+    /// setter arrives with the reliable-order machinery (BW-02-03-06):
+    /// `unackedCriticalSeq_` is set when a packet carrying an unacked
+    /// critical message is filed.
+    #[cfg(test)]
+    pub fn force_unacked_critical_seq(&mut self, seq: SeqNum) {
+        self.unacked_critical_seq = seq;
     }
 
     /// A test hook ageing `lastReliableSendTime_`.
@@ -1241,5 +1653,449 @@ mod tests {
             interface.find_channel(addr(0x0100_01f5), false).is_none(),
             "the anonymous channel deregistered itself"
         );
+    }
+
+    /// `useNextSequenceID` plus `addResendTimer`, the way the reference's
+    /// send path drives them: one packet per seq, no reliable orders yet.
+    fn send(channel: &ChannelPtr) -> bool {
+        let seq = UdpChannel::use_next_sequence_id(channel);
+        let mut packet = Packet::new();
+        packet.set_seq(seq);
+        UdpChannel::add_resend_timer(channel, seq, Rc::new(packet), &[])
+    }
+
+    /// The acceptance fixture: the send window works across the `SEQ_SIZE`
+    /// seam. Three sends straddle the wrap, an out-of-order ack crosses
+    /// back over it, and a cumulative ack drains the ring -- every step is
+    /// plain masked arithmetic; nothing special-cases the seam.
+    #[test]
+    fn the_window_and_acks_wrap_through_the_seq_ring() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00ca),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // Park the outgoing seq just before the seam: the next three
+        // sends land on SEQ_MASK-1, SEQ_MASK and 0.
+        channel.borrow_mut().force_out_seq_at(SEQ_MASK - 1);
+        assert!(send(&channel));
+        assert!(send(&channel));
+        assert!(send(&channel));
+
+        {
+            let this = channel.borrow();
+            assert_eq!(this.small_out_seq_at(), 1, "the seq wrapped around to 1");
+            assert_eq!(this.large_out_seq_at(), 1);
+            assert_eq!(this.oldest_unacked_seq(), SEQ_MASK - 1);
+            assert_eq!(this.send_window_usage(), 3);
+            assert!(this.is_in_sent_window(SEQ_MASK - 1));
+            assert!(this.is_in_sent_window(SEQ_MASK));
+            assert!(this.is_in_sent_window(0), "the window spans the seam");
+            assert!(!this.is_in_sent_window(1), "one past the sent head");
+            assert!(!this.is_in_sent_window(SEQ_MASK - 2), "before the oldest");
+            assert!(this.is_unacked(0));
+        }
+
+        // A critical seq parked on the wrapped packet: acking it clears it.
+        channel.borrow_mut().force_unacked_critical_seq(0);
+
+        // The out-of-order ack of the wrapped seq: the highest ack crosses
+        // the seam backwards, the oldest stays put.
+        assert!(UdpChannel::handle_ack(&channel, 0));
+        {
+            let this = channel.borrow();
+            assert_eq!(this.highest_ack(), 0, "the highest ack crossed the seam");
+            assert_eq!(
+                this.oldest_unacked_seq(),
+                SEQ_MASK - 1,
+                "an out-of-order ack does not move the oldest"
+            );
+            assert!(!this.is_unacked(0));
+            assert_eq!(this.unacked_critical_seq(), SEQ_NULL);
+            assert_eq!(
+                this.send_window_usage(),
+                3,
+                "usage spans [oldest, large): the hole is not the oldest yet"
+            );
+        }
+
+        // A stale re-ack finds an empty slot and does nothing.
+        assert!(UdpChannel::handle_ack(&channel, 0));
+        assert_eq!(channel.borrow().send_window_usage(), 3);
+
+        // An out-of-range seq is refused: seqMask(SEQ_NULL) != SEQ_NULL.
+        assert!(!UdpChannel::handle_ack(&channel, SEQ_NULL));
+
+        // A cumulative ack over the seam drains what is left, up to but
+        // not including endSeq.
+        assert!(UdpChannel::handle_cumulative_ack(&channel, 1));
+        {
+            let this = channel.borrow();
+            assert_eq!(this.oldest_unacked_seq(), SEQ_NULL);
+            assert_eq!(this.send_window_usage(), 0, "the ring drained");
+            assert!(!this.has_unacked_packets());
+            assert_eq!(this.highest_ack(), 0, "0 is still the newest ack");
+        }
+
+        // With nothing unacked, further acks are no-ops.
+        assert!(UdpChannel::handle_cumulative_ack(&channel, 1));
+        assert!(UdpChannel::handle_ack(&channel, SEQ_MASK - 1));
+    }
+
+    /// `handleCumulativeAck` refuses an endSeq past what has been sent, and
+    /// an out-of-range endSeq outright.
+    #[test]
+    fn a_future_cumulative_ack_refuses() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00cb),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        channel.borrow_mut().force_out_seq_at(0);
+        assert!(send(&channel)); // seq 0 sent; the head is now 1
+        assert_eq!(channel.borrow().small_out_seq_at(), 1);
+
+        assert!(
+            !UdpChannel::handle_cumulative_ack(&channel, 2),
+            "acks for packets not yet sent"
+        );
+        assert!(channel.borrow().has_unacked_packets(), "nothing was acked");
+        assert!(
+            !UdpChannel::handle_cumulative_ack(&channel, SEQ_NULL),
+            "seqMask(SEQ_NULL) != SEQ_NULL"
+        );
+        assert_eq!(channel.borrow().send_window_usage(), 1);
+    }
+
+    /// One clean round trip folds into the average exactly once
+    /// (udp_channel.cpp:989): nine tenths of the old value plus a tenth of
+    /// the sample. Stale and never-sent seqs leave it untouched.
+    #[test]
+    fn an_ack_updates_the_rtt_average_once() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00cc),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        assert_eq!(channel.borrow().round_trip_time_in_seconds(), 0.1);
+
+        channel.borrow_mut().force_out_seq_at(0);
+        assert!(send(&channel));
+
+        clock.set(1_300_000); // a 0.3s round trip
+        assert!(UdpChannel::handle_ack(&channel, 0));
+        assert_eq!(
+            channel.borrow().round_trip_time_in_seconds(),
+            0.12,
+            "(0.1 * 9 + 0.3) / 10"
+        );
+
+        // A stale re-ack and an unsent seq both leave the average alone.
+        assert!(UdpChannel::handle_ack(&channel, 0));
+        assert!(UdpChannel::handle_ack(&channel, 5));
+        assert_eq!(channel.borrow().round_trip_time_in_seconds(), 0.12);
+    }
+
+    /// A resent packet's ack does not fold into the average
+    /// (udp_channel.cpp:987): its round trip was not a round trip.
+    #[test]
+    fn an_ack_for_a_resent_packet_leaves_the_average_alone() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00cd),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        channel.borrow_mut().force_out_seq_at(0);
+        for _ in 0..257 {
+            send(&channel);
+        }
+        assert_eq!(
+            channel.borrow().small_out_seq_at(),
+            255,
+            "the window is full"
+        );
+        assert!(!channel.borrow().has_seen_overflow_warning());
+
+        // The packet queued at the head is old enough to go back out.
+        clock.set(3_000_000);
+        assert!(!send(&channel)); // seq 257 resends the packet at seq 255
+        assert_eq!(channel.borrow().last_reliable_resend_time(), 3_000_000);
+
+        // Its ack comes back: no round-trip sample for a resent packet.
+        assert!(UdpChannel::handle_ack(&channel, 255));
+        assert_eq!(
+            channel.borrow().round_trip_time_in_seconds(),
+            1.0,
+            "a resent packet does not sample the RTT"
+        );
+        assert_eq!(channel.borrow().oldest_unacked_seq(), 0);
+
+        // The slot ahead of the head is now empty: the next queued send
+        // goes back out on its own (the missing predecessor is no
+        // obstacle).
+        assert!(!send(&channel));
+        assert_eq!(channel.borrow().small_out_seq_at(), 257);
+    }
+
+    /// A packet carrying reliable orders files them with its window slot,
+    /// the way the send path records what a resend may piggyback.
+    #[test]
+    fn a_reliable_order_rides_with_its_packet() {
+        use crate::interfaces::ReplyMessageHandler;
+        use crate::misc::Reason;
+        use crate::nub_exception::NubException;
+        use crate::unpacked_message_header::UnpackedMessageHeader;
+        use foundation::stream::BinaryStream;
+
+        /// A placeholder handler that accepts anything and says nothing.
+        struct NoOp;
+        impl ReplyMessageHandler for NoOp {
+            fn handle_message(
+                &self,
+                _source: &Address,
+                _header: &UnpackedMessageHeader,
+                _data: &mut BinaryStream,
+                _arg: usize,
+            ) {
+            }
+            fn handle_exception(&self, _exception: &NubException, _arg: usize) {}
+        }
+
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00ce),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        channel.borrow_mut().force_out_seq_at(0);
+
+        let handler: Rc<dyn ReplyMessageHandler> = Rc::new(NoOp);
+        let order = Rc::new(ReplyOrder::new(Rc::clone(&handler), 1, 500_000, 0));
+        let seq = UdpChannel::use_next_sequence_id(&channel);
+        let mut packet = Packet::new();
+        packet.set_seq(seq);
+        assert!(UdpChannel::add_resend_timer(
+            &channel,
+            seq,
+            Rc::new(packet),
+            std::slice::from_ref(&order)
+        ));
+
+        // The orders ride with the slot.
+        let this = channel.borrow();
+        let slot = this.unacked_packets().get(seq as usize).as_ref();
+        assert!(slot.is_some(), "the slot is filed");
+        let orders = slot.unwrap().reliable_orders();
+        assert_eq!(orders.len(), 1);
+        assert!(Rc::ptr_eq(&orders[0], &order));
+
+        // The placeholder's whole contract: say nothing.
+        handler.handle_message(
+            &Address::new(0, 0),
+            &UnpackedMessageHeader::new(1),
+            &mut BinaryStream::new(),
+            0,
+        );
+        handler.handle_exception(&NubException::new(Reason::TimerExpired, None), 0);
+    }
+
+    /// The full cycle of a saturated window (udp_channel.cpp:421): packets
+    /// queue past the window, the queue passes half the safety ceiling and
+    /// the channel warns once, cumulative acks drain the queue, and once
+    /// the queue is under a third of the ceiling on the next fill, the
+    /// warning clears.
+    #[test]
+    fn a_full_window_overflows_until_it_warns_and_then_drains() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00ce),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        channel.borrow_mut().force_out_seq_at(0);
+
+        // 768 sends: the first 255 fit the window, the 256th is the first
+        // refusal, and the overflow grows past half the 1024 ceiling.
+        for i in 0..768 {
+            let sent = send(&channel);
+            if i < 255 {
+                assert!(sent);
+            } else {
+                assert!(!sent, "send #{} is queued as overflow", i + 1);
+            }
+        }
+        {
+            let this = channel.borrow();
+            assert!(this.has_seen_overflow_warning(), "513 queued > 1024 / 2");
+            assert_eq!(this.send_window_usage(), 768, "usage counts the overflow");
+            assert_eq!(this.num_outstanding_packets(), 769, "plus the bundle");
+            assert_eq!(this.send_window_size(), 1024, "the ring doubled twice");
+            assert_eq!(this.oldest_unacked_seq(), 0);
+        }
+
+        // The packet queued at the head is now old enough: it goes back
+        // out and the head advances by one.
+        clock.set(3_000_000);
+        assert!(!send(&channel)); // seq 768
+        assert_eq!(channel.borrow().small_out_seq_at(), 256);
+        assert_eq!(channel.borrow().last_reliable_resend_time(), 3_000_000);
+
+        // Cumulative acks drain the window: every ack makes room and the
+        // queued packets flow out behind it.
+        assert!(UdpChannel::handle_cumulative_ack(&channel, 256));
+        {
+            let this = channel.borrow();
+            assert_eq!(this.oldest_unacked_seq(), 256);
+            assert_eq!(this.small_out_seq_at(), 512);
+        }
+        assert!(UdpChannel::handle_cumulative_ack(&channel, 512));
+        {
+            let this = channel.borrow();
+            assert_eq!(this.oldest_unacked_seq(), 512);
+            assert_eq!(this.small_out_seq_at(), 768);
+        }
+        assert!(UdpChannel::handle_cumulative_ack(&channel, 768));
+        {
+            let this = channel.borrow();
+            assert_eq!(this.oldest_unacked_seq(), 768);
+            assert_eq!(this.small_out_seq_at(), 769);
+            assert_eq!(this.send_window_usage(), 1);
+            assert!(
+                this.has_seen_overflow_warning(),
+                "only addResendTimer checks"
+            );
+        }
+
+        // The drain left the window roomy again: the next send goes
+        // straight out instead of queueing.
+        assert!(send(&channel)); // seq 769
+        assert_eq!(channel.borrow().small_out_seq_at(), 770);
+
+        // The window fills once more, and this time the overflow check
+        // finds the queue drained and clears the warning.
+        let mut last = true;
+        for _ in 0..254 {
+            last = send(&channel); // seqs 770..1023
+        }
+        assert!(!last, "the window filled again");
+        {
+            let this = channel.borrow();
+            assert!(!this.has_seen_overflow_warning(), "1 < 1024 / 3");
+            assert_eq!(this.send_window_usage(), 256);
+            assert_eq!(this.send_window_size(), 1024);
+            assert_eq!(this.window_size(), 256, "the ring outgrew the window");
+        }
+    }
+
+    /// `doubleSize` keeps the ring ahead of the span (udp_channel.cpp:856):
+    /// a full window's worth plus one doubles it, and the carried slots
+    /// survive the doubling at their absolute indexes.
+    #[test]
+    fn the_ring_doubles_when_the_span_outgrows_it() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00cf),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        channel.borrow_mut().force_out_seq_at(0);
+
+        for _ in 0..256 {
+            send(&channel);
+        }
+        assert_eq!(channel.borrow().send_window_size(), 256);
+        assert!(channel.borrow().is_unacked(255));
+
+        send(&channel); // seq 256: the span is now 257
+        assert_eq!(channel.borrow().send_window_size(), 512);
+        assert!(channel.borrow().is_unacked(5), "slots survive the doubling");
+
+        for _ in 0..255 {
+            send(&channel); // seqs 257..511
+        }
+        assert_eq!(channel.borrow().send_window_size(), 512);
+
+        send(&channel); // seq 512: the span is now 513
+        assert_eq!(channel.borrow().send_window_size(), 1024);
+        assert!(channel.borrow().is_unacked(300));
+        assert!(channel.borrow().is_unacked(512));
+        assert_eq!(channel.borrow().window_size(), 256);
+    }
+
+    /// The internal and indexed windows overflow against their own
+    /// ceilings (udp_channel.cpp:34): 8192 and 4096 queued packets, so a
+    /// freshly full window is nowhere near warning.
+    #[test]
+    fn internal_and_indexed_channels_overflow_against_their_own_ceilings() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+
+        let internal = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d0),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        internal.borrow_mut().force_out_seq_at(0);
+        for _ in 0..4096 {
+            send(&internal);
+        }
+        assert!(!internal.borrow().has_seen_overflow_warning());
+        send(&internal); // seq 4096 doubles the ring
+        {
+            let this = internal.borrow();
+            assert_eq!(this.send_window_size(), 8192);
+            assert!(!this.has_seen_overflow_warning());
+        }
+
+        let indexed = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d1),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            7,
+        );
+        indexed.borrow_mut().force_out_seq_at(0);
+        for _ in 0..512 {
+            send(&indexed);
+        }
+        assert!(!indexed.borrow().has_seen_overflow_warning());
+        send(&indexed); // seq 512 doubles the ring
+        {
+            let this = indexed.borrow();
+            assert_eq!(this.send_window_size(), 1024);
+            assert!(!this.has_seen_overflow_warning());
+        }
     }
 }

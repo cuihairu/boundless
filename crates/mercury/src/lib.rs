@@ -5,6 +5,7 @@ pub mod bundle_dispatch;
 pub mod channel_listener;
 #[cfg(target_os = "linux")]
 pub mod channel_map;
+pub mod circular_array;
 #[cfg(target_os = "linux")]
 pub mod condemned_channels;
 pub mod endpoint;
@@ -38,4 +39,5 @@ pub mod request_manager;
 pub mod udp_bundle;
 #[cfg(target_os = "linux")]
 pub mod udp_channel;
+pub mod unacked_packet;
 pub mod unpacked_message_header;
