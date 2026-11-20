@@ -1432,7 +1432,11 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
   - 新版：`ci/check-python.sh` 提供 compile / test 两条 lane（compileall + pytest），pytest 退出码 4（用法错）与 5（未收集到用例）单独解释；CI 作业 `python`。
   - 结果：当前仓 tests/python、scripts、python、tools 均无 Python，两 lane SKIP 并注明由 BW-18 开启；注入 `tests/python/scratch_probe.py`（语法错误）后 python-compile FAIL 定位 `tests/python/scratch_probe.py:1`、python-test 报 no tests collected 并指向 compile lane；注入失败断言后 python-test FAIL 定位 `tests/python/test_bad.py::test_fails`。
   - 证据：`ci-out/manifest.tsv` 上述三行 + `logs/python-{compile,test}.log`；`ci/check-python.sh self-test` 3 项全 PASS（syntax defect 定位到 broken_module.py:1、failing test 检出、clean 树放行）。
-- [ ] **BW-22-01-04 接入 TypeScript 检查**。**验收** 失败定位扩展源码。
+- [x] **BW-22-01-04 接入 TypeScript 检查**。**验收** 失败定位扩展源码。
+  - 原版：BigWorld 无 TypeScript 门禁，`ci.yml` 只跑 `ctest`，`daily-build.yml` 只打包。
+  - 新版：`ci/check-typescript.sh {all|self-test}` 遍历树内每个 `tsconfig*.json`（tracked 与未提交都扫，按 basename 过滤而非 git pathspec——`tsconfig*.json` 作 pathspec 匹配不到嵌套路径），逐个 `tsc --noEmit -p` 并跑该包自带 `test` 脚本；CI 作业 `typescript` 调同一入口。
+  - 结果：当前仓无 tsconfig，`ts-typecheck` / `ts-test` 均 SKIP 并注明由 extensions/vscode（BW-20）或 docs/（BW-19）开启；注入 `extensions/vscode/{tsconfig.json,src/bad.ts}` 后 `ts-typecheck` FAIL 定位 `extensions/vscode/src/bad.ts(2, 5): error TS2322`、无 test 脚本则 `ts-test` SKIP；删掉 bad.ts 即转 PASS；include 匹配不到文件时（TS18003，无行列坐标）改为报 `error TS18003: No inputs were found in config file '…/tsconfig.json'`，不再是空白 detail。
+  - 证据：`ci-out/manifest.tsv` 上述三行 + `logs/ts-typecheck-extensions/vscode.log`；`ci/check-typescript.sh self-test` 2 项全 PASS（定位 `src/bad.ts(2,5): error TS2322`、clean 项目放行）。
 - [ ] **BW-22-01-05 配置变更路径条件**。**验收** 文档和代码改动触发对应作业。
 
 #### BW-22-02 测试矩阵与服务装配
