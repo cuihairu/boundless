@@ -81,6 +81,13 @@ jobs:
           # point is that the checkout resolves 1.100.0.
           cache: false
 
+      - name: Python (pinned by .python-version)
+        uses: actions/setup-python@v6
+        with:
+          # Same deal as the Rust step: no version input, read the pin
+          # file under test.
+          python-version-file: .python-version
+
       # The lane warms its own registry from Cargo.lock before building
       # offline: on a clean runner `cargo build --offline` has an empty
       # registry and fails with nothing wrong at all.
@@ -204,7 +211,8 @@ jobs:
       - name: Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          # The single pin file, same pattern as rust-toolchain.toml.
+          python-version-file: .python-version
 
       # Only worth installing once tests/python exists (BW-18).
       - name: Install pytest when there is Python to gate
@@ -425,7 +433,8 @@ jobs:
       - name: Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          # The single pin file, same pattern as rust-toolchain.toml.
+          python-version-file: .python-version
 
       - name: Run the storage cases
         env:
@@ -832,7 +841,8 @@ jobs:
       - name: Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          # The single pin file, same pattern as rust-toolchain.toml.
+          python-version-file: .python-version
 
       - name: Node
         uses: actions/setup-node@v6
