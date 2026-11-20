@@ -1286,7 +1286,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 - [x] **BW-18-04-01 提供单模块和全量入口**。**验收** 同一模块可单独执行。
   - 证据：本地与 CI 走同一入口 `cargo run -p test-support --bin run-tests -- ...`；harness.rs 的 `workspace_modules` 从根 manifest `members` 解析全部 10 个 crate 名、`Plan::for_module` 校验模块名（拼错时报错并列出全部已知 crate）、`cargo_args` 给出映射的 cargo 调用（`-p <crate> [filter]` / `--workspace`）；实测 `run-tests -- test-support timer_scenarios` 单独执行该模块（4 用例通过、其余 90 过滤）、`run-tests -- all` 跑全 workspace、`run-tests -- clock` 拒绝未知模块，7 项单测覆盖映射规则。
-- [ ] **BW-18-04-02 提供兼容差分入口**。**验收** 输出可定位差异。
+- [x] **BW-18-04-02 提供兼容差分入口**。**验收** 输出可定位差异。
+  - 证据：harness.rs 增加共享归档口径 `PASS/FAIL/SKIP <用例名>` 行格式（`parse_outcomes` 跳过头/注释/空行，同一文件本地与 CI 产物通吃）与 `diff_runs`（按名匹配、重名取最坏结果、输出 REGRESSED/healed/MISSING/ADDED 四类），入口 `run-tests diff <baseline> <current>` 每行点名差异用例，实测对样例归档输出 `REGRESSED case_b`+`ADDED case_new` 并以 exit 2 拒绝不兼容；未重跑他人兼容差分（各 lane 自行喂归档），14 项单测覆盖解析与四类分类。
 - [ ] **BW-18-04-03 提供覆盖率入口**。**验收** 报告能映射源码。
 - [ ] **BW-18-04-04 提供结果归档**。**验收** CI 和本地采用同一目录及格式。
 - [ ] **BW-18-04-05 编写失败重现说明**。**验收** 从产物可复跑相应用例。
