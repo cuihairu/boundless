@@ -9,6 +9,7 @@
 //! | `Py_FrozenFlag = 1`, `Py_NoSiteFlag = 1`, `Py_IgnoreEnvironmentFlag = 1` | set before `Py_Initialize` |
 //! | `Py_Initialize()` | same |
 //! | `PySys_SetObject("argv", pArgvList)`, only when `g_scriptArgc` | `InitConfig::argv` |
+//! | `PySys_SetObject("path", sysPaths.pathAsObject())` | `InitConfig::import_paths` |
 //! | `gc.disable()` (`Script::disablePythonGarbage`) | `disable_garbage` |
 //! | `s_isInitalised = true` | [`Interpreter::is_initialized`] |
 //! | `Script::fini` | [`Interpreter::fini`] |
@@ -19,13 +20,14 @@
 //! `None` -- the reference re-implements the removed `_PyModule_Clear`
 //! inline), `Py_Finalize`, then the flag.
 //!
-//! The stdout redirection, the `sys.path` assignment, module registration and
-//! the fini-time jobs arrive with their own BW-03-01 items.
+//! The stdout redirection, module registration and the fini-time jobs arrive
+//! with their own BW-03-01 items.
 
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::capi::{self, PyObject};
+use super::import_paths::ImportPaths;
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -38,6 +40,9 @@ pub enum InitError {
     /// The `sys.argv` list could not be built (a `PyList_New` or
     /// `PyList_SetItem` failure in the reference's argv loop).
     ArgvFailed,
+    /// `PySys_SetObject("path", ...)` refused the list. The reference logs
+    /// `"Script::init: Unable to assign sys.path"` and returns false.
+    PathFailed,
     /// `gc` could not be imported. The reference clears the import error and
     /// carries on with collection enabled; the port reports it instead so a
     /// mis-built runtime is visible.
@@ -50,6 +55,10 @@ pub struct InitConfig {
     /// `g_scriptArgv`. An empty list leaves `sys.argv` at the interpreter
     /// default, exactly like the reference's `if (g_scriptArgc)` guard.
     pub argv: Vec<String>,
+    /// The `PyImportPaths` the app passes to `Script::init`. Always becomes
+    /// `sys.path` -- an empty collection included, since the reference replaces
+    /// the interpreter default rather than extending it.
+    pub import_paths: ImportPaths,
 }
 
 /// `Script`: the embedded interpreter handle.
@@ -89,6 +98,8 @@ impl Interpreter {
         }
         let error = if !config.argv.is_empty() && !set_argv(&config.argv) {
             Some(InitError::ArgvFailed)
+        } else if !set_import_paths(&config.import_paths) {
+            Some(InitError::PathFailed)
         } else if !disable_garbage() {
             Some(InitError::GarbageCollectionUnavailable)
         } else {
@@ -193,6 +204,22 @@ fn set_argv(argv: &[String]) -> bool {
     }
 }
 
+/// `PySys_SetObject("path", paths.pathAsObject())`.
+///
+/// SAFETY: the interpreter must be up and the caller must own the GIL.
+fn set_import_paths(paths: &ImportPaths) -> bool {
+    // SAFETY: the interpreter is up and this thread owns the GIL; the handle
+    // releases the list after the assignment, as the reference's
+    // `Py_DECREF(pSys)` does.
+    unsafe {
+        let list = paths.path_as_object();
+        if list.is_empty() {
+            return false;
+        }
+        capi::PySys_SetObject(c"path".as_ptr(), list.as_ptr()) == 0
+    }
+}
+
 /// `Script::disablePythonGarbage`: import `gc` and call `gc.disable()`.
 ///
 /// The reference clears an import failure and carries on with collection
@@ -272,7 +299,9 @@ fn clear_main_module() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::import_paths;
     use crate::pyref::PyRef;
+    use std::path::PathBuf;
     use std::process::Command;
 
     /// BW-03-01-01. One scenario per process, because CPython 3.13 and later
@@ -296,6 +325,9 @@ mod tests {
         "interpreter::tests::scenario_a_bad_argument_is_an_init_failure",
         "interpreter::tests::scenario_a_handle_owns_one_reference",
         "interpreter::tests::scenario_a_handle_outliving_finalisation_is_safe",
+        "interpreter::tests::scenario_a_script_under_the_resource_root_imports",
+        "interpreter::tests::scenario_sys_path_is_the_assembled_list",
+        "interpreter::tests::scenario_an_unencodable_path_fails_init",
         "interpreter::tests::scenario_init_run_fini",
     ];
 
@@ -328,6 +360,18 @@ mod tests {
         let interpreter = Interpreter::init(config).expect("Script::init");
         body(&interpreter);
         interpreter.fini();
+    }
+
+    /// A throw-away resource root laid out the way the engine ships its scripts:
+    /// `scripts/common` holds one importable module.
+    fn temp_resource_root() -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("boundless-python-host-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("scripts/common/Lib")).expect("build the script tree");
+        std::fs::write(root.join("scripts/common/probe_script.py"), "VALUE = 7\n")
+            .expect("write the script");
+        root
     }
 
     /// `sys.getrefcount(__handle)`: the live reference count of the object the
@@ -399,6 +443,7 @@ mod tests {
         interpreter_scenario(
             &InitConfig {
                 argv: vec![String::from("baseapp"), String::from("--res")],
+                ..Default::default()
             },
             |interpreter| {
                 assert_eq!(
@@ -495,22 +540,32 @@ mod tests {
 
     /// Real stdlib work through the embedded interpreter, the shape of a
     /// server process start.
+    ///
+    /// The reference replaces `sys.path` rather than extending it, so only
+    /// frozen and builtin modules stay importable: the probe imports `sys` and
+    /// `gc`, both builtin, plus a script from the resource tree.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_init_run_fini() {
-        interpreter_scenario(
-            &InitConfig {
-                argv: vec![String::from("scenario")],
-            },
-            |interpreter| {
-                let flags = probe(
-                    interpreter,
-                    "import sys, gc, json\n\
-                     __probe = (sys.argv[0], gc.isenabled(), json.dumps({'k': 1}))",
-                );
-                assert_eq!(flags, "('scenario', False, '{\"k\": 1}')");
-            },
+        let root = temp_resource_root();
+        let root_path = root.to_str().expect("a UTF-8 root");
+        let mut paths = ImportPaths::new(ImportPaths::default_delimiter());
+        paths.add_res_path(&[root_path], "scripts/common");
+        let interpreter = Interpreter::init(&InitConfig {
+            argv: vec![String::from("scenario")],
+            import_paths: paths,
+        })
+        .expect("Script::init");
+        // Real stdlib modules reach the embedded interpreter, and a script from
+        // the resource tree resolves through the assembled `sys.path`.
+        let flags = probe(
+            &interpreter,
+            "import sys, gc, probe_script\n\
+             __probe = (sys.argv[0], gc.isenabled(), probe_script.VALUE)",
         );
+        assert_eq!(flags, "('scenario', False, 7)");
+        interpreter.fini();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// BW-03-01-01 acceptance: every scenario exits normally.
@@ -564,6 +619,7 @@ mod tests {
         assert_eq!(
             Interpreter::init(&InitConfig {
                 argv: vec![String::from("bad\0argument")],
+                ..Default::default()
             })
             .err(),
             Some(InitError::ArgvFailed),
@@ -623,6 +679,81 @@ mod tests {
         assert!(Interpreter::is_finalized());
         // The drop below runs after finalisation: it must be a no-op.
         drop(late);
+    }
+
+    /// BW-03-01-02 acceptance: a script that lives where the engine ships its
+    /// scripts imports by name, because `sys.path` is the assembled resource
+    /// path list rather than CPython's default.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_script_under_the_resource_root_imports() {
+        let root = temp_resource_root();
+        let root_path = root.to_str().expect("a UTF-8 root");
+        let mut app = ImportPaths::new(ImportPaths::default_delimiter());
+        app.add_non_res_path(root.join("app/scripts").to_str().expect("a path"));
+        let sys_paths =
+            import_paths::role_paths(&app, &[root_path], "linux-x86-64", Some("server"));
+        let interpreter = Interpreter::init(&InitConfig {
+            argv: vec![],
+            import_paths: sys_paths,
+        })
+        .expect("Script::init");
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import probe_script; __probe = probe_script.VALUE"
+            ),
+            "7"
+        );
+        interpreter.fini();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `sys.path` is the app's paths followed by the resource-tree paths, in
+    /// the reference's order: `common`, `common/Lib`, then the platform
+    /// build directory.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_sys_path_is_the_assembled_list() {
+        let mut app = ImportPaths::new(ImportPaths::default_delimiter());
+        app.add_non_res_path("/app/scripts");
+        let sys_paths = import_paths::role_paths(&app, &["/res"], "linux-x86-64", Some("server"));
+        interpreter_scenario(
+            &InitConfig {
+                argv: vec![],
+                import_paths: sys_paths,
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(interpreter, "import sys; __probe = len(sys.path)"),
+                    "4"
+                );
+                assert_eq!(
+                    probe(interpreter, "import sys; __probe = sys.path[3]"),
+                    "/res/scripts/server_common/lib-dynload-linux-x86-64_server"
+                );
+            },
+        );
+    }
+
+    /// A path with an embedded NUL cannot become a C string. The collection
+    /// refuses to build the list rather than silently dropping the entry, so
+    /// init fails and unwinds, the same way a bad argument does.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_unencodable_path_fails_init() {
+        let mut paths = ImportPaths::new(ImportPaths::default_delimiter());
+        paths.add_non_res_path("/res\0/scripts");
+        assert_eq!(
+            Interpreter::init(&InitConfig {
+                argv: vec![],
+                import_paths: paths,
+            })
+            .err(),
+            Some(InitError::PathFailed),
+        );
+        assert!(!Interpreter::is_initialized());
+        assert_eq!(unsafe { capi::Py_IsInitialized() }, 0);
     }
 
     /// Before any init the script system is neither initialised nor

@@ -16,7 +16,9 @@
 //! match.
 
 pub mod capi;
+pub mod import_paths;
 pub mod interpreter;
 pub mod pyref;
 
+pub use import_paths::ImportPaths;
 pub use interpreter::{InitConfig, InitError, Interpreter};

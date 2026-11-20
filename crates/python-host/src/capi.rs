@@ -108,7 +108,7 @@ pub unsafe fn clear_error() {
 pub unsafe fn inc_ref(obj: *mut PyObject) {
     unsafe {
         if !obj.is_null() {
-            Py_IncRef(obj)
+            Py_IncRef(obj);
         }
     }
 }
