@@ -1260,7 +1260,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：原版测试用 `sleep( 0.5 )` 硬等后直接连接，超时无从定位；新版 multiproc.rs 提供 Readiness 三种条件（PortOpen 探测 127.0.0.1 监听、FileExists 标记文件、LogContains 日志就绪行）+ `wait_ready` 轮询等待，`a_timed_out_wait_names_the_role_and_condition` 钉死超时错误带角色名+条件+等待毫秒，`an_exited_role_fails_fast_with_its_status` 验证角色先死立即报错不空等，`wait_ready_all_reports_the_first_failing_role` 验证多角色等待点名第一个未就绪者，`unknown_role_in_a_wait_is_rejected` 拒绝拼错的角色名。
 - [x] **BW-18-02-03 分配独立端口与数据库**。**验收** 两个测试并跑互不干扰。
   - 证据：原版测试硬编码端口段并共用检出内数据目录，并跑必撞；新版 crates/test-support/src/allocation.rs 提供 PortAllocator（bind 127.0.0.1:0 由内核发号、PortLease 持有监听期间无人可拿同号）与 RunRoot（logs/db/artifacts 布局）+ database_slot（同标签也各得独立空 db/+journal/ 槽位），`port_leases_are_distinct_while_held`/`bulk_leases_come_back_all_distinct`/`two_parallel_runs_never_overlap`（双 run 根+双分配器 6 端口 2 槽位全不相交）常驻验证并跑互不干扰。
-- [ ] **BW-18-02-04 保留日志与失败目录**。**验收** 失败报告可打开原始产物。
+- [x] **BW-18-02-04 保留日志与失败目录**。**验收** 失败报告可打开原始产物。
+  - 证据：原版 MultiProcTestCase 子进程输出直接进测试 stdout，失败后无现场可查；新版 multiproc.rs 提供 `start_logged`（每角色 stdout+stderr 汇入 RunRoot logs/&lt;role&gt;.log，保持角色实际输出顺序）与 `preserve_failure`（artifacts/failure-report.txt 记录原因、启动顺序、各角色退出状态与日志路径，并 keep 整个 RunRoot），`role_output_is_captured_in_the_run_log` 用日志就绪探针证明输出进的是运行日志，`a_failure_scene_keeps_the_original_logs_and_a_report` 验证报告可打开且原始日志可读、RunRoot 在 drop 后仍存活；另补 `kill_all` 让测试不再空等长驻角色。
 - [ ] **BW-18-02-05 清理整个进程树**。**验收** 三端测试退出无残留进程。
 
 #### BW-18-03 可控时间与消息故障

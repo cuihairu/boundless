@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -240,6 +240,9 @@ pub struct ProcessGroup {
     topology: Topology,
     children: Vec<(String, Child)>,
     start_order: Vec<String>,
+    /// Directory the role logs live in, when the group was started with
+    /// log capture.
+    logs_dir: Option<PathBuf>,
 }
 
 impl ProcessGroup {
@@ -247,25 +250,67 @@ impl ProcessGroup {
     /// failed spawn terminates the roles already started, so a half-started
     /// group never leaks.
     pub fn start(topology: &Topology) -> Result<Self, HarnessError> {
+        Self::spawn_group(topology, None)
+    }
+
+    /// Start like [`ProcessGroup::start`], but capture every role's stdout
+    /// and stderr into `<logs_dir>/<role>.log` -- the original artifacts a
+    /// failure report opens.
+    pub fn start_logged(topology: &Topology, logs_dir: &Path) -> Result<Self, HarnessError> {
+        std::fs::create_dir_all(logs_dir).map_err(|error| HarnessError::Spawn {
+            role: "<logs>".to_string(),
+            reason: format!("cannot create {}: {error}", logs_dir.display()),
+        })?;
+        Self::spawn_group(topology, Some(logs_dir))
+    }
+
+    /// Shared spawn path for inherited and captured stdio.
+    fn spawn_group(topology: &Topology, logs_dir: Option<&Path>) -> Result<Self, HarnessError> {
         let order = topology.start_order()?;
 
         let mut children: Vec<(String, Child)> = Vec::with_capacity(order.len());
         let mut start_order = Vec::with_capacity(order.len());
         for spec in order {
-            let spawned = Command::new(&spec.program)
-                .args(&spec.args)
-                .spawn()
-                .map_err(|error| {
-                    // Terminate what is already running before reporting.
+            let log_file = logs_dir.map(|dir| dir.join(format!("{}.log", spec.name)));
+            let mut command = Command::new(&spec.program);
+            command.args(&spec.args);
+            if let Some(path) = &log_file {
+                let file = std::fs::File::create(path).map_err(|error| {
                     for (_, mut child) in children.drain(..) {
                         let _ = child.kill();
                         let _ = child.wait();
                     }
                     HarnessError::Spawn {
                         role: spec.name.clone(),
-                        reason: error.to_string(),
+                        reason: format!("cannot open log {}: {error}", path.display()),
                     }
                 })?;
+                let mirror = file.try_clone().map_err(|error| {
+                    for (_, mut child) in children.drain(..) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    HarnessError::Spawn {
+                        role: spec.name.clone(),
+                        reason: format!("cannot share log {}: {error}", path.display()),
+                    }
+                })?;
+                // Both streams into one file keeps the interleaved order in
+                // which the role actually produced them.
+                command.stdout(mirror).stderr(file);
+            }
+
+            let spawned = command.spawn().map_err(|error| {
+                // Terminate what is already running before reporting.
+                for (_, mut child) in children.drain(..) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                HarnessError::Spawn {
+                    role: spec.name.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
             start_order.push(spec.name.clone());
             children.push((spec.name.clone(), spawned));
         }
@@ -274,6 +319,7 @@ impl ProcessGroup {
             topology: topology.clone(),
             children,
             start_order,
+            logs_dir: logs_dir.map(Path::to_path_buf),
         })
     }
 
@@ -287,12 +333,59 @@ impl ProcessGroup {
         &self.topology
     }
 
+    /// A role's captured log, when the group logs its roles.
+    pub fn log_path(&self, role: &str) -> Option<PathBuf> {
+        self.logs_dir
+            .as_ref()
+            .map(|dir| dir.join(format!("{role}.log")))
+    }
+
+    /// Preserve a failure scene: keep the run root, write a report into its
+    /// artifacts directory naming the reason, the start order, each role's
+    /// status and where its log lives. Returns the report path.
+    pub fn preserve_failure(
+        &mut self,
+        run: &mut crate::allocation::RunRoot,
+        reason: &str,
+    ) -> std::io::Result<PathBuf> {
+        let mut report = format!("failure: {reason}\n");
+        report.push_str(&format!("start order: {}\n", self.start_order.join(", ")));
+        let roles: Vec<String> = self.children.iter().map(|(role, _)| role.clone()).collect();
+        for role in roles {
+            let status = self
+                .try_wait_role(&role)
+                .map_or_else(|| "still running".to_string(), |status| format!("{status}"));
+            report.push_str(&format!("role {role}: {status}\n"));
+            if let Some(path) = self.log_path(&role) {
+                report.push_str(&format!("  log: {}\n", path.display()));
+            }
+        }
+
+        let path = run.artifacts_dir().join("failure-report.txt");
+        std::fs::write(&path, report)?;
+        run.keep();
+        Ok(path)
+    }
+
     /// The OS pid of a role's process, while it is still un-reaped.
     pub fn pid_of(&self, name: &str) -> Option<u32> {
         self.children
             .iter()
             .find(|(role, _)| role == name)
             .map(|(_, child)| child.id())
+    }
+
+    /// Kill every role and reap it, returning `(role, status)` in start
+    /// order. Used when a scenario must not wait for long-running roles.
+    pub fn kill_all(&mut self) -> Vec<(String, ExitStatus)> {
+        self.children
+            .drain(..)
+            .map(|(role, mut child)| {
+                let _ = child.kill();
+                let status = child.wait().expect("wait on killed role");
+                (role, status)
+            })
+            .collect()
     }
 
     /// Wait for every role to exit, returning `(role, status)` in start
@@ -703,5 +796,97 @@ mod tests {
             ),
             Err(HarnessError::UnknownRole("ghost".to_string()))
         );
+    }
+
+    /// Role output lands in the run's own log file, not the test's stdout:
+    /// the readiness probe sees the line only through the captured log.
+    #[test]
+    fn role_output_is_captured_in_the_run_log() {
+        let run = crate::allocation::RunRoot::open("capture").unwrap();
+        let topology = Topology::new().add(
+            ProcessSpec::new("chatty", "/bin/sh")
+                .arg("-c")
+                .arg("echo 'chatty: on deck'; sleep 30"),
+        );
+        let mut group = ProcessGroup::start_logged(&topology, &run.logs_dir()).expect("starts");
+
+        let log = group.log_path("chatty").expect("logged group");
+        assert_eq!(log, run.logs_dir().join("chatty.log"));
+        group
+            .wait_ready(
+                "chatty",
+                &Readiness::LogContains {
+                    path: log.clone(),
+                    pattern: "chatty: on deck".to_string(),
+                },
+                Duration::from_secs(5),
+            )
+            .expect("log captures the role output");
+        // Kill the sleeper so the suite does not wait it out.
+        let results = group.kill_all();
+        assert_eq!(results.len(), 1);
+    }
+
+    /// A failed run keeps its scene: the report opens the original role
+    /// log, and the run root survives for the report to reference.
+    #[test]
+    fn a_failure_scene_keeps_the_original_logs_and_a_report() {
+        let mut run = crate::allocation::RunRoot::open("failure").unwrap();
+        let topology = Topology::new()
+            .add(
+                ProcessSpec::new("boom", "/bin/sh")
+                    .arg("-c")
+                    .arg("echo boom >&2; exit 2"),
+            )
+            .add(ProcessSpec::new("sleeper", "/bin/sleep").arg("30"));
+        let mut group = ProcessGroup::start_logged(&topology, &run.logs_dir()).expect("starts");
+
+        // boom exits; sleeper keeps running.
+        std::thread::sleep(Duration::from_millis(200));
+        let report = group
+            .preserve_failure(&mut run, "boom exited early")
+            .expect("report written");
+
+        let report_text = std::fs::read_to_string(&report).unwrap();
+        assert!(report_text.contains("boom exited early"), "{report_text}");
+        assert!(report_text.contains("start order: boom, sleeper"));
+        assert!(
+            report_text.contains("role boom: exit status: 2"),
+            "{report_text}"
+        );
+        assert!(report_text.contains("role sleeper: still running"));
+        // The report names the log next to the role's original output.
+        let log = run.logs_dir().join("boom.log");
+        assert!(report_text.contains(&log.display().to_string()));
+        assert!(std::fs::read_to_string(&log).unwrap().contains("boom"));
+
+        // The kept root survives the group and the root itself dropping,
+        // so the report can still be opened afterwards.
+        let root_path = run.path().to_path_buf();
+        let _ = group.kill_all();
+        drop(run);
+        assert!(root_path.exists(), "failure scene kept");
+        let _ = std::fs::remove_dir_all(&root_path);
+    }
+
+    /// A group started without log capture reports no log paths, and the
+    /// failure report still lands in the artifacts directory.
+    #[test]
+    fn an_unlogged_group_still_writes_a_report() {
+        let mut run = crate::allocation::RunRoot::open("unlogged").unwrap();
+        let topology = Topology::new().add(ProcessSpec::new("quiet", "/bin/sleep").arg("30"));
+        let mut group = ProcessGroup::start(&topology).expect("starts");
+        assert!(group.log_path("quiet").is_none());
+
+        let report = group
+            .preserve_failure(&mut run, "timed out")
+            .expect("report written");
+        let report_text = std::fs::read_to_string(&report).unwrap();
+        assert!(report_text.contains("timed out"));
+        assert!(!report_text.contains("log:"), "{report_text}");
+        let root_path = run.path().to_path_buf();
+        let _ = group.kill_all();
+        drop(run);
+        let _ = std::fs::remove_dir_all(&root_path);
     }
 }
