@@ -80,7 +80,15 @@ main() {
     OFFLINE_NOTE="offline not requested"
     if [ "$OFFLINE" -eq 1 ]; then
         ci_step "offline resolution"
-        if ! (cd "$REPO_ROOT" && cargo build --workspace --offline) >"$CI_LOG_DIR/lockfile-offline.log" 2>&1; then
+        # A clean checkout has an empty registry, and `--offline` against an
+        # empty one fails with nothing wrong at all. Populate it from
+        # Cargo.lock first — resolving against the crates index is the
+        # completeness half of the check — then build with no network.
+        if ! (cd "$REPO_ROOT" && cargo fetch) >"$CI_LOG_DIR/lockfile-offline.log" 2>&1; then
+            ci_fail lockfile "cargo fetch could not resolve Cargo.lock (see logs/lockfile-offline.log)"
+            return
+        fi
+        if ! (cd "$REPO_ROOT" && cargo build --workspace --offline) >>"$CI_LOG_DIR/lockfile-offline.log" 2>&1; then
             ci_fail lockfile "offline build from the committed lockfile failed (see logs/lockfile-offline.log)"
             return
         fi

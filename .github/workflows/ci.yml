@@ -73,6 +73,9 @@ jobs:
           # point is that the checkout resolves 1.100.0.
           cache: false
 
+      # The lane warms its own registry from Cargo.lock before building
+      # offline: on a clean runner `cargo build --offline` has an empty
+      # registry and fails with nothing wrong at all.
       - name: Verify
         run: ci/toolchain-check.sh --offline
 
@@ -86,7 +89,7 @@ jobs:
           if-no-files-found: ignore
 
   rust-static:
-    name: Rust format and lint (${{ needs.changes.outputs.rust_packages || 'workspace-wide' }})
+    name: Rust format and lint
     needs: changes
     if: >-
       contains(needs.changes.outputs.lanes, 'rust') &&
@@ -123,7 +126,7 @@ jobs:
           if-no-files-found: ignore
 
   rust-build-test:
-    name: Rust build and test (${{ needs.changes.outputs.rust_packages || 'workspace' }})
+    name: Rust build and test
     needs: changes
     if: >-
       contains(needs.changes.outputs.lanes, 'rust') &&
