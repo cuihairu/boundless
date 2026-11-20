@@ -202,6 +202,41 @@ mod tests {
         assert_eq!(hits[1].anchor, "second");
     }
 
+    #[test]
+    fn a_language_filter_keeps_that_locale_only() {
+        let mut index = DocIndex { versions: Vec::new() };
+        let english = DocEntry {
+            path: "guide/x.md".into(),
+            lang: "en".into(),
+            title: "X".into(),
+            blob: "b".into(),
+            sections: vec![section("First", "flags cell")],
+        };
+        let zh = DocEntry {
+            path: "zh/guide/x.md".into(),
+            lang: "zh".into(),
+            title: "实体".into(),
+            blob: "c".into(),
+            sections: vec![section("属性", "属性的 Flags 决定 cell 数据")],
+        };
+        index.versions.push(VersionDocs {
+            label: "v1".into(),
+            commit: "abc".into(),
+            docs: vec![english, zh],
+        });
+        let hits = search(&index, "v1", "flags cell", Some("zh"), DEFAULT_LIMIT);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "zh/guide/x.md");
+        assert_eq!(hits[0].lang, "zh");
+    }
+
+    #[test]
+    fn a_term_that_ends_the_text_is_kept() {
+        // Nothing follows the last term, so it has to be flushed by hand.
+        assert_eq!(terms("cell migration."), vec!["cell", "migration"]);
+        assert_eq!(terms("迁移"), vec!["迁移"]);
+    }
+
     fn section(title: &str, body: &str) -> SectionEntry {
         SectionEntry {
             title: title.into(),

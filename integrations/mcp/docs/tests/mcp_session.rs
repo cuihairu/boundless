@@ -251,3 +251,65 @@ fn the_limit_limits_the_hits() {
     assert!(hits(&all).len() >= 2);
     assert_eq!(hits(&limited).len(), 1);
 }
+
+#[test]
+fn the_default_settings_match_the_command_line_defaults() {
+    // The editor writes these into .vscode/mcp.json, so a plain config must
+    // mean the same as starting the server with no flags at all.
+    assert_eq!(
+        ServerConfig::default(),
+        ServerConfig {
+            prefix: "docs".into(),
+            locales: vec!["zh".to_string()],
+            version: "HEAD".into(),
+            docs_url: String::new(),
+        }
+    );
+}
+
+#[test]
+fn a_message_without_a_method_is_a_protocol_error() {
+    let session = session();
+    let reply = call(
+        &session,
+        json!({"jsonrpc": "2.0", "id": 20}),
+    );
+    assert_eq!(reply["error"]["code"], -32600);
+    assert_eq!(reply["id"], 20);
+    assert!(reply["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("missing method"));
+}
+
+#[test]
+fn a_read_without_a_path_is_reported() {
+    let session = session();
+    let reply = call(
+        &session,
+        json!({"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "read_doc", "arguments": {}}}),
+    );
+    assert_eq!(reply["result"]["isError"], true);
+    assert!(reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("requires a path"));
+}
+
+#[test]
+fn blank_lines_between_requests_are_nothing() {
+    let session = session();
+    let input = Cursor::new(concat!(
+        "\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/list\"}\n",
+        "   \n",
+    ));
+    let mut output = Vec::new();
+    boundless_docs_mcp::mcp::serve(session, input, &mut output).expect("serve");
+    let text = String::from_utf8(output).expect("utf-8");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "one reply for one request: {text}");
+    let reply: Value = serde_json::from_str(lines[0]).expect("parse");
+    assert_eq!(reply["id"], 30);
+    assert!(reply["result"]["tools"].is_array());
+}

@@ -252,4 +252,28 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn a_source_path_is_not_a_rendered_link() {
+        // The index names pages by their markdown path, so a link that already
+        // ends in `.md` keeps it rather than growing a second one.
+        assert_eq!(
+            rendered_target("docs/guide/a.md", ""),
+            Some(("guide/a.md".to_string(), None))
+        );
+        assert_eq!(
+            rendered_target("docs/guide/a.md#b", ""),
+            Some(("guide/a.md".to_string(), Some("b".to_string())))
+        );
+    }
+
+    #[test]
+    fn an_empty_target_is_the_page_it_sits_in() {
+        let links = links_in("[here]()", "zh/guide/x.md", "https://docs.boundless.dev");
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].target,
+            "https://docs.boundless.dev/zh/guide/x.html"
+        );
+    }
 }

@@ -55,3 +55,57 @@ pub fn git_exit(context: &'static str, status: ExitStatus, stderr: &[u8]) -> Doc
     };
     DocsError::Git { context, detail }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn every_failure_names_what_it_is() {
+        assert_eq!(
+            DocsError::Git {
+                context: "rev-parse",
+                detail: "reference v9: exit code 128".to_string(),
+            }
+            .to_string(),
+            "git rev-parse: reference v9: exit code 128"
+        );
+        assert_eq!(
+            DocsError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "no index"))
+                .to_string(),
+            "io: no index"
+        );
+        assert!(
+            DocsError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err())
+                .to_string()
+                .starts_with("index json: ")
+        );
+        assert_eq!(
+            DocsError::Version("v9".into()).to_string(),
+            "docs version: v9"
+        );
+    }
+
+    #[test]
+    fn the_platform_failures_become_this_error() {
+        let io: DocsError = std::io::Error::other("gone").into();
+        assert!(io.to_string().starts_with("io:"));
+        let json: DocsError = serde_json::from_str::<serde_json::Value>("nope").unwrap_err().into();
+        assert!(json.to_string().starts_with("index json:"));
+    }
+
+    #[test]
+    fn a_git_failure_without_a_message_still_names_the_exit_code() {
+        let status = std::process::ExitStatus::from_raw(128 << 8);
+        let err = git_exit("show", status, b"");
+        assert_eq!(err.to_string(), "git show: exit code 128");
+    }
+
+    #[test]
+    fn a_git_failure_with_a_message_carries_it() {
+        let status = std::process::ExitStatus::from_raw(1 << 8);
+        let err = git_exit("ls-tree", status, b" fatal: bad thing\n");
+        assert_eq!(err.to_string(), "git ls-tree: exit code 1: fatal: bad thing");
+    }
+}

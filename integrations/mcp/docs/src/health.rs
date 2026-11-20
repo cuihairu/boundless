@@ -374,4 +374,48 @@ mod tests {
                 .any(|line| line.contains("private page indexed"))
         );
     }
+
+    /// A link to another host is not a documentation link and so cannot break.
+    #[test]
+    fn a_link_off_the_docs_site_is_ignored() {
+        let repo = Repo::new();
+        repo.commit(
+            "docs/guide/near.md",
+            "# Near\n\n## Here\n\nSee [Elsewhere](https://other.example/page.html).\n",
+            "near",
+        );
+        let mut index = DocIndex::default();
+        index
+            .add_version(&repo.source, "HEAD", "docs", &["zh"])
+            .expect("index");
+        let report = scope(&index, &repo.source, "HEAD", "docs", "").expect("report");
+        assert!(report.clean());
+    }
+
+    /// Several findings come back in one reading order, whatever they were in.
+    #[test]
+    fn the_findings_are_sorted_by_page_and_target() {
+        let repo = Repo::new();
+        repo.commit(
+            "docs/guide/near.md",
+            "# Near\n\n## Here\n\nSee [Zeta](./gone.md#zeta) and [Alpha](./nowhere.md).\n",
+            "near",
+        );
+        repo.commit(
+            "docs/guide/far.md",
+            "# Far\n\n## There\n\nSee [Nothing](./void.md#nothing).\n",
+            "far",
+        );
+        let mut index = DocIndex::default();
+        index
+            .add_version(&repo.source, "HEAD", "docs", &["zh"])
+            .expect("index");
+        let report = scope(&index, &repo.source, "HEAD", "docs", "").expect("report");
+        let targets: Vec<&str> =
+            report.broken.iter().map(|link| link.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            ["docs/guide/void.html#nothing", "docs/guide/gone.html#zeta", "docs/guide/nowhere.html"]
+        );
+    }
 }
