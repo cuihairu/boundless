@@ -1637,6 +1637,7 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 | **44790503820** | `02d90bb` | push | completed/**success** | BW-22-04-01 上线首跑：`Installer package and launch smoke` **success**（release 构建→前缀→2.6M tarball→干净前缀安装→启动烟测全 PASS）、`Harness self-tests` 含 `ci/package.sh self-test` 3/3。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 | **44791771769** | `4e4590c` | push | completed/**success** | BW-22-04-02 上线首跑：`Docs site package and version index` **success**（构建 20 页→index 戳 0.1.0/4e4590c→864K tarball→版本元数据对账 PASS）；`Documentation site and links` 的 docs-build 腿首次真跑 PASS（修掉门错根 package.json 的旧条件 + link checker 排除 node_modules）。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 | **44792575020** | `a051884` | push | completed/**success** | BW-22-04-03 上线首跑：`Engine SDK archives and import smoke` **success**（`sdk/engines/` 不在 → 如实 SKIP 点名 BW-21-01-01）；`Harness self-tests` 含 `ci/sdk-archive.sh self-test` 4/4。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
+| **44793741916** | `092e962` | push | completed/**success** | BW-22-04-04 上线首跑：`VSIX package and clean-host install` **success**（新编译→vsce 160K→档案完整性→干净宿主核心加载 PASS，editor 腿如实 SKIP 点名 BW-20-03-03——首跑曾咬中 `require('vscode')` 主入口裸 node 装不了的契约缺陷并修正）；`Harness self-tests` 含 vsix 自测 3/3。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 
 本地等价门（`CI_OUT` 走默认仓根路径，与 CI 一致）在 `a2c0f66` 上全跑一次：28 PASS / 3 SKIP / 2 FAIL，两条 FAIL 均为 `rust-fmt`（211 处）与 `rust-lint`（32 处，全在 `crates/resources`），属各 crate 所属席位的历史债务，不属 CI 面；`archive` 行 `ok: 32 manifest row(s) round-tripped, bundle 60K`。
 
@@ -1701,7 +1702,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 选路与 workflow：`ci/changes.sh` 新增 `sdkarc` lane（`sdk/engines/* | ci/sdk-archive.sh`）；`ci.yml` 新增 `Engine SDK archives and import smoke` 作业（无 Rust，纯归档+烟测）；`package-daily.yml` 新增 `sdk-archive` 作业（同一 48 小时保鲜规则，产物 `package-sdk-engines-*`）；harness 作业补 `ci/sdk-archive.sh self-test`。版本号只读 workspace 现值用于文件名——不 bump、不打 tag、不发 Release（红线）。
   - 结果：本地 `ci/sdk-archive.sh` rc=0（真树现状：`sdk/engines/` 整树不在 → 单行 SKIP 点名 BW-21-01-01）、self-test 4/4 PASS、`shellcheck -S warning` 与 `actionlint` 双绿。
   - 证据：CI run **44792575020**（HEAD `a051884`）：`Engine SDK archives and import smoke` **success**（托管 runner 上 `sdk-archive SKIP no sdk/engines/ tree ... tracked by BW-21-01-01` 照录——诚实登记而非假 PASS）；同 run `Harness self-tests` **success** 含 `ci/sdk-archive.sh self-test` 四行 PASS。唯一红仍为 `rust-lint` 历史债。本地等价命令均 rc=0。详见下方 BW-22 交付汇总。
-- [ ] **BW-22-04-04 归档 VSIX**。**验收** 可以在干净宿主安装。
+- [x] **BW-22-04-04 归档 VSIX**。**验收** 可以在干净宿主安装。
+  - 原版：BigWorld 无 VS Code 扩展、无 VSIX 面——编辑器侧交付不存在于原版 CI；本条的锚是本仓 BW-20 席位落地的 `extensions/vscode`（`vsce` 已在其 devDependencies）与原版 `daily-build.yml` 的「装包不发布」约束形态。
+  - 新版：`ci/vsix.sh`——**先新编译再打包**（陈旧 `out/` 不许进包：`tsc -p .` 后才跑 `vsce package --no-dependencies`，用扩展自带的 vsce，打包规则与发布者同一条路径），归档 `ci-out/vsix/boundless-vscode-<扩展版本>-<commit>.vsix`；`vsix-verify` 查档案完整性——`extension.vsixmanifest`、`extension/package.json`、package.json 声明的 `main` 条目必须在档内，且 manifest 的 version 与 package.json 一致（自测抓到过 sed 未锚定前缀导致假失配——`<PackageManifest>0.0.1` ≠ `0.0.1`——补 `.*` 锚定修掉）；`vsix-install` **干净宿主安装烟测**：mktemp 出干净扩展目录、python stdlib 解包（runner 不保证有 unzip）、从**安装副本**加载宿主无关核心 `out/workspace/diagnostics.js` 并断言 `checkDefText` 可用——与 `ci/sdk.sh` 的 built-load 同一份契约，但加载的是装出来的而非编出来的。
+  - 关键设计：**安装烟测首跑即咬中真缺陷**——最初让 node 加载 package.json 的 `main` 条目，真跑 rc=1：`extension.js:46` `require('vscode')`——扩展主入口**理应**依赖编辑器宿主 API，裸 node 加载不了它。契约修正为加载宿主无关核心（这正是 BW-20-03-03 编辑器宿主缺失的边界：入口级安装验证归编辑器腿）；`vsix-editor-host` 腿在 `@vscode/test-electron` 未声明前如实 SKIP 点名 BW-20-03-03。自测三路：完整 vsix 验证+安装全过、缺 main 条目 FAIL 点名、manifest/package 版本失配 FAIL 点名（python stdlib 造 vsix，不依赖 vsce）。
+  - 选路与 workflow：`ci/changes.sh` 新增 `vsix` lane（`extensions/vscode/* | ci/vsix.sh`）；`ci.yml` 新增 `VSIX package and clean-host install` 作业（node+pnpm，产物 `vsix-*`）；`package-daily.yml` 新增 `vsix-archive` 作业（同一 48 小时保鲜规则，产物 `package-vsix-*`）；harness 作业补 `ci/vsix.sh self-test`。版本号只读扩展现值用于文件名——不 bump、不打 tag、不发 Release、不 publish（红线）。
+  - 结果：本地 `ci/vsix.sh` rc=0（五腿：build/package 160K/verify/install/editor-SKIP 全部如实）、self-test 3/3、`shellcheck -S warning` 与 `actionlint` 双绿。
+  - 证据：CI run **44793741916**（HEAD `092e962`）：`VSIX package and clean-host install` **success**（五行 verdict 照录：`boundless-vscode-0.0.1-092e962.vsix (160K)`、installed core loads and checkDefText is usable from a clean host、editor-host SKIP 点名 BW-20-03-03）；同 run `Harness self-tests` **success** 含 vsix 自测三行。唯一红仍为 `rust-lint` 历史债。本地等价命令均 rc=0。详见下方 BW-22 交付汇总。
 - [ ] **BW-22-04-05 校验发布元数据与散列**。**验收** 改动产物会检测失败。
 
 ### BW-23 内置 Profiler 与性能分析
