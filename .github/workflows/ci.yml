@@ -551,6 +551,35 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-03-01 — the PR short load test. The scenario set (BW-17-03-05) and
+  # the driver crate (BW-17-01-01) do not exist yet, so every case SKIPs and
+  # names its ticket; the day the substrate lands, the same step runs the
+  # scenarios and records their results.
+  load:
+    name: PR short load test
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'load')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Run the short load scenarios
+        run: ci/load.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-load-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -592,6 +621,7 @@ jobs:
           ci/runners.sh self-test
           ci/parity.sh self-test
           ci/sdk.sh self-test
+          ci/load.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results
