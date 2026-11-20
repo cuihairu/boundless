@@ -8,6 +8,7 @@
 pub mod case_registry;
 pub mod config_fixture;
 pub mod layering;
+pub mod multiproc;
 pub mod rng;
 pub mod standalone;
 pub mod workspace;

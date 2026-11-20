@@ -1254,7 +1254,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 对应原版 `multi_proc_test_case`，提供按拓扑启动、按条件等待就绪、独立端口和数据库、日志采集、失败现场保留及进程清理。验证并行执行时隔离和三端清理。
 
-- [ ] **BW-18-02-01 按拓扑启动进程**。**验收** 依赖顺序可观察。
+- [x] **BW-18-02-01 按拓扑启动进程**。**验收** 依赖顺序可观察。
+  - 证据：原版 `multi_proc_test_case.cpp` 只有 fork/waitpid 匿名子进程，无角色与拓扑概念；新版 crates/test-support/src/multiproc.rs 提供 Topology（ProcessSpec 带 depends_on 边）+ Kahn 拓扑排序（独立角色按插入序保证可复现）+ ProcessGroup::start 按序真实 spawn，`dependents_start_after_their_dependencies`/`independent_roles_keep_insertion_order` 钉死顺序可观察，`cycles_list_their_members`/`unknown_dependencies_report_both_roles`/`duplicate_role_names_are_rejected` 报错带角色名，`a_started_group_spawns_roles_in_dependency_order` 验证真实进程按序启动且 pid 独立，`a_failed_spawn_names_the_role_and_cleans_up` 验证半启动不泄漏。
 - [ ] **BW-18-02-02 按就绪条件等待**。**验收** 超时能明确定位角色。
 - [ ] **BW-18-02-03 分配独立端口与数据库**。**验收** 两个测试并跑互不干扰。
 - [ ] **BW-18-02-04 保留日志与失败目录**。**验收** 失败报告可打开原始产物。
