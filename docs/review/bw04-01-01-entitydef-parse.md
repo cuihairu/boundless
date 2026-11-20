@@ -507,3 +507,26 @@
 3. **`<Exposed>` 客户端方法禁止**：stock 属性解析失败报错路径；fixture 已按参考改正，未在 Rust 侧复刻该错误文案（属诊断域，本 fixture 不触发）。
 4. **stock teardown 伪影**：BWTwoWay/twisted 导入失败（ReturnValuesHandler 静态初始化）与 Python finalization segfault 在 service_def/full_def 两次基线均出现，不影响 JSON 产物；Rust bin 无对应噪音（exit 0 干净）。
 5. **空 .py 不算脚本存在**：`pythonScriptExists` 的 size != 0 检查——首版 fixture 用 touch 造空文件被 stock 全判无脚本，已按参考语义填注释行。
+
+---
+
+# BW-04-04-04 验证 bwentity 与集成示例 — 复核证据
+
+- **任务编号**: BW-04-04-04（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 405；验收：用产物成功加载脚本定义）。
+- **原版源码**: `lib/bwentity/entity_description_map_factory.cpp` —— `EntityDescriptionMapFactory::create(pathsToEntityDef)`：初始化 ResMgr → 打开 `Constants::entitiesFile()`（`scripts/entities.xml`）→ `new EntityDescriptionMap` → `parse(pEntities, &ClientInterface::Range::entityPropertyRange, &ClientInterface::Range::entityMethodRange, &BaseAppExtInterface::Range::baseEntityMethodRange, &BaseAppExtInterface::Range::cellEntityMethodRange)` → 返回可导航 map；`entity_description_map.hpp` 的消费面即 `nameToIndex`/`size`/`entityDescription`。**活基准**（集成示例两棵参考树经同一路径实测）：`bigworld/examples/client_integration/python/simple/res` 与 `programming/fantasydemo/res` 加载成功且 digest 与各自捕获产物一致。
+- **Boundless 模块**: `crates/entitydef/tests/bwentity_load.rs` —— `factory_create` 镜像 C++ 工厂（`FsResolver` + 惰性别名 + 打开 `scripts/entities.xml` + `parse` + 断言诊断干净），导航检查：`size`、`name_to_index` ↔ `entity_description(index).name` 全量回环、`base()/cell()/client()` 方法表访问、属性集访问与 `Identifier → isIndexed+isUnique` 链、`clientIndex` 0/65535 口径、`has_return_values`、digest/最大值与 BW-04-04-03 产物交叉核对。
+- **平台**: Linux x86_64（Rust 工具链 1.100.0，llvm-cov 0.9.1）。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**238 单元 + 3 bwentity 工厂加载 + 1 诊断差分 + 5 差分**全部通过。
+  - 三棵树经工厂路径加载成功：`full_def`（本仓，无条件）、**client_integration 示例**与 **fantasydemo**（本环境 `BW04_CI_RES`/`BW04_FD_RES` 已设，实际执行，digest 与产物逐字节核对一致）。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt（触达文件）干净；覆盖率（`--lib`）全部文件 **≥98%**。
+- **证据链接**: `crates/entitydef/tests/bwentity_load.rs`、`docs/review/reference/{full,client_integration,fantasydemo}_entitydef.json`、`lib/bwentity/entity_description_map_factory.cpp`（对照源）。
+- **状态**: 已交付（产物成功加载脚本定义：bwentity 等价工厂路径在三棵树上加载成功、导航 API 全部可用、digest 与生成产物一致）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **EDITOR_ONLY 属性不进运行时属性集**：full_def 的 `secret`（EDITOR_ONLY）不占 `propertyCount`（7 而非 8），与 stock oracle `allProperties` 7 条一致——锚定测试先红（测试期望 8 为误）后按参考语义改正，生产代码未动。
+2. **环境门控如实登记**：两棵参考树测试依赖 `BW04_CI_RES`/`BW04_FD_RES`，无该环境时 skip 并打印说明；本环境实际执行且通过。
+3. **四 Range 参数属连接层**：工厂 parse 的四个接口 Range（Client/BaseAppExt 接口号）属 mercury/连接域（禁触），Rust 沿用 dump 管线的 `MessageRanges::default()` 口径（与 process_defs 产物一致的等价口径），登记。
+4. **factory 失败语义差异**：参考工厂 parse 失败仅 ERROR 日志仍返回 map；Rust 测试按验收口径断言解析必须成功且诊断干净，加严登记。
+5. **connectionConstants 不在域内**：`EntityDescriptionMap::connectionConstants()`（连接层常量表）属 mercury 域，本席不建。
