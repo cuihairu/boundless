@@ -12,7 +12,9 @@ a nav or sidebar entry pointing at a missing page must fail the gate too.
 Comments in that file are stripped first, because the docstring documents a
 locale switch that is not enabled and would otherwise look like a link.
 
-`.vitepress/`, `node_modules/`, `dist/` and `.git/` are never scanned.
+`.vitepress/`, `node_modules/`, `dist/`, `.git/` and `review/` are never
+scanned (`review/` is the seats' evidence area, excluded from the site by
+`srcExclude` in `.vitepress/config.mjs`).
 
 Usage:  python3 scripts/check-docs-links.py [docs]
 Exit:   0 when no dead links, 1 otherwise.
@@ -24,7 +26,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 # Directories that are never part of the site.
-SKIP_DIRS = frozenset({".vitepress", "node_modules", "dist", ".git"})
+SKIP_DIRS = frozenset({".vitepress", "node_modules", "dist", ".git", "review"})
 
 PAGES = (".html", ".md", ".mdx")
 INLINE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
