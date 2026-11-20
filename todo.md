@@ -105,7 +105,11 @@
 
 - [x] **BW-00-03-01 创建 Cargo workspace**。**验收** 干净检出可枚举和编译成员。
   - 证据：`cargo build --workspace` 9 个成员 0 警告（根 Cargo.toml）。
-- [ ] **BW-00-03-02 固定 Rust、Python 工具链与依赖**。**验收** 本地与 CI 解析同一版本。
+- [x] **BW-00-03-02 固定 Rust、Python 工具链与依赖**。**验收** 本地与 CI 解析同一版本。
+  - 原版：BigWorld 无工具链固定面——构建依赖系统里恰好装着的编译器与 Python 2.7，没有声明处，也没有任何「两端解析同一版本」的校验。
+  - 新版：Rust 半边——`rust-toolchain.toml` 钉 `channel = "1.100.0"`（本席位接手时已在，**未重做**），`ci/toolchain-check.sh`（BW-22-01-01 落地）校验 pinned==resolved（rustup override 让每台检出机器强制解析 pin）、`[workspace.package] rust-version` 声明存在即须与 pin 一致（当前未声明，如实记 `<none>`）、Cargo.lock 入库且 `cargo metadata --locked` 一致、`--offline` 从锁文件冷注册表全仓可编译——依赖固定即锁文件入库这条。Python 半边——本条目补齐：新增 `.python-version` 钉 `3.12`（与 rust-toolchain.toml 同型的单一声明源），ci.yml 所有 `setup-python` 改读 `python-version-file: .python-version`（原先三处各自硬编码 `3.12`，会各自漂移），toolchain 作业补 Python 步骤使 lane 里的 python3 就是 pin 解析出的解释器，lane 新增 python 腿：pin 文件缺失/空 → FAIL；**CI 里 python3 与 pin 不一致 → FAIL**（setup-python 已按文件解析，不一致只可能是 setup 步骤被删或镜像漂移）；本机默认 python3 不认 pin 文件（hermes 托管的 3.14.9）→ 两边版本如实写进 `toolchain.json`（`python_pinned`/`python_resolved`）并注明谁认这个文件，不假造本地一致。
+  - 结果：本地 `ci/toolchain-check.sh --offline` rc=0（`python_pinned=3.12 python_resolved=3.14.9` 记录在案，rust 半边 pinned==resolved=1.100.0、members=10、offline build resolved）；`shellcheck -S warning` 与 `actionlint` 双绿。
+  - 证据：CI run **44796370170**（HEAD `b45f330`）：`Toolchain pin and lockfile` **success**，Python 步骤照录 `Successfully set up CPython (3.12.16)`，lane 行 `python_pinned=3.12 python_resolved=3.12.16`——**CI 侧解析与 pin 逐字一致**，「本地与 CI 解析同一版本」在受管环境成立且有硬门；rust 半边的 CI 记录自 BW-22-01-01 起 toolchain 作业持续绿（run **44749719511** 起）。同 run 其余自有作业全 success，唯一红仍为 `rust-lint` 历史债。本地等价命令 rc=0。
 - [ ] **BW-00-03-03 配置 Python 模块构建与导入**。**验收** 安装后能导入最小模块。
 - [ ] **BW-00-03-04 分离资源、配置、原版产物和测试路径**。**验收** 同机两套环境互不覆盖。
 - [x] **BW-00-03-05 提供最小启动与关闭入口**。**验收** 进程退出且留存启动日志。
@@ -1639,6 +1643,7 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 | **44792575020** | `a051884` | push | completed/**failure** | BW-22-04-03 上线首跑：`Engine SDK archives and import smoke` **success**（`sdk/engines/` 不在 → 如实 SKIP 点名 BW-21-01-01）；`Harness self-tests` 含 `ci/sdk-archive.sh self-test` 4/4。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 | **44793741916** | `092e962` | push | completed/**failure** | BW-22-04-04 上线首跑：`VSIX package and clean-host install` **success**（新编译→vsce 160K→档案完整性→干净宿主核心加载 PASS，editor 腿如实 SKIP 点名 BW-20-03-03——首跑曾咬中 `require('vscode')` 主入口裸 node 装不了的契约缺陷并修正）；`Harness self-tests` 含 vsix 自测 3/3。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 | **44795047237** | `f28df98` | push | completed/**failure** | BW-22-04-05 上线首跑：`Harness self-tests` **success** 含 checksums 自测 4/4（回环 PASS、单字节篡改→`CHANGED` 点名、删文件→`MISSING` 点名、错版本戳→`MISSTAMPED` 对 header 咬住）；installer/docs/sdk/vsix 四个打包面作业全 success。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
+| **44796370170** | `b45f330` | push | completed/**failure** | BW-00-03-02 收口：`Toolchain pin and lockfile` **success**——新增 `.python-version` 单一声明源，四处 `setup-python` 改读 `python-version-file`，CI 照录 `Successfully set up CPython (3.12.16)` 且 lane 行 `python_pinned=3.12 python_resolved=3.12.16`（CI 内不一致即 FAIL 的硬门）。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 
 本地等价门（`CI_OUT` 走默认仓根路径，与 CI 一致）在 `a2c0f66` 上全跑一次：28 PASS / 3 SKIP / 2 FAIL，两条 FAIL 均为 `rust-fmt`（211 处）与 `rust-lint`（32 处，全在 `crates/resources`），属各 crate 所属席位的历史债务，不属 CI 面；`archive` 行 `ok: 32 manifest row(s) round-tripped, bundle 60K`。
 
