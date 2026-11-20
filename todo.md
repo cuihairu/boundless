@@ -355,7 +355,8 @@
   - 证据：自建 res 夹具（services.xml 两服务 + service_defs + 服务脚本 + 服务接口链）上跑参考 process_defs 生成 oracle `docs/review/reference/service_entitydef.json`（MD5 012FC1AB…），Rust `dump_map` 逐字节相等；服务公开方法清单 = `<Implements>` 接口方法在前 + `<Methods>`（vacuum/sweep/tally），`sweep` exposedIndex=0，cell/client 半边为空，服务自带 `<Properties>` 被忽略。同时修正 `EntityDistribution` 标签名对齐参考 `readBool("Client"/"Base"/"Cell")`。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-03 节。commit `683bb5d`。
 - [x] **BW-04-01-04 分配属性和方法索引**。**验收** Base、Cell、Client 索引吻合。
   - 证据：新增自建夹具 `docs/review/fixtures/entity_index/res`（父/子实体 + server-only + 三边混合定长/变长方法），参考 process_defs 生成 oracle `docs/review/reference/entity_index_entitydef.json`（MD5 6FAD1D72…），Rust `dump_map` 首轮即逐字节相等；属性 index 按并入序、clientServerFullIndex 只在 client-server 半边重排、base/cell/client 三边 exposed 索引各自排序（子实体 repair=0、damage=1、shout=2，retire=-1）。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-04 节。commit `df12d8e`。
-- [ ] **BW-04-01-05 计算定义摘要**。**验收** 同输入得到与原版相同字节。
+- [x] **BW-04-01-05 计算定义摘要**。**验收** 同输入得到与原版相同字节。
+  - 证据：四份参考 oracle（fantasydemo / client_integration / service_def / entity_index）的 `constants.digest` 与 Rust `dump_map` 逐字节相等；新测 `the_digest_is_deterministic_and_matches_the_reference_oracles` 钉住同夹具两次解析同字节且等于参考常量（service 8A225AFC…、entity_index 3F009C3E…），既有测试钉住"只计入 client 类型、按加载序"规则。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-05 节。commit `43a4902`。
 
 #### BW-04-02 数据类型和属性流
 
