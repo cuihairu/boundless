@@ -45,8 +45,16 @@ jobs:
         env:
           GH_BASE: ${{ github.base_ref }}
         run: |
-          base="${GH_BASE:-main}"
-          ci/changes.sh --machine "origin/$base" HEAD >>"$GITHUB_OUTPUT"
+          # A pull_request has github.base_ref; a push event does not. Diffing a
+          # push against main's tip would re-test everything another branch has
+          # pushed since this one diverged, so measure push events from the
+          # fork point instead.
+          if [ -n "$GH_BASE" ]; then
+            base="origin/$GH_BASE"
+          else
+            base="$(git merge-base origin/main HEAD)"
+          fi
+          ci/changes.sh --machine "$base" HEAD >>"$GITHUB_OUTPUT"
 
   toolchain:
     name: Toolchain pin and lockfile
