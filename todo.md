@@ -1273,7 +1273,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：原版 lib/network/unit_test/manual_clock.hpp 从墙钟起步、advanceMs 走浮点秒换算，重复运行 Tick 不同；新版 crates/test-support/src/clock.rs 提供 ManualClock（stamp 零起步、纳秒刻度与 stamp_now()/DispatcherTimers ClockFn 完全同单位，advance_ms/rewind_ms 定点整数推进、rewind 过零环绕保留原版无符号减法语义），`the_same_advance_sequence_yields_the_same_ticks` 钉死同序列同 Tick，`time_stands_still_until_advanced`/`milliseconds_convert_to_nanosecond_stamps`/`the_injected_clock_fn_tracks_advances` 验证静止性、刻度与 ClockFn 注入可观察推进。
 - [x] **BW-18-03-02 实现确定性丢包**。**验收** 指定包触发预期重传。
   - 证据：原版 `test_mangle.cpp` 用 `g_mangleProb=0.05` 墙钟概率丢包，无法指名丢哪个包、重传行为不可复现；新版 crates/test-support/src/channel.rs 提供 ScriptedChannel（按发送序号 script 每包 Fate，Drop 包进 dropped() 记录），`designated_packets_drop_and_the_rest_deliver` 验证指名丢包其余按序达，`a_designated_drop_triggers_the_expected_retransmission` 走通 丢1→缺口→重发→新副本必达 的完整重传环，`script_by_chance` 用 SeededRng 复刻概率模式且 `seeded_chance_scripting_is_reproducible` 钉死同种子同丢包集；mercury 包类型 BW-02+ 接入同通道。
-- [ ] **BW-18-03-03 实现延迟及乱序**。**验收** 按指定顺序交付。
+- [x] **BW-18-03-03 实现延迟及乱序**。**验收** 按指定顺序交付。
+  - 证据：原版测试靠真实网络抖动或睡固定毫秒，延迟乱序无法指名；新版 channel.rs 增加 `Fate::Delayed{until_nanos}`（吃 BW-18-03-01 虚拟时钟戳）与 `Fate::After(anchor)`（锚定交付，脚本化换序），pump 内解约束到不动点，`delayed_packets_deliver_when_the_clock_advances` 验证差 1ms 都不交付、到点即达，`anchored_packets_deliver_after_their_anchor`/`an_anchor_chain_delivers_in_the_scripted_order` 钉死按指定顺序交付（含链式反序 2,1,0），`delay_and_reorder_stay_deterministic_together` 验证延迟+乱序同脚本同时钟必同序，`an_anchor_behind_a_dropped_packet_stays_back` 验证锚在被丢包上时不误交付。
 - [ ] **BW-18-03-04 提供进程故障夹具**。**验收** 可复现迁移或恢复。
 - [ ] **BW-18-03-05 接通可控时钟取消测试**。**验收** 定时器重复用例稳定。
 

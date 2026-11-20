@@ -16,7 +16,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 /// Nanoseconds per millisecond, the stamp unit of this tree.
-const NANOS_PER_MS: u64 = 1_000_000;
+pub const NANOS_PER_MS: u64 = 1_000_000;
 
 /// A clock that only moves when the test moves it.
 #[derive(Debug, Clone, Default)]

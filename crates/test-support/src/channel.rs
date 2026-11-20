@@ -23,6 +23,13 @@ pub enum Fate {
     /// Never deliver on the wire. The sender is expected to notice and
     /// retransmit -- the channel records the packet in `dropped()`.
     Drop,
+    /// Deliver on the first pump at or after `until_nanos` on the virtual
+    /// clock ([`crate::clock::ManualClock`] stamps).
+    Delayed { until_nanos: u64 },
+    /// Deliver only after packet `anchor` has delivered -- the scripted
+    /// reorder primitive: `script(a, Fate::After(b))` swaps `a` behind `b`.
+    /// An anchor that never delivers (dropped) holds the packet back.
+    After(usize),
 }
 
 /// A scripted channel: packets are sent in order and delivered by their
@@ -91,26 +98,46 @@ impl<T> ScriptedChannel<T> {
 
     /// Deliver every in-flight packet whose fate allows it *now*; returns
     /// the packets in delivery order. The `now` parameter is the virtual
-    /// clock stamp for the delayed fates added at BW-18-03-03.
+    /// clock stamp consumed by [`Fate::Delayed`]. Constraints resolve to a
+    /// fixpoint within one pump, so a reorder chain settles in the scripted
+    /// order.
     pub fn pump(&mut self, now: u64) -> Vec<T> {
-        let _ = now;
         let mut out = Vec::new();
-        for index in 0..self.schedule.len() {
-            match self.schedule[index] {
-                Fate::Deliver => {
-                    if let Some(packet) = self.in_flight[index].take() {
-                        self.delivered.push(index);
-                        out.push(packet);
-                    }
+        let mut delivered_this_pump: Vec<usize> = Vec::new();
+        loop {
+            let mut progressed = false;
+            for index in 0..self.schedule.len() {
+                if self.in_flight[index].is_none() {
+                    continue;
                 }
-                Fate::Drop => {
-                    if let Some(packet) = self.in_flight[index].take() {
-                        self.dropped.push(packet);
+                let ready = match self.schedule[index] {
+                    Fate::Deliver | Fate::Drop => true,
+                    Fate::Delayed { until_nanos } => now >= until_nanos,
+                    Fate::After(anchor) => {
+                        anchor != index
+                            && (self.delivered.contains(&anchor)
+                                || delivered_this_pump.contains(&anchor))
                     }
+                };
+                if !ready {
+                    continue;
+                }
+                if let Some(packet) = self.in_flight[index].take() {
+                    match self.schedule[index] {
+                        Fate::Drop => self.dropped.push(packet),
+                        _ => {
+                            self.delivered.push(index);
+                            delivered_this_pump.push(index);
+                            out.push(packet);
+                        }
+                    }
+                    progressed = true;
                 }
             }
+            if !progressed {
+                return out;
+            }
         }
-        out
     }
 
     /// Packets the channel dropped, in drop order.
@@ -207,5 +234,109 @@ mod tests {
         );
         assert_eq!(seven, dropped(7), "the same seed drops the same packets");
         assert_ne!(seven, dropped(8), "another seed drops another set");
+    }
+
+    /// Delayed packets hold back until the virtual clock reaches their
+    /// stamp, then deliver in send order with everything else.
+    #[test]
+    fn delayed_packets_deliver_when_the_clock_advances() {
+        let mut channel: ScriptedChannel<char> = ScriptedChannel::new();
+        let late = channel.send('b');
+        channel.send('a');
+        channel.send('c');
+        channel.script(
+            late,
+            Fate::Delayed {
+                until_nanos: 50 * crate::clock::NANOS_PER_MS,
+            },
+        );
+
+        let early = channel.pump(0);
+        assert_eq!(early, ['a', 'c']);
+        assert!(channel.is_in_flight(late), "not yet due");
+
+        let still_early = channel.pump(49 * crate::clock::NANOS_PER_MS);
+        assert!(still_early.is_empty(), "one millisecond short");
+
+        let on_time = channel.pump(50 * crate::clock::NANOS_PER_MS);
+        assert_eq!(on_time, ['b']);
+        assert_eq!(channel.delivered(), [1, 2, 0]);
+    }
+
+    /// Anchored delivery swaps the scripted packet behind its anchor:
+    /// the specified order, not the send order.
+    #[test]
+    fn anchored_packets_deliver_after_their_anchor() {
+        let mut channel: ScriptedChannel<u8> = ScriptedChannel::new();
+        for value in 0..3 {
+            channel.send(value);
+        }
+        channel.script(1, Fate::After(2));
+
+        let delivered = channel.pump(0);
+        assert_eq!(delivered, [0, 2, 1]);
+        assert_eq!(channel.delivered(), [0, 2, 1]);
+    }
+
+    /// A chain of anchors settles within one pump in the fully scripted
+    /// order.
+    #[test]
+    fn an_anchor_chain_delivers_in_the_scripted_order() {
+        let mut channel: ScriptedChannel<u8> = ScriptedChannel::new();
+        for value in 0..3 {
+            channel.send(value);
+        }
+        // 0 waits for 1, 1 waits for 2: delivery runs 2, 1, 0.
+        channel.script(0, Fate::After(1));
+        channel.script(1, Fate::After(2));
+
+        let delivered = channel.pump(0);
+        assert_eq!(delivered, [2, 1, 0]);
+    }
+
+    /// Delay plus reorder resolve together deterministically: the same
+    /// script and clock steps give the same delivery order every time.
+    #[test]
+    fn delay_and_reorder_stay_deterministic_together() {
+        let scenario = || {
+            let mut channel: ScriptedChannel<u8> = ScriptedChannel::new();
+            for value in 0..4 {
+                channel.send(value);
+            }
+            channel.script(
+                1,
+                Fate::Delayed {
+                    until_nanos: 10 * crate::clock::NANOS_PER_MS,
+                },
+            );
+            channel.script(3, Fate::After(2));
+            let mut order = Vec::new();
+            order.extend(channel.pump(0));
+            order.extend(channel.pump(5 * crate::clock::NANOS_PER_MS));
+            order.extend(channel.pump(10 * crate::clock::NANOS_PER_MS));
+            (order, channel.delivered().to_vec())
+        };
+        assert_eq!(scenario(), scenario());
+        let (order, indices) = scenario();
+        // Pump one: 0 then 2 (3 anchored behind it). Pump three: 1's delay
+        // expires. 3 lands with pump one's second pass.
+        assert_eq!(order, [0, 2, 3, 1]);
+        assert_eq!(indices, [0, 2, 3, 1]);
+    }
+
+    /// A packet anchored to a dropped packet never delivers: the hold is
+    /// relative to actual delivery.
+    #[test]
+    fn an_anchor_behind_a_dropped_packet_stays_back() {
+        let mut channel: ScriptedChannel<u8> = ScriptedChannel::new();
+        channel.send(0);
+        let follower = channel.send(1);
+        channel.send(2);
+        channel.script(1, Fate::After(2));
+        channel.script(2, Fate::Drop);
+
+        let delivered = channel.pump(0);
+        assert_eq!(delivered, [0]);
+        assert!(channel.is_in_flight(follower), "anchor was dropped");
     }
 }
