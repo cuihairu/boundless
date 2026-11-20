@@ -1495,10 +1495,26 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 固定工具链与锁文件，提供 Rust 格式、lint、编译、Python 检查和 TypeScript 检查入口。按变更路径选择检查，文档变更触发站点检查。
 
-- [ ] **BW-22-01-01 固定 CI 工具链和锁文件**。**验收** 本地解析结果一致。
-- [ ] **BW-22-01-02 接入 Rust 格式、lint 与构建**。**验收** 各有可复跑入口。
-- [ ] **BW-22-01-03 接入 Python 检查**。**验收** 失败定位模块。
-- [ ] **BW-22-01-04 接入 TypeScript 检查**。**验收** 失败定位扩展源码。
+- [x] **BW-22-01-01 固定 CI 工具链和锁文件**。**验收** 本地解析结果一致。
+  - 原版：BigWorld `.github/workflows/{ci,daily-build}.yml` 只钉 vcpkg `builtin-baseline` 与系统 `gcc-14`，无 Rust 侧约束（原版不含 Rust）。
+  - 新版：钉位沿用 BW-00-03-02 的 `rust-toolchain.toml` channel=1.100.0（未重做），新增 `ci/toolchain-check.sh` 断言 rustup 依该文件解析出的 `rustc`/`cargo` 等于 pin、`Cargo.lock` 已入库且未被 gitignore、`cargo metadata --locked` 一致，并把解析结果写成 `ci-out/toolchain.json`。
+  - 结果：`ci/toolchain-check.sh --offline` 退出码 0，报 pinned=1.100.0 / resolved=1.100.0 / members=9 / offline build resolved；负例 `RUSTUP_TOOLCHAIN=1.99.0` 退出码 1，报 `resolved 1.99.0 but rust-toolchain.toml pins 1.100.0`。
+  - 证据：`ci/toolchain-check.sh`、`ci-out/toolchain.json`（pinned、resolved、members、cargo_lock_tracked、offline、checked_at、git_sha=0cd68ff）；CI 作业 `toolchain` 见 `.github/workflows/ci.yml`（run 号见 BW-22 交付汇总）。
+- [x] **BW-22-01-02 接入 Rust 格式、lint 与构建**。**验收** 各有可复跑入口。
+  - 原版：BigWorld `ci.yml` 只跑 `ctest` + vcpkg baseline，`daily-build.yml` 跑 `make bw-run-all-unit-tests`，无 cargo fmt/clippy 门禁。
+  - 新版：`ci/check-rust.sh {fmt|lint|build|test|all|self-test}` 单入口，`--packages a,b` 作用域；CI 作业 `rust-static` / `rust-build-test` 调同一入口。
+  - 结果：build PASS（0 警告）、test PASS（502 用例）；fmt FAIL 284 处（foundation 17 / mercury 23 / platform 18 / resources 129 / server-runtime 97）、lint FAIL（deny 级 foundation/src/math/quaternion.rs:64:9、foundation/src/time.rs:6:1；resources/src/zip.rs:1140 因依赖 crate 先失败未及编译）——属各 crate 所属 lane，不属 CI 面。
+  - 证据：失败定位到 `path:line:col`（manifest.tsv + logs/rust-<lane>.log）；`ci/check-rust.sh self-test` 5 项全 PASS：fmt/lint/build/test 各能咬住注入缺陷、clean 夹具放行。
+- [x] **BW-22-01-03 接入 Python 检查**。**验收** 失败定位模块。
+  - 原版：BigWorld `scripts/package-daily.sh` 只做打包，Python 侧由 `make bw-run-all-unit-tests`（C++ 单测）带过，无 pytest 门禁。
+  - 新版：`ci/check-python.sh` 提供 compile / test 两条 lane（compileall + pytest），pytest 退出码 4（用法错）与 5（未收集到用例）单独解释；CI 作业 `python`。
+  - 结果：当前仓 tests/python、scripts、python、tools 均无 Python，两 lane SKIP 并注明由 BW-18 开启；注入 `tests/python/scratch_probe.py`（语法错误）后 python-compile FAIL 定位 `tests/python/scratch_probe.py:1`、python-test 报 no tests collected 并指向 compile lane；注入失败断言后 python-test FAIL 定位 `tests/python/test_bad.py::test_fails`。
+  - 证据：`ci-out/manifest.tsv` 上述三行 + `logs/python-{compile,test}.log`；`ci/check-python.sh self-test` 3 项全 PASS（syntax defect 定位到 broken_module.py:1、failing test 检出、clean 树放行）。
+- [x] **BW-22-01-04 接入 TypeScript 检查**。**验收** 失败定位扩展源码。
+  - 原版：BigWorld 无 TypeScript 门禁，`ci.yml` 只跑 `ctest`，`daily-build.yml` 只打包。
+  - 新版：`ci/check-typescript.sh {all|self-test}` 遍历树内每个 `tsconfig*.json`（tracked 与未提交都扫，按 basename 过滤而非 git pathspec——`tsconfig*.json` 作 pathspec 匹配不到嵌套路径），逐个 `tsc --noEmit -p` 并跑该包自带 `test` 脚本；CI 作业 `typescript` 调同一入口。
+  - 结果：当前仓无 tsconfig，`ts-typecheck` / `ts-test` 均 SKIP 并注明由 extensions/vscode（BW-20）或 docs/（BW-19）开启；注入 `extensions/vscode/{tsconfig.json,src/bad.ts}` 后 `ts-typecheck` FAIL 定位 `extensions/vscode/src/bad.ts(2, 5): error TS2322`、无 test 脚本则 `ts-test` SKIP；删掉 bad.ts 即转 PASS；include 匹配不到文件时（TS18003，无行列坐标）改为报 `error TS18003: No inputs were found in config file '…/tsconfig.json'`，不再是空白 detail。
+  - 证据：`ci-out/manifest.tsv` 上述三行 + `logs/ts-typecheck-extensions/vscode.log`；`ci/check-typescript.sh self-test` 2 项全 PASS（定位 `src/bad.ts(2,5): error TS2322`、clean 项目放行）。
 - [ ] **BW-22-01-05 配置变更路径条件**。**验收** 文档和代码改动触发对应作业。
 
 #### BW-22-02 测试矩阵与服务装配
