@@ -1243,7 +1243,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 - [x] **BW-18-01-01 提供资源根和临时目录夹具**。**验收** 并行测试目录隔离。
   - 证据：原版 `base_resmgr_unit_test_harness.cpp` 从 `BW_ROOT`/可执行文件目录合成 `--res` 路径，测试耦合检出布局；新版 crates/test-support/src/workspace.rs 提供 TempWorkspace（unique 目录、drop 即清理、失败可 keep 现场）与 ResourceRoot，`workspaces_are_isolated`/`sequential_fixtures_get_distinct_directories`/`dropped_workspaces_are_removed` 常驻验证并行隔离。
-- [ ] **BW-18-01-02 提供固定随机种子**。**验收** 重复调用给出同一序列。
+- [x] **BW-18-01-02 提供固定随机种子**。**验收** 重复调用给出同一序列。
+  - 证据：原版 `lib/network/unit_test/network_app.hpp:57` 用 `srand((int)timestamp())` 播种，重复运行轨迹不同、无可复现种子；新版 crates/test-support/src/rng.rs 提供 SeededRng（SplitMix64，平台无关），`the_same_seed_repeats_the_same_sequence` 钉死同种子同序列、`the_zero_seed_is_usable` 覆盖零种子、`bounded_values_stay_in_range` 覆盖取界。
 - [ ] **BW-18-01-03 提供配置和数据库夹具**。**验收** 测试可从已知状态启动。
 - [ ] **BW-18-01-04 映射原版单测**。**验收** Rust 和 pytest 用例可通过原始编号追溯。
 

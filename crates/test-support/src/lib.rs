@@ -6,5 +6,6 @@
 //! by plain `cargo test` runs.
 
 pub mod layering;
+pub mod rng;
 pub mod standalone;
 pub mod workspace;
