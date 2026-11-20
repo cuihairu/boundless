@@ -5,6 +5,7 @@
 //! entity descriptions, and the digest over those descriptions pins the wire
 //! contract between processes.
 
+pub mod cli;
 pub mod constants;
 pub mod data_description;
 pub mod data_type;

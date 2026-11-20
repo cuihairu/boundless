@@ -434,3 +434,28 @@
 3. **`"<invalid>"` 分支不可达**：`componentAsStr` 的 fallback 只护 C++ 越枚举值；salt 的 3-bit 域 0..=7 全被枚举覆盖，Rust 匹配穷尽无 fallback——登记为等价加严。
 4. **`PyEntityMailBox` 侧不在域内**：`reduceToRef`/`constructFromRef` 与「零 IP 信箱缓冲方法」属 Python 宿主层，静态 crate 无对应物；`isSameType` 的零 IP 拒绝（`UninitialisedMailBox` 原话报错）已于 BW-04-02 交付并有专测。
 5. **`getStreamElement` 单元素拆分未另建**：参考 `MailBoxDataType::getStreamElement` 返回单个 `MailBoxStreamElement`（size=1），Rust 以 `MAILBOX_STREAM_SIZE` 整块口径覆盖同一形态，无逐元素拆分器。
+
+---
+
+# BW-04-04-01 兼容 process_defs 参数 — 复核证据
+
+- **任务编号**: BW-04-04-01（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 399；验收：帮助、退出码和选项有基准）
+- **原版源码**: `tools/process_defs/main.cpp` —— `USAGE` 原文、`getOption`/`hasFlag` 扫描（"deliberately stop one short"：末位 flag 无值、默认值存活、盲取下一参、首个匹配即返回）、选项序 `module → function → help → verbose → use-stdout → (-r 走 BWResource::init) → path → 残余 argv`；`--help` 分支 usage 打到 **stderr** 且无条件 `EXIT_SUCCESS`；`EntityDescriptionMap::parse` 失败 → `"Failed to parse .def files\n"` + `EXIT_FAILURE`；`Script::init` 失败 → `EXIT_FAILURE`。`-r`/`--res` 扫描在 `lib/resmgr/bwresource.cpp` `BWResource::init`（同样停一位短、成对移除）。**活基准**（本机 stock 二进制 `game/bin/server/el7/tools/process_defs` 实测）：`--help`（带 `-r` res 根）→ exit 0、usage 全文到 stderr、stdout 空；坏 `.def` / 缺 `entities.xml` → exit 1 + `EntityDescriptionMap::parse: pSection is NULL` + `Failed to parse .def files`；无 res path → exit 1 + `Failed to initialise Python`；未知 flag `--bogus` → 本环境 SIGABRT(134)（`BWResource::init` 本身容忍未知参，abort 出自其后 Python stdout flush 路径）。
+- **Boundless 模块**: `crates/entitydef/src/cli.rs`（`USAGE` 常量与 stock `--help` 逐字节一致、`CliOptions`、`get_option`/`has_flag`/`extract_res_paths` 三扫描器、`parse_options` 按 `main()` 序、`run()`：help → usage 到 stderr + 0；加载成功 → dump 到 stdout + 0；失败 → `"Failed to parse .def files"` + 1）+ `crates/entitydef/src/bin/process_defs.rs` 薄入口 + `lib.rs` `pub mod cli;`。
+- **平台**: Linux x86_64（el7 参考二进制实测；Rust 工具链 1.100.0，llvm-cov 0.9.1）。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**238 单元测试 + 4 差分测试**全部通过（本项新增 6 测）。
+  - **端到端（Rust bin vs stock 实测）**：`--help` stderr 与 stock 输出**逐字节相等**且 exit 0、stdout 同为空；`-r docs/review/fixtures/service_def/res` stdout 与 oracle `service_entitydef.json` **逐字节相等**且 exit 0；无 `-r` → exit 1 + `Failed to parse .def files`。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt（仅触达文件）干净；覆盖率（`--lib`）cli.rs **163/163 = 100%**，全部文件 **≥98%**。
+- **证据链接**: `crates/entitydef/src/cli.rs`、`crates/entitydef/src/bin/process_defs.rs`、`docs/review/reference/service_entitydef.json`（oracle）、本机 stock 二进制实测记录（本节）。
+- **状态**: 已交付（帮助文本/退出码/选项扫描三基准：源码逐句 + stock 二进制活测 + Rust bin 端到端逐字节）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **`-p` 默认值双口径**：代码默认 `"."`，usage 文案宣称 res 树 scripts 目录——参考自身如此，Rust 照抄两种口径并登记。
+2. **`getOption` 盲取值已钉**：`-m -h` → module=`-h` 且 help 不触发；首个匹配即返回，第二次出现的 option 对残留进 `script_args`——均按参考行为建测。
+3. **无 Python 宿主**：`-m/-f/-p` 照常解析并保留语义，但"回调"固定为确定性 JSON dump（即 `-m process_defs_dump -f dump` 契约）；help 分支不调用模块 `help` 函数（参考中该调用结果不影响退出码）。
+4. **未知 flag**：Rust 保留进 `script_args` 并继续（`BWResource::init` 语义）；stock 二进制在本环境该场景 SIGABRT(134)，属其 Python 层伪影，差异登记。
+5. **多 `-r`**：全部按序收集，首个作加载根（`load_and_dump` 单根），其余保留——与参考逐个 `addPaths` 的差异登记。
+6. **bin 目标不计入 lib 覆盖率**（`--lib` 门禁）：其行为由端到端逐字节比对背书；`run()` 由泛型 `IntoIterator` 改收 `Vec<String>`，消除 llvm-cov 多实例化（23 实例仅 15 覆盖）导致的行覆盖聚合伪影（97.60% → 163/163）。
+7. **stock `--help` 运行观察**：模块 `help()` 的 print 本次未见于 stdout/stderr（`ProcessDefsHelpMsgHandler` 脚本输出重定向链），如实登记。
