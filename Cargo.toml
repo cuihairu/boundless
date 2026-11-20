@@ -25,7 +25,7 @@ libc = "0.2"
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
-# platform = { path = "crates/platform" }  # re-add with first consumer
+platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
 # mercury = { path = "crates/mercury" }  # re-add at BW-02
 # contracts = { path = "crates/contracts" }  # re-add when a role runtime consumes it
