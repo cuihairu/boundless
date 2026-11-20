@@ -79,7 +79,7 @@ main() {
 
     local p owner
     local rust_pkgs=""
-    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0
+    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0 report=0
     local rust_all=0
 
     while IFS= read -r p; do
@@ -139,6 +139,10 @@ main() {
         case "$p" in
         crates/test-support/* | tests/fault/* | ci/fault.sh) fault=1 ;;
         esac
+        # The comparison report follows its lane.
+        case "$p" in
+        ci/report.sh) report=1 ;;
+        esac
 
         if owner="$(owning_package "$p")" && [ "$owner" != workspace-root ] && [ -n "$owner" ]; then
             if [[ "$rust_pkgs" != *"$owner"* ]]; then
@@ -171,6 +175,7 @@ main() {
     [ "$sdk" -eq 1 ] && add_lane sdk
     [ "$load" -eq 1 ] && add_lane load
     [ "$fault" -eq 1 ] && add_lane fault
+    [ "$report" -eq 1 ] && add_lane report
 
     # A Rust source change whose owning package could not be resolved (a crate
     # directory that has no Cargo.toml yet, a stray .rs outside crates/ and

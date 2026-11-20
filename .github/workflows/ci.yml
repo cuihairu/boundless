@@ -620,6 +620,37 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-03-04 — the comparison report: one record that makes two runs
+  # comparable. Version, hardware, scenario and database sections are read
+  # back before the lane passes, so a report missing a section cannot ship.
+  # The scenario section reflects whatever archives and load records this
+  # checkout holds; the compare section needs a baseline (report.yml). No
+  # Rust is needed here: the report reads, it does not build.
+  report:
+    name: Comparison report
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'report')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Generate the comparison report
+        run: ci/report.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-report-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -665,6 +696,7 @@ jobs:
           ci/sdk.sh self-test
           ci/load.sh self-test
           ci/fault.sh self-test
+          ci/report.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results

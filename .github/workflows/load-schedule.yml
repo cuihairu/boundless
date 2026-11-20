@@ -56,6 +56,13 @@ jobs:
           CI_LOAD_DURATION: ${{ inputs.duration || '600' }}
         run: ci/load.sh
 
+      # BW-22-03-04 — the nightly's comparison report lands next to its load
+      # records in the same artifact, so two nights can be joined on any row
+      # (version, hardware, scenario, database).
+      - name: Generate the comparison report
+        if: always()
+        run: ci/report.sh
+
       - name: Bundle results
         if: always()
         run: ci/archive-results.sh
