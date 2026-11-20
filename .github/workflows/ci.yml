@@ -503,6 +503,37 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-00-02-01 — the reference baseline: the original tree's commit, binary
+  # hashes and stated versions, recorded the same way local and CI run it.
+  # A hosted runner has no reference checkout, so the job records the honest
+  # SKIP naming the missing tree; the self-test in the harness job proves the
+  # collection itself bites, and the durable record lives under
+  # tests/baseline/ in the repo.
+  refbase:
+    name: Reference baseline
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'refbase')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Record the reference baseline
+        run: ci/reference-baseline.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-refbase-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # BW-22-02-05 — SDK and plugin cases: does a produced artifact load in a
   # host? Three of the four substrates do not exist yet, so those cases SKIP
   # and name the ticket that turns them on (BW-21-01-01, BW-13-06-03,
@@ -871,6 +902,7 @@ jobs:
           ci/sdk-archive.sh self-test
           ci/vsix.sh self-test
           ci/checksums.sh self-test
+          ci/reference-baseline.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results

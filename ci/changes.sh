@@ -79,7 +79,7 @@ main() {
 
     local p owner
     local rust_pkgs=""
-    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0 report=0 package=0 docspkg=0 sdkarc=0 vsix=0
+    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0 report=0 package=0 docspkg=0 sdkarc=0 vsix=0 refbase=0
     local rust_all=0
 
     while IFS= read -r p; do
@@ -161,6 +161,10 @@ main() {
         case "$p" in
         extensions/vscode/* | ci/vsix.sh) vsix=1 ;;
         esac
+        # The reference baseline follows its recorded snapshots and the lane.
+        case "$p" in
+        tests/baseline/* | ci/reference-baseline.sh) refbase=1 ;;
+        esac
 
         if owner="$(owning_package "$p")" && [ "$owner" != workspace-root ] && [ -n "$owner" ]; then
             if [[ "$rust_pkgs" != *"$owner"* ]]; then
@@ -198,6 +202,7 @@ main() {
     [ "$docspkg" -eq 1 ] && add_lane docspkg
     [ "$sdkarc" -eq 1 ] && add_lane sdkarc
     [ "$vsix" -eq 1 ] && add_lane vsix
+    [ "$refbase" -eq 1 ] && add_lane refbase
 
     # A Rust source change whose owning package could not be resolved (a crate
     # directory that has no Cargo.toml yet, a stray .rs outside crates/ and
