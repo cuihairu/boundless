@@ -319,8 +319,9 @@ unsafe extern "C" {
     pub fn Py_Finalize();
     pub fn Py_DecRef(obj: *mut PyObject);
     pub fn Py_IncRef(obj: *mut PyObject);
-    pub fn PyGILState_Ensure() -> c_int;
-    pub fn PyGILState_Release(state: c_int);
+    pub fn PyEval_RestoreThread(tstate: *mut std::os::raw::c_void);
+    pub fn PyEval_SaveThread() -> *mut std::os::raw::c_void;
+    pub fn PyThreadState_Swap(tstate: *mut std::os::raw::c_void) -> *mut std::os::raw::c_void;
     pub fn PyRun_SimpleString(string: *const c_char) -> c_int;
     pub fn PySys_SetObject(name: *const c_char, value: *mut PyObject) -> c_int;
     pub fn PySys_GetObject(name: *const c_char) -> *mut PyObject;
@@ -362,6 +363,7 @@ unsafe extern "C" {
     pub fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) -> c_int;
     pub fn PyErr_SetString(exception: *mut PyObject, message: *const c_char);
     pub fn PyThreadState_Get() -> *mut std::os::raw::c_void;
+    pub fn PyGILState_Check() -> c_int;
     pub fn PyImport_AddModule(name: *const c_char) -> *mut PyObject;
     pub fn PyImport_ImportModule(name: *const c_char) -> *mut PyObject;
     pub fn PyObject_Str(obj: *mut PyObject) -> *mut PyObject;

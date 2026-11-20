@@ -17,6 +17,7 @@
 
 pub mod binding;
 pub mod capi;
+pub mod gil;
 pub mod import_paths;
 pub mod init_time_job;
 pub mod interpreter;

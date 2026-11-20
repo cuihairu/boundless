@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use super::binding;
 use super::capi::{self, PyObject};
+use super::gil;
 use super::import_paths::ImportPaths;
 use super::init_time_job;
 use super::keepalive;
@@ -118,6 +119,10 @@ impl Interpreter {
             if capi::Py_IsInitialized() == 0 {
                 return Err(InitError::InitializeFailed);
             }
+            // `s_pMainThreadState = PyThreadState_Get(); s_defaultContext =
+            // s_pMainThreadState;` (`script.cpp:603-604`), captured on the
+            // thread that brings the interpreter up.
+            let _ = gil::init_thread();
         }
         // `new ScriptOutputWriter()` sits right after `Py_Initialize`
         // (`script.cpp:531`), before argv: everything the rest of init logs
@@ -225,6 +230,13 @@ impl Interpreter {
         // last item here". A double drain only logs in the reference; the
         // port ignores the error and finalises regardless.
         let _ = init_time_job::run_fini_time_jobs();
+        // `Script::clearTimers` (`py_callback.cpp:81-91`): the reference reaches it
+        // from the app's shutdown, ahead of `Script::fini`; the port places it here,
+        // behind the fini-time jobs, so a job that posts a callback is not the one
+        // that leaves a callback behind for `Py_Finalize` to find. Nothing survives
+        // the drain to the collect loop, which is what keeps a posted-but-never-run
+        // callback from being a dangling one.
+        gil::clear();
         // The native registries die before the script system finalises --
         // `CellApp::shutDown` deletes its entities before `Script::fini` --
         // so every native wrapper `Py_DecRef`s here, allocator still alive.
@@ -459,6 +471,7 @@ fn clear_main_module() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gil;
     use crate::import_paths;
     use crate::keepalive;
     use crate::pyref::PyRef;
@@ -542,6 +555,10 @@ mod tests {
         "interpreter::tests::scenario_unpinning_twice_releases_once",
         "interpreter::tests::scenario_a_pinned_callback_survives_the_script_dropping_it",
         "interpreter::tests::scenario_a_script_side_cycle_is_freed_exactly_once",
+        "interpreter::tests::scenario_the_gil_context_is_installed_at_init",
+        "interpreter::tests::scenario_a_callback_posted_from_a_dying_thread_runs_on_the_script_thread",
+        "interpreter::tests::scenario_an_exception_in_a_callback_does_not_leave_it_queued",
+        "interpreter::tests::scenario_finishing_the_script_system_leaves_no_callback_behind",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
     ];
@@ -1919,6 +1936,136 @@ mod tests {
             // twice and not zero times.
             assert_eq!(probe(interpreter, "__probe = gc.collect()"), "0");
         });
+    }
+
+    /// `s_defaultContext` is a `THREADLOCAL`, captured at init on the thread that
+    /// brings the interpreter up (`script.cpp:603-604`), and `Script::fini`
+    /// leaves it in place -- it only reverts the poller's idle hooks to no-ops.
+    /// The context is what makes [`gil::acquire_lock`] and
+    /// [`gil::release_lock`] restore and save this thread's state instead of
+    /// doing nothing.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_gil_context_is_installed_at_init() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(gil::has_context());
+            assert!(interpreter.run_simple_string("seen = 'script'"));
+            // The thread that brought the interpreter up already holds the GIL,
+            // so CPython reports it as the current thread state.
+            let installed = unsafe { capi::PyThreadState_Get() };
+            assert!(!installed.is_null());
+            unsafe {
+                // `releaseLock` gives the GIL back and reports `Ok` because
+                // `PyEval_SaveThread` handed back exactly the state this
+                // thread was given. It does not remove the context: only
+                // `finiThread` does, so the thread still names a state while
+                // holding no current one.
+                assert!(gil::release_lock().is_ok());
+                assert!(gil::has_context());
+                assert_eq!(capi::PyGILState_Check(), 0, "the lock went with it");
+                // `acquireLock` puts this thread back on the state it was
+                // given, so a call the script thread makes still sees its own
+                // globals, the way `Script::call` assumes.
+                gil::acquire_lock();
+                assert_ne!(capi::PyGILState_Check(), 0, "the lock came back");
+                assert_eq!(capi::PyThreadState_Get(), installed);
+            }
+            assert!(gil::has_context());
+            assert_eq!(probe(interpreter, "__probe = seen"), "script");
+        });
+    }
+
+    /// The cross-thread contract: a callback posted from a thread that then
+    /// exits is the queue's to run, not the thread's to keep, so it still
+    /// reaches the script thread -- and the script thread is the one that
+    /// runs it, on the interpreter the caller owns.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_callback_posted_from_a_dying_thread_runs_on_the_script_thread() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string("counter = [0]"));
+            let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let spawner = ran.clone();
+            let poster = std::thread::spawn(move || {
+                gil::post(move || {
+                    // The callback runs on the thread that owns the GIL, so
+                    // it may touch the interpreter it cannot send across.
+                    // SAFETY: `process` requires the caller to own the GIL, and
+                    // this closure only ever runs there.
+                    let Ok(source) = std::ffi::CString::new("counter[0] = counter[0] + 1") else {
+                        return;
+                    };
+                    unsafe { capi::PyRun_SimpleString(source.as_ptr()) };
+                    spawner.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            });
+            // The thread is over; its callback is still queued.
+            assert!(poster.join().is_ok());
+            assert_eq!(gil::pending(), 1);
+            assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(unsafe { gil::process() }, 1);
+            assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(gil::pending(), 0);
+            assert_eq!(probe(interpreter, "__probe = counter[0]"), "1");
+        });
+    }
+
+    /// A callback whose script raises does not strand the callbacks posted
+    /// behind it: the pass has already taken its snapshot out of the queue, so
+    /// the failure is contained to that one callback.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_exception_in_a_callback_does_not_leave_it_queued() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string("counter = [0]"));
+            let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observer = failing.clone();
+            let source = "raise ValueError('the callback fails')";
+            gil::post(move || {
+                // SAFETY: this runs on the GIL-owning thread.
+                let Ok(encoded) = std::ffi::CString::new(source) else {
+                    return;
+                };
+                // The raise is caught on the script side, the way the
+                // reference's callbacks catch theirs; the point is that the
+                // exception does not unwind the pass.
+                unsafe {
+                    capi::PyRun_SimpleString(encoded.as_ptr());
+                }
+                observer.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            gil::post(|| {
+                // SAFETY: this runs on the GIL-owning thread.
+                let Ok(source) = std::ffi::CString::new("counter[0] = counter[0] + 1") else {
+                    return;
+                };
+                unsafe { capi::PyRun_SimpleString(source.as_ptr()) };
+            });
+            assert_eq!(unsafe { gil::process() }, 2);
+            assert!(failing.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(gil::pending(), 0);
+            assert_eq!(probe(interpreter, "__probe = counter[0]"), "1");
+        });
+    }
+
+    /// `Script::clearTimers`'s job: a callback posted but never run must not
+    /// be left behind the script system, so shutdown drops it rather than
+    /// handing it to a torn-down interpreter.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_finishing_the_script_system_leaves_no_callback_behind() {
+        let config = scenario_config(&InitConfig::default());
+        let interpreter = Interpreter::init(&config).expect("Script::init");
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let marker = dropped.clone();
+        gil::post(move || {
+            marker.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(gil::pending(), 1);
+        interpreter.fini();
+        assert_eq!(gil::pending(), 0, "nothing survives the drain");
+        assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(Interpreter::is_finalized());
     }
 
     /// `Script::init` drains the init-time jobs itself, after the
