@@ -580,6 +580,41 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-03-03 — the fault drill: run the process-fault fixtures through the
+  # shared entry and leave topology, archive and log behind whatever the
+  # outcome. The lane follows the harness crate that provides the fixtures,
+  # so a fixture change re-runs the drill on push; on-demand drills go
+  # through fault-scenarios.yml.
+  fault:
+    name: Fault drill
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'fault')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust (pinned by rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Run the fault drill
+        run: ci/fault.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-fault-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -622,6 +657,7 @@ jobs:
           ci/parity.sh self-test
           ci/sdk.sh self-test
           ci/load.sh self-test
+          ci/fault.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results

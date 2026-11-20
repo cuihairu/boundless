@@ -79,7 +79,7 @@ main() {
 
     local p owner
     local rust_pkgs=""
-    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0
+    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0
     local rust_all=0
 
     while IFS= read -r p; do
@@ -134,6 +134,11 @@ main() {
         case "$p" in
         tests/load/* | apps/bots/* | ci/load.sh) load=1 ;;
         esac
+        # The fault drill runs the fixtures of the harness crate that provides
+        # them, so it follows that crate and the lane.
+        case "$p" in
+        crates/test-support/* | tests/fault/* | ci/fault.sh) fault=1 ;;
+        esac
 
         if owner="$(owning_package "$p")" && [ "$owner" != workspace-root ] && [ -n "$owner" ]; then
             if [[ "$rust_pkgs" != *"$owner"* ]]; then
@@ -165,6 +170,7 @@ main() {
     [ "$parity" -eq 1 ] && add_lane parity
     [ "$sdk" -eq 1 ] && add_lane sdk
     [ "$load" -eq 1 ] && add_lane load
+    [ "$fault" -eq 1 ] && add_lane fault
 
     # A Rust source change whose owning package could not be resolved (a crate
     # directory that has no Cargo.toml yet, a stray .rs outside crates/ and
