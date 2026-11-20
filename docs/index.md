@@ -17,6 +17,8 @@ starts here.
 | Start and stop one server role today | [Running a standalone server](/guide/standalone-server) |
 | Write your own entity scripts | [Entity scripting](/guide/entity-authoring) |
 | Connect a client or an engine | [Client SDK](/guide/client-sdk) and [Engine integration](/guide/engine-integration) |
+| See which processes exist and what is wired | [Process topology](/architecture/process-topology) |
+| Check a version, platform or engine target | [Compatibility matrix](/architecture/compatibility-matrix) |
 
 ## Repository layout
 
