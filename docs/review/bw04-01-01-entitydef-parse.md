@@ -69,3 +69,27 @@
   - `cargo test -p entitydef --offline`：154 单测 + 3 差分通过；clippy 隔离门禁 0 findings；行覆盖 **99.55%**（llvm-cov 0.9.1）。
 - **证据链接**: `docs/review/fixtures/service_def/res/`（夹具）、`docs/review/reference/service_entitydef.json`（oracle）、`crates/entitydef/tests/differential.rs`、`crates/entitydef/src/entity_map.rs`、`crates/entitydef/src/entity_description.rs`。
 - **状态**: 已验收（服务路径差分逐字节相等；Distribution 标签缺陷已修复）。
+
+---
+
+# BW-04-01-04 分配属性和方法索引 — 复核证据
+
+- **任务编号**: BW-04-01-04（todo.md 行 355）
+- **原版构建目标/源码**: `lib/entitydef/entity_description_map.cpp`（`parseInternal` 的两段 ClientServer/ServerOnly 加载与索引盖章、`setExposedMessageIDs`）、`lib/entitydef/entity_description.cpp`（属性 `index`/`clientServerFullIndex` 分配、`EntityMethodDescriptions::init` 的 internal/exposed 索引）、`lib/entitydef/method_description.cpp`（`<Exposed>` 的 component 语义：client 方法使用 `<Exposed>` 即报错；client 方法默认即对 client 公开）、`lib/network/exposed_message_range.hpp`。参考二进制：`game/bin/server/el7/tools/process_defs`。
+- **Boundless 模块**: `crates/entitydef::entity_map`（`parse` / `parse_internal` / `set_exposed_message_ids`）、`crates/entitydef::method`（`EntityMethodDescriptions::init`、exposed 排序）、`crates/entitydef::data_description`、`crates/entitydef::dump` + `tests/differential.rs::compare_fixture`。
+- **平台**: Linux x86_64（el7 参考二进制；Rust 1.100.0，llvm-cov 0.9.1）。
+- **输入夹具**: `docs/review/fixtures/entity_index/res`（`ClientServerEntities` = Alpha、Beta（`<Parent> Alpha`）；`ServerOnlyEntities` = Gamma；Alpha 带 base/cell/client 各半边方法与混合定长/变长参数；Beta 追加 `shield` 属性与 `repair`（带返回值）/`ping` 方法）。
+- **原版结果**: 参考二进制对该夹具的 dump 落盘为 oracle `docs/review/reference/entity_index_entitydef.json`（MD5 `6FAD1D7207CFF792E172B34C0C2E1FA5`）。钉住的分配规则：
+  - 实体 ID 按加载序：Alpha=0、Beta=1、Gamma=2；server-only 的 clientIndex=65535；
+  - 属性 `index` 按并入序（父的 pid/hp/label/spin 0..3，子自有 shield=4）；
+  - `clientServerFullIndex` 只给 client-server 属性，且按类型/流长重排：Beta = shield 0 / pid 1 / label 2，其余 -1；
+  - base 半边 internal 0..3（`repair` 排在继承方法之后），exposed 重排为 `repair 0 / damage 1 / shout 2`，非 exposed 的 `retire` = -1；
+  - cell 半边 `explode 0`、非 exposed `vanish -1`；client 半边 `ping 0 / blink 1 / wave 2`（定长先、变长后）；
+  - 四个 maxima：clientServerPropertyCount=3、exposedBase=3、exposedCell=1、exposedClient=3；digest `3F009C3EC546D8F26E7836134C4CC74A`。
+- **新版结果**:
+  - 差分测试 `entity_index_dump_matches_the_process_defs_oracle` 与参考 JSON **逐字节相等**（该项无需改实现，首轮即绿）；
+  - 单测 `a_child_reuses_the_parent_indexes_and_exposed_ids_sort_per_half` 把上述三条索引序列写成可读断言（属性名序与 full index 序列、base/cell/client 三边 exposed 序列、server-only 的 clientIndex）；
+  - 顺带钉住参考事实：client 方法不接受 `<Exposed>`（参考报 "Unable to use <Exposed> tag in client method"），故夹具的 client 方法只靠默认公开。
+  - `cargo test -p entitydef --offline`：155 单测 + 4 差分通过；clippy 隔离门禁 0 findings；行覆盖 **99.58%**。
+- **证据链接**: `docs/review/fixtures/entity_index/res/`、`docs/review/reference/entity_index_entitydef.json`、`crates/entitydef/tests/differential.rs`、`crates/entitydef/src/entity_map.rs`。
+- **状态**: 已验收（Base/Cell/Client 三边索引与原版逐字节一致）。

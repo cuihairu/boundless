@@ -25,28 +25,42 @@ fn compare(env_var: &str, oracle_file: &str) {
     );
 }
 
-/// The service oracle is captured against a fixture res tree that lives in this
-/// repository, so this comparison always runs (BW-04-01-03): services parse
-/// after the entities, take their methods from `<Methods>`, keep interface
-/// methods first, drop their own properties, and never face the client or a
-/// cell.
-#[test]
-fn service_dump_matches_the_process_defs_oracle() {
-    let root = std::path::Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/review/fixtures/service_def/res"
-    ));
+/// Compare against an oracle captured from a fixture res tree that lives in
+/// this repository, so the run is unconditional.
+fn compare_fixture(fixture_dir: &str, oracle_file: &str) {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("a crates/ parent")
+        .parent()
+        .expect("the repository root");
+    let root = repo_root.join("docs/review/fixtures").join(fixture_dir);
 
     let mut diag = Diagnostics::new();
-    let actual = load_and_dump(root, &mut diag)
+    let actual = load_and_dump(&root, &mut diag)
         .unwrap_or_else(|_| panic!("parse and dump ({:?})", diag.messages()));
 
-    let oracle_path = format!("{ORACLE_DIR}/service_entitydef.json");
+    let oracle_path = format!("{ORACLE_DIR}/{oracle_file}");
     let expected = std::fs::read_to_string(&oracle_path).expect("oracle file readable");
     assert!(
         actual == expected,
         "dump differs from the process_defs oracle {oracle_path}"
     );
+}
+
+/// BW-04-01-03: services parse after the entities, take their methods from
+/// `<Methods>`, keep interface methods first, drop their own properties, and
+/// never face the client or a cell.
+#[test]
+fn service_dump_matches_the_process_defs_oracle() {
+    compare_fixture("service_def/res", "service_entitydef.json");
+}
+
+/// BW-04-01-04: property, client-server and exposed-method index allocation
+/// across the base, cell and client halves, including a derived entity that
+/// reuses its parent's method indexes.
+#[test]
+fn entity_index_dump_matches_the_process_defs_oracle() {
+    compare_fixture("entity_index/res", "entity_index_entitydef.json");
 }
 
 #[test]

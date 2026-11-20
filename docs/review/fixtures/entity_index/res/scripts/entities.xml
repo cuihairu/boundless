@@ -1,0 +1,10 @@
+<root>
+	<ClientServerEntities>
+		<Alpha/>
+		<Beta/>
+	</ClientServerEntities>
+
+	<ServerOnlyEntities>
+		<Gamma/>
+	</ServerOnlyEntities>
+</root>

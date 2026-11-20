@@ -945,16 +945,15 @@ mod tests {
         );
     }
 
-    /// The committed service fixture
-    /// (`docs/review/fixtures/service_def`): a service's public method list is
-    /// its `<Methods>` section plus the methods of its `<Implements>` chain, in
-    /// that order, and services never gain cell or client methods.
-    #[test]
-    fn a_service_lists_its_public_methods_from_the_methods_section() {
-        let root = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/review/fixtures/service_def/res"
-        ));
+    /// Load one of the committed res-tree fixtures, exactly like `process_defs`.
+    fn parse_fixture(dir: &str) -> (EntityDescriptionMap, Diagnostics) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("a crates/ parent")
+            .parent()
+            .expect("the repository root")
+            .join("docs/review/fixtures")
+            .join(dir);
         let resolver = crate::entity_description::FsResolver::new(root);
         let mut ctx = crate::data_type::TypeContext::default();
         let mut diag = Diagnostics::new();
@@ -978,6 +977,16 @@ mod tests {
             "{:?}",
             diag.messages()
         );
+        (map, diag)
+    }
+
+    /// The committed service fixture
+    /// (`docs/review/fixtures/service_def`): a service's public method list is
+    /// its `<Methods>` section plus the methods of its `<Implements>` chain, in
+    /// that order, and services never gain cell or client methods.
+    #[test]
+    fn a_service_lists_its_public_methods_from_the_methods_section() {
+        let (map, _) = parse_fixture("service_def/res");
 
         // Services load after every entity, so their ids start at 2 here.
         assert_eq!(map.name_to_index("Cleaner"), Some(2));
@@ -1003,6 +1012,73 @@ mod tests {
             cleaner.property_count(),
             0,
             "service properties are dropped"
+        );
+    }
+
+    /// The committed index fixture
+    /// (`docs/review/fixtures/entity_index`): a child entity keeps its parent's
+    /// property and method indexes and appends its own, while the exposed ids
+    /// are re-sorted per half (fixed-size messages first, variable-size last).
+    #[test]
+    fn a_child_reuses_the_parent_indexes_and_exposed_ids_sort_per_half() {
+        let (map, _) = parse_fixture("entity_index/res");
+
+        let beta = map.entity_description(1).expect("Beta is the child");
+        assert_eq!(map.name_to_index("Gamma"), Some(2));
+        assert_eq!(
+            map.entity_description(2).unwrap().client_index(),
+            65535,
+            "a server-only type has no client id"
+        );
+
+        let properties = beta.properties();
+        assert_eq!(
+            properties.iter().map(|p| p.name()).collect::<Vec<_>>(),
+            // The parent's four, then the child's own.
+            ["pid", "hp", "label", "spin", "shield"]
+        );
+        assert_eq!(
+            properties
+                .iter()
+                .map(|p| p.client_server_full_index)
+                .collect::<Vec<_>>(),
+            // Only the client-server half gets an id, and only there.
+            [1, -1, 2, -1, 0]
+        );
+
+        assert_eq!(
+            beta.base()
+                .internal_methods()
+                .iter()
+                .map(|m| m.name())
+                .collect::<Vec<_>>(),
+            // `repair` is the child's own method, after the inherited ones.
+            ["damage", "shout", "retire", "repair"]
+        );
+        assert_eq!(
+            beta.base()
+                .internal_methods()
+                .iter()
+                .map(|m| m.exposed_index())
+                .collect::<Vec<_>>(),
+            // The two-way `repair` message sorts before the fixed ones.
+            [1, 2, -1, 0]
+        );
+        assert_eq!(
+            beta.cell()
+                .internal_methods()
+                .iter()
+                .map(|m| m.exposed_index())
+                .collect::<Vec<_>>(),
+            [0, -1]
+        );
+        assert_eq!(
+            beta.client()
+                .internal_methods()
+                .iter()
+                .map(|m| m.exposed_index())
+                .collect::<Vec<_>>(),
+            [1, 2, 0]
         );
     }
 
