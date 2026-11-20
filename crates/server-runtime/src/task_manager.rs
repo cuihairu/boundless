@@ -419,6 +419,27 @@ impl TaskManager {
     pub fn stop_all_defaults(&self) {
         self.stop_all(true, true);
     }
+
+    /// The shutdown drain: end the pool but let the queued work finish.
+    ///
+    /// `stopAll(true, ...)` would cancel every queued task, so the queue
+    /// is discarded instead of drained -- hence `discardPendingTasks =
+    /// false`, the `waitForThreads = true` half of `stopAll`: the workers
+    /// pull their real tasks before the stop sentinels ("stop" tasks are
+    /// pulled last) and then exit.
+    ///
+    /// The reference's `stopAll` ends with one tick -- "do a tick to stop
+    /// all foreground tasks. Note that more foreground tasks could be
+    /// added while it's stopping the current list" -- so the drain keeps
+    /// ticking while anything is still queued: every completion, including
+    /// the ones the exiting workers queue on their way out
+    /// (`ThreadFinisher`), runs on the calling thread exactly once.
+    pub fn drain(&self) {
+        self.stop_all(false, true);
+        while self.has_tasks() {
+            self.tick();
+        }
+    }
 }
 
 impl Default for TaskManager {
@@ -1057,5 +1078,239 @@ mod tests {
         assert_eq!(mgr.num_bg_tasks_left(), 0);
         assert_eq!(mgr.num_running_threads(), 0);
         assert_eq!(mgr.num_unstopped_threads(), 0);
+    }
+
+    /// A task that reports back to the main thread from its background
+    /// phase -- the "add themselves back" pattern. Its completion may
+    /// reach the foreground list while `stopAll` is already running.
+    struct SelfCompletingTask {
+        label: &'static str,
+        log: Log,
+        me: Mutex<Option<TaskPtr>>,
+    }
+
+    impl SelfCompletingTask {
+        fn new(label: &'static str, log: &Log) -> Arc<Self> {
+            let task = Arc::new(Self {
+                label,
+                log: Arc::clone(log),
+                me: Mutex::new(None),
+            });
+            *task.me.lock().expect("me") = Some(Arc::clone(&task) as TaskPtr);
+            task
+        }
+    }
+
+    impl BackgroundTask for SelfCompletingTask {
+        fn do_background_task(&self, mgr: &TaskManager) {
+            push(&self.log, self.label);
+            let me = self.me.lock().expect("me").clone().expect("self set");
+            mgr.add_main_thread_task(me);
+        }
+
+        fn do_main_thread_task(&self, _mgr: &TaskManager) {
+            push(&self.log, "done");
+        }
+
+        fn name(&self) -> &str {
+            self.label
+        }
+    }
+
+    /// The shutdown drain: the queued work finishes rather than being
+    /// cancelled, the workers exit, and every completion queued by a
+    /// worker runs on the calling thread. Whatever the interleaving
+    /// between the workers and the shutdown, the end state is the same.
+    #[test]
+    fn drain_ends_in_the_same_state_no_matter_the_interleaving() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let mgr = Arc::new(TaskManager::new());
+        mgr.start_threads(1);
+
+        // Running: a completion arrives from the worker.
+        let worker = SelfCompletingTask::new("worker", &log);
+        assert_eq!(worker.name(), "worker");
+        mgr.add_background_task(worker);
+        // Still queued when the shutdown starts; the drain lets it
+        // finish ("stop" tasks are pulled last).
+        mgr.add_background_task(NamedTask::background(
+            "late-pending",
+            Arc::clone(&log),
+            Arc::new(AtomicUsize::new(1)),
+        ));
+
+        mgr.drain();
+
+        // Both background phases ran in queue order, then the
+        // completion -- dispatched on this thread, exactly once.
+        assert_eq!(*log.lock().expect("log"), ["worker", "late-pending", "done"]);
+        assert_eq!(mgr.num_running_threads(), 0);
+        assert_eq!(mgr.num_unstopped_threads(), 0);
+        assert_eq!(mgr.num_bg_tasks_left(), 0);
+        assert!(!mgr.has_tasks());
+
+        // Draining again changes nothing: the shutdown is repeatable.
+        mgr.drain();
+        assert_eq!(*log.lock().expect("log"), ["worker", "late-pending", "done"]);
+        assert!(!mgr.has_tasks());
+    }
+
+    /// `stopAll`'s final tick is one pass; a completion the exiting
+    /// workers queue afterwards (the `ThreadFinisher`) would sit queued
+    /// into `fini`. The drain keeps ticking until nothing is left, so a
+    /// task completing at the same moment the process shuts down is
+    /// never dropped.
+    #[test]
+    fn drain_runs_completions_queued_after_the_first_tick() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let mgr = Arc::new(TaskManager::new());
+        mgr.start_threads(1);
+
+        // The finishing worker pushes a completion from off-thread, so
+        // the foreground list is non-empty whenever the drain looks.
+        let notifier = Arc::new(Notifier {
+            log: Arc::clone(&log),
+            mgr: Arc::clone(&mgr),
+        });
+        assert_eq!(notifier.name(), "Notifier");
+        // A completion only: its background phase never runs, and its
+        // label is carried through for the profiler.
+        let completion = Arc::new(ForegroundOnly {
+            log: Arc::clone(&log),
+        });
+        assert_eq!(completion.name(), "ForegroundOnly");
+        completion.do_background_task(&mgr);
+        mgr.add_background_task(notifier);
+
+        mgr.drain();
+
+        // The worker's completion plus the ThreadFinisher completions
+        // all ran on this thread, in order.
+        assert_eq!(*log.lock().expect("log"), ["bg", "done"]);
+        assert!(!mgr.has_tasks());
+        assert_eq!(mgr.num_running_threads(), 0);
+    }
+
+    /// A task that notifies the main thread from its background phase.
+    struct Notifier {
+        log: Log,
+        mgr: Arc<TaskManager>,
+    }
+
+    impl BackgroundTask for Notifier {
+        fn do_background_task(&self, _mgr: &TaskManager) {
+            push(&self.log, "bg");
+            self.mgr.add_main_thread_task(Arc::new(ForegroundOnly {
+                log: Arc::clone(&self.log),
+            }));
+        }
+
+        fn name(&self) -> &str {
+            "Notifier"
+        }
+    }
+
+    /// A completion only: `doBackgroundTask` never runs for it.
+    struct ForegroundOnly {
+        log: Log,
+    }
+
+    impl BackgroundTask for ForegroundOnly {
+        fn do_background_task(&self, _mgr: &TaskManager) {}
+
+        fn do_main_thread_task(&self, _mgr: &TaskManager) {
+            push(&self.log, "done");
+        }
+
+        fn name(&self) -> &str {
+            "ForegroundOnly"
+        }
+    }
+
+    /// A completion that queues another completion as it runs -- the
+    /// "more foreground tasks could be added while it's stopping the
+    /// current list" case the reference warns about in `stopAll`.
+    struct ChainingCompletion {
+        log: Log,
+        queued: bool,
+    }
+
+    impl BackgroundTask for ChainingCompletion {
+        fn do_background_task(&self, _mgr: &TaskManager) {}
+
+        fn do_main_thread_task(&self, mgr: &TaskManager) {
+            push(&self.log, "first");
+            if !self.queued {
+                mgr.add_main_thread_task(Arc::new(ForegroundOnly {
+                    log: Arc::clone(&self.log),
+                }));
+            }
+        }
+
+        fn name(&self) -> &str {
+            "ChainingCompletion"
+        }
+    }
+
+    /// A task whose background phase is a no-op: used to spend a worker
+    /// so the pool is idle when the shutdown starts.
+    struct IdleWorkerTask {
+        done: Arc<AtomicBool>,
+    }
+
+    impl BackgroundTask for IdleWorkerTask {
+        fn do_background_task(&self, _mgr: &TaskManager) {
+            self.done.store(true, Ordering::SeqCst);
+        }
+
+        fn name(&self) -> &str {
+            "IdleWorkerTask"
+        }
+    }
+
+    /// The completion queued while the drain was already ticking is not
+    /// lost: `stopAll`'s tail tick runs the first pass, and the drain
+    /// keeps ticking until the queue is really empty -- the state at the
+    /// end of the shutdown is the same however the completion arrives.
+    #[test]
+    fn drain_keeps_ticking_while_completions_arrive() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let mgr = Arc::new(TaskManager::new());
+        mgr.start_threads(1);
+
+        // Spend the worker and let it exit, so the pool reports no
+        // running threads when the shutdown starts: `stopAll`'s wait
+        // loop is skipped and its single tail tick is the only pass.
+        let done = Arc::new(AtomicBool::new(false));
+        let idle = Arc::new(IdleWorkerTask {
+            done: Arc::clone(&done),
+        });
+        assert_eq!(idle.name(), "IdleWorkerTask");
+        // Its background phase is what the worker spends; the completion
+        // phase is the trait default.
+        mgr.add_background_task(idle);
+        wait_until(|| done.load(Ordering::SeqCst));
+        mgr.stop_threads(1);
+        wait_until(|| {
+            mgr.tick();
+            mgr.num_running_threads() == 0
+        });
+
+        // A completion landing while the drain runs: its own pass
+        // chains a second one, which only the drain's loop reaches.
+        let head = Arc::new(ChainingCompletion {
+            log: Arc::clone(&log),
+            queued: false,
+        });
+        assert_eq!(head.name(), "ChainingCompletion");
+        // A completion never has its background phase run for it.
+        head.do_background_task(&mgr);
+        mgr.add_main_thread_task(head);
+
+        mgr.drain();
+
+        assert_eq!(*log.lock().expect("log"), ["first", "done"]);
+        assert!(!mgr.has_tasks());
+        assert_eq!(mgr.num_running_threads(), 0);
     }
 }

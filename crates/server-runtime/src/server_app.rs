@@ -1557,6 +1557,189 @@ mod tests {
         );
     }
 
+    /// Acceptance (drain half): work queued by the loop and its
+    /// completions are drained in `fini`, before
+    /// `prepareForShutdown` -- the reference's `~BaseApp` runs
+    /// `bgTaskManager_.stopAll()` before
+    /// `extInterface().prepareForShutdown()`. The threaded pool is used,
+    /// so whichever of "worker still running" and "shutdown started"
+    /// happens first, the end state is the same.
+    #[test]
+    fn the_shutdown_drains_the_threaded_task_pool() {
+        use crate::task_manager::{BackgroundTask, TaskManager, TaskPtr};
+        use std::sync::Arc;
+
+        type SharedLog = std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>;
+
+        struct DrainingTask {
+            work: &'static str,
+            cleanup: &'static str,
+            log: SharedLog,
+            me: std::sync::Mutex<Option<TaskPtr>>,
+        }
+
+        impl BackgroundTask for DrainingTask {
+            fn do_background_task(&self, mgr: &TaskManager) {
+                self.log.lock().expect("log").push(self.work);
+                let me = self.me.lock().expect("me").clone().expect("self set");
+                mgr.add_main_thread_task(me);
+            }
+
+            fn do_main_thread_task(&self, _mgr: &TaskManager) {
+                self.log.lock().expect("log").push(self.cleanup);
+            }
+
+            fn name(&self) -> &str {
+                self.work
+            }
+        }
+
+        struct DrainedApp {
+            log: SharedLog,
+            dispatcher: Dispatcher,
+            tasks: std::sync::Arc<TaskManager>,
+        }
+
+        impl ServerApp for DrainedApp {
+            fn app_name(&self) -> &str {
+                "cellapp"
+            }
+
+            fn init(&mut self, _args: &[String]) -> bool {
+                self.log.lock().expect("log").push("init");
+
+                let log = Arc::clone(&self.log);
+                let tasks = Arc::clone(&self.tasks);
+                let passes = Cell::new(0);
+                let queued = Cell::new(false);
+
+                // Pass 1: submit the work that is still running when the
+                // shutdown starts.
+                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                    FrequentTaskFn(
+                        move || {
+                            if queued.get() {
+                                return;
+                            }
+                            queued.set(true);
+                            let task = Arc::new(DrainingTask {
+                                work: "bg work",
+                                cleanup: "bg cleanup",
+                                log: Arc::clone(&log),
+                                me: std::sync::Mutex::new(None),
+                            });
+                            *task
+                                .me
+                                .lock()
+                                .expect("me") = Some(Arc::clone(&task) as TaskPtr);
+                            assert_eq!(task.name(), "bg work");
+                            tasks.add_background_task(task as TaskPtr);
+                        },
+                        "queue work",
+                    ),
+                )));
+
+                // Pass 2: queue one more, then break.
+                let log = Arc::clone(&self.log);
+                let tasks = Arc::clone(&self.tasks);
+                let break_flag = self.dispatcher.break_flag();
+                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                    FrequentTaskFn(
+                        move || {
+                            passes.set(passes.get() + 1);
+                            if passes.get() < 2 {
+                                return;
+                            }
+                            let task = Arc::new(DrainingTask {
+                                work: "late work",
+                                cleanup: "late cleanup",
+                                log: Arc::clone(&log),
+                                me: std::sync::Mutex::new(None),
+                            });
+                            *task
+                                .me
+                                .lock()
+                                .expect("me") = Some(Arc::clone(&task) as TaskPtr);
+                            tasks.add_background_task(task as TaskPtr);
+                            break_flag.set(true);
+                        },
+                        "queue late work",
+                    ),
+                )));
+                true
+            }
+
+            fn run(&mut self) -> bool {
+                self.dispatcher.process_until_break();
+                true
+            }
+
+            fn fini(&mut self) {
+                self.log.lock().expect("log").push("fini");
+                // `bgTaskManager_.stopAll()`: the queued work finishes and
+                // every completion dispatches on this thread.
+                self.tasks.drain();
+                assert!(!self.tasks.has_tasks());
+                assert_eq!(self.tasks.num_running_threads(), 0);
+            }
+
+            fn prepare_for_shutdown(&mut self) {
+                self.log.lock().expect("log").push("prepareForShutdown");
+            }
+        }
+
+        let (_r, config, _k) = config_over("drained_pool", &valid_bw_xml());
+        let log: SharedLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut app = DrainedApp {
+            log: Arc::clone(&log),
+            dispatcher: Dispatcher::new(),
+            tasks: Arc::new(TaskManager::new()),
+        };
+        app.tasks.start_threads(1);
+
+        assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
+
+        // The interleaving of the worker and the shutdown is not
+        // pinned, but the end state is: every phase ran exactly once,
+        // the work before its own completion, both completions after
+        // "fini" (they dispatch inside the drain), and the drain before
+        // prepareForShutdown.
+        let entries: Vec<&'static str> = log.lock().expect("log").clone();
+        assert_eq!(entries.first().copied(), Some("init"));
+        assert_eq!(entries.last().copied(), Some("prepareForShutdown"));
+        for (work, cleanup) in [("bg work", "bg cleanup"), ("late work", "late cleanup")] {
+            let work_at = entries.iter().position(|entry| *entry == work);
+            let cleanup_at = entries.iter().position(|entry| *entry == cleanup);
+            assert!(
+                work_at.is_some() && cleanup_at.is_some(),
+                "missing phase in {entries:?}"
+            );
+            assert!(work_at.unwrap() < cleanup_at.unwrap());
+            assert!(
+                entries.iter().filter(|entry| **entry == cleanup).count() == 1,
+                "{cleanup} dispatched more than once in {entries:?}"
+            );
+        }
+        let fini_at = entries
+            .iter()
+            .position(|entry| *entry == "fini")
+            .expect("fini");
+        assert!(
+            fini_at
+                < entries
+                    .iter()
+                    .position(|entry| *entry == "bg cleanup")
+                    .unwrap()
+        );
+        assert!(
+            fini_at
+                < entries
+                    .iter()
+                    .position(|entry| *entry == "late cleanup")
+                    .unwrap()
+        );
+    }
+
     /// Acceptance (staged half): a control event carrying
     /// `SHUTDOWN_INFORM` records the stage and the deadline tick on the
     /// app's shutdown state, then breaks processing -- the app leaves the
