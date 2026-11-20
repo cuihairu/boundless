@@ -1,6 +1,12 @@
 //! BW-02 transports, message framing and RPC.
 
 pub mod bundle_dispatch;
+#[cfg(target_os = "linux")]
+pub mod channel_listener;
+#[cfg(target_os = "linux")]
+pub mod channel_map;
+#[cfg(target_os = "linux")]
+pub mod condemned_channels;
 pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;
@@ -30,4 +36,6 @@ pub mod reply_order;
 pub mod request;
 pub mod request_manager;
 pub mod udp_bundle;
+#[cfg(target_os = "linux")]
+pub mod udp_channel;
 pub mod unpacked_message_header;

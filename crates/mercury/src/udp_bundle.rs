@@ -29,7 +29,7 @@ use crate::interface_element::{INVALID_MESSAGE, InterfaceElement};
 use crate::interfaces::ReplyMessageHandler;
 use crate::message_framing::{NEXT_REQUEST_OFFSET_SIZE, REPLY_ID_SIZE, SPECIAL_LENGTH_SIZE};
 use crate::misc::{SEQ_NULL, SeqNum, SeqNumAllocator};
-use crate::packet::{Packet, HEADER_SIZE, flags};
+use crate::packet::{HEADER_SIZE, Packet, flags};
 use crate::reply_order::ReplyOrder;
 use crate::request_manager::RequestManager;
 
@@ -156,6 +156,13 @@ impl UdpBundle {
     pub fn reliable(&mut self, current_msg_reliable: ReliableType) {
         self.msg_is_reliable = current_msg_reliable.is_reliable();
         self.reliable_driver |= current_msg_reliable.is_driver();
+    }
+
+    /// `UDPBundle::clear( spareSize )`: reset to construction state,
+    /// keeping the spare size the bundle was built with. The channel
+    /// calls this from `clearBundle` after every send.
+    pub fn clear(&mut self) {
+        *self = Self::new(self.extra_size);
     }
 
     // -- packet chain -----------------------------------------------------
@@ -481,7 +488,6 @@ impl UdpBundle {
         let mut last_seq = 0u32;
 
         for (index, packet) in self.packets.iter_mut().enumerate() {
-
             if should_use_checksums {
                 // Reserve space for the checksum footer
                 assert!(!packet.has_flags(flags::HAS_CHECKSUM));
@@ -1313,7 +1319,10 @@ mod tests {
         // validate and no request footer to peel.
         let mut bare = Packet::new();
         bare.grow(HEADER_SIZE);
-        assert_eq!(sender.sendto_address(bare.wire(), bound), HEADER_SIZE as i32);
+        assert_eq!(
+            sender.sendto_address(bare.wire(), bound),
+            HEADER_SIZE as i32
+        );
 
         // Receive and dispatch each datagram exactly as the packet
         // receiver will: checksum first, then the request footer, then
