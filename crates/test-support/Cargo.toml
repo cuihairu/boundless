@@ -11,3 +11,7 @@ repository.workspace = true
 # The layering checker (BW-16) only needs the filesystem and the shell out to
 # cargo, so it stays dependency free.  Fixtures added under BW-18 re-add the
 # internal crates here, one line each with a reason.
+# resources + server-runtime: the config fixture loads a real bw.xml chain
+# through BwResource and BwConfig (BW-18-01-03).
+resources = { workspace = true }
+server-runtime = { workspace = true }

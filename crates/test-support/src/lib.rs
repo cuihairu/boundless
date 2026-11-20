@@ -5,6 +5,7 @@
 //! ([`layering`], BW-16-01-01 / BW-16-02-05), so the layering rule is guarded
 //! by plain `cargo test` runs.
 
+pub mod config_fixture;
 pub mod layering;
 pub mod rng;
 pub mod standalone;

@@ -1245,7 +1245,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：原版 `base_resmgr_unit_test_harness.cpp` 从 `BW_ROOT`/可执行文件目录合成 `--res` 路径，测试耦合检出布局；新版 crates/test-support/src/workspace.rs 提供 TempWorkspace（unique 目录、drop 即清理、失败可 keep 现场）与 ResourceRoot，`workspaces_are_isolated`/`sequential_fixtures_get_distinct_directories`/`dropped_workspaces_are_removed` 常驻验证并行隔离。
 - [x] **BW-18-01-02 提供固定随机种子**。**验收** 重复调用给出同一序列。
   - 证据：原版 `lib/network/unit_test/network_app.hpp:57` 用 `srand((int)timestamp())` 播种，重复运行轨迹不同、无可复现种子；新版 crates/test-support/src/rng.rs 提供 SeededRng（SplitMix64，平台无关），`the_same_seed_repeats_the_same_sequence` 钉死同种子同序列、`the_zero_seed_is_usable` 覆盖零种子、`bounded_values_stay_in_range` 覆盖取界。
-- [ ] **BW-18-01-03 提供配置和数据库夹具**。**验收** 测试可从已知状态启动。
+- [x] **BW-18-01-03 提供配置和数据库夹具**。**验收** 测试可从已知状态启动。
+  - 证据：原版测试各写各的 bw.xml 与临时 DB 路径，无统一已知状态入口；新版 crates/test-support/src/config_fixture.rs 提供 ConfigFixture（写入 server/bw.xml 链后走真实 BwConfig::init_from_sources 解析，`the_chain_resolves_child_first`/`a_missing_personalised_file_falls_back_to_base` 验证链序与回退）与 DatabaseFixture（全新 db/、journal/ 目录布局，实体库本体待 BW-09），`a_database_backed_config_starts_from_a_known_state` 串起两者证明测试从已知状态启动；为可断言链序给 BwConfig 加了 `section_names()` 访问器（crates/server-runtime/src/config.rs）。
 - [ ] **BW-18-01-04 映射原版单测**。**验收** Rust 和 pytest 用例可通过原始编号追溯。
 
 #### BW-18-02 多进程测试框架

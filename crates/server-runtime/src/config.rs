@@ -312,6 +312,16 @@ impl BwConfig {
         out
     }
 
+    /// The chain filenames, most-derived first. The reference keeps this in
+    /// the private `g_sections` pair list; exposing it is test-facing (the
+    /// BW-18 fixtures assert which files a known state resolved).
+    pub fn section_names(&self) -> Vec<&str> {
+        self.sections
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect()
+    }
+
     /// `BWConfig::getChildrenNames`: the child names of `parent_path` from
     /// every chain entry that has one, concatenated in chain order.
     pub fn get_children_names(&self, parent_path: &str) -> Vec<String> {
@@ -421,6 +431,20 @@ mod tests {
         assert_eq!(config.sections[1].1, "server/bw.xml");
         assert!(config.bad_filename.is_empty());
         assert!(!config.is_bad(&resource));
+    }
+
+    /// `section_names`: the same chain as filenames, most-derived first,
+    /// for fixtures that assert which files a known state resolved.
+    #[test]
+    fn section_names_lists_the_chain_front_to_back() {
+        let (resource, _keep) = chained_resource("names");
+        let mut config = BwConfig::new();
+        config.init_from_sources(&resource, Some("user"));
+
+        assert_eq!(
+            config.section_names(),
+            ["server/bw_user.xml", "server/bw.xml"]
+        );
     }
 
     /// Acceptance: values of the chained configs resolve like the
