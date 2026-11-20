@@ -1,5 +1,6 @@
 //! BW-02 transports, message framing and RPC.
 
+pub mod bundle_dispatch;
 pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;

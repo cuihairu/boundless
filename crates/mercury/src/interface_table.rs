@@ -103,6 +103,15 @@ impl InterfaceTable {
         }
     }
 
+    /// `InterfaceElementWithStats::stopProfile( msgLen )`'s
+    /// `messageReceived`: count one delivered message of this many body
+    /// bytes against its element. The bundle dispatch calls it for every
+    /// message it delivers (the reference does the same under
+    /// `ENABLE_WATCHERS`).
+    pub fn record_received(&self, msg_id: MessageID, length: u32) {
+        self.table.borrow_mut()[msg_id as usize].message_received(length);
+    }
+
     /// `name_`.
     pub fn name(&self) -> String {
         self.name.borrow().clone()
@@ -192,6 +201,14 @@ mod tests {
         assert_eq!(table.element(3).length_style(), FIXED_LENGTH_MESSAGE);
         assert!(table.handler(3).is_some());
         assert!(table.handler(2).is_none(), "the other slots are untouched");
+
+        // The served handler is reachable through the table and answers a
+        // delivery like any other handler.
+        table.handler(3).unwrap().handle_message(
+            &crate::endpoint::Address::new(0, 0),
+            &mut crate::unpacked_message_header::UnpackedMessageHeader::new(3),
+            &mut foundation::stream::BinaryStream::new(),
+        );
     }
 
     /// The internal and the external socket each own a table, so the same
