@@ -9,6 +9,7 @@
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
 
 import * as vscode from "vscode";
+import { mkdirSync, writeFileSync } from "node:fs";
 
 import { nodeProbe } from "./workspace/nodeProbe";
 import { definitionTargets } from "./workspace/navigation";
@@ -22,6 +23,7 @@ import {
 import { processRunner } from "./workspace/processRunner";
 import { formatOutcome } from "./workspace/jobs";
 import { nodeJobRunner } from "./workspace/jobRunner";
+import { mergeLaunchJson, pythonAttachConfig } from "./workspace/launchConfig";
 import { AliasRegistry } from "./def/registry";
 import { ScriptRole, scriptPath } from "./workspace/resourceRoot";
 import {
@@ -203,7 +205,27 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("boundless.runBots", () =>
       runConfiguredJob("bots"),
     ),
+    vscode.commands.registerCommand("boundless.setupPythonDebug", () =>
+      setupPythonDebug(),
+    ),
   );
+
+  /** Adds the Python attach configurations to every workspace folder's
+   * `launch.json`, keeping what the user already had there. */
+  function setupPythonDebug(): void {
+    const settings = vscode.workspace.getConfiguration("boundless.cluster");
+    const roles = settings.get<string[]>("launchRoles", configuredRoles());
+    const configs = roles.map((role) => pythonAttachConfig(role));
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const file = join(folder.uri.fsPath, ".vscode", "launch.json");
+      const existing = nodeProbe().read(file);
+      const merged = mergeLaunchJson(existing, configs);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, merged, "utf8");
+      status.appendLine(`wrote ${displayPath(file)}`);
+    }
+    status.show(true);
+  }
 
   const diagnostics = vscode.languages.createDiagnosticCollection(
     "boundless-entitydef",

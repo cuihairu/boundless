@@ -56,6 +56,11 @@
         "command": "boundless.runBots",
         "title": "Boundless: Run Bots",
         "category": "Boundless"
+      },
+      {
+        "command": "boundless.setupPythonDebug",
+        "title": "Boundless: Set Up Python Debug Configurations",
+        "category": "Boundless"
       }
     ],
     "languages": [
@@ -128,6 +133,17 @@
           "type": "string",
           "default": "",
           "description": "Command the Run Bots job executes in the workspace folder. Empty disables the job."
+        },
+        "boundless.cluster.launchRoles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "baseapp",
+            "cellapp"
+          ],
+          "description": "Roles that get a Python attach configuration in launch.json."
         }
       }
     }
@@ -137,7 +153,8 @@
     "check": "tsc -p . --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "pnpm run build && vsce package --no-dependencies"
+    "package": "pnpm run build && vsce package --no-dependencies",
+    "verify": "pnpm run build && node tools/verify/navigation.cjs && node tools/verify/diagnostics.cjs && node tools/verify/cluster.cjs"
   },
   "devDependencies": {
     "@types/node": "22.10.5",
