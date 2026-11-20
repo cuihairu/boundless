@@ -30,6 +30,7 @@ use super::binding;
 use super::capi::{self, PyObject};
 use super::import_paths::ImportPaths;
 use super::init_time_job;
+use super::keepalive;
 use super::output_writer;
 use super::wrapper;
 
@@ -232,6 +233,11 @@ impl Interpreter {
         // `s_type_` objects outlive every script object, and the port holds
         // its registry references until here.
         binding::reset();
+        // The keep-alive entries die with the native side too: `Pickler`'s
+        // registry and the timer table are torn down inside
+        // `Script::fini` before the collect loop (script.cpp:686), so a
+        // held reference never survives into `Py_Finalize`.
+        keepalive::reset();
         // The snapshot goes before the collect loop, the reference's DECREF
         // between `runFiniTimeJobs` and `while (PyGC_Collect() > 0);`.
         let snapshot = INIT_TIME_MODULES.swap(std::ptr::null_mut(), Ordering::SeqCst);
@@ -454,6 +460,7 @@ fn clear_main_module() {
 mod tests {
     use super::*;
     use crate::import_paths;
+    use crate::keepalive;
     use crate::pyref::PyRef;
     use crate::sequence;
     use std::path::PathBuf;
@@ -530,6 +537,11 @@ mod tests {
         "interpreter::tests::scenario_a_sequence_proxy_bounds_are_checked",
         "interpreter::tests::scenario_a_read_only_sequence_refuses_assignment",
         "interpreter::tests::scenario_a_non_integer_subscript_refuses",
+        "interpreter::tests::scenario_a_keep_alive_entry_holds_one_reference",
+        "interpreter::tests::scenario_repinning_adopts_and_replaces_once",
+        "interpreter::tests::scenario_unpinning_twice_releases_once",
+        "interpreter::tests::scenario_a_pinned_callback_survives_the_script_dropping_it",
+        "interpreter::tests::scenario_a_script_side_cycle_is_freed_exactly_once",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
     ];
@@ -657,6 +669,24 @@ mod tests {
             let rendered = capi::to_string(text);
             capi::dec_ref(text);
             rendered
+        }
+    }
+
+    /// A fresh list parked in `__main__` under `__handle`, as a borrowed handle
+    /// plus a copy of it that names the object the same way the script does.
+    /// The `refcount` helper reads `__handle`, so the parked name is what
+    /// keeps the object readable between handles.
+    fn fresh() -> PyRef {
+        // SAFETY: the interpreter is up and this thread owns the GIL.
+        unsafe {
+            let list = PyRef::from_owned(capi::PyList_New(0)).expect("a live object");
+            let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+            let dictionary = capi::PyModule_GetDict(main);
+            assert_eq!(
+                capi::PyDict_SetItemString(dictionary, c"__handle".as_ptr(), list.as_ptr()),
+                0
+            );
+            list.clone()
         }
     }
 
@@ -1735,6 +1765,159 @@ mod tests {
                 ),
                 "TypeError: 'str' object does not support item assignment"
             );
+        });
+    }
+
+    /// The reference's keep-alive contract, one entry: `PySTLSequence`'s
+    /// constructor `Py_XINCREF`s its owner and the destructor `Py_XDECREF`s it,
+    /// so one entry is exactly one strong reference -- not two, not none.
+    /// `sys.getrefcount` names the object itself as well, so the counts read
+    /// two here; what the test measures is the delta of one.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_keep_alive_entry_holds_one_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let list = fresh();
+            let baseline = refcount(interpreter);
+            unsafe { keepalive::pin(41, &list) }.expect("pin the entry");
+            assert!(keepalive::is_pinned(41));
+            assert_eq!(keepalive::pinned_count(), 1);
+            assert_eq!(refcount(interpreter), baseline + 1);
+            assert!(keepalive::unpin(41));
+            assert_eq!(refcount(interpreter), baseline);
+        });
+    }
+
+    /// Repinning an identity adopts the new reference and drops the old one
+    /// exactly once, `Script::setData`'s rule: no leak on replace, no entry
+    /// for an identity that no longer exists.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_repinning_adopts_and_replaces_once() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let first = fresh();
+            unsafe { keepalive::pin(9, &first) }.expect("pin the first");
+            // The parked name and the handle hold two; the entry is the
+            // third. Read directly, because the second pin replaces the
+            // object the `__handle` helper reads.
+            assert_eq!(unsafe { capi::refcount(first.as_ptr()) }, 3);
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let second = unsafe { PyRef::from_owned(capi::PyList_New(0)) }.expect("a live object");
+            unsafe { keepalive::pin(9, &second) }.expect("replace the entry");
+            // One entry, not two: the replace is an adopt.
+            assert_eq!(keepalive::pinned_count(), 1);
+            assert!(keepalive::is_pinned(9));
+            // The first entry's reference went exactly once, `setData`'s rule:
+            // the count is back to the two the script side still holds. A
+            // double release would have freed it under the parked name; a
+            // missing one would have left it at three.
+            assert_eq!(unsafe { capi::refcount(first.as_ptr()) }, 2);
+        });
+    }
+
+    /// Unpinning twice releases once: the second call finds no entry and
+    /// reports it, which is what makes a host's double `fini` harmless.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_unpinning_twice_releases_once() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let object = fresh();
+            unsafe { keepalive::pin(7, &object) }.expect("pin");
+            let before = refcount(interpreter);
+            assert!(keepalive::unpin(7));
+            assert_eq!(refcount(interpreter), before - 1);
+            assert!(!keepalive::unpin(7));
+            assert!(!keepalive::is_pinned(7));
+            assert_eq!(refcount(interpreter), before - 1);
+        });
+    }
+
+    /// `Script::gTimers`'s contract: the native registry's entry keeps a
+    /// callback alive after the script has thrown it away, and unpinning is
+    /// what finally releases it -- the timer table drops its owned function
+    /// and arguments at `clearTimers`, never earlier.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_pinned_callback_survives_the_script_dropping_it() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // A bound method as the held callback, the shape the timer table
+            // stores: the instance and the function together.
+            assert!(interpreter.run_simple_string(
+                "class Holder:\n    def answer(self):\n        return 6\n\
+                 \nh = Holder()\n__callback = h.answer"
+            ));
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let callback = unsafe {
+                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                PyRef::from_owned(capi::PyObject_GetAttrString(main, c"__callback".as_ptr()))
+                    .expect("the bound method")
+            };
+            unsafe { keepalive::pin(1, &callback) }.expect("pin the callback");
+            // The script lets go of every name it had.
+            assert!(interpreter.run_simple_string("del h\ndel __callback"));
+            // A collection freed nothing, because the entry owns one
+            // reference of its own.
+            assert!(interpreter.run_simple_string("import gc; gc.collect()"));
+            // The handle and the entry are the only two names left: the entry
+            // is what the script's drop could not kill.
+            assert_eq!(unsafe { capi::refcount(callback.as_ptr()) }, 2);
+            // The entry is still callable: the registry's reference is
+            // the only thing keeping it alive.
+            let held = keepalive::take_out(1).expect("the held reference");
+            // The take-out handed the entry's reference to the caller, the
+            // release-happened-exactly-once leg of the contract: the caller's
+            // drop is what frees it.
+            drop(callback);
+            // The reference's `MF_ASSERT_DEV(ob_refcnt == 0)` at native
+            // teardown, read the way the C++ layer reads it: one owned
+            // reference is left, so the count is not zero yet -- and it is
+            // the caller's final drop that takes it there, never the registry
+            // releasing twice.
+            assert!(!unsafe { keepalive::zero_reference_count(&held) });
+            assert_eq!(unsafe { capi::refcount(held.as_ptr()) }, 1);
+            let answer = unsafe { capi::PyObject_CallNoArgs(held.as_ptr()) };
+            assert!(!answer.is_null());
+            // SAFETY: the answer is a fresh strong reference from the call.
+            unsafe { capi::dec_ref(answer) };
+            drop(held);
+        });
+    }
+
+    /// The reference's collection policy: `gc.disable()` in init means the
+    /// automatic collector never runs, so a cycle the script builds is freed
+    /// only by an explicit pass -- `gc.collect()` here, and the same
+    /// `while (PyGC_Collect() > 0);` loop that `Script::fini` runs after
+    /// `__main__` is blanked. Either way the rule under test is the same:
+    /// the two members of the cycle go exactly once, never twice, never
+    /// early while the script still names them.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_script_side_cycle_is_freed_exactly_once() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert_eq!(
+                probe(interpreter, "import gc; __probe = gc.isenabled()"),
+                "False"
+            );
+            // A two-object cycle, each naming the other.
+            assert!(interpreter.run_simple_string("a = []\nb = []\na.append(b)\nb.append(a)"));
+            // Collection is off, so nothing collects on its own: an explicit
+            // pass is what frees the cycle. One pass warms up the leftovers
+            // init left unreachable, so the counts afterwards are about the
+            // cycle alone.
+            assert_ne!(probe(interpreter, "__probe = gc.collect()"), "0");
+            // While the script still names the members, a pass finds nothing
+            // unreachable.
+            assert_eq!(probe(interpreter, "__probe = gc.collect()"), "0");
+            // The script drops every name; only the cycle keeps itself alive.
+            assert!(interpreter.run_simple_string("del a\ndel b"));
+            assert_eq!(
+                probe(interpreter, "__probe = gc.collect()"),
+                "2",
+                "the two-list cycle was freed"
+            );
+            // A second pass frees nothing: the cycle went exactly once, not
+            // twice and not zero times.
+            assert_eq!(probe(interpreter, "__probe = gc.collect()"), "0");
         });
     }
 

@@ -20,6 +20,7 @@ pub mod capi;
 pub mod import_paths;
 pub mod init_time_job;
 pub mod interpreter;
+pub mod keepalive;
 pub mod output_writer;
 pub mod pyref;
 pub mod sequence;
