@@ -66,6 +66,11 @@
         "command": "boundless.setupRustDebug",
         "title": "Boundless: Set Up Rust Launch Configurations",
         "category": "Boundless"
+      },
+      {
+        "command": "boundless.setupDocsMcp",
+        "title": "Boundless: Set Up Documentation MCP Server",
+        "category": "Boundless"
       }
     ],
     "languages": [
@@ -149,6 +154,41 @@
             "cellapp"
           ],
           "description": "Roles that get a Python attach configuration in launch.json."
+        },
+        "boundless.docs.server": {
+          "type": "string",
+          "default": "integrations/mcp/docs/target/release/boundless-docs-mcp",
+          "description": "boundless-docs-mcp to serve the documentation with, relative to the workspace folder (cargo build --release in integrations/mcp/docs), or an absolute path."
+        },
+        "boundless.docs.root": {
+          "type": "string",
+          "default": "${workspaceFolder}",
+          "description": "The git repository the documentation is read from, as passed to the server's --root."
+        },
+        "boundless.docs.version": {
+          "type": "string",
+          "default": "HEAD",
+          "description": "Git ref label or commit the queries answer for; HEAD answers for the checked-out version of the workspace."
+        },
+        "boundless.docs.prefix": {
+          "type": "string",
+          "default": "docs",
+          "description": "The documentation directory inside the repository."
+        },
+        "boundless.docs.langs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "zh"
+          ],
+          "description": "Locale directories inside the documentation root."
+        },
+        "boundless.docs.url": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the rendered documentation site, so the source links open there; empty keeps them repository-relative."
         }
       }
     }
@@ -159,7 +199,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "package": "pnpm run build && vsce package --no-dependencies",
-    "verify": "pnpm run build && node tools/verify/navigation.cjs && node tools/verify/diagnostics.cjs && node tools/verify/cluster.cjs"
+    "verify": "pnpm run build && node tools/verify/navigation.cjs && node tools/verify/diagnostics.cjs && node tools/verify/cluster.cjs && node tools/verify/docsMcp.cjs"
   },
   "devDependencies": {
     "@types/node": "22.10.5",
