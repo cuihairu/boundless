@@ -1,0 +1,74 @@
+<root>
+	<Properties>
+		<name>
+			<Type>	STRING	</Type>
+			<Flags>	OTHER_CLIENTS	</Flags>
+			<Persistent>	true	</Persistent>
+			<Default>	nobody	</Default>
+		</name>
+		<dbid>
+			<Type>	INT32	</Type>
+			<Flags>	BASE	</Flags>
+			<Identifier>	true	</Identifier>
+			<Persistent>	true	</Persistent>
+			<Default>	-1	</Default>
+		</dbid>
+		<mood>
+			<Type>	STRING	</Type>
+			<Flags>	ALL_CLIENTS	</Flags>
+			<Default>	calm	</Default>
+		</mood>
+		<pos>
+			<Type>	FIXED_DICT
+				<Properties>
+					<x>
+						<Type>	FLOAT32	</Type>
+					</x>
+					<y>
+						<Type>	FLOAT32	</Type>
+					</y>
+				</Properties>
+			</Type>
+			<Flags>	CELL_PUBLIC_AND_OWN	</Flags>
+		</pos>
+		<friends>
+			<Type>	ARRAY	<of>	STRING	</of>	</Type>
+			<Flags>	BASE	</Flags>
+		</friends>
+		<hp>
+			<Type>	HP	</Type>
+			<Flags>	OWN_CLIENT	</Flags>
+		</hp>
+		<secret>
+			<Type>	STRING	</Type>
+			<Flags>	EDITOR_ONLY	</Flags>
+		</secret>
+		<visible>
+			<Type>	UINT8	</Type>
+			<Flags>	CELL_PUBLIC	</Flags>
+		</visible>
+	</Properties>
+
+	<BaseMethods>
+		<order>
+			<Args>
+				<task>	STRING	</task>
+				<urgent>	UINT8	</urgent>
+			</Args>
+			<Exposed/>
+		</order>
+		<save/>
+	</BaseMethods>
+
+	<CellMethods>
+		<teleport>
+			<Args>	<x>	FLOAT32	</x>	<y>	FLOAT32	</y>	</Args>
+		</teleport>
+	</CellMethods>
+
+	<ClientMethods>
+		<ping>
+			<Args>	<stamp>	INT32	</stamp>	</Args>
+		</ping>
+	</ClientMethods>
+</root>

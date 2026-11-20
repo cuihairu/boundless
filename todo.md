@@ -462,42 +462,63 @@
 
 覆盖 `entities.xml`、`.def`、`alias.xml`、父类和接口、Service 定义、属性默认值与索引、Base/Cell/Client 方法排序。比对实体、属性、方法 ID 和定义摘要。
 
-- [ ] **BW-04-01-01 解析实体和别名文件**。**验收** 实体 ID、别名解析及缺项错误吻合。
-- [ ] **BW-04-01-02 合并父类和接口**。**验收** 继承冲突与优先级吻合。
-- [ ] **BW-04-01-03 处理 Service 定义**。**验收** 公开方法与原版清单一致。
-- [ ] **BW-04-01-04 分配属性和方法索引**。**验收** Base、Cell、Client 索引吻合。
-- [ ] **BW-04-01-05 计算定义摘要**。**验收** 同输入得到与原版相同字节。
+- [x] **BW-04-01-01 解析实体和别名文件**。**验收** 实体 ID、别名解析及缺项错误吻合。
+  - 证据：crates/entitydef 差分测试对参考 process_defs dump（fantasydemo / client_integration 两棵 res 树）逐字节相等，149 单测通过，行覆盖 99.41%；详见 docs/review/bw04-01-01-entitydef-parse.md。commit `0023108`。
+- [x] **BW-04-01-02 合并父类和接口**。**验收** 继承冲突与优先级吻合。
+  - 证据：父类同名方法签名冲突失败、接口成员先于自身并入、Volatile 缺省继承父值、接口链自深向浅合并；差分 oracle 仍逐字节相等。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-02 节。commit `da3b2ff`（前置 clippy 修复 `ca51862`）。
+- [x] **BW-04-01-03 处理 Service 定义**。**验收** 公开方法与原版清单一致。
+  - 证据：自建 res 夹具（services.xml 两服务 + service_defs + 服务脚本 + 服务接口链）上跑参考 process_defs 生成 oracle `docs/review/reference/service_entitydef.json`（MD5 012FC1AB…），Rust `dump_map` 逐字节相等；服务公开方法清单 = `<Implements>` 接口方法在前 + `<Methods>`（vacuum/sweep/tally），`sweep` exposedIndex=0，cell/client 半边为空，服务自带 `<Properties>` 被忽略。同时修正 `EntityDistribution` 标签名对齐参考 `readBool("Client"/"Base"/"Cell")`。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-03 节。commit `683bb5d`。
+- [x] **BW-04-01-04 分配属性和方法索引**。**验收** Base、Cell、Client 索引吻合。
+  - 证据：新增自建夹具 `docs/review/fixtures/entity_index/res`（父/子实体 + server-only + 三边混合定长/变长方法），参考 process_defs 生成 oracle `docs/review/reference/entity_index_entitydef.json`（MD5 6FAD1D72…），Rust `dump_map` 首轮即逐字节相等；属性 index 按并入序、clientServerFullIndex 只在 client-server 半边重排、base/cell/client 三边 exposed 索引各自排序（子实体 repair=0、damage=1、shout=2，retire=-1）。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-04 节。commit `df12d8e`。
+- [x] **BW-04-01-05 计算定义摘要**。**验收** 同输入得到与原版相同字节。
+  - 证据：四份参考 oracle（fantasydemo / client_integration / service_def / entity_index）的 `constants.digest` 与 Rust `dump_map` 逐字节相等；新测 `the_digest_is_deterministic_and_matches_the_reference_oracles` 钉住同夹具两次解析同字节且等于参考常量（service 8A225AFC…、entity_index 3F009C3E…），既有测试钉住"只计入 client 类型、按加载序"规则。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-05 节。commit `43a4902`。
 
 #### BW-04-02 数据类型和属性流
 
 覆盖基本类型、ARRAY/TUPLE、FIXED_DICT、USER_TYPE、MAILBOX、嵌套属性和变化切片。比对 Python 类型转换、默认值、压包、广播和持久化字段。
 
-- [ ] **BW-04-02-01 实现标量与默认值转换**。**验收** 数值边界和异常对照通过。
-- [ ] **BW-04-02-02 实现 ARRAY/TUPLE**。**验收** 长度、元素及嵌套字节一致。
-- [ ] **BW-04-02-03 实现 FIXED_DICT**。**验收** 字段次序和缺省行为一致。
-- [ ] **BW-04-02-04 实现 USER_TYPE 与 MAILBOX**。**验收** 转换及序列化夹具一致。
-- [ ] **BW-04-02-05 编码嵌套属性增量**。**验收** 修改一个 FIXED_DICT 子字段时，更新切片的路径和负载与原版逐字节一致。
-- [ ] **BW-04-02-06 应用嵌套属性增量**。**验收** 接收原版更新切片后，只有目标字段改变，Python 通知携带正确旧值。
-- [ ] **BW-04-02-07 提取持久化投影**。**验收** 数据库属性流与原版字节一致。
+- [x] **BW-04-02-01 实现标量与默认值转换**。**验收** 数值边界和异常对照通过。
+  - 证据：`crates/entitydef::value` 落地 `PropertyValue`/`PropertyError` 与 `check_integer`/`value_from_section`/`default_value`/`add_to_stream`/`create_from_stream`；数值边界钉住 `Script_intOverflow` 四边界（INT32 收 0x7fffffff 与 -0x80000000、拒 0x80000000 与 -0x80000001），四条参考错误模板逐字节锚定（含结尾 `\n`），`pInitialValue` 三槽顺序与 `setDefaultValue` 语义各有一测；171 单测 + 4 差分通过，value.rs 行覆盖 99.09%。无字节级参考 oracle（process_defs 不遍历属性流），本项证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-01 节。commit `c7c2e45`。
+- [x] **BW-04-02-02 实现 ARRAY/TUPLE**。**验收** 长度、元素及嵌套字节一致。
+  - 证据：`crates/entitydef::value` 新增 `PropertyValue::Sequence` 与 `Kind::Sequence` 的五个入口（`check_value`/`value_from_section`/`default_value`/`add_to_stream`/`create_from_stream`）+ `check_sequence_capacity`；定长序列**不写**长度前缀、变长写 packed int 计数，钉住 `TUPLE size 2 of INT8` 的 `[1,2]` 与 `ARRAY of INT8` 的 `[2,1,2]`；嵌套「变长 ARRAY of 定长 TUPLE」字节钉为 `[2,1,0,2,0,3,0,4,0]`，「ARRAY of STRING」钉为 `[2,1,'a',2,'b','c']`；六个参考错误模板逐字节锚定（含结尾 `\n`），参考在读路径误印 `fromSourceToStream` 的复制粘贴瑕疵逐字复刻；默认值按 `size_`（变长空、定长 N 个元素默认值），节读取按 `countChildren()` 且尾部缺失取元素默认值；报错中的类型名是元素自己的 `typeName()`（`INT8`）而非 `ARRAY size 2 of (INT8)`；181 单测 + 4 差分通过，value.rs 行覆盖 99.06%、crate 99.46%，clippy 0 findings。仍无字节级参考 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-02 节。commit `e4a2997`。
+- [x] **BW-04-02-03 实现 FIXED_DICT**。**验收** 字段次序和缺省行为一致。
+  - 证据：`crates/entitydef::value` 新增 `PropertyValue::FixedDict` 与 `Kind::FixedDict` 的五个入口 + `PropertyError::{NullSection, MissingNoneIndicator, FieldDefaultFailed}`；钉住无 `<AllowNone>` 时**无**指示字节、字段按类型自身顺序直排（`UINT8 7` + `STRING "x"` = `[7,1,'x']`），`Enter/Leave/End` 三个 StreamElement 均不写字节；`<AllowNone>` 时钉住 `uint8(isNone ? 0 : 1)`（None 写 `[0]` 即止、有值写 `[1]` 再接字段）；缺省行为钉住 `getDefaultValue` 双分支（allowNone→None，否则逐字段默认值按字段序）、`countChildren()==0` 即 None、缺失字段先在本类型 `<Default>` 按字段名找子节、找不到才用字段类型默认值、该子节构建失败报 `ClassDataType::Field::createDefaultValue: Failed to create %s from default section`；三条参考错误模板逐字节锚定（含结尾 `\n`，`Missing None/values indicator` 一条钉住参考源码相邻字面量拼接后 `fromStreamToSink` 后无冒号的形态）；190 单测 + 4 差分通过，value.rs 行覆盖 99.27%、crate 99.47%，clippy 0 findings。仍无字节级参考 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-03 节。commit `959ec7f`。
+- [x] **BW-04-02-04 实现 USER_TYPE 与 MAILBOX**。**验收** 转换及序列化夹具一致。
+  - 证据：`crates/entitydef::value` 新增 `PropertyValue::MailBox { id, ip, port, salt }` 与 `PropertyError::{MissingConverter { site, module, instance }, UninitialisedMailBox { id }}`，补齐 `Kind::UserType`/`Kind::MailBox` 五入口；USER_TYPE 无 Python 宿主的五个上报点逐一对齐——`isSameType` 静默假、`addObjectToStream` 先写空字符串（字节 `[0]`）再报错、`createObjectFromStream` 先消费长度前缀字符串再报错（截断时得 `StreamTruncated`，转换器未被询问）、`createFromSection` 报站点串 `UserDataType::<site>: Do not have demo.Thing`；MAILBOX 钉住 12 字节小端 `{id, ip, port, salt}` 线格式并往返一致、ip==0 报 `MailBoxDataType::isSameType: Mailbox for entity %d has not been fully initialised yet (IP address is zero)`、`getDefaultValue` 全零 ref、`createFromSection` 读 `id`/`ip`/`etc` 具名子节且 `etc = port | (salt << 16)`、子节缺失读 0；`data_type.rs` 新增 MAILBOX 拒绝 `<Default>` 子节（报 `MailBoxDataType::setDefaultValue: Default value for mailbox not supported`）但类型照常构建且不落 `default_section`；197 单测 + 4 差分通过，value.rs 行覆盖 99.08%，clippy 0 findings。关键登记：参考 `MailBoxDataType::to(BinaryOStream&)` 写 `stream << mbr` 而全树无 `operator<<(BinaryOStream&, EntityMailBoxRef&)`，流字节为按 `streamSize()==12` 推导而非验证；USER_TYPE 默认值参考报错后写 Python None，本模型落 Int(0) 兜底，差异已登记。仍无字节级参考 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-04 节。commit `3828957`。
+- [x] **BW-04-02-05 编码嵌套属性增量**。**验收** 修改一个 FIXED_DICT 子字段时，更新切片的路径和负载与原版逐字节一致。
+  - 证据：新模块 `crates/entitydef::property_change`（`PropertyChange` 基类 + `SinglePropertyChange`/`SlicePropertyChange`）复刻 `property_change.cpp` 内流编码：flags 字节（SLICE=1、NESTED=2）、`uint8` 路径长 + 逐跳 `int32`（叶→根）、extra bits（单值 int32 leafIndex / 切片 uint32 start+end，**仅嵌套路径携带**）、负载走叶子类型自身 `addToStream`；验收钉 `entity.myDict.ammo = 7` 的 `[2, 0, 0,0,0,0, 7]`——实体自身属性索引 6 进 root_index（信封，`ghostedDataUpdate` 先写 id+propertyIndex 再进变更体）**不进路径**（参考 `IntermediatePropertyOwner::getTopLevelOwner`），负载是字段类型自己的 `[7]` 而非字典形态；深层 `arr[4].dict.ammo` 钉 `[2, 1, 4,0,0,0, 0,0,0,0, 7]`；嵌套切片钉 `[3, 1, 1,0,0,0, 2,0,0,0, 5,0,0,0, 9, 8]`；平路单值 `[0, 7]`、平路切片 `[1, 5]` 无 start/end（参考读侧 `MF_ASSERT( !isSlice )` 佐证）；STRING 子字段走 packed 形态、rootIndex 虚派发（平路单值=leafIndex/切片=0/嵌套=信封索引）各有一钉；`isNestedChange(bool)` 忽略实参恒置真、路径长>255 静默截 uint8 两处参考形态逐字保留；`data_type.rs` 增 `field_type`（=`getFieldDataType`）与 `element_type`（=`getElemType`）；206 单测 + 4 差分通过，clippy 0 findings，全 crate 行覆盖 ≥98%（property_change.rs 100%）。外部位压缩形态（BitWriter/bitsRequired）未移植已登记；仍无字节级参考 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-05 节。commit `7213567`。
+- [x] **BW-04-02-06 应用嵌套属性增量**。**验收** 接收原版更新切片后，只有目标字段改变，Python 通知携带正确旧值。
+  - 证据：`property_change.rs` 新增应用族 `apply_internal_stream(root_type, root_value, stream)`——flags 分派后平路整属性 `create_from_stream` 替换（空路径）、嵌套走 `uint8` 路径长 + 逐跳 `int32` 下降（`getChildPropertyOwner` 同构：Sequence/FixedDict 可作中间所有者，其余 `OwnerIsNull`）、`getPyIndex` 映射为 `PathElement::{Field(字段名),Index,Slice}`；验收钉 FIXED_DICT 子字段变更 `[2, 0,0,0,0, 0,0,0,0, 7]` 应用后**只有 ammo 变 7、label 原样、old_value=旧子值 `Uint(5)`**（参考 `setOwnedProperty` 返回旧子值而非整属性）、通知路径 `[Field("ammo")]`；切片应用钉 `[2,5]` 替换后数组重排 + 通知路径元素 `Slice(1, 2)`（end 按**有符号**尺寸增量重定基，缩容为负）；固定尺寸校验 `end-start != new.len()` → `WrongArraySize`（参考原话无尾换行）、尺寸 0 豁免；坏路径各有钉：标量根嵌套 → `OwnerIsNull{hop:1}` 值原样、字典坏跳 → `BadChildIndex`（`"Bad index %d. size = %zd\n"` 原话）、叶越界 → `LeafIndexOutOfRange`、非数组切片 → `OldValueIsNull`（`"Old value is NULL\n"`）、截断 → `Payload(StreamTruncated)`、BLOB 越界 → `UnableToCreateSlice`、平路切片 flag → `FlatSliceOnInternalStream`（对齐参考 `MF_ASSERT( !isSlice )`）；FixedDict(None) 视 0 子项；222 单测 + 4 差分通过，clippy 0 findings，触碰文件行覆盖 ≥98%（property_change.rs 99.44%）。登记差异：参考双打印收敛为单错误、叶越界参考是 UB 而 Rust 显式报错、`endIndex<startIndex` 参考只打印不中断未建形态；**路径序更正随本 commit 落账**：`ChangePath` 头注释"叶→根"有误，`getTopLevelOwner` 递归返回后才 `addToPath`，流内实为下降序（BW-04-02-05 文档表述已更正）；仍无字节级参考 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-06 节。commit `183708a`。
+- [x] **BW-04-02-07 提取持久化投影**。**验收** 数据库属性流与原版字节一致。
+  - 证据：`data_type.rs` 增 `DataType::num_persistent_fields`（=`FixedDictDataType::getNumPersistentFields`）与 `DataType::field_index_for_persistent_field_index`（=`getFieldIndexForPersistentFieldIndex` 线性投影映射）；`value.rs` 内部流函数增 `persistent_only` 形参按参考透传（Sequence/FixedDict 递归臂透传、标量臂忽略），FixedDict 写臂 `continue` 跳过非 `<Persistent>` 字段、读臂用 `default_value` 补缺（参考 `createInstanceFromStream` 的 `createDefaultValue` 补缺），公开面新增 `add_persistent_to_stream`/`create_persistent_from_stream`（数据库投影形态）；`property_change.rs` 六个负载点显式传 `false`（对齐参考 `/* isPersistentOnly: */ false`）。验收钉三字段字典（ammo 持久/temp 持久关闭/label 持久）投影流 `[7, 1, 'x']`——temp 的 99 不入流，全字段形态 `[7, 99, 1, 'x']`，字节形态差异只在字段过滤（None 指示与 enter/leave/end 元素不变）；读回钉 temp 取类型缺省、ammo/label 从流恢复；投影记账钉 3 持久字段、位次 0/1/2→0/2/3、越界 `None`（参考 `MF_ASSERT( false )`，Rust 统一为可报告结果，登记加严）。225 单测 + 4 差分通过，clippy 0 findings，触碰文件行覆盖 ≥98%（value.rs 99.12%、data_type.rs 98.09%）。登记差异：序列 `dbLen()>0` 持久截断未建模、CLASS 的 `getStreamElement(isPersistentOnly)` 未建模（Rust 流无 CLASS 臂）；仍无字节级参考 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-07 节。commit `a39d91f`。
 
 #### BW-04-03 可见性与调用约束
 
 覆盖 exposed 方法、属性分发标志、客户端/服务端权限、参数校验、方法应答和 MailBox 引用。比对同一实体定义在 Base、Cell、Client 和 DB 的投影。
 
-- [ ] **BW-04-03-01 实现 exposed 方法可见性**。**验收** 客户端只能调用允许方法。
-- [ ] **BW-04-03-02 处理属性分发标志**。**验收** 同一属性的四类接收方与基线一致。
-- [ ] **BW-04-03-03 验证参数与权限失败**。**验收** 返回同类错误且业务回调未执行。
-- [ ] **BW-04-03-04 实现带返回值的方法应答**。**验收** 响应字段和超时行为一致。
-- [ ] **BW-04-03-05 序列化 MailBox 引用**。**验收** 原版可恢复实体位置与类型。
+- [x] **BW-04-03-01 实现 exposed 方法可见性**。**验收** 客户端只能调用允许方法。
+  - 证据：`method.rs` 增 `EntityMethodDescriptions::exposed_method_from_msg_id(msg_id, sub_index, range)`——入站远程调用只经暴露表解析（`exposedIDFromMsgID` → `exposedMethod`）；验收钉三方法表（ping/shout 带 `<Exposed>`、secret 未暴露）：`num_exposed()==2`、每个暴露位次都不是 secret、位次 2 拒绝、`set_exposed_msg_ids` 发出的 msg id 往返还原同方法（exposed_index 一致）、表外 msg id（200）拒绝、赋号前一切拒绝（构造态 `-1`，对齐参考 `maxExposedMethodCount_(-1)`）。**连带修复潜在错误**：原 `#[derive(Default)]` 使未赋号态计数为 0，参考构造器是 `-1`，红测先抓住再修复（TDD red→green）。参考越界 ERROR_MSG+NULL 与未赋号 MF_ASSERT 统一收敛为 `None`（登记）；`component()!=CLIENT` 的断言是调用方使用约束不入解析器（登记）。226 单测 + 4 差分通过，clippy 0 findings，触碰文件行覆盖 ≥98%（method.rs 99.64%）。暴露位矩阵/`exposedMethods_` 收集/固定尺寸前排序/安全检查为 BW-04-01 系列已交付，本项补解析门。无字节级 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-03-01 节。commit `af07627`。
+- [x] **BW-04-03-02 处理属性分发标志**。**验收** 同一属性的四类接收方与基线一致。
+  - 证据：`data_description.rs` 增属性层转发访问器（`is_ghosted_data`/`is_other_client_data`/`is_own_client_data`/`is_base_data`/`is_cell_data`/`is_client_server_data`），全部落到已交付的 `EntityDataFlags` 位谓词（对齐 `data_description.ipp:80-155`：四类接收方是分发位直读，`isCellData()` 是 `!isBaseData()` 否定式，`isClientServerData()` 是 OTHER_CLIENT|OWN_CLIENT|REPLAY 三元并）。验收钉 `ALL_CLIENTS`/`CELL_PUBLIC_AND_OWN`/`BASE_AND_CLIENT`/`BASE`/`CELL_PRIVATE` 五个参考命名表条目的 `(ghost, other, own, base, cell-home)` 全矩阵：(T,T,T,F,T)/(T,F,T,F,T)/(F,F,T,T,F)/(F,F,F,T,F)/(F,F,F,F,T)，并钉 `CELL_PRIVATE` 不进客户端服务器通道。顺带钉 `is_cell_data` 否定式语义。227 单测 + 4 差分通过，clippy 0 findings，触碰文件行覆盖 ≥98%。登记差异：参考解析期 `MF_ASSERT_DEV(!isBaseData() || !ghost && !other)` 未建模（非行为差异）、`CELL_PRIVATE`=0 位是「无接收方」的参考写法（空 `<Flags>` 两侧都是解析失败）；无字节级 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-03-02 节。commit `da83a9b`。
+- [x] **BW-04-03-03 验证参数与权限失败**。**验收** 返回同类错误且业务回调未执行。
+  - 证据：`method.rs` 增 `ArgCountError`（参考 `MethodArgs::checkValid` 原话 Display，含 `expectedArgs == 1 ? "" : "s"` 单复数）与 `MethodDescription::first_ordinary_arg`/`expected_args`/`check_arg_count`（`firstOrdinaryArg = exposedExplicit && isExposed() && component()==CELL`，暴露 CELL 方法带隐式实体参数）。验收钉暴露 CELL 方法 `jump(INT32)`：期望 2（隐式 1 + 声明 1）、给 2 通过、给 1 拒并输出 `"Method jump requires exactly 2 arguments; 1 given"`；基座方法 `spin` 期望 1、多给一个拒且钉单数措辞 `"Method spin requires exactly 1 argument; 2 given"`。计数门在逐参数类型检查之前返回，故错误即终结调用路径、回调不执行（静态 crate 无分派回调，以错误结果等价表达，已登记为口径说明）。228 单测 + 4 差分通过，clippy 0 findings，触碰文件行覆盖 ≥98%。登记差异：`PyErr_Format`/`generateException` 的 Python 异常状态、隐式实体参数的 None/id/obj-with-id 类型检查、逐参数类型不匹配消息（依赖 Python 类型对象）三者均未建模。权限侧（只调暴露方法）见 BW-04-03-01。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-03-03 节。commit `12c1e31`。
+- [x] **BW-04-03-04 实现带返回值的方法应答**。**验收** 响应字段和超时行为一致。
+  - 证据：`crates/entitydef/src/method.rs` 新增 `Response::{Values,Failure}` / `ResponseError` 与 `add_return_values_to_stream` / `create_return_values_from_stream` / `create_response_from_stream`，应答帧 `uint8 isError` 起头、错误半帧两字符串、成功半帧逐声明返回值无计数无名字，缺值时以类型缺省照样入流并报错——原话/字节均锚定（`[3,0,0,0,2,'o','k']`、`[1,"TypeError",""]`、`[0,0,0,0]`）。230 单测+4 差分通过，clippy 0 findings，method.rs 行覆盖 99.33%。验收中「超时行为」在参考 entitydef/delegate 层全树检索无对应物（属消息/网络层），如实登记不虚勾（见 docs/review/bw04-01-01-entitydef-parse.md BW-04-03-04 节备注 1）。commit `5ea7e79`。
+- [x] **BW-04-03-05 序列化 MailBox 引用**。**验收** 原版可恢复实体位置与类型。
+  - 证据：`crates/entitydef/src/value.rs` 新增 `MailBoxComponent`（8 组件按参考数值序）、salt 位域常量、`mail_box_ref`（`init` 打包 `(c<<13)|t`）与 `mailbox_component`/`mailbox_type_id`/`mailbox_component_name`/`mailbox_has_address` 读取器；以参考 fixture（id 2405 @ 0xc0180010:0x4567，BASE_VIA_CELL，typeID 7 → salt 0x6007）做 12 字节流往返，逐项恢复实体位置与类型，另钉全组件名与 ip/port-only `hasAddress` 语义。232 单测+4 差分通过，clippy 0 findings，value.rs 行覆盖 99.19%。无字节 oracle（推导登记）、`<invalid>` 分支不可达登记见 docs/review/bw04-01-01-entitydef-parse.md BW-04-03-05 节备注 1/3。commit `dc7b2d8`。
 
 #### BW-04-04 定义工具和 SDK 契约
 
 复现 `process_defs` 的命令行、诊断及产物。核对 `bwentity` 和客户端集成示例依赖的定义接口与生成结果。
 
-- [ ] **BW-04-04-01 兼容 process_defs 参数**。**验收** 帮助、退出码和选项有基准。
-- [ ] **BW-04-04-02 兼容定义诊断**。**验收** 坏 .def 显示对应文件和字段。
-- [ ] **BW-04-04-03 复现生成产物**。**验收** 对照 ID、摘要及引用关系。
-- [ ] **BW-04-04-04 验证 bwentity 与集成示例**。**验收** 用产物成功加载脚本定义。
+- [x] **BW-04-04-01 兼容 process_defs 参数**。**验收** 帮助、退出码和选项有基准。
+  - 证据：`crates/entitydef/src/cli.rs` + `src/bin/process_defs.rs`——usage 文本与 stock `--help` 逐字节（打到 stderr、exit 0）、退出码三基准（help=0/加载失败=1+原话/成功=0）、`getOption`/`hasFlag` 停一位短与盲取值行为逐条建测、`-r` 扫描按 `BWResource::init`；Rust bin 端到端对 stock 实测：`--help` stderr 逐字节相等，service 夹具 dump stdout 与 oracle 逐字节相等，无 `-r` exit 1。238 单测+4 差分通过，clippy 0 findings，cli.rs 100%（bin 不计入 lib 覆盖，由端到端背书；多 `-r` 与未知 flag 差异登记，见 docs/review/bw04-01-01-entitydef-parse.md BW-04-04-01 节备注 4/5）。commit `f56abea`。
+- [x] **BW-04-04-02 兼容定义诊断**。**验收** 坏 .def 显示对应文件和字段。
+  - 证据：坏定义 fixture（Bad.def 字段 hp 用 NOSUCHTYPE）在 stock 二进制七行诊断链逐字捕获（docs/review/reference/bad_def_diagnostics.txt），Rust 经惰性别名加载（data_type.cpp s_aliasesDone 等价）后差分测试断言六行 [DataDescription] 链顺序与文本逐行一致，含 `Unable to find data type 'NOSUCHTYPE' for Bad.hp` 文件.字段行；238 单元 + 1 诊断差分 + 4 差分通过，clippy 0 findings，覆盖率 data_type.rs 943/962=98.02% 全部 ≥98%（commit 7af5fd6）。
+- [x] **BW-04-04-03 复现生成产物**。**验收** 对照 ID、摘要及引用关系。
+  - 证据：新建 full_def fixture（3 实体、alias/ARRAY/FIXED_DICT、九个 Flags 族、identifier 链、base/cell/client 脚本三向），stock 产物 docs/review/reference/full_entitydef.json（11,763 字节，digest 6FA9B4C32162519E4A50B9C98136791B），Rust bin stdout 与之逐字节相等（diff 空，exit 0）；ID（实体/属性/clientServerFull index、65535 哨兵）、摘要（全 flag 组合、streamSize、方法 args/returnValues）、引用关系（别名解析、类型组合、脚本存在性、全树 digest）三轴一致，差分测试 full_dump_matches_the_process_defs_oracle 无条件锚定；238 单元 + 6 差分通过，clippy 0，覆盖率全部 ≥98%（commit 4912826）。
+- [x] **BW-04-04-04 验证 bwentity 与集成示例**。**验收** 用产物成功加载脚本定义。
+  - 证据：bwentity 等价工厂路径（tests/bwentity_load.rs，镜像 EntityDescriptionMapFactory::create：开 scripts/entities.xml → parse → nameToIndex/entityDescription 导航）在 full_def（无条件）、client_integration 示例与 fantasydemo（BW04_CI_RES/BW04_FD_RES 本环境实跑）三棵树加载成功，digest 与 BW-04-04-03 产物逐字节核对一致；锚定测试先红后依参考语义改正（EDITOR_ONLY 属性不进运行时属性集，secret 不占 propertyCount）；238 单元 + 9 差分/工厂测试通过，clippy 0，覆盖率全部 ≥98%（commit 5539da6）。
 
 ### BW-05 集群控制、进程发现和恢复
 

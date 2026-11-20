@@ -1,0 +1,4 @@
+<root>
+	<HP>	INT32	<Default>	100	</Default>	</HP>
+	<REGISTRY>	UINT32	</REGISTRY>
+</root>

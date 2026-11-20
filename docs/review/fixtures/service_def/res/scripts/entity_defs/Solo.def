@@ -1,0 +1,14 @@
+<root>
+	<Properties>
+		<score>
+			<Type>	INT32	</Type>
+			<Flags>	BASE	</Flags>
+		</score>
+	</Properties>
+
+	<BaseMethods>
+		<recharge>
+			<ReturnValues>	<left>	INT32	</left>	</ReturnValues>
+		</recharge>
+	</BaseMethods>
+</root>

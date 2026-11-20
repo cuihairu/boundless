@@ -28,3 +28,6 @@ ci-out/
 __pycache__/
 *.py[cod]
 ci-results/
+
+# Python bytecode from the review tooling
+__pycache__/
