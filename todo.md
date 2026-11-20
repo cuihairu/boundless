@@ -381,7 +381,8 @@
 
 覆盖 exposed 方法、属性分发标志、客户端/服务端权限、参数校验、方法应答和 MailBox 引用。比对同一实体定义在 Base、Cell、Client 和 DB 的投影。
 
-- [ ] **BW-04-03-01 实现 exposed 方法可见性**。**验收** 客户端只能调用允许方法。
+- [x] **BW-04-03-01 实现 exposed 方法可见性**。**验收** 客户端只能调用允许方法。
+  - 证据：`method.rs` 增 `EntityMethodDescriptions::exposed_method_from_msg_id(msg_id, sub_index, range)`——入站远程调用只经暴露表解析（`exposedIDFromMsgID` → `exposedMethod`）；验收钉三方法表（ping/shout 带 `<Exposed>`、secret 未暴露）：`num_exposed()==2`、每个暴露位次都不是 secret、位次 2 拒绝、`set_exposed_msg_ids` 发出的 msg id 往返还原同方法（exposed_index 一致）、表外 msg id（200）拒绝、赋号前一切拒绝（构造态 `-1`，对齐参考 `maxExposedMethodCount_(-1)`）。**连带修复潜在错误**：原 `#[derive(Default)]` 使未赋号态计数为 0，参考构造器是 `-1`，红测先抓住再修复（TDD red→green）。参考越界 ERROR_MSG+NULL 与未赋号 MF_ASSERT 统一收敛为 `None`（登记）；`component()!=CLIENT` 的断言是调用方使用约束不入解析器（登记）。226 单测 + 4 差分通过，clippy 0 findings，触碰文件行覆盖 ≥98%（method.rs 99.64%）。暴露位矩阵/`exposedMethods_` 收集/固定尺寸前排序/安全检查为 BW-04-01 系列已交付，本项补解析门。无字节级 oracle，证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-03-01 节。commit `af07627`。
 - [ ] **BW-04-03-02 处理属性分发标志**。**验收** 同一属性的四类接收方与基线一致。
 - [ ] **BW-04-03-03 验证参数与权限失败**。**验收** 返回同类错误且业务回调未执行。
 - [ ] **BW-04-03-04 实现带返回值的方法应答**。**验收** 响应字段和超时行为一致。
