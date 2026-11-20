@@ -1163,7 +1163,8 @@ boundless/
   - 证据：原版 C++ 无分层约束（依赖靠 Makefile 隐式），新版在 crates/test-support/src/layering.rs 建立分层注册表（foundation=0、platform=1、contracts/entitydef/mercury/python-host/resources=2、server-runtime=3、boundless-server/test-support=4）+ manifest 行级扫描 + Tarjan 环检测 + cargo metadata 成员交叉校验，`workspace_rules_hold` 守护全成员，cargo test -p test-support 7 passed。
 - [x] **BW-16-01-02 抽取进程间消息契约**。**验收** 调用方无需依赖对端服务 crate。
   - 证据：原版 `lib/network/machine_guard.hpp` 的 MachineGuardMessage 体系原先分散在 machined 与各角色实现里，新版抽到 crates/contracts/src/machined.rs（消息 id、标志、param/type/category 枚举、Header+ProcessMessage+ListenerMessage+SignalMessage 及 matches/describe）。`process_message_matches_reference_bytes` 用按原版字段序手写的 38 字节向量逐位断言，另测旧发送方无 extra 块的兼容读取与未来字段跳过；cargo test -p contracts 8 passed。
-- [ ] **BW-16-01-03 验证独立构建**。**验收** 指定服务能单独编译。
+- [x] **BW-16-01-03 验证独立构建**。**验收** 指定服务能单独编译。
+  - 证据：原版 GNU Make 无按服务单独编译入口，新版 crates/test-support/src/standalone.rs 从根 manifest 枚举 `apps/` 下应用包并逐个 `cargo build -p <package>`，`application_crates_build_independently` 常驻守护；实测 `cargo build -p boundless-server` 生成 target/debug/boundless-server 且 role 参数校验正常。
 
 #### BW-16-02 平台与外部依赖边界
 
@@ -1240,7 +1241,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 实现资源根目录、临时工作区、固定随机种子、配置与数据库夹具。用 Rust 原生测试和 pytest 复刻模块测试，登记原版用例到新版用例的对应关系。
 
-- [ ] **BW-18-01-01 提供资源根和临时目录夹具**。**验收** 并行测试目录隔离。
+- [x] **BW-18-01-01 提供资源根和临时目录夹具**。**验收** 并行测试目录隔离。
+  - 证据：原版 `base_resmgr_unit_test_harness.cpp` 从 `BW_ROOT`/可执行文件目录合成 `--res` 路径，测试耦合检出布局；新版 crates/test-support/src/workspace.rs 提供 TempWorkspace（unique 目录、drop 即清理、失败可 keep 现场）与 ResourceRoot，`workspaces_are_isolated`/`sequential_fixtures_get_distinct_directories`/`dropped_workspaces_are_removed` 常驻验证并行隔离。
 - [ ] **BW-18-01-02 提供固定随机种子**。**验收** 重复调用给出同一序列。
 - [ ] **BW-18-01-03 提供配置和数据库夹具**。**验收** 测试可从已知状态启动。
 - [ ] **BW-18-01-04 映射原版单测**。**验收** Rust 和 pytest 用例可通过原始编号追溯。
