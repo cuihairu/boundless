@@ -99,6 +99,36 @@ pub unsafe fn py_module_check(obj: *mut PyObject) -> bool {
     unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyModule_Type)) == 1 }
 }
 
+/// `PyTraceBack_Check`, a macro in the C API (`PyObject_TypeCheck` against
+/// `&PyTraceBack_Type`).
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_traceback_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTraceBack_Type)) == 1 }
+}
+
+/// `PyCFunction`: a builtin function object's implementation (`ml_meth`).
+pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+
+/// `METH_VARARGS` from `Include/methodobject.h`.
+pub const METH_VARARGS: c_int = 0x0001;
+
+/// `PyMethodDef`, the descriptor a `PyCFunction` is created from.
+#[repr(C)]
+pub struct PyMethodDef {
+    /// `ml_name`.
+    pub ml_name: *const c_char,
+    /// `ml_meth`.
+    pub ml_meth: Option<PyCFunction>,
+    /// `ml_flags`.
+    pub ml_flags: c_int,
+    /// `ml_doc`.
+    pub ml_doc: *const c_char,
+}
+
 /// `PyErr_Clear`, called without touching the exception state.
 pub unsafe fn clear_error() {
     unsafe { PyErr_Clear() }
@@ -151,6 +181,7 @@ unsafe extern "C" {
     pub static mut Py_NoSiteFlag: c_int;
     pub static mut Py_IgnoreEnvironmentFlag: c_int;
     pub static mut PyModule_Type: PyTypeObject;
+    pub static mut PyTraceBack_Type: PyTypeObject;
 }
 
 unsafe extern "C" {
@@ -209,6 +240,12 @@ unsafe extern "C" {
         value: *mut PyObject,
     ) -> c_int;
     pub fn PyObject_CallNoArgs(func: *mut PyObject) -> *mut PyObject;
+    pub fn PyCFunction_New(def: *mut PyMethodDef, self_: *mut PyObject) -> *mut PyObject;
+    pub fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
+    pub fn PyTuple_GetItem(tuple: *mut PyObject, index: PySsize) -> *mut PyObject;
+    pub fn PyObject_Repr(obj: *mut PyObject) -> *mut PyObject;
+    pub fn PyErr_Display(type_: *mut PyObject, value: *mut PyObject, traceback: *mut PyObject);
+    pub fn PySys_WriteStderr(format: *const c_char, ...);
 }
 
 #[cfg(test)]
@@ -247,5 +284,25 @@ mod tests {
     #[test]
     fn a_null_object_renders_empty() {
         assert_eq!(unsafe { to_string(std::ptr::null_mut()) }, String::new());
+    }
+
+    /// `PyTraceBack_Check` on a null result is `false`, never a dereference:
+    /// `printTraceBack` receives whatever the caller passes as the traceback
+    /// and must fall back to `PyErr_Display` for anything else.
+    #[test]
+    fn traceback_check_rejects_null() {
+        assert!(!unsafe { py_traceback_check(std::ptr::null_mut()) });
+    }
+
+    /// The static `PyMethodDef` descriptors the host builds are `repr(C)`:
+    /// name pointer, function pointer, `c_int` flags (padded to a word) and
+    /// doc pointer, so 32 bytes on a 64-bit host. A compile-time size check
+    /// keeps a CPython revision from silently mis-parsing the struct.
+    #[test]
+    fn the_method_def_layout_is_stable() {
+        assert_eq!(
+            std::mem::size_of::<PyMethodDef>(),
+            4 * std::mem::size_of::<usize>()
+        );
     }
 }

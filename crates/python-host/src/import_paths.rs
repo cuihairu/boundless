@@ -156,14 +156,48 @@ impl ImportPaths {
     }
 }
 
+/// The compile-time platform the path assembly is built for: the port's
+/// stand-in for the superproject's `BW_BUILD_PLATFORM`, composed from the
+/// target triple the same way `PlatformInfo::buildStr` composes
+/// `SHORT_NAME_*` -- `win64`/`win32` on Windows, `macosx` under Apple, and
+/// an os-arch pair elsewhere. The exact literal is build data; the warning
+/// logic below is the part `Script::init` owns.
+pub fn bw_build_platform() -> &'static str {
+    if cfg!(windows) {
+        if cfg!(target_pointer_width = "64") {
+            "win64"
+        } else {
+            "win32"
+        }
+    } else if cfg!(target_os = "macos") {
+        "macosx"
+    } else {
+        "linux-amd64"
+    }
+}
+
+/// `Script::init`'s platform check (`script.cpp:486`): the warning text when
+/// the runtime platform differs from the compile-time platform, `None` when
+/// they match. Emitting it is the caller's logging concern.
+pub fn platform_mismatch(platform: &str) -> Option<String> {
+    if platform != bw_build_platform() {
+        Some(format!(
+            "Runtime platform doesn't match compile time platform: {platform} / {}",
+            bw_build_platform()
+        ))
+    } else {
+        None
+    }
+}
+
 /// The reference's `#if !BWCLIENT_AS_PYTHON_MODULE` block: the app's own
 /// paths first, then the resource-tree paths the engine's scripts live in.
 ///
 /// `platform` is `BW::PlatformInfo::buildStr()`; `config` is
 /// `BW_COMPILE_TIME_CONFIG` and `None` stands for `BW_CONFIG_HYBRID`, the one
 /// value the reference does not append to the path. The reference also warns
-/// when `platform` differs from the compile-time platform; that is a logging
-/// concern and lands with the script-logging item.
+/// when `platform` differs from the compile-time platform; that warning text
+/// is [`platform_mismatch`]'s result.
 pub fn role_paths(
     app_paths: &ImportPaths,
     roots: &[&str],
@@ -279,6 +313,21 @@ mod tests {
         assert_eq!(
             assembled.paths_as_string(),
             "/res/scripts/common:/res/scripts/common/Lib:/res/scripts/server_common/lib-dynload-linux-x86-64",
+        );
+    }
+
+    /// The compile-time platform never warns against itself, and a foreign
+    /// platform string produces the reference's warning text.
+    #[test]
+    fn the_platform_check_warns_only_on_a_mismatch() {
+        assert_eq!(platform_mismatch(bw_build_platform()), None);
+        let warning = platform_mismatch("el7").expect("a warning");
+        assert_eq!(
+            warning,
+            format!(
+                "Runtime platform doesn't match compile time platform: el7 / {}",
+                bw_build_platform()
+            )
         );
     }
 

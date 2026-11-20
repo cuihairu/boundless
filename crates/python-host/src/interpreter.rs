@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use super::capi::{self, PyObject};
 use super::import_paths::ImportPaths;
 use super::init_time_job;
+use super::output_writer;
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -54,6 +55,14 @@ pub enum InitError {
     /// carries on with collection enabled; the port reports it instead so a
     /// mis-built runtime is visible.
     GarbageCollectionUnavailable,
+    /// The stdio redirect could not be installed (`new ScriptOutputWriter()`
+    /// at `script.cpp:531`, `MF_VERIFY`'d there; the port reports instead of
+    /// aborting).
+    StdioFailed,
+    /// `import bw_site` failed, the reference's
+    /// `"Script::init: Unable to import bw_site"` path (`script.cpp:617`),
+    /// which also returns false.
+    BwSiteImportFailed,
 }
 
 /// The `Script::init` arguments BW-03-01 owns.
@@ -107,6 +116,12 @@ impl Interpreter {
                 return Err(InitError::InitializeFailed);
             }
         }
+        // `new ScriptOutputWriter()` sits right after `Py_Initialize`
+        // (`script.cpp:531`), before argv: everything the rest of init logs
+        // already lands in the script log entry.
+        if !output_writer::install() {
+            return Err(InitError::StdioFailed);
+        }
         // The reference order from script.cpp: argv, sys.path, init-time
         // jobs, gc.disable, the BigWorld module, the module-table snapshot.
         let mut error = None;
@@ -142,6 +157,23 @@ impl Interpreter {
             return Err(error);
         }
         INITIALIZED.store(true, Ordering::SeqCst);
+        // `ScriptModule::import("bw_site", ...)` at `script.cpp:617`, the
+        // tail of init: failure reports `BwSiteImportFailed` and unwinds
+        // (the reference returns false with `s_isInitalised` left set -- the
+        // port rolls back instead, consistent with its other failure arms).
+        if !import_bw_site() {
+            INITIALIZED.store(false, Ordering::SeqCst);
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            unsafe {
+                capi::Py_Finalize();
+            }
+            return Err(InitError::BwSiteImportFailed);
+        }
+        // `initExceptionHook` is per-process code in the reference
+        // (`cellapp.cpp:3622` et al.), called after `Script::init` returns;
+        // folded into init until a process layer exists. The reference
+        // ignores `PySys_SetObject`'s result here and so does the port.
+        output_writer::install_exception_hook();
         Ok(Interpreter)
     }
 
@@ -183,6 +215,9 @@ impl Interpreter {
         // The snapshot goes before the collect loop, the reference's DECREF
         // between `runFiniTimeJobs` and `while (PyGC_Collect() > 0);`.
         let snapshot = INIT_TIME_MODULES.swap(std::ptr::null_mut(), Ordering::SeqCst);
+        // The writer's own teardown: buffers and hooks go now, the
+        // reference's writer dies inside `Py_Finalize`'s sys clear.
+        output_writer::reset();
         // SAFETY: the interpreter is up, this thread owns the GIL, and the
         // steps below run in the reference's order: the snapshot DECREF
         // lands between `runFiniTimeJobs` and the collect loop, while the
@@ -307,6 +342,22 @@ fn take_modules_snapshot() {
 /// enabled; the port reports it instead, see [`InitError`].
 ///
 /// SAFETY: the interpreter must be up and the caller must own the GIL.
+/// `ScriptModule::import("bw_site")`: the engine's site-module stand-in,
+/// imported from the res tree at the tail of init. A failure leaves the
+/// pending exception for the caller's rollback path to clear.
+fn import_bw_site() -> bool {
+    // SAFETY: the interpreter is up and this thread owns the GIL.
+    unsafe {
+        let module = capi::PyImport_ImportModule(c"bw_site".as_ptr());
+        if module.is_null() {
+            capi::clear_error();
+            return false;
+        }
+        capi::dec_ref(module);
+        true
+    }
+}
+
 fn disable_garbage() -> bool {
     unsafe {
         let module = capi::PyImport_ImportModule(c"gc".as_ptr());
@@ -411,6 +462,16 @@ mod tests {
         "interpreter::tests::scenario_an_unencodable_path_fails_init",
         "interpreter::tests::scenario_big_world_module_carries_the_component",
         "interpreter::tests::scenario_a_component_with_a_nul_stays_unset",
+        "interpreter::tests::scenario_stdout_lands_in_the_log_sink",
+        "interpreter::tests::scenario_stderr_lands_in_the_log_sink",
+        "interpreter::tests::scenario_partial_writes_buffer_and_hooks_see_chunks",
+        "interpreter::tests::scenario_a_hook_may_remove_itself_mid_callback",
+        "interpreter::tests::scenario_an_embedded_nul_logs_the_repr",
+        "interpreter::tests::scenario_the_excepthook_formats_the_traceback",
+        "interpreter::tests::scenario_the_excepthook_handles_a_missing_traceback",
+        "interpreter::tests::scenario_bad_write_arguments_raise",
+        "interpreter::tests::scenario_bw_site_is_imported_at_the_tail_of_init",
+        "interpreter::tests::scenario_missing_bw_site_fails_init",
         "interpreter::tests::scenario_init_time_modules_snapshot_taken_at_init",
         "interpreter::tests::scenario_init_time_jobs_run_once_in_rung_order",
         "interpreter::tests::scenario_fini_time_jobs_run_once_in_rung_order",
@@ -444,9 +505,24 @@ mod tests {
 
     /// `Script::init` around one body, then `Script::fini`.
     fn interpreter_scenario(config: &InitConfig, body: impl FnOnce(&Interpreter)) {
-        let interpreter = Interpreter::init(config).expect("Script::init");
+        let interpreter = Interpreter::init(&scenario_config(config)).expect("Script::init");
         body(&interpreter);
         interpreter.fini();
+    }
+
+    /// `Interpreter::init`'s config with the scenario fixture's res root in
+    /// the path list, so `import bw_site` has something to import: the
+    /// reference always has the engine's script tree on its path, and the
+    /// fixture stands in for it.
+    fn scenario_config(config: &InitConfig) -> InitConfig {
+        let root = temp_resource_root();
+        let root_path = root.to_str().expect("a UTF-8 root").to_owned();
+        let mut paths = config.import_paths.clone();
+        paths.add_res_path(&[&root_path], import_paths::COMMON_PATH);
+        InitConfig {
+            import_paths: paths,
+            ..config.clone()
+        }
     }
 
     /// A throw-away resource root laid out the way the engine ships its scripts:
@@ -458,6 +534,16 @@ mod tests {
         std::fs::create_dir_all(root.join("scripts/common/Lib")).expect("build the script tree");
         std::fs::write(root.join("scripts/common/probe_script.py"), "VALUE = 7\n")
             .expect("write the script");
+        std::fs::write(
+            root.join("scripts/common/bw_site.py"),
+            "import sys\nsys.bw_site_imported = True\n",
+        )
+        .expect("write bw_site");
+        std::fs::write(
+            root.join("scripts/common/boom.py"),
+            "def boom():\n    raise ValueError('boom message')\n",
+        )
+        .expect("write the boom script");
         root
     }
 
@@ -618,7 +704,8 @@ mod tests {
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_fini_finalises_once() {
-        let interpreter = Interpreter::init(&InitConfig::default()).expect("Script::init");
+        let interpreter =
+            Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
         interpreter.fini();
         interpreter.fini();
         assert!(Interpreter::is_finalized());
@@ -650,7 +737,8 @@ mod tests {
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_drop_runs_fini() {
         {
-            let _interpreter = Interpreter::init(&InitConfig::default()).expect("Script::init");
+            let _interpreter =
+                Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
         }
         assert!(Interpreter::is_finalized());
     }
@@ -790,7 +878,8 @@ mod tests {
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_a_handle_outliving_finalisation_is_safe() {
-        let interpreter = Interpreter::init(&InitConfig::default()).expect("Script::init");
+        let interpreter =
+            Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
         // SAFETY: the interpreter is up and this thread owns the GIL.
         let late = unsafe { PyRef::from_owned(capi::PyList_New(0)) }.expect("a live object");
         interpreter.fini();
@@ -844,9 +933,12 @@ mod tests {
                 ..Default::default()
             },
             |interpreter| {
+                // The fixture root's `scripts/common` trails the assembled
+                // list, standing in for the engine's own script tree being
+                // on the path.
                 assert_eq!(
                     probe(interpreter, "import sys; __probe = len(sys.path)"),
-                    "4"
+                    "5"
                 );
                 assert_eq!(
                     probe(interpreter, "import sys; __probe = sys.path[3]"),
@@ -1049,7 +1141,8 @@ mod tests {
                 Ok(())
             );
         }
-        let interpreter = Interpreter::init(&InitConfig::default()).expect("Script::init");
+        let interpreter =
+            Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
         assert!(gc_was_enabled.load(std::sync::atomic::Ordering::SeqCst));
         // After init, collection is off: the job really did run before it.
@@ -1058,6 +1151,323 @@ mod tests {
             "False"
         );
         interpreter.fini();
+    }
+
+    /// A `print` on stdout lands in the log sink as an info-level line,
+    /// the reference's `PythonScriptOutputWriter_testStdioDebugMessage`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_stdout_lands_in_the_log_sink() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let lines = lines.clone();
+            output_writer::set_log_sink(move |line, is_stderr| {
+                lines.lock().unwrap().push((line.to_owned(), is_stderr));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string("print('Test stdio string: 25')"));
+            assert_eq!(
+                *lines.lock().unwrap(),
+                vec![("Test stdio string: 25".to_owned(), false)]
+            );
+            // The stream still looks like a stream to the script: softspace
+            // is present and writable, as the reference's PY_RW attribute.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import sys; sys.stdout.softspace = True; \
+                     __probe = sys.stdout.softspace"
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// stderr carries the error level, the reference's
+    /// `PythonScriptOutputWriter_testStderrDebugMessage`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_stderr_lands_in_the_log_sink() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let lines = lines.clone();
+            output_writer::set_log_sink(move |line, is_stderr| {
+                lines.lock().unwrap().push((line.to_owned(), is_stderr));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(
+                interpreter.run_simple_string(
+                    "import sys; print('Test stderr string: 45', file=sys.stderr)"
+                )
+            );
+            assert_eq!(
+                *lines.lock().unwrap(),
+                vec![("Test stderr string: 45".to_owned(), true)]
+            );
+        });
+    }
+
+    /// Writes without their newline hold in the stream buffer until the
+    /// newline arrives, while hooks receive the raw chunks either way --
+    /// and hooks need the redirect up before they can latch.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_partial_writes_buffer_and_hooks_see_chunks() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let chunks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let lines = lines.clone();
+            output_writer::set_log_sink(move |line, is_stderr| {
+                lines.lock().unwrap().push((line.to_owned(), is_stderr));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let chunks_handle = chunks.clone();
+            output_writer::add_hook(Box::new(move |chunk: &str, is_stderr: bool| {
+                chunks_handle
+                    .lock()
+                    .unwrap()
+                    .push((chunk.to_owned(), is_stderr));
+            }))
+            .expect("hook the redirect");
+            assert!(interpreter.run_simple_string("import sys; sys.stdout.write('hel')"));
+            assert!(interpreter.run_simple_string("import sys; sys.stdout.write('lo')"));
+            assert!(lines.lock().unwrap().is_empty());
+            assert_eq!(
+                *chunks.lock().unwrap(),
+                vec![("hel".to_owned(), false), ("lo".to_owned(), false)]
+            );
+            assert!(interpreter.run_simple_string("import sys; sys.stdout.write('\\n')"));
+            assert_eq!(*lines.lock().unwrap(), vec![("hello".to_owned(), false)]);
+        });
+        // The redirect is gone after fini, so late hooks are refused.
+        assert_eq!(
+            output_writer::add_hook(Box::new(|_: &str, _: bool| {})),
+            Err(output_writer::HookError::NoStdioWriter)
+        );
+    }
+
+    /// A hook can remove itself from inside its own callback without
+    /// invalidating the iteration, the reference's `pCurrentHook_` dance;
+    /// hooks after it keep receiving everything.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_hook_may_remove_itself_mid_callback() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_after = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let own_id = std::sync::Arc::new(std::sync::Mutex::new(None));
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let seen_handle = seen.clone();
+            let own_id_handle = own_id.clone();
+            let id = output_writer::add_hook(Box::new(move |chunk: &str, is_stderr: bool| {
+                seen_handle
+                    .lock()
+                    .unwrap()
+                    .push((chunk.to_owned(), is_stderr));
+                if chunk == "two\n" {
+                    // From inside a callback only the running hook may
+                    // remove anything: another identity is refused.
+                    assert_eq!(
+                        output_writer::remove_hook(u64::MAX),
+                        Err(output_writer::HookError::NoSuchHook)
+                    );
+                    // The self-removal: this very callback is the one
+                    // running, so the removal must wait for it to return.
+                    if let Some(id) = *own_id_handle.lock().unwrap() {
+                        assert_eq!(output_writer::remove_hook(id), Ok(()));
+                    }
+                }
+            }))
+            .expect("hook the redirect");
+            // The hook only reads this once it is running, which is after
+            // `add_hook` has handed back the identity.
+            *own_id.lock().unwrap() = Some(id);
+            let after_handle = seen_after.clone();
+            let follower =
+                output_writer::add_hook(Box::new(move |chunk: &str, is_stderr: bool| {
+                    after_handle
+                        .lock()
+                        .unwrap()
+                        .push((chunk.to_owned(), is_stderr));
+                }))
+                .expect("hook the follower");
+            for word in ["one", "two", "three"] {
+                assert!(
+                    interpreter
+                        .run_simple_string(&format!("import sys; sys.stdout.write('{word}\\n')"))
+                );
+            }
+            assert_eq!(
+                *seen.lock().unwrap(),
+                vec![("one\n".to_owned(), false), ("two\n".to_owned(), false)]
+            );
+            assert_eq!(
+                *seen_after.lock().unwrap(),
+                vec![
+                    ("one\n".to_owned(), false),
+                    ("two\n".to_owned(), false),
+                    ("three\n".to_owned(), false)
+                ]
+            );
+            // Outside any callback the removal goes through the writer
+            // lock and takes by identity; a repeat reports the missing id.
+            assert_eq!(output_writer::remove_hook(follower), Ok(()));
+            assert_eq!(
+                output_writer::remove_hook(follower),
+                Err(output_writer::HookError::NoSuchHook)
+            );
+        });
+    }
+
+    /// An embedded NUL is not UTF-8 text, so the repr of the argument is
+    /// logged instead, the reference's `memchr` branch. A repr never ends
+    /// with a real newline, so it stays in the buffer, and the next
+    /// newline-terminated write flushes it joined with its own text.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_embedded_nul_logs_the_repr() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let lines = lines.clone();
+            output_writer::set_log_sink(move |line, is_stderr| {
+                lines.lock().unwrap().push((line.to_owned(), is_stderr));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string("import sys; sys.stdout.write('a\\x00b\\n')"));
+            assert!(interpreter.run_simple_string("import sys; sys.stdout.write('tail\\n')"));
+            assert_eq!(
+                *lines.lock().unwrap(),
+                vec![("'a\\x00b\\n'tail".to_owned(), false)]
+            );
+        });
+    }
+
+    /// `sys.excepthook` is the port's `printTraceBack`: a raised exception
+    /// reported through it lands in the log entry -- header, frames with
+    /// the source line, and the exception line -- the whole chain routed
+    /// through the hooked stderr as error-level entries.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_excepthook_formats_the_traceback() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let lines = lines.clone();
+            output_writer::set_log_sink(move |line, is_stderr| {
+                lines.lock().unwrap().push((line.to_owned(), is_stderr));
+            });
+        }
+        let boom_path = std::env::temp_dir()
+            .join(format!("boundless-python-host-{}", std::process::id()))
+            .join("scripts/common/boom.py");
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string(
+                "import sys, boom\n\
+                     try:\n\
+                     \x20\x20\x20\x20boom.boom()\n\
+                     except ValueError:\n\
+                     \x20\x20\x20\x20sys.excepthook(*sys.exc_info())"
+            ));
+            let logged: Vec<String> = lines
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(line, _)| line.clone())
+                .collect();
+            let text = logged.join("\n");
+            assert!(
+                text.contains("Traceback (most recent call last):"),
+                "{text}"
+            );
+            // The fixture root's scripts/common is on sys.path, so the
+            // frame names the module file it raised in.
+            let boom_name = boom_path.to_str().expect("a UTF-8 path").to_owned();
+            let frame = format!("  File \"{boom_name}\", line 2, in boom");
+            assert!(text.contains(&frame), "{text}");
+            assert!(
+                text.contains("    raise ValueError('boom message')"),
+                "{text}"
+            );
+            assert!(text.contains("ValueError: boom message"), "{text}");
+            // Every traceback line came in as an error-level entry.
+            assert!(
+                lines
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(_, is_stderr)| *is_stderr)
+            );
+        });
+    }
+
+    /// An exception without a traceback still renders: the reference's
+    /// fallback to `PyErr_Display`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_excepthook_handles_a_missing_traceback() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let lines = lines.clone();
+            output_writer::set_log_sink(move |line, is_stderr| {
+                lines.lock().unwrap().push((line.to_owned(), is_stderr));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string(
+                "import sys; sys.excepthook(ValueError, ValueError('only'), None)"
+            ));
+            // Fewer than three arguments fails the parse; the reference
+            // logs an error, clears the exception, and returns None, so
+            // nothing propagates to the caller.
+            assert!(interpreter.run_simple_string("sys.excepthook(1)"));
+            let text: String = lines
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(line, _)| line.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("ValueError: only"), "{text}");
+        });
+    }
+
+    /// A `write` call with bad arguments raises `TypeError` into the
+    /// caller: the reference lets the parse failure propagate.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_bad_write_arguments_raise() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string(
+                "\nimport sys\ntry:\n    sys.stdout.write()\nexcept TypeError:\n    pass\nelse:\n    raise AssertionError('write() did not raise')\n"
+            ));
+        });
+    }
+
+    /// `import bw_site` runs at the tail of init from the res tree.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_bw_site_is_imported_at_the_tail_of_init() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert_eq!(
+                probe(interpreter, "import sys; __probe = sys.bw_site_imported"),
+                "True"
+            );
+        });
+    }
+
+    /// Without the engine's script tree on the path, `import bw_site` fails
+    /// and init reports it, the reference's
+    /// `"Script::init: Unable to import bw_site"` returning false.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_missing_bw_site_fails_init() {
+        assert_eq!(
+            Interpreter::init(&InitConfig::default()).err(),
+            Some(InitError::BwSiteImportFailed)
+        );
+        assert!(!Interpreter::is_initialized());
     }
 
     /// Before any init the script system is neither initialised nor
