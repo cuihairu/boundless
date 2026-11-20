@@ -6,5 +6,6 @@ pub mod dispatcher;
 pub mod server_app;
 pub mod shutdown;
 pub mod signals;
+pub mod task_manager;
 pub mod tick;
 pub mod timers;
