@@ -1,0 +1,46 @@
+<!--
+bw.standalone.xml: example head of a `server/bw.xml` chain.
+
+Copied from the option table in docs/reference/configuration.md. There is no
+sample config directory in the working tree yet (BW-14), so this file is the
+runnable reference: place it at <res>/server/bw.xml and start a role.
+
+Keys not listed here fall back to the defaults in ServerAppConfig, each
+logging one CONFIG_WARNING_MSG per option.
+-->
+<root>
+	<!-- Chain head. Leave parentFile empty, or name a parent that exists. -->
+	<parentFile/>
+
+	<Server>
+		<!-- 10 ticks per second; DEFAULT_GAME_UPDATE_HERTZ. -->
+		<gameUpdateHertz>10</gameUpdateHertz>
+
+		<!-- standalone | center | periphery. standalone needs nothing else. -->
+		<serverMode>standalone</serverMode>
+
+		<!-- true runs production code paths; false enables development-only
+		     diagnostics. -->
+		<production>false</production>
+
+		<!-- Ticks between time sync operations. -->
+		<timeSyncPeriod>60</timeSyncPeriod>
+
+		<!-- -1 means: do not change the process limit. -->
+		<maxOpenFileDescriptors>-1</maxOpenFileDescriptors>
+
+		<!-- Largest single value carried in shared data. -->
+		<maxSharedDataValueSize>10240</maxSharedDataValueSize>
+
+		<!-- Seconds a manager staggers its registrations by. -->
+		<maxMgrRegisterStagger>0.0</maxMgrRegisterStagger>
+
+		<!-- Startup retry attempts before giving up. -->
+		<numStartupRetries>60</numStartupRetries>
+	</Server>
+
+	<Personality>
+		<!-- Python personality name; BWPersonality is the default. -->
+		<name>BWPersonality</name>
+	</Personality>
+</root>
