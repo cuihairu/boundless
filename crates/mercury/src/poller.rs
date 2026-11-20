@@ -23,6 +23,7 @@
 //! chains them).
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 use std::rc::Rc;
@@ -52,7 +53,9 @@ pub trait InputNotificationHandler {
 
 /// `InputHandlerEntry`: a registered handler with the name and the counts
 /// the watchers expose. The trigger and error counters wrap, like the
-/// reference's `uint32`s.
+/// reference's `uint32`s. `Clone` so a dispatch can lift the entry out of
+/// the map and run it after the borrow ends.
+#[derive(Clone)]
 pub struct InputHandlerEntry {
     handler: Rc<dyn InputNotificationHandler>,
     name: String,
@@ -254,15 +257,18 @@ impl PollerBackend for EpollBackend {
     }
 }
 
-/// `Mercury::EventPoller`: the fd-to-handler maps plus a backend.
+/// `Mercury::EventPoller`: the fd-to-handler maps plus a backend. The
+/// maps sit in `RefCell`s so registration stays `&self`: interfaces
+/// (re)register and deregister while shared behind an `Rc`, and handlers
+/// may do the same from inside a dispatch.
 ///
-/// Not `Clone`: the maps hand out handler references, and a clone's
-/// registrations would not be reflected in the original's backend.
+/// Not `Clone`: a clone's registrations would not be reflected in the
+/// original's backend.
 pub struct EventPoller {
     /// `fdReadHandlers_`.
-    fd_read_handlers: BTreeMap<RawFd, InputHandlerEntry>,
+    fd_read_handlers: RefCell<BTreeMap<RawFd, InputHandlerEntry>>,
     /// `fdWriteHandlers_`.
-    fd_write_handlers: BTreeMap<RawFd, InputHandlerEntry>,
+    fd_write_handlers: RefCell<BTreeMap<RawFd, InputHandlerEntry>>,
     /// `spareTime_`, microseconds spent waiting; a `Cell` so the dispatch
     /// path can stay `&self` (the poller registers itself as a handler
     /// with parent dispatchers, whose trait methods take `&self`).
@@ -286,8 +292,8 @@ impl EventPoller {
     /// shape through subclassing.
     pub fn new(backend: Box<dyn PollerBackend>) -> Self {
         Self {
-            fd_read_handlers: BTreeMap::new(),
-            fd_write_handlers: BTreeMap::new(),
+            fd_read_handlers: RefCell::new(BTreeMap::new()),
+            fd_write_handlers: RefCell::new(BTreeMap::new()),
             spare_time: Cell::new(0),
             backend,
         }
@@ -296,7 +302,7 @@ impl EventPoller {
     /// `registerForRead`: the backend must accept the descriptor before
     /// the map claims it.
     pub fn register_for_read(
-        &mut self,
+        &self,
         fd: RawFd,
         handler: Rc<dyn InputNotificationHandler>,
         name: &str,
@@ -309,13 +315,14 @@ impl EventPoller {
             return false;
         }
         self.fd_read_handlers
+            .borrow_mut()
             .insert(fd, InputHandlerEntry::new(handler, name));
         true
     }
 
     /// `registerForWrite`.
     pub fn register_for_write(
-        &mut self,
+        &self,
         fd: RawFd,
         handler: Rc<dyn InputNotificationHandler>,
         name: &str,
@@ -328,21 +335,22 @@ impl EventPoller {
             return false;
         }
         self.fd_write_handlers
+            .borrow_mut()
             .insert(fd, InputHandlerEntry::new(handler, name));
         true
     }
 
     /// `deregisterForRead`: the map entry goes first, so the backend's
     /// MOD-or-DEL decision sees the post-erase registration state.
-    pub fn deregister_for_read(&mut self, fd: RawFd) -> bool {
-        self.fd_read_handlers.remove(&fd);
+    pub fn deregister_for_read(&self, fd: RawFd) -> bool {
+        self.fd_read_handlers.borrow_mut().remove(&fd);
         let opposite = self.is_registered(fd, false);
         self.backend.do_register(fd, true, false, None, opposite)
     }
 
     /// `deregisterForWrite`.
-    pub fn deregister_for_write(&mut self, fd: RawFd) -> bool {
-        self.fd_write_handlers.remove(&fd);
+    pub fn deregister_for_write(&self, fd: RawFd) -> bool {
+        self.fd_write_handlers.borrow_mut().remove(&fd);
         let opposite = self.is_registered(fd, true);
         self.backend.do_register(fd, false, false, None, opposite)
     }
@@ -350,17 +358,27 @@ impl EventPoller {
     /// `triggerRead`/`triggerWrite`: dispatch to a registered handler.
     /// Both share `trigger(fd, handlers)`.
     pub fn trigger_read(&self, fd: RawFd) -> bool {
-        self.trigger(fd, &self.fd_read_handlers)
+        self.trigger(fd, true)
     }
 
     /// `triggerWrite`.
     pub fn trigger_write(&self, fd: RawFd) -> bool {
-        self.trigger(fd, &self.fd_write_handlers)
+        self.trigger(fd, false)
     }
 
-    /// `trigger`: report the descriptor to its entry, if it has one.
-    fn trigger(&self, fd: RawFd, handlers: &BTreeMap<RawFd, InputHandlerEntry>) -> bool {
-        match handlers.get(&fd) {
+    /// `trigger`: report the descriptor to its entry, if it has one. The
+    /// entry is lifted out of the map first, so a handler may register or
+    /// deregister from inside its own dispatch.
+    fn trigger(&self, fd: RawFd, is_for_read: bool) -> bool {
+        let entry = {
+            let handlers = if is_for_read {
+                self.fd_read_handlers.borrow()
+            } else {
+                self.fd_write_handlers.borrow()
+            };
+            handlers.get(&fd).cloned()
+        };
+        match entry {
             None => false,
             Some(entry) => {
                 entry.handle_input_notification(fd);
@@ -374,25 +392,33 @@ impl EventPoller {
     /// back to input notification, and an unknown descriptor reports
     /// false.
     pub fn trigger_error(&self, fd: RawFd) -> bool {
-        for handlers in [&self.fd_read_handlers, &self.fd_write_handlers] {
-            if let Some(entry) = handlers.get(&fd) {
+        // Lift the entry out before dispatching, like `trigger`: the
+        // handler may mutate the maps from inside its own callback.
+        let entry = self
+            .fd_read_handlers
+            .borrow()
+            .get(&fd)
+            .cloned()
+            .or_else(|| self.fd_write_handlers.borrow().get(&fd).cloned());
+        match entry {
+            Some(entry) => {
                 if !entry.handle_error_notification(fd) {
                     // Error notification did not handle the error.
                     // Fallback to input notification.
                     entry.handle_input_notification(fd);
                 }
-                return true;
+                true
             }
+            None => false,
         }
-        false
     }
 
     /// `isRegistered(fd, isForRead)`.
     pub fn is_registered(&self, fd: RawFd, is_for_read: bool) -> bool {
         let handlers = if is_for_read {
-            &self.fd_read_handlers
+            self.fd_read_handlers.borrow()
         } else {
-            &self.fd_write_handlers
+            self.fd_write_handlers.borrow()
         };
         handlers.contains_key(&fd)
     }
@@ -402,14 +428,31 @@ impl EventPoller {
     pub fn is_ready_for_shutdown(&self) -> bool {
         [&self.fd_read_handlers, &self.fd_write_handlers]
             .iter()
-            .all(|handlers| handlers.values().all(|e| e.is_ready_for_shutdown()))
+            .all(|handlers| {
+                handlers
+                    .borrow()
+                    .values()
+                    .all(|e| e.is_ready_for_shutdown())
+            })
     }
 
     /// `maxFD()`: the largest descriptor across both maps, `-1` when both
     /// are empty.
     pub fn max_fd(&self) -> RawFd {
-        let read_max = self.fd_read_handlers.keys().copied().max().unwrap_or(-1);
-        let write_max = self.fd_write_handlers.keys().copied().max().unwrap_or(-1);
+        let read_max = self
+            .fd_read_handlers
+            .borrow()
+            .keys()
+            .copied()
+            .max()
+            .unwrap_or(-1);
+        let write_max = self
+            .fd_write_handlers
+            .borrow()
+            .keys()
+            .copied()
+            .max()
+            .unwrap_or(-1);
         read_max.max(write_max)
     }
 
@@ -631,7 +674,7 @@ mod tests {
     #[test]
     fn register_maps_track_backend_result() {
         let (backend, controls) = StubBackend::pair();
-        let mut poller = EventPoller::new(Box::new(backend));
+        let poller = EventPoller::new(Box::new(backend));
         let handler = FakeHandler::new();
 
         // Failure from the backend must not register anything.
@@ -663,7 +706,7 @@ mod tests {
     #[test]
     fn max_fd_spans_both_maps() {
         let (backend, _) = StubBackend::pair();
-        let mut poller = EventPoller::new(Box::new(backend));
+        let poller = EventPoller::new(Box::new(backend));
         let handler = FakeHandler::new();
 
         assert_eq!(poller.max_fd(), -1);
@@ -686,7 +729,7 @@ mod tests {
     #[test]
     fn triggers_dispatch_to_registered_handlers() {
         let (backend, _) = StubBackend::pair();
-        let mut poller = EventPoller::new(Box::new(backend));
+        let poller = EventPoller::new(Box::new(backend));
         let handler = FakeHandler::new();
 
         // Nothing registered: no dispatch.
@@ -716,7 +759,7 @@ mod tests {
     #[test]
     fn trigger_error_arms() {
         let (backend, _) = StubBackend::pair();
-        let mut poller = EventPoller::new(Box::new(backend));
+        let poller = EventPoller::new(Box::new(backend));
         let handler = FakeHandler::new();
 
         // No handler at all.
@@ -748,7 +791,7 @@ mod tests {
     #[test]
     fn shutdown_readiness_is_a_conjunction() {
         let (backend, _) = StubBackend::pair();
-        let mut poller = EventPoller::new(Box::new(backend));
+        let poller = EventPoller::new(Box::new(backend));
         let reader = FakeHandler::new();
         let writer = FakeHandler::new();
 
@@ -829,7 +872,7 @@ mod tests {
     #[test]
     fn polls_dispatch_read_events() {
         let pipes = PipePair::new();
-        let mut poller = EventPoller::create();
+        let poller = EventPoller::create();
         let handler = FakeHandler::new();
 
         assert!(poller.register_for_read(pipes.read_end(), Rc::clone(&handler) as _, "pipe-r"));
@@ -854,7 +897,7 @@ mod tests {
     #[test]
     fn polls_dispatch_write_events() {
         let pipes = PipePair::new();
-        let mut poller = EventPoller::create();
+        let poller = EventPoller::create();
         let handler = FakeHandler::new();
 
         assert!(poller.register_for_write(pipes.write_end(), Rc::clone(&handler) as _, "pipe-w"));
@@ -869,7 +912,7 @@ mod tests {
     #[test]
     fn both_directions_and_selective_removal() {
         let pipes = PipePair::new();
-        let mut poller = EventPoller::create();
+        let poller = EventPoller::create();
         let read_handler = FakeHandler::new();
         let write_handler = FakeHandler::new();
 
@@ -919,7 +962,7 @@ mod tests {
     /// false), leaving nothing registered.
     #[test]
     fn unknown_and_invalid_descriptors_fail() {
-        let mut poller = EventPoller::create();
+        let poller = EventPoller::create();
         let handler = FakeHandler::new();
         let dead = dead_fd();
 
@@ -947,7 +990,7 @@ mod tests {
     #[test]
     fn hangups_route_to_the_error_handler() {
         let mut pipes = PipePair::new();
-        let mut poller = EventPoller::create();
+        let poller = EventPoller::create();
         let handler = FakeHandler::new();
 
         assert!(poller.register_for_read(pipes.read_end(), Rc::clone(&handler) as _, "r"));
@@ -1003,7 +1046,7 @@ mod tests {
     #[test]
     fn the_handler_defaults_are_the_reference_defaults() {
         let (backend, _) = StubBackend::pair();
-        let mut poller = EventPoller::new(Box::new(backend));
+        let poller = EventPoller::new(Box::new(backend));
         let handler = Rc::new(BareHandler {
             input_calls: Cell::new(0),
         });

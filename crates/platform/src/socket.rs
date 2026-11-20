@@ -45,6 +45,12 @@ pub const IP_RECVERR: i32 = libc::IP_RECVERR;
 pub const MSG_ERRQUEUE: i32 = libc::MSG_ERRQUEUE;
 /// `ECONNREFUSED`, the error an ICMP "port unreachable" turns into.
 pub const ECONNREFUSED: i32 = libc::ECONNREFUSED;
+/// `EAGAIN`/`EWOULDBLOCK`, the receive queue drained.
+pub const EAGAIN: i32 = libc::EAGAIN;
+/// `EHOSTUNREACH`, no route to the named host.
+pub const EHOSTUNREACH: i32 = libc::EHOSTUNREACH;
+/// `EMSGSIZE`, the datagram exceeded the path or interface MTU.
+pub const EMSGSIZE: i32 = libc::EMSGSIZE;
 
 /// `htons`: host order to network order.
 pub fn htons(value: u16) -> u16 {

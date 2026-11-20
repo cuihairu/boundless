@@ -2,6 +2,9 @@
 
 pub mod clock;
 
+/// `ioctl`-based network-interface enumeration (`endpoint.hpp:175-192`).
+pub mod interface;
+
 #[cfg(unix)]
 pub mod socket;
 

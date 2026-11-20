@@ -63,6 +63,74 @@ pub mod flags {
 /// Message id 0xFF is reserved for replies (`Mercury::REPLY`).
 pub const REPLY_MESSAGE_ID: u8 = 0xFF;
 
+/// One packet on the wire (`lib/network/packet.cpp`).
+///
+/// This is the receive-shaped slice of `Packet`: the `PACKET_MAX_SIZE`
+/// data array, the end-of-message offset, and the footer size it adds up
+/// to. A fresh packet starts empty (`msgEndOffset_( 0 )`,
+/// `footerSize_( 0 )`); `recvFromEndpoint` sets the offset to the byte
+/// count the kernel handed back, so `totalSize()` is exactly what arrived.
+/// The write side -- flags, acks, fragments -- is the BW-02-03 codec and
+/// lands there.
+pub struct Packet {
+    data: Box<[u8; PACKET_MAX_SIZE]>,
+    msg_end_offset: usize,
+    footer_size: usize,
+}
+
+impl Packet {
+    /// `Packet()`.
+    pub fn new() -> Self {
+        Self {
+            data: Box::new([0; PACKET_MAX_SIZE]),
+            msg_end_offset: 0,
+            footer_size: 0,
+        }
+    }
+
+    /// `msgEndOffset()`.
+    pub fn msg_end_offset(&self) -> usize {
+        self.msg_end_offset
+    }
+
+    /// `bodySize()`: everything after the flags word.
+    pub fn body_size(&self) -> usize {
+        self.msg_end_offset.saturating_sub(HEADER_SIZE)
+    }
+
+    /// `totalSize()`: `msgEndOffset_ + footerSize_`, the whole datagram.
+    pub fn total_size(&self) -> usize {
+        self.msg_end_offset + self.footer_size
+    }
+
+    /// The bytes that arrived, i.e. `data_[ .. msgEndOffset_ ]`.
+    pub fn data(&self) -> &[u8] {
+        &self.data[..self.msg_end_offset]
+    }
+
+    /// The raw backing array, for the read the kernel fills.
+    fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.data[..]
+    }
+
+    /// `Packet::recvFromEndpoint` (`packet.cpp:175`): recv into the data
+    /// array and set the length on success. The return value is the
+    /// low-level `recvfrom` result, byte count or -1, untouched.
+    pub fn recv_from_endpoint(&mut self, ep: &crate::endpoint::Endpoint, addr: &mut crate::endpoint::Address) -> i32 {
+        let len = ep.recvfrom(self.data_mut(), Some(&mut addr.port), Some(&mut addr.ip));
+        if len >= 0 {
+            self.msg_end_offset = len as usize;
+        }
+        len
+    }
+}
+
+impl Default for Packet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +171,51 @@ mod tests {
     #[test]
     fn reply_message_id_is_the_escape_value() {
         assert_eq!(REPLY_MESSAGE_ID, 0xFF);
+    }
+
+    /// A fresh packet is empty (`msgEndOffset_( 0 )`, `footerSize_( 0 )`),
+    /// and a received datagram sets the offsets to what arrived.
+    #[test]
+    fn a_received_datagram_sets_its_offsets() {
+        let mut listener = crate::endpoint::Endpoint::new();
+        listener.socket(platform::socket::SOCK_DGRAM);
+        assert_eq!(listener.bind(0, crate::endpoint::INADDR_ANY), 0);
+        let bound = listener.local();
+
+        let mut sender = crate::endpoint::Endpoint::new();
+        sender.socket(platform::socket::SOCK_DGRAM);
+        // Bind so `local()` names a precise address: an auto-bound socket
+        // reports INADDR_ANY, not the interface the datagram left by.
+        // 127.0.0.1 as the repo stores it (host-order word of the
+        // network-order bytes).
+        assert_eq!(sender.bind(0, 0x0100_007f), 0);
+        let payload = b"hello packet";
+        assert_eq!(
+            sender.sendto(payload, bound.port, bound.ip),
+            payload.len() as i32
+        );
+
+        let mut packet = Packet::new();
+        assert_eq!(packet.msg_end_offset(), 0);
+        assert_eq!(packet.total_size(), 0);
+        assert_eq!(packet.body_size(), 0);
+
+        let mut source = crate::endpoint::Address::default();
+        assert_eq!(packet.recv_from_endpoint(&listener, &mut source), 12);
+        assert_eq!(source, sender.local());
+        assert_eq!(
+            packet.total_size(),
+            12,
+            "footer is empty, size is the datagram"
+        );
+        assert_eq!(packet.body_size(), 10, "everything after the flags word");
+        assert_eq!(packet.data(), payload);
+
+        // A zero-length datagram is still a datagram: recvfrom returns 0
+        // and the packet stays empty.
+        assert_eq!(sender.sendto(b"", bound.port, bound.ip), 0);
+        let mut second = Packet::new();
+        assert_eq!(second.recv_from_endpoint(&listener, &mut source), 0);
+        assert_eq!(second.total_size(), 0);
     }
 }

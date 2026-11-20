@@ -5,8 +5,10 @@
 //! here returns the kernel's own result code (0 on success, -1 on error),
 //! which is how the reference's callers test them.
 
+use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 
+use platform::interface;
 use platform::socket;
 
 /// `Endpoint::NO_SOCKET`.
@@ -134,6 +136,95 @@ impl std::hash::Hash for Address {
 /// `None` means neither worked.
 pub fn convert_address(text: &str) -> Option<u32> {
     socket::inet_aton(text).or_else(|| socket::host_by_name(text))
+}
+
+/// `atoi`: the leading integer of the text, skipping leading blanks,
+/// accepting a sign, and yielding 0 when there are no digits -- the C
+/// library's loose parse, which `findIndicatedInterface` relies on for
+/// the netmask-bits field.
+fn atoi(text: &str) -> i32 {
+    let text = text.trim_start();
+    let (sign, digits) = match text.strip_prefix('-') {
+        Some(rest) => (-1i64, rest),
+        None => (1i64, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    digits[..end].parse::<i64>().map(|v| (sign * v) as i32).unwrap_or(0)
+}
+
+/// `NetMask` (`netmask.hpp/.cpp`): the prefix matcher `getInterfaces`
+/// filters interface addresses with.
+///
+/// The reference builds the mask with the *last* dotted octet shifted
+/// highest and flags its own TODO about endianness; on the little-endian
+/// hosts this runs on, comparing the raw network-order words like this is
+/// a prefix match on the leading dotted octets, which is what the callers
+/// want. The port keeps the reference's arithmetic and its raw-word
+/// comparison unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetMask {
+    mask: u32,
+    bits: i32,
+    parsed_ok: bool,
+}
+
+impl NetMask {
+    /// What a failed parse leaves: zero bits, which matches everything.
+    const MATCH_ALL: NetMask = NetMask {
+        mask: 0,
+        bits: 0,
+        parsed_ok: false,
+    };
+
+    /// `NetMask::parse` on `"%d.%d.%d.%d/%d"`. A malformed string parses
+    /// to the match-everything mask (`bits_ = 0`) -- the caller warns.
+    pub fn parse(text: &str) -> NetMask {
+        let Some((address_part, bits_part)) = text.split_once('/') else {
+            return NetMask::MATCH_ALL;
+        };
+        // sscanf demands exactly four dot-separated ints and then a bits
+        // int; anything else is the match-all mask.
+        let pieces: Vec<&str> = address_part.split('.').collect();
+        if pieces.len() != 4 {
+            return NetMask::MATCH_ALL;
+        }
+        let mut octets = [0i64; 4];
+        for (slot, piece) in octets.iter_mut().zip(pieces) {
+            match piece.parse::<i64>() {
+                Ok(value) => *slot = value,
+                Err(_) => return NetMask::MATCH_ALL,
+            }
+        }
+        let Ok(bits) = bits_part.parse::<i64>() else {
+            return NetMask::MATCH_ALL;
+        };
+        let (a, b, c, d) = (octets[0], octets[1], octets[2], octets[3]);
+        NetMask {
+            mask: ((d << 24) | (c << 16) | (b << 8) | a) as u32,
+            bits: bits as i32,
+            parsed_ok: true,
+        }
+    }
+
+    /// Whether `parse` accepted the text (drives the caller's warning).
+    pub fn parsed_ok(&self) -> bool {
+        self.parsed_ok
+    }
+
+    /// `containsAddress`: a zero-bit mask matches everything (the
+    /// reference's `n << 32 == n` guard), otherwise the low `bits` bits of
+    /// the raw words must agree. Bits beyond 32 are treated as all of them
+    /// and non-positive counts as zero, where the reference's shifts would
+    /// run off the end of the word.
+    pub fn contains_address(&self, addr: u32) -> bool {
+        if self.bits <= 0 {
+            return true;
+        }
+        let bits_of_interest = u32::MAX >> (32 - self.bits.min(32));
+        (addr & bits_of_interest) == (self.mask & bits_of_interest)
+    }
 }
 
 /// A wrapper around one socket (`Endpoint`).
@@ -438,6 +529,34 @@ impl Endpoint {
         socket::bytes_available(self.socket_)
     }
 
+    /// `Endpoint::getQueueSizes` (endpoint.cpp:543): 0 when NetworkStats
+    /// knows the socket, -1 when it has no record of it.
+    pub fn get_queue_sizes(&self, tx: &mut i32, rx: &mut i32) -> i32 {
+        if crate::network_stats::get_queue_sizes(self, tx, rx) {
+            0
+        } else {
+            -1
+        }
+    }
+
+    /// `Endpoint::transmitQueueSize` (endpoint.ipp:726): the queued
+    /// transmit bytes; the reference ignores the lookup result here, so
+    /// an unknown socket answers 0.
+    pub fn transmit_queue_size(&self) -> i32 {
+        let mut tx = 0;
+        let mut rx = 0;
+        self.get_queue_sizes(&mut tx, &mut rx);
+        tx
+    }
+
+    /// `Endpoint::receiveQueueSize` (endpoint.ipp:740), same story.
+    pub fn receive_queue_size(&self) -> i32 {
+        let mut tx = 0;
+        let mut rx = 0;
+        self.get_queue_sizes(&mut tx, &mut rx);
+        rx
+    }
+
     /// `getBufferSize(optname)`: only `SO_SNDBUF` / `SO_RCVBUF`, -1 on
     /// error. The reference asserts the option name in debug builds.
     pub fn get_buffer_size(&self, optname: i32) -> i32 {
@@ -468,6 +587,190 @@ impl Endpoint {
     pub fn set_buffer_size(&self, optname: i32, size: i32) -> bool {
         socket::set_int_option(self.socket_, socket::SOL_SOCKET, optname, size);
         self.get_buffer_size(optname) >= size
+    }
+
+    /// `getInterfaceFlags(name, flags)`: the kernel flag bits, 0 or -1.
+    pub fn get_interface_flags(&self, name: &str, flags: &mut i32) -> i32 {
+        match interface::flags(self.socket_, name) {
+            Some(value) => {
+                *flags = value;
+                0
+            }
+            None => -1,
+        }
+    }
+
+    /// `getInterfaceAddress(name, address)`: the interface's IPv4
+    /// address, 0 or -1 (non-`AF_INET` answers are -1 too).
+    pub fn get_interface_address(&self, name: &str, address: &mut u32) -> i32 {
+        match interface::address(self.socket_, name) {
+            Some(value) => {
+                *address = value;
+                0
+            }
+            None => -1,
+        }
+    }
+
+    /// `getInterfaces(interfaces, netmaskStr = NULL)`: every interface
+    /// address, optionally filtered by a `"a.b.c.d/bits"` prefix. A
+    /// duplicate IP overwrites its predecessor, exactly like the
+    /// reference's `interfaces[s->sin_addr.s_addr] = ...`.
+    pub fn get_interfaces(
+        &self,
+        interfaces: &mut BTreeMap<u32, String>,
+        netmask_str: Option<&str>,
+    ) -> bool {
+        let Some(entries) = interface::conf(self.socket_) else {
+            eprintln!("Endpoint::getInterfaces: ioctl(SIOCGIFCONF) failed.");
+            return false;
+        };
+
+        let netmask = match netmask_str {
+            Some(text) => {
+                let mask = NetMask::parse(text);
+                if !mask.parsed_ok() {
+                    eprintln!(
+                        "Endpoint::getInterfaces: failed to parse netmask string '{}'",
+                        text
+                    );
+                }
+                mask
+            }
+            None => NetMask::MATCH_ALL,
+        };
+
+        for (name, ip) in entries {
+            if !netmask.contains_address(ip) {
+                continue;
+            }
+            interfaces.insert(ip, name);
+        }
+        true
+    }
+
+    /// `findDefaultInterface(name)`: the first `IFF_UP|IFF_RUNNING`
+    /// interface with an IPv4 address, walking past loopback entries and
+    /// only settling for one if nothing better exists -- the reference's
+    /// stopgap until "whatever interface the default route goes over".
+    /// 0 when a name was found, -1 otherwise.
+    pub fn find_default_interface(&self, name: &mut String) -> i32 {
+        let mut ret = -1;
+        for (_, candidate) in interface::name_index() {
+            let mut flags = 0;
+            self.get_interface_flags(&candidate, &mut flags);
+            if (flags & interface::IFF_UP) != 0 && (flags & interface::IFF_RUNNING) != 0 {
+                let mut addr = 0;
+                if self.get_interface_address(&candidate, &mut addr) == 0 {
+                    *name = candidate;
+                    ret = 0;
+                    // We only stop if it's not a loopback address,
+                    // otherwise we continue, hoping to find a better one.
+                    if (flags & interface::IFF_LOOPBACK) == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        ret
+    }
+
+    /// `findIndicatedInterface(spec, name)`: resolve a listening-interface
+    /// spec to a real interface name. Accepted forms, in the reference's
+    /// order: `"ip/bits"` (netmask), a bare interface name, a bare IP
+    /// (netmask bits 32). Returns 0 on a match, -1 on an unparseable spec,
+    /// -2 when it parsed but no interface matches.
+    pub fn find_indicated_interface(&self, spec: &str, name: &mut String) -> i32 {
+        // Start with it cleared.
+        name.clear();
+        if spec.is_empty() {
+            return -1;
+        }
+
+        // `strncpy(iftemp, spec, IFNAMSIZ); iftemp[IFNAMSIZ] = 0`: the
+        // working copy keeps at most 16 bytes.
+        let iftemp: String = String::from_utf8_lossy(&spec.as_bytes()[..spec.len().min(16)])
+            .into_owned();
+
+        let mut netmask_bits = 32;
+        let mut addr = 0;
+
+        match spec.find('/') {
+            // See if it's a netmask; the IP part itself must fit in an
+            // interface-name slot for the reference to try it.
+            Some(slash) if slash <= 16 => {
+                let ip_part = &spec[..slash];
+                let bits_part = &spec[slash + 1..];
+                let mut ok = match convert_address(ip_part) {
+                    Some(value) => {
+                        addr = value;
+                        true
+                    }
+                    None => false,
+                };
+                netmask_bits = atoi(bits_part);
+                ok &= netmask_bits > 0 && netmask_bits <= 32;
+                if !ok {
+                    eprintln!(
+                        "Endpoint::findIndicatedInterface: netmask match {} length {} is not valid.",
+                        ip_part, bits_part
+                    );
+                    return -1;
+                }
+            }
+            _ => {
+                if self.get_interface_address(&iftemp, &mut addr) == 0 {
+                    // Specified name of interface.
+                    *name = iftemp.chars().take(interface::IFNAMSIZ - 1).collect();
+                } else {
+                    match convert_address(spec) {
+                        Some(value) => {
+                            addr = value;
+                            netmask_bits = 32; // Redundant but instructive.
+                        }
+                        None => {
+                            eprintln!(
+                                "Endpoint::findIndicatedInterface: No interface matching interface spec '{}' found",
+                                spec
+                            );
+                            return -1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we haven't set a name yet then we're supposed to look up the
+        // ip address.
+        if name.is_empty() {
+            let netmask_shift = (32 - netmask_bits) as u32;
+            let netmask_match = socket::ntohl(addr);
+
+            for candidate in interface::name_index().into_iter().map(|(_, name)| name) {
+                let mut tip = 0;
+                if self.get_interface_address(&candidate, &mut tip) == 0 {
+                    let htip = socket::ntohl(tip);
+                    if (htip >> netmask_shift) == (netmask_match >> netmask_shift) {
+                        *name = candidate;
+                        break;
+                    }
+                }
+            }
+
+            if name.is_empty() {
+                // The raw bytes of `addr` in memory spell the dotted quad
+                // back on a little-endian host, which is how the
+                // reference's `(uint8 *)&addr` prints them.
+                let qik = addr.to_ne_bytes();
+                eprintln!(
+                    "Endpoint::findIndicatedInterface: No interface matching netmask spec '{}' found (evals to {}:{}:{}:{}/{})",
+                    spec, qik[0], qik[1], qik[2], qik[3], netmask_bits
+                );
+                return -2; // Parsing ok, just didn't match.
+            }
+        }
+
+        0
     }
 }
 
@@ -1042,5 +1345,171 @@ mod tests {
         assert_ne!(only_peer_port, 0, "the peer port is filled");
         assert_eq!(mut_addr, LOOPBACK, "the peer address is filled");
         let _ = visitor;
+    }
+
+    /// `atoi`'s loose C parse: blanks, a sign, a trailing tail, and no
+    /// digits at all.
+    #[test]
+    fn atoi_takes_the_leading_integer() {
+        assert_eq!(super::atoi("24"), 24);
+        assert_eq!(super::atoi("  -7x"), -7);
+        assert_eq!(super::atoi("+3bits"), 3);
+        assert_eq!(super::atoi(""), 0);
+        assert_eq!(super::atoi("bits"), 0);
+    }
+
+    /// `NetMask::parse`'s grammar and its match-all failure mode.
+    #[test]
+    fn netmask_parsing_and_prefix_matching() {
+        // 10.0.0.0/8: the mask word is built with the last octet highest,
+        // so "10" lands in the low byte, which against the raw network-
+        // order word is the leading octet.
+        let mask = NetMask::parse("10.0.0.0/8");
+        assert!(mask.parsed_ok());
+        // The raw word of an address is the network-order byte string read
+        // in host order, so 10.1.2.3 is from_ne_bytes([10, 1, 2, 3]) and
+        // its leading octet sits in the low byte.
+        let ten_raw = u32::from_ne_bytes([10, 1, 2, 3]);
+        assert!(mask.contains_address(ten_raw));
+        assert!(mask.contains_address(ten_raw | 0xffff_ff00), "10.x.y.z");
+        assert!(!mask.contains_address(u32::from_ne_bytes([11, 0, 0, 0])));
+
+        let exact = NetMask::parse("127.0.0.1/32");
+        assert!(exact.contains_address(LOOPBACK));
+        assert!(!exact.contains_address(u32::from_ne_bytes([126, 0, 0, 1])));
+
+        // Unparseable forms all become the match-all mask, bits 0.
+        for bad in ["no-slash", "1.2.3/8", "a.b.c.d/8", "1.2.3.4", "1.2.3.4/x"] {
+            let mask = NetMask::parse(bad);
+            assert!(!mask.parsed_ok(), "{bad} should not parse");
+            assert!(mask.contains_address(0xdead_beef), "{bad} matches all");
+        }
+    }
+
+    /// The `lo` interface carries the loopback address, under whichever
+    /// name the kernel lists it; this is the fixture the reference's own
+    /// unit test relies on.
+    #[test]
+    fn the_loopback_interface_is_listed_with_its_address() {
+        let mut endpoint = Endpoint::new();
+        endpoint.socket(socket::SOCK_DGRAM);
+        let mut interfaces = BTreeMap::new();
+        assert!(endpoint.get_interfaces(&mut interfaces, None));
+        assert!(
+            interfaces.values().any(|name| name == "lo"),
+            "lo is listed: {interfaces:?}"
+        );
+        assert!(
+            interfaces.contains_key(&LOOPBACK),
+            "127.0.0.1 is a listed address: {interfaces:?}"
+        );
+    }
+
+    /// The netmask filter narrows the enumeration, and a malformed filter
+    /// is a warning (logged) plus the whole list.
+    #[test]
+    fn the_netmask_filter_narrows_get_interfaces() {
+        let mut endpoint = Endpoint::new();
+        endpoint.socket(socket::SOCK_DGRAM);
+
+        // 127.0.0.0/8 keeps only loopback-shaped addresses.
+        let mut filtered = BTreeMap::new();
+        assert!(endpoint.get_interfaces(&mut filtered, Some("127.0.0.0/8")));
+        assert!(filtered.contains_key(&LOOPBACK));
+        assert!(
+            filtered.keys().all(|ip| *ip & 0x0000_00ff == 127),
+            "every kept address is a 127.x: {filtered:?}"
+        );
+
+        // 10.0.0.0/8: loopback is not in that range, and on a test host
+        // nothing else need be either.
+        let mut none = BTreeMap::new();
+        assert!(endpoint.get_interfaces(&mut none, Some("10.255.0.0/16")));
+        assert!(!none.contains_key(&LOOPBACK));
+
+        // A malformed filter warns but still returns everything.
+        let mut all = BTreeMap::new();
+        assert!(endpoint.get_interfaces(&mut all, Some("not-a-mask")));
+        let mut bare = BTreeMap::new();
+        assert!(endpoint.get_interfaces(&mut bare, None));
+        assert_eq!(all, bare, "the failed filter is treated as match-all");
+    }
+
+    /// `getInterfaceFlags`/`getInterfaceAddress` succeed on `lo` and fail
+    /// on an unknown name, the 0 and -1 arms.
+    #[test]
+    fn interface_flags_and_address_queries() {
+        let mut endpoint = Endpoint::new();
+        endpoint.socket(socket::SOCK_DGRAM);
+
+        let mut flags = 0;
+        assert_eq!(endpoint.get_interface_flags("lo", &mut flags), 0);
+        assert_ne!(flags & platform::interface::IFF_LOOPBACK, 0, "lo is loopback");
+
+        let mut addr = 0;
+        assert_eq!(endpoint.get_interface_address("lo", &mut addr), 0);
+        assert_eq!(addr, LOOPBACK);
+
+        assert_eq!(endpoint.get_interface_flags("no-such-if", &mut flags), -1);
+        assert_eq!(endpoint.get_interface_address("no-such-if", &mut addr), -1);
+    }
+
+    /// `findDefaultInterface` finds something with an address; on a test
+    /// host that is often `lo` itself, which the reference accepts.
+    #[test]
+    fn a_default_interface_is_found() {
+        let mut endpoint = Endpoint::new();
+        endpoint.socket(socket::SOCK_DGRAM);
+        let mut name = String::new();
+        assert_eq!(endpoint.find_default_interface(&mut name), 0);
+        assert!(!name.is_empty(), "a name was chosen: {name:?}");
+
+        // The chosen interface really has the flags the search requires.
+        let mut flags = 0;
+        assert_eq!(endpoint.get_interface_flags(&name, &mut flags), 0);
+        assert_ne!(flags & platform::interface::IFF_UP, 0);
+        assert_ne!(flags & platform::interface::IFF_RUNNING, 0);
+    }
+
+    /// `findIndicatedInterface`'s grammar, against the real loopback:
+    /// bare name, bare IP, and netmask forms all resolve; garbage forms
+    /// report -1 or -2 with a cleared name.
+    #[test]
+    fn interface_spec_resolution() {
+        let mut endpoint = Endpoint::new();
+        endpoint.socket(socket::SOCK_DGRAM);
+
+        // A bare interface name: `lo` resolves to itself.
+        let mut name = String::new();
+        assert_eq!(endpoint.find_indicated_interface("lo", &mut name), 0);
+        assert_eq!(name, "lo");
+
+        // A bare IP: the netmask scan finds the interface carrying it.
+        let mut name = String::new();
+        assert_eq!(endpoint.find_indicated_interface("127.0.0.1", &mut name), 0);
+        assert_eq!(name, "lo", "the loopback address resolves to lo");
+
+        // ip/bits: same scan, prefix semantics.
+        let mut name = String::new();
+        assert_eq!(endpoint.find_indicated_interface("127.0.0.0/8", &mut name), 0);
+        assert_eq!(name, "lo");
+
+        // Empty and garbage specs: -1, name cleared.
+        let mut name = String::new();
+        assert_eq!(endpoint.find_indicated_interface("", &mut name), -1);
+        assert!(name.is_empty());
+        assert_eq!(endpoint.find_indicated_interface("no-such-if-xyz", &mut name), -1);
+        assert!(name.is_empty());
+
+        // A valid netmask nothing carries: -2, parsing ok but no match.
+        let mut name = String::new();
+        assert_eq!(endpoint.find_indicated_interface("10.11.12.13/24", &mut name), -2);
+        assert!(name.is_empty());
+
+        // A malformed netmask: -1 with the not-valid message.
+        let mut name = String::new();
+        assert_eq!(endpoint.find_indicated_interface("1.2.3/40", &mut name), -1);
+        assert!(name.is_empty());
+        assert_eq!(endpoint.find_indicated_interface("1.2.3.4/0", &mut name), -1);
     }
 }
