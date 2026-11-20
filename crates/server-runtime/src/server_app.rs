@@ -14,7 +14,11 @@
 //!   and keeps its default (`ServerAppOptionIniterT::init`);
 //! - `ServerApp::init` sets `runFromMachined` for every argument that is
 //!   *not* `-machined` (`if (strcmp(...))` -- a real reference bug, kept);
-//! - `runApp` always calls `fini()`, init-success or not.
+//! - `runApp` always calls `fini()` then `interface_.prepareForShutdown()`,
+//!   init-success or not, and `bwMainT` prints "%s has shut down." for
+//!   every exit path -- the baseline exit order is init ->
+//!   `---- %s is running ----` -> run (`processUntilBreak` +
+//!   `onRunComplete`) -> fini -> prepareForShutdown;
 
 use crate::config::BwConfig;
 use crate::signals::{HandlerId, SignalHandler, SignalHandlerFn, SignalProcessor};
@@ -319,11 +323,22 @@ pub trait ServerApp {
     /// `ServerApp::init`: returns false to abort the startup.
     fn init(&mut self, args: &[String]) -> bool;
 
-    /// `ServerApp::run`.
+    /// `ServerApp::run`. The base body (`processUntilBreak` +
+    /// `onRunComplete` + success) is [`base_run`]; role apps that own a
+    /// dispatcher inherit it through that helper.
     fn run(&mut self) -> bool;
+
+    /// `ServerApp::onRunComplete` (a no-op in the base class): runs
+    /// inside `run`, after the processing loop unwinds.
+    fn on_run_complete(&mut self) {}
 
     /// `ServerApp::fini` (a no-op in the base class).
     fn fini(&mut self) {}
+
+    /// `interface_.prepareForShutdown()`: the Mercury interface's
+    /// shutdown preparation, flattened onto the app until the interface
+    /// joins at BW-02. `runApp` always reaches it, right after `fini`.
+    fn prepare_for_shutdown(&mut self) {}
 
     /// `ServerApp::shutDown`: the base class logs the request and breaks
     /// `mainDispatcher_`; the break flag lives in the app (it owns its
@@ -358,6 +373,18 @@ pub fn base_on_signalled(sig_num: i32) {
     }
 }
 
+/// The base `ServerApp::run` body: `mainDispatcher_.processUntilBreak()`,
+/// then `onRunComplete()`, then success. Role apps that do not override
+/// `run` inherit exactly this.
+pub fn base_run(
+    app: &mut dyn ServerApp,
+    dispatcher: &mut crate::dispatcher::Dispatcher,
+) -> bool {
+    dispatcher.process_until_break();
+    app.on_run_complete();
+    true
+}
+
 /// The anonymous-namespace `ServerAppSignalHandler`: forwards every
 /// dispatched signal into `app.on_signalled`.
 pub fn app_signal_handler(
@@ -380,20 +407,23 @@ pub fn install_app_signal_handler(
     processor.add_signal_handler(libc::SIGINT, app_signal_handler(app))
 }
 
-/// `ServerApp::runApp`: init gates run; fini always happens; the bool is
-/// `doBWMainT`'s success/failure input. `prepareForShutdown` belongs to
-/// the Mercury interface (BW-02).
+/// `ServerApp::runApp`: init gates run; fini always happens, followed by
+/// `prepareForShutdown`; the bool is `doBWMainT`'s success/failure input.
+/// The exit order is the baseline the acceptance pins: init ->
+/// `---- %s is running ----` -> run -> fini -> prepareForShutdown.
 pub fn run_app(app: &mut dyn ServerApp, args: &[String]) -> bool {
     // stampsPerSecond() -- clock warm-up, nothing observable here.
     let mut result = false;
 
     if app.init(args) {
+        eprintln!("---- {} is running ----", app.app_name());
         result = app.run();
     } else {
         eprintln!("Failed to initialise {}", app.app_name());
     }
 
     app.fini();
+    app.prepare_for_shutdown();
     result
 }
 
@@ -423,6 +453,19 @@ pub fn do_bw_main_t(
     }
 }
 
+/// `bwMainT` without the Mercury wiring (the dispatcher/interface join
+/// at BW-02): run `do_bw_main_t`, then the unconditional tail line --
+/// `INFO_MSG( "%s has shut down.\n", appName )` prints for every exit
+/// path, the `-1` config failure included.
+pub fn bw_main_t(app: &mut dyn ServerApp, config: &BwConfig, args: &[String]) -> i32 {
+    // MachineDaemon::queryForInternalInterface, the deprecated
+    // internalInterface warning and the message forwarder join with
+    // BW-02.
+    let result = do_bw_main_t(app, config, args);
+    eprintln!("{} has shut down.", app.app_name());
+    result
+}
+
 /// The unix `BIGWORLD_MAIN` macro body: resource init, config init, then
 /// the app's `bwMain`. Both init return values are discarded here --
 /// exactly like the reference, where a missing configuration does not
@@ -439,7 +482,7 @@ pub fn bigworld_main(
 ) -> i32 {
     let _ = resource.init_from_args(args);
     let _ = config.init_from_args(resource, args);
-    do_bw_main_t(app, config, args)
+    bw_main_t(app, config, args)
 }
 
 #[cfg(test)]
@@ -675,6 +718,10 @@ mod tests {
         // The base shutDown: the INFO line only; the override breaks the
         // loop (the app owns its dispatcher).
         ServerApp::shut_down(&mut app);
+
+        // The pipeline hooks are no-ops by default too.
+        ServerApp::on_run_complete(&mut app);
+        ServerApp::prepare_for_shutdown(&mut app);
     }
 
     /// Every option missing from the chain warns and keeps its default.
@@ -1105,5 +1152,451 @@ mod tests {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
         }
         assert!(processor.clear_signal_handler(libc::SIGINT, id));
+    }
+
+    // ---- BW-01-04-05: staged shutdown and the baseline exit order ----
+
+    use crate::shutdown::{shut_down_stage_to_string, ShutDownStage, ShutdownState, TaskManager};
+
+    /// The base `ServerApp::run` body: `processUntilBreak` unwinds on the
+    /// breaker, `onRunComplete` runs, success returns.
+    #[test]
+    fn base_run_runs_the_base_run_body() {
+        struct HookProbeApp {
+            completed: Cell<bool>,
+        }
+        impl ServerApp for HookProbeApp {
+            fn app_name(&self) -> &str {
+                "probe"
+            }
+            fn init(&mut self, _args: &[String]) -> bool {
+                true
+            }
+            fn run(&mut self) -> bool {
+                true
+            }
+            fn on_run_complete(&mut self) {
+                self.completed.set(true);
+            }
+        }
+
+        let mut app = HookProbeApp {
+            completed: Cell::new(false),
+        };
+        // The probe's required trait methods behave like the reference's
+        // defaults: the name reports, init/run succeed.
+        assert_eq!(ServerApp::app_name(&app), "probe");
+        assert!(ServerApp::init(&mut app, &[]));
+        assert!(ServerApp::run(&mut app));
+
+        let mut dispatcher = Dispatcher::new();
+        let break_flag = dispatcher.break_flag();
+        dispatcher.add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
+            move || break_flag.set(true),
+            "breaker",
+        ))));
+
+        assert_eq!(base_run(&mut app, &mut dispatcher), true);
+        assert!(app.completed.get());
+    }
+
+    /// The full pipeline with every hook recorded. `run` here is the base
+    /// body (loop + onRunComplete), so the log pins the baseline order:
+    /// init -> run -> onRunComplete -> fini -> prepareForShutdown.
+    struct LifecycleApp {
+        log: Rc<RefCell<Vec<String>>>,
+        dispatcher: Dispatcher,
+        init_ok: bool,
+        run_ok: bool,
+    }
+
+    impl LifecycleApp {
+        fn new(init_ok: bool, run_ok: bool, log: &Rc<RefCell<Vec<String>>>) -> Self {
+            Self {
+                log: Rc::clone(log),
+                dispatcher: Dispatcher::new(),
+                init_ok,
+                run_ok,
+            }
+        }
+    }
+
+    impl ServerApp for LifecycleApp {
+        fn app_name(&self) -> &str {
+            "cellapp"
+        }
+
+        fn init(&mut self, _args: &[String]) -> bool {
+            self.log.borrow_mut().push("init".to_string());
+            let break_flag = self.dispatcher.break_flag();
+            self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                FrequentTaskFn(move || break_flag.set(true), "breaker"),
+            )));
+            self.init_ok
+        }
+
+        fn run(&mut self) -> bool {
+            self.log.borrow_mut().push("run".to_string());
+            self.dispatcher.process_until_break();
+            self.on_run_complete();
+            self.run_ok
+        }
+
+        fn on_run_complete(&mut self) {
+            self.log.borrow_mut().push("onRunComplete".to_string());
+        }
+
+        fn fini(&mut self) {
+            self.log.borrow_mut().push("fini".to_string());
+        }
+
+        fn prepare_for_shutdown(&mut self) {
+            self.log
+                .borrow_mut()
+                .push("prepareForShutdown".to_string());
+        }
+    }
+
+    /// Acceptance: a healthy run ends in the baseline order -- init, run,
+    /// onRunComplete, fini, prepareForShutdown -- and exits 0.
+    #[test]
+    fn the_baseline_exit_order_is_pinned_for_a_healthy_run() {
+        let (_r, config, _k) = config_over("exit_order_ok", &valid_bw_xml());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut app = LifecycleApp::new(true, true, &log);
+
+        assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
+        assert_eq!(
+            *log.borrow(),
+            [
+                "init",
+                "run",
+                "onRunComplete",
+                "fini",
+                "prepareForShutdown",
+            ]
+        );
+    }
+
+    /// A failing init skips run and onRunComplete entirely, but fini and
+    /// prepareForShutdown still run -- runApp reaches both unconditionally.
+    #[test]
+    fn fini_and_prepare_for_shutdown_run_even_when_init_fails() {
+        let (_r, config, _k) = config_over("exit_order_initfail", &valid_bw_xml());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut app = LifecycleApp::new(false, true, &log);
+
+        assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_FAILURE);
+        assert_eq!(*log.borrow(), ["init", "fini", "prepareForShutdown"]);
+    }
+
+    /// A failing run still unwinds through the same tail: onRunComplete
+    /// happened inside run, fini and prepareForShutdown follow.
+    #[test]
+    fn a_failing_run_keeps_the_tail_order() {
+        let (_r, config, _k) = config_over("exit_order_runfail", &valid_bw_xml());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut app = LifecycleApp::new(true, false, &log);
+
+        assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_FAILURE);
+        assert_eq!(
+            *log.borrow(),
+            [
+                "init",
+                "run",
+                "onRunComplete",
+                "fini",
+                "prepareForShutdown",
+            ]
+        );
+    }
+
+    /// `bwMainT` runs `doBWMainT` and then prints the shutdown tail for
+    /// every exit path -- the -1 config failure, the 1 init/run failure
+    /// and the 0 success all flow through it.
+    #[test]
+    fn bw_main_t_returns_every_exit_code_through_the_tail() {
+        // Config options fail -> -1 straight through bwMainT.
+        let (_r, config, _k) = config_over(
+            "bwmain_badmode",
+            "<root><serverMode>bogus</serverMode></root>",
+        );
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut app = ScriptedApp::new(true, true, &log);
+        assert_eq!(bw_main_t(&mut app, &config, &[]), -1);
+        assert!(log.borrow().is_empty());
+
+        // App init fails -> 1.
+        let (_r, config, _k) = config_over("bwmain_initfail", &valid_bw_xml());
+        let mut app = ScriptedApp::new(false, true, &log);
+        assert_eq!(bw_main_t(&mut app, &config, &[]), EXIT_FAILURE);
+
+        // Healthy -> 0.
+        let mut app = ScriptedApp::new(true, true, &log);
+        assert_eq!(bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
+    }
+
+    /// Acceptance (background half): a background task submitted during
+    /// the loop runs its phase inline, its completion drains on the next
+    /// tick, and a completion queued after the last tick still finishes
+    /// inside `stopAll`'s final tick -- during fini, before
+    /// prepareForShutdown and before the process ends.
+    #[test]
+    fn background_tasks_end_in_the_baseline_order() {
+        struct BgApp {
+            log: Rc<RefCell<Vec<String>>>,
+            dispatcher: Dispatcher,
+            tasks: Rc<RefCell<TaskManager>>,
+        }
+
+        impl ServerApp for BgApp {
+            fn app_name(&self) -> &str {
+                "cellapp"
+            }
+
+            fn init(&mut self, _args: &[String]) -> bool {
+                self.log.borrow_mut().push("init".to_string());
+
+                // "queue work" (pass 1): submit a background task. Its
+                // phase runs inline now; its completion waits for a tick.
+                let log = Rc::clone(&self.log);
+                let tasks = Rc::clone(&self.tasks);
+                let queued = Cell::new(false);
+                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                    FrequentTaskFn(
+                        move || {
+                            if queued.get() {
+                                return;
+                            }
+                            queued.set(true);
+                            let task = LabelledTask::new("bg work", "bg cleanup", &log);
+                            task.borrow_mut()
+                                .self_rc
+                                .borrow_mut()
+                                .replace(Rc::clone(&task));
+                            tasks
+                                .borrow_mut()
+                                .add_background_task(task as Rc<RefCell<dyn BackgroundTask>>);
+                        },
+                        "queue work",
+                    ),
+                )));
+
+                // The game-tick stand-in: drain completions every pass.
+                let tasks = Rc::clone(&self.tasks);
+                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                    FrequentTaskFn(
+                        move || tasks.borrow_mut().tick(),
+                        "tick",
+                    ),
+                )));
+
+                // "late work" (pass 2, after the tick): one more
+                // background task, still pending when the loop breaks.
+                let log = Rc::clone(&self.log);
+                let tasks = Rc::clone(&self.tasks);
+                let passes = Cell::new(0);
+                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                    FrequentTaskFn(
+                        move || {
+                            passes.set(passes.get() + 1);
+                            if passes.get() < 2 {
+                                return;
+                            }
+                            let task = LabelledTask::new("late bg work", "late cleanup", &log);
+                            assert_eq!(task.borrow().name(), "late bg work");
+                            task.borrow_mut()
+                                .self_rc
+                                .borrow_mut()
+                                .replace(Rc::clone(&task));
+                            tasks
+                                .borrow_mut()
+                                .add_background_task(task as Rc<RefCell<dyn BackgroundTask>>);
+                        },
+                        "late work",
+                    ),
+                )));
+
+                // Break at the end of pass 2.
+                let break_flag = self.dispatcher.break_flag();
+                let passes = Cell::new(0);
+                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                    FrequentTaskFn(
+                        move || {
+                            passes.set(passes.get() + 1);
+                            if passes.get() >= 2 {
+                                break_flag.set(true);
+                            }
+                        },
+                        "breaker",
+                    ),
+                )));
+                true
+            }
+
+            fn run(&mut self) -> bool {
+                self.dispatcher.process_until_break();
+                true
+            }
+
+            fn fini(&mut self) {
+                self.log.borrow_mut().push("fini".to_string());
+                // The task manager's shutdown drain: stopAll's final tick
+                // finishes whatever is still queued.
+                self.tasks.borrow_mut().stop_all();
+            }
+
+            fn prepare_for_shutdown(&mut self) {
+                self.log
+                    .borrow_mut()
+                    .push("prepareForShutdown".to_string());
+            }
+        }
+
+        /// A task that works in the background phase, then "adds itself
+        /// back" so its completion runs on the main thread with a
+        /// different label.
+        struct LabelledTask {
+            work: &'static str,
+            cleanup: &'static str,
+            log: Rc<RefCell<Vec<String>>>,
+            self_rc: RefCell<Option<Rc<RefCell<LabelledTask>>>>,
+        }
+
+        impl LabelledTask {
+            fn new(
+                work: &'static str,
+                cleanup: &'static str,
+                log: &Rc<RefCell<Vec<String>>>,
+            ) -> Rc<RefCell<Self>> {
+                Rc::new(RefCell::new(Self {
+                    work,
+                    cleanup,
+                    log: Rc::clone(log),
+                    self_rc: RefCell::new(None),
+                }))
+            }
+        }
+
+        impl BackgroundTask for LabelledTask {
+            fn do_background_task(&mut self, mgr: &mut TaskManager) {
+                self.log.borrow_mut().push(self.work.to_string());
+                let rc = Rc::clone(self.self_rc.borrow().as_ref().unwrap());
+                mgr.add_main_thread_task(rc);
+            }
+
+            fn do_main_thread_task(&mut self, _mgr: &mut TaskManager) {
+                self.log.borrow_mut().push(self.cleanup.to_string());
+            }
+
+            fn name(&self) -> &str {
+                self.work
+            }
+        }
+
+        use crate::shutdown::BackgroundTask;
+
+        let (_r, config, _k) = config_over("bg_order", &valid_bw_xml());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut app = BgApp {
+            log: Rc::clone(&log),
+            dispatcher: Dispatcher::new(),
+            tasks: Rc::new(RefCell::new(TaskManager::new())),
+        };
+
+        assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
+        assert_eq!(
+            *log.borrow(),
+            [
+                "init",
+                "bg work",       // pass 1: inline background phase
+                "bg cleanup",    // pass 2: tick drains the completion
+                "late bg work",  // pass 2: queued after the last tick
+                "fini",
+                "late cleanup",  // stopAll's final tick, inside fini
+                "prepareForShutdown",
+            ]
+        );
+    }
+
+    /// Acceptance (staged half): a control event carrying
+    /// `SHUTDOWN_INFORM` records the stage and the deadline tick on the
+    /// app's shutdown state, then breaks processing -- the app leaves the
+    /// loop in a shutting-down stage and exits 0.
+    #[test]
+    fn a_control_event_walks_the_staged_shutdown() {
+        struct StagedApp {
+            state: Rc<RefCell<ShutdownState>>,
+            dispatcher: Dispatcher,
+            log: Rc<RefCell<Vec<String>>>,
+        }
+
+        impl ServerApp for StagedApp {
+            fn app_name(&self) -> &str {
+                "cellapp"
+            }
+
+            fn init(&mut self, _args: &[String]) -> bool {
+                self.log.borrow_mut().push("init".to_string());
+
+                // The BW-02 stand-in for the controlledShutDown message
+                // handler.
+                let log = Rc::clone(&self.log);
+                let state = Rc::clone(&self.state);
+                let break_flag = self.dispatcher.break_flag();
+                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
+                    FrequentTaskFn(
+                        move || {
+                            log.borrow_mut().push(format!(
+                                "controlledShutDown {}",
+                                shut_down_stage_to_string(
+                                    ShutDownStage::Inform as i32
+                                )
+                            ));
+                            state
+                                .borrow_mut()
+                                .handle_controlled_shut_down(
+                                    ShutDownStage::Inform,
+                                    120,
+                                );
+                            log.borrow_mut().push(
+                                "ServerApp::shutDown: shutting down".to_string(),
+                            );
+                            break_flag.set(true);
+                        },
+                        "control event",
+                    ),
+                )));
+                true
+            }
+
+            fn run(&mut self) -> bool {
+                self.dispatcher.process_until_break();
+                true
+            }
+        }
+
+        let (_r, config, _k) = config_over("staged_ctl", &valid_bw_xml());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let state = Rc::new(RefCell::new(ShutdownState::new()));
+        let mut app = StagedApp {
+            state: Rc::clone(&state),
+            dispatcher: Dispatcher::new(),
+            log: Rc::clone(&log),
+        };
+
+        assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
+        assert_eq!(
+            *log.borrow(),
+            [
+                "init",
+                "controlledShutDown SHUTDOWN_INFORM",
+                "ServerApp::shutDown: shutting down",
+            ]
+        );
+        let state = state.borrow();
+        assert_eq!(state.stage(), ShutDownStage::Inform);
+        assert_eq!(state.shut_down_time(), 120);
+        assert!(state.is_shutting_down());
     }
 }
