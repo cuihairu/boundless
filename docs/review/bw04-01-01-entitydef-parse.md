@@ -482,3 +482,28 @@
 3. **ResMgr XML 语法错误行未建模**：参考对坏 XML 会先出 XMLSection 解析行（如 "Unclosed tag"）；本项 fixture 用语义错误（查无类型），语法层错误归解析器域，登记不建模。
 4. **控制台前缀是装饰**：`LEVEL: [Component] ` 为 debug filter 输出层修饰，oracle 原样保存，差分比较剥离前缀后的正文。
 5. **tests/ 目标不计入 `--lib` 门禁**：差分测试走公共加载路径（真实 fixture 磁盘树），其覆盖由 lib 内被调路径背书。
+
+---
+
+# BW-04-04-03 复现生成产物 — 复核证据
+
+- **任务编号**: BW-04-04-03（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 403；验收：对照 ID、摘要及引用关系）。
+- **原版源码**: `tools/process_defs/main.cpp` —— 生成产物即 `createEntityDescription`/`createMethodDescriptions`/`createPropertyDescription` 逐实体构建的 dict + `constants.digest`（经捕获器落成确定性 JSON）。fixture 设计的三条参考语义全部由源码钉出：**Flags 必填**（data_description.cpp:209-216，缺 `<Flags>` 报 `Invalid Flags section ''`，仅 `PARSE_IGNORE_FLAGS` 豁免）；**`<Exposed>` 不许用于 client 方法**（解析警告 `Unable to use <Exposed> tag in client method`，属性解析直接失败）；**脚本存在性要求非空**（entity_description.cpp `pythonScriptExists` 要求 `finfo.size != 0`，空 .py 不算）。**活基准**（stock 二进制对新建 `full_def` fixture 实测）：产物 `docs/review/reference/full_entitydef.json`（11,763 字节）；stderr 仅剩已知 teardown 伪影（`BWTwoWay`/`twisted` ModuleNotFoundError（ReturnValuesHandler 静态初始化）+ Python finalization segfault，service_def 基线同样存在，产物先于 teardown 写出且完好）。
+- **Boundless 模块**: 无生产代码改动——产物级差分锚定：新建 `docs/review/fixtures/full_def/res/scripts/`（3 实体 + alias.xml + base/cell/client 脚本树）+ oracle `docs/review/reference/full_entitydef.json` + `crates/entitydef/tests/differential.rs` 新增 `full_dump_matches_the_process_defs_oracle`（无条件跑本仓 fixture，逐字节断言）。
+- **平台**: Linux x86_64（el7 参考二进制实测；Rust 工具链 1.100.0，llvm-cov 0.9.1）。
+- **新版结果**:
+  - **端到端**：Rust bin `process_defs -r docs/review/fixtures/full_def/res` stdout 与 stock 产物**逐字节相等**（11,763 字节，diff 空），exit 0。
+  - **对照 ID**：实体 index 0/1/2；clientIndex 0 与 65535 哨兵；属性 index 0..6；clientServerFullIndex 0..3 与 -1；方法 internal/exposed index；`maxClientServerPropertyCount=4` 等 constants 计数一致。
+  - **对照 摘要**：九个 Flags 族全观测（CELL_PRIVATE/CELL_PUBLIC/OTHER_CLIENTS/OWN_CLIENT/BASE/BASE_AND_CLIENT/CELL_PUBLIC_AND_OWN/ALL_CLIENTS/EDITOR_ONLY 各自的 ghost/other/own/cell/base/cs 组合）；`Identifier → isIndexed+isUnique` 推导链（serial）；`<Persistent>` 位（name/dbid/serial/reading）；isConst（简单类型 true，FIXED_DICT/ARRAY false）；streamSize（STRING -1、INT32 4、UINT8 1、FLOAT64 8、FIXED_DICT{2×FLOAT32} 8、ARRAY -1）；方法 args/returnValues/streamSize（exposed 的 order streamSize -1、calibrate 返回值 8）。
+  - **对照 引用关系**：alias 解析（`HP→INT32`、`REGISTRY→UINT32`，dump 的 type 字段显示底层类型名）；ARRAY of STRING/UINT8 组合；FIXED_DICT x/y、r/g/b 成员组合；方法参数与返回值类型引用；脚本文件存在性三向（base/cell/client 的 hasXxxScript：Avatar 全真、Beacon base+cell、Sensor 仅 base）；全树 digest `6FA9B4C32162519E4A50B9C98136791B` 一致（引用关系完整性的全局哈希，随 fixture 内容变化且两侧相同）。
+  - `cargo test -p entitydef --offline`：**238 单元 + 1 诊断差分 + 5 差分**全部通过（本项新增 1 测）；clippy **0 findings**；rustfmt（触达文件）干净；覆盖率（`--lib`）全部文件 **≥98%**。
+- **证据链接**: `docs/review/fixtures/full_def/`、`docs/review/reference/full_entitydef.json`、`crates/entitydef/tests/differential.rs`、stock 实测 stderr 记录（本节）。
+- **状态**: 已交付（产物在 ID、摘要、引用关系三轴上与 stock 逐字节一致，且以差分测试常驻锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **首轮即字节相等**：无生产代码改动，本项交付形态是"fixture + oracle + 无条件差分测试"的锚定，红绿循环发生在 fixture 设计对 stock 的试错（Flags/Exposed/空脚本三处修正）。
+2. **Flags 必填是本 fork 语义**：参考主线有 Flags 可选的模式，本 fork `DataDescription::parse` 无 Flags 即失败——fixture 全部显式补齐，Rust 行为与 stock 一致（同为报错路径）。
+3. **`<Exposed>` 客户端方法禁止**：stock 属性解析失败报错路径；fixture 已按参考改正，未在 Rust 侧复刻该错误文案（属诊断域，本 fixture 不触发）。
+4. **stock teardown 伪影**：BWTwoWay/twisted 导入失败（ReturnValuesHandler 静态初始化）与 Python finalization segfault 在 service_def/full_def 两次基线均出现，不影响 JSON 产物；Rust bin 无对应噪音（exit 0 干净）。
+5. **空 .py 不算脚本存在**：`pythonScriptExists` 的 size != 0 检查——首版 fixture 用 touch 造空文件被 stock 全判无脚本，已按参考语义填注释行。

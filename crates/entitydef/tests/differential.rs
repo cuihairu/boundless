@@ -63,6 +63,17 @@ fn entity_index_dump_matches_the_process_defs_oracle() {
     compare_fixture("entity_index/res", "entity_index_entitydef.json");
 }
 
+/// BW-04-04-03: the generated artifact reproduces on a fixture that exercises
+/// the comparison axes — IDs (entity/property/clientServerFull indexes and the
+/// 65535 client sentinel), summaries (all nine flag families, persistent,
+/// identifier->indexed+unique, stream sizes), and reference relationships
+/// (alias.xml resolution, ARRAY/FIXED_DICT composition, method arg and return
+/// value types, script-file presence, and the whole-tree digest).
+#[test]
+fn full_dump_matches_the_process_defs_oracle() {
+    compare_fixture("full_def/res", "full_entitydef.json");
+}
+
 #[test]
 fn fantasydemo_dump_matches_the_process_defs_oracle() {
     compare("BW04_FD_RES", "fantasydemo_entitydef.json");

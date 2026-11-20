@@ -1,0 +1,10 @@
+<root>
+	<ClientServerEntities>
+		<Avatar/>
+	</ClientServerEntities>
+
+	<ServerOnlyEntities>
+		<Sensor/>
+		<Beacon/>
+	</ServerOnlyEntities>
+</root>
