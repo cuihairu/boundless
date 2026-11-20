@@ -164,13 +164,8 @@ describe("path walking", () => {
 });
 
 describe("scalar conversions", () => {
-  const node = (value: string): DataSection => ({
-    name: "v",
-    value,
-    valueSet: true,
-    isAttribute: false,
-    children: [],
-  });
+  const node = (value: string): DataSection =>
+    findChild(parseXml("root", `<root><v>${value}</v></root>`), "v")!;
 
   it("parses booleans case-insensitively by name only", () => {
     expect(asBool(node("true"), false)).toBe(true);

@@ -38,6 +38,13 @@
         "extensions": [
           ".def"
         ],
+        "filenames": [
+          "entities.xml",
+          "alias.xml",
+          "services.xml",
+          "capabilities.xml",
+          "user_data_objects.xml"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -51,7 +58,7 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "check": "tsc -p . --noEmit",
+    "check": "tsc -p . --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "package": "pnpm run build && vsce package --no-dependencies"
@@ -61,6 +68,8 @@
     "@types/vscode": "1.85.0",
     "@vscode/vsce": "3.2.1",
     "typescript": "5.7.3",
-    "vitest": "2.1.8"
+    "vitest": "2.1.8",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^8.0.0"
   }
 }
