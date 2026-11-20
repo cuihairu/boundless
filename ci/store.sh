@@ -132,6 +132,14 @@ pg_password() {
 # the workflow supplies the server. Either way the caller gets a private
 # database that is dropped before the lane ends.
 provision_postgres() {
+    # psql is how both shapes are reached — a server this runner starts and a
+    # container the workflow supplies — so it is checked first, exactly as the
+    # mysql leg checks its client before the host shortcut. Checking it only
+    # after the shortcut would turn a missing client into a FAIL.
+    if ! pg_path psql >/dev/null; then
+        echo "no psql on this runner" >&2
+        return "$MISSING_TOOLS"
+    fi
     if [ -n "${CI_STORE_PG_HOST:-}" ]; then
         printf '%s' "$CI_STORE_PG_HOST"
         return 0
