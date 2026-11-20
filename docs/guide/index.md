@@ -36,3 +36,6 @@ Two commands are enough for most claims in this section:
 cargo build -p boundless-server        # the binary and its role set
 cargo test -p server-runtime            # config chain, tick, timers, signals
 ```
+
+[Testing and release](/operations/testing-and-release) lists every reproducible
+gate, including the documentation build.

@@ -131,5 +131,7 @@ cargo test --workspace            # every unit test in the tree
 ```
 
 There is no `tests/` directory and no integration test harness yet; all tests
-are inline `#[cfg(test)]` modules in the crates above. The operations section
-carries the testing and release page these commands feed into.
+are inline `#[cfg(test)]` modules in the crates above. The planned internal test
+framework (fixtures, virtual time, multi-process topologies) is **BW-18**. See
+[Testing and release](/operations/testing-and-release) for every reproducible
+command.

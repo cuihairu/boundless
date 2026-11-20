@@ -10,6 +10,8 @@ gates that decide whether a build is trustworthy.
   **BW-09**.
 - [Load testing with bots](/operations/load-testing) — the bot runtime,
   fixed-seed scenarios and the report contract, tracked by **BW-17**.
+- [Testing and release](/operations/testing-and-release) — what is reproducible
+  locally today, and the CI and release pipeline it builds towards (**BW-22**).
 
 ## Status warning
 
