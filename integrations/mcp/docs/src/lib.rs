@@ -7,6 +7,7 @@
 //! docs of the version a workspace is at.
 
 pub mod errors;
+pub mod health;
 pub mod index;
 pub mod links;
 pub mod markdown;
