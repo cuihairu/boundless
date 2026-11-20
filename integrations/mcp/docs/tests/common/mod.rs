@@ -36,6 +36,14 @@ impl Repo {
         git(&self._dir, &["tag", label]);
     }
 
+    /// Removes `docs/<rel>` and commits it.
+    pub fn delete(&self, rel: &str, message: &str) {
+        let file = self._dir.path().join("docs").join(rel);
+        std::fs::remove_file(&file).expect("remove");
+        git(&self._dir, &["add", "-A"]);
+        git(&self._dir, &["commit", "-q", "-m", message]);
+    }
+
     /// The repository root, for `--root`.
     pub fn path(&self) -> std::path::PathBuf {
         self._dir.path().to_path_buf()

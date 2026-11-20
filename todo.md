@@ -1643,7 +1643,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 证据：原版结果——引用仓库文档树没有版本维度，读者只能看当前工作区，同一个页面路径在不同发布之间无法区分。新版结果——`src/source.rs` 的 `GitSource` 只从 Git 读内容（`git ls-tree -r <ref>:docs` 列文件、`git show <ref>:<path>` 取内容、`git rev-parse --short <ref>` 解析版本键，路径全部经 Git 解析而非磁盘文件，磁盘改动不改变版本含义）；`src/index.rs` 的 `DocIndex` 按版本分区，`VersionDocs { label, commit, docs }` 既按 ref 标签（`v1`/`v2`/`HEAD`）也按 commit 哈希可查，同一页面路径在两个版本下并存。证据链接——`cargo test --test version_index` 6 例全绿（真实 git 仓库夹具）：同一 `guide/entities.md` 在 v1/v2 下内容互不相等、标签解析为 ≥7 位十六进制 commit 且用该 commit 亦能查到同一页、索引经 `to_json`/`from_json` 往返相等、`private: true` 页不入索引而公开页在、`.vitepress/config.ts` 与 `img/logo.png` 被跳过只留 `guide/page.md`、不存在的 ref 返回错误（含 ref 名）而非 panic。
 - [x] **BW-28-01-03 更新修改过的文档章节**。**验收** 增量刷新后搜索命中新文本及当前锚点。
   - 证据：原版结果——引用仓库没有索引，也就没有「改了文档还能检索到」这一层。新版结果——`DocIndex::refresh` 用 `git ls-tree -r <ref>:docs` 的 blob 哈希做变更指纹：blob 未变的页整页沿用（`unchanged` 计数），变了才重新读盘抽取，返回 `RefreshReport { updated, removed, unchanged }`，同一 ref（`HEAD` 移动）原地覆盖。证据链接——`tests/incremental.rs` 4 例（编辑一页只更新那页、锚点与正文随标题改写更新、重复刷新零变更）；`tests/refresh_search.rs` 把刷新接到搜索上取证：页内容从 `## Old heading` / `Obsolete marker wording.` 改为 `## **New** heading` / `Current marker wording.` 后，`RefreshReport.updated == ["guide/entities.md"]`、`unchanged == 1`，搜索 `Current marker` 命中章节 `New heading`（`anchor == new-heading`，snippet 含 `Current marker`），搜索 `obsolete` 返回空。
-- [ ] **BW-28-01-04 移除删除的文档章节**。**验收** 增量刷新后检索结果和链接都不再包含被删除章节。
+- [x] **BW-28-01-04 移除删除的文档章节**。**验收** 增量刷新后检索结果和链接都不再包含被删除章节。
+  - 证据：原版结果——被删文档没有「删了就消失」的保证，读取接口会指向一个已不存在的对象。新版结果——刷新把消失的页从版本里摘出（`RefreshReport.removed == ["guide/gone.md"]`），`Session::find` 取不到它、`Session::paths` 不再列它；对它的 `read_doc` 返回 `isError: true`（链接即报错）；一节被删后该页锚点收敛为 `["two","keep"]`，该节正文再无命中。证据链接——`integrations/mcp/docs/tests/refresh_search.rs`：`a_deleted_page_is_out_of_the_index_and_the_results`、`a_deleted_section_leaves_no_hit_or_link`；`tests/incremental.rs` 的删除路径。
 - [ ] **BW-28-01-05 验证公开边界**。**验收** 私有夹具不会进入索引。
 
 #### BW-28-02 MCP 文档查询

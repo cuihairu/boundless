@@ -34,6 +34,7 @@ impl Default for ServerConfig {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Session {
     index: DocIndex,
     config: ServerConfig,
@@ -47,6 +48,16 @@ fn params(request: &Value) -> Value {
 impl Session {
     pub fn new(index: DocIndex, config: ServerConfig) -> Self {
         Self { index, config }
+    }
+
+    /// The page at `path` in `version`, if it is indexed.
+    pub fn find(&self, version: &str, path: &str) -> Option<&crate::index::DocEntry> {
+        self.index.find(version, path)
+    }
+
+    /// The page paths indexed for `version`.
+    pub fn paths(&self, version: &str) -> Vec<String> {
+        self.index.paths(version)
     }
 
     /// Answers one request, or `None` for notifications.

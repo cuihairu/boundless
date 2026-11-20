@@ -1,5 +1,6 @@
-//! BW-28-01-03: an incremental refresh re-reads the edited sections, so search
-//! hits the new text and the current anchor rather than the old revision.
+//! BW-28-01-03 / 01-04: an incremental refresh re-reads the edited sections
+//! (search hits the new text and the current anchor) and drops the deleted
+//! ones (no hit and no page left for them).
 
 #[path = "common/mod.rs"]
 mod common;
@@ -66,4 +67,61 @@ fn a_refreshed_page_searches_its_new_text_and_anchor() {
 
     // The wording of the earlier revision is gone from the index.
     assert!(hits(&session, 2, "obsolete").is_empty());
+}
+
+#[test]
+fn a_deleted_page_is_out_of_the_index_and_the_results() {
+    let repo = common::Repo::new();
+    repo.commit_doc(
+        "guide/keep.md",
+        "# Keep\n\n## Keep section\n\nStays indexed.\n",
+        "keep",
+    );
+    repo.commit_doc(
+        "guide/gone.md",
+        "# Gone\n\n## Vanished section\n\nUnique vanishing phrase.\n",
+        "gone",
+    );
+    let mut index = DocIndex::default();
+    index.add_version(&repo.source, VERSION, "docs", &["zh"]).expect("index");
+
+    repo.delete("guide/gone.md", "drop the page");
+    let report = index.add_version(&repo.source, VERSION, "docs", &["zh"]).expect("refresh");
+    assert_eq!(report.removed, ["guide/gone.md"]);
+
+    let session = session_with(index);
+    assert!(session.find(VERSION, "guide/gone.md").is_none());
+    assert!(!session.paths(VERSION).iter().any(|p| p.contains("gone.md")));
+    let reply = session
+        .handle(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "read_doc", "arguments": {"path": "guide/gone.md"}},
+        }))
+        .expect("reply");
+    assert_eq!(reply["result"]["isError"], true);
+    assert!(reply["result"]["content"][0]["text"].as_str().unwrap().contains("gone.md"));
+}
+
+#[test]
+fn a_deleted_section_leaves_no_hit_or_link() {
+    let repo = common::Repo::new();
+    repo.commit_doc(
+        "guide/two.md",
+        "# Two\n\n## Keep\n\nKept body.\n\n## Drop\n\nUnique dropped body.\n",
+        "two",
+    );
+    let mut index = DocIndex::default();
+    index.add_version(&repo.source, VERSION, "docs", &["zh"]).expect("index");
+    assert!(!hits(&session_with(index.clone()), 1, "dropped").is_empty());
+
+    repo.commit_doc("guide/two.md", "# Two\n\n## Keep\n\nKept body.\n", "trim");
+    index.add_version(&repo.source, VERSION, "docs", &["zh"]).expect("refresh");
+
+    let session = session_with(index);
+    assert!(hits(&session, 2, "dropped").is_empty());
+    let page = session.find(VERSION, "guide/two.md").expect("page");
+    assert_eq!(
+        page.sections.iter().map(|s| s.anchor.as_str()).collect::<Vec<_>>(),
+        ["two", "keep"]
+    );
 }
