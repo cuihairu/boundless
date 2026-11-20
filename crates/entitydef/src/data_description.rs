@@ -229,6 +229,36 @@ impl DataDescription {
     }
 
     /// `clientSafety()`, forwarded to the type.
+    /// `DataDescription::isGhostedData()`.
+    pub fn is_ghosted_data(&self) -> bool {
+        self.data_flags.is_ghosted_data()
+    }
+
+    /// `DataDescription::isOtherClientData()`.
+    pub fn is_other_client_data(&self) -> bool {
+        self.data_flags.is_other_client_data()
+    }
+
+    /// `DataDescription::isOwnClientData()`.
+    pub fn is_own_client_data(&self) -> bool {
+        self.data_flags.is_own_client_data()
+    }
+
+    /// `DataDescription::isBaseData()`.
+    pub fn is_base_data(&self) -> bool {
+        self.data_flags.is_base_data()
+    }
+
+    /// `DataDescription::isCellData()`.
+    pub fn is_cell_data(&self) -> bool {
+        self.data_flags.is_cell_data()
+    }
+
+    /// `DataDescription::isClientServerData()`.
+    pub fn is_client_server_data(&self) -> bool {
+        self.data_flags.is_client_server_data()
+    }
+
     pub fn client_safety(&self) -> u32 {
         self.data_type.client_safety()
     }
@@ -308,6 +338,58 @@ mod tests {
         assert!(prop.initial_value_section.is_some());
         assert!(prop.default_section.is_none());
         assert!(!diag.has_errors());
+    }
+
+    #[test]
+    fn a_propertys_four_receivers_match_the_baseline() {
+        // The four receiver classes — ghost, other clients, own client,
+        // base — fall straight out of the distribution flags
+        // (`data_description.ipp` predicates). One fixture per class plus
+        // the intersections the reference table names.
+        let ctx = TypeContext::default();
+        let mut receivers = Vec::new();
+        for (name, flags) in [
+            ("all_clients", "ALL_CLIENTS"),
+            ("public_own", "CELL_PUBLIC_AND_OWN"),
+            ("banked", "BASE_AND_CLIENT"),
+            ("base_only", "BASE"),
+            ("private", "CELL_PRIVATE"),
+        ] {
+            let mut prop = DataDescription::default();
+            let mut diag = Diagnostics::new();
+            let section = parse_xml(&format!(
+                "<{name}> <Type> UINT8 </Type> <Flags> {flags} </Flags> </{name}>"
+            ));
+            assert!(prop.parse(&section, "Avatar", "", None, &ctx, &mut diag));
+            receivers.push((
+                name,
+                prop.is_ghosted_data(),
+                prop.is_other_client_data(),
+                prop.is_own_client_data(),
+                prop.is_base_data(),
+                prop.is_cell_data(),
+            ));
+        }
+
+        // (name, ghost, other, own, base, cell-home)
+        let expected = [
+            ("all_clients", true, true, true, false, true),
+            ("public_own", true, false, true, false, true),
+            ("banked", false, false, true, true, false),
+            ("base_only", false, false, false, true, false),
+            // Cell-private carries no receivers; `isCellData` still calls it
+            // cell data because it is simply not base data.
+            ("private", false, false, false, false, true),
+        ];
+        assert_eq!(receivers, expected);
+
+        // `CELL_PRIVATE` also leaves the property off the client-server
+        // channel entirely.
+        let mut prop = DataDescription::default();
+        let mut diag = Diagnostics::new();
+        let section = parse_xml("<hp> <Type> UINT8 </Type> <Flags> CELL_PRIVATE </Flags> </hp>");
+        assert!(prop.parse(&section, "Avatar", "", None, &ctx, &mut diag));
+        assert!(!prop.is_client_server_data());
     }
 
     #[test]

@@ -341,3 +341,26 @@
 2. **`component() != CLIENT` 的 `MF_ASSERT` 是调用方使用约束**（该变体只服务 BASE/CELL 入站调用，CLIENT 侧用 `exposedMethod` 直取），不是解析逻辑；Rust 解析器不加组件门，登记为使用约定。
 3. **`sub_index` 形参替代流读**：参考从 `data` 流读子 id 字节，Rust 由调用方传字节（与 BW-04-01 已交付的 `exposed_id_from_msg_id(msg_id, sub_index, num_exposed)` 同构），流读取属消息层。
 4. 无字节级 oracle（同前项备注）：process_defs 不走入站调用解析；证据为源码级对齐 + 自钉测试。
+
+---
+
+# BW-04-03-02 处理属性分发标志 — 复核证据
+
+- **任务编号**: BW-04-03-02（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 381；验收：同一属性的四类接收方与基线一致）
+- **原版源码**: `lib/entitydef/data_description.ipp:80-155` —— 四类接收方谓词全是分发位的直读：`isGhostedData()`=`DATA_GHOSTED`、`isOtherClientData()`=`DATA_OTHER_CLIENT`、`isOwnClientData()`=`DATA_OWN_CLIENT`、`isBaseData()`=`DATA_BASE`，`isCellData()` 是**否定式** `!isBaseData()`，`isClientServerData()`=三元并 `OTHER_CLIENT|OWN_CLIENT|REPLAY`；`isExposedForReplay()`=`DATA_REPLAY`。基线分类表 `s_entityDataFlagMappings`（`setEntityDataFlags` 查表）：`CELL_PRIVATE`=0 / `CELL_PUBLIC`=GHOSTED / `OTHER_CLIENTS`=GHOSTED|OTHER_CLIENT / `OWN_CLIENT` / `BASE` / `BASE_AND_CLIENT`=OWN_CLIENT|BASE / `CELL_PUBLIC_AND_OWN`=GHOSTED|OWN_CLIENT / `ALL_CLIENTS`=GHOSTED|OTHER_CLIENT|OWN_CLIENT / `EDITOR_ONLY`。解析期的位层叠（`<Persistent>`/`<Identifier>`/`<Indexed>`/`ExposedForReplay` 以 `isOtherClientData()` 为缺省、仅当 `isClientServerData()` 才生效）为 BW-04-01/02 系列已交付并钉测。
+- **Boundless 模块**: `crates/entitydef/src/data_description.rs`（新增 `DataDescription` 六转发访问器 `is_ghosted_data` / `is_other_client_data` / `is_own_client_data` / `is_base_data` / `is_cell_data` / `is_client_server_data`，均落到已交付的 `EntityDataFlags` 位谓词）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**227 单元测试 + 4 差分测试**全部通过（本项新增 1 测）。
+  - **验收钉**：`a_propertys_four_receivers_match_the_baseline` 以参考命名表逐一取值跑真解析（`UINT8` 属性 + `<Flags>`），钉住四类接收方矩阵 `(ghost, other, own, base, cell-home)`：`ALL_CLIENTS`=(T,T,T,F,T)、`CELL_PUBLIC_AND_OWN`=(T,F,T,F,T)、`BASE_AND_CLIENT`=(F,F,T,T,F)、`BASE`=(F,F,F,T,F)、`CELL_PRIVATE`=(F,F,F,F,T)——`CELL_PRIVATE` 是参考表达「无接收方」的名字（空 `<Flags>` 是解析失败，见已交付测），且它的 `is_client_server_data()` 为假（不进客户端/服务器通道）。
+  - 顺带钉住 `is_cell_data` 的否定式语义：base 属性为 cell-home 假、CELL_PRIVATE 为真。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt 干净；覆盖率全部文件 **≥98%**。
+- **证据链接**: `crates/entitydef/src/data_description.rs`（转发访问器与四类接收方测）、`crates/entitydef/src/flags.rs`（位常量/映射表/位谓词）。
+- **状态**: 已交付（源码级对齐 + 四类接收方矩阵锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **参考的 dev 断言未建模**：`data_description.cpp` 在解析期 `MF_ASSERT_DEV( !isBaseData() || (!isGhostedData() && !isOtherClientData()) )`（base 数据同时走 ghost/other-client 是矛盾配置）。Rust 解析不设此断言也不报错——登记为未建模，非行为差异（参考该断言在 release 构建不生效，在 dev 构建是提示性）。
+2. **`CELL_PRIVATE` 而非空标志**：参考 `setEntityDataFlags` 查表，`CELL_PRIVATE` 名对应 0 位；空 `<Flags>` 在两侧都是解析失败（已交付测 `missing_flags_is_a_parse_failure` 钉住），故「无接收方」只能以该名字表达。
+3. **分发位的解析层叠已在位**（`<Persistent>`/`<Identifier>`/`<Indexed>`/`ExposedForReplay` 缺省 `isOtherClientData()` 且仅 `isClientServerData()` 生效）——本项只补接收方谓词面向属性层的入口，不重复建模。
+4. 无字节级 oracle（同前项备注）：分发标志不产生流字节；证据为源码级对齐 + 自钉矩阵测试。
