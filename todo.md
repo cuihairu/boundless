@@ -1548,6 +1548,18 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
   - 结果：scratch 仓 11 例全对——markdown→docs、`tests/python`→python、tsconfig→typescript、crate→`rust_packages=foundation`、无 manifest 的 crate→`rust_all=1` 兜底（否则两个 rust 作业会静默跳过，此为本次修掉的缺陷）、根 Cargo.toml→graph-wide、`ci/`→全 lane、crate+docs 混合→`rust,docs` + `boundless-resources`、两个 crate→`foundation,boundless-resources`、clean→仅 toolchain；死链 FAIL detail 由「1 dead」改为直接给出 `index.md -> no-such-page.md`。另修 push 事件基准缺陷：原实现一律取 `origin/main` tip 为基准，分叉久的分支会把他人推入 crate 的改动全算成本分支 diff（实测报 `rust_packages=mercury,platform`、117 个文件假象），改为 push 事件用 `git merge-base origin/main HEAD` 作基准（PR 仍用 `origin/$base_ref`），修正后本分支 diff 只含 6 个 CI 文件、`rust_packages=` 空。本地等价 7 作业序列 exit=0，manifest 25 行 0 FAIL。
   - 证据：`ci-out/changes.tsv` + 上表 11 例 + `ci-out/manifest.tsv`（toolchain PASS、rust×4 与 python×2 SKIP 并注明开启项、ts-typecheck/ts-test PASS、docs-links PASS、四组 selftest 全 PASS）；作业定义见 `.github/workflows/ci.yml`（run 号见下方交付汇总）。
 
+##### BW-22-01 交付汇总（CI 面真跑记录）
+
+workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatch），`gh workflow run ci.yml --ref lane/bw22-ci` 与 push 触发均验证过：
+
+| run | HEAD | 结果 | 说明 |
+| --- | --- | --- | --- |
+| 44745195746 | `0a64405` | completed/cancelled | 被后续 push 取代 |
+| 44747373936 | `51de90d` | completed/**failure** | 6/8 绿；`Toolchain pin and lockfile` 红——干净 runner 注册表为空，`cargo build --offline` 失败被误报成「锁文件坏」。本地冷 `CARGO_HOME` 复现同一失败，修法是 lane 先 `cargo fetch` 再离线构建（commit `2e63e65`） |
+| **44749719511** | `2e63e65` | completed/**success** | `Select lanes`/`Toolchain`/`Python`/`TypeScript`/`Documentation`/`Harness self-tests` 全 success，`Rust format and lint`、`Rust build and test` 按选路 **skipped**（CI-only 改动、`rust_packages` 空、`rust_all=0`）——路径条件在生产环境生效 |
+
+门禁结论：三条 lane 在本席位可复跑（`ci/toolchain-check.sh --offline` 冷缓存 exit 0；`ci/check-typescript.sh` 对 `extensions/vscode` 真门禁并通过 149 个 vitest 用例；`ci/check-docs.sh` 47 链接 0 死）。Rust 侧 `cargo fmt`/`clippy` 在全仓口径仍红，属 foundation/mercury/platform/resources/server-runtime 各 crate 所属席位的历史债务（284 处 fmt、2 处 clippy deny），不属 CI 面。
+
 #### BW-22-02 测试矩阵与服务装配
 
 编排三端原生 runner、真实 MySQL/PostgreSQL 后端、XML/SQLite、原版兼容差分和 SDK/插件测试。每套任务可在本地复跑，归档测试结果、覆盖率、服务日志及失败夹具。
@@ -1557,7 +1569,13 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 - [ ] **BW-22-02-03 编排 XML 与 SQLite**。**验收** 各有独立结果。
 - [ ] **BW-22-02-04 接入兼容性差分**。**验收** 替换路径可在本地复跑。
 - [ ] **BW-22-02-05 接入 SDK 与插件用例**。**验收** 产物能在宿主中加载。
-- [ ] **BW-22-02-06 归档覆盖率、日志和夹具**。**验收** 失败可取回证据。
+- [x] **BW-22-02-06 归档覆盖率、日志和夹具**。**验收** 失败可取回证据。
+  - 原版：BigWorld `.github/workflows/ci.yml` 与 `ci-windows.yml` 的上传步骤叫「Upload logs on failure」`if: failure()`，只传 `cmake-configure.log` / `cmake-build.log` / `ctest.log` 这类 tee 出来的散文件；`scripts/package-daily.sh` 产出的是安装包（tar.gz / .deb / .rpm），不是测试证据——没有覆盖率、没有失败夹具、也没有回读校验。
+  - 新版：`ci/archive-results.sh` 在 `CI_OUT` **同级**打 `ci-results-<name>-<sha>-<utc>.tar.gz`（manifest + `logs/` + `coverage/` + `fixtures/` + `toolchain.json`），打包后**回读**、行数比对通过才交给上传。`.github/workflows/ci.yml` 每个作业加 `Bundle results`（`if: always()`）与 `Upload results`（`ci-results/<job>-<run_id>`、`if: always()`、`if-no-files-found: warn`）——绿跑的 manifest 正是归档 lane 要校验的东西，红跑的日志才是留档的意义所在，所以两者都不再是 `failure()`。bundle 不落在 `CI_OUT` 内：tar 归档自身目录会无限增长。
+  - 关键设计：行数在打包**前**快照并作为参数传入校验，而不是回读时重新计数。manifest 是 append-only，归档 lane 自己那行在 tarball 已生成**之后**才落盘；若重新计数，一个缺行的 bundle 会对着「已经变长」的 manifest 判通过——本次自测的截断负例正是这条。
+  - 结果：`ci/archive-results.sh self-test` 3 项全 PASS（满负载 CI_OUT round-trip、截断 bundle 被拒、空树如实报告）；本地 7 作业等价门 27 行 round-trip、bundle 56K；解包后 3 条 FAIL 行与其具名日志俱在（`logs/rust-test.log` 60K，含 panic `left: 8 / right: 0` 原样可读）。
+  - 附带发现（不属 CI 面，未改一行代码）：整仓并行跑时 `crates/server-runtime/src/signals.rs:825` 的 `signals::tests::ignore_signal_swallows_raises` **非确定性失败**（首跑 160 过 1 败，复跑 4/4 过，单跑 10/10 过）。成因是测试间共享进程级信号状态：`PENDING_SIGNALS` 与计数 handler 是进程全局的，本用例 `ignore_signal(SIGUSR2)` 与兄弟用例的 handler 注册交叉时，它的计数器被他人投递累加到 8。属 server-runtime 席位的测试隔离缺陷，会间歇性让 `Rust build and test` 作业变红——恰是归档 lane 存在的理由。
+  - 证据：`ci-out/manifest.tsv` 的 `archive` 行 `ok: 27 manifest row(s) round-tripped, bundle 56K`、`ci-results/ci-results-ci-out-2e63e65-*.tar.gz`、`ci/archive-results.sh`；CI 首跑 run 号见 BW-22-02 交付汇总。
 
 #### BW-22-03 压测与回归报告
 
