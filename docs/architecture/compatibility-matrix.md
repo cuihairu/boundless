@@ -90,12 +90,12 @@ layer from BW-02-01 (`endpoint`, `poller`, `network_interface`,
 | `platform` | `clock`, `interface`, `socket` (unix), `poller` (linux) |
 | `resources` | `base64`, `binary`, `bwresource`, `data_section_cache`, `datasection`, `file_system`, `multi_file_system`, `packed`, `special_chars`, `zip` |
 | `mercury` | `packet`, `endpoint`, `misc`, `network_utils`, `network_stats`, `network_interface` (linux), `packet_receiver` (linux), `poller` (linux) |
-| `contracts` | *(none — placeholder only)* |
+| `contracts` | `machined` |
 | `entitydef` | entity type registry |
-| `python-host` | *(none — surface reserved)* |
+| `python-host` | `capi`, `import_paths`, `init_time_job`, `interpreter`, `output_writer`, `pyref` |
 | `server-runtime` | `app`, `config`, `dispatcher`, `server_app`, `shutdown`, `signals`, `task_manager`, `tick`, `timers` |
 
-`foundation`, `platform`, `resources`, `server-runtime` and `libc` are enabled
-as workspace dependencies in the root `Cargo.toml`; `mercury`, `contracts`,
-`entitydef` and `python-host` are commented out and get re-added with their
-first consumer (`mercury`'s turn is the message layer, BW-02-02).
+`foundation`, `platform`, `resources`, `python-host`, `server-runtime` and
+`libc` are enabled as workspace dependencies in the root `Cargo.toml`;
+`mercury`, `contracts` and `entitydef` are commented out and get re-added with
+their first consumer (`mercury`'s turn is the message layer, BW-02-02).

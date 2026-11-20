@@ -5,9 +5,11 @@ crate, and the executable example that proves each one. "Executable example"
 means a `cargo test` invocation you can run in a checkout.
 
 ::: info Reading this page
-`contracts` and `python-host` appear below with *no* public items — that is
-accurate, not a gap in the docs. Both are placeholder crates. See
-[Compatibility matrix](/architecture/compatibility-matrix) for their status.
+Every item below is a `pub` declaration in the named crate, so the tables and
+the source agree. `entitydef` carries the type registry only — property and
+method tables are BW-04-02. See
+[Compatibility matrix](/architecture/compatibility-matrix) for what is still
+open in each crate.
 :::
 
 ## `foundation`
@@ -136,12 +138,50 @@ signals.
 cargo test -p server-runtime
 ```
 
-## `contracts` and `python-host`
+## `contracts`
 
-No public items. `contracts/src/lib.rs` carries only the module docstring saying
-callers should depend on it instead of on a peer service crate; `python-host`
-reserves its surface for the CPython host. Both are documented as
-not-implemented on the pages that use them.
+The bwmachined wire contracts, ported from `lib/network/machine_guard.hpp`
+(BW-16-01-02): one shared header plus the message and address types every role
+sends to `bwmachined`.
+
+| Item | Meaning |
+| --- | --- |
+| `MERCURY_INTERFACE_VERSION = 1` | Mercury interface version mirrored from the reference |
+| `message_id::*` | 15 tool-to-machined ids, `WHOLE_MACHINE` … `HIGH_PRECISION_MACHINE`, plus `MACHINED_ANNOUNCE = 64` |
+| `flags::*`, `process_type::*`, `process_param::*`, `category_name()` | the header flag, process-type, process-param and category vocabularies |
+| `Header` | `u8 message, u8 flags, u16 seq`, little endian |
+| `ProcessMessage`, `ListenerMessage`, `SignalMessage` | the wire messages; each has `write(&self, &mut BinaryStream)` and `read(&mut BinaryStream)` |
+| `ProcessMessage: Default` | the empty process record every other variant grows from |
+
+```bash
+cargo test -p contracts
+```
+
+No role consumes them yet: `contracts` is still commented out of the root
+`[workspace.dependencies]`, and the only mention in the tree is the
+`test-support` case registry naming the crate's test names.
+
+## `python-host`
+
+The CPython embedding layer ported from the reference `lib/pyscript/` and
+`lib/script/` (BW-03), six modules. It links no Python dependency: `capi`
+declares the interpreter ABI by hand.
+
+| Module | Items | Meaning |
+| --- | --- | --- |
+| `interpreter` | `Interpreter::init(&InitConfig)`, `run_simple_string`, `init_time_modules`, `fini`, `is_initialized`, `is_finalized` | one-process interpreter lifecycle; keeps the reference's pre-init globals instead of migrating to `PyConfig` |
+| `import_paths` | `ImportPaths`, `bw_build_platform()`, `platform_mismatch()`, `role_paths()` | the role-specific Python import path and its platform stamp |
+| `init_time_job` | `add_init_time_job(rung, job)`, `run_init_time_jobs`, `add_fini_time_job(_at)`, `run_fini_time_jobs` | init/fini job rungs, the ordering primitive the reference relies on |
+| `output_writer` | `ScriptOutputHook`, `add_hook`/`remove_hook`, `set_log_sink`, `LogSink`, `handle_write` | `sys.stdout`/`sys.stderr` redirected into script logging |
+| `pyref` | `PyRef` | refcounted object bridge; not `Send`, valid only on the thread that holds the GIL |
+| `capi` | `PyObject`, `PyTypeObject`, `PySsize`, `py_none/py_true/py_false`, `is_finalized` | the hand-written CPython ABI surface |
+
+```bash
+cargo test -p python-host
+```
+
+The public script modules, the entity-side object bridge and script entry
+points with reload land with the remaining BW-03 items.
 
 ## Running everything
 
