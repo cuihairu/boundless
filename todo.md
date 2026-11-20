@@ -1635,6 +1635,7 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 | **44789187301** | `7dcb8cd` | push | completed/**success** | BW-22-03-04 上线首跑：`Comparison report` **success**（裸 runner 12 行：scenario 如实 `none recorded yet`、db 三项如实 absent）、`Harness self-tests` 内 `ci/report.sh self-test` 两行 PASS。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 | 44789687782 | `b69126b` | push | completed/**failure** | BW-22-03-04 的 docs 提交：唯一红仍为 `Rust format and lint`（lane 分支 push 的 diff 基线是与 main 的 fork 点，故全仓 lint 债每跑必现），报告条目不受影响 |
 | **44790503820** | `02d90bb` | push | completed/**success** | BW-22-04-01 上线首跑：`Installer package and launch smoke` **success**（release 构建→前缀→2.6M tarball→干净前缀安装→启动烟测全 PASS）、`Harness self-tests` 含 `ci/package.sh self-test` 3/3。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
+| **44791771769** | `4e4590c` | push | completed/**success** | BW-22-04-02 上线首跑：`Docs site package and version index` **success**（构建 20 页→index 戳 0.1.0/4e4590c→864K tarball→版本元数据对账 PASS）；`Documentation site and links` 的 docs-build 腿首次真跑 PASS（修掉门错根 package.json 的旧条件 + link checker 排除 node_modules）。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 
 本地等价门（`CI_OUT` 走默认仓根路径，与 CI 一致）在 `a2c0f66` 上全跑一次：28 PASS / 3 SKIP / 2 FAIL，两条 FAIL 均为 `rust-fmt`（211 处）与 `rust-lint`（32 处，全在 `crates/resources`），属各 crate 所属席位的历史债务，不属 CI 面；`archive` 行 `ok: 32 manifest row(s) round-tripped, bundle 60K`。
 
@@ -1684,7 +1685,14 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 关键设计：**烟测必须咬假货**。自测种一个 exit 0 打 startup 行的 stub 当「编好的二进制」，走完整 stage→archive→smoke 链路要求 PASS 且 tarball 真存在；再换 exit 3 的 stub 要求 FAIL 且点名退出码；最后种不存在的二进制路径要求 staging FAIL 而不是打包空气。子进程拿私有 manifest——stub 驱动的 package 行不许混进真构建的账。
   - 结果：本地 `ci/package.sh` rc=0（真 release 构建 2.6M tarball，烟测打出 `[baseapp] starting (boundless minimal entry)`）、`ci/package.sh self-test` 3/3 PASS、`shellcheck -S warning` 与 `actionlint` 双绿。
   - 证据：CI run **44790503820**（HEAD `02d90bb`）：`Installer package and launch smoke` **success**（托管 runner 上四行 PASS 照录：build/stage/archive 2.6M/smoke），同 run `Harness self-tests` **success** 含 `ci/package.sh self-test` 三行 PASS。唯一红仍为 `rust-lint` 历史债。本地等价命令均 rc=0。详见下方 BW-22 交付汇总。
-- [ ] **BW-22-04-02 发布文档与版本化索引产物**。**验收** 版本元数据一致。
+- [x] **BW-22-04-02 发布文档与版本化索引产物**。**验收** 版本元数据一致。
+  - 原版：BigWorld 根有 `package.json`（`docs:dev|build|preview` 三入口）+ VitePress 站点，但 CI 四份工作流**从不构建文档**——docs 产物只在本地存在；「版本化索引」与「版本元数据一致」在原版没有任何对应物（站点的 version 与交付的 RPM/deb 版本之间无一处对账）。
+  - 新版：`ci/docs-package.sh`——构建（`pnpm --dir docs run build`，BW-19-01-04 的真实入口，锁文件是钉住契约，无锁 → SKIP 点名）、盖章（`index.json`：version/commit/generated/pages/bytes——写的是**实际构建出来**的树的元数据）、归档（`boundless-docs-<version>-<commit>.tar.gz`）、对账（`docs-consistency`：把树里**每一处独立的版本元数据源**互相校——workspace Cargo.toml、`docs/package.json` 自身的 version 字段、VitePress config 里声明了的 `siteVersion`、index 戳与活 commit——不一致就 FAIL 点名哪个源、差多少；还没声明的源如实记 absent，不发明）。版本号只读不 bump、不打 tag、不发 Release（红线）。
+  - 关键设计：**对账门必须咬假货**。自测种私有树三路：各源一致 → PASS 且归档真含 `dist/index.html`；`docs/package.json` 版本 9.9.9 + `siteVersion` 9.9.9 → FAIL 且**两个源都点名**；index 戳是旧 commit `deadbee` 而活树是 `cafe123` → FAIL 原文点名戳过期。
+  - 顺带修正（同一 substrate 变化的连带）：`ci/check-docs.sh` 的 build 腿原本写在 BW-19 落地之前（门的是还不存在的根 `package.json`，落地后永远 SKIP）——改为门 `docs/package.json` 的真实入口，**docs-build 腿从永久 SKIP 变成真门**；连带抓出并修掉 `ci/check-docs-links.py` 的潜伏 bug：walker 不排除 `node_modules/`，pnpm 一装依赖、上万份 vendored README 全被当站点内容扫（本机首跑当场红）。排除集 `{.git, .vitepress, node_modules, dist}`。
+  - workflow：`ci.yml` 新增 `Docs site package and version index` 作业（node+pnpm，产物另传 `docs-package-*` artifact）；docs 作业简化为只装 pnpm 工具（依赖由 lane 自己装，本地与 CI 同一代码路径）；`package-daily.yml` 新增 `docs-package` 作业（同一 48 小时保鲜规则，Ubuntu 一腿即可，产物 `package-docs-*`）；`ci/changes.sh` 新增 `docspkg` lane（`docs/* | ci/docs-package.sh`）；harness 作业补 `ci/docs-package.sh self-test`。
+  - 结果：本地 `ci/docs-package.sh` rc=0（真构建 20 页、860K tarball、index 戳 0.1.0/commit、consistency PASS 如实记 `docs/package.json declares no version (absent is recorded, not invented)`）、`ci/check-docs.sh` rc=0（links+build 双 PASS）、self-test 3/3、`shellcheck -S warning` 与 `actionlint` 双绿。
+  - 证据：CI run **44791771769**（HEAD `4e4590c`）：`Docs site package and version index` **success**（docs-site/docs-index `version=0.1.0 commit=4e4590c`/docs-package 864K/docs-consistency 四行 PASS 照录）；`Documentation site and links` **success**（docs-build 腿首次在托管 runner 上真跑 PASS）；`Harness self-tests` **success** 含 docspkg 自测三行。唯一红仍为 `rust-lint` 历史债。本地等价命令均 rc=0。详见下方 BW-22 交付汇总。
 - [ ] **BW-22-04-03 归档各引擎 SDK**。**验收** 可以从空项目导入。
 - [ ] **BW-22-04-04 归档 VSIX**。**验收** 可以在干净宿主安装。
 - [ ] **BW-22-04-05 校验发布元数据与散列**。**验收** 改动产物会检测失败。
