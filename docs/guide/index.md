@@ -13,6 +13,10 @@ getting a world running.
   role, and what a role can and cannot do today.
 - [Entity scripting](/guide/entity-authoring) — the callback names, the
   `.def`-driven RPC surface, and which parts use which base class.
+- [Client SDK](/guide/client-sdk) — the capability list, the first-RPC
+  verification, and the reference client it is checked against.
+- [Engine integration](/guide/engine-integration) — Unity, Unreal and Godot
+  bindings and their per-engine acceptance items.
 
 ## How honest this guide is
 
