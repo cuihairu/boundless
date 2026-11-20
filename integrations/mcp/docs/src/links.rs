@@ -131,6 +131,31 @@ fn normalize(page: &str, target: &str) -> String {
     parts.join("/")
 }
 
+/// The page and anchor a rendered link points at, or `None` when it leaves
+/// the docs site (a link to another host is not a doc link).
+pub fn rendered_target(target: &str, docs_url: &str) -> Option<(String, Option<String>)> {
+    let base = if docs_url.trim().is_empty() {
+        "docs/".to_string()
+    } else {
+        format!("{}/", docs_url.trim().trim_end_matches('/'))
+    };
+    let rest = target.strip_prefix(&base)?;
+    let (file, anchor) = match rest.split_once('#') {
+        Some((file, anchor)) => (file, Some(anchor)),
+        None => (rest, None),
+    };
+    if file.is_empty() {
+        return None;
+    }
+    let page = file.strip_suffix(".html").unwrap_or(file);
+    let page = if page.ends_with(".md") {
+        page.to_string()
+    } else {
+        format!("{page}.md")
+    };
+    Some((page, anchor.map(|anchor| anchor.to_string())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +228,28 @@ mod tests {
     fn a_link_above_the_root_clamps_to_the_root() {
         let links = links_in("[Far](../../../../away.md)", "guide/entities.md", "");
         assert_eq!(links[0].target, "docs/away.html");
+    }
+
+    #[test]
+    fn a_rendered_target_gives_back_the_page_and_anchor() {
+        assert_eq!(
+            rendered_target(
+                "https://docs.boundless.dev/guide/a.html#b",
+                "https://docs.boundless.dev",
+            ),
+            Some(("guide/a.md".to_string(), Some("b".to_string())))
+        );
+        assert_eq!(
+            rendered_target("docs/guide/a.html", ""),
+            Some(("guide/a.md".to_string(), None))
+        );
+        assert_eq!(
+            rendered_target("https://other.dev/x.html", "https://docs.boundless.dev"),
+            None
+        );
+        assert_eq!(
+            rendered_target("https://docs.boundless.dev/#top", "https://docs.boundless.dev"),
+            None
+        );
     }
 }

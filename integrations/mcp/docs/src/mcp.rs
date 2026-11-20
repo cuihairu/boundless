@@ -219,7 +219,7 @@ impl Session {
 }
 
 fn section_json(section: &crate::index::SectionEntry, docs_url: &str, page: &str) -> Value {
-    let links = links_in(&section.body, page, docs_url)
+    let links = links_in(&section.direct, page, docs_url)
         .into_iter()
         .map(|link| json!({"label": link.label, "target": link.target}))
         .collect::<Vec<_>>();

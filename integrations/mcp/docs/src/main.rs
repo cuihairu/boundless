@@ -75,30 +75,56 @@ fn check(options: &Options, index_path: &str) -> bool {
         }
     };
     let source = GitSource::new(&options.root);
-    match health::freshness(&index, &source, &options.version, &options.prefix) {
-        Ok(report) if !report.stale() => {
-            let commit = index
-                .version(&options.version)
-                .map(|version| version.commit.clone())
-                .unwrap_or_default();
-            println!(
-                "boundless-docs-mcp: the index matches {} ({})",
-                options.version, commit
-            );
-            true
-        }
-        Ok(report) => {
-            eprintln!("boundless-docs-mcp: the index no longer matches {}", options.version);
-            for reason in report.describe() {
-                eprintln!("  {reason}");
-            }
-            false
-        }
+    let fresh = match health::freshness(&index, &source, &options.version, &options.prefix) {
+        Ok(report) => report,
         Err(err) => {
             eprintln!("boundless-docs-mcp: {err}");
-            false
+            return false;
         }
+    };
+    let scoped = match health::scope(
+        &index,
+        &source,
+        &options.version,
+        &options.prefix,
+        &options.docs_url,
+    ) {
+        Ok(report) => Some(report),
+        // The workspace cannot be read at all; the index findings still matter.
+        Err(err) => {
+            eprintln!("boundless-docs-mcp: {err}");
+            None
+        }
+    };
+    let mut clean = true;
+    if fresh.stale() {
+        eprintln!("boundless-docs-mcp: the index no longer matches {}", options.version);
+        for reason in fresh.describe() {
+            eprintln!("  {reason}");
+        }
+        clean = false;
     }
+    if let Some(scoped) = &scoped && !scoped.clean() {
+        eprintln!(
+            "boundless-docs-mcp: the docs of {} do not hold together:",
+            options.version
+        );
+        for line in scoped.describe() {
+            eprintln!("  {line}");
+        }
+        clean = false;
+    }
+    if clean {
+        let commit = index
+            .version(&options.version)
+            .map(|version| version.commit.clone())
+            .unwrap_or_default();
+        println!(
+            "boundless-docs-mcp: the index matches {} ({})",
+            options.version, commit
+        );
+    }
+    clean
 }
 
 fn main() {

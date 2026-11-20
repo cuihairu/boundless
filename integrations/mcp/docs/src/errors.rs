@@ -15,6 +15,8 @@ pub enum DocsError {
     Io(std::io::Error),
     /// The index file could not be parsed.
     Json(serde_json::Error),
+    /// A version the index does not carry.
+    Version(String),
 }
 
 impl fmt::Display for DocsError {
@@ -23,6 +25,7 @@ impl fmt::Display for DocsError {
             DocsError::Git { context, detail } => write!(out, "git {context}: {detail}"),
             DocsError::Io(err) => write!(out, "io: {err}"),
             DocsError::Json(err) => write!(out, "index json: {err}"),
+            DocsError::Version(version) => write!(out, "docs version: {version}"),
         }
     }
 }

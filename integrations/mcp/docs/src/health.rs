@@ -6,6 +6,8 @@
 //! the gate CI runs instead of trusting that a build happened.
 
 use crate::index::DocIndex;
+use crate::links;
+use crate::markdown;
 use crate::source::GitSource;
 use crate::DocsError;
 
@@ -74,6 +76,128 @@ pub fn freshness(
         }
     }
     report.reasons.sort();
+    Ok(report)
+}
+
+/// One way a link of an indexed page can be wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenLink {
+    /// The page the link lives in.
+    pub path: String,
+    /// The section it lives in.
+    pub section: String,
+    /// The link as the server answers it.
+    pub target: String,
+    pub kind: BrokenKind,
+}
+
+/// Why a link does not open inside the docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrokenKind {
+    /// The link points at a page the index does not carry.
+    MissingPage,
+    /// The page is indexed but carries no such anchor.
+    DanglingAnchor,
+}
+
+impl BrokenLink {
+    /// One line for a log or a CI failure message.
+    pub fn describe(&self) -> String {
+        let what = match self.kind {
+            BrokenKind::MissingPage => "no such page",
+            BrokenKind::DanglingAnchor => "no such anchor",
+        };
+        format!("{} > {}: {what} at {}", self.path, self.section, self.target)
+    }
+}
+
+/// What a check of one version's public scope and links found.
+#[derive(Debug, Clone, Default)]
+pub struct ScopeReport {
+    /// Pages the index carries although the repository marks them private.
+    pub private: Vec<String>,
+    /// Links that do not open inside the indexed docs.
+    pub broken: Vec<BrokenLink>,
+}
+
+impl ScopeReport {
+    /// Whether nothing at all needs fixing.
+    pub fn clean(&self) -> bool {
+        self.private.is_empty() && self.broken.is_empty()
+    }
+
+    /// One line per finding, for a log or a CI failure message.
+    pub fn describe(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .private
+            .iter()
+            .map(|path| format!("private page indexed: {path}"))
+            .collect();
+        lines.extend(self.broken.iter().map(BrokenLink::describe));
+        lines
+    }
+}
+
+/// Whether the version an index carries stays public and whether every link of
+/// it opens on a page and anchor the index also carries.
+pub fn scope(
+    index: &DocIndex,
+    source: &GitSource,
+    reference: &str,
+    prefix: &str,
+    docs_url: &str,
+) -> Result<ScopeReport, DocsError> {
+    let version = index
+        .version(reference)
+        .cloned()
+        .ok_or_else(|| DocsError::Version(format!("not indexed: {reference}")))?;
+    let mut report = ScopeReport::default();
+    for doc in &version.docs {
+        // A page the repository no longer serves cannot be inspected here; the
+        // freshness gate names it.
+        let Ok(text) = source.read(reference, &format!("{prefix}/{}", doc.path)) else {
+            continue;
+        };
+        let (matter, _) = markdown::parse_front_matter(&text);
+        if matter.private {
+            report.private.push(doc.path.clone());
+            continue;
+        }
+        for section in &doc.sections {
+            for link in links::links_in(&section.direct, &doc.path, docs_url) {
+                let Some((page, anchor)) = links::rendered_target(&link.target, docs_url) else {
+                    continue; // a link to another host is not a doc link
+                };
+                match index.find(reference, &page) {
+                    None => report.broken.push(BrokenLink {
+                        path: doc.path.clone(),
+                        section: section.title.clone(),
+                        target: link.target,
+                        kind: BrokenKind::MissingPage,
+                    }),
+                    Some(found) => {
+                        if let Some(anchor) = anchor
+                            && !found.sections.iter().any(|section| section.anchor == anchor)
+                        {
+                            report.broken.push(BrokenLink {
+                                path: doc.path.clone(),
+                                section: section.title.clone(),
+                                target: link.target,
+                                kind: BrokenKind::DanglingAnchor,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    report.private.sort();
+    report.broken.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.section.cmp(&b.section))
+            .then_with(|| a.target.cmp(&b.target))
+    });
     Ok(report)
 }
 
@@ -152,5 +276,102 @@ mod tests {
         let repo = Repo::new();
         let report = freshness(&DocIndex::default(), &repo.source, "HEAD", "docs").expect("report");
         assert_eq!(report.reasons, ["missing version HEAD"]);
+    }
+
+    #[test]
+    fn a_clean_scope_passes() {
+        let repo = Repo::new();
+        repo.commit(
+            "docs/guide/near.md",
+            "# Near\n\n## Here\n\nSee [One](./page.md#one).\n",
+            "near",
+        );
+        let mut index = DocIndex::default();
+        index
+            .add_version(&repo.source, "HEAD", "docs", &["zh"])
+            .expect("index");
+        let report = scope(&index, &repo.source, "HEAD", "docs", "").expect("report");
+        assert!(report.clean());
+    }
+
+    #[test]
+    fn a_link_to_a_missing_page_is_reported() {
+        let repo = Repo::new();
+        repo.commit(
+            "docs/guide/near.md",
+            "# Near\n\n## Here\n\nSee [Gone](./gone.md).\n",
+            "near",
+        );
+        let mut index = DocIndex::default();
+        index
+            .add_version(&repo.source, "HEAD", "docs", &["zh"])
+            .expect("index");
+        let report = scope(&index, &repo.source, "HEAD", "docs", "").expect("report");
+        assert_eq!(report.broken.len(), 1);
+        assert_eq!(report.broken[0].kind, BrokenKind::MissingPage);
+        assert!(report.describe().iter().any(|line| line.contains("no such page")));
+    }
+
+    #[test]
+    fn a_link_to_a_missing_anchor_is_reported() {
+        let repo = Repo::new();
+        repo.commit(
+            "docs/guide/near.md",
+            "# Near\n\n## Here\n\nSee [Nope](./page.md#nope).\n",
+            "near",
+        );
+        let mut index = DocIndex::default();
+        index
+            .add_version(&repo.source, "HEAD", "docs", &["zh"])
+            .expect("index");
+        let report = scope(&index, &repo.source, "HEAD", "docs", "").expect("report");
+        assert_eq!(report.broken.len(), 1);
+        assert_eq!(report.broken[0].kind, BrokenKind::DanglingAnchor);
+        assert!(
+            report
+                .describe()
+                .iter()
+                .any(|line| line.contains("no such anchor"))
+        );
+    }
+
+    #[test]
+    fn a_private_page_in_the_index_is_reported() {
+        use crate::index::{DocEntry, SectionEntry, VersionDocs};
+
+        let repo = Repo::new();
+        repo.commit(
+            "docs/guide/secret.md",
+            "---\ntitle: Secret\nprivate: true\n---\n# Secret\n\n## Hidden\n\nHidden body.\n",
+            "secret",
+        );
+        let mut index = DocIndex::default();
+        index.versions.push(VersionDocs {
+            label: "HEAD".into(),
+            commit: repo.source.rev("HEAD").expect("rev"),
+            docs: vec![DocEntry {
+                path: "guide/secret.md".into(),
+                lang: "en".into(),
+                title: "Secret".into(),
+                blob: "anything".into(),
+                sections: vec![SectionEntry {
+                    title: "Hidden".into(),
+                    anchor: "hidden".into(),
+                    level: 2,
+                    line: 5,
+                    body: "Hidden body.".into(),
+                    direct: "Hidden body.".into(),
+                }],
+            }],
+        });
+        let report = scope(&index, &repo.source, "HEAD", "docs", "").expect("report");
+        assert_eq!(report.private, ["guide/secret.md"]);
+        assert!(!report.clean());
+        assert!(
+            report
+                .describe()
+                .iter()
+                .any(|line| line.contains("private page indexed"))
+        );
     }
 }
