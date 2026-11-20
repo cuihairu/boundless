@@ -1161,7 +1161,8 @@ boundless/
 
 - [x] **BW-16-01-01 建立应用与角色 crate 依赖单向关系**。**验收** 依赖图无环。
   - 证据：原版 C++ 无分层约束（依赖靠 Makefile 隐式），新版在 crates/test-support/src/layering.rs 建立分层注册表（foundation=0、platform=1、contracts/entitydef/mercury/python-host/resources=2、server-runtime=3、boundless-server/test-support=4）+ manifest 行级扫描 + Tarjan 环检测 + cargo metadata 成员交叉校验，`workspace_rules_hold` 守护全成员，cargo test -p test-support 7 passed。
-- [ ] **BW-16-01-02 抽取进程间消息契约**。**验收** 调用方无需依赖对端服务 crate。
+- [x] **BW-16-01-02 抽取进程间消息契约**。**验收** 调用方无需依赖对端服务 crate。
+  - 证据：原版 `lib/network/machine_guard.hpp` 的 MachineGuardMessage 体系原先分散在 machined 与各角色实现里，新版抽到 crates/contracts/src/machined.rs（消息 id、标志、param/type/category 枚举、Header+ProcessMessage+ListenerMessage+SignalMessage 及 matches/describe）。`process_message_matches_reference_bytes` 用按原版字段序手写的 38 字节向量逐位断言，另测旧发送方无 extra 块的兼容读取与未来字段跳过；cargo test -p contracts 8 passed。
 - [ ] **BW-16-01-03 验证独立构建**。**验收** 指定服务能单独编译。
 
 #### BW-16-02 平台与外部依赖边界
