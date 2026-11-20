@@ -202,21 +202,33 @@ impl Interpreter {
         unsafe { capi::PyRun_SimpleString(encoded.as_ptr()) == 0 }
     }
 
-    /// `Script::fini`: always tears the interpreter down in this port.
+    /// `Script::fini` (script.cpp:659): the shutdown order the port follows.
     ///
-    /// The reference can skip `Py_Finalize` (client-module builds) and still
-    /// mark the script system finalised; a server process never does, so the
-    /// flag is the whole difference and stays for the shutdown item to
-    /// exercise.
+    /// The reference stops its background-task managers first ("they might be
+    /// loading PyObjects or have script callbacks"), finalises the Pickler,
+    /// then drains the fini-time jobs -- `Personality::onFini` rides the last
+    /// rung -- before dropping the init-time module snapshot, the writer, the
+    /// collected cycles, `__main__`, and finally CPython itself. The port owns
+    /// no task managers or Pickler yet, so the stop-the-background-work step
+    /// belongs to the process layer that drives `fini`, and this method covers
+    /// the script side: jobs, snapshot, cycles, module clear, `Py_Finalize`.
+    /// Unlike the reference, the port always finalises; the reference can skip
+    /// `Py_Finalize` (client-module builds) and still mark itself finalised.
     pub fn fini(&self) {
         if !INITIALIZED.load(Ordering::SeqCst) || capi::is_finalized() {
             return;
         }
+        // `runFiniTimeJobs()`, script.cpp:689: "Personality::onFini called as
+        // last item here". A double drain only logs in the reference; the
+        // port ignores the error and finalises regardless.
+        let _ = init_time_job::run_fini_time_jobs();
         // The snapshot goes before the collect loop, the reference's DECREF
         // between `runFiniTimeJobs` and `while (PyGC_Collect() > 0);`.
         let snapshot = INIT_TIME_MODULES.swap(std::ptr::null_mut(), Ordering::SeqCst);
         // The writer's own teardown: buffers and hooks go now, the
-        // reference's writer dies inside `Py_Finalize`'s sys clear.
+        // reference's writer dies inside `Py_Finalize`'s sys clear. This
+        // follows the jobs, so a callback's `print` still reaches hooks and
+        // the sink, as it does in the reference.
         output_writer::reset();
         // SAFETY: the interpreter is up, this thread owns the GIL, and the
         // steps below run in the reference's order: the snapshot DECREF
@@ -475,6 +487,7 @@ mod tests {
         "interpreter::tests::scenario_init_time_modules_snapshot_taken_at_init",
         "interpreter::tests::scenario_init_time_jobs_run_once_in_rung_order",
         "interpreter::tests::scenario_fini_time_jobs_run_once_in_rung_order",
+        "interpreter::tests::scenario_fini_runs_the_fini_time_jobs",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
     ];
@@ -1110,6 +1123,64 @@ mod tests {
             init_time_job::add_fini_time_job(|| {}),
             Err(init_time_job::JobError::AlreadyRan)
         );
+    }
+
+    /// `Script::fini` drains the fini-time jobs itself, before any
+    /// teardown: every callback still sees a live interpreter, its script
+    /// calls still reach CPython, and its output still lands in the log
+    /// sink. The reference runs `runFiniTimeJobs()` at script.cpp:689 --
+    /// "`Personality::onFini` called as last item here" -- before the
+    /// snapshot DECREF and the collect loop.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_fini_runs_the_fini_time_jobs() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let events = events.clone();
+            output_writer::set_log_sink(move |line, _is_stderr| {
+                events.lock().unwrap().push(format!("sink:{line}"));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let rung_zero = events.clone();
+            assert_eq!(
+                init_time_job::add_fini_time_job_at(0, move || {
+                    // The interpreter is still up: the callback runs script
+                    // and its print reaches the sink.
+                    assert!(run_simple_probe("print('from fini job'); __probe = True"));
+                    rung_zero
+                        .lock()
+                        .unwrap()
+                        .push(format!("job:alive={}", Interpreter::is_initialized()));
+                }),
+                Ok(())
+            );
+            let rung_two = events.clone();
+            assert_eq!(
+                init_time_job::add_fini_time_job_at(2, move || {
+                    rung_two.lock().unwrap().push("job:onFini-rung".to_owned());
+                }),
+                Ok(())
+            );
+        });
+        // The teardown events land in order; what follows is the
+        // documented exit-time flush noise of the reference's own writer.
+        let recorded = events.lock().unwrap().clone();
+        assert!(
+            recorded.starts_with(&[
+                "sink:from fini job".to_owned(),
+                "job:alive=true".to_owned(),
+                "job:onFini-rung".to_owned()
+            ]),
+            "{recorded:?}"
+        );
+        assert!(
+            recorded[3..]
+                .iter()
+                .all(|line| line.contains("flush") || line.contains("unraisablehook")),
+            "{recorded:?}"
+        );
+        assert!(Interpreter::is_finalized());
     }
 
     /// `Script::init` drains the init-time jobs itself, after the
