@@ -733,8 +733,21 @@ pub fn build_type(
         _ => simple_type(meta),
     };
 
-    // setDefaultValue( pSection->findChild( "Default" ) ).
-    data_type.default_section = section.find_child("Default").cloned();
+    // setDefaultValue( pSection->findChild( "Default" ) ). A mailbox rejects
+    // a default section but the type itself is still built, and the section
+    // is not stored: `MailBoxDataType::setDefaultValue` returns without the
+    // base call, so `pDefaultValue_` stays NULL and the zeroed ref remains
+    // the default.
+    let default_section = section.find_child("Default");
+    if matches!(data_type.kind(), Kind::MailBox) {
+        if default_section.is_some() {
+            diag.error(
+                "MailBoxDataType::setDefaultValue: Default value for mailbox not supported\n",
+            );
+        }
+        return Some(data_type);
+    }
+    data_type.default_section = default_section.cloned();
     Some(data_type)
 }
 

@@ -54,11 +54,25 @@ pub enum PropertyValue {
     /// `FIXED_DICT` (`FixedDictDataType`): `None` for the `<AllowNone>` value,
     /// else the fields as `(name, value)` pairs in the type's own field order.
     FixedDict(Option<Vec<(String, PropertyValue)>>),
+    /// `MAILBOX` (`EntityMailBoxRef`): the entity id plus its address, which
+    /// is an `ip`, a `port` and the `salt` carrying the component and type.
+    MailBox {
+        id: i32,
+        ip: u32,
+        port: u16,
+        salt: u16,
+    },
 }
 
 /// The `SimpleStreamElement` / `BlobStreamElement` truncation text.
 const SIMPLE_STREAM_ELEMENT: &str = "SimpleStreamElement";
 const BLOB_STREAM_ELEMENT: &str = "BlobStreamElement";
+
+/// The `UserDataType` reporting sites (`user_data_type.cpp`). Each names the
+/// function that found the Python converter missing.
+const USER_ADD_TO_STREAM: &str = "UserDataType::addObjectToStream";
+const USER_CREATE_FROM_STREAM: &str = "UserDataType::createObjectFromStream";
+const USER_CREATE_FROM_SECTION: &str = "UserDataType::createObjectFromSection";
 
 /// A failure, carrying the reference's own message text where one exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +123,15 @@ pub enum PropertyError {
     /// `ClassDataType::Field::createDefaultValue`: the field's default
     /// section would not build.
     FieldDefaultFailed { name: String },
+    /// `UserDataType`: the `{module}.{instance}` converter is not on this
+    /// host. `site` names the reporting function, as in the reference.
+    MissingConverter {
+        site: &'static str,
+        module: String,
+        instance: String,
+    },
+    /// `MailBoxDataType::isSameType`: a mailbox whose IP is still zero.
+    UninitialisedMailBox { id: i32 },
     /// A composite meta type, handled outside this module.
     Unsupported(&'static str),
 }
@@ -166,6 +189,15 @@ impl std::fmt::Display for PropertyError {
             Self::FieldDefaultFailed { name } => writeln!(
                 f,
                 "ClassDataType::Field::createDefaultValue: Failed to create {name} from default section"
+            ),
+            Self::MissingConverter {
+                site,
+                module,
+                instance,
+            } => writeln!(f, "{site}: Do not have {module}.{instance}"),
+            Self::UninitialisedMailBox { id } => writeln!(
+                f,
+                "MailBoxDataType::isSameType: Mailbox for entity {id} has not been fully initialised yet (IP address is zero)"
             ),
             Self::Unsupported(meta) => write!(f, "{meta} values are not supported here"),
         }
@@ -340,6 +372,21 @@ fn check_value(kind: &Kind, value: &PropertyValue) -> Result<(), PropertyError> 
             }
             _ => Err(PropertyError::TypeMismatch { meta: "fixed_dict" }),
         },
+        // `UserDataType::isSameType` returns `pObject() != NULL`, which is
+        // false without a Python host. The reference prints nothing here.
+        Kind::UserType { .. } => Err(PropertyError::TypeMismatch { meta: "user_type" }),
+        // `MailBoxDataType::isSameType`: Python `None` passes first (there is
+        // no None value here), then a mailbox whose IP is still zero is
+        // rejected with a warning.
+        Kind::MailBox => match value {
+            PropertyValue::MailBox { id, ip, .. } => {
+                if *ip == 0 {
+                    return Err(PropertyError::UninitialisedMailBox { id: *id });
+                }
+                Ok(())
+            }
+            _ => Err(PropertyError::TypeMismatch { meta: "mailbox" }),
+        },
         _ => Err(PropertyError::Unsupported(kind.meta_name())),
     }
 }
@@ -461,6 +508,25 @@ fn value_from_section(
             }
             Ok(PropertyValue::FixedDict(Some(values)))
         }
+        // `UserDataType::createFromSection` bounces to
+        // `createObjectFromSection`, which needs the Python converter.
+        Kind::UserType { module, instance } => Err(PropertyError::MissingConverter {
+            site: USER_CREATE_FROM_SECTION,
+            module: module.clone(),
+            instance: instance.clone(),
+        }),
+        // `MailBoxDataType::createFromSection`: the `id`, `ip` and `etc`
+        // children, where `etc` packs the port and the salt as one uint32.
+        Kind::MailBox => {
+            let read = |name| section.open_section(name);
+            let etc = read("etc").map_or(0, |child| child.as_uint(0));
+            Ok(PropertyValue::MailBox {
+                id: read("id").map_or(0, |child| child.as_int(0)),
+                ip: read("ip").map_or(0, |child| child.as_uint(0)),
+                port: etc as u16,
+                salt: (etc >> 16) as u16,
+            })
+        }
         _ => Err(PropertyError::Unsupported(kind.meta_name())),
     }
 }
@@ -498,6 +564,14 @@ fn default_value(kind: &Kind) -> PropertyValue {
                 ))
             }
         }
+        // `MailBoxDataType::getDefaultValue`: a zeroed `EntityMailBoxRef`,
+        // which is `Address::NONE`.
+        Kind::MailBox => PropertyValue::MailBox {
+            id: 0,
+            ip: 0,
+            port: 0,
+            salt: 0,
+        },
         _ => PropertyValue::Int(0),
     }
 }
@@ -663,6 +737,27 @@ fn add_to_stream(
             }
             _ => return Err(PropertyError::TypeMismatch { meta: "fixed_dict" }),
         },
+        // `UserDataType::addObjectToStream` writes an empty string before
+        // reporting the missing converter.
+        Kind::UserType { module, instance } => {
+            let _ = stream.write_string("");
+            return Err(PropertyError::MissingConverter {
+                site: USER_ADD_TO_STREAM,
+                module: module.clone(),
+                instance: instance.clone(),
+            });
+        }
+        // `MailBoxStreamElement` is a `SimpleStreamElement<EntityMailBoxRef>`,
+        // so the raw bytes of the ref, little-endian on this host.
+        Kind::MailBox => match value {
+            PropertyValue::MailBox { id, ip, port, salt } => {
+                let _ = stream.write_i32(*id);
+                let _ = stream.write_u32(*ip);
+                let _ = stream.write_u16(*port);
+                let _ = stream.write_u16(*salt);
+            }
+            _ => return Err(PropertyError::TypeMismatch { meta: "mailbox" }),
+        },
         _ => return Err(PropertyError::Unsupported(kind.meta_name())),
     }
     Ok(())
@@ -753,6 +848,23 @@ fn create_from_stream(
                 ));
             }
             Ok(PropertyValue::FixedDict(Some(values)))
+        }
+        // `UserDataType::createObjectFromStream` consumes the string first,
+        // even when the converter is missing.
+        Kind::UserType { module, instance } => {
+            let _ = stream.read_string().map_err(|_| truncated())?;
+            Err(PropertyError::MissingConverter {
+                site: USER_CREATE_FROM_STREAM,
+                module: module.clone(),
+                instance: instance.clone(),
+            })
+        }
+        Kind::MailBox => {
+            let id = stream.read_i32().map_err(|_| truncated())?;
+            let ip = stream.read_u32().map_err(|_| truncated())?;
+            let port = stream.read_u16().map_err(|_| truncated())?;
+            let salt = stream.read_u16().map_err(|_| truncated())?;
+            Ok(PropertyValue::MailBox { id, ip, port, salt })
         }
         _ => Err(PropertyError::Unsupported(kind.meta_name())),
     }
@@ -1533,6 +1645,181 @@ mod tests {
         assert_eq!(bare.initial_value(), Ok(PropertyValue::Int(0)));
     }
 
+    fn user_type() -> DataType {
+        build_type("<a> USER_TYPE <implementedBy> demo.custom.Thing </implementedBy> </a>")
+    }
+
+    fn mailbox_value() -> PropertyValue {
+        PropertyValue::MailBox {
+            id: 42,
+            ip: 0x0100_007f,
+            port: 0x1234,
+            salt: 0xabcd,
+        }
+    }
+
+    #[test]
+    fn a_user_type_reports_the_missing_converter_at_every_site() {
+        let user = user_type();
+        // `UserDataType::isSameType` is `pObject() != NULL`, which is silently
+        // false without a Python host.
+        assert_eq!(
+            user.check_value(&PropertyValue::Int(1)),
+            Err(PropertyError::TypeMismatch { meta: "user_type" })
+        );
+        // `createFromSection` bounces to `createObjectFromSection`.
+        assert_eq!(
+            user.value_from_section(&parse_xml("<v> </v>")),
+            Err(PropertyError::MissingConverter {
+                site: USER_CREATE_FROM_SECTION,
+                module: "demo.custom".into(),
+                instance: "Thing".into(),
+            })
+        );
+        // `addObjectToStream` writes the empty string first.
+        let mut stream = BinaryStream::new();
+        assert_eq!(
+            user.add_to_stream(&PropertyValue::Int(1), &mut stream),
+            Err(PropertyError::MissingConverter {
+                site: USER_ADD_TO_STREAM,
+                module: "demo.custom".into(),
+                instance: "Thing".into(),
+            })
+        );
+        assert_eq!(stream.as_bytes(), &[0]);
+    }
+
+    #[test]
+    fn a_user_type_stream_read_consumes_the_string_before_failing() {
+        let user = user_type();
+        let mut stream = BinaryStream::new();
+        let _ = stream.write_string("payload");
+        let err = user.create_from_stream(&mut stream).unwrap_err();
+        assert_eq!(
+            err,
+            PropertyError::MissingConverter {
+                site: USER_CREATE_FROM_STREAM,
+                module: "demo.custom".into(),
+                instance: "Thing".into(),
+            }
+        );
+        // The length-prefixed string is consumed even on failure, so a short
+        // stream truncates before the converter is ever consulted.
+        let mut stream = BinaryStream::new();
+        stream.write_u8(7);
+        assert!(matches!(
+            user.create_from_stream(&mut stream),
+            Err(PropertyError::StreamTruncated { .. })
+        ));
+    }
+
+    #[test]
+    fn a_mailbox_stream_is_the_raw_twelve_byte_ref() {
+        let mailbox = build_type("<a> MAILBOX </a>");
+        let value = mailbox_value();
+        let mut stream = BinaryStream::new();
+        mailbox.add_to_stream(&value, &mut stream).unwrap();
+        assert_eq!(
+            stream.as_bytes(),
+            &[
+                42, 0, 0, 0, // id
+                0x7f, 0x00, 0x00, 0x01, // ip
+                0x34, 0x12, // port
+                0xcd, 0xab, // salt
+            ]
+        );
+        assert_eq!(mailbox.create_from_stream(&mut stream).unwrap(), value);
+    }
+
+    #[test]
+    fn a_mailbox_rejects_an_uninitialised_address() {
+        let mailbox = build_type("<a> MAILBOX </a>");
+        assert_eq!(mailbox.check_value(&mailbox_value()), Ok(()));
+        assert_eq!(
+            mailbox.check_value(&PropertyValue::MailBox {
+                id: 42,
+                ip: 0,
+                port: 0,
+                salt: 0,
+            }),
+            Err(PropertyError::UninitialisedMailBox { id: 42 })
+        );
+        assert_eq!(
+            mailbox.check_value(&PropertyValue::Int(1)),
+            Err(PropertyError::TypeMismatch { meta: "mailbox" })
+        );
+    }
+
+    #[test]
+    fn a_mailbox_default_is_the_zeroed_ref() {
+        let mailbox = build_type("<a> MAILBOX </a>");
+        assert_eq!(
+            mailbox.default_value(),
+            Ok(PropertyValue::MailBox {
+                id: 0,
+                ip: 0,
+                port: 0,
+                salt: 0,
+            })
+        );
+        // With a <Default> child the type still builds, the reference prints
+        // the rejection, and the zeroed ref remains the default because
+        // `setDefaultValue` never stores the section.
+        let mut diag = crate::diagnostics::Diagnostics::new();
+        let ctx = crate::data_type::TypeContext::default();
+        let section = parse_xml("<a> MAILBOX <Default> junk </Default> </a>");
+        let type_ = crate::data_type::build_type(&ctx, Some(&section), &mut diag).unwrap();
+        assert_eq!(
+            diag.errors(),
+            &[
+                "MailBoxDataType::setDefaultValue: Default value for mailbox not supported\n"
+                    .to_string()
+            ]
+        );
+        assert_eq!(
+            type_.default_value(),
+            Ok(PropertyValue::MailBox {
+                id: 0,
+                ip: 0,
+                port: 0,
+                salt: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn a_mailbox_stream_write_rejects_a_foreign_value() {
+        let mailbox = build_type("<a> MAILBOX </a>");
+        let mut stream = BinaryStream::new();
+        assert_eq!(
+            mailbox.add_to_stream(&PropertyValue::Int(1), &mut stream),
+            Err(PropertyError::TypeMismatch { meta: "mailbox" })
+        );
+        assert!(stream.as_bytes().is_empty());
+    }
+
+    #[test]
+    fn a_mailbox_reads_its_id_ip_and_etc_children() {
+        let mailbox = build_type("<a> MAILBOX </a>");
+        // `etc` packs the port and the salt as one uint32.
+        assert_eq!(
+            mailbox.value_from_section(&parse_xml(
+                "<v> <id> 42 </id> <ip> 16777343 </ip> <etc> 2882343476 </etc> </v>"
+            )),
+            Ok(mailbox_value())
+        );
+        // Missing children read as zero, like `DataSection::readInt(0)`.
+        assert_eq!(
+            mailbox.value_from_section(&parse_xml("<v> </v>")),
+            Ok(PropertyValue::MailBox {
+                id: 0,
+                ip: 0,
+                port: 0,
+                salt: 0,
+            })
+        );
+    }
+
     #[test]
     fn error_text_matches_the_reference_messages() {
         assert_eq!(
@@ -1643,6 +1930,28 @@ mod tests {
             .to_string(),
             "ClassDataType::Field::createDefaultValue: Failed to create ammo \
              from default section\n"
+        );
+
+        // The user-type family, one string per reporting site.
+        for site in [
+            USER_ADD_TO_STREAM,
+            USER_CREATE_FROM_STREAM,
+            USER_CREATE_FROM_SECTION,
+        ] {
+            assert_eq!(
+                PropertyError::MissingConverter {
+                    site,
+                    module: "demo".into(),
+                    instance: "Thing".into(),
+                }
+                .to_string(),
+                format!("{site}: Do not have demo.Thing\n")
+            );
+        }
+        assert_eq!(
+            PropertyError::UninitialisedMailBox { id: 42 }.to_string(),
+            "MailBoxDataType::isSameType: Mailbox for entity 42 has not been \
+             fully initialised yet (IP address is zero)\n"
         );
     }
 

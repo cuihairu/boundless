@@ -201,3 +201,33 @@
 3. 参考 `getStreamElement` 的 `isPersistentOnly` 分支（`getNumPersistentFields` / `getFieldIndexForPersistentFieldIndex` 的持久化投影）属 **BW-04-02-07**，本项未实现；本项的 `stream_size` 已含持久化口径（`allowNone` → `-1`）。
 4. 自定义类路径（`<implementedBy>` + `FixedDictStreamedStreamElement` 的 `readCustomType`/`writeCustomType`）未移植 —— 无 Python 宿主，参考在同构建下同样走空路径。
 5. `value.rs` 残余未覆盖 3 行：`405` 是解析器不变式（同 BW-04-02-01 备注 3）；`634`/`635` 是变长序列 `write_packed_int` 的 `map_err` 闭包 —— 只在 packed 计数超过 `MAX_PACKED_INT`（16 MiB）时触发，即需要 >1600 万个元素，单元测试不可行（同 BW-04-02-02 备注 3）。
+
+---
+
+# BW-04-02-04 实现 USER_TYPE 与 MAILBOX — 复核证据
+
+- **任务编号**: BW-04-02-04（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 369；验收：转换及序列化夹具一致）
+- **原版源码**: `lib/entitydef/data_types/user_data_type.cpp` 60-435 —— `isSameType` 返回 `pObject() != NULL`（无 Python 宿主即静默假）；五个上报点：`addObjectToStream`（先 `stream << ""` 再报错）、`createObjectFromStream`（先读长度前缀字符串再报错）、`createObjectFromSection`、`addObjectToSection`、`pDefaultValue`，文案统一 `"UserDataType::<site>: Do not have %s.%s\n"`；`streamSize()` 恒 `-1`。`lib/entitydef/data_types/mailbox_data_type.cpp` 全篇 —— `EntityMailBoxRef` 12 字节（`network/basictypes.hpp`：`int32 id` + `uint32 ip` + `uint16 port` + `uint16 salt`）；`isSameType` 对 ip==0 报 WARNING `"MailBoxDataType::isSameType: Mailbox for entity %d has not been fully initialised yet (IP address is zero)\n"` 并返回假；`setDefaultValue` 报 ERROR `"MailBoxDataType::setDefaultValue: Default value for mailbox not supported\n"` 但类型照常构建，且不落 `pDefaultValue_`（不调基类）；`getDefaultValue` 返回全零 ref（`Address::NONE`）；`createFromSection` 读 `id`/`ip`/`etc` 三个具名子节，`etc = port | (salt << 16)`；`clientSafety()` = CLIENT_UNUSABLE；`addToMD5("MailBox")`。
+- **Boundless 模块**: `crates/entitydef::value`（`PropertyValue::MailBox { id, ip, port, salt }`；`PropertyError::{MissingConverter { site, module, instance }, UninitialisedMailBox { id }}` 及 `Display`；`check_value` / `value_from_section` / `default_value` / `add_to_stream` / `create_from_stream` 的 `Kind::UserType` 与 `Kind::MailBox` 臂）；`crates/entitydef/src/data_type.rs`（`build_type` 尾部：MAILBOX 拒绝 `<Default>` 子节但类型照常构建且不落 `default_section`）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**197 单元测试 + 4 差分测试**全部通过。
+  - **USER_TYPE 无宿主的五个语义**：`a_user_type_reports_the_missing_converter_at_every_site` 钉住 `check_value` 静默 `TypeMismatch`（参考 `isSameType` 只返回假不打印）、`value_from_section` 报 `createObjectFromSection` 站点、`add_to_stream` **先写空字符串**（packed int 0，字节 `[0]`）再报 `addObjectToStream` 站点；`a_user_type_stream_read_consumes_the_string_before_failing` 钉住 `create_from_stream` **先消费长度前缀字符串**再报错 —— 字符串完整时得 `MissingConverter`，流截断时得 `StreamTruncated`（转换器根本未被询问），与参考读序一致。
+  - **MAILBOX 线格式**：`a_mailbox_stream_is_the_raw_twelve_byte_ref` 钉住 12 字节小端 `{id, ip, port, salt}` = `[42,0,0,0, 0x7f,0,0,1, 0x34,0x12, 0xcd,0xab]` 并往返一致。
+  - **零地址闸门**：`a_mailbox_rejects_an_uninitialised_address` 钉住 ip==0 → `UninitialisedMailBox { id }`、ip!=0 → 通过、非 MailBox 载荷 → `TypeMismatch { meta: "mailbox" }`；`a_mailbox_stream_write_rejects_a_foreign_value` 钉住写路径同名拒绝且不落任何字节。
+  - **缺省行为**：`a_mailbox_default_is_the_zeroed_ref` 钉住 `getDefaultValue` 全零 ref；同一测试再用带 `<Default>` 子节的夹具钉住三件事 —— 诊断报参考的拒绝串、类型**照常构建**、零 ref 仍是默认值（参考 `setDefaultValue` 不落 `pDefaultValue_`）。
+  - **节读取**：`a_mailbox_reads_its_id_ip_and_etc_children` 钉住 `id`/`ip`/`etc` 具名子节读取、`etc = port | (salt << 16)` 的拆包方向、子节缺失读 0（同 `readInt(tag, 0)`）。
+  - **错误串**：`error_text_matches_the_reference_messages` 追加四处锚定：三个 USER_TYPE 站点串（`UserDataType::<site>: Do not have demo.Thing\n`）与 MAILBOX 零地址 WARNING（含结尾 `\n`）。
+  - clippy `-D warnings`：entitydef **0 findings**（依赖 `crates/resources` 的 32 条既有 findings 属其他席位 lane，按隔离清单 `-A` 放行）。
+  - rustfmt：`value.rs` / `data_type.rs` 干净（仅对本次触碰文件检查）。
+  - 覆盖率：`value.rs` **99.08%** 行、全部 crate **≥98%**（门槛达成）。
+- **证据链接**: `crates/entitydef/src/value.rs`（实现与全部单测）、`crates/entitydef/src/data_type.rs`（`Kind::{MailBox, UserType}`、`build_type` 的 MAILBOX `<Default>` 拒绝、`stream_size`/`client_safety`/`add_to_md5` 的 MAILBOX 臂，BW-04-01 系列已交付）。
+- **状态**: 已交付（源码级对齐 + 线格式/错误串/缺省行为/读序锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **MAILBOX 流字节无参考 oracle（关键登记）**：`MailBoxDataType::to(mbr, BinaryOStream&)` 写的是 `stream << mbr`，但**全树不存在** `operator<<(BinaryOStream&, const EntityMailBoxRef&)`（`cstdmf/binary_stream.hpp/.ipp` 只有数值/字符串重载与 `insertRaw` 成员模板；`binary_stream.ipp:6` 注明无泛化模板）。即该路径在参考中**不产生任何字节**，本实现按 `streamSize()==12` 与 `insertRaw` 的 memcpy/本机小端口径推导为 12 字节裸 `{id, ip, port, salt}`，并如实登记为推导而非验证。
+2. **USER_TYPE 默认值与参考有已登记差异**：参考 `pDefaultValue` 在报错后**继续写 Python None 并返回 true**（错误但成功返回）；本实现 `default_value` 签名返回 `PropertyValue`，USER_TYPE 落入 `_ => PropertyValue::Int(0)` 兜底臂。差异在于「报错后写 None」无法在无 Python 宿主的 `PropertyValue` 模型中表达（None 值仅 FIXED_DICT `AllowNone` 有），已如实登记，不虚称一致。
+3. **仍无字节级参考 oracle**（同 BW-04-02-01/02/03 备注 1）：本项「转换及序列化夹具一致」的证据是与参考源码逐句对齐的自钉夹具测试，不是与参考二进制产物的比对。
+4. `data_type.rs` 的 `Kind::MailBox` 基础臂（`stream_size`=12、`client_safety`=CLIENT_UNUSABLE、`add_to_md5("MailBox")`、`build_user_type` 的 `implementedBy` 拆分与两条诊断）为 BW-04-01 系列已交付，本项只新增 `build_type` 尾部的 `<Default>` 拒绝与不落盘。
+5. `value.rs` 残余未覆盖 3 行：`452` 是向量解析器不变式 `unreachable!`（同 BW-04-02-01 备注 3）；`708`/`709` 是变长序列 `write_packed_int` 的 `map_err` 闭包 —— 只在 packed 计数超过 `MAX_PACKED_INT`（16 MiB）时触发（同 BW-04-02-02 备注 3）。
