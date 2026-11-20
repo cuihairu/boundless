@@ -400,7 +400,8 @@
   - 证据：`crates/entitydef/src/cli.rs` + `src/bin/process_defs.rs`——usage 文本与 stock `--help` 逐字节（打到 stderr、exit 0）、退出码三基准（help=0/加载失败=1+原话/成功=0）、`getOption`/`hasFlag` 停一位短与盲取值行为逐条建测、`-r` 扫描按 `BWResource::init`；Rust bin 端到端对 stock 实测：`--help` stderr 逐字节相等，service 夹具 dump stdout 与 oracle 逐字节相等，无 `-r` exit 1。238 单测+4 差分通过，clippy 0 findings，cli.rs 100%（bin 不计入 lib 覆盖，由端到端背书；多 `-r` 与未知 flag 差异登记，见 docs/review/bw04-01-01-entitydef-parse.md BW-04-04-01 节备注 4/5）。commit `f56abea`。
 - [x] **BW-04-04-02 兼容定义诊断**。**验收** 坏 .def 显示对应文件和字段。
   - 证据：坏定义 fixture（Bad.def 字段 hp 用 NOSUCHTYPE）在 stock 二进制七行诊断链逐字捕获（docs/review/reference/bad_def_diagnostics.txt），Rust 经惰性别名加载（data_type.cpp s_aliasesDone 等价）后差分测试断言六行 [DataDescription] 链顺序与文本逐行一致，含 `Unable to find data type 'NOSUCHTYPE' for Bad.hp` 文件.字段行；238 单元 + 1 诊断差分 + 4 差分通过，clippy 0 findings，覆盖率 data_type.rs 943/962=98.02% 全部 ≥98%（commit 7af5fd6）。
-- [ ] **BW-04-04-03 复现生成产物**。**验收** 对照 ID、摘要及引用关系。
+- [x] **BW-04-04-03 复现生成产物**。**验收** 对照 ID、摘要及引用关系。
+  - 证据：新建 full_def fixture（3 实体、alias/ARRAY/FIXED_DICT、九个 Flags 族、identifier 链、base/cell/client 脚本三向），stock 产物 docs/review/reference/full_entitydef.json（11,763 字节，digest 6FA9B4C32162519E4A50B9C98136791B），Rust bin stdout 与之逐字节相等（diff 空，exit 0）；ID（实体/属性/clientServerFull index、65535 哨兵）、摘要（全 flag 组合、streamSize、方法 args/returnValues）、引用关系（别名解析、类型组合、脚本存在性、全树 digest）三轴一致，差分测试 full_dump_matches_the_process_defs_oracle 无条件锚定；238 单元 + 6 差分通过，clippy 0，覆盖率全部 ≥98%（commit 4912826）。
 - [ ] **BW-04-04-04 验证 bwentity 与集成示例**。**验收** 用产物成功加载脚本定义。
 
 ### BW-05 集群控制、进程发现和恢复
