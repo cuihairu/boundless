@@ -25,3 +25,5 @@ rustc-ice-*.txt
 
 # BW-22-02-06: ci/ entrypoint output — results, logs and archives. Never tracked.
 ci-out/
+__pycache__/
+*.py[cod]

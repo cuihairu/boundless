@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared helpers for the ci/ entrypoints.
 #
 # Every entrypoint is a single shell function that runs the same way locally
@@ -26,6 +27,25 @@ REPO_ROOT="$(cd "$CI_LIB_ROOT/.." && pwd)"
 CI_OUT="${CI_OUT:-$REPO_ROOT/ci-out}"
 CI_MANIFEST="$CI_OUT/manifest.tsv"
 CI_LOG_DIR="$CI_OUT/logs"
+
+# How many rows the manifest already had when this entrypoint started.
+#
+# One workflow job runs several entrypoints into the same CI_OUT: rust-build-test
+# runs `check-rust.sh build` then `check-rust.sh test`, and harness runs four
+# self-tests back to back. The manifest is therefore append-only across them,
+# which is how the uploaded artifact shows every lane's verdict.
+#
+# The exit code must come from the rows this process wrote, though. Reading the
+# whole file makes a rerun into the same CI_OUT stay red after the defect it
+# recorded has been healed — the lane is then reporting a verdict it did not
+# reach. lib.sh is sourced before any lane runs, so the count taken here is the
+# row count at process start.
+if [ -f "$CI_MANIFEST" ]; then
+    CI_MANIFEST_MARK="$(wc -l <"$CI_MANIFEST")"
+else
+    CI_MANIFEST_MARK=0
+fi
+CI_MANIFEST_MARK=$((CI_MANIFEST_MARK))
 
 ci_out_env() {
     mkdir -p "$CI_OUT" "$CI_LOG_DIR"
@@ -81,10 +101,15 @@ ci_base_ref() {
 }
 
 # Exit clean unless some lane failed. SKIP never blocks a push.
+#
+# The whole manifest is printed, because the artifact reader wants every lane
+# this job produced. The verdict, though, is taken only from the rows written
+# since $CI_MANIFEST_MARK — see the note there.
 ci_finalize() {
     local failed=0
     if [ -f "$CI_MANIFEST" ]; then
-        failed=$(awk -F'\t' '$2 == "FAIL"' "$CI_MANIFEST" | wc -l)
+        failed="$(tail -n +"$((CI_MANIFEST_MARK + 1))" "$CI_MANIFEST" \
+            | awk -F'\t' '$2 == "FAIL"' | wc -l)"
         printf '\n== manifest: %s\n' "$CI_MANIFEST"
         column -s "$(printf '\t')" "$CI_MANIFEST" 2>/dev/null || cat "$CI_MANIFEST"
     fi
