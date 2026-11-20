@@ -723,6 +723,45 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-04-03 — engine SDK archives: each adapter tree under sdk/engines/
+  # is archived and must prove importability from an empty project through
+  # its own import-check. Every engine SKIPs and names its ticket until
+  # BW-21 lands the trees; a started tree that cannot prove importability
+  # fails here rather than at handoff.
+  sdkarc:
+    name: Engine SDK archives and import smoke
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'sdkarc')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Archive the engine SDKs
+        run: ci/sdk-archive.sh
+
+      - name: Upload the archives
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: sdk-archives-${{ github.run_id }}
+          path: ci-out/sdk/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-sdkarc-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -771,6 +810,7 @@ jobs:
           ci/report.sh self-test
           ci/package.sh self-test
           ci/docs-package.sh self-test
+          ci/sdk-archive.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results

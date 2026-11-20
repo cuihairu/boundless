@@ -79,7 +79,7 @@ main() {
 
     local p owner
     local rust_pkgs=""
-    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0 report=0 package=0 docspkg=0
+    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0 report=0 package=0 docspkg=0 sdkarc=0
     local rust_all=0
 
     while IFS= read -r p; do
@@ -153,6 +153,10 @@ main() {
         case "$p" in
         docs/* | ci/docs-package.sh) docspkg=1 ;;
         esac
+        # The engine SDK archives follow their adapter trees and the lane.
+        case "$p" in
+        sdk/engines/* | ci/sdk-archive.sh) sdkarc=1 ;;
+        esac
 
         if owner="$(owning_package "$p")" && [ "$owner" != workspace-root ] && [ -n "$owner" ]; then
             if [[ "$rust_pkgs" != *"$owner"* ]]; then
@@ -188,6 +192,7 @@ main() {
     [ "$report" -eq 1 ] && add_lane report
     [ "$package" -eq 1 ] && add_lane package
     [ "$docspkg" -eq 1 ] && add_lane docspkg
+    [ "$sdkarc" -eq 1 ] && add_lane sdkarc
 
     # A Rust source change whose owning package could not be resolved (a crate
     # directory that has no Cargo.toml yet, a stray .rs outside crates/ and
