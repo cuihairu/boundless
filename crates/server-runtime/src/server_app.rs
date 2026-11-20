@@ -356,6 +356,44 @@ pub trait ServerApp {
     fn on_signalled(&mut self, sig_num: i32) {
         base_on_signalled(sig_num);
     }
+
+    /// `ServerApp::onTickPeriod`: "gives subclasses the tick period each
+    /// time advanceTime is called." The default is the base body -- the
+    /// slow-tick warning ("Last game tick took %.2f seconds. Expected
+    /// %.2f."). The hertz arrives as a parameter until the config
+    /// statics go global.
+    fn on_tick_period(&mut self, tick_period: f64, update_hertz: i32) {
+        base_on_tick_period(tick_period, update_hertz);
+    }
+
+    /// "This method gives subclasses a chance to act at the end of a
+    /// tick immediately before the current server time is incremented."
+    fn on_end_of_tick(&mut self) {}
+
+    /// "This method gives subclasses a chance to act at the beginning of
+    /// a tick immediately after the current server time is incremented."
+    fn on_start_of_tick(&mut self) {}
+
+    /// "This method gives subclasses a chance to act at the end of
+    /// ServerApp's tick processing, immediately before control returns
+    /// to the caller of ServerApp::advanceTime()."
+    fn on_tick_processing_complete(&mut self) {}
+
+    /// `ServerApp::onSetStartTime` (a no-op in the base class).
+    fn on_set_start_time(&mut self, _old_time: u32, _new_time: u32) {}
+}
+
+/// `ServerApp::onTickPeriod`'s base body: warn when the last game tick
+/// took more than twice its budget.
+pub fn base_on_tick_period(tick_period: f64, update_hertz: i32) {
+    if tick_period * update_hertz as f64 > 2.0 {
+        eprintln!(
+            "ServerApp::onTickPeriod: Last game tick took \
+             {:.2} seconds. Expected {:.2}.",
+            tick_period,
+            1.0 / update_hertz as f64
+        );
+    }
 }
 
 /// `ServerApp::onSignalled`, the base arm: on SIGINT reset the
