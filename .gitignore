@@ -27,3 +27,4 @@ rustc-ice-*.txt
 ci-out/
 __pycache__/
 *.py[cod]
+ci-results/

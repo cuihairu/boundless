@@ -79,14 +79,20 @@ jobs:
       - name: Verify
         run: ci/toolchain-check.sh --offline
 
+      - name: Bundle results
+        # Always: a green run's manifest is what the archive lane verifies, and
+        # a red one is the whole point of keeping it retrievable.
+        if: always()
+        run: ci/archive-results.sh
+
       - name: Upload results
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ci-out-toolchain-${{ github.run_id }}
-          path: ci-out/
+          name: ci-results-toolchain-${{ github.run_id }}
+          path: ci-results/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   rust-static:
     name: Rust format and lint
@@ -116,14 +122,20 @@ jobs:
             ci/check-rust.sh all --packages ""
           fi
 
+      - name: Bundle results
+        # Always: a green run's manifest is what the archive lane verifies, and
+        # a red one is the whole point of keeping it retrievable.
+        if: always()
+        run: ci/archive-results.sh
+
       - name: Upload results
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ci-out-rust-static-${{ github.run_id }}
-          path: ci-out/
+          name: ci-results-rust-static-${{ github.run_id }}
+          path: ci-results/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   rust-build-test:
     name: Rust build and test
@@ -152,14 +164,20 @@ jobs:
             ci/check-rust.sh test
           fi
 
+      - name: Bundle results
+        # Always: a green run's manifest is what the archive lane verifies, and
+        # a red one is the whole point of keeping it retrievable.
+        if: always()
+        run: ci/archive-results.sh
+
       - name: Upload results
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ci-out-rust-build-test-${{ github.run_id }}
-          path: ci-out/
+          name: ci-results-rust-build-test-${{ github.run_id }}
+          path: ci-results/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   python:
     name: Python checks
@@ -183,14 +201,20 @@ jobs:
       - name: Check
         run: ci/check-python.sh
 
+      - name: Bundle results
+        # Always: a green run's manifest is what the archive lane verifies, and
+        # a red one is the whole point of keeping it retrievable.
+        if: always()
+        run: ci/archive-results.sh
+
       - name: Upload results
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ci-out-python-${{ github.run_id }}
-          path: ci-out/
+          name: ci-results-python-${{ github.run_id }}
+          path: ci-results/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   typescript:
     name: TypeScript checks
@@ -216,14 +240,20 @@ jobs:
       - name: Check
         run: ci/check-typescript.sh
 
+      - name: Bundle results
+        # Always: a green run's manifest is what the archive lane verifies, and
+        # a red one is the whole point of keeping it retrievable.
+        if: always()
+        run: ci/archive-results.sh
+
       - name: Upload results
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ci-out-typescript-${{ github.run_id }}
-          path: ci-out/
+          name: ci-results-typescript-${{ github.run_id }}
+          path: ci-results/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   docs:
     name: Documentation site and links
@@ -257,14 +287,20 @@ jobs:
         if: hashFiles('package.json') == ''
         run: ci/check-docs.sh
 
+      - name: Bundle results
+        # Always: a green run's manifest is what the archive lane verifies, and
+        # a red one is the whole point of keeping it retrievable.
+        if: always()
+        run: ci/archive-results.sh
+
       - name: Upload results
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ci-out-docs-${{ github.run_id }}
-          path: ci-out/
+          name: ci-results-docs-${{ github.run_id }}
+          path: ci-results/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
@@ -305,11 +341,17 @@ jobs:
           ci/check-typescript.sh self-test
           ci/check-docs.sh self-test
 
+      - name: Bundle results
+        # Always: a green run's manifest is what the archive lane verifies, and
+        # a red one is the whole point of keeping it retrievable.
+        if: always()
+        run: ci/archive-results.sh
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ci-out-harness-${{ github.run_id }}
-          path: ci-out/
+          name: ci-results-harness-${{ github.run_id }}
+          path: ci-results/
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn
