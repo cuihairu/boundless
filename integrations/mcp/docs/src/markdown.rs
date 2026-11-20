@@ -22,6 +22,8 @@ pub struct ExtractedSection {
     /// Zero-based line of the heading inside the document.
     pub line: usize,
     pub body: String,
+    /// The text before any nested heading: what this section itself says.
+    pub direct: String,
 }
 
 /// Everything the index needs about one markdown page.
@@ -169,13 +171,19 @@ pub fn extract_document(text: &str) -> ExtractedDoc {
                 break;
             }
         }
+        // The direct body stops at the next heading of any level, so the
+        // section that owns the text is the one search attributes it to.
+        let next_any = headings.get(idx + 1).map(|(_, _, l)| *l).unwrap_or(end);
+        let own_end = next_any.min(end);
         let body: Vec<&str> = lines[line + 1 - base..end - base].to_vec();
+        let direct: Vec<&str> = lines[line + 1 - base..own_end - base].to_vec();
         sections.push(ExtractedSection {
             level,
             title: title.clone(),
             anchor: slugify(title),
             line,
             body: body.join("\n"),
+            direct: direct.join("\n"),
         });
     }
 
