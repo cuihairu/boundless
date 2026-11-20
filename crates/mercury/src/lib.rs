@@ -29,4 +29,5 @@ pub mod poller;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;
+pub mod udp_bundle;
 pub mod unpacked_message_header;

@@ -11,15 +11,19 @@
 //! the reason the reference reports, leaving the rest of the bundle
 //! undelivered.
 //!
-//! The reference walks a chain of packets with packet-absolute offsets and
-//! reads the request links off the packet footer. This port frames inside
-//! one contiguous buffer (see [`crate::message_framing`]), so a bundle
-//! here is the body alone: offsets are body-relative, the caller hands the
-//! first request offset in the same terms ([`None`] when the packet
-//! carried no request footer), and the constant `Packet::HEADER_SIZE`
-//! shift cancels on both sides. The same flattening folds the reference's
-//! "is there a next packet to hold the payload" check into a plain bounds
-//! check, and the walk's end condition into `offset >= body.len()`.
+//! The reference walks a chain of packets with packet-absolute offsets,
+//! its flags word at offset 0 and the first body byte at offset
+//! `Packet::HEADER_SIZE`. This port flattens the chain into one
+//! contiguous buffer with the flags word stripped off (see
+//! [`crate::message_framing`]), so the walk's offsets are body-relative.
+//! The request links the wire carries stay packet-absolute -- the caller
+//! hands the first request's footer value through untouched ([`None`]
+//! when the packet carried no request footer) and the walk translates at
+//! the two places a link meets an offset: seeding the first message and
+//! comparing each message's link against its own position. The same
+//! flattening folds the reference's "is there a next packet to hold the
+//! payload" check into a plain bounds check, and the walk's end
+//! condition into `offset >= body.len()`.
 //!
 //! Left with the channel layer of BW-02-03: the packet chain and its
 //! `nextPacket`, early (`isEarly`) dispatch, the per-channel
@@ -35,7 +39,7 @@ use crate::interface_element::{InterfaceElement, REPLY_MESSAGE_IDENTIFIER};
 use crate::interface_table::InterfaceTable;
 use crate::message_framing::{NEXT_REQUEST_OFFSET_SIZE, REPLY_ID_SIZE, SPECIAL_LENGTH_SIZE};
 use crate::misc::{Reason, ReplyID};
-use crate::unpacked_message_header::{UnpackedMessageHeader, NO_REPLY};
+use crate::unpacked_message_header::{NO_REPLY, UnpackedMessageHeader};
 
 /// One unpacked message: the header the handler is handed, and where its
 /// body sits in the bundle buffer.
@@ -49,9 +53,10 @@ struct Unpacked {
 /// packed in `body` and deliver each to the handler its id is served
 /// with.
 ///
-/// `first_request_offset` is the body-relative offset of the bundle's
-/// first request, or [`None`] when the packet carried no request footer;
-/// the request links each message carries chain the rest.
+/// `first_request_offset` is the packet's first-request footer value --
+/// the packet-absolute offset of the bundle's first request -- or
+/// [`None`] when the packet carried no request footer; the request links
+/// each message carries chain the rest, in the same wire terms.
 ///
 /// The reference returns the reason it stopped on (`REASON_SUCCESS` when
 /// every message was delivered); the rest of a bundle after an error is
@@ -65,8 +70,8 @@ pub fn dispatch_messages(
     let msg_end = body.len();
     let mut offset = 0usize;
     // `iterator::nextPacket`: the packet's first request offset, zero when
-    // it has none. `None` is that zero here, and it can never equal an
-    // offset the walk stands on.
+    // it has none. `None` is that zero here, and it can never equal a
+    // wire offset, which starts at the flags word the body lacks.
     let mut next_request_offset = first_request_offset;
 
     // `while (iter != end && !breakLoop)`: with one buffer, the iterator
@@ -103,7 +108,10 @@ pub fn dispatch_messages(
             return Reason::CorruptedPacket;
         }
 
-        let is_request = next_request_offset == Some(offset);
+        // `isRequest = ( nextRequestOffset_ == offset_ )`: the wire value
+        // counts from the flags word, the walk from the body's first
+        // byte, so the constant header shifts the walk's position up.
+        let is_request = next_request_offset == Some(offset + crate::packet::HEADER_SIZE);
         let mut unpacked =
             match unpack_message(&updated, body, offset, is_request, &mut next_request_offset) {
                 Ok(unpacked) => unpacked,
@@ -232,20 +240,23 @@ fn unpack_message(
                 .try_into()
                 .unwrap(),
         );
-        if link as usize > msg_end {
+        // The wire link counts from the flags word the body slice lacks,
+        // so it may reach `HEADER_SIZE` past the body's end.
+        let wire_msg_end = msg_end + crate::packet::HEADER_SIZE;
+        if link as usize > wire_msg_end {
             eprintln!(
                 "UDPBundleProcessor::iterator::unpack( {} ): Next request offset out of bounds (got offset {}, msg end offset {})",
                 element.name(),
                 link,
-                msg_end
+                wire_msg_end
             );
             revert(element, body, offset, length, is_request);
             return corrupt_header();
         }
 
-        // The wire link is body-relative here, the reference's being
-        // packet-absolute; zero is "no next request", which can never be
-        // an offset a later message stands on.
+        // The link stays in wire terms; the walk translates when it
+        // compares. Zero is "no next request", which can never equal an
+        // offset a later message stands on.
         *next_request_offset = Some(link as usize);
         msg_beg += REPLY_ID_SIZE + NEXT_REQUEST_OFFSET_SIZE;
     }
@@ -470,14 +481,20 @@ mod tests {
     }
 
     /// Patch the request links: each request points at the next one, the
-    /// last at nothing, and the walk starts at the first.
+    /// last at nothing, and the walk starts at the first. The values are
+    /// wire offsets, packet-absolute like [`crate::udp_bundle`] writes
+    /// them, so every body offset gains the flags word's two bytes.
     fn chain(links: &[(usize, usize)], body: &mut [u8]) -> Option<usize> {
         for (i, &(_, slot)) in links.iter().enumerate() {
-            let next = links.get(i + 1).map_or(0usize, |&(offset, _)| offset);
+            let next = links
+                .get(i + 1)
+                .map_or(0usize, |&(offset, _)| offset + crate::packet::HEADER_SIZE);
             body[slot..slot + NEXT_REQUEST_OFFSET_SIZE]
                 .copy_from_slice(&(next as u16).to_le_bytes());
         }
-        links.first().map(|&(offset, _)| offset)
+        links
+            .first()
+            .map(|&(offset, _)| offset + crate::packet::HEADER_SIZE)
     }
 
     fn variable(id: MessageID, width: i32) -> InterfaceElement {
@@ -661,7 +678,12 @@ mod tests {
         body.extend_from_slice(&4u16.to_le_bytes());
         body.extend_from_slice(&77i32.to_le_bytes()); // reply id, no link
 
-        let reason = dispatch_messages(&table, &source(), &mut body, Some(0));
+        let reason = dispatch_messages(
+            &table,
+            &source(),
+            &mut body,
+            Some(crate::packet::HEADER_SIZE),
+        );
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(got.notes().is_empty());
@@ -680,7 +702,12 @@ mod tests {
         let (_, slot) = fill_request(&mut body, &element, 77, b"abc");
         body[slot..slot + NEXT_REQUEST_OFFSET_SIZE].copy_from_slice(&5000u16.to_le_bytes());
 
-        let reason = dispatch_messages(&table, &source(), &mut body, Some(0));
+        let reason = dispatch_messages(
+            &table,
+            &source(),
+            &mut body,
+            Some(crate::packet::HEADER_SIZE),
+        );
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(got.notes().is_empty());
@@ -740,7 +767,12 @@ mod tests {
         let mut body = Vec::new();
         fill_request(&mut body, &element, 77, b"pay");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, Some(0));
+        let reason = dispatch_messages(
+            &table,
+            &source(),
+            &mut body,
+            Some(crate::packet::HEADER_SIZE),
+        );
 
         assert_eq!(reason, Reason::Success);
         assert_eq!(got.notes(), vec![(5, 77, b"pay".to_vec())]);
@@ -817,7 +849,12 @@ mod tests {
         answer.extend_from_slice(b"done");
         fill_request(&mut body, &InterfaceElement::reply(), 7, &answer);
 
-        let reason = dispatch_messages(&table, &source(), &mut body, Some(0));
+        let reason = dispatch_messages(
+            &table,
+            &source(),
+            &mut body,
+            Some(crate::packet::HEADER_SIZE),
+        );
 
         assert_eq!(reason, Reason::Success);
         assert_eq!(replies.notes(), vec![(99, b"done".to_vec())]);

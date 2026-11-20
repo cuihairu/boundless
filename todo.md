@@ -350,7 +350,12 @@
 
 实现 Packet、Bundle、UDPChannel、ACK/序号窗口、重传、乱序处理、分片重组、Channel 生命周期及统计。双向混跑并覆盖丢包、延迟、重复包和序号回绕。
 
-- [ ] **BW-02-03-01 实现 Packet/Bundle 编解码**。**验收** 真实 UDP 帧逐字节往返。
+- [x] **BW-02-03-01 实现 Packet/Bundle 编解码**。**验收** 真实 UDP 帧逐字节往返。
+  - 证据：`crates/mercury/src/packet.rs`（全量 Packet 编解码）+ `crates/mercury/src/udp_bundle.rs`（UdpBundle 写侧）+ `misc.rs` 增 SeqNum 环（SEQ_SIZE=0x10000000/SEQ_MASK/SEQ_NULL/seqMask/seqLessThan/SeqNumAllocator）。验收测试 `a_bundle_survives_a_real_udp_round_trip`：bundle 构造（固定消息+请求+回执）→ finalise → prepare_packets（校验和开）→ 真实 loopback UDP `sendto_address`/`recv_from_endpoint` → validate_checksum → strip 请求页脚 → `dispatch_messages` → 三个 handler 全中、RequestManager 收尾（收端 pending 清零、发端仍挂 1）；另有 golden 逐字节夹具：固定 `[0,0,3,A,B,C,D]`、可变长度压缩、REPLY 帧 15 字节 `[0,0,0xFF,8,0,0,0,77,0,0,0,d,o,n,e]`（长度字段=8 覆盖 id+正文）、请求保留 6 字节前导 + `first_request_offset == HEADER_SIZE`、双请求链 patch、分片（2000 字节 → 2 包，页脚线序 `[seq0,seq1,seq0]`）、超长特殊形（0xff 标记 + 位移 4 字节 qreserve 跨包）、ack 页脚线序 `[seq LE][count]`（count 先 pack 落最高地址）、校验和 XOR 含越界末字（与参考同款 overrun）。
+  - 合同要点（对齐参考源码逐行核过）：页脚 pack 次序决定线位（后 pack = 低地址；prepare 顺序 checksum→acks→seq→firstRequestOffset→fragInfo，线上升序 [fragBegin,fragEnd,requests,seq,acks,checksum]）；`addRequest` 首请求记 `first_request_offset`、次请求 patch 前一链槽、末槽置零；piggyback 从顶剥离、长度高位=最后一块、`!raw` 还原长度；`stripFooter` 走到 flags 字即拒；`shouldCreateAnonymous` = ON_CHANNEL|CREATE_CHANNEL 且非 INDEXED；`ProcessPiggybackPackets` 剥出的内包置 `is_piggyback`。
+  - **派发缝合修正（取代 BW-02-02-05 旧断言）**：线上请求链接是 packet-absolute（参考 iterator offset_ 从 `Packet::HEADER_SIZE` 起数），旧「HEADER_SIZE 两侧抵消」只对单连续缓冲成立、对真实线帧不成立；现契约=walk 用 body-relative、仅在两处比较点翻译（`is_request = next_request_offset == offset + HEADER_SIZE`、越界按 `link > msg_end + HEADER_SIZE` 记线值），`next_request_offset`/`first_request_offset` 存原始线值，`None` = 页脚无请求。`bundle_dispatch` 4 处测试夹具与 `chain()` 助手同步改。
+  - 有意偏离：链用 `Vec<Packet>` 顺序持有（参考侵入式 PacketPtr 链）；`msg_beg` 用 `(packet,offset)` Pos 对（qreserve 连续保证头部不跨包）；`addReliableOrder`/重发计时/首溢返回 → BW-02-03-02+，piggyback 发送路径 → BW-02-03-06，channel 版本页脚 → channel 层；`add_reply_orders_to` 的「帧过小」分支经 1500 字节满缓冲不可达，参考的 log-and-continue 收敛为 expect（注释注明）。
+  - 验证：mercury lib 237/0；workspace 900 passed/0 failed；clippy 五 crate 对干净 HEAD 零新增（mercury 2 处新告警已修：useless vec + 不可达分支改写）；llvm-cov 行覆盖 packet.rs/udp_bundle.rs 均 100%（llvm-cov show 逐行、lcov DA、Uncovered Lines 页脚三证一致；summary 计数器多报 packet.rs 3 行为 llvm-cov 已知伪影，无对应行）；压力：mercury `--test-threads=1` ×100 循环 0 失败，python-host ×30（`--test-threads=8`）0 失败。
 - [ ] **BW-02-03-02 实现 Channel 注册与关闭**。**验收** 重复创建和旧 Channel 回收吻合。
 - [ ] **BW-02-03-03 实现 ACK 与序号窗口**。**验收** 序号回绕夹具通过。
 - [ ] **BW-02-03-04 实现重传计时**。**验收** 单次可控丢包后仅交付一次。
