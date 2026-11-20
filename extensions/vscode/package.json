@@ -26,6 +26,36 @@
         "command": "boundless.showWorkspaceInfo",
         "title": "Boundless: Show Workspace Configuration",
         "category": "Boundless"
+      },
+      {
+        "command": "boundless.startCluster",
+        "title": "Boundless: Start Local Cluster",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.stopCluster",
+        "title": "Boundless: Stop Local Cluster",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.showClusterStatus",
+        "title": "Boundless: Show Cluster Status",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.showClusterLogs",
+        "title": "Boundless: Show Role Log",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.runTests",
+        "title": "Boundless: Run Tests",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.runBots",
+        "title": "Boundless: Run Bots",
+        "category": "Boundless"
       }
     ],
     "languages": [
@@ -60,7 +90,47 @@
         "language": "entities",
         "path": "./snippets/entities.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Boundless",
+      "properties": {
+        "boundless.cluster.binary": {
+          "type": "string",
+          "default": "target/debug/server",
+          "description": "Role binary to launch, relative to the workspace folder holding the resource root (target/debug/server)."
+        },
+        "boundless.cluster.roles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "baseapp",
+              "baseappmgr",
+              "cellapp",
+              "cellappmgr",
+              "dbapp",
+              "dbappmgr",
+              "editor"
+            ]
+          },
+          "default": [
+            "baseapp",
+            "cellapp"
+          ],
+          "description": "Roles to start with the local cluster, in the reference server's role names."
+        },
+        "boundless.cluster.testsCommand": {
+          "type": "string",
+          "default": "cargo test",
+          "description": "Command the Run Tests job executes in the workspace folder."
+        },
+        "boundless.cluster.botsCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Command the Run Bots job executes in the workspace folder. Empty disables the job."
+        }
+      }
+    }
   },
   "scripts": {
     "build": "tsc -p .",

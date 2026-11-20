@@ -6,13 +6,22 @@
  * editor's workspace folders into that logic and shows the result.
  */
 
-import { basename, dirname, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 
 import * as vscode from "vscode";
 
 import { nodeProbe } from "./workspace/nodeProbe";
 import { definitionTargets } from "./workspace/navigation";
 import { ScriptProbe, checkDefText } from "./workspace/diagnostics";
+import {
+  CLUSTER_ROLES,
+  ClusterConfig,
+  ClusterControl,
+  ClusterRole,
+} from "./workspace/cluster";
+import { processRunner } from "./workspace/processRunner";
+import { formatOutcome } from "./workspace/jobs";
+import { nodeJobRunner } from "./workspace/jobRunner";
 import { AliasRegistry } from "./def/registry";
 import { ScriptRole, scriptPath } from "./workspace/resourceRoot";
 import {
@@ -23,9 +32,40 @@ import {
 
 let roots: ResourceRoot[] = [];
 
+const cluster = new ClusterControl(processRunner());
+const jobs = nodeJobRunner();
+
 /** The workspace folders the editor gives us, in editor order. */
 function folderPaths(): string[] {
   return (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+}
+
+/** The resource root that the cluster commands use. */
+function firstRoot(): ResourceRoot | undefined {
+  refresh();
+  return roots[0];
+}
+
+/** How to launch a role, from the resource root and the settings. */
+function clusterConfig(root: ResourceRoot): ClusterConfig {
+  const settings = vscode.workspace.getConfiguration("boundless.cluster");
+  const binary = settings.get<string>("binary", "target/debug/server");
+  return {
+    binary: isAbsolute(binary) ? binary : join(root.folder, binary),
+    resRoot: root.resRoot,
+    cwd: root.folder,
+    logDir: join(root.folder, ".boundless", "logs"),
+  };
+}
+
+/** Which roles `boundless.cluster.roles` asks for, in the reference order. */
+function configuredRoles(): ClusterRole[] {
+  const wanted =
+    vscode.workspace.getConfiguration("boundless.cluster").get<string[]>(
+      "roles",
+      ["baseapp", "cellapp"],
+    ) ?? [];
+  return CLUSTER_ROLES.filter((role) => wanted.includes(role));
 }
 
 /** The alias table of `root`, empty when the file is absent. */
@@ -96,6 +136,73 @@ export function activate(context: vscode.ExtensionContext): void {
       output.appendLine(report());
       output.show();
     }),
+  );
+
+  const status = vscode.window.createOutputChannel("Boundless Cluster");
+  context.subscriptions.push(status);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("boundless.startCluster", async () => {
+      const root = firstRoot();
+      if (!root) {
+        vscode.window.showErrorMessage(
+          "No Boundless resource root found; nothing to start.",
+        );
+        return;
+      }
+      const config = clusterConfig(root);
+      for (const role of configuredRoles()) {
+        const info = await cluster.start(config, role);
+        status.appendLine(
+          `started ${info.role} (pid ${info.pid}); log ${displayPath(info.logPath)}`,
+        );
+      }
+      status.show(true);
+    }),
+    vscode.commands.registerCommand("boundless.stopCluster", async () => {
+      await cluster.stopAll();
+      status.appendLine("cluster stopped");
+      status.show(true);
+    }),
+    vscode.commands.registerCommand("boundless.showClusterStatus", () => {
+      const running = cluster.roles();
+      status.clear();
+      if (running.length === 0) status.appendLine("no roles running");
+      for (const info of running) {
+        status.appendLine(
+          `${info.role} pid ${info.pid} — ${displayPath(info.logPath)}`,
+        );
+      }
+      status.show(true);
+    }),
+    vscode.commands.registerCommand("boundless.showClusterLogs", async () => {
+      const running = cluster.roles();
+      if (running.length === 0) {
+        vscode.window.showInformationMessage("No roles running.");
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        running.map((i) => ({ label: i.role, logPath: i.logPath })),
+        { placeHolder: "Which role log?" },
+      );
+      if (!picked) return;
+      try {
+        const doc = await vscode.workspace.openTextDocument(
+          vscode.Uri.file(picked.logPath),
+        );
+        await vscode.window.showTextDocument(doc);
+      } catch {
+        vscode.window.showInformationMessage(
+          `No log yet at ${displayPath(picked.logPath)}.`,
+        );
+      }
+    }),
+    vscode.commands.registerCommand("boundless.runTests", () =>
+      runConfiguredJob("tests"),
+    ),
+    vscode.commands.registerCommand("boundless.runBots", () =>
+      runConfiguredJob("bots"),
+    ),
   );
 
   const diagnostics = vscode.languages.createDiagnosticCollection(
@@ -180,6 +287,43 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     }),
   );
+
+  /** Runs the test or bots job from the settings, reporting status and
+   * results to the cluster channel. */
+  async function runConfiguredJob(kind: "tests" | "bots"): Promise<void> {
+    const settings = vscode.workspace.getConfiguration("boundless.cluster");
+    const defaults: Record<"tests" | "bots", string> = {
+      tests: "cargo test",
+      bots: "",
+    };
+    const command = settings
+      .get<string>(`${kind}Command`, defaults[kind])
+      .trim();
+    const root = firstRoot();
+    const cwd =
+      root?.folder ??
+      vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
+      process.cwd();
+    if (!command) {
+      status.appendLine(
+        `${kind}: not configured — set boundless.cluster.${kind}Command`,
+      );
+      status.show(true);
+      return;
+    }
+    status.appendLine(`${kind}: running ${command} in ${displayPath(cwd)}`);
+    const [bin, ...args] = command.split(/\s+/);
+    const outcome = await jobs.run({
+      name: kind,
+      command: bin,
+      args,
+      cwd,
+      resultPath: join(cwd, ".boundless", "reports", `${kind}.log`),
+    });
+    status.appendLine(`${kind}: ${formatOutcome(outcome)}`);
+    if (outcome.output) status.appendLine(outcome.output);
+    status.show(true);
+  }
 }
 
 export function deactivate(): void {

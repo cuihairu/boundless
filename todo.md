@@ -1328,8 +1328,10 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 提供任务入口启动/停止本地集群、查看运行状态、运行选定测试和 Bots 场景、查看进程日志。接入 BW-27 的 LSP/DAP 和 BW-28 的文档 MCP，验证 Python 附加调试与 Rust 调试启动配置。
 
-- [ ] **BW-20-02-01 接入本地集群启动停止**。**验收** 测试不会留下进程。
-- [ ] **BW-20-02-02 接入状态和日志查看**。**验收** 列出当前角色且定位对应日志。
+- [x] **BW-20-02-01 接入本地集群启动停止**。**验收** 测试不会留下进程。
+  - 证据：原版结果——引用端每角色一个进程（`bigworld_app baseapp` 等），`BW_RES_PATH` 导出 res 根；本版 `crates/server-runtime/src/app.rs` 接受同样角色名、`crates/resources/src/bwresource.rs:195` 读 `BW_RES_PATH`。新版结果——`extensions/vscode/src/workspace/cluster.ts` 的 `ClusterControl`（注入 `ProcessRunner`）按角色表起停角色，`roleSpec` 复刻引用端启动行（`BW_RES_PATH=<resRoot>`、`<binary> <role>`、日志在 `<logDir>/<role>.log`），`src/workspace/processRunner.ts` 用 detached 进程组启动、SIGTERM→SIGKILL 收树，Windows 走 `taskkill /t /f`；`extension.ts` 提供 `boundless.startCluster`/`stopCluster` 命令。证据链接——`pnpm test` 133 例全绿（含 `test/cluster.test.ts` 8 例，其中真实子进程用例：detached 起一个 node 进程、`stopAll()` 后 `isRunning` 为假且无遗留）；实跑 `node /tmp/bwcluster.cjs`（编译产物驱动）：起停两个角色后 `pgrep -f` 标记进程为零。
+- [x] **BW-20-02-02 接入状态和日志查看**。**验收** 列出当前角色且定位对应日志。
+  - 证据：原版结果——`process_defs` 与各进程日志分离，`bigworld_app -p` 下角色日志落在 `log/`；本版沿用同一分离面。新版结果——`ClusterControl.roles()` 按角色表顺序给出 `{role, pid, commandLine, logPath}`；`boundless.showClusterStatus` 输出到 "Boundless Cluster" 通道，逐个角色列出 pid 与日志路径；`boundless.showClusterLogs` 用快速选择挑角色并打开对应日志文件（不存在时提示路径）。证据链接——`pnpm test` 全绿（含 `test/cluster.test.ts` "stops the role that was asked for and keeps the others" 与真实进程用例）；实跑 `node /tmp/bwcluster.cjs`：`status` 列出 baseapp（pid 700891）与 cellapp（pid 700893）及各自 `logPath`，读 `.boundless/logs/baseapp.log` 得 `baseapp started (pid 700891)`，`cellapp.log` 得 `cellapp started (pid 700893)`——路径与内容一一对应。
 - [ ] **BW-20-02-03 接入测试和 Bots 命令**。**验收** 失败时显示退出状态与结果路径。
 - [ ] **BW-20-02-04 接入 LSP**。**验收** 工作区文件能诊断与跳转。
 - [ ] **BW-20-02-05 验证 VS Code 的 Python 附加**。**验收** 能在 BaseApp 实体回调命中断点。
