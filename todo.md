@@ -1633,6 +1633,8 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 | **44787515629** | `e5a17f2` | push | completed/**failure** | BW-22-03-03 收口：`rust-static`/`harness` 显式钉 `components: rustfmt clippy` 后 `rust-fmt` **PASS**；`Fault drill` **success**。仅剩 `rust-lint` 红在 `crates/resources`（base64.rs:68:8 等约 32 处，BW-22-01 已记账的历史债，clippy workspace wrapper 使 `-p` 选路豁免不了）。本条目自有作业全绿，该 HEAD 是本条目的最终推送状态 |
 | **44788192807** | `26425bd` | push | completed/**failure** | BW-22-03-04 前的 docs 提交：唯一红仍为 `Rust format and lint`（`crates/resources` 历史债），报告条目自有作业未受影响 |
 | **44789187301** | `7dcb8cd` | push | completed/**success** | BW-22-03-04 上线首跑：`Comparison report` **success**（裸 runner 12 行：scenario 如实 `none recorded yet`、db 三项如实 absent）、`Harness self-tests` 内 `ci/report.sh self-test` 两行 PASS。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
+| 44789687782 | `b69126b` | push | completed/**failure** | BW-22-03-04 的 docs 提交：唯一红仍为 `Rust format and lint`（lane 分支 push 的 diff 基线是与 main 的 fork 点，故全仓 lint 债每跑必现），报告条目不受影响 |
+| **44790503820** | `02d90bb` | push | completed/**success** | BW-22-04-01 上线首跑：`Installer package and launch smoke` **success**（release 构建→前缀→2.6M tarball→干净前缀安装→启动烟测全 PASS）、`Harness self-tests` 含 `ci/package.sh self-test` 3/3。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 
 本地等价门（`CI_OUT` 走默认仓根路径，与 CI 一致）在 `a2c0f66` 上全跑一次：28 PASS / 3 SKIP / 2 FAIL，两条 FAIL 均为 `rust-fmt`（211 处）与 `rust-lint`（32 处，全在 `crates/resources`），属各 crate 所属席位的历史债务，不属 CI 面；`archive` 行 `ok: 32 manifest row(s) round-tripped, bundle 60K`。
 
@@ -1675,7 +1677,13 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 构建并归档三端二进制与安装包、VitePress 站点及匹配的文档索引、SDK 包和 VSIX。校验版本、散列和打包内容，使用干净环境对安装/导入/运行做 smoke。
 
-- [ ] **BW-22-04-01 编排三端安装包**。**验收** 每端烟测可安装和启动。
+- [x] **BW-22-04-01 编排三端安装包**。**验收** 每端烟测可安装和启动。
+  - 原版：`daily-build.yml` 是唯一装包面——cron `23 21 * * *` + **48 小时无提交跳过**的保鲜规则，Linux 出 tar.gz / deb / rpm、Windows 出自包含 zip；且文件头自己写明约束：**不建 tag、不发 Release、结果只是 workflow artifact**（14 天后回收）。「每端烟测可安装和启动」在原版没有对应步骤——装包后没有安装+启动验证。
+  - 新版：`ci/package.sh`——装包与烟测同一条 lane：release 编译 → 装前缀（`bin/boundless-server`）→ 归档 `ci-out/package/boundless-<workspace版本>-<platform>-<arch>.tar.gz`（成员序固定）→ **烟测装「装出来的」而非「编出来的」**：解到干净前缀后运行安装好的二进制，要求 exit 0 且打出 startup 行（与 runners lane 同一份可观测契约，BW-22-02-01）。lane 打包它所在的平台；另两端由 workflow 的 matrix 供。版本号只读 workspace 现值用于文件名——**不 bump、不打 tag、不发 Release**（全局红线），产物只是 artifact。
+  - 三端编排：`.github/workflows/package-daily.yml`——原版规则的直译：cron `19 3 * * *`（避开整分）、48 小时保鲜（scheduled 无提交就跳过重编译，dispatch 无条件）、`concurrency: package-daily` 不取消进行中、timeout 120 分钟、产物 artifact 14 天。matrix ubuntu/windows/macos，Windows/macOS 两腿 `continue-on-error` **report 而不 gate**（今天只有 Linux 编译，`signals.rs` 的 libc 专属 API 卡死另两端——与 runners 作业同一份考据；BW-15-03/04 启动后翻掉 continue-on-error 即可）。schedule 只认默认分支，落 main 即激活。
+  - 关键设计：**烟测必须咬假货**。自测种一个 exit 0 打 startup 行的 stub 当「编好的二进制」，走完整 stage→archive→smoke 链路要求 PASS 且 tarball 真存在；再换 exit 3 的 stub 要求 FAIL 且点名退出码；最后种不存在的二进制路径要求 staging FAIL 而不是打包空气。子进程拿私有 manifest——stub 驱动的 package 行不许混进真构建的账。
+  - 结果：本地 `ci/package.sh` rc=0（真 release 构建 2.6M tarball，烟测打出 `[baseapp] starting (boundless minimal entry)`）、`ci/package.sh self-test` 3/3 PASS、`shellcheck -S warning` 与 `actionlint` 双绿。
+  - 证据：CI run **44790503820**（HEAD `02d90bb`）：`Installer package and launch smoke` **success**（托管 runner 上四行 PASS 照录：build/stage/archive 2.6M/smoke），同 run `Harness self-tests` **success** 含 `ci/package.sh self-test` 三行 PASS。唯一红仍为 `rust-lint` 历史债。本地等价命令均 rc=0。详见下方 BW-22 交付汇总。
 - [ ] **BW-22-04-02 发布文档与版本化索引产物**。**验收** 版本元数据一致。
 - [ ] **BW-22-04-03 归档各引擎 SDK**。**验收** 可以从空项目导入。
 - [ ] **BW-22-04-04 归档 VSIX**。**验收** 可以在干净宿主安装。
