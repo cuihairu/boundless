@@ -362,7 +362,8 @@
 
 覆盖基本类型、ARRAY/TUPLE、FIXED_DICT、USER_TYPE、MAILBOX、嵌套属性和变化切片。比对 Python 类型转换、默认值、压包、广播和持久化字段。
 
-- [ ] **BW-04-02-01 实现标量与默认值转换**。**验收** 数值边界和异常对照通过。
+- [x] **BW-04-02-01 实现标量与默认值转换**。**验收** 数值边界和异常对照通过。
+  - 证据：`crates/entitydef::value` 落地 `PropertyValue`/`PropertyError` 与 `check_integer`/`value_from_section`/`default_value`/`add_to_stream`/`create_from_stream`；数值边界钉住 `Script_intOverflow` 四边界（INT32 收 0x7fffffff 与 -0x80000000、拒 0x80000000 与 -0x80000001），四条参考错误模板逐字节锚定（含结尾 `\n`），`pInitialValue` 三槽顺序与 `setDefaultValue` 语义各有一测；171 单测 + 4 差分通过，value.rs 行覆盖 99.09%。无字节级参考 oracle（process_defs 不遍历属性流），本项证据为源码级对齐，不虚勾。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-02-01 节。commit `c7c2e45`。
 - [ ] **BW-04-02-02 实现 ARRAY/TUPLE**。**验收** 长度、元素及嵌套字节一致。
 - [ ] **BW-04-02-03 实现 FIXED_DICT**。**验收** 字段次序和缺省行为一致。
 - [ ] **BW-04-02-04 实现 USER_TYPE 与 MAILBOX**。**验收** 转换及序列化夹具一致。

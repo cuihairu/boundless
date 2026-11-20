@@ -111,3 +111,32 @@
   - `cargo test -p entitydef --offline`：156 单测 + 4 差分通过；clippy 隔离门禁 0 findings；行覆盖 **99.58%**。
 - **证据链接**: `docs/review/reference/*.json`（四份 oracle）、`crates/entitydef/src/entity_map.rs`、`crates/entitydef/src/digest.rs`、`crates/entitydef/tests/differential.rs`。
 - **状态**: 已验收（四份 oracle 的 digest 字段与原版逐字节一致）。
+
+---
+
+# BW-04-02-01 实现标量与默认值转换 — 复核证据
+
+- **任务编号**: BW-04-02-01（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 365）
+- **原版源码**: `lib/entitydef/data_types/integer_data_type.cpp`（`IntegerDataType::isSameType` 截断闸门、`setDefaultValue`）、`long_integer_data_type.cpp`、`float_data_types.cpp`、`string_data_type.cpp`、`unicode_string_data_type.cpp`、`blob_data_type.cpp`、`vector_data_types.{hpp,cpp}`（`SimpleStreamElement<VECTOR>`）、`simple_stream_element.hpp`、`lib/entitydef/data_type.cpp`（`buildDataType` 末尾 `setDefaultValue(pSection->findChild("Default"))`）、`lib/entitydef/data_description.cpp`（`DataDescription::pInitialValue` 三槽顺序）。
+- **Boundless 模块**: `crates/entitydef::value`（新增：`PropertyValue` / `PropertyError` / `check_integer` / `truncate_integer` / `integer_bits` / `check_value` / `value_from_section` / `default_value` / `add_to_stream` / `create_from_stream` / `write_int` / `read_integer`），`DataType::{check_value, default_value, initial_value, value_from_section, add_to_stream, create_from_stream}` 与 `DataDescription::initial_value` 委托方法；`Kind::meta_name()` 改为 `DataType::meta_name()` 与 `value.rs` 共用。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**171 单元测试 + 4 差分测试**全部通过。
+  - 数值边界：`integer_boundaries_match_the_reference_check` 钉住 `Script_intOverflow`（`pyscript/unit_test/test_conversion.cpp:54`）的四个边界 —— INT32 收 `0x7fffffff` 与 `-0x80000000`、拒 `0x80000000` 与 `-0x80000001`；UINT32 收 `0..0xffffffff`、拒负数。截断算法与 `IntegerDataType::isSameType` 的 `INT_TYPE value = INT_TYPE( intValue ); if (intValue != NativeLong( value ))` 逐句对应。
+  - 异常对照：`error_text_matches_the_reference_messages` 把四条参考错误模板逐字节钉住（含结尾 `\n`）：`IntegerDataType::isSameType: {value} is out of range (truncated = {truncated}).`、`SimpleStreamElement: Not enough data on stream to read value`、`BlobStreamElement: Not enough data on stream to read value`、`UnicodeStringStreamElement::fromStreamToSink: Could not convert from UTF8.`。
+  - 默认值顺序：`type_defaults_follow_the_reference_order` + `a_property_initial_value_follows_the_reference_order` 钉住 `pInitialValue` 的三槽顺序（`pInitialValue_` → `pDefaultSection_` 经 `createFromSection` → `getDefaultValue`），以及 `buildDataType` 对 `<Type>` 自带 `<Default>` 子节的 `setDefaultValue` 语义。
+  - 字节布局：`scalar_round_trip_is_byte_exact` 覆盖 INT8/16/32/64、UINT8/16/32/64、FLOAT32/64、STRING、UNICODE_STRING、BLOB、VECTOR2/3/4 的写读往返，`add_to_stream`/`create_from_stream` 字节一致；有符号读回按 `INT_TYPE` 位宽符号扩展。
+  - 16 MiB 上限：`an_overlong_scalar_reports_the_stream_element_message` 验证 `MAX_PACKED_INT = 16MiB-1` 的长度前缀上限触发参考的 stream element 报错。
+  - clippy `-D warnings`：entitydef **0 findings**（依赖 `crates/resources` 的 32 条既有 findings 属其他席位 lane，按隔离清单 `-A` 放行）。
+  - rustfmt：`crates/entitydef/src/value.rs`、`data_type.rs` 干净（仅对本次触碰文件检查，未做全包 fmt）。
+  - 覆盖率：crate 行覆盖 **99.00%** 区域 / 行覆盖合计；`value.rs` 单文件 **99.09%** 行（门槛 ≥98%）。
+- **证据链接**: `crates/entitydef/src/value.rs`（实现与全部单测）、`crates/entitydef/src/data_type.rs`（`Kind::meta_name`）、`crates/foundation/src/stream.rs`（`BinaryStream` 原语与 `MAX_PACKED_INT`）。
+- **状态**: 已交付（源码级对齐 + 精确错误串/边界锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **无字节级参考 oracle**：本族没有可直接比对的参考二进制产物 —— `tools/process_defs` 不遍历属性流，本机构建内也没有带 `EntityDescription` 扩展的解释器能吐出属性字节。故证据为「参考 C++ 源码逐句对齐 + 错误串/边界/往返测试锚定」，不是「与参考二进制逐字节相等」。此点不虚勾，留待 BW-04-02-02..07 若有夹具再补字节级对照。
+2. `PropertyError::NotUtf8`（`UnicodeStringDataType::createFromSection` 的 "Could not convert from UTF8."）在本实现中**不可达**：Rust 侧 XML 解析器（`datasection.rs`）用 `String::from_utf8_lossy` 先做有损归一，非法 UTF-8 无法在 `DataSection` 中表示。该错误通道按参考保留命名，但无测试覆盖。
+3. `value_from_section` 中 `Kind::Vector` 的 `_ => unreachable!("vector element count")` 是唯一未覆盖行（99.09% 的残余）：解析器只会产生 2/3/4 分量，属解析器不变式。
+4. 无符号整数从流中读回保持零扩展（不符号扩展），有符号宽度才符号扩展 —— 与参考把 `stream >> value` 读入 `INT_TYPE` 的行为一致。
+5. `PropertyValue` 没有 bool 变体：BigWorld entitydef 的标量 meta 类型中不存在 BOOL（`data_type.cpp` 的类型表无此项）。
