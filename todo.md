@@ -1626,6 +1626,7 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 | **44779041655** | `ea8e403` | push | completed/**success** | BW-22-02-04 收口：缺 reference 树时的 SKIP 不再回显开发机绝对路径（改由 `$HOME` 解析，CI 上点名 `/home/runner/workspaces/BigWorld/...`），本地仍零设置可跑。该 HEAD 是本条目的最终推送状态 |
 | 44781223162 | `652b54f` | push | completed/**failure** | BW-22-02-05 上线首跑：新增 `SDK and plugin host-load cases` 作业 **failure**——`Build the extension core` 里 pnpm 12 对 ignored postinstall scripts（`@vscode/vsce-sign`、`keytar`）以 `ERR_PNPM_IGNORED_BUILDS` 退出 1，其余 8 作业全绿 |
 | **44781880340** | `5b8ba93` | push | completed/**success** | BW-22-02-05 收口：`SDK and plugin host-load cases` **success**——三条 SKIP 各点名 BW-21-01-01 / BW-13-06-03 / BW-20-03-03，`sdk-built-load` **PASS**（node 在托管 runner 上加载了编译出的扩展核心），归档 `ok: 4 manifest row(s) round-tripped, bundle 4.0K`；`Harness` 内 `ci/sdk.sh self-test` 4/4 PASS。该 HEAD 是本条目的最终推送状态 |
+| **44783874538** | `47d67ed` | push | completed/**success** | BW-22-03-01 上线首跑：新增 `PR short load test` 作业 **success**——`load-scenarios`/`load-driver`/`load-run` 三条 SKIP 各点名 BW-17-03-05 / BW-17-01-01（场景契约已由 `ci/load.sh` 立起，substrate 归 BW-17），归档 `ok: 3 manifest row(s) round-tripped, bundle 4.0K`；`Harness` 内 `ci/load.sh self-test` 5/5 PASS。该 HEAD 是本条目的最终推送状态 |
 
 本地等价门（`CI_OUT` 走默认仓根路径，与 CI 一致）在 `a2c0f66` 上全跑一次：28 PASS / 3 SKIP / 2 FAIL，两条 FAIL 均为 `rust-fmt`（211 处）与 `rust-lint`（32 处，全在 `crates/resources`），属各 crate 所属席位的历史债务，不属 CI 面；`archive` 行 `ok: 32 manifest row(s) round-tripped, bundle 60K`。
 
@@ -1635,7 +1636,13 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 
 PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。生成不同版本可比较的报告，记录硬件、拓扑、数据库后端及场景版本。
 
-- [ ] **BW-22-03-01 接入 PR 短压测**。**验收** 小规模场景产出结果。
+- [x] **BW-22-03-01 接入 PR 短压测**。**验收** 小规模场景产出结果。
+  - 原版：BigWorld 有真正的压测载体——`bots` 应用（`programming/bigworld/server/tools/bots/` 源码，`game/bin/server/el7/server/bots/bots` 为 194 MB ELF），模拟客户端连上集群；`bots_config.cpp` 以 `bots/` 前缀配置（serverName、port、transport 默认 UDP 可选 TCP/WebSockets、controllerType `Patrol` + `server/bots/test.bwp`），数量靠 watcher 在运行时增减（`add_bots_callable_watcher.cpp`/`del_bots_callable_watcher.cpp`）。但 CI **从不跑它**：`.github/workflows/` 四份工作流 grep `bots` 零命中，压测在原版是**对活集群的运维动作**，不是 CI 面。
+  - 新版：`ci/load.sh` 把「小规模场景产出结果」落成可执行契约，BW-17 的驱动将来直接对着它写——场景是 `tests/load/scenarios/` 下的可执行文件，带 `LOAD_DURATION`（缺省 `CI_LOAD_DURATION`=30s）/ `LOAD_CLIENTS`（缺省 4）/ `LOAD_TARGET`（透传）环境量，stdout 必须打 `metric<TAB>value` 行；lane 用 `timeout` 卡墙钟，**超时杀掉并点名**、退非零点名、零指标点名；每场景落 `ci-out/load/<name>.tsv`，stderr 噪声不入账。三个 case 各对各的 substrate：`load-scenarios`（场景集缺 → SKIP 点名 BW-17-03-05）、`load-driver`（`apps/bots` 缺 → SKIP 点名 BW-17-01-01，目录在而 `Cargo.toml` 不在 → FAIL）、`load-run`（两者齐才真跑）。
+  - 关键设计：**SKIP 存根必须能点亮**。自测把驱动 crate 与两个场景种进私有根——`good.sh` 打两行指标（其中一行走 stderr），要求 lane 只记 stdout 那行；`slow.sh` `sleep 300`，要求在 2s 预算内被杀且死因写明「exceeded the 2s wall budget」；再反手验空树上三 case 全 SKIP、绝不假 PASS。搭建时就抓到一个自己的 bug：`if ! out="$(…)"; then rc=$?` 里 `$?` 是**取反后**的 0 不是命令退出码——写完即修，未进过一次 commit。
+  - 选路与 workflow：`ci/changes.sh` 新增 `load` lane（`tests/load/* | apps/bots/* | ci/load.sh`）；`ci.yml` 新增 `PR short load test` 作业（无 substrate 的今天在托管 runner 上如实 SKIP）；`harness` 作业补 `ci/load.sh self-test`。
+  - 结果：本地 `ci/load.sh` rc=0（三条 SKIP 各点名自己的 ticket）、`ci/load.sh self-test` 5/5 PASS（含 stderr 不入账与 runaway 被杀）、`shellcheck -S warning` 与 `actionlint` 双绿。本仓 substrate 现状（Explore 全仓核过）：无 bots/load 生成器、`apps/` 只有 `server` 且角色进程打印一行即退（`server-runtime/src/app.rs:45-51`）、无跨进程集成测试——「跑真场景」的 substrate 归 BW-17（`todo.md:1175` `apps/bots/`、`:1269` BW-17-01-01 客户端连接层、`:1297` BW-17-03-05 PR smoke），CI 面的职责是把承接契约先立起来。
+  - 证据：CI run **44783874538**（HEAD `47d67ed`，`completed/success`，10 作业 success + 3 skipped）：`PR short load test` **success**，manifest 三行 SKIP 路径均在 `/home/runner/work/boundless/boundless` 下、归档 `ok: 3 manifest row(s) round-tripped, bundle 4.0K`；同 run `Harness self-tests` 内 `ci/load.sh self-test` 5/5 PASS（`selftest-load` ×4 + `selftest-load-empty`）。本地等价命令 `ci/load.sh` 与 `ci/load.sh self-test` 均 rc=0。详见下方 BW-22 交付汇总。
 - [ ] **BW-22-03-02 接入定时容量与长稳任务**。**验收** 可配置并发和持续时间。
 - [ ] **BW-22-03-03 接入手动故障场景**。**验收** 复现失败时有拓扑和日志。
 - [ ] **BW-22-03-04 生成对比报告**。**验收** 版本、硬件、场景及 DB 信息齐全。
