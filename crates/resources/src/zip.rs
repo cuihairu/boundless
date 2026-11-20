@@ -178,6 +178,18 @@ pub struct DirFooter {
 
 pub const DIR_FOOTER_SIZE: usize = 22;
 
+/// Byte image of an archive holding no entries: just the end-of-central-
+/// directory footer. Useful as the seed image for writers and fixtures.
+pub fn empty_archive() -> Vec<u8> {
+    let mut out = Vec::new();
+    DirFooter {
+        signature: DIR_FOOTER_SIGNATURE,
+        ..Default::default()
+    }
+    .write(&mut out);
+    out
+}
+
 impl DirFooter {
     fn parse(bytes: &[u8]) -> DirFooter {
         DirFooter {

@@ -173,7 +173,8 @@
 - [x] **BW-01-03-03 实现 ZIP 资源挂载**。**验收** 压缩和未压缩条目可查。
   - 证据：zip.rs 手搭 ZIP 字节夹具（本地头/中央目录/尾记录逐字节自拼）验证解析，STORE 与 DEFLATE 条目均可 read_file 查询；get_file_type_ex 嵌套 zip 探测（未加载流式嗅探压缩与未压缩、已载入内存字节嗅探）；updateFile 重名编码（"name 1"/"name 2"）与 duplicates 解析、erase 索引重建、clear、createZip 字节精确对照（固定 DOS 时间戳）、bCompressed_ 锁存防二次压缩回归。29 测试全绿。zip_file_system.cpp 3010 行逐行精读钉死语义，忠实保留原版怪癖：根目录无 fileMap 行（getFileType("") 返回 NOT_FOUND）、尾点路径 erase(size-2) 连切两字符、readFile 不剥前缀而 getFileType 剥、updateFile 行需 createZip 后才可读（localHeaderOffset<0 早退）、createZip 的 isValid=pData_!=NULL 剔除未加载行、坏本地头签名退化到零头从 offset+30 读入名字字节。llvm-cov：zip.rs 行 99.38%/区域 100%（仅余防御分支与 unwrap panic 区域），workspace 0 警告。嵌套 zip 节点（childNode/tag_ 转发）与 ZipSection 数据节层属后续集成任务。
 
-- [ ] **BW-01-03-04 实现资源根搜索和路径映射**。**验收** 同名资源优先级吻合。
+- [x] **BW-01-03-04 实现资源根搜索和路径映射**。**验收** 同名资源优先级吻合。
+  - 证据：file_system.rs/multi_file_system.rs/bwresource.rs 移植 unix_file_system.cpp + multi_file_system.cpp + bwresource.cpp。同名资源优先级吻合已钉死：MultiFileSystem 按加入顺序 first-hit-wins（getFileType/getFileTypeEx/readFile/readFile(dirPath,index)），delPath+refresh 后落到第二根、addPath(atIndex=0) 前插恢复优先级；readDirectory 为跨根 union（同名列出两次）且 dirCache_ 键剥一个尾斜杠、写后 flushModificationMonitor 才失效。postAddPaths 路径映射：*.zip 与 dir/res.zip → ZipArchiveFs（包目录本体不再挂载，包内文件遮蔽包外同名文件）、目录 → NativeFileSystem、损坏 zip 丢弃。resolveToAbsolutePath 跳过 zip（空绝对路径）、目录补尾斜杠、空路径走原生分支。searchPathsForFile/searchForFile 递归重写全路径（依赖 EDITOR_ENABLED 空基根，enable_editor_default_root 对应移植）。忠实保留原版怪癖：pathIsRelative("")=false、getFilePath=glibc dirname（"top.txt"→"."，根写只标记 "." 缓存槽、根列表缓存不失效）、".hidden" 扩展名为 "hidden"、formatSearchPath 剥一个尾斜杠、ensurePathExists 无尾斜杠路径丢最后一级、zip 会话内写行 flush 前 offset<0 不可读、flush 后 isValid 剔除未加载改名行。32 新测试全绿（workspace 291 测试、0 警告）。llvm-cov：bwresource.rs 99.25%、file_system.rs 98.97%、multi_file_system.rs 99.74%、crate 总 99.63%（余为花括号/测试夹具区域伪迹）。
 - [ ] **BW-01-03-05 实现 DataSection 缓存失效**。**验收** 覆盖写入后读取新值。
 - [ ] **BW-01-03-06 实现保存与更新**。**验收** 原版可读新版生成的代表性文件。
 
