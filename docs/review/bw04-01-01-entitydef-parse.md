@@ -93,3 +93,21 @@
   - `cargo test -p entitydef --offline`：155 单测 + 4 差分通过；clippy 隔离门禁 0 findings；行覆盖 **99.58%**。
 - **证据链接**: `docs/review/fixtures/entity_index/res/`、`docs/review/reference/entity_index_entitydef.json`、`crates/entitydef/tests/differential.rs`、`crates/entitydef/src/entity_map.rs`。
 - **状态**: 已验收（Base/Cell/Client 三边索引与原版逐字节一致）。
+
+---
+
+# BW-04-01-05 计算定义摘要 — 复核证据
+
+- **任务编号**: BW-04-01-05（todo.md 行 357）
+- **原版构建目标/源码**: `lib/entitydef/entity_description_map.cpp`（`parse` 尾部 `MD5 md5; addToMD5( md5 ); md5.getDigest( digest_ )`；`EntityDescriptionMap::addToMD5` 只把 `isClientType()` 的描述按加载序喂进 MD5）、`lib/entitydef/entity_description.cpp`（逐实体的 `addToMD5`）、`lib/cstdmf/md5.cpp`；`tools/process_defs` 的 `constants.digest`。参考二进制：`game/bin/server/el7/tools/process_defs`。
+- **Boundless 模块**: `crates/entitydef::entity_map`（`digest` / `add_to_md5`）、`crates/entitydef::digest`（纯 Rust MD5 + 十六进制大写 quote）、`crates/entitydef::dump`（`constants.digest` 字段）、`crates/entitydef/tests/differential.rs`。
+- **平台**: Linux x86_64（el7 参考二进制；Rust 1.100.0，llvm-cov 0.9.1）。
+- **输入夹具**: 四棵 res 树 —— `fantasydemo/res`、`client_integration/.../res`（参考树）、`docs/review/fixtures/service_def/res`、`docs/review/fixtures/entity_index/res`（自建）。
+- **原版结果**: 参考二进制 dump 的 `constants.digest`：`service_def` = `8A225AFC889A748A5E310F49862A4A43`、`entity_index` = `3F009C3EC546D8F26E7836134C4CC74A`；fantasydemo / client_integration 两份历史 oracle（MD5 `18D00DC6…` / `2190C88D…`）同样钉住该字段。
+- **新版结果**:
+  - 四个差分测试与参考 JSON **逐字节相等**，含 `constants.digest` 字段（同输入 → 同字节）；
+  - 新测 `the_digest_is_deterministic_and_matches_the_reference_oracles`：同一夹具两次独立解析的 digest 相等，且等于上述参考常量；
+  - 既有 `digest_covers_client_types_in_vector_order_only` 钉住"只计入 client 类型、按加载序"的原版规则；
+  - `cargo test -p entitydef --offline`：156 单测 + 4 差分通过；clippy 隔离门禁 0 findings；行覆盖 **99.58%**。
+- **证据链接**: `docs/review/reference/*.json`（四份 oracle）、`crates/entitydef/src/entity_map.rs`、`crates/entitydef/src/digest.rs`、`crates/entitydef/tests/differential.rs`。
+- **状态**: 已验收（四份 oracle 的 digest 字段与原版逐字节一致）。

@@ -1082,6 +1082,21 @@ mod tests {
         );
     }
 
+    /// BW-04-01-05: the definition digest is the MD5 over the client-visible
+    /// descriptions in load order, so two parses of one res tree must agree
+    /// byte for byte. The constants are the values the stock `process_defs`
+    /// prints for these same fixtures.
+    #[test]
+    fn the_digest_is_deterministic_and_matches_the_reference_oracles() {
+        let (first, _) = parse_fixture("entity_index/res");
+        let (second, _) = parse_fixture("entity_index/res");
+        assert_eq!(first.digest(), second.digest());
+        assert_eq!(first.digest(), "3F009C3EC546D8F26E7836134C4CC74A");
+
+        let (services, _) = parse_fixture("service_def/res");
+        assert_eq!(services.digest(), "8A225AFC889A748A5E310F49862A4A43");
+    }
+
     #[test]
     fn service_without_script_fails() {
         let resolver = MemoryResolver::new(&[
