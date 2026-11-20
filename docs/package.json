@@ -1,0 +1,19 @@
+{
+  "name": "boundless-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview",
+    "check:links": "python3 scripts/check-docs-links.py ."
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
