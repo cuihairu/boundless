@@ -7,6 +7,8 @@
 //! the mapping unit-testable without spawning anything; the binary only
 //! wires arguments, runs the plan, and propagates the exit status.
 
+use std::path::{Path, PathBuf};
+
 /// Workspace crate names parsed from the root manifest's `members` array.
 /// `apps/server` contributes `server` -- the path tail is the package name.
 pub fn workspace_modules(root_text: &str) -> Vec<String> {
@@ -245,6 +247,47 @@ pub fn diff_runs(baseline: &[TestOutcome], current: &[TestOutcome]) -> DiffRepor
     report
 }
 
+/// Where the coverage entry writes its reports (BW-18-04-03): under the
+/// shared run-results tree, so local and CI pick the same paths.
+pub fn coverage_report_dir(target_dir: &Path, module: Option<&str>) -> PathBuf {
+    match module {
+        Some(module) => target_dir
+            .join("test-results")
+            .join(format!("cov-{module}")),
+        None => target_dir.join("test-results").join("cov-all"),
+    }
+}
+
+/// The `cargo llvm-cov` arguments (everything after `cargo`) for one
+/// coverage run: an lcov report whose `SF:`/`DA:` records map every
+/// measured line back to its source file and line. Requires
+/// cargo-llvm-cov 0.9.1 (which does not allow `--html` alongside
+/// `--lcov`, so the lcov report is the one output).
+pub fn coverage_args(module: Option<&str>, report_dir: &Path) -> Vec<String> {
+    let mut args = vec!["llvm-cov".to_string()];
+    if let Some(module) = module {
+        args.push("-p".to_string());
+        args.push(module.to_string());
+    }
+    args.extend([
+        "--lcov".to_string(),
+        "--output-path".to_string(),
+        report_dir.join("lcov.info").to_string_lossy().into_owned(),
+    ]);
+    args
+}
+
+/// The source files an lcov report maps to, from its `SF:` records. This
+/// is the acceptance check: a report that maps to source names real
+/// files.
+pub fn lcov_source_files(lcov_text: &str) -> Vec<String> {
+    lcov_text
+        .lines()
+        .filter_map(|line| line.strip_prefix("SF:"))
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +480,50 @@ version = "0.1.0"
         assert!(report.healed.is_empty());
         assert!(report.missing.is_empty());
         assert!(report.added.is_empty());
+    }
+
+    #[test]
+    fn coverage_args_target_the_module_and_its_lcov_report() {
+        let report_dir = coverage_report_dir(Path::new("target"), Some("foundation"));
+        assert_eq!(report_dir, Path::new("target/test-results/cov-foundation"));
+        assert_eq!(
+            coverage_args(Some("foundation"), &report_dir),
+            [
+                "llvm-cov",
+                "-p",
+                "foundation",
+                "--lcov",
+                "--output-path",
+                "target/test-results/cov-foundation/lcov.info",
+            ]
+        );
+    }
+
+    #[test]
+    fn coverage_without_a_module_spans_the_workspace() {
+        let report_dir = coverage_report_dir(Path::new("target"), None);
+        assert_eq!(report_dir, Path::new("target/test-results/cov-all"));
+        assert_eq!(
+            coverage_args(None, &report_dir),
+            [
+                "llvm-cov",
+                "--lcov",
+                "--output-path",
+                "target/test-results/cov-all/lcov.info",
+            ]
+        );
+    }
+
+    #[test]
+    fn lcov_source_files_read_the_sf_records() {
+        let lcov = "TN:\nSF:crates/foundation/src/lib.rs\nDA:1,2\nDA:5,0\nend_of_record\n\
+                    SF:crates/foundation/src/allocator.rs\nDA:1,1\nend_of_record\n";
+        assert_eq!(
+            lcov_source_files(lcov),
+            [
+                "crates/foundation/src/lib.rs",
+                "crates/foundation/src/allocator.rs"
+            ]
+        );
     }
 }

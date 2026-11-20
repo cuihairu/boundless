@@ -7,6 +7,8 @@
 //!   `cargo run -p test-support --bin run-tests -- test-support timer_scenarios`
 //! - compat diff between two run archives, naming every difference:
 //!   `cargo run -p test-support --bin run-tests -- diff <baseline> <current>`
+//! - coverage (cargo-llvm-cov 0.9.1), lcov + html mapping back to source:
+//!   `cargo run -p test-support --bin run-tests -- cov [module]`
 //!
 //! Exits with the test run's status so CI gates on it directly; the diff
 //! exits 2 when the runs are not compatible.
@@ -14,12 +16,16 @@
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-use test_support::harness::{Plan, diff_runs, parse_outcomes, workspace_modules};
+use test_support::harness::{
+    Plan, coverage_args, coverage_report_dir, diff_runs, lcov_source_files, parse_outcomes,
+    workspace_modules,
+};
 use test_support::layering::find_workspace_root;
 
 fn usage() -> String {
     "usage: run-tests all\n       run-tests <module> [filter]\n       \
-     run-tests diff <baseline-archive> <current-archive>\n\
+     run-tests diff <baseline-archive> <current-archive>\n       \
+     run-tests cov [module]\n\
      modules: foundation platform resources mercury contracts entitydef \
      python-host server-runtime test-support server"
         .to_string()
@@ -53,6 +59,39 @@ fn run_diff(baseline_path: &str, current_path: &str) -> ExitCode {
     }
 }
 
+/// The `cov` mode: run cargo-llvm-cov for a module (or the workspace) and
+/// print which source files the report maps to.
+fn run_cov(module: Option<&str>, root: &Path) -> ExitCode {
+    let target_dir = root.join("target");
+    let report_dir = coverage_report_dir(&target_dir, module);
+    if let Err(reason) = std::fs::create_dir_all(&report_dir) {
+        eprintln!("run-tests: cannot create report dir: {reason}");
+        return ExitCode::FAILURE;
+    }
+
+    let cov_args = coverage_args(module, &report_dir);
+    println!("run-tests: cargo {}", cov_args.join(" "));
+    let status = Command::new("cargo").args(&cov_args).status();
+    match status {
+        Ok(status) if !status.success() => ExitCode::FAILURE,
+        Err(reason) => {
+            eprintln!("run-tests: cannot start cargo: {reason}");
+            ExitCode::FAILURE
+        }
+        Ok(_) => {
+            let lcov = std::fs::read_to_string(report_dir.join("lcov.info")).unwrap_or_default();
+            let sources = lcov_source_files(&lcov);
+            println!(
+                "run-tests: lcov maps {} source files ({} .. {})",
+                sources.len(),
+                sources.first().map(String::as_str).unwrap_or("-"),
+                sources.last().map(String::as_str).unwrap_or("-"),
+            );
+            ExitCode::SUCCESS
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -75,6 +114,14 @@ fn main() -> ExitCode {
 
     let plan = match words.as_slice() {
         ["all"] => Ok(Plan::All),
+        ["cov"] => return run_cov(None, &root),
+        ["cov", module] => {
+            if let Err(message) = Plan::for_module(module, &modules, None) {
+                eprintln!("run-tests: {message}");
+                return ExitCode::FAILURE;
+            }
+            return run_cov(Some(module), &root);
+        }
         [module] => Plan::for_module(module, &modules, None),
         [module, filter] => Plan::for_module(module, &modules, Some(filter)),
         _ => Err(usage()),
