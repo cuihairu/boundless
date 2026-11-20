@@ -1284,7 +1284,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 提供按模块执行、全量测试、兼容差分、覆盖率和结果归档入口。文档记录调用、依赖、夹具来源和失败复现方式。
 
-- [ ] **BW-18-04-01 提供单模块和全量入口**。**验收** 同一模块可单独执行。
+- [x] **BW-18-04-01 提供单模块和全量入口**。**验收** 同一模块可单独执行。
+  - 证据：本地与 CI 走同一入口 `cargo run -p test-support --bin run-tests -- ...`；harness.rs 的 `workspace_modules` 从根 manifest `members` 解析全部 10 个 crate 名、`Plan::for_module` 校验模块名（拼错时报错并列出全部已知 crate）、`cargo_args` 给出映射的 cargo 调用（`-p <crate> [filter]` / `--workspace`）；实测 `run-tests -- test-support timer_scenarios` 单独执行该模块（4 用例通过、其余 90 过滤）、`run-tests -- all` 跑全 workspace、`run-tests -- clock` 拒绝未知模块，7 项单测覆盖映射规则。
 - [ ] **BW-18-04-02 提供兼容差分入口**。**验收** 输出可定位差异。
 - [ ] **BW-18-04-03 提供覆盖率入口**。**验收** 报告能映射源码。
 - [ ] **BW-18-04-04 提供结果归档**。**验收** CI 和本地采用同一目录及格式。
