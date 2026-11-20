@@ -350,6 +350,15 @@ pub fn parse_cargo_test_output(output: &str) -> Vec<TestOutcome> {
     outcomes
 }
 
+/// The exact rerun command recorded in an archive (BW-18-04-05): the
+/// `run:` line, which reproduces the failing slice on the same checkout.
+/// `None` when the text carries no archive header.
+pub fn rerun_command(archive_text: &str) -> Option<String> {
+    archive_text
+        .lines()
+        .find_map(|line| line.strip_prefix("run: ").map(str::to_string))
+}
+
 /// The `cargo llvm-cov` arguments (everything after `cargo`) for one
 /// coverage run: an lcov report whose `SF:`/`DA:` records map every
 /// measured line back to its source file and line. Requires
@@ -679,6 +688,28 @@ version = "0.1.0"
         let text = archive.render();
         assert!(text.contains("commit: unknown\n"));
         assert!(text.ends_with("summary: 0 passed, 0 failed, 0 skipped\n"));
+    }
+
+    #[test]
+    fn an_archive_carries_its_own_rerun_command() {
+        // A filtered slice must rerun narrowed, not whole-crate.
+        let archive = RunArchive {
+            label: "test-support-timer_scenarios".to_string(),
+            command: "cargo test -p test-support timer_scenarios".to_string(),
+            commit: Some("0eb5a00".to_string()),
+            when: String::new(),
+            outcomes: outcomes(&[("t", TestStatus::Passed)]),
+        };
+        assert_eq!(
+            rerun_command(&archive.render()),
+            Some("cargo test -p test-support timer_scenarios".to_string())
+        );
+    }
+
+    #[test]
+    fn text_without_an_archive_header_has_no_rerun_command() {
+        assert_eq!(rerun_command("# run archive\nlabel: all\n"), None);
+        assert_eq!(rerun_command("PASS some_test\n"), None);
     }
 
     #[test]
