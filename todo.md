@@ -1159,7 +1159,8 @@ boundless/
 
 服务与客户端运行时依赖共享契约及各自所需的基础库，服务进程间调用走 Mercury 契约。跨角色共用的消息结构按发送方/接收方接口归入 `contracts`，避免进程 crate 互相依赖。依赖方向为 `apps → 角色或工具运行时 → 契约与领域库 → 基础层`。
 
-- [ ] **BW-16-01-01 建立应用与角色 crate 依赖单向关系**。**验收** 依赖图无环。
+- [x] **BW-16-01-01 建立应用与角色 crate 依赖单向关系**。**验收** 依赖图无环。
+  - 证据：原版 C++ 无分层约束（依赖靠 Makefile 隐式），新版在 crates/test-support/src/layering.rs 建立分层注册表（foundation=0、platform=1、contracts/entitydef/mercury/python-host/resources=2、server-runtime=3、boundless-server/test-support=4）+ manifest 行级扫描 + Tarjan 环检测 + cargo metadata 成员交叉校验，`workspace_rules_hold` 守护全成员，cargo test -p test-support 7 passed。
 - [ ] **BW-16-01-02 抽取进程间消息契约**。**验收** 调用方无需依赖对端服务 crate。
 - [ ] **BW-16-01-03 验证独立构建**。**验收** 指定服务能单独编译。
 
