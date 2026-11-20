@@ -170,7 +170,9 @@
   - 证据：crates/resources datasection.rs 80 测试钉死 xml_section.cpp 语义（重复子节点取首、空值返回空串、转义表、保存布局）；llvm-cov 全部核心 crate 行覆盖 100%。
 - [x] **BW-01-03-02 实现 Binary/Packed 读写**。**验收** 原版生成物被正确解析且能往返。
   - 证据：packed.rs 手搭字节级夹具复现原版生成物（magic 0x62a14e45、排序字符串表双 NUL、错位一格记录布局 R0.dataPos=own end|type、child k 的 end|type 存 R(k+1)）并解析通过；写入→读取全树往返（int 全宽/bool/float/vector/矩阵 row0-3/加密 blob/base64）字节精确；120 测试全绿。原版为 Windows 工程不可在 Linux 运行，以 packed_section.cpp 逐行精读钉死语义（含 addBestGuess 分支顺序 empty→bool→大u64→int→float→blob→string）。llvm-cov：packed.rs 99.84%（仅 3 行为原版自身 asString↔asInt64 无限递归分支，注释留档），base64/binary/special_chars/datasection 100%。
-- [ ] **BW-01-03-03 实现 ZIP 资源挂载**。**验收** 压缩和未压缩条目可查。
+- [x] **BW-01-03-03 实现 ZIP 资源挂载**。**验收** 压缩和未压缩条目可查。
+  - 证据：zip.rs 手搭 ZIP 字节夹具（本地头/中央目录/尾记录逐字节自拼）验证解析，STORE 与 DEFLATE 条目均可 read_file 查询；get_file_type_ex 嵌套 zip 探测（未加载流式嗅探压缩与未压缩、已载入内存字节嗅探）；updateFile 重名编码（"name 1"/"name 2"）与 duplicates 解析、erase 索引重建、clear、createZip 字节精确对照（固定 DOS 时间戳）、bCompressed_ 锁存防二次压缩回归。29 测试全绿。zip_file_system.cpp 3010 行逐行精读钉死语义，忠实保留原版怪癖：根目录无 fileMap 行（getFileType("") 返回 NOT_FOUND）、尾点路径 erase(size-2) 连切两字符、readFile 不剥前缀而 getFileType 剥、updateFile 行需 createZip 后才可读（localHeaderOffset<0 早退）、createZip 的 isValid=pData_!=NULL 剔除未加载行、坏本地头签名退化到零头从 offset+30 读入名字字节。llvm-cov：zip.rs 行 99.38%/区域 100%（仅余防御分支与 unwrap panic 区域），workspace 0 警告。嵌套 zip 节点（childNode/tag_ 转发）与 ZipSection 数据节层属后续集成任务。
+
 - [ ] **BW-01-03-04 实现资源根搜索和路径映射**。**验收** 同名资源优先级吻合。
 - [ ] **BW-01-03-05 实现 DataSection 缓存失效**。**验收** 覆盖写入后读取新值。
 - [ ] **BW-01-03-06 实现保存与更新**。**验收** 原版可读新版生成的代表性文件。

@@ -5,3 +5,4 @@ pub mod binary;
 pub mod datasection;
 pub mod packed;
 pub mod special_chars;
+pub mod zip;
