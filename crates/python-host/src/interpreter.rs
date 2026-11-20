@@ -32,6 +32,7 @@ use super::gil;
 use super::import_paths::ImportPaths;
 use super::init_time_job;
 use super::keepalive;
+use super::math;
 use super::output_writer;
 use super::wrapper;
 
@@ -150,6 +151,11 @@ impl Interpreter {
             error = Some(InitError::GarbageCollectionUnavailable);
         }
         if error.is_none() {
+            // `TempPyVectorInit` (`script_math.cpp:3053-3067`) is a rung-0
+            // init-time job: the Math module and its classes exist before
+            // the BigWorld module is built, and the module-table snapshot
+            // sees Math either way.
+            math::install();
             // `ScriptModule::getOrCreate("BigWorld")` with the `component`
             // attribute, then the `s_pOurInitTimeModules` snapshot.
             create_big_world_module(&config.component);
@@ -241,6 +247,11 @@ impl Interpreter {
         // `CellApp::shutDown` deletes its entities before `Script::fini` --
         // so every native wrapper `Py_DecRef`s here, allocator still alive.
         wrapper::reset();
+        // The Math module's providers release their held references next:
+        // the teardown table must stay intact for the deallocs that release
+        // fires, so the reset sits before `binding::reset`, which drops the
+        // type objects themselves.
+        math::reset();
         // The type registry's references go the same way: the static
         // `s_type_` objects outlive every script object, and the port holds
         // its registry references until here.
@@ -563,6 +574,11 @@ mod tests {
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
+        "interpreter::tests::scenario_the_math_module_serves_the_ported_surface",
+        "interpreter::tests::scenario_the_vector_types_exercise_their_surface",
+        "interpreter::tests::scenario_the_matrix_and_plane_types_exercise_their_surface",
+        "interpreter::tests::scenario_the_matrix_and_plane_methods_exercise_their_surface",
+        "interpreter::tests::scenario_the_v4_providers_exercise_their_surface",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -1332,7 +1348,7 @@ mod tests {
     fn scenario_a_foreign_object_carries_no_native_id() {
         interpreter_scenario(&InitConfig::default(), |_interpreter| {
             let text = unsafe { capi::PyUnicode_FromString(c"not a native object".as_ptr()) };
-            let borrowed = PyRef::borrowed(text);
+            let borrowed = PyRef::from_owned(text).expect("a fresh unicode object");
             assert_eq!(unsafe { wrapper::native(&borrowed) }, None);
         });
     }
@@ -1492,8 +1508,10 @@ mod tests {
         });
     }
 
-    /// The reference's three rejections: assigning a read-only attribute,
-    /// reading an unknown one, and deleting a bound one -- the last is the
+    /// The reference's three rejections: assigning a read-only attribute is
+    /// the `PY_RO_ATTRIBUTE_SET` `TypeError` naming the attribute and the
+    /// `tp_name` (`pyobject_plus.hpp:443-454`), reading an unknown one stays
+    /// the interpreter's `AttributeError`, and deleting a bound one is the
     /// `pyDelAttribute` path, which a getset table answers with `TypeError`.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
@@ -1508,10 +1526,9 @@ mod tests {
             assert_eq!(
                 probe(
                     interpreter,
-                    "try:\n    demo.label = 1\nexcept AttributeError:\n    __probe = True\n\
-                     else:\n    __probe = False",
+                    "try:\n    demo.label = 1\nexcept TypeError as error:\n    __probe = str(error)",
                 ),
-                "True"
+                "Sorry, the attribute label in boundless.Demo is read-only"
             );
             assert_eq!(
                 probe(
@@ -1524,10 +1541,9 @@ mod tests {
             assert_eq!(
                 probe(
                     interpreter,
-                    "try:\n    del demo.value\nexcept TypeError:\n    __probe = True\n\
-                     else:\n    __probe = False",
+                    "try:\n    del demo.value\nexcept TypeError as error:\n    __probe = str(error)",
                 ),
-                "True"
+                "cannot delete the value attribute"
             );
         });
     }
@@ -2441,8 +2457,8 @@ mod tests {
     /// The export manifest agrees with the live interpreter: the surface it
     /// marks ported imports and resolves, and its scoping records read true
     /// against the modules that exist today -- `BigWorld.component` is
-    /// present, the client-only `BigWorld.callback` is not, and `Math` is
-    /// absent entirely because the port has not delivered it yet.
+    /// present, the client-only `BigWorld.callback` is not, and the ported
+    /// `Math` module imports with every delivered name.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_the_manifest_matches_the_interpreter() {
@@ -2469,11 +2485,2240 @@ mod tests {
             }
             // SAFETY: the interpreter is up and this thread owns the GIL.
             let math = unsafe { capi::PyImport_ImportModule(c"Math".as_ptr()) };
-            // The port has not delivered Math: the module is absent, exactly
-            // what its pending row records.
-            assert!(math.is_null(), "Math is still pending");
-            // SAFETY: a failed import leaves an exception set; clear it.
-            unsafe { capi::clear_error() };
+            assert!(!math.is_null(), "Math imports: the port delivered it");
+            // SAFETY: math is a live module object.
+            unsafe { capi::dec_ref(math) };
+        });
+    }
+
+    /// The Math module serves the ported surface: the delivered factory
+    /// names sit in the module while the internal coercion target, the
+    /// register type and the Windows-only animation never show, a provider
+    /// chain re-evaluates bottom-up on every read, a tuple coerces into the
+    /// Basic provider whose `value` answers the reference's read-only
+    /// sentence, the walls raise the reference's own sentences, the
+    /// register file hands out one shared handle per cell, and the host
+    /// tick walks the autoTick providers.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_module_serves_the_ported_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // Every delivered factory name, and none of the internals: the
+            // coercion target (`Vector4Basic`) and the register type are
+            // link-internal in the reference, and `MatrixAnimation` is
+            // Windows-only.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = ', '.join(sorted(n for n in dir(Math) if not n.startswith('_')))",
+                ),
+                "Matrix, MatrixInverse, MatrixProduct, Plane, Vector2, Vector3, Vector4, \
+                 Vector4Animation, Vector4Combiner, Vector4Distance, Vector4LFO, \
+                 Vector4MatrixAdaptor, Vector4Morph, Vector4Product, Vector4Shader, \
+                 Vector4Swizzle, Vector4Translation, getRegister",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = any(n in dir(Math) for n in \
+                     ('Vector4Basic', 'Vector4Register', 'MatrixAnimation'))",
+                ),
+                "False",
+            );
+
+            // A product chain re-evaluates bottom-up on every read: a
+            // provider assigned to an input reads through, so a later write
+            // below it shows on top without a re-assign. A product with
+            // only one source provides that source's value -- the rule the
+            // reference documents (`script_math.cpp:3322-3325`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     top = Math.Vector4Product()\n\
+                     bottom = Math.Vector4Product()\n\
+                     bottom.b = (2, 2, 2, 2)\n\
+                     top.a = bottom\n\
+                     top.b = (1, 1, 1, 1)\n\
+                     before = tuple(top.value)\n\
+                     bottom.a = (3, 3, 3, 3)\n\
+                     __probe = (before, tuple(top.value))",
+                ),
+                "((2.0, 2.0, 2.0, 2.0), (6.0, 6.0, 6.0, 6.0))",
+            );
+
+            // A tuple coerced into a provider slot becomes the Basic type,
+            // and its `value` answers the reference's read-only sentence.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     p = Math.Vector4Product()\n\
+                     p.a = (1, 2, 3, 4)\n\
+                     __probe = tuple(p.a.value)",
+                ),
+                "(1.0, 2.0, 3.0, 4.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     p = Math.Vector4Product()\n\
+                     p.a = (1, 2, 3, 4)\n\
+                     try:\n\
+                     \x20   p.a.value = 5\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Sorry, the attribute value in Math.Vector4Basic is read-only",
+            );
+
+            // The constructor wall: the factories take no script arguments.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4Product(1)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector4Product() takes no arguments.",
+            );
+
+            // The enum walls: a string name round-trips, an unknown name is
+            // the `ValueError` listing the legal ones, a non-string is the
+            // same sentence as the `TypeError`.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     lfo = Math.Vector4LFO()\n\
+                     lfo.waveform = 'SINE'\n\
+                     __probe = lfo.waveform",
+                ),
+                "SINE",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     lfo = Math.Vector4LFO()\n\
+                     try:\n\
+                     \x20   lfo.waveform = 'WOBBLE'\n\
+                     except ValueError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     lfo = Math.Vector4LFO()\n\
+                     try:\n\
+                     \x20   lfo.waveform = 2\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH",
+            );
+
+            // The keyframe walls: a non-sequence and a wrong pair refuse
+            // with the reference's sentences, a good set lerp-walks on the
+            // `time` attribute.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     animation = Math.Vector4Animation()\n\
+                     try:\n\
+                     \x20   animation.keyframes = 5\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "keyframes must be set to a sequence",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     animation = Math.Vector4Animation()\n\
+                     try:\n\
+                     \x20   animation.keyframes = [(0.0,)]\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "An item of a PySTLSequence of a keyframe must be set to a tuple of \
+                 a float and a Vector4Provider",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     animation = Math.Vector4Animation()\n\
+                     animation.keyframes = [(0.0, (1, 2, 3, 4)), (1.0, (2, 2, 2, 2))]\n\
+                     animation.time = 0.5\n\
+                     __probe = tuple(animation.value)",
+                ),
+                "(1.5, 2.0, 2.5, 3.0)",
+            );
+
+            // The register file: one shared handle per cell, zeros until a
+            // shader writes, and the cap of 62 is the reference's own
+            // `MAX_ARG` sentence.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     register = Math.getRegister(3)\n\
+                     __probe = (register is Math.getRegister(3), tuple(register.value))",
+                ),
+                "(True, (0.0, 0.0, 0.0, 0.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.getRegister(63)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "() argument 1 is greater than maximum value",
+            );
+
+            // The provider wall: a plain number is no provider.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     product = Math.Vector4Product()\n\
+                     try:\n\
+                     \x20   product.a = 5\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "a must be set to a Vector4Provider or None",
+            );
+
+            // The autoTick providers walk under the host's per-frame tick:
+            // the morph sits a hair past its old value -- `target` writes
+            // `time_ = 0.f` directly (`script_math.cpp:3852-3856`) but the
+            // `duration` setter re-clamps through the 0.0001 floor
+            // (`:3882-3885`) -- and reaches the target halfway through its
+            // duration.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     morph = Math.Vector4Morph((0, 0, 0, 0))\n\
+                     morph.target = (2, 2, 2, 2)\n\
+                     morph.duration = 1.0\n\
+                     __probe = tuple(round(c, 5) for c in morph.value)",
+                ),
+                "(0.0002, 0.0002, 0.0002, 0.0002)",
+            );
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            crate::math::tick(0.5);
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n__probe = tuple(round(c, 5) for c in morph.value)"
+                ),
+                "(1.0002, 1.0002, 1.0002, 1.0002)",
+            );
+        });
+    }
+
+    /// The vector types carry their whole script surface: the constructor
+    /// forms and their wall, the ostream string, the arithmetic slots with
+    /// the Vector3 cross-product multiply, the lexicographic comparisons,
+    /// the in-place operators handing the same object back, the method
+    /// set with its per-dimension refusals, the attributes, the sequence
+    /// protocol, and the bytes state round trip.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_vector_types_exercise_their_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // Construction: empty is zeros, a single float fills, a tuple
+            // sets, and a wrong shape is the set wall.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (str(Math.Vector2()), str(Math.Vector2(3)), \
+                     str(Math.Vector3(1, 2, 3)), str(Math.Vector4(1, 2, 3, 4)))",
+                ),
+                "('(0, 0)', '(3, 3)', '(1, 2, 3)', '(1, 2, 3, 4)')",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector2((1, 2, 3))\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector.set must be set to a sequence of 2 floats, or one float",
+            );
+
+            // The arithmetic slots: tuple operands work on either side,
+            // scalars multiply and divide, and a fresh vector comes back
+            // from every operator.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector2((1, 2))\n\
+                     w = Math.Vector2((3, 4))\n\
+                     __probe = (str(v + w), str(v - w), str(v + (1, 1)), \
+                     str((1, 1) + v), str(v * 2), str(2 * v), str(v / 2))",
+                ),
+                "('(4, 6)', '(-2, -2)', '(2, 3)', '(2, 3)', '(2, 4)', '(2, 4)', '(0.5, 1)')",
+            );
+            // A division by zero is the ostream's word, not a crash.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n__probe = str(Math.Vector2((1, 2)) / 0)",
+                ),
+                "(inf, inf)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector2((1, 2))\n\
+                     __probe = (str(-v), str(+v), bool(Math.Vector2()), bool(v))",
+                ),
+                "('(-1, -2)', '(1, 2)', False, True)",
+            );
+            // The Vector3 multiply: two vectors are the cross product, a
+            // scalar the plain multiply, anything else the interpreter's
+            // own refusal.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (str(Math.Vector3((1, 0, 0)) * Math.Vector3((0, 1, 0))), \
+                     str(Math.Vector3((1, 0, 0)) * 3))",
+                ),
+                "('(0, 0, 1)', '(3, 0, 0)')",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 0, 0)) * 'nope'\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "can't multiply sequence by non-int of type 'Math.Vector3'",
+            );
+
+            // The comparisons are lexicographic over the components.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     a = Math.Vector2((1, 2))\n\
+                     b = Math.Vector2((1, 3))\n\
+                     __probe = (a == b, a != b, a < b, b <= a, b > a, a >= b, \
+                     a == Math.Vector2((1, 2)))",
+                ),
+                "(False, True, True, False, True, False, True)",
+            );
+
+            // The in-place operators hand the same object back.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     q = Math.Vector2((1, 2))\n\
+                     r = q\n\
+                     q += (1, 1)\n\
+                     __probe = (str(q), r is q)",
+                ),
+                "('(2, 3)', True)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     a3 = Math.Vector3((1, 0, 0))\n\
+                     a3 *= Math.Vector3((0, 1, 0))\n\
+                     __probe = str(a3)",
+                ),
+                "(0, 0, 1)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     q = Math.Vector2((1, 2))\n\
+                     try:\n\
+                     \x20   q += 'nope'\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = (str(error), str(q))",
+                ),
+                "(\"unsupported operand type(s) for +=: 'Math.Vector2' and 'str'\", '(1, 2)')",
+            );
+
+            // The methods: dot, the cross2D specializations and the
+            // refusal past them, the flat distances, the pitch/yaw setter
+            // and its refusals, the distance pair, scale, normalise, and
+            // the tuple and list views.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (Math.Vector2((1, 2)).dot((3, 4)), \
+                     Math.Vector2((1, 2)).cross2D((3, 4)), \
+                     Math.Vector3((1, 2, 3)).cross2D((4, 5, 6)))",
+                ),
+                "(11.0, -2.0, -6.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4((1, 2, 3, 4)).cross2D((1, 2, 3, 4))\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "No cross2D for this type of vector",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (Math.Vector3((1, 2, 3)).flatDistTo((4, 6, 0)), \
+                     Math.Vector3((1, 2, 3)).flatDistSqrTo((4, 6, 0)), \
+                     Math.Vector2((0, 0)).distTo((3, 4)), \
+                     Math.Vector2((0, 0)).distSqrTo((3, 4)))",
+                ),
+                "(4.242640495300293, 18.0, 5.0, 25.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector2((1, 2)).flatDistTo((3, 4))\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "No flatDistTo for this type of vector",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     p = Math.Vector3((1, 2, 3))\n\
+                     answer = p.setPitchYaw(0.0, 1.0)\n\
+                     __probe = (answer, round(p.x, 4), round(p.y, 4), round(p.z, 4))",
+                ),
+                "(None, 0.8415, -0.0, 0.5403)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector2((1, 2)).setPitchYaw(1, 2)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "No setPitchYaw for this type of vector",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3)).setPitchYaw(1)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector3.setPitchYaw expects exactly two arguments",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     s = Math.Vector3((1, 2, 3))\n\
+                     scaled = s.scale(2)\n\
+                     n = Math.Vector3((3, 0, 0))\n\
+                     normalised = n.normalise()\n\
+                     __probe = (str(s), str(scaled), str(n), normalised, \
+                     Math.Vector2((3, 4)).length, Math.Vector2((3, 4)).lengthSquared)",
+                ),
+                "('(1, 2, 3)', '(2, 4, 6)', '(1, 0, 0)', None, 5.0, 25.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3)).normalise(1)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector.normalise takes no arguments (nor does it brook any dissent :)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (Math.Vector3((1, 2, 3)).tuple(), \
+                     Math.Vector3((1, 2, 3)).list(), tuple(Math.Vector2((1, 2))), \
+                     len(Math.Vector2((1, 2))))",
+                ),
+                "((1.0, 2.0, 3.0), [1.0, 2.0, 3.0], (1.0, 2.0), 2)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector2((3, 4))\n\
+                     __probe = (v.isReference, v.isReadOnly)",
+                ),
+                "(False, False)",
+            );
+            // The yaw and pitch views of a Vector3, in degrees.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((0, 1, 0))\n\
+                     __probe = (round(v.yaw, 4), round(v.pitch, 4))",
+                ),
+                "(0.0, -1.5708)",
+            );
+
+            // The sequence protocol: indexing reads and writes, the
+            // negative index, and the out-of-range and non-integer walls.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((1, 2, 3))\n\
+                     __probe = (v[0], v[-1], len(v))",
+                ),
+                "(1.0, 3.0, 3)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3))[5]\n\
+                     except IndexError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector index out of range",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((1, 2, 3))\n\
+                     v[0] = 9\n\
+                     v[-1] = 7\n\
+                     __probe = str(v)",
+                ),
+                "(9, 2, 7)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3))['a']\n\
+                     except TypeError:\n\
+                     \x20   __probe = 'TypeError'\n\
+                     else:\n\
+                     \x20   __probe = 'no error'",
+                ),
+                "TypeError",
+            );
+
+            // The state round trip is a bytes blob of the raw vector.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     blob = Math.Vector3((1, 2, 3)).__getstate__()\n\
+                     v = Math.Vector3((9, 9, 9))\n\
+                     __probe = (type(blob).__name__, len(blob), v.__setstate__(blob), \
+                     str(v))",
+                ),
+                "('bytes', 12, None, '(1, 2, 3)')",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3)).__setstate__(b'xx')\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = repr(str(error))",
+                ),
+                "'__setstate__ called with invalid type\\n'",
+            );
+
+            // The per-dimension attribute spread: z and w only where the
+            // dimension carries them.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (hasattr(Math.Vector2((1, 2)), 'z'), \
+                     hasattr(Math.Vector3((1, 2, 3)), 'z'), \
+                     hasattr(Math.Vector3((1, 2, 3)), 'w'), \
+                     hasattr(Math.Vector4((1, 2, 3, 4)), 'w'), \
+                     Math.Vector4((1, 2, 3, 4)).w)",
+                ),
+                "(False, True, False, True, 4.0)",
+            );
+
+            // The component setters write through `safeSetVector`, the
+            // in-place operators fold a scalar into every component, and
+            // `set` takes every accepted form: separate floats, a tuple, a
+            // list, another vector, or one float repeated. The component
+            // setter's refusal and the non-3-vector `flatDistSqrTo` are
+            // walls (`script_math.cpp:1798-1884, 2110-2157`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((1, 2, 3))\n\
+                     v.x = 10.0\n\
+                     v.y = 20.0\n\
+                     v.z = 30.0\n\
+                     w = Math.Vector4((1, 1, 1, 1))\n\
+                     w.w = 4.0\n\
+                     v *= 2.0\n\
+                     v /= 2.0\n\
+                     w *= 3.0\n\
+                     w /= 1.5\n\
+                     kind = 'none'\n\
+                     try:\n\
+                     \x20   v.x = 'x'\n\
+                     except TypeError as error:\n\
+                     \x20   kind = type(error).__name__\n\
+                     packed = Math.Vector3((0, 0, 0))\n\
+                     packed.set((5, 6, 7))\n\
+                     listed = Math.Vector3((0, 0, 0))\n\
+                     listed.set([8, 9, 10])\n\
+                     repeated = Math.Vector3((0, 0, 0))\n\
+                     repeated.set(42)\n\
+                     flat = 'none'\n\
+                     try:\n\
+                     \x20   w.flatDistSqrTo((0, 0, 0), (0, 0, 0))\n\
+                     except TypeError as error:\n\
+                     \x20   flat = type(error).__name__\n\
+                     __probe = (v.x, v.y, v.z, w.w, kind, packed.x, packed.z, \
+                     listed.y, repeated.x, flat)",
+                ),
+                "(10.0, 20.0, 30.0, 8.0, 'TypeError', 5.0, 7.0, 9.0, 42.0, \
+                 'TypeError')",
+            );
+
+            // The in-place operator answers `NotImplemented` for a
+            // non-number, which Python surfaces as the `TypeError`, and
+            // `scale` refuses its non-float argument; a tuple crosses over
+            // as a vector and the distance pair takes one -- the arms the
+            // arithmetic probes leave alone. The `cross2D` read is the
+            // XZ-plane product the reference computes
+            // (`script_math.cpp:2014`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((2, 0, 0))\n\
+                     w = Math.Vector3((0, 3, 0))\n\
+                     inplace = 'no'\n\
+                     try:\n\
+                     \x20   v *= 'x'\n\
+                     except BaseException as error:\n\
+                     \x20   inplace = type(error).__name__\n\
+                     scaled = 'no'\n\
+                     try:\n\
+                     \x20   v.scale('x')\n\
+                     except TypeError as error:\n\
+                     \x20   scaled = type(error).__name__\n\
+                     try:\n\
+                     \x20   dot = v.dot((4, 0, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   dot = type(error).__name__\n\
+                     try:\n\
+                     \x20   cross = v.cross2D((0, 5, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   cross = type(error).__name__\n\
+                     try:\n\
+                     \x20   near = v.distTo((1, 0, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   near = type(error).__name__\n\
+                     try:\n\
+                     \x20   flat = v.flatDistTo((2, 0, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   flat = type(error).__name__\n\
+                     try:\n\
+                     \x20   squared = v.flatDistSqrTo((2, 1, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   squared = type(error).__name__\n\
+                     __probe = (inplace, scaled, dot, cross, near, flat, squared)",
+                ),
+                "('TypeError', 'TypeError', 8.0, 0.0, 1.0, 0.0, 0.0)",
+            );
+
+            // The walls the arithmetic probes leave alone: `set` from a
+            // vector, its short-tuple zero fill and its refusal, the
+            // binary operators answering `NotImplemented` for a non-number,
+            // the rich-compare fallthrough, the sequence slot, the
+            // `tuple`/`list` argument windows, and the distance and
+            // cross-product parses refusing a non-vector.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except BaseException as error:\n\
+                     \x20       return type(error).__name__\n\
+                     def put(seq, key, value):\n\
+                     \x20   seq[key] = value\n\
+                     v = Math.Vector3((2, 0, 0))\n\
+                     s = Math.Vector3((0, 0, 0))\n\
+                     short = Math.Vector3((0, 0, 0))\n\
+                     sx = 'err'\n\
+                     try:\n\
+                     \x20   s.set(v)\n\
+                     \x20   sx = s.x\n\
+                     except BaseException as error:\n\
+                     \x20   sx = type(error).__name__\n\
+                     shx = 'err'\n\
+                     try:\n\
+                     \x20   short.set((1, 2))\n\
+                     \x20   shx = (short.x, short.z)\n\
+                     except BaseException as error:\n\
+                     \x20   shx = type(error).__name__\n\
+                     sub = 'err'\n\
+                     try:\n\
+                     \x20   d = Math.Vector4((3, 1, 1, 1)) - Math.Vector4((1, 1, 1, 1))\n\
+                     \x20   sub = d.w\n\
+                     except BaseException as error:\n\
+                     \x20   sub = type(error).__name__\n\
+                     bad = wall(lambda: s.set('x'))\n\
+                     add = wall(lambda: v + 'x')\n\
+                     radd = wall(lambda: 'x' + v)\n\
+                     cmp = wall(lambda: v < 'x')\n\
+                     assign = wall(lambda: put(v, 0, 5.0))\n\
+                     element = wall(lambda: v[0])\n\
+                     idx = wall(lambda: put(v, 9, 1.0))\n\
+                     typ = wall(lambda: put(v, 0, 'x'))\n\
+                     tp = wall(lambda: v.tuple(1))\n\
+                     ls = wall(lambda: v.list(1))\n\
+                     dt = wall(lambda: v.distTo('x'))\n\
+                     ds = wall(lambda: v.distSqrTo('x'))\n\
+                     fd = wall(lambda: v.flatDistTo('x'))\n\
+                     fs = wall(lambda: v.flatDistSqrTo('x'))\n\
+                     c2 = wall(lambda: v.cross2D('x'))\n\
+                     __probe = (sx, shx, sub, bad, add, radd, cmp, assign, \
+                     element, idx, typ, tp, ls, dt, ds, fd, fs, c2)",
+                ),
+                "(2.0, 'TypeError', 0.0, 'TypeError', 'TypeError', 'TypeError', \
+                 'TypeError', 'no', 'no', 'IndexError', 'TypeError', 'TypeError', \
+                 'TypeError', 'TypeError', 'TypeError', 'TypeError', 'TypeError', \
+                 'TypeError')",
+            );
+        });
+    }
+
+    /// The matrix and plane types carry their whole script surface, and
+    /// the matrix providers read through live while a `Math.Matrix`
+    /// constructor copy snapshots: the cell and attribute reads, the
+    /// rotation and multiplication order, the inversion and its
+    /// singular refusal, the projections, the state blob, the plane ray,
+    /// the adaptor's enum wall, and the product and inverse providers.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_matrix_and_plane_types_exercise_their_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // The cells: identity start, setElement and get, the
+            // translation and the axis and origin applications.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setElement(1, 2, 7)\n\
+                     __probe = (m.get(0, 0), m.get(1, 2))",
+                ),
+                "(1.0, 7.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((3, 4, 5))\n\
+                     a = str(m.applyToOrigin())\n\
+                     b = str(m.applyToAxis(0))\n\
+                     c = str(m.applyV4Point((1, 2, 3, 1)))\n\
+                     __probe = (a, b, c)",
+                ),
+                "('(3, 4, 5)', '(1, 0, 0)', '(4, 6, 8, 1)')",
+            );
+
+            // The quarter turn and the vector application: the row
+            // layout sends +X to -Z, with the f32 epsilon on the cosine.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setRotateY(1.5707964)\n\
+                     p = m.applyPoint((1, 0, 0))\n\
+                     __probe = tuple(round(c, 6) for c in p)",
+                ),
+                "(-0.0, 0.0, -1.0)",
+            );
+
+            // The Euler attributes read back the composition, and the
+            // determinant and mirror read the axes.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setRotateYPR((0.5, -0.25, 0.125))\n\
+                     s = Math.Matrix()\n\
+                     s.setScale((2, 3, 4))\n\
+                     d = Math.Matrix()\n\
+                     d.setScale((-2, 3, 4))\n\
+                     __probe = (round(m.yaw, 5), round(m.pitch, 5), round(m.roll, 5), \
+                     round(s.determinant, 5), s.isMirrored, round(d.determinant, 5), \
+                     d.isMirrored)",
+                ),
+                "(0.5, -0.25, 0.125, 24.0, False, -24.0, True)",
+            );
+
+            // The multiplication order: pre lands the argument on the
+            // left, post on the right -- the pre-multiplied rotation
+            // swings the translated origin, the post one does not.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     r = Math.Matrix()\n\
+                     r.setRotateY(1.5707964)\n\
+                     t = Math.Matrix()\n\
+                     t.setTranslate((1, 0, 0))\n\
+                     left = Math.Matrix()\n\
+                     left.postMultiply(t)\n\
+                     left.preMultiply(r)\n\
+                     right = Math.Matrix()\n\
+                     right.postMultiply(t)\n\
+                     right.postMultiply(r)\n\
+                     lp = left.applyToOrigin()\n\
+                     rp = right.applyToOrigin()\n\
+                     __probe = (tuple(round(c, 4) for c in lp), \
+                     tuple(round(c, 4) for c in rp))",
+                ),
+                "((1.0, 0.0, 0.0), (-0.0, 0.0, -1.0))",
+            );
+
+            // The inversion round-trips and the singular refusal leaves
+            // the matrix untouched.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setRotateY(0.9)\n\
+                     m.setTranslate((3, -2, 5))\n\
+                     o = Math.Matrix()\n\
+                     o.setRotateY(0.9)\n\
+                     o.setTranslate((3, -2, 5))\n\
+                     m.invert()\n\
+                     m.postMultiply(o)\n\
+                     home = m.applyToOrigin()\n\
+                     s = Math.Matrix()\n\
+                     s.setScale((0, 1, 1))\n\
+                     try:\n\
+                     \x20   s.invert()\n\
+                     except ValueError as error:\n\
+                     \x20   refusal = str(error)\n\
+                     __probe = (tuple(abs(c) < 1e-4 for c in home), refusal, \
+                     round(s.get(0, 0), 5))",
+                ),
+                "((True, True, True), 'Matrix could not be inverted', 0.0)",
+            );
+
+            // The projections and the lookAt bottom row.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.orthogonalProjection(4, 2, 1, 101)\n\
+                     l = Math.Matrix()\n\
+                     l.lookAt((1, 2, 3), (0, 0, 1), (0, 1, 0))\n\
+                     __probe = (m.get(0, 0), m.get(1, 1), m.get(3, 3), \
+                     round(l.get(3, 0), 5), round(l.get(3, 1), 5), round(l.get(3, 2), 5))",
+                ),
+                "(0.5, 1.0, 1.0, -1.0, -2.0, -3.0)",
+            );
+
+            // The state blob round trip.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((1, 2, 3))\n\
+                     blob = m.__getstate__()\n\
+                     c = Math.Matrix()\n\
+                     c.__setstate__(blob)\n\
+                     __probe = (type(blob).__name__, len(blob), str(c.applyToOrigin()))",
+                ),
+                "('bytes', 64, '(1, 2, 3)')",
+            );
+
+            // The plane: three points, the ray hit on the plane, and an
+            // in-plane ray answers the source itself.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     plane = Math.Plane()\n\
+                     plane.init((0, 0, 5), (1, 0, 5), (0, 1, 5))\n\
+                     hit = plane.intersectRay((0, 0, 10), (0, 0, -1))\n\
+                     flat = plane.intersectRay((0, 0, 5), (1, 0, 0))\n\
+                     __probe = (str(hit), str(flat))",
+                ),
+                "('(0, 0, 5)', '(0, 0, 5)')",
+            );
+
+            // The matrix providers read through live, while a Matrix
+            // constructor copy snapshots -- the reference documents the
+            // difference (`script_math.cpp:857-858`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     t = Math.Matrix()\n\
+                     t.setTranslate((3, 4, 5))\n\
+                     only = Math.MatrixProduct()\n\
+                     only.a = t\n\
+                     only_view = str(Math.Matrix(only).applyToOrigin())\n\
+                     p = Math.MatrixProduct()\n\
+                     p.a = t\n\
+                     p.b = Math.Matrix()\n\
+                     via_a = str(Math.Matrix(p.a).applyToOrigin())\n\
+                     snapshot = Math.Matrix(p)\n\
+                     before = str(snapshot.applyToOrigin())\n\
+                     t.setTranslate((9, 9, 9))\n\
+                     fresh = str(Math.Matrix(p).applyToOrigin())\n\
+                     frozen = str(snapshot.applyToOrigin())\n\
+                     __probe = (only_view, via_a, before, fresh, frozen)",
+                ),
+                "('(3, 4, 5)', '(3, 4, 5)', '(3, 4, 5)', '(9, 9, 9)', '(3, 4, 5)')",
+            );
+
+            // The inverse provider negates the rotation and translation.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     t = Math.Matrix()\n\
+                     t.setTranslate((3, 4, 5))\n\
+                     inverse = Math.MatrixInverse(t)\n\
+                     __probe = Math.Matrix(inverse).applyToOrigin()",
+                ),
+                "(-3, -4, -5)",
+            );
+
+            // The adaptor's enum wall and its look-at composition.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ad = Math.Vector4MatrixAdaptor()\n\
+                     ad.style = 'XYZ_SCALE'\n\
+                     name = ad.style\n\
+                     try:\n\
+                     \x20   ad.style = 'BAD'\n\
+                     except ValueError as error:\n\
+                     \x20   refusal = str(error)\n\
+                     __probe = (name, refusal)",
+                ),
+                "('XYZ_SCALE', 'style must be set to one of XYZ_SCALE, XY_SCALE, \
+                 X_ROTATE, Y_ROTATE, Z_ROTATE, LOOKAT, or LOOKAT_SCALEZ')",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ad = Math.Vector4MatrixAdaptor()\n\
+                     ad.style = 'X_ROTATE'\n\
+                     ad.source = (1.5707964, 0, 0, 0)\n\
+                     ad.position = (5, 0, 0, 0)\n\
+                     m = Math.Matrix(ad)\n\
+                     first = tuple(round(c, 5) for c in m.applyToAxis(1))\n\
+                     ad.source = (0, 0, 0, 0)\n\
+                     fresh = tuple(round(c, 5) for c in Math.Matrix(ad).applyToAxis(1))\n\
+                     frozen = tuple(round(c, 5) for c in m.applyToAxis(1))\n\
+                     __probe = (first, fresh, frozen)",
+                ),
+                "((0.0, -0.0, 1.0), (0.0, 1.0, 0.0), (0.0, -0.0, 1.0))",
+            );
+        });
+    }
+    /// The `Matrix` and `Plane` methods the type scenario leaves alone:
+    /// the setters and the element accessors, the three axis rotations
+    /// with their angle window, the multiply order and the singular
+    /// refusal, the four applications, the two projections, the state
+    /// blob's rejections, the translation accessor, the call slot, and
+    /// the plane's ray -- every expectation pinned against
+    /// `test_script_math.cpp:296-1026`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_matrix_and_plane_methods_exercise_their_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // The zero and identity setters, the scale, and the mirror
+            // flag the determinant's sign drives.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     zero = Math.Matrix()\n\
+                     zero.setZero()\n\
+                     ident = Math.Matrix()\n\
+                     ident.setScale((2, 3, 4))\n\
+                     ident.setIdentity()\n\
+                     scale = Math.Matrix()\n\
+                     scale.setScale((2, 3, 4))\n\
+                     mirror = Math.Matrix()\n\
+                     mirror.setScale((1, 1, -1))\n\
+                     __probe = (zero.determinant, zero.get(1, 1), ident.determinant, \
+                     ident.get(0, 0), ident.get(0, 1), tuple(scale.get(i, i) for i in range(4)), \
+                     scale.determinant, mirror.determinant, mirror.isMirrored)",
+                ),
+                "(0.0, 0.0, 1.0, 1.0, 0.0, (2.0, 3.0, 4.0, 1.0), 24.0, -1.0, True)",
+            );
+
+            // `set` copies a whole matrix through the provider parse, and
+            // the translation accessor reads and writes the bottom row
+            // while the elements mask their indices with `& 3`.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     trans = Math.Matrix()\n\
+                     trans.setTranslate((1, 2, 3))\n\
+                     m.set(trans)\n\
+                     copied = m.translation.z\n\
+                     el = Math.Matrix()\n\
+                     el.setElement(3, 0, 1.0)\n\
+                     el.setElement(3, 1, 2.0)\n\
+                     el.setElement(3, 2, 4.0)\n\
+                     rows = (el.get(3, 0), el.get(3, 1), el.get(3, 2), el.get(3, 3))\n\
+                     el.translation = (7, 8, 9)\n\
+                     after = (el.translation.x, el.translation.y, el.translation.z, \
+                     el.get(3, 0), el.get(3, 1), el.get(3, 2), el.get(3, 3), \
+                     el.applyToOrigin().z)\n\
+                     wrap = Math.Matrix()\n\
+                     wrap.setElement(4, 0, 5.0)\n\
+                     __probe = (copied, rows, after, wrap.get(0, 0), wrap.get(4, 0))",
+                ),
+                "(3.0, (1.0, 2.0, 4.0, 1.0), (7.0, 8.0, 9.0, 7.0, 8.0, 9.0, 1.0, 9.0), \
+                 5.0, 5.0)",
+            );
+
+            // The three axis rotations, the YPR triple, the angle window
+            // at both ends, and the determinant every rotation keeps.
+            // The `yaw` read back is the Euler decomposition of the stored
+            // matrix, so the legal 100 radian angle wraps into `(-pi, pi]` --
+            // `100 - 16*pi` in the f32 arithmetic the reference carries
+            // (`script_math.cpp:2417-2439`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     rx = Math.Matrix()\n\
+                     rx.setRotateX(0.5)\n\
+                     ry = Math.Matrix()\n\
+                     ry.setRotateY(0.5)\n\
+                     rz = Math.Matrix()\n\
+                     rz.setRotateZ(0.5)\n\
+                     ypr = Math.Matrix()\n\
+                     ypr.setRotateYPR((0.1, 0.2, 0.3))\n\
+                     edge = Math.Matrix()\n\
+                     edge.setRotateY(100.0)\n\
+                     __probe = (round(rx.pitch, 5), round(rx.yaw, 5), round(ry.yaw, 5), \
+                     round(ry.pitch, 5), round(rz.roll, 5), round(rz.yaw, 5), \
+                     round(ypr.yaw, 5), round(ypr.pitch, 5), round(ypr.roll, 5), \
+                     round(ypr.determinant, 5), round(edge.yaw, 5))",
+                ),
+                "(0.5, 0.0, 0.5, -0.0, 0.5, 0.0, 0.1, 0.2, 0.3, 1.0, -0.53096)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     edge = Math.Matrix()\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except TypeError as error:\n\
+                     \x20       return str(error)\n\
+                     __probe = (wall(lambda: edge.setRotateY(100.5)), \
+                     wall(lambda: edge.setRotateY(-100.5)), \
+                     wall(lambda: edge.setRotateX(1000.0)), \
+                     wall(lambda: edge.setRotateZ(1000.0)), \
+                     wall(lambda: edge.setRotateYPR((0.0, 0.0, 200.0))), \
+                     wall(lambda: edge.setRotateYPR((0.0, 200.0, 0.0))), \
+                     wall(lambda: edge.setRotateYPR((200.0, 0.0, 0.0))), \
+                     wall(lambda: edge.setRotateY()), \
+                     wall(lambda: edge.setRotateYPR((0.0, 0.0))), \
+                     wall(lambda: edge.setScale(1)), \
+                     wall(lambda: edge.setScale()), \
+                     wall(lambda: edge.setZero(1)), \
+                     wall(lambda: edge.setIdentity(1)))",
+                ),
+                "('() argument 1 must be a valid angle', '() argument 1 must be a valid angle', \
+                 '() argument 1 must be a valid angle', '() argument 1 must be a valid angle', \
+                 '() argument 1 element 2 must be a valid angle', \
+                 '() argument 1 element 1 must be a valid angle', \
+                 '() argument 1 element 0 must be a valid angle', \
+                 'setRotateY() expects 1 argument of type float', \
+                 '() argument 1 must be set to a Vector3 or a tuple of 3 floats', \
+                 '() argument 1 must be set to a Vector3 or a tuple of 3 floats', \
+                 'setScale() expects 1 argument of type Vector3', \
+                 'setZero() takes no arguments.', \
+                 'setIdentity() takes no arguments.')",
+            );
+
+            // The multiply order and the inversion: the pre-multiply
+            // swings the old translation, the post one keeps it, the
+            // inverse undoes it, and a singular matrix is refused with
+            // its cells left as they were.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     half = 3.14159 / 2\n\
+                     tr = Math.Matrix()\n\
+                     tr.setTranslate((1, 0, 0))\n\
+                     ro = Math.Matrix()\n\
+                     ro.setRotateY(half)\n\
+                     pre = Math.Matrix()\n\
+                     pre.set(ro)\n\
+                     pre.preMultiply(tr)\n\
+                     post = Math.Matrix()\n\
+                     post.set(ro)\n\
+                     post.postMultiply(tr)\n\
+                     inv = Math.Matrix()\n\
+                     inv.setTranslate((1, 2, 3))\n\
+                     inv.invert()\n\
+                     back = Math.Matrix()\n\
+                     back.set(inv)\n\
+                     back.invert()\n\
+                     sing = Math.Matrix()\n\
+                     sing.setZero()\n\
+                     try:\n\
+                     \x20   sing.invert()\n\
+                     \x20   refusal = 'no'\n\
+                     except ValueError as error:\n\
+                     \x20   refusal = str(error)\n\
+                     __probe = (round(pre.translation.x, 3), round(pre.translation.z, 3), \
+                     round(pre.yaw, 2), round(post.translation.x, 3), \
+                     round(post.translation.y, 3), round(inv.translation.x, 3), \
+                     round(inv.translation.z, 3), round(back.translation.x, 3), \
+                     round(back.translation.y, 3), round(back.translation.z, 3), \
+                     round(back.determinant, 3), sing.determinant, refusal)",
+                ),
+                "(0.0, -1.0, 1.57, 1.0, 0.0, -1.0, -3.0, 1.0, 2.0, 3.0, 1.0, 0.0, \
+                 'Matrix could not be inverted')",
+            );
+
+            // The four applications: the translation reaches points and
+            // origins but not vectors, the fourth component divides, and
+            // the axis index wraps with `& 3`.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((2, 4, 8))\n\
+                     rot = Math.Matrix()\n\
+                     rot.setRotateY(3.14159 / 2)\n\
+                     p = m.applyPoint((1, 2, 3))\n\
+                     v4 = m.applyV4Point((1, 2, 3, 1))\n\
+                     v = m.applyVector((1, 2, 3))\n\
+                     o = m.applyToOrigin()\n\
+                     __probe = ((p.x, p.y, p.z), (v4.x, v4.z, v4.w), (v.x, v.z), \
+                     (o.x, o.z), round(rot.applyToAxis(2).x, 3), \
+                     round(rot.applyToAxis(2).z, 3), round(rot.applyToAxis(9).x, 3), \
+                     round(rot.applyToAxis(9).y, 3))",
+                ),
+                "((3.0, 6.0, 11.0), (3.0, 11.0, 1.0), (1.0, 3.0), (2.0, 8.0), 1.0, 0.0, \
+                 0.0, 1.0)",
+            );
+
+            // `lookAt` builds a view matrix whose translation reads back
+            // the negated basis dot products.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     look = Math.Matrix()\n\
+                     look.lookAt((0, 0, -10), (0, 0, 10), (0, 1, 0))\n\
+                     __probe = (round(look.translation.x, 3), round(look.translation.z, 3))",
+                ),
+                // `-position.dotProduct(Right)` negates the zero dot product,
+                // so the `x` translation is the negative zero the reference
+                // writes (`matrix.cpp:726`).
+                "(-0.0, 10.0)",
+            );
+
+            // The projections fill the documented 4x4 layouts.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     orth = Math.Matrix()\n\
+                     orth.orthogonalProjection(2.0, 4.0, 1.0, 10.0)\n\
+                     persp = Math.Matrix()\n\
+                     persp.perspectiveProjection(3.14159265 / 2, 1.0, 1.0, 11.0)\n\
+                     __probe = (round(orth.get(0, 0), 4), round(orth.get(0, 1), 4), \
+                     round(orth.get(1, 1), 4), round(orth.get(2, 2), 4), \
+                     round(orth.get(3, 3), 4), round(orth.translation.z, 4), \
+                     round(persp.get(0, 0), 4), round(persp.get(1, 1), 4), \
+                     round(persp.get(2, 2), 4), round(persp.get(3, 2), 4), \
+                     round(persp.determinant, 4))",
+                ),
+                "(1.0, 0.0, 0.5, 0.1111, 1.0, -0.1111, 1.0, 1.0, 1.1, -1.1, 1.1)",
+            );
+
+            // The state blob round trips, and each rejected shape leaves
+            // the target untouched.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((1, 2, 3))\n\
+                     state = m.__getstate__()\n\
+                     other = Math.Matrix()\n\
+                     other.__setstate__(state)\n\
+                     kept = (other.translation.x, other.translation.y, other.translation.z)\n\
+                     def wall(body, kind):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except kind as error:\n\
+                     \x20       return str(error)\n\
+                     shaped = (len(state), isinstance(state, bytes), kept, \
+                     wall(lambda: other.__setstate__(state, state), TypeError), \
+                     wall(lambda: other.__setstate__(('nope',)), ValueError), \
+                     wall(lambda: other.__setstate__((b'short',)), ValueError), \
+                     other.translation.x)\n\
+                     __probe = shaped",
+                ),
+                "(64, True, (1.0, 2.0, 3.0), \
+                 'Matrix.__setstate__ was given wrong args', \
+                 'Matrix.__setstate__ was given bad state', \
+                 'Matrix.__setstate__ was given bad state', 1.0)",
+            );
+
+            // The call slot is `get`: the same two-index read, the same
+            // masked lookup, and the same walls.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setElement(1, 2, 7.0)\n\
+                     m.translation = (5, 6, 7)\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except TypeError as error:\n\
+                     \x20       return str(error)\n\
+                     __probe = (m(1, 2), m(5, 2), wall(lambda: m(1)), \
+                     wall(lambda: m('x', 0)), wall(lambda: m(0, 'x')), \
+                     wall(lambda: Math.Matrix(42)), wall(lambda: Math.Matrix(1, 2)), \
+                     wall(lambda: m.set(42)), wall(lambda: m.set(None)), \
+                     wall(lambda: m.set()), wall(lambda: m.get()), \
+                     wall(lambda: m.setElement(0, 0)), \
+                     wall(lambda: m.setElement(0, 0, 'x')), \
+                     wall(lambda: m.applyPoint((1.0, 2.0))), \
+                     wall(lambda: m.applyV4Point((1.0, 2.0, 3.0))), \
+                     wall(lambda: m.applyVector('x')), \
+                     wall(lambda: m.applyToAxis()), wall(lambda: m.applyToOrigin(1)), \
+                     wall(lambda: m.lookAt((0.0, 0.0, 0.0))), \
+                     wall(lambda: m.orthogonalProjection(1.0)), \
+                     wall(lambda: m.perspectiveProjection(1.0, 1.0, 1.0)), \
+                     wall(lambda: m.preMultiply(42)), \
+                     wall(lambda: m.postMultiply(42)), wall(lambda: m.preMultiply()), \
+                     str(m.translation))",
+                ),
+                "(7.0, 7.0, 'get() expects 2 arguments of types uint, uint', \
+                 '() argument 1 must be set to an uint', \
+                 '() argument 2 must be set to an uint', \
+                 'Math.Matrix(): Expected an optional MatrixProvider', \
+                 'Math.Matrix(): Expected an optional MatrixProvider', \
+                 '() argument 1 must be set to a MatrixProvider or None', \
+                 '() argument 1 cannot be None', 'set() expects 1 argument of type \
+                 MatrixProvider', 'get() expects 2 arguments of types uint, uint', \
+                 'setElement() expects 3 arguments of types uint, uint, float', \
+                 '() argument 3 must be set to a float', \
+                 '() argument 1 must be set to a Vector3 or a tuple of 3 floats', \
+                 '() argument 1 must be set to a Vector4 or tuple of 4 floats', \
+                 '() argument 1 must be set to a Vector3 or a tuple of 3 floats', \
+                 'applyToAxis() expects 1 argument of type uint', \
+                 'applyToOrigin() takes no arguments.', \
+                 'lookAt() expects 3 arguments of types Vector3, Vector3, Vector3', \
+                 'orthogonalProjection() expects 4 arguments of types float, float, float, \
+                 float', \
+                 'perspectiveProjection() expects 4 arguments of types float, float, float, \
+                 float', \
+                 '() argument 1 must be set to a MatrixProvider or None', \
+                 '() argument 1 must be set to a MatrixProvider or None', \
+                 'preMultiply() expects 1 argument of type MatrixProvider', \
+                 '(5, 6, 7)')",
+            );
+
+            // The plane: the ray through the floor, the parallel ray that
+            // hands the source back, and the parse walls. The reference's
+            // own test (`test_script_math.cpp:1019-1022`) only asserts
+            // `TypeError` for each, and its `Plane` factory ignores its
+            // argument (`script_math.cpp:5279-5283`), so the two-argument
+            // `init` fails the count and the extra argument is accepted.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     floor = Math.Plane()\n\
+                     floor.init((0, 0, 0), (1, 0, 0), (0, 0, 1))\n\
+                     hit = floor.intersectRay((0, 5, 0), (0, -1, 0))\n\
+                     par = floor.intersectRay((0, 5, 0), (1, 0, 0))\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except TypeError as error:\n\
+                     \x20       return str(error)\n\
+                     __probe = (round(hit.x, 3), round(hit.y, 3), round(hit.z, 3), \
+                     round(par.x, 3), round(par.y, 3), round(par.z, 3), \
+                     wall(lambda: floor.init((0, 1, 0))), \
+                     wall(lambda: floor.intersectRay((0, 0, 0))), \
+                     wall(lambda: floor.init((0, 0, 0), (1, 0))), \
+                     wall(lambda: Math.Plane(5).intersectRay((0, 5, 0), (0, -1, 0)).y))",
+                ),
+                "(0.0, 0.0, 0.0, 0.0, 5.0, 0.0, \
+                 'init() expects 3 arguments of types Vector3, Vector3, Vector3', \
+                 'intersectRay() expects 2 arguments of types Vector3, Vector3', \
+                 'init() expects 3 arguments of types Vector3, Vector3, Vector3', \
+                 'no')",
+            );
+
+            // The pickling hooks drive a real round trip through the
+            // protocol, the translation setter rewrites the bottom row,
+            // and a couple of reads the type scenario does not touch. The
+            // reference replaces `sys.path` with the resource paths
+            // (`script.cpp:566-571`), so the stdlib `copy` module is not
+            // importable and the round trip calls the hooks the way
+            // `copy.copy` would.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((1, 2, 3))\n\
+                     clone = Math.Matrix()\n\
+                     clone.__setstate__(m.__getstate__())\n\
+                     clone.translation = (4, 5, 6)\n\
+                     __probe = (round(clone.translation.x, 3), round(clone.translation.z, 3), \
+                     round(clone.applyToOrigin().y, 3), clone.get(3, 3), \
+                     round(m.determinant, 3))",
+                ),
+                "(4.0, 6.0, 5.0, 1.0, 1.0)",
+            );
+
+            // The walls the happy-path probes leave alone: the argument
+            // windows on `setRotateYPR`, `invert` and `applyV4Point`, the
+            // state blob's length check, the plane and application parses,
+            // and the translation setter's non-vector refusal.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except BaseException as error:\n\
+                     \x20       return type(error).__name__\n\
+                     m = Math.Matrix()\n\
+                     ypr = wall(lambda: m.setRotateYPR())\n\
+                     inv = wall(lambda: m.invert(1))\n\
+                     v4 = wall(lambda: m.applyV4Point())\n\
+                     st = wall(lambda: m.__setstate__(b'short'))\n\
+                     pl = Math.Plane()\n\
+                     pi = wall(lambda: pl.init('x'))\n\
+                     pr = wall(lambda: pl.intersectRay('x'))\n\
+                     ap = wall(lambda: m.applyPoint('x'))\n\
+                     pre = wall(lambda: m.preMultiply('x'))\n\
+                     tr = wall(lambda: setattr(m, 'translation', 'x'))\n\
+                     __probe = (ypr, inv, v4, st, pi, pr, ap, pre, tr)",
+                ),
+                "('TypeError', 'TypeError', 'TypeError', 'ValueError', 'TypeError', \
+                 'TypeError', 'TypeError', 'TypeError', 'TypeError')",
+            );
+        });
+    }
+
+    /// The `Vector4` providers exercise their whole script surface: the
+    /// product's source forms and walls, the translation and the distance
+    /// over matrix origins, the LFO's four waveforms under the shared
+    /// tick, the swizzle and the combiner's seven functions, the
+    /// animation's keyframe walk with the clock wrap, the morph's clamped
+    /// clock, the adaptor's styles, and the shader's register machine --
+    /// every expectation pinned against the reference's own unit tests
+    /// (`test_script_math.cpp:1028-1608`).
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_v4_providers_exercise_their_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // The product: no source is the zero vector, either source
+            // alone passes through, both multiply componentwise, and a
+            // tuple or a `Vector4` both wrap as a `Vector4Basic`.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     none = Math.Vector4Product()\n\
+                     lone = Math.Vector4Product()\n\
+                     lone.a = (1, 2, 0.5, 0)\n\
+                     only_b = Math.Vector4Product()\n\
+                     only_b.b = (3, 6, 9, 12)\n\
+                     prod = Math.Vector4Product()\n\
+                     prod.a = (1, 2, 0.5, 0)\n\
+                     prod.b = Math.Vector4(2, 2, 2, 2)\n\
+                     __probe = (Math.Vector4Product().a is None, type(prod.a).__name__, \
+                     str(prod.a.value), str(none.value), str(lone.value), str(only_b.value), \
+                     str(prod.value), isinstance(prod.a.value, Math.Vector4))",
+                ),
+                "(True, 'Vector4Basic', '(1, 2, 0.5, 0)', '(0, 0, 0, 0)', \
+                 '(1, 2, 0.5, 0)', '(3, 6, 9, 12)', '(2, 4, 1, 0)', True)",
+            );
+
+            // The product's walls: `value` is read-only, a plain number
+            // is no provider, and `None` clears a slot to the other
+            // source.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   prod.value = (1, 1, 1, 1)\n\
+                     \x20   read_only = 'no'\n\
+                     except TypeError as error:\n\
+                     \x20   read_only = str(error)\n\
+                     try:\n\
+                     \x20   prod.a = 42\n\
+                     \x20   wall = 'no'\n\
+                     except TypeError as error:\n\
+                     \x20   wall = str(error)\n\
+                     prod.a = None\n\
+                     __probe = (read_only, wall, str(prod.value))",
+                ),
+                "('Sorry, the attribute value in Math.Vector4Product is read-only', \
+                 'a must be set to a Vector4Provider or None', '(2, 2, 2, 2)')",
+            );
+
+            // The translation reads the source's origin with w = 1, and
+            // the distance spreads the gap between the two origins into
+            // all four components.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ma = Math.Matrix()\n\
+                     ma.setTranslate((1, 2, 3))\n\
+                     mb = Math.Matrix()\n\
+                     mb.setTranslate((4, 6, 3))\n\
+                     trans = Math.Vector4Translation(ma)\n\
+                     trans.source = mb\n\
+                     dist = Math.Vector4Distance(ma, mb)\n\
+                     __probe = (tuple(trans.value), trans.source is mb, \
+                     tuple(round(c, 5) for c in dist.value), dist.a is ma, dist.b is mb)",
+                ),
+                "((4.0, 6.0, 3.0, 1.0), True, (5.0, 5.0, 5.0, 5.0), True, True)",
+            );
+
+            // The translation and distance walls: the argument counts and
+            // the matrix-provider converter's sentence.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4Translation(42)\n\
+                     except TypeError as error:\n\
+                     \x20   not_provider = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Translation()\n\
+                     except TypeError as error:\n\
+                     \x20   missing = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Distance(ma)\n\
+                     except TypeError as error:\n\
+                     \x20   one = str(error)\n\
+                     try:\n\
+                     \x20   trans.source = 42\n\
+                     except TypeError as error:\n\
+                     \x20   attribute = str(error)\n\
+                     __probe = (not_provider, missing, one, attribute)",
+                ),
+                "('() argument 1 must be set to a MatrixProvider or None', \
+                 'Vector4Translation() expects 1 argument of type MatrixProvider', \
+                 'Vector4Distance() expects 2 arguments of types MatrixProvider, \
+                 MatrixProvider', \
+                 'source must be set to a MatrixProvider or None')",
+            );
+
+            // The LFO's four waveforms at the clock the reference's unit
+            // test pins: the half-amplitude sine at zero, the sawtooth
+            // ramp, the triangle each side of the half period, the square
+            // low then high, and the flat line a zero period draws.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     sine = Math.Vector4LFO()\n\
+                     sine.period = 1.0\n\
+                     sine.amplitude = 2.0\n\
+                     saw = Math.Vector4LFO()\n\
+                     saw.period = 1.0\n\
+                     saw.amplitude = 2.0\n\
+                     saw.waveform = 'SAWTOOTH'\n\
+                     saw.time = 0.25\n\
+                     tri = Math.Vector4LFO()\n\
+                     tri.period = 1.0\n\
+                     tri.amplitude = 2.0\n\
+                     tri.waveform = 'TRIANGLE'\n\
+                     tri.time = 0.25\n\
+                     tri_high = Math.Vector4LFO()\n\
+                     tri_high.period = 1.0\n\
+                     tri_high.amplitude = 2.0\n\
+                     tri_high.waveform = 'TRIANGLE'\n\
+                     tri_high.time = 0.75\n\
+                     sq = Math.Vector4LFO()\n\
+                     sq.period = 1.0\n\
+                     sq.amplitude = 2.0\n\
+                     sq.waveform = 'SQUARE'\n\
+                     sq.time = 0.25\n\
+                     sq_high = Math.Vector4LFO()\n\
+                     sq_high.period = 1.0\n\
+                     sq_high.amplitude = 2.0\n\
+                     sq_high.waveform = 'SQUARE'\n\
+                     sq_high.time = 0.75\n\
+                     flat = Math.Vector4LFO()\n\
+                     flat.period = 0.0\n\
+                     flat.amplitude = 5.0\n\
+                     neg = Math.Vector4LFO()\n\
+                     neg.period = -1.0\n\
+                     neg.amplitude = 5.0\n\
+                     neg.waveform = 'SQUARE'\n\
+                     neg.time = 0.3\n\
+                     __probe = (sine.waveform, round(sine.period, 5), \
+                     round(sine.amplitude, 5), round(sine.phase, 5), round(sine.time, 5), \
+                     round(sine.value.x, 5), round(saw.value.x, 5), round(tri.value.x, 5), \
+                     round(tri_high.value.x, 5), round(sq.value.x, 5), \
+                     round(sq_high.value.x, 5), round(flat.value.x, 5), \
+                     round(neg.value.x, 5))",
+                ),
+                "('SINE', 1.0, 2.0, 0.0, 0.0, 1.0, 0.5, 1.5, 1.5, 0.0, 2.0, 0.0, 0.0)",
+            );
+
+            // The tick advances the clock and flips the parity: the
+            // negative-period square follows the parity counter, which
+            // starts out even and goes odd after one frame.
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            crate::math::tick(0.1);
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n__probe = (round(neg.value.x, 5), round(neg.time, 5))",
+                ),
+                "(5.0, 0.4)",
+            );
+
+            // The LFO's walls: the enum sentences and the float parse.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   neg.waveform = 'NOPE'\n\
+                     except ValueError as error:\n\
+                     \x20   wrong = str(error)\n\
+                     try:\n\
+                     \x20   neg.waveform = 5\n\
+                     except TypeError as error:\n\
+                     \x20   not_string = str(error)\n\
+                     try:\n\
+                     \x20   neg.period = 'x'\n\
+                     except TypeError as error:\n\
+                     \x20   period = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4LFO(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     __probe = (wrong, not_string, period, factory)",
+                ),
+                "('waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH', \
+                 'waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH', \
+                 'period must be set to a float', \
+                 'Vector4LFO() takes no arguments.')",
+            );
+
+            // The swizzle gathers the x component of each source into
+            // its own slot.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     sw = Math.Vector4Swizzle()\n\
+                     sw.x = (1, 9, 9, 9)\n\
+                     sw.y = (2, 9, 9, 9)\n\
+                     sw.z = (3, 9, 9, 9)\n\
+                     sw.w = (4, 9, 9, 9)\n\
+                     __probe = (type(sw.x).__name__, tuple(sw.value))",
+                ),
+                "('Vector4Basic', (1.0, 2.0, 3.0, 4.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   sw.x = 42\n\
+                     except TypeError as error:\n\
+                     \x20   first = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Swizzle(5)\n\
+                     except TypeError as error:\n\
+                     \x20   second = str(error)\n\
+                     __probe = (first, second)",
+                ),
+                "('x must be set to a Vector4Provider or None', \
+                 'Vector4Swizzle() takes no arguments.')",
+            );
+
+            // The combiner's seven functions over the same two inputs,
+            // and the zero vector an absent operand leaves.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     cb = Math.Vector4Combiner()\n\
+                     cb.a = (1, 2, 3, 4)\n\
+                     cb.b = (4, 3, 2, 1)\n\
+                     name = cb.fn\n\
+                     add = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'SUBTRACT'\n\
+                     subtract = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'MULTIPLY'\n\
+                     multiply = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'DIVIDE'\n\
+                     divide = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'DOT'\n\
+                     dot = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'MIN'\n\
+                     minimum = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'MAX'\n\
+                     maximum = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.a = None\n\
+                     zero = tuple(round(c, 5) for c in cb.value)\n\
+                     __probe = (name, add, subtract, multiply, divide, dot, minimum, \
+                     maximum, zero)",
+                ),
+                "('ADD', (5.0, 5.0, 5.0, 5.0), (-3.0, -1.0, 1.0, 3.0), (4.0, 6.0, 6.0, 4.0), \
+                 (0.25, 0.66667, 1.5, 4.0), (20.0, 20.0, 20.0, 20.0), (1.0, 2.0, 2.0, 1.0), \
+                 (4.0, 3.0, 3.0, 4.0), (0.0, 0.0, 0.0, 0.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   cb.fn = 'NOPE'\n\
+                     except ValueError as error:\n\
+                     \x20   wrong = str(error)\n\
+                     try:\n\
+                     \x20   cb.fn = 5\n\
+                     except TypeError as error:\n\
+                     \x20   not_string = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Combiner(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     __probe = (wrong, not_string, factory)",
+                ),
+                "('fn must be set to one of MULTIPLY, DIVIDE, ADD, SUBTRACT, DOT, MIN, or \
+                 MAX', \
+                 'fn must be set to one of MULTIPLY, DIVIDE, ADD, SUBTRACT, DOT, MIN, or \
+                 MAX', \
+                 'Vector4Combiner() takes no arguments.')",
+            );
+
+            // The animation: empty is the zero vector, the keyframe walk
+            // holds the first value before the first keyframe, lerps
+            // between, and holds the last past the end. The raw tuple
+            // form of `keyframes` reads back the same list shape.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     empty = Math.Vector4Animation()\n\
+                     anim = Math.Vector4Animation()\n\
+                     anim.duration = 2.0\n\
+                     anim.keyframes = [(0.0, (1, 0, 0, 0)), (1.0, (0, 1, 0, 0))]\n\
+                     before = tuple(anim.value)\n\
+                     anim.time = 0.5\n\
+                     half = tuple(anim.value)\n\
+                     anim.time = 5.0\n\
+                     after = tuple(anim.value)\n\
+                     anim.keyframes = ((0.0, (1, 0, 0, 0)), (1.0, (0, 1, 0, 0)))\n\
+                     start = Math.Vector4Animation()\n\
+                     start.keyframes = [(0.0, (1, 0, 0, 0)), (1.0, (0, 1, 0, 0))]\n\
+                     start.time = 0.0\n\
+                     __probe = (str(empty.value), round(empty.duration, 5), \
+                     len(anim.keyframes), anim.keyframes[0][0], \
+                     type(anim.keyframes[0][1]).__name__, before, half, after)",
+                ),
+                "('(0, 0, 0, 0)', 1.0, 2, 0.0, 'Vector4Basic', \
+                 (1.0, 0.0, 0.0, 0.0), (0.5, 0.5, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0))",
+            );
+
+            // The shared provider store advances the animation clock and
+            // wraps it at the duration.
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            crate::math::tick(0.25);
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n__probe = (round(start.time, 5), round(start.value.x, 5))",
+                ),
+                "(0.25, 0.75)",
+            );
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            crate::math::tick(2.0);
+            assert_eq!(
+                probe(interpreter, "import Math\n__probe = round(start.time, 5)"),
+                "0.25",
+            );
+
+            // The keyframe wall: each item is a float and a provider, and
+            // the assignment itself a sequence. Every bad item -- a short
+            // tuple, a non-float clock, a `None` source, a non-numeric
+            // clock -- reads as the pair sentence, never the inner wall.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   anim.keyframes = [(0.0, 5)]\n\
+                     except TypeError as error:\n\
+                     \x20   item = str(error)\n\
+                     try:\n\
+                     \x20   anim.keyframes = [5]\n\
+                     except TypeError as error:\n\
+                     \x20   shape = str(error)\n\
+                     try:\n\
+                     \x20   anim.keyframes = 5\n\
+                     except TypeError as error:\n\
+                     \x20   sequence = str(error)\n\
+                     try:\n\
+                     \x20   anim.keyframes = [(0.0, None)]\n\
+                     except TypeError as error:\n\
+                     \x20   null = str(error)\n\
+                     try:\n\
+                     \x20   anim.keyframes = [('x', (1, 1, 1, 1))]\n\
+                     except TypeError as error:\n\
+                     \x20   number = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Animation(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     __probe = (item, shape, sequence, null, number, factory)",
+                ),
+                "('An item of a PySTLSequence of a keyframe must be set to a tuple of a \
+                 float and a Vector4Provider', \
+                 'An item of a PySTLSequence of a keyframe must be set to a tuple of a \
+                 float and a Vector4Provider', \
+                 'keyframes must be set to a sequence', \
+                 'An item of a PySTLSequence of a keyframe must be set to a tuple of a \
+                 float and a Vector4Provider', \
+                 'An item of a PySTLSequence of a keyframe must be set to a tuple of a \
+                 float and a Vector4Provider', \
+                 'Vector4Animation() takes no arguments.')",
+            );
+
+            // The morph: the duration rewrite carries the progress and
+            // clamps through the 0.0001 floor, and `target` snapshots the
+            // current value and rewinds the clock.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     morph = Math.Vector4Morph((0, 0, 0, 0))\n\
+                     morph.target = (10, 10, 10, 10)\n\
+                     morph.duration = 1.0\n\
+                     began = (round(morph.duration, 5), round(morph.time, 5))\n\
+                     near = tuple(round(c, 4) for c in morph.value)\n\
+                     morph.time = 0.5\n\
+                     half = tuple(round(c, 5) for c in morph.value)\n\
+                     morph.duration = 2.0\n\
+                     carried = (round(morph.duration, 5), round(morph.time, 5), \
+                     tuple(round(c, 5) for c in morph.value))\n\
+                     morph.time = 100.0\n\
+                     clamped = (round(morph.time, 5), tuple(round(c, 5) for c in morph.value))\n\
+                     morph.time = -5.0\n\
+                     floor = round(morph.time, 5)\n\
+                     morph.duration = 0.0\n\
+                     duration_floor = round(morph.duration, 5)\n\
+                     morph.time = 1.0\n\
+                     morph.target = (20, 20, 20, 20)\n\
+                     retarget = (round(morph.time, 5), round(morph.target.x, 5))\n\
+                     __probe = (began, near, half, carried, clamped, floor, duration_floor, \
+                     retarget)",
+                ),
+                "((1.0, 0.0001), (0.001, 0.001, 0.001, 0.001), (5.0, 5.0, 5.0, 5.0), \
+                 (2.0, 1.0, (5.0, 5.0, 5.0, 5.0)), (2.0, (10.0, 10.0, 10.0, 10.0)), \
+                 0.0001, 0.0001, (0.0, 20.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4Morph(5)\n\
+                     except TypeError as error:\n\
+                     \x20   first = str(error)\n\
+                     try:\n\
+                     \x20   morph.target = 5\n\
+                     except TypeError as error:\n\
+                     \x20   second = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Morph(1, 2)\n\
+                     except TypeError as error:\n\
+                     \x20   third = str(error)\n\
+                     __probe = (first, second, third)",
+                ),
+                "('() argument 1 optionally must be set to a Vector4 or tuple of 4 floats', \
+                 'target must be set to a Vector4 or tuple of 4 floats', \
+                 'Vector4Morph() expects between 0 and 1 arguments of types Vector4')",
+            );
+
+            // The adaptor's styles: the scales read the components, the
+            // rotations their angles, the look-ats stay invertible, and a
+            // missing source leaves the receiving matrix zeroed.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ad = Math.Vector4MatrixAdaptor()\n\
+                     ad.source = (2, 3, 4, 0)\n\
+                     ad.position = (1, 0, 0, 0)\n\
+                     xy = (round(Math.Matrix(ad).get(0, 0), 5), \
+                     round(Math.Matrix(ad).get(1, 1), 5), \
+                     round(Math.Matrix(ad).get(2, 2), 5), \
+                     round(Math.Matrix(ad).translation.x, 5))\n\
+                     xyz = Math.Vector4MatrixAdaptor()\n\
+                     xyz.source = (2, 3, 4, 0)\n\
+                     xyz.style = 'XYZ_SCALE'\n\
+                     rot_y = Math.Vector4MatrixAdaptor()\n\
+                     rot_y.source = (2, 3, 4, 0)\n\
+                     rot_y.style = 'Y_ROTATE'\n\
+                     rot_z = Math.Vector4MatrixAdaptor()\n\
+                     rot_z.source = (2, 3, 4, 0)\n\
+                     rot_z.style = 'Z_ROTATE'\n\
+                     look = Math.Vector4MatrixAdaptor()\n\
+                     look.source = (1, 0, 0, 0)\n\
+                     look.style = 'LOOKAT'\n\
+                     look_z = Math.Vector4MatrixAdaptor()\n\
+                     look_z.source = (0, 0, 2, 0)\n\
+                     look_z.style = 'LOOKAT_SCALEZ'\n\
+                     __probe = (xy, round(Math.Matrix(xyz).get(2, 2), 5), \
+                     round(Math.Matrix(rot_y).yaw, 5), round(Math.Matrix(rot_z).roll, 5), \
+                     Math.Matrix(look).determinant != 0, \
+                     Math.Matrix(look_z).determinant != 0, \
+                     round(Math.Matrix(Math.Vector4MatrixAdaptor()).determinant, 5), \
+                     round(Math.Matrix(Math.Vector4MatrixAdaptor()).translation.x, 5))",
+                ),
+                "((2.0, 3.0, 1.0, 1.0), 4.0, 3.0, -2.28319, True, True, 0.0, 0.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4MatrixAdaptor(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     try:\n\
+                     \x20   ad.source = 42\n\
+                     except TypeError as error:\n\
+                     \x20   source = str(error)\n\
+                     try:\n\
+                     \x20   ad.position = 42\n\
+                     except TypeError as error:\n\
+                     \x20   position = str(error)\n\
+                     __probe = (factory, source, position)",
+                ),
+                "('Vector4MatrixAdaptor() takes no arguments.', \
+                 'source must be set to a Vector4Provider or None', \
+                 'position must be set to a Vector4Provider or None')",
+            );
+
+            // The register file: one shared handle per cell, zeros until
+            // a shader writes, and the scratch cap's `MAX_ARG` sentence.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     reg = Math.getRegister(0)\n\
+                     last = Math.getRegister(62)\n\
+                     try:\n\
+                     \x20   Math.getRegister(63)\n\
+                     except TypeError as error:\n\
+                     \x20   over = str(error)\n\
+                     try:\n\
+                     \x20   Math.getRegister()\n\
+                     except TypeError as error:\n\
+                     \x20   count = str(error)\n\
+                     try:\n\
+                     \x20   Math.getRegister('x')\n\
+                     except TypeError as error:\n\
+                     \x20   parse = str(error)\n\
+                     __probe = (Math.getRegister(0) is reg, tuple(reg.value), over, count, \
+                     parse)",
+                ),
+                "(True, (0.0, 0.0, 0.0, 0.0), \
+                 '() argument 1 is greater than maximum value', \
+                 'getRegister() expects 1 argument of type uint8', \
+                 '() argument 1 must be set to an uint')",
+            );
+
+            // The one-operand shader ops over register zero.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def const(x, y, z, w):\n\
+                     \x20   p = Math.Vector4Product()\n\
+                     \x20   p.a = (x, y, z, w)\n\
+                     \x20   return p\n\
+                     move = Math.Vector4Shader()\n\
+                     move.addOp(0, reg, const(5, 6, 7, 8))\n\
+                     recip = Math.Vector4Shader()\n\
+                     recip.addOp(1, reg, const(2, 4, 8, 16))\n\
+                     bias = Math.Vector4Shader()\n\
+                     bias.addOp(2, reg, const(1, 2, 3, 4))\n\
+                     complement = Math.Vector4Shader()\n\
+                     complement.addOp(3, reg, const(1, 2, 3, 4))\n\
+                     __probe = (tuple(round(c, 5) for c in move.value), \
+                     tuple(round(c, 5) for c in recip.value), \
+                     tuple(round(c, 5) for c in bias.value), \
+                     tuple(round(c, 5) for c in complement.value))",
+                ),
+                "((5.0, 6.0, 7.0, 8.0), (0.5, 0.25, 0.125, 0.0625), \
+                 (0.5, 1.5, 2.5, 3.5), (0.0, -1.0, -2.0, -3.0))",
+            );
+
+            // The two-operand ops, the comparisons included: the
+            // staircase against i0.x the reference pins.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     mul = Math.Vector4Shader()\n\
+                     mul.addOp(4, reg, const(1, 2, 3, 4), const(10, 20, 30, 40))\n\
+                     div = Math.Vector4Shader()\n\
+                     div.addOp(5, reg, const(1, 2, 3, 4), const(2, 2, 2, 2))\n\
+                     add = Math.Vector4Shader()\n\
+                     add.addOp(6, reg, const(1, 2, 3, 4), const(10, 20, 30, 40))\n\
+                     sub = Math.Vector4Shader()\n\
+                     sub.addOp(7, reg, const(1, 2, 3, 4), const(1, 1, 1, 1))\n\
+                     dot = Math.Vector4Shader()\n\
+                     dot.addOp(8, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     mn = Math.Vector4Shader()\n\
+                     mn.addOp(9, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     mx = Math.Vector4Shader()\n\
+                     mx.addOp(10, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     greater = Math.Vector4Shader()\n\
+                     greater.addOp(11, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     less = Math.Vector4Shader()\n\
+                     less.addOp(12, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     __probe = (tuple(round(c, 5) for c in mul.value), \
+                     tuple(round(c, 5) for c in div.value), \
+                     tuple(round(c, 5) for c in add.value), \
+                     tuple(round(c, 5) for c in sub.value), \
+                     tuple(round(c, 5) for c in dot.value), \
+                     tuple(round(c, 5) for c in mn.value), \
+                     tuple(round(c, 5) for c in mx.value), \
+                     tuple(round(c, 5) for c in greater.value), \
+                     tuple(round(c, 5) for c in less.value))",
+                ),
+                "((10.0, 40.0, 90.0, 160.0), (0.5, 1.0, 1.5, 2.0), (11.0, 22.0, 33.0, 44.0), \
+                 (0.0, 1.0, 2.0, 3.0), (20.0, 20.0, 20.0, 20.0), (1.0, 2.0, 2.0, 1.0), \
+                 (4.0, 3.0, 3.0, 4.0), (0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0, 0.0))",
+            );
+
+            // The instructions run in order with the last write to
+            // register zero winning, a register an earlier shader wrote
+            // feeds a later one as a plain input, and the same provider in
+            // both operand slots is one user input.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ordered = Math.Vector4Shader()\n\
+                     ordered.addOp(6, reg, const(1, 1, 1, 1), const(1, 1, 1, 1))\n\
+                     ordered.addOp(4, reg, const(1, 2, 3, 4), const(10, 20, 30, 40))\n\
+                     feeder = Math.Vector4Shader()\n\
+                     feeder.addOp(6, last, const(1, 2, 3, 4), const(1, 1, 1, 1))\n\
+                     feeder.value\n\
+                     reader = Math.Vector4Shader()\n\
+                     reader.addOp(0, reg, last)\n\
+                     shared = const(3, 3, 3, 3)\n\
+                     dedupe = Math.Vector4Shader()\n\
+                     dedupe.addOp(6, reg, shared, shared)\n\
+                     __probe = (tuple(round(c, 5) for c in ordered.value), \
+                     tuple(round(c, 5) for c in reader.value), \
+                     tuple(round(c, 5) for c in dedupe.value))",
+                ),
+                "((10.0, 40.0, 90.0, 160.0), (2.0, 3.0, 4.0, 5.0), (6.0, 6.0, 6.0, 6.0))",
+            );
+
+            // A non-register output slot maps to the unused cell, an
+            // unknown opcode writes nothing, plain tuples coerce as
+            // constant snapshots, and the 65th distinct user input
+            // reuses the unused cell rather than a 65th register. Both
+            // non-writing shaders answer the shared register file's cell
+            // zero: `r_[]` is class-static and only the user inputs at
+            // `BASE_USER_REGISTER` upward are ever written
+            // (`script_math.cpp:5017,5126-5131`), so the leftover is the
+            // `(6, 6, 6, 6)` the previous probe left in it.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     misplaced = Math.Vector4Shader()\n\
+                     misplaced.addOp(4, const(1, 1, 1, 1), const(1, 1, 1, 1))\n\
+                     unknown = Math.Vector4Shader()\n\
+                     unknown.addOp(13, reg, const(7, 8, 9, 10))\n\
+                     tuples = Math.Vector4Shader()\n\
+                     tuples.addOp(0, reg, (1, 1, 1, 1))\n\
+                     tuples.addOp(4, reg, reg, (3, 3, 3, 3))\n\
+                     capped = Math.Vector4Shader()\n\
+                     for i in range(65):\n\
+                     \x20   capped.addOp(4, reg, (i, i, i, i))\n\
+                     __probe = (tuple(round(c, 5) for c in misplaced.value), \
+                     tuple(round(c, 5) for c in unknown.value), \
+                     tuple(round(c, 5) for c in tuples.value), \
+                     tuple(round(c, 5) for c in capped.value))",
+                ),
+                "((6.0, 6.0, 6.0, 6.0), (6.0, 6.0, 6.0, 6.0), (3.0, 3.0, 3.0, 3.0), \
+                 (0.0, 0.0, 0.0, 0.0))",
+            );
+
+            // The shader's walls: the addOp argument window, the opcode
+            // and operand parses, and the factory.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     sh = Math.Vector4Shader()\n\
+                     try:\n\
+                     \x20   sh.addOp(4)\n\
+                     except TypeError as error:\n\
+                     \x20   count = str(error)\n\
+                     try:\n\
+                     \x20   sh.addOp('x', reg, sh)\n\
+                     except TypeError as error:\n\
+                     \x20   opcode = str(error)\n\
+                     try:\n\
+                     \x20   sh.addOp(4, 42, sh)\n\
+                     except TypeError as error:\n\
+                     \x20   output = str(error)\n\
+                     try:\n\
+                     \x20   sh.addOp(4, reg, Math.Matrix())\n\
+                     except TypeError as error:\n\
+                     \x20   operand = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Shader(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     __probe = (count, opcode, output, operand, factory)",
+                ),
+                "('addOp() expects between 3 and 4 arguments of types uint8, \
+                 Vector4Provider, Vector4Provider, Vector4Provider', \
+                 '() argument 1 must be set to an uint', \
+                 '() argument 2 must be set to a Vector4Provider or None', \
+                 '() argument 3 must be set to a Vector4Provider or None', \
+                 'Vector4Shader() takes no arguments.')",
+            );
+
+            // The matrix providers' walls and the single-slot form.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     t = Math.Matrix()\n\
+                     t.setTranslate((7, 8, 9))\n\
+                     only_b = Math.MatrixProduct()\n\
+                     only_b.b = t\n\
+                     via_b = str(Math.Matrix(only_b).applyToOrigin())\n\
+                     try:\n\
+                     \x20   Math.MatrixProduct(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     try:\n\
+                     \x20   Math.MatrixInverse()\n\
+                     except TypeError as error:\n\
+                     \x20   missing = str(error)\n\
+                     try:\n\
+                     \x20   Math.MatrixInverse(42)\n\
+                     except TypeError as error:\n\
+                     \x20   not_provider = str(error)\n\
+                     __probe = (via_b, factory, missing, not_provider)",
+                ),
+                "('(7, 8, 9)', 'MatrixProduct() takes no arguments.', \
+                 'MatrixInverse() expects 1 argument of type MatrixProvider', \
+                 '() argument 1 must be set to a MatrixProvider or None')",
+            );
+
+            // The remaining provider walls and lazy slots: the morph clamp
+            // setters, both Distance endpoint parses, the swizzle's unset
+            // components, the LFO clocks at a dead period, the bare product
+            // the matrix folds as identity, and the product slot that a
+            // None clears back out.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except BaseException as error:\n\
+                     \x20       return type(error).__name__\n\
+                     mo = Math.Vector4Morph()\n\
+                     du = wall(lambda: setattr(mo, 'duration', 'x'))\n\
+                     ti = wall(lambda: setattr(mo, 'time', 'x'))\n\
+                     d1 = wall(lambda: Math.Vector4Distance('x', Math.Matrix()))\n\
+                     d2 = wall(lambda: Math.Vector4Distance(Math.Matrix(), 'x'))\n\
+                     sz = str(Math.Vector4Swizzle().value)\n\
+                     tri = Math.Vector4LFO()\n\
+                     tri.waveform = 'TRIANGLE'\n\
+                     tri.period = 0.0\n\
+                     tv = tuple(round(c, 5) for c in tri.value)\n\
+                     saw = Math.Vector4LFO()\n\
+                     saw.waveform = 'SAWTOOTH'\n\
+                     saw.period = 0.0\n\
+                     wv = tuple(round(c, 5) for c in saw.value)\n\
+                     bare = str(Math.Matrix(Math.MatrixProduct()).applyToOrigin())\n\
+                     mp = Math.MatrixProduct()\n\
+                     mp.a = None\n\
+                     mp.b = Math.Matrix()\n\
+                     mp.b.setTranslate((7, 8, 9))\n\
+                     via_none = str(Math.Matrix(mp).applyToOrigin())\n\
+                     __probe = (du, ti, d1, d2, sz, tv, wv, bare, via_none)",
+                ),
+                "('TypeError', 'TypeError', 'TypeError', 'TypeError', \
+                 '(0, 0, 0, 0)', (0.0, 0.0, 0.0, 0.0), \
+                 (0.0, 0.0, 0.0, 0.0), '(0, 0, 0)', '(7, 8, 9)')",
+            );
+
+            // The leftover walls across the three families: the vector
+            // subtraction, the zero-argument construction, the tuple parse
+            // over a non-number, the division and two-wide multiplication
+            // NotImplemented falls, the register read-only wall, the
+            // matrix argument parses, the shader's fourth operand, the
+            // inverse with a cleared source, and the look-at over the pole
+            // where the reference swaps the up axis.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except BaseException as error:\n\
+                     \x20       return type(error).__name__\n\
+                     sub = str(Math.Vector3((1, 2, 3)) - Math.Vector3((1, 1, 1)))\n\
+                     zero = str(Math.Vector3())\n\
+                     dnot = wall(lambda: Math.Vector3((1, 2, 3)) / 'x')\n\
+                     mnot = wall(lambda: Math.Vector2((1, 0)) * Math.Vector2((0, 1)))\n\
+                     badtuple = wall(lambda: Math.Vector3((1, 'x', 3)))\n\
+                     dt = wall(lambda: Math.Vector3().dot('x'))\n\
+                     c2 = wall(lambda: Math.Vector3().cross2D('x'))\n\
+                     sf = wall(lambda: Math.Vector3().set(1, 2, 3))\n\
+                     py = wall(lambda: Math.Vector3().setPitchYaw('x', 1))\n\
+                     m = Math.Matrix()\n\
+                     st = wall(lambda: m.setTranslate('x'))\n\
+                     lk = wall(lambda: m.lookAt((0, 0, 0), 'x', (0, 1, 0)))\n\
+                     g1 = wall(lambda: m.get('x', 1))\n\
+                     g2 = wall(lambda: m.get(1, 'x'))\n\
+                     ax = wall(lambda: m.applyToAxis('x'))\n\
+                     p = Math.Plane()\n\
+                     pi = wall(lambda: p.init((0, 0, 0), 'x', (0, 1, 0)))\n\
+                     ir = wall(lambda: p.intersectRay('x', (0, 0, 1)))\n\
+                     sh = Math.Vector4Shader()\n\
+                     reg = Math.getRegister(3)\n\
+                     a4 = wall(lambda: sh.addOp(4, reg, sh, 'x'))\n\
+                     vv = Math.Vector3((4, 5, 6))\n\
+                     vv -= Math.Vector3((1, 1, 1))\n\
+                     insub = str(vv)\n\
+                     d0 = round(Math.Vector3((1, 2, 3)).dot(), 5)\n\
+                     inv_id = str(Math.Matrix(Math.MatrixInverse(None)).applyToOrigin())\n\
+                     look_up = Math.Vector4MatrixAdaptor()\n\
+                     look_up.source = (0, 10, 0, 0)\n\
+                     look_up.style = 'LOOKAT'\n\
+                     look_up_z = Math.Vector4MatrixAdaptor()\n\
+                     look_up_z.source = (0, 5, 0, 0)\n\
+                     look_up_z.style = 'LOOKAT_SCALEZ'\n\
+                     lu = Math.Matrix(look_up).determinant != 0\n\
+                     lz = Math.Matrix(look_up_z).determinant != 0\n\
+                     __probe = (sub, zero, dnot, mnot, badtuple, dt, c2, sf, py, st, \
+                     lk, g1, g2, ax, pi, ir, a4, insub, d0, inv_id, lu, lz)",
+                ),
+                "('(0, 1, 2)', '(0, 0, 0)', 'TypeError', 'TypeError', 'TypeError', \
+                 'TypeError', 'TypeError', 'no', 'TypeError', 'TypeError', \
+                 'TypeError', 'TypeError', 'TypeError', 'TypeError', 'TypeError', \
+                 'TypeError', 'TypeError', '(3, 4, 5)', 0.0, '(0, 0, 0)', True, True)",
+            );
         });
     }
 }

@@ -82,6 +82,11 @@ pub struct TypeSpec {
     sequence: Option<SequenceHandlers>,
     /// Extra bytes of instance body the allocated objects carry.
     instance_size: usize,
+    /// Extra protocol slots beyond the generic set: number-protocol entries
+    /// (`Py_nb_*`), rich compare, `tp_str`, or a `tp_new` that replaces the
+    /// construction refusal. An extra replaces the default slot of the same
+    /// id, or is appended before the terminator.
+    extra_slots: Vec<(c_int, *mut std::os::raw::c_void)>,
 }
 
 impl TypeSpec {
@@ -93,6 +98,7 @@ impl TypeSpec {
             methods: Vec::new(),
             sequence: None,
             instance_size: 0,
+            extra_slots: Vec::new(),
         }
     }
 
@@ -148,6 +154,17 @@ impl TypeSpec {
     #[must_use]
     pub fn instance_size(mut self, bytes: usize) -> Self {
         self.instance_size = bytes;
+        self
+    }
+
+    /// Add one protocol slot on top of the generic set. A slot id the
+    /// generic set already fills is replaced -- a `Py_tp_new` here overrides
+    /// the construction refusal, which is how the engine-constructed types
+    /// that scripts *do* build (`Math.Vector3( ... )`) declare their real
+    /// constructor.
+    #[must_use]
+    pub fn slot(mut self, slot: c_int, handler: *mut std::os::raw::c_void) -> Self {
+        self.extra_slots.push((slot, handler));
         self
     }
 }
@@ -389,6 +406,27 @@ fn raise_type_error(rendered: &str) {
     }
 }
 
+/// The `PY_RO_ATTRIBUTE_SET` error setter (`pyobject_plus.hpp:443-454`): a
+/// read-only attribute never carries a null setter, it carries this one, so
+/// the assignment raises the reference's `TypeError` naming the attribute
+/// and the type instead of the interpreter's `AttributeError`. The
+/// `PyGetSetDef` closure is the leaked attribute name.
+unsafe extern "C" fn read_only_setter(
+    object: *mut capi::PyObject,
+    _value: *mut capi::PyObject,
+    closure: *mut std::os::raw::c_void,
+) -> std::os::raw::c_int {
+    // SAFETY: the closure is a `CString` leaked at type creation and the
+    // object's type is live while the interpreter holds the call.
+    let name = unsafe { std::ffi::CStr::from_ptr(closure.cast::<std::os::raw::c_char>()) }
+        .to_string_lossy();
+    let type_name = unsafe { capi::type_name(capi::Py_TYPE(object)) };
+    raise_type_error(&format!(
+        "Sorry, the attribute {name} in {type_name} is read-only"
+    ));
+    -1
+}
+
 /// `mp_subscript` (`pyobject_plus.cpp:294`'s `seqMappingMethods`): normalise
 /// the key exactly the way the reference's bridge does, then dispatch to the
 /// type's own `sq_item`. Public so a host can dispatch it itself.
@@ -479,7 +517,7 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
         let pointer = existing as *mut capi::PyObject;
         // SAFETY: the registry only stores objects this function created.
         unsafe { capi::inc_ref(pointer) };
-        return Ok(PyRef::borrowed(pointer));
+        return Ok(PyRef::from_owned(pointer).expect("the registry address is a live type object"));
     }
     if unsafe { capi::Py_IsInitialized() } == 0 {
         return Err(BindError::NoInterpreter);
@@ -507,17 +545,31 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
     let methods: &'static mut [capi::PyMethodDef] = Box::leak(methods.into_boxed_slice());
 
     // The attribute table: one getset descriptor per attribute, terminated
-    // by a null name. A missing setter is the read-only attribute.
+    // by a null name. A missing setter is the read-only attribute: the
+    // descriptor carries the reference's error setter instead of a null one,
+    // so an assignment raises the `TypeError` the reference raises, and the
+    // closure carries the leaked attribute name for that message.
     let mut attributes: Vec<capi::PyGetSetDef> = spec
         .attributes
         .iter()
         .zip(&names[1..1 + spec.attributes.len()])
-        .map(|(attribute, name)| capi::PyGetSetDef {
-            name: name.as_ptr(),
-            get: Some(attribute.get),
-            set: attribute.set,
-            doc: std::ptr::null(),
-            closure: std::ptr::null_mut(),
+        .map(|(attribute, name)| {
+            let (set, closure) = match attribute.set {
+                Some(set) => (set, std::ptr::null_mut()),
+                None => (
+                    read_only_setter as capi::Setter,
+                    std::ffi::CString::from(*name)
+                        .into_raw()
+                        .cast::<std::os::raw::c_void>(),
+                ),
+            };
+            capi::PyGetSetDef {
+                name: name.as_ptr(),
+                get: Some(attribute.get),
+                set: Some(set),
+                doc: std::ptr::null(),
+                closure,
+            }
         })
         .collect();
     attributes.push(capi::PyGetSetDef {
@@ -534,85 +586,100 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
     // `PyObject_GenericSetAttr` (a `NULL` value in the slot layer is the
     // delete, which `PyObject_GenericSetAttr` itself handles), `_pyNew` the
     // refusal, `pyRepr` the address format.
-    let slots: &'static mut [capi::PyTypeSlot] = Box::leak(
-        vec![
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_getattro,
-                pfunc: capi::PyObject_GenericGetAttr as *mut std::os::raw::c_void,
+    let mut slots: Vec<capi::PyTypeSlot> = vec![
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_getattro,
+            pfunc: capi::PyObject_GenericGetAttr as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_setattro,
+            pfunc: capi::PyObject_GenericSetAttr as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_new,
+            pfunc: refuse_new as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_repr,
+            pfunc: default_repr as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_sq_length,
+            pfunc: spec
+                .sequence
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |sequence| {
+                    sequence.length as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_sq_item,
+            pfunc: spec
+                .sequence
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |sequence| {
+                    sequence.item as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_sq_ass_item,
+            pfunc: spec
+                .sequence
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |sequence| {
+                    sequence.ass_item as *mut std::os::raw::c_void
+                }),
+        },
+        // The mapping protocol wins `obj[i]` for heap types, so the
+        // reference bridges it back into the sequence handlers instead
+        // of filling a second table (`pyobject_plus.cpp:294`).
+        capi::PyTypeSlot {
+            slot: capi::Py_mp_subscript,
+            pfunc: if spec.sequence.is_some() {
+                seq_subscript as *mut std::os::raw::c_void
+            } else {
+                std::ptr::null_mut()
             },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_setattro,
-                pfunc: capi::PyObject_GenericSetAttr as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_mp_ass_subscript,
+            pfunc: if spec.sequence.is_some() {
+                seq_ass_subscript as *mut std::os::raw::c_void
+            } else {
+                std::ptr::null_mut()
             },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_new,
-                pfunc: refuse_new as *mut std::os::raw::c_void,
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_repr,
-                pfunc: default_repr as *mut std::os::raw::c_void,
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_sq_length,
-                pfunc: spec
-                    .sequence
-                    .as_ref()
-                    .map_or(std::ptr::null_mut(), |sequence| {
-                        sequence.length as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_sq_item,
-                pfunc: spec
-                    .sequence
-                    .as_ref()
-                    .map_or(std::ptr::null_mut(), |sequence| {
-                        sequence.item as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_sq_ass_item,
-                pfunc: spec
-                    .sequence
-                    .as_ref()
-                    .map_or(std::ptr::null_mut(), |sequence| {
-                        sequence.ass_item as *mut std::os::raw::c_void
-                    }),
-            },
-            // The mapping protocol wins `obj[i]` for heap types, so the
-            // reference bridges it back into the sequence handlers instead
-            // of filling a second table (`pyobject_plus.cpp:294`).
-            capi::PyTypeSlot {
-                slot: capi::Py_mp_subscript,
-                pfunc: if spec.sequence.is_some() {
-                    seq_subscript as *mut std::os::raw::c_void
-                } else {
-                    std::ptr::null_mut()
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_methods,
+            pfunc: methods.as_mut_ptr().cast(),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_getset,
+            pfunc: attributes.as_mut_ptr().cast(),
+        },
+        capi::PyTypeSlot {
+            slot: 0,
+            pfunc: std::ptr::null_mut(),
+        },
+    ];
+    // The spec's extra slots replace the generic entry of the same id -- a
+    // `Py_tp_new` here is the real constructor standing in for the refusal
+    // -- or join the table ahead of the terminator.
+    for (slot, handler) in &spec.extra_slots {
+        if let Some(entry) = slots.iter_mut().find(|entry| entry.slot == *slot) {
+            entry.pfunc = *handler;
+        } else {
+            let position = slots.len().saturating_sub(1);
+            slots.insert(
+                position,
+                capi::PyTypeSlot {
+                    slot: *slot,
+                    pfunc: *handler,
                 },
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_mp_ass_subscript,
-                pfunc: if spec.sequence.is_some() {
-                    seq_ass_subscript as *mut std::os::raw::c_void
-                } else {
-                    std::ptr::null_mut()
-                },
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_methods,
-                pfunc: methods.as_mut_ptr().cast(),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_getset,
-                pfunc: attributes.as_mut_ptr().cast(),
-            },
-            capi::PyTypeSlot {
-                slot: 0,
-                pfunc: std::ptr::null_mut(),
-            },
-        ]
-        .into_boxed_slice(),
-    );
+            );
+        }
+    }
+    let slots: &'static mut [capi::PyTypeSlot] = Box::leak(slots.into_boxed_slice());
 
     // The instance body is the `PyObject` header plus whatever the spec
     // asked for: a container proxy carries its state pointer there.

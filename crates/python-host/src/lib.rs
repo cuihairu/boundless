@@ -23,6 +23,7 @@ pub mod init_time_job;
 pub mod interpreter;
 pub mod keepalive;
 pub mod manifest;
+pub mod math;
 pub mod output_writer;
 pub mod pyref;
 pub mod sequence;
