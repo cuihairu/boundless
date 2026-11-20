@@ -15,6 +15,7 @@
 //! - `resolveToAbsolutePath` appends `'/'` to resolved directories.
 
 use std::cell::RefCell;
+use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
 
 use crate::data_section_cache::{DataSectionCache, DEFAULT_CACHE_SIZE};
@@ -178,6 +179,107 @@ impl BwResource {
         resource
     }
 
+    /// `BWResource::init(argc, argv)` for unix servers: scans the command
+    /// line, falls back through the res-path sources, and returns whether
+    /// any path survived plus the surviving arguments (the reference
+    /// compacts `argv` in place via `BWUtil::compressArgs`; the port hands
+    /// the compressed tail back). The reference logs a "No res path set"
+    /// error when nothing resolved.
+    ///
+    /// Source order is `loadPathsXML`'s: `--res`/`-r` arguments first, then
+    /// the (deprecated) `BW_RES_PATH` environment variable, then the first
+    /// usable line of `~/.bwmachined.conf` for `getUserId()`'s user.
+    pub fn init_from_args(&mut self, args: &[String]) -> (bool, Vec<String>) {
+        let exe_dir = executable_directory();
+        let uid = current_uid();
+        let env_res_path = std::env::var("BW_RES_PATH").ok();
+        self.init_from_sources(args, &exe_dir, uid, &passwd_home, env_res_path.as_deref())
+    }
+
+    /// The injectable core of [`BwResource::init_from_args`]; `bw_res_path`
+    /// and `home_of_uid` stand in for the environment lookups so callers
+    /// (and tests) can pin them. `home_of_uid` is consulted only when the
+    /// machined-conf branch runs, and it sees the uid *after* any `-uid`
+    /// argument rewrote it -- the port of `setenv("UID")` feeding
+    /// `getpwuid(getUserId())`.
+    pub fn init_from_sources(
+        &mut self,
+        args: &[String],
+        executable_dir: &str,
+        uid: u32,
+        home_of_uid: &dyn Fn(u32) -> Option<String>,
+        bw_res_path: Option<&str>,
+    ) -> (bool, Vec<String>) {
+        let mut uid = uid;
+        // The argv loop runs to `argc - 1`: a flag in the final slot never
+        // matches and survives, like the reference.
+        let mut remaining: Vec<String> = Vec::new();
+        let mut skip_next = false;
+        for (i, arg) in args.iter().enumerate() {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+            if let Some(value) = args.get(i + 1) {
+                if arg == "--res" || arg == "-r" {
+                    self.add_paths_with_source(value, "from command line", executable_dir);
+                    skip_next = true;
+                    continue;
+                }
+                if arg == "-UID" || arg == "-uid" {
+                    // `setenv("UID", ...)` in the reference; the parsed uid
+                    // feeds the machined-conf lookup directly here.
+                    uid = atoi_or_zero(value) as u32;
+                    skip_next = true;
+                    continue;
+                }
+            }
+            remaining.push(arg.clone());
+        }
+
+        if self.paths.is_empty() {
+            if let Some(res_path) = bw_res_path {
+                self.add_paths_with_source(
+                    res_path,
+                    "from BW_RES_PATH env variable",
+                    executable_dir,
+                );
+            }
+        }
+        if self.paths.is_empty() {
+            if let Some(home) = home_of_uid(uid) {
+                self.add_paths_from_machined_conf(home.as_str(), executable_dir);
+            }
+        }
+
+        self.refresh_paths();
+        (!self.paths.is_empty(), remaining)
+    }
+
+    /// The `~/.bwmachined.conf` branch of `loadPathsXML`: comment and blank
+    /// lines are skipped, each usable line contributes the token after its
+    /// first `;`, and reading stops once a line has added a path (the
+    /// reference's `while (paths_.empty() && fgets)` gate).
+    fn add_paths_from_machined_conf(&mut self, home_dir: &str, executable_dir: &str) {
+        let Ok(content) =
+            std::fs::read_to_string(format!("{}/.bwmachined.conf", home_dir))
+        else {
+            return;
+        };
+        for line in content.lines() {
+            if !self.paths.is_empty() {
+                break;
+            }
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some(res_path) = machined_conf_res_path(trimmed) {
+                self.add_paths_with_source(&res_path, "from ~/.bwmachined.conf", executable_dir);
+            }
+        }
+    }
+
     /// `#ifdef EDITOR_ENABLED` in `postAddPaths`: appends an empty-base
     /// native root, letting absolute paths (and the search helpers, which
     /// build absolute candidates) resolve through the multiplexer.
@@ -209,6 +311,42 @@ impl BwResource {
     pub fn add_paths(&mut self, path: &str) {
         for part in path.split(BW_RES_PATH_SEPARATOR) {
             let formatted = format_search_path(part);
+            if self.native_file_system.get_file_type(&formatted, None)
+                == FileType::NotFound
+            {
+                continue;
+            }
+            self.paths.push(formatted);
+        }
+        if self.file_system_built {
+            self.refresh_paths();
+        }
+    }
+
+    /// `addPaths(path, desc)` used by `init`: like [`BwResource::add_paths`],
+    /// plus the `MF_SERVER` branch — a relative part is anchored at the
+    /// executable directory and passed through `canonicalize_file_name`
+    /// (`fs::canonicalize`); when canonicalisation fails the relative form
+    /// survives, and either way a part that does not exist is reported and
+    /// dropped instead of pushed.
+    pub fn add_paths_with_source(
+        &mut self,
+        path: &str,
+        _source: &str,
+        executable_dir: &str,
+    ) {
+        for part in path.split(BW_RES_PATH_SEPARATOR) {
+            let mut formatted = format_search_path(part);
+            // Relative res paths resolve against the executable directory.
+            if !formatted.is_empty()
+                && !formatted.starts_with('/')
+                && !formatted.starts_with('\\')
+            {
+                let anchored = format!("{}/{}", executable_dir, formatted);
+                if let Ok(abs) = std::fs::canonicalize(&anchored) {
+                    formatted = abs.to_string_lossy().into_owned();
+                }
+            }
             if self.native_file_system.get_file_type(&formatted, None)
                 == FileType::NotFound
             {
@@ -632,6 +770,69 @@ fn atoi_or_zero(raw: &str) -> usize {
     }
 }
 
+/// `BWUtil::executableDirectory`: the directory of the running image,
+/// empty when it cannot be determined.
+fn executable_directory() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.parent()
+                .map(|dir| dir.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default()
+}
+
+/// `getUserId()`: the `UID` environment variable parsed with atoi when
+/// present (even when it does not name a number -- atoi yields 0), else
+/// the process's real uid, read from the `/proc/self` owner.
+fn current_uid() -> u32 {
+    current_uid_from(std::env::var("UID").ok().as_deref())
+}
+
+/// The injectable core of [`current_uid`].
+fn current_uid_from(env_uid: Option<&str>) -> u32 {
+    match env_uid {
+        Some(raw) => atoi_or_zero(raw) as u32,
+        None => std::fs::metadata("/proc/self")
+            .map(|meta| meta.uid())
+            .unwrap_or(0),
+    }
+}
+
+/// The home directory `/etc/passwd` lists for `uid` (the reference asks
+/// `getpwuid`); `None` when no entry matches.
+fn passwd_home(uid: u32) -> Option<String> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    for line in passwd.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() >= 6
+            && fields[2].parse::<u32>() == Ok(uid)
+        {
+            return Some(fields[5].to_string());
+        }
+    }
+    None
+}
+
+/// `sscanf(line, "%*[^;];%s")` on a `~/.bwmachined.conf` line: the value
+/// is the first whitespace-delimited token after the first `;`. A line
+/// with an empty head before the `;` or no token after it fails the
+/// reference's `== 1` check and yields `None`.
+fn machined_conf_res_path(line: &str) -> Option<String> {
+    let (head, tail) = line.split_once(';')?;
+    if head.is_empty() {
+        return None;
+    }
+    let tail = tail.trim_start();
+    let end = tail
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(tail.len());
+    if end == 0 {
+        return None;
+    }
+    Some(tail[..end].to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,6 +840,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// A `home_of_uid` lookup that never finds a home.
+    fn no_home(_: u32) -> Option<String> {
+        None
+    }
 
     fn temp_root(tag: &str) -> String {
         let id = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -1330,6 +1536,310 @@ mod tests {
 
         fs::remove_dir_all(&first).unwrap();
         fs::remove_dir_all(&second).unwrap();
+    }
+
+    #[test]
+    fn the_same_command_resolves_identical_paths() {
+        let a = temp_root("init_det");
+        fs::create_dir(format!("{}/res1", a)).unwrap();
+        fs::create_dir(format!("{}/res2", a)).unwrap();
+        let canonical = |name: &str| {
+            fs::canonicalize(format!("{}/{}", a, name))
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        let args = vec![
+            "cellapp".to_string(),
+            "--res".to_string(),
+            "res1:res2".to_string(),
+        ];
+        // Same command twice: the same configuration paths, in the same
+        // order -- the acceptance determinism.
+        let mut one = BwResource::new();
+        let (ok_one, rem_one) =
+            one.init_from_sources(&args, &a, 1000, &no_home, None);
+        let mut two = BwResource::new();
+        let (ok_two, rem_two) =
+            two.init_from_sources(&args, &a, 1000, &no_home, None);
+
+        assert!(ok_one && ok_two);
+        assert_eq!(one.get_path_num(), 2);
+        assert_eq!(one.get_path(0), canonical("res1"));
+        assert_eq!(one.get_path(1), canonical("res2"));
+        assert_eq!(one.get_path(0), two.get_path(0));
+        assert_eq!(one.get_path(1), two.get_path(1));
+        // compressArgs dropped the consumed pairs and kept the rest.
+        assert_eq!(rem_one, vec!["cellapp".to_string()]);
+        assert_eq!(rem_two, rem_one);
+
+        // Absolute parts skip the executable anchoring and pass through
+        // verbatim (canonicalisation is a relative-branch concern).
+        let abs = format!("{}/res1", a);
+        let mut three = BwResource::new();
+        three.init_from_sources(
+            &["cellapp".to_string(), "-r".to_string(), abs.clone()],
+            &a,
+            1000,
+            &no_home,
+            None,
+        );
+        assert_eq!(three.get_path(0), abs);
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn argv_scan_matches_the_reference_bounds() {
+        let a = temp_root("init_argv");
+        fs::create_dir(format!("{}/res1", a)).unwrap();
+        let canonical = fs::canonicalize(format!("{}/res1", a))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        // A flag in the final slot never matches and survives.
+        let mut resource = BwResource::new();
+        let (ok, remaining) = resource.init_from_sources(
+            &["prog".to_string(), "--res".to_string()],
+            &a,
+            1000,
+            &no_home,
+            None,
+        );
+        assert!(!ok);
+        assert_eq!(
+            remaining,
+            vec!["prog".to_string(), "--res".to_string()]
+        );
+        assert_eq!(resource.get_path_num(), 0);
+
+        // -uid consumes its value and rewires the conf lookup: only uid
+        // 1001 finds the fixture home, so the surviving res path must have
+        // come through that branch.
+        fs::create_dir(format!("{}/uid1001", a)).unwrap();
+        fs::write(
+            format!("{}/uid1001/.bwmachined.conf", a),
+            "machined;res1\n",
+        )
+        .unwrap();
+        let mut resource = BwResource::new();
+        let home_of_uid = |uid: u32| {
+            if uid == 1001 {
+                Some(format!("{}/uid1001", a))
+            } else {
+                None
+            }
+        };
+        let (ok, remaining) = resource.init_from_sources(
+            &["prog".to_string(), "-uid".to_string(), "1001".to_string()],
+            &a,
+            1000,
+            &home_of_uid,
+            None,
+        );
+        assert!(ok);
+        assert_eq!(remaining, vec!["prog".to_string()]);
+        assert_eq!(resource.get_path(0), canonical);
+
+        // A different -uid misses the same lookup and resolves nothing:
+        // the flag value drives the branch.
+        let mut resource = BwResource::new();
+        let (ok, _) = resource.init_from_sources(
+            &["prog".to_string(), "-uid".to_string(), "2000".to_string()],
+            &a,
+            1000,
+            &home_of_uid,
+            None,
+        );
+        assert!(!ok);
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn fallback_chain_runs_env_then_machined_conf() {
+        let a = temp_root("init_fallback");
+        fs::create_dir(format!("{}/res1", a)).unwrap();
+        fs::create_dir(format!("{}/res2", a)).unwrap();
+        let canonical = |name: &str| {
+            fs::canonicalize(format!("{}/{}", a, name))
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        // Command-line paths silence the env variable entirely.
+        let mut resource = BwResource::new();
+        let (ok, _) = resource.init_from_sources(
+            &[],
+            &a,
+            1000,
+            &no_home,
+            Some(&format!("{}/res1", a)),
+        );
+        assert!(ok);
+        assert_eq!(resource.get_path(0), format!("{}/res1", a));
+
+        // A -r that resolves nothing leaves the chain open: the env
+        // variable answers next.
+        let mut resource = BwResource::new();
+        let (ok, _) = resource.init_from_sources(
+            &["prog".to_string(), "-r".to_string(), "missing".to_string()],
+            &a,
+            1000,
+            &no_home,
+            Some("res1:res2"),
+        );
+        assert!(ok);
+        assert_eq!(resource.get_path(0), canonical("res1"));
+        assert_eq!(resource.get_path(1), canonical("res2"));
+
+        // Without env, the conf file answers: the first usable line wins
+        // even when later lines name live paths, comments and invalid
+        // lines never register.
+        let home = temp_root("init_home");
+        fs::write(
+            format!("{}/.bwmachined.conf", home),
+            "# comment\n   \n;<nocolon>\nbroken;\nmissing\nmachined;res2:res1\nmachined;res1\n",
+        )
+        .unwrap();
+        let mut resource = BwResource::new();
+        let (ok, remaining) =
+            resource.init_from_sources(&[], &a, 1000, &|_| Some(home.clone()), None);
+        assert!(ok);
+        assert_eq!(resource.get_path_num(), 2);
+        assert_eq!(resource.get_path(0), canonical("res2"));
+        assert_eq!(resource.get_path(1), canonical("res1"));
+        assert_eq!(remaining, Vec::<String>::new());
+
+        // Nothing resolvable: init fails but reports the arguments whole.
+        let empty_home = temp_root("init_empty");
+        let mut resource = BwResource::new();
+        let (ok, remaining) = resource.init_from_sources(
+            &["prog".to_string(), "x".to_string()],
+            &a,
+            1000,
+            &|_| Some(empty_home.clone()),
+            None,
+        );
+        assert!(!ok);
+        assert_eq!(resource.get_path_num(), 0);
+        assert_eq!(
+            remaining,
+            vec!["prog".to_string(), "x".to_string()]
+        );
+
+        fs::remove_dir_all(&a).unwrap();
+        fs::remove_dir_all(&home).unwrap();
+        fs::remove_dir_all(&empty_home).unwrap();
+    }
+
+    #[test]
+    fn machined_conf_lines_parse_like_sscanf() {
+        assert_eq!(
+            machined_conf_res_path("machined;<res>/path</res>"),
+            Some("<res>/path</res>".to_string())
+        );
+        // %s stops at whitespace.
+        assert_eq!(
+            machined_conf_res_path("head; first rest"),
+            Some("first".to_string())
+        );
+        // An empty head before ';' fails the scanf match, as does a
+        // missing token after it.
+        assert_eq!(machined_conf_res_path(";value"), None);
+        assert_eq!(machined_conf_res_path("head;   "), None);
+        assert_eq!(machined_conf_res_path("no semicolon"), None);
+    }
+
+    #[test]
+    fn init_from_args_wraps_the_real_environment() {
+        // The real-environment wrapper: with no flags to consume, the
+        // arguments survive whole. Whether a res path resolves depends on
+        // the host (env variable, machined conf), so only the mechanics
+        // are pinned.
+        let args = vec!["cellapp".to_string(), "extra".to_string()];
+        let mut resource = BwResource::new();
+        let (ok, remaining) = resource.init_from_args(&args);
+        let _ = ok;
+        assert_eq!(remaining, args);
+    }
+
+    #[test]
+    fn init_drops_unreadable_archives_and_rebuilds_late_adds() {
+        let a = temp_root("init_badzip");
+        // A *.zip path that is not an archive is dropped from the paths
+        // (the reference's "not a valid zip file" branch): anchored under
+        // plain/ it neither canonicalises nor exists from the working
+        // directory.
+        fs::write(format!("{}/bad.zip", a), b"not a zip at all").unwrap();
+        fs::create_dir(format!("{}/plain", a)).unwrap();
+        let plain = format!("{}/plain", a);
+        let mut resource = BwResource::new();
+        let (ok, _) = resource.init_from_sources(
+            &[
+                "prog".to_string(),
+                "--res".to_string(),
+                format!("{}:{}", a, "bad.zip"),
+            ],
+            &plain,
+            1000,
+            &no_home,
+            None,
+        );
+        assert!(ok);
+        assert_eq!(resource.get_path_num(), 1);
+        // The bad zip contributed no root: the directory is the only base.
+        assert_eq!(resource.file_system().base_file_system_count(), 1);
+
+        // A directory whose res.zip package is corrupt yields no root at
+        // all: the package consumes the path and the raw directory branch
+        // is skipped.
+        fs::create_dir(format!("{}/withpack", a)).unwrap();
+        fs::write(format!("{}/withpack/res.zip", a), b"garbage").unwrap();
+        let mut resource = BwResource::new();
+        let (ok, _) = resource.init_from_sources(
+            &[
+                "prog".to_string(),
+                "--res".to_string(),
+                format!("{}/withpack", a),
+            ],
+            &plain,
+            1000,
+            &no_home,
+            None,
+        );
+        assert!(ok);
+        assert_eq!(resource.get_path_num(), 1);
+        assert_eq!(resource.file_system().base_file_system_count(), 0);
+
+        // add_paths_with_source on an already-built instance triggers the
+        // same rebuild the late addPath does.
+        fs::create_dir(format!("{}/late", a)).unwrap();
+        let mut built = BwResource::init_paths(&[&plain]);
+        assert_eq!(built.file_system().base_file_system_count(), 1);
+        built.add_paths_with_source(&format!("{}/late", a), "later", "");
+        assert_eq!(built.get_path_num(), 2);
+        assert_eq!(built.file_system().base_file_system_count(), 2);
+
+        fs::remove_dir_all(&a).unwrap();
+    }
+
+    #[test]
+    fn uid_helpers_read_the_running_account() {
+        // A present-but-junk UID lands on 0 through atoi, like the
+        // reference getenv branch.
+        assert_eq!(current_uid_from(Some("not-a-number")), 0);
+        assert_eq!(current_uid_from(Some("1001")), 1001);
+        // The env-free path falls back to the process uid, whose passwd
+        // entry exists.
+        let uid = current_uid_from(None);
+        assert!(passwd_home(uid).is_some());
+        // Root is always in /etc/passwd; an absurd uid is not.
+        assert!(passwd_home(0).is_some());
+        assert_eq!(passwd_home(u32::MAX - 1), None);
     }
 }
 

@@ -184,7 +184,8 @@
 
 覆盖入口参数、`BWResource`、`BWConfig`、`bw.xml` 配置继承和覆盖、初始化、信号、退出码、分阶段关服。比对配置信息缺失、启动失败和正常关闭。
 
-- [ ] **BW-01-04-01 解析启动参数和资源根**。**验收** 同一命令得到相同配置路径。
+- [x] **BW-01-04-01 解析启动参数和资源根**。**验收** 同一命令得到相同配置路径。
+  - 证据：init_from_args/init_from_sources 复现 BWResource::init + loadPathsXML 全链。argv 扫描与 bwParseCommandLine 对齐：`--res`/`-r` 取下一参数加入临时路径表、`-UID`/`-uid` 改写生效 uid（原版 setenv("UID")，移植版以 home_of_uid 闭包注入——`-uid 1001` 真正驱动 passwd/machined 查找；`-uid 2000` 查无 home 即失败，钉死旗标值驱动分支），循环上界 `i < argc-1` 与原版一致（末尾悬空旗标永不匹配、原样进剩余参数，compressArgs 等价收缩）。回退链与 loadPathsXML 相同：argv 路径 → BW_RES_PATH 环境（ ':' 分隔）→ ~/.bwmachined.conf 首个可用行（sscanf("%*[^;];%s") 语义：分号前段全弃、空头或空 token 不取；while(paths_.empty()&&fgets) 首行添入即停的门钉死——多行文件只用第一行）。addPaths 对齐：':' 切分、相对路径锚定 exe 目录后 canonicalize（fs::canonicalize）、不存在即弃。验收「同一命令得到相同配置路径」：同参数两次 init 产生逐项相同的规范化绝对路径列表（zip/目录根排序稳定）；坏 zip 被丢弃、坏 res.zip 目录根归零后重建迟到 add 仍成功。env 依赖经 Option 注入测试（cache_size_from/current_uid_from/init_from_sources，edition 2024 不安全 set_var 的绕法），真实环境薄包装 init_from_args/refresh_paths 保持生产路径被覆盖。6 新测试全绿（crate 205、workspace 314、0 警告）。llvm-cov：bwresource.rs 99.58%、crate 总 99.6%+（余为花括号伪迹）。
 - [ ] **BW-01-04-02 解析 bw.xml 继承与覆盖**。**验收** 并列配置的最终值吻合。
 - [ ] **BW-01-04-03 实现应用初始化失败处理**。**验收** 缺配置和异常入口有对应退出码。
 - [ ] **BW-01-04-04 接入停止信号和控制事件**。**验收** 应用进入关服阶段。
