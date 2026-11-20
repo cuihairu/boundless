@@ -393,6 +393,40 @@ impl DataType {
         }
     }
 
+    /// `FixedDictDataType::getNumPersistentFields`: how many of the fields
+    /// are `<Persistent>`, counting in field order. Zero for the kinds that
+    /// carry no named fields.
+    pub fn num_persistent_fields(&self) -> usize {
+        match self.kind() {
+            Kind::FixedDict { fields, .. } => {
+                fields.iter().filter(|field| field.is_persistent).count()
+            }
+            _ => 0,
+        }
+    }
+
+    /// `FixedDictDataType::getFieldIndexForPersistentFieldIndex`: the field
+    /// index behind a position in the persistent projection. `None` when the
+    /// position runs past the projection — the reference reports the same
+    /// overrun with `MF_ASSERT( false )` before returning 0, so this makes
+    /// it a reportable result instead of an abort.
+    pub fn field_index_for_persistent_field_index(&self, persistent_index: usize) -> Option<usize> {
+        let fields = match self.kind() {
+            Kind::FixedDict { fields, .. } => fields,
+            _ => return None,
+        };
+        let mut seen = 0;
+        for (index, field) in fields.iter().enumerate() {
+            if field.is_persistent {
+                if seen == persistent_index {
+                    return Some(index);
+                }
+                seen += 1;
+            }
+        }
+        None
+    }
+
     pub fn kind(&self) -> &Kind {
         &self.kind
     }
@@ -1035,6 +1069,29 @@ mod tests {
         expected.append_cstr("Uint");
         expected.append_i32(4);
         assert_eq!(md5.quote(), expected.quote());
+    }
+
+    #[test]
+    fn the_persistent_projection_counts_and_maps_only_the_persistent_fields() {
+        // `FixedDictDataType::getNumPersistentFields` /
+        // `getFieldIndexForPersistentFieldIndex` (`fixed_dict_data_type.cpp`).
+        let (dict, _) = build(
+            "<a> FIXED_DICT <Properties>                  <ammo> <Type> UINT8 </Type> </ammo>                  <temp> <Type> UINT8 </Type> <Persistent> false </Persistent> </temp>                  <label> <Type> STRING </Type> </label>                  <also> <Type> UINT8 </Type> </also>              </Properties> </a>",
+        );
+        let dict = dict.expect("FIXED_DICT builds");
+        assert_eq!(dict.num_persistent_fields(), 3);
+        assert_eq!(dict.field_index_for_persistent_field_index(0), Some(0));
+        assert_eq!(dict.field_index_for_persistent_field_index(1), Some(2));
+        assert_eq!(dict.field_index_for_persistent_field_index(2), Some(3));
+        // `MF_ASSERT( false && "Overran number of persistent fields" )`: the
+        // reference aborts, this reports the overrun instead.
+        assert_eq!(dict.field_index_for_persistent_field_index(3), None);
+
+        // The accessors live on the FIXED_DICT kind only.
+        let (uint8, _) = build("<a> UINT8 </a>");
+        let uint8 = uint8.expect("UINT8 builds");
+        assert_eq!(uint8.num_persistent_fields(), 0);
+        assert_eq!(uint8.field_index_for_persistent_field_index(0), None);
     }
 
     #[test]

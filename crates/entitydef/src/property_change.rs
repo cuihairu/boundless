@@ -181,7 +181,7 @@ impl SinglePropertyChange {
         value: &PropertyValue,
         stream: &mut BinaryStream,
     ) -> Result<(), PropertyError> {
-        add_to_stream(leaf_type.kind(), value, stream)
+        add_to_stream(leaf_type.kind(), value, stream, false)
     }
 
     /// The external-stream `addExtraBits( BitWriter & )` reads
@@ -249,7 +249,7 @@ impl SlicePropertyChange {
         stream: &mut BinaryStream,
     ) -> Result<(), PropertyError> {
         for value in new_values {
-            add_to_stream(element_type.kind(), value, stream)?;
+            add_to_stream(element_type.kind(), value, stream, false)?;
         }
         Ok(())
     }
@@ -420,7 +420,7 @@ pub fn apply_internal_stream(
         // The flat branch: `setOwnedProperty( rootIndex, stream )` on the
         // entity, which replaces the whole property and fills no path.
         let new_value =
-            create_from_stream(root_type.kind(), stream).map_err(ApplyError::Payload)?;
+            create_from_stream(root_type.kind(), stream, false).map_err(ApplyError::Payload)?;
         let old_value = std::mem::replace(root_value, new_value);
         return Ok(AppliedChange {
             old_value,
@@ -551,7 +551,7 @@ fn set_owned_property(
                 });
             }
             let old = children[index].1.clone();
-            children[index].1 = create_from_stream(fields[index].type_.kind(), stream)
+            children[index].1 = create_from_stream(fields[index].type_.kind(), stream, false)
                 .map_err(ApplyError::Payload)?;
             path.push(PathElement::Field(fields[index].name.clone()));
             Ok(old)
@@ -566,7 +566,7 @@ fn set_owned_property(
             }
             let old = children[index].clone();
             children[index] =
-                create_from_stream(element.kind(), stream).map_err(ApplyError::Payload)?;
+                create_from_stream(element.kind(), stream, false).map_err(ApplyError::Payload)?;
             path.push(PathElement::Index(leaf_index));
             Ok(old)
         }
@@ -605,7 +605,7 @@ fn set_owned_slice(
     // Read the new values first ("Read until stream is empty"), then splice.
     let mut new_values = Vec::new();
     while stream.remaining() > 0 {
-        match create_from_stream(element_kind.kind(), stream) {
+        match create_from_stream(element_kind.kind(), stream, false) {
             Ok(new_value) => new_values.push(new_value),
             Err(_) => return Err(ApplyError::UnableToCreateSlice),
         }

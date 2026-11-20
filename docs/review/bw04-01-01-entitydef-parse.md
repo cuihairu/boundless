@@ -293,3 +293,28 @@
 5. **路径序更正随本 commit 落账**：`ChangePath` 头注释自称 "叶→根"，但 `IntermediatePropertyOwner::getTopLevelOwner` 的递归返回后才 `addToPath`，故**最近顶层属性的跳点先进流**——机制与 reader 都是下降序，注释是错的；BW-04-02-05 文档中的路径序表述已随本 commit 更正。
 6. **切片端点重定基为有符号差**：`(new_size as i64 - orig_size as i64) as i32`（缩容为负），与参考 `end + newSize - oldSize` 一致；usize 直接相减在缩容时会下溢，已规避。
 7. **平路切片 flag 是参考断言而非错误串**：`MF_ASSERT( !isSlice )` 在 release 构建是 UB；Rust 选择显式 `FlatSliceOnInternalStream` 错误，加严登记。
+
+---
+
+# BW-04-02-07 提取持久化投影 — 复核证据
+
+- **任务编号**: BW-04-02-07（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 376；验收：数据库属性流与原版字节一致）
+- **原版源码**: `lib/entitydef/data_types/fixed_dict_data_type.cpp` —— `getNumPersistentFields`（逐字段数 `isPersistent_`）；`getFieldIndexForPersistentFieldIndex`（投影位次 → 字段位次线性映射，越界 `MF_ASSERT( false && "Overran number of persistent fields" )` 后返回 0）；`addInstanceToStream( pInst, stream, isPersistentOnly )`（`isPersistentOnly && !it->isPersistent_` 则 `continue` 跳过该字段，其余按字段序逐个 `type_->addToStream( source, stream, isPersistentOnly )`——嵌套 FIXED_DICT 与序列元素继续透传该旗标）；`createInstanceFromStream( stream, isPersistentOnly )`（投影不含的字段用 `it->createDefaultValue( pDefaultSection_, sink )` 补缺，流里只读投影携带的字段）；`getStreamElement`（`isPersistentOnly` 时元素位次经 `getFieldIndexForPersistentFieldIndex` 映射回字段位次，None 指示字节与 enter/leave/end 元素不受影响）。旗标源头：字段小节 `<Persistent>`（`DataDescription` 同名旗标、实体级 `<Persistent>` 为另一层）；调用侧：`entitydef_script/py_component.cpp:66-96`（`delegate.getDataField( stream, descr, isPersistentOnly )` / `descr.addToStream( source, stream, isPersistentOnly )`）。属性变更路径显式传 false（`fixed_dict_data_type.cpp:397 /* isPersistentOnly: */ false`）。
+- **Boundless 模块**: `crates/entitydef/src/data_type.rs`（`DataType::num_persistent_fields`、`DataType::field_index_for_persistent_field_index`）；`crates/entitydef/src/value.rs`（内部 `add_to_stream`/`create_from_stream` 增 `persistent_only` 形参并按参考透传：Sequence/FixedDict 递归臂透传、其余标量臂忽略；FixedDict 写臂 `continue` 跳过非持久字段、读臂用 `default_value` 补缺；公开面新增 `DataType::add_persistent_to_stream` / `DataType::create_persistent_from_stream`）；`crates/entitydef/src/property_change.rs`（六个负载点显式传 `false`，对齐参考 `/* isPersistentOnly: */ false`）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**225 单元测试 + 4 差分测试**全部通过（本项新增 3 测）。
+  - **验收钉**：`the_persistent_stream_carries_only_the_persistent_fields` 钉住三字段字典（ammo 持久 / temp `<Persistent> false </Persistent>` / label 持久）的数据库投影流 `[7, 1, 'x']`——**temp 的 99 不出现在流里**，而全字段形态是 `[7, 99, 1, 'x']`；字节形态与全字段流一致（None 指示与 enter/leave/end 元素均不变），差异只在字段过滤。
+  - **读回补缺**：`a_persistent_read_fills_the_non_persistent_fields_from_their_defaults` 钉住投影读回后 temp 取类型缺省（对齐参考 `createDefaultValue` 补缺），ammo/label 从流恢复。
+  - **投影记账**：`the_persistent_projection_counts_and_maps_only_the_persistent_fields` 钉住 `num_persistent_fields()==3`、投影位次 0/1/2 → 字段位次 0/2/3、越界 → `None`；非 FIXED_DICT 壳上两访问器为 0/`None`。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt 触碰文件干净；覆盖率全部文件 **≥98%**（value.rs 99.12%、data_type.rs 98.09%）。
+- **证据链接**: `crates/entitydef/src/data_type.rs`（投影访问器与单测）、`crates/entitydef/src/value.rs`（持久流形态与单测）、`crates/entitydef/src/property_change.rs`（显式 false 透传）。
+- **状态**: 已交付（源码级对齐 + 投影字节/补缺/记账锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **仍无字节级参考 oracle**（同 BW-04-02-01..06 备注）：process_defs 不产数据库属性流；本项「字节一致」是与参考源码逐句推出的投影形态一致的自钉测试，不是与参考二进制产物的比对。
+2. **投影越界在参考是 `MF_ASSERT( false )`（debug 构建中止，release 返回 0）**，Rust 显式 `None`——把两种构建形态统一为可报告结果，登记为加严。
+3. **`SequenceDataType` 的 `dbLen() > 0` 持久短路**（`sequence_data_type.cpp:59/243`：持久模式下序列以 `<DatabaseLength>` 定长截断/补齐）未建模——Rust 序列流形态无 dbLen 概念，登记待后续项；本项序列臂只透传旗标。
+4. **`ClassDataType::getStreamElement` 也收 `isPersistentOnly`**（`class_data_type.cpp:510`），但 Rust 流形态没有 CLASS 臂（`PropertyError::Unsupported`），该映射未建模，登记在案。
+5. **`readBool` 解析域**：参考 `DataSection::readBool`，Rust `as_bool` 只认大小写不敏感 true/false；夹具按此用 `<Persistent> false </Persistent>`。若参考对 `0/1/yes/no` 亦有解析（各 DataSection 实现而异），归 `crates/resources` 域，不在本席 lane 内改。

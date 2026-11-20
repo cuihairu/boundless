@@ -610,7 +610,17 @@ impl DataType {
         value: &PropertyValue,
         stream: &mut BinaryStream,
     ) -> Result<(), PropertyError> {
-        add_to_stream(self.kind(), value, stream)
+        add_to_stream(self.kind(), value, stream, false)
+    }
+
+    /// `DataType::addToStream` with `isPersistentOnly`: the database
+    /// projection, carrying only the `<Persistent>` fields.
+    pub fn add_persistent_to_stream(
+        &self,
+        value: &PropertyValue,
+        stream: &mut BinaryStream,
+    ) -> Result<(), PropertyError> {
+        add_to_stream(self.kind(), value, stream, true)
     }
 
     /// `DataType::createFromStream` for the scalar metas.
@@ -618,7 +628,17 @@ impl DataType {
         &self,
         stream: &mut BinaryStream,
     ) -> Result<PropertyValue, PropertyError> {
-        create_from_stream(self.kind(), stream)
+        create_from_stream(self.kind(), stream, false)
+    }
+
+    /// `DataType::createFromStream` with `isPersistentOnly`: reads the
+    /// database projection back, taking the fields it does not carry from
+    /// their defaults.
+    pub fn create_persistent_from_stream(
+        &self,
+        stream: &mut BinaryStream,
+    ) -> Result<PropertyValue, PropertyError> {
+        create_from_stream(self.kind(), stream, true)
     }
 }
 
@@ -643,6 +663,7 @@ pub(crate) fn add_to_stream(
     kind: &Kind,
     value: &PropertyValue,
     stream: &mut BinaryStream,
+    persistent_only: bool,
 ) -> Result<(), PropertyError> {
     match kind {
         Kind::Int { bytes, .. } => match value {
@@ -709,7 +730,7 @@ pub(crate) fn add_to_stream(
                         })?;
                 }
                 for element_value in elements.iter() {
-                    add_to_stream(element.kind(), element_value, stream)?;
+                    add_to_stream(element.kind(), element_value, stream, persistent_only)?;
                 }
             }
             _ => return Err(PropertyError::TypeMismatch { meta: "sequence" }),
@@ -731,8 +752,16 @@ pub(crate) fn add_to_stream(
                 if *allow_none {
                     let _ = stream.write_u8(1);
                 }
-                for (field, (_, field_value)) in fields.iter().zip(values.iter()) {
-                    add_to_stream(field.type_.kind(), field_value, stream)?;
+                for (position, field) in fields.iter().enumerate() {
+                    if persistent_only && !field.is_persistent {
+                        continue;
+                    }
+                    add_to_stream(
+                        field.type_.kind(),
+                        &values[position].1,
+                        stream,
+                        persistent_only,
+                    )?;
                 }
             }
             _ => return Err(PropertyError::TypeMismatch { meta: "fixed_dict" }),
@@ -767,6 +796,7 @@ pub(crate) fn add_to_stream(
 pub(crate) fn create_from_stream(
     kind: &Kind,
     stream: &mut BinaryStream,
+    persistent_only: bool,
 ) -> Result<PropertyValue, PropertyError> {
     let truncated = || PropertyError::StreamTruncated {
         element: SIMPLE_STREAM_ELEMENT,
@@ -813,7 +843,7 @@ pub(crate) fn create_from_stream(
             check_sequence_capacity(element_size, count, stream.remaining() as i32)?;
             let mut values = Vec::with_capacity(count);
             for _ in 0..count {
-                values.push(create_from_stream(element.kind(), stream)?);
+                values.push(create_from_stream(element.kind(), stream, persistent_only)?);
             }
             Ok(PropertyValue::Sequence(values))
         }
@@ -842,10 +872,14 @@ pub(crate) fn create_from_stream(
             }
             let mut values = Vec::with_capacity(fields.len());
             for field in fields.iter() {
-                values.push((
-                    field.name.clone(),
-                    create_from_stream(field.type_.kind(), stream)?,
-                ));
+                let value = if persistent_only && !field.is_persistent {
+                    // `createDefaultValue`: the field is absent from the
+                    // projection, so the type default stands in for it.
+                    default_value(field.type_.kind())
+                } else {
+                    create_from_stream(field.type_.kind(), stream, persistent_only)?
+                };
+                values.push((field.name.clone(), value));
             }
             Ok(PropertyValue::FixedDict(Some(values)))
         }
@@ -1306,6 +1340,59 @@ mod tests {
         dict.add_to_stream(&value, &mut stream).unwrap();
         assert_eq!(stream.as_bytes(), &[7, 1, b'x']);
         assert_eq!(dict.create_from_stream(&mut stream).unwrap(), value);
+    }
+
+    fn persistent_dict_type() -> DataType {
+        build_type(
+            "<a> FIXED_DICT <Properties>              <ammo> <Type> UINT8 </Type> </ammo>              <temp> <Type> UINT8 </Type> <Persistent> false </Persistent> </temp>              <label> <Type> STRING </Type> </label>              </Properties> </a>",
+        )
+    }
+
+    fn persistent_dict_value() -> PropertyValue {
+        PropertyValue::FixedDict(Some(vec![
+            ("ammo".to_string(), PropertyValue::Uint(7)),
+            ("temp".to_string(), PropertyValue::Uint(99)),
+            ("label".to_string(), PropertyValue::String("x".into())),
+        ]))
+    }
+
+    #[test]
+    fn the_persistent_stream_carries_only_the_persistent_fields() {
+        // `FixedDictDataType::addInstanceToStream` skips a field when
+        // `isPersistentOnly` is set and the field is not `<Persistent>`; the
+        // enter/leave/end stream elements write nothing either way.
+        let dict = persistent_dict_type();
+        let mut stream = BinaryStream::new();
+        dict.add_persistent_to_stream(&persistent_dict_value(), &mut stream)
+            .unwrap();
+        assert_eq!(stream.as_bytes(), &[7, 1, b'x']);
+
+        let mut full = BinaryStream::new();
+        dict.add_to_stream(&persistent_dict_value(), &mut full)
+            .unwrap();
+        assert_eq!(full.as_bytes(), &[7, 99, 1, b'x']);
+    }
+
+    #[test]
+    fn a_persistent_read_fills_the_non_persistent_fields_from_their_defaults() {
+        // `FixedDictDataType::createInstanceFromStream` takes the
+        // non-persistent fields from `createDefaultValue` instead of the
+        // stream.
+        let dict = persistent_dict_type();
+        let mut stream = BinaryStream::new();
+        dict.add_persistent_to_stream(&persistent_dict_value(), &mut stream)
+            .unwrap();
+        assert_eq!(
+            dict.create_persistent_from_stream(&mut stream).unwrap(),
+            PropertyValue::FixedDict(Some(vec![
+                ("ammo".to_string(), PropertyValue::Uint(7)),
+                (
+                    "temp".to_string(),
+                    dict.field_type(1).unwrap().default_value().unwrap(),
+                ),
+                ("label".to_string(), PropertyValue::String("x".into())),
+            ]))
+        );
     }
 
     #[test]
