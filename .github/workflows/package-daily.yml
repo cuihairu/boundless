@@ -87,12 +87,20 @@ jobs:
         shell: bash
         run: ci/package.sh
 
+      # BW-22-04-05 — the delivered artifact carries its own hash sheet.
+      - name: Stamp and verify checksums
+        if: always() && steps.freshness.outputs.stale != 'true'
+        shell: bash
+        run: ci/checksums.sh
+
       - name: Upload the package
         if: always() && steps.freshness.outputs.stale != 'true'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: package-${{ matrix.os }}-${{ github.run_id }}
-          path: ci-out/package/*.tar.gz
+          path: |
+            ci-out/package/*.tar.gz
+            ci-out/checksums/SHA256SUMS
           retention-days: 14
           if-no-files-found: warn
 
@@ -155,12 +163,18 @@ jobs:
         if: steps.freshness.outputs.stale != 'true'
         run: ci/docs-package.sh
 
+      - name: Stamp and verify checksums
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/checksums.sh
+
       - name: Upload the site package
         if: always() && steps.freshness.outputs.stale != 'true'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: package-docs-${{ github.run_id }}
-          path: ci-out/docs/
+          path: |
+            ci-out/docs/
+            ci-out/checksums/SHA256SUMS
           retention-days: 14
           if-no-files-found: warn
 
@@ -211,12 +225,18 @@ jobs:
         if: steps.freshness.outputs.stale != 'true'
         run: ci/sdk-archive.sh
 
+      - name: Stamp and verify checksums
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/checksums.sh
+
       - name: Upload the archives
         if: always() && steps.freshness.outputs.stale != 'true'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: package-sdk-engines-${{ github.run_id }}
-          path: ci-out/sdk/
+          path: |
+            ci-out/sdk/
+            ci-out/checksums/SHA256SUMS
           retention-days: 14
           if-no-files-found: warn
 
@@ -277,12 +297,18 @@ jobs:
         if: steps.freshness.outputs.stale != 'true'
         run: ci/vsix.sh
 
+      - name: Stamp and verify checksums
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/checksums.sh
+
       - name: Upload the vsix
         if: always() && steps.freshness.outputs.stale != 'true'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: package-vsix-${{ github.run_id }}
-          path: ci-out/vsix/*.vsix
+          path: |
+            ci-out/vsix/*.vsix
+            ci-out/checksums/SHA256SUMS
           retention-days: 14
           if-no-files-found: warn
 

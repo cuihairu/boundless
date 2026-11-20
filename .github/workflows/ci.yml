@@ -860,6 +860,7 @@ jobs:
           ci/docs-package.sh self-test
           ci/sdk-archive.sh self-test
           ci/vsix.sh self-test
+          ci/checksums.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results
