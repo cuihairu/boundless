@@ -25,6 +25,17 @@ MODE="${1:-all}"
 # point at its own directory.
 ARCHIVE_DIR="${CI_ARCHIVE_DIR:-$(dirname "$CI_OUT")}"
 
+# The bundle stamp. A colon is legal in a file name but not in an Actions
+# artifact path, and the uploader rejects the whole artifact for a single one
+# (run 44757456657: "The path for one of the files in artifact is not valid:
+# /ci-results-ci-out-...-14:53:38Z.tar.gz"). Every other character is legal, so
+# the name is also squeezed to [A-Za-z0-9._-] for runners whose path syntax
+# differs. ci_now() keeps its human-readable form: the manifest and
+# toolchain.json are read by people, this file name is read by an uploader.
+ci_stamp() {
+    date -u +%Y%m%dT%H%M%SZ
+}
+
 # One bundle: every file under $src. The members keep their names so a reader
 # can reconstruct the layout; the version lives in the bundle's own file name.
 archive_one() {
@@ -36,9 +47,13 @@ archive_one() {
         return 1
     fi
     mkdir -p "$dest"
-    now="$(ci_now)"
+    now="$(ci_stamp)"
     sha="$(ci_git_sha)"
-    bundle="$dest/ci-results-$name-$sha-$now.tar.gz"
+    # Sanitise the name only: running this over the whole path would replace
+    # the separators too, so the bundle would land in the caller's cwd under a
+    # single squashed file name instead of inside $dest.
+    name="${name//[^A-Za-z0-9._-]/_}"
+    bundle="$dest/ci-results-${name}-$sha-$now.tar.gz"
     tar -czf "$bundle" -C "$(dirname "$src")" "$name"
     [ -s "$bundle" ] || { echo "empty bundle: $bundle"; return 1; }
     printf '%s\n' "$bundle"
@@ -93,6 +108,23 @@ self_test() {
         ci_fail selftest-archive "no usable bundle produced"
         fails=$((fails + 1))
     fi
+
+    ci_step "self-test: the bundle name survives an artifact uploader"
+    # A colon is a legal file name and a fatal artifact path, so the name is
+    # checked rather than assumed.
+    if [ -n "$bundle" ] && printf '%s' "$(basename "$bundle")" | grep -q '[^A-Za-z0-9._-]'; then
+        ci_fail selftest-name "bundle name has an illegal path character: $(basename "$bundle")"
+        fails=$((fails + 1))
+    else
+        ci_pass selftest-name "artifact-safe bundle name"
+    fi
+
+    # The same rule applied to the whole path silently rewrites the separators,
+    # and the bundle then lands in the caller's cwd. Assert the destination.
+    case "$bundle" in
+        "$sandbox"/*) ci_pass selftest-dest "bundle is inside the archive dir" ;;
+        *) ci_fail selftest-dest "bundle escaped the archive dir: $bundle"; fails=$((fails + 1)) ;;
+    esac
 
     ci_step "self-test: a truncated bundle is rejected"
     if [ -n "$bundle" ]; then
