@@ -406,6 +406,17 @@ pub struct PyMethodDef {
     pub ml_doc: *const c_char,
 }
 
+impl PyMethodDef {
+    /// The sentinel entry that ends a method table, the zeroed
+    /// `PyMethodDef` a `PyMethodDef[]` array must be terminated with.
+    pub const END: PyMethodDef = PyMethodDef {
+        ml_name: std::ptr::null(),
+        ml_meth: None,
+        ml_flags: 0,
+        ml_doc: std::ptr::null(),
+    };
+}
+
 /// `PyErr_Clear`, called without touching the exception state.
 pub unsafe fn clear_error() {
     unsafe { PyErr_Clear() }
@@ -541,6 +552,11 @@ unsafe extern "C" {
         value: *mut PyObject,
     ) -> c_int;
     pub fn PyObject_CallNoArgs(func: *mut PyObject) -> *mut PyObject;
+    pub fn PyObject_CallObject(func: *mut PyObject, args: *mut PyObject) -> *mut PyObject;
+    pub fn PyCallable_Check(obj: *mut PyObject) -> c_int;
+    pub fn PyObject_IsTrue(obj: *mut PyObject) -> c_int;
+    pub fn PyModule_AddFunctions(module: *mut PyObject, functions: *const PyMethodDef) -> c_int;
+    pub fn PyBool_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyCFunction_New(def: *mut PyMethodDef, self_: *mut PyObject) -> *mut PyObject;
     pub fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
     pub fn PyTuple_GetItem(tuple: *mut PyObject, index: PySsize) -> *mut PyObject;
@@ -571,6 +587,7 @@ unsafe extern "C" {
         value: *mut PyObject,
     ) -> c_int;
     pub fn PyLong_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
+    pub fn PyLong_FromUnsignedLong(value: std::os::raw::c_ulong) -> *mut PyObject;
     pub fn PyLong_AsLong(obj: *mut PyObject) -> std::os::raw::c_long;
     pub fn PyFloat_AsDouble(obj: *mut PyObject) -> f64;
     pub fn PyFloat_FromDouble(value: f64) -> *mut PyObject;

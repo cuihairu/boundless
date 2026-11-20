@@ -247,6 +247,12 @@ impl Interpreter {
         // `CellApp::shutDown` deletes its entities before `Script::fini` --
         // so every native wrapper `Py_DecRef`s here, allocator still alive.
         wrapper::reset();
+        // The timer faces drain first: the reference cancels the entity
+        // timers in `CellApp::shutDown` before `Script::fini`, and its
+        // `Script::fini` runs the clear timers job before the collect loop
+        // (`script.cpp:686`), so every callback record and time queue
+        // entry releases while every teardown table is still intact.
+        crate::timers::reset();
         // The Math module's providers release their held references next:
         // the teardown table must stay intact for the deallocs that release
         // fires, so the reset sits before `binding::reset`, which drops the
@@ -371,6 +377,11 @@ fn create_big_world_module(component: &str) {
         // reference leaves the attribute unset and moves on.
         capi::PyObject_SetAttrString(module, c"component".as_ptr(), value);
         capi::dec_ref(value);
+        // The timer faces join the module per role (`PyModuleMethodLink`
+        // tables, `script.cpp:1409-1453`): the component decides whether
+        // the client callback pair or the server timer trio is linked, the
+        // way `MF_SERVER` decides it at build time.
+        crate::timers::install(module, component);
     }
 }
 
@@ -530,6 +541,8 @@ mod tests {
         "interpreter::tests::scenario_sys_path_is_the_assembled_list",
         "interpreter::tests::scenario_an_unencodable_path_fails_init",
         "interpreter::tests::scenario_big_world_module_carries_the_component",
+        "interpreter::tests::scenario_the_client_callbacks_cancel_reregister_and_keep_order",
+        "interpreter::tests::scenario_the_server_timers_cancel_reregister_and_answer",
         "interpreter::tests::scenario_a_component_with_a_nul_stays_unset",
         "interpreter::tests::scenario_stdout_lands_in_the_log_sink",
         "interpreter::tests::scenario_stderr_lands_in_the_log_sink",
@@ -1134,6 +1147,378 @@ mod tests {
                         "import BigWorld; __probe = hasattr(BigWorld, 'component')"
                     ),
                     "False"
+                );
+            },
+        );
+    }
+
+    /// The client callback pair (`py_callback.cpp:257-333`): the handle is
+    /// an int, the walls raise the reference's own sentences, equal delays
+    /// keep registration order, a cancelled record never runs, a
+    /// `cancelCallback` of an unknown handle is silent `None`, a callback
+    /// that cancels itself still completes, a zero-delay registration made
+    /// during the tick waits a frame, and a negative delay clamps to now.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_client_callbacks_cancel_reregister_and_keep_order() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("client"),
+                ..Default::default()
+            },
+            |interpreter| {
+                // The role split: a client carries the callback pair, never
+                // the server trio.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         __probe = (hasattr(BigWorld, 'callback'), \
+                         hasattr(BigWorld, 'cancelCallback'), \
+                         hasattr(BigWorld, 'addTimer'), \
+                         hasattr(BigWorld, 'addFrequentTask'))",
+                    ),
+                    "(True, True, False, False)"
+                );
+                // Return values, walls, the cancel of a live record, and
+                // the silence around an unknown handle.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         seen = []\n\
+                         h1 = BigWorld.callback(0.1, lambda: seen.append('a'))\n\
+                         h2 = BigWorld.callback(0.1, lambda: seen.append('b'))\n\
+                         h3 = BigWorld.callback(0.05, lambda: seen.append('c'))\n\
+                         walls = []\n\
+                         try:\n\
+                         \x20   BigWorld.callback('x', lambda: None)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         try:\n\
+                         \x20   BigWorld.callback(1.0, 42)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         try:\n\
+                         \x20   BigWorld.cancelCallback('x')\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         cancelled = BigWorld.cancelCallback(h2)\n\
+                         unknown = BigWorld.cancelCallback(99999)\n\
+                         __probe = (isinstance(h1, int), h1 != h2, h1 != h3, \
+                         tuple(walls), cancelled, unknown, seen)",
+                    ),
+                    "(True, True, True, \
+                     ('BigWorld.callback: Argument parsing error.', \
+                     'BigWorld.callback: Argument parsing error.', \
+                     'py_cancelCallback: Argument parsing error.'), \
+                     None, None, [])",
+                );
+                // The tick eats the due records in registration order for
+                // equal delays -- minus the cancelled one -- and stops at
+                // the first future record. A negative delay clamps to the
+                // current game time, which is still the start here, so the
+                // clamped record sorts first.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         BigWorld.callback(-5, lambda: seen.append('now'))\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                crate::timers::tick(0.2);
+                assert_eq!(probe(interpreter, "__probe = seen"), "['now', 'c', 'a']",);
+                // A callback that cancels its own record still completes --
+                // `cancelCallback` refuses to erase the record being
+                // called (`py_callback.cpp:319-326`) -- and a zero-delay
+                // registration made during the tick waits a frame
+                // (`:160-171`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         marks = []\n\
+                         holder = []\n\
+                         def self_cancel():\n\
+                         \x20   BigWorld.cancelCallback(holder[0])\n\
+                         \x20   marks.append('self')\n\
+                         def reregister(reg):\n\
+                         \x20   reg.append('first')\n\
+                         \x20   BigWorld.callback(0, lambda: reg.append('second'))\n\
+                         holder.append(BigWorld.callback(0.05, self_cancel))\n\
+                         BigWorld.callback(0.05, lambda: reregister(marks))\n\
+                         __probe = len(holder)",
+                    ),
+                    "1",
+                );
+                crate::timers::tick(0.05);
+                // The cancelled-during-call record is skipped, the
+                // zero-delay registration waits.
+                assert_eq!(probe(interpreter, "__probe = marks"), "['self', 'first']");
+                crate::timers::tick(0.01);
+                assert_eq!(
+                    probe(interpreter, "__probe = marks"),
+                    "['self', 'first', 'second']",
+                );
+                // A failing callback is printed and the walk carries on --
+                // `Script::call` (`script.ipp:21-35`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         def boom():\n\
+                         \x20   raise RuntimeError('exploded')\n\
+                         BigWorld.callback(0.05, boom)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                crate::timers::tick(0.05);
+                assert_eq!(probe(interpreter, "__probe = 'still here'"), "still here");
+            },
+        );
+    }
+
+    /// The server timer trio (`script_timers.cpp`, `app_script_timers.cpp`,
+    /// `script_frequent_tasks.cpp`): offsets round to ticks at 10 hertz, a
+    /// one-shot fires once and frees its id, the smallest free id is
+    /// reused, a repeat reschedules every tick until `delTimer`, a
+    /// negative offset clamps to now, the callback receives `(id,
+    /// userArg)`, an `onTimer` attribute stands in for a non-callable, and
+    /// the frequent tasks run per tick across two levels with a truthy
+    /// return deregistering and a mid-walk registration waiting a tick.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_server_timers_cancel_reregister_and_answer() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                // The role split mirrored: a server component carries the
+                // trio, never the client pair.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         __probe = (hasattr(BigWorld, 'callback'), \
+                         hasattr(BigWorld, 'addTimer'), \
+                         hasattr(BigWorld, 'delTimer'), \
+                         hasattr(BigWorld, 'addFrequentTask'))",
+                    ),
+                    "(False, True, True, True)"
+                );
+                // Registration answers the smallest free ids in order.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         seen = []\n\
+                         def on_timer(timer_id, user_arg):\n\
+                         \x20   seen.append((timer_id, user_arg))\n\
+                         id1 = BigWorld.addTimer(on_timer, 0.1, 0, 7)\n\
+                         id2 = BigWorld.addTimer(on_timer, 0.2, 0.1, 9)\n\
+                         id3 = BigWorld.addTimer(on_timer, 0.15, 0, 3)\n\
+                         __probe = (isinstance(id1, int), id1 == 1, id2 == 2, id3 == 3)",
+                    ),
+                    "(True, True, True, True)",
+                );
+                crate::timers::tick(0.05);
+                crate::timers::tick(0.05);
+                // Tick 1: only the 0.1s one-shot is due.
+                assert_eq!(probe(interpreter, "__probe = seen"), "[(1, 7)]");
+                crate::timers::tick(0.1);
+                // Tick 2: the repeat's first shot and the 0.15s one-shot.
+                assert_eq!(
+                    probe(interpreter, "__probe = seen"),
+                    "[(1, 7), (2, 9), (3, 3)]"
+                );
+                crate::timers::tick(0.1);
+                // Tick 3: the repeat reschedules from its old deadline.
+                assert_eq!(
+                    probe(interpreter, "__probe = seen"),
+                    "[(1, 7), (2, 9), (3, 3), (2, 9)]"
+                );
+                // `delTimer` answers `None` however the scan went -- the
+                // unknown id only logs (`app_script_timers.cpp:214-221`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld; __probe = (BigWorld.delTimer(2), BigWorld.delTimer(999))",
+                    ),
+                    "(None, None)",
+                );
+                crate::timers::tick(0.1);
+                // The cancelled repeat is gone.
+                assert_eq!(
+                    probe(interpreter, "__probe = seen"),
+                    "[(1, 7), (2, 9), (3, 3), (2, 9)]"
+                );
+                // The freed ids are reused smallest-first -- ids 1, 2 and 3
+                // are all free now (`script_timers.cpp:89-100`) -- and a
+                // negative offset clamps to now, while the walls keep the
+                // reference's own sentences: the callable check with the
+                // `onTimer` fallback, the parser's sentence for a bad
+                // parse, the frequent-task sentences.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         class Has:\n\
+                         \x20   def __init__(self):\n\
+                         \x20       self.hits = []\n\
+                         \x20   def onTimer(self, timer_id, user_arg):\n\
+                         \x20       self.hits.append(user_arg)\n\
+                         obj = Has()\n\
+                         id5 = BigWorld.addTimer(on_timer, -1.0, 0, 0)\n\
+                         id6 = BigWorld.addTimer(obj, 0.05, 0, 11)\n\
+                         walls = []\n\
+                         try:\n\
+                         \x20   BigWorld.addTimer(42, 0.1)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         try:\n\
+                         \x20   BigWorld.addTimer(lambda a, b: None)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError:\n\
+                         \x20   walls.append('TypeError')\n\
+                         try:\n\
+                         \x20   BigWorld.delTimer('x')\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError:\n\
+                         \x20   walls.append('TypeError')\n\
+                         try:\n\
+                         \x20   BigWorld.addFrequentTask(42)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         try:\n\
+                         \x20   BigWorld.addFrequentTask()\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError:\n\
+                         \x20   walls.append('TypeError')\n\
+                         try:\n\
+                         \x20   BigWorld.addFrequentTask(lambda: True, 5)\n\
+                         \x20   walls.append('no')\n\
+                         except ValueError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         __probe = (id5, id6, tuple(walls))",
+                    ),
+                    "(1, 2, ('Callback function is not callable', 'TypeError', \
+                     'TypeError', 'Argument is not callable', 'TypeError', \
+                     'Failed to register for update'))",
+                );
+                // Tick 4: the clamped timer fires at once.
+                crate::timers::tick(0.01);
+                assert_eq!(
+                    probe(interpreter, "__probe = seen"),
+                    "[(1, 7), (2, 9), (3, 3), (2, 9), (1, 0)]"
+                );
+                crate::timers::tick(0.1);
+                // Tick 5: the `onTimer` stand-in receives the user arg.
+                assert_eq!(probe(interpreter, "__probe = obj.hits"), "[11]");
+                // A repeat that cancels itself during its own call wins over
+                // the reschedule (`time_queue.ipp:429-437`), and a failing
+                // callback is printed and the queue carries on --
+                // `PY_ERROR_CHECK` (`pyobject_plus.hpp:49-56`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         def boom(timer_id, user_arg):\n\
+                         \x20   raise RuntimeError('exploded')\n\
+                         def suicide(timer_id, user_arg):\n\
+                         \x20   quitter.append(timer_id)\n\
+                         \x20   BigWorld.delTimer(timer_id)\n\
+                         quitter = []\n\
+                         bad = BigWorld.addTimer(boom, 0.05, 0.2, 0)\n\
+                         sid = BigWorld.addTimer(suicide, 0.05, 0.1, 0)\n\
+                         __probe = (bad, sid)",
+                    ),
+                    "(1, 2)",
+                );
+                crate::timers::tick(0.1);
+                // Tick 6: the suicide repeat cancelled itself mid-call; the
+                // failing repeat printed and rescheduled.
+                assert_eq!(probe(interpreter, "__probe = quitter"), "[2]");
+                crate::timers::tick(0.2);
+                // Tick 8: the failing repeat fired once more and lives on.
+                assert_eq!(probe(interpreter, "__probe = quitter"), "[2]");
+                // A failing frequent task stays registered
+                // (`script_frequent_tasks.cpp:56-62`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         hits = []\n\
+                         def bad_task():\n\
+                         \x20   hits.append('hit')\n\
+                         \x20   raise RuntimeError('exploded')\n\
+                         BigWorld.addFrequentTask(bad_task)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                crate::timers::tick(0.05);
+                crate::timers::tick(0.05);
+                assert_eq!(probe(interpreter, "__probe = hits"), "['hit', 'hit']");
+                // The frequent tasks: level 0 runs before level 1, a truthy
+                // return deregisters, a `False` return keeps the task, and
+                // a registration made during the walk waits a tick
+                // (`updatables.cpp:199-203`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         tasks = []\n\
+                         def once():\n\
+                         \x20   tasks.append('once')\n\
+                         \x20   return True\n\
+                         def forever():\n\
+                         \x20   tasks.append('forever')\n\
+                         ok1 = BigWorld.addFrequentTask(once)\n\
+                         ok2 = BigWorld.addFrequentTask(forever, 1)\n\
+                         __probe = (ok1, ok2)",
+                    ),
+                    "(True, True)",
+                );
+                crate::timers::tick(0.05);
+                assert_eq!(probe(interpreter, "__probe = tasks"), "['once', 'forever']");
+                crate::timers::tick(0.05);
+                assert_eq!(
+                    probe(interpreter, "__probe = tasks"),
+                    "['once', 'forever', 'forever']"
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         def adder():\n\
+                         \x20   tasks.append('adder')\n\
+                         \x20   BigWorld.addFrequentTask(lambda: tasks.append('late'))\n\
+                         \x20   return False\n\
+                         __probe = BigWorld.addFrequentTask(adder)",
+                    ),
+                    "True",
+                );
+                crate::timers::tick(0.05);
+                // `late` registered during the walk: not called this tick.
+                assert_eq!(
+                    probe(interpreter, "__probe = tasks"),
+                    "['once', 'forever', 'forever', 'adder', 'forever']"
+                );
+                crate::timers::tick(0.05);
+                assert_eq!(
+                    probe(interpreter, "__probe = tasks"),
+                    "['once', 'forever', 'forever', 'adder', 'forever', \
+                     'adder', 'late', 'forever']"
                 );
             },
         );
@@ -2456,39 +2841,59 @@ mod tests {
 
     /// The export manifest agrees with the live interpreter: the surface it
     /// marks ported imports and resolves, and its scoping records read true
-    /// against the modules that exist today -- `BigWorld.component` is
-    /// present, the client-only `BigWorld.callback` is not, and the ported
-    /// `Math` module imports with every delivered name.
+    /// against the modules that exist today -- under a client component the
+    /// `BigWorld.component` attribute and the client callback pair are
+    /// present while the server timer trio is not, and the ported `Math`
+    /// module imports with every delivered name.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_the_manifest_matches_the_interpreter() {
-        interpreter_scenario(&InitConfig::default(), |interpreter| {
-            // SAFETY: the interpreter is up and this thread owns the GIL.
-            assert_eq!(unsafe { manifest::check() }, Ok(()));
-            let _ = interpreter;
-            // SAFETY: the interpreter is up and this thread owns the GIL.
-            let big_world = unsafe { capi::PyImport_ImportModule(c"BigWorld".as_ptr()) };
-            assert!(!big_world.is_null(), "BigWorld imports");
-            // SAFETY: BigWorld is a live module object.
-            let component =
-                unsafe { capi::PyObject_GetAttrString(big_world, c"component".as_ptr()) };
-            assert!(!component.is_null(), "BigWorld.component is present");
-            // SAFETY: both results are owned references from the calls above.
-            unsafe {
-                capi::dec_ref(component);
-                // `callback` is client-only surface: its absence is the
-                // scoping fact the manifest pins for BW-03-03-03.
-                let callback = capi::PyObject_GetAttrString(big_world, c"callback".as_ptr());
-                assert!(callback.is_null(), "BigWorld.callback is not here");
-                capi::clear_error();
-                capi::dec_ref(big_world);
-            }
-            // SAFETY: the interpreter is up and this thread owns the GIL.
-            let math = unsafe { capi::PyImport_ImportModule(c"Math".as_ptr()) };
-            assert!(!math.is_null(), "Math imports: the port delivered it");
-            // SAFETY: math is a live module object.
-            unsafe { capi::dec_ref(math) };
-        });
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("client"),
+                ..Default::default()
+            },
+            |interpreter| {
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                assert_eq!(unsafe { manifest::check() }, Ok(()));
+                let _ = interpreter;
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                let big_world = unsafe { capi::PyImport_ImportModule(c"BigWorld".as_ptr()) };
+                assert!(!big_world.is_null(), "BigWorld imports");
+                // SAFETY: BigWorld is a live module object.
+                let component =
+                    unsafe { capi::PyObject_GetAttrString(big_world, c"component".as_ptr()) };
+                assert!(!component.is_null(), "BigWorld.component is present");
+                // SAFETY: both results are owned references from the calls
+                // above.
+                unsafe {
+                    capi::dec_ref(component);
+                    // The client role carries the callback pair...
+                    let callback = capi::PyObject_GetAttrString(big_world, c"callback".as_ptr());
+                    assert!(!callback.is_null(), "BigWorld.callback is here");
+                    capi::dec_ref(callback);
+                    capi::clear_error();
+                    // ...and never the server trio: the scoping facts the
+                    // manifest pins for BW-03-03-03.
+                    for name in ["addTimer", "delTimer", "addFrequentTask"] {
+                        let face = capi::PyObject_GetAttrString(
+                            big_world,
+                            std::ffi::CString::new(name)
+                                .expect("an ASCII name")
+                                .as_ptr(),
+                        );
+                        assert!(face.is_null(), "{name} is not on a client");
+                        capi::clear_error();
+                    }
+                    capi::dec_ref(big_world);
+                }
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                let math = unsafe { capi::PyImport_ImportModule(c"Math".as_ptr()) };
+                assert!(!math.is_null(), "Math imports: the port delivered it");
+                // SAFETY: math is a live module object.
+                unsafe { capi::dec_ref(math) };
+            },
+        );
     }
 
     /// The Math module serves the ported surface: the delivered factory

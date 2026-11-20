@@ -195,22 +195,23 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "callback",
         Kind::Function,
         Scope::Client,
-        Status::Pending,
+        Status::Ported,
         "\"dO\" (float time, callable function)",
         "int callback handle",
-        "TypeError \"BigWorld.callback: Argument parsing error.\"; \
-         TypeError \"py_callback: Callback handle overflow.\"",
-        "lib/pyscript/py_callback.cpp:288 (parse :262, errors :265-266,:278)",
+        "TypeError \"BigWorld.callback: Argument parsing error.\"",
+        "lib/pyscript/py_callback.cpp:288 (parse :262, clamp :270, \
+         callable :264, counter :202-210)",
     ),
     item(
         "cancelCallback",
         Kind::Function,
         Scope::Client,
-        Status::Pending,
+        Status::Ported,
         "\"i\" (int handle)",
         "None",
         "TypeError \"py_cancelCallback: Argument parsing error.\"",
-        "lib/pyscript/py_callback.cpp:333 (parse :308, error :310)",
+        "lib/pyscript/py_callback.cpp:333 (parse :308, error :310, \
+         skip current :319-326)",
     ),
     // URL requests.
     item(
@@ -398,31 +399,35 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "addTimer",
         Kind::Function,
         Scope::Server,
-        Status::Pending,
-        "(interval, user data, repetitions)",
-        "int timer handle",
-        "TypeError from the auto argument parse",
-        "lib/server/app_script_timers.cpp:193",
+        Status::Ported,
+        "\"Of|fi:addTimer\" (callable, float initialOffset, \
+         float repeatOffset = 0, int userArg = 0)",
+        "int timer id",
+        "TypeError \"Callback function is not callable\"; \
+         ValueError \"Unable to add timer\"",
+        "lib/server/app_script_timers.cpp:193 (parse :99, callable :105-122, \
+         id :132)",
     ),
     item(
         "delTimer",
         Kind::Function,
         Scope::Server,
-        Status::Pending,
-        "int timer handle",
+        Status::Ported,
+        "\"i\" (int timerID)",
         "None",
-        "TypeError from the auto argument parse",
-        "lib/server/app_script_timers.cpp:235",
+        "TypeError from the auto argument parse; an unknown id only logs",
+        "lib/server/app_script_timers.cpp:235 (parse :210, unknown :214-219)",
     ),
     item(
         "addFrequentTask",
         Kind::Function,
         Scope::Server,
-        Status::Pending,
-        "(callable, interval)",
-        "int (non-zero on success)",
-        "TypeError from the auto argument parse",
-        "lib/server/script_frequent_tasks.cpp:142",
+        Status::Ported,
+        "\"O|i:addFrequentTask\" (callable, int level = 0)",
+        "True on success",
+        "TypeError \"Argument is not callable\"; \
+         ValueError \"Failed to register for update\"",
+        "lib/server/script_frequent_tasks.cpp:142 (parse :99, errors :99-104,:120)",
     ),
     item(
         "saveAllocationsToFile",
@@ -1255,6 +1260,15 @@ pub enum Mismatch {
         /// The surface name.
         item: &'static str,
     },
+    /// A [`Scope::Client`] or [`Scope::Server`] row marked
+    /// [`Status::Ported`] is live under a component whose build does not
+    /// carry it -- the `#ifndef MF_SERVER` gate breached the other way.
+    ItemScopeLeak {
+        /// The module name.
+        module: &'static str,
+        /// The surface name.
+        item: &'static str,
+    },
 }
 
 impl Mismatch {
@@ -1267,12 +1281,44 @@ impl Mismatch {
             Mismatch::ItemMissing { module, item } => {
                 format!("{module}.{item} is marked ported but is not present")
             }
+            Mismatch::ItemScopeLeak { module, item } => {
+                format!("{module}.{item} is live under a role that does not carry it")
+            }
         }
     }
 }
 
+/// Which build a component name belongs to: the `MF_SERVER` component list
+/// against the non-server builds, the split the timer faces are gated by
+/// (`py_callback.cpp:9`, the `@components{}` lists of
+/// `app_script_timers.cpp:189-201` and `script_frequent_tasks.cpp:129-141`).
+/// A component without a name -- the interpreter's default, or a NUL-mangled
+/// one -- carries neither side.
+fn is_server_component(component: &str) -> bool {
+    matches!(component, "base" | "cell" | "database" | "bot")
+}
+
+/// Whether a build carrying `component` would link a surface of `scope`:
+/// an ungated scope is always carried, the gated ones follow the build
+/// split -- the server component list, the client/editor pair, and an
+/// unknown name carrying neither (the port cannot tell the build, so it
+/// claims neither face). This is the runtime shape of the reference's
+/// compile-time gate, and [`crate::timers`] applies the same split to the
+/// method tables it installs.
+fn carries_role(scope: Scope, component: &str) -> bool {
+    match scope {
+        Scope::Both | Scope::Tool | Scope::Supplied => true,
+        Scope::Server => is_server_component(component),
+        Scope::Client => matches!(component, "client" | "editor"),
+    }
+}
+
 /// The inventory walk: every [`Status::Ported`] module must pass `imports`
-/// and every [`Status::Ported`] surface on it must pass `carries`.
+/// and every [`Status::Ported`] surface on it must pass `carries` -- unless
+/// its scope is gated and `role` says the live build does not carry it, in
+/// which case the row makes the opposite claim: the name must be ABSENT,
+/// and presence is the [`Mismatch::ItemScopeLeak`] failure. A gated row
+/// under its own role makes the plain presence claim.
 /// [`Status::Pending`] and [`Status::Covered`] rows make no claim here, so a
 /// half-delivered module is not a failure -- the rows that are marked are the
 /// contract. The interpreter operations come in as closures so a unit test
@@ -1281,6 +1327,7 @@ fn audit(
     entries: &[Entry],
     imports: &mut dyn FnMut(&str) -> bool,
     carries: &mut dyn FnMut(&str, &str) -> bool,
+    role: &mut dyn FnMut(Scope) -> bool,
 ) -> Vec<Mismatch> {
     let mut mismatches = Vec::new();
     for entry in entries {
@@ -1297,6 +1344,17 @@ fn audit(
             if surface.status != Status::Ported {
                 continue;
             }
+            let gated = matches!(surface.scope, Scope::Client | Scope::Server);
+            if gated && !role(surface.scope) {
+                // The absence is the contract here; a leak is the failure.
+                if carries(entry.module, surface.name) {
+                    mismatches.push(Mismatch::ItemScopeLeak {
+                        module: entry.module,
+                        item: surface.name,
+                    });
+                }
+                continue;
+            }
             if !carries(entry.module, surface.name) {
                 mismatches.push(Mismatch::ItemMissing {
                     module: entry.module,
@@ -1310,13 +1368,37 @@ fn audit(
 
 /// Run the manifest against the live interpreter: every [`Status::Ported`]
 /// module must import and every [`Status::Ported`] surface on it must
-/// resolve. Returns every failure, or `Ok` when the manifest and the
-/// interpreter agree.
+/// resolve, with the gated surfaces checked against the role the live
+/// `BigWorld.component` names -- the same read `Script::init` based the
+/// method-table links on (`script.cpp:1409-1453`). Returns every failure,
+/// or `Ok` when the manifest and the interpreter agree.
 ///
 /// # Safety
 ///
 /// The interpreter must be up and the calling thread must own the GIL.
 pub unsafe fn check() -> Result<(), Vec<Mismatch>> {
+    // SAFETY: the interpreter is up and this thread owns the GIL.
+    let component = unsafe {
+        let big_world = capi::PyImport_ImportModule(c"BigWorld".as_ptr());
+        if big_world.is_null() {
+            capi::clear_error();
+            String::new()
+        } else {
+            // SAFETY: `big_world` is a live object and the name has no NUL.
+            let value = capi::PyObject_GetAttrString(big_world, c"component".as_ptr());
+            capi::dec_ref(big_world);
+            if value.is_null() {
+                // The NUL-mangled name left the attribute unset.
+                capi::clear_error();
+                String::new()
+            } else {
+                // SAFETY: `value` is a live object.
+                let name = capi::to_string(value);
+                capi::dec_ref(value);
+                name
+            }
+        }
+    };
     let mut imports = |name: &str| {
         // SAFETY: the interpreter is up and this thread owns the GIL; the
         // name is a manifest module name, plain ASCII with no interior NUL.
@@ -1367,7 +1449,8 @@ pub unsafe fn check() -> Result<(), Vec<Mismatch>> {
         unsafe { capi::dec_ref(handle) };
         present == 1
     };
-    let mismatches = audit(ENTRIES, &mut imports, &mut carries);
+    let mut role = |scope: Scope| carries_role(scope, &component);
+    let mismatches = audit(ENTRIES, &mut imports, &mut carries, &mut role);
     if mismatches.is_empty() {
         Ok(())
     } else {
@@ -1440,7 +1523,9 @@ mod tests {
 
     /// `BigWorld.callback` is client only and `addEventListener` is server
     /// only: pin the pair, because BW-03-03-03 builds the timer module off
-    /// this row and a flip here would send it to the wrong process.
+    /// this row and a flip here would send it to the wrong process. The
+    /// delivered timer faces carry the same split: the callback pair on the
+    /// client rows, the server trio on the server rows.
     #[test]
     fn the_counter_intuitive_scopes_are_pinned() {
         let big_world = find("BigWorld").expect("BigWorld");
@@ -1456,9 +1541,61 @@ mod tests {
             .find(|item| item.name == "addEventListener")
             .expect("addEventListener row");
         assert_eq!(listener.scope, Scope::Server);
+        for (name, scope) in [
+            ("cancelCallback", Scope::Client),
+            ("addTimer", Scope::Server),
+            ("delTimer", Scope::Server),
+            ("addFrequentTask", Scope::Server),
+        ] {
+            let row = big_world
+                .items
+                .iter()
+                .find(|item| item.name == name)
+                .unwrap_or_else(|| panic!("{name} row"));
+            assert_eq!(row.scope, scope, "{name}");
+        }
         // And its module is shared, which is exactly why the per-item scope
         // exists.
         assert_eq!(big_world.scope, Scope::Both);
+    }
+
+    /// The role gate is the build split in runtime shape: a server
+    /// component list against the non-server builds, an unknown name
+    /// carrying neither side.
+    #[test]
+    fn the_role_gate_follows_the_build_split() {
+        for server in ["base", "cell", "database", "bot"] {
+            assert!(is_server_component(server), "{server}");
+            assert!(
+                carries_role(Scope::Server, server),
+                "server face on {server}"
+            );
+            assert!(
+                !carries_role(Scope::Client, server),
+                "client face on {server}"
+            );
+        }
+        for client in ["client", "editor"] {
+            assert!(!is_server_component(client), "{client}");
+            assert!(
+                carries_role(Scope::Client, client),
+                "client face on {client}"
+            );
+            assert!(
+                !carries_role(Scope::Server, client),
+                "server face on {client}"
+            );
+        }
+        for nameless in ["", "bad\u{0}name", "mystery"] {
+            assert!(!carries_role(Scope::Client, nameless), "{nameless:?}");
+            assert!(!carries_role(Scope::Server, nameless), "{nameless:?}");
+        }
+        // Ungated scopes are carried everywhere.
+        for scope in [Scope::Both, Scope::Tool, Scope::Supplied] {
+            assert!(carries_role(scope, "client"), "{scope:?}");
+            assert!(carries_role(scope, "cell"), "{scope:?}");
+            assert!(carries_role(scope, ""), "{scope:?}");
+        }
     }
 
     /// Project-supplied modules are marked as such rather than given an
@@ -1482,8 +1619,10 @@ mod tests {
     }
 
     /// Ported rows are exactly what the interpreter carries today: the
-    /// BigWorld shell with its `component` attribute, and the Math module
-    /// with every factory name -- the Windows-only matrix animation is the
+    /// BigWorld shell with its `component` attribute and the timer faces
+    /// BW-03-03-03 delivered -- the client pair gated to the client role,
+    /// the server trio gated to the server roles -- plus the Math module
+    /// with every factory name; the Windows-only matrix animation is the
     /// one row still pending.
     #[test]
     fn only_the_delivered_surface_is_marked_ported() {
@@ -1500,7 +1639,17 @@ mod tests {
             .filter(|item| item.status == Status::Ported)
             .map(|item| item.name)
             .collect();
-        assert_eq!(ported_items, vec!["component"]);
+        assert_eq!(
+            ported_items,
+            vec![
+                "component",
+                "callback",
+                "cancelCallback",
+                "addTimer",
+                "delTimer",
+                "addFrequentTask",
+            ]
+        );
         let math = find("Math").unwrap();
         let ported_math: Vec<_> = math
             .items
@@ -1576,17 +1725,19 @@ mod tests {
         }
     }
 
-    /// The walk reports both ways a table can lie, and each report reads as
+    /// The walk reports every way a table can lie, and each report reads as
     /// a sentence about the row, not a code.
     #[test]
     fn a_walk_reports_both_ways_a_table_can_lie() {
         let big_world = find("BigWorld").expect("BigWorld");
         let mut never_imports = |_: &str| false;
         let mut always_carries = |_: &str, _: &str| true;
+        let mut carries_all = |_: Scope| true;
         let missing = audit(
             std::slice::from_ref(big_world),
             &mut never_imports,
             &mut always_carries,
+            &mut carries_all,
         );
         assert_eq!(
             missing,
@@ -1598,11 +1749,15 @@ mod tests {
         );
         let mut imports = |_: &str| true;
         let mut carries_nothing = |_: &str, _: &str| false;
+        let mut carries_none = |_: Scope| false;
         let uncarried = audit(
             std::slice::from_ref(big_world),
             &mut imports,
             &mut carries_nothing,
+            &mut carries_none,
         );
+        // With no role carried, every gated row's absence is the contract
+        // and only the ungated `component` claim fails.
         assert_eq!(
             uncarried,
             vec![Mismatch::ItemMissing {
@@ -1613,6 +1768,51 @@ mod tests {
         assert_eq!(
             uncarried[0].render(),
             "BigWorld.component is marked ported but is not present"
+        );
+        // The leak direction: a client build carrying the server trio is
+        // the breach the role gate exists to catch, and its report reads
+        // as its own sentence.
+        let mut carries_only_server =
+            |_: &str, surface: &str| matches!(surface, "addTimer" | "delTimer" | "addFrequentTask");
+        let mut client_role = |scope: Scope| matches!(scope, Scope::Client);
+        let leak = audit(
+            std::slice::from_ref(big_world),
+            &mut imports,
+            &mut carries_only_server,
+            &mut client_role,
+        );
+        assert_eq!(
+            leak,
+            vec![
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "component"
+                },
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "callback"
+                },
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "cancelCallback"
+                },
+                Mismatch::ItemScopeLeak {
+                    module: "BigWorld",
+                    item: "addTimer"
+                },
+                Mismatch::ItemScopeLeak {
+                    module: "BigWorld",
+                    item: "delTimer"
+                },
+                Mismatch::ItemScopeLeak {
+                    module: "BigWorld",
+                    item: "addFrequentTask"
+                },
+            ]
+        );
+        assert_eq!(
+            leak[3].render(),
+            "BigWorld.addTimer is live under a role that does not carry it"
         );
     }
 
