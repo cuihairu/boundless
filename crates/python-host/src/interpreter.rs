@@ -26,10 +26,14 @@
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
+use super::binding;
 use super::capi::{self, PyObject};
+use super::gil;
 use super::import_paths::ImportPaths;
 use super::init_time_job;
+use super::keepalive;
 use super::output_writer;
+use super::wrapper;
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -115,6 +119,10 @@ impl Interpreter {
             if capi::Py_IsInitialized() == 0 {
                 return Err(InitError::InitializeFailed);
             }
+            // `s_pMainThreadState = PyThreadState_Get(); s_defaultContext =
+            // s_pMainThreadState;` (`script.cpp:603-604`), captured on the
+            // thread that brings the interpreter up.
+            let _ = gil::init_thread();
         }
         // `new ScriptOutputWriter()` sits right after `Py_Initialize`
         // (`script.cpp:531`), before argv: everything the rest of init logs
@@ -202,21 +210,53 @@ impl Interpreter {
         unsafe { capi::PyRun_SimpleString(encoded.as_ptr()) == 0 }
     }
 
-    /// `Script::fini`: always tears the interpreter down in this port.
+    /// `Script::fini` (script.cpp:659): the shutdown order the port follows.
     ///
-    /// The reference can skip `Py_Finalize` (client-module builds) and still
-    /// mark the script system finalised; a server process never does, so the
-    /// flag is the whole difference and stays for the shutdown item to
-    /// exercise.
+    /// The reference stops its background-task managers first ("they might be
+    /// loading PyObjects or have script callbacks"), finalises the Pickler,
+    /// then drains the fini-time jobs -- `Personality::onFini` rides the last
+    /// rung -- before dropping the init-time module snapshot, the writer, the
+    /// collected cycles, `__main__`, and finally CPython itself. The port owns
+    /// no task managers or Pickler yet, so the stop-the-background-work step
+    /// belongs to the process layer that drives `fini`, and this method covers
+    /// the script side: jobs, snapshot, cycles, module clear, `Py_Finalize`.
+    /// Unlike the reference, the port always finalises; the reference can skip
+    /// `Py_Finalize` (client-module builds) and still mark itself finalised.
     pub fn fini(&self) {
         if !INITIALIZED.load(Ordering::SeqCst) || capi::is_finalized() {
             return;
         }
+        // `runFiniTimeJobs()`, script.cpp:689: "Personality::onFini called as
+        // last item here". A double drain only logs in the reference; the
+        // port ignores the error and finalises regardless.
+        let _ = init_time_job::run_fini_time_jobs();
+        // `Script::clearTimers` (`py_callback.cpp:81-91`): the reference reaches it
+        // from the app's shutdown, ahead of `Script::fini`; the port places it here,
+        // behind the fini-time jobs, so a job that posts a callback is not the one
+        // that leaves a callback behind for `Py_Finalize` to find. Nothing survives
+        // the drain to the collect loop, which is what keeps a posted-but-never-run
+        // callback from being a dangling one.
+        gil::clear();
+        // The native registries die before the script system finalises --
+        // `CellApp::shutDown` deletes its entities before `Script::fini` --
+        // so every native wrapper `Py_DecRef`s here, allocator still alive.
+        wrapper::reset();
+        // The type registry's references go the same way: the static
+        // `s_type_` objects outlive every script object, and the port holds
+        // its registry references until here.
+        binding::reset();
+        // The keep-alive entries die with the native side too: `Pickler`'s
+        // registry and the timer table are torn down inside
+        // `Script::fini` before the collect loop (script.cpp:686), so a
+        // held reference never survives into `Py_Finalize`.
+        keepalive::reset();
         // The snapshot goes before the collect loop, the reference's DECREF
         // between `runFiniTimeJobs` and `while (PyGC_Collect() > 0);`.
         let snapshot = INIT_TIME_MODULES.swap(std::ptr::null_mut(), Ordering::SeqCst);
         // The writer's own teardown: buffers and hooks go now, the
-        // reference's writer dies inside `Py_Finalize`'s sys clear.
+        // reference's writer dies inside `Py_Finalize`'s sys clear. This
+        // follows the jobs, so a callback's `print` still reaches hooks and
+        // the sink, as it does in the reference.
         output_writer::reset();
         // SAFETY: the interpreter is up, this thread owns the GIL, and the
         // steps below run in the reference's order: the snapshot DECREF
@@ -431,10 +471,28 @@ fn clear_main_module() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gil;
     use crate::import_paths;
+    use crate::keepalive;
+    use crate::manifest;
     use crate::pyref::PyRef;
+    use crate::sequence;
     use std::path::PathBuf;
     use std::process::Command;
+
+    /// One container state plus the view over it: the sequence scenarios
+    /// build a proxy on it and park the view in `__main__`, the same way the
+    /// engine parks a native object.
+    fn sequence_view(values: &[i64], writable: bool) -> (Box<sequence::SequenceState>, PyRef) {
+        let mut state = if writable {
+            Box::new(sequence::SequenceState::new(values))
+        } else {
+            Box::new(sequence::SequenceState::read_only(values))
+        };
+        let view = unsafe { sequence::wrap(state.as_mut() as *mut sequence::SequenceState) }
+            .expect("wrap the native state");
+        (state, view)
+    }
 
     /// BW-03-01-01. One scenario per process, because CPython 3.13 and later
     /// refuse to initialise a process that has already finalised (`Fatal
@@ -475,8 +533,36 @@ mod tests {
         "interpreter::tests::scenario_init_time_modules_snapshot_taken_at_init",
         "interpreter::tests::scenario_init_time_jobs_run_once_in_rung_order",
         "interpreter::tests::scenario_fini_time_jobs_run_once_in_rung_order",
+        "interpreter::tests::scenario_fini_runs_the_fini_time_jobs",
+        "interpreter::tests::scenario_the_same_native_id_wraps_to_one_object",
+        "interpreter::tests::scenario_a_forgotten_id_wraps_to_a_new_object",
+        "interpreter::tests::scenario_a_foreign_object_carries_no_native_id",
+        "interpreter::tests::scenario_different_ids_are_distinct_wrappers",
+        "interpreter::tests::scenario_the_cache_holds_one_reference_per_identity",
+        "interpreter::tests::scenario_a_bound_attribute_round_trips",
+        "interpreter::tests::scenario_a_bound_type_refuses_the_wrong_access",
+        "interpreter::tests::scenario_a_bound_method_parses_its_arguments",
+        "interpreter::tests::scenario_a_script_cannot_construct_a_native_type",
+        "interpreter::tests::scenario_an_instance_renders_with_the_reference_format",
+        "interpreter::tests::scenario_a_type_name_creates_one_type_object",
+        "interpreter::tests::scenario_a_sequence_proxy_round_trips_native_state",
+        "interpreter::tests::scenario_two_sequence_views_share_native_state",
+        "interpreter::tests::scenario_a_sequence_proxy_normalises_negative_indices",
+        "interpreter::tests::scenario_a_sequence_proxy_bounds_are_checked",
+        "interpreter::tests::scenario_a_read_only_sequence_refuses_assignment",
+        "interpreter::tests::scenario_a_non_integer_subscript_refuses",
+        "interpreter::tests::scenario_a_keep_alive_entry_holds_one_reference",
+        "interpreter::tests::scenario_repinning_adopts_and_replaces_once",
+        "interpreter::tests::scenario_unpinning_twice_releases_once",
+        "interpreter::tests::scenario_a_pinned_callback_survives_the_script_dropping_it",
+        "interpreter::tests::scenario_a_script_side_cycle_is_freed_exactly_once",
+        "interpreter::tests::scenario_the_gil_context_is_installed_at_init",
+        "interpreter::tests::scenario_a_callback_posted_from_a_dying_thread_runs_on_the_script_thread",
+        "interpreter::tests::scenario_an_exception_in_a_callback_does_not_leave_it_queued",
+        "interpreter::tests::scenario_finishing_the_script_system_leaves_no_callback_behind",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
+        "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -602,6 +688,24 @@ mod tests {
             let rendered = capi::to_string(text);
             capi::dec_ref(text);
             rendered
+        }
+    }
+
+    /// A fresh list parked in `__main__` under `__handle`, as a borrowed handle
+    /// plus a copy of it that names the object the same way the script does.
+    /// The `refcount` helper reads `__handle`, so the parked name is what
+    /// keeps the object readable between handles.
+    fn fresh() -> PyRef {
+        // SAFETY: the interpreter is up and this thread owns the GIL.
+        unsafe {
+            let list = PyRef::from_owned(capi::PyList_New(0)).expect("a live object");
+            let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+            let dictionary = capi::PyModule_GetDict(main);
+            assert_eq!(
+                capi::PyDict_SetItemString(dictionary, c"__handle".as_ptr(), list.as_ptr()),
+                0
+            );
+            list.clone()
         }
     }
 
@@ -1112,6 +1216,860 @@ mod tests {
         );
     }
 
+    /// `Script::fini` drains the fini-time jobs itself, before any
+    /// teardown: every callback still sees a live interpreter, its script
+    /// calls still reach CPython, and its output still lands in the log
+    /// sink. The reference runs `runFiniTimeJobs()` at script.cpp:689 --
+    /// "`Personality::onFini` called as last item here" -- before the
+    /// snapshot DECREF and the collect loop.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_fini_runs_the_fini_time_jobs() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let events = events.clone();
+            output_writer::set_log_sink(move |line, _is_stderr| {
+                events.lock().unwrap().push(format!("sink:{line}"));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let rung_zero = events.clone();
+            assert_eq!(
+                init_time_job::add_fini_time_job_at(0, move || {
+                    // The interpreter is still up: the callback runs script
+                    // and its print reaches the sink.
+                    assert!(run_simple_probe("print('from fini job'); __probe = True"));
+                    rung_zero
+                        .lock()
+                        .unwrap()
+                        .push(format!("job:alive={}", Interpreter::is_initialized()));
+                }),
+                Ok(())
+            );
+            let rung_two = events.clone();
+            assert_eq!(
+                init_time_job::add_fini_time_job_at(2, move || {
+                    rung_two.lock().unwrap().push("job:onFini-rung".to_owned());
+                }),
+                Ok(())
+            );
+        });
+        // The teardown events land in order; what follows is the
+        // documented exit-time flush noise of the reference's own writer.
+        let recorded = events.lock().unwrap().clone();
+        assert!(
+            recorded.starts_with(&[
+                "sink:from fini job".to_owned(),
+                "job:alive=true".to_owned(),
+                "job:onFini-rung".to_owned()
+            ]),
+            "{recorded:?}"
+        );
+        assert!(
+            recorded[3..]
+                .iter()
+                .all(|line| line.contains("flush") || line.contains("unraisablehook")),
+            "{recorded:?}"
+        );
+        assert!(Interpreter::is_finalized());
+    }
+
+    /// The reference identity rule, one scenario per facet of it: the same
+    /// native id always yields the same wrapper instance (`PyEntities::
+    /// subscript` hands back the one embedded `PyObjectPlus` with
+    /// `Py_XINCREF`), a forgotten id rewraps to a new object, a foreign
+    /// object carries no native id, and the cache holds exactly one
+    /// reference per registered identity.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_same_native_id_wraps_to_one_object() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let native = 0x1000 as *mut std::os::raw::c_void;
+            let first = unsafe { wrapper::wrap(native, 100) }.expect("wrap the native object");
+            let second = unsafe { wrapper::wrap(native, 100) }.expect("wrap it again");
+            // Same pointer, so Python sees `is` identity: the subscript
+            // layer's `Py_XINCREF` and return.
+            assert_eq!(first, second);
+            assert_eq!(unsafe { wrapper::native(&first) }, Some(native));
+            // The capsule carries the wrapper name.
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"one".as_ptr(), first.as_ptr());
+                capi::PyObject_SetAttrString(main, c"two".as_ptr(), second.as_ptr());
+            }
+            // The reference's `is` check, on the Python side.
+            assert_eq!(probe(interpreter, "__probe = (one is two)"), "True");
+        });
+    }
+
+    /// A forgotten id wraps again -- the reference has no second wrapper to
+    /// hand back, and neither does the port.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_forgotten_id_wraps_to_a_new_object() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let native = 0x2000 as *mut std::os::raw::c_void;
+            let first = unsafe { wrapper::wrap(native, 200) }.expect("wrap");
+            let first_address = first.as_ptr() as usize;
+            assert!(wrapper::release(200));
+            let second = unsafe { wrapper::wrap(native, 200) }.expect("rewrap");
+            assert_ne!(second.as_ptr() as usize, first_address);
+            // The first wrapper is still alive while Python holds it: the
+            // host dropping the identity only forgets the cache entry.
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"kept".as_ptr(), first.as_ptr());
+                capi::PyObject_SetAttrString(main, c"fresh".as_ptr(), second.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = (kept is fresh)"), "False");
+        });
+    }
+
+    /// A foreign object (a plain `str`) is not one of this module's
+    /// capsules: `PyCapsule_IsValid` refuses it.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_foreign_object_carries_no_native_id() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let text = unsafe { capi::PyUnicode_FromString(c"not a native object".as_ptr()) };
+            let borrowed = PyRef::borrowed(text);
+            assert_eq!(unsafe { wrapper::native(&borrowed) }, None);
+        });
+    }
+
+    /// Two ids over one address are two wrappers: the registry keys
+    /// identity, not the pointer.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_different_ids_are_distinct_wrappers() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let native = 0x3000 as *mut std::os::raw::c_void;
+            let left = unsafe { wrapper::wrap(native, 301) }.expect("wrap the first identity");
+            let right = unsafe { wrapper::wrap(native, 302) }.expect("wrap the second");
+            assert_ne!(left, right);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"left".as_ptr(), left.as_ptr());
+                capi::PyObject_SetAttrString(main, c"right".as_ptr(), right.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = (left is right)"), "False");
+        });
+    }
+
+    /// The cache holds exactly one reference per registered identity:
+    /// wrapping is a clone (a fresh reference), dropping it goes back to
+    /// the cache's own.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_cache_holds_one_reference_per_identity() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let native = 0x4000 as *mut std::os::raw::c_void;
+            let first = unsafe { wrapper::wrap(native, 400) }.expect("wrap");
+            // The cache owns one and the caller owns one.
+            assert_eq!(unsafe { capi::refcount(first.as_ptr()) }, 2);
+            {
+                let second = unsafe { wrapper::wrap(native, 400) }.expect("wrap again");
+                assert_eq!(unsafe { capi::refcount(second.as_ptr()) }, 3);
+            }
+            assert_eq!(unsafe { capi::refcount(first.as_ptr()) }, 2);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"kept".as_ptr(), first.as_ptr());
+            }
+            // `__main__` holds a third reference while the interpreter is
+            // up; the cache's release happens at fini, before the
+            // finaliser.
+        });
+    }
+
+    /// The native type the binding scenarios bind: one attribute with a
+    /// setter, one read-only attribute and one `METH_VARARGS` method -- the
+    /// shape of one reference class' getset table and method table. The
+    /// handlers read a process global instead of the instance, the port's
+    /// stand-in for the reference's embedded-header `this` pointer.
+    mod demo {
+        use std::os::raw::c_int;
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        use crate::capi;
+
+        static VALUE: AtomicI64 = AtomicI64::new(4);
+
+        /// The demo type's description, one name for the whole process.
+        pub(super) fn spec() -> crate::binding::TypeSpec {
+            crate::binding::TypeSpec::new("boundless.Demo")
+                .attribute("value", value_get, Some(value_set))
+                .attribute("label", label_get, None)
+                .method("twist", twist)
+        }
+
+        /// `value`, read: the reference's `pyGetAttribute` hands the call to
+        /// this descriptor.
+        unsafe extern "C" fn value_get(
+            _self_: *mut capi::PyObject,
+            _closure: *mut std::os::raw::c_void,
+        ) -> *mut capi::PyObject {
+            // SAFETY: the getter only builds a new long from a stored value.
+            unsafe { capi::PyLong_FromLong(VALUE.load(Ordering::SeqCst) as std::os::raw::c_long) }
+        }
+
+        /// `value`, write: an unparseable value keeps the stored one and
+        /// returns negative with the error CPython already set. A delete
+        /// reaches the same setter with a null value -- `pyDelAttribute`
+        /// is `PyObject_GenericSetAttr(pObject, pAttr, NULL)` -- and is
+        /// refused the way the C API convention refuses it.
+        unsafe extern "C" fn value_set(
+            _self_: *mut capi::PyObject,
+            value: *mut capi::PyObject,
+            _closure: *mut std::os::raw::c_void,
+        ) -> c_int {
+            if value.is_null() {
+                // SAFETY: the refusal only sets the error.
+                unsafe {
+                    capi::PyErr_SetString(
+                        capi::PyExc_TypeError,
+                        c"cannot delete the value attribute".as_ptr(),
+                    );
+                }
+                return -1;
+            }
+            let parsed = unsafe { capi::PyLong_AsLong(value) };
+            // A value of -1 with no pending error is -1 itself, not a
+            // failure: only an actual conversion error returns negative.
+            let failed = unsafe { !capi::PyErr_Occurred().is_null() };
+            if parsed == -1 && failed {
+                return -1;
+            }
+            VALUE.store(parsed as i64, Ordering::SeqCst);
+            0
+        }
+
+        /// `label`, read-only: no setter, so `pySetAttribute` refuses it.
+        unsafe extern "C" fn label_get(
+            _self_: *mut capi::PyObject,
+            _closure: *mut std::os::raw::c_void,
+        ) -> *mut capi::PyObject {
+            // SAFETY: the getter only builds a new string.
+            unsafe { capi::PyUnicode_FromString(c"fixture".as_ptr()) }
+        }
+
+        /// `twist`, the agreed-convention method: the tuple is parsed with a
+        /// `PyArg_ParseTuple` format string and a wrong argument raises the
+        /// `TypeError` the API sets, never a panic.
+        unsafe extern "C" fn twist(
+            _self_: *mut capi::PyObject,
+            args: *mut capi::PyObject,
+        ) -> *mut capi::PyObject {
+            let mut amount: c_int = 0;
+            // SAFETY: the parse leaves either a value or a pending error.
+            let parsed = unsafe { capi::PyArg_ParseTuple(args, c"i:twist".as_ptr(), &mut amount) };
+            if parsed == 0 {
+                return std::ptr::null_mut();
+            }
+            unsafe { capi::PyLong_FromLong(amount as i64 * 2) }
+        }
+    }
+
+    /// The reference's attribute protocol end to end: a bound attribute
+    /// round-trips through its getter and setter, so a script can read and
+    /// write native state the way `Personality.onInit` reads class state.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_bound_attribute_round_trips() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            // The engine builds the instance: scripts may not.
+            let instance = unsafe { binding::instantiate(&demo_type) }.expect("the instance");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"demo".as_ptr(), instance.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = demo.value"), "4");
+            assert_eq!(
+                probe(interpreter, "demo.value = 7; __probe = (demo.value == 7)"),
+                "True"
+            );
+        });
+    }
+
+    /// The reference's three rejections: assigning a read-only attribute,
+    /// reading an unknown one, and deleting a bound one -- the last is the
+    /// `pyDelAttribute` path, which a getset table answers with `TypeError`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_bound_type_refuses_the_wrong_access() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            let instance = unsafe { binding::instantiate(&demo_type) }.expect("the instance");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"demo".as_ptr(), instance.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    demo.label = 1\nexcept AttributeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    demo.missing\nexcept AttributeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    del demo.value\nexcept TypeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// The agreed convention for a native method: a good argument parses and
+    /// returns, a wrong count or a wrong type raises `TypeError` from the
+    /// `PyArg_ParseTuple` call, never a Rust panic.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_bound_method_parses_its_arguments() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            let instance = unsafe { binding::instantiate(&demo_type) }.expect("the instance");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"demo".as_ptr(), instance.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = demo.twist(5)"), "10");
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    demo.twist()\nexcept TypeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    demo.twist('not a number')\nexcept TypeError:\n    __probe = True\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// `_pyNew`: a script cannot construct a native type, and the error
+    /// carries the reference's message with the dotted type name.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_script_cannot_construct_a_native_type() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"native".as_ptr(), demo_type.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    native()\nexcept TypeError as error:\n    __probe = \
+                     'Cannot directly construct objects of this type' in str(error)\n\
+                     else:\n    __probe = False",
+                ),
+                "True"
+            );
+            // The refusal names the type, `%s()` with the dotted name.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    native()\nexcept TypeError as error:\n    __probe = \
+                     str(error).startswith('boundless.Demo()')\nelse:\n    __probe = False",
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// `pyRepr`: the instance renders as the dotted type name and its
+    /// address, the reference's `"%s at %p"` with this platform's `%p`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_instance_renders_with_the_reference_format() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let demo_type = binding::create_type(&demo::spec()).expect("build the demo type");
+            let instance = unsafe { binding::instantiate(&demo_type) }.expect("the instance");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"demo".as_ptr(), instance.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "__probe = repr(demo).startswith('boundless.Demo at 0x')",
+                ),
+                "True"
+            );
+        });
+    }
+
+    /// The `s_type_` rule: one name is one type object for the process, and
+    /// every instance the engine builds is a distinct allocation of it.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_type_name_creates_one_type_object() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let first = binding::create_type(&demo::spec()).expect("build the demo type");
+            let second = binding::create_type(&demo::spec()).expect("the same name again");
+            assert_eq!(first.as_ptr(), second.as_ptr());
+            let left = unsafe { binding::instantiate(&first) }.expect("one instance");
+            let right = unsafe { binding::instantiate(&first) }.expect("another instance");
+            assert_ne!(left.as_ptr(), right.as_ptr());
+            // A type this module never created answers through the C API
+            // instead of the registry.
+            let foreign = unsafe { capi::Py_TYPE(capi::py_true()) };
+            assert_eq!(unsafe { binding::qualified_name(foreign) }, "bool");
+        });
+    }
+
+    /// The acceptance probe: a script's writes through the proxy land in
+    /// the native state, and its reads report the native state -- the
+    /// `PySTLSequence` contract, a mutation seen from Python applied to the
+    /// native object.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_sequence_proxy_round_trips_native_state() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (mut _state, view) = sequence_view(&[10, 20, 30], true);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = len(seq)"), "3");
+            assert_eq!(probe(interpreter, "__probe = seq[1]"), "20");
+            probe(interpreter, "seq[1] = 25");
+            assert_eq!(probe(interpreter, "__probe = seq[1]"), "25");
+            // The native state carries the script's write.
+            assert_eq!(_state.values(), &[10, 25, 30]);
+            // And the script sees a native-side write.
+            _state.values_mut()[0] = 5;
+            assert_eq!(probe(interpreter, "__probe = seq[0]"), "5");
+        });
+    }
+
+    /// Two views of one state share it: the reference's every view of one
+    /// `PyObjectPlus` holder reports on the same native container.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_two_sequence_views_share_native_state() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (mut state, left) = sequence_view(&[1, 2], true);
+            let right = unsafe { sequence::wrap(state.as_mut() as *mut sequence::SequenceState) }
+                .expect("the second view");
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"left".as_ptr(), left.as_ptr());
+                capi::PyObject_SetAttrString(main, c"right".as_ptr(), right.as_ptr());
+            }
+            probe(interpreter, "left[0] = 9");
+            assert_eq!(probe(interpreter, "__probe = right[0]"), "9");
+            assert_eq!(probe(interpreter, "__probe = (left is right)"), "False");
+        });
+    }
+
+    /// The bridge's negative-index normalisation, `seqIndexKey` on the
+    /// mapping path: `seq[-1]` is the last item, and a deletion through a
+    /// negative index removes the same item a positive one would.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_sequence_proxy_normalises_negative_indices() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (state, view) = sequence_view(&[1, 2, 3], true);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(probe(interpreter, "__probe = seq[-1]"), "3");
+            probe(interpreter, "del seq[-1]");
+            assert_eq!(state.values(), &[1, 2]);
+            assert_eq!(probe(interpreter, "__probe = seq[-1]"), "2");
+        });
+    }
+
+    /// Out-of-range reads and writes raise the reference's two index
+    /// errors, verbatim with the type name in the `%s`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_sequence_proxy_bounds_are_checked() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (_state, view) = sequence_view(&[1], true);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    seq[3]\nexcept IndexError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "IndexError: boundless.Sequence index out of range"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    seq[3] = 4\nexcept IndexError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "IndexError: boundless.Sequence assignment index out of range"
+            );
+        });
+    }
+
+    /// A read-only state refuses the write with the reference's message.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_read_only_sequence_refuses_assignment() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (_state, view) = sequence_view(&[1], false);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    seq[0] = 2\nexcept TypeError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "TypeError: Cannot assign an item in a read-only boundless.Sequence"
+            );
+        });
+    }
+
+    /// A non-integer subscript raises the reference's `TypeError`, and a
+    /// foreign object through the bridge raises the reference's
+    /// not-subscriptable refusal: the message a plain `str` produces is the
+    /// `PyType_GetName` arm of the qualified-name lookup.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_non_integer_subscript_refuses() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let (_state, view) = sequence_view(&[1], true);
+            let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+            unsafe {
+                capi::PyObject_SetAttrString(main, c"seq".as_ptr(), view.as_ptr());
+            }
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    seq['one']\nexcept TypeError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "TypeError: boundless.Sequence indices must be integers, not str"
+            );
+            // The bridge's own miss arm renders the same sentence; CPython's
+            // own wording for a `str` here is the independent check of it.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "try:\n    'text'[0] = 1\nexcept TypeError as error:\n    \
+                     __probe = type(error).__name__ + ': ' + str(error)",
+                ),
+                "TypeError: 'str' object does not support item assignment"
+            );
+        });
+    }
+
+    /// The reference's keep-alive contract, one entry: `PySTLSequence`'s
+    /// constructor `Py_XINCREF`s its owner and the destructor `Py_XDECREF`s it,
+    /// so one entry is exactly one strong reference -- not two, not none.
+    /// `sys.getrefcount` names the object itself as well, so the counts read
+    /// two here; what the test measures is the delta of one.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_keep_alive_entry_holds_one_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let list = fresh();
+            let baseline = refcount(interpreter);
+            unsafe { keepalive::pin(41, &list) }.expect("pin the entry");
+            assert!(keepalive::is_pinned(41));
+            assert_eq!(keepalive::pinned_count(), 1);
+            assert_eq!(refcount(interpreter), baseline + 1);
+            assert!(keepalive::unpin(41));
+            assert_eq!(refcount(interpreter), baseline);
+        });
+    }
+
+    /// Repinning an identity adopts the new reference and drops the old one
+    /// exactly once, `Script::setData`'s rule: no leak on replace, no entry
+    /// for an identity that no longer exists.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_repinning_adopts_and_replaces_once() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            let first = fresh();
+            unsafe { keepalive::pin(9, &first) }.expect("pin the first");
+            // The parked name and the handle hold two; the entry is the
+            // third. Read directly, because the second pin replaces the
+            // object the `__handle` helper reads.
+            assert_eq!(unsafe { capi::refcount(first.as_ptr()) }, 3);
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let second = unsafe { PyRef::from_owned(capi::PyList_New(0)) }.expect("a live object");
+            unsafe { keepalive::pin(9, &second) }.expect("replace the entry");
+            // One entry, not two: the replace is an adopt.
+            assert_eq!(keepalive::pinned_count(), 1);
+            assert!(keepalive::is_pinned(9));
+            // The first entry's reference went exactly once, `setData`'s rule:
+            // the count is back to the two the script side still holds. A
+            // double release would have freed it under the parked name; a
+            // missing one would have left it at three.
+            assert_eq!(unsafe { capi::refcount(first.as_ptr()) }, 2);
+        });
+    }
+
+    /// Unpinning twice releases once: the second call finds no entry and
+    /// reports it, which is what makes a host's double `fini` harmless.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_unpinning_twice_releases_once() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let object = fresh();
+            unsafe { keepalive::pin(7, &object) }.expect("pin");
+            let before = refcount(interpreter);
+            assert!(keepalive::unpin(7));
+            assert_eq!(refcount(interpreter), before - 1);
+            assert!(!keepalive::unpin(7));
+            assert!(!keepalive::is_pinned(7));
+            assert_eq!(refcount(interpreter), before - 1);
+        });
+    }
+
+    /// `Script::gTimers`'s contract: the native registry's entry keeps a
+    /// callback alive after the script has thrown it away, and unpinning is
+    /// what finally releases it -- the timer table drops its owned function
+    /// and arguments at `clearTimers`, never earlier.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_pinned_callback_survives_the_script_dropping_it() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // A bound method as the held callback, the shape the timer table
+            // stores: the instance and the function together.
+            assert!(interpreter.run_simple_string(
+                "class Holder:\n    def answer(self):\n        return 6\n\
+                 \nh = Holder()\n__callback = h.answer"
+            ));
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let callback = unsafe {
+                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                PyRef::from_owned(capi::PyObject_GetAttrString(main, c"__callback".as_ptr()))
+                    .expect("the bound method")
+            };
+            unsafe { keepalive::pin(1, &callback) }.expect("pin the callback");
+            // The script lets go of every name it had.
+            assert!(interpreter.run_simple_string("del h\ndel __callback"));
+            // A collection freed nothing, because the entry owns one
+            // reference of its own.
+            assert!(interpreter.run_simple_string("import gc; gc.collect()"));
+            // The handle and the entry are the only two names left: the entry
+            // is what the script's drop could not kill.
+            assert_eq!(unsafe { capi::refcount(callback.as_ptr()) }, 2);
+            // The entry is still callable: the registry's reference is
+            // the only thing keeping it alive.
+            let held = keepalive::take_out(1).expect("the held reference");
+            // The take-out handed the entry's reference to the caller, the
+            // release-happened-exactly-once leg of the contract: the caller's
+            // drop is what frees it.
+            drop(callback);
+            // The reference's `MF_ASSERT_DEV(ob_refcnt == 0)` at native
+            // teardown, read the way the C++ layer reads it: one owned
+            // reference is left, so the count is not zero yet -- and it is
+            // the caller's final drop that takes it there, never the registry
+            // releasing twice.
+            assert!(!unsafe { keepalive::zero_reference_count(&held) });
+            assert_eq!(unsafe { capi::refcount(held.as_ptr()) }, 1);
+            let answer = unsafe { capi::PyObject_CallNoArgs(held.as_ptr()) };
+            assert!(!answer.is_null());
+            // SAFETY: the answer is a fresh strong reference from the call.
+            unsafe { capi::dec_ref(answer) };
+            drop(held);
+        });
+    }
+
+    /// The reference's collection policy: `gc.disable()` in init means the
+    /// automatic collector never runs, so a cycle the script builds is freed
+    /// only by an explicit pass -- `gc.collect()` here, and the same
+    /// `while (PyGC_Collect() > 0);` loop that `Script::fini` runs after
+    /// `__main__` is blanked. Either way the rule under test is the same:
+    /// the two members of the cycle go exactly once, never twice, never
+    /// early while the script still names them.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_script_side_cycle_is_freed_exactly_once() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert_eq!(
+                probe(interpreter, "import gc; __probe = gc.isenabled()"),
+                "False"
+            );
+            // A two-object cycle, each naming the other.
+            assert!(interpreter.run_simple_string("a = []\nb = []\na.append(b)\nb.append(a)"));
+            // Collection is off, so nothing collects on its own: an explicit
+            // pass is what frees the cycle. One pass warms up the leftovers
+            // init left unreachable, so the counts afterwards are about the
+            // cycle alone.
+            assert_ne!(probe(interpreter, "__probe = gc.collect()"), "0");
+            // While the script still names the members, a pass finds nothing
+            // unreachable.
+            assert_eq!(probe(interpreter, "__probe = gc.collect()"), "0");
+            // The script drops every name; only the cycle keeps itself alive.
+            assert!(interpreter.run_simple_string("del a\ndel b"));
+            assert_eq!(
+                probe(interpreter, "__probe = gc.collect()"),
+                "2",
+                "the two-list cycle was freed"
+            );
+            // A second pass frees nothing: the cycle went exactly once, not
+            // twice and not zero times.
+            assert_eq!(probe(interpreter, "__probe = gc.collect()"), "0");
+        });
+    }
+
+    /// `s_defaultContext` is a `THREADLOCAL`, captured at init on the thread that
+    /// brings the interpreter up (`script.cpp:603-604`), and `Script::fini`
+    /// leaves it in place -- it only reverts the poller's idle hooks to no-ops.
+    /// The context is what makes [`gil::acquire_lock`] and
+    /// [`gil::release_lock`] restore and save this thread's state instead of
+    /// doing nothing.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_gil_context_is_installed_at_init() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(gil::has_context());
+            assert!(interpreter.run_simple_string("seen = 'script'"));
+            // The thread that brought the interpreter up already holds the GIL,
+            // so CPython reports it as the current thread state.
+            let installed = unsafe { capi::PyThreadState_Get() };
+            assert!(!installed.is_null());
+            unsafe {
+                // `releaseLock` gives the GIL back and reports `Ok` because
+                // `PyEval_SaveThread` handed back exactly the state this
+                // thread was given. It does not remove the context: only
+                // `finiThread` does, so the thread still names a state while
+                // holding no current one.
+                assert!(gil::release_lock().is_ok());
+                assert!(gil::has_context());
+                assert_eq!(capi::PyGILState_Check(), 0, "the lock went with it");
+                // `acquireLock` puts this thread back on the state it was
+                // given, so a call the script thread makes still sees its own
+                // globals, the way `Script::call` assumes.
+                gil::acquire_lock();
+                assert_ne!(capi::PyGILState_Check(), 0, "the lock came back");
+                assert_eq!(capi::PyThreadState_Get(), installed);
+            }
+            assert!(gil::has_context());
+            assert_eq!(probe(interpreter, "__probe = seen"), "script");
+        });
+    }
+
+    /// The cross-thread contract: a callback posted from a thread that then
+    /// exits is the queue's to run, not the thread's to keep, so it still
+    /// reaches the script thread -- and the script thread is the one that
+    /// runs it, on the interpreter the caller owns.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_callback_posted_from_a_dying_thread_runs_on_the_script_thread() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string("counter = [0]"));
+            let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let spawner = ran.clone();
+            let poster = std::thread::spawn(move || {
+                gil::post(move || {
+                    // The callback runs on the thread that owns the GIL, so
+                    // it may touch the interpreter it cannot send across.
+                    // SAFETY: `process` requires the caller to own the GIL, and
+                    // this closure only ever runs there.
+                    let Ok(source) = std::ffi::CString::new("counter[0] = counter[0] + 1") else {
+                        return;
+                    };
+                    unsafe { capi::PyRun_SimpleString(source.as_ptr()) };
+                    spawner.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            });
+            // The thread is over; its callback is still queued.
+            assert!(poster.join().is_ok());
+            assert_eq!(gil::pending(), 1);
+            assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(unsafe { gil::process() }, 1);
+            assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(gil::pending(), 0);
+            assert_eq!(probe(interpreter, "__probe = counter[0]"), "1");
+        });
+    }
+
+    /// A callback whose script raises does not strand the callbacks posted
+    /// behind it: the pass has already taken its snapshot out of the queue, so
+    /// the failure is contained to that one callback.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_exception_in_a_callback_does_not_leave_it_queued() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string("counter = [0]"));
+            let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observer = failing.clone();
+            let source = "raise ValueError('the callback fails')";
+            gil::post(move || {
+                // SAFETY: this runs on the GIL-owning thread.
+                let Ok(encoded) = std::ffi::CString::new(source) else {
+                    return;
+                };
+                // The raise is caught on the script side, the way the
+                // reference's callbacks catch theirs; the point is that the
+                // exception does not unwind the pass.
+                unsafe {
+                    capi::PyRun_SimpleString(encoded.as_ptr());
+                }
+                observer.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            gil::post(|| {
+                // SAFETY: this runs on the GIL-owning thread.
+                let Ok(source) = std::ffi::CString::new("counter[0] = counter[0] + 1") else {
+                    return;
+                };
+                unsafe { capi::PyRun_SimpleString(source.as_ptr()) };
+            });
+            assert_eq!(unsafe { gil::process() }, 2);
+            assert!(failing.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(gil::pending(), 0);
+            assert_eq!(probe(interpreter, "__probe = counter[0]"), "1");
+        });
+    }
+
+    /// `Script::clearTimers`'s job: a callback posted but never run must not
+    /// be left behind the script system, so shutdown drops it rather than
+    /// handing it to a torn-down interpreter.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_finishing_the_script_system_leaves_no_callback_behind() {
+        let config = scenario_config(&InitConfig::default());
+        let interpreter = Interpreter::init(&config).expect("Script::init");
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let marker = dropped.clone();
+        gil::post(move || {
+            marker.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(gil::pending(), 1);
+        interpreter.fini();
+        assert_eq!(gil::pending(), 0, "nothing survives the drain");
+        assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(Interpreter::is_finalized());
+    }
+
     /// `Script::init` drains the init-time jobs itself, after the
     /// interpreter is up but before `gc.disable()` -- the reference's
     /// `runInitTimeJobs()` position at `script.cpp:584`.
@@ -1478,5 +2436,44 @@ mod tests {
         assert!(!Interpreter::is_initialized());
         assert!(!Interpreter::is_finalized());
         Interpreter.fini();
+    }
+
+    /// The export manifest agrees with the live interpreter: the surface it
+    /// marks ported imports and resolves, and its scoping records read true
+    /// against the modules that exist today -- `BigWorld.component` is
+    /// present, the client-only `BigWorld.callback` is not, and `Math` is
+    /// absent entirely because the port has not delivered it yet.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_manifest_matches_the_interpreter() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            assert_eq!(unsafe { manifest::check() }, Ok(()));
+            let _ = interpreter;
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let big_world = unsafe { capi::PyImport_ImportModule(c"BigWorld".as_ptr()) };
+            assert!(!big_world.is_null(), "BigWorld imports");
+            // SAFETY: BigWorld is a live module object.
+            let component =
+                unsafe { capi::PyObject_GetAttrString(big_world, c"component".as_ptr()) };
+            assert!(!component.is_null(), "BigWorld.component is present");
+            // SAFETY: both results are owned references from the calls above.
+            unsafe {
+                capi::dec_ref(component);
+                // `callback` is client-only surface: its absence is the
+                // scoping fact the manifest pins for BW-03-03-03.
+                let callback = capi::PyObject_GetAttrString(big_world, c"callback".as_ptr());
+                assert!(callback.is_null(), "BigWorld.callback is not here");
+                capi::clear_error();
+                capi::dec_ref(big_world);
+            }
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let math = unsafe { capi::PyImport_ImportModule(c"Math".as_ptr()) };
+            // The port has not delivered Math: the module is absent, exactly
+            // what its pending row records.
+            assert!(math.is_null(), "Math is still pending");
+            // SAFETY: a failed import leaves an exception set; clear it.
+            unsafe { capi::clear_error() };
+        });
     }
 }

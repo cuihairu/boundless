@@ -15,13 +15,20 @@
 //! behaviour-level change in the ledger, and this port keeps the globals to
 //! match.
 
+pub mod binding;
 pub mod capi;
+pub mod gil;
 pub mod import_paths;
 pub mod init_time_job;
 pub mod interpreter;
+pub mod keepalive;
+pub mod manifest;
 pub mod output_writer;
 pub mod pyref;
+pub mod sequence;
+pub mod wrapper;
 
+pub use binding::BindError;
 pub use import_paths::ImportPaths;
 pub use init_time_job::{
     JobError, add_fini_time_job, add_fini_time_job_at, add_init_time_job, run_fini_time_jobs,
@@ -29,3 +36,4 @@ pub use init_time_job::{
 };
 pub use interpreter::{InitConfig, InitError, Interpreter};
 pub use output_writer::{HookError, LogSink, ScriptOutputHook, set_log_sink};
+pub use wrapper::WrapError;
