@@ -17,6 +17,7 @@ pub mod flags;
 pub mod lod;
 pub mod member;
 pub mod method;
+pub mod property_change;
 pub mod value;
 pub mod volatile;
 

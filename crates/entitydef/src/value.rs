@@ -639,7 +639,7 @@ impl DataDescription {
 }
 
 /// `DataType::addToStream` for the scalar metas, one `StreamElement` each.
-fn add_to_stream(
+pub(crate) fn add_to_stream(
     kind: &Kind,
     value: &PropertyValue,
     stream: &mut BinaryStream,
@@ -764,7 +764,7 @@ fn add_to_stream(
 }
 
 /// `DataType::createFromStream` for the scalar metas.
-fn create_from_stream(
+pub(crate) fn create_from_stream(
     kind: &Kind,
     stream: &mut BinaryStream,
 ) -> Result<PropertyValue, PropertyError> {

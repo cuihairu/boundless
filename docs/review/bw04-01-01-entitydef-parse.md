@@ -231,3 +231,33 @@
 3. **仍无字节级参考 oracle**（同 BW-04-02-01/02/03 备注 1）：本项「转换及序列化夹具一致」的证据是与参考源码逐句对齐的自钉夹具测试，不是与参考二进制产物的比对。
 4. `data_type.rs` 的 `Kind::MailBox` 基础臂（`stream_size`=12、`client_safety`=CLIENT_UNUSABLE、`add_to_md5("MailBox")`、`build_user_type` 的 `implementedBy` 拆分与两条诊断）为 BW-04-01 系列已交付，本项只新增 `build_type` 尾部的 `<Default>` 拒绝与不落盘。
 5. `value.rs` 残余未覆盖 3 行：`452` 是向量解析器不变式 `unreachable!`（同 BW-04-02-01 备注 3）；`708`/`709` 是变长序列 `write_packed_int` 的 `map_err` 闭包 —— 只在 packed 计数超过 `MAX_PACKED_INT`（16 MiB）时触发（同 BW-04-02-02 备注 3）。
+
+---
+
+# BW-04-02-05 编码嵌套属性增量 — 复核证据
+
+- **任务编号**: BW-04-02-05（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 372；验收：修改一个 FIXED_DICT 子字段时，更新切片的路径和负载与原版逐字节一致）
+- **原版源码**: `lib/entitydef/property_change.cpp` + `.hpp` —— `Flags`（`FLAG_IS_SLICE=1<<0`、`FLAG_IS_NESTED=1<<1`）；`writePathSimple`（`uint8( path_.size() )` 后逐跳 `stream << iter->first`，`ChangePath::value_type` 是 `pair<int32,int32>`）；`SinglePropertyChange::addExtraBits(BinaryOStream&)` = `stream << leafIndex_`（int32）；`SlicePropertyChange::addExtraBits(BinaryOStream&)` = `uint32(start) << uint32(end)`；`addValueToStream` 交叶子（或逐元素）类型的 `addToStream(source, stream, false)`；`addInternalFlags`/`addToInternalStream`（**extra bits 只在嵌套路径上写**——`addSimplePathToStream` 仅当 `isNestedChange()`）；`isNestedChange( bool )` **忽略实参恒置真**（复制粘贴瑕疵）；`SinglePropertyChange::getRootIndex()`=`leafIndex_`、`SlicePropertyChange` 的为 0，`rootIndex()` 按 `isNestedChange()` 二选一。路径构造：`lib/entitydef/data_instances/intermediate_property_owner.cpp:13`（`getTopLevelOwner`：rpTopLevelOwner == 直接父级时索引进 `rootIndex_` **不进 path_**，否则 `addToPath( ownerRef_, getNumOwnedProperties() )`）——故 path 是叶→根且**不含**实体自身属性索引；`lib/entitydef/data_types/fixed_dict_data_instance.cpp:338`（子字段修改用字段位次与字段数构 `changeOwnedProperty`）。信封证据：`server/cellapp/entity.cpp:5749-5754`（ghostedDataUpdate 先写 entity id + `int32( propertyIndex )` 再 `change.addToInternalStream`）；`:5093` 侧 `setPropertyFromInternalStream` 平路分支 `MF_ASSERT( !isSlice )` 证明平路切片不带 start/end。
+- **Boundless 模块**: `crates/entitydef/src/property_change.rs`（新模块：`FLAG_IS_SLICE`/`FLAG_IS_NESTED`；`PropertyChange`（path + is_nested_change + root_index，`ChangeHop` 的 index_length 字段同参考保留）；`SinglePropertyChange::add_to_internal_stream` / `SlicePropertyChange::add_to_internal_stream`）；`crates/entitydef/src/data_type.rs`（新增 `field_type`=`FixedDictDataType::getFieldDataType`/`ClassDataType` 同名、`element_type`=`SequenceDataType::getElemType` 两个访问器）；`crates/entitydef/src/value.rs`（`add_to_stream`/`create_from_stream` 提为 `pub(crate)` 供本模块复用）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**206 单元测试 + 4 差分测试**全部通过（本模块新增 9 测）。
+  - **验收钉**：`a_fixed_dict_subfield_change_is_nested_with_an_empty_path` 钉住 `entity.myDict.ammo = 7`（myDict 为实体第 6 属性、ammo 第 0 字段、字典共 2 字段）的内流字节 `[2, 0, 0,0,0,0, 7]`——flags=2（嵌套非切片）、路径长 0（**实体自身索引 6 进 root_index 不进路径**）、leafIndex int32=0、负载是**字段类型**（UINT8）自己的 `[7]` 而非字典的 `[1,7]`。
+  - **深层路径**：`a_deeper_change_records_the_hops_leaf_to_root` 钉住 `entity.arr[4].dict.ammo = 7` 的 `[2, 1, 4,0,0,0, 0,0,0,0, 7]`——路径长 1、跳点（叶→根）4、leafIndex 0，实体索引仍在信封。
+  - **嵌套切片**：`a_nested_slice_writes_start_end_then_one_payload_per_value` 钉住 `[3, 1, 1,0,0,0, 2,0,0,0, 5,0,0,0, 9, 8]`——flags=3、路径跳点 1、`uint32` start=2 end=5、每个新值一个元素负载。
+  - **平路形态**：`a_flat_change_writes_its_flags_then_payload_only` 钉住平路单值 `[0, 7]`；`a_flat_slice_change_carries_the_slice_flags_only` 钉住平路切片 `[1, 5]`——**无 start/end**（参考平路不写 extra bits，且读侧 `MF_ASSERT( !isSlice )` 证明该形态不会被内部流使用）；`a_flat_slice_of_dicts_streams_each_full_dict` 钉住字典数组切片按字段序整流每个字典 `[1, 7, 1, 'x']`。
+  - **负载走叶子类型**：`the_payload_of_a_single_change_is_the_leaf_types_own_form` 钉住 STRING 子字段的 packed 长度形态 `[2, 0, 0,0,0,0, 2, 'x', 'y']`。
+  - **rootIndex 虚派发**：`the_root_index_follows_the_reference_virtual_dispatch` 钉住平路单值报 leafIndex、平路切片报 0、嵌套报信封索引，与参考 `rootIndex()` 的 `isNestedChange() ? rootIndex_ : getRootIndex()` 一致。
+  - clippy `-D warnings`：entitydef **0 findings**（`crates/resources` 32 条既有 findings 属其他席位 lane，按隔离清单 `-A` 放行）。
+  - rustfmt：`property_change.rs` / `value.rs` / `data_type.rs` / `lib.rs` 干净（仅本次触碰文件）。
+  - 覆盖率：全部文件 **≥98%**（`property_change.rs` 100% 行、`value.rs` 99.08% 残 3 行同前备注）。
+- **证据链接**: `crates/entitydef/src/property_change.rs`（实现与全部单测）、`crates/entitydef/src/data_type.rs`（`field_type`/`element_type`）、`crates/entitydef/src/value.rs`（`pub(crate)` 复用）。
+- **状态**: 已交付（源码级对齐 + 内流字节/路径序/信封分离锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **仍无字节级参考 oracle**（同前四项备注）：process_defs 不遍历属性变更流；本项「逐字节一致」是**与参考源码逐句推出的内流形态一致的自钉测试**，不是与参考二进制产物的比对。
+2. **外部（客户端）位压缩形态未移植**：`addCompressedPathToStream`/`addExtraBits(BitWriter&)` 需要 `BitWriter`/`BitReader`（`bitsRequired`），属 `client-server` 属性消息路径，本项只交付内流（服务器间）形态；`ChangeHop.index_length` 与 `leaf_size`/`original_leaf_size` 字段已按参考保留并在测试中钉住，供后续外部形态使用。
+3. **信封不在本模块**：实体 id 与顶层属性索引（`ghostedDataUpdate` 的 `bundle << id; bundle << int32(propertyIndex)`）属消息层，`PropertyChange` 自身不含之，与参考 `rootIndex()` 只被调用方读取一致。
+4. **`isNestedChange( bool )` 忽略实参**与**路径长 >255 静默截 uint8**两个参考形态均逐字保留（后者的前提：单条变更路径长度受限于定义深度，255 不可达）。
+5. `changeOwnedProperty` 的 `canIgnoreAssignment`/`hasChanged`（同值短路）依赖 Python 宿主的 ScriptObject 比较，本模型由调用方用 `PropertyValue` 相等性自行短路，编码器不重复判断——与参考分层一致（编码发生在 `onOwnedPropertyChanged` 之后）。

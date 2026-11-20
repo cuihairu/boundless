@@ -372,6 +372,27 @@ impl DataType {
     }
 
     /// The kind payload, for structural inspection.
+    /// `FixedDictDataType::getFieldDataType` (and `ClassDataType`'s twin):
+    /// the type of one field, `None` when out of range or not a composite
+    /// with named fields.
+    pub fn field_type(&self, index: usize) -> Option<&DataType> {
+        match self.kind() {
+            Kind::FixedDict { fields, .. } | Kind::Class { fields, .. } => {
+                fields.get(index).map(|field| field.type_.as_ref())
+            }
+            _ => None,
+        }
+    }
+
+    /// `SequenceDataType::getElemType`: the element type, `None` when not a
+    /// sequence.
+    pub fn element_type(&self) -> Option<&DataType> {
+        match self.kind() {
+            Kind::Sequence { element, .. } => Some(element.as_ref()),
+            _ => None,
+        }
+    }
+
     pub fn kind(&self) -> &Kind {
         &self.kind
     }
