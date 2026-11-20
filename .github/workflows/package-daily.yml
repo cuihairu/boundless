@@ -232,3 +232,69 @@ jobs:
           path: ci-results/
           retention-days: 14
           if-no-files-found: warn
+
+  # BW-22-04-04 — the VSIX face of the daily packaging: compile fresh,
+  # package with the extension's own vsce, verify, and install-smoke the
+  # installed core. The .vsix lands in its own artifact.
+  vsix-archive:
+    name: VSIX package
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check for commits in the last 48 hours
+        id: freshness
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          count="$(git rev-list --count --since='48 hours' HEAD)"
+          echo "commits in last 48h: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "stale=true" >>"$GITHUB_OUTPUT"
+            echo "No commits in the last 48 hours — skipping this daily package."
+          else
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Node
+        if: steps.freshness.outputs.stale != 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: pnpm
+        if: steps.freshness.outputs.stale != 'true'
+        run: npm install --no-fund --no-audit --global pnpm@12
+
+      - name: Package the extension
+        if: steps.freshness.outputs.stale != 'true'
+        run: ci/vsix.sh
+
+      - name: Upload the vsix
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: package-vsix-${{ github.run_id }}
+          path: ci-out/vsix/*.vsix
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-package-daily-vsix-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn

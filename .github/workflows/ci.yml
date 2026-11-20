@@ -762,6 +762,54 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-04-04 — the VSIX lane: compile the extension fresh, package it
+  # with its own vsce, verify the archive's integrity (manifest, package,
+  # main entry, versions agreeing) and prove the installed core loads from
+  # a clean host. The editor leg reports SKIP until BW-20-03-03 lands
+  # @vscode/test-electron.
+  vsix:
+    name: VSIX package and clean-host install
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'vsix')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: pnpm
+        run: npm install --no-fund --no-audit --global pnpm@12
+
+      - name: Package the extension
+        run: ci/vsix.sh
+
+      - name: Upload the vsix
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: vsix-${{ github.run_id }}
+          path: ci-out/vsix/*.vsix
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-vsix-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -811,6 +859,7 @@ jobs:
           ci/package.sh self-test
           ci/docs-package.sh self-test
           ci/sdk-archive.sh self-test
+          ci/vsix.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results
