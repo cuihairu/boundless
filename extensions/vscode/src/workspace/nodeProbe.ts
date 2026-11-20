@@ -4,12 +4,13 @@
  * platform dependency.
  */
 
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 
 import { FilesystemProbe } from "./resourceRoot";
+import { NavigationProbe } from "./navigation";
 
-/** A probe over the real filesystem. */
-export function nodeProbe(): FilesystemProbe {
+/** A probe over the real filesystem, for both discovery and navigation. */
+export function nodeProbe(): FilesystemProbe & NavigationProbe {
   return {
     isFile(path) {
       try {
@@ -22,6 +23,13 @@ export function nodeProbe(): FilesystemProbe {
       try {
         const entries = readdirSync(path, { withFileTypes: true });
         return entries.map((e) => e.name);
+      } catch {
+        return null;
+      }
+    },
+    read(path) {
+      try {
+        return readFileSync(path, "utf8");
       } catch {
         return null;
       }

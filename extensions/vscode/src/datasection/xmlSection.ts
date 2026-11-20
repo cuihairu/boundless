@@ -285,7 +285,7 @@ class Parser {
       nameEnd++;
     }
     const name = decode(tagText, 0, nameEnd);
-    const nameOffset = tagStart + 1;
+    const nameOffset = tagStart;
     const children: DataSection[] = [];
     this.parseAttributes(children, tagText.subarray(nameEnd), nameOffset + nameEnd);
 
