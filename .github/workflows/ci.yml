@@ -1,0 +1,297 @@
+name: CI
+
+# Per-push / per-PR gate for Boundless.
+#
+# Everything here is a call into a ci/ entrypoint, so a developer's terminal
+# and this workflow exercise the same code path (todo.md BW-22-01-02). The
+# `changes` job picks the lanes from the changed paths (BW-22-01-05): a
+# markdown-only push never touches the Rust toolchain, and a push that only
+# touches ci/ proves the harness still bites instead of gating the engine.
+#
+# Rust gates are scoped to the crates the change touches. A crate's own
+# lane stays responsible for its own formatting and lint; a change to the
+# workspace manifest widens build and test to the whole graph instead.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Select lanes from the changed paths
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    outputs:
+      lanes: ${{ steps.plan.outputs.lanes }}
+      rust_packages: ${{ steps.plan.outputs.rust_packages }}
+      rust_all: ${{ steps.plan.outputs.rust_all }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # The base diff needs history, and a scheduled rebuild of an old
+          # ref needs the same checkout to reproduce.
+          fetch-depth: 0
+
+      - name: Plan
+        id: plan
+        env:
+          GH_BASE: ${{ github.base_ref }}
+        run: |
+          base="${GH_BASE:-main}"
+          ci/changes.sh --machine "origin/$base" HEAD >>"$GITHUB_OUTPUT"
+
+  toolchain:
+    name: Toolchain pin and lockfile
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'toolchain')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust (pinned by rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # No toolchain input: read rust-toolchain.toml, which is the pin
+          # under test. Caching is off here deliberately — this job's whole
+          # point is that the checkout resolves 1.100.0.
+          cache: false
+
+      - name: Verify
+        run: ci/toolchain-check.sh --offline
+
+      - name: Upload results
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-out-toolchain-${{ github.run_id }}
+          path: ci-out/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  rust-static:
+    name: Rust format and lint (${{ needs.changes.outputs.rust_packages || 'workspace-wide' }})
+    needs: changes
+    if: >-
+      contains(needs.changes.outputs.lanes, 'rust') &&
+      (needs.changes.outputs.rust_packages != '' || needs.changes.outputs.rust_all == '1')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Format and lint
+        run: |
+          scope="${{ needs.changes.outputs.rust_packages }}"
+          if [ -n "$scope" ]; then
+            ci/check-rust.sh all --packages "$scope"
+          else
+            # Nothing in the crate sources moved, but the manifest may have,
+            # so formatting and linting stay skipped here and build/test below
+            # run the whole graph.
+            ci/check-rust.sh all --packages ""
+          fi
+
+      - name: Upload results
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-out-rust-static-${{ github.run_id }}
+          path: ci-out/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  rust-build-test:
+    name: Rust build and test (${{ needs.changes.outputs.rust_packages || 'workspace' }})
+    needs: changes
+    if: >-
+      contains(needs.changes.outputs.lanes, 'rust') &&
+      (needs.changes.outputs.rust_packages != '' || needs.changes.outputs.rust_all == '1')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Build and test
+        run: |
+          scope="${{ needs.changes.outputs.rust_packages }}"
+          if [ -n "$scope" ]; then
+            ci/check-rust.sh build --packages "$scope"
+            ci/check-rust.sh test --packages "$scope"
+          else
+            ci/check-rust.sh build
+            ci/check-rust.sh test
+          fi
+
+      - name: Upload results
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-out-rust-build-test-${{ github.run_id }}
+          path: ci-out/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  python:
+    name: Python checks
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'python')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # Only worth installing once tests/python exists (BW-18).
+      - name: Install pytest when there is Python to gate
+        if: hashFiles('tests/python/**/*.py', 'scripts/**/*.py') != ''
+        run: pip install pytest
+
+      - name: Check
+        run: ci/check-python.sh
+
+      - name: Upload results
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-out-python-${{ github.run_id }}
+          path: ci-out/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  typescript:
+    name: TypeScript checks
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'typescript')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Check
+        run: ci/check-typescript.sh
+
+      - name: Upload results
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-out-typescript-${{ github.run_id }}
+          path: ci-out/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  docs:
+    name: Documentation site and links
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'docs')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Restore package cache
+        uses: actions/cache@v6.1.0
+        if: hashFiles('package.json', 'package-lock.json') != ''
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      - name: Install and build the site
+        if: hashFiles('package.json') != ''
+        run: |
+          npm ci
+          ci/check-docs.sh
+
+      - name: Check
+        if: hashFiles('package.json') == ''
+        run: ci/check-docs.sh
+
+      - name: Upload results
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-out-docs-${{ github.run_id }}
+          path: ci-out/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Runs whenever ci/ itself moves: each lane must still be able to go red on
+  # a planted defect. This is the guard against a gate that quietly stops
+  # meaning anything.
+  harness:
+    name: Harness self-tests
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'ci')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install the lanes' dependencies
+        run: |
+          pip install pytest
+          npm install --no-fund --no-audit --global typescript@5
+
+      - name: Prove every lane bites
+        run: |
+          ci/check-rust.sh self-test
+          ci/check-python.sh self-test
+          ci/check-typescript.sh self-test
+          ci/check-docs.sh self-test
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-out-harness-${{ github.run_id }}
+          path: ci-out/
+          retention-days: 14
+          if-no-files-found: ignore

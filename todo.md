@@ -1541,7 +1541,11 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
   - 新版：`ci/check-typescript.sh {all|self-test}` 遍历树内每个 `tsconfig*.json`（tracked 与未提交都扫，按 basename 过滤而非 git pathspec——`tsconfig*.json` 作 pathspec 匹配不到嵌套路径），逐个 `tsc --noEmit -p` 并跑该包自带 `test` 脚本；CI 作业 `typescript` 调同一入口。
   - 结果：当前仓无 tsconfig，`ts-typecheck` / `ts-test` 均 SKIP 并注明由 extensions/vscode（BW-20）或 docs/（BW-19）开启；注入 `extensions/vscode/{tsconfig.json,src/bad.ts}` 后 `ts-typecheck` FAIL 定位 `extensions/vscode/src/bad.ts(2, 5): error TS2322`、无 test 脚本则 `ts-test` SKIP；删掉 bad.ts 即转 PASS；include 匹配不到文件时（TS18003，无行列坐标）改为报 `error TS18003: No inputs were found in config file '…/tsconfig.json'`，不再是空白 detail。
   - 证据：`ci-out/manifest.tsv` 上述三行 + `logs/ts-typecheck-extensions/vscode.log`；`ci/check-typescript.sh self-test` 2 项全 PASS（定位 `src/bad.ts(2,5): error TS2322`、clean 项目放行）。
-- [ ] **BW-22-01-05 配置变更路径条件**。**验收** 文档和代码改动触发对应作业。
+- [x] **BW-22-01-05 配置变更路径条件**。**验收** 文档和代码改动触发对应作业。
+  - 原版：BigWorld `.github/workflows/ci.yml` 与 `daily-build.yml` 全量作业无条件触发，不按改动路径选择检查。
+  - 新版：`ci/changes.sh {--machine} [base] [head]` 把改动路径映射为 lanes {ci,toolchain,rust,python,typescript,docs}：`ci/` 与 `.github/workflows/` 触发全部 lane（harness 自检随之跑）；根 `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml` 置 `rust_all=1`；crate 改动按各自 Cargo.toml 的 package name 归入 `rust_packages`（`apps/server` 解析为 `boundless-server`）；markdown/docs → docs。`.github/workflows/ci.yml` 每个作业用 `contains(lanes, …)` + `rust_packages`/`rust_all` 门控，`harness` 作业在 `ci/` 变更时跑全部四条 self-test。
+  - 结果：scratch 仓 11 例全对——markdown→docs、`tests/python`→python、tsconfig→typescript、crate→`rust_packages=foundation`、无 manifest 的 crate→`rust_all=1` 兜底（否则两个 rust 作业会静默跳过，此为本次修掉的缺陷）、根 Cargo.toml→graph-wide、`ci/`→全 lane、crate+docs 混合→`rust,docs` + `boundless-resources`、两个 crate→`foundation,boundless-resources`、clean→仅 toolchain；死链 FAIL detail 由「1 dead」改为直接给出 `index.md -> no-such-page.md`。本地等价 7 作业序列 exit=0，manifest 23 行 0 FAIL。
+  - 证据：`ci-out/changes.tsv` + 上表 11 例 + `ci-out/manifest.tsv`（toolchain PASS、rust/python/ts/docs 各 SKIP 并注明开启项、四组 selftest 全 PASS）；作业定义见 `.github/workflows/ci.yml`（run 号见下方交付汇总）。
 
 #### BW-22-02 测试矩阵与服务装配
 
