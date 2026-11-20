@@ -31,6 +31,32 @@ export function pythonAttachConfig(
   };
 }
 
+/** The debugger that can launch a Rust binary on this platform. */
+export function rustDebugger(
+  platform: string = process.platform,
+): string {
+  return platform === "win32" ? "cppvsdbg" : "lldb";
+}
+
+/** A launch configuration that runs one role under the debugger. */
+export function rustLaunchConfig(
+  role: string,
+  options: { platform?: string; program?: string; resPath?: string } = {},
+): Record<string, unknown> {
+  const program = options.program ?? "${workspaceFolder}/target/debug/boundless-server";
+  const resPath = options.resPath ?? "${workspaceFolder}/res";
+  return {
+    name: `Boundless: Launch ${role}`,
+    type: rustDebugger(options.platform),
+    request: "launch",
+    program,
+    args: [role],
+    cwd: "${workspaceFolder}",
+    env: { BW_RES_PATH: resPath },
+    stopAtEntry: false,
+  };
+}
+
 /** Inserts our configurations into an existing `launch.json` text. */
 export function mergeLaunchJson(
   existing: string | null,

@@ -5,6 +5,8 @@ import {
   hasConfiguration,
   mergeLaunchJson,
   pythonAttachConfig,
+  rustDebugger,
+  rustLaunchConfig,
 } from "../src/workspace/launchConfig";
 
 describe("python attach configuration", () => {
@@ -91,5 +93,47 @@ describe("merging launch.json", () => {
     expect(hasConfiguration(text, "Boundless: Attach to baseapp")).toBe(true);
     expect(hasConfiguration(text, "Boundless: Attach to cellapp")).toBe(false);
     expect(hasConfiguration(null, "anything")).toBe(false);
+  });
+});
+
+describe("rust launch configuration", () => {
+  it("launches the role binary under the platform debugger", () => {
+    expect(rustLaunchConfig("cellapp", { platform: "linux" })).toEqual({
+      name: "Boundless: Launch cellapp",
+      type: "lldb",
+      request: "launch",
+      program: "${workspaceFolder}/target/debug/boundless-server",
+      args: ["cellapp"],
+      cwd: "${workspaceFolder}",
+      env: { BW_RES_PATH: "${workspaceFolder}/res" },
+      stopAtEntry: false,
+    });
+  });
+
+  it("uses the MSVC debugger on Windows", () => {
+    expect(rustDebugger("win32")).toBe("cppvsdbg");
+    expect(rustDebugger("linux")).toBe("lldb");
+    expect(rustDebugger("darwin")).toBe("lldb");
+  });
+
+  it("lets the program and res path be overridden", () => {
+    const config = rustLaunchConfig("baseapp", {
+      program: "/opt/boundless/server",
+      resPath: "/game/res",
+    });
+    expect(config.program).toBe("/opt/boundless/server");
+    expect(config.env).toEqual({ BW_RES_PATH: "/game/res" });
+  });
+
+  it("merges into launch.json alongside the attach configurations", () => {
+    const text = mergeLaunchJson(null, [
+      pythonAttachConfig("baseapp"),
+      rustLaunchConfig("cellapp", { platform: "linux" }),
+    ]);
+    const parsed = JSON.parse(text);
+    expect(parsed.configurations.map((c: { name: string }) => c.name)).toEqual([
+      "Boundless: Attach to baseapp",
+      "Boundless: Launch cellapp",
+    ]);
   });
 });

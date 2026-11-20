@@ -61,6 +61,11 @@
         "command": "boundless.setupPythonDebug",
         "title": "Boundless: Set Up Python Debug Configurations",
         "category": "Boundless"
+      },
+      {
+        "command": "boundless.setupRustDebug",
+        "title": "Boundless: Set Up Rust Launch Configurations",
+        "category": "Boundless"
       }
     ],
     "languages": [
@@ -101,8 +106,8 @@
       "properties": {
         "boundless.cluster.binary": {
           "type": "string",
-          "default": "target/debug/server",
-          "description": "Role binary to launch, relative to the workspace folder holding the resource root (target/debug/server)."
+          "default": "target/debug/boundless-server",
+          "description": "Role binary to launch, relative to the workspace folder holding the resource root (target/debug/boundless-server after cargo build)."
         },
         "boundless.cluster.roles": {
           "type": "array",

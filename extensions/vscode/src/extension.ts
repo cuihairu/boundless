@@ -23,7 +23,11 @@ import {
 import { processRunner } from "./workspace/processRunner";
 import { formatOutcome } from "./workspace/jobs";
 import { nodeJobRunner } from "./workspace/jobRunner";
-import { mergeLaunchJson, pythonAttachConfig } from "./workspace/launchConfig";
+import {
+  mergeLaunchJson,
+  pythonAttachConfig,
+  rustLaunchConfig,
+} from "./workspace/launchConfig";
 import { AliasRegistry } from "./def/registry";
 import { ScriptRole, scriptPath } from "./workspace/resourceRoot";
 import {
@@ -51,7 +55,7 @@ function firstRoot(): ResourceRoot | undefined {
 /** How to launch a role, from the resource root and the settings. */
 function clusterConfig(root: ResourceRoot): ClusterConfig {
   const settings = vscode.workspace.getConfiguration("boundless.cluster");
-  const binary = settings.get<string>("binary", "target/debug/server");
+  const binary = settings.get<string>("binary", "target/debug/boundless-server");
   return {
     binary: isAbsolute(binary) ? binary : join(root.folder, binary),
     resRoot: root.resRoot,
@@ -208,6 +212,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("boundless.setupPythonDebug", () =>
       setupPythonDebug(),
     ),
+    vscode.commands.registerCommand("boundless.setupRustDebug", () =>
+      setupRustDebug(),
+    ),
   );
 
   /** Adds the Python attach configurations to every workspace folder's
@@ -216,6 +223,28 @@ export function activate(context: vscode.ExtensionContext): void {
     const settings = vscode.workspace.getConfiguration("boundless.cluster");
     const roles = settings.get<string[]>("launchRoles", configuredRoles());
     const configs = roles.map((role) => pythonAttachConfig(role));
+    writeLaunchConfigurations(configs);
+  }
+
+  /** Adds the Rust launch configurations (one per configured role). */
+  function setupRustDebug(): void {
+    const settings = vscode.workspace.getConfiguration("boundless.cluster");
+    const roles = settings.get<string[]>("launchRoles", configuredRoles());
+    const program = settings.get<string>("binary", "target/debug/boundless-server");
+    const configs = roles.map((role) =>
+      rustLaunchConfig(role, {
+        program: isAbsolute(program)
+          ? program
+          : `\${workspaceFolder}/${program}`,
+      }),
+    );
+    writeLaunchConfigurations(configs);
+  }
+
+  /** Merges configurations into every workspace folder's `launch.json`. */
+  function writeLaunchConfigurations(
+    configs: Record<string, unknown>[],
+  ): void {
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       const file = join(folder.uri.fsPath, ".vscode", "launch.json");
       const existing = nodeProbe().read(file);
