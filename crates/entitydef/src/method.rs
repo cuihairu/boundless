@@ -660,7 +660,7 @@ impl MethodDescription {
 // ---------------------------------------------------------------------------
 
 /// The per-entity-type method table (`EntityMethodDescriptions`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EntityMethodDescriptions {
     internal_methods: Vec<MethodDescription>,
     /// name -> index into `internal_methods`.
@@ -669,6 +669,18 @@ pub struct EntityMethodDescriptions {
     /// `set_exposed_msg_ids` sorts them.
     exposed_methods: Vec<usize>,
     max_exposed_method_count: i32,
+}
+
+impl Default for EntityMethodDescriptions {
+    /// `maxExposedMethodCount_( -1 )`: unset until `set_exposed_msg_ids`.
+    fn default() -> Self {
+        Self {
+            internal_methods: Vec::new(),
+            map: HashMap::new(),
+            exposed_methods: Vec::new(),
+            max_exposed_method_count: -1,
+        }
+    }
 }
 
 impl EntityMethodDescriptions {
@@ -844,6 +856,29 @@ impl EntityMethodDescriptions {
         self.exposed_methods
             .get(index)
             .map(|&iindex| &self.internal_methods[iindex])
+    }
+
+    /// `exposedMethodFromMsgID( msgID, data, range )`: the incoming-call
+    /// gate — a remote call resolves through the exposed table only.
+    /// `sub_index` stands in for the sub-id byte the reference reads off the
+    /// data stream. `None` rejects the call: ids that map past this table,
+    /// and calls arriving before `set_exposed_msg_ids` (the reference
+    /// `MF_ASSERT`s on that ordering; its out-of-range case reports
+    /// `ERROR_MSG` with NULL, both collapse to `None` here).
+    pub fn exposed_method_from_msg_id(
+        &self,
+        msg_id: i32,
+        sub_index: u8,
+        range: &ExposedMethodMessageRange,
+    ) -> Option<&MethodDescription> {
+        if self.max_exposed_method_count == -1 {
+            return None;
+        }
+        let exposed_id =
+            range.exposed_id_from_msg_id(msg_id, sub_index, self.max_exposed_method_count);
+        usize::try_from(exposed_id)
+            .ok()
+            .and_then(|index| self.exposed_method(index))
     }
 
     /// The number of exposed methods.
@@ -1257,6 +1292,63 @@ mod tests {
         assert_eq!(methods.exposed_method(2).expect("id 2").name(), "var");
 
         assert_eq!(methods.exposed_method(0).expect("id 0").exposed_index(), 0);
+    }
+
+    #[test]
+    fn a_client_can_only_reach_the_exposed_methods() {
+        // The incoming-call gate: an exposed id resolves through the exposed
+        // table only — a method without `<Exposed>` stays internal-only, and
+        // ids outside the table refuse the call.
+        let ctx = ctx();
+        let methods_xml = parse_xml(
+            "<root> \
+                 <ping> <Exposed> </Exposed> </ping> \
+                 <secret> <Arg> INT32 </Arg> </secret> \
+                 <shout> <Exposed> </Exposed> </shout> \
+             </root>",
+        );
+
+        let mut methods = EntityMethodDescriptions::new();
+        let mut diag = Diagnostics::new();
+        assert!(methods.init(
+            Some(&methods_xml),
+            Component::Base,
+            "Avatar",
+            "",
+            None,
+            &ctx,
+            &mut diag
+        ));
+
+        // Before `set_exposed_msg_ids` nothing resolves at all — the
+        // reference `MF_ASSERT`s on that ordering.
+        let range = ExposedMethodMessageRange::new(100, 130);
+        assert!(methods.exposed_method_from_msg_id(100, 0, &range).is_none());
+
+        let mut diag = Diagnostics::new();
+        methods.set_exposed_msg_ids(2, Some(&range), &mut diag);
+
+        assert_eq!(methods.num_exposed(), 2);
+        for index in 0..methods.num_exposed() {
+            assert_ne!(
+                methods.exposed_method(index).map(|m| m.name()),
+                Some("secret")
+            );
+        }
+        assert!(methods.exposed_method(2).is_none());
+
+        // The ids the table handed out round-trip back to their methods.
+        for exposed_id in 0..2i32 {
+            let (msg_id, sub_id) = range.msg_id_from_exposed_id(exposed_id, 2);
+            let resolved = methods
+                .exposed_method_from_msg_id(i32::from(msg_id), sub_id as u8, &range)
+                .expect("exposed id resolves");
+            assert_eq!(resolved.exposed_index(), exposed_id);
+            assert_ne!(resolved.name(), "secret");
+        }
+
+        // A message id that maps past the last exposed id refuses the call.
+        assert!(methods.exposed_method_from_msg_id(200, 0, &range).is_none());
     }
 
     #[test]

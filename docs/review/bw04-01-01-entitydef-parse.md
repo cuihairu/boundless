@@ -318,3 +318,26 @@
 3. **`SequenceDataType` 的 `dbLen() > 0` 持久短路**（`sequence_data_type.cpp:59/243`：持久模式下序列以 `<DatabaseLength>` 定长截断/补齐）未建模——Rust 序列流形态无 dbLen 概念，登记待后续项；本项序列臂只透传旗标。
 4. **`ClassDataType::getStreamElement` 也收 `isPersistentOnly`**（`class_data_type.cpp:510`），但 Rust 流形态没有 CLASS 臂（`PropertyError::Unsupported`），该映射未建模，登记在案。
 5. **`readBool` 解析域**：参考 `DataSection::readBool`，Rust `as_bool` 只认大小写不敏感 true/false；夹具按此用 `<Persistent> false </Persistent>`。若参考对 `0/1/yes/no` 亦有解析（各 DataSection 实现而异），归 `crates/resources` 域，不在本席 lane 内改。
+
+---
+
+# BW-04-03-01 实现 exposed 方法可见性 — 复核证据
+
+- **任务编号**: BW-04-03-01（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 380；验收：客户端只能调用允许方法）
+- **原版源码**: `lib/entitydef/entity_method_descriptions.cpp/.hpp` —— 构造器 `maxExposedMethodCount_( -1 )`（未跑过 `setExposedMsgIDs` 前不可解析）；`init` 里 `isExposed()` 者进 `exposedMethods_`（内索引表），`exposedMethod( index )` 越界打印 `"Attempted to call exposed method id %u when only %zu methods are exposed\n"` 返回 NULL；`exposedMethodFromMsgID( msgID, data, range )` = `MF_ASSERT( maxExposedMethodCount_ != -1 )` → `range.exposedIDFromMsgID` → `exposedMethod( exposedID )`，且 `MF_ASSERT( pMethodDesc == NULL || component() != CLIENT )`（该变体只服务 BASE/CELL 入站，CLIENT 用 `exposedMethod` 直取）。暴露位语义（`method_description.hpp:176-199`）与 `exposedMethods_` 收集、按 streamSize 排序（固定尺寸在前）已在 BW-04-01 系列交付。
+- **Boundless 模块**: `crates/entitydef/src/method.rs`（新增 `EntityMethodDescriptions::exposed_method_from_msg_id(msg_id, sub_index, range)`；**修复**：`EntityMethodDescriptions` 由 `#[derive(Default)]`（`max_exposed_method_count` 误为 0）改为手写 `Default`，`-1` 对齐参考构造器）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**226 单元测试 + 4 差分测试**全部通过（本项新增 1 测）。
+  - **验收钉**：`a_client_can_only_reach_the_exposed_methods` 钉住含 `<Exposed>` 的 ping/shout 与未暴露的 secret 三方法实体表——`num_exposed()==2`、每个暴露位次解析出的方法都**不是** secret、位次 2 拒绝；`set_exposed_msg_ids` 发出去的 msg id 经 `exposed_method_from_msg_id` 往返还原同方法（`exposed_index` 一致）；映射到表外的 msg id（200）拒绝；**赋号前**任何 msg id 都拒绝（构造态 `-1`）。
+  - **本项连带修复一个潜在错误**：原 `#[derive(Default)]` 使未赋号状态的 `max_exposed_method_count` 为 0，而参考构造器是 `-1`——红测先抓住该差异再修复（TDD red→green）。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt 干净；覆盖率全部文件 **≥98%**（method.rs 1118/1122 = 99.64%）。
+- **证据链接**: `crates/entitydef/src/method.rs`（`exposed_method_from_msg_id`、手写 `Default`、验收测）。
+- **状态**: 已交付（源码级对齐 + 可达性/往返/拒绝锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **参考双形态收敛为 `None`**：越界 `exposedMethod` 打印 ERROR_MSG 返回 NULL、未赋号 `MF_ASSERT` 在 debug 构建中止——Rust 统一为 `None` 拒绝，登记在案。
+2. **`component() != CLIENT` 的 `MF_ASSERT` 是调用方使用约束**（该变体只服务 BASE/CELL 入站调用，CLIENT 侧用 `exposedMethod` 直取），不是解析逻辑；Rust 解析器不加组件门，登记为使用约定。
+3. **`sub_index` 形参替代流读**：参考从 `data` 流读子 id 字节，Rust 由调用方传字节（与 BW-04-01 已交付的 `exposed_id_from_msg_id(msg_id, sub_index, num_exposed)` 同构），流读取属消息层。
+4. 无字节级 oracle（同前项备注）：process_defs 不走入站调用解析；证据为源码级对齐 + 自钉测试。
