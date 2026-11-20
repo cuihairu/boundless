@@ -1383,6 +1383,219 @@ mod tests {
         assert_eq!(desc.cell.size(), 1, "interface cell methods merge in");
     }
 
+    /// BW-04-01-02: a parent method redeclared with another signature is a
+    /// conflict, not a second method.
+    #[test]
+    fn a_conflicting_parent_method_fails_the_child() {
+        let resolver = MemoryResolver::new(&[
+            (
+                RES,
+                "<root> \
+                     <ClientServerEntities> <Child/> </ClientServerEntities> \
+                     <ServerOnlyEntities/> \
+                 </root>",
+            ),
+            (
+                &format!("{DEFS}/Parent.def"),
+                "<root> <CellMethods> \
+                         <jump> <Arg> INT32 </Arg> <Exposed> </Exposed> </jump> \
+                     </CellMethods> </root>",
+            ),
+            (
+                &format!("{DEFS}/Child.def"),
+                "<root> <Parent> Parent </Parent> <CellMethods> \
+                         <jump> <Arg> STRING </Arg> <Exposed> </Exposed> </jump> \
+                     </CellMethods> </root>",
+            ),
+            ("scripts/base/Child.py", "# base script"),
+            ("scripts/base/Parent.py", "# base script"),
+        ]);
+
+        let mut desc = EntityDescription::new();
+        let mut diag = Diagnostics::new();
+        assert!(!desc.parse(
+            "Child",
+            "",
+            Some(&HasScriptDecider::with_client_script(&resolver, true)),
+            &resolver,
+            &ctx(),
+            &mut diag
+        ));
+        assert!(
+            diag.errors()
+                .iter()
+                .any(|m| m.contains("Method 'jump' already defined with a different signature"))
+        );
+    }
+
+    /// The same method through an `<Implements>` interface conflicts the same
+    /// way.
+    #[test]
+    fn an_interface_method_conflicts_with_the_entity_method() {
+        let resolver = MemoryResolver::new(&[
+            (
+                RES,
+                "<root> <ClientServerEntities> <Knight/> </ClientServerEntities> \
+                     <ServerOnlyEntities/> </root>",
+            ),
+            (
+                &format!("{DEFS}/interfaces/Combat.def"),
+                "<root> <BaseMethods> <shout> <Arg> INT32 </Arg> <Exposed> </Exposed> </shout> \
+                     </BaseMethods> </root>",
+            ),
+            (
+                &format!("{DEFS}/Knight.def"),
+                "<root> \
+                     <Implements> <Interface> Combat </Interface> </Implements> \
+                     <BaseMethods> <shout> <Exposed> </Exposed> </shout> </BaseMethods> \
+                 </root>",
+            ),
+            ("scripts/base/Knight.py", "# base script"),
+        ]);
+
+        let mut desc = EntityDescription::new();
+        let mut diag = Diagnostics::new();
+        assert!(!desc.parse(
+            "Knight",
+            "",
+            Some(&HasScriptDecider::with_client_script(&resolver, true)),
+            &resolver,
+            &ctx(),
+            &mut diag
+        ));
+        assert!(
+            diag.errors()
+                .iter()
+                .any(|m| m.contains("Method 'shout' already defined with a different signature"))
+        );
+    }
+
+    /// Volatile priorities are sticky: a child keeps its parent's values
+    /// unless it declares its own.
+    #[test]
+    fn volatile_priorities_inherit_from_the_parent() {
+        let resolver = MemoryResolver::new(&[
+            (
+                RES,
+                "<root> \
+                     <ClientServerEntities> <Child/> </ClientServerEntities> \
+                     <ServerOnlyEntities/> \
+                 </root>",
+            ),
+            (
+                &format!("{DEFS}/Parent.def"),
+                "<root> <Volatile> <position> 10 </position> </Volatile> </root>",
+            ),
+            (
+                &format!("{DEFS}/Child.def"),
+                "<root> <Parent> Parent </Parent> </root>",
+            ),
+            ("scripts/base/Child.py", "# base script"),
+            ("scripts/base/Parent.py", "# base script"),
+        ]);
+
+        let mut desc = EntityDescription::new();
+        let mut diag = Diagnostics::new();
+        assert!(
+            desc.parse(
+                "Child",
+                "",
+                Some(&HasScriptDecider::with_client_script(&resolver, true)),
+                &resolver,
+                &ctx(),
+                &mut diag
+            ),
+            "{:?}",
+            diag.messages()
+        );
+        // The parent's 10 is squared by the priority rule and inherited.
+        assert_eq!(desc.volatile_info.position_priority(), 100.0);
+
+        // An explicit child section replaces the inherited values.
+        let mut resolver = resolver;
+        resolver.files.insert(
+            format!("{DEFS}/Child.def"),
+            "<root> <Parent> Parent </Parent> <Volatile> <position> 3 </position> \
+             </Volatile> </root>"
+                .as_bytes()
+                .to_vec(),
+        );
+        let mut desc = EntityDescription::new();
+        let mut diag = Diagnostics::new();
+        assert!(
+            desc.parse(
+                "Child",
+                "",
+                Some(&HasScriptDecider::with_client_script(&resolver, true)),
+                &resolver,
+                &ctx(),
+                &mut diag
+            ),
+            "{:?}",
+            diag.messages()
+        );
+        assert_eq!(desc.volatile_info.position_priority(), 9.0);
+    }
+
+    /// Interfaces can themselves implement interfaces: members arrive in
+    /// declaration order, deepest first.
+    #[test]
+    fn interface_chains_merge_deep_first() {
+        let resolver = MemoryResolver::new(&[
+            (
+                RES,
+                "<root> <ClientServerEntities> <Knight/> </ClientServerEntities> \
+                     <ServerOnlyEntities/> </root>",
+            ),
+            (
+                &format!("{DEFS}/interfaces/Base.def"),
+                "<root> <Properties> \
+                         <stance> <Type> INT32 </Type> <Flags> ALL_CLIENTS </Flags> </stance> \
+                     </Properties> </root>",
+            ),
+            (
+                &format!("{DEFS}/interfaces/Combat.def"),
+                "<root> <Implements> <Interface> Base </Interface> </Implements> \
+                     <Properties> \
+                         <attack> <Type> INT32 </Type> <Flags> ALL_CLIENTS </Flags> </attack> \
+                     </Properties> </root>",
+            ),
+            (
+                &format!("{DEFS}/Knight.def"),
+                "<root> <Implements> <Interface> Combat </Interface> </Implements> \
+                     <Properties> \
+                         <armour> <Type> INT32 </Type> <Flags> ALL_CLIENTS </Flags> </armour> \
+                     </Properties> </root>",
+            ),
+            ("scripts/base/Knight.py", "# base script"),
+        ]);
+
+        let mut desc = EntityDescription::new();
+        let mut diag = Diagnostics::new();
+        assert!(
+            desc.parse(
+                "Knight",
+                "",
+                Some(&HasScriptDecider::with_client_script(&resolver, true)),
+                &resolver,
+                &ctx(),
+                &mut diag
+            ),
+            "{:?}",
+            diag.messages()
+        );
+
+        let names: Vec<&str> = desc
+            .properties()
+            .iter()
+            .map(DataDescription::name)
+            .collect();
+        assert_eq!(names, vec!["stance", "attack", "armour"]);
+        assert_eq!(desc.properties()[0].index, 0);
+        assert_eq!(desc.properties()[1].index, 1);
+        assert_eq!(desc.properties()[2].index, 2);
+    }
+
     #[test]
     fn visit_orders_by_pass_then_declaration() {
         let resolver = MemoryResolver::new(&[
