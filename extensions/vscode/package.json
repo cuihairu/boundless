@@ -1,0 +1,58 @@
+{
+  "name": "boundless-vscode",
+  "displayName": "Boundless",
+  "description": "Entity definition language support, cluster tasks and documentation access for Boundless workspaces.",
+  "version": "0.0.1",
+  "license": "LGPL-3.0-or-later",
+  "publisher": "boundless",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/scripts/entities.xml",
+    "onLanguage:entities"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "entities",
+        "aliases": [
+          "EntityDef",
+          "entities"
+        ],
+        "extensions": [
+          ".def"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "entities",
+        "scopeName": "source.entities",
+        "path": "./syntaxes/entities.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "check": "tsc -p . --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "pnpm run build && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "@types/vscode": "1.85.0",
+    "@vscode/vsce": "3.2.1",
+    "typescript": "5.7.3",
+    "vitest": "2.1.8"
+  }
+}
