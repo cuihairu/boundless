@@ -1258,7 +1258,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：原版 `multi_proc_test_case.cpp` 只有 fork/waitpid 匿名子进程，无角色与拓扑概念；新版 crates/test-support/src/multiproc.rs 提供 Topology（ProcessSpec 带 depends_on 边）+ Kahn 拓扑排序（独立角色按插入序保证可复现）+ ProcessGroup::start 按序真实 spawn，`dependents_start_after_their_dependencies`/`independent_roles_keep_insertion_order` 钉死顺序可观察，`cycles_list_their_members`/`unknown_dependencies_report_both_roles`/`duplicate_role_names_are_rejected` 报错带角色名，`a_started_group_spawns_roles_in_dependency_order` 验证真实进程按序启动且 pid 独立，`a_failed_spawn_names_the_role_and_cleans_up` 验证半启动不泄漏。
 - [x] **BW-18-02-02 按就绪条件等待**。**验收** 超时能明确定位角色。
   - 证据：原版测试用 `sleep( 0.5 )` 硬等后直接连接，超时无从定位；新版 multiproc.rs 提供 Readiness 三种条件（PortOpen 探测 127.0.0.1 监听、FileExists 标记文件、LogContains 日志就绪行）+ `wait_ready` 轮询等待，`a_timed_out_wait_names_the_role_and_condition` 钉死超时错误带角色名+条件+等待毫秒，`an_exited_role_fails_fast_with_its_status` 验证角色先死立即报错不空等，`wait_ready_all_reports_the_first_failing_role` 验证多角色等待点名第一个未就绪者，`unknown_role_in_a_wait_is_rejected` 拒绝拼错的角色名。
-- [ ] **BW-18-02-03 分配独立端口与数据库**。**验收** 两个测试并跑互不干扰。
+- [x] **BW-18-02-03 分配独立端口与数据库**。**验收** 两个测试并跑互不干扰。
+  - 证据：原版测试硬编码端口段并共用检出内数据目录，并跑必撞；新版 crates/test-support/src/allocation.rs 提供 PortAllocator（bind 127.0.0.1:0 由内核发号、PortLease 持有监听期间无人可拿同号）与 RunRoot（logs/db/artifacts 布局）+ database_slot（同标签也各得独立空 db/+journal/ 槽位），`port_leases_are_distinct_while_held`/`bulk_leases_come_back_all_distinct`/`two_parallel_runs_never_overlap`（双 run 根+双分配器 6 端口 2 槽位全不相交）常驻验证并跑互不干扰。
 - [ ] **BW-18-02-04 保留日志与失败目录**。**验收** 失败报告可打开原始产物。
 - [ ] **BW-18-02-05 清理整个进程树**。**验收** 三端测试退出无残留进程。
 
