@@ -46,8 +46,8 @@ code stays out of the role crates.
 **None of the four backends is implemented.** No SQL dependency, `.sql` file or
 migration directory exists in the tree. What does exist is the id vocabulary:
 `DatabaseId = i64` and the `PENDING_DATABASE_ID = -1` sentinel, in
-`crates/foundation/src/ids.rs`. The operations section carries the target
-database migration and recovery procedure.
+`crates/foundation/src/ids.rs`. See [Database migration and
+recovery](/operations/database) for the target procedure.
 
 ## Client and engine targets
 

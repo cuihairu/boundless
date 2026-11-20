@@ -20,7 +20,8 @@ const nav = [
   { text: "Overview", link: "/" },
   { text: "Guide", link: "/guide/" },
   { text: "Architecture", link: "/architecture/" },
-  { text: "Reference", link: "/reference/" }
+  { text: "Reference", link: "/reference/" },
+  { text: "Operations", link: "/operations/" }
 ];
 
 const guideSidebar = [
@@ -96,10 +97,21 @@ const referenceSidebar = [
   }
 ];
 
+const operationsSidebar = [
+  { text: "Operations", link: "/operations/" },
+  {
+    text: "Data",
+    items: [
+      { text: "Database migration and recovery", link: "/operations/database" }
+    ]
+  }
+];
+
 const sidebar = {
   "/guide/": guideSidebar,
   "/architecture/": architectureSidebar,
-  "/reference/": referenceSidebar
+  "/reference/": referenceSidebar,
+  "/operations/": operationsSidebar
 };
 
 export default {
