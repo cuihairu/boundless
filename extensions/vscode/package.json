@@ -54,6 +54,12 @@
         "scopeName": "source.entities",
         "path": "./syntaxes/entities.tmLanguage.json"
       }
+    ],
+    "snippets": [
+      {
+        "language": "entities",
+        "path": "./snippets/entities.json"
+      }
     ]
   },
   "scripts": {

@@ -6,21 +6,7 @@ import {
 } from "../src/def/registry";
 import { parseEntityDef } from "../src/def/defFile";
 import { DefDiagnostic, checkEntityDef } from "../src/def/checker";
-
-/** The reference `alias.xml`, verbatim from
- * `examples/client_integration/python/simple/res/scripts/entity_defs/alias.xml`. */
-const ALIAS_XML = `<root>
-	<OBJECT_ID>			INT32		</OBJECT_ID>
-	<BOOL>				UINT8		</BOOL>
-	<ANGLE>				FLOAT		</ANGLE>
-	<ITEM>				UINT32		</ITEM>
-	<CONTROLLER_ID>		INT32		</CONTROLLER_ID>
-	<EXPERIENCE>		INT32		</EXPERIENCE>
-	<INFO>				UINT16		</INFO>
-	<MISSION_STATS> ARRAY <of>	INFO		 	</of>	</MISSION_STATS>
-	<STATS_MATRIX>  ARRAY <of>	MISSION_STATS 	</of>	</STATS_MATRIX>
-	<TEAM> ARRAY <of>OBJECT_ID	</of>			</TEAM>
-</root>`;
+import { ALIAS_XML } from "./fixtures";
 
 /** The reference `entities.xml` for the simple example. */
 const ENTITIES_XML = `<root>
