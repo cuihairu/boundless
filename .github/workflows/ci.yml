@@ -282,22 +282,12 @@ jobs:
         with:
           node-version: 24
 
-      - name: Restore package cache
-        uses: actions/cache@v6.1.0
-        if: hashFiles('package.json', 'package-lock.json') != ''
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: npm-${{ runner.os }}-
-
-      - name: Install and build the site
-        if: hashFiles('package.json') != ''
-        run: |
-          npm ci
-          ci/check-docs.sh
+      # The docs tree (BW-19) installs with pnpm from docs/package.json;
+      # the lane installs the deps itself, so only the tool is needed here.
+      - name: pnpm for the docs tree
+        run: npm install --no-fund --no-audit --global pnpm@12
 
       - name: Check
-        if: hashFiles('package.json') == ''
         run: ci/check-docs.sh
 
       - name: Bundle results
@@ -686,6 +676,53 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-04-02 — the docs release lane: build the site, stamp a versioned
+  # index, archive it, and require version metadata to agree across every
+  # source (workspace Cargo.toml, docs/package.json, a declared siteVersion,
+  # the index stamp against the live commit).
+  docspkg:
+    name: Docs site package and version index
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'docspkg')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: pnpm
+        run: npm install --no-fund --no-audit --global pnpm@12
+
+      - name: Package the docs site
+        run: ci/docs-package.sh
+
+      - name: Upload the site package
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: docs-package-${{ github.run_id }}
+          path: ci-out/docs/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-docspkg-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -733,6 +770,7 @@ jobs:
           ci/fault.sh self-test
           ci/report.sh self-test
           ci/package.sh self-test
+          ci/docs-package.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results

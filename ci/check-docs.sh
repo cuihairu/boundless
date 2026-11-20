@@ -54,18 +54,27 @@ main() {
         fi
     fi
 
-    # The site build is only meaningful once the root package.json has the
-    # script BW-19 will add; otherwise it would gate on a missing devDependency.
-    if [ -f package.json ] && grep -q '"docs:build"\|"docs:dev"' package.json; then
-        ci_step "site build"
-        ci_pipe docs-build npm run docs:build --silent
-        if [ "${CI_RC:-1}" -eq 0 ]; then
-            ci_pass docs-build "ok"
+    # BW-19 landed the site as docs/package.json with pnpm managing deps
+    # (vitepress 1.6.4), so the build leg now gates on the real entry rather
+    # than the root package.json it was written against before the tree
+    # existed. pnpm 12 aborts the install on ignored postinstall scripts
+    # (esbuild) even when the tools are in place — the same behaviour the
+    # SDK lane tolerates — so the gate is the build itself, not the installer.
+    if [ -f docs/package.json ] && grep -q '"build"' docs/package.json; then
+        if ! command -v pnpm >/dev/null 2>&1; then
+            ci_skip docs-build "no pnpm on this runner; the docs tree installs with pnpm (BW-19-01-04)"
         else
-            ci_fail docs-build "vitepress build failed (log logs/docs-build.log)"
+            ci_step "site build"
+            pnpm --dir docs install --frozen-lockfile --prefer-offline >/dev/null 2>&1 || true
+            ci_pipe docs-build pnpm --dir docs run build
+            if [ "${CI_RC:-1}" -eq 0 ]; then
+                ci_pass docs-build "ok"
+            else
+                ci_fail docs-build "vitepress build failed (log logs/docs-build.log)"
+            fi
         fi
     else
-        ci_skip docs-build "no docs:build script in package.json yet"
+        ci_skip docs-build "no docs/package.json build script yet (BW-19-01-04)"
     fi
 }
 

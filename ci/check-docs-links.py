@@ -25,6 +25,11 @@ ASSETS = frozenset({
     ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".webm", ".mp3", ".ogg",
 })
 PAGES = (".html", ".md", ".mdx")
+# Directories that are never site content: installed dependencies (a single
+# pnpm install drops tens of thousands of vendored READMEs into docs/), the
+# build output, and VCS internals. The site is written from the tree, not
+# from what the package manager or the builder leaves behind.
+SKIPPED_DIRS = frozenset({".git", ".vitepress", "node_modules", "dist"})
 INLINE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 IMAGE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 REF = re.compile(r"^\s*\[[^\]]+\]:\s*<?([^>\s]+)>?(?:\s+[^\n]*)?$")
@@ -73,7 +78,7 @@ def main():
     dead = []
     checked = 0
     for doc in sorted(base.rglob("*.md")):
-        if ".vitepress" in doc.parts:
+        if SKIPPED_DIRS.intersection(doc.parts):
             continue
         text = doc.read_text(encoding="utf-8", errors="replace")
         for raw in targets(text):
