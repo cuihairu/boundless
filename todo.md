@@ -1313,7 +1313,8 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 识别资源根、`entities.xml`、`alias.xml`、实体 `.def` 和 Base/Cell/Client 脚本目录。提供语法、片段和实体定义到脚本的跳转；诊断复用 `process_defs` 或同一 EntityDef 检查入口。
 
-- [ ] **BW-20-01-01 识别工作区资源根**。**验收** 单根与多根均定位配置。
+- [x] **BW-20-01-01 识别工作区资源根**。**验收** 单根与多根均定位配置。
+  - 证据：原版结果——`lib/entitydef/constants.hpp` 把 `entitiesFile()=scripts/entities.xml`、`entitiesBasePath()=scripts/base`、`entitiesCellPath()=scripts/cell`、`entitiesClientPath()=scripts/client`、`entitiesServicePath()=scripts/service`、`entitiesDefsPath()=scripts/entity_defs` 定义为相对 res 根的路径，`HasScriptOrTagDistributionDecider::canBeOnCell`（`entity_description.cpp:72-88`）先用 `<Distribution>` 标签、否则探测 `scripts/cell/<Name>.py` 是否存在。新版结果——`findResourceRoots`（`extensions/vscode/src/workspace/resourceRoot.ts`）以 `<root>/scripts/entities.xml` 为标记、BFS 取最浅 res 根并回填同一组常量，多根按 folder 顺序各出一份并记住各自来源 folder。证据链接——`pnpm vitest` 82 例全绿（含 `test/resourceRoot.test.ts` 8 例）且 `tsc` 0 错误；实跑 `node /tmp/bwroots.cjs`：单根在 `examples/client_integration/python/simple` 下定位到 `…/simple/res` 并解析出 ClientServer=5 个实体，无 res 根的工作区返回空，多根（docs 目录 + `/tmp/bwprobe` + simple）跳过 docs 后按序定位 2 个 res 根。
 - [ ] **BW-20-01-02 配置 .def 与配置文件语法**。**验收** 示例高亮类型可检查。
 - [ ] **BW-20-01-03 提供实体和脚本片段**。**验收** 插入内容可被 EntityDef 读取。
 - [ ] **BW-20-01-04 接入定义跳转**。**验收** 测试文件定位到目标脚本。

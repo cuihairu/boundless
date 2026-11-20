@@ -17,9 +17,17 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "workspaceContains:**/scripts/entities.xml",
-    "onLanguage:entities"
+    "onLanguage:entities",
+    "onCommand:boundless.showWorkspaceInfo"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "boundless.showWorkspaceInfo",
+        "title": "Boundless: Show Workspace Configuration",
+        "category": "Boundless"
+      }
+    ],
     "languages": [
       {
         "id": "entities",
