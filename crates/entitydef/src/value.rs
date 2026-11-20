@@ -206,6 +206,118 @@ impl std::fmt::Display for PropertyError {
 
 impl std::error::Error for PropertyError {}
 
+// -----------------------------------------------------------------------------
+// Section: MailBox ref semantics (`EntityMailBoxRef`)
+// -----------------------------------------------------------------------------
+
+/// `EntityMailBoxRef::Component` (`lib/network/basictypes.hpp`): the top three
+/// salt bits name the app — and relay — a mailbox points at. The variant order
+/// is the reference's numeric values (`CELL` = 0 through `SERVICE` = 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MailBoxComponent {
+    Cell,
+    Base,
+    Client,
+    BaseViaCell,
+    ClientViaCell,
+    CellViaBase,
+    ClientViaBase,
+    Service,
+}
+
+/// `EntityMailBoxRef::component()` / `component( c )`: the component lives in
+/// the salt's top three bits (`uint16(c) << 13`).
+pub const MAILBOX_COMPONENT_SHIFT: u32 = 13;
+
+/// `EntityMailBoxRef::type()` / `type( t )`: the entity type id is the salt's
+/// low thirteen bits (`addr.salt & 0x1FFF`).
+pub const MAILBOX_TYPE_ID_MASK: u16 = 0x1FFF;
+
+impl MailBoxComponent {
+    /// Packs a salt carrying this component over `type_id`
+    /// (`EntityMailBoxRef::init`: `addr.salt = (uint16(c) << 13) | t`). The
+    /// thirteen-bit mask matches `type( t )`, which keeps only the low bits.
+    pub fn into_salt(self, type_id: u16) -> u16 {
+        ((self as u16) << MAILBOX_COMPONENT_SHIFT) | (type_id & MAILBOX_TYPE_ID_MASK)
+    }
+
+    /// `EntityMailBoxRef::componentAsStr`. Every three-bit field value names a
+    /// component, so the reference's `"<invalid>"` fallback is unreachable
+    /// through a salt.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MailBoxComponent::Cell => "cell",
+            MailBoxComponent::Base => "base",
+            MailBoxComponent::Service => "service",
+            MailBoxComponent::Client => "client",
+            MailBoxComponent::BaseViaCell => "base_via_cell",
+            MailBoxComponent::ClientViaCell => "client_via_cell",
+            MailBoxComponent::CellViaBase => "cell_via_base",
+            MailBoxComponent::ClientViaBase => "client_via_base",
+        }
+    }
+}
+
+impl PropertyValue {
+    /// `EntityMailBoxRef::component()`: `addr.salt >> 13`.
+    pub fn mailbox_component(&self) -> Option<MailBoxComponent> {
+        let salt = match self {
+            PropertyValue::MailBox { salt, .. } => *salt,
+            _ => return None,
+        };
+        Some(match salt >> MAILBOX_COMPONENT_SHIFT {
+            0 => MailBoxComponent::Cell,
+            1 => MailBoxComponent::Base,
+            2 => MailBoxComponent::Client,
+            3 => MailBoxComponent::BaseViaCell,
+            4 => MailBoxComponent::ClientViaCell,
+            5 => MailBoxComponent::CellViaBase,
+            6 => MailBoxComponent::ClientViaBase,
+            _ => MailBoxComponent::Service,
+        })
+    }
+
+    /// `EntityMailBoxRef::type()`: `addr.salt & 0x1FFF`.
+    pub fn mailbox_type_id(&self) -> Option<u16> {
+        match self {
+            PropertyValue::MailBox { salt, .. } => Some(salt & MAILBOX_TYPE_ID_MASK),
+            _ => None,
+        }
+    }
+
+    /// `EntityMailBoxRef::componentAsStr` for this ref's component.
+    pub fn mailbox_component_name(&self) -> Option<&'static str> {
+        Some(self.mailbox_component()?.as_str())
+    }
+
+    /// `EntityMailBoxRef::hasAddress()`: `addr != Mercury::Address::NONE`,
+    /// whose `operator==` compares only `ip` and `port` — the salt is not
+    /// consulted, so an uninitialised ref still names its component and type.
+    pub fn mailbox_has_address(&self) -> Option<bool> {
+        match self {
+            PropertyValue::MailBox { ip, port, .. } => Some(*ip != 0 || *port != 0),
+            _ => None,
+        }
+    }
+
+    /// `EntityMailBoxRef::init( id, addr, component, type )`: the salt packs
+    /// the component above the thirteen-bit entity type id.
+    pub fn mail_box_ref(
+        id: i32,
+        ip: u32,
+        port: u16,
+        component: MailBoxComponent,
+        type_id: u16,
+    ) -> PropertyValue {
+        PropertyValue::MailBox {
+            id,
+            ip,
+            port,
+            salt: component.into_salt(type_id),
+        }
+    }
+}
+
 /// `IntegerDataType::isSameType`: truncate `value` to the `bits` two's-complement
 /// width of `INT_TYPE` and require the round trip to be exact.
 ///
@@ -1816,6 +1928,90 @@ mod tests {
             ]
         );
         assert_eq!(mailbox.create_from_stream(&mut stream).unwrap(), value);
+    }
+
+    /// The reference fixture (`test_streamsizes.hpp`, `MailBoxDataTypeFixture`):
+    /// entity 2405 at `0xc0180010:0x4567`, component `BASE_VIA_CELL`, type id 7.
+    #[test]
+    fn a_mailbox_salt_splits_into_the_component_and_the_type() {
+        let mbr = PropertyValue::mail_box_ref(
+            2405,
+            0xc018_0010,
+            0x4567,
+            MailBoxComponent::BaseViaCell,
+            7,
+        );
+        // `init`: the salt packs the component above the thirteen-bit type id.
+        assert_eq!(
+            mbr,
+            PropertyValue::MailBox {
+                id: 2405,
+                ip: 0xc018_0010,
+                port: 0x4567,
+                salt: 0x6007,
+            }
+        );
+        assert_eq!(mbr.mailbox_component(), Some(MailBoxComponent::BaseViaCell));
+        assert_eq!(mbr.mailbox_type_id(), Some(7));
+        assert_eq!(mbr.mailbox_component_name(), Some("base_via_cell"));
+        assert_eq!(mbr.mailbox_has_address(), Some(true));
+
+        // Every component keeps its reference name and round trips the full
+        // thirteen-bit type width.
+        let named = [
+            (MailBoxComponent::Cell, "cell"),
+            (MailBoxComponent::Base, "base"),
+            (MailBoxComponent::Client, "client"),
+            (MailBoxComponent::BaseViaCell, "base_via_cell"),
+            (MailBoxComponent::ClientViaCell, "client_via_cell"),
+            (MailBoxComponent::CellViaBase, "cell_via_base"),
+            (MailBoxComponent::ClientViaBase, "client_via_base"),
+            (MailBoxComponent::Service, "service"),
+        ];
+        for (component, name) in named {
+            let mbr = PropertyValue::mail_box_ref(1, 1, 1, component, MAILBOX_TYPE_ID_MASK);
+            assert_eq!(mbr.mailbox_component(), Some(component));
+            assert_eq!(mbr.mailbox_type_id(), Some(MAILBOX_TYPE_ID_MASK));
+            assert_eq!(mbr.mailbox_component_name(), Some(name));
+        }
+
+        // Values that are not mailbox refs carry no ref semantics.
+        assert_eq!(PropertyValue::Int(1).mailbox_component(), None);
+        assert_eq!(PropertyValue::Int(1).mailbox_type_id(), None);
+        assert_eq!(PropertyValue::Int(1).mailbox_component_name(), None);
+        assert_eq!(PropertyValue::Int(1).mailbox_has_address(), None);
+    }
+
+    /// BW-04-03-05 acceptance: a mailbox streamed with the reference wire form
+    /// recovers the entity position (id and address) and its type.
+    #[test]
+    fn a_streamed_mailbox_ref_recovers_the_entity_position_and_type() {
+        let ty = build_type("<a> MAILBOX </a>");
+        let mbr = PropertyValue::mail_box_ref(
+            2405,
+            0xc018_0010,
+            0x4567,
+            MailBoxComponent::BaseViaCell,
+            7,
+        );
+        let mut stream = BinaryStream::new();
+        ty.add_to_stream(&mbr, &mut stream).unwrap();
+        assert_eq!(stream.as_bytes().len(), 12);
+
+        let back = ty.create_from_stream(&mut stream).unwrap();
+        assert_eq!(back, mbr);
+        assert_eq!(
+            back.mailbox_component(),
+            Some(MailBoxComponent::BaseViaCell)
+        );
+        assert_eq!(back.mailbox_type_id(), Some(7));
+
+        // A zero ip and port is the not-yet-initialised ref: `hasAddress` is
+        // false even though the salt still names a component and a type.
+        let pending = PropertyValue::mail_box_ref(9, 0, 0, MailBoxComponent::Cell, 3);
+        assert_eq!(pending.mailbox_has_address(), Some(false));
+        assert_eq!(pending.mailbox_component(), Some(MailBoxComponent::Cell));
+        assert_eq!(pending.mailbox_type_id(), Some(3));
     }
 
     #[test]

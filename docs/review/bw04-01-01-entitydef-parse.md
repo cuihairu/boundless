@@ -410,3 +410,27 @@
 2. **`DataSource` 侧形态未建模**：参考 `MethodArgs::addToStream` 走 `source.beginSequence`/`enterItem`/`leaveItem`，逐处失败各有文案（`enterItem failed for arg %zu.\n` 等）；Rust 在静态 `PropertyValue` 序列上组合，同一无计数无名字形态，进入/离开元素的文案与失败位点不可复现。
 3. **应答元组的隐式源实体 id 未建模**：参考 `MethodArgs::createFromStream` 在 `pImplicitSource != NULL` 时把源实体 id 写成元组第 0 项（`tupleSize = numArgs + 1`）——属 Python 元组形状，静态定义域内无对应物。
 4. **`TruncatedFrame` 文案是描述性的**：参考该路径不打印任何消息（流错误只翻成 error 字节），Rust 以说明性文案表达同一拒绝，已登记为差异而非原话引用。
+
+---
+
+# BW-04-03-05 序列化 MailBox 引用 — 复核证据
+
+- **任务编号**: BW-04-03-05（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 392；验收：原版可恢复实体位置与类型）
+- **原版源码**: `lib/network/basictypes.hpp:322-365` —— `EntityMailBoxRef`：`EntityID id` + `Mercury::Address addr`；`Component` 枚举 `CELL=0, BASE=1, CLIENT=2, BASE_VIA_CELL=3, CLIENT_VIA_CELL=4, CELL_VIA_BASE=5, CLIENT_VIA_BASE=6, SERVICE=7`；`component() = addr.salt >> 13`、`type() = addr.salt & 0x1FFF`（`EntityTypeID` 为 `uint16`，basictypes.hpp:185）、`init( id, addr, c, t )` 打包 `addr.salt = (uint16(c) << 13) | t`。**线上形态无专属 operator**：`MailBoxDataType::from( BinaryIStream&, … )` 的 `stream >> mbr` 落到 `lib/cstdmf/binary_stream.ipp` 的小端泛型模板（`extractRaw` 整结构体 memcpy）——即 12 字节裸排：`id` u32 LE、`ip` u32 LE、`port` u16 LE、`salt` u16 LE（`Address` 自带 operator，basictypes.cpp:199-221，ip/port raw + salt LE，字节排布相同）；`streamSize() = sizeof( EntityMailBoxRef )`。节子项 `id` / `ip` / **`etc`**（端口从 `etc` 读，mailbox_data_type.cpp from/to Section）。`componentAsStr`（basictypes.cpp:237-256）：`cell / base / service / client / base_via_cell / client_via_cell / cell_via_base / client_via_base`。`hasAddress()`：`addr != Address::NONE`，而 `operator==` 只比 `ip` 与 `port`（basictypes.ipp），salt 不参与。参考单测锚 `test_streamsizes.hpp:143-157` `MailBoxDataTypeFixture`：id 2405、`Address( 0xc0180010, 0x4567 )`、component `BASE_VIA_CELL`、typeID 7（test_streamsizes.cpp:93-98 `CHECK_FIXED_TYPE_STREAMSIZE`）。
+- **Boundless 模块**: `crates/entitydef/src/value.rs` —— 12 字节裸流形态与 `id`/`ip`/`etc` 节读法已于 BW-04-02 交付；本项新增 `MailBoxComponent`（8 变体按参考数值序）、`MAILBOX_COMPONENT_SHIFT` / `MAILBOX_TYPE_ID_MASK`、`MailBoxComponent::into_salt` / `as_str`、`PropertyValue::mail_box_ref`（`init` 打包）与读取器 `mailbox_component` / `mailbox_type_id` / `mailbox_component_name` / `mailbox_has_address`。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**232 单元测试 + 4 差分测试**全部通过（本项新增 2 测）。
+  - **验收钉（恢复位置与类型）**：`a_streamed_mailbox_ref_recovers_the_entity_position_and_type` 以参考 fixture 值（id 2405 @ 0xc0180010:0x4567，BASE_VIA_CELL，typeID 7 → salt `0x6007`）写入 12 字节流再读回，id/ip/port/salt 逐项相等且 `mailbox_component()==BaseViaCell`、`mailbox_type_id()==7`。
+  - **salt 语义钉**：`a_mailbox_salt_splits_into_the_component_and_the_type` 钉住 init 打包、全部 8 组件与 `componentAsStr` 8 名、13-bit 全宽 type id 往返、`hasAddress` 的 ip/port-only 语义（零地址仍带 component/type）、非邮箱值四读取器全 None。
+  - clippy `-D warnings`：entitydef **0 findings**；rustfmt 干净；覆盖率全部文件 **≥98%**（value.rs 1473/1485 = 99.19%）。
+- **证据链接**: `crates/entitydef/src/value.rs`（MailBox ref 语义节 + 两测）。
+- **状态**: 已交付（流往返恢复位置与类型 + salt 位域/组件名/hasAddress 语义锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **无字节 oracle**：参考单测对 mailbox 只有 `CHECK_FIXED_TYPE_STREAMSIZE`（12 字节定长）与 None 转换检查，无逐字节断言；字节排布 id/ip/port/salt LE 由小端泛型 `extractRaw` 推出，登记为**推导**而非原版字节捕获。带宽 12 字节与 `streamSize()` 口径一致（data_type.rs `MAILBOX_STREAM_SIZE`）。
+2. **TDD red 一次为测试期望自误**：首跑把 BASE_VIA_CELL 的 salt 期望写成 `0xA007`（那是 CELL_VIA_BASE=5），按参考枚举（BASE_VIA_CELL=3）改正为 `0x6007`；实现未动。
+3. **`"<invalid>"` 分支不可达**：`componentAsStr` 的 fallback 只护 C++ 越枚举值；salt 的 3-bit 域 0..=7 全被枚举覆盖，Rust 匹配穷尽无 fallback——登记为等价加严。
+4. **`PyEntityMailBox` 侧不在域内**：`reduceToRef`/`constructFromRef` 与「零 IP 信箱缓冲方法」属 Python 宿主层，静态 crate 无对应物；`isSameType` 的零 IP 拒绝（`UninitialisedMailBox` 原话报错）已于 BW-04-02 交付并有专测。
+5. **`getStreamElement` 单元素拆分未另建**：参考 `MailBoxDataType::getStreamElement` 返回单个 `MailBoxStreamElement`（size=1），Rust 以 `MAILBOX_STREAM_SIZE` 整块口径覆盖同一形态，无逐元素拆分器。
