@@ -21,6 +21,7 @@ starts here.
 | Check a version, platform or engine target | [Compatibility matrix](/architecture/compatibility-matrix) |
 | Look up a config key or a CLI flag | [Configuration reference](/reference/configuration) and [CLI reference](/reference/cli) |
 | See what each crate exports | [Script and SDK API](/reference/api) |
+| Plan a MySQL to PostgreSQL migration | [Database migration and recovery](/operations/database) |
 
 ## Repository layout
 
