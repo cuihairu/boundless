@@ -19,6 +19,8 @@ starts here.
 | Connect a client or an engine | [Client SDK](/guide/client-sdk) and [Engine integration](/guide/engine-integration) |
 | See which processes exist and what is wired | [Process topology](/architecture/process-topology) |
 | Check a version, platform or engine target | [Compatibility matrix](/architecture/compatibility-matrix) |
+| Look up a config key or a CLI flag | [Configuration reference](/reference/configuration) and [CLI reference](/reference/cli) |
+| See what each crate exports | [Script and SDK API](/reference/api) |
 
 ## Repository layout
 

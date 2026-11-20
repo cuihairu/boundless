@@ -19,7 +19,8 @@ const siteTitle = "Boundless";
 const nav = [
   { text: "Overview", link: "/" },
   { text: "Guide", link: "/guide/" },
-  { text: "Architecture", link: "/architecture/" }
+  { text: "Architecture", link: "/architecture/" },
+  { text: "Reference", link: "/reference/" }
 ];
 
 const guideSidebar = [
@@ -73,9 +74,32 @@ const architectureSidebar = [
   }
 ];
 
+const referenceSidebar = [
+  { text: "Reference", link: "/reference/" },
+  {
+    text: "Configuration",
+    items: [
+      { text: "Configuration reference", link: "/reference/configuration" }
+    ]
+  },
+  {
+    text: "Command line",
+    items: [
+      { text: "CLI reference", link: "/reference/cli" }
+    ]
+  },
+  {
+    text: "API",
+    items: [
+      { text: "Script and SDK API", link: "/reference/api" }
+    ]
+  }
+];
+
 const sidebar = {
   "/guide/": guideSidebar,
-  "/architecture/": architectureSidebar
+  "/architecture/": architectureSidebar,
+  "/reference/": referenceSidebar
 };
 
 export default {
