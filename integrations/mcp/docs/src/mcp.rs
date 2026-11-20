@@ -7,7 +7,7 @@ use std::io::{BufRead, Write};
 use serde_json::{json, Value};
 
 use crate::index::DocIndex;
-use crate::links::source_link;
+use crate::links::{links_in, source_link};
 use crate::search::{search, DEFAULT_LIMIT};
 use crate::DocsError;
 
@@ -122,7 +122,7 @@ impl Session {
             }),
             json!({
                 "name": "read_doc",
-                "description": "Read one page, or one anchored section of it, at one version.",
+                "description": "Read one page, or one anchored section of it, at one version; the links in a body come back resolved.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -219,6 +219,10 @@ impl Session {
 }
 
 fn section_json(section: &crate::index::SectionEntry, docs_url: &str, page: &str) -> Value {
+    let links = links_in(&section.body, page, docs_url)
+        .into_iter()
+        .map(|link| json!({"label": link.label, "target": link.target}))
+        .collect::<Vec<_>>();
     json!({
         "title": section.title,
         "anchor": section.anchor,
@@ -226,6 +230,7 @@ fn section_json(section: &crate::index::SectionEntry, docs_url: &str, page: &str
         "line": section.line,
         "body": section.body,
         "source": source_link(docs_url, page, Some(&section.anchor)),
+        "links": links,
     })
 }
 
