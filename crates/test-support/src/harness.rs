@@ -258,6 +258,98 @@ pub fn coverage_report_dir(target_dir: &Path, module: Option<&str>) -> PathBuf {
     }
 }
 
+/// One archived run (BW-18-04-04): everything a later diff or rerun needs,
+/// in a text format both the local machine and the CI artifact use
+/// unchanged. Outcome lines are the `PASS/FAIL/SKIP <name>` records
+/// [`parse_outcomes`] reads, so an archive feeds the compat diff as-is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunArchive {
+    /// The run label; also the directory name under `test-results/`.
+    pub label: String,
+    /// The cargo invocation that produced the run, verbatim.
+    pub command: String,
+    /// The workspace commit the run executed on, if known.
+    pub commit: Option<String>,
+    /// Human-readable run stamp (ISO-8601 UTC); never parsed back.
+    pub when: String,
+    /// One outcome line per test, in report order.
+    pub outcomes: Vec<TestOutcome>,
+}
+
+impl RunArchive {
+    /// Render the archive deterministically: a fixed header, then the
+    /// outcome lines, then a summary. The same run renders to the same
+    /// bytes on every machine.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "# run archive\nlabel: {}\nrun: {}\n",
+            self.label, self.command
+        ));
+        match &self.commit {
+            Some(commit) => out.push_str(&format!("commit: {commit}\n")),
+            None => out.push_str("commit: unknown\n"),
+        }
+        out.push_str(&format!("when: {}\n", self.when));
+        for outcome in &self.outcomes {
+            out.push_str(&format!("{} {}\n", outcome.status.token(), outcome.name));
+        }
+        let (mut passed, mut failed, mut skipped) = (0, 0, 0);
+        for outcome in &self.outcomes {
+            match outcome.status {
+                TestStatus::Passed => passed += 1,
+                TestStatus::Failed => failed += 1,
+                TestStatus::Skipped => skipped += 1,
+            }
+        }
+        out.push_str(&format!(
+            "summary: {passed} passed, {failed} failed, {skipped} skipped\n"
+        ));
+        out
+    }
+
+    /// The directory this archive belongs in, under the shared
+    /// run-results tree.
+    pub fn dir(&self, target_dir: &Path) -> PathBuf {
+        target_dir.join("test-results").join(&self.label)
+    }
+}
+
+/// Outcomes from libtest's default output: `test <name> ... ok`,
+/// `test <name> ... FAILED` and `test <name> ... ignored`. Other lines
+/// (suite headers, failures detail, doc-test banners) carry no per-test
+/// outcome and are skipped.
+pub fn parse_cargo_test_output(output: &str) -> Vec<TestOutcome> {
+    let mut outcomes = Vec::new();
+    for line in output.lines() {
+        let Some(rest) = line.trim().strip_prefix("test ") else {
+            continue;
+        };
+        let Some((name, verdict)) = rest.rsplit_once(" ... ") else {
+            continue;
+        };
+        // Verdicts can carry a suffix (`ignored, reason: ...`), so match
+        // on the leading word.
+        let status = if verdict == "ok" {
+            TestStatus::Passed
+        } else if verdict.starts_with("FAILED") {
+            TestStatus::Failed
+        } else if verdict.starts_with("ignored") {
+            TestStatus::Skipped
+        } else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() {
+            outcomes.push(TestOutcome {
+                name: name.to_string(),
+                status,
+            });
+        }
+    }
+    outcomes
+}
+
 /// The `cargo llvm-cov` arguments (everything after `cargo`) for one
 /// coverage run: an lcov report whose `SF:`/`DA:` records map every
 /// measured line back to its source file and line. Requires
@@ -524,6 +616,94 @@ version = "0.1.0"
                 "crates/foundation/src/lib.rs",
                 "crates/foundation/src/allocator.rs"
             ]
+        );
+    }
+
+    #[test]
+    fn cargo_test_output_parses_to_outcomes() {
+        let output = "\
+             running 10 tests\n\
+             test config::tests::chain_resolves ... ok\n\
+             test timers::tests::fires ... FAILED\n\
+             test migrate::tests::slow_case ... ignored, reason: nightly\n\
+             failures:\n\
+                 timers::tests::fires\n";
+        assert_eq!(
+            parse_cargo_test_output(output),
+            outcomes(&[
+                ("config::tests::chain_resolves", TestStatus::Passed),
+                ("timers::tests::fires", TestStatus::Failed),
+                ("migrate::tests::slow_case", TestStatus::Skipped),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_archive_renders_and_feeds_the_diff_unchanged() {
+        let archive = RunArchive {
+            label: "server-runtime".to_string(),
+            command: "cargo test -p server-runtime".to_string(),
+            commit: Some("0f1e2d3".to_string()),
+            when: "2026-11-20T09:30:00Z".to_string(),
+            outcomes: outcomes(&[
+                ("config::chain", TestStatus::Passed),
+                ("timers::fires", TestStatus::Failed),
+            ]),
+        };
+        let text = archive.render();
+        assert_eq!(
+            text,
+            "# run archive\n\
+             label: server-runtime\n\
+             run: cargo test -p server-runtime\n\
+             commit: 0f1e2d3\n\
+             when: 2026-11-20T09:30:00Z\n\
+             PASS config::chain\n\
+             FAIL timers::fires\n\
+             summary: 1 passed, 1 failed, 0 skipped\n"
+        );
+        // The rendered outcome lines parse straight back -- this is the
+        // same file the diff entry reads.
+        assert_eq!(parse_outcomes(&text), archive.outcomes);
+    }
+
+    #[test]
+    fn an_unknown_commit_renders_deterministically() {
+        let archive = RunArchive {
+            label: "all".to_string(),
+            command: "cargo test --workspace".to_string(),
+            commit: None,
+            when: "2026-11-20T09:30:00Z".to_string(),
+            outcomes: Vec::new(),
+        };
+        let text = archive.render();
+        assert!(text.contains("commit: unknown\n"));
+        assert!(text.ends_with("summary: 0 passed, 0 failed, 0 skipped\n"));
+    }
+
+    #[test]
+    fn archives_of_every_kind_live_under_the_same_tree() {
+        let archive = RunArchive {
+            label: "foundation".to_string(),
+            command: "cargo test -p foundation".to_string(),
+            commit: None,
+            when: String::new(),
+            outcomes: Vec::new(),
+        };
+        assert_eq!(
+            archive.dir(Path::new("target")),
+            Path::new("target/test-results/foundation")
+        );
+        assert_eq!(
+            RunArchive {
+                label: "all".to_string(),
+                command: "cargo test --workspace".to_string(),
+                commit: None,
+                when: String::new(),
+                outcomes: Vec::new(),
+            }
+            .dir(Path::new("target")),
+            Path::new("target/test-results/all")
         );
     }
 }

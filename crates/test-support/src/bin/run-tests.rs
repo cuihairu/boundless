@@ -13,12 +13,13 @@
 //! Exits with the test run's status so CI gates on it directly; the diff
 //! exits 2 when the runs are not compatible.
 
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
 use test_support::harness::{
-    Plan, coverage_args, coverage_report_dir, diff_runs, lcov_source_files, parse_outcomes,
-    workspace_modules,
+    Plan, RunArchive, coverage_args, coverage_report_dir, diff_runs, lcov_source_files,
+    parse_cargo_test_output, parse_outcomes, workspace_modules,
 };
 use test_support::layering::find_workspace_root;
 
@@ -136,15 +137,107 @@ fn main() -> ExitCode {
 
     let cargo_args = plan.cargo_args();
     println!("run-tests: cargo {}", cargo_args.join(" "));
-    match Command::new("cargo").args(&cargo_args).status() {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => match status.code() {
-            Some(code) => ExitCode::from(code.clamp(1, 255) as u8),
-            None => ExitCode::FAILURE,
-        },
+
+    // Stream the run's stdout through (so progress shows live) while
+    // collecting per-test outcomes for the archive (BW-18-04-04).
+    let mut child = match Command::new("cargo")
+        .args(&cargo_args)
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
         Err(reason) => {
             eprintln!("run-tests: cannot start cargo: {reason}");
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut outcomes = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(line) => {
+                    println!("{line}");
+                    outcomes.extend(parse_cargo_test_output(&line));
+                }
+                Err(reason) => {
+                    eprintln!("run-tests: cannot read test output: {reason}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
     }
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(reason) => {
+            eprintln!("run-tests: cannot wait for cargo: {reason}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let label = match &plan {
+        Plan::All => "all".to_string(),
+        Plan::Single { package, filter } => match filter {
+            Some(filter) => format!("{package}-{filter}"),
+            None => package.clone(),
+        },
+    };
+    let archive = RunArchive {
+        label,
+        command: format!("cargo {}", cargo_args.join(" ")),
+        commit: git_commit(&root),
+        when: utc_now(),
+        outcomes,
+    };
+    let archive_path = archive.dir(&root.join("target")).join("run.txt");
+    if let Err(reason) = write_archive(&archive, &archive_path) {
+        eprintln!("run-tests: cannot write archive: {reason}");
+        // The test run itself still decides the exit status below.
+    } else {
+        println!("run-tests: archive {}", archive_path.display());
+    }
+
+    if status.success() {
+        ExitCode::SUCCESS
+    } else {
+        match status.code() {
+            Some(code) => ExitCode::from(code.clamp(1, 255) as u8),
+            None => ExitCode::FAILURE,
+        }
+    }
+}
+
+/// Short HEAD sha, or None outside a git checkout.
+fn git_commit(root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("rev-parse")
+        .arg("--short")
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// ISO-8601 UTC stamp via `date`, so no extra dependency.
+fn utc_now() -> String {
+    Command::new("date")
+        .arg("-u")
+        .arg("+%Y-%m-%dT%H:%M:%SZ")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+fn write_archive(archive: &RunArchive, path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, archive.render())
 }

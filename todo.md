@@ -1290,7 +1290,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：harness.rs 增加共享归档口径 `PASS/FAIL/SKIP <用例名>` 行格式（`parse_outcomes` 跳过头/注释/空行，同一文件本地与 CI 产物通吃）与 `diff_runs`（按名匹配、重名取最坏结果、输出 REGRESSED/healed/MISSING/ADDED 四类），入口 `run-tests diff <baseline> <current>` 每行点名差异用例，实测对样例归档输出 `REGRESSED case_b`+`ADDED case_new` 并以 exit 2 拒绝不兼容；未重跑他人兼容差分（各 lane 自行喂归档），14 项单测覆盖解析与四类分类。
 - [x] **BW-18-04-03 提供覆盖率入口**。**验收** 报告能映射源码。
   - 证据：harness.rs 的 `coverage_report_dir`（target/test-results/cov-<module>，本地与 CI 同路径）与 `coverage_args`（cargo-llvm-cov 0.9.1，`--lcov --output-path`；0.9.1 不允许 --html 与 --lcov 同用故取 lcov 单报告），入口 `run-tests cov [module]` 校验模块名后生成报告并打印映射的源文件数；实测 `run-tests cov foundation` 产出 63KB lcov.info，SF: 记录映射 8 个真实源文件（ids.rs..time.rs），`DA:87,2` 与 `FN:87 is_null_entity_id` 逐行对上——报告映射到源码文件+行号；`lcov_source_files` 解析 SF: 记录有单测，17 项 harness 单测全绿。
-- [ ] **BW-18-04-04 提供结果归档**。**验收** CI 和本地采用同一目录及格式。
+- [x] **BW-18-04-04 提供结果归档**。**验收** CI 和本地采用同一目录及格式。
+  - 证据：harness.rs 的 `RunArchive`（label/run 命令/commit/when 头 + `PASS/FAIL/SKIP <名>` 行 + summary，渲染确定且 `parse_outcomes` 可原样读回）与 `parse_cargo_test_output`（解析 libtest 默认 `test <名> ... ok/FAILED/ignored[, reason]` 行），入口把 cargo 测试 stdout 边流式回显边收结果，统一写入 `target/test-results/<label>/run.txt`（本地与 CI 同一目录同一文件格式）；实测 `run-tests -- test-support timer_scenarios` 产出含 `commit: 7b8793f` 的 run.txt（4 PASS+summary），该产物直接喂 `run-tests diff` 判 no differences、exit 0；108 项单测全绿。
 - [ ] **BW-18-04-05 编写失败重现说明**。**验收** 从产物可复跑相应用例。
 
 ### BW-19 VitePress 文档站
