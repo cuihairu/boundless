@@ -1548,17 +1548,9 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
   - 结果：scratch 仓 11 例全对——markdown→docs、`tests/python`→python、tsconfig→typescript、crate→`rust_packages=foundation`、无 manifest 的 crate→`rust_all=1` 兜底（否则两个 rust 作业会静默跳过，此为本次修掉的缺陷）、根 Cargo.toml→graph-wide、`ci/`→全 lane、crate+docs 混合→`rust,docs` + `boundless-resources`、两个 crate→`foundation,boundless-resources`、clean→仅 toolchain；死链 FAIL detail 由「1 dead」改为直接给出 `index.md -> no-such-page.md`。另修 push 事件基准缺陷：原实现一律取 `origin/main` tip 为基准，分叉久的分支会把他人推入 crate 的改动全算成本分支 diff（实测报 `rust_packages=mercury,platform`、117 个文件假象），改为 push 事件用 `git merge-base origin/main HEAD` 作基准（PR 仍用 `origin/$base_ref`），修正后本分支 diff 只含 6 个 CI 文件、`rust_packages=` 空。本地等价 7 作业序列 exit=0，manifest 25 行 0 FAIL。
   - 证据：`ci-out/changes.tsv` + 上表 11 例 + `ci-out/manifest.tsv`（toolchain PASS、rust×4 与 python×2 SKIP 并注明开启项、ts-typecheck/ts-test PASS、docs-links PASS、四组 selftest 全 PASS）；作业定义见 `.github/workflows/ci.yml`（run 号见下方交付汇总）。
 
-##### BW-22-01 交付汇总（CI 面真跑记录）
+本组 run 号与结论汇总在 BW-22-02 末尾的「BW-22 交付汇总」一张表里（同一 workflow 面被逐条改造，表按 run 排列）。
 
-workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatch），`gh workflow run ci.yml --ref lane/bw22-ci` 与 push 触发均验证过：
-
-| run | HEAD | 结果 | 说明 |
-| --- | --- | --- | --- |
-| 44745195746 | `0a64405` | completed/cancelled | 被后续 push 取代 |
-| 44747373936 | `51de90d` | completed/**failure** | 6/8 绿；`Toolchain pin and lockfile` 红——干净 runner 注册表为空，`cargo build --offline` 失败被误报成「锁文件坏」。本地冷 `CARGO_HOME` 复现同一失败，修法是 lane 先 `cargo fetch` 再离线构建（commit `2e63e65`） |
-| **44749719511** | `2e63e65` | completed/**success** | `Select lanes`/`Toolchain`/`Python`/`TypeScript`/`Documentation`/`Harness self-tests` 全 success，`Rust format and lint`、`Rust build and test` 按选路 **skipped**（CI-only 改动、`rust_packages` 空、`rust_all=0`）——路径条件在生产环境生效 |
-
-门禁结论：三条 lane 在本席位可复跑（`ci/toolchain-check.sh --offline` 冷缓存 exit 0；`ci/check-typescript.sh` 对 `extensions/vscode` 真门禁并通过 149 个 vitest 用例；`ci/check-docs.sh` 47 链接 0 死）。Rust 侧 `cargo fmt`/`clippy` 在全仓口径仍红，属各 crate 所属席位的历史债务，不属 CI 面；rebase 到 `a2c0f66` 后实测 **211 处 fmt**（resources 104 / mercury 32 / server-runtime 34 / platform 24 / foundation 17）与 **32 处 clippy**（全部落在 `crates/resources` 的 `bwresource.rs` / `packed.rs` / `zip.rs`）——债务在席位间随合并移动，CI 面只负责把位置打到 `path:line:col`。
+门禁要点：三条 lane 在本席位可复跑（`ci/toolchain-check.sh --offline` 冷缓存 exit 0；`ci/check-typescript.sh` 对 `extensions/vscode` 真门禁并通过 149 个 vitest 用例；`ci/check-docs.sh` 47 链接 0 死）。Rust 侧 `cargo fmt`/`clippy` 在全仓口径仍红，属各 crate 所属席位的历史债务，不属 CI 面；rebase 到 `a2c0f66` 后实测 **211 处 fmt**（resources 104 / mercury 32 / server-runtime 34 / platform 24 / foundation 17）与 **32 处 clippy**（全部落在 `crates/resources` 的 `bwresource.rs` / `packed.rs` / `zip.rs`）——债务在席位间随合并移动，CI 面只负责把位置打到 `path:line:col`。
 
 #### BW-22-02 测试矩阵与服务装配
 
@@ -1568,8 +1560,11 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
   - 原版：BigWorld 的 OS 差异是**两份独立工作流**——`ci.yml`（`ubuntu-24.04`）与 `ci-windows.yml`（`windows-latest`），同一门禁逻辑复制两遍；全仓**没有任何 macos runner**。且没有「每端启动测试记录」这回事：作业跑 `ctest`，失败时靠 `if: failure()` 上传 tee 出来的 `.log` 散文件。
   - 新版：单一入口 `ci/runners.sh`，`.github/workflows/ci.yml` 的 `runners` 作业用 `strategy.matrix.os: [ubuntu-latest, windows-latest, macos-latest]` 三腿跑**同一个**入口（对应 BW-15-02/03/04 的三个首批目标）。每腿把角色列表从 `crates/server-runtime/src/app.rs` 的 `KNOWN_ROLES` **读出来**（不是硬编码，加角色即自动点亮），逐个 `boundless-server <role>` 起来并记录启动行与退出码，另跑一次未知角色做负例；产出 `ci-out/runners/<os>-<arch>.tsv`（os / arch / rustc / toolchain_resolved / git_sha / version / binary + 每角色一行结果）与机器可读 `runners/<os>-<arch>.json`。
   - 结果：Linux 腿真跑 **8/8 角色全部起来**（`[baseapp] starting (boundless minimal entry)` 等，退出码全 0），未知角色 `not-a-real-role` 被拒且回显合法集合，json 报 `roles_total=8 roles_ok=8 unknown_role_refused=yes`。`self-test` 2 项全 PASS：坏角色会 FAIL 且**在记录里点名**（`badrole FAIL`）、干净 stub 全过；自测用私有 `CI_OUT` 沙盒，不会覆盖同进程里已发生的真实记录。
-  - 关键设计：矩阵作业**故意忽略** `vars.CI_RUNNER`——一台自托管 runner 不可能同时是三个操作系统，而这正是矩阵的意义所在。选路上把 `runners` 挂在「runner 真正执行的代码」上（`crates/platform/**`、`apps/server/**`、`crates/server-runtime/**`、`rust-toolchain.toml`、根 `Cargo.toml`/`Cargo.lock`），而不是挂在 `ci/` 上：改 CI 脚本时由 `harness` 作业的 `ci/runners.sh self-test` 覆盖，不必每次都烧三台 runner。三端矩阵尚未在本仓真跑（需 push 后由 CI 执行）。
-  - 证据：`ci-out/runners/linux-x86_64.tsv` 与 `.json`、`logs/runners-linux-x86_64.log`；`ci/runners.sh`、`ci/changes.sh`（`runners` lane）、`.github/workflows/ci.yml` 的 `runners` 作业；CI run 号见下方 BW-22-02 交付汇总。
+  - 关键设计：矩阵作业**故意忽略** `vars.CI_RUNNER`——一台自托管 runner 不可能同时是三个操作系统，而这正是矩阵的意义所在。选路上把 `runners` 挂在「runner 真正执行的代码」上（`crates/platform/**`、`apps/server/**`、`crates/server-runtime/**`、`rust-toolchain.toml`、根 `Cargo.toml`/`Cargo.lock`），而不是挂在 `ci/` 上：改 CI 脚本时由 `harness` 作业的 `ci/runners.sh self-test` 覆盖，不必每次都烧三台 runner。另加 `workflow_dispatch.inputs.runners` 手动开关，可强制跑矩阵（新 runner 镜像也靠它烟测）。
+  - 三端矩阵已在 CI 真跑（run **44760793199**，`gh workflow run ci.yml -f runners=true`）：**ubuntu-latest success、windows-latest success、macos-latest failure**。前两端证明整个 workspace 在 Windows 上也能编译并把 8 个角色起起来；macOS 腿记录的是真编译错误——`crates/server-runtime/src/signals.rs:517` 用了 `libc::SIGRTMIN()`/`SIGRTMAX()`/`sigwaitinfo`（仅 Linux 有），`error[E0425] cannot find function 'sigwaitinfo' in crate 'libc'`，`could not compile 'server-runtime' (lib) due to 4 previous errors`。这正是 BW-15-04（macOS 未开始）应有的样子，由记录如实报出而非被平均掉。
+  - 因此该作业是**报告型而非门控型**：`continue-on-error: true`，理由与翻转条件都写在作业注释里——`docs/architecture/compatibility-matrix.md` 中只有 Linux x86-64 是「已开工」目标，Windows/macOS 未开始；若因 macOS 编译不过就红整条 push，反而会把这个作业真正的产出（三端就绪度记录）藏起来。两端开工后删掉 `continue-on-error` 即可转门控。
+  - 附带修掉的调用错误：`ci/runners.sh` 起初写成 `if ! ci_pipe …`，而 `ci_pipe` 的约定是把退出码放进 `$CI_RC` 由调用方判断（`ci/check-rust.sh:79` 等五处皆如此），故原写法会把编译失败当成功——本地一次真实构建没产出可执行文件时暴露，改为 `${CI_RC:-1}` 判断。
+  - 证据：`ci-out/runners/linux-x86_64.tsv` 与 `.json`、`logs/runners-linux-x86_64.log`；CI 侧 `ci-results-runners-{ubuntu,windows,macos}-latest-44760793199` 三个 artifact（macOS 那份含 4 条 E0425 原文）；`ci/runners.sh`、`ci/changes.sh`（`runners` lane）、`.github/workflows/ci.yml` 的 `runners` 作业。
 - [ ] **BW-22-02-02 编排 MySQL 和 PostgreSQL**。**验收** 可隔离起库并执行存储用例。
 - [ ] **BW-22-02-03 编排 XML 与 SQLite**。**验收** 各有独立结果。
 - [ ] **BW-22-02-04 接入兼容性差分**。**验收** 替换路径可在本地复跑。
@@ -1580,7 +1575,23 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
   - 关键设计：行数在打包**前**快照并作为参数传入校验，而不是回读时重新计数。manifest 是 append-only，归档 lane 自己那行在 tarball 已生成**之后**才落盘；若重新计数，一个缺行的 bundle 会对着「已经变长」的 manifest 判通过——本次自测的截断负例正是这条。
   - 结果：`ci/archive-results.sh self-test` 3 项全 PASS（满负载 CI_OUT round-trip、截断 bundle 被拒、空树如实报告）；本地 7 作业等价门 27 行 round-trip、bundle 56K；解包后 3 条 FAIL 行与其具名日志俱在（`logs/rust-test.log` 60K，含 panic `left: 8 / right: 0` 原样可读）。
   - 附带发现（不属 CI 面，本席位未改一行代码）：在分叉点 `2e63e65` 上整仓并行跑时，`crates/server-runtime/src/signals.rs:825` 的 `signals::tests::ignore_signal_swallows_raises` **非确定性失败**（门内 160 过 1 败；整库复跑 1/5 再败；单跑 10/10 过）。诊断是测试间共享进程级信号状态：`PENDING_SIGNALS` 与计数 handler 均为进程全局，本用例 `ignore_signal(SIGUSR2)` 与兄弟用例的 handler 注册交叉时，它的计数器被他人投递累加到 8。server-runtime 席位随后在 `6a1bbd2` 修掉了同一根因（`The pending bitset is shared process state that a sibling test may have dirtied`），rebase 后两次 `rust-test` 均 PASS、flake 不再复现。该 flake 会间歇性让 `Rust build and test` 作业变红——正是归档 lane 存在的理由。
-  - 证据：分叉点树 `ci-out/manifest.tsv` 的 `archive` 行 `ok: 27 manifest row(s) round-tripped, bundle 56K`；rebase 后 `a2c0f66` 上再跑一次 `ok: 15 manifest row(s) round-tripped, bundle 60K`；bundle 解包后 3 条 FAIL 行与其具名日志俱在（`logs/rust-test.log` 60K，含 panic `left: 8 / right: 0` 原样可读）；CI 首跑 run 号见下方 BW-22-02 交付汇总。
+  - 证据：分叉点树 `ci-out/manifest.tsv` 的 `archive` 行 `ok: 27 manifest row(s) round-tripped, bundle 56K`；rebase 后 `a2c0f66` 上再跑一次 `ok: 15 manifest row(s) round-tripped, bundle 60K`；bundle 解包后 3 条 FAIL 行与其具名日志俱在（`logs/rust-test.log` 60K，含 panic `left: 8 / right: 0` 原样可读）；CI 首跑 run 号见下方 BW-22 交付汇总。
+
+#### BW-22 交付汇总（CI 面真跑记录）
+
+workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatch）。BW-22-01 与 BW-22-02 的条目共用这张表，因为同一个 workflow 面被逐条改造：
+
+| run | HEAD | 触发 | 结果 | 说明 |
+| --- | --- | --- | --- | --- |
+| 44745195746 | `0a64405` | push | completed/cancelled | 被后续 push 取代 |
+| 44747373936 | `51de90d` | push | completed/**failure** | 6/8 绿；`Toolchain pin and lockfile` 红——干净 runner 注册表为空，`cargo build --offline` 失败被误报成「锁文件坏」。本地冷 `CARGO_HOME` 复现同一失败；修法是 lane 先 `cargo fetch` 再离线构建 |
+| **44749719511** | `2e63e65` | push | completed/**success** | BW-22-01 收口：`Select lanes`/`Toolchain`/`Python`/`TypeScript`/`Documentation`/`Harness` 全 success，两个 Rust 作业按选路 **skipped**——路径条件在生产环境生效 |
+| 44757456657 | `95c8f75` | push | completed/**failure** | BW-22-02-06 上线首跑：7 个作业的 `Bundle results` 全 success，但 `Upload results` 全红——bundle 文件名里的 UTC **冒号**被 Actions artifact 路径校验拒绝（`The path for one of the files in artifact is not valid … Contains the following character: Colon`）。旧上传步骤挂 `if: failure()`，绿作业从未真正执行过上传，故该缺陷一直潜伏；改成 `if: always()` 才暴露 |
+| **44760793199** | `1ef471e` | workflow_dispatch（`runners=true`） | completed/**failure** | BW-22-02-01 三端矩阵：`ubuntu-latest` success、`windows-latest` success、`macos-latest` failure（`server-runtime/src/signals.rs:517` 用了仅 Linux 有的 `SIGRTMIN`/`SIGRTMAX`/`sigwaitinfo`）。作业随后改为 `continue-on-error` 报告型 |
+
+本地等价门（`CI_OUT` 走默认仓根路径，与 CI 一致）在 `a2c0f66` 上全跑一次：28 PASS / 3 SKIP / 2 FAIL，两条 FAIL 均为 `rust-fmt`（211 处）与 `rust-lint`（32 处，全在 `crates/resources`），属各 crate 所属席位的历史债务，不属 CI 面；`archive` 行 `ok: 32 manifest row(s) round-tripped, bundle 60K`。
+
+门禁结论：本席位负责的门面（选路、工具链、TypeScript、文档、归档、三端启动记录、全部自测）在本机与 CI 均可复跑且真绿；Rust 格式与 lint 在全仓口径仍红，且债务随合并在各席位间移动，CI 面的职责是把位置打到 `path:line:col` 并保证可取回，而非替他人还债。
 
 #### BW-22-03 压测与回归报告
 

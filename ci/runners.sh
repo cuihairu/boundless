@@ -161,7 +161,9 @@ run() {
             ci_skip "runner-$target" "no cargo on this runner — cannot build the server role entry point"
             return 0
         fi
-        if ! ci_pipe "runners-build-$target" cargo build -q -p boundless-server >/dev/null; then
+        ci_pipe "runners-build-$target" cargo build -q -p boundless-server >/dev/null
+        # ci_pipe reports through CI_RC, not its own exit status.
+        if [ "${CI_RC:-1}" -ne 0 ]; then
             ci_fail "runner-$target" "cargo build -p boundless-server failed on $target (see logs/runners-build-$target.log)"
             return 0
         fi

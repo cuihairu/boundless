@@ -317,9 +317,21 @@ jobs:
   # This job deliberately ignores vars.CI_RUNNER: one self-hosted runner cannot
   # be three operating systems at once, and that is the whole point of the
   # matrix.
+  #
+  # It reports rather than gates. Only Linux x86-64 is a started platform
+  # target (docs/architecture/compatibility-matrix.md, BW-15-02); Windows and
+  # macOS are not started, and macOS in particular does not compile yet:
+  # crates/server-runtime/src/signals.rs uses libc::SIGRTMIN / SIGRTMAX /
+  # sigwaitinfo, which exist only on Linux. Failing the whole push for that
+  # would hide the record that is this job's product, so the legs are
+  # continue-on-error and the truth lives in the uploaded startup records.
+  #
+  # Flip this to gating by dropping continue-on-error once the other two
+  # targets are started.
   runners:
     name: Server startup on every runner
     needs: changes
+    continue-on-error: true
     if: >-
       contains(needs.changes.outputs.lanes, 'runners') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.runners == 'true')
