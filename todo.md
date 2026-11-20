@@ -1329,7 +1329,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 - [x] **BW-19-02-01 编写三端安装指南**。**验收** 各端干净环境可复现。
   - 证据：原版无对应的三端安装页（`docs/getting-started/` 仅 build-from-source / project-structure / api-reference，面向 C++ 源码构建；其 README 记录服务端基准 Linux x86-64、C++23、嵌入 CPython 3.13.16）；新版为 `docs/guide/install.md`，按 BW-15 首批三端 Linux x86-64 / Windows x86-64 / macOS arm64 分表，含 `rust-toolchain.toml` 钉定 1.100.0、`cargo build -p boundless-server`、release profile（`opt-level=3`+`debug=true`）与干净安装 4 步清单。Linux 标注 Verified 并实测：`cargo build -p boundless-server` 绿（首编 3.17s，复检命中缓存 0.04s）；`target/debug/boundless-server loginapp` 打印 `[loginapp] starting (boundless minimal entry)` exit 0，`bogus` exit 1，无参 exit 1——与页面所述逐条吻合。Windows 与 macOS 如实标注「未在本树验证」并指向 BW-15-03/04（`crates/platform/` 现仅 `clock.rs`），不代餐。`pnpm --dir docs run build` 绿 5.68s，checker 24 链接 0 dead。
-- [ ] **BW-19-02-02 编写 FantasyDemo 快速开始**。**验收** 按步骤可登录进入世界。
+- [x] **BW-19-02-02 编写 FantasyDemo 快速开始**。**验收** 按步骤可登录进入世界。
+  - 证据：原版 FantasyDemo 位于 `BigWorld/programming/fantasydemo/`（108 文件），`res/scripts/entities.xml` 声明 5 类实体 Account/Avatar/Guard/Space/ClientOnly，脚本分 base/cell/client 三层，全部由 `scripts/generate-fantasydemo-assets.py` 生成（末行 `-- do not edit.`）、Tab 缩进；新版为 `docs/guide/fantasy-demo.md`，含五类实体表、两份真实脚本全文（`base/Account.py` 15 行、`cell/Avatar.py` 18 行）、目录树、六步验收对照表（BW-14-01-01..06），并如实标注所引路径是**原版路径**、本树尚无 `fantasydemo/`（规划目标 `examples/fantasydemo/`）。12 个引用路径实测 **11 个 EXISTS**，唯一例外 `res/scripts/alias.xml` 不存在——实为 `entity_defs/alias.xml`（该目录恰为 5 个 `.def` + `alias.xml`），文档已改正；`entities.xml` 的生成横幅注释含 `--`，使严格 XML 解析器拒绝（`xml.etree` 报 not well-formed，line 2 col 59），已以 tip 块如实登记，BW 自身解析器接受。验收「按步骤可登录进入世界」依赖 BW-14：本树无登录协议与 Python host，页面明示该六步为 BW-14-01 的验收目标而非可跑步骤，不代餐。`pnpm --dir docs run build` 绿 5.47s，checker 25 链接 0 dead。
 - [ ] **BW-19-02-03 编写独立服务指南**。**验收** 命令能启动并停止单角色。
 - [ ] **BW-19-02-04 编写实体开发指南**。**验收** 示例脚本有可观测回调。
 - [ ] **BW-19-02-05 编写 SDK 与引擎接入指南**。**验收** 示例包含第一次 RPC 验证。

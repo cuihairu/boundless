@@ -7,6 +7,8 @@ getting a world running.
 
 - [Installing on three platforms](/guide/install) — Linux, Windows and macOS
   prerequisites and a clean-install checklist.
+- [FantasyDemo quick start](/guide/fantasy-demo) — log in, create a character,
+  enter a space and move.
 
 ## How honest this guide is
 
