@@ -348,9 +348,9 @@
 覆盖 `entities.xml`、`.def`、`alias.xml`、父类和接口、Service 定义、属性默认值与索引、Base/Cell/Client 方法排序。比对实体、属性、方法 ID 和定义摘要。
 
 - [x] **BW-04-01-01 解析实体和别名文件**。**验收** 实体 ID、别名解析及缺项错误吻合。
-  - 证据：crates/entitydef 差分测试对参考 process_defs dump（fantasydemo / client_integration 两棵 res 树）逐字节相等，149 单测通过，行覆盖 99.41%；详见 docs/review/bw04-01-01-entitydef-parse.md。
+  - 证据：crates/entitydef 差分测试对参考 process_defs dump（fantasydemo / client_integration 两棵 res 树）逐字节相等，149 单测通过，行覆盖 99.41%；详见 docs/review/bw04-01-01-entitydef-parse.md。commit `0023108`。
 - [x] **BW-04-01-02 合并父类和接口**。**验收** 继承冲突与优先级吻合。
-  - 证据：父类同名方法签名冲突失败、接口成员先于自身并入、Volatile 缺省继承父值、接口链自深向浅合并；差分 oracle 仍逐字节相等。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-02 节。
+  - 证据：父类同名方法签名冲突失败、接口成员先于自身并入、Volatile 缺省继承父值、接口链自深向浅合并；差分 oracle 仍逐字节相等。详见 docs/review/bw04-01-01-entitydef-parse.md 的 BW-04-01-02 节。commit `da3b2ff`（前置 clippy 修复 `ca51862`）。
 - [ ] **BW-04-01-03 处理 Service 定义**。**验收** 公开方法与原版清单一致。
 - [ ] **BW-04-01-04 分配属性和方法索引**。**验收** Base、Cell、Client 索引吻合。
 - [ ] **BW-04-01-05 计算定义摘要**。**验收** 同输入得到与原版相同字节。
