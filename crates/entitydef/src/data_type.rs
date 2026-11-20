@@ -101,6 +101,49 @@ pub enum Kind {
     UserType { module: String, instance: String },
 }
 
+impl Kind {
+    /// The meta-type name of this payload (`pMetaDataType_->name()`).
+    pub fn meta_name(&self) -> &'static str {
+        match self {
+            Self::Int { bytes, signed } => match (*signed, *bytes) {
+                (true, 1) => "INT8",
+                (true, 2) => "INT16",
+                (true, 4) => "INT32",
+                (true, 8) => "INT64",
+                (false, 1) => "UINT8",
+                (false, 2) => "UINT16",
+                (false, 4) => "UINT32",
+                (false, 8) => "UINT64",
+                _ => unreachable!("int byte width"),
+            },
+            Self::Float32 => "FLOAT32",
+            Self::Float64 => "FLOAT64",
+            Self::String => "STRING",
+            Self::UnicodeString => "UNICODE_STRING",
+            Self::Blob => "BLOB",
+            Self::Vector { elements } => match elements {
+                2 => "VECTOR2",
+                3 => "VECTOR3",
+                4 => "VECTOR4",
+                _ => unreachable!("vector element count"),
+            },
+            Self::UdoRef => "UDO_REF",
+            Self::MailBox => "MAILBOX",
+            Self::Python => "PYTHON",
+            Self::Sequence { is_tuple, .. } => {
+                if *is_tuple {
+                    "TUPLE"
+                } else {
+                    "ARRAY"
+                }
+            }
+            Self::FixedDict { .. } => "FIXED_DICT",
+            Self::Class { .. } => "CLASS",
+            Self::UserType { .. } => "USER_TYPE",
+        }
+    }
+}
+
 /// A parsed `<Type>` section (`DataType`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataType {
@@ -133,43 +176,7 @@ impl DataType {
     /// The meta-type name (`DataType::typeName()` base case:
     /// `pMetaDataType_->name()`).
     pub fn meta_name(&self) -> &'static str {
-        match &self.kind {
-            Kind::Int { bytes, signed } => match (*signed, *bytes) {
-                (true, 1) => "INT8",
-                (true, 2) => "INT16",
-                (true, 4) => "INT32",
-                (true, 8) => "INT64",
-                (false, 1) => "UINT8",
-                (false, 2) => "UINT16",
-                (false, 4) => "UINT32",
-                (false, 8) => "UINT64",
-                _ => unreachable!("int byte width"),
-            },
-            Kind::Float32 => "FLOAT32",
-            Kind::Float64 => "FLOAT64",
-            Kind::String => "STRING",
-            Kind::UnicodeString => "UNICODE_STRING",
-            Kind::Blob => "BLOB",
-            Kind::Vector { elements } => match elements {
-                2 => "VECTOR2",
-                3 => "VECTOR3",
-                4 => "VECTOR4",
-                _ => unreachable!("vector element count"),
-            },
-            Kind::UdoRef => "UDO_REF",
-            Kind::MailBox => "MAILBOX",
-            Kind::Python => "PYTHON",
-            Kind::Sequence { is_tuple, .. } => {
-                if *is_tuple {
-                    "TUPLE"
-                } else {
-                    "ARRAY"
-                }
-            }
-            Kind::FixedDict { .. } => "FIXED_DICT",
-            Kind::Class { .. } => "CLASS",
-            Kind::UserType { .. } => "USER_TYPE",
-        }
+        self.kind.meta_name()
     }
 
     /// The whole type, as the reference `typeName()` accumulates it.
