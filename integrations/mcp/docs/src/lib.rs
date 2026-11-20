@@ -9,6 +9,8 @@
 pub mod errors;
 pub mod index;
 pub mod markdown;
+pub mod mcp;
+pub mod search;
 pub mod source;
 
 pub use errors::DocsError;

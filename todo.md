@@ -1649,8 +1649,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 提供文档搜索、按版本读取和链接解析，返回来源、路径、章节和版本。首发支持本地 stdio，由 VS Code 或其他 MCP 客户端接入。
 
-- [ ] **BW-28-02-01 提供 stdio MCP 会话**。**验收** 客户端能列出搜索和读取入口。
-- [ ] **BW-28-02-02 提供文档搜索**。**验收** 固定查询命中预期章节。
+- [x] **BW-28-02-01 提供 stdio MCP 会话**。**验收** 客户端能列出搜索和读取入口。
+  - 证据：原版结果——引用仓库没有 MCP 面，文档只能靠人翻目录。新版结果——`src/mcp.rs` 提供 stdio 会话：JSON-RPC 2.0、每行一条消息，`initialize`（回 `protocolVersion 2025-06-18`、`serverInfo boundless-docs-mcp`、`capabilities.tools`）、`ping`、`tools/list`、`tools/call`、通知不回包、未知方法 `-32601`、坏 JSON `-32700`（id null）；工具层失败按 MCP 惯例回 `isError` 结果而非协议错误。二进制 `boundless-docs-mcp --root <工作区> --version <ref>` 直接可被 MCP 客户端启动。证据链接——`cargo test` 45 例全绿（含 `tests/mcp_session.rs` 12 例）；`tests/e2e_stdio.rs` 用真实子进程实跑一次工具调用：spawn 二进制（`--root` 指向真实 git 仓库、`--version v1`）→ 写入 initialize/notifications/tools/list/tools/call → 收 3 条回复：`serverInfo.name == boundless-docs-mcp`、`tools/list` 恰好 `["search_docs","read_doc"]`、搜索回 `Defining properties` 且 `version == v1`，进程正常退出。clippy 0 警告。
+- [x] **BW-28-02-02 提供文档搜索**。**验收** 固定查询命中预期章节。
+  - 证据：原版结果——引用仓库文档无搜索入口，也没有章节级索引可供定位。新版结果——`src/search.rs` 按词加权：章节标题整词 8 分 > 标题子串 4 > 页标题 2 > 正文 1；分词保留 CJK 短语为一个词（`"Cell 迁移 v2!"` → `cell / 迁移 / v2`），按路径+行号稳定排序，`limit` 钳到 1..50，空查询与未建索引的版本返回空；snippet 取正文中第一条含查询词的行、超过 140 字截断加省略号。打分与 snippet 只用章节**自己的**正文（`ExtractedSection.direct`，止于下一个任意层级标题），因此父章节不会抢走子章节的命中。证据链接——固定查询 `Flags cell` 命中 `guide/entities.md` 的 `Defining properties`（`anchor == defining-properties`、snippet 含 `Flags`、`version == v1`）；中文查询 `属性` + `lang=zh` 全部命中 `zh/` 前缀页且 `lang == zh`；`limit:1` 只回 1 条。`cargo test` 45 例全绿（`src/search.rs` 内 5 例单测 + `tests/mcp_session.rs`），覆盖率 search.rs 98%、markdown.rs 100%。
 - [ ] **BW-28-02-03 提供版本化读取**。**验收** 返回路径、版本、章节和源链接。
 - [ ] **BW-28-02-04 解析 VitePress 链接**。**验收** 读取结果的锚点可打开。
 

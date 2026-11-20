@@ -1,5 +1,6 @@
 //! A real git repository standing in for a workspace, so tests exercise the
-//! same Git plumbing the server uses.
+//! same Git plumbing the server uses. Not every test file uses every helper.
+#![allow(dead_code)]
 
 use std::process::Command;
 
@@ -28,6 +29,16 @@ impl Repo {
         std::fs::write(&file, text).expect("write");
         git(&self._dir, &["add", "-A"]);
         git(&self._dir, &["commit", "-q", "-m", message]);
+    }
+
+    /// Tags the current commit.
+    pub fn tag(&self, label: &str) {
+        git(&self._dir, &["tag", label]);
+    }
+
+    /// The repository root, for `--root`.
+    pub fn path(&self) -> std::path::PathBuf {
+        self._dir.path().to_path_buf()
     }
 }
 

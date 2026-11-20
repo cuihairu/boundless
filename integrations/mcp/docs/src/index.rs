@@ -19,6 +19,8 @@ pub struct SectionEntry {
     /// Zero-based line of the heading in the page source.
     pub line: usize,
     pub body: String,
+    /// The text before any nested heading, what this section itself says.
+    pub direct: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,7 +53,7 @@ pub struct RefreshReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocIndex {
-    versions: Vec<VersionDocs>,
+    pub versions: Vec<VersionDocs>,
 }
 
 impl DocIndex {
@@ -183,6 +185,7 @@ impl DocEntry {
                     level: s.level,
                     line: s.line,
                     body: s.body,
+                    direct: s.direct,
                 })
                 .collect(),
         })
