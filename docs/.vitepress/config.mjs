@@ -34,6 +34,12 @@ const guideSidebar = [
     items: [
       { text: "FantasyDemo quick start", link: "/guide/fantasy-demo" }
     ]
+  },
+  {
+    text: "Deployment",
+    items: [
+      { text: "Running a standalone server", link: "/guide/standalone-server" }
+    ]
   }
 ];
 

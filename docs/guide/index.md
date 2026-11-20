@@ -9,6 +9,8 @@ getting a world running.
   prerequisites and a clean-install checklist.
 - [FantasyDemo quick start](/guide/fantasy-demo) — log in, create a character,
   enter a space and move.
+- [Running a standalone server](/guide/standalone-server) — start and stop one
+  role, and what a role can and cannot do today.
 
 ## How honest this guide is
 
