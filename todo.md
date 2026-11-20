@@ -1558,7 +1558,7 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 | 44747373936 | `51de90d` | completed/**failure** | 6/8 绿；`Toolchain pin and lockfile` 红——干净 runner 注册表为空，`cargo build --offline` 失败被误报成「锁文件坏」。本地冷 `CARGO_HOME` 复现同一失败，修法是 lane 先 `cargo fetch` 再离线构建（commit `2e63e65`） |
 | **44749719511** | `2e63e65` | completed/**success** | `Select lanes`/`Toolchain`/`Python`/`TypeScript`/`Documentation`/`Harness self-tests` 全 success，`Rust format and lint`、`Rust build and test` 按选路 **skipped**（CI-only 改动、`rust_packages` 空、`rust_all=0`）——路径条件在生产环境生效 |
 
-门禁结论：三条 lane 在本席位可复跑（`ci/toolchain-check.sh --offline` 冷缓存 exit 0；`ci/check-typescript.sh` 对 `extensions/vscode` 真门禁并通过 149 个 vitest 用例；`ci/check-docs.sh` 47 链接 0 死）。Rust 侧 `cargo fmt`/`clippy` 在全仓口径仍红，属 foundation/mercury/platform/resources/server-runtime 各 crate 所属席位的历史债务（284 处 fmt、2 处 clippy deny），不属 CI 面。
+门禁结论：三条 lane 在本席位可复跑（`ci/toolchain-check.sh --offline` 冷缓存 exit 0；`ci/check-typescript.sh` 对 `extensions/vscode` 真门禁并通过 149 个 vitest 用例；`ci/check-docs.sh` 47 链接 0 死）。Rust 侧 `cargo fmt`/`clippy` 在全仓口径仍红，属各 crate 所属席位的历史债务，不属 CI 面；rebase 到 `a2c0f66` 后实测 **211 处 fmt**（resources 104 / mercury 32 / server-runtime 34 / platform 24 / foundation 17）与 **32 处 clippy**（全部落在 `crates/resources` 的 `bwresource.rs` / `packed.rs` / `zip.rs`）——债务在席位间随合并移动，CI 面只负责把位置打到 `path:line:col`。
 
 #### BW-22-02 测试矩阵与服务装配
 
@@ -1574,8 +1574,8 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
   - 新版：`ci/archive-results.sh` 在 `CI_OUT` **同级**打 `ci-results-<name>-<sha>-<utc>.tar.gz`（manifest + `logs/` + `coverage/` + `fixtures/` + `toolchain.json`），打包后**回读**、行数比对通过才交给上传。`.github/workflows/ci.yml` 每个作业加 `Bundle results`（`if: always()`）与 `Upload results`（`ci-results/<job>-<run_id>`、`if: always()`、`if-no-files-found: warn`）——绿跑的 manifest 正是归档 lane 要校验的东西，红跑的日志才是留档的意义所在，所以两者都不再是 `failure()`。bundle 不落在 `CI_OUT` 内：tar 归档自身目录会无限增长。
   - 关键设计：行数在打包**前**快照并作为参数传入校验，而不是回读时重新计数。manifest 是 append-only，归档 lane 自己那行在 tarball 已生成**之后**才落盘；若重新计数，一个缺行的 bundle 会对着「已经变长」的 manifest 判通过——本次自测的截断负例正是这条。
   - 结果：`ci/archive-results.sh self-test` 3 项全 PASS（满负载 CI_OUT round-trip、截断 bundle 被拒、空树如实报告）；本地 7 作业等价门 27 行 round-trip、bundle 56K；解包后 3 条 FAIL 行与其具名日志俱在（`logs/rust-test.log` 60K，含 panic `left: 8 / right: 0` 原样可读）。
-  - 附带发现（不属 CI 面，未改一行代码）：整仓并行跑时 `crates/server-runtime/src/signals.rs:825` 的 `signals::tests::ignore_signal_swallows_raises` **非确定性失败**（首跑 160 过 1 败，复跑 4/4 过，单跑 10/10 过）。成因是测试间共享进程级信号状态：`PENDING_SIGNALS` 与计数 handler 是进程全局的，本用例 `ignore_signal(SIGUSR2)` 与兄弟用例的 handler 注册交叉时，它的计数器被他人投递累加到 8。属 server-runtime 席位的测试隔离缺陷，会间歇性让 `Rust build and test` 作业变红——恰是归档 lane 存在的理由。
-  - 证据：`ci-out/manifest.tsv` 的 `archive` 行 `ok: 27 manifest row(s) round-tripped, bundle 56K`、`ci-results/ci-results-ci-out-2e63e65-*.tar.gz`、`ci/archive-results.sh`；CI 首跑 run 号见 BW-22-02 交付汇总。
+  - 附带发现（不属 CI 面，本席位未改一行代码）：在分叉点 `2e63e65` 上整仓并行跑时，`crates/server-runtime/src/signals.rs:825` 的 `signals::tests::ignore_signal_swallows_raises` **非确定性失败**（门内 160 过 1 败；整库复跑 1/5 再败；单跑 10/10 过）。诊断是测试间共享进程级信号状态：`PENDING_SIGNALS` 与计数 handler 均为进程全局，本用例 `ignore_signal(SIGUSR2)` 与兄弟用例的 handler 注册交叉时，它的计数器被他人投递累加到 8。server-runtime 席位随后在 `6a1bbd2` 修掉了同一根因（`The pending bitset is shared process state that a sibling test may have dirtied`），rebase 后两次 `rust-test` 均 PASS、flake 不再复现。该 flake 会间歇性让 `Rust build and test` 作业变红——正是归档 lane 存在的理由。
+  - 证据：分叉点树 `ci-out/manifest.tsv` 的 `archive` 行 `ok: 27 manifest row(s) round-tripped, bundle 56K`；rebase 后 `a2c0f66` 上再跑一次 `ok: 15 manifest row(s) round-tripped, bundle 60K`；bundle 解包后 3 条 FAIL 行与其具名日志俱在（`logs/rust-test.log` 60K，含 panic `left: 8 / right: 0` 原样可读）；CI 首跑 run 号见下方 BW-22-02 交付汇总。
 
 #### BW-22-03 压测与回归报告
 
