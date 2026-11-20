@@ -255,6 +255,46 @@ impl BwConfig {
         }
     }
 
+    pub fn update_uint(&self, path: &str, value: &mut u32) -> bool {
+        match self.get_section(path) {
+            Some(section) => {
+                *value = section.as_uint(*value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn update_long(&self, path: &str, value: &mut i64) -> bool {
+        match self.get_section(path) {
+            Some(section) => {
+                *value = section.as_long(*value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn update_float(&self, path: &str, value: &mut f32) -> bool {
+        match self.get_section(path) {
+            Some(section) => {
+                *value = section.as_float(*value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn update_string(&self, path: &str, value: &mut String) -> bool {
+        match self.get_section(path) {
+            Some(section) => {
+                *value = section.as_string().to_string();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `BWConfig::beginSearchSections` / `SearchIterator`: every direct
     /// child of every chain entry named `name`, in chain order, with the
     /// filename of the config that supplied it. This is how repeated
