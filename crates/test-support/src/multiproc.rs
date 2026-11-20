@@ -281,50 +281,17 @@ impl ProcessGroup {
         let mut children: Vec<(String, Child)> = Vec::with_capacity(order.len());
         let mut start_order = Vec::with_capacity(order.len());
         for spec in order {
-            let log_file = logs_dir.map(|dir| dir.join(format!("{}.log", spec.name)));
-            let mut command = Command::new(&spec.program);
-            command.args(&spec.args);
-            // Each role leads its own process group, so tearing the role
-            // down can take its whole subtree with it -- the reference
-            // tests SIGKILL only the direct child and leak grandchildren.
-            command.process_group(0);
-            if let Some(path) = &log_file {
-                let file = std::fs::File::create(path).map_err(|error| {
+            let spawned = match Self::spawn_one(spec, logs_dir) {
+                Ok(child) => child,
+                Err(error) => {
+                    // Terminate what is already running before reporting.
                     for (_, mut child) in children.drain(..) {
                         let _ = child.kill();
                         let _ = child.wait();
                     }
-                    HarnessError::Spawn {
-                        role: spec.name.clone(),
-                        reason: format!("cannot open log {}: {error}", path.display()),
-                    }
-                })?;
-                let mirror = file.try_clone().map_err(|error| {
-                    for (_, mut child) in children.drain(..) {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                    HarnessError::Spawn {
-                        role: spec.name.clone(),
-                        reason: format!("cannot share log {}: {error}", path.display()),
-                    }
-                })?;
-                // Both streams into one file keeps the interleaved order in
-                // which the role actually produced them.
-                command.stdout(mirror).stderr(file);
-            }
-
-            let spawned = command.spawn().map_err(|error| {
-                // Terminate what is already running before reporting.
-                for (_, mut child) in children.drain(..) {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    return Err(error);
                 }
-                HarnessError::Spawn {
-                    role: spec.name.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
+            };
             start_order.push(spec.name.clone());
             children.push((spec.name.clone(), spawned));
         }
@@ -334,6 +301,35 @@ impl ProcessGroup {
             children,
             start_order,
             logs_dir: logs_dir.map(Path::to_path_buf),
+        })
+    }
+
+    /// Spawn one role with its own process group and (when set) log
+    /// capture.
+    fn spawn_one(spec: &ProcessSpec, logs_dir: Option<&Path>) -> Result<Child, HarnessError> {
+        let mut command = Command::new(&spec.program);
+        command.args(&spec.args);
+        // Each role leads its own process group, so tearing the role
+        // down can take its whole subtree with it -- the reference
+        // tests SIGKILL only the direct child and leak grandchildren.
+        command.process_group(0);
+        if let Some(dir) = logs_dir {
+            let path = dir.join(format!("{}.log", spec.name));
+            let file = std::fs::File::create(&path).map_err(|error| HarnessError::Spawn {
+                role: spec.name.clone(),
+                reason: format!("cannot open log {}: {error}", path.display()),
+            })?;
+            let mirror = file.try_clone().map_err(|error| HarnessError::Spawn {
+                role: spec.name.clone(),
+                reason: format!("cannot share log {}: {error}", path.display()),
+            })?;
+            // Both streams into one file keeps the interleaved order in
+            // which the role actually produced them.
+            command.stdout(mirror).stderr(file);
+        }
+        command.spawn().map_err(|error| HarnessError::Spawn {
+            role: spec.name.clone(),
+            reason: error.to_string(),
         })
     }
 
@@ -425,6 +421,51 @@ impl ProcessGroup {
             .iter()
             .map(|(role, child)| (role.clone(), child.id()))
             .collect()
+    }
+
+    /// Inject the fault: kill the role's whole process tree and reap it.
+    /// The slot stays empty until [`ProcessGroup::restart`] fills it.
+    /// Returns the pid that was killed.
+    ///
+    /// # Panics
+    /// If the role is unknown or already down.
+    pub fn crash(&mut self, role: &str) -> u32 {
+        let index = self
+            .children
+            .iter()
+            .position(|(name, _)| name == role)
+            .unwrap_or_else(|| panic!("no such role '{role}'"));
+        let (_, mut child) = self.children.remove(index);
+        let pid = child.id();
+        kill_process_group(pid as i32);
+        let _ = child.kill();
+        let _ = child.wait();
+        pid
+    }
+
+    /// Bring a crashed role back with its original spec -- the scripted
+    /// recovery step of a migration scenario. Returns the new pid.
+    ///
+    /// # Panics
+    /// If no role of that name exists in the topology.
+    pub fn restart(&mut self, role: &str) -> Result<u32, HarnessError> {
+        let spec = self
+            .topology
+            .specs()
+            .iter()
+            .find(|spec| spec.name == role)
+            .unwrap_or_else(|| panic!("no such role '{role}'"))
+            .clone();
+        let spawned = Self::spawn_one(&spec, self.logs_dir.as_deref())?;
+        let pid = spawned.id();
+        self.children.push((role.to_string(), spawned));
+        Ok(pid)
+    }
+
+    /// True while the role has a live process (false when it exited or was
+    /// crashed); `false` for unknown roles.
+    pub fn is_running(&mut self, role: &str) -> bool {
+        self.try_wait_role(role).is_none() && self.children.iter().any(|(name, _)| name == role)
     }
 
     /// Wait for every role to exit, returning `(role, status)` in start
@@ -1063,5 +1104,137 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(150));
         assert!(!scan_for(MARKER), "drop leaked the role tree");
+    }
+
+    /// The fault fixture kills the role's tree and a restart brings a
+    /// fresh process of the same spec back.
+    #[test]
+    fn a_crashed_role_restarts_with_a_fresh_pid() {
+        let topology = Topology::new().add(ProcessSpec::new("tenant", "/bin/sleep").arg("30"));
+        let mut group = ProcessGroup::start(&topology).expect("starts");
+
+        let original = group.pid_of("tenant").expect("running");
+        assert!(group.is_running("tenant"));
+
+        let killed = group.crash("tenant");
+        assert_eq!(killed, original);
+        assert!(!group.is_running("tenant"));
+        assert!(group.pid_of("tenant").is_none(), "slot emptied");
+
+        let revived = group.restart("tenant").expect("restarts");
+        assert_ne!(revived, original);
+        assert!(group.is_running("tenant"));
+        let _ = group.kill_tree();
+    }
+
+    /// The acceptance: the same migration scenario -- start, crash,
+    /// restart, recover -- replays through identical state transitions on
+    /// two independent copies, so the recovery is reproducible.
+    #[test]
+    fn a_migration_scenario_replays_identically() {
+        let scenario = |tag: &str| -> Vec<String> {
+            let dir = std::env::temp_dir().join(format!(
+                "bw18-fault-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let recovered = dir.join("recovered.marker");
+            let release = dir.join("release.go");
+
+            // The role waits for the release file, then reports recovery.
+            // The first instance never reaches the marker: only the
+            // restarted copy can, so marker existence means recovery.
+            let topology = Topology::new().add(
+                ProcessSpec::new("baseapp", "/bin/sh")
+                    .arg("-c")
+                    .arg(format!(
+                        "while [ ! -f {} ]; do sleep 0.05; done; touch {}; sleep 30",
+                        release.display(),
+                        recovered.display()
+                    )),
+            );
+            let mut group = ProcessGroup::start(&topology).expect("starts");
+
+            let mut events = vec!["running".to_string()];
+            assert!(group.is_running("baseapp"));
+            assert!(!recovered.exists());
+
+            group.crash("baseapp");
+            events.push("crashed".to_string());
+            assert!(!group.is_running("baseapp"));
+
+            group.restart("baseapp").expect("restarts");
+            events.push("restarted".to_string());
+            std::fs::write(&release, b"").unwrap();
+
+            group
+                .wait_ready(
+                    "baseapp",
+                    &Readiness::FileExists(recovered.clone()),
+                    Duration::from_secs(5),
+                )
+                .expect("restarted copy recovers");
+            events.push("recovered".to_string());
+
+            let _ = group.kill_tree();
+            let _ = std::fs::remove_dir_all(&dir);
+            events
+        };
+
+        assert_eq!(
+            scenario("first"),
+            ["running", "crashed", "restarted", "recovered"],
+        );
+        assert_eq!(scenario("second"), scenario("first"));
+    }
+
+    /// A restart keeps log capture: the recovered role appends to the same
+    /// per-role log.
+    #[test]
+    fn a_restarted_role_keeps_its_log() {
+        let run = crate::allocation::RunRoot::open("recover-log").unwrap();
+        let topology = Topology::new().add(
+            ProcessSpec::new("recovering", "/bin/sh")
+                .arg("-c")
+                .arg("echo 'back on deck'; sleep 30"),
+        );
+        let mut group = ProcessGroup::start_logged(&topology, &run.logs_dir()).expect("starts");
+        group.crash("recovering");
+
+        group.restart("recovering").expect("restarts");
+        let log = group.log_path("recovering").expect("logged");
+        group
+            .wait_ready(
+                "recovering",
+                &Readiness::LogContains {
+                    path: log.clone(),
+                    pattern: "back on deck".to_string(),
+                },
+                Duration::from_secs(5),
+            )
+            .expect("restarted role logged its startup");
+        let _ = group.kill_tree();
+    }
+
+    /// The fault fixture rejects role names it does not know, on both
+    /// crash and restart.
+    #[test]
+    #[should_panic(expected = "no such role 'ghost'")]
+    fn crashing_an_unknown_role_is_rejected() {
+        let topology = Topology::new().add(ProcessSpec::new("real", "/bin/sleep").arg("30"));
+        let mut group = ProcessGroup::start(&topology).expect("starts");
+        let _ = group.crash("ghost");
+    }
+
+    #[test]
+    #[should_panic(expected = "no such role 'ghost'")]
+    fn restarting_an_unknown_role_is_rejected() {
+        let topology = Topology::new().add(ProcessSpec::new("real", "/bin/sleep").arg("30"));
+        let mut group = ProcessGroup::start(&topology).expect("starts");
+        let _ = group.restart("ghost");
     }
 }
