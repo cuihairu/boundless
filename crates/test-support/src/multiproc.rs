@@ -65,7 +65,7 @@ impl Topology {
     }
 
     /// Add a role; its name must be unique within the topology.
-    pub fn add(mut self, spec: ProcessSpec) -> Self {
+    pub fn with(mut self, spec: ProcessSpec) -> Self {
         self.specs.push(spec);
         self
     }
@@ -560,9 +560,9 @@ mod tests {
     /// dependency edges can produce the right order.
     fn bigworld_chain() -> Topology {
         Topology::new()
-            .add(ProcessSpec::new("cellapp", "/bin/true").depends_on("cellappmgr"))
-            .add(ProcessSpec::new("cellappmgr", "/bin/true").depends_on("machined"))
-            .add(ProcessSpec::new("machined", "/bin/true"))
+            .with(ProcessSpec::new("cellapp", "/bin/true").depends_on("cellappmgr"))
+            .with(ProcessSpec::new("cellappmgr", "/bin/true").depends_on("machined"))
+            .with(ProcessSpec::new("machined", "/bin/true"))
     }
 
     #[test]
@@ -579,9 +579,9 @@ mod tests {
     #[test]
     fn independent_roles_keep_insertion_order() {
         let topology = Topology::new()
-            .add(ProcessSpec::new("loginapp", "/bin/true"))
-            .add(ProcessSpec::new("baseapp", "/bin/true"))
-            .add(ProcessSpec::new("cellappmgr", "/bin/true").depends_on("loginapp"));
+            .with(ProcessSpec::new("loginapp", "/bin/true"))
+            .with(ProcessSpec::new("baseapp", "/bin/true"))
+            .with(ProcessSpec::new("cellappmgr", "/bin/true").depends_on("loginapp"));
         let order: Vec<String> = topology
             .start_order()
             .unwrap()
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn unknown_dependencies_report_both_roles() {
         let topology =
-            Topology::new().add(ProcessSpec::new("baseapp", "/bin/true").depends_on("machined"));
+            Topology::new().with(ProcessSpec::new("baseapp", "/bin/true").depends_on("machined"));
         match topology.start_order() {
             Err(HarnessError::UnknownDependency { role, missing }) => {
                 assert_eq!(role, "baseapp");
@@ -609,9 +609,9 @@ mod tests {
     #[test]
     fn cycles_list_their_members() {
         let topology = Topology::new()
-            .add(ProcessSpec::new("a", "/bin/true").depends_on("b"))
-            .add(ProcessSpec::new("b", "/bin/true").depends_on("a"))
-            .add(ProcessSpec::new("c", "/bin/true"));
+            .with(ProcessSpec::new("a", "/bin/true").depends_on("b"))
+            .with(ProcessSpec::new("b", "/bin/true").depends_on("a"))
+            .with(ProcessSpec::new("c", "/bin/true"));
         match topology.start_order() {
             Err(HarnessError::DependencyCycle(members)) => {
                 assert_eq!(members, ["a", "b"]);
@@ -623,8 +623,8 @@ mod tests {
     #[test]
     fn duplicate_role_names_are_rejected() {
         let topology = Topology::new()
-            .add(ProcessSpec::new("cellapp", "/bin/true"))
-            .add(ProcessSpec::new("cellapp", "/bin/true"));
+            .with(ProcessSpec::new("cellapp", "/bin/true"))
+            .with(ProcessSpec::new("cellapp", "/bin/true"));
         assert_eq!(
             topology.start_order(),
             Err(HarnessError::DuplicateRole("cellapp".to_string()))
@@ -658,8 +658,8 @@ mod tests {
         // without matching unrelated sleeps elsewhere on the machine.
         const MARKER: &str = "bw18-leak-probe-194327";
         let topology = Topology::new()
-            .add(ProcessSpec::new("machined", "/bin/sleep").arg(MARKER))
-            .add(ProcessSpec::new("broken", "/no/such/binary"));
+            .with(ProcessSpec::new("machined", "/bin/sleep").arg(MARKER))
+            .with(ProcessSpec::new("broken", "/no/such/binary"));
         let error = ProcessGroup::start(&topology).expect_err("spawn fails");
 
         let HarnessError::Spawn { role, .. } = error else {
@@ -697,7 +697,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("ready.marker");
 
-        let topology = Topology::new().add(
+        let topology = Topology::new().with(
             ProcessSpec::new("late", "/bin/sh")
                 .arg("-c")
                 .arg(format!("sleep 0.2; touch {}; sleep 5", marker.display())),
@@ -720,7 +720,7 @@ mod tests {
     /// the exact condition, not just "timed out".
     #[test]
     fn a_timed_out_wait_names_the_role_and_condition() {
-        let topology = Topology::new().add(ProcessSpec::new("sleeper", "/bin/sleep").arg("30"));
+        let topology = Topology::new().with(ProcessSpec::new("sleeper", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start(&topology).unwrap();
         let error = group
             .wait_ready(
@@ -747,7 +747,7 @@ mod tests {
     /// status -- no point waiting out the budget on a corpse.
     #[test]
     fn an_exited_role_fails_fast_with_its_status() {
-        let topology = Topology::new().add(
+        let topology = Topology::new().with(
             ProcessSpec::new("doomed", "/bin/sh")
                 .arg("-c")
                 .arg("exit 3"),
@@ -780,7 +780,7 @@ mod tests {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        let topology = Topology::new().add(ProcessSpec::new("role", "/bin/sleep").arg("30"));
+        let topology = Topology::new().with(ProcessSpec::new("role", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start(&topology).unwrap();
 
         group
@@ -811,7 +811,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("cellapp.log");
 
-        let topology = Topology::new().add(ProcessSpec::new("cellapp", "/bin/sh").arg("-c").arg(
+        let topology = Topology::new().with(ProcessSpec::new("cellapp", "/bin/sh").arg("-c").arg(
             format!(
                 "sleep 0.2; echo 'CellApp initialized: ready' >> {}; sleep 5",
                 log.display()
@@ -846,12 +846,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let good = dir.join("good.marker");
         let topology = Topology::new()
-            .add(
+            .with(
                 ProcessSpec::new("good", "/bin/sh")
                     .arg("-c")
                     .arg(format!("touch {}; sleep 5", good.display())),
             )
-            .add(ProcessSpec::new("bad", "/bin/sleep").arg("30"));
+            .with(ProcessSpec::new("bad", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start(&topology).unwrap();
 
         let error = group
@@ -876,7 +876,7 @@ mod tests {
     /// A wait naming a role the group does not have is rejected up front.
     #[test]
     fn unknown_role_in_a_wait_is_rejected() {
-        let topology = Topology::new().add(ProcessSpec::new("real", "/bin/sleep").arg("30"));
+        let topology = Topology::new().with(ProcessSpec::new("real", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start(&topology).unwrap();
         assert_eq!(
             group.wait_ready(
@@ -893,7 +893,7 @@ mod tests {
     #[test]
     fn role_output_is_captured_in_the_run_log() {
         let run = crate::allocation::RunRoot::open("capture").unwrap();
-        let topology = Topology::new().add(
+        let topology = Topology::new().with(
             ProcessSpec::new("chatty", "/bin/sh")
                 .arg("-c")
                 .arg("echo 'chatty: on deck'; sleep 30"),
@@ -923,12 +923,12 @@ mod tests {
     fn a_failure_scene_keeps_the_original_logs_and_a_report() {
         let mut run = crate::allocation::RunRoot::open("failure").unwrap();
         let topology = Topology::new()
-            .add(
+            .with(
                 ProcessSpec::new("boom", "/bin/sh")
                     .arg("-c")
                     .arg("echo boom >&2; exit 2"),
             )
-            .add(ProcessSpec::new("sleeper", "/bin/sleep").arg("30"));
+            .with(ProcessSpec::new("sleeper", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start_logged(&topology, &run.logs_dir()).expect("starts");
 
         // boom exits; sleeper keeps running.
@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn an_unlogged_group_still_writes_a_report() {
         let mut run = crate::allocation::RunRoot::open("unlogged").unwrap();
-        let topology = Topology::new().add(ProcessSpec::new("quiet", "/bin/sleep").arg("30"));
+        let topology = Topology::new().with(ProcessSpec::new("quiet", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start(&topology).expect("starts");
         assert!(group.log_path("quiet").is_none());
 
@@ -999,7 +999,7 @@ mod tests {
     #[test]
     fn kill_tree_takes_out_grandchildren() {
         const MARKER: &str = "bw18-tree-grand-194331";
-        let topology = Topology::new().add(
+        let topology = Topology::new().with(
             ProcessSpec::new("nested", "/bin/sh")
                 .arg("-c")
                 .arg(format!("sleep 194331 & wait  # {MARKER}")),
@@ -1024,17 +1024,17 @@ mod tests {
             "bw18-end-c-194334",
         ];
         let topology = Topology::new()
-            .add(
+            .with(
                 ProcessSpec::new("machined", "/bin/sh")
                     .arg("-c")
                     .arg(format!("sleep 194332 & wait  # {}", markers[0])),
             )
-            .add(
+            .with(
                 ProcessSpec::new("baseapp", "/bin/sh")
                     .arg("-c")
                     .arg(format!("sleep 194333 & wait  # {}", markers[1])),
             )
-            .add(
+            .with(
                 ProcessSpec::new("cellapp", "/bin/sh")
                     .arg("-c")
                     .arg(format!("sleep 194334 & wait  # {}", markers[2])),
@@ -1058,12 +1058,12 @@ mod tests {
         let survivor_marker = "bw18-par-survivor-194335";
         let victim_marker = "bw18-par-victim-194336";
 
-        let survivor_topology = Topology::new().add(
+        let survivor_topology = Topology::new().with(
             ProcessSpec::new("survivor", "/bin/sh")
                 .arg("-c")
                 .arg(format!("sleep 194335 & wait  # {survivor_marker}")),
         );
-        let victim_topology = Topology::new().add(
+        let victim_topology = Topology::new().with(
             ProcessSpec::new("victim", "/bin/sh")
                 .arg("-c")
                 .arg(format!("sleep 194336 & wait  # {victim_marker}")),
@@ -1091,13 +1091,13 @@ mod tests {
     #[test]
     fn a_dropped_group_tears_itself_down() {
         const MARKER: &str = "bw18-drop-194337";
-        let topology = Topology::new().add(
+        let topology = Topology::new().with(
             ProcessSpec::new("leaker", "/bin/sh")
                 .arg("-c")
                 .arg(format!("sleep 194337 & wait  # {MARKER}")),
         );
         {
-            let group = ProcessGroup::start(&topology).expect("starts");
+            let _group = ProcessGroup::start(&topology).expect("starts");
             std::thread::sleep(Duration::from_millis(150));
             assert!(scan_for(MARKER));
             // Implicit drop here, no kill call.
@@ -1110,7 +1110,7 @@ mod tests {
     /// fresh process of the same spec back.
     #[test]
     fn a_crashed_role_restarts_with_a_fresh_pid() {
-        let topology = Topology::new().add(ProcessSpec::new("tenant", "/bin/sleep").arg("30"));
+        let topology = Topology::new().with(ProcessSpec::new("tenant", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start(&topology).expect("starts");
 
         let original = group.pid_of("tenant").expect("running");
@@ -1148,15 +1148,14 @@ mod tests {
             // The role waits for the release file, then reports recovery.
             // The first instance never reaches the marker: only the
             // restarted copy can, so marker existence means recovery.
-            let topology = Topology::new().add(
-                ProcessSpec::new("baseapp", "/bin/sh")
-                    .arg("-c")
-                    .arg(format!(
+            let topology =
+                Topology::new().with(ProcessSpec::new("baseapp", "/bin/sh").arg("-c").arg(
+                    format!(
                         "while [ ! -f {} ]; do sleep 0.05; done; touch {}; sleep 30",
                         release.display(),
                         recovered.display()
-                    )),
-            );
+                    ),
+                ));
             let mut group = ProcessGroup::start(&topology).expect("starts");
 
             let mut events = vec!["running".to_string()];
@@ -1197,7 +1196,7 @@ mod tests {
     #[test]
     fn a_restarted_role_keeps_its_log() {
         let run = crate::allocation::RunRoot::open("recover-log").unwrap();
-        let topology = Topology::new().add(
+        let topology = Topology::new().with(
             ProcessSpec::new("recovering", "/bin/sh")
                 .arg("-c")
                 .arg("echo 'back on deck'; sleep 30"),
@@ -1225,7 +1224,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "no such role 'ghost'")]
     fn crashing_an_unknown_role_is_rejected() {
-        let topology = Topology::new().add(ProcessSpec::new("real", "/bin/sleep").arg("30"));
+        let topology = Topology::new().with(ProcessSpec::new("real", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start(&topology).expect("starts");
         let _ = group.crash("ghost");
     }
@@ -1233,7 +1232,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "no such role 'ghost'")]
     fn restarting_an_unknown_role_is_rejected() {
-        let topology = Topology::new().add(ProcessSpec::new("real", "/bin/sleep").arg("30"));
+        let topology = Topology::new().with(ProcessSpec::new("real", "/bin/sleep").arg("30"));
         let mut group = ProcessGroup::start(&topology).expect("starts");
         let _ = group.restart("ghost");
     }
