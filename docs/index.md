@@ -63,6 +63,8 @@ and, where a page describes a target that is not implemented yet, names the
 | Server binary and role set | Implemented, minimal lifecycle | `apps/server/src/main.rs` |
 | `bw.xml` configuration chain | Implemented | `crates/server-runtime/src/config.rs` |
 | Mercury packet framing | Implemented | `crates/mercury/src/packet.rs` |
+| Mercury endpoint, poll and interface dispatch | Implemented (`BW-02-01`) | `crates/mercury/src/{endpoint,poller,network_interface,packet_receiver}.rs` |
+| Mercury message layer and channels | Not implemented | `todo.md` BW-02-02, BW-02-03 |
 | PostgreSQL persistence | Not implemented | `todo.md` BW-09-06 |
 | FantasyDemo examples | Not implemented | `todo.md` BW-14 |
 | Bots load testing | Not implemented | `todo.md` BW-17 |

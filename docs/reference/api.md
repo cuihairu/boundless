@@ -32,15 +32,19 @@ cargo test -p foundation
 
 ## `platform`
 
-Only the monotonic clock is public today.
+Operating-system primitives. Four modules today, three of them platform-gated:
 
-| Item | Meaning |
-| --- | --- |
-| `monotonic_now_micros() -> Stamp` | monotonic clock, microseconds |
-| `wall_now_micros() -> Stamp` | wall clock, microseconds |
+| Module | Items | Meaning |
+| --- | --- | --- |
+| `clock` | `monotonic_now_micros() -> Stamp`, `wall_now_micros() -> Stamp` | clocks in microseconds; `Stamp` comes from `foundation::time` |
+| `interface` | `name_index()`, `flags(fd, name)`, `address(fd, name)`, `IFNAMSIZ`, `IFF_*`, `SIOCGIF*` | `ioctl`-based network-interface enumeration |
+| `socket` (unix) | socket option constants (`SO_*`, `SOCK_DGRAM`, …) and the helpers `Endpoint` uses | socket creation and buffer-size application |
+| `poller` (linux) | `create(expected_size)`, `ctl(epfd, op, fd, events)`, `EPOLLIN/OUT/ERR/HUP` | raw `epoll` primitives behind the Mercury event poller |
 
-`Stamp` itself comes from `foundation::time` — the functions above are its only
-consumers in this crate.
+`clock` is the only piece accepted against its three-platform criterion
+(BW-15-01-02); `interface`, `socket` and `poller` landed with the BW-02-01
+transport work and are Linux-first (`unix` / `linux` `cfg` gates), with their
+BW-15-01 acceptance items still open.
 
 ```bash
 cargo test -p platform
@@ -63,7 +67,8 @@ cargo test -p resources
 
 ## `mercury`
 
-Mercury reliable-UDP framing constants.
+Mercury reliable-UDP transport: framing constants plus the BW-02-01 endpoint and
+dispatch layer.
 
 | Item | Value |
 | --- | --- |
@@ -75,6 +80,21 @@ Mercury reliable-UDP framing constants.
 | `REPLY_MESSAGE_ID` | `0xFF` |
 
 All multi-byte wire fields are little-endian.
+
+The transport layer around the packet, delivered by BW-02-01-01..04:
+
+| Module | Items | Meaning |
+| --- | --- | --- |
+| `endpoint` | `Address`, `Endpoint`, `NO_SOCKET`, `INADDR_ANY`, `BROADCAST` | address type and the UDP socket wrapper |
+| `misc` | `Reason` (`Success`, `TimerExpired`, `NoSuchPort`, `GeneralNetwork`, `CorruptedPacket`, …) | the reference's `Mercury::Reason` enum |
+| `network_utils` | `MIN_SND_SKT_BUF_SIZE = 1_048_576`, `MIN_RCV_SKT_BUF_SIZE = 16_777_216`, `buffer_sizes()` | socket buffer sizing against kernel maxima |
+| `network_stats` | `get_queue_sizes(ep, tx, rx)` | the `/proc/net/udp` reader behind `Endpoint::getQueueSizes`, 400 ms cache |
+| `network_interface` (linux) | `NetworkInterface`, `InterfaceType`, `ChannelFinder` | one bound interface; dispatches events to the right channel finder |
+| `packet_receiver` (linux) | `PacketReceiver`, `LogReporter`, `NoSuchPortCallback` | drains the socket into registered receivers |
+| `poller` (linux) | `EventPoller`, `InputHandlerEntry` | epoll-backed registration, wake-up and input/error notification |
+
+The message layer on top (`BW-02-02`) and the Channel/Bundle layer (`BW-02-03`)
+are not there yet.
 
 ```bash
 cargo test -p mercury

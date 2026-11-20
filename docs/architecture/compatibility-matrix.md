@@ -24,15 +24,19 @@ First-batch build targets from BW-15:
 
 | Target | Status | Tracked by |
 | --- | --- | --- |
-| Linux x86-64 | Interface work started; `crates/platform/src/clock.rs` only | BW-15-02 |
+| Linux x86-64 | Clock verified; `interface`, `socket` (unix) and `poller` (linux) modules landed with the BW-02-01 transport work | BW-15-02 |
 | Windows x86-64 | Not started | BW-15-03 |
 | macOS arm64 | Not started | BW-15-04 |
 
 Of the seven platform-interface items (event polling, monotonic clock, process
 control, file locking, memory mapping, path casing, network addresses), only
-**monotonic clock** is implemented and verified: `crates/platform/src/clock.rs`.
-The platform interface is intentionally kept in one crate so platform-specific
-code stays out of the role crates.
+**monotonic clock** has passed its acceptance (**BW-15-01-02**,
+`crates/platform/src/clock.rs`). Event polling, socket control and
+interface enumeration now exist as `platform`'s `poller`, `socket` and
+`interface` modules, but they are gated `unix`/`linux` and were delivered as
+**BW-02-01-01..04** fixtures — their three-platform BW-15-01 acceptance items
+remain open. The platform interface is intentionally kept in one crate so
+platform-specific code stays out of the role crates.
 
 ## Persistence backends
 
@@ -61,7 +65,9 @@ recovery](/operations/database) for the target procedure.
 
 The wire contract the SDKs will build against is already present: Mercury
 packet framing in `crates/mercury/src/packet.rs` (1472-byte payload cap, 2-byte
-header, 27-byte worst-case footer, flag layout), and the entity type id space in
+header, 27-byte worst-case footer, flag layout), the UDP endpoint and dispatch
+layer from BW-02-01 (`endpoint`, `poller`, `network_interface`,
+`packet_receiver`), and the entity type id space in
 `crates/entitydef/src/entities.rs` (`FIRST_ENTITY_TYPE_ID = 0`,
 `INVALID_ENTITY_TYPE_ID = 0xFFFF`, ids assigned in load order).
 
@@ -81,15 +87,15 @@ header, 27-byte worst-case footer, flag layout), and the entity type id space in
 | Crate | Public modules today |
 | --- | --- |
 | `foundation` | `ids`, `math` (angle, boundbox, matrix, quaternion, vector), `stream`, `time` |
-| `platform` | `clock` |
+| `platform` | `clock`, `interface`, `socket` (unix), `poller` (linux) |
 | `resources` | `base64`, `binary`, `bwresource`, `data_section_cache`, `datasection`, `file_system`, `multi_file_system`, `packed`, `special_chars`, `zip` |
-| `mercury` | `packet` |
+| `mercury` | `packet`, `endpoint`, `misc`, `network_utils`, `network_stats`, `network_interface` (linux), `packet_receiver` (linux), `poller` (linux) |
 | `contracts` | *(none — placeholder only)* |
 | `entitydef` | entity type registry |
 | `python-host` | *(none — surface reserved)* |
 | `server-runtime` | `app`, `config`, `dispatcher`, `server_app`, `shutdown`, `signals`, `task_manager`, `tick`, `timers` |
 
-Only `foundation`, `resources`, `server-runtime` and `libc` are enabled as
-workspace dependencies in the root `Cargo.toml`; `platform`, `mercury`,
-`contracts`, `entitydef` and `python-host` are commented out and get re-added
-with their first consumer.
+`foundation`, `platform`, `resources`, `server-runtime` and `libc` are enabled
+as workspace dependencies in the root `Cargo.toml`; `mercury`, `contracts`,
+`entitydef` and `python-host` are commented out and get re-added with their
+first consumer (`mercury`'s turn is the message layer, BW-02-02).

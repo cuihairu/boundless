@@ -69,7 +69,9 @@ server](/guide/standalone-server).
 | Game tick, timers, task dispatch | Implemented (`tick.rs`, `timers.rs`, `task_manager.rs`, `dispatcher.rs`) |
 | Role-to-role messages | **Not implemented.** `crates/contracts/src/lib.rs` carries no types yet |
 | Service discovery | **Not implemented** |
-| Mercury transport framing | Implemented (`crates/mercury/src/packet.rs`); the connection layer is not |
+| Mercury transport framing | Implemented (`crates/mercury/src/packet.rs`) |
+| UDP endpoint, event poll and interface dispatch | Implemented (**BW-02-01-01..04**: `endpoint.rs`, `poller.rs`, `network_interface.rs`, `packet_receiver.rs`) |
+| Mercury message layer and channels | **Not implemented** — BW-02-02 and BW-02-03 |
 
 Because `contracts` is empty, no process currently speaks to another. Until that
 crate lands the topology above is a *deployed but not yet wired* graph: each role
