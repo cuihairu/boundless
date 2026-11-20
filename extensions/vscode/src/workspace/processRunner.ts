@@ -12,14 +12,14 @@ import { spawn } from "node:child_process";
 import { ProcessInfo, ProcessRunner } from "./cluster";
 
 /** Spawns a role process, detached so the editor closing cannot leave it behind. */
-export function processRunner(): ProcessRunner {
+export function processRunner(platform: string = process.platform): ProcessRunner {
   return {
     async spawn(spec) {
       const child = spawn(spec.command, spec.args, {
         cwd: spec.cwd,
         env: { ...process.env, ...spec.env },
         stdio: ["ignore", "ignore", "ignore"],
-        detached: process.platform !== "win32",
+        detached: platform !== "win32",
       });
       child.on("error", () => {
         // The role binary may not exist yet; the lifecycle records no pid.
@@ -30,15 +30,15 @@ export function processRunner(): ProcessRunner {
       });
     },
     async terminate(pid, _commandLine) {
-      await killTree(pid);
+      await killTree(pid, platform);
     },
   };
 }
 
 /** Kills the process and, on POSIX, the group it leads. */
-async function killTree(pid: number): Promise<void> {
+async function killTree(pid: number, platform: string): Promise<void> {
   if (pid <= 0) return;
-  if (process.platform === "win32") {
+  if (platform === "win32") {
     const { execFile } = await import("node:child_process");
     await new Promise<void>((resolve) => {
       execFile("taskkill", ["/pid", String(pid), "/t", "/f"], () => resolve());
