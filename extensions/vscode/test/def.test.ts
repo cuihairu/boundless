@@ -127,14 +127,21 @@ describe("properties", () => {
     const diagnostics = defs(def);
     expect(rules(diagnostics)).toContain("property.type-missing");
     expect(diagnostics[0].severity).toBe("error");
-    expect(diagnostics[0].message).toBe("DataDescription::parse: Unable to find data type '' for .hp");
+    expect(diagnostics[0].message).toBe("DataType::buildDataType: Could not find MetaDataType ''");
+    // The reference names the entity first: `Unable to find data type '' for Account.hp`.
+    expect(diagnostics[1].message).toBe(
+      "DataDescription::parse: Unable to find data type '' for Account.hp",
+    );
   });
 
   it("rejects an unknown type name with the reference message", () => {
     const def = `<root><Properties><hp><Type>NOPE</Type><Flags>BASE</Flags></hp></Properties></root>`;
     const diagnostics = defs(def);
     expect(diagnostics[0].message).toBe(
-      "DataDescription::parse: Unable to find data type 'NOPE' for .hp",
+      "DataType::buildDataType: Could not find MetaDataType 'NOPE'",
+    );
+    expect(diagnostics[1].message).toBe(
+      "DataDescription::parse: Unable to find data type 'NOPE' for Account.hp",
     );
   });
 
@@ -144,8 +151,8 @@ describe("properties", () => {
     const broken = AliasRegistry.parse("<root><A>NOT_A_TYPE</A></root>");
     const def = `<root><Properties><hp><Type>A</Type><Flags>BASE</Flags></hp></Properties></root>`;
     const diagnostics = checkEntityDef(parseEntityDef(def, "Account"), { aliases: broken });
-    expect(diagnostics[0].message).toBe(
-      "DataDescription::parse: Unable to find data type 'A' for .hp",
+    expect(diagnostics[1].message).toBe(
+      "DataDescription::parse: Unable to find data type 'A' for Account.hp",
     );
   });
 
@@ -209,7 +216,12 @@ describe("properties", () => {
     const def = `<root><Properties><box>
       <Type>MAILBOX</Type><Flags>ALL_CLIENTS</Flags>
     </box></Properties></root>`;
-    expect(rules(defs(def))).toContain("property.client-server-mailbox");
+    const diagnostics = defs(def);
+    expect(rules(diagnostics)).toContain("property.client-server-mailbox");
+    // The MAILBOX variant says the type cannot be streamed, not "security hole".
+    expect(diagnostics[0].message).toBe(
+      "Account.box is a client-server property that has a MAILBOX member (type is not able to be sent to or from client)",
+    );
   });
 
   it("warns on a PYTHON member of a client-server property", () => {
@@ -219,6 +231,17 @@ describe("properties", () => {
     const diagnostics = defs(def);
     expect(diagnostics.some((d) => d.rule === "property.client-server-python")).toBe(true);
     expect(diagnostics[0].severity).toBe("warning");
+    expect(diagnostics[0].message).toBe(
+      "Account.py is a client-server property that has a PYTHON member (potential security hole)",
+    );
+  });
+
+  it("also resolves a detail level for ALL_CLIENTS data", () => {
+    // isOtherClientData() is set by both OTHER_CLIENTS and ALL_CLIENTS.
+    const def = `<root><Properties><hp>
+      <Type>INT32</Type><Flags>ALL_CLIENTS</Flags><DetailLevel>far</DetailLevel>
+    </hp></Properties></root>`;
+    expect(rules(defs(def))).toContain("property.detail-level");
   });
 
   it("rejects a detail level label that LoDLevels does not declare", () => {
@@ -357,7 +380,21 @@ describe("methods", () => {
 
   it("warns on a PYTHON argument to a client method", () => {
     const def = `<root><ClientMethods><tick><Arg>PYTHON</Arg></tick></ClientMethods></root>`;
-    expect(rules(defs(def))).toContain("method.client-python-arg");
+    const diagnostics = defs(def);
+    expect(rules(diagnostics)).toContain("method.client-python-arg");
+    // Every client method counts as exposed in the reference.
+    expect(diagnostics[0].message).toBe(
+      "Account.tick is a client method that takes a PYTHON arg (potential security hole)",
+    );
+  });
+
+  it("reports an exposed base method's MAILBOX arg as an Exposed method", () => {
+    const def = `<root><BaseMethods><tick><Exposed>OWN_CLIENT</Exposed><Arg>MAILBOX</Arg></tick></BaseMethods></root>`;
+    const diagnostics = defs(def);
+    const mailbox = diagnostics.find((d) => d.rule === "method.exposed-mailbox-arg");
+    expect(mailbox?.message).toBe(
+      "Account.tick is an Exposed method that takes a MAILBOX arg (type is not able to be sent to or from client)",
+    );
   });
 });
 
@@ -379,5 +416,26 @@ describe("distribution", () => {
   it("accepts a def whose roles all have scripts", () => {
     const def = `<root><BaseMethods/><CellMethods/><ClientMethods/></root>`;
     expect(defs(def)).toEqual([]);
+  });
+
+  it("names the cell property rather than the method when both are missing", () => {
+    const def = `<root>
+      <Properties><position><Type>VECTOR3</Type><Flags>OTHER_CLIENTS</Flags></position></Properties>
+      <CellMethods><tick/></CellMethods>
+    </root>`;
+    const diagnostics = defs(def, { client: true, base: true, cell: false });
+    expect(diagnostics.some((d) => d.rule === "distribution.cell-property")).toBe(true);
+    expect(diagnostics.some((d) => d.message === "Entitiy 'Account' does not have a cell script but has cell method 'tick'")).toBe(false);
+  });
+
+  it("errors when a service has no service script", () => {
+    const def = `<root><Methods/></root>`;
+    const parsed = parseEntityDef(def, "Account", true);
+    const diagnostics = checkEntityDef(parsed, {
+      aliases,
+      hasScript: (role) => role === "service" ? false : true,
+    });
+    expect(diagnostics.some((d) => d.rule === "distribution.service-script")).toBe(true);
+    expect(diagnostics.some((d) => d.message === "Service 'Account' does not have a service script.")).toBe(true);
   });
 });

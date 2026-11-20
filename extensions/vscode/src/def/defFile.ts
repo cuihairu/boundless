@@ -26,6 +26,12 @@ export interface MethodInfo {
 }
 
 export interface EntityDef {
+  /**
+   * The entity name. The reference derives it from the file name
+   * (`scripts/entity_defs/<Name>.def`) and passes it to `DataDescription::parse`
+   * as `parentName`, so reference messages read `<Name>.<property>`.
+   */
+  name: string;
   root: DataSection;
   /** `<Parent>` — the only inheritance mechanism in this fork. */
   parent: string | undefined;
@@ -64,7 +70,6 @@ export function parseEntityDef(
   isService = false,
 ): EntityDef {
   const root = parseXml("root", text);
-  void name;
 
   const distribution: Record<string, boolean> = {};
   const dist = findChild(root, "Distribution");
@@ -90,6 +95,7 @@ export function parseEntityDef(
   }
 
   return {
+    name,
     root,
     parent: readString(root, "Parent") || undefined,
     clientName: readString(root, "ClientName") || undefined,

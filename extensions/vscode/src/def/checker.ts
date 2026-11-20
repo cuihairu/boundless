@@ -46,59 +46,108 @@ export function checkEntityDef(def: EntityDef, ctx: CheckContext): DefDiagnostic
 }
 
 /** Distribution/script cross-checks (`EntityDescription::parse`,
- * `lib/entitydef/entity_description.cpp`). The reference probes for a script
- * file per role and then complains when methods exist without one. */
+ * `lib/entitydef/entity_description.cpp:289-340`).
+ *
+ * Whether a role is available comes from `HasScriptOrTagDistributionDecider`
+ * (`entity_description.cpp:72`): a `<Distribution>` tag wins, otherwise the
+ * reference probes `scripts/cell|base|client/<Name>.py` for existence.
+ */
 function checkDistribution(def: EntityDef, ctx: CheckContext): DefDiagnostic[] {
   const out: DefDiagnostic[] = [];
   const has = ctx.hasScript;
   if (!has) return out;
 
-  // A distribution switch that is present but false removes the role.
   const wanted = (role: "Cell" | "Base" | "Client"): boolean => {
     const explicit = def.distribution[role];
-    return explicit === undefined ? has(role.toLowerCase() as "cell" | "base" | "client") : explicit;
+    if (explicit !== undefined) return explicit;
+    // A service keeps its base-side script under scripts/service_defs/.
+    const scriptRole =
+      role === "Base" && def.isService
+        ? "service"
+        : (role.toLowerCase() as "cell" | "base" | "client");
+    return has(scriptRole);
   };
 
-  const cellMethods = def.methods.filter((m) => m.component === "cell");
-  const baseMethods = def.methods.filter((m) => m.component === "base");
-  const clientMethods = def.methods.filter((m) => m.component === "client");
+  const firstMethod = (component: MethodInfo["component"]): MethodInfo | undefined =>
+    def.methods.find((m) => m.component === component);
 
-  if (!wanted("Cell") && cellMethods.length > 0) {
-    const first = cellMethods[0];
-    out.push(
-      diag(
-        "warning",
-        `Entitiy '${def.root.name}' does not have a cell script but has cell method '${first.name}'`,
-        first.node,
-        "distribution.cell-script",
-      ),
-    );
+  if (!wanted("Cell")) {
+    // A cell property already sinks the streaming of cell data, so the reference
+    // reports the property rather than the method.
+    const cellProperty = def.properties.find((p) => isCellDataFlag(flagOf(p)));
+    if (cellProperty) {
+      out.push(
+        diag(
+          "warning",
+          `Entity '${def.name}' does not have a cell script but has cell property '${cellProperty.name}'.`,
+          cellProperty,
+          "distribution.cell-property",
+        ),
+      );
+    } else {
+      const first = firstMethod("cell");
+      if (first) {
+        out.push(
+          diag(
+            "warning",
+            `Entitiy '${def.name}' does not have a cell script but has cell method '${first.name}'`,
+            first.node,
+            "distribution.cell-script",
+          ),
+        );
+      }
+    }
   }
 
-  if (!wanted("Base") && baseMethods.length > 0) {
-    const first = baseMethods[0];
-    out.push(
-      diag(
-        "warning",
-        `Entity '${def.root.name}' does not have a base script but has base method '${first.name}'`,
-        first.node,
-        "distribution.base-script",
-      ),
-    );
+  if (!wanted("Base")) {
+    if (def.isService) {
+      out.push(
+        diag("error", `Service '${def.name}' does not have a service script.`, def.root, "distribution.service-script"),
+      );
+    } else {
+      const first = firstMethod("base");
+      if (first) {
+        out.push(
+          diag(
+            "warning",
+            `Entity '${def.name}' does not have a base script but has base method '${first.name}'`,
+            first.node,
+            "distribution.base-script",
+          ),
+        );
+      }
+    }
   }
 
-  if (!wanted("Client") && clientMethods.length > 0) {
+  const firstClient = firstMethod("client");
+  if (!wanted("Client") && firstClient) {
     out.push(
       diag(
         "error",
-        `Entity '${def.root.name}' does not have a client script but has client methods`,
-        clientMethods[0].node,
+        `Entity '${def.name}' does not have a client script but has client methods`,
+        firstClient.node,
         "distribution.client-script",
       ),
     );
   }
 
   return out;
+}
+
+/** `DataDescription::isCellData` (`data_description.ipp:114`): the flag sets
+ * `DATA_GHOSTED`. */
+function isCellDataFlag(flags: string): boolean {
+  return (
+    flags === "CELL_PUBLIC" ||
+    flags === "OTHER_CLIENTS" ||
+    flags === "CELL_PUBLIC_AND_OWN" ||
+    flags === "ALL_CLIENTS"
+  );
+}
+
+/** The raw `<Flags>` text of a property. */
+function flagOf(property: DataSection): string {
+  return findChild(property, "Flags")?.value ?? "";
 }
 
 /** `VolatileInfo::parse` (`lib/entitydef/volatile_info.cpp`): unknown children
@@ -146,7 +195,7 @@ function checkProperties(def: EntityDef, aliases: AliasRegistry): DefDiagnostic[
   const out: DefDiagnostic[] = [];
   const labels = lodLabels(def);
   for (const property of def.properties) {
-    out.push(...checkProperty(property, aliases, labels));
+    out.push(...checkProperty(property, def.name, aliases, labels));
   }
   out.push(...checkLoDLevels(def));
   return out;
@@ -182,24 +231,37 @@ function lodLabels(def: EntityDef): Set<string> {
   return labels;
 }
 
-/** `DataDescription::parse` (`lib/entitydef/data_description.cpp:169-331`). */
+/** `DataDescription::parse` (`lib/entitydef/data_description.cpp:169-331`).
+ * `entityName` is what the reference passes as `parentName`, so the messages
+ * read `<Entity>.<property>`. */
 function checkProperty(
   property: DataSection,
+  entityName: string,
   aliases: AliasRegistry,
   labels: Set<string>,
 ): DefDiagnostic[] {
   const out: DefDiagnostic[] = [];
   const name = property.name;
-  const parent = "";
+  const member = `${entityName}.${name}`;
 
   const typeNode = findChild(property, "Type");
   const resolved = resolveType(property, aliases, 0);
 
   if (!typeNode || resolved === null) {
+    // `DataType::buildDataType` reports the missing meta type first, then
+    // `DataDescription::parse` reports the consequence.
     out.push(
       diag(
         "error",
-        `DataDescription::parse: Unable to find data type '${typeNode?.value ?? ""}' for ${parent}.${name}`,
+        `DataType::buildDataType: Could not find MetaDataType '${typeNode?.value ?? ""}'`,
+        typeNode ?? property,
+        "type.metadatatype-missing",
+      ),
+    );
+    out.push(
+      diag(
+        "error",
+        `DataDescription::parse: Unable to find data type '${typeNode?.value ?? ""}' for ${member}`,
         typeNode ?? property,
         "property.type-missing",
       ),
@@ -247,26 +309,26 @@ function checkProperty(
   }
 
   // Client-server properties must not carry MAILBOX (fatal) or PYTHON
-  // (warning) members.
+  // (warning) members. `EntityDescription::parseProperties` raises these.
   if (isClientServerFlag(flagsText)) {
     const leaks = collectTypes(resolved);
     for (const leak of leaks) {
-      if (leak.name === "MAILBOX") {
-        out.push(
-          diag(
-            "error",
-            `${parent}.${name} is a client-server property that has a MAILBOX member (potential security hole)`,
-            leak.node,
-            "property.client-server-mailbox",
-          ),
-        );
-      } else if (leak.name === "PYTHON") {
+      if (leak.name === "PYTHON") {
         out.push(
           diag(
             "warning",
-            `${parent}.${name} is a client-server property that has a PYTHON member (potential security hole)`,
+            `${member} is a client-server property that has a PYTHON member (potential security hole)`,
             leak.node,
             "property.client-server-python",
+          ),
+        );
+      } else if (leak.name === "MAILBOX") {
+        out.push(
+          diag(
+            "error",
+            `${member} is a client-server property that has a MAILBOX member (type is not able to be sent to or from client)`,
+            leak.node,
+            "property.client-server-mailbox",
           ),
         );
       }
@@ -274,9 +336,14 @@ function checkProperty(
   }
 
   // The reference only resolves the detail level for other-client data
-  // (`isOtherClientData`), against the labels declared in <LoDLevels>.
+  // (`isOtherClientData`, i.e. `DATA_OTHER_CLIENT`: OTHER_CLIENTS or
+  // ALL_CLIENTS), against the labels declared in <LoDLevels>.
   const detailLevel = findChild(property, "DetailLevel");
-  if (detailLevel && flagsText === "OTHER_CLIENTS" && !labels.has(detailLevel.value)) {
+  if (
+    detailLevel &&
+    isOtherClientFlag(flagsText) &&
+    !labels.has(detailLevel.value)
+  ) {
     out.push(
       diag(
         "error",
@@ -337,6 +404,11 @@ function checkCompositeSpec(typeNode: DataSection): DefDiagnostic[] {
   return out;
 }
 
+/** `DataDescription::isClientServerData`
+ * (`lib/entitydef/data_description.ipp:144`): the flag sets
+ * `DATA_OTHER_CLIENT`, `DATA_OWN_CLIENT` or `DATA_REPLAY`. Replayed data is
+ * only ever client-server data, so this is exactly the five spellings that set
+ * one of the first two bits in `s_entityDataFlagMappings`. */
 function isClientServerFlag(flags: string): boolean {
   return (
     flags === "ALL_CLIENTS" ||
@@ -345,6 +417,12 @@ function isClientServerFlag(flags: string): boolean {
     flags === "BASE_AND_CLIENT" ||
     flags === "CELL_PUBLIC_AND_OWN"
   );
+}
+
+/** `DataDescription::isOtherClientData`
+ * (`lib/entitydef/data_description.ipp:92`): the flag sets `DATA_OTHER_CLIENT`. */
+function isOtherClientFlag(flags: string): boolean {
+  return flags === "OTHER_CLIENTS" || flags === "ALL_CLIENTS";
 }
 
 
@@ -447,34 +525,38 @@ function checkMethod(
     }
   });
 
-  // Client methods must not take PYTHON (warning) and Exposed methods must not
-  // take MAILBOX (fatal).
+  // Client-safety of the arguments. `EntityMethodDescriptions::init` marks
+  // every client method as exposed ("all client methods are exposed",
+  // entity_method_descriptions.cpp:56) and then runs
+  // `checkExposedForClientSafety` over the exposed methods only.
   const exposedToClients =
-    method.component === "client" || (exposed !== undefined && exposed.value !== "");
+    method.component === "client" || exposed !== undefined;
+  const kind = method.component === "client" ? "a client" : "an Exposed";
 
-  for (const spec of method.argSpecs) {
-    const resolved = resolveTypeSpec(spec, aliases, 0);
-    if (resolved === null) continue;
-    for (const member of collectTypes(resolved)) {
-      if (member.name === "PYTHON" && method.component === "client") {
-        out.push(
-          diag(
-            "warning",
-            `${def.root.name}.${method.name} is a client method that takes a PYTHON arg (potential security hole)`,
-            member.node,
-            "method.client-python-arg",
-          ),
-        );
-      }
-      if (member.name === "MAILBOX" && exposedToClients && method.component !== "client") {
-        out.push(
-          diag(
-            "error",
-            `${def.root.name}.${method.name} is an Exposed method that takes a MAILBOX arg (potential security hole)`,
-            member.node,
-            "method.exposed-mailbox-arg",
-          ),
-        );
+  if (exposedToClients) {
+    for (const spec of method.argSpecs) {
+      const resolved = resolveTypeSpec(spec, aliases, 0);
+      if (resolved === null) continue;
+      for (const member of collectTypes(resolved)) {
+        if (member.name === "PYTHON") {
+          out.push(
+            diag(
+              "warning",
+              `${def.name}.${method.name} is ${kind} method that takes a PYTHON arg (potential security hole)`,
+              member.node,
+              "method.client-python-arg",
+            ),
+          );
+        } else if (member.name === "MAILBOX") {
+          out.push(
+            diag(
+              "error",
+              `${def.name}.${method.name} is ${kind} method that takes a MAILBOX arg (type is not able to be sent to or from client)`,
+              member.node,
+              "method.exposed-mailbox-arg",
+            ),
+          );
+        }
       }
     }
   }
