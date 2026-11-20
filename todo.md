@@ -1565,7 +1565,16 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
   - 因此该作业是**报告型而非门控型**：`continue-on-error: true`，理由与翻转条件都写在作业注释里——`docs/architecture/compatibility-matrix.md` 中只有 Linux x86-64 是「已开工」目标，Windows/macOS 未开始；若因 macOS 编译不过就红整条 push，反而会把这个作业真正的产出（三端就绪度记录）藏起来。两端开工后删掉 `continue-on-error` 即可转门控。
   - 附带修掉的调用错误：`ci/runners.sh` 起初写成 `if ! ci_pipe …`，而 `ci_pipe` 的约定是把退出码放进 `$CI_RC` 由调用方判断（`ci/check-rust.sh:79` 等五处皆如此），故原写法会把编译失败当成功——本地一次真实构建没产出可执行文件时暴露，改为 `${CI_RC:-1}` 判断。
   - 证据：`ci-out/runners/linux-x86_64.tsv` 与 `.json`、`logs/runners-linux-x86_64.log`；CI 侧 `ci-results-runners-{ubuntu,windows,macos}-latest-44760793199` 三个 artifact（macOS 那份含 4 条 E0425 原文）；`ci/runners.sh`、`ci/changes.sh`（`runners` lane）、`.github/workflows/ci.yml` 的 `runners` 作业。
-- [ ] **BW-22-02-02 编排 MySQL 和 PostgreSQL**。**验收** 可隔离起库并执行存储用例。
+- [x] **BW-22-02-02 编排 MySQL 和 PostgreSQL**。**验收** 可隔离起库并执行存储用例。
+  - 原版：BigWorld 关于 MySQL 的全部 CI 产物只有一个 `fixwork/programming/bigworld/build/make/test_mysql.sh`，它验证的是「**能否编译一个 MySQL 程序**」——`mysql_config --include` 加一段 `gcc -E -x c++-header` 包住 `#include <mysql/mysql.h>`。`libmysqlclient-dev` 在 `daily-build.yml` 里只是构建依赖。Linux 门 `ci.yml` 与 `ci-windows.yml` **都没有 `services:`、没有 docker、没有任何起库动作**：门禁序列是 configure → build → `ctest --output-on-failure | tee ctest.log` → `Upload logs on failure`。也就是说 CI 从未对真实后端执行过**一条**语句，存储层能不能跑完全不在门内。
+  - 新版：`ci/store.sh` 为每个后端**独立起一个私有服务器**——MariaDB 走 `mariadb-install-db` + `mariadbd --skip-networking --socket=<沙盒内>`（只走 Unix socket，不占 TCP 端口，因此镜像上 3306 上跑着什么都无关）；PostgreSQL 走 `initdb` + `pg_ctl -w start`（`-w` 阻塞到 postmaster 应答，所以无需就绪轮询）。二者都在沙盒内用 `boundless_ci_$$` 建私有库、逐用例执行、**收尾 DROP**，并回读 `SHOW DATABASES` / `pg_database` 断言库确已消失，把「零残留」写进记录而不只是口头保证。
+  - 用例 `tests/store/common/id_vocabulary.sql` 由**语句本身充当断言**：按 `crates/foundation/src/ids.rs` 钉死的 `DatabaseId = i64` 与 `PENDING_DATABASE_ID = -1`，插入 `-1`、`i64::MIN`、`0`、`i64::MAX` 四个端点。后端若把 id 列收窄成 32 位，就会在这几条插入上直接拒绝——用例只在整段 i64 域都能往返时才绿，不存在「空跑通过」。
+  - 结果：本机双腿 PASS，`store-mysql` 与 `store-postgres` 各 `1/1 cases ok, isolated <backend> left nothing behind`，两条记录 `database_dropped=yes`，且 `ps` 实测**残留沙盒 0、残留服务进程 0**。`self-test` 2 项 PASS：负例报 `ERROR 1264 (22003) … Out of range value for column 'id'`，DROP 后无残留。
+  - 关键设计一：「**缺工具**」与「**真故障**」必须分开。provisioner 找不到自己的工具时退出码 2，lane 据此记 **SKIP** 并点名缺失件；工具齐了却起不来才是 **FAIL**。干净 runner 上没有数据库服务端，若把这种情况记成 FAIL，等于用一条假红灯把真正的问题盖住。
+  - 关键设计二：**同一条代码路径吃两种后端来源**。句柄是「本 runner 私有 socket 路径」或「host:port / 主机名」，mysql 与 postgres 的 helper 各自按句柄形态拼连接参数，本地沙盒与 workflow 的 `services:` 容器走的是同一份逻辑。故 CI 里由 `storage` 作业供 `mysql:8` + `postgres:16`，本地则由脚本自己起——两边都可复跑。
+  - 附带修掉的三处：① `ok` 只声明未赋值，`set -u` 下 `ok=$((ok+1))` 直接炸 lane；② 服务进程是在命令替换（子 shell）里 fork 的，pid 随手写死在变量里会随子 shell 一起死掉、服务成孤儿，改为写进沙盒内 pid 文件由 EXIT trap 读；③ bash 在**致命信号**下不执行 EXIT trap，而取消一个 job 发的正是这个信号——`trap 'exit 143' TERM` 等把信号转成普通退出，清理才真的会跑（修前实测残留沙盒目录与存活进程，修后 0 残留）。
+  - 附带加固一处（自己抓到自己）：self-test 的 `CREATE DATABASE` 起初硬编码 `--socket=`，在 TCP 句柄下连不上会**静默失败**，随后「未知数据库」的错误被当成「列太窄」的证据，自我测试于是在**错误原因**上绿灯。现改为先断言私有库真存在（不存在就 FAIL「nothing is being tested」），且要求拒绝原因是 `out of range`/`1264`——别的拒绝理由不足以判 PASS。
+  - 证据：`ci-out/store/mysql.tsv` 与 `postgres.tsv`（`provisioned` / `database` / `case result` / `database_dropped`）；`ci-out/manifest.tsv`；`ci/store.sh`、`ci/changes.sh`（`store` lane）、`.github/workflows/ci.yml` 的 `storage` 作业（`services: mysql:8, postgres:16`）、`tests/store/common/id_vocabulary.sql`。CI run 号见下方 BW-22 交付汇总。
 - [ ] **BW-22-02-03 编排 XML 与 SQLite**。**验收** 各有独立结果。
 - [ ] **BW-22-02-04 接入兼容性差分**。**验收** 替换路径可在本地复跑。
 - [ ] **BW-22-02-05 接入 SDK 与插件用例**。**验收** 产物能在宿主中加载。

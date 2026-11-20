@@ -368,6 +368,89 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-02-02 — the storage cases run against a real backend. The workflow
+  # supplies mysql:8 and postgres:16 as service containers because a clean
+  # runner has neither server; ci/store.sh reaches them over the mapped ports
+  # and provisions nothing itself.
+  #
+  # A change that only moves a case file still runs the lane: the cases are the
+  # contract, and a case that no backend can satisfy is exactly what must be
+  # caught here rather than at release time.
+  storage:
+    name: Storage cases on a real backend
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'store')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: boundless
+          POSTGRES_PASSWORD: boundless
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U boundless"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      # The lane probes for mysql/psql; on an image that ships neither, an
+      # apt-get is the difference between a PASS and a SKIP that hides nothing.
+      - name: Storage clients
+        run: |
+          missing=()
+          if ! command -v mysql >/dev/null 2>&1 && ! command -v mariadb >/dev/null 2>&1; then
+            missing+=("default-mysql-client")
+          fi
+          command -v psql >/dev/null 2>&1 || missing+=("postgresql-client")
+          if [ ${#missing[@]} -gt 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then
+              sudo apt-get update -qq && sudo apt-get install -y -qq "${missing[@]}"
+            else
+              apt-get update -qq && apt-get install -y -qq "${missing[@]}"
+            fi
+          fi
+
+      - name: Run the storage cases
+        env:
+          CI_STORE_MYSQL_HOST: 127.0.0.1
+          CI_STORE_MYSQL_PORT: '3306'
+          CI_STORE_MYSQL_USER: root
+          CI_STORE_MYSQL_PASSWORD: root
+          CI_STORE_PG_HOST: 127.0.0.1
+          CI_STORE_PG_PORT: '5432'
+          CI_STORE_PG_PASSWORD: boundless
+        run: |
+          # The self-test lives here rather than in the harness job because it
+          # needs a MySQL server, which only this job has.
+          ci/store.sh self-test
+          ci/store.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-storage-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
