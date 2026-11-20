@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BW-22-02-03 — the XML store must carry the id vocabulary.
+
+     crates/foundation/src/ids.rs fixes DatabaseId = i64 and
+     PENDING_DATABASE_ID = -1. The reference XML backend writes an id out as a
+     decimal attribute and reads it back, so the domain that must survive a
+     round trip is the signed 64-bit one. A backend that narrows the id to 32
+     bits cannot represent either end, and this case refuses it.
+
+     Every id attribute is asserted; the file is only green when the whole
+     domain round-trips and at least one id is present (a file with no ids
+     would otherwise pass vacuously).
+-->
+<root>
+    <Entity id="-1"/>                       <!-- PENDING_DATABASE_ID -->
+    <Entity id="0"/>                        <!-- the assigned-id boundary -->
+    <Entity id="-9223372036854775808"/>     <!-- i64::MIN -->
+    <Entity id="9223372036854775807"/>      <!-- i64::MAX -->
+</root>

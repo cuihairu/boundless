@@ -1,0 +1,326 @@
+name: Package daily
+
+# BW-22-04-01 — the installer lane across the three targets, on a schedule.
+#
+# Every leg calls the same entrypoint (ci/package.sh): build the server in
+# release, stage the install prefix, archive it, then install into a clean
+# prefix and launch what was installed. Like the runners matrix, the legs
+# report rather than gate: only Linux compiles today (crates/server-runtime/
+# src/signals.rs uses Linux-only signal APIs; see the runners job in ci.yml),
+# so Windows and macOS legs are expected to fail at build until BW-15-03/04
+# start those targets. Flip continue-on-error off when they do.
+#
+# Repo rules honoured here (they are also global red lines):
+#   * no git tags are created;
+#   * no GitHub releases are published — results are workflow ARTIFACTS
+#     only; versioned releases stay user-triggered.
+#
+# Freshness: a scheduled run only builds when the branch moved in the last
+# 48 hours (the original daily-build's rule; a quiet branch skips the heavy
+# release build). workflow_dispatch builds unconditionally.
+#
+# Schedule events run against the default branch only — this workflow
+# activates when it lands on main.
+
+on:
+  schedule:
+    # Daily at 03:19 UTC — off the round minutes every other job piles onto.
+    - cron: '19 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-daily
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Installer package on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    continue-on-error: ${{ matrix.report_only }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            report_only: false
+          - os: windows-latest
+            report_only: true
+          - os: macos-latest
+            report_only: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # The freshness check counts commits by date.
+          fetch-depth: 0
+
+      - name: Check for commits in the last 48 hours
+        id: freshness
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            echo "Manual dispatch: build unconditionally."
+            exit 0
+          fi
+          count="$(git rev-list --count --since='48 hours' HEAD)"
+          echo "commits in last 48h: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "stale=true" >>"$GITHUB_OUTPUT"
+            echo "No commits in the last 48 hours — skipping this daily package."
+          else
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Rust (pinned by rust-toolchain.toml)
+        if: steps.freshness.outputs.stale != 'true'
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Package and smoke-launch
+        if: steps.freshness.outputs.stale != 'true'
+        shell: bash
+        run: ci/package.sh
+
+      # BW-22-04-05 — the delivered artifact carries its own hash sheet.
+      - name: Stamp and verify checksums
+        if: always() && steps.freshness.outputs.stale != 'true'
+        shell: bash
+        run: ci/checksums.sh
+
+      - name: Upload the package
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: package-${{ matrix.os }}-${{ github.run_id }}
+          path: |
+            ci-out/package/*.tar.gz
+            ci-out/checksums/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        shell: bash
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-package-daily-${{ matrix.os }}-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # BW-22-04-02 — the docs face of the daily packaging: build the site, stamp
+  # the versioned index, archive it, and require version metadata to agree.
+  # Docs are cheap and node-only, so one Linux leg suffices; the same 48-hour
+  # freshness rule gates it alongside the binaries.
+  docs-package:
+    name: Docs site package and index
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check for commits in the last 48 hours
+        id: freshness
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          count="$(git rev-list --count --since='48 hours' HEAD)"
+          echo "commits in last 48h: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "stale=true" >>"$GITHUB_OUTPUT"
+            echo "No commits in the last 48 hours — skipping this daily package."
+          else
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Node
+        if: steps.freshness.outputs.stale != 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: pnpm
+        if: steps.freshness.outputs.stale != 'true'
+        run: npm install --no-fund --no-audit --global pnpm@12
+
+      - name: Package the docs site
+        if: steps.freshness.outputs.stale != 'true'
+        run: ci/docs-package.sh
+
+      - name: Stamp and verify checksums
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/checksums.sh
+
+      - name: Upload the site package
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: package-docs-${{ github.run_id }}
+          path: |
+            ci-out/docs/
+            ci-out/checksums/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-package-daily-docs-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # BW-22-04-03 — the engine SDK face of the daily packaging: archive every
+  # adapter tree that exists and require importability from an empty
+  # project. Until BW-21 lands the trees the lane reports honest SKIPs.
+  sdk-archive:
+    name: Engine SDK archives
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check for commits in the last 48 hours
+        id: freshness
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          count="$(git rev-list --count --since='48 hours' HEAD)"
+          echo "commits in last 48h: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "stale=true" >>"$GITHUB_OUTPUT"
+            echo "No commits in the last 48 hours — skipping this daily package."
+          else
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Archive the engine SDKs
+        if: steps.freshness.outputs.stale != 'true'
+        run: ci/sdk-archive.sh
+
+      - name: Stamp and verify checksums
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/checksums.sh
+
+      - name: Upload the archives
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: package-sdk-engines-${{ github.run_id }}
+          path: |
+            ci-out/sdk/
+            ci-out/checksums/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-package-daily-sdk-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # BW-22-04-04 — the VSIX face of the daily packaging: compile fresh,
+  # package with the extension's own vsce, verify, and install-smoke the
+  # installed core. The .vsix lands in its own artifact.
+  vsix-archive:
+    name: VSIX package
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check for commits in the last 48 hours
+        id: freshness
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          count="$(git rev-list --count --since='48 hours' HEAD)"
+          echo "commits in last 48h: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "stale=true" >>"$GITHUB_OUTPUT"
+            echo "No commits in the last 48 hours — skipping this daily package."
+          else
+            echo "stale=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Node
+        if: steps.freshness.outputs.stale != 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: pnpm
+        if: steps.freshness.outputs.stale != 'true'
+        run: npm install --no-fund --no-audit --global pnpm@12
+
+      - name: Package the extension
+        if: steps.freshness.outputs.stale != 'true'
+        run: ci/vsix.sh
+
+      - name: Stamp and verify checksums
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/checksums.sh
+
+      - name: Upload the vsix
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: package-vsix-${{ github.run_id }}
+          path: |
+            ci-out/vsix/*.vsix
+            ci-out/checksums/SHA256SUMS
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Bundle results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always() && steps.freshness.outputs.stale != 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-package-daily-vsix-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
