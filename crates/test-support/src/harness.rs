@@ -691,6 +691,35 @@ version = "0.1.0"
     }
 
     #[test]
+    #[test]
+    fn skipped_tests_render_and_count_in_archives() {
+        // Ignored tests are common in real runs; their SKIP lines must
+        // survive the render -> parse roundtrip and the summary.
+        let archive = RunArchive {
+            label: "all".to_string(),
+            command: "cargo test --workspace".to_string(),
+            commit: None,
+            when: "2026-11-20T13:00:00Z".to_string(),
+            outcomes: outcomes(&[
+                ("a", TestStatus::Passed),
+                ("b", TestStatus::Skipped),
+                ("c", TestStatus::Failed),
+            ]),
+        };
+        let text = archive.render();
+        assert!(text.contains("SKIP b\n"));
+        assert!(text.contains("summary: 1 passed, 1 failed, 1 skipped\n"));
+        assert_eq!(parse_outcomes(&text), archive.outcomes);
+    }
+
+    #[test]
+    fn a_table_header_while_inside_members_closes_the_array() {
+        let text = "[workspace]\nmembers = [\n  \"alpha\",\n  \"beta/beta\",\n]\n\n\
+                    [workspace.package]\nversion = \"0.1.0\"\n";
+        assert_eq!(workspace_modules(text), ["alpha", "beta"]);
+    }
+
+    #[test]
     fn an_archive_carries_its_own_rerun_command() {
         // A filtered slice must rerun narrowed, not whole-crate.
         let archive = RunArchive {
