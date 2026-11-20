@@ -17,8 +17,13 @@
 
 pub mod capi;
 pub mod import_paths;
+pub mod init_time_job;
 pub mod interpreter;
 pub mod pyref;
 
 pub use import_paths::ImportPaths;
+pub use init_time_job::{
+    JobError, add_fini_time_job, add_fini_time_job_at, add_init_time_job, run_fini_time_jobs,
+    run_init_time_jobs,
+};
 pub use interpreter::{InitConfig, InitError, Interpreter};

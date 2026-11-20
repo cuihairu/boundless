@@ -24,12 +24,19 @@
 //! with their own BW-03-01 items.
 
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use super::capi::{self, PyObject};
 use super::import_paths::ImportPaths;
+use super::init_time_job;
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// `s_pOurInitTimeModules`: a copy of `sys.modules` taken once init has
+/// registered every native module. Reload swaps it back into a fresh
+/// subinterpreter (`Script::createInterpreter`), so the table travels with
+/// the interpreter.
+static INIT_TIME_MODULES: AtomicPtr<PyObject> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Why `Script::init` could not complete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +66,10 @@ pub struct InitConfig {
     /// `sys.path` -- an empty collection included, since the reference replaces
     /// the interpreter default rather than extending it.
     pub import_paths: ImportPaths,
+    /// The `componentName` argument of `Script::init`: one of `cell`, `base`,
+    /// `client`, `database`, `bot` or `editor`. It becomes the
+    /// `BigWorld.component` attribute every script reads.
+    pub component: String,
 }
 
 /// `Script`: the embedded interpreter handle.
@@ -96,15 +107,31 @@ impl Interpreter {
                 return Err(InitError::InitializeFailed);
             }
         }
-        let error = if !config.argv.is_empty() && !set_argv(&config.argv) {
-            Some(InitError::ArgvFailed)
-        } else if !set_import_paths(&config.import_paths) {
-            Some(InitError::PathFailed)
-        } else if !disable_garbage() {
-            Some(InitError::GarbageCollectionUnavailable)
-        } else {
-            None
-        };
+        // The reference order from script.cpp: argv, sys.path, init-time
+        // jobs, gc.disable, the BigWorld module, the module-table snapshot.
+        let mut error = None;
+        if !config.argv.is_empty() && !set_argv(&config.argv) {
+            error = Some(InitError::ArgvFailed);
+        }
+        if error.is_none() && !set_import_paths(&config.import_paths) {
+            error = Some(InitError::PathFailed);
+        }
+        if error.is_none() {
+            // `runInitTimeJobs()`: module registrations made before init.
+            // A spent registry logs and carries on in the reference, so init
+            // does the same; through `init`'s own guard a second call is
+            // unreachable.
+            let _ = init_time_job::run_init_time_jobs();
+        }
+        if error.is_none() && !disable_garbage() {
+            error = Some(InitError::GarbageCollectionUnavailable);
+        }
+        if error.is_none() {
+            // `ScriptModule::getOrCreate("BigWorld")` with the `component`
+            // attribute, then the `s_pOurInitTimeModules` snapshot.
+            create_big_world_module(&config.component);
+            take_modules_snapshot();
+        }
         if let Some(error) = error {
             // Unwind back to the pre-init state so a retry is not refused by
             // the `s_isInitalised` guard.
@@ -128,6 +155,12 @@ impl Interpreter {
         capi::is_finalized()
     }
 
+    /// `s_pOurInitTimeModules`: the borrowed module-table snapshot taken at
+    /// init time, or null before init and after `Script::fini`.
+    pub fn init_time_modules() -> *mut PyObject {
+        INIT_TIME_MODULES.load(Ordering::SeqCst)
+    }
+
     /// `PyRun_SimpleString`: the reference returns 0 on success.
     pub fn run_simple_string(&self, source: &str) -> bool {
         let Ok(encoded) = CString::new(source) else {
@@ -147,9 +180,17 @@ impl Interpreter {
         if !INITIALIZED.load(Ordering::SeqCst) || capi::is_finalized() {
             return;
         }
+        // The snapshot goes before the collect loop, the reference's DECREF
+        // between `runFiniTimeJobs` and `while (PyGC_Collect() > 0);`.
+        let snapshot = INIT_TIME_MODULES.swap(std::ptr::null_mut(), Ordering::SeqCst);
         // SAFETY: the interpreter is up, this thread owns the GIL, and the
-        // steps below run in the reference's order.
+        // steps below run in the reference's order: the snapshot DECREF
+        // lands between `runFiniTimeJobs` and the collect loop, while the
+        // allocator is still alive -- freeing it after `Py_Finalize`
+        // segfaults inside `_Py_Dealloc`.
         unsafe {
+            // SAFETY: `dec_ref` skips null, so a double `fini` is a no-op.
+            capi::dec_ref(snapshot);
             // `while (PyGC_Collect() > 0);`
             while capi::PyGC_Collect() > 0 {}
             clear_main_module();
@@ -217,6 +258,46 @@ fn set_import_paths(paths: &ImportPaths) -> bool {
             return false;
         }
         capi::PySys_SetObject(c"path".as_ptr(), list.as_ptr()) == 0
+    }
+}
+
+/// `ScriptModule::getOrCreate("BigWorld")` plus the `component` attribute
+/// (`script.cpp:589-600`). Both steps go through `ScriptErrorPrint` in the
+/// reference, which logs and carries on, so a failure here neither aborts
+/// init nor leaves the module half-made.
+///
+/// SAFETY: the interpreter must be up and the caller must own the GIL.
+fn create_big_world_module(component: &str) {
+    // SAFETY: the interpreter is up and this thread owns the GIL.
+    unsafe {
+        let module = capi::PyImport_AddModule(c"BigWorld".as_ptr());
+        if module.is_null() {
+            return;
+        }
+        let Ok(name) = std::ffi::CString::new(component) else {
+            return;
+        };
+        let value = capi::PyUnicode_FromString(name.as_ptr());
+        if value.is_null() {
+            return;
+        }
+        // `setAttribute` failure is `ScriptErrorPrint()`ed away too; the
+        // reference leaves the attribute unset and moves on.
+        capi::PyObject_SetAttrString(module, c"component".as_ptr(), value);
+        capi::dec_ref(value);
+    }
+}
+
+/// `s_pOurInitTimeModules = PyDict_Copy(PySys_GetObject("modules"))`
+/// (`script.cpp:602`).
+///
+/// SAFETY: the interpreter must be up and the caller must own the GIL.
+fn take_modules_snapshot() {
+    // SAFETY: the interpreter is up and this thread owns the GIL.
+    unsafe {
+        let modules = capi::PySys_GetObject(c"modules".as_ptr());
+        let snapshot = capi::PyDict_Copy(modules);
+        INIT_TIME_MODULES.store(snapshot, Ordering::SeqCst);
     }
 }
 
@@ -328,6 +409,12 @@ mod tests {
         "interpreter::tests::scenario_a_script_under_the_resource_root_imports",
         "interpreter::tests::scenario_sys_path_is_the_assembled_list",
         "interpreter::tests::scenario_an_unencodable_path_fails_init",
+        "interpreter::tests::scenario_big_world_module_carries_the_component",
+        "interpreter::tests::scenario_a_component_with_a_nul_stays_unset",
+        "interpreter::tests::scenario_init_time_modules_snapshot_taken_at_init",
+        "interpreter::tests::scenario_init_time_jobs_run_once_in_rung_order",
+        "interpreter::tests::scenario_fini_time_jobs_run_once_in_rung_order",
+        "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
     ];
 
@@ -372,6 +459,36 @@ mod tests {
         std::fs::write(root.join("scripts/common/probe_script.py"), "VALUE = 7\n")
             .expect("write the script");
         root
+    }
+
+    /// Runs `source` from inside an init-time job and reports whether the
+    /// `__probe` it assigns renders true.
+    fn run_simple_probe(source: &str) -> bool {
+        // SAFETY: only called from an init-time job, which runs while the
+        // interpreter is up on the thread that owns the GIL.
+        unsafe {
+            let Ok(encoded) = std::ffi::CString::new(source) else {
+                return false;
+            };
+            if capi::PyRun_SimpleString(encoded.as_ptr()) != 0 {
+                // The failed run leaves a pending exception; init continues
+                // after an init-time job either way, and a pending exception
+                // would poison the next call, so the helper prints-and-clears
+                // the way the reference's `ScriptErrorPrint` does.
+                capi::clear_error();
+                return false;
+            }
+            let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+            let dictionary = capi::PyModule_GetDict(main);
+            let value = capi::PyDict_GetItemString(dictionary, c"__probe".as_ptr());
+            if value.is_null() {
+                return false;
+            }
+            let text = capi::PyObject_Str(value);
+            let rendered = capi::to_string(text);
+            capi::dec_ref(text);
+            rendered == "True"
+        }
     }
 
     /// `sys.getrefcount(__handle)`: the live reference count of the object the
@@ -554,6 +671,7 @@ mod tests {
         let interpreter = Interpreter::init(&InitConfig {
             argv: vec![String::from("scenario")],
             import_paths: paths,
+            ..Default::default()
         })
         .expect("Script::init");
         // Real stdlib modules reach the embedded interpreter, and a script from
@@ -696,6 +814,7 @@ mod tests {
         let interpreter = Interpreter::init(&InitConfig {
             argv: vec![],
             import_paths: sys_paths,
+            ..Default::default()
         })
         .expect("Script::init");
         assert_eq!(
@@ -722,6 +841,7 @@ mod tests {
             &InitConfig {
                 argv: vec![],
                 import_paths: sys_paths,
+                ..Default::default()
             },
             |interpreter| {
                 assert_eq!(
@@ -748,12 +868,196 @@ mod tests {
             Interpreter::init(&InitConfig {
                 argv: vec![],
                 import_paths: paths,
+                ..Default::default()
             })
             .err(),
             Some(InitError::PathFailed),
         );
         assert!(!Interpreter::is_initialized());
         assert_eq!(unsafe { capi::Py_IsInitialized() }, 0);
+    }
+
+    /// The `BigWorld` module `Script::init` creates and the `component`
+    /// attribute every script reads (`script.cpp:589-600`).
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_big_world_module_carries_the_component() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(interpreter, "import BigWorld; __probe = BigWorld.component"),
+                    "cell"
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import sys; __probe = 'BigWorld' in sys.modules"
+                    ),
+                    "True"
+                );
+            },
+        );
+    }
+
+    /// A component name with an embedded NUL cannot be encoded for
+    /// `setAttribute`, so the attribute is left unset -- the reference's
+    /// `ScriptErrorPrint` failure path for the `BigWorld` module and its
+    /// attribute, both of which leave init moving.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_component_with_a_nul_stays_unset() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("bad\u{0}name"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld; __probe = hasattr(BigWorld, 'component')"
+                    ),
+                    "False"
+                );
+            },
+        );
+    }
+
+    /// `s_pOurInitTimeModules`: the module table as it stood at the end of
+    /// init -- `BigWorld` in, anything imported later out. `Script::fini`
+    /// releases it, so the accessor reads null again afterwards.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_init_time_modules_snapshot_taken_at_init() {
+        let root = temp_resource_root();
+        let root_path = root.to_str().expect("a UTF-8 root");
+        let mut paths = ImportPaths::new(ImportPaths::default_delimiter());
+        paths.add_res_path(&[root_path], "scripts/common");
+        let interpreter = Interpreter::init(&InitConfig {
+            component: String::from("base"),
+            import_paths: paths,
+            ..Default::default()
+        })
+        .expect("Script::init");
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import probe_script; __probe = probe_script.VALUE"
+            ),
+            "7"
+        );
+        // SAFETY: the interpreter is up and this thread owns the GIL.
+        unsafe {
+            let snapshot = Interpreter::init_time_modules();
+            assert!(!snapshot.is_null());
+            assert!(capi::PyDict_GetItemString(snapshot, c"probe_script".as_ptr()).is_null());
+            assert!(!capi::PyDict_GetItemString(snapshot, c"BigWorld".as_ptr()).is_null());
+        }
+        interpreter.fini();
+        assert!(Interpreter::init_time_modules().is_null());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Init-time jobs run once, ascending rung, insertion order within a
+    /// rung; a second run and a registration after the run are both
+    /// `AlreadyRan` (the reference's error and critical error).
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_init_time_jobs_run_once_in_rung_order() {
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i32>::new()));
+        for rung in [10, -5, 0, 0] {
+            let order = order.clone();
+            assert_eq!(
+                init_time_job::add_init_time_job(rung, move || order.lock().unwrap().push(rung)),
+                Ok(())
+            );
+        }
+        assert_eq!(init_time_job::run_init_time_jobs(), Ok(()));
+        assert_eq!(*order.lock().unwrap(), vec![-5, 0, 0, 10]);
+        assert_eq!(
+            init_time_job::run_init_time_jobs(),
+            Err(init_time_job::JobError::AlreadyRan)
+        );
+        assert_eq!(
+            init_time_job::add_init_time_job(0, || {}),
+            Err(init_time_job::JobError::AlreadyRan)
+        );
+    }
+
+    /// Fini-time jobs share the contract; `add_fini_time_job` is the
+    /// reference's default rung 1.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_fini_time_jobs_run_once_in_rung_order() {
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i32>::new()));
+        {
+            let order = order.clone();
+            assert_eq!(
+                init_time_job::add_fini_time_job(move || order.lock().unwrap().push(1)),
+                Ok(())
+            );
+        }
+        for rung in [3, -2] {
+            let order = order.clone();
+            assert_eq!(
+                init_time_job::add_fini_time_job_at(rung, move || order.lock().unwrap().push(rung)),
+                Ok(())
+            );
+        }
+        assert_eq!(init_time_job::run_fini_time_jobs(), Ok(()));
+        assert_eq!(*order.lock().unwrap(), vec![-2, 1, 3]);
+        assert_eq!(
+            init_time_job::run_fini_time_jobs(),
+            Err(init_time_job::JobError::AlreadyRan)
+        );
+        assert_eq!(
+            init_time_job::add_fini_time_job(|| {}),
+            Err(init_time_job::JobError::AlreadyRan)
+        );
+    }
+
+    /// `Script::init` drains the init-time jobs itself, after the
+    /// interpreter is up but before `gc.disable()` -- the reference's
+    /// `runInitTimeJobs()` position at `script.cpp:584`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_init_runs_the_init_time_jobs() {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gc_was_enabled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let ran = ran.clone();
+            let gc_was_enabled = gc_was_enabled.clone();
+            assert_eq!(
+                init_time_job::add_init_time_job(0, move || {
+                    ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // A failing job leaves no pending exception behind: the
+                    // helper cleared it, and the good probe below still runs.
+                    assert!(!run_simple_probe("import no_such_probe_module"));
+                    // A source with an embedded NUL cannot even be encoded,
+                    // and a source that assigns no `__probe` reads as false.
+                    assert!(!run_simple_probe("has\u{0}an_embedded_nul"));
+                    assert!(!run_simple_probe("pass"));
+                    // SAFETY: the interpreter is up inside Script::init and
+                    // this runs on the thread that owns the GIL.
+                    let enabled = run_simple_probe("import gc; __probe = gc.isenabled()");
+                    gc_was_enabled.store(enabled, std::sync::atomic::Ordering::SeqCst);
+                }),
+                Ok(())
+            );
+        }
+        let interpreter = Interpreter::init(&InitConfig::default()).expect("Script::init");
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(gc_was_enabled.load(std::sync::atomic::Ordering::SeqCst));
+        // After init, collection is off: the job really did run before it.
+        assert_eq!(
+            probe(&interpreter, "import gc; __probe = gc.isenabled()"),
+            "False"
+        );
+        interpreter.fini();
     }
 
     /// Before any init the script system is neither initialised nor
