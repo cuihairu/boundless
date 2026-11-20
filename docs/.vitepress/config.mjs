@@ -40,6 +40,12 @@ const guideSidebar = [
     items: [
       { text: "Running a standalone server", link: "/guide/standalone-server" }
     ]
+  },
+  {
+    text: "Scripting",
+    items: [
+      { text: "Entity scripting", link: "/guide/entity-authoring" }
+    ]
   }
 ];
 

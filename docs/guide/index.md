@@ -11,6 +11,8 @@ getting a world running.
   enter a space and move.
 - [Running a standalone server](/guide/standalone-server) — start and stop one
   role, and what a role can and cannot do today.
+- [Entity scripting](/guide/entity-authoring) — the callback names, the
+  `.def`-driven RPC surface, and which parts use which base class.
 
 ## How honest this guide is
 

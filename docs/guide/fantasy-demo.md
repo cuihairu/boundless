@@ -102,7 +102,8 @@ class Account( BigWorld.Proxy ):
 Two things about this file are worth knowing before you write your own scripts:
 `Account` derives from `BigWorld.Proxy` because it has no cell part, and
 `onClientDeath` is the hook that turns a dropped client into a destroyed entity.
-See the entity scripting guide.
+See [Entity scripting](/guide/entity-authoring) for the full callback list and
+the script-to-`.def` contract.
 
 ## The flow, and what each step should look like
 
