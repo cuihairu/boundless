@@ -237,13 +237,13 @@
 # BW-04-02-05 编码嵌套属性增量 — 复核证据
 
 - **任务编号**: BW-04-02-05（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 372；验收：修改一个 FIXED_DICT 子字段时，更新切片的路径和负载与原版逐字节一致）
-- **原版源码**: `lib/entitydef/property_change.cpp` + `.hpp` —— `Flags`（`FLAG_IS_SLICE=1<<0`、`FLAG_IS_NESTED=1<<1`）；`writePathSimple`（`uint8( path_.size() )` 后逐跳 `stream << iter->first`，`ChangePath::value_type` 是 `pair<int32,int32>`）；`SinglePropertyChange::addExtraBits(BinaryOStream&)` = `stream << leafIndex_`（int32）；`SlicePropertyChange::addExtraBits(BinaryOStream&)` = `uint32(start) << uint32(end)`；`addValueToStream` 交叶子（或逐元素）类型的 `addToStream(source, stream, false)`；`addInternalFlags`/`addToInternalStream`（**extra bits 只在嵌套路径上写**——`addSimplePathToStream` 仅当 `isNestedChange()`）；`isNestedChange( bool )` **忽略实参恒置真**（复制粘贴瑕疵）；`SinglePropertyChange::getRootIndex()`=`leafIndex_`、`SlicePropertyChange` 的为 0，`rootIndex()` 按 `isNestedChange()` 二选一。路径构造：`lib/entitydef/data_instances/intermediate_property_owner.cpp:13`（`getTopLevelOwner`：rpTopLevelOwner == 直接父级时索引进 `rootIndex_` **不进 path_**，否则 `addToPath( ownerRef_, getNumOwnedProperties() )`）——故 path 是叶→根且**不含**实体自身属性索引；`lib/entitydef/data_types/fixed_dict_data_instance.cpp:338`（子字段修改用字段位次与字段数构 `changeOwnedProperty`）。信封证据：`server/cellapp/entity.cpp:5749-5754`（ghostedDataUpdate 先写 entity id + `int32( propertyIndex )` 再 `change.addToInternalStream`）；`:5093` 侧 `setPropertyFromInternalStream` 平路分支 `MF_ASSERT( !isSlice )` 证明平路切片不带 start/end。
+- **原版源码**: `lib/entitydef/property_change.cpp` + `.hpp` —— `Flags`（`FLAG_IS_SLICE=1<<0`、`FLAG_IS_NESTED=1<<1`）；`writePathSimple`（`uint8( path_.size() )` 后逐跳 `stream << iter->first`，`ChangePath::value_type` 是 `pair<int32,int32>`）；`SinglePropertyChange::addExtraBits(BinaryOStream&)` = `stream << leafIndex_`（int32）；`SlicePropertyChange::addExtraBits(BinaryOStream&)` = `uint32(start) << uint32(end)`；`addValueToStream` 交叶子（或逐元素）类型的 `addToStream(source, stream, false)`；`addInternalFlags`/`addToInternalStream`（**extra bits 只在嵌套路径上写**——`addSimplePathToStream` 仅当 `isNestedChange()`）；`isNestedChange( bool )` **忽略实参恒置真**（复制粘贴瑕疵）；`SinglePropertyChange::getRootIndex()`=`leafIndex_`、`SlicePropertyChange` 的为 0，`rootIndex()` 按 `isNestedChange()` 二选一。路径构造：`lib/entitydef/data_instances/intermediate_property_owner.cpp:13`（`getTopLevelOwner`：rpTopLevelOwner == 直接父级时索引进 `rootIndex_` **不进 path_**，否则 `addToPath( ownerRef_, getNumOwnedProperties() )`）——path **不含**实体自身属性索引；顺序更正见 BW-04-02-06 备注 5（`addToPath` 在递归返回后执行，流内是**下降序**：最近顶层属性的跳点先进流，头注释 "叶→根" 有误）；`lib/entitydef/data_types/fixed_dict_data_instance.cpp:338`（子字段修改用字段位次与字段数构 `changeOwnedProperty`）。信封证据：`server/cellapp/entity.cpp:5749-5754`（ghostedDataUpdate 先写 entity id + `int32( propertyIndex )` 再 `change.addToInternalStream`）；`:5093` 侧 `setPropertyFromInternalStream` 平路分支 `MF_ASSERT( !isSlice )` 证明平路切片不带 start/end。
 - **Boundless 模块**: `crates/entitydef/src/property_change.rs`（新模块：`FLAG_IS_SLICE`/`FLAG_IS_NESTED`；`PropertyChange`（path + is_nested_change + root_index，`ChangeHop` 的 index_length 字段同参考保留）；`SinglePropertyChange::add_to_internal_stream` / `SlicePropertyChange::add_to_internal_stream`）；`crates/entitydef/src/data_type.rs`（新增 `field_type`=`FixedDictDataType::getFieldDataType`/`ClassDataType` 同名、`element_type`=`SequenceDataType::getElemType` 两个访问器）；`crates/entitydef/src/value.rs`（`add_to_stream`/`create_from_stream` 提为 `pub(crate)` 供本模块复用）。
 - **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
 - **新版结果**:
   - `cargo test -p entitydef --offline`：**206 单元测试 + 4 差分测试**全部通过（本模块新增 9 测）。
   - **验收钉**：`a_fixed_dict_subfield_change_is_nested_with_an_empty_path` 钉住 `entity.myDict.ammo = 7`（myDict 为实体第 6 属性、ammo 第 0 字段、字典共 2 字段）的内流字节 `[2, 0, 0,0,0,0, 7]`——flags=2（嵌套非切片）、路径长 0（**实体自身索引 6 进 root_index 不进路径**）、leafIndex int32=0、负载是**字段类型**（UINT8）自己的 `[7]` 而非字典的 `[1,7]`。
-  - **深层路径**：`a_deeper_change_records_the_hops_leaf_to_root` 钉住 `entity.arr[4].dict.ammo = 7` 的 `[2, 1, 4,0,0,0, 0,0,0,0, 7]`——路径长 1、跳点（叶→根）4、leafIndex 0，实体索引仍在信封。
+  - **深层路径**：`a_deeper_change_records_the_hops_leaf_to_root` 钉住 `entity.arr[4].dict.ammo = 7` 的 `[2, 1, 4,0,0,0, 0,0,0,0, 7]`——路径长 1、跳点（下降序）4、leafIndex 0，实体索引仍在信封。
   - **嵌套切片**：`a_nested_slice_writes_start_end_then_one_payload_per_value` 钉住 `[3, 1, 1,0,0,0, 2,0,0,0, 5,0,0,0, 9, 8]`——flags=3、路径跳点 1、`uint32` start=2 end=5、每个新值一个元素负载。
   - **平路形态**：`a_flat_change_writes_its_flags_then_payload_only` 钉住平路单值 `[0, 7]`；`a_flat_slice_change_carries_the_slice_flags_only` 钉住平路切片 `[1, 5]`——**无 start/end**（参考平路不写 extra bits，且读侧 `MF_ASSERT( !isSlice )` 证明该形态不会被内部流使用）；`a_flat_slice_of_dicts_streams_each_full_dict` 钉住字典数组切片按字段序整流每个字典 `[1, 7, 1, 'x']`。
   - **负载走叶子类型**：`the_payload_of_a_single_change_is_the_leaf_types_own_form` 钉住 STRING 子字段的 packed 长度形态 `[2, 0, 0,0,0,0, 2, 'x', 'y']`。
@@ -261,3 +261,35 @@
 3. **信封不在本模块**：实体 id 与顶层属性索引（`ghostedDataUpdate` 的 `bundle << id; bundle << int32(propertyIndex)`）属消息层，`PropertyChange` 自身不含之，与参考 `rootIndex()` 只被调用方读取一致。
 4. **`isNestedChange( bool )` 忽略实参**与**路径长 >255 静默截 uint8**两个参考形态均逐字保留（后者的前提：单条变更路径长度受限于定义深度，255 不可达）。
 5. `changeOwnedProperty` 的 `canIgnoreAssignment`/`hasChanged`（同值短路）依赖 Python 宿主的 ScriptObject 比较，本模型由调用方用 `PropertyValue` 相等性自行短路，编码器不重复判断——与参考分层一致（编码发生在 `onOwnedPropertyChanged` 之后）。
+
+---
+
+# BW-04-02-06 应用嵌套属性增量 — 复核证据
+
+- **任务编号**: BW-04-02-06（lane BW-04 EntityDef、实体数据与 RPC 契约，todo.md 行 375；验收：接收原版更新切片后，只有目标字段改变，Python 通知携带正确旧值）
+- **原版源码**: `lib/entitydef/property_change_reader.cpp` —— `PropertyChangeReader::readAndApply`（flags 分派；平路分支整属性 `createFromStream` 替换，嵌套分支走 `readSimplePathAndApply`）；`readSimplePathAndApply`（`uint8` 路径长 + 逐跳 `int32`，`getChildPropertyOwner` 逐级下降，`pOwner==NULL` 打印 `"PropertyChangeReader::readAndApply: pOwner is NULL. %d/%d.\n"`）；`getPyIndex`（FIXED_DICT → 字段名 PythonString，数组 → int）；`SinglePropertyChangeReader::apply`（`setOwnedProperty( leafIndex_ )`，返回**旧子值**而非整属性）；`SlicePropertyChangeReader::apply`（`setOwnedSlice` 仅数组可用，基类返回 NULL 时打印 `"Old value is NULL"` 不给旧值；逐元素读到流尽；`setSlice` 把 start 夹到 [0,origSize]、end 夹到 [start,origSize]，固定尺寸校验 `size != 0 && end-start != numToInsert` 打印 `"slice assignment would create array of wrong size"` **无尾换行**；通知路径元素 = `(start, end + newSize - oldSize)` **有符号**）。所有者资格：`childPropertyOwnerIsSimilarType` / `PyArrayDataInstance::getChildPropertyOwner`（ARRAY/TUPLE）/ `PyFixedDictDataInstance::getChildPropertyOwner`（FIXED_DICT，值为 None 视 0 子项）/ `PyClassDataInstance`（CLASS）；其余类型返回 NULL 打印 `"Bad index %d. size = %zd\n"`。叶索引越界：`fieldValues_[ref]` **无检查**（参考 UB）。
+- **Boundless 模块**: `crates/entitydef/src/property_change.rs`（`PathElement::{Field,Index,Slice}`（Slice 端点带符号尺寸增量重定基）、`AppliedChange{old_value,path}`、`ApplyError` 九变体含参考原话 Display、`apply_internal_stream(root_type, root_value, stream)`、`apply_at` 下降器、`set_owned_property`/`set_owned_slice`）。
+- **平台**: Linux x86_64，Rust 1.100.0，llvm-cov 0.9.1。
+- **新版结果**:
+  - `cargo test -p entitydef --offline`：**222 单元测试 + 4 差分测试**全部通过（本模块新增 16 测）。
+  - **验收钉**：`an_applied_dict_subfield_change_touches_only_the_target_field` 钉住 FIXED_DICT `[2, 0,0,0,0, 0,0,0,0, 7]` 应用后**只有 ammo 变 7**、label 原样、`old_value` = 旧子值 `Uint(5)`、通知路径 `[Field("ammo")]`（`getPyIndex` 的 FIXED_DICT → 字段名形态）。
+  - **深路径与兄弟不动**：两跳 `[0, 0]` 穿数组入字典，兄弟字段与兄弟元素均原样。
+  - **切片应用**：钉住 `[2,5]` 替换 `[4,9,2]` 后数组为 `[4, 7, 8, 2]`、旧值 NULL 语义、通知路径元素 `Slice(1, 2)`（end 按 +1 尺寸增量重定基，有符号）。
+  - **固定尺寸校验**：`end-start != new.len()` → `WrongArraySize`，错误串含无尾换行的参考原话；尺寸 0 数组豁免。
+  - **平路**：整属性 `create_from_stream` 替换、空路径；平路切片 flag 拒绝（`FlatSliceOnInternalStream`，对齐参考 `MF_ASSERT( !isSlice )`）。
+  - **坏路径**：标量根上嵌套路径 → `OwnerIsNull{hop:1,size:1}` 值原样（参考 `getChildPropertyOwner` NULL 双打印收敛为单错误）；字典内坏跳 → `BadChildIndex`（`"Bad index %d. size = %zd\n"` 原话）；叶子越界 → `LeafIndexOutOfRange`（参考 UB，登记为显式错误）；切片落在非数组 → `OldValueIsNull`（`"Old value is NULL\n"` 原话）；截断流 → `Payload(StreamTruncated)`；BLOB 越界 → `UnableToCreateSlice`（原话）。
+  - clippy `-D warnings`：entitydef **0 findings**（隔离清单放行 `crates/resources` 32 条既有 findings）。
+  - rustfmt：仅触碰文件干净。
+  - 覆盖率：全部文件 **≥98%**（`property_change.rs` 895/900 = 99.44%，残 5 行为显示分支不可达组合）。
+- **证据链接**: `crates/entitydef/src/property_change.rs`（apply 家族与全部单测）、`docs/review/bw04-01-01-entitydef-parse.md` BW-04-02-05 节（编码形态，本项为其读侧对偶）。
+- **状态**: 已交付（源码级对齐 + 应用语义/旧值/通知路径/错误串锚定）。
+
+## 备注（登记在案的差异 / 待验项）
+
+1. **仍无字节级参考 oracle**（同 BW-04-02-01..05 备注）：process_defs 不遍历属性变更应用；本项证据是与 `property_change_reader.cpp` 逐句对齐的自钉夹具测试，不是与参考二进制产物的比对。
+2. **参考双打印收敛为单错误**：`getChildPropertyOwner` 打印 "Bad index" 后 reader 再打印 "pOwner is NULL"（两条都出）；Rust 以单个 `ApplyError` 表达同一失败，语义等价、打印次数不同，登记为差异。
+3. **叶索引越界在参考是 UB**（`fieldValues_[ref]` 无检查），Rust 显式 `LeafIndexOutOfRange`；这是加严而非放松，登记在案。
+4. **`endIndex < startIndex` 参考只打印 "Invalid values..." 并继续**（产物为空切片），未建为独立结果形态，已登记不虚勾。
+5. **路径序更正随本 commit 落账**：`ChangePath` 头注释自称 "叶→根"，但 `IntermediatePropertyOwner::getTopLevelOwner` 的递归返回后才 `addToPath`，故**最近顶层属性的跳点先进流**——机制与 reader 都是下降序，注释是错的；BW-04-02-05 文档中的路径序表述已随本 commit 更正。
+6. **切片端点重定基为有符号差**：`(new_size as i64 - orig_size as i64) as i32`（缩容为负），与参考 `end + newSize - oldSize` 一致；usize 直接相减在缩容时会下溢，已规避。
+7. **平路切片 flag 是参考断言而非错误串**：`MF_ASSERT( !isSlice )` 在 release 构建是 UB；Rust 选择显式 `FlatSliceOnInternalStream` 错误，加严登记。

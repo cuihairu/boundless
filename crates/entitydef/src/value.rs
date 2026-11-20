@@ -65,7 +65,7 @@ pub enum PropertyValue {
 }
 
 /// The `SimpleStreamElement` / `BlobStreamElement` truncation text.
-const SIMPLE_STREAM_ELEMENT: &str = "SimpleStreamElement";
+pub(crate) const SIMPLE_STREAM_ELEMENT: &str = "SimpleStreamElement";
 const BLOB_STREAM_ELEMENT: &str = "BlobStreamElement";
 
 /// The `UserDataType` reporting sites (`user_data_type.cpp`). Each names the
