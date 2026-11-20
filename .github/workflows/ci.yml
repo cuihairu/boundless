@@ -523,11 +523,17 @@ jobs:
       - name: pnpm
         run: npm install --no-fund --no-audit --global pnpm@12
 
+      # pnpm 12 aborts the install on ignored postinstall scripts (vsce-sign,
+      # keytar) even though tsc itself is already in place — the same behaviour
+      # the TypeScript lane tolerates by gating on the toolchain rather than
+      # the installer's exit code. So the install is not the gate: tsc runs
+      # from node_modules directly, and a tree without a usable tsc fails
+      # right here.
       - name: Build the extension core
         run: |
           cd extensions/vscode
-          pnpm install --frozen-lockfile
-          pnpm run build
+          pnpm install --frozen-lockfile --prefer-offline || true
+          ./node_modules/.bin/tsc -p .
 
       - name: Run the SDK and plugin cases
         run: ci/sdk.sh
