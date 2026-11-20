@@ -17,6 +17,12 @@
 
 import { expandSpecialChars, reduceEscapeSequences } from "./specialChars";
 
+/** Absolute offsets are the parser's position currency; editors convert them to
+ * line/character spans with the document's line index. `nameOffset` points at
+ * the first character of the node name inside its start tag, `valueOffset` at
+ * the first non-whitespace character of its text value. */
+export const NO_OFFSET = -1;
+
 /** Why an XML document failed to parse. The reference prints an `ERROR_MSG`
  * and returns NULL; callers then fall back to a binary section. */
 export class XmlParseError extends Error {
@@ -35,6 +41,12 @@ export interface DataSection {
   readonly valueSet: boolean;
   readonly isAttribute: boolean;
   readonly children: readonly DataSection[];
+  /** Absolute offset of the node name inside its start tag. */
+  readonly nameOffset: number;
+  readonly nameLength: number;
+  /** Absolute offsets of the trimmed text value, `NO_OFFSET` when absent. */
+  readonly valueOffset: number;
+  readonly valueLength: number;
 }
 
 const NUL = 0x00;
@@ -68,7 +80,17 @@ function decode(bytes: Uint8Array, start = 0, end = bytes.length): string {
 
 /** `DataSection::new(tag)` — an empty section with a name and no children. */
 export function newSection(tag: string): DataSection {
-  return { name: tag, value: "", valueSet: false, isAttribute: false, children: [] };
+  return {
+    name: tag,
+    value: "",
+    valueSet: false,
+    isAttribute: false,
+    children: [],
+    nameOffset: NO_OFFSET,
+    nameLength: 0,
+    valueOffset: NO_OFFSET,
+    valueLength: 0,
+  };
 }
 
 class Parser {
@@ -193,7 +215,12 @@ class Parser {
           let content = this.data.subarray(start, contentEnd);
           const nul = content.indexOf(NUL);
           if (nul >= 0) content = content.subarray(0, nul);
-          this.replace(node, { value: decode(content), valueSet: true });
+          this.replace(node, {
+            value: decode(content),
+            valueSet: true,
+            valueOffset: start,
+            valueLength: content.length,
+          });
           return;
         }
       }
@@ -223,6 +250,7 @@ class Parser {
     const gtRel = this.data.subarray(this.pos).indexOf(GT);
     if (gtRel < 0) throw new XmlParseError("unclosed tag");
     let tagText = this.data.subarray(this.pos, this.pos + gtRel);
+    const tagStart = this.pos;
     this.pos += gtRel + 1;
 
     // Trailing whitespace of the tag text is trimmed.
@@ -257,17 +285,23 @@ class Parser {
       nameEnd++;
     }
     const name = decode(tagText, 0, nameEnd);
+    const nameOffset = tagStart + 1;
     const children: DataSection[] = [];
-    this.parseAttributes(children, tagText.subarray(nameEnd));
+    this.parseAttributes(children, tagText.subarray(nameEnd), nameOffset + nameEnd);
+
+    const node: DataSection = {
+      name,
+      value: "",
+      valueSet: false,
+      isAttribute: false,
+      children,
+      nameOffset,
+      nameLength: nameEnd,
+      valueOffset: NO_OFFSET,
+      valueLength: 0,
+    };
 
     if (isEmptyTag) {
-      const node: DataSection = {
-        name,
-        value: "",
-        valueSet: false,
-        isAttribute: false,
-        children,
-      };
       const parent = this.open[this.open.length - 1];
       // A self-closed root completes the document at once; the main loop
       // then exits and ignores any trailing content, exactly like the
@@ -276,13 +310,13 @@ class Parser {
       else this.root = node;
     } else {
       // Non-empty tags descend; children attach when the end tag closes.
-      this.open.push({ name, value: "", valueSet: false, isAttribute: false, children });
+      this.open.push(node);
     }
   }
 
   /** Attribute collection. Syntax problems stop collection for that tag; the
-   * tag itself still parses. */
-  private parseAttributes(out: DataSection[], rest: Uint8Array): void {
+   * tag itself still parses. `baseOffset` is the absolute offset of `rest[0]`. */
+  private parseAttributes(out: DataSection[], rest: Uint8Array, baseOffset: number): void {
     let p = 0;
     const end = rest.length;
     for (;;) {
@@ -298,6 +332,8 @@ class Parser {
 
       const nextChar = rest[p];
       const name = decode(rest, nameStart, p);
+      const nameOffset = baseOffset + nameStart;
+      const nameLength = p - nameStart;
       p++;
 
       // The '=' may follow whitespace.
@@ -319,7 +355,17 @@ class Parser {
       const value = reduceEscapeSequences(decode(rest, valueStart, p));
       p++;
 
-      out.push({ name, value, valueSet: true, isAttribute: true, children: [] });
+      out.push({
+        name,
+        value,
+        valueSet: true,
+        isAttribute: true,
+        children: [],
+        nameOffset,
+        nameLength,
+        valueOffset: baseOffset + valueStart,
+        valueLength: p - valueStart,
+      });
     }
   }
 
@@ -345,7 +391,12 @@ class Parser {
     let span = this.data.subarray(start, valueEnd);
     const nul = span.indexOf(NUL);
     if (nul >= 0) span = span.subarray(0, nul);
-    this.replace(node, { value: reduceEscapeSequences(decode(span)), valueSet: true });
+    this.replace(node, {
+      value: reduceEscapeSequences(decode(span)),
+      valueSet: true,
+      valueOffset: start,
+      valueLength: span.length,
+    });
   }
 
   /** The open stack is immutable-by-interface, so replacement happens by
