@@ -2,6 +2,10 @@
 //! `lib/cstdmf/timer_handler.hpp`) and the `EventDispatcher` timer surface
 //! (`lib/network/event_dispatcher.cpp`).
 //!
+//! The queue is cstdmf, so it lives in `foundation`; both event
+//! dispatchers in this tree (server-runtime's bootstrap `Dispatcher` and
+//! mercury's `EventDispatcher`) share it.
+//!
 //! Reference contract preserved:
 //! - `add( startTime, interval, handler, user, name )` pushes a node and
 //!   restores the heap; a recurrent timer carries its interval, a once-off
@@ -225,7 +229,7 @@ fn time_at<TS: Stamp>(queue: &[Rc<RefCell<Node<TS>>>], index: usize) -> TS {
 /// while its parent compares greater. Equal keys never bubble: a newly
 /// pushed equal-deadline timer stays below its ancestors.
 fn push_heap_value<TS: Stamp>(
-    queue: &mut Vec<Rc<RefCell<Node<TS>>>>,
+    queue: &mut [Rc<RefCell<Node<TS>>>],
     mut hole: usize,
     top: usize,
     value: Rc<RefCell<Node<TS>>>,
@@ -244,7 +248,7 @@ fn push_heap_value<TS: Stamp>(
 }
 
 /// `std::push_heap`: sift the freshly pushed last element up.
-fn push_heap_last<TS: Stamp>(queue: &mut Vec<Rc<RefCell<Node<TS>>>>) {
+fn push_heap_last<TS: Stamp>(queue: &mut [Rc<RefCell<Node<TS>>>]) {
     let hole = queue.len() - 1;
     let value = Rc::clone(&queue[hole]);
     push_heap_value(queue, hole, 0, value);
@@ -256,7 +260,7 @@ fn push_heap_last<TS: Stamp>(queue: &mut Vec<Rc<RefCell<Node<TS>>>>) {
 /// single-child level, libstdc++ moves the hole past *both* the leaf and
 /// its missing sibling before the sift-up.
 fn adjust_heap<TS: Stamp>(
-    queue: &mut Vec<Rc<RefCell<Node<TS>>>>,
+    queue: &mut [Rc<RefCell<Node<TS>>>],
     hole: usize,
     len: usize,
     value: Rc<RefCell<Node<TS>>>,
@@ -293,7 +297,7 @@ fn pop_heap_front<TS: Stamp>(queue: &mut Vec<Rc<RefCell<Node<TS>>>>) -> Rc<RefCe
 
 /// `std::make_heap` (the reference's `PriorityQueue::heapify`): adjust
 /// every non-leaf, from the last parent to the root.
-fn make_heap<TS: Stamp>(queue: &mut Vec<Rc<RefCell<Node<TS>>>>) {
+fn make_heap<TS: Stamp>(queue: &mut [Rc<RefCell<Node<TS>>>]) {
     let len = queue.len();
     if len < 2 {
         return;
@@ -470,10 +474,10 @@ impl<TS: Stamp> TimeQueueT<TS> {
             return false;
         };
         let inner = self.inner.borrow();
-        if let Some(processing) = &inner.processing_node {
-            if Rc::ptr_eq(processing, node) {
-                return true;
-            }
+        if let Some(processing) = &inner.processing_node
+            && Rc::ptr_eq(processing, node)
+        {
+            return true;
         }
         inner.queue.iter().any(|queued| Rc::ptr_eq(queued, node))
     }
@@ -630,10 +634,10 @@ fn cancel_node<TS: Stamp>(node: &Rc<RefCell<Node<TS>>>, should_call_on_release: 
         let handler = guard.handler.take();
         let user = guard.user;
         drop(guard);
-        if should_call_on_release {
-            if let Some(handler) = handler {
-                handler.on_release(TimerHandle(Some(Rc::clone(node))), user);
-            }
+        if should_call_on_release
+            && let Some(handler) = handler
+        {
+            handler.on_release(TimerHandle(Some(Rc::clone(node))), user);
         }
     }
     // `owner_.onCancel()`.
@@ -681,7 +685,7 @@ pub type ClockFn = Box<dyn Fn() -> u64>;
 
 /// `EventDispatcher::realClock`.
 pub fn real_clock() -> u64 {
-    crate::tick::stamp_now()
+    crate::time::stamp_now()
 }
 
 /// `TimeStamp::fromSeconds` for the `addTimerCommon` conversion:
@@ -839,7 +843,10 @@ mod tests {
         }
     }
 
-    fn recorder() -> (Rc<dyn TimerHandler<u64>>, Rc<RefCell<Vec<&'static str>>>) {
+    /// The recorder fixture pair: its handler and the shared log.
+    type RecorderParts = (Rc<dyn TimerHandler<u64>>, Rc<RefCell<Vec<&'static str>>>);
+
+    fn recorder() -> RecorderParts {
         let log = Rc::new(RefCell::new(Vec::new()));
         (
             Rc::new(Recorder {
@@ -1298,76 +1305,6 @@ mod tests {
         let first = real_clock();
         let second = real_clock();
         assert!(second >= first);
-    }
-
-    /// The dispatcher surface: `processOnce` runs frequent tasks then
-    /// timers on the injected clock -- the timer fires only once its
-    /// delivery time passes.
-    #[test]
-    fn the_dispatcher_runs_frequent_tasks_then_timers() {
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let clock = Rc::new(Cell::new(1_000_000_000u64));
-        let clock_for_closure = Rc::clone(&clock);
-        let timers = DispatcherTimers::with_clock(Box::new(move || clock_for_closure.get()));
-        let mut dispatcher = crate::dispatcher::Dispatcher::with_timers(timers);
-
-        let log_for_task = Rc::clone(&log);
-        dispatcher.add_frequent_task(Rc::new(RefCell::new(
-            crate::dispatcher::FrequentTaskFn(
-                move || log_for_task.borrow_mut().push("frequent"),
-                "frequent",
-            ),
-        )));
-        let log_for_timer = Rc::clone(&log);
-        dispatcher.add_once_off_timer(
-            500_000,
-            Rc::new(TimerHandlerFn::new(
-                move |_, _| log_for_timer.borrow_mut().push("timer"),
-                "timer",
-            )),
-            0,
-            "timer",
-        );
-
-        // addTimer maps 500000us to 0.5s of stamps on the pinned clock.
-        assert_eq!(dispatcher.timers().time_queue.next_exp(0), 1_500_000_000);
-
-        // First pass: not due yet.
-        dispatcher.process_once(false);
-        assert_eq!(*log.borrow(), ["frequent"]);
-        assert_eq!(dispatcher.timers().num_timer_calls(), 0);
-
-        // Second pass at t=1.5s: the frequent task repeats, the timer
-        // fires.
-        clock.set(1_500_000_000);
-        dispatcher.process_once(false);
-        assert_eq!(*log.borrow(), ["frequent", "frequent", "timer"]);
-        assert_eq!(dispatcher.timers().num_timer_calls(), 1);
-    }
-
-    /// The reference guard: a break raised inside a frequent task skips
-    /// the timer pass (`if (!breakProcessing_) processTimers()`).
-    #[test]
-    fn a_break_inside_a_frequent_task_skips_the_timer_pass() {
-        let clock = Rc::new(Cell::new(1_000_000_000u64));
-        let clock_for_closure = Rc::clone(&clock);
-        let timers = DispatcherTimers::with_clock(Box::new(move || clock_for_closure.get()));
-        let mut dispatcher = crate::dispatcher::Dispatcher::with_timers(timers);
-
-        let break_flag = dispatcher.break_flag();
-        dispatcher.add_frequent_task(Rc::new(RefCell::new(
-            crate::dispatcher::FrequentTaskFn(move || break_flag.set(true), "breaker"),
-        )));
-
-        // Due at 1.1s; the clock is moved there first so the timer would
-        // fire if the pass ran.
-        let (skipped_handler, skipped_log) = recorder();
-        dispatcher.add_timer(100_000, skipped_handler, 0, "skipped");
-        clock.set(1_100_000_000);
-
-        dispatcher.process_once(false);
-        assert_eq!(*skipped_log.borrow(), Vec::<&'static str>::new());
-        assert_eq!(dispatcher.timers().num_timer_calls(), 0);
     }
 
     /// Non-positive `addTimer` delays produce an unset handle, exactly

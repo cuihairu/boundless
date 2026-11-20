@@ -719,6 +719,10 @@ mod tests {
         // the regular drain too (nobody regular ever registers for it).
         assert_eq!(fired.load(Ordering::SeqCst), 1);
 
+        // The global bitset is shared process state; wipe the bit this
+        // raise left behind so the rest of the suite starts clean.
+        PENDING_SIGNALS.store(0, Ordering::Relaxed);
+
         // `clearSignalHandler( SIGQUIT, ... )` drops the slot; a second
         // call finds nothing; the bulk `clearSignalHandlers` path is a
         // no-op on the empty slot.
@@ -819,10 +823,18 @@ mod tests {
 
         processor.ignore_signal(libc::SIGUSR2);
         assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_IGN as usize);
+        // The pending bitset is shared process state that a sibling test may
+        // have dirtied, so assert the ignored raise added nothing rather
+        // than that the world was quiet.
+        let before = PENDING_SIGNALS.load(Ordering::Relaxed);
         unsafe {
             libc::raise(libc::SIGUSR2);
         }
-        assert_eq!(PENDING_SIGNALS.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            PENDING_SIGNALS.load(Ordering::Relaxed),
+            before,
+            "an ignored signal queues nothing"
+        );
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
         // Restore for the rest of the suite.

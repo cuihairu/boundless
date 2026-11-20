@@ -61,7 +61,7 @@ impl Quaternion {
         self.x = -self.x / d;
         self.y = -self.y / d;
         self.z = -self.z / d;
-        self.w = self.w / d;
+        self.w /= d;
     }
 
     /// Conjugate (no division), commonly used for unit quaternions.

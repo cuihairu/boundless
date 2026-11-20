@@ -68,6 +68,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 name = "mercury"
 version = "0.1.0"
 dependencies = [
+ "foundation",
  "platform",
 ]
 
@@ -106,6 +107,7 @@ dependencies = [
 name = "server-runtime"
 version = "0.1.0"
 dependencies = [
+ "foundation",
  "libc",
  "resources",
 ]
