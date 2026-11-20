@@ -1271,7 +1271,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 - [x] **BW-18-03-01 实现手动时钟**。**验收** 同一序列推进得到相同 Tick。
   - 证据：原版 lib/network/unit_test/manual_clock.hpp 从墙钟起步、advanceMs 走浮点秒换算，重复运行 Tick 不同；新版 crates/test-support/src/clock.rs 提供 ManualClock（stamp 零起步、纳秒刻度与 stamp_now()/DispatcherTimers ClockFn 完全同单位，advance_ms/rewind_ms 定点整数推进、rewind 过零环绕保留原版无符号减法语义），`the_same_advance_sequence_yields_the_same_ticks` 钉死同序列同 Tick，`time_stands_still_until_advanced`/`milliseconds_convert_to_nanosecond_stamps`/`the_injected_clock_fn_tracks_advances` 验证静止性、刻度与 ClockFn 注入可观察推进。
-- [ ] **BW-18-03-02 实现确定性丢包**。**验收** 指定包触发预期重传。
+- [x] **BW-18-03-02 实现确定性丢包**。**验收** 指定包触发预期重传。
+  - 证据：原版 `test_mangle.cpp` 用 `g_mangleProb=0.05` 墙钟概率丢包，无法指名丢哪个包、重传行为不可复现；新版 crates/test-support/src/channel.rs 提供 ScriptedChannel（按发送序号 script 每包 Fate，Drop 包进 dropped() 记录），`designated_packets_drop_and_the_rest_deliver` 验证指名丢包其余按序达，`a_designated_drop_triggers_the_expected_retransmission` 走通 丢1→缺口→重发→新副本必达 的完整重传环，`script_by_chance` 用 SeededRng 复刻概率模式且 `seeded_chance_scripting_is_reproducible` 钉死同种子同丢包集；mercury 包类型 BW-02+ 接入同通道。
 - [ ] **BW-18-03-03 实现延迟及乱序**。**验收** 按指定顺序交付。
 - [ ] **BW-18-03-04 提供进程故障夹具**。**验收** 可复现迁移或恢复。
 - [ ] **BW-18-03-05 接通可控时钟取消测试**。**验收** 定时器重复用例稳定。
