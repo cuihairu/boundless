@@ -113,10 +113,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
+      # The components are declared, not assumed: this job's whole product is
+      # cargo fmt and cargo clippy, and the setup action passes an empty
+      # component list by default — one install path then ships a minimal
+      # profile and the lane fails with "'cargo-fmt' is not installed".
       - name: Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: true
+          components: rustfmt clippy
 
       - name: Format and lint
         run: |
@@ -631,6 +636,8 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: true
+          # check-rust.sh self-test formats and lints a bait crate.
+          components: rustfmt clippy
 
       - name: Python
         uses: actions/setup-python@v6
