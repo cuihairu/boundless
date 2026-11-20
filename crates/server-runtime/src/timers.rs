@@ -144,10 +144,12 @@ impl<TS: Stamp> TimerHandle<TS> {
         self.0.is_some()
     }
 
-    /// `cancel()`: cancels the timer if the handle is set.
-    pub fn cancel(&self) {
-        if let Some(node) = &self.0 {
-            cancel_node(node, true);
+    /// `cancel()`: cancels the timer if the handle is set. The reference
+    /// clears `pNode_` *before* touching the node, so the handle is unset
+    /// as soon as the call is made and a second cancel is inert.
+    pub fn cancel(&mut self) {
+        if let Some(node) = self.0.take() {
+            cancel_node(&node, true);
         }
     }
 
@@ -554,11 +556,26 @@ impl<TS: Stamp> TimeQueueT<TS> {
         node.borrow().interval
     }
 
+    /// The mutable `timerIntervalTime` overload (`Node::intervalRef`):
+    /// change the timer's repeat interval in place. The reference hands
+    /// out `TIME_STAMP &` into the node; here the same observable effect
+    /// is a setter. A timer's own callback may do this -- the new
+    /// interval takes effect on the post-callback `time += interval`
+    /// reschedule (the TimeKeeper tick-speedup primitive).
+    pub fn set_timer_interval_time(&self, handle: &TimerHandle<TS>, interval: TS) {
+        let node = handle.0.as_ref().expect("interval time of a set timer");
+        node.borrow_mut().interval = interval;
+    }
+
     /// `TimeQueueT::getTimerInfo`: the time, interval and name of a
-    /// timer, or nothing for an unset handle.
+    /// timer; nothing for an unset or a cancelled handle
+    /// (`if (!pNode->isCancelled())` in the reference).
     pub fn get_timer_info(&self, handle: &TimerHandle<TS>) -> Option<(TS, TS, &'static str)> {
         let node = handle.0.as_ref()?;
         let node = node.borrow();
+        if node.state == NodeState::Cancelled {
+            return None;
+        }
         Some((node.time, node.interval, node.name))
     }
 }
@@ -774,6 +791,11 @@ impl DispatcherTimers {
         self.time_queue.timer_interval_time(handle)
     }
 
+    /// The mutable `EventDispatcher::timerIntervalTime` overload.
+    pub fn set_timer_interval_time(&self, handle: &TimerHandle<u64>, interval: u64) {
+        self.time_queue.set_timer_interval_time(handle, interval);
+    }
+
     /// `EventDispatcher::maxTimerLateness`: the worst observed delivery
     /// delay -- the event-loop stall signal.
     pub fn max_timer_lateness(&self) -> u64 {
@@ -937,7 +959,7 @@ mod tests {
     fn a_recurrent_timer_repeats_until_cancelled() {
         let queue = TimeQueue64::new();
         let (handler, log) = recorder();
-        let handle = queue.add(0, 10, handler, 0, "tick");
+        let mut handle = queue.add(0, 10, handler, 0, "tick");
         assert_eq!(queue.timer_interval_time(&handle), 10);
 
         assert_eq!(queue.process(25), 3);
@@ -962,6 +984,7 @@ mod tests {
             fn handle_timeout(&self, handle: TimerHandle<u64>, _user: usize) {
                 self.log.borrow_mut().push("fired");
                 assert!(self.queue.borrow().legal(&handle));
+                let mut handle = handle;
                 handle.cancel();
             }
         }
@@ -989,7 +1012,7 @@ mod tests {
         let (handler, log) = recorder();
         let early = queue.add(5, 0, handler, 0, "early");
         let (doomed_handler, doomed_log) = recorder();
-        let doomed = queue.add(10, 0, doomed_handler, 0, "doomed");
+        let mut doomed = queue.add(10, 0, doomed_handler, 0, "doomed");
 
         doomed.cancel();
         assert_eq!(*doomed_log.borrow(), ["released"]);
@@ -1011,7 +1034,7 @@ mod tests {
     fn a_cancelled_front_node_never_fires() {
         let queue = TimeQueue64::new();
         let (handler, log) = recorder();
-        let handle = queue.add(10, 0, handler, 0, "doomed");
+        let mut handle = queue.add(10, 0, handler, 0, "doomed");
         handle.cancel();
 
         assert_eq!(queue.process(10), 0);
@@ -1108,7 +1131,7 @@ mod tests {
             handles.push(once_off(&queue, time, name, &log));
         }
         // Cancel four of six: the fourth cancel sees 4 * 2 > 2 and purges.
-        for handle in &handles[1..5] {
+        for handle in &mut handles[1..5] {
             handle.cancel();
         }
         assert_eq!(queue.size(), 2);
@@ -1127,7 +1150,7 @@ mod tests {
         queue.add(1, 0, Rc::clone(&handler), 0, "pending1");
         queue.add(2, 0, handler, 0, "pending2");
         let (doomed_handler, doomed_log) = recorder();
-        let doomed = queue.add(3, 0, doomed_handler, 0, "pre-cancelled");
+        let mut doomed = queue.add(3, 0, doomed_handler, 0, "pre-cancelled");
         doomed.cancel();
 
         queue.clear(true);
@@ -1262,7 +1285,7 @@ mod tests {
     #[test]
     fn unset_handles_are_inert() {
         let queue = TimeQueue64::new();
-        let handle = TimerHandle::<u64>::default();
+        let mut handle = TimerHandle::<u64>::default();
         assert!(!handle.is_set());
         assert!(!queue.legal(&handle));
         handle.cancel(); // no-op
@@ -1516,7 +1539,7 @@ mod tests {
         // Six cancels leave four survivors; the sixth trips the purge
         // (6 * 2 > 10, cancelled nodes still counted in the length) and
         // `make_heap` walks two parent levels.
-        for handle in &handles[1..7] {
+        for handle in &mut handles[1..7] {
             handle.cancel();
         }
         assert_eq!(queue.size(), 4);
@@ -1526,17 +1549,25 @@ mod tests {
     }
 
     /// The defensive guards keep the reference's shape: a cancelled node
-    /// never triggers, a second cancel is a no-op.
+    /// never triggers, a second cancel is inert because the handle was
+    /// unset first (`pNode_ = NULL` before the node is touched), and a
+    /// copy taken before the cancel still points at the node but cannot
+    /// make it fire.
     #[test]
     fn the_cancelled_guards_never_double_fire() {
         let queue = TimeQueue64::new();
         let (handler, log) = recorder();
-        let handle = queue.add(5, 0, handler, 0, "guarded");
+        let mut handle = queue.add(5, 0, handler, 0, "guarded");
+        let mut probe = handle.clone();
 
         handle.cancel(); // releases
-        handle.cancel(); // already cancelled: no-op
+        assert!(!handle.is_set());
+        handle.cancel(); // unset: fully inert
         // triggerTimer's cancelled guard: the node can no longer fire.
-        trigger_timer(handle.0.as_ref().expect("the node is still alive"));
+        trigger_timer(probe.0.as_ref().expect("the copy keeps the node"));
+        // Cancelling through the stale copy: the node's cancelled guard
+        // makes it inert, so the handler is never released twice.
+        probe.cancel();
 
         assert_eq!(*log.borrow(), ["released"]);
     }
@@ -1545,13 +1576,286 @@ mod tests {
     /// releases, the (gone) owner bookkeeping is skipped.
     #[test]
     fn cancelling_after_the_queue_is_dropped_is_safe() {
-        let (handle, log) = {
+        let (mut handle, log) = {
             let queue = TimeQueue64::new();
             let (handler, log) = recorder();
             let handle = queue.add(1, 0, handler, 0, "late");
             (handle, log)
         };
         handle.cancel();
+        assert_eq!(*log.borrow(), ["released"]);
+    }
+
+    /// Cancelling from inside another timer's callback: the victim never
+    /// fires and its `onRelease` runs synchronously inside the canceller's
+    /// callback. The victim was already in the queue, so the purge trips
+    /// during processing.
+    #[test]
+    fn a_callback_can_cancel_another_pending_timer() {
+        struct CrossCanceller {
+            log: Rc<RefCell<Vec<&'static str>>>,
+            victim: RefCell<Option<TimerHandle<u64>>>,
+        }
+        impl TimerHandler<u64> for CrossCanceller {
+            fn handle_timeout(&self, _handle: TimerHandle<u64>, _user: usize) {
+                self.log.borrow_mut().push("canceller");
+                let mut victim = self.victim.borrow_mut().take().expect("victim handle set");
+                victim.cancel();
+                self.log.borrow_mut().push("victim-released");
+            }
+        }
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let queue = TimeQueue64::new();
+
+        let canceller = Rc::new(CrossCanceller {
+            log: Rc::clone(&log),
+            victim: RefCell::new(None),
+        });
+        queue.add(
+            5,
+            0,
+            Rc::clone(&canceller) as Rc<dyn TimerHandler<u64>>,
+            0,
+            "canceller",
+        );
+        let (victim_handler, victim_recorder) = recorder();
+        let victim = queue.add(10, 0, victim_handler, 0, "victim");
+        *canceller.victim.borrow_mut() = Some(victim);
+
+        assert_eq!(queue.process(5), 1);
+        assert_eq!(*log.borrow(), ["canceller", "victim-released"]);
+        assert_eq!(*victim_recorder.borrow(), ["released"]);
+
+        // The victim's due time passes without it firing.
+        assert_eq!(queue.process(10), 0);
+        assert_eq!(*victim_recorder.borrow(), ["released"]);
+    }
+
+    /// The TimeKeeper re-registration pattern: read `timerDeliveryTime`
+    /// before cancelling, then re-add at exactly that time. The old
+    /// handle never fires again and the replacement keeps the phase --
+    /// re-registered at 15, not at "late now + interval".
+    #[test]
+    fn a_callback_can_reregister_at_the_original_delivery_time() {
+        struct Reregistrar {
+            log: Rc<RefCell<Vec<&'static str>>>,
+            queue: Rc<RefCell<TimeQueue64>>,
+            me: RefCell<Option<Rc<dyn TimerHandler<u64>>>>,
+            handle: RefCell<TimerHandle<u64>>,
+        }
+        impl TimerHandler<u64> for Reregistrar {
+            fn handle_timeout(&self, handle: TimerHandle<u64>, _user: usize) {
+                self.log.borrow_mut().push("fired");
+                let delivery = self.queue.borrow().timer_delivery_time(&handle);
+                let me = Rc::clone(self.me.borrow().as_ref().expect("self set"));
+                let fresh = self
+                    .queue
+                    .borrow()
+                    .add(delivery, 5, me, 0, "reregistered");
+                let mut old = self.handle.borrow_mut();
+                old.cancel();
+                *old = fresh;
+                self.log.borrow_mut().push("reregistered");
+            }
+        }
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let queue = Rc::new(RefCell::new(TimeQueue64::new()));
+        let reg = Rc::new(Reregistrar {
+            log: Rc::clone(&log),
+            queue: Rc::clone(&queue),
+            me: RefCell::new(None),
+            handle: RefCell::new(TimerHandle::default()),
+        });
+        *reg.me.borrow_mut() = Some(Rc::clone(&reg) as Rc<dyn TimerHandler<u64>>);
+        *reg.handle.borrow_mut() = queue.borrow().add(
+            10,
+            5,
+            Rc::clone(&reg) as Rc<dyn TimerHandler<u64>>,
+            0,
+            "original",
+        );
+
+        // Delivered two stamps late: the replacement goes in at the
+        // original phase 15, not at the late 12 + 5.
+        assert_eq!(queue.borrow().process(12), 1);
+        assert_eq!(*log.borrow(), ["fired", "reregistered"]);
+        assert_eq!(queue.borrow().process(15), 1);
+        assert_eq!(queue.borrow().process(17), 0, "the phase stayed at 20");
+        assert_eq!(queue.borrow().next_exp(17), 3);
+        assert_eq!(queue.borrow().process(20), 1);
+        assert_eq!(
+            *log.borrow(),
+            ["fired", "reregistered", "fired", "reregistered", "fired", "reregistered"]
+        );
+    }
+
+    /// The `scheduleSyncCheck` discipline: a second schedule request while
+    /// the check timer is still armed is refused ("existing timer ID"),
+    /// so timers never stack; the slot is rearmed only after it fired and
+    /// was cleared.
+    #[test]
+    fn a_reregister_guard_does_not_stack_timers() {
+        struct SyncCheck {
+            log: Rc<RefCell<Vec<&'static str>>>,
+            queue: Rc<RefCell<TimeQueue64>>,
+            me: RefCell<Option<Rc<dyn TimerHandler<u64>>>>,
+            sync_check: RefCell<TimerHandle<u64>>,
+        }
+        impl TimerHandler<u64> for SyncCheck {
+            fn handle_timeout(&self, _handle: TimerHandle<u64>, user: usize) {
+                if user == 1 {
+                    // The scheduled check: detach the slot, then do the
+                    // work (the reference cancels the handle first).
+                    self.sync_check.borrow_mut().clear_without_cancel();
+                    self.log.borrow_mut().push("check");
+                    return;
+                }
+                if self.sync_check.borrow().is_set() {
+                    self.log.borrow_mut().push("busy");
+                    return;
+                }
+                let me = Rc::clone(self.me.borrow().as_ref().expect("self set"));
+                // scheduleSyncCheck arms relative to the current pass
+                // (the reference derives deliveryIn from the clock).
+                let when = self.queue.borrow().last_process_time() + 10;
+                *self.sync_check.borrow_mut() = self.queue.borrow().add(when, 0, me, 1, "check");
+                self.log.borrow_mut().push("scheduled");
+            }
+        }
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let queue = Rc::new(RefCell::new(TimeQueue64::new()));
+        let sync = Rc::new(SyncCheck {
+            log: Rc::clone(&log),
+            queue: Rc::clone(&queue),
+            me: RefCell::new(None),
+            sync_check: RefCell::new(TimerHandle::default()),
+        });
+        *sync.me.borrow_mut() = Some(Rc::clone(&sync) as Rc<dyn TimerHandler<u64>>);
+        let request = |queue: &Rc<RefCell<TimeQueue64>>,
+                       sync: &Rc<SyncCheck>,
+                       time: u64,
+                       name: &'static str| {
+            queue.borrow().add(
+                time,
+                0,
+                Rc::clone(sync) as Rc<dyn TimerHandler<u64>>,
+                0,
+                name,
+            );
+        };
+
+        request(&queue, &sync, 0, "request-1");
+        request(&queue, &sync, 2, "request-2");
+        request(&queue, &sync, 12, "request-3");
+
+        assert_eq!(queue.borrow().process(2), 2);
+        assert_eq!(*log.borrow(), ["scheduled", "busy"]);
+        assert_eq!(queue.borrow().process(10), 1);
+        assert_eq!(*log.borrow(), ["scheduled", "busy", "check"]);
+        // The slot was cleared by the check, so request-3 rearms it.
+        assert_eq!(queue.borrow().process(12), 1);
+        assert_eq!(*log.borrow(), ["scheduled", "busy", "check", "scheduled"]);
+        assert_eq!(queue.borrow().process(22), 1);
+        assert_eq!(*log.borrow(), ["scheduled", "busy", "check", "scheduled", "check"]);
+    }
+
+    /// The mutable `timerIntervalTime` (`Node::intervalRef`): a timer may
+    /// change its own interval inside the callback -- the post-callback
+    /// `time += interval` reschedule uses the new value -- and revert to
+    /// nominal afterwards (the TimeKeeper shortening/reverting dance).
+    #[test]
+    fn an_interval_can_be_changed_in_its_own_callback() {
+        struct PaceSelf {
+            queue: Rc<RefCell<TimeQueue64>>,
+            fires: Cell<usize>,
+        }
+        impl TimerHandler<u64> for PaceSelf {
+            fn handle_timeout(&self, handle: TimerHandle<u64>, _user: usize) {
+                self.fires.set(self.fires.get() + 1);
+                let queue = self.queue.borrow();
+                if self.fires.get() == 2 {
+                    // We are slow: shorten the tick interval.
+                    queue.set_timer_interval_time(&handle, 3);
+                } else if self.fires.get() == 3 {
+                    // Sped up enough: revert to nominal.
+                    queue.set_timer_interval_time(&handle, 5);
+                }
+            }
+        }
+        let queue = Rc::new(RefCell::new(TimeQueue64::new()));
+        queue.borrow().add(
+            10,
+            5,
+            Rc::new(PaceSelf {
+                queue: Rc::clone(&queue),
+                fires: Cell::new(0),
+            }),
+            0,
+            "tracking",
+        );
+
+        assert_eq!(queue.borrow().process(10), 1);
+        assert_eq!(queue.borrow().process(14), 0, "nominal spacing kept");
+        assert_eq!(queue.borrow().process(15), 1);
+        assert_eq!(queue.borrow().process(17), 0, "next delivery at 18");
+        assert_eq!(queue.borrow().process(18), 1);
+        assert_eq!(queue.borrow().process(22), 0, "nominal spacing restored");
+        assert_eq!(queue.borrow().process(23), 1);
+        assert_eq!(queue.borrow().process(27), 0, "next delivery at 28");
+        assert_eq!(queue.borrow().process(28), 1);
+    }
+
+    /// The mutable interval surface is reachable through the dispatcher
+    /// timers and takes effect on the next reschedule (the TimeKeeper
+    /// master-adjusts-the-tracking-timer path).
+    #[test]
+    fn the_dispatcher_interval_surface_mutates_the_reschedule() {
+        let now = Rc::new(Cell::new(1_000_000_000u64));
+        let now_for_clock = Rc::clone(&now);
+        let mut timers =
+            DispatcherTimers::with_clock(Box::new(move || now_for_clock.get()));
+        let fired = Rc::new(Cell::new(0));
+        let fired_for_handler = Rc::clone(&fired);
+        let handler = Rc::new(TimerHandlerFn::new(
+            move |_, _| fired_for_handler.set(fired_for_handler.get() + 1),
+            "tracking",
+        ));
+        let handle = timers.add_timer(500_000, handler, 0, "tracking");
+
+        assert_eq!(timers.timer_interval_time(&handle), 500_000_000);
+        // Shorten the interval like inputMasterReading does for a slow
+        // app; the first delivery is unaffected (only the reschedule is).
+        timers.set_timer_interval_time(&handle, 450_000_000);
+        assert_eq!(timers.timer_interval_time(&handle), 450_000_000);
+        assert_eq!(timers.timer_delivery_time(&handle), 1_500_000_000);
+
+        assert_eq!(timers.process_timers(), 0, "not due yet at 1s");
+        now.set(1_500_000_000);
+        assert_eq!(timers.process_timers(), 1);
+        assert_eq!(fired.get(), 1);
+        // The reschedule used the shortened interval.
+        assert_eq!(timers.timer_delivery_time(&handle), 1_950_000_000);
+    }
+
+    /// `getTimerInfo` reports nothing for a cancelled or unset handle
+    /// (`if (!pNode->isCancelled())` in the reference); a set handle
+    /// reports time, interval and name.
+    #[test]
+    fn timer_info_of_a_cancelled_or_unset_handle_is_none() {
+        let queue = TimeQueue64::new();
+        let (handler, log) = recorder();
+        let mut handle = queue.add(10, 5, handler, 0, "info");
+        assert_eq!(queue.get_timer_info(&handle), Some((10, 5, "info")));
+
+        // A copy taken before the cancel still reaches the node; the
+        // cancelled check in getTimerInfo turns it into nothing.
+        let probe = handle.clone();
+        handle.cancel();
+        assert_eq!(queue.get_timer_info(&probe), None, "cancelled: no info");
+        assert_eq!(queue.get_timer_info(&handle), None, "unset: no info");
+
+        let unset = TimerHandle::<u64>::default();
+        assert_eq!(queue.get_timer_info(&unset), None);
         assert_eq!(*log.borrow(), ["released"]);
     }
 }
