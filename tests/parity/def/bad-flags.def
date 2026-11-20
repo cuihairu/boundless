@@ -1,0 +1,8 @@
+<root>
+	<Properties>
+		<hp>
+			<Type>INT32</Type>
+			<Flags>WRONG</Flags>
+		</hp>
+	</Properties>
+</root>

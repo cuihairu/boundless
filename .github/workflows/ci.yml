@@ -460,6 +460,45 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-22-02-04 — the compatibility differential. Our replacement and the
+  # original `process_defs` get the same .def; the lane fails when our checker
+  # does not report what the original reported.
+  #
+  # This job expects to SKIP on a hosted runner: the original binary lives in a
+  # reference checkout (BW_REFERENCE) that a clean runner does not have. The
+  # SKIP names the missing tool and the ticket that turns the lane on, which is
+  # the record this lane exists to make. On a self-hosted runner that carries
+  # the reference tree the same step becomes the gate.
+  parity:
+    name: Compatibility differential against the reference tool
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'parity')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Run the differential
+        run: ci/parity.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-parity-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # Runs whenever ci/ itself moves: each lane must still be able to go red on
   # a planted defect. This is the guard against a gate that quietly stops
   # meaning anything.
@@ -499,6 +538,7 @@ jobs:
           ci/check-typescript.sh self-test
           ci/check-docs.sh self-test
           ci/runners.sh self-test
+          ci/parity.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results
