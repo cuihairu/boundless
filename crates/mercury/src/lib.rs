@@ -18,3 +18,4 @@ pub mod packet_receiver;
 /// `HAS_EPOLL` and no other backend is ported yet.
 #[cfg(target_os = "linux")]
 pub mod poller;
+pub mod request_manager;
