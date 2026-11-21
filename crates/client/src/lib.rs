@@ -34,13 +34,18 @@
 //! (`entity_udo_factory.cpp`), and `picker` the entity selection
 //! (`entity_picker.cpp`) — a hit focuses the target, a release blurs it, and
 //! the hidden grace period holds a line-of-sight-blocked target before it is
-//! released.
+//! released. `movement_filter` carries movement filtering
+//! (`lib/connection/movement_filter.hpp`, `client/dumb_filter.cpp`): the
+//! filter framework (`reset`/`input`/`output`/`getLastInput`) and the dumb
+//! filter, whose error-box trust logic turns a fixed input-sample trajectory
+//! into the same output trajectory.
 
 pub mod camera;
 pub mod device;
 pub mod focus;
 pub mod frame;
 pub mod local_entity;
+pub mod movement_filter;
 pub mod picker;
 pub mod player;
 pub mod render;
