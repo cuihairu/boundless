@@ -94,7 +94,7 @@
 记录二进制哈希、编译选项、配置、Python 标准库和数据库版本。复跑上游单测入口并记录实际参编用例。获取单机集群、最小客户端、Windows 客户端及工具的可运行基准。
 
 - [x] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。`6dad22a` 清册落 `docs/review/bw00-02-01-runtime-environment.md` + 全量 SHA256 manifest `docs/review/data/bw00-02-01-el7-manifest.sha256`（47 件实查）：提交 4657a17；GCC 15.2.0（.comment 实读）/hybrid 缺省/第三方全静态（ldd 仅 libc 族）；Python 实链 3.13.15（libpython3.13.a+宿主 exe 自报）+ baseapp 内 3.13.16 字样差登记；DB MariaDB 11.8.6 客户端静态入包、XML 后备、ssl OpenSSL 3.6.1/sqlite 双口径登记；证据可复跑。
-- [ ] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
+- [x] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。`df90f16` 清册落 `docs/review/bw00-02-02-original-unittest-rerun.md` + 日志原件 `docs/review/data/bw00-02-02-logs/`（21 件逐套件全量）：基线 4657a17；入口=make 链 `unit_tests` 目标已注释且 `user_shouldRunUnitTests=1` 门控，故直接执行已构建二进制；命令 `cd <可写目录> && timeout 300 env BW_RES_PATH=<同一目录> <el7>/unit_tests/<suite>_test`（BW_RES_PATH 修正首轮 507 处 resmgr 假失败，非产品缺陷）；参编 21 套件/1284 用例（baseappmgr/cellappmgr/dbapp/dbappmgr/loginapp/reviver 6 套件原版树空壳 0 用例，如实登记）；结果 20 套件全绿 0 失败；缺口如实登记 network_test 300s/900s 超时未完成（0 字节日志、源目录 60+ test 长时用例、原版树多份崩溃断言转储）。
 - [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
 - [ ] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。
