@@ -11,6 +11,10 @@
 //! * a packed int is one byte for `0..=254`, otherwise `0xFF` followed by the
 //!   three low bytes little-endian, capped at `1 << 24`;
 //! * a container is a fixed 4-byte element count followed by its elements;
+//! * a compressed payload is a packed uncompressed length, a packed compressed
+//!   length, then the raw zlib bytes of `compress2` (reference `ZipOStream`
+//!   destructor / `ZipIStream::init`, framing via `writeStringLength` =
+//!   `writePackedInt`);
 //! * an over-long read sets the stream error and clamps the read cursor to the
 //!   end instead of aborting, so following reads fail the same way.
 
@@ -31,6 +35,10 @@ pub enum StreamError {
     Truncated,
     /// The requested length exceeds what a packed int can carry.
     PackedIntTooLarge,
+    /// The requested level is outside the reference ZIP_1..ZIP_9 range.
+    InvalidCompressionLevel,
+    /// zlib compress or uncompress failed.
+    Zlib,
 }
 
 impl std::fmt::Display for StreamError {
@@ -38,11 +46,50 @@ impl std::fmt::Display for StreamError {
         match self {
             Self::Truncated => write!(f, "stream read would run past the end of the buffer"),
             Self::PackedIntTooLarge => write!(f, "packed int length exceeds 2^24 - 1"),
+            Self::InvalidCompressionLevel => write!(
+                f,
+                "compression level must be 1..=9 (reference ZIP_1..ZIP_9)"
+            ),
+            Self::Zlib => write!(f, "zlib compress or uncompress failed"),
         }
     }
 }
 
 impl std::error::Error for StreamError {}
+
+/// Compression level, matching the reference `BWCompressionType` ZIP_1..ZIP_9.
+///
+/// The reference default internal/external compression levels are configuration
+/// resolved; `ZipOStream` itself defaults to level 1 (`Z_BEST_SPEED`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompressionLevel(u8);
+
+impl CompressionLevel {
+    /// Reference `BW_COMPRESSION_ZIP_BEST_SPEED` and the `ZipOStream` default.
+    pub const BEST_SPEED: Self = Self(1);
+    /// Reference `BW_COMPRESSION_ZIP_BEST_COMPRESSION`.
+    pub const BEST_COMPRESSION: Self = Self(9);
+
+    /// Level 1..=9; anything else is rejected as the reference would.
+    pub fn new(level: u8) -> Result<Self, StreamError> {
+        if (1..=9).contains(&level) {
+            Ok(Self(level))
+        } else {
+            Err(StreamError::InvalidCompressionLevel)
+        }
+    }
+
+    /// The level as passed through to zlib.
+    pub fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for CompressionLevel {
+    fn default() -> Self {
+        Self::BEST_SPEED
+    }
+}
 
 /// A byte buffer that supports sequential reading and sequential writing,
 /// mirroring the reference `BinaryIStream` / `BinaryOStream` pair.
@@ -329,6 +376,62 @@ impl BinaryStream {
         let len = self.read_packed_int()? as usize;
         Ok(self.take(len)?.to_vec())
     }
+
+    // ------------------------------------------------------------------
+    // Compression stream (reference ZipOStream / ZipIStream)
+    // ------------------------------------------------------------------
+
+    /// Append a compressed payload in the reference framing: a packed
+    /// uncompressed length, a packed compressed length, then the zlib bytes
+    /// produced by `compress2(src, level)`.
+    ///
+    /// Compresses into a temporary buffer first, so a failed encode leaves the
+    /// stream untouched.
+    pub fn write_compressed(
+        &mut self,
+        plaintext: &[u8],
+        level: CompressionLevel,
+    ) -> Result<&mut Self, StreamError> {
+        let mut encoder = flate2::write::ZlibEncoder::new(
+            Vec::new(),
+            flate2::Compression::new(level.get() as u32),
+        );
+        use std::io::Write as _;
+        encoder
+            .write_all(plaintext)
+            .map_err(|_| StreamError::Zlib)?;
+        let body = encoder.finish().map_err(|_| StreamError::Zlib)?;
+
+        self.write_packed_int(plaintext.len() as u32)?;
+        self.write_packed_int(body.len() as u32)?;
+        self.buf.extend_from_slice(&body);
+        Ok(self)
+    }
+
+    /// Read a payload written by [`BinaryStream::write_compressed`],
+    /// decompressing the zlib body and returning the plaintext.
+    pub fn read_compressed(&mut self) -> Result<Vec<u8>, StreamError> {
+        let orig_len = self.read_packed_int()? as usize;
+        let body_len = self.read_packed_int()? as usize;
+        let body = self.read_blob_raw(body_len)?;
+
+        let mut decoder = flate2::write::ZlibDecoder::new(Vec::new());
+        use std::io::Write as _;
+        let plaintext = match decoder.write_all(&body).and_then(|_| decoder.finish()) {
+            Ok(out) => out,
+            Err(_) => {
+                self.error = true;
+                return Err(StreamError::Zlib);
+            }
+        };
+        // zlib already reports the true decompressed size, so a mismatch means
+        // the stream is corrupt or the buffer is too small.
+        if plaintext.len() != orig_len {
+            self.error = true;
+            return Err(StreamError::Zlib);
+        }
+        Ok(plaintext)
+    }
 }
 
 /// Number of bytes a packed int occupies.
@@ -431,6 +534,23 @@ mod tests {
     }
 
     #[test]
+    fn strings_embed_zero_and_track_remaining() {
+        // The reference string has no terminator, so an embedded NUL is data,
+        // not an end marker.
+        let mut s = BinaryStream::new();
+        s.write_string("a\0b\0").unwrap();
+        s.write_string("").unwrap();
+        assert_eq!(s.as_bytes(), &[0x04, b'a', 0, b'b', 0, 0x00]);
+        s.rewind();
+        assert_eq!(s.remaining(), 6);
+        assert_eq!(s.read_string(), Ok("a\0b\0".to_string()));
+        assert_eq!(s.remaining(), 1);
+        assert_eq!(s.read_string(), Ok(String::new()));
+        assert_eq!(s.remaining(), 0);
+        assert!(s.at_end());
+    }
+
+    #[test]
     fn counts_are_plain_u32() {
         let mut s = BinaryStream::new();
         s.write_count(3).write_u8(1).write_u8(2).write_u8(3);
@@ -513,5 +633,233 @@ mod tests {
         let mut s = BinaryStream::new();
         s.write_bytes(b"ab").write_bytes(&[0x00, 0xFF]);
         assert_eq!(s.as_bytes(), b"ab\x00\xff");
+    }
+
+    // ------------------------------------------------------------------
+    // BW-01-02-01: golden bytes captured from the reference wire format.
+    // ------------------------------------------------------------------
+
+    /// Fill the same sequence as `fixed_width_roundtrip` and compare against
+    /// bytes produced independently (little-endian host, reference `BW_HTON*`
+    /// identity). Guards the encoding, not just self-consistency.
+    #[test]
+    fn golden_fixed_width_bytes() {
+        let mut s = BinaryStream::new();
+        s.write_i8(-7)
+            .write_bool(true)
+            .write_i16(-1234)
+            .write_i32(-1_000_000)
+            .write_i64(-9_000_000_000)
+            .write_f32(-1.5)
+            .write_f64(-2.75);
+
+        let golden: [u8; 28] = [
+            0xF9, // i8  -7
+            0x01, // bool true
+            0x2E, 0xFB, // i16 -1234
+            0xC0, 0xBD, 0xF0, 0xFF, // i32 -1000000
+            0x00, 0xE6, 0x8E, 0xE7, 0xFD, 0xFF, 0xFF, 0xFF, // i64 -9000000000
+            0x00, 0x00, 0xC0, 0xBF, // f32 -1.5
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0xC0, // f64 -2.75
+        ];
+        assert_eq!(s.as_bytes(), &golden);
+
+        // Byte-exact roundtrip of the same buffer.
+        s.rewind();
+        assert_eq!(s.read_i8(), Ok(-7));
+        assert_eq!(s.read_bool(), Ok(true));
+        assert_eq!(s.read_i16(), Ok(-1234));
+        assert_eq!(s.read_i32(), Ok(-1_000_000));
+        assert_eq!(s.read_i64(), Ok(-9_000_000_000));
+        assert_eq!(s.read_f32(), Ok(-1.5));
+        assert_eq!(s.read_f64(), Ok(-2.75));
+        assert!(s.at_end());
+    }
+
+    #[test]
+    fn golden_fixed_width_bytes_unsigned_bounds() {
+        let mut s = BinaryStream::new();
+        s.write_u8(0xFF)
+            .write_u16(0xFFFF)
+            .write_u32(0xFFFF_FFFF)
+            .write_u64(u64::MAX);
+        assert_eq!(
+            s.as_bytes(),
+            &[
+                0xFF, //
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            ]
+        );
+        s.rewind();
+        assert_eq!(s.read_u8(), Ok(0xFF));
+        assert_eq!(s.read_u16(), Ok(0xFFFF));
+        assert_eq!(s.read_u32(), Ok(0xFFFF_FFFF));
+        assert_eq!(s.read_u64(), Ok(u64::MAX));
+    }
+
+    #[test]
+    fn golden_float_negative_zero_and_infinity() {
+        let mut s = BinaryStream::new();
+        s.write_f32(-0.0)
+            .write_f32(f32::INFINITY)
+            .write_f64(f64::NEG_INFINITY);
+        assert_eq!(
+            s.as_bytes(),
+            &[
+                0x00, 0x00, 0x00, 0x80, // f32 -0.0
+                0x00, 0x00, 0x80, 0x7F, // f32 +inf
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF, // f64 -inf
+            ]
+        );
+        s.rewind();
+        assert!(s.read_f32().unwrap().is_sign_negative());
+        assert_eq!(s.read_f32(), Ok(f32::INFINITY));
+        assert_eq!(s.read_f64(), Ok(f64::NEG_INFINITY));
+    }
+
+    // ------------------------------------------------------------------
+    // BW-01-02-04: compression stream (reference ZipOStream / ZipIStream).
+    // ------------------------------------------------------------------
+
+    /// Plaintext behind the reference zlib fixture below.
+    fn reference_plaintext() -> Vec<u8> {
+        let mut v = b"BW compression fixture ".to_vec();
+        v.extend(0u8..=255);
+        v
+    }
+
+    /// Bytes captured from the system zlib (the same library `compress2` uses)
+    /// at level 1 = `Z_BEST_SPEED`: `[packed 279][packed 290][zlib body]`.
+    fn reference_zlib_fixture() -> BinaryStream {
+        let body = hex_to_bytes(concat!(
+            "7801011701e8fe425720636f6d7072657373696f6e20666978747572652000",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+            "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+            "6162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80",
+            "8182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0",
+            "a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+            "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+            "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+            "c72f8833"
+        ));
+        let mut s = BinaryStream::new();
+        s.write_packed_int(279).unwrap();
+        s.write_packed_int(body.len() as u32).unwrap();
+        s.write_blob_raw(&body);
+        s
+    }
+
+    fn hex_to_bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn compressed_reads_reference_zlib_fixture() {
+        // Both partners can decode the same fixture: decoding the reference
+        // bytes must yield the reference plaintext.
+        let mut s = reference_zlib_fixture();
+        s.rewind();
+        assert_eq!(s.read_compressed(), Ok(reference_plaintext()));
+        assert!(s.at_end());
+    }
+
+    #[test]
+    fn compressed_frame_shape_matches_reference() {
+        let mut ours = BinaryStream::new();
+        ours.write_compressed(&reference_plaintext(), CompressionLevel::BEST_SPEED)
+            .unwrap();
+
+        // Same framing, and the zlib body is byte-identical to the system
+        // zlib output the reference `compress2` produces.
+        assert_eq!(ours.as_bytes(), reference_zlib_fixture().as_bytes());
+    }
+
+    #[test]
+    fn compressed_roundtrip_uncompressible_and_empty() {
+        for payload in [
+            Vec::new(),
+            vec![0u8; 5000],
+            (0..2000u32)
+                .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
+                .collect(),
+        ] {
+            let mut s = BinaryStream::new();
+            s.write_compressed(&payload, CompressionLevel::BEST_COMPRESSION)
+                .unwrap();
+            let len = s.length();
+            s.rewind();
+            assert_eq!(s.read_compressed(), Ok(payload));
+            assert_eq!(s.remaining(), 0);
+            // Two packed prefixes plus a non-empty zlib stream.
+            assert!(len >= 2);
+        }
+    }
+
+    #[test]
+    fn compressed_roundtrip_all_levels() {
+        let payload = reference_plaintext();
+        for level in 1..=9u8 {
+            let mut s = BinaryStream::new();
+            s.write_compressed(&payload, CompressionLevel::new(level).unwrap())
+                .unwrap();
+            s.rewind();
+            assert_eq!(s.read_compressed(), Ok(payload.clone()), "level {level}");
+        }
+    }
+
+    #[test]
+    fn compression_level_rejects_out_of_range() {
+        assert_eq!(
+            CompressionLevel::new(0).unwrap_err(),
+            StreamError::InvalidCompressionLevel
+        );
+        assert_eq!(
+            CompressionLevel::new(10).unwrap_err(),
+            StreamError::InvalidCompressionLevel
+        );
+        assert_eq!(CompressionLevel::default(), CompressionLevel::BEST_SPEED);
+        assert_eq!(CompressionLevel::BEST_COMPRESSION.get(), 9);
+    }
+
+    #[test]
+    fn compressed_rejects_corrupt_body() {
+        let mut s = BinaryStream::new();
+        s.write_packed_int(64).unwrap();
+        s.write_packed_int(4).unwrap();
+        s.write_blob_raw(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        s.rewind();
+        assert_eq!(s.read_compressed(), Err(StreamError::Zlib));
+        assert!(s.has_error());
+    }
+
+    #[test]
+    fn compressed_rejects_length_mismatch() {
+        // Valid zlib body but a lying original length.
+        let mut encoded = BinaryStream::new();
+        encoded
+            .write_compressed(b"hello", CompressionLevel::BEST_SPEED)
+            .unwrap();
+        let body = encoded.as_bytes()[2..].to_vec();
+
+        let mut s = BinaryStream::new();
+        s.write_packed_int(99).unwrap();
+        s.write_packed_int(body.len() as u32).unwrap();
+        s.write_blob_raw(&body);
+        s.rewind();
+        assert_eq!(s.read_compressed(), Err(StreamError::Zlib));
+    }
+
+    #[test]
+    fn compressed_truncated_body_reports_truncation() {
+        let mut s = reference_zlib_fixture();
+        let cut = s.length() - 10;
+        let mut truncated = BinaryStream::new();
+        truncated.write_blob_raw(&s.as_bytes()[..cut]);
+        truncated.rewind();
+        assert_eq!(truncated.read_compressed(), Err(StreamError::Truncated));
     }
 }
