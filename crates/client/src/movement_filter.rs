@@ -3,7 +3,7 @@
 //! A movement filter is attached to an entity to process its `volatile`
 //! members (position, yaw, pitch, roll): the network layer feeds best-effort
 //! input samples, and the filter produces a visually pleasing trajectory
-//! (`lib/connection/movement_filter.hpp:14-28`). The common base is
+//! (`client/filter.hpp:13-23`). The common base is
 //! `MovementFilter` (`movement_filter.hpp:17-108`): `reset`, `input`, `output`
 //! and `getLastInput`, with the output going to a `MovementFilterTarget`.
 //!
