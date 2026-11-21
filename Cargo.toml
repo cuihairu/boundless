@@ -12,6 +12,7 @@ members = [
     "crates/server-runtime",
     "crates/test-support",
     "crates/asset-pipeline",
+    "crates/python-module",
     "apps/server",
 ]
 
