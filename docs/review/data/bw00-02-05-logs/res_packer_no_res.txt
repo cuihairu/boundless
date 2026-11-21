@@ -1,0 +1,5 @@
+WARNING: BWResource::BWResource: Unable to open /home/cui/.bwmachined.conf
+ERROR: BWResource::BWResource: No res path set.
+	Is ~/.bwmachined.conf correct or 'BW_RES_PATH' environment variable set?
+Error: Couldn't initialise BWResource.
+Unable to initialise the resource system.
