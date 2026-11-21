@@ -11,6 +11,7 @@ pub mod channel;
 pub mod clock;
 pub mod cmake_targets;
 pub mod config_fixture;
+pub mod full_stack;
 pub mod harness;
 pub mod layering;
 pub mod multiproc;
