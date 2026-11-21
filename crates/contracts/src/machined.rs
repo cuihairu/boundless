@@ -158,8 +158,10 @@ impl Default for ProcessMessage {
 }
 
 impl ProcessMessage {
-    /// Write the message body plus the versioned extra block.
-    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+    /// Write the fixed fields: header through the interface name, with no
+    /// extra block. Subclasses (e.g. `ProcessStatsMessage`) add their own
+    /// fields between the body and the extra block.
+    pub fn write_body(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
         self.header.write(stream);
         stream.write_u8(self.param);
         stream.write_u8(self.category);
@@ -168,9 +170,13 @@ impl ProcessMessage {
         stream.write_u16(self.port);
         stream.write_u16(self.id);
         stream.write_string(&self.name)?;
+        Ok(())
+    }
 
-        // Extra block: the declared tail size covers everything after the
-        // size field, so unknown future fields can be skipped on read.
+    /// Write the versioned extra block that trails a process body.
+    pub fn write_extra(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        // The declared tail size covers everything after the size field, so
+        // unknown future fields can be skipped on read.
         let tail = 2 * 4 + packed_len(&self.username) + packed_len(&self.def_digest);
         stream.write_i32(tail);
         stream.write_u16(self.major_version);
@@ -182,8 +188,14 @@ impl ProcessMessage {
         Ok(())
     }
 
-    /// Read a message, tolerating senders without the extra block.
-    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+    /// Write the message body plus the versioned extra block.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.write_body(stream)?;
+        self.write_extra(stream)
+    }
+
+    /// Read the fixed fields with an empty extra block.
+    pub fn read_body(stream: &mut BinaryStream) -> Result<Self, StreamError> {
         let header = Header::read(stream)?;
         let param = stream.read_u8()?;
         let category = stream.read_u8()?;
@@ -192,8 +204,7 @@ impl ProcessMessage {
         let port = stream.read_u16()?;
         let id = stream.read_u16()?;
         let name = stream.read_string()?;
-
-        let mut message = Self {
+        Ok(Self {
             header,
             param,
             category,
@@ -208,8 +219,11 @@ impl ProcessMessage {
             interface_version: 0,
             username: String::new(),
             def_digest: String::new(),
-        };
+        })
+    }
 
+    /// Read the versioned extra block if one is present.
+    pub fn read_extra(stream: &mut BinaryStream, message: &mut Self) -> Result<(), StreamError> {
         if !stream.at_end() {
             let declared_tail = stream.read_i32()?;
             let before = stream.remaining();
@@ -227,6 +241,13 @@ impl ProcessMessage {
             // Future fields: skip what this version does not know.
             stream.read_blob_raw(unread as usize)?;
         }
+        Ok(())
+    }
+
+    /// Read a message, tolerating senders without the extra block.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let mut message = Self::read_body(stream)?;
+        Self::read_extra(stream, &mut message)?;
         Ok(message)
     }
 
@@ -353,6 +374,1306 @@ impl SignalMessage {
     pub fn set_hard_kill(&mut self) {
         self.signal = signal::SIGQUIT;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Machine statistics (BW-05-01-01: MachineGuard query messages).
+// ---------------------------------------------------------------------------
+
+/// `LowPrecisionInterfaceStats`: one interface's counters for a
+/// `WholeMachineMessage`. The bits/packs fields are whole percent of the
+/// link, carried in a byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LowPrecisionInterfaceStats {
+    pub name: String,
+    pub bits_in: u8,
+    pub bits_out: u8,
+    pub pack_in: u8,
+    pub pack_out: u8,
+}
+
+/// `HighPrecisionInterfaceStats`: the wider counters a
+/// `HighPrecisionMachineMessage` reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HighPrecisionInterfaceStats {
+    pub name: String,
+    pub bits_in: u32,
+    pub bits_out: u32,
+    pub pack_in: u32,
+    pub pack_out: u32,
+}
+
+/// `WholeMachineMessage`: low precision whole-machine statistics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WholeMachineMessage {
+    pub header: Header,
+    pub hostname: String,
+    /// CPU speed in MHz.
+    pub cpu_speed: u16,
+    pub n_cpus: u8,
+    pub cpu_loads: Vec<u8>,
+    /// Memory usage as a percent.
+    pub mem: u8,
+    pub n_interfaces: u8,
+    pub if_stats: Vec<LowPrecisionInterfaceStats>,
+    pub in_discards: u8,
+    pub out_discards: u8,
+    /// The machined version.
+    pub version: u8,
+}
+
+impl Default for WholeMachineMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::WHOLE_MACHINE,
+                flags: 0,
+                seq: 0,
+            },
+            hostname: String::new(),
+            cpu_speed: 0,
+            n_cpus: 0,
+            cpu_loads: Vec::new(),
+            mem: 0,
+            n_interfaces: 0,
+            if_stats: Vec::new(),
+            in_discards: 0,
+            out_discards: 0,
+            version: 0,
+        }
+    }
+}
+
+impl WholeMachineMessage {
+    /// Write the message body in the reference field order.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_string(&self.hostname)?;
+        stream.write_u16(self.cpu_speed);
+        stream.write_u8(self.n_cpus);
+        stream.write_u8(self.n_interfaces);
+        stream.write_u8(self.mem);
+        stream.write_u8(self.version);
+        stream.write_u8(self.in_discards);
+        stream.write_u8(self.out_discards);
+        for load in &self.cpu_loads {
+            stream.write_u8(*load);
+        }
+        for stats in &self.if_stats {
+            stream.write_string(&stats.name)?;
+            stream.write_u8(stats.bits_in);
+            stream.write_u8(stats.bits_out);
+            stream.write_u8(stats.pack_in);
+            stream.write_u8(stats.pack_out);
+        }
+        Ok(())
+    }
+
+    /// Read a whole-machine message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let header = Header::read(stream)?;
+        let hostname = stream.read_string()?;
+        let cpu_speed = stream.read_u16()?;
+        let n_cpus = stream.read_u8()?;
+        let n_interfaces = stream.read_u8()?;
+        let mem = stream.read_u8()?;
+        let version = stream.read_u8()?;
+        let in_discards = stream.read_u8()?;
+        let out_discards = stream.read_u8()?;
+        let mut cpu_loads = Vec::with_capacity(n_cpus as usize);
+        for _ in 0..n_cpus {
+            cpu_loads.push(stream.read_u8()?);
+        }
+        let mut if_stats = Vec::with_capacity(n_interfaces as usize);
+        for _ in 0..n_interfaces {
+            if_stats.push(LowPrecisionInterfaceStats {
+                name: stream.read_string()?,
+                bits_in: stream.read_u8()?,
+                bits_out: stream.read_u8()?,
+                pack_in: stream.read_u8()?,
+                pack_out: stream.read_u8()?,
+            });
+        }
+        Ok(Self {
+            header,
+            hostname,
+            cpu_speed,
+            n_cpus,
+            cpu_loads,
+            mem,
+            n_interfaces,
+            if_stats,
+            in_discards,
+            out_discards,
+            version,
+        })
+    }
+}
+
+/// `HighPrecisionMachineMessage`: detailed whole-machine statistics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HighPrecisionMachineMessage {
+    pub header: Header,
+    pub hostname: String,
+    pub cpu_speed: u16,
+    pub n_cpus: u8,
+    pub cpu_loads: Vec<u8>,
+    /// Percent of time waiting for IO.
+    pub io_wait_time: u8,
+    pub mem: u8,
+    pub n_interfaces: u8,
+    pub if_stats: Vec<HighPrecisionInterfaceStats>,
+    pub in_discards: u8,
+    pub out_discards: u8,
+    pub version: u8,
+}
+
+impl Default for HighPrecisionMachineMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::HIGH_PRECISION_MACHINE,
+                flags: 0,
+                seq: 0,
+            },
+            hostname: String::new(),
+            cpu_speed: 0,
+            n_cpus: 0,
+            cpu_loads: Vec::new(),
+            io_wait_time: 0,
+            mem: 0,
+            n_interfaces: 0,
+            if_stats: Vec::new(),
+            in_discards: 0,
+            out_discards: 0,
+            version: 0,
+        }
+    }
+}
+
+impl HighPrecisionMachineMessage {
+    /// Write the message body in the reference field order.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_string(&self.hostname)?;
+        stream.write_u16(self.cpu_speed);
+        stream.write_u8(self.n_cpus);
+        stream.write_u8(self.n_interfaces);
+        stream.write_u8(self.mem);
+        stream.write_u8(self.version);
+        stream.write_u8(self.in_discards);
+        stream.write_u8(self.out_discards);
+        for load in &self.cpu_loads {
+            stream.write_u8(*load);
+        }
+        // This is where the message diverges from `WholeMachineMessage`.
+        stream.write_u8(self.io_wait_time);
+        for stats in &self.if_stats {
+            stream.write_string(&stats.name)?;
+            stream.write_u32(stats.bits_in);
+            stream.write_u32(stats.bits_out);
+            stream.write_u32(stats.pack_in);
+            stream.write_u32(stats.pack_out);
+        }
+        Ok(())
+    }
+
+    /// Read a high precision machine message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let header = Header::read(stream)?;
+        let hostname = stream.read_string()?;
+        let cpu_speed = stream.read_u16()?;
+        let n_cpus = stream.read_u8()?;
+        let n_interfaces = stream.read_u8()?;
+        let mem = stream.read_u8()?;
+        let version = stream.read_u8()?;
+        let in_discards = stream.read_u8()?;
+        let out_discards = stream.read_u8()?;
+        let mut cpu_loads = Vec::with_capacity(n_cpus as usize);
+        for _ in 0..n_cpus {
+            cpu_loads.push(stream.read_u8()?);
+        }
+        let io_wait_time = stream.read_u8()?;
+        let mut if_stats = Vec::with_capacity(n_interfaces as usize);
+        for _ in 0..n_interfaces {
+            if_stats.push(HighPrecisionInterfaceStats {
+                name: stream.read_string()?,
+                bits_in: stream.read_u32()?,
+                bits_out: stream.read_u32()?,
+                pack_in: stream.read_u32()?,
+                pack_out: stream.read_u32()?,
+            });
+        }
+        Ok(Self {
+            header,
+            hostname,
+            cpu_speed,
+            n_cpus,
+            cpu_loads,
+            io_wait_time,
+            mem,
+            n_interfaces,
+            if_stats,
+            in_discards,
+            out_discards,
+            version,
+        })
+    }
+}
+
+/// `ProcessStatsMessage`: a process body plus cpu and memory usage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessStatsMessage {
+    pub process: ProcessMessage,
+    /// Process cpu as a proportion of max.
+    pub cpu: u8,
+    /// Memory usage as a proportion of max.
+    pub mem: u8,
+}
+
+impl Default for ProcessStatsMessage {
+    fn default() -> Self {
+        Self {
+            process: ProcessMessage {
+                header: Header {
+                    message: message_id::PROCESS_STATS,
+                    flags: 0,
+                    seq: 0,
+                },
+                ..ProcessMessage::default()
+            },
+            cpu: 0,
+            mem: 0,
+        }
+    }
+}
+
+impl ProcessStatsMessage {
+    /// Write the process body, then the cpu/mem pair, then the extra block.
+    /// The message id is forced to `PROCESS_STATS`, exactly as the reference
+    /// constructor sets it, regardless of the wrapped process header.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        let mut process = self.process.clone();
+        process.header.message = message_id::PROCESS_STATS;
+        process.write_body(stream)?;
+        stream.write_u8(self.cpu);
+        stream.write_u8(self.mem);
+        process.write_extra(stream)
+    }
+
+    /// Read a process stats message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let mut process = ProcessMessage::read_body(stream)?;
+        let cpu = stream.read_u8()?;
+        let mem = stream.read_u8()?;
+        process.header.message = message_id::PROCESS_STATS;
+        ProcessMessage::read_extra(stream, &mut process)?;
+        Ok(Self { process, cpu, mem })
+    }
+}
+
+/// `QueryInterfaceMessage`: asks machined for the address of an interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryInterfaceMessage {
+    pub header: Header,
+    /// The address of the requesting interface.
+    pub address: u32,
+}
+
+impl Default for QueryInterfaceMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::QUERY_INTERFACE,
+                flags: 0,
+                seq: 0,
+            },
+            address: 0,
+        }
+    }
+}
+
+impl QueryInterfaceMessage {
+    /// Write the message body.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_u32(self.address);
+        Ok(())
+    }
+
+    /// Read a query-interface message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        Ok(Self {
+            header: Header::read(stream)?,
+            address: stream.read_u32()?,
+        })
+    }
+}
+
+/// `MachinePlatformMessage`: the OS distribution and release string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachinePlatformMessage {
+    pub header: Header,
+    pub platform_info: String,
+}
+
+impl Default for MachinePlatformMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::MACHINE_PLATFORM,
+                flags: 0,
+                seq: 0,
+            },
+            platform_info: String::new(),
+        }
+    }
+}
+
+impl MachinePlatformMessage {
+    /// Write the message body.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_string(&self.platform_info)?;
+        Ok(())
+    }
+
+    /// Read a machine platform message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        Ok(Self {
+            header: Header::read(stream)?,
+            platform_info: stream.read_string()?,
+        })
+    }
+}
+
+/// `TagsMessage`: the tags defined for this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagsMessage {
+    pub header: Header,
+    pub tags: Vec<String>,
+    /// Flag indicating if a category exists at all.
+    pub exists: u8,
+}
+
+impl Default for TagsMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::TAGS,
+                flags: 0,
+                seq: 0,
+            },
+            tags: Vec::new(),
+            exists: 0,
+        }
+    }
+}
+
+impl TagsMessage {
+    /// Write the message body.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_u8(self.tags.len() as u8);
+        stream.write_u8(self.exists);
+        for tag in &self.tags {
+            stream.write_string(tag)?;
+        }
+        Ok(())
+    }
+
+    /// Read a tags message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let header = Header::read(stream)?;
+        let tag_count = stream.read_u8()?;
+        let exists = stream.read_u8()?;
+        let mut tags = Vec::with_capacity(tag_count as usize);
+        for _ in 0..tag_count {
+            tags.push(stream.read_string()?);
+        }
+        Ok(Self {
+            header,
+            tags,
+            exists,
+        })
+    }
+}
+
+/// `UserMessage::Param` bits.
+pub mod user_param {
+    pub const USE_UID: u8 = 0x01;
+    pub const USE_NAME: u8 = 0x02;
+    pub const CHECK_COREDUMPS: u8 = 0x04;
+    pub const REFRESH_ENV: u8 = 0x08;
+    pub const GET_VERSION: u8 = 0x10;
+}
+
+/// `UserMessage::CoreDump`: one reported coredump file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreDump {
+    pub filename: String,
+    pub assert: String,
+    pub time: u32,
+}
+
+/// `UserMessage`: information about one user on the machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserMessage {
+    pub header: Header,
+    pub param: u8,
+    pub uid: u16,
+    pub username: String,
+    pub fullname: String,
+    pub home: String,
+    pub mfroot: String,
+    pub bwrespath: String,
+    pub coredumps: Vec<CoreDump>,
+    pub version_string: String,
+}
+
+impl Default for UserMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::USER,
+                flags: 0,
+                seq: 0,
+            },
+            param: 0,
+            uid: 0,
+            username: String::new(),
+            fullname: String::new(),
+            home: String::new(),
+            mfroot: String::new(),
+            bwrespath: String::new(),
+            coredumps: Vec::new(),
+            version_string: String::new(),
+        }
+    }
+}
+
+impl UserMessage {
+    /// Unsuccessful queries carry this in the uid field.
+    pub const UID_NOT_FOUND: u16 = 0xffff;
+
+    /// Write the message body. Coredumps are only reported when requested,
+    /// and the version string only when it was asked for, matching the
+    /// reference's conditional writes.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_u8(self.param);
+        stream.write_u16(self.uid);
+        stream.write_string(&self.username)?;
+        stream.write_string(&self.fullname)?;
+        stream.write_string(&self.home)?;
+        stream.write_string(&self.mfroot)?;
+        stream.write_string(&self.bwrespath)?;
+
+        if self.param & user_param::CHECK_COREDUMPS != 0 {
+            stream.write_u32(self.coredumps.len() as u32);
+            for dump in &self.coredumps {
+                stream.write_string(&dump.filename)?;
+                stream.write_string(&dump.assert)?;
+                stream.write_u32(dump.time);
+            }
+        } else {
+            stream.write_u32(0);
+        }
+
+        if self.param & user_param::GET_VERSION != 0 {
+            stream.write_string(&self.version_string)?;
+        }
+        Ok(())
+    }
+
+    /// Read a user message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let header = Header::read(stream)?;
+        let param = stream.read_u8()?;
+        let uid = stream.read_u16()?;
+        let username = stream.read_string()?;
+        let fullname = stream.read_string()?;
+        let home = stream.read_string()?;
+        let mfroot = stream.read_string()?;
+        let bwrespath = stream.read_string()?;
+        let count = stream.read_u32()?;
+        let mut coredumps = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            coredumps.push(CoreDump {
+                filename: stream.read_string()?,
+                assert: stream.read_string()?,
+                time: stream.read_u32()?,
+            });
+        }
+
+        let mut version_string = String::new();
+        if param & user_param::GET_VERSION != 0 && !stream.at_end() {
+            version_string = stream.read_string()?;
+        }
+
+        Ok(Self {
+            header,
+            param,
+            uid,
+            username,
+            fullname,
+            home,
+            mfroot,
+            bwrespath,
+            coredumps,
+            version_string,
+        })
+    }
+}
+
+/// `PidMessage`: asks whether a pid exists on this system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PidMessage {
+    pub header: Header,
+    pub pid: u16,
+    pub running: u8,
+}
+
+impl Default for PidMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::PID,
+                flags: 0,
+                seq: 0,
+            },
+            pid: 0,
+            running: 0,
+        }
+    }
+}
+
+impl PidMessage {
+    /// Write the message body.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_u16(self.pid);
+        stream.write_u8(self.running);
+        Ok(())
+    }
+
+    /// Read a pid message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        Ok(Self {
+            header: Header::read(stream)?,
+            pid: stream.read_u16()?,
+            running: stream.read_u8()?,
+        })
+    }
+}
+
+/// `ResetMessage`: flush tags and user mappings. Header only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetMessage {
+    pub header: Header,
+}
+
+impl Default for ResetMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::RESET,
+                flags: 0,
+                seq: 0,
+            },
+        }
+    }
+}
+
+impl ResetMessage {
+    /// Write the message body (the header alone).
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        Ok(())
+    }
+
+    /// Read a reset message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        Ok(Self {
+            header: Header::read(stream)?,
+        })
+    }
+}
+
+/// `ErrorMessage`: machined's way of reporting errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorMessage {
+    pub header: Header,
+    pub severity: u8,
+    pub msg: String,
+}
+
+impl Default for ErrorMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::ERROR,
+                flags: 0,
+                seq: 0,
+            },
+            severity: 0,
+            msg: String::new(),
+        }
+    }
+}
+
+impl ErrorMessage {
+    /// Write the message body.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_u8(self.severity);
+        stream.write_string(&self.msg)?;
+        Ok(())
+    }
+
+    /// Read an error message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        Ok(Self {
+            header: Header::read(stream)?,
+            severity: stream.read_u8()?,
+            msg: stream.read_string()?,
+        })
+    }
+}
+
+/// `CreateMessage`: commands machined to spawn a process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateMessage {
+    pub header: Header,
+    /// The name of the executable to start.
+    pub name: String,
+    /// Hybrid, Debug etc.
+    pub config: String,
+    pub uid: u16,
+    /// Start with `-recover`.
+    pub recover: u8,
+    /// IP to forward output to.
+    pub fwd_ip: u32,
+    /// Port to forward output to.
+    pub fwd_port: u16,
+}
+
+impl Default for CreateMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::CREATE,
+                flags: 0,
+                seq: 0,
+            },
+            name: String::new(),
+            config: String::new(),
+            uid: 0,
+            recover: 0,
+            fwd_ip: 0,
+            fwd_port: 0,
+        }
+    }
+}
+
+impl CreateMessage {
+    /// Write the message body.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_string(&self.name)?;
+        stream.write_string(&self.config)?;
+        stream.write_u16(self.uid);
+        stream.write_u8(self.recover);
+        stream.write_u32(self.fwd_ip);
+        stream.write_u16(self.fwd_port);
+        Ok(())
+    }
+
+    /// Read a create message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        Ok(Self {
+            header: Header::read(stream)?,
+            name: stream.read_string()?,
+            config: stream.read_string()?,
+            uid: stream.read_u16()?,
+            recover: stream.read_u8()?,
+            fwd_ip: stream.read_u32()?,
+            fwd_port: stream.read_u16()?,
+        })
+    }
+}
+
+/// `CreateWithArgsMessage`: a create with explicit command line arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateWithArgsMessage {
+    pub create: CreateMessage,
+    pub args: Vec<String>,
+}
+
+impl Default for CreateWithArgsMessage {
+    fn default() -> Self {
+        Self {
+            create: CreateMessage {
+                header: Header {
+                    message: message_id::CREATE_WITH_ARGS,
+                    flags: 0,
+                    seq: 0,
+                },
+                ..CreateMessage::default()
+            },
+            args: Vec::new(),
+        }
+    }
+}
+
+impl CreateWithArgsMessage {
+    /// Write the message body.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.create.write(stream)?;
+        stream.write_u32(self.args.len() as u32);
+        for arg in &self.args {
+            stream.write_string(arg)?;
+        }
+        Ok(())
+    }
+
+    /// Read a create-with-args message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let create = CreateMessage::read(stream)?;
+        let num_args = stream.read_u32()?;
+        let mut args = Vec::with_capacity(num_args as usize);
+        for _ in 0..num_args {
+            args.push(stream.read_string()?);
+        }
+        Ok(Self { create, args })
+    }
+}
+
+/// `MachinedAnnounceMessage::Type`.
+pub mod machined_announce_type {
+    pub const BIRTH: u8 = 0;
+    pub const DEATH: u8 = 1;
+    pub const EXISTS: u8 = 2;
+}
+
+/// `MachinedAnnounceMessage`: machined-to-machined ring announcements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachinedAnnounceMessage {
+    pub header: Header,
+    pub announce_type: u8,
+    /// Birth replies use this to tell the size of the network; death/exists
+    /// use it as the machine address.
+    pub count: u32,
+}
+
+impl Default for MachinedAnnounceMessage {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                message: message_id::MACHINED_ANNOUNCE,
+                flags: 0,
+                seq: 0,
+            },
+            announce_type: machined_announce_type::BIRTH,
+            count: 0,
+        }
+    }
+}
+
+impl MachinedAnnounceMessage {
+    /// Write the message body.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_u8(self.announce_type);
+        stream.write_u32(self.count);
+        Ok(())
+    }
+
+    /// Read an announce message.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        Ok(Self {
+            header: Header::read(stream)?,
+            announce_type: stream.read_u8()?,
+            count: stream.read_u32()?,
+        })
+    }
+}
+
+/// `UnknownMessage`: an unrecognised message echoed back with the
+/// `MESSAGE_NOT_UNDERSTOOD` flag. The raw bytes are kept as-is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownMessage {
+    pub header: Header,
+    /// Bytes after the header, carried through untouched.
+    pub data: Vec<u8>,
+}
+
+impl UnknownMessage {
+    /// Write the header plus the raw tail.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        self.header.write(stream);
+        stream.write_bytes(&self.data);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MGMPacket carrier and message dispatch (BW-05-01-01).
+// ---------------------------------------------------------------------------
+
+/// `MGMPacket::Flags`.
+pub mod mgm_packet_flags {
+    /// Replies may be staggered.
+    pub const PACKET_STAGGER_REPLIES: u8 = 0x1;
+}
+
+/// `MGMPacket`: a UDP datagram carrying one or more MachineGuardMessages.
+///
+/// Wire layout: flags u8, buddy u32, then each message as `u16 length`
+/// (network order) plus the message bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MgmPacket {
+    pub flags: u8,
+    pub buddy: u32,
+    pub messages: Vec<MachineGuardMessage>,
+}
+
+impl MgmPacket {
+    /// The reference datagram size ceiling.
+    pub const MAX_SIZE: usize = 32768;
+
+    /// Build a packet carrying the given messages.
+    pub fn new(messages: Vec<MachineGuardMessage>) -> Self {
+        Self {
+            flags: 0,
+            buddy: 0,
+            messages,
+        }
+    }
+
+    /// Should replies to this packet be staggered?
+    pub fn should_stagger_reply(&self) -> bool {
+        self.flags & mgm_packet_flags::PACKET_STAGGER_REPLIES != 0
+    }
+
+    /// Serialize the packet. The buddy field of the packet is substituted
+    /// for every message's own buddy when set by machined; the wire carries
+    /// the packet buddy once.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        stream.write_u8(self.flags);
+        stream.write_u32(self.buddy);
+        for message in &self.messages {
+            let mut sub = BinaryStream::new();
+            message.write(&mut sub)?;
+            let bytes = sub.as_bytes();
+            stream.write_u16(bytes.len() as u16);
+            stream.write_bytes(bytes);
+        }
+        Ok(())
+    }
+
+    /// Parse a packet, giving each enclosed message its own bounded stream
+    /// exactly like the reference's per-message `MemoryIStream`.
+    pub fn read(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let flags = stream.read_u8()?;
+        let buddy = stream.read_u32()?;
+        let mut messages = Vec::new();
+        while !stream.at_end() {
+            let msglen = stream.read_u16()? as usize;
+            let bytes = stream.read_blob_raw(msglen)?;
+            let mut sub = BinaryStream::from_slice(&bytes);
+            messages.push(MachineGuardMessage::create(&mut sub)?);
+        }
+        Ok(Self {
+            flags,
+            buddy,
+            messages,
+        })
+    }
+
+    /// Serialize a packet to a byte vector, refusing a datagram the
+    /// reference would report as oversized.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, StreamError> {
+        let mut stream = BinaryStream::new();
+        self.write(&mut stream)?;
+        Ok(stream.as_bytes().to_vec())
+    }
+
+    /// Parse a packet from raw bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, StreamError> {
+        let mut stream = BinaryStream::from_slice(bytes);
+        let packet = Self::read(&mut stream)?;
+        Ok(packet)
+    }
+}
+
+/// A dispatched MachineGuard message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineGuardMessage {
+    WholeMachine(WholeMachineMessage),
+    Process(ProcessMessage),
+    ProcessStats(ProcessStatsMessage),
+    Listener(ListenerMessage),
+    Create(CreateMessage),
+    CreateWithArgs(CreateWithArgsMessage),
+    Signal(SignalMessage),
+    Tags(TagsMessage),
+    User(UserMessage),
+    Pid(PidMessage),
+    Reset(ResetMessage),
+    Error(ErrorMessage),
+    QueryInterface(QueryInterfaceMessage),
+    HighPrecision(HighPrecisionMachineMessage),
+    MachinePlatform(MachinePlatformMessage),
+    MachinedAnnounce(MachinedAnnounceMessage),
+    Unknown(UnknownMessage),
+}
+
+impl MachineGuardMessage {
+    /// Peek at the message id without consuming it.
+    pub fn message_id(stream: &BinaryStream) -> Option<u8> {
+        stream.peek()
+    }
+
+    /// Construct the right variant for the message at the cursor. Unknown
+    /// ids, and any message whose typed read fails, fall back to
+    /// `UnknownMessage`, matching the reference's defensive path.
+    pub fn create(stream: &mut BinaryStream) -> Result<Self, StreamError> {
+        let id = stream.peek().ok_or(StreamError::Truncated)?;
+        let parsed = match id {
+            message_id::WHOLE_MACHINE => WholeMachineMessage::read(stream).map(Self::WholeMachine),
+            message_id::HIGH_PRECISION_MACHINE => {
+                HighPrecisionMachineMessage::read(stream).map(Self::HighPrecision)
+            }
+            message_id::PROCESS => ProcessMessage::read(stream).map(Self::Process),
+            message_id::PROCESS_STATS => ProcessStatsMessage::read(stream).map(Self::ProcessStats),
+            message_id::LISTENER => ListenerMessage::read(stream).map(Self::Listener),
+            message_id::CREATE => CreateMessage::read(stream).map(Self::Create),
+            message_id::CREATE_WITH_ARGS => {
+                CreateWithArgsMessage::read(stream).map(Self::CreateWithArgs)
+            }
+            message_id::SIGNAL => SignalMessage::read(stream).map(Self::Signal),
+            message_id::TAGS => TagsMessage::read(stream).map(Self::Tags),
+            message_id::USER => UserMessage::read(stream).map(Self::User),
+            message_id::PID => PidMessage::read(stream).map(Self::Pid),
+            message_id::RESET => ResetMessage::read(stream).map(Self::Reset),
+            message_id::ERROR => ErrorMessage::read(stream).map(Self::Error),
+            message_id::QUERY_INTERFACE => {
+                QueryInterfaceMessage::read(stream).map(Self::QueryInterface)
+            }
+            message_id::MACHINE_PLATFORM => {
+                MachinePlatformMessage::read(stream).map(Self::MachinePlatform)
+            }
+            message_id::MACHINED_ANNOUNCE => {
+                MachinedAnnounceMessage::read(stream).map(Self::MachinedAnnounce)
+            }
+            _ => {
+                // Echo the message back with the not-understood flag set,
+                // which is what the reference does for unknown ids.
+                stream.rewind();
+                let mut header = Self::read_header(stream)?;
+                header.flags |= flags::MESSAGE_NOT_UNDERSTOOD;
+                let data = stream.read_blob_raw(stream.remaining())?;
+                return Ok(Self::Unknown(UnknownMessage { header, data }));
+            }
+        };
+
+        match parsed {
+            Ok(message) => Ok(message),
+            Err(_) => {
+                // A message that failed its typed read falls back to the raw
+                // echo the reference produces.
+                stream.rewind();
+                let mut header = Self::read_header(stream)?;
+                header.flags |= flags::MESSAGE_NOT_UNDERSTOOD;
+                let data = stream.read_blob_raw(stream.remaining())?;
+                Ok(Self::Unknown(UnknownMessage { header, data }))
+            }
+        }
+    }
+
+    fn read_header(stream: &mut BinaryStream) -> Result<Header, StreamError> {
+        Header::read(stream)
+    }
+
+    /// Serialize the message to the stream.
+    pub fn write(&self, stream: &mut BinaryStream) -> Result<(), StreamError> {
+        match self {
+            Self::WholeMachine(m) => m.write(stream),
+            Self::Process(m) => m.write(stream),
+            Self::ProcessStats(m) => m.write(stream),
+            Self::Listener(m) => m.write(stream),
+            Self::Create(m) => m.write(stream),
+            Self::CreateWithArgs(m) => m.write(stream),
+            Self::Signal(m) => m.write(stream),
+            Self::Tags(m) => m.write(stream),
+            Self::User(m) => m.write(stream),
+            Self::Pid(m) => m.write(stream),
+            Self::Reset(m) => m.write(stream),
+            Self::Error(m) => m.write(stream),
+            Self::QueryInterface(m) => m.write(stream),
+            Self::HighPrecision(m) => m.write(stream),
+            Self::MachinePlatform(m) => m.write(stream),
+            Self::MachinedAnnounce(m) => m.write(stream),
+            Self::Unknown(m) => m.write(stream),
+        }
+    }
+
+    /// The message header.
+    pub fn header(&self) -> &Header {
+        match self {
+            Self::WholeMachine(m) => &m.header,
+            Self::Process(m) => &m.header,
+            Self::ProcessStats(m) => &m.process.header,
+            Self::Listener(m) => &m.process.header,
+            Self::Create(m) => &m.header,
+            Self::CreateWithArgs(m) => &m.create.header,
+            Self::Signal(m) => &m.process.header,
+            Self::Tags(m) => &m.header,
+            Self::User(m) => &m.header,
+            Self::Pid(m) => &m.header,
+            Self::Reset(m) => &m.header,
+            Self::Error(m) => &m.header,
+            Self::QueryInterface(m) => &m.header,
+            Self::HighPrecision(m) => &m.header,
+            Self::MachinePlatform(m) => &m.header,
+            Self::MachinedAnnounce(m) => &m.header,
+            Self::Unknown(m) => &m.header,
+        }
+    }
+
+    /// Set the sequence number, as the reference's `copySeq` does when
+    /// tagging a pre-generated reply.
+    pub fn set_seq(&mut self, seq: u16) {
+        let header = self.header_mut();
+        header.seq = seq;
+    }
+
+    fn header_mut(&mut self) -> &mut Header {
+        match self {
+            Self::WholeMachine(m) => &mut m.header,
+            Self::Process(m) => &mut m.header,
+            Self::ProcessStats(m) => &mut m.process.header,
+            Self::Listener(m) => &mut m.process.header,
+            Self::Create(m) => &mut m.header,
+            Self::CreateWithArgs(m) => &mut m.create.header,
+            Self::Signal(m) => &mut m.process.header,
+            Self::Tags(m) => &mut m.header,
+            Self::User(m) => &mut m.header,
+            Self::Pid(m) => &mut m.header,
+            Self::Reset(m) => &mut m.header,
+            Self::Error(m) => &mut m.header,
+            Self::QueryInterface(m) => &mut m.header,
+            Self::HighPrecision(m) => &mut m.header,
+            Self::MachinePlatform(m) => &mut m.header,
+            Self::MachinedAnnounce(m) => &mut m.header,
+            Self::Unknown(m) => &mut m.header,
+        }
+    }
+
+    /// Serialize to a byte vector.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, StreamError> {
+        let mut stream = BinaryStream::new();
+        self.write(&mut stream)?;
+        Ok(stream.as_bytes().to_vec())
+    }
+
+    /// Parse one message from raw bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, StreamError> {
+        let mut stream = BinaryStream::from_slice(bytes);
+        Self::create(&mut stream)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Query answering (BW-05-01-01).
+// ---------------------------------------------------------------------------
+
+/// The machine and process state a Machined answers queries from. Built by
+/// the discovery and statistics steps (BW-05-01-02/04); the query path only
+/// needs to serialize it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MachinedSnapshot {
+    pub hostname: String,
+    pub cpu_speed: u16,
+    pub cpu_loads: Vec<u8>,
+    pub io_wait_time: u8,
+    pub mem: u8,
+    pub interfaces: Vec<HighPrecisionInterfaceStats>,
+    pub in_discards: u8,
+    pub out_discards: u8,
+    /// The machined version byte.
+    pub version: u8,
+    pub platform_info: String,
+    pub tags: Vec<String>,
+    pub processes: Vec<ProcessMessage>,
+    pub user: UserMessage,
+}
+
+/// Answer a MachineGuard query with a compatible reply.
+///
+/// The reply keeps the request's sequence number, as the reference does
+/// with `copySeq`, so the tool can correlate response to request.
+pub fn answer_query(
+    snapshot: &MachinedSnapshot,
+    request: &MachineGuardMessage,
+) -> MachineGuardMessage {
+    let seq = request.header().seq;
+    let mut reply = match request {
+        MachineGuardMessage::WholeMachine(_) => {
+            let n_interfaces = snapshot.interfaces.len().min(u8::MAX as usize) as u8;
+            let n_cpus = snapshot.cpu_loads.len().min(u8::MAX as usize) as u8;
+            MachineGuardMessage::WholeMachine(WholeMachineMessage {
+                header: Header {
+                    message: message_id::WHOLE_MACHINE,
+                    flags: 0,
+                    seq,
+                },
+                hostname: snapshot.hostname.clone(),
+                cpu_speed: snapshot.cpu_speed,
+                n_cpus,
+                cpu_loads: snapshot.cpu_loads.clone(),
+                mem: snapshot.mem,
+                n_interfaces,
+                if_stats: snapshot
+                    .interfaces
+                    .iter()
+                    .map(|i| LowPrecisionInterfaceStats {
+                        name: i.name.clone(),
+                        bits_in: i.bits_in.min(u8::MAX as u32) as u8,
+                        bits_out: i.bits_out.min(u8::MAX as u32) as u8,
+                        pack_in: i.pack_in.min(u8::MAX as u32) as u8,
+                        pack_out: i.pack_out.min(u8::MAX as u32) as u8,
+                    })
+                    .collect(),
+                in_discards: snapshot.in_discards,
+                out_discards: snapshot.out_discards,
+                version: snapshot.version,
+            })
+        }
+        MachineGuardMessage::HighPrecision(_) => {
+            let n_interfaces = snapshot.interfaces.len().min(u8::MAX as usize) as u8;
+            let n_cpus = snapshot.cpu_loads.len().min(u8::MAX as usize) as u8;
+            MachineGuardMessage::HighPrecision(HighPrecisionMachineMessage {
+                header: Header {
+                    message: message_id::HIGH_PRECISION_MACHINE,
+                    flags: 0,
+                    seq,
+                },
+                hostname: snapshot.hostname.clone(),
+                cpu_speed: snapshot.cpu_speed,
+                n_cpus,
+                cpu_loads: snapshot.cpu_loads.clone(),
+                io_wait_time: snapshot.io_wait_time,
+                mem: snapshot.mem,
+                n_interfaces,
+                if_stats: snapshot.interfaces.clone(),
+                in_discards: snapshot.in_discards,
+                out_discards: snapshot.out_discards,
+                version: snapshot.version,
+            })
+        }
+        MachineGuardMessage::QueryInterface(q) => {
+            MachineGuardMessage::QueryInterface(QueryInterfaceMessage {
+                header: Header {
+                    message: message_id::QUERY_INTERFACE,
+                    flags: 0,
+                    seq,
+                },
+                address: q.address,
+            })
+        }
+        MachineGuardMessage::MachinePlatform(_) => {
+            MachineGuardMessage::MachinePlatform(MachinePlatformMessage {
+                header: Header {
+                    message: message_id::MACHINE_PLATFORM,
+                    flags: 0,
+                    seq,
+                },
+                platform_info: snapshot.platform_info.clone(),
+            })
+        }
+        MachineGuardMessage::Tags(_) => MachineGuardMessage::Tags(TagsMessage {
+            header: Header {
+                message: message_id::TAGS,
+                flags: 0,
+                seq,
+            },
+            tags: snapshot.tags.clone(),
+            exists: u8::from(!snapshot.tags.is_empty()),
+        }),
+        MachineGuardMessage::User(_) => {
+            let mut user = snapshot.user.clone();
+            user.header = Header {
+                message: message_id::USER,
+                flags: 0,
+                seq,
+            };
+            MachineGuardMessage::User(user)
+        }
+        MachineGuardMessage::Pid(p) => {
+            let running = snapshot
+                .processes
+                .iter()
+                .any(|process| process.pid == p.pid) as u8;
+            MachineGuardMessage::Pid(PidMessage {
+                header: Header {
+                    message: message_id::PID,
+                    flags: 0,
+                    seq,
+                },
+                pid: p.pid,
+                running,
+            })
+        }
+        MachineGuardMessage::Process(query) => {
+            // Return the first process matching the query's requested fields.
+            // The full match list is BW-05-01-02; the reference answers one
+            // process per reply for a targeted query.
+            let process = snapshot
+                .processes
+                .iter()
+                .find(|process| process.matches(query))
+                .cloned()
+                .unwrap_or_else(ProcessMessage::default);
+            let mut reply = process;
+            reply.header = Header {
+                message: message_id::PROCESS,
+                flags: 0,
+                seq,
+            };
+            MachineGuardMessage::Process(reply)
+        }
+        MachineGuardMessage::ProcessStats(query) => {
+            let process = snapshot
+                .processes
+                .iter()
+                .find(|process| process.matches(&query.process))
+                .cloned()
+                .unwrap_or_else(ProcessMessage::default);
+            let mut process = process;
+            process.header.message = message_id::PROCESS_STATS;
+            process.header.seq = seq;
+            MachineGuardMessage::ProcessStats(ProcessStatsMessage {
+                process,
+                cpu: 0,
+                mem: 0,
+            })
+        }
+        // Commands and notifications are not answered by this path.
+        other => {
+            return MachineGuardMessage::Unknown(UnknownMessage {
+                header: Header {
+                    message: other.header().message,
+                    flags: flags::MESSAGE_NOT_UNDERSTOOD,
+                    seq,
+                },
+                data: Vec::new(),
+            });
+        }
+    };
+    reply.set_seq(seq);
+    reply
 }
 
 #[cfg(test)]
@@ -577,5 +1898,620 @@ mod tests {
         assert_eq!(command.signal, signal::SIGINT);
         command.set_hard_kill();
         assert_eq!(command.signal, signal::SIGQUIT);
+    }
+
+    /// A whole-machine reply, hand-encoded field by field to pin the wire
+    /// layout to the reference `writeImpl` order.
+    #[test]
+    fn whole_machine_message_matches_reference_bytes() {
+        let message = WholeMachineMessage {
+            hostname: "test".to_string(),
+            cpu_speed: 2000,
+            n_cpus: 2,
+            cpu_loads: vec![10, 20],
+            mem: 50,
+            n_interfaces: 1,
+            if_stats: vec![LowPrecisionInterfaceStats {
+                name: "eth0".to_string(),
+                bits_in: 5,
+                bits_out: 6,
+                pack_in: 7,
+                pack_out: 8,
+            }],
+            in_discards: 0,
+            out_discards: 1,
+            version: 1,
+            ..WholeMachineMessage::default()
+        };
+
+        let mut stream = BinaryStream::new();
+        message.write(&mut stream).expect("write");
+
+        let expected: Vec<u8> = [
+            // header: message, flags, seq
+            message_id::WHOLE_MACHINE,
+            0,
+            0,
+            0,
+            // hostname
+            4,
+            b't',
+            b'e',
+            b's',
+            b't',
+            // cpu speed
+            208,
+            7,
+            // n cpus, n interfaces, mem, version, discards
+            2,
+            1,
+            50,
+            1,
+            0,
+            1,
+            // cpu loads
+            10,
+            20,
+            // eth0 stats: name, bits in/out, packs in/out
+            4,
+            b'e',
+            b't',
+            b'h',
+            b'0',
+            5,
+            6,
+            7,
+            8,
+        ]
+        .to_vec();
+        assert_eq!(stream.as_bytes(), expected);
+
+        stream.rewind();
+        assert_eq!(
+            WholeMachineMessage::read(&mut stream).expect("read"),
+            message
+        );
+    }
+
+    /// A high precision reply diverges from the low precision one only after
+    /// the cpu loads: an io wait byte, then wide interface counters.
+    #[test]
+    fn high_precision_message_matches_reference_bytes() {
+        let message = HighPrecisionMachineMessage {
+            hostname: "test".to_string(),
+            cpu_speed: 2000,
+            n_cpus: 1,
+            cpu_loads: vec![30],
+            io_wait_time: 4,
+            mem: 50,
+            n_interfaces: 1,
+            if_stats: vec![HighPrecisionInterfaceStats {
+                name: "eth0".to_string(),
+                bits_in: 0x0100,
+                bits_out: 0x0200,
+                pack_in: 3,
+                pack_out: 4,
+            }],
+            in_discards: 0,
+            out_discards: 0,
+            version: 1,
+            ..HighPrecisionMachineMessage::default()
+        };
+
+        let mut stream = BinaryStream::new();
+        message.write(&mut stream).expect("write");
+
+        let expected: Vec<u8> = [
+            message_id::HIGH_PRECISION_MACHINE,
+            0,
+            0,
+            0,
+            4,
+            b't',
+            b'e',
+            b's',
+            b't',
+            208,
+            7,
+            1,
+            1,
+            50,
+            1,
+            0,
+            0,
+            // cpu loads
+            30,
+            // io wait comes after the loads
+            4,
+            // eth0: name, then four u32 counters
+            4,
+            b'e',
+            b't',
+            b'h',
+            b'0',
+            0,
+            1,
+            0,
+            0,
+            0,
+            2,
+            0,
+            0,
+            3,
+            0,
+            0,
+            0,
+            4,
+            0,
+            0,
+            0,
+        ]
+        .to_vec();
+        assert_eq!(stream.as_bytes(), expected);
+
+        stream.rewind();
+        assert_eq!(
+            HighPrecisionMachineMessage::read(&mut stream).expect("read"),
+            message
+        );
+    }
+
+    /// Process stats is the process body, then cpu/mem, then the extra block.
+    #[test]
+    fn process_stats_message_matches_reference_bytes() {
+        let message = ProcessStatsMessage {
+            process: ProcessMessage {
+                header: Header {
+                    message: message_id::PROCESS_STATS,
+                    flags: 0,
+                    seq: 0,
+                },
+                pid: 11,
+                name: "baseapp01".to_string(),
+                ..ProcessMessage::default()
+            },
+            cpu: 12,
+            mem: 13,
+        };
+
+        let mut stream = BinaryStream::new();
+        message.write(&mut stream).expect("write");
+
+        let expected: Vec<u8> = [
+            message_id::PROCESS_STATS,
+            0,
+            0,
+            0,
+            // process body: param, category, uid, pid, port, id
+            0,
+            0,
+            0,
+            0,
+            11,
+            0,
+            0,
+            0,
+            0,
+            0,
+            // name
+            9,
+            b'b',
+            b'a',
+            b's',
+            b'e',
+            b'a',
+            b'p',
+            b'p',
+            b'0',
+            b'1',
+            // cpu, mem come before the extra block
+            12,
+            13,
+            // extra: declared tail 10 (i32), four u16 versions, two empty
+            // strings
+            10,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+        ]
+        .to_vec();
+        assert_eq!(stream.as_bytes(), expected);
+
+        stream.rewind();
+        assert_eq!(
+            ProcessStatsMessage::read(&mut stream).expect("read"),
+            message
+        );
+    }
+
+    /// The remaining simple query bodies in one pass.
+    #[test]
+    fn simple_query_messages_match_reference_bytes() {
+        // QueryInterface: header + address.
+        let query = QueryInterfaceMessage {
+            address: 0x7f000001,
+            ..QueryInterfaceMessage::default()
+        };
+        let mut stream = BinaryStream::new();
+        query.write(&mut stream).expect("write");
+        assert_eq!(
+            stream.as_bytes(),
+            [message_id::QUERY_INTERFACE, 0, 0, 0, 1, 0, 0, 127].to_vec()
+        );
+        stream.rewind();
+        assert_eq!(
+            QueryInterfaceMessage::read(&mut stream).expect("read"),
+            query
+        );
+
+        // MachinePlatform: header + platform string.
+        let platform = MachinePlatformMessage {
+            platform_info: "Linux el7".to_string(),
+            ..MachinePlatformMessage::default()
+        };
+        let mut stream = BinaryStream::new();
+        platform.write(&mut stream).expect("write");
+        let mut expected = vec![message_id::MACHINE_PLATFORM, 0, 0, 0, 9];
+        expected.extend_from_slice(b"Linux el7");
+        assert_eq!(stream.as_bytes(), expected);
+        stream.rewind();
+        assert_eq!(
+            MachinePlatformMessage::read(&mut stream).expect("read"),
+            platform
+        );
+
+        // Pid: header + pid + running.
+        let pid = PidMessage {
+            pid: 4242,
+            running: 1,
+            ..PidMessage::default()
+        };
+        let mut stream = BinaryStream::new();
+        pid.write(&mut stream).expect("write");
+        assert_eq!(
+            stream.as_bytes(),
+            [message_id::PID, 0, 0, 0, 0x92, 0x10, 1].to_vec()
+        );
+        stream.rewind();
+        assert_eq!(PidMessage::read(&mut stream).expect("read"), pid);
+
+        // Tags: header + count + exists + strings.
+        let tags = TagsMessage {
+            tags: vec!["dev".to_string()],
+            exists: 1,
+            ..TagsMessage::default()
+        };
+        let mut stream = BinaryStream::new();
+        tags.write(&mut stream).expect("write");
+        assert_eq!(
+            stream.as_bytes(),
+            [message_id::TAGS, 0, 0, 0, 1, 1, 3, b'd', b'e', b'v'].to_vec()
+        );
+        stream.rewind();
+        assert_eq!(TagsMessage::read(&mut stream).expect("read"), tags);
+    }
+
+    /// User writes coredumps only when asked, and the version string only
+    /// when requested, exactly like the reference's conditional writes.
+    #[test]
+    fn user_message_conditional_fields_round_trip() {
+        let base = UserMessage {
+            param: 0,
+            uid: 1000,
+            username: "cui".to_string(),
+            fullname: "Cui Hairu".to_string(),
+            home: "/home/cui".to_string(),
+            mfroot: "/opt/bw".to_string(),
+            bwrespath: "/opt/bw/res".to_string(),
+            coredumps: vec![CoreDump {
+                filename: "core.1".to_string(),
+                assert: "assert.txt".to_string(),
+                time: 1234,
+            }],
+            version_string: "1.2.3".to_string(),
+            ..UserMessage::default()
+        };
+
+        // Without the check bits neither tail field goes on the wire.
+        let mut stream = BinaryStream::new();
+        base.write(&mut stream).expect("write");
+        let read = UserMessage::read(&mut stream).expect("read");
+        assert!(read.coredumps.is_empty());
+        assert_eq!(read.version_string, "");
+
+        // With both bits everything round trips.
+        let with_all = UserMessage {
+            param: user_param::CHECK_COREDUMPS | user_param::GET_VERSION,
+            ..base.clone()
+        };
+        let mut stream = BinaryStream::new();
+        with_all.write(&mut stream).expect("write");
+        assert_eq!(UserMessage::read(&mut stream).expect("read"), with_all);
+
+        // A coredump entry is two strings plus a u32 time.
+        let with_dumps = UserMessage {
+            param: user_param::CHECK_COREDUMPS,
+            ..base.clone()
+        };
+        let mut stream = BinaryStream::new();
+        with_dumps.write(&mut stream).expect("write");
+        let bytes = stream.as_bytes();
+        // 6 strings + count u32 = 4 + 2*2 + 10 + 10 + 10 + 9 + 12 + 4 = 53
+        // header 4, param 1, uid 2 = 7 before the six strings and the vector.
+        // header 4 + param 1 + uid 2 + five strings + count u32 + one
+        // coredump (two strings + u32).
+        let expected_len = 4 + 1 + 2 + 4 + 10 + 10 + 8 + 12 + 4 + 7 + 11 + 4;
+        assert_eq!(bytes.len(), expected_len);
+    }
+
+    /// Create and announce bodies round trip.
+    #[test]
+    fn create_and_announce_round_trip() {
+        let create = CreateMessage {
+            name: "cellapp".to_string(),
+            config: "Hybrid".to_string(),
+            uid: 1000,
+            recover: 1,
+            fwd_ip: 0x7f000001,
+            fwd_port: 30000,
+            ..CreateMessage::default()
+        };
+        let mut stream = BinaryStream::new();
+        create.write(&mut stream).expect("write");
+        assert_eq!(CreateMessage::read(&mut stream).expect("read"), create);
+
+        let with_args = CreateWithArgsMessage {
+            create: CreateMessage {
+                name: "baseapp".to_string(),
+                ..CreateMessage::default()
+            },
+            args: vec!["--recover".to_string(), "1".to_string()],
+        };
+        let mut stream = BinaryStream::new();
+        with_args.write(&mut stream).expect("write");
+        assert_eq!(
+            CreateWithArgsMessage::read(&mut stream).expect("read"),
+            with_args
+        );
+
+        let announce = MachinedAnnounceMessage {
+            announce_type: machined_announce_type::EXISTS,
+            count: 0x7f000001,
+            ..MachinedAnnounceMessage::default()
+        };
+        let mut stream = BinaryStream::new();
+        announce.write(&mut stream).expect("write");
+        assert_eq!(
+            MachinedAnnounceMessage::read(&mut stream).expect("read"),
+            announce
+        );
+
+        // Reset and error bodies.
+        let reset = ResetMessage::default();
+        let mut stream = BinaryStream::new();
+        reset.write(&mut stream).expect("write");
+        assert_eq!(stream.as_bytes(), [message_id::RESET, 0, 0, 0].to_vec());
+        stream.rewind();
+        assert_eq!(ResetMessage::read(&mut stream).expect("read"), reset);
+
+        let error = ErrorMessage {
+            severity: 3,
+            msg: "boom".to_string(),
+            ..ErrorMessage::default()
+        };
+        let mut stream = BinaryStream::new();
+        error.write(&mut stream).expect("write");
+        let mut expected = vec![message_id::ERROR, 0, 0, 0, 3, 4];
+        expected.extend_from_slice(b"boom");
+        assert_eq!(stream.as_bytes(), expected);
+        stream.rewind();
+        assert_eq!(ErrorMessage::read(&mut stream).expect("read"), error);
+    }
+
+    /// A packet carrying one whole-machine query round trips through the
+    /// length-prefixed framing and dispatches back to the same variant.
+    #[test]
+    fn mgm_packet_round_trips_and_dispatches() {
+        let query = MachineGuardMessage::WholeMachine(WholeMachineMessage {
+            hostname: "h".to_string(),
+            ..WholeMachineMessage::default()
+        });
+        let packet = MgmPacket::new(vec![query.clone()]);
+
+        let bytes = packet.to_bytes().expect("write");
+        let read = MgmPacket::from_bytes(&bytes).expect("read");
+        assert_eq!(read, packet);
+        assert_eq!(read.messages, vec![query]);
+        assert!(!read.should_stagger_reply());
+
+        // Two messages dispatch independently.
+        let packet = MgmPacket::new(vec![
+            MachineGuardMessage::Reset(ResetMessage::default()),
+            MachineGuardMessage::Pid(PidMessage {
+                pid: 1,
+                ..PidMessage::default()
+            }),
+        ]);
+        let bytes = packet.to_bytes().expect("write");
+        assert_eq!(MgmPacket::from_bytes(&bytes).expect("read"), packet);
+
+        // The stagger flag survives the round trip.
+        let mut packet = MgmPacket::new(vec![MachineGuardMessage::Reset(ResetMessage::default())]);
+        packet.flags = mgm_packet_flags::PACKET_STAGGER_REPLIES;
+        let bytes = packet.to_bytes().expect("write");
+        assert!(
+            MgmPacket::from_bytes(&bytes)
+                .expect("read")
+                .should_stagger_reply()
+        );
+    }
+
+    /// An unrecognised message id echoes back with the not-understood flag.
+    #[test]
+    fn dispatch_unknown_message_sets_flag() {
+        // A body with a message id nothing handles, followed by junk.
+        let mut stream = BinaryStream::new();
+        stream.write_u8(0x77);
+        stream.write_u8(0);
+        stream.write_u16(9);
+        stream.write_bytes(&[1, 2, 3]);
+
+        let message = MachineGuardMessage::create(&mut stream).expect("create");
+        match message {
+            MachineGuardMessage::Unknown(unknown) => {
+                assert_eq!(unknown.header.message, 0x77);
+                assert_eq!(unknown.header.seq, 9);
+                assert_ne!(unknown.header.flags & flags::MESSAGE_NOT_UNDERSTOOD, 0);
+                assert_eq!(unknown.data, vec![1, 2, 3]);
+            }
+            other => panic!("expected unknown, got {other:?}"),
+        }
+    }
+
+    /// A malformed typed message also falls back to the raw echo.
+    #[test]
+    fn dispatch_malformed_message_falls_back_to_unknown() {
+        // A tags message declaring two tags but carrying none.
+        let mut stream = BinaryStream::new();
+        stream.write_u8(message_id::TAGS);
+        stream.write_u8(0);
+        stream.write_u16(0);
+        stream.write_u8(2);
+        stream.write_u8(1);
+
+        let message = MachineGuardMessage::create(&mut stream).expect("create");
+        match message {
+            MachineGuardMessage::Unknown(unknown) => {
+                assert_eq!(unknown.header.message, message_id::TAGS);
+            }
+            other => panic!("expected unknown, got {other:?}"),
+        }
+    }
+
+    /// The query path: a whole-machine request over a fixed snapshot
+    /// produces the reference-compatible reply bytes, and the same request
+    /// always produces the same payload.
+    #[test]
+    fn answer_query_returns_compatible_payload() {
+        let snapshot = MachinedSnapshot {
+            hostname: "test".to_string(),
+            cpu_speed: 2000,
+            cpu_loads: vec![10, 20],
+            io_wait_time: 4,
+            mem: 50,
+            interfaces: vec![HighPrecisionInterfaceStats {
+                name: "eth0".to_string(),
+                bits_in: 5,
+                bits_out: 6,
+                pack_in: 7,
+                pack_out: 8,
+            }],
+            in_discards: 0,
+            out_discards: 1,
+            version: 1,
+            platform_info: "Linux el7".to_string(),
+            tags: vec!["dev".to_string()],
+            processes: vec![ProcessMessage {
+                pid: 11,
+                name: "baseapp01".to_string(),
+                ..ProcessMessage::default()
+            }],
+            user: UserMessage::default(),
+        };
+
+        let request = MachineGuardMessage::WholeMachine(WholeMachineMessage {
+            header: Header {
+                message: message_id::WHOLE_MACHINE,
+                flags: 0,
+                seq: 77,
+            },
+            ..WholeMachineMessage::default()
+        });
+
+        let reply = answer_query(&snapshot, &request);
+        let bytes = reply.to_bytes().expect("write");
+        assert_eq!(
+            bytes,
+            [
+                message_id::WHOLE_MACHINE,
+                0,
+                77,
+                0,
+                4,
+                b't',
+                b'e',
+                b's',
+                b't',
+                208,
+                7,
+                2,
+                1,
+                50,
+                1,
+                0,
+                1,
+                10,
+                20,
+                4,
+                b'e',
+                b't',
+                b'h',
+                b'0',
+                5,
+                6,
+                7,
+                8,
+            ]
+            .to_vec()
+        );
+
+        // The same request gives the same payload.
+        let again = answer_query(&snapshot, &request).to_bytes().expect("write");
+        assert_eq!(bytes, again);
+
+        // Pid answers from the process registry.
+        let hit = answer_query(
+            &snapshot,
+            &MachineGuardMessage::Pid(PidMessage {
+                pid: 11,
+                ..PidMessage::default()
+            }),
+        )
+        .to_bytes()
+        .expect("write");
+        assert_eq!(hit, [message_id::PID, 0, 0, 0, 11, 0, 1].to_vec());
+
+        let miss = answer_query(
+            &snapshot,
+            &MachineGuardMessage::Pid(PidMessage {
+                pid: 12,
+                ..PidMessage::default()
+            }),
+        )
+        .to_bytes()
+        .expect("write");
+        assert_eq!(miss, [message_id::PID, 0, 0, 0, 12, 0, 0].to_vec());
+
+        // Commands are not answered by the query path.
+        let command = answer_query(
+            &snapshot,
+            &MachineGuardMessage::Reset(ResetMessage::default()),
+        );
+        match command {
+            MachineGuardMessage::Unknown(unknown) => {
+                assert_ne!(unknown.header.flags & flags::MESSAGE_NOT_UNDERSTOOD, 0);
+            }
+            other => panic!("expected unknown, got {other:?}"),
+        }
     }
 }
