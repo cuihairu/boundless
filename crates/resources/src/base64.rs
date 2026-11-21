@@ -155,7 +155,10 @@ mod tests {
     #[test]
     fn strict_decode_roundtrips_encode() {
         for raw in ["", "f", "fo", "foo", "foob", "fooba", "foobar", "a&b<c>"] {
-            assert_eq!(decode_strict(&encode(raw.as_bytes())).unwrap(), raw.as_bytes());
+            assert_eq!(
+                decode_strict(&encode(raw.as_bytes())).unwrap(),
+                raw.as_bytes()
+            );
         }
     }
 

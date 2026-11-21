@@ -168,8 +168,7 @@ impl<T> DataSectionCache<T> {
             return false;
         }
         // Case 1: only node.
-        if self.head.as_deref() == Some(name) && self.tail.as_deref() == Some(name)
-        {
+        if self.head.as_deref() == Some(name) && self.tail.as_deref() == Some(name) {
             self.head = None;
             self.tail = None;
         }
@@ -350,10 +349,7 @@ mod tests {
 
         // purgeLRU takes the tail.
         cache.purge_lru();
-        assert_eq!(
-            cache.lru_order(),
-            vec![("c".to_string(), 3)]
-        );
+        assert_eq!(cache.lru_order(), vec![("c".to_string(), 3)]);
         cache.purge_lru();
         assert!(cache.is_empty());
         // Purging an empty cache is a no-op.

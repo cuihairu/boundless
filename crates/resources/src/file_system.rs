@@ -72,10 +72,7 @@ impl NativeFileSystem {
     /// that does not already end with one.
     pub fn new(base_path: &str) -> Self {
         let mut base_path = base_path.to_string();
-        if !base_path.is_empty()
-            && !base_path.ends_with('/')
-            && !base_path.ends_with('\\')
-        {
+        if !base_path.is_empty() && !base_path.ends_with('/') && !base_path.ends_with('\\') {
             base_path.push('/');
         }
         Self { base_path }
@@ -135,9 +132,7 @@ impl FileSystem for NativeFileSystem {
         if ft == FileType::File {
             if let Ok(mut file) = fs::File::open(self.resolve(path)) {
                 let mut magic = [0u8; 2];
-                if file.read_exact(&mut magic).is_ok()
-                    && u16::from_le_bytes(magic) == ZIP_MAGIC
-                {
+                if file.read_exact(&mut magic).is_ok() && u16::from_le_bytes(magic) == ZIP_MAGIC {
                     return FileType::Archive;
                 }
             }
@@ -320,16 +315,16 @@ mod tests {
         assert_eq!(fs.get_file_type("nope", None), FileType::NotFound);
 
         let mut info = FileInfo::default();
-        assert_eq!(fs.get_file_type("file.txt", Some(&mut info)), FileType::File);
+        assert_eq!(
+            fs.get_file_type("file.txt", Some(&mut info)),
+            FileType::File
+        );
         assert_eq!(info.size, 5);
         assert!(info.modified > 0);
 
         // Absolute probing goes through the same stat path.
         assert_eq!(
-            NativeFileSystem::get_absolute_file_type(
-                &format!("{}/file.txt", root),
-                None
-            ),
+            NativeFileSystem::get_absolute_file_type(&format!("{}/file.txt", root), None),
             FileType::File
         );
         assert_eq!(
@@ -438,10 +433,7 @@ mod tests {
 
         assert!(fs.make_directory("one"));
         assert!(!fs.make_directory("one/two/three"));
-        assert_eq!(
-            fs.get_file_type("one", None),
-            FileType::Directory
-        );
+        assert_eq!(fs.get_file_type("one", None), FileType::Directory);
 
         write(&root, "/tree/leaf.bin", b"leaf");
         assert!(fs.erase_file_or_directory("tree"));
@@ -460,8 +452,7 @@ mod tests {
     #[test]
     fn zip_roots_answer_reads_and_refuse_absolute_paths() {
         // Build the archive bytes through the same machinery as BW-01-03-03.
-        let mut builder =
-            crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
+        let mut builder = crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
         builder.update_file("res/config.xml", Some(b"<root/>".to_vec()));
         let bytes = builder.create_zip();
 
@@ -499,5 +490,3 @@ mod tests {
         );
     }
 }
-
-

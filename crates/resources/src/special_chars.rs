@@ -152,11 +152,7 @@ fn strtol(bytes: &[u8], base: u32) -> i64 {
     if !any {
         return 0;
     }
-    if negative {
-        -acc
-    } else {
-        acc
-    }
+    if negative { -acc } else { acc }
 }
 
 /// Hex prefix parse used by `&#x..;` bodies; no digits yields `None`
@@ -174,11 +170,7 @@ fn parse_hex(bytes: &[u8]) -> Option<i32> {
         any = true;
         acc = acc.wrapping_mul(16).wrapping_add(digit);
     }
-    if any {
-        Some(acc as i32)
-    } else {
-        None
-    }
+    if any { Some(acc as i32) } else { None }
 }
 
 #[cfg(test)]
