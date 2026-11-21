@@ -356,28 +356,31 @@ fn arg_count_error(name: &str, expected: &[&str]) {
 
 /// The wrong-type `varName` the auto machinery passes to `Script::setData`:
 /// `"() argument N"`, with `" optionally"` on the optional tail
-/// (`script.hpp:1117-1131`).
-fn arg_var_name(position: usize, optional: bool) -> String {
+/// (`script.hpp:1117-1131`). `number` is the reference's 1-based argument
+/// number (`"() argument " #N` of the auto macros).
+fn arg_var_name(number: usize, optional: bool) -> String {
     if optional {
-        format!("() argument {position} optionally")
+        format!("() argument {number} optionally")
     } else {
-        format!("() argument {position}")
+        format!("() argument {number}")
     }
 }
 
-/// The wrong-type failure of argument `position`: the `Script::setData`
-/// sentence with the auto `varName`.
+/// The wrong-type failure of the argument at tuple index `position`: the
+/// `Script::setData` sentence with the auto `varName` (`position + 1` --
+/// the reference's argument numbers start at 1).
 fn raise_arg_type(type_sentence: &str, position: usize, optional: bool) {
     raise_type_error(&format!(
         "{} {type_sentence}",
-        arg_var_name(position, optional)
+        arg_var_name(position + 1, optional)
     ));
 }
 
 /// The `NZARG` sentence: a `PyObjectPtr` argument handed `None` is
-/// refused -- `None` is the zero value (`script.hpp:1128-1131`).
+/// refused -- `None` is the zero value (`script.hpp:1128-1131`); the
+/// argument number is 1-based as above.
 fn raise_arg_cannot_be_none(position: usize) {
-    raise_type_error(&format!("() argument {position} cannot be None"));
+    raise_type_error(&format!("() argument {} cannot be None", position + 1));
 }
 
 /// Parse one string argument of an auto-parsed call: the `BW::string`

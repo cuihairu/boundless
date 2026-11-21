@@ -5208,14 +5208,14 @@ mod tests {
         std::fs::write(
             root.join("settings/items/table.xml"),
             "<table>\n\
-             <value>\n<cost>10</cost>\n<rare>false</rare>\n</value>\n\
+             <value>\n<cost>10</cost>\n<rare>false</rare>\n<pos>(1 2 3)</pos>\n</value>\n\
              <key>crab</key>\n\
              <key>lobster</key>\n\
              </table>\n",
         )
         .expect("write the table fixture");
         let root_path = root.to_str().expect("a UTF-8 root");
-        crate::resmgr::init_paths(&[root_path]);
+        crate::resmgr::init_paths(&[&root_path]);
 
         let interpreter =
             Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
@@ -5620,15 +5620,208 @@ mod tests {
                  table.value.cost, table.value.get('rare'), table.value.get('absent'), \
                  table.value.get('absent', 7), table.at(0).value.get('cost'), calls, \
                  table.link(lambda entry: None), table.unlink(lambda entry: None), \
-                 at_wall, sub_wall, missing, not_callable, count_wall)",
+                 table.value.pos, at_wall, sub_wall, missing, not_callable, count_wall)",
             ),
             "(2, 'crab', 'lobster', 'lobster', 'lobster', 0, -1, '', 'crab', 'crab', \
              4294967295, 0, 1, 10, 10, False, None, 7, 10, [''], True, None, \
+             '(1 2 3)', \
              'ResourceTable.at: index 9 out of range', \
              'ResourceTable.find: no entry for key absent', \
              \"ResourceTable() no such resource 'settings/items/absent.xml'\", \
              'ResourceTable() second arg must be callable', \
              'ResourceTable() expects between 1 and 2 arguments of types BW::string, PyObjectPtr')",
+        );
+
+        // The `as*` setters write through the typed attribute faces: the
+        // vector and matrix setters convert their argument, the int64
+        // setter answers through the plain long ladder, the underscore
+        // assignment walks the vector ladder, and every refusal raises its
+        // own sentence. The `__getitem__` guess on a `"(x y z)"` text stays
+        // a string: the paren guard passes but the parse cannot cross the
+        // leading `(` (strtod fails there), so the sentinel compare keeps
+        // the default — the reference `XMLSection::asVector3` answers the
+        // same way, which makes the Vector3 arm an unreachable parity.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr, Math\n\
+                 s = ResMgr.openSection('settings/items/kit.xml')\n\
+                 pair = s['pair']\n\
+                 quad = s['quad']\n\
+                 row = s['row0']\n\
+                 name = s['name']\n\
+                 armour = s['armour']\n\
+                 pair.asVector2 = (9, 10)\n\
+                 quad.asVector4 = (1, 2, 3, 4)\n\
+                 matrix = Math.Matrix()\n\
+                 matrix.setElement(1, 2, 3)\n\
+                 row.asMatrix = matrix\n\
+                 armour.asInt64 = 41\n\
+                 name.isAttribute = 'False'\n\
+                 s._flag = (1, 2)\n\
+                 try:\n\
+                 \x20   pair.asVector2 = 'no'\n\
+                 except TypeError as error:\n\
+                 \x20   vector_wall = str(error)\n\
+                 try:\n\
+                 \x20   row.asMatrix = 5\n\
+                 except TypeError as error:\n\
+                 \x20   matrix_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.isAttribute = True\n\
+                 except AttributeError as error:\n\
+                 \x20   attribute_wall = str(error)\n\
+                 try:\n\
+                 \x20   name.isAttribute = 'maybe'\n\
+                 except TypeError as error:\n\
+                 \x20   bool_wall = str(error)\n\
+                 __probe = (tuple(pair.asVector2), tuple(quad.asVector4), \
+                 row.asMatrix.get(1, 2), armour.asInt64, name.isAttribute, \
+                 s.readString('flag'), vector_wall, matrix_wall, \
+                 attribute_wall, bool_wall)",
+            ),
+            "((9.0, 10.0), (1.0, 2.0, 3.0, 4.0), 3.0, 41, False, '1.000000 2.000000', \
+             'asVector2 must be set to a Vector2 or tuple of 2 floats', \
+             'asMatrix must be a MatrixProvider', \
+             'isAttribute can only be used on XML DataSections which have no children', \
+             'isAttribute must be set to a bool')",
+        );
+
+        // The indexed child faces answer the child and its name and raise
+        // the reference's walls, the module parse walls quote the auto
+        // sentences, and the `bool` argument takes the true/false strings.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/list.xml')\n\
+                 first = s.child(0)\n\
+                 opened = ResMgr.openSection('settings/items/list.xml', 'true')\n\
+                 try:\n\
+                 \x20   s.child(9)\n\
+                 except IndexError as error:\n\
+                 \x20   child_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.childName(9)\n\
+                 except IndexError as error:\n\
+                 \x20   name_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.childName('x')\n\
+                 except TypeError as error:\n\
+                 \x20   arg_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.childName()\n\
+                 except TypeError as error:\n\
+                 \x20   count_wall = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.openSection()\n\
+                 except TypeError as error:\n\
+                 \x20   open_count = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.openSection(42)\n\
+                 except TypeError as error:\n\
+                 \x20   open_type = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.openSection('settings/items/list.xml', object())\n\
+                 except TypeError as error:\n\
+                 \x20   open_bool = str(error)\n\
+                 __probe = (first.asString, s.childName(1), opened.name, child_wall, \
+                 name_wall, arg_wall, count_wall, open_count, open_type, open_bool)",
+            ),
+            "('1', 'two', 'list.xml', 'child index out of range', \
+             'child index out of range', '() argument 1 must be set to an int', \
+             'childName() expects 1 argument of type int', \
+             'openSection() expects between 1 and 2 arguments of types BW::string, bool', \
+             '() argument 1 must be set to a string.', \
+             '() argument 2 optionally must be set to a bool')",
+        );
+
+        // The typed faces refuse the wrong types with the reference's
+        // sentences, the plural wall quotes the per-item index, the
+        // `one-string` parse is shared by the read*s and section makers,
+        // and the table and struct faces raise their own walls.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/writes.xml')\n\
+                 table = ResMgr.ResourceTable('settings/items/table.xml')\n\
+                 try:\n\
+                 \x20   s.readFloat('absent', 'nope')\n\
+                 except TypeError as error:\n\
+                 \x20   read_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.writeInt64('absent', 'x')\n\
+                 except TypeError as error:\n\
+                 \x20   int64_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.writeString('p', 3)\n\
+                 except TypeError as error:\n\
+                 \x20   write_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.writeStrings('p', ('a', 3))\n\
+                 except TypeError as error:\n\
+                 \x20   plural_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.readStrings(42)\n\
+                 except TypeError as error:\n\
+                 \x20   arg_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.deleteSection(42)\n\
+                 except TypeError as error:\n\
+                 \x20   delete_wall = str(error)\n\
+                 try:\n\
+                 \x20   table[42]\n\
+                 except ValueError as error:\n\
+                 \x20   table_wall = str(error)\n\
+                 try:\n\
+                 \x20   table[1.5]\n\
+                 except TypeError as error:\n\
+                 \x20   item_type_wall = str(error)\n\
+                 try:\n\
+                 \x20   table.value.get()\n\
+                 except TypeError as error:\n\
+                 \x20   get_wall = str(error)\n\
+                 __probe = (read_wall, int64_wall, write_wall, plural_wall, arg_wall, \
+                 delete_wall, table_wall, item_type_wall, get_wall)",
+            ),
+            "('Expected a string and an optional float', \
+             'Expected string and int64.', \
+             'Expected string and BW::string.', \
+             'Section 1 is not of of type BW::string.', \
+             'Expected one string argument.', \
+             'py_deleteSection: Expected a DataSection\\tor String argument.', \
+             'ResourceTable.at: index 42 out of range', \
+             'ResourceTable[x]: x must be set to a string', \
+             'get() expects between 1 and 2 arguments of types BW::string, PyObjectPtr')",
+        );
+
+        // The module `save` of an open id answers its key, `createSection`
+        // with the auto-parsed one-string wall and a directory path, and
+        // the `child` index parse takes the auto int sentence.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/writes.xml')\n\
+                 s.writeString('str', 'again')\n\
+                 saved = ResMgr.save('settings/items/writes.xml')\n\
+                 made = s.createSection('sub/leaf')\n\
+                 opened_again = ResMgr.openSection('settings/items/writes.xml')\n\
+                 try:\n\
+                 \x20   s.createSection(42)\n\
+                 except TypeError as error:\n\
+                 \x20   make_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.child('x')\n\
+                 except TypeError as error:\n\
+                 \x20   child_arg = str(error)\n\
+                 __probe = (saved, opened_again.readString('str'), \
+                 s.readString('sub/leaf'), make_wall, child_arg)",
+            ),
+            "(True, 'again', '', \
+             'Expected one string argument.', \
+             '() argument 1 must be set to an int')",
         );
 
         interpreter.fini();
@@ -5653,7 +5846,7 @@ mod tests {
         )
         .expect("kit");
         let root_path = root.to_str().expect("a UTF-8 root");
-        crate::resmgr::init_paths(&[root_path]);
+        crate::resmgr::init_paths(&[&root_path]);
 
         let interpreter = Interpreter::init(&InitConfig {
             component: String::from("editor"),
