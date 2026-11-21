@@ -45,7 +45,13 @@ fn module_dir() -> &'static PathBuf {
         // target dir means a separate build lock, so the nested `cargo build`
         // cannot deadlock against the `cargo test` process that owns the
         // workspace target dir.
-        let scratch = std::env::temp_dir().join("boundless-python-module-build");
+        // Per-process name (BW-00-03-04): two checkouts on one machine can
+        // run this test at the same time, and a fixed name would make them
+        // build into and lock the same scratch target dir.
+        let scratch = std::env::temp_dir().join(format!(
+            "boundless-python-module-build-{}",
+            std::process::id()
+        ));
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let status = Command::new("cargo")
             .arg("build")
@@ -91,7 +97,12 @@ fn install_dir() -> PathBuf {
         "the built module is missing at {}",
         built.display()
     );
-    let dir = std::env::temp_dir().join("boundless-python-module-install");
+    // Per-process name (BW-00-03-04): two checkouts on one machine running
+    // this test concurrently must not install over each other's module.
+    let dir = std::env::temp_dir().join(format!(
+        "boundless-python-module-install-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).expect("create scratch install dir");
     let installed = dir.join("boundless.so");
     std::fs::copy(&built, &installed).expect("install (copy) the module");
