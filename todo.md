@@ -1142,7 +1142,7 @@
 封装事件轮询和唤醒、单调时钟、信号/控制事件、子进程与退出状态、文件锁、内存映射、动态库和系统目录。对照大小写、路径编码、原子替换、IPv4/IPv6 和断网行为。
 
 - [ ] **BW-15-01-01 封装事件轮询和唤醒**。**验收** 三端可停止空闲循环。
-  - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道、macOS 无 epoll 需 kqueue/select 后端——随 BW-15-05 三端 runner 落地。
+  - 证据（部分，未勾）：`crates/platform/src/wakeup.rs`（441ff01）——自管道 `Wakeup`（`pipe(2)` 双端 `O_NONBLOCK`、`trigger` 任意线程一字节写入容忍 EAGAIN=已挂起、`consume` 排空重整、Drop 关双端），Linux 实测 5 测：空闲 `epoll_wait`（5s 预算）被另一线程 `trigger` 在 1s 内唤醒、预挂起即回、`consume` 后零超时不再上报、未触发 `consume` 为 no-op、100 轮触发/消费循环稳定；「轮询」半块已由 BW-02-01-02 `platform::poller`+Mercury `EventPoller` 承担（Linux epoll）。**macOS 后端已落（59da22c）**：`crates/platform/src/poller.rs` 拆为 Linux `epoll`/macOS `kqueue` 两后端、`lib.rs` 把 `poller` 门控扩到 macOS——kqueue 与 epoll 同为描述符持久注册集，`create`/`ctl`/`wait` 一对应映射（`kqueue()`；`kevent` EV_ADD/EV_DELETE 按 filter、`CTL_DEL` 先删读再删写、二者其一在册即成功、无册 fd 返 `ENOENT` 同参考 WARNING 分档；`EV_EOF`→`EPOLLHUP`/`EV_ERROR`→`EPOLLERR`；超时负值阻塞零轮询；事件位沿用 epoll 数值使调用方跨端同常量）；`platform` darwin `--all-targets` 交叉编译绿、darwin clippy `-D warnings` 绿、Linux 59 测零回归；kqueue 模块 4 测镜像 epoll 待三端 runner 实跑。**剩余**：Windows `WSAPoll` 走 socketpair 而非匿名管道——随 BW-15-05 三端 runner 落地（kqueue 实跑亦随三端 runner）。
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
 - [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
