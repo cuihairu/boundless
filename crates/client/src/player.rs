@@ -111,8 +111,8 @@ impl ClientEntity {
     pub fn space_id(&self) -> Option<u32> {
         self.space_id
     }
-    /// `Entity::isPlayer()` (`entity.cpp:1780`): the player is the entity the
-    /// client controls.
+    /// `BW::Entity::isPlayer()` (`lib/connection_model/bw_entity.hpp:111`):
+    /// the player is the entity the client controls.
     pub fn is_player(&self) -> bool {
         self.is_player
     }
