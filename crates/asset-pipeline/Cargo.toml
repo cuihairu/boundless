@@ -1,0 +1,11 @@
+[package]
+name = "asset-pipeline"
+description = "BW-13 dependency discovery, conversion and compilation"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+resources = { workspace = true }
