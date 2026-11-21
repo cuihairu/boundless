@@ -168,6 +168,7 @@ main() {
             | ci/reference-protocol.sh | ci/reference-protocol.py \
             | ci/reference-callback.sh | ci/reference-callback.py \
             | ci/reference-fixtures.sh | ci/reference-fixtures.py \
+            | ci/compare-fullstack.sh | ci/compare-fullstack.py \
             | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 

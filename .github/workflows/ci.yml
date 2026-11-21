@@ -549,6 +549,9 @@ jobs:
       - name: Record the reference fixtures
         run: ci/reference-fixtures.sh
 
+      - name: Record the original and new full-stack comparison
+        run: ci/compare-fullstack.sh
+
       - name: Record the reference windows baseline
         run: ci/reference-winbaseline.sh
 
@@ -940,6 +943,7 @@ jobs:
           ci/reference-protocol.sh self-test
           ci/reference-callback.sh self-test
           ci/reference-fixtures.sh self-test
+          ci/compare-fullstack.sh self-test
           ci/reference-winbaseline.sh self-test
           ci/archive-results.sh self-test
 

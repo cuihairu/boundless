@@ -1,0 +1,238 @@
+{
+  "login_wire": {
+    "payload_bytes": "00 00 09 02",
+    "messages": {
+      "login": {
+        "id": 0,
+        "length_style": "VARIABLE_LENGTH_MESSAGE",
+        "length_param": 2
+      },
+      "probe": {
+        "id": 1,
+        "length_style": "FIXED_LENGTH_MESSAGE",
+        "length_param": 0
+      },
+      "challengeResponse": {
+        "id": 2,
+        "length_style": "VARIABLE_LENGTH_MESSAGE",
+        "length_param": 2
+      }
+    }
+  },
+  "callback": {
+    "sites": [
+      {
+        "line": 546,
+        "function": "connect",
+        "stage": "STAGE_INITIAL",
+        "status": "NOT_SET"
+      },
+      {
+        "line": 620,
+        "function": "connect",
+        "stage": "STAGE_LOGIN",
+        "status": "PUBLIC_KEY_LOOKUP_FAILED"
+      },
+      {
+        "line": 653,
+        "function": "connect",
+        "stage": "STAGE_INITIAL",
+        "status": "NOT_SET"
+      },
+      {
+        "line": 699,
+        "function": "startReplayFromFile",
+        "stage": "STAGE_INITIAL",
+        "status": "NOT_SET"
+      },
+      {
+        "line": 765,
+        "function": "startReplayFromStream",
+        "stage": "STAGE_INITIAL",
+        "status": "NOT_SET"
+      },
+      {
+        "line": 993,
+        "function": "onLoggedOn",
+        "stage": "STAGE_LOGIN",
+        "status": "LOGGED_ON"
+      },
+      {
+        "line": 999,
+        "function": "onLoggedOn",
+        "stage": "STAGE_LOGIN",
+        "status": "LOGGED_ON_OFFLINE"
+      },
+      {
+        "line": 1035,
+        "function": "onLogOnFailure",
+        "stage": "STAGE_LOGIN",
+        "status": "runtime"
+      },
+      {
+        "line": 1074,
+        "function": "onBasePlayerCreated",
+        "stage": "STAGE_DATA",
+        "status": "LOGGED_ON"
+      },
+      {
+        "line": 1079,
+        "function": "onBasePlayerCreated",
+        "stage": "STAGE_DATA",
+        "status": "LOGGED_ON_OFFLINE"
+      },
+      {
+        "line": 1102,
+        "function": "disconnected",
+        "stage": "STAGE_DISCONNECTED",
+        "status": "NOT_SET"
+      }
+    ],
+    "runtime_paths": [
+      "online success|onLoggedOn then onBasePlayerCreated|(STAGE_LOGIN,LOGGED_ON,server message) then (STAGE_DATA,LOGGED_ON,'')",
+      "offline success|onLoggedOn then onBasePlayerCreated|(STAGE_LOGIN,LOGGED_ON_OFFLINE,'Single user mode') then (STAGE_DATA,LOGGED_ON_OFFLINE,'')",
+      "failure|onLogOnFailure|(STAGE_LOGIN,<runtime status>,failure message) \u2014 terminal, the callback is cleared after",
+      "early abort|connect / startReplayFrom*|(STAGE_INITIAL,NOT_SET,'') \u2014 already connected or the logon never started",
+      "disconnect|disconnected|(STAGE_DISCONNECTED,NOT_SET,'')"
+    ],
+    "args": "(stage:int, status:int, message:str)"
+  },
+  "db_state": {
+    "logon_mapping": [
+      {
+        "logOnName": "FantasyAccount",
+        "password": "a",
+        "type": "Account",
+        "entityID": "2"
+      }
+    ],
+    "tables": {
+      "Account": {
+        "playerName": "FantasyAccount",
+        "character": "FantasyHero",
+        "databaseID": "2"
+      },
+      "Avatar": {
+        "playerName": "FantasyHero",
+        "prop1": "1",
+        "prop2": "2",
+        "prop3": "3",
+        "position": "0.0 0.0 0.0",
+        "direction": "0.0 0.0 0.0",
+        "spaceID": "1",
+        "databaseID": "1"
+      }
+    }
+  },
+  "entity_defs": {
+    "names": [
+      "Account",
+      "Avatar",
+      "ClientOnly",
+      "Guard",
+      "Space"
+    ],
+    "summary": {
+      "Account": {
+        "properties": {
+          "playerName": {
+            "Type": "STRING",
+            "Flags": "BASE_AND_CLIENT",
+            "Persistent": "true",
+            "Editable": "true"
+          },
+          "character": {
+            "Type": "STRING",
+            "Flags": "BASE",
+            "Persistent": "true",
+            "Editable": "true"
+          }
+        },
+        "client_methods": [
+          "chatMessage"
+        ],
+        "cell_methods": [],
+        "base_methods": [],
+        "identifier": null
+      },
+      "Avatar": {
+        "properties": {
+          "playerName": {
+            "Type": "STRING",
+            "Flags": "ALL_CLIENTS",
+            "Persistent": "true",
+            "Editable": "true",
+            "Identifier": "true"
+          },
+          "prop1": {
+            "Type": "INT32",
+            "Flags": "BASE_AND_CLIENT",
+            "Default": "1"
+          },
+          "prop2": {
+            "Type": "INT16",
+            "Flags": "ALL_CLIENTS",
+            "Default": "2",
+            "Persistent": "true"
+          },
+          "prop3": {
+            "Type": "INT8",
+            "Flags": "OTHER_CLIENTS",
+            "Default": "3"
+          }
+        },
+        "client_methods": [
+          "cellTick",
+          "fromCell"
+        ],
+        "cell_methods": [],
+        "base_methods": [
+          "logOff"
+        ],
+        "identifier": null
+      },
+      "ClientOnly": {
+        "properties": {
+          "name": {
+            "Type": "STRING",
+            "Flags": "ALL_CLIENTS",
+            "Editable": "true"
+          },
+          "prop1": {
+            "Type": "INT32",
+            "Flags": "OWN_CLIENT",
+            "Default": "1"
+          }
+        },
+        "client_methods": [
+          "method1"
+        ],
+        "cell_methods": [],
+        "base_methods": [],
+        "identifier": null
+      },
+      "Guard": {
+        "properties": {
+          "name": {
+            "Type": "STRING",
+            "Flags": "ALL_CLIENTS",
+            "Editable": "true"
+          }
+        },
+        "client_methods": [],
+        "cell_methods": [],
+        "base_methods": [],
+        "identifier": null
+      },
+      "Space": {
+        "properties": {},
+        "client_methods": [],
+        "cell_methods": [],
+        "base_methods": [],
+        "identifier": null
+      }
+    }
+  },
+  "commit": "a5270be8a3432b81c4f2cf75fe40e353c879946f",
+  "source": "tests/baseline/{protocol-format,callback-sequence,fixture-database,fixture-entity}.json"
+}
