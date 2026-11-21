@@ -3,6 +3,7 @@
 pub mod endpoint;
 pub mod exposed_message_range;
 pub mod interface_element;
+pub mod message_frame;
 pub mod misc;
 #[cfg(target_os = "linux")]
 pub mod network_interface;
