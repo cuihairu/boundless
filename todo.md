@@ -1150,6 +1150,7 @@
   - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [ ] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。
 - [ ] **BW-15-01-07 校验网络地址与断网行为**。**验收** IPv4/IPv6 和失联状态可复测。
+  - 证据（部分，未勾）：IPv4 侧与失联侧**原语层已齐**——地址校验 `inet_aton`/`host_by_name`/`host_by_addr`（`socket.rs`，含点分十进制与主机名区分测试）；断网 `Endpoint::enable_error_queue`+`read_error_queue`（04d4133 起在 macOS 亦可编译，见下），**失联可复测实测**：`endpoint.rs::the_error_queue_reports_a_refused_packet`（无监听端口发包→ICMP unreachable 入错误队列→`ECONNREFUSED`+offender 回读→队列排空）。**待决（用户拍板）**：IPv6。参考 BigWorld 的 `Address`/`Endpoint` 是 IPv4-only（`uint32 ip`+`sockaddr_in`，`socket.rs` 文档已注明"the reference only builds IPv4 addresses"）；若本移植要支持 IPv6 则属**参考外偏差**，需改 `Address` 为双族枚举并波及 `endpoint`/`packet_receiver`/`packet`（`sockaddr_in6`、`AF_INET6`），改动面大且与在飞文件重叠。
 
 #### BW-15-02 Linux
 
