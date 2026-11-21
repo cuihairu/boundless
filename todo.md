@@ -332,7 +332,10 @@
   - 证据：`crates/mercury/src/message_frame.rs` 帧格式 `[id][长度字段][负载]`：定长帧无长度字段（负载必须等于 `lengthParam`），变长帧长度字段 `lengthParam` 字节宽。**BigWorld 网络上用 little-endian**（`binary_stream.ipp`：「uses little-endian over the network, not big-endian which is the standard network byte order」），故 1/2/4 宽走 `BW_HTONS`/`BW_HTONL` 恒等、3 宽走 `BW_PACK3`（低三字节小端），移植后统一小端。
   - 黄金比对：宽 2 长 258 → 字节 `02 01`（`test_tcp_bundle.cpp` VAR2）、宽 3 长 300=0x012C → `2C 01 00`（`TCPBundle_variableLengthWidth3Pack3`）、定长空体 `probe` 帧=单字节 id、`disconnect` 定长 4 逐字节一致。超限（宽 1 长 300、宽 2 长 0xffff）返回 `Oversize`——参考的 0xff 逃逸+32 位 stash 属多包 Bundle（BW-02-03），单帧路径显式报错。
   - 测试：`a_variable_length_is_little_endian_at_its_width`、`a_width_3_length_is_pack3_little_endian`、`a_fixed_empty_frame_is_just_the_identifier`、`a_fixed_frame_carries_the_body_verbatim`、`the_round_trip_preserves_arbitrary_bodies`、`an_oversize_body_is_rejected_on_encode`、`an_escape_marker_is_reported_on_decode`、`a_body_shorter_than_its_length_is_rejected`、`unsupported_widths_and_styles_are_rejected`。mercury 107 测试绿，workspace 全绿。
-- [ ] **BW-02-02-03 实现请求关联与应答派发**。**验收** 交错请求各自收到正确响应。
+- [x] **BW-02-02-03 实现请求关联与应答派发**。**验收** 交错请求各自收到正确响应。（commit fc074ca）
+  - 证据：`crates/mercury/src/request_manager.rs` 移植 `RequestManager`：`addReplyOrder` 登记 pending 表（`BTreeMap<ReplyId, PendingRequest>`）、`getNextReplyID` 分配并回绕、`handleMessage` 按应答 ID 派发。应答帧体 `[reply_id u32 小端][负载]`，经 BW-02-02-02 的 `body_from_frame` 用 `InterfaceElement::reply()`（id 0xFF、变长宽 4）解出。
+  - 黄金比对：回复 ID 上限 `REPLY_ID_MAX = 1000000`（`misc.hpp:112`），分配器过界回绕到 1（0 永不发出）；种子 `(timestamp()%100000)+10101` 改为由构造参数给定以便测试钉住。未知/已超时 ID 按参考打 WARNING 后丢弃（`DispatchOutcome::UnknownReply`）。
+  - 测试：`interleaved_requests_each_receive_their_own_reply`（三请求乱序应答各自得到正确负载，验收主证）、`the_allocator_wraps_at_reply_id_max`、`a_second_reply_for_the_same_id_is_unknown`、`a_reply_frame_is_routed_by_its_wire_reply_id`、`a_reply_frame_with_a_short_body_is_corrupted`。mercury 114 测试绿，workspace 全绿。
 - [ ] **BW-02-02-04 实现请求超时和取消**。**验收** 回调恰好一次并释放挂起状态。
 - [ ] **BW-02-02-05 注册处理器与校验**。**验收** 未知消息与长度错误结果吻合。
 
