@@ -9,20 +9,31 @@
 //! - `SIGQUIT` is special: its single handler runs *immediately* from the
 //!   signal context (the machined watchdog path -- the app may be about
 //!   to die), a second registration asserts;
-//! - `SIGRTMIN..=SIGRTMAX` render as the literal `"SIGRTxxx"`;
+//! - `SIGRTMIN..=SIGRTMAX` render as the literal `"SIGRTxxx"` (Linux
+//!   only: macOS has no real-time signal range to render);
 //! - removing the last handler of a signal reverts its disposition to
 //!   `SIG_DFL`, and dropping the processor resets every signal it still
 //!   handles;
 //! - `dispatch()` blocks all signals for its duration (the `Blocker`).
 //!
 //! Deviations: the pending set is an `AtomicU32` over signals 1..=31
-//! (`SIGMAX == SIGSYS`) instead of a `sigset_t` -- same async-safe
+//! (`SIGMAX` is `SIGSYS` on Linux, `SIGUSR2` on macOS -- both are the
+//! highest standard signal) instead of a `sigset_t` -- same async-safe
 //! mutation contract, real-time signals are simply not tracked (nothing
 //! in the server apps registers one). The `SIGQUIT` immediate slot takes
 //! a `Send + Sync` callback instead of re-entering the shared handler
 //! through a `RefCell` (the reference dereferences the handler pointer
 //! straight from signal context; its own contract is "must not block or
 //! allocate", which the callback keeps).
+//!
+//! Portability: the wait is `sigwaitinfo` on Linux and `sigwait` on
+//! macOS (the libc crate exposes only the latter for the BSD family;
+//! both wrap the same POSIX wait and both can be interrupted by
+//! `EINTR`). The reference `SIGNAL_NAMES` table is Linux-numbered, so
+//! macOS keeps its own table (signal numbers differ: `SIGUSR1`/`SIGUSR2`
+//! are 30/31 and there is a `SIGEMT`/`SIGINFO` but no `SIGSTKFLT`/
+//! `SIGPWR`). The quit signals the server uses -- `SIGTERM`, `SIGINT`,
+//! `SIGQUIT` -- carry the same numbers on both platforms.
 
 use std::cell::RefCell;
 use std::ptr;
@@ -33,10 +44,21 @@ use std::sync::{Arc, Mutex};
 /// `SIGMIN`.
 pub const SIGMIN: i32 = 1;
 
-/// `SIGMAX` (= `SIGSYS` on POSIX).
+/// `SIGMAX`: the highest standard signal, which bounds the `AtomicU32`
+/// masks (both platforms number their highest signal 31, so the masks
+/// stay identical; only the table below differs).
+#[cfg(target_os = "linux")]
 pub const SIGMAX: i32 = libc::SIGSYS;
+#[cfg(target_os = "macos")]
+pub const SIGMAX: i32 = libc::SIGUSR2;
 
 /// The `SIGNAL_NAMES` table, `SIGMIN..=SIGMAX` (index 0 unused).
+///
+/// The reference table is Linux-numbered; macOS numbers several signals
+/// differently (`SIGUSR1`/`SIGUSR2` are 30/31, `SIGBUS` is 10, and
+/// `SIGEMT`/`SIGINFO` replace the Linux `SIGSTKFLT`/`SIGPWR` slots), so
+/// each platform carries its own. Index `n` is signal number `n`.
+#[cfg(target_os = "linux")]
 pub const SIGNAL_NAMES: [&str; 32] = [
     "",
     "SIGHUP",
@@ -70,6 +92,46 @@ pub const SIGNAL_NAMES: [&str; 32] = [
     "SIGIO",
     "SIGPWR",
     "SIGSYS",
+];
+
+/// The macOS-numbered table: `SIGEMT` at 7, `SIGBUS` at 10, `SIGSYS` at
+/// 12, `SIGURG` at 16, `SIGCHLD` at 20, `SIGIO` at 23, `SIGINFO` at 29,
+/// `SIGUSR1` at 30, `SIGUSR2` at 31. The signal *names* are the same;
+/// only the numbers move.
+#[cfg(target_os = "macos")]
+pub const SIGNAL_NAMES: [&str; 32] = [
+    "",
+    "SIGHUP",
+    "SIGINT",
+    "SIGQUIT",
+    "SIGILL",
+    "SIGTRAP",
+    "SIGABRT",
+    "SIGEMT",
+    "SIGFPE",
+    "SIGKILL",
+    "SIGBUS",
+    "SIGSEGV",
+    "SIGSYS",
+    "SIGPIPE",
+    "SIGALRM",
+    "SIGTERM",
+    "SIGURG",
+    "SIGSTOP",
+    "SIGTSTP",
+    "SIGCONT",
+    "SIGCHLD",
+    "SIGTTIN",
+    "SIGTTOU",
+    "SIGIO",
+    "SIGXCPU",
+    "SIGXFSZ",
+    "SIGVTALRM",
+    "SIGPROF",
+    "SIGWINCH",
+    "SIGINFO",
+    "SIGUSR1",
+    "SIGUSR2",
 ];
 
 /// The pending set: bit `sig` set means signal `sig` arrived and has not
@@ -477,22 +539,50 @@ impl SignalProcessor {
         }
     }
 
-    /// `waitForSignals`: `sigwaitinfo` until one of `set` arrives
-    /// (retrying on `EINTR`), then dispatch it. Only
-    /// `TableSynchroniser::run` uses this in the reference.
+    /// `waitForSignals`: wait until one of `set` arrives (retrying on
+    /// `EINTR`), then dispatch it. Only `TableSynchroniser::run` uses
+    /// this in the reference.
     pub fn wait_for_signals(&mut self, set: &Set) -> i32 {
-        let mut sig_num =
-            unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
-        while sig_num < 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
-        {
-            sig_num =
-                unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
+        // `EINTR` is the only interruption worth retrying: a signal
+        // outside `set` reached the thread while it waited.
+        let mut sig_num = wait_one(set);
+        while sig_num == -libc::EINTR {
+            sig_num = wait_one(set);
         }
         if sig_num >= 0 {
             self.dispatch_signal(sig_num);
         }
         sig_num
+    }
+}
+
+/// Block until one signal in `set` arrives and return it; a negative
+/// result means the wait failed (the negation of the error, so `EINTR`
+/// reads as `-EINTR`).
+///
+/// `sigwaitinfo` (Linux) hands back the signal number and reports
+/// failures through `errno`; `sigwait` (macOS, and the libc crate's
+/// spelling for the rest of the BSD family) hands it back through an
+/// out-parameter and *returns* the error itself, so nothing is in
+/// `errno` to read. Both block until a member of `set` arrives, which is
+/// the POSIX contract the reference relies on.
+fn wait_one(set: &Set) -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        let sig_num = unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
+        if sig_num >= 0 {
+            sig_num
+        } else {
+            -std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EINTR)
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut sig_num: libc::c_int = 0;
+        let rc = unsafe { libc::sigwait(set.raw(), &mut sig_num) };
+        if rc == 0 { sig_num } else { -rc }
     }
 }
 
@@ -513,9 +603,11 @@ impl Drop for SignalProcessor {
 
 /// `SignalProcessor::signalNumberToString`.
 pub fn signal_number_to_string(sig_num: i32) -> &'static str {
-    // SIGRTMIN/SIGRTMAX are function calls into glibc.
-    let (sig_rtmin, sig_rtmax) = (libc::SIGRTMIN(), libc::SIGRTMAX());
-    if (sig_rtmin..=sig_rtmax).contains(&sig_num) {
+    // glibc's real-time range renders as one literal. `SIGRTMIN`/
+    // `SIGRTMAX` are calls into glibc and macOS has no real-time range,
+    // so the arm is Linux-only.
+    #[cfg(target_os = "linux")]
+    if (libc::SIGRTMIN()..=libc::SIGRTMAX()).contains(&sig_num) {
         return "SIGRTxxx";
     }
     assert!((SIGMIN..=SIGMAX).contains(&sig_num) && sig_num != 0);
@@ -560,8 +652,10 @@ mod tests {
         })))
     }
 
-    /// `signalNumberToString`: the fixed table, the real-time range and
-    /// the out-of-range rejection.
+    /// `signalNumberToString`: the fixed table and the out-of-range
+    /// rejection. The quit signals carry the same numbers on every
+    /// platform, so those names are checked everywhere; the real-time
+    /// range and the `SIGMAX` sentinel are Linux-specific.
     #[test]
     fn signal_names_cover_the_reference_table() {
         let _guard = disposition_guard();
@@ -570,10 +664,21 @@ mod tests {
         assert_eq!(signal_number_to_string(libc::SIGQUIT), "SIGQUIT");
         assert_eq!(signal_number_to_string(libc::SIGUSR1), "SIGUSR1");
         assert_eq!(signal_number_to_string(libc::SIGSYS), "SIGSYS");
-        let (sig_rtmin, sig_rtmax) = (libc::SIGRTMIN(), libc::SIGRTMAX());
-        assert_eq!(signal_number_to_string(sig_rtmin), "SIGRTxxx");
-        assert_eq!(signal_number_to_string(sig_rtmax), "SIGRTxxx");
-        assert_eq!(SIGMAX, libc::SIGSYS);
+        #[cfg(target_os = "linux")]
+        {
+            let (sig_rtmin, sig_rtmax) = (libc::SIGRTMIN(), libc::SIGRTMAX());
+            assert_eq!(signal_number_to_string(sig_rtmin), "SIGRTxxx");
+            assert_eq!(signal_number_to_string(sig_rtmax), "SIGRTxxx");
+            assert_eq!(SIGMAX, libc::SIGSYS);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // The macOS table numbers SIGEMT/SIGINFO and reaches the
+            // highest signal at SIGUSR2.
+            assert_eq!(signal_number_to_string(libc::SIGEMT), "SIGEMT");
+            assert_eq!(signal_number_to_string(libc::SIGINFO), "SIGINFO");
+            assert_eq!(SIGMAX, libc::SIGUSR2);
+        }
     }
 
     /// `Signal::Set`: EMPTY/FULL initialisers, per-signal set/clear,
