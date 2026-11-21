@@ -1,0 +1,305 @@
+{
+  "face": "reference entity definitions",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "a5270be8a3432b81c4f2cf75fe40e353c879946f",
+  "generator": "programming/bigworld/scripts/generate-fantasydemo-assets.py",
+  "generator_sha256": "625dc3f5dd5d8c29d920d51d85e637ea78865d224fba187472f52abe1f7c35d8",
+  "sets": [
+    {
+      "set": "fantasydemo",
+      "files": [
+        {
+          "path": "programming/fantasydemo/res/scripts/entity_defs/Account.def",
+          "size": 709,
+          "sha256": "975fd92c8d6d86509cb8943b19fe6890aa7ce54cdfb80280303ad08e802898bc"
+        },
+        {
+          "path": "programming/fantasydemo/res/scripts/entity_defs/Avatar.def",
+          "size": 1029,
+          "sha256": "e35472f0279ff43da1c9bbcb057bf3cb0a16f43d803a81c70031da69b1fa50fa"
+        },
+        {
+          "path": "programming/fantasydemo/res/scripts/entity_defs/ClientOnly.def",
+          "size": 613,
+          "sha256": "b218f560026247648c575181f5f4913b3377f0161746ba5aca5f3044ae65f615"
+        },
+        {
+          "path": "programming/fantasydemo/res/scripts/entity_defs/Guard.def",
+          "size": 474,
+          "sha256": "4810bb14b2a95669caaa3013923d8c53dc21132830b0eecc09e6bd7d67fe04ac"
+        },
+        {
+          "path": "programming/fantasydemo/res/scripts/entity_defs/Space.def",
+          "size": 286,
+          "sha256": "1521697d8afae0e12a48f2e49ebdcf1e489952b2ee05d221a9b209af87735800"
+        },
+        {
+          "path": "programming/fantasydemo/res/scripts/entity_defs/alias.xml",
+          "size": 394,
+          "sha256": "e3ebeb7557bd772b5160c866b9e480ce06484edc1c9d4c134f95c8bf9b032cc7"
+        }
+      ],
+      "entities": {
+        "Account": {
+          "properties": {
+            "playerName": {
+              "Type": "STRING",
+              "Flags": "BASE_AND_CLIENT",
+              "Persistent": "true",
+              "Editable": "true"
+            },
+            "character": {
+              "Type": "STRING",
+              "Flags": "BASE",
+              "Persistent": "true",
+              "Editable": "true"
+            }
+          },
+          "client_methods": [
+            "chatMessage"
+          ],
+          "cell_methods": [],
+          "base_methods": [],
+          "identifier": null
+        },
+        "Avatar": {
+          "properties": {
+            "playerName": {
+              "Type": "STRING",
+              "Flags": "ALL_CLIENTS",
+              "Persistent": "true",
+              "Editable": "true",
+              "Identifier": "true"
+            },
+            "prop1": {
+              "Type": "INT32",
+              "Flags": "BASE_AND_CLIENT",
+              "Default": "1"
+            },
+            "prop2": {
+              "Type": "INT16",
+              "Flags": "ALL_CLIENTS",
+              "Default": "2",
+              "Persistent": "true"
+            },
+            "prop3": {
+              "Type": "INT8",
+              "Flags": "OTHER_CLIENTS",
+              "Default": "3"
+            }
+          },
+          "client_methods": [
+            "cellTick",
+            "fromCell"
+          ],
+          "cell_methods": [],
+          "base_methods": [
+            "logOff"
+          ],
+          "identifier": null
+        },
+        "ClientOnly": {
+          "properties": {
+            "name": {
+              "Type": "STRING",
+              "Flags": "ALL_CLIENTS",
+              "Editable": "true"
+            },
+            "prop1": {
+              "Type": "INT32",
+              "Flags": "OWN_CLIENT",
+              "Default": "1"
+            }
+          },
+          "client_methods": [
+            "method1"
+          ],
+          "cell_methods": [],
+          "base_methods": [],
+          "identifier": null
+        },
+        "Guard": {
+          "properties": {
+            "name": {
+              "Type": "STRING",
+              "Flags": "ALL_CLIENTS",
+              "Editable": "true"
+            }
+          },
+          "client_methods": [],
+          "cell_methods": [],
+          "base_methods": [],
+          "identifier": null
+        },
+        "Space": {
+          "properties": {},
+          "client_methods": [],
+          "cell_methods": [],
+          "base_methods": [],
+          "identifier": null
+        }
+      }
+    },
+    {
+      "set": "client_integration",
+      "files": [
+        {
+          "path": "programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Account.def",
+          "size": 537,
+          "sha256": "5158a0b45a71f44a77e593860f2b7b5ed01ac1c0205fa17eedff50d1bcdb0dae"
+        },
+        {
+          "path": "programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/ClientAvatar.def",
+          "size": 1530,
+          "sha256": "d038aad9c3474a41decd9d4d38f716753292e2001fe700c10fd7da3c6f4d2493"
+        },
+        {
+          "path": "programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/ClientOnly.def",
+          "size": 706,
+          "sha256": "e38e6189cd4249c36ca7bc7c4138aa496f1a8517924992d06f139c17391107a7"
+        },
+        {
+          "path": "programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Guard.def",
+          "size": 216,
+          "sha256": "72963aaf90473a88c98dce3c3da4869e40bcdc400dd7eb38bd49f8aefccbb0c5"
+        },
+        {
+          "path": "programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Space.def",
+          "size": 144,
+          "sha256": "8dc0224eaf00fa1126788366f6b52dde02e2bcf1f9350cdea16a47f60f52dbf5"
+        },
+        {
+          "path": "programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/alias.xml",
+          "size": 404,
+          "sha256": "776bcaf4710b7e804a4e599738dd53373f0a5c9398a1318fa9ff4df7eab9c843"
+        }
+      ],
+      "entities": {
+        "Account": {
+          "properties": {
+            "playerName": {
+              "Type": "STRING",
+              "Flags": "BASE_AND_CLIENT",
+              "Persistent": "true",
+              "Editable": "true"
+            },
+            "character": {
+              "Type": "STRING",
+              "Flags": "BASE",
+              "Persistent": "true",
+              "Editable": "true"
+            }
+          },
+          "client_methods": [
+            "chatMessage"
+          ],
+          "cell_methods": [],
+          "base_methods": [],
+          "identifier": null
+        },
+        "ClientAvatar": {
+          "properties": {
+            "playerName": {
+              "Type": "STRING",
+              "Flags": "ALL_CLIENTS",
+              "Persistent": "true",
+              "Editable": "true",
+              "Identifier": "true"
+            },
+            "prop1": {
+              "Type": "INT32",
+              "Flags": "BASE_AND_CLIENT",
+              "Default": "1"
+            },
+            "prop2": {
+              "Type": "INT16",
+              "Flags": "ALL_CLIENTS",
+              "Default": "2",
+              "Persistent": "true"
+            },
+            "prop3": {
+              "Type": "INT8",
+              "Flags": "OTHER_CLIENTS",
+              "Default": "3"
+            },
+            "prop4": {
+              "Type": "INT8",
+              "Flags": "CELL_PRIVATE",
+              "Default": "4"
+            },
+            "prop5": {
+              "Type": "USER_TYPE",
+              "Flags": "ALL_CLIENTS",
+              "Persistent": "true"
+            },
+            "_timer1": {
+              "Type": "INT32",
+              "Flags": "CELL_PRIVATE"
+            },
+            "_timer2": {
+              "Type": "INT32",
+              "Flags": "CELL_PRIVATE"
+            },
+            "_timerTick": {
+              "Type": "INT32",
+              "Flags": "CELL_PRIVATE"
+            }
+          },
+          "client_methods": [
+            "cellTick",
+            "fromCell"
+          ],
+          "cell_methods": [],
+          "base_methods": [
+            "logOff"
+          ],
+          "identifier": null
+        },
+        "ClientOnly": {
+          "properties": {
+            "name": {
+              "Type": "STRING",
+              "Flags": "ALL_CLIENTS",
+              "Editable": "true"
+            },
+            "prop1": {
+              "Type": "INT32",
+              "Flags": "OWN_CLIENT",
+              "Default": "1"
+            },
+            "prop2": {
+              "Type": "INT16",
+              "Flags": "OWN_CLIENT",
+              "Default": "2"
+            },
+            "prop3": {
+              "Type": "INT8",
+              "Flags": "OWN_CLIENT",
+              "Default": "3"
+            }
+          },
+          "client_methods": [
+            "method1"
+          ],
+          "cell_methods": [],
+          "base_methods": [],
+          "identifier": null
+        },
+        "Guard": {
+          "properties": {},
+          "client_methods": [],
+          "cell_methods": [],
+          "base_methods": [],
+          "identifier": null
+        },
+        "Space": {
+          "properties": {},
+          "client_methods": [],
+          "cell_methods": [],
+          "base_methods": [],
+          "identifier": null
+        }
+      }
+    }
+  ]
+}

@@ -167,6 +167,7 @@ main() {
             | ci/reference-cluster.sh | ci/reference-login.sh \
             | ci/reference-protocol.sh | ci/reference-protocol.py \
             | ci/reference-callback.sh | ci/reference-callback.py \
+            | ci/reference-fixtures.sh | ci/reference-fixtures.py \
             | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 
