@@ -2099,7 +2099,7 @@ pub fn answer_query(
         }
         MachineGuardMessage::ProcessStats(query) => {
             let entry = snapshot.registry.find(&query.process);
-            let mut process = match entry {
+            let process = match entry {
                 Some(entry) => {
                     // The reference answers each matching process with the
                     // cpu and mem it last collected for it.

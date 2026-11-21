@@ -158,8 +158,10 @@ dependencies = [
 name = "server-runtime"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "foundation",
  "libc",
+ "platform",
  "resources",
 ]
 

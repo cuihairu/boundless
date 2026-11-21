@@ -32,7 +32,7 @@ foundation = { path = "crates/foundation" }
 platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
 # mercury = { path = "crates/mercury" }  # re-add at BW-02
-# contracts = { path = "crates/contracts" }  # re-add when a role runtime consumes it
+contracts = { path = "crates/contracts" }
 # entitydef = { path = "crates/entitydef" }  # re-add at BW-02+
 python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
