@@ -27,7 +27,7 @@ pub mod path;
 /// `epoll` primitives for the Mercury event poller. Linux only: the
 /// reference compiles `EPoller` only when `HAS_EPOLL` is defined
 /// (`__linux__ && !EMSCRIPTEN`).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod poller;
 
 /// The self-pipe wakeup that makes an idle event loop interruptible
