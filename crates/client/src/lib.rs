@@ -21,6 +21,7 @@
 //! (feature `winit-backend`).
 
 pub mod device;
+pub mod focus;
 pub mod frame;
 pub mod render;
 pub mod window_mode;

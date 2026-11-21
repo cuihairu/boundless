@@ -14,6 +14,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::device::{DeviceConfig, DeviceLifecycle, DeviceStats};
+use crate::focus::FocusState;
 use crate::frame::{FrameLoop, FramePhase, PhaseHook};
 use crate::render::scene::TestScene;
 use crate::window_mode::{SurfaceAction, WindowMode, surface_action};
@@ -45,6 +46,12 @@ pub struct AppOutcome {
     /// The distinct frame phases seen, in first-occurrence order —
     /// `[Tick, UpdateAnimations, Draw]` proves update ran before draw.
     pub frame_phases: Vec<FramePhase>,
+    /// Focus transitions seen (BW-11-01-04, the `WM_ACTIVATE` equivalents).
+    pub focus_transitions: u32,
+    /// The focus state at exit.
+    pub focused: bool,
+    /// Whether the OS cursor is shown at exit (hidden while focused).
+    pub cursor_visible: bool,
     /// Why the loop stopped.
     pub exit_reason: ExitReason,
 }
@@ -74,6 +81,8 @@ pub struct ClientApp {
     device: DeviceLifecycle,
     scene: TestScene,
     frame_loop: FrameLoop,
+    focus: FocusState,
+    focus_transitions: u32,
     mode: WindowMode,
     frames: u32,
     mode_switches: u32,
@@ -102,6 +111,8 @@ impl ClientApp {
             device: DeviceLifecycle::new(),
             scene: TestScene::new(),
             frame_loop,
+            focus: FocusState::focused_windowed(),
+            focus_transitions: 0,
             mode: WindowMode::Windowed,
             frames: 0,
             mode_switches: 0,
@@ -137,14 +148,11 @@ impl ClientApp {
         }
     }
 
-    /// Advance to the next presentation mode in the cycle windowed →
-    /// borderless → exclusive → windowed.
-    fn advance_mode(&mut self) {
-        let next = match self.mode {
-            WindowMode::Windowed => WindowMode::Borderless,
-            WindowMode::Borderless => WindowMode::Exclusive,
-            WindowMode::Exclusive => WindowMode::Windowed,
-        };
+    /// Switch to a presentation mode (the reference `changeMode`): apply the
+    /// surface action, rebuild the *same* device in place with the new
+    /// presentation parameters (BW-11-01-01's no-leak property + BW-11-01-02's
+    /// rebuild), and record.
+    fn set_mode(&mut self, next: WindowMode) {
         if let Some(w) = &self.window {
             match surface_action(self.mode, next) {
                 SurfaceAction::Noop => {}
@@ -168,9 +176,6 @@ impl ClientApp {
                 }
             }
         }
-        // A mode switch resets the *same* device in place with the new
-        // presentation parameters (BW-11-01-01's no-leak property + BW-11-01-02's
-        // rebuild): the device object is never re-created.
         let cfg = self.device_config();
         self.device.on_mode_switch(&cfg);
         self.mode = next;
@@ -182,6 +187,17 @@ impl ClientApp {
         }
     }
 
+    /// Advance to the next presentation mode in the cycle windowed →
+    /// borderless → exclusive → windowed.
+    fn advance_mode(&mut self) {
+        let next = match self.mode {
+            WindowMode::Windowed => WindowMode::Borderless,
+            WindowMode::Borderless => WindowMode::Exclusive,
+            WindowMode::Exclusive => WindowMode::Windowed,
+        };
+        self.set_mode(next);
+    }
+
     fn finish(&mut self, reason: ExitReason, el: &ActiveEventLoop) {
         self.device.release();
         self.outcome = Some(AppOutcome {
@@ -191,6 +207,9 @@ impl ClientApp {
             mode_switches: self.mode_switches,
             presented: self.presented,
             frame_phases: self.frame_loop.phases_seen(),
+            focus_transitions: self.focus_transitions,
+            focused: self.focus.focused,
+            cursor_visible: self.focus.cursor_visible,
             exit_reason: reason,
         });
         el.exit();
@@ -221,6 +240,13 @@ impl ApplicationHandler for ClientApp {
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.finish(ExitReason::CloseRequested, el),
+            // BW-11-01-04: the WM_ACTIVATE equivalent — a focus change drives
+            // input enablement, cursor visibility and the frame's active path
+            // (`App::handleSetFocus`, `app.cpp:2674`).
+            WindowEvent::Focused(has_focus) => {
+                self.focus.set_focus(has_focus);
+                self.focus_transitions += 1;
+            }
             WindowEvent::RedrawRequested => {
                 self.frames += 1;
                 if self.config.cycle_every > 0
@@ -238,7 +264,9 @@ impl ApplicationHandler for ClientApp {
                     .device_mut()
                     .map(|d| d.check_device())
                     .unwrap_or(false);
-                let log = self.frame_loop.run_frame(true, device_ok);
+                let log = self
+                    .frame_loop
+                    .run_frame(self.focus.frame_active, device_ok);
                 if log.phases.contains(&FramePhase::Draw)
                     && let Some(device) = self.device.device_mut()
                 {
@@ -329,14 +357,40 @@ mod tests {
         );
 
         // BW-11-01-03: update ran before draw, in the reference's phase order.
+        // A no-WM X server (xvfb) may deliver `Focused(false)` before the
+        // window gains focus, so an early frame legitimately ran `inactiveTick`
+        // (`app.cpp:1460`); the focused path must still be canonical:
+        // tick → updateAnimations → draw.
+        let active_order: Vec<_> = outcome
+            .frame_phases
+            .iter()
+            .filter_map(|p| p.active_index())
+            .collect();
         assert_eq!(
-            outcome.frame_phases,
-            vec![
-                FramePhase::Tick,
-                FramePhase::UpdateAnimations,
-                FramePhase::Draw
-            ],
-            "the frame ran tick → updateAnimations → draw"
+            active_order,
+            vec![0, 1, 2],
+            "active frames ran tick → updateAnimations → draw"
+        );
+        assert!(
+            outcome.frame_phases.contains(&FramePhase::Tick),
+            "the update phase ran"
+        );
+        assert!(
+            outcome.frame_phases.contains(&FramePhase::Draw),
+            "the draw phase ran"
+        );
+
+        // BW-11-01-04: the window received focus events (winit's
+        // `Focused(bool)` is the WM_ACTIVATE equivalent), and the cursor state
+        // follows the baseline: shown iff unfocused
+        // (`restoreCursor(!state)`, `app.cpp:2692`).
+        assert!(
+            outcome.focus_transitions >= 1,
+            "the window saw a focus event"
+        );
+        assert_eq!(
+            outcome.cursor_visible, !outcome.focused,
+            "cursor visible iff unfocused"
         );
     }
 }
