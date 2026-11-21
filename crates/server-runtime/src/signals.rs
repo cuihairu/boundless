@@ -719,6 +719,14 @@ mod tests {
         // the regular drain too (nobody regular ever registers for it).
         assert_eq!(fired.load(Ordering::SeqCst), 1);
 
+        // Drain the SIGQUIT bit the raise just set: without a dispatch
+        // here the pending bit leaks into the next test that holds the
+        // disposition lock and asserts `PENDING_SIGNALS == 0`, which is
+        // an ordering-dependent flake across the parallel suite.
+        assert_ne!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGQUIT), 0);
+        processor.dispatch();
+        assert_eq!(PENDING_SIGNALS.load(Ordering::Relaxed), 0);
+
         // `clearSignalHandler( SIGQUIT, ... )` drops the slot; a second
         // call finds nothing; the bulk `clearSignalHandlers` path is a
         // no-op on the empty slot.
