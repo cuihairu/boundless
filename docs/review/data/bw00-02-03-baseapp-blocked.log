@@ -1,0 +1,142 @@
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/fantasydemo/res" (from command line).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from command line).
+INFO: [Config] BWConfig::init: Adding server/bw.xml
+INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface
+WARNING: [Network] NetworkInterface::recreateListeningSocket: No address received from machined so binding to all interfaces.
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:55959
+INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Total # loggers on network: 0
+ERROR: [CStdMF] DirectoryWatcher::addChild: tried to replace existing watcher filterThreshold
+INFO: [Config] ---- BaseApp    Version: 14.4.1. Config: hybrid. Built: 23:11:22 Nov 21 2026. UID: 1000. User: cui. PID: 706602 ----
+INFO: [Config] Server coding: Intel(R) Core(TM) i9-10880H CPU @ 2.30GHz x14 with 48207128kB RAM
+INFO: [Config] Resource path (1 of 2): /home/cui/workspaces/BigWorld/programming/fantasydemo/res
+INFO: [Config] Resource path (2 of 2): /home/cui/workspaces/BigWorld/game/res/bigworld
+WARNING: [Config] ServerAppConfig::init: baseApp/createBaseElsewhereThreshold not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: baseApp/backupPeriod not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: baseApp/backupSizeWarningLevel not read from bw.xml chain. Using default (102400)
+WARNING: [Config] ServerAppConfig::init: baseApp/shouldLogBackups not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: baseApp/archiveEmergencyThreshold not read from bw.xml chain. Using default (0.25)
+WARNING: [Config] ServerAppConfig::init: baseApp/sendAuthToClient not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: baseApp/shouldShutDownIfPortUsed not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: baseApp/inactivityTimeout not read from bw.xml chain. Using default (30)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientOverflowLimit not read from bw.xml chain. Using default (1000)
+WARNING: [Config] ServerAppConfig::init: bitsPerSecondToClient not read from bw.xml chain. Using default (20000)
+WARNING: [Config] ServerAppConfig::init: baseApp/backUpUndefinedProperties not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: baseApp/shouldResolveMailBoxes not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: baseApp/warnOnNoDef not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: baseApp/loadSmoothingBias not read from bw.xml chain. Using default (0.01)
+WARNING: [Config] ServerAppConfig::init: baseApp/reservedTickFraction not read from bw.xml chain. Using default (0.05)
+WARNING: [Config] ServerAppConfig::init: baseApp/verboseExternalInterface not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: baseApp/maxExternalSocketProcessingTime not read from bw.xml chain. Using default (-1)
+WARNING: [Config] ServerAppConfig::init: baseApp/sendWindowCallbackThreshold not read from bw.xml chain. Using default (0.5)
+WARNING: [Config] ServerAppConfig::init: baseApp/shouldDelayLookUpSend not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: baseApp/downloadStreaming/bitsPerSecondTotal not read from bw.xml chain. Using default (10000000)
+WARNING: [Config] ServerAppConfig::init: baseApp/downloadStreaming/bitsPerSecondPerClient not read from bw.xml chain. Using default (100000)
+WARNING: [Config] ServerAppConfig::init: baseApp/downloadStreaming/rampUpRate not read from bw.xml chain. Using default (5000)
+WARNING: [Config] ServerAppConfig::init: baseApp/downloadStreaming/backlogLimit not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: baseApp/ids/criticallyLowSize not read from bw.xml chain. Using default (100)
+WARNING: [Config] ServerAppConfig::init: baseApp/ids/lowSize not read from bw.xml chain. Using default (2000)
+WARNING: [Config] ServerAppConfig::init: baseApp/ids/desiredSize not read from bw.xml chain. Using default (2400)
+WARNING: [Config] ServerAppConfig::init: baseApp/ids/highSize not read from bw.xml chain. Using default (3000)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientUpstreamLimits/warnMessagesPerSecond not read from bw.xml chain. Using default (250)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientUpstreamLimits/maxMessagesPerSecond not read from bw.xml chain. Using default (500)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientUpstreamLimits/warnBytesPerSecond not read from bw.xml chain. Using default (20480)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientUpstreamLimits/maxBytesPerSecond not read from bw.xml chain. Using default (40960)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientUpstreamLimits/warnMessagesBuffered not read from bw.xml chain. Using default (500)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientUpstreamLimits/maxMessagesBuffered not read from bw.xml chain. Using default (1000)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientUpstreamLimits/warnBytesBuffered not read from bw.xml chain. Using default (262144)
+WARNING: [Config] ServerAppConfig::init: baseApp/clientUpstreamLimits/maxBytesBuffered not read from bw.xml chain. Using default (524288)
+WARNING: [Config] ServerAppConfig::init: externalLatencyMin not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: externalLatencyMax not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: externalLossRatio not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: externalInterface not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: tcpServerBacklog not read from bw.xml chain. Using default (511)
+WARNING: [Config] ServerAppConfig::init: networkAddressTranslation/localNetMask not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: networkAddressTranslation/externalAddress not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: gameUpdateHertz not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: serverMode not read from bw.xml chain. Using default (standalone)
+WARNING: [Config] ServerAppConfig::init: production not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: timeSyncPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: useDefaultSpace not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxOpenFileDescriptors not read from bw.xml chain. Using default (-1)
+WARNING: [Config] ServerAppConfig::init: channelTimeoutPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: allowInteractiveDebugging not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxSharedDataValueSize not read from bw.xml chain. Using default (10240)
+WARNING: [Config] ServerAppConfig::init: maxMgrRegisterStagger not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: numStartupRetries not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/enabled not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/threshold not read from bw.xml chain. Using default (1.5)
+WARNING: [Config] ServerAppConfig::init: profilerJsonDumpDirectory not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: profilerMaxThreads not read from bw.xml chain. Using default (96)
+INFO: [Config] Configuration options (from server/bw.xml):
+INFO: [Config]   baseApp/createBaseElsewhereThreshold = 0
+INFO: [Config]   baseApp/backupPeriod               = 10
+INFO: [Config]   baseApp/backupSizeWarningLevel     = 102400
+INFO: [Config]   baseApp/shouldLogBackups           = false
+INFO: [Config]   baseApp/archivePeriod              = 0 (default: 100)
+INFO: [Config]   baseApp/archiveEmergencyThreshold  = 0.25
+INFO: [Config]   baseApp/sendAuthToClient           = false
+INFO: [Config]   baseApp/shouldShutDownIfPortUsed   = true
+INFO: [Config]   baseApp/inactivityTimeout          = 30
+INFO: [Config]   baseApp/clientOverflowLimit        = 1000
+INFO: [Config]   bitsPerSecondToClient              = 20000
+INFO: [Config]   baseApp/backUpUndefinedProperties  = false
+INFO: [Config]   baseApp/shouldResolveMailBoxes     = false
+INFO: [Config]   baseApp/warnOnNoDef                = true
+INFO: [Config]   baseApp/loadSmoothingBias          = 0.01
+INFO: [Config]   baseApp/reservedTickFraction       = 0.05
+INFO: [Config]   baseApp/verboseExternalInterface   = false
+INFO: [Config]   baseApp/maxExternalSocketProcessingTime = 0.1 (default: -1)
+INFO: [Config]   baseApp/sendWindowCallbackThreshold = 0.5
+INFO: [Config]   baseApp/shouldDelayLookUpSend      = false
+INFO: [Config]   baseApp/downloadStreaming/bitsPerSecondTotal = 10000000
+INFO: [Config]   baseApp/downloadStreaming/bitsPerSecondPerClient = 100000
+INFO: [Config]   baseApp/downloadStreaming/rampUpRate = 5000
+INFO: [Config]   baseApp/downloadStreaming/backlogLimit = 5
+INFO: [Config]   baseApp/ids/criticallyLowSize      = 100
+INFO: [Config]   baseApp/ids/lowSize                = 2000
+INFO: [Config]   baseApp/ids/desiredSize            = 2400
+INFO: [Config]   baseApp/ids/highSize               = 3000
+INFO: [Config]   baseApp/clientUpstreamLimits/warnMessagesPerSecond = 250
+INFO: [Config]   baseApp/clientUpstreamLimits/maxMessagesPerSecond = 500
+INFO: [Config]   baseApp/clientUpstreamLimits/warnBytesPerSecond = 20480
+INFO: [Config]   baseApp/clientUpstreamLimits/maxBytesPerSecond = 40960
+INFO: [Config]   baseApp/clientUpstreamLimits/warnMessagesBuffered = 500
+INFO: [Config]   baseApp/clientUpstreamLimits/maxMessagesBuffered = 1000
+INFO: [Config]   baseApp/clientUpstreamLimits/warnBytesBuffered = 262144
+INFO: [Config]   baseApp/clientUpstreamLimits/maxBytesBuffered = 524288
+INFO: [Config]   externalLatencyMin                 = 0
+INFO: [Config]   externalLatencyMax                 = 0
+INFO: [Config]   externalLossRatio                  = 0
+INFO: [Config]   externalInterface                  = 
+INFO: [Config]   tcpServerBacklog                   = 511
+INFO: [Config]   networkAddressTranslation/localNetMask = 
+INFO: [Config]   networkAddressTranslation/externalAddress = 
+INFO: [Config]   gameUpdateHertz                    = 10
+INFO: [Config]   personality                        = fantasydemo (default: BWPersonality)
+INFO: [Config]   serverMode                         = standalone
+INFO: [Config]   production                         = true
+INFO: [Config]   timeSyncPeriod                     = 60
+INFO: [Config]   useDefaultSpace                    = false
+INFO: [Config]   maxOpenFileDescriptors             = -1
+INFO: [Config]   channelTimeoutPeriod               = 60
+INFO: [Config]   allowInteractiveDebugging          = false
+INFO: [Config]   maxSharedDataValueSize             = 10240
+INFO: [Config]   maxMgrRegisterStagger              = 0
+INFO: [Config]   numStartupRetries                  = 60
+INFO: [Config]   hitchDetection/enabled             = false
+INFO: [Config]   hitchDetection/threshold           = 1.5
+INFO: [Config]   profilerJsonDumpDirectory          = 
+INFO: [Config]   profilerMaxThreads                 = 96
+TRACE: [CStdMF] ProfilerSystem: 12mb memory used.
+INFO: [Network] NetworkInterface::recreateListeningSocket: bound to all interfaces with default route interface on ens18 ( 192.168.5.188:33051 )
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:33051
+INFO: [Network] TCPServer::initWithPort: Listening on 192.168.5.188:33051
+INFO: [ProcessIP] Internal address = 192.168.5.188:55959
+INFO: [ProcessIP] External address = 192.168.5.188:33051
+INFO: [Server] ServerApp::init: Run from bwmachined = true
+ERROR: No key file server/bigworld.key found.
+Either place your server/bigworld.key file at the root of your resource tree (for
+example bigworld/res/server/bigworld.key) or contact support@bigworldtech.com for a key.
+ERROR: [Server] Failed to initialise BaseApp
