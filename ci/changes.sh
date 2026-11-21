@@ -165,6 +165,7 @@ main() {
         case "$p" in
         tests/baseline/* | ci/reference-baseline.sh | ci/reference-tests.sh \
             | ci/reference-cluster.sh | ci/reference-login.sh \
+            | ci/reference-protocol.sh | ci/reference-protocol.py \
             | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 

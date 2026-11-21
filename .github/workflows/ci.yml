@@ -503,13 +503,15 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # BW-00-02-01..05 — the reference face: the original tree's commit, binary
-  # hashes and stated versions (the baseline), its own unit tests rerun with
-  # list, command and result saved, then the single-machine cluster face —
-  # topology, configuration and the launch gate —, the minimal client login
-  # face — request, callbacks and the capture gate —, and the Windows client
-  # and tools baseline — per-target result or gap — the same way local and
-  # CI run them.
+  # BW-00-02-01..05 and BW-00-04-01 — the reference face: the original tree's
+  # commit, binary hashes and stated versions (the baseline), its own unit
+  # tests rerun with list, command and result saved, then the single-machine
+  # cluster face — topology, configuration and the launch gate —, the minimal
+  # client login face — request, callbacks and the capture gate —, the wire
+  # protocol face — every registered message with its id, length style and
+  # direction, plus the framing those ids use —, and the Windows client and
+  # tools baseline — per-target result or gap — the same way local and CI run
+  # them.
   # A hosted runner has no reference checkout, so the job records the honest
   # SKIP naming the missing tree; the self-test in the harness job proves the
   # collection itself bites, and the durable record lives under
@@ -534,6 +536,9 @@ jobs:
 
       - name: Record the reference login face
         run: ci/reference-login.sh
+
+      - name: Record the reference wire protocol
+        run: ci/reference-protocol.sh
 
       - name: Record the reference windows baseline
         run: ci/reference-winbaseline.sh
@@ -923,6 +928,7 @@ jobs:
           ci/reference-tests.sh self-test
           ci/reference-cluster.sh self-test
           ci/reference-login.sh self-test
+          ci/reference-protocol.sh self-test
           ci/reference-winbaseline.sh self-test
           ci/archive-results.sh self-test
 
