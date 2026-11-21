@@ -13,7 +13,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::device::{DeviceLifecycle, DeviceStats};
+use crate::device::{DeviceConfig, DeviceLifecycle, DeviceStats};
+use crate::render::scene::TestScene;
 use crate::window_mode::{SurfaceAction, WindowMode, surface_action};
 
 /// How the app terminates.
@@ -37,6 +38,9 @@ pub struct AppOutcome {
     pub device_ids: [u64; 3],
     /// Presentation-mode switches performed.
     pub mode_switches: u32,
+    /// Frames presented to the device (BW-11-01-02: the test scene kept
+    /// producing frames across the mode switches / rebuilds).
+    pub presented: u64,
     /// Why the loop stopped.
     pub exit_reason: ExitReason,
 }
@@ -59,13 +63,16 @@ impl Default for RunConfig {
     }
 }
 
-/// The application state. Owns the window and the device lifecycle.
+/// The application state. Owns the window, the test scene and the device
+/// lifecycle.
 pub struct ClientApp {
     window: Option<Window>,
     device: DeviceLifecycle,
+    scene: TestScene,
     mode: WindowMode,
     frames: u32,
     mode_switches: u32,
+    presented: u64,
     device_ids: [u64; 3],
     ids_filled: usize,
     config: RunConfig,
@@ -77,13 +84,31 @@ impl ClientApp {
         Self {
             window: None,
             device: DeviceLifecycle::new(),
+            scene: TestScene::new(),
             mode: WindowMode::Windowed,
             frames: 0,
             mode_switches: 0,
+            presented: 0,
             device_ids: [0; 3],
             ids_filled: 0,
             config,
             outcome: None,
+        }
+    }
+
+    /// The presentation parameters the device renders to: the window size, as
+    /// `fillPresentationParameters` derives the back buffer from it.
+    fn device_config(&self) -> DeviceConfig {
+        let (width, height) = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size())
+            .map(|s| (s.width, s.height))
+            .unwrap_or((640, 480));
+        DeviceConfig {
+            width,
+            height,
+            adapter: 0,
         }
     }
 
@@ -126,8 +151,11 @@ impl ClientApp {
                 }
             }
         }
-        // The device is untouched by a mode switch (the no-leak property).
-        self.device.on_mode_switch();
+        // A mode switch resets the *same* device in place with the new
+        // presentation parameters (BW-11-01-01's no-leak property + BW-11-01-02's
+        // rebuild): the device object is never re-created.
+        let cfg = self.device_config();
+        self.device.on_mode_switch(&cfg);
         self.mode = next;
         self.mode_switches += 1;
         self.record_device();
@@ -144,6 +172,7 @@ impl ClientApp {
             leaked: self.device.leaked(),
             device_ids: self.device_ids,
             mode_switches: self.mode_switches,
+            presented: self.presented,
             exit_reason: reason,
         });
         el.exit();
@@ -159,7 +188,7 @@ impl ApplicationHandler for ClientApp {
             match el.create_window(attrs) {
                 Ok(w) => {
                     self.window = Some(w);
-                    let _ = self.device.ensure_device();
+                    let _ = self.device.ensure_device(self.device_config());
                     self.record_device();
                 }
                 Err(_) => {
@@ -180,6 +209,17 @@ impl ApplicationHandler for ClientApp {
                     && self.frames.is_multiple_of(self.config.cycle_every)
                 {
                     self.advance_mode();
+                }
+                // BW-11-01-02: advance the test scene and present it, but only
+                // when the device is operational (`checkDevice`): a device that
+                // is lost or needs a rebuild must not be drawn to, and
+                // `NotReset` is rebuilt first so frames resume.
+                self.scene.step();
+                if let Some(device) = self.device.device_mut() {
+                    if device.check_device() {
+                        device.present(&self.scene);
+                        self.presented += 1;
+                    }
                 }
                 if self.frames >= self.config.max_frames {
                     self.finish(ExitReason::FrameBudget, el);
@@ -224,9 +264,11 @@ pub fn run(config: RunConfig) -> Result<AppOutcome, Box<dyn std::error::Error>> 
 mod tests {
     use super::*;
 
-    /// The BW-11-01-01 acceptance: window creation, three-mode switching and
-    /// clean exit with no device leak. `#[ignore]`: needs a display — run with
-    /// `xvfb-run cargo test --features winit-backend -p client -- --ignored`.
+    /// The BW-11-01-01/02 acceptance: window creation, three-mode switching
+    /// and clean exit with no device leak, where the test scene keeps
+    /// producing frames across the mode switches (each of which rebuilds the
+    /// device in place). `#[ignore]`: needs a display — run with `xvfb-run
+    /// cargo test --features winit-backend -p client -- --ignored`.
     #[test]
     #[ignore = "needs a display; run under xvfb-run or on a real machine"]
     fn three_mode_switching_does_not_leak_the_device() {
@@ -251,6 +293,15 @@ mod tests {
         assert_eq!(
             outcome.device_ids[1], outcome.device_ids[2],
             "same device across borderless→exclusive"
+        );
+
+        // BW-11-01-02: the test scene kept producing frames, and frames were
+        // presented after every mode switch (each rebuilds the device in
+        // place, so the scene continues to render).
+        assert!(outcome.presented > 0, "frames were produced");
+        assert!(
+            outcome.presented >= u64::from(outcome.mode_switches),
+            "frames continue across the mode switches"
         );
     }
 }

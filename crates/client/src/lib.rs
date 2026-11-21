@@ -1,5 +1,5 @@
-//! BW-11 client application: window creation, presentation-mode switching and
-//! the device lifecycle that must not leak across mode changes.
+//! BW-11 client application: window creation, presentation-mode switching,
+//! device lifecycle and the render device itself.
 //!
 //! The reference client toggles a single `windowed_` flag on the render
 //! context (`lib/moo/render_context.hpp:66`) through
@@ -12,11 +12,16 @@
 //! BW-11-01-01's acceptance (three-mode switching without device leak) is the
 //! property the `device` module enforces: the graphics device is created once
 //! for the app lifetime and a presentation-mode switch only reconfigures the
-//! surface, never re-creates the device. `window_mode` carries the mode model
-//! and the transition policy; `app` binds them to a real window through winit
+//! surface, never re-creates the device. BW-11-01-02 adds the device itself:
+//! it is initialised once (`Device::create`), rebuilt in place on a mode
+//! switch, a resize or a device loss (`Device::rebuild`, a reset of the *same*
+//! object) and presents frames from a test scene (`render`), so frames keep
+//! coming after a rebuild. `window_mode` carries the mode model and the
+//! transition policy; `app` binds them to a real window through winit
 //! (feature `winit-backend`).
 
 pub mod device;
+pub mod render;
 pub mod window_mode;
 
 #[cfg(feature = "winit-backend")]
