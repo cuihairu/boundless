@@ -14,6 +14,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::device::{DeviceConfig, DeviceLifecycle, DeviceStats};
+use crate::frame::{FrameLoop, FramePhase, PhaseHook};
 use crate::render::scene::TestScene;
 use crate::window_mode::{SurfaceAction, WindowMode, surface_action};
 
@@ -27,7 +28,7 @@ pub enum ExitReason {
 }
 
 /// What a run of the client app produced.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AppOutcome {
     /// Device lifetime counters at exit (after the device was released).
     pub stats: DeviceStats,
@@ -41,6 +42,9 @@ pub struct AppOutcome {
     /// Frames presented to the device (BW-11-01-02: the test scene kept
     /// producing frames across the mode switches / rebuilds).
     pub presented: u64,
+    /// The distinct frame phases seen, in first-occurrence order —
+    /// `[Tick, UpdateAnimations, Draw]` proves update ran before draw.
+    pub frame_phases: Vec<FramePhase>,
     /// Why the loop stopped.
     pub exit_reason: ExitReason,
 }
@@ -63,12 +67,13 @@ impl Default for RunConfig {
     }
 }
 
-/// The application state. Owns the window, the test scene and the device
-/// lifecycle.
+/// The application state. Owns the window, the test scene, the frame loop and
+/// the device lifecycle.
 pub struct ClientApp {
     window: Option<Window>,
     device: DeviceLifecycle,
     scene: TestScene,
+    frame_loop: FrameLoop,
     mode: WindowMode,
     frames: u32,
     mode_switches: u32,
@@ -81,10 +86,22 @@ pub struct ClientApp {
 
 impl ClientApp {
     fn new(config: RunConfig) -> Self {
+        let mut frame_loop = FrameLoop::new();
+        // The personality callbacks the reference fires in a frame: the update
+        // phase (`ScriptApp::tick`, `script_app.cpp:143`) and the draw phase.
+        frame_loop.add_hook(PhaseHook {
+            name: "onTick",
+            phase: FramePhase::Tick,
+        });
+        frame_loop.add_hook(PhaseHook {
+            name: "onDrawFrame",
+            phase: FramePhase::Draw,
+        });
         Self {
             window: None,
             device: DeviceLifecycle::new(),
             scene: TestScene::new(),
+            frame_loop,
             mode: WindowMode::Windowed,
             frames: 0,
             mode_switches: 0,
@@ -173,6 +190,7 @@ impl ClientApp {
             device_ids: self.device_ids,
             mode_switches: self.mode_switches,
             presented: self.presented,
+            frame_phases: self.frame_loop.phases_seen(),
             exit_reason: reason,
         });
         el.exit();
@@ -210,16 +228,22 @@ impl ApplicationHandler for ClientApp {
                 {
                     self.advance_mode();
                 }
-                // BW-11-01-02: advance the test scene and present it, but only
-                // when the device is operational (`checkDevice`): a device that
-                // is lost or needs a rebuild must not be drawn to, and
-                // `NotReset` is rebuilt first so frames resume.
+                // BW-11-01-03: run the frame in the reference's phase order —
+                // update (tick) first, then draw, only when the device is
+                // operational (`checkDevice`, `app.cpp:1439`). The update
+                // action advances the test scene; the draw action presents it.
                 self.scene.step();
-                if let Some(device) = self.device.device_mut() {
-                    if device.check_device() {
-                        device.present(&self.scene);
-                        self.presented += 1;
-                    }
+                let device_ok = self
+                    .device
+                    .device_mut()
+                    .map(|d| d.check_device())
+                    .unwrap_or(false);
+                let log = self.frame_loop.run_frame(true, device_ok);
+                if log.phases.contains(&FramePhase::Draw)
+                    && let Some(device) = self.device.device_mut()
+                {
+                    device.present(&self.scene);
+                    self.presented += 1;
                 }
                 if self.frames >= self.config.max_frames {
                     self.finish(ExitReason::FrameBudget, el);
@@ -302,6 +326,17 @@ mod tests {
         assert!(
             outcome.presented >= u64::from(outcome.mode_switches),
             "frames continue across the mode switches"
+        );
+
+        // BW-11-01-03: update ran before draw, in the reference's phase order.
+        assert_eq!(
+            outcome.frame_phases,
+            vec![
+                FramePhase::Tick,
+                FramePhase::UpdateAnimations,
+                FramePhase::Draw
+            ],
+            "the frame ran tick → updateAnimations → draw"
         );
     }
 }
