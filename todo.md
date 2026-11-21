@@ -1143,6 +1143,7 @@
 - [x] **BW-15-01-02 封装单调时钟**。**验收** 单调性及 Tick 单位一致。
   - 证据：crates/platform clock.rs 测试（monotonic 不回退、微秒单位、起点近零）。
 - [ ] **BW-15-01-03 封装进程控制及退出码**。**验收** 三端可正常关服并回收子进程。
+  - 证据（部分，未勾）：`crates/platform/src/process.rs`（d25d90a）——`Child`（`fork`+`execvp` PATH 搜索、子进程 exec 失败 `_exit(127)`、`wait` 阻塞重采/`try_wait` WNOHANG 非阻塞/`signal` kill、二采 `ECHILD` 报错）+ `ExitStatus`（`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG` 解码、`success` 即 code 0）；Linux 实测 7 测：exit 42 采回、零退出成功、SIGTERM 终止、存活期 `try_wait` None 再采、exec 失败回 127、空 argv 拒、二采 ECHILD。**剩余**：Windows `CreateProcess` 后端随 BW-15-03 落地；`server-runtime` 关服接线（信号→kill 子进程→wait 回收）待做。
 - [ ] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。
   - 证据（部分，未勾）：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；Linux 实测 6 测：持锁期 try 被拒/释放后可重获、阻塞获取等释放、整文件换入、无临时残留、失败路径清理、**并发夹具（2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失）**。**剩余**：Windows `LockFileEx`/`ReplaceFile` 后端随 BW-15-05 落地。
 - [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
