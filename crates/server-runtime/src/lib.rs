@@ -13,6 +13,7 @@ pub mod shutdown;
 pub mod signals;
 pub mod task_manager;
 pub mod tick;
+pub mod timekeeper;
 // The time queue is cstdmf and lives in foundation; re-exported under the
 // historical `timers` name so `crate::timers::…` paths keep working.
 pub use foundation::time_queue as timers;
