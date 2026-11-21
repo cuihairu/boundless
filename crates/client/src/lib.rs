@@ -19,11 +19,19 @@
 //! coming after a rebuild. `window_mode` carries the mode model and the
 //! transition policy; `app` binds them to a real window through winit
 //! (feature `winit-backend`).
+//!
+//! BW-11-01-05 adds the display settings and the object LOD setting: the
+//! "OBJECT_LOD" graphics setting (`lib/moo/lod_settings.cpp`) selects an LOD
+//! option whose factor biases the object distance (`applyLodBias`) and the
+//! deterministic `calculateLod` value a model compares against its fixed
+//! thresholds. `settings` carries both, so the same thresholds always produce
+//! the same switch.
 
 pub mod device;
 pub mod focus;
 pub mod frame;
 pub mod render;
+pub mod settings;
 pub mod window_mode;
 
 #[cfg(feature = "winit-backend")]
