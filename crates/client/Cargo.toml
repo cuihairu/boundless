@@ -8,7 +8,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# foundation = { workspace = true }  # re-add with first consumer (BW-11 ids/math)
+# The shared math primitives (matrix/quaternion/vector, the reference
+# `lib/math` scalar path) and the DataSection tree (the reference
+# `resmgr/xml_section.cpp`), both used by the model/skeletal-animation
+# port (BW-11-04-01).
+foundation = { workspace = true }
+resources = { workspace = true }
 # Replay tick-data decompression (`CompressionIStream`/`ZipIStream` zlib
 # `uncompress`, `lib/connection/compression_stream.cpp`). rust_backend keeps it
 # pure Rust (miniz_oxide), so the workspace gate needs no system zlib.
