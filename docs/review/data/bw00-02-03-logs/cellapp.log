@@ -1,0 +1,87 @@
+INFO: [Chunk] Registering factory for worldNavmesh
+INFO: [Chunk] Registering factory for overlapper
+INFO: [Chunk] Registering factory for model
+INFO: [Chunk] Registering factory for shell
+INFO: [Chunk] Registering factory for terrain
+WARNING: [ResMgr] The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/fantasydemo/res" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from BW_RES_PATH env variable).
+INFO: [Config] BWConfig::init: Adding server/bw.xml
+INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface
+WARNING: [Network] NetworkInterface::recreateListeningSocket: No address received from machined so binding to all interfaces.
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:50437
+INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Total # loggers on network: 0
+ERROR: [CStdMF] DirectoryWatcher::addChild: tried to replace existing watcher filterThreshold
+INFO: [Config] ---- CellApp    Version: 14.4.1. Config: hybrid. Built: 06:14:01 Nov 22 2026. UID: 1000. User: cui. PID: 4107205 ----
+INFO: [Config] Server coding: Intel(R) Core(TM) i9-10880H CPU @ 2.30GHz x14 with 48207128kB RAM
+INFO: [Config] Resource path (1 of 2): /home/cui/workspaces/BigWorld/programming/fantasydemo/res
+INFO: [Config] Resource path (2 of 2): /home/cui/workspaces/BigWorld/game/res/bigworld
+WARNING: [Config] ServerAppConfig::init: cellApp/loadSmoothingBias not read from bw.xml chain. Using default (0.05)
+WARNING: [Config] ServerAppConfig::init: cellApp/ghostDistance not read from bw.xml chain. Using default (500)
+WARNING: [Config] ServerAppConfig::init: cellApp/maxAoIRadius not read from bw.xml chain. Using default (500)
+WARNING: [Config] ServerAppConfig::init: cellApp/defaultAoIRadius not read from bw.xml chain. Using default (500)
+WARNING: [Config] ServerAppConfig::init: cellApp/shouldResolveMailBoxes not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: cellApp/entitySpamSize not read from bw.xml chain. Using default (200)
+WARNING: [Config] ServerAppConfig::init: cellApp/maxGhostsToDelete not read from bw.xml chain. Using default (100)
+WARNING: [Config] ServerAppConfig::init: cellApp/minGhostLifespan not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: cellApp/fastShutdown not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: cellApp/loadDominantTextureMaps not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: cellApp/maxTimeBetweenPlayerUpdates not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: cellApp/backupPeriod not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: cellApp/checkOffloadsPeriod not read from bw.xml chain. Using default (0.1)
+WARNING: [Config] ServerAppConfig::init: cellApp/chunkLoadingPeriod not read from bw.xml chain. Using default (0.02)
+WARNING: [Config] ServerAppConfig::init: cellApp/ghostUpdateHertz not read from bw.xml chain. Using default (50)
+WARNING: [Config] ServerAppConfig::init: cellApp/reservedTickFraction not read from bw.xml chain. Using default (0.05)
+WARNING: [Config] ServerAppConfig::init: cellApp/obstacleTreeDepth not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: cellApp/sendWindowCallbackThreshold not read from bw.xml chain. Using default (0.5)
+WARNING: [Config] ServerAppConfig::init: cellApp/expectedMaxControllers not read from bw.xml chain. Using default (25)
+WARNING: [Config] ServerAppConfig::init: cellApp/absoluteMaxControllers not read from bw.xml chain. Using default (50)
+WARNING: [Config] ServerAppConfig::init: cellApp/enforceGhostDecorators not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: cellApp/treatAllOtherEntitiesAsGhosts not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: cellApp/maxPhysicsNetworkJitter not read from bw.xml chain. Using default (0.2)
+WARNING: [Config] ServerAppConfig::init: cellApp/maxTickStagger not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: cellApp/shouldNavigationDropPosition not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: cellApp/sendDetailedPlayerVehicles not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: cellApp/navigationMaxSlope not read from bw.xml chain. Using default (45)
+WARNING: [Config] ServerAppConfig::init: cellApp/navigationMaxClimb not read from bw.xml chain. Using default (0.65)
+WARNING: [Config] ServerAppConfig::init: cellApp/witnessUpdateMaxPriorityDelta not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: cellApp/witnessUpdateDefaultMinDelta not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: cellApp/witnessUpdateDefaultMaxDelta not read from bw.xml chain. Using default (101)
+WARNING: [Config] ServerAppConfig::init: cellApp/witnessUpdateDeltaGrowthThrottle not read from bw.xml chain. Using default (1.125)
+WARNING: [Config] ServerAppConfig::init: cellApp/ids/criticallyLowSize not read from bw.xml chain. Using default (100)
+WARNING: [Config] ServerAppConfig::init: cellApp/ids/lowSize not read from bw.xml chain. Using default (2000)
+WARNING: [Config] ServerAppConfig::init: cellApp/ids/desiredSize not read from bw.xml chain. Using default (2400)
+WARNING: [Config] ServerAppConfig::init: cellApp/ids/highSize not read from bw.xml chain. Using default (3000)
+WARNING: [Config] ServerAppConfig::init: cellApp/noise/standardRange not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: cellApp/noise/verticalSpeed not read from bw.xml chain. Using default (1e+06)
+WARNING: [Config] ServerAppConfig::init: cellApp/noise/horizontalSpeed not read from bw.xml chain. Using default (1e+06)
+WARNING: [Config] ServerAppConfig::init: cellApp/throttle/behindThreshold not read from bw.xml chain. Using default (0.1)
+WARNING: [Config] ServerAppConfig::init: cellApp/throttle/spareTimeThreshold not read from bw.xml chain. Using default (0.001)
+WARNING: [Config] ServerAppConfig::init: cellApp/throttle/scaleForwardTime not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: cellApp/throttle/scaleBackTime not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: cellApp/throttle/min not read from bw.xml chain. Using default (0.1)
+WARNING: [Config] ServerAppConfig::init: balance/maxCPUOffload not read from bw.xml chain. Using default (0.02)
+WARNING: [Config] ServerAppConfig::init: balance/numCPUOffloadLevels not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: balance/aggressionDecrease not read from bw.xml chain. Using default (0.5)
+WARNING: [Config] ServerAppConfig::init: balance/aggressionIncreasePeriod not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: balance/maxAggressionIncreasePeriod not read from bw.xml chain. Using default (40)
+WARNING: [Config] ServerAppConfig::init: balance/maxAggression not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: balance/demo/enable not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: balance/demo/numEntitiesPerCell not read from bw.xml chain. Using default (100)
+WARNING: [Config] ServerAppConfig::init: gameUpdateHertz not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: serverMode not read from bw.xml chain. Using default (standalone)
+WARNING: [Config] ServerAppConfig::init: production not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: timeSyncPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: useDefaultSpace not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxOpenFileDescriptors not read from bw.xml chain. Using default (-1)
+WARNING: [Config] ServerAppConfig::init: channelTimeoutPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: allowInteractiveDebugging not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxSharedDataValueSize not read from bw.xml chain. Using default (10240)
+WARNING: [Config] ServerAppConfig::init: maxMgrRegisterStagger not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: numStartupRetries not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/enabled not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/threshold not read from bw.xml chain. Using default (1.5)
+WARNING: [Config] ServerAppConfig::init: profilerJsonDumpDirectory not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: profilerMaxThreads not read from bw.xml chain. Using default (96)
