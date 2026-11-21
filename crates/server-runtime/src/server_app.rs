@@ -821,6 +821,33 @@ mod tests {
         SignalProcessor,
     };
 
+    /// Consume a signal the test just parked kernel-pending. Linux polls
+    /// with `sigtimedwait` (zero timeout); the BSD family has no
+    /// `sigtimedwait` in libc, but the signal is guaranteed pending at
+    /// this point, so `sigwait` returns immediately with the same result.
+    fn consume_pending_signal(sig_num: i32) {
+        let mut wait_set = Set::empty();
+        wait_set.set(sig_num);
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
+                sig_num
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        unsafe {
+            let mut received: libc::c_int = 0;
+            assert_eq!(libc::sigwait(wait_set.raw(), &mut received), 0);
+            assert_eq!(received, sig_num);
+        }
+    }
+
     /// A role-app skeleton: owns its dispatcher (the `mainDispatcher_`
     /// member) and registers a control-event handler as a frequent task
     /// -- the BW-02 stand-in for the Mercury shutDown message handler.
@@ -941,19 +968,7 @@ mod tests {
         // Consume the pending signal so unblocking is safe (the
         // reference lets the default action kill the process; the test
         // must survive).
-        let mut wait_set = Set::empty();
-        wait_set.set(libc::SIGINT);
-        unsafe {
-            let mut info: libc::siginfo_t = std::mem::zeroed();
-            let timeout = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            assert_eq!(
-                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
-                libc::SIGINT
-            );
-        }
+        consume_pending_signal(libc::SIGINT);
     }
 
     /// The default `on_signalled` (and the base arm for non-SIGINT
@@ -1172,19 +1187,7 @@ mod tests {
         );
 
         // Consume the parked signal while still blocked.
-        let mut wait_set = Set::empty();
-        wait_set.set(libc::SIGINT);
-        unsafe {
-            let mut info: libc::siginfo_t = std::mem::zeroed();
-            let timeout = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            assert_eq!(
-                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
-                libc::SIGINT
-            );
-        }
+        consume_pending_signal(libc::SIGINT);
         drop(blocker);
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
