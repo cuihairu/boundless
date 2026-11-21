@@ -17,6 +17,7 @@ pub mod login_gate;
 pub mod login_request;
 pub mod loginapp;
 pub mod machined;
+pub mod pending_logins;
 pub mod relogon;
 pub mod reviver;
 pub mod server_app;
