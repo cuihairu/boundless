@@ -84,10 +84,14 @@
 
 展开 Make/CMake、发布脚本及条件编译，列出可执行文件、库、扩展和平台矩阵。逐项标明已参编、条件启用、仅源码、仅发行物或缺依赖。整理 `third_party/`、资源许可证和 NOTICE，确认哪些复用依赖、哪些需替代实现。
 
-- [ ] **BW-00-01-01 展开 Linux Make 构建目标**。**验收** 清册包含二进制、库及所属规则。
-- [ ] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。
-- [ ] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。
-- [ ] **BW-00-01-04 登记第三方依赖与资源来源**。**验收** 每项有许可证、NOTICE 及复用决策。
+- [x] **BW-00-01-01 展开 Linux Make 构建目标**（commit 73a5e65，主线已做未重做）。**验收** 清册包含二进制、库及所属规则。
+  - 证据：`docs/review/bw00-01-01-linux-make-targets.md`（73a5e65，主线 `main`）——清册 79 个声明的目标（19 binary + 1 copy_of_binary + 32 library + 5 shared_library + 21 unit_test + 1 非组件一次性拷贝 remove_db），每个目标列出目录与所属规则（组件 `Makefile.rules`/伴随 `Makefile.<name>` + `common_footer_config.mak` 类型分派 + `commands.mak` 创建命令）；规则链入口 `programming/Makefile`→`bigworld/build/make/Makefile`，聚合经 `includeMakefilesFrom`；类型全集 6 种；特性开关矩阵（usePython 30/useOpenSSL 15/useMySQL 6/useSQLite 5/usePyURLRequest 3/useCurl 3/useMongoDB 2/usePNG 2，useBigWorld 子树级、useSystemPython/useCustomBillingSystem 关）；客户端与编辑器（worldeditor/modeleditor/…）为 CMake 侧、非 Make 范围，归 BW-00-01-02。采集脚本 `docs/review/tools/make_inventory.py` 可复现。
+- [x] **BW-00-01-02 展开 CMake 与 Windows 目标**（commit b989000，主线已做未重做）。**验收** 清册记录平台及启用宏。
+  - 证据：`docs/review/bw00-01-02-cmake-windows-targets.md`（b989000，主线 `main`）——`BW_CMAKE_TARGET` 取值 11 个（client/server/tools/assetprocessor/bwentity/exporters/navgen/extras + 3 个 blob 包装），分派=glob `BWConfiguration_*.cmake`；平台矩阵：根一次性决定，Windows 本地 MSVC（win32/win64）、Linux 仅经 `BW_IS_REMOTE_ONLY` 远端 SSH、**macOS 无路径**；配置类型 `Debug;Hybrid`；启用宏族 `BW_*_SUPPORT`+`USE_MEMHOOK`+`BW_USE_CSTDMF_*`+`BW_USE_BWENTITY_DLL`+`BW_PYTHON_AS_SOURCE`/`BW_PCH_SUPPORT`；SERVER 清单（8 进程+9 工具+4 Python MODULE+29 静态库）、CLIENT 清单（bwclient WIN32 exe+emptyvoip SHARED+31 静态库+0 MODULE）；Make/CMake 边界：Make=服务端全部，CMake=Make 全部+Windows-only 表面。
+- [x] **BW-00-01-03 登记发行脚本与 RPM 目标**（commit 64781c6，主线已做未重做）。**验收** 标出独有交付物及版本。
+  - 证据：`docs/review/bw00-01-03-release-scripts-and-rpm.md`（64781c6，主线 `main`）——发行脚本清册：Linux 侧 `build/bw_internal/scripts/` 3 脚本（makeRPM.py/makeServer.py/build_common.py），Windows 侧 8 脚本；RPM 目标登记为缺口（makeRPM.py 调 `make rpm`，但 `rpm`/`everything` 目标在当前参考树无定义）；版本锚点：参考 tag bigworld-14.4.1、检出 bigworld-14.4.1-320-gb119c389、`BW_PYTHON_VERSION := 3.13`。
+- [x] **BW-00-01-04 登记第三方依赖与资源来源**（commit c7aca00，主线已做未重做）。**验收** 每项有许可证、NOTICE 及复用决策。
+  - 证据：`docs/review/bw00-01-04-third-party-and-resources.md`（c7aca00，主线 `main`）——`third_party/` 22 子目录：16 库/框架（curl=MIT 类、png=libpng、python=PSF 3.13、re2=BSD-3、sqlite=public domain、zip=zlib 1.2.8、mongodb=Apache 2.0、nvtt=MIT 2.0.8、openautomate=NVIDIA 专有、CppUnitLite2=MIT+军事限制 1.1、WTL=Microsoft 共享源 10.0.10320、JsonCpp=PD/MIT、openssl-vs*=1.0.1p、openssl_android=0.9.8h）+ 6 二进制/工具；NOTICE 主文件 repo 根 `THIRD-PARTY-NOTICES`（2292 行，16 节）；资源来源 `game/res/bigworld/scripts`（4557 文件=Python 3.13 标准库+BigWorld 服务端脚本）；复用决策总表：复用（Python→python-host、RE2→Rust `regex` 已决、MD5→`md-5` 已决）、替代（curl→ureq/reqwest、png→image、sqlite→rusqlite/sqlx、zlib→flate2、mongodb→mongodb crate、JsonCpp→serde_json、CppUnitLite2→Rust 测试框架、nedalloc→Rust 分配器）、不用（nvtt/nvmeshmender/openautomate 专有、WTL、openssl-vs*/android、putty、cmake-win32-x86）、待定（recastnavigation 随 BW-15 拍板）。
 
 #### BW-00-02 原版运行基准
 
