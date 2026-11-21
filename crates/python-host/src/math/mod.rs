@@ -27,9 +27,12 @@
 //! (`client/script_app.cpp:156`); [`tick`] is that step, and [`reset`] is
 //! the fini-time teardown of everything this module holds.
 
-mod matrix;
+// The vector and matrix classes are reused by the `ResMgr` faces
+// (`readVector3`, `asMatrix` and friends build real `Math` objects), so
+// the modules are crate-visible; `provider` stays module-private.
+pub(crate) mod matrix;
 mod provider;
-mod vector;
+pub(crate) mod vector;
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};

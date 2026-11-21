@@ -27,7 +27,7 @@ use super::provider;
 use super::vector::{parse_vector_like, vector_object};
 use super::{
     arg_count_error, body, bool_object, check_type, coerce_float, coerce_uint, float_object,
-    own_raw, raise_type_error, remember_type, takes_no_arguments,
+    own_raw, raise_type_error, remember_type, takes_no_arguments, type_address,
 };
 
 use std::ffi::c_int;
@@ -85,8 +85,8 @@ fn normalise3(v: &mut [f32; 3]) {
 /// (`applyToUnitAxisVector` reads `m[axis]`, `matrix.ipp:368-376`) and the
 /// translation is `m[3]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct MatrixValue {
-    pub m: [[f32; 4]; 4],
+pub(crate) struct MatrixValue {
+    pub(crate) m: [[f32; 4]; 4],
 }
 
 impl MatrixValue {
@@ -100,7 +100,7 @@ impl MatrixValue {
     }
 
     /// `Matrix::Matrix()` (`matrix.ipp:19-22`): all zero.
-    pub(super) fn zero() -> Self {
+    pub(crate) fn zero() -> Self {
         Self { m: [[0.0; 4]; 4] }
     }
 
@@ -444,12 +444,33 @@ struct MatrixBody {
 /// # Safety
 ///
 /// `object` must be a borrowed object the interpreter handed out, or null.
-pub(super) unsafe fn matrix_of(object: *mut capi::PyObject) -> Option<MatrixValue> {
+pub(crate) unsafe fn matrix_of(object: *mut capi::PyObject) -> Option<MatrixValue> {
     if unsafe { check_type(object, MATRIX_NAME) } {
         // SAFETY: the check above guarantees the instance shape.
         return Some(unsafe { (*body::<MatrixBody>(object)).value });
     }
     unsafe { provider::matrix_of(object) }
+}
+
+/// A fresh `Math.Matrix` instance the caller owns: the `new PyMatrix`
+/// the `getData(const Matrix&)` path answers with (`script.cpp:2400`).
+/// Used by the `ResMgr` faces (`asMatrix`, `readMatrix` build real
+/// matrix objects).
+///
+/// # Safety
+///
+/// The interpreter must be up and the `Math` module installed.
+pub(crate) unsafe fn matrix_object(value: MatrixValue) -> PyRef {
+    let address = type_address(MATRIX_NAME).expect("the matrix type is installed");
+    let type_object = PyRef::borrowed(address as *mut capi::PyObject);
+    // SAFETY: the type is one of this module's, and the interpreter is up.
+    let instance = unsafe { binding::instantiate(&type_object) }
+        .expect("the matrix instance allocation cannot fail");
+    // SAFETY: the instance is the fresh allocation this call owns.
+    unsafe {
+        (*body::<MatrixBody>(instance.as_ptr())).value = value;
+    }
+    instance
 }
 
 /// One `MatrixProviderPtr` converter step

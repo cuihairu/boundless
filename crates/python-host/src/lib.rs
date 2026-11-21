@@ -26,6 +26,7 @@ pub mod manifest;
 pub mod math;
 pub mod output_writer;
 pub mod pyref;
+pub mod resmgr;
 pub mod sequence;
 pub mod timers;
 pub mod wrapper;

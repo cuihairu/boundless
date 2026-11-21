@@ -69,9 +69,7 @@ pub fn is_valid_xml_tag(name: &str) -> bool {
     if bytes[0] >= 0x80 || bytes[0].is_ascii_digit() {
         return false;
     }
-    bytes
-        .iter()
-        .all(|&b| b != b' ' && b != b'\\' && b != b'/')
+    bytes.iter().all(|&b| b != b' ' && b != b'\\' && b != b'/')
 }
 
 fn is_ws(b: u8) -> bool {
@@ -139,9 +137,7 @@ impl<'a> Parser<'a> {
                 }
             } else if !self.alive() {
                 let name = self.open.last().map_or("NULL", |n| n.name.as_str());
-                return Err(XmlParseError::new(format!(
-                    "unterminated tag {name}"
-                )));
+                return Err(XmlParseError::new(format!("unterminated tag {name}")));
             } else if self.open.is_empty() {
                 return Err(XmlParseError::new("file must start with a tag"));
             } else {
@@ -210,8 +206,7 @@ impl<'a> Parser<'a> {
                 if count == 0 {
                     return Ok(());
                 }
-            } else if prev3 == b'<' && prev2 == b'!' && prev1 == b'-' && curr == b'-'
-            {
+            } else if prev3 == b'<' && prev2 == b'!' && prev1 == b'-' && curr == b'-' {
                 count += 1;
             }
         }
@@ -233,9 +228,7 @@ impl<'a> Parser<'a> {
                         .last_mut()
                         .ok_or_else(|| XmlParseError::new("CDATA outside section"))?;
                     if node.value_set {
-                        return Err(XmlParseError::new(
-                            "trying to set the value twice (CDATA)",
-                        ));
+                        return Err(XmlParseError::new("trying to set the value twice (CDATA)"));
                     }
                     let mut content = &self.data[start..content_end];
                     if let Some(nul) = content.iter().position(|&b| b == 0) {
@@ -412,9 +405,7 @@ impl<'a> Parser<'a> {
                 // Reference: "unable to find end of attribute", break.
                 break;
             }
-            let value = special_chars::reduce(&String::from_utf8_lossy(
-                &rest[value_start..p],
-            ));
+            let value = special_chars::reduce(&String::from_utf8_lossy(&rest[value_start..p]));
             p += 1;
 
             node.children.push(DataSection {
@@ -476,6 +467,34 @@ impl DataSection {
         &self.name
     }
 
+    /// Replace the tag (`XMLSection::setTagName`).
+    pub fn set_section_name(&mut self, tag: &str) {
+        self.name = tag.to_string();
+    }
+
+    /// `XMLSection::sanitiseSectionName` (`xml_section.cpp:2524-2546`):
+    /// every space becomes the `..` token, a leading digit gains an `id.`
+    /// prefix, and the answer says whether the name changed.
+    pub fn sanitise_section_name(&mut self) -> bool {
+        let mut new_name = self.name.replace(' ', "..");
+        let first = new_name.as_bytes().first().copied();
+        if first.is_some_and(|b| b.is_ascii_digit()) {
+            new_name = format!("id.{new_name}");
+        }
+        if new_name != self.name {
+            self.name = new_name;
+            return true;
+        }
+        false
+    }
+
+    /// `XMLSection::isValidSectionName` (`xml_section.cpp:2551-2558`): the
+    /// tag check is gated behind `s_shouldCheckXMLTag`, whose default is
+    /// off -- the check never runs and the answer is always true.
+    pub fn is_valid_section_name(&self) -> bool {
+        true
+    }
+
     /// Children include attribute nodes, in document order.
     pub fn count_children(&self) -> usize {
         self.children.len()
@@ -503,6 +522,16 @@ impl DataSection {
 
     pub fn is_attribute(&self) -> bool {
         self.is_attribute
+    }
+
+    /// `XMLSection::isAttribute(bool)`: the flag moves only on a childless
+    /// node; a section with children reports false and keeps its state.
+    pub fn set_is_attribute(&mut self, is_attribute: bool) -> bool {
+        if !self.children.is_empty() {
+            return false;
+        }
+        self.is_attribute = is_attribute;
+        true
     }
 
     /// Raw string value. The reference's `defaultVal` and flags parameters
@@ -591,8 +620,7 @@ impl DataSection {
     pub fn as_int64(&self, default: i64) -> i64 {
         let mut p = 0usize;
         let bytes = self.value.as_bytes();
-        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C)
-        {
+        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C) {
             p += 1;
         }
         let mut negative = false;
@@ -618,11 +646,7 @@ impl DataSection {
         if !any || overflow {
             return default;
         }
-        if negative {
-            -acc
-        } else {
-            acc
-        }
+        if negative { -acc } else { acc }
     }
 
     /// `sscanf("%llu")`: whitespace and sign allowed, digits required
@@ -635,8 +659,7 @@ impl DataSection {
             return default;
         }
         let mut p = 0usize;
-        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C)
-        {
+        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C) {
             p += 1;
         }
         let mut negative = false;
@@ -649,7 +672,9 @@ impl DataSection {
         let mut overflow = false;
         while p < bytes.len() && bytes[p].is_ascii_digit() {
             any = true;
-            acc = match acc.checked_mul(10).and_then(|v| v.checked_add((bytes[p] - b'0') as u64))
+            acc = match acc
+                .checked_mul(10)
+                .and_then(|v| v.checked_add((bytes[p] - b'0') as u64))
             {
                 Some(v) => v,
                 None => {
@@ -665,11 +690,7 @@ impl DataSection {
         if overflow {
             return u64::MAX;
         }
-        if negative {
-            acc.wrapping_neg()
-        } else {
-            acc
-        }
+        if negative { acc.wrapping_neg() } else { acc }
     }
 
     /// `strtod` prefix semantics: any successfully parsed prefix counts
@@ -810,9 +831,7 @@ impl DataSection {
                 if self.find_child(head).is_none() {
                     self.add_child(head);
                 }
-                let child = self
-                    .find_child_mut(head)
-                    .expect("child ensured just above");
+                let child = self.find_child_mut(head).expect("child ensured just above");
                 match path[slash..].find(|c: char| c != '/') {
                     None => Some(child),
                     Some(rest) => child.open_or_make(&path[slash + rest..]),
@@ -842,6 +861,58 @@ impl DataSection {
             }
             None => false,
         }
+    }
+
+    /// The `makeNewSection = true` lookup the typed writers hand their
+    /// value to (`openSection(path, true)`): the first node at `path`,
+    /// with every missing intermediate and leaf tag appended. The empty
+    /// path is `self`.
+    pub fn open_or_make_section(&mut self, path: &str) -> Option<&mut DataSection> {
+        self.open_or_make(path)
+    }
+
+    /// `XMLSection::delChild(tag)`: removes the first child carrying
+    /// `tag`; true when a child went away.
+    pub fn del_child(&mut self, tag: &str) -> bool {
+        match self.children.iter().position(|c| c.name == tag) {
+            Some(index) => {
+                self.children.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::deleteSection(tagPath)`: walks the `'/'`-separated
+    /// tags down through first matches and removes the final node from
+    /// its parent. An intermediate miss -- including the empty tags an
+    /// empty, leading or doubled slash yields -- stops the walk and
+    /// reports false.
+    pub fn delete_section(&mut self, tag_path: &str) -> bool {
+        let mut components: Vec<&str> = tag_path.split('/').collect();
+        let Some(final_tag) = components.pop() else {
+            return false;
+        };
+        let mut current = self;
+        for tag in components {
+            let Some(position) = current.children.iter().position(|c| c.name == tag) else {
+                return false;
+            };
+            let Some(next) = current.child_mut(position) else {
+                return false;
+            };
+            current = next;
+        }
+        current.del_child(final_tag)
+    }
+
+    /// `DataSection::copy(pSection)` with `modifyCurrent = true`: this
+    /// section's value, attribute flag and children are replaced with
+    /// deep copies of the source's; the name is kept.
+    pub fn copy_from(&mut self, other: &DataSection) {
+        self.children = other.children.clone();
+        self.set_string(other.as_string());
+        self.is_attribute = other.is_attribute;
     }
 
     // ------------------------------------------------------------------
@@ -896,10 +967,7 @@ impl DataSection {
     }
 
     pub fn set_vector4(&mut self, v: Vector4) {
-        self.set_string(&format!(
-            "{:.6} {:.6} {:.6} {:.6}",
-            v.x, v.y, v.z, v.w
-        ));
+        self.set_string(&format!("{:.6} {:.6} {:.6} {:.6}", v.x, v.y, v.z, v.w));
     }
 
     /// Serialise as the reference `writeToStream` does from level 0:
@@ -1055,11 +1123,7 @@ fn strtoul(bytes: &[u8]) -> (u64, bool) {
     if overflow {
         return (u64::MAX, true);
     }
-    let value = if negative {
-        acc.wrapping_neg()
-    } else {
-        acc
-    };
+    let value = if negative { acc.wrapping_neg() } else { acc };
     (value, false)
 }
 
@@ -1090,11 +1154,19 @@ fn strtod_from(bytes: &[u8], from: usize) -> Option<(f64, usize)> {
     let rest = &bytes[q..];
     let lower: Vec<u8> = rest.iter().map(|b| b.to_ascii_lowercase()).collect();
     if lower.starts_with(b"infinity") {
-        let v = if negative { f64::NEG_INFINITY } else { f64::INFINITY };
+        let v = if negative {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
         return Some((v, q + 8));
     }
     if lower.starts_with(b"inf") {
-        let v = if negative { f64::NEG_INFINITY } else { f64::INFINITY };
+        let v = if negative {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
         return Some((v, q + 3));
     }
     if lower.starts_with(b"nan") {
@@ -1346,7 +1418,11 @@ mod tests {
     #[test]
     fn unterminated_comment_and_cdata_are_parse_errors() {
         assert!(parse_err("<!-- x").message.contains("comment"));
-        assert!(parse_err("<a><![CDATA[x]]></a").message.contains("unclosed"));
+        assert!(
+            parse_err("<a><![CDATA[x]]></a")
+                .message
+                .contains("unclosed")
+        );
     }
 
     #[test]
@@ -1404,7 +1480,9 @@ mod tests {
 
     #[test]
     fn as_int_prefix_semantics() {
-        let doc = parse_doc("<r><a>42</a><b>-7</b><c>42abc</c><d>abc</d><e></e><f>0</f><g>99999999999</g><h>99999999999999999999999</h></r>");
+        let doc = parse_doc(
+            "<r><a>42</a><b>-7</b><c>42abc</c><d>abc</d><e></e><f>0</f><g>99999999999</g><h>99999999999999999999999</h></r>",
+        );
         let r = &doc;
         assert_eq!(r.find_child("a").unwrap().as_int(0), 42);
         assert_eq!(r.find_child("b").unwrap().as_int(0), -7);
@@ -1424,7 +1502,9 @@ mod tests {
 
     #[test]
     fn as_uint_wraps_and_range_checks() {
-        let doc = parse_doc("<r><a>4294967295</a><b>4294967296</b><c>-1</c><d>abc</d><e></e><f>0</f></r>");
+        let doc = parse_doc(
+            "<r><a>4294967295</a><b>4294967296</b><c>-1</c><d>abc</d><e></e><f>0</f></r>",
+        );
         let r = &doc;
         assert_eq!(r.find_child("a").unwrap().as_uint(0), u32::MAX);
         // Fits u64, truncates to 0, and 0 from a non-"0" string → default.
@@ -1450,7 +1530,8 @@ mod tests {
 
     #[test]
     fn as_int64_stream_semantics() {
-        let doc = parse_doc("<r><a>12abc</a><b>abc</b><c></c><d>  5 </d><e>99999999999999999999</e></r>");
+        let doc =
+            parse_doc("<r><a>12abc</a><b>abc</b><c></c><d>  5 </d><e>99999999999999999999</e></r>");
         let r = &doc;
         assert_eq!(r.find_child("a").unwrap().as_int64(-1), 12, "junk tail ok");
         assert_eq!(r.find_child("b").unwrap().as_int64(-1), -1);
@@ -1521,7 +1602,8 @@ mod tests {
 
     #[test]
     fn as_vector3_is_prefix_strtod() {
-        let doc = parse_doc("<r><a>1 2 3</a><b>1 2 3 </b><c>1 2 3 junk</c><d>1 2</d><e>1x 2 3</e></r>");
+        let doc =
+            parse_doc("<r><a>1 2 3</a><b>1 2 3 </b><c>1 2 3 junk</c><d>1 2</d><e>1x 2 3</e></r>");
         let r = &doc;
         let v3 = Vector3::new(1.0, 2.0, 3.0);
         assert_eq!(r.find_child("a").unwrap().as_vector3(Vector3::ZERO), v3);
@@ -1814,7 +1896,11 @@ mod tests {
         s.set_string("1e3");
         assert_eq!(s.as_double(0.0), 1000.0);
         s.set_string("1e");
-        assert_eq!(s.as_double(0.0), 1.0, "exponent without digits is not consumed");
+        assert_eq!(
+            s.as_double(0.0),
+            1.0,
+            "exponent without digits is not consumed"
+        );
         s.set_string("+2.5");
         assert_eq!(s.as_double(0.0), 2.5);
         s.set_string("  3.5");
@@ -1866,7 +1952,10 @@ mod tests {
     fn bang_marker_at_eof_is_an_error() {
         // `<!` runs off the document before the body type can be read.
         let err = parse_err("<r><!");
-        assert!(err.message.contains("unexpected end of document"), "{err:?}");
+        assert!(
+            err.message.contains("unexpected end of document"),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -2013,7 +2102,10 @@ mod tests {
         let mut s = DataSection::new("v");
         // 1e400 overflows f64 to infinity, which is not a literal → failbit.
         s.set_string("1e400 2");
-        assert_eq!(s.as_vector2(Vector2::new(-1.0, -1.0)), Vector2::new(-1.0, -1.0));
+        assert_eq!(
+            s.as_vector2(Vector2::new(-1.0, -1.0)),
+            Vector2::new(-1.0, -1.0)
+        );
         // A signed literal inf passes through the sign-consume path.
         s.set_string("-inf 2");
         let v = s.as_vector2(Vector2::ZERO);
@@ -2045,18 +2137,9 @@ mod tests {
             doc.open_section("").unwrap().section_name(),
             doc.section_name()
         );
-        assert_eq!(
-            doc.open_section("a/b/c").unwrap().as_string(),
-            "deep"
-        );
-        assert_eq!(
-            doc.open_section("a/b/x").unwrap().as_string(),
-            "attr"
-        );
-        assert_eq!(
-            doc.open_section("a").unwrap().section_name(),
-            "a"
-        );
+        assert_eq!(doc.open_section("a/b/c").unwrap().as_string(), "deep");
+        assert_eq!(doc.open_section("a/b/x").unwrap().as_string(), "attr");
+        assert_eq!(doc.open_section("a").unwrap().section_name(), "a");
         // Missing intermediate or leaf: None, no creation.
         assert!(doc.open_section("z/c").is_none());
         assert!(doc.open_section("a/z").is_none());
@@ -2105,5 +2188,65 @@ mod tests {
         // The empty path writes the section's own value.
         assert!(doc.write_string("", "root value"));
         assert_eq!(doc.as_string(), "root value");
+    }
+
+    #[test]
+    fn del_child_takes_the_first_match_only() {
+        let mut doc = parse_doc("<r><b>1</b><b>2</b><c>3</c></r>");
+        assert!(doc.del_child("b"));
+        assert_eq!(doc.count_children(), 2);
+        assert_eq!(doc.open_child(0).unwrap().as_string(), "2");
+        // A missing tag removes nothing and reports the miss.
+        assert!(!doc.del_child("missing"));
+        assert_eq!(doc.count_children(), 2);
+    }
+
+    #[test]
+    fn delete_section_walks_and_removes_the_final_node() {
+        let mut doc = parse_doc("<r><a><b><c>v</c></b></a></r>");
+        assert!(doc.delete_section("a/b/c"));
+        assert_eq!(doc.open_section("a/b").unwrap().count_children(), 0);
+        // The descent only follows first matches; a miss anywhere is a miss.
+        assert!(!doc.delete_section("a/x/c"));
+        assert!(!doc.delete_section(""));
+        assert!(!doc.delete_section("a/"));
+        assert!(!doc.delete_section("//c"));
+        // The final tag deletes by name from the walked parent.
+        let mut dup = parse_doc("<r><b>1</b><b>2</b></r>");
+        assert!(dup.delete_section("b"));
+        assert_eq!(dup.open_child(0).unwrap().as_string(), "2");
+    }
+
+    #[test]
+    fn copy_from_replaces_value_children_and_attribute_flag() {
+        let mut target = parse_doc("<target>old</target>");
+        target.add_child("kept");
+        let mut source = parse_doc("<source>new text</source>");
+        let mut marked = source.open_or_make_section("extra").expect("made");
+        marked.set_is_attribute(true);
+        let source = source;
+        let snapshot = source.clone();
+        target.copy_from(&snapshot);
+        // `parse` renamed the root tag; the point is the name is kept
+        // rather than taken from the source.
+        assert_eq!(target.section_name(), "root", "copy keeps the name");
+        assert_eq!(target.as_string(), "new text");
+        assert_eq!(target.count_children(), 1);
+        assert_eq!(target.open_child(0).unwrap().section_name(), "extra");
+        assert!(target.open_child(0).unwrap().is_attribute());
+    }
+
+    #[test]
+    fn set_is_attribute_refuses_sections_with_children() {
+        let mut doc = parse_doc("<r><c><sub>v</sub></c></r>");
+        let child = doc.open_or_make_section("c").expect("existing");
+        assert!(!child.set_is_attribute(true));
+        assert!(!child.is_attribute());
+        // A childless value node takes the flag either way.
+        let mut made = doc.open_or_make_section("flag").expect("made");
+        assert!(made.set_is_attribute(true));
+        assert!(made.is_attribute());
+        assert!(made.set_is_attribute(false));
+        assert!(!made.is_attribute());
     }
 }

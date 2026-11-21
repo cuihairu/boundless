@@ -8,4 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# foundation = { workspace = true }  # re-add with first consumer
+# The ResMgr faces run on the BW-01 resource engine: the section trees and
+# the search path behind the `ResMgr` module functions.
+foundation = { workspace = true }
+resources = { workspace = true }

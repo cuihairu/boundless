@@ -156,6 +156,11 @@ impl Interpreter {
             // the BigWorld module is built, and the module-table snapshot
             // sees Math either way.
             math::install();
+            // The ResMgr module (`res_mgr_script.cpp`): the resource faces
+            // exist before the BigWorld module is built, so the module
+            // table snapshot sees ResMgr as well.
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            unsafe { crate::resmgr::install(&config.component) };
             // `ScriptModule::getOrCreate("BigWorld")` with the `component`
             // attribute, then the `s_pOurInitTimeModules` snapshot.
             create_big_world_module(&config.component);
@@ -258,6 +263,11 @@ impl Interpreter {
         // fires, so the reset sits before `binding::reset`, which drops the
         // type objects themselves.
         math::reset();
+        // The ResMgr censuses release next: the wrappers hold tree handles
+        // and the tables hold links, all DECREFed while every teardown
+        // table is still intact -- before `binding::reset` drops the type
+        // objects themselves.
+        crate::resmgr::reset();
         // The type registry's references go the same way: the static
         // `s_type_` objects outlive every script object, and the port holds
         // its registry references until here.
@@ -592,6 +602,7 @@ mod tests {
         "interpreter::tests::scenario_the_matrix_and_plane_types_exercise_their_surface",
         "interpreter::tests::scenario_the_matrix_and_plane_methods_exercise_their_surface",
         "interpreter::tests::scenario_the_v4_providers_exercise_their_surface",
+        "interpreter::tests::scenario_the_resmgr_module_serves_the_ported_surface",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -5125,5 +5136,213 @@ mod tests {
                  'TypeError', 'TypeError', '(3, 4, 5)', 0.0, '(0, 0, 0)', True, True)",
             );
         });
+    }
+
+    /// BW-03-03-04 acceptance. The `ResMgr` module's resource faces -- the
+    /// module functions, the `DataSection` read/write surface, and the
+    /// resource path resolution: the reference resolves a resource id
+    /// through `BWResource`'s search paths (`openSection`, `isFile`,
+    /// `isDir`, `save`, `resolveToAbsolutePath`), and there is no `<inherit>`
+    /// mechanism in `DataSection` or the resource layer for "inheritance
+    /// paths" to mean anything but that search.
+    ///
+    /// The host lays the search paths down before the interpreter comes up
+    /// (`BWResource::init` before `Script::init`), so the scenario does the
+    /// same with one fixture root carrying a real resource, then probes the
+    /// surface a script sees.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_resmgr_module_serves_the_ported_surface() {
+        let root = std::env::temp_dir().join(format!("boundless-resmgr-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("settings/creatures")).expect("build the res tree");
+        std::fs::write(
+            root.join("settings/creatures/crab.xml"),
+            "<root>\n\
+             <name>crab</name>\n\
+             <health>100</health>\n\
+             <speed>3.5</speed>\n\
+             <position>1 2 3</position>\n\
+             <alive>true</alive>\n\
+             </root>\n",
+        )
+        .expect("write the fixture resource");
+        let root_path = root.to_str().expect("a UTF-8 root");
+        crate::resmgr::init_paths(&[root_path]);
+
+        let interpreter =
+            Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
+
+        // The module surface: the three linked classes, `root`, and the
+        // unconditional function table -- with the editor trio absent from a
+        // non-editor component.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 __probe = (hasattr(ResMgr, 'DataSection'), \
+                 hasattr(ResMgr, 'ResourceTable'), hasattr(ResMgr, 'root'), \
+                 hasattr(ResMgr, 'save'), hasattr(ResMgr, 'purge'), \
+                 hasattr(ResMgr, 'remove'))",
+            ),
+            "(True, True, True, True, True, False)",
+        );
+
+        // Path resolution through the search path: a resource under the
+        // fixture root answers `isFile`/`isDir`, a missing one does not.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 __probe = (ResMgr.isFile('settings/creatures/crab.xml'), \
+                 ResMgr.isDir('settings/creatures'), \
+                 ResMgr.isFile('nope/nope.xml'))",
+            ),
+            "(True, True, False)",
+        );
+
+        // `openSection` resolves the id through the same search path, and the
+        // reads answer the fixture's values (a miss answers its default).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 __probe = (s.readString('name'), s.readInt('health'), \
+                 s.readFloat('speed'), tuple(s.readVector3('position')), \
+                 s.readBool('alive'), s.readString('missing', 'default'), len(s))",
+            ),
+            "('crab', 100, 3.5, (1.0, 2.0, 3.0), True, 'default', 5)",
+        );
+
+        // A child wrapper carries its tag name and reads its own value; the
+        // root wrapper's `name` is the resource id's filename. `as*` reads
+        // the node's own value.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 name = s.child(0)\n\
+                 __probe = (s.name, name.name, name.asString, name.asInt, \
+                 s.readFloat('a/b/c', 7.5))",
+            ),
+            "('crab.xml', 'name', 'crab', 0, 7.5)",
+        );
+
+        // The write*s round-trip: a write lands in the shared tree and the
+        // read answers it back.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 s.writeString('name', 'lobster')\n\
+                 s.writeInt('health', 120)\n\
+                 s.writeFloat('speed', 9.75)\n\
+                 s.writeVector3('position', (7, 8, 9))\n\
+                 __probe = (s.readString('name'), s.readInt('health'), \
+                 s.readFloat('speed'), tuple(s.readVector3('position')), s.name)",
+            ),
+            "('lobster', 120, 9.75, (7.0, 8.0, 9.0), 'crab.xml')",
+        );
+
+        // Two opens of the same id alias one tree: a write through one shows
+        // in the other (the wrappers themselves stay distinct).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 a = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 b = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 a.writeString('name', 'crab')\n\
+                 __probe = (b.readString('name'), a is b)",
+            ),
+            "('crab', False)",
+        );
+
+        // `createSection` returns a wrapper over the new child, `child`/`name`
+        // read it, and `deleteSection` drops the child so the read answers its
+        // default.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 child = s.createSection('shell')\n\
+                 child.writeString('colour', 'white')\n\
+                 written = (s.readString('shell/colour'), child.name)\n\
+                 deleted = s.deleteSection('shell')\n\
+                 gone = s.readString('shell/colour', 'empty')\n\
+                 __probe = (written, deleted, gone)",
+            ),
+            "(('white', 'shell'), True, 'empty')",
+        );
+
+        // A dotted path form creates the parent chain: the wrapper answers
+        // the new leaf inside it, not the parent the leaf went under.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 nested = s.createSection('legs/left')\n\
+                 nested.writeString('state', 'up')\n\
+                 __probe = (nested.name, s.readString('legs/left/state'))",
+            ),
+            "('left', 'up')",
+        );
+
+        // The write reaches the disk: `save` writes the tree back, `purge`
+        // drops the census and cache, and a re-open re-reads the file.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 s.save()\n\
+                 ResMgr.purge('settings/creatures/crab.xml')\n\
+                 again = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 __probe = (again.readString('name'), again.readInt('health'), \
+                 again.readFloat('speed'))",
+            ),
+            "('crab', 120, 9.75)",
+        );
+
+        // The openSection walls: a dotted id with `makeNew` builds a fresh
+        // section, an undotted missing id without `makeNew` answers `None`,
+        // and an undotted `makeNew` is the reference's `ValueError`.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 fresh = ResMgr.openSection('settings/creatures/newone.xml', True)\n\
+                 made = fresh.readString('name', 'none')\n\
+                 miss = ResMgr.openSection('settings/creatures/nothing')\n\
+                 try:\n\
+                 \x20   ResMgr.openSection('settings/creatures/nothing', True)\n\
+                 except ValueError as error:\n\
+                 \x20   refused = str(error)\n\
+                 __probe = (fresh is not None, made, miss, refused)",
+            ),
+            "(True, 'none', None, \"ResMgr.openSection(): Could not make new section \
+             'settings/creatures/nothing'\")",
+        );
+
+        // The remaining functions answer in-scope: `resolveToAbsolutePath`
+        // resolves through the search path, `localise` answers its key
+        // unchanged (no localisation data is in scope).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 __probe = (ResMgr.resolveToAbsolutePath('settings/creatures/crab.xml').endswith('crab.xml'), \
+                 ResMgr.localise('a key'))",
+            ),
+            "(True, 'a key')",
+        );
+
+        interpreter.fini();
+        std::fs::remove_dir_all(&root).ok();
     }
 }

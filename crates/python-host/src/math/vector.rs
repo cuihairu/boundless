@@ -70,7 +70,7 @@ unsafe fn dim_of(object: *mut capi::PyObject) -> Option<usize> {
 /// # Safety
 ///
 /// `object` must be an instance of a vector type of this module.
-pub(super) unsafe fn values_of(object: *mut capi::PyObject) -> [f32; 4] {
+pub(crate) unsafe fn values_of(object: *mut capi::PyObject) -> [f32; 4] {
     // SAFETY: the caller guarantees the instance shape.
     unsafe { (*body::<VectorBody>(object)).values }
 }
@@ -82,7 +82,7 @@ pub(super) unsafe fn values_of(object: *mut capi::PyObject) -> [f32; 4] {
 ///
 /// The interpreter must be up on the calling thread, with the vector types
 /// of this module installed.
-pub(super) unsafe fn vector_object(values: [f32; 4], dim: usize) -> PyRef {
+pub(crate) unsafe fn vector_object(values: [f32; 4], dim: usize) -> PyRef {
     let address = type_address(vector_name(dim)).expect("the vector type is installed");
     let type_object = PyRef::borrowed(address as *mut capi::PyObject);
     // SAFETY: the type is one of this module's, and the interpreter is up.
@@ -155,7 +155,7 @@ unsafe fn parse_float_tuple(object: *mut capi::PyObject, dim: usize) -> Option<[
 /// # Safety
 ///
 /// `object` must be a borrowed object the interpreter handed out, or null.
-pub(super) unsafe fn parse_vector_like(
+pub(crate) unsafe fn parse_vector_like(
     object: *mut capi::PyObject,
     dim: usize,
     var_name: &str,

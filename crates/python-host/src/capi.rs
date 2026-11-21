@@ -556,6 +556,11 @@ unsafe extern "C" {
     pub fn PyCallable_Check(obj: *mut PyObject) -> c_int;
     pub fn PyObject_IsTrue(obj: *mut PyObject) -> c_int;
     pub fn PyModule_AddFunctions(module: *mut PyObject, functions: *const PyMethodDef) -> c_int;
+    pub fn PyModule_AddObject(
+        module: *mut PyObject,
+        name: *const c_char,
+        value: *mut PyObject,
+    ) -> c_int;
     pub fn PyBool_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyCFunction_New(def: *mut PyMethodDef, self_: *mut PyObject) -> *mut PyObject;
     pub fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
@@ -575,11 +580,16 @@ unsafe extern "C" {
     pub fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int;
     pub static mut PyExc_TypeError: *mut PyObject;
     pub static mut PyExc_IndexError: *mut PyObject;
+    pub static mut PyExc_AttributeError: *mut PyObject;
+    pub static mut PyExc_EnvironmentError: *mut PyObject;
+    pub static mut PyExc_IOError: *mut PyObject;
+    pub static mut PyExc_SystemError: *mut PyObject;
     pub fn PyIndex_Check(obj: *mut PyObject) -> c_int;
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
     pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
+    pub fn PyObject_GetAttr(obj: *mut PyObject, attr_name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericGetAttr(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericSetAttr(
         obj: *mut PyObject,
@@ -592,6 +602,9 @@ unsafe extern "C" {
     pub fn PyFloat_AsDouble(obj: *mut PyObject) -> f64;
     pub fn PyFloat_FromDouble(value: f64) -> *mut PyObject;
     pub fn PySequence_Fast(obj: *mut PyObject, message: *const c_char) -> *mut PyObject;
+    pub fn PySequence_Check(obj: *mut PyObject) -> c_int;
+    pub fn PySequence_Size(obj: *mut PyObject) -> PySsize;
+    pub fn PySequence_GetItem(obj: *mut PyObject, index: PySsize) -> *mut PyObject;
     pub fn PyTuple_Size(tuple: *mut PyObject) -> PySsize;
     pub fn PyTuple_New(size: PySsize) -> *mut PyObject;
     pub fn PyTuple_SetItem(tuple: *mut PyObject, index: PySsize, item: *mut PyObject) -> c_int;
