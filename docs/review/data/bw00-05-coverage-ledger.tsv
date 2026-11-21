@@ -150,3 +150,26 @@ fantasydemo_res	datadir	programming/fantasydemo/res	resource	-	BW-14-01	-	pendin
 fantasydemo_web_php	script	programming/fantasydemo/web/php	resource	-	BW-14-03	-	pending	PHP Web 集成(Authenticator/BigWorld.php 等)
 fantasydemo_kbengine	legacy	programming/fantasydemo/.kbengine	resource	-	BW-29	-	pending	KBEngine 时代遗留(debug.json/stubs),随 BW-29 差异复核
 generate-fantasydemo-assets.py	script	bigworld/scripts/generate-fantasydemo-assets.py	resource	-	BW-14-01	-	pending	参考树脚本;Boundless 侧尚未移植(仓内无 scripts/),生成 res 占位树
+makeServer.py	script	bigworld/build/bw_internal/scripts/makeServer.py	release	-	BW-14-04	-	pending	参考发行脚本(服务端打包);Boundless 等价面=ci/package.sh 夜间打包(BW-22-04-01),逐脚本复用未定
+build_common.py	script	bigworld/build/bw_internal/scripts/build_common.py	release	-	BW-14-04	-	pending	参考发行脚本(共用构建逻辑);Boundless 等价面=ci/package.sh(BW-22-04-01),复用未定
+makeRPM.py	script	bigworld/build/bw_internal/scripts/makeRPM.py	release	-	BW-14-04	-	blocked	调 make rpm,但 rpm/everything 目标在参考树无定义(01-03 缺口)
+makeSolutions.py	script	bigworld/build/bw_internal/scripts/makeSolutions.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05);硬编码 C:\Python27\python.exe 陈旧残留(01-03)
+cmake_all_windows.py	script	bigworld/build/bw_internal/scripts/cmake_all_windows.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winArchiveBuild.bat	script	bigworld/build/bw_internal/scripts/winArchiveBuild.bat	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winMakeClient.py	script	bigworld/build/bw_internal/scripts/winMakeClient.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winCMakeClient.py	script	bigworld/build/bw_internal/scripts/winCMakeClient.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winCMakeShaders.py	script	bigworld/build/bw_internal/scripts/winCMakeShaders.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winCMakeUnitTests.py	script	bigworld/build/bw_internal/scripts/winCMakeUnitTests.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winMakeUnitTests.py	script	bigworld/build/bw_internal/scripts/winMakeUnitTests.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+perforce_synchronizer.py	script	bigworld/build/bw_internal/scripts/perforce_synchronizer.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+project_manager.py	script	bigworld/build/bw_internal/scripts/project_manager.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+package-daily.sh	script	scripts/package-daily.sh	release	-	BW-14-04	.github/workflows/package-daily.yml	covered	参考滚动发布脚本;Boundless 等价=package-daily.yml+ci/package.sh(BW-22-04-01,无 tag/无 release)
+package-daily-windows.ps1	script	scripts/package-daily-windows.ps1	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+make_rpm_target	gap	build/make/Makefile	gap	-	BW-14-04	-	blocked	01-03: makeRPM.py 调 make rpm,但 rpm/everything 目标在当前参考树无定义(全树 grep '^rpm:' 仅 third_party/curl)
+bigworld_key	gap	server/bigworld.key	gap	-	BW-00-02-03	-	blocked	BigWorld 商业许可密钥,全仓无、不可重建;挡 baseapp/cellapp/dbapp 启动
+loginapp_privkey	gap	server/loginapp.privkey	gap	-	BW-00-02-05	-	blocked	RSA 私钥缺失,loginapp 初始化即败;与 00-02-05 外部条件同源
+twisted_module	gap	server	gap	-	BW-00-02-03	-	blocked	twisted 模块未入 PYTHONPATH(site-packages 缺失),dbapp 启动败;待 Python 迁移台账落地后复核
+fantasydemo_art	gap	programming/fantasydemo	gap	-	BW-14-01	-	blocked	仓库无美术资源(mesh/model/visual/space/texture/UI),仅 .wpr+web/php+占位 res(由 generate-fantasydemo-assets.py 生成);来源=生成脚本 docstring
+openautomate_sdk	gap	third_party/openautomate	gap	-	BW-11-05	-	blocked	NVIDIA 专有 SDK,00-01-04 决策"不用",功能替代缺口
+windows_runner	gap	-	gap	-	BW-00-02-05	-	blocked	Windows 真机/runner 缺失,挡 58 个 CMake-only 目标验收 + bwclient 基线 + Windows 发行脚本
+sdk_package	gap	-	gap	-	BW-14-02	-	blocked	Boundless 尚无 SDK 打包面;原版 SDK=bwentity DLL+entitydef 定义+examples 样例
