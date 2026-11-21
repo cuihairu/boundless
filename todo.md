@@ -1160,6 +1160,7 @@
 验证原生服务端全角色、Bots、编辑器/客户端、资产工具及发布包。保留旧 EL7 互通基准，另记录 Boundless 自身的发行版及系统库要求。
 
 - [ ] **BW-15-02-01 跑 Linux 服务端全角色**。**验收** 拓扑能够启动和关闭。
+  - 证据（部分，未勾）：进程生命周期接通（185d7f7）——`server_runtime::app::run` 校验角色后**阻塞等退出信号再干净关服**：`pthread_sigmask` 屏蔽 SIGTERM/SIGINT/SIGQUIT，`SignalProcessor::wait_for_signals`（`sigwaitinfo`+EINTR 重试，`signals.rs:483`）等信号，抵达即 `dispatch_signal`（打印 `SignalProcessor::dispatchSignal: <name>`）并打印 `[{role}] has shut down.`（退出契约引自 `server_app.rs` `bw_main_t` 的 `"%s has shut down."`）。**全 8 角色实测 SIGTERM→exit 0**（baseapp/baseappmgr/cellapp/cellappmgr/dbapp/dbappmgr/loginapp/reviver），baseapp 另验 SIGINT/SIGQUIT 亦 exit 0。验收测试 `apps/server/tests/role_lifecycle.rs`（`every_role_starts_and_shuts_down_on_sigterm` 8 角色 + `sigint_and_sigquit_also_shut_down`）。**剩余**：真实 Dispatcher 事件循环、bw.xml/接口初始化（BW-01-04）、关服前 Mercury 接口 `prepareForShutdown` 走线（BW-02）；SIGINT 干净退出是**最小入口的既定偏差**——原版 `base_on_signalled` 对 SIGINT 重置 disposition 再 raise 即死，完整 per-app SIGQUIT handler 随 BW-02 ServerApp 接线落地。
 - [ ] **BW-15-02-02 跑 Linux Bots 与离线工具**。**验收** 样例输出和负载报告有效。
 - [ ] **BW-15-02-03 跑 Linux 客户端和编辑器**。**验收** 固定地图可显示并编辑。
 - [ ] **BW-15-02-04 验证 Linux 安装包**。**验收** 干净系统可安装和启动。
