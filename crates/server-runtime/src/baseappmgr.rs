@@ -192,6 +192,51 @@ pub enum DeferredReason {
     ShuttingDown,
 }
 
+/// `BaseAppMgr::initData` outcome: the initial game time from the DBApp
+/// Alpha.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitDataOutcome {
+    /// Ignored: initialisation data was already received.
+    Ignored,
+    /// Accepted.
+    Accepted {
+        /// Whether the caller should `set_start_time(game_time)`: the
+        /// manager's game time was still zero (`BaseAppMgr::initData` only
+        /// adopts the DBApp time on the first start, not on recovery).
+        should_set_start_time: bool,
+    },
+}
+
+/// `BaseAppIntInterface::startupArgs` for one BaseApp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BaseAppStartup {
+    /// The app's address for cells.
+    pub addr: Addr,
+    /// `args.bootstrap`: set on exactly one non-service BaseApp.
+    pub bootstrap: bool,
+    /// `args.didAutoLoadEntitiesFromDB`.
+    pub did_auto_load_entities_from_db: bool,
+}
+
+/// `BaseAppMgr::startup` outcome: the DBApp Alpha told the manager to start
+/// the rest of the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupOutcome {
+    /// Already started: the request is ignored.
+    AlreadyStarted,
+    /// No BaseApp (ready or pending) to start: the reference CRITICALs.
+    NoBaseApps,
+    /// Started: every BaseApp was told to start, with the bootstrap flag on
+    /// exactly one non-service BaseApp, and the CellAppMgr was told to
+    /// start.
+    Started {
+        /// `BaseAppIntInterface::startup` per app.
+        apps: Vec<BaseAppStartup>,
+        /// Whether the `CellAppMgrInterface::startup` was forwarded.
+        cell_app_mgr: bool,
+    },
+}
+
 /// The reply `BaseAppMgr::add` streams back on success.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BaseAppInitData {
@@ -328,6 +373,64 @@ impl BaseAppScheduler {
 
     pub fn set_has_started(&mut self, started: bool) {
         self.has_started = started;
+    }
+
+    /// `BaseAppMgr::initData`: the initial game time from the DBApp Alpha.
+    /// Subsequent messages are ignored; the DBApp time is only adopted on
+    /// the first start, not on recovery.
+    pub fn init_data(&mut self, _game_time: u32, current_time: u32) -> InitDataOutcome {
+        if self.has_init_data {
+            return InitDataOutcome::Ignored;
+        }
+        self.has_init_data = true;
+        InitDataOutcome::Accepted {
+            should_set_start_time: current_time == 0,
+        }
+    }
+
+    /// `BaseAppMgr::requestHasStarted`: the reply to the DBAppMgr's query.
+    pub fn request_has_started(&self) -> bool {
+        self.has_started
+    }
+
+    /// `BaseAppMgr::startup`: the DBApp Alpha tells the manager to start the
+    /// rest of the server. Once the timer starts, `hasStarted_` is set, the
+    /// CellAppMgr is told to start, and every BaseApp (ready then pending)
+    /// is sent `BaseAppIntInterface::startup` with the bootstrap flag on
+    /// exactly one non-service BaseApp.
+    pub fn startup(&mut self, did_auto_load_entities_from_db: bool) -> StartupOutcome {
+        if self.has_started {
+            return StartupOutcome::AlreadyStarted;
+        }
+
+        if self.base_apps.is_empty() && self.service_apps.is_empty() && self.pending.is_empty() {
+            return StartupOutcome::NoBaseApps;
+        }
+
+        // startTimer(): the game timer and the slave TimeKeeper come up.
+        self.has_started = true;
+
+        let mut apps = Vec::new();
+        let mut bootstrap_used = false;
+        for app in self
+            .base_apps
+            .iter()
+            .chain(self.service_apps.iter())
+            .chain(self.pending.iter())
+        {
+            let bootstrap = !bootstrap_used && !app.is_service_app;
+            bootstrap_used |= bootstrap;
+            apps.push(BaseAppStartup {
+                addr: app.addr_for_cells,
+                bootstrap,
+                did_auto_load_entities_from_db,
+            });
+        }
+
+        StartupOutcome::Started {
+            apps,
+            cell_app_mgr: self.cell_app_mgr_established,
+        }
     }
 
     /// Find a ready app by its cells address.
@@ -1236,5 +1339,97 @@ mod tests {
             scheduler.controlled_shut_down(ShutDownStage::Trigger, 0),
             ShutdownOutcome::TriggerServerShutdown
         );
+    }
+
+    /// `initData` is taken once and only adopts the DBApp time on the first
+    /// start.
+    #[test]
+    fn init_data_taken_once_and_start_time_guarded() {
+        let mut scheduler = BaseAppScheduler::new();
+        assert_eq!(
+            scheduler.init_data(100, 0),
+            InitDataOutcome::Accepted {
+                should_set_start_time: true
+            }
+        );
+        assert_eq!(scheduler.init_data(200, 0), InitDataOutcome::Ignored);
+
+        // A recovery start adopts the time only when the clock is still 0.
+        let mut scheduler = BaseAppScheduler::new();
+        assert_eq!(
+            scheduler.init_data(300, 0),
+            InitDataOutcome::Accepted {
+                should_set_start_time: true
+            }
+        );
+        let mut scheduler = BaseAppScheduler::new();
+        assert_eq!(
+            scheduler.init_data(300, 50),
+            InitDataOutcome::Accepted {
+                should_set_start_time: false
+            }
+        );
+    }
+
+    /// `startup` sets `hasStarted_`, forwards the CellAppMgr start, and puts
+    /// the bootstrap flag on exactly one non-service BaseApp.
+    #[test]
+    fn startup_sets_ready_and_bootstraps_one() {
+        let mut scheduler = ready_scheduler();
+        let base = add_base_apps(&mut scheduler, 2);
+        assert_eq!(scheduler.request_has_started(), false);
+
+        let outcome = scheduler.startup(false);
+        let StartupOutcome::Started { apps, cell_app_mgr } = outcome else {
+            panic!("unexpected startup outcome: {outcome:?}");
+        };
+        assert!(cell_app_mgr);
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].addr, base[0]);
+        assert!(apps[0].bootstrap);
+        assert!(!apps[1].bootstrap);
+        assert!(!apps[1].did_auto_load_entities_from_db);
+
+        assert_eq!(scheduler.request_has_started(), true);
+        assert_eq!(scheduler.startup(true), StartupOutcome::AlreadyStarted);
+
+        // A BaseApp registered after the start is told it is ready.
+        let late = cell_addr(9);
+        assert!(matches!(
+            scheduler.register(late, client_addr(9), false, 10),
+            RegisterOutcome::Registered(BaseAppInitData { is_ready: true, .. })
+        ));
+    }
+
+    /// `startup` refuses when no BaseApp has registered yet.
+    #[test]
+    fn startup_refused_without_base_apps() {
+        let mut scheduler = ready_scheduler();
+        assert_eq!(scheduler.startup(false), StartupOutcome::NoBaseApps);
+        assert_eq!(scheduler.request_has_started(), false);
+    }
+
+    /// The bootstrap flag never lands on a service app.
+    #[test]
+    fn bootstrap_skips_service_apps() {
+        let mut scheduler = ready_scheduler();
+        let base = add_base_apps(&mut scheduler, 1);
+        let service = cell_addr(100);
+        assert!(matches!(
+            scheduler.register(service, client_addr(100), true, 10),
+            RegisterOutcome::Registered(_)
+        ));
+        scheduler.finished_init(service);
+
+        let outcome = scheduler.startup(true);
+        let StartupOutcome::Started { apps, .. } = outcome else {
+            panic!("unexpected startup outcome: {outcome:?}");
+        };
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].addr, base[0]);
+        assert!(apps[0].bootstrap);
+        assert!(apps[0].did_auto_load_entities_from_db);
+        assert_eq!(apps[1].addr, service);
+        assert!(!apps[1].bootstrap);
     }
 }

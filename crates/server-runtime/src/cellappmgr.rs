@@ -2222,7 +2222,8 @@ fn scorer_score(kind: ScorerKind, app: &CellAppRecord, space: &Space, group_load
 /// `CellAppComparer::isValidApp`: `false` when any gate rejects the app.
 pub fn is_valid_app(scorers: &[ScorerConfig], app: &CellAppRecord, space: &Space) -> bool {
     for sc in scorers {
-        if matches!(sc.kind, ScorerKind::LimitedSpaces) && app.num_cells >= sc.max_spaces_per_cell_app
+        if matches!(sc.kind, ScorerKind::LimitedSpaces)
+            && app.num_cells >= sc.max_spaces_per_cell_app
         {
             return false;
         }
@@ -2590,6 +2591,22 @@ pub enum AddAppOutcome {
     },
 }
 
+/// `CellAppMgr::startup` outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CellAppStartupOutcome {
+    /// `MF_ASSERT(!hasStarted_)` failed: the manager is already started.
+    AlreadyStarted,
+    /// Started.
+    Started {
+        /// The default space, `None` when it could not be created (for
+        /// instance when no CellApp is registered yet).
+        default_space: Option<SpaceId>,
+        /// `CellAppInterface::startup` per CellApp, with the BaseApp address:
+        /// `(cell app, base app)`.
+        apps: Vec<(Addr, Option<Addr>)>,
+    },
+}
+
 // -----------------------------------------------------------------------------
 // Section: CellAppMgr
 // -----------------------------------------------------------------------------
@@ -2691,6 +2708,40 @@ impl CellAppMgr {
     /// `CellAppMgr::setDBAppAlpha`.
     pub fn set_db_app_alpha(&mut self, addr: Addr) {
         self.db_app_alpha = Some(addr);
+    }
+
+    /// `CellAppMgr::startup`: the BaseAppMgr tells the manager to start. The
+    /// game timer and the master TimeKeeper come up (`startTimer`), the
+    /// default space is created if it is missing (`findSpace(1)`), and every
+    /// CellApp is told to start (`cellApps_.startAll`).
+    pub fn startup(&mut self) -> CellAppStartupOutcome {
+        if self.has_started {
+            return CellAppStartupOutcome::AlreadyStarted;
+        }
+
+        self.has_started = true;
+
+        // This forces the default space to be created if it isn't already.
+        let default_space = if self.spaces.is_empty() {
+            self.create_space(1, false, 0)
+        } else if self.spaces.contains_key(&1) {
+            Some(1)
+        } else {
+            None
+        };
+
+        // Tell the cellApps to start, passing along the BaseApp address.
+        let base_app = self.base_app_addr;
+        let apps: Vec<(Addr, Option<Addr>)> = self
+            .apps
+            .iter()
+            .map(|record| (record.addr, base_app))
+            .collect();
+
+        CellAppStartupOutcome::Started {
+            default_space,
+            apps,
+        }
     }
 
     /// `CellAppMgr::generateSpaceID`.
@@ -3619,5 +3670,53 @@ mod tests {
             &bytes[off..off + 4],
             &(NUM_CPU_OFFLOAD_LEVELS as u32).to_le_bytes()
         );
+    }
+
+    // ------------------------------------------------------------------
+    // BW-05-06-01: startup readiness conditions.
+    // ------------------------------------------------------------------
+
+    /// `startup` raises `hasStarted_`, creates the default space, and tells
+    /// every CellApp to start with the BaseApp address.
+    #[test]
+    fn startup_starts_default_space_and_apps() {
+        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5), ((0x7f000002, 3000), 0.5)]);
+        assert!(!mgr.has_started);
+
+        let outcome = mgr.startup();
+        let CellAppStartupOutcome::Started {
+            default_space,
+            apps,
+        } = outcome
+        else {
+            panic!("unexpected startup outcome: {outcome:?}");
+        };
+
+        assert!(mgr.has_started);
+        assert_eq!(default_space, Some(1));
+        assert_eq!(apps.len(), 2);
+        assert!(apps.contains(&((0x7f000001, 3000), Some((0x7f000001, 100)))));
+        assert!(apps.contains(&((0x7f000002, 3000), Some((0x7f000001, 100)))));
+
+        // A second start is refused (`MF_ASSERT(!hasStarted_)`).
+        assert_eq!(mgr.startup(), CellAppStartupOutcome::AlreadyStarted);
+    }
+
+    /// With no CellApp registered the default space cannot be created, so
+    /// the cluster is not ready to serve.
+    #[test]
+    fn startup_without_cell_apps_has_no_space() {
+        let mut mgr = mgr_with(vec![]);
+        let outcome = mgr.startup();
+        let CellAppStartupOutcome::Started {
+            default_space,
+            apps,
+        } = outcome
+        else {
+            panic!("unexpected startup outcome: {outcome:?}");
+        };
+        assert_eq!(default_space, None);
+        assert!(apps.is_empty());
+        assert!(mgr.has_started);
     }
 }
