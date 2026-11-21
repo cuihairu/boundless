@@ -20,3 +20,9 @@ pub mod poller;
 /// Windows poller under BW-15-05.
 #[cfg(unix)]
 pub mod wakeup;
+
+/// Advisory file locking and atomic replacement (BW-15-01-04). Unix
+/// only: `flock(2)`/`rename(2)`; the Windows `LockFileEx`/`ReplaceFile`
+/// backend lands with the Windows work under BW-15-05.
+#[cfg(unix)]
+pub mod file;
