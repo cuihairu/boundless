@@ -10,6 +10,7 @@ pub mod case_registry;
 pub mod channel;
 pub mod clock;
 pub mod config_fixture;
+pub mod environment;
 pub mod harness;
 pub mod layering;
 pub mod multiproc;
