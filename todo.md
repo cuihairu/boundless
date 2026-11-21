@@ -1655,7 +1655,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 本组 run 号与结论汇总在 BW-22-02 末尾的「BW-22 交付汇总」一张表里（同一 workflow 面被逐条改造，表按 run 排列）。
 
-门禁要点：三条 lane 在本席位可复跑（`ci/toolchain-check.sh --offline` 冷缓存 exit 0；`ci/check-typescript.sh` 对 `extensions/vscode` 真门禁并通过 149 个 vitest 用例；`ci/check-docs.sh` 47 链接 0 死）。Rust 侧 `cargo fmt`/`clippy` 在全仓口径仍红，属各 crate 所属席位的历史债务，不属 CI 面；rebase 到 `a2c0f66` 后实测 **211 处 fmt**（resources 104 / mercury 32 / server-runtime 34 / platform 24 / foundation 17）与 **32 处 clippy**（全部落在 `crates/resources` 的 `bwresource.rs` / `packed.rs` / `zip.rs`）——债务在席位间随合并移动，CI 面只负责把位置打到 `path:line:col`。
+门禁要点：三条 lane 在本席位可复跑（`ci/toolchain-check.sh --offline` 冷缓存 exit 0；`ci/check-typescript.sh` 对 `extensions/vscode` 真门禁并通过 149 个 vitest 用例；`ci/check-docs.sh` 47 链接 0 死）。Rust 侧 `cargo fmt`/`clippy` 在全仓口径仍红，属各 crate 所属席位的历史债务，不属 CI 面；rebase 到 `a2c0f66` 后实测 **211 处 fmt**（resources 104 / mercury 32 / server-runtime 34 / platform 24 / foundation 17）与 **32 处 clippy**（全部落在 `crates/resources` 的 `bwresource.rs` / `packed.rs` / `zip.rs`）——债务在席位间随合并移动，CI 面只负责把位置打到 `path:line:col`。**platform 的 24 处已清**（socket 19 + interface 3 于 161f8a7，另 2 处随 59da22c poller 落；`cargo fmt --check -p platform` 与 clippy `-D warnings` 均绿、59 测零回归），余 187 处全在兄弟席 crate（resources/mercury/server-runtime/foundation）。
 
 #### BW-22-02 测试矩阵与服务装配
 
