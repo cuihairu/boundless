@@ -9,11 +9,14 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
-/// The directory the built `cdylib` lands in, derived the way Cargo lays it
-/// out: `CARGO_TARGET_DIR` when set, else `<workspace>/target`, under the
-/// profile the test binary was built for.
-fn built_module_dir() -> PathBuf {
+/// The directory the built `cdylib` lands in. Cargo's `test` lane builds the
+/// `rlib` for the test harness but not the `cdylib`, so a cold `cargo test`
+/// finds nothing here — `ensure_built` falls back to building the cdylib into
+/// a scratch target dir, which is why the test never needs a prior
+/// `cargo build`.
+fn workspace_target_dir() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -27,6 +30,45 @@ fn built_module_dir() -> PathBuf {
         }
     };
     target.join(profile)
+}
+
+/// The directory holding the built `libboundless.so`. Built once, shared by
+/// both tests so they do not race a scratch `cargo build`.
+fn module_dir() -> &'static PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = workspace_target_dir();
+        if dir.join("libboundless.so").is_file() {
+            return dir;
+        }
+        // Cold run: build the cdylib into a scratch target dir. A separate
+        // target dir means a separate build lock, so the nested `cargo build`
+        // cannot deadlock against the `cargo test` process that owns the
+        // workspace target dir.
+        let scratch = std::env::temp_dir().join("boundless-python-module-build");
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let status = Command::new("cargo")
+            .arg("build")
+            .arg("-p")
+            .arg("python-module")
+            .arg("--target-dir")
+            .arg(&scratch)
+            .arg("--manifest-path")
+            .arg(manifest.join("../../Cargo.toml"))
+            .status()
+            .expect("spawn cargo build for the module");
+        assert!(
+            status.success(),
+            "cargo build of the python-module cdylib failed"
+        );
+        let dir = scratch.join("debug");
+        assert!(
+            dir.join("libboundless.so").is_file(),
+            "libboundless.so missing after build at {}",
+            dir.display()
+        );
+        dir
+    })
 }
 
 /// The interpreter the build linked against: `BOUNDLESS_PYTHON` first, then
@@ -43,11 +85,10 @@ fn interpreter() -> PathBuf {
 /// Copies `libboundless.so` into a scratch install dir under the name CPython
 /// resolves (`boundless.so`), returning that dir.
 fn install_dir() -> PathBuf {
-    let built = built_module_dir().join("libboundless.so");
+    let built = module_dir().join("libboundless.so");
     assert!(
         built.is_file(),
-        "the built module is missing; run `cargo build -p python-module` first \
-         (looked at {})",
+        "the built module is missing at {}",
         built.display()
     );
     let dir = std::env::temp_dir().join("boundless-python-module-install");
@@ -95,7 +136,7 @@ print("boundless", boundless.__version__, "imported")
 /// `libboundless.so`.
 #[test]
 fn the_install_step_renames_libboundless_so() {
-    let built = built_module_dir().join("libboundless.so");
+    let built = module_dir().join("libboundless.so");
     assert!(
         built.is_file(),
         "libboundless.so not built at {}",
