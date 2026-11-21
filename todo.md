@@ -1146,6 +1146,7 @@
 - [ ] **BW-15-01-04 封装文件锁及原子替换**。**验收** 并发更新夹具通过。
   - 证据（部分，未勾）：`crates/platform/src/file.rs`（d0a9ac4）——`FileLock`（`flock` LOCK_EX 互斥、try 版返回 None 表已持有、Drop 即释放；**锁稳定伴生 `.lock` 文件而非被替换的数据文件**——rename 换 inode，锁被替换文件本身无法串行化更新，此平台事实已编码进模块文档）+ `atomic_replace`（同目录临时文件写全→`fsync`→`rename(2)` 原子换入，失败自动 unlink 残留）；Linux 实测 6 测：持锁期 try 被拒/释放后可重获、阻塞获取等释放、整文件换入、无临时残留、失败路径清理、**并发夹具（2 线程×50 锁-读-改-写-原子替换，计数恰为 100 零丢失）**。**剩余**：Windows `LockFileEx`/`ReplaceFile` 后端随 BW-15-05 落地。
 - [ ] **BW-15-01-05 封装内存映射与共享库查找**。**验收** 三端加载相同测试资源。
+  - 证据（部分，未勾）：`crates/platform/src/mmap.rs`（3359d3b）——`Mmap`（`mmap` PROT_READ|MAP_SHARED 整文件映射、空文件映射空切片、匿名零页映射、`Deref<[u8]>`、Drop `munmap`；mmap 需活 fd、成功后 close 映射仍有效）+ `DynamicLibrary`（`dlopen` RTLD_NOW|LOCAL、`dlsym`、Drop `dlclose`、`dlerror` 消费）；Linux 实测 7 测：文件映射逐字节等于文件、空文件、匿名页全零、缺文件报错、dlopen libc 并 dlsym malloc 非空、缺符号报错、缺库报错。**剩余**：Windows `CreateFileMapping`/`LoadLibrary` 后端随 BW-15-05 落地。
 - [ ] **BW-15-01-06 校验路径大小写、编码和系统目录**。**验收** 代表性夹具可寻址。
 - [ ] **BW-15-01-07 校验网络地址与断网行为**。**验收** IPv4/IPv6 和失联状态可复测。
 
