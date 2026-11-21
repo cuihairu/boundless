@@ -61,24 +61,32 @@ pub fn regenerate_session_key(now: u64) -> SessionKey {
 }
 
 /// The session side of one Proxy (`Proxy::prepareForLogin`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProxySession {
     client_addr: Option<Addr>,
     session_key: SessionKey,
 }
 
 impl ProxySession {
-    /// Constructor.
-    pub fn new() -> Self {
-        Self::default()
+    /// Constructor. The proxy constructor regenerates the session key at once,
+    /// so a fresh proxy already holds a non-zero key.
+    pub fn new(now: u64) -> Self {
+        Self {
+            client_addr: None,
+            session_key: regenerate_session_key(now),
+        }
     }
 
     /// `prepareForLogin`: the client address is recorded and the session key
-    /// is regenerated; the key is what the client is told to present.
+    /// is regenerated. The returned key is the one the client is told to
+    /// present on its next connect — the *previous* key, which the pending
+    /// login is keyed by — while the proxy keeps the new key for the attach
+    /// reply.
     pub fn prepare_for_login(&mut self, client_addr: Addr, now: u64) -> SessionKey {
+        let login_key = self.session_key;
         self.client_addr = Some(client_addr);
         self.session_key = regenerate_session_key(now);
-        self.session_key
+        login_key
     }
 
     /// `clientAddr_`.
@@ -178,18 +186,23 @@ mod tests {
 
     #[test]
     fn prepare_for_login_records_the_client_and_issues_a_key() {
-        let mut session = ProxySession::new();
-        let key = session.prepare_for_login(BASE_APP, NOW);
+        // The proxy constructor already holds a non-zero key.
+        let mut session = ProxySession::new(NOW);
+        assert_ne!(session.session_key(), 0);
+        // The login happens later than the construction, so the time advances.
+        let key = session.prepare_for_login(BASE_APP, NOW + 1);
         assert_eq!(session.client_addr(), Some(BASE_APP));
-        assert_eq!(session.session_key(), key);
-        assert_ne!(key, 0);
-        // A second preparation issues a different key.
-        assert_ne!(session.prepare_for_login(BASE_APP, NOW + 1), key);
+        // The login key is the previous key; the proxy keeps a new one for
+        // the attach reply.
+        assert_eq!(key, regenerate_session_key(NOW));
+        assert_ne!(session.session_key(), key);
+        // A second preparation issues a different login key.
+        assert_ne!(session.prepare_for_login(BASE_APP, NOW + 2), key);
     }
 
     #[test]
     fn the_reply_carries_the_proxy_address_and_the_key() {
-        let mut session = ProxySession::new();
+        let mut session = ProxySession::new(NOW);
         let key = session.prepare_for_login(BASE_APP, NOW);
         let reply = ContinuationReply {
             entity_mailbox: EntityMailBoxRef::new(7, BASE_APP),
