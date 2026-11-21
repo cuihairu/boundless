@@ -97,7 +97,8 @@
 
 记录二进制哈希、编译选项、配置、Python 标准库和数据库版本。复跑上游单测入口并记录实际参编用例。获取单机集群、最小客户端、Windows 客户端及工具的可运行基准。
 
-- [ ] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。
+- [x] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。
+  - 证据：`docs/review/bw00-02-01-runtime-environment.md`（cbd765b）+ `docs/review/data/bw00-02-01-built-artifacts.sha256`——提交锚点：HEAD b119c389（`bigworld-14.4.1-320-gb119c389`，基线 tag `bigworld-14.4.1`）；二进制哈希：参考树 389 个构建产物（cmake-entitydef 173/el7 137/cmake-python 21/cmake-network 20/cmake-resmgr 19/cmake-cstdmf 19），完整清单 389 行，单测可执行内联（cstdmf_test `34c0de67…`、resmgr_test `2a52dfa1…`、entitydef_test `f2abeaf6…`），el7/lib 关键库（libbwpython3.13.a、libdb_storage_mysql.a、libnetwork.a 等）入清单；构建参数：CMake `CMAKE_BUILD_TYPE=Release` + `/usr/bin/cc` + `/usr/bin/c++`（CMakeCache）、Make el7 树 + makeServer.py `MF_CONFIG` 变体（Debug/Hybrid×64 + `_SingleThreaded`/`_SystemPython`）、`build_revision=-1`（未烘焙版本）；Python **3.13**（`BW_PYTHON_VERSION := 3.13`（third_party_python.mak:7）、cmake-python 构建 bwpython313/python3.13、libbwpython3.13.a）+ 14 个 site-packages wheels（sqlalchemy-1.4.54/attrs-24.2.0/twisted-24.7.0 等）；DB：MySQL client **8.4.13**（系统 `mysql_config`，未 vendored）+ SQLite **3.6.23.1**（third_party/sqlite/sqlite3.h，vendored）。已知登记项：服务端进程二进制未建（参考构建止于库阶段，可执行哈希留待全量构建补采）。
 - [ ] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
 - [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
