@@ -1256,7 +1256,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [ ] **BW-16-02-01 收敛系统调用至 platform**。**验收** 依赖扫描确认调用位置。（依赖 crates/platform 改动冻结，主席位 flake 调查在途，解禁后解锁）
 - [ ] **BW-16-02-02 隔离图形后端**。**验收** 服务端构建不加载图形后端。（依赖 rendering crate 未建，随 BW-11 立项解锁）
 - [ ] **BW-16-02-03 隔离数据库驱动**。**验收** 可单独启用后端。（依赖 storage crate 未建，随 BW-09 立项解锁）
-- [ ] **BW-16-02-04 隔离 CPython FFI**。**验收** 绑定与解释器所有权有测试。（依赖 python-host crate 未建，现为 4 行空壳，随 BW-03 立项解锁）
+- [x] **BW-16-02-04 隔离 CPython FFI**。**验收** 绑定与解释器所有权有测试。（commit 02a009a）
+  - 证据：原版 CPython FFI 无独立层（`lib/script` 与 `lib/pyscript` 直接链 libbwpython3.13.a，嵌入所有权由 `Py_Initialize`/`Py_Finalize` 全局状态承担）；新版 CPython FFI 全量收拢到 `crates/python-host`（`src/capi.rs` 50 个 pub 面，`PyObject` 两字段布局对齐 3.x 稳定 ABI），其余 crate 零 FFI 泄漏（`grep -rl "PyObject|Py_Initialize|pyo3"` 跨 crate 仅命中 python-host）。**所有权与绑定有测试**：`Interpreter::init/fini/drop` 生命周期场景（`scenario_init_is_idempotent_while_up`、`scenario_fini_finalises_once`、`scenario_drop_runs_fini`、`scenario_fini_blanks_main_module`、`scenario_a_handle_owns_one_reference`、`scenario_a_handle_outliving_finalisation_is_safe`）+ 绑定（`scenario_stdout_lands_in_the_log_sink`、`scenario_a_script_under_the_resource_root_imports`、`scenario_big_world_module_carries_the_component`）；`cargo test -p python-host --lib` 38 passed 0 failed。**新版对照**：Boundless 将 CPython 嵌入所有权按句柄引用计数而非进程全局，`PyRef` 空句柄自相等、越界 finalise 后安全（`pyref.rs`），与 BW-03 席位的解释器初始化、输出路由与 init/fini 作业场景同源交付（02a009a 起，BW-03 席位交付）。
 - [x] **BW-16-02-05 接入依赖检查**。**验收** 跨层违规产生可定位报告。（commit 9f574e6）
   - 证据：原版 GNU Make/CMake 无依赖方向检查（仅编译顺序）；新版 `cargo run -p test-support --bin check-deps` 输出 `manifest:line: kind: detail`，同规则由 cargo test 常驻。实测合成 workspace 得 `crates/above/Cargo.toml:7: unregistered crate` 并退出码 2。
 
