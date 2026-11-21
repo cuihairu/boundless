@@ -98,8 +98,16 @@
   - 新版：`ci/reference-baseline.sh` 五条 leg——reference-commit（含 **provenance 守卫**：`rev-parse --show-toplevel` 不等于树自身即 FAIL，防 `git -C` 在无 `.git` 目录上向上走、把别仓 commit 认作原版基线）、reference-binaries（53 文件逐个 sha256 → `reference-binaries.tsv`，其整体指纹 `db7c171f…` 入 json）、reference-python（lib 名 + 解释器双探）、reference-db（文档声明 + 出处路径，无声明记 absent 不编造）、reference-build（TESTING.md make 行 + config.log 若在）；树缺席 → SKIP 点名 BW-00-02-01（CI 托管 runner 面即如此）；树在而坏 → FAIL 不出空心基线。持久记录入库 `tests/baseline/reference-env.json` + `tests/baseline/reference-binaries.tsv`（56 行=3 头+53 行）；活树与已冻结记录 commit 漂移时 ci_note（快照锚点语义，不失败）。
   - 结果：本地实跑采集全 legs PASS；自测 **3/3 绿**（植入树 round-trip：64 位指纹 + 恰 3 行 tsv + json 可解析；缺席树 SKIP；坏树 FAIL——曾实测复现 `git -C` 上溯假 PASS（拿到的是本仓 1ce69a9 的 commit）后补守卫修掉）。
   - 证据：CI run **44839762476**（Reference baseline **success**、Harness self-tests **success**，13 skip / 7 success / 0 failure），commit c4f9c2e；本地复跑命令 `ci/reference-baseline.sh`（`BW_REFERENCE=/home/cui/workspaces/BigWorld` 时实跑，输出 `ci-out/reference-baseline/`）。
-- [ ] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
-- [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
+- [x] **BW-00-02-02 复跑原版单测**（commit 663872f）。**验收** 保存参编列表、执行命令及结果。
+  - 原版：参编列表不是目录通配——模块在 `programming/**/unit_test/Makefile.rules` 里以 `type := unit_test` + `name := <n>` 注册，全量入口 `bw-run-all-unit-tests` 逐个走 `cd <unit_test dir> && timeout 1800 <binary> --root <tree>`。
+  - 新版：`ci/reference-tests.sh` 从源码树派生同一列表、跑同一命令、同一 1800s 预算，逐模块记录组件目录、用例数、失败摘要行、退出码与秒数；派生到但未发布或超预算记红（不认证未观测的东西）；树缺席 → SKIP 点名 BW-00-02-02；树在而无 git 溯源 → FAIL（说不出 commit 的结果不是基线）。
+  - 结果：21 个注册模块重跑全绿、1543 用例（cstdmf 452 / db 11 / entitydef 387 / math 44 / network 256 / physics2 44 / pyscript 151 / resmgr 88 / scene 5 / script 18 / server 5 / terrain 8 / unit_test_lib 1 / baseapp 17 / cellapp 53，余 6 个空壳 0 用例）；退出码全 0。
+  - 证据：`ci/reference-tests.sh` + 入库记录 `tests/baseline/reference-unit-tests.tsv`（21 行，锚定原版 commit 4657a17c）；本地重跑 `BW_REFERENCE=/home/cui/workspaces/BigWorld ci/reference-tests.sh` → `reference-tests	PASS	21 registered module(s) rerun green, 1543 case(s) counted`（本轮锚定 709ef69c，仍绿）；`ci/reference-tests.sh self-test` 与 `shellcheck -S warning`、`actionlint` 双绿。
+- [x] **BW-00-02-03 录制单机集群启动基线**（commit c93a242）。**验收** 留存拓扑、配置和日志。
+  - 原版：集群面即 `game/bin/server/el7/server`（14 个载荷）+ `el7/tools`（4 个工具/守护）；原版不附带 `~/.bwmachined.conf`、不预设 `BW_RES_PATH`，`process_defs` 在两者都缺时以 "Unable to open ~/.bwmachined.conf" / "No res path set" 退出，docs/index.md 与 docs/zh/index.md 亦未记载 baseappmgr 一类的启动命令。
+  - 新版：`ci/reference-cluster.sh` 三面记录——**topology**（载荷逐个入 `cluster-topology.tsv`，按 `*mgr`/`bwmachined*|message_logger`/`*extensions` 分类为 manager/daemon/process）、**config**（`BW_RES_PATH` 状态、资源根 `game/res/bigworld`、machined 配置文件状态）、**logs**（启动门开后才有）；**启动门**按实况判定：门开（配置存在且 `BW_RES_PATH` 已设）→ 记 PASS 并可留日志，门关 → SKIP 点名缺口。不替原版编造配置。
+  - 结果：`cluster-topology	PASS	17 payload(s) recorded (3 managers, 2 daemons)`；`cluster-config	PASS	BW_RES_PATH unset; resource root present (scripts ); machined config absent (/home/cui/.bwmachined.conf)`；`cluster-launch	SKIP	absent (~/.bwmachined.conf) and BW_RES_PATH unset`；`cluster-baseline.json` 记 `launch_gate:"closed"`、`logs:"absent (no launch recorded)"`。
+  - 证据：`ci/reference-cluster.sh` + 入库 `tests/baseline/cluster-topology.tsv`（17 行载荷 + 3 行头）与 `cluster-baseline.json`（17 载荷 / 3 manager / 2 daemon / 门关）；自测 **4/4 绿**（植入载荷记 4 载荷并点名门关、伪造配置+`BW_RES_PATH` 把门开成合法记录、树缺席 SKIP 点名票号、无 el7 载荷树 FAIL「空心基线」）；`shellcheck -S warning`、`actionlint` 双绿。
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
 - [ ] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。
 
