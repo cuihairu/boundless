@@ -104,7 +104,9 @@
 - [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
   - 证据（部分，未勾）：`docs/review/bw00-02-03-single-machine-cluster.md`（cd37838）+ 5 个启动日志（data/bw00-02-03-*.log）——**进展**：服务端二进制此前未建，本次 `make -j$(nproc)`（VCPKG_ROOT=/home/cui/vcpkg，g++ 15.2 -std=c++23，el7 构建一致）全量构建成功无错误，产出 baseapp/serviceapp/baseappmgr/cellapp/cellappmgr/dbapp/dbappmgr/loginapp/reviver/bots（server/el7/server/）+ bwmachined2（tools/）+ commands 工具；**启动尝试**（fantasydemo/res:game/res/bigworld，server/bw.xml 最小版，bwmachined2 -f）：baseappmgr/cellappmgr/dbappmgr 达 `Version 14.4.1` 并持续运行（管理器层基线已录），**卡点**：baseapp/cellapp/dbapp 均 `No key file server/bigworld.key found`（BigWorld 商业许可密钥，全仓无、被裁剪、不可重建）、loginapp `Couldn't load private key from non-existent file server/loginapp.privkey`（RSA 密钥缺失）、dbapp 另缺 twisted 模块（site-packages 未入路径）——**完整单机集群拓扑与日志无法从当前参考树获取**，待用户提供合法许可密钥/授权环境后补录。
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
+  - 卡点（同 00-02-03 外部条件）：`simple_python_client` 已随本次全量构建产出（`game/bin/server/el7/examples/`），但登录链路服务端侧全被阻断——loginapp 缺 `server/loginapp.privkey`（初始化即败），集群应用层（baseapp/cellapp/dbapp）缺 `server/bigworld.key`（BigWorld 商业许可密钥，全仓无、不可重建）。客户端登录的请求/回调序列无法在服务端不在线的情况下录制；待许可密钥/授权环境补录。
 - [ ] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。
+  - 卡点（Windows 真机，外部条件）：bwclient 与全部编辑器/工具（worldeditor/modeleditor/…）为 **CMake Windows-only** 目标（见 00-01-02 清册：根 CMake 非 Windows 即 `FATAL_ERROR`，Linux 无原生 CMake 路径），Linux 侧不可构建；需 Windows 真机/runner 后逐目标复测，与 BW-15 Windows 后端批次同批落地。
 
 #### BW-00-03 Boundless 构建入口
 
