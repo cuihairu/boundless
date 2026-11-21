@@ -10,7 +10,7 @@ verification fixture and its coverage status. One TSV row per target:
     origin   where the row was registered from: make|cmake|release|resource|gap
     enable   enable condition: `-` (unconditional) or comma-joined feature
              tokens (usePython / useOpenSSL / ... or BW_* CMake macros)
-    task     todo item(s): `BW-xx-yy[-zz]` comma-joined, `pending`, or `n/a`
+    task     todo item(s): `BW-xx[-yy[-zz]]` comma-joined, `pending`, or `n/a`
     fixture  repo-relative path(s) to the runnable acceptance or the record
              that evidences coverage (`-` when none yet)
     status   covered|partial|pending|blocked|excluded
@@ -54,7 +54,7 @@ STATUS = ("covered", "partial", "pending", "blocked", "excluded")
 MAKE_TYPES = {"binary", "library", "shared_library", "unit_test",
               "copy_of_binary", "oneoff"}
 
-_TASK = r"BW-\d{2}(-\d{2}){1,2}"
+_TASK = r"BW-\d{2}(-\d{2}){0,2}"
 _ENABLE = r"[A-Za-z_][A-Za-z0-9_]*"
 
 
@@ -121,7 +121,7 @@ def validate(rows: list[dict], ledger: Path) -> list[str]:
             errors.append(f"{where}: status {r['status']!r} not in {STATUS}")
         if not _is_task(r["task"]):
             errors.append(f"{where}: task {r['task']!r} not "
-                          f"BW-xx-yy[-zz]/pending/n/a (comma-joined)")
+                          f"BW-xx[-yy[-zz]]/pending/n/a (comma-joined)")
         if not _is_enable(r["enable"]):
             errors.append(f"{where}: enable {r['enable']!r} not `-` or "
                           f"comma-joined feature tokens")

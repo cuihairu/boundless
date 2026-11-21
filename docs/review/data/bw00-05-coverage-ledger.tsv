@@ -1,80 +1,80 @@
 target	type	dir	origin	enable	task	fixture	status	note
-cellapp_example	shared_library	bigworld/examples/cellapp_extension	make	usePython	pending	-	pending	-
-simple_python_client	binary	bigworld/examples/client_integration/python/simple	make	useOpenSSL,usePython	pending	-	pending	-
-build	library	bigworld/lib/build	make	usePython	pending	-	pending	-
-chunk	library	bigworld/lib/chunk	make	usePython	pending	-	pending	-
-chunk_loading	library	bigworld/lib/chunk_loading	make	-	pending	-	pending	-
-connection	library	bigworld/lib/connection	make	useOpenSSL	pending	-	pending	-
-connection_model	library	bigworld/lib/connection_model	make	useOpenSSL	pending	-	pending	-
+cellapp_example	shared_library	bigworld/examples/cellapp_extension	make	usePython	BW-14-02	-	pending	-
+simple_python_client	binary	bigworld/examples/client_integration/python/simple	make	useOpenSSL,usePython	BW-14-02	-	pending	-
+build	library	bigworld/lib/build	make	usePython	BW-01	-	pending	-
+chunk	library	bigworld/lib/chunk	make	usePython	BW-10-01	-	pending	-
+chunk_loading	library	bigworld/lib/chunk_loading	make	-	BW-10-01	-	pending	-
+connection	library	bigworld/lib/connection	make	useOpenSSL	BW-02	-	pending	-
+connection_model	library	bigworld/lib/connection_model	make	useOpenSSL	BW-06-04	-	pending	-
 cstdmf	library	bigworld/lib/cstdmf	make	-	BW-01-01-01,BW-01-01-02,BW-01-01-03,BW-01-05-02,BW-01-05-03,BW-01-05-04,BW-01-05-05	crates/foundation/src/ids.rs,crates/foundation/src/time.rs,crates/foundation/src/time_queue.rs,crates/server-runtime/src/task_manager.rs	partial	allocator/basictypes/memhook 面待映射;ID/时间戳/TimeQueue/TaskManager 已移植
 cstdmf	unit_test	bigworld/lib/cstdmf/unit_test	make	-	BW-00-02-02	docs/review/data/bw00-02-02-original-unit-test-results.txt	covered	451 测试 0 失败(00-02-02 复跑)
-db	library	bigworld/lib/db	make	usePython	pending	-	pending	-
-db	unit_test	bigworld/lib/db/unit_test	make	-	pending	-	pending	-
-db_storage	library	bigworld/lib/db_storage	make	usePython	pending	-	pending	-
-db_storage_mysql	library	bigworld/lib/db_storage_mysql	make	useMySQL,usePython	pending	-	pending	-
-db_storage_xml	library	bigworld/lib/db_storage_xml	make	usePython	pending	-	pending	-
-delegate_interface	library	bigworld/lib/delegate_interface	make	-	pending	-	pending	-
-entitydef	library	bigworld/lib/entitydef	make	usePython	pending	-	pending	-
+db	library	bigworld/lib/db	make	usePython	BW-09-01	-	pending	-
+db	unit_test	bigworld/lib/db/unit_test	make	-	BW-09-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+db_storage	library	bigworld/lib/db_storage	make	usePython	BW-09-03	-	pending	-
+db_storage_mysql	library	bigworld/lib/db_storage_mysql	make	useMySQL,usePython	BW-09-02	-	pending	-
+db_storage_xml	library	bigworld/lib/db_storage_xml	make	usePython	BW-09-03	-	pending	-
+delegate_interface	library	bigworld/lib/delegate_interface	make	-	BW-10	-	pending	-
+entitydef	library	bigworld/lib/entitydef	make	usePython	BW-04-01	-	pending	-
 entitydef	unit_test	bigworld/lib/entitydef/unit_test	make	useOpenSSL,usePython	BW-00-02-02	docs/review/data/bw00-02-02-original-unit-test-results.txt	covered	380 测试 0 失败(00-02-02 复跑)
-entitydef_script	library	bigworld/lib/entitydef_script	make	usePython	pending	-	pending	-
+entitydef_script	library	bigworld/lib/entitydef_script	make	usePython	BW-04-01	-	pending	-
 math	library	bigworld/lib/math	make	-	BW-01-01-04,BW-01-01-05	crates/foundation/src/math	covered	-
-math	unit_test	bigworld/lib/math/unit_test	make	-	pending	-	pending	-
-memhook	library	bigworld/lib/memhook	make	-	pending	-	pending	-
-moo	library	bigworld/lib/moo	make	usePNG	pending	-	pending	-
-network	library	bigworld/lib/network	make	useOpenSSL	pending	-	pending	-
-network	unit_test	bigworld/lib/network/unit_test	make	useOpenSSL	pending	-	pending	-
-physics2	library	bigworld/lib/physics2	make	-	pending	-	pending	-
-physics2	unit_test	bigworld/lib/physics2/unit_test	make	-	pending	-	pending	-
-pyscript	library	bigworld/lib/pyscript	make	usePython	pending	-	pending	-
-pyscript	unit_test	bigworld/lib/pyscript/unit_test	make	usePython	pending	-	pending	-
+math	unit_test	bigworld/lib/math/unit_test	make	-	BW-01-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+memhook	library	bigworld/lib/memhook	make	-	BW-01	-	pending	-
+moo	library	bigworld/lib/moo	make	usePNG	BW-11	-	pending	-
+network	library	bigworld/lib/network	make	useOpenSSL	BW-02	-	pending	-
+network	unit_test	bigworld/lib/network/unit_test	make	useOpenSSL	BW-02	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+physics2	library	bigworld/lib/physics2	make	-	BW-10-03	-	pending	-
+physics2	unit_test	bigworld/lib/physics2/unit_test	make	-	BW-10-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+pyscript	library	bigworld/lib/pyscript	make	usePython	BW-03	-	pending	-
+pyscript	unit_test	bigworld/lib/pyscript/unit_test	make	usePython	BW-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
 resmgr	library	bigworld/lib/resmgr	make	-	BW-01-03-01,BW-01-03-02,BW-01-03-03,BW-01-03-04,BW-01-03-05,BW-01-03-06,BW-01-04-01	crates/resources/src/datasection.rs,crates/resources/src/bwresource.rs,crates/resources/src/multi_file_system.rs	partial	DataSection/ZIP/搜索路径/缓存/保存已覆盖;access_monitor/auto_config/bdiff 面待映射
 resmgr	unit_test	bigworld/lib/resmgr/unit_test	make	-	BW-00-02-02	docs/review/data/bw00-02-02-original-unit-test-results.txt	covered	88 测试 0 失败(00-02-02 复跑)
-scene	library	bigworld/lib/scene	make	-	pending	-	pending	-
-scene	unit_test	bigworld/lib/scene/unit_test	make	-	pending	-	pending	-
-script	library	bigworld/lib/script	make	usePython	pending	-	pending	-
-script	unit_test	bigworld/lib/script/unit_test	make	usePython	pending	-	pending	-
+scene	library	bigworld/lib/scene	make	-	BW-10-02	-	pending	-
+scene	unit_test	bigworld/lib/scene/unit_test	make	-	BW-10-02	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+script	library	bigworld/lib/script	make	usePython	BW-03	-	pending	-
+script	unit_test	bigworld/lib/script/unit_test	make	usePython	BW-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
 server	library	bigworld/lib/server	make	usePython	BW-01-04-02,BW-01-04-03,BW-01-04-04,BW-01-04-05,BW-01-05-01	crates/server-runtime/src/config.rs,crates/server-runtime/src/server_app.rs,crates/server-runtime/src/signals.rs,crates/server-runtime/src/shutdown.rs,crates/server-runtime/src/tick.rs	partial	BWConfig/ServerApp/退出码/信号/关服/Updatables 已覆盖;time_keeper/bwservice 余量待 BW-02/BW-04
-server	unit_test	bigworld/lib/server/unit_test	make	-	pending	-	pending	-
-speedtree	library	bigworld/lib/speedtree	make	-	pending	-	pending	-
-sqlite	library	bigworld/lib/sqlite	make	useSQLite	pending	-	pending	-
-terrain	library	bigworld/lib/terrain	make	-	pending	-	pending	-
-terrain	unit_test	bigworld/lib/terrain/unit_test	make	usePNG	pending	-	pending	-
+server	unit_test	bigworld/lib/server/unit_test	make	-	BW-01-04	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+speedtree	library	bigworld/lib/speedtree	make	-	BW-11	-	pending	-
+sqlite	library	bigworld/lib/sqlite	make	useSQLite	BW-09-03	-	pending	-
+terrain	library	bigworld/lib/terrain	make	-	BW-10-03	-	pending	-
+terrain	unit_test	bigworld/lib/terrain/unit_test	make	usePNG	BW-10-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
 unit_test_lib	library	bigworld/lib/unit_test_lib	make	-	BW-00-02-02	docs/review/data/bw00-02-02-original-unit-test-results.txt	partial	单测宿主库;经 BW-00-02-02 复跑 3 个可执行间接验证
-unit_test_lib	unit_test	bigworld/lib/unit_test_lib/unit_test	make	-	pending	-	pending	-
-urlrequest	library	bigworld/lib/urlrequest	make	useCurl	pending	-	pending	-
-waypoint	library	bigworld/lib/waypoint	make	usePython	pending	-	pending	-
+unit_test_lib	unit_test	bigworld/lib/unit_test_lib/unit_test	make	-	BW-18	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+urlrequest	library	bigworld/lib/urlrequest	make	useCurl	BW-02-04	-	pending	-
+waypoint	library	bigworld/lib/waypoint	make	usePython	BW-10-04	-	pending	-
 baseapp	binary	bigworld/server/baseapp	make	useCurl,useOpenSSL,usePyURLRequest,usePython,useSQLite	BW-00-02-03	docs/review/data/bw00-02-03-baseapp-blocked.log	blocked	缺 server/bigworld.key(商业许可密钥,全仓无、不可重建)
-baseapp	unit_test	bigworld/server/baseapp/unit_test	make	useOpenSSL,useSQLite	pending	-	pending	-
+baseapp	unit_test	bigworld/server/baseapp/unit_test	make	useOpenSSL,useSQLite	BW-07-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
 baseappmgr	binary	bigworld/server/baseappmgr	make	-	BW-00-02-03	docs/review/data/bw00-02-03-baseappmgr-start.log	partial	达 Version 14.4.1 并持续运行(管理器层基线)
-baseappmgr	unit_test	bigworld/server/baseappmgr/unit_test	make	-	pending	-	pending	-
+baseappmgr	unit_test	bigworld/server/baseappmgr/unit_test	make	-	BW-05-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
 cellapp	binary	bigworld/server/cellapp	make	useCurl,useOpenSSL,usePyURLRequest,usePython	BW-00-02-03	docs/review/data/bw00-02-03-baseapp-blocked.log	blocked	缺 server/bigworld.key(商业许可密钥)
-cellapp	unit_test	bigworld/server/cellapp/unit_test	make	usePython	pending	-	pending	-
+cellapp	unit_test	bigworld/server/cellapp/unit_test	make	usePython	BW-08-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
 cellappmgr	binary	bigworld/server/cellappmgr	make	-	BW-00-02-03	docs/review/data/bw00-02-03-cellappmgr-start.log	partial	达 Version 14.4.1 并持续运行(管理器层基线)
-cellappmgr	unit_test	bigworld/server/cellappmgr/unit_test	make	-	pending	-	pending	-
+cellappmgr	unit_test	bigworld/server/cellappmgr/unit_test	make	-	BW-05-04	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
 dbapp	binary	bigworld/server/dbapp	make	usePyURLRequest	BW-00-02-03	docs/review/data/bw00-02-03-baseapp-blocked.log	blocked	缺 server/bigworld.key;另缺 twisted 模块(site-packages 未入路径)
-dbapp	unit_test	bigworld/server/dbapp/unit_test	make	-	pending	-	pending	-
-bwengine_mysql	shared_library	bigworld/server/dbapp_extensions/bwengine_mysql	make	useMySQL,usePython	pending	-	pending	-
-bwengine_xml	shared_library	bigworld/server/dbapp_extensions/bwengine_xml	make	usePython	pending	-	pending	-
+dbapp	unit_test	bigworld/server/dbapp/unit_test	make	-	BW-09-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+bwengine_mysql	shared_library	bigworld/server/dbapp_extensions/bwengine_mysql	make	useMySQL,usePython	BW-09-04	-	pending	-
+bwengine_xml	shared_library	bigworld/server/dbapp_extensions/bwengine_xml	make	usePython	BW-09-04	-	pending	-
 dbappmgr	binary	bigworld/server/dbappmgr	make	-	BW-00-02-03	docs/review/data/bw00-02-03-dbappmgr-start.log	partial	达 Version 14.4.1 并持续运行(管理器层基线)
-dbappmgr	unit_test	bigworld/server/dbappmgr/unit_test	make	-	pending	-	pending	-
+dbappmgr	unit_test	bigworld/server/dbappmgr/unit_test	make	-	BW-05-05	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
 loginapp	binary	bigworld/server/loginapp	make	useOpenSSL	BW-00-02-03	docs/review/data/bw00-02-03-loginapp-blocked.log	blocked	缺 server/loginapp.privkey(RSA 私钥缺失)
-loginapp	unit_test	bigworld/server/loginapp/unit_test	make	-	pending	-	pending	-
-reviver	binary	bigworld/server/reviver	make	-	pending	-	pending	-
-reviver	unit_test	bigworld/server/reviver/unit_test	make	-	pending	-	pending	-
-bots	binary	bigworld/server/tools/bots	make	useOpenSSL,usePython	pending	-	pending	-
-_bw_profile	shared_library	bigworld/server/tools/bw_profile	make	usePython	pending	-	pending	-
+loginapp	unit_test	bigworld/server/loginapp/unit_test	make	-	BW-06-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+reviver	binary	bigworld/server/reviver	make	-	BW-05-02	-	pending	-
+reviver	unit_test	bigworld/server/reviver/unit_test	make	-	BW-05-02	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+bots	binary	bigworld/server/tools/bots	make	useOpenSSL,usePython	BW-12-04	-	pending	-
+_bw_profile	shared_library	bigworld/server/tools/bw_profile	make	usePython	BW-12-03	-	pending	-
 bwmachined2	binary	bigworld/server/tools/bwmachined	make	-	BW-00-02-03	docs/review/data/bw00-02-03-baseappmgr-start.log	partial	bwmachined2 -f 启动成功(00-02-03)
-clear_auto_load	binary	bigworld/server/tools/clear_auto_load	make	useMySQL,useOpenSSL,usePython	pending	-	pending	-
-consolidate_dbs	binary	bigworld/server/tools/consolidate_dbs	make	useMySQL,useOpenSSL,usePython,useSQLite	pending	-	pending	-
-remove_db	oneoff	bigworld/server/tools/remove_db	make	-	pending	-	pending	-
-snapshot_helper	binary	bigworld/server/tools/snapshot_helper	make	useMySQL	pending	-	pending	-
-sync_db	binary	bigworld/server/tools/sync_db	make	useMySQL,useOpenSSL,usePython	pending	-	pending	-
-transfer_db	binary	bigworld/server/tools/transfer_db	make	useSQLite	pending	-	pending	-
+clear_auto_load	binary	bigworld/server/tools/clear_auto_load	make	useMySQL,useOpenSSL,usePython	BW-09-05	-	pending	-
+consolidate_dbs	binary	bigworld/server/tools/consolidate_dbs	make	useMySQL,useOpenSSL,usePython,useSQLite	BW-09-05	-	pending	-
+remove_db	oneoff	bigworld/server/tools/remove_db	make	-	BW-09-05	-	pending	-
+snapshot_helper	binary	bigworld/server/tools/snapshot_helper	make	useMySQL	BW-09-05	-	pending	-
+sync_db	binary	bigworld/server/tools/sync_db	make	useMySQL,useOpenSSL,usePython	BW-09-05	-	pending	-
+transfer_db	binary	bigworld/server/tools/transfer_db	make	useSQLite	BW-09-05	-	pending	-
 CppUnitLite2	library	bigworld/third_party/CppUnitLite2/src	make	-	n/a	-	excluded	BW-00-01-04 决策: 不复现该 C++ 目标,由 Rust 测试框架替代
 png	library	bigworld/third_party/png	make	-	n/a	-	excluded	BW-00-01-04 决策: 由 image crate 替代
 zip	library	bigworld/third_party/zip	make	-	n/a	-	excluded	BW-00-01-04 决策: zlib→flate2;zip 读写面经 BW-01-03-03 覆盖
-process_defs	binary	bigworld/tools/process_defs	make	useOpenSSL,usePython	pending	-	pending	-
-res_packer	binary	bigworld/tools/res_packer	make	usePython	pending	-	pending	-
+process_defs	binary	bigworld/tools/process_defs	make	useOpenSSL,usePython	BW-04-04	-	pending	-
+res_packer	binary	bigworld/tools/res_packer	make	usePython	BW-13-02	-	pending	-
 serviceapp	copy_of_binary	bigworld/server/baseapp	make	-	BW-00-02-03	docs/review/data/bw00-02-03-baseapp-blocked.log	blocked	baseapp 二进制副本,随 baseapp 阻塞
-message_logger	binary	bigworld/server/tools/message_logger	make	useMongoDB	pending	-	pending	-
-_bwlog	shared_library	bigworld/server/tools/message_logger	make	useMongoDB,usePython	pending	-	pending	-
+message_logger	binary	bigworld/server/tools/message_logger	make	useMongoDB	BW-12-02	-	pending	-
+_bwlog	shared_library	bigworld/server/tools/message_logger	make	useMongoDB,usePython	BW-12-02	-	pending	-

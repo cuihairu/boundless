@@ -21,7 +21,7 @@
 | `dir` | 原版源目录，相对 `programming/` | 清单 `dir` |
 | `origin` | 行来源：`make`/`cmake`/`release`/`resource`/`gap` | `make`=01-01 清单；`cmake`=01-02 CMake/Windows 面（03 登记）；`release`=01-03 发行物（05 登记）；`resource`=资源/脚本入口（04 登记）；`gap`=缺失资源/SDK 缺口（05 登记） |
 | `enable` | **启用条件**：`-`（无条件）或逗号连接的特性令牌（`usePython`/`useOpenSSL`/… 或 `BW_*` CMake 宏） | 清单 `use_flags`（make 行）；CMake 宏族 per 01-02 |
-| `task` | **任务号**：`BW-xx-yy[-zz]`（逗号连接，一行可引多项）、`pending`（未映射，待 02-04）、`n/a`（刻意无任务，note 说明） | todo.md 条目 id；`pending`=本项骨架默认 |
+| `task` | **任务号**：`BW-xx[-yy[-zz]]`（lane/小节/条目级均可，逗号连接）、`pending`（未映射，待 02-04）、`n/a`（刻意无任务，note 说明） | todo.md 条目 id；`pending`=本项骨架默认 |
 | `fixture` | **夹具**：仓库相对路径（逗号连接），可运行验收或可追踪记录；`-`（尚无） | 测试路径 / `docs/review/*` 记录 / `docs/review/data/*` |
 | `status` | **状态**：`covered`/`partial`/`pending`/`blocked`/`excluded` | 见下表语义 |
 | `note` | 备注；`blocked`/`excluded` **必填** | 阻塞原因（许可证/真机）或决策引用（如 BW-00-01-04 替代表） |
