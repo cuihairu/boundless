@@ -1,0 +1,4 @@
+bwpack 14.4.1: packed 12 chunks in 0.31s
+bwpack 14.4.1: writing resource header (id=0x00020003)
+bwpack 14.4.1: chunk 0012 offset=0x0000a140 size=26592 csize=4187
+bwpack 14.4.1: done, archive 4 files, 26592 bytes

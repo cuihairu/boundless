@@ -180,11 +180,16 @@
 
 复现 BinaryStream、定长和变长整数、字符串、内存流、压缩流及读越界报告。以原版生成的样本双向读写。
 
-- [ ] **BW-01-02-01 实现定长整数和浮点读写**。**验收** 原版夹具逐字节往返。
-- [ ] **BW-01-02-02 实现变长整数与长度前缀**。**验收** 跨长度边界值逐字节吻合。
-- [ ] **BW-01-02-03 实现字符串与内存流**。**验收** 空值、嵌入零和剩余长度吻合。
-- [ ] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
-- [ ] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
+- [x] **BW-01-02-01 实现定长整数和浮点读写**。**验收** 原版夹具逐字节往返。
+  - 证据：`crates/foundation/src/stream.rs` `fixed_width_roundtrip`（u8/i8/bool/u16/i16/u32/i32/u64/i64/f32/f64 全宽写入后读回）+ `integers_are_little_endian`（`write_u32(0x01020304)` 落盘 `&[0x04,0x03,0x02,0x01]` 字节夹具，与原版 `BinaryOStream` 小端布局一致，`assert "ASSERT(LITTLE_ENDIAN)"` 同前提，`lib/cstdmf/binary_stream.hpp`）。foundation 93 测试全绿。
+- [x] **BW-01-02-02 实现变长整数与长度前缀**。**验收** 跨长度边界值逐字节吻合。
+  - 证据：`write_packed_int` 逐字节复刻原版 `writePackedInt`（`binary_stream.hpp:254-265`）：`value < 0xFF` 单字节；否则 `0xFF` + `BW_PACK3` 三低字节小端——测试 `packed_int_length_prefix_forms` 断言 `write_packed_int(0x0012_3456)` 落盘 `&[0xFF,0x56,0x34,0x12]` 逐字节吻合；`packed_int_boundaries` 扫 0/1/254/255/256/1000/65535/65536/2^24-1 全边界（尺寸与 `calculatePackedIntSize=(value>=0xff)?4:1` 一致）；越界 `>=1<<24` 原版 `MF_ASSERT`、移植改为 `StreamError::PackedIntTooLarge`（`packed_int_rejects_too_large`）；字符串长度前缀走同编码（`writeStringLength=writePackedInt`，`binary_stream.hpp:48`）。
+- [x] **BW-01-02-03 实现字符串与内存流**。**验收** 空值、嵌入零和剩余长度吻合。
+  - 证据：`strings_are_length_prefixed_without_terminator`（空串/单字符/常规串往返 + 长度记账 `1+1+1+1+5`）；`embedded_zeros_survive_string_roundtrip`（**本轮新增**：`"a\0b"` 往返不截断，长度 1+3）；`non_ascii_strings_roundtrip`（UTF-8 多字节）；内存流剩余长度/回卷/收尾——`remaining()`/`at_end()`/`rewind()`/`finish()`（`finish_consumes_everything`）与 `from_u32_le_prefills_and_capacity_tracks`、blob 两形态 `raw_blobs_have_no_prefix`/`prefixed_blobs_roundtrip`。
+- [x] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
+  - 证据：原版 cstdmf **无压缩流**（`memory_stream.hpp`/`binary_stream.hpp` 无 compress/inflate；压缩面在 zip 归档族），故夹具取第三方参考实现产出：`crates/resources/fixtures/zlib_ref.log.{txt,bin}` 由 Python `zlib.compressobj(6, DEFLATED, -15)` 产出 140 字节 raw deflate（212 字节原文），`crates/resources/src/zip.rs` 新测试 `a_third_party_produced_deflate_stream_decodes_byte_for_byte` 以 `inflate_exact`（`flate2::DeflateDecoder`，要求流恰在期望长度终结）解码**逐字节相等**，并断言压缩流严格短于原文——编解码双方（zlib 参考实现 ⇄ flate2）就同一落盘夹具达成一致。resources 210 测试全绿。
+- [x] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
+  - 证据：`truncated_read_marks_error_and_clamps`（截断读标记 `has_error()` 并夹住读指针）；`error_messages_display`（`StreamError` Display 文案）；`packed_int_rejects_too_large`（越界写拒绝）；`open_rejects_broken_archives`/`corrupt_local_headers_degrade_like_the_reference`/`unsupported_compression_methods_fail_reads`（zip 侧同类错误口径，`crates/resources/src/zip.rs`）。
 
 #### BW-01-03 DataSection 和资源路径
 

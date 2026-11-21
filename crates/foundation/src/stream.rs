@@ -430,6 +430,17 @@ mod tests {
         assert_eq!(s.read_string(), Ok("实体与太空".to_string()));
     }
 
+    /// Length prefixing preserves embedded zeros: no terminator is written,
+    /// so `a\0b` round-trips instead of truncating at the NUL.
+    #[test]
+    fn embedded_zeros_survive_string_roundtrip() {
+        let mut s = BinaryStream::new();
+        s.write_string("a\0b").unwrap();
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("a\0b".to_string()));
+        assert_eq!(s.length(), 1 + 3);
+    }
+
     #[test]
     fn counts_are_plain_u32() {
         let mut s = BinaryStream::new();
