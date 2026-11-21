@@ -1,0 +1,24 @@
+{
+  "face": "python logon callback argument format",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "01a38d3ee6e3ffe6f7226d6c2e68e863b23d9c1c",
+  "callback_signature": "BigWorld.connect( server, loginParams, progressFn )",
+  "args": {
+    "stage": {"type": "int", "source": "LogOnStage enum, client/connection_control.hpp"},
+    "status": {"type": "int", "source": "LogOnStatus::Status enum, lib/connection/log_on_status.hpp"},
+    "message": {"type": "str", "source": "the server message string"}
+  },
+  "tuple": "Py_BuildValue( \"(iNs)\", stage, Script::getData( status.value() ), message.c_str() ) — client/connection_control.cpp",
+  "ignorable_fields": [
+    "message: varies run to run (server message, empty, or 'Single user mode')",
+    "status on the failure path: a runtime parameter of onLogOnFailure, not a literal",
+    "shouldCallNextFrame: a timing-only flag, never passed to Python"
+  ],
+  "source_refs": [
+    "client/connection_control.hpp",
+    "client/connection_control.cpp",
+    "lib/connection/log_on_status.hpp"
+  ],
+  "recorded_at": "2026-11-21T22:26:44Z",
+  "lane_git_sha": "d3fbd4b"
+}
