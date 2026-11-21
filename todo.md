@@ -1029,7 +1029,8 @@
 
 移植 dependency/discovery/cache、batch/JIT compiler 和转换器注册。逐类验证 space、visual、primitive、texture、effect、BSP、配置输入及增量重跑的产物。
 
-- [ ] **BW-13-01-01 实现资产发现和依赖图**。**验收** 修改选定输入只重排对应目标。
+- [x] **BW-13-01-01 实现资产发现和依赖图**。**验收** 修改选定输入只重排对应目标。
+  - 证据：`crates/asset-pipeline/`（de69c53 依赖模型、7d0859b 发现走查）—— 依赖图：`Hash64`（FNV-1a 64-bit、`combine` golden-ratio 折叠）+ `DependencyType`（SourceFile=0…Invalid=6）+ `Dependency` 六种依赖（`critical` 标志、DataSection 序列化）+ `DependencyList`（primary/secondary 输入、intermediate/output、`get_input_hash(includeSecondary)`）。资产发现：`ConversionTask`（状态机 NEW…FAILED、`s_unknownId=0`）+ `ConversionRule` 抽象（`createRootTask`/`createTask`/`getSourceFile`）+ `TaskFinder`（递归目录走查、规则倒序匹配、root 任务入队、按源路径缓存；`Compiler` 经 `TaskCompiler` trait 接缝注入、文件系统经 `BwResource` 新增 `dissolve_filename`）。asset-pipeline 34 测绿 + resources `dissolve_filename` 2 测绿。**验收注**：完整「修改选定输入只重排对应目标」需增量缓存/编译（BW-13-01-02/03）落地方可端到端观察，本条目已交付其依赖图与发现走查。
 - [ ] **BW-13-01-02 实现增量缓存**。**验收** 第二次同输入可复用。
 - [ ] **BW-13-01-03 移植 batch compiler**。**验收** 按目标生成原版可读文件。
 - [ ] **BW-13-01-04 移植 jit compiler 与转换器注册**。**验收** 按需生成且可查转换器。
