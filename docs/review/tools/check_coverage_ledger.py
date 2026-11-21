@@ -25,10 +25,16 @@ CMake/Windows surface, release artifacts, resource entries or gaps).
 Run:
     python3 check_coverage_ledger.py [--schema-only] [--ledger path]
     python3 check_coverage_ledger.py --scaffold   # list unregistered components
+    python3 check_coverage_ledger.py --audit      # BW-00-05-06 integrity review
 
 `--scaffold` prints the inventory components missing from the ledger (one
 TSV row each, all fields at their pending defaults) so a later mapping
 item can append them; it does not write anything.
+
+`--audit` runs the validation and then answers BW-00-05-06's acceptance
+for every row: run evidence (covered/partial with a resolvable fixture),
+an explicit gap (blocked/excluded with a note) or a scheduled-but-not-yet-
+enabled target (pending, already indexed to a task).
 """
 
 from __future__ import annotations
@@ -204,6 +210,33 @@ def scaffold(rows: list[dict], root: Path) -> list[dict]:
     return out
 
 
+def audit(rows: list[dict]) -> tuple[list[str], dict]:
+    """BW-00-05-06: every row is evidence, an explicit gap, or scheduled.
+
+    Evidence   covered/partial  -> fixture present and resolvable on disk
+    Gap        blocked/excluded -> note present
+    Scheduled  pending          -> task already indexed (never task=pending)
+    """
+    problems: list[str] = []
+    dist: dict[tuple[str, str], int] = {}
+    for r in rows:
+        where = f"row {r['target']} {r['dir']}"
+        st, org = r["status"], r["origin"]
+        dist[(st, org)] = dist.get((st, org), 0) + 1
+        if st in ("covered", "partial"):
+            ok = r["fixture"] != "-" and all(
+                (REPO_ROOT / f.strip()).exists() for f in r["fixture"].split(","))
+            if not ok:
+                problems.append(f"{where}: {st} without a resolvable fixture")
+        elif st in ("blocked", "excluded"):
+            if r["note"] == "-":
+                problems.append(f"{where}: {st} without a gap note")
+        else:  # pending
+            if r["task"] == "pending":
+                problems.append(f"{where}: pending without a task index")
+    return problems, dist
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ledger", default=str(DEFAULT_LEDGER))
@@ -212,6 +245,8 @@ def main() -> int:
                     help="skip the make_inventory cross-check")
     ap.add_argument("--scaffold", action="store_true",
                     help="print inventory components missing from the ledger")
+    ap.add_argument("--audit", action="store_true",
+                    help="BW-00-05-06: evidence/gap/scheduled per row")
     args = ap.parse_args()
 
     ledger = Path(args.ledger)
@@ -244,6 +279,26 @@ def main() -> int:
         return 1
 
     print(f"ledger OK: {len(rows)} rows, all fields valid")
+
+    if args.audit:
+        problems, dist = audit(rows)
+        by = {}
+        for (st, _org), n in dist.items():
+            by[st] = by.get(st, 0) + n
+        print(f"audit rows              : {len(rows)}")
+        for st in STATUS:
+            print(f"  {st:9s}             : {by.get(st, 0)}")
+        for (st, org), n in sorted(dist.items()):
+            print(f"    {st}/{org:<9s}     : {n}")
+        evidence = by.get("covered", 0) + by.get("partial", 0)
+        gap = by.get("blocked", 0) + by.get("excluded", 0)
+        if problems:
+            for p in problems:
+                print(f"AUDIT  {p}", file=sys.stderr)
+            return 1
+        print(f"audit OK: {len(rows)} rows = {evidence} evidence + "
+              f"{gap} explicit gap + {by.get('pending', 0)} scheduled "
+              f"(all indexed)")
     return 0
 
 
