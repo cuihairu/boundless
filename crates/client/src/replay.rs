@@ -159,6 +159,14 @@ impl<'a> Cursor<'a> {
         self.take(4)
             .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
+    fn i32(&mut self) -> Option<i32> {
+        self.take(4)
+            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn f32(&mut self) -> Option<f32> {
+        self.take(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
     /// `readPackedInt` (`binary_stream.hpp:287-296`): 1 byte, or `0xFF` + 3
     /// little-endian bytes.
     fn packed_len(&mut self) -> Option<usize> {
@@ -343,6 +351,10 @@ pub const COMPRESSION_ZIP_MIN: u8 = 1;
 /// `BW_COMPRESSION_ZIP_BEST_COMPRESSION` (`BW_COMPRESSION_ZIP_9`).
 pub const COMPRESSION_ZIP_MAX: u8 = 9;
 
+/// `ServerConnection::NO_POSITION` (`server_connection.cpp:71`): the y a
+/// ground-volatile update stores when the entity is on the ground.
+pub const NO_POSITION: f32 = -13000.0;
+
 /// A tick-data block type (`ReplayData` block enum, `replay_data.hpp:16-28`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockType {
@@ -490,9 +502,19 @@ pub fn parse_tick_chunks(
 /// * a stream that fails to inflate — or inflates past the declared
 ///   decompressed size (`uncompress`'s `Z_BUF_ERROR`) — is a corrupted block.
 pub fn decompress_tick(blob: &[u8]) -> Result<Vec<u8>, ReplayError> {
+    decompress_tick_consumed(blob).map(|(data, _)| data)
+}
+
+/// Like [`decompress_tick`], but also returns how many bytes of `blob` the
+/// compression header and payload occupy. For `BW_COMPRESSION_NONE` the blob is
+/// `[NONE][data]` and the raw data is the whole remainder, so the whole blob is
+/// consumed; for a zip type the consumed size is the header plus the declared
+/// compressed length. This is what an entity-create's nested `CompressionIStream`
+/// needs to bound its block (`handleEntityCreate`, `replay_controller.cpp:1081-1116`).
+fn decompress_tick_consumed(blob: &[u8]) -> Result<(Vec<u8>, usize), ReplayError> {
     let (&compression_type, rest) = blob.split_first().ok_or(ReplayError::DecompressionFailed)?;
     if compression_type == COMPRESSION_NONE {
-        return Ok(rest.to_vec());
+        return Ok((rest.to_vec(), blob.len()));
     }
     if !(COMPRESSION_ZIP_MIN..=COMPRESSION_ZIP_MAX).contains(&compression_type) {
         return Err(ReplayError::InvalidCompressionType(compression_type));
@@ -515,7 +537,8 @@ pub fn decompress_tick(blob: &[u8]) -> Result<Vec<u8>, ReplayError> {
         // uncompress would have overflowed its origLen-sized buffer.
         return Err(ReplayError::DecompressionFailed);
     }
-    Ok(out)
+    // 1 byte compression type + packed origLen + packed compressLen + payload.
+    Ok((out, 1 + c.pos))
 }
 
 /// Scan the block types of a decompressed tick, `ReplayController::processTick`
@@ -549,6 +572,552 @@ pub fn scan_block_types(
         types.push(block_type);
     }
     Ok(types)
+}
+
+/// A parsed tick block — the field layouts the reference's `ReplayController`
+/// `handle*` methods read (`replay_controller.cpp:1080-1372`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReplayBlock {
+    /// `handleEntityCreate` (`:1081-1116`): `[vehicleID i32]` then a nested
+    /// `CompressionIStream` blob decompressing to `[id i32][type u16][pos
+    /// 3×f32][yaw f32][pitch f32][roll f32][properties…]`.
+    EntityCreate {
+        /// `vehicleID` (the ID of the vehicle the entity is riding).
+        vehicle_id: i32,
+        /// `id`, the new entity's ID.
+        id: i32,
+        /// `type`, the entity type index.
+        type_id: u16,
+        /// `pos` (x, y, z).
+        position: [f32; 3],
+        /// `dir.yaw`, `dir.pitch`, `dir.roll`.
+        direction: [f32; 3],
+        /// The remaining entity properties, opaque (entity-def-driven).
+        properties: Vec<u8>,
+    },
+    /// `handleEntityVolatile` (`:1125-1143`): `[entityID i32][pos 3×f32][dir
+    /// 3×f32][vehicle i32]`.
+    EntityVolatile {
+        entity_id: i32,
+        position: [f32; 3],
+        direction: [f32; 3],
+        vehicle_id: i32,
+    },
+    /// `handleEntityVolatileOnGround` (`:1148-1170`): `[entityID i32][x f32]
+    /// [z f32][dir 3×f32][vehicle i32]`; the reconstructed y is
+    /// `ServerConnection::NO_POSITION`.
+    EntityVolatileOnGround {
+        entity_id: i32,
+        x: f32,
+        z: f32,
+        direction: [f32; 3],
+        vehicle_id: i32,
+    },
+    /// `handleEntityMethod` (`:1178-1200`): `[entityID i32][messageID u8]
+    /// [streamSize i32][streamSize bytes]`.
+    EntityMethod {
+        entity_id: i32,
+        message_id: u8,
+        data: Vec<u8>,
+    },
+    /// `handleEntityPropertyChange` (`:1207-1226`): `[entityID i32][isSlice
+    /// u8][streamSize i32][streamSize bytes]`.
+    EntityPropertyChange {
+        entity_id: i32,
+        is_slice: bool,
+        data: Vec<u8>,
+    },
+    /// `handleEntityPlayerStateChange` (`:1231-1277`): `[playerID i32]
+    /// [hasBecomePlayer u8]` then, when becoming a player,
+    /// `[numInAoI u32][numInAoI × entityID i32]`.
+    EntityPlayerStateChange {
+        player_id: i32,
+        has_become_player: bool,
+        /// The `numInAoI` entity IDs when becoming a player.
+        aoi: Vec<i32>,
+    },
+    /// `handleEntityAoIChange` (`:1280-1304`): `[playerID i32][entityID i32]
+    /// [hasEnteredAoI u8]`.
+    PlayerAoiChange {
+        player_id: i32,
+        entity_id: i32,
+        has_entered_aoi: bool,
+    },
+    /// `handleEntityDelete` (`:1307-1320`): `[entityID i32]`.
+    EntityDelete { entity_id: i32 },
+    /// `handleSpaceData` (`:1323-1344`): `[spaceEntryID (ip u32, port u16)]
+    /// [key u16][value string]`.
+    SpaceData {
+        /// `(ip, port)`, the `Mercury::Address` layout of `SpaceEntryID`.
+        entry_id: (u32, u16),
+        key: u16,
+        value: String,
+    },
+    /// `handleFinal` (`:1349-1353`): the end-of-replay marker.
+    Final,
+}
+
+/// `ReplayController::processTick` (`replay_controller.cpp:1001-1062`): parse
+/// the block sequence of one decompressed tick, reading each block's field
+/// layout. `EntityCreate`'s properties are opaque (the reference reads them
+/// entity-def-driven via the `onEntityCreate` stream); the nested
+/// `CompressionIStream` bounds them.
+pub fn parse_blocks(decompressed: &[u8]) -> Result<Vec<ReplayBlock>, ReplayError> {
+    let mut blocks = Vec::new();
+    let mut c = Cursor::new(decompressed);
+    while c.remaining() > 1 {
+        // `while (remainingLength() > sizeof(BlockType))`, `:1003-1006`.
+        let byte = c.u8().ok_or(ReplayError::InvalidBlockType(0))?;
+        let block_type = BlockType::from_u8(byte).ok_or(ReplayError::InvalidBlockType(byte))?;
+        let block = match block_type {
+            BlockType::EntityCreate => {
+                let vehicle_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let (payload, consumed) = decompress_tick_consumed(&decompressed[c.pos..])?;
+                c.pos += consumed;
+                let mut p = Cursor::new(&payload);
+                let id = p.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let type_id = p.u16().ok_or(ReplayError::BlockDataOverrun)?;
+                let position = [
+                    p.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    p.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    p.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                ];
+                let direction = [
+                    p.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    p.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    p.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                ];
+                let properties = payload[p.pos..].to_vec();
+                ReplayBlock::EntityCreate {
+                    vehicle_id,
+                    id,
+                    type_id,
+                    position,
+                    direction,
+                    properties,
+                }
+            }
+            BlockType::EntityVolatile => {
+                let entity_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let position = [
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                ];
+                let direction = [
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                ];
+                let vehicle_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                ReplayBlock::EntityVolatile {
+                    entity_id,
+                    position,
+                    direction,
+                    vehicle_id,
+                }
+            }
+            BlockType::EntityVolatileOnGround => {
+                let entity_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let x = c.f32().ok_or(ReplayError::BlockDataOverrun)?;
+                let z = c.f32().ok_or(ReplayError::BlockDataOverrun)?;
+                let direction = [
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                    c.f32().ok_or(ReplayError::BlockDataOverrun)?,
+                ];
+                let vehicle_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                ReplayBlock::EntityVolatileOnGround {
+                    entity_id,
+                    x,
+                    z,
+                    direction,
+                    vehicle_id,
+                }
+            }
+            BlockType::EntityMethod => {
+                let entity_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let message_id = c.u8().ok_or(ReplayError::BlockDataOverrun)?;
+                let stream_size = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                if stream_size < 0 {
+                    return Err(ReplayError::BlockDataOverrun);
+                }
+                let data = c
+                    .take(stream_size as usize)
+                    .ok_or(ReplayError::BlockDataOverrun)?
+                    .to_vec();
+                ReplayBlock::EntityMethod {
+                    entity_id,
+                    message_id,
+                    data,
+                }
+            }
+            BlockType::EntityPropertyChange => {
+                let entity_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let is_slice = c.u8().ok_or(ReplayError::BlockDataOverrun)?;
+                let stream_size = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                if stream_size < 0 {
+                    return Err(ReplayError::BlockDataOverrun);
+                }
+                let data = c
+                    .take(stream_size as usize)
+                    .ok_or(ReplayError::BlockDataOverrun)?
+                    .to_vec();
+                ReplayBlock::EntityPropertyChange {
+                    entity_id,
+                    is_slice: is_slice == 1,
+                    data,
+                }
+            }
+            BlockType::EntityPlayerStateChange => {
+                let player_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let has_become_player = c.u8().ok_or(ReplayError::BlockDataOverrun)? != 0;
+                let mut aoi = Vec::new();
+                if has_become_player {
+                    let num_in_aoi = c.u32().ok_or(ReplayError::BlockDataOverrun)?;
+                    for _ in 0..num_in_aoi {
+                        aoi.push(c.i32().ok_or(ReplayError::BlockDataOverrun)?);
+                    }
+                }
+                ReplayBlock::EntityPlayerStateChange {
+                    player_id,
+                    has_become_player,
+                    aoi,
+                }
+            }
+            BlockType::PlayerAoiChange => {
+                let player_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let entity_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                let has_entered_aoi = c.u8().ok_or(ReplayError::BlockDataOverrun)? != 0;
+                ReplayBlock::PlayerAoiChange {
+                    player_id,
+                    entity_id,
+                    has_entered_aoi,
+                }
+            }
+            BlockType::EntityDelete => {
+                let entity_id = c.i32().ok_or(ReplayError::BlockDataOverrun)?;
+                ReplayBlock::EntityDelete { entity_id }
+            }
+            BlockType::SpaceData => {
+                let ip = c.u32().ok_or(ReplayError::BlockDataOverrun)?;
+                let port = c.u16().ok_or(ReplayError::BlockDataOverrun)?;
+                let key = c.u16().ok_or(ReplayError::BlockDataOverrun)?;
+                let value = c.string().ok_or(ReplayError::BlockDataOverrun)?;
+                ReplayBlock::SpaceData {
+                    entry_id: (ip, port),
+                    key,
+                    value,
+                }
+            }
+            BlockType::Final => ReplayBlock::Final,
+        };
+        let is_final = block_type.is_final();
+        blocks.push(block);
+        if is_final {
+            break;
+        }
+    }
+    Ok(blocks)
+}
+
+/// The reconstructed state of one entity, as the server's entity state after
+/// the create/volatile/delete/player-state blocks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityState {
+    /// The latest position (x, y, z); `NO_POSITION` in y for on-ground.
+    pub position: [f32; 3],
+    /// yaw, pitch, roll.
+    pub direction: [f32; 3],
+    /// The vehicle the entity is riding, or 0 when on the ground (`NULL_ENTITY_ID`).
+    pub vehicle_id: i32,
+    /// Whether the entity is currently a player.
+    pub is_player: bool,
+}
+
+/// The entity state reconstruction, the `onEntityCreate`/`onEntityMove`/
+/// `onEntityLeave` side of the replay handler: applying the create, volatile,
+/// on-ground, delete and player-state blocks to a map keyed by entity id.
+#[derive(Debug, Clone, Default)]
+pub struct ReplayWorld {
+    entities: std::collections::BTreeMap<i32, EntityState>,
+}
+
+impl ReplayWorld {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// `handleEntityCreate`/`handleEntityVolatile`/… → the entity map.
+    pub fn apply(&mut self, block: &ReplayBlock) {
+        match block {
+            ReplayBlock::EntityCreate {
+                id,
+                position,
+                direction,
+                vehicle_id,
+                ..
+            } => {
+                self.entities.insert(
+                    *id,
+                    EntityState {
+                        position: *position,
+                        direction: *direction,
+                        vehicle_id: *vehicle_id,
+                        is_player: false,
+                    },
+                );
+            }
+            ReplayBlock::EntityVolatile {
+                entity_id,
+                position,
+                direction,
+                vehicle_id,
+            } => {
+                if let Some(e) = self.entities.get_mut(entity_id) {
+                    e.position = *position;
+                    e.direction = *direction;
+                    e.vehicle_id = *vehicle_id;
+                }
+            }
+            ReplayBlock::EntityVolatileOnGround {
+                entity_id,
+                x,
+                z,
+                direction,
+                vehicle_id,
+            } => {
+                if let Some(e) = self.entities.get_mut(entity_id) {
+                    e.position = [*x, NO_POSITION, *z];
+                    e.direction = *direction;
+                    e.vehicle_id = *vehicle_id;
+                }
+            }
+            ReplayBlock::EntityPlayerStateChange {
+                player_id,
+                has_become_player,
+                ..
+            } => {
+                if let Some(e) = self.entities.get_mut(player_id) {
+                    e.is_player = *has_become_player;
+                }
+            }
+            ReplayBlock::EntityDelete { entity_id } => {
+                self.entities.remove(entity_id);
+            }
+            // Method / property / AoI / space-data / final do not change the
+            // reconstructed position state.
+            _ => {}
+        }
+    }
+    /// `onEntitiesReset` — a rewind clears the world before the replay.
+    pub fn reset(&mut self) {
+        self.entities.clear();
+    }
+    /// The current state of an entity, or `None` when it is not present.
+    pub fn get(&self, id: i32) -> Option<&EntityState> {
+        self.entities.get(&id)
+    }
+    pub fn entities(&self) -> &std::collections::BTreeMap<i32, EntityState> {
+        &self.entities
+    }
+}
+
+/// The replay handler notifications the player emits per tick
+/// (`onReplayControllerPostTick`). A no-op default keeps the player usable
+/// without a handler; the real client handler is a later item.
+pub trait ReplayHandler {
+    /// `onReplayControllerPostTick(*this, currentTick_)`
+    /// (`replay_controller.cpp:750`).
+    fn on_post_tick(&mut self, _tick: u32) {}
+    /// `onReplayControllerIncreaseTotalTime(*this, 1.0/frequency)`, called once
+    /// per tick processed while seeking (`:736-740`).
+    fn on_increase_total_time(&mut self, _delta: f64) {}
+}
+
+impl ReplayHandler for () {}
+
+/// One loaded tick: the game time and the decompressed block data.
+#[derive(Debug, Clone)]
+pub struct Tick {
+    /// The tick's game time (`GameTime`).
+    pub game_time: u32,
+    /// The decompressed tick data (the `processTick` block stream).
+    pub data: Vec<u8>,
+}
+
+/// The playback controller, `ReplayController` (`replay_controller.cpp`):
+/// steps through loaded ticks at the game-update rate and supports seeking to
+/// a target tick (`setCurrentTick`, `:500-518`).
+///
+/// The port loads all ticks up front (the reference streams them through a
+/// tick loader), so a backward seek rewinds the world and replays from tick 0,
+/// and a forward seek fast-forwards — the same `tick()` stepping
+/// (`:658-777`) with `numTicksLoaded_` fixed at the remaining count.
+pub struct ReplayPlayer<H: ReplayHandler = ()> {
+    ticks: Vec<Tick>,
+    game_update_frequency: u8,
+    first_game_time: u32,
+    /// The number of ticks processed (the next tick index).
+    current_tick: u32,
+    /// The seek target; `None` when not seeking.
+    seek_to: Option<u32>,
+    time_since_last_tick: f64,
+    /// Whether playback is enabled (the caller started the stream).
+    playing: bool,
+    world: ReplayWorld,
+    handler: H,
+    /// Whether all ticks have been played and `onReplayControllerFinish`
+    /// would have fired (the finish event itself is BW-11-03-04).
+    finished: bool,
+}
+
+impl<H: ReplayHandler> ReplayPlayer<H> {
+    /// `ReplayController` with all ticks loaded and a first game time.
+    pub fn new(
+        ticks: Vec<Tick>,
+        first_game_time: u32,
+        game_update_frequency: u8,
+        handler: H,
+    ) -> Self {
+        Self {
+            ticks,
+            game_update_frequency,
+            first_game_time,
+            current_tick: 0,
+            seek_to: None,
+            time_since_last_tick: 0.0,
+            playing: false,
+            world: ReplayWorld::new(),
+            handler,
+            finished: false,
+        }
+    }
+
+    /// `isPlayingStream()` / start playback (`isPlayingStream_ = true`).
+    pub fn play(&mut self) {
+        self.playing = true;
+    }
+    pub fn pause(&mut self) {
+        self.playing = false;
+    }
+    pub fn is_playing(&self) -> bool {
+        self.playing
+    }
+
+    /// `setCurrentTick(newTick)` (`replay_controller.cpp:500-518`): seek to a
+    /// target tick. A backward seek (target below the current tick) rewinds:
+    /// the world is reset and playback restarts from tick 0, then fast-forwards
+    /// to the target (the reference prepends the earlier ticks and calls
+    /// `resetEntities`).
+    pub fn set_current_tick(&mut self, target: u32) {
+        if target < self.current_tick {
+            self.world.reset();
+            self.current_tick = 0;
+            self.finished = false;
+        }
+        self.seek_to = Some(target);
+    }
+
+    /// `isSeekingToTick()`.
+    pub fn is_seeking(&self) -> bool {
+        self.seek_to.is_some()
+    }
+
+    /// `currentTick_`.
+    pub fn current_tick(&self) -> u32 {
+        self.current_tick
+    }
+
+    /// `getCurrentTickTime()` (`:1421-1429`): `firstGameTime_ + currentTick_`.
+    pub fn current_tick_time(&self) -> u32 {
+        self.first_game_time + self.current_tick
+    }
+
+    /// `numTicksLoaded_` — the remaining, not-yet-processed ticks.
+    pub fn num_ticks_loaded(&self) -> u32 {
+        self.ticks.len().saturating_sub(self.current_tick as usize) as u32
+    }
+
+    /// `numTicksTotal()` (`:1404-1420`): the total tick count.
+    pub fn num_ticks_total(&self) -> u32 {
+        self.ticks.len() as u32
+    }
+
+    /// The reconstructed world after the applied ticks.
+    pub fn world(&self) -> &ReplayWorld {
+        &self.world
+    }
+
+    /// Whether the replay has played through its last tick
+    /// (`handleFinal` would have fired; the finish event is 03-04).
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// `tick(timeDelta)` (`replay_controller.cpp:658-777`): step the playback
+    /// by a real-time delta. During a seek, up to the remaining loaded ticks
+    /// are processed towards the target; otherwise the game-update rate
+    /// converts the delta to a tick count (the first tick is forced).
+    pub fn tick(&mut self, time_delta: f64) -> Result<(), ReplayError> {
+        if !self.playing && !self.is_seeking() {
+            return Ok(());
+        }
+
+        let ticks_left = if self.is_seeking() {
+            let target = self.seek_to.expect("is_seeking implies a target");
+            let remaining = self.ticks.len().saturating_sub(self.current_tick as usize) as u32;
+            // `std::min(numTicksLoaded_, seekToTick_ - currentTick_)`, `:692`.
+            self.time_since_last_tick = 0.0;
+            remaining.min(target.saturating_sub(self.current_tick))
+        } else if self.current_tick == 0 {
+            // `currentTick_ == 0` forces one tick, `:697-701`.
+            self.time_since_last_tick = 0.0;
+            1
+        } else {
+            self.time_since_last_tick += time_delta;
+            let ticks_left = (self.time_since_last_tick * self.game_update_frequency as f64) as u32;
+            if ticks_left == 0 {
+                return Ok(());
+            }
+            self.time_since_last_tick -=
+                f64::from(ticks_left) / f64::from(self.game_update_frequency);
+            ticks_left
+        };
+
+        let mut remaining = ticks_left;
+        while (self.is_seeking() || self.playing)
+            && remaining > 0
+            && (self.current_tick as usize) < self.ticks.len()
+        {
+            let data = self.ticks[self.current_tick as usize].data.clone();
+            let blocks = parse_blocks(&data)?;
+            if self.is_seeking() {
+                // `onReplayControllerIncreaseTotalTime(*this, 1.0/frequency)`
+                // per seeked tick, `:736-740`.
+                self.handler
+                    .on_increase_total_time(1.0 / f64::from(self.game_update_frequency));
+            }
+            for block in &blocks {
+                self.world.apply(block);
+            }
+            self.handler.on_post_tick(self.current_tick);
+            self.current_tick += 1;
+            remaining -= 1;
+        }
+
+        if self.seek_to == Some(self.current_tick) {
+            self.seek_to = None;
+        }
+
+        // `handleFinal` condition (`:770-776`): no tick left to read, playing,
+        // not receiving, and all ticks consumed. The finish event itself is
+        // BW-11-03-04; this flag records that it would have fired.
+        if self.playing && self.num_ticks_total() <= self.current_tick {
+            self.finished = true;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -948,5 +1517,493 @@ mod tests {
             types,
             vec![BlockType::EntityCreate, BlockType::EntityVolatile]
         );
+    }
+
+    // --- BW-11-03-03: block field layouts, entity state, playback/seek ---
+
+    /// An entity-create block: `[vehicleID i32][nested blob]`. The nested blob
+    /// decompresses to `[id i32][type u16][pos 3×f32][dir 3×f32][properties]`;
+    /// `nested_zip` chooses the nested `CompressionIStream` encoding.
+    fn entity_create_block(
+        vehicle_id: i32,
+        id: i32,
+        type_id: u16,
+        pos: [f32; 3],
+        dir: [f32; 3],
+        props: &[u8],
+        nested_zip: bool,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&id.to_le_bytes());
+        payload.extend_from_slice(&type_id.to_le_bytes());
+        for v in pos {
+            payload.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in dir {
+            payload.extend_from_slice(&v.to_le_bytes());
+        }
+        payload.extend_from_slice(props);
+        let nested = if nested_zip {
+            zip_blob(&payload)
+        } else {
+            raw_blob(&payload)
+        };
+        let mut b = Vec::new();
+        b.extend_from_slice(&vehicle_id.to_le_bytes());
+        b.extend_from_slice(&nested);
+        b
+    }
+
+    fn volatile_block(entity_id: i32, pos: [f32; 3], dir: [f32; 3], vehicle: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&entity_id.to_le_bytes());
+        for v in pos {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in dir {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&vehicle.to_le_bytes());
+        b
+    }
+
+    fn ground_volatile_block(
+        entity_id: i32,
+        x: f32,
+        z: f32,
+        dir: [f32; 3],
+        vehicle: i32,
+    ) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&entity_id.to_le_bytes());
+        b.extend_from_slice(&x.to_le_bytes());
+        b.extend_from_slice(&z.to_le_bytes());
+        for v in dir {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&vehicle.to_le_bytes());
+        b
+    }
+
+    fn method_block(entity_id: i32, message_id: u8, data: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&entity_id.to_le_bytes());
+        b.push(message_id);
+        b.extend_from_slice(&(data.len() as i32).to_le_bytes());
+        b.extend_from_slice(data);
+        b
+    }
+
+    fn property_block(entity_id: i32, is_slice: u8, data: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&entity_id.to_le_bytes());
+        b.push(is_slice);
+        b.extend_from_slice(&(data.len() as i32).to_le_bytes());
+        b.extend_from_slice(data);
+        b
+    }
+
+    fn player_state_block(player_id: i32, has_become: u8, aoi: &[i32]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&player_id.to_le_bytes());
+        b.push(has_become);
+        if has_become != 0 {
+            b.extend_from_slice(&(aoi.len() as u32).to_le_bytes());
+            for id in aoi {
+                b.extend_from_slice(&id.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    fn aoi_block(player_id: i32, entity_id: i32, entered: u8) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&player_id.to_le_bytes());
+        b.extend_from_slice(&entity_id.to_le_bytes());
+        b.push(entered);
+        b
+    }
+
+    fn space_data_block(ip: u32, port: u16, key: u16, value: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&ip.to_le_bytes());
+        b.extend_from_slice(&port.to_le_bytes());
+        b.extend_from_slice(&key.to_le_bytes());
+        b.push(value.len() as u8);
+        b.extend_from_slice(value.as_bytes());
+        b
+    }
+
+    /// The full block stream of one tick: the type byte then the block data.
+    fn tick_blocks(blocks: &[(u8, Vec<u8>)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        for (ty, data) in blocks {
+            b.push(*ty);
+            b.extend_from_slice(data);
+        }
+        b
+    }
+
+    /// The acceptance: `parse_blocks` reads every block's field layout from a
+    /// decompressed tick, matching `ReplayController::processTick`'s `handle*`
+    /// methods.
+    #[test]
+    fn a_tick_parses_all_block_field_layouts() {
+        let create = entity_create_block(
+            0,
+            100,
+            3,
+            [1.5, 2.5, 3.5],
+            [0.1, 0.2, 0.3],
+            &[9, 9, 9],
+            /*nested_zip*/ true,
+        );
+        let data = tick_blocks(&[
+            (0, create),
+            (
+                1,
+                volatile_block(100, [10.0, 20.0, 30.0], [0.4, 0.5, 0.6], 7),
+            ),
+            (
+                2,
+                ground_volatile_block(101, 11.0, 12.0, [0.7, 0.8, 0.9], 0),
+            ),
+            (3, method_block(100, 5, &[1, 2, 3])),
+            (4, property_block(100, 1, &[4, 5])),
+            (5, 100i32.to_le_bytes().to_vec()), // EntityDelete
+            (6, player_state_block(100, 1, &[101, 102])),
+            (7, aoi_block(100, 103, 1)),
+            (8, space_data_block(0x01020304, 0x0506, 0x0708, "abc")),
+            (9, Vec::new()),
+        ]);
+        let blocks = parse_blocks(&data).expect("parses");
+        assert_eq!(
+            blocks,
+            vec![
+                ReplayBlock::EntityCreate {
+                    vehicle_id: 0,
+                    id: 100,
+                    type_id: 3,
+                    position: [1.5, 2.5, 3.5],
+                    direction: [0.1, 0.2, 0.3],
+                    properties: vec![9, 9, 9],
+                },
+                ReplayBlock::EntityVolatile {
+                    entity_id: 100,
+                    position: [10.0, 20.0, 30.0],
+                    direction: [0.4, 0.5, 0.6],
+                    vehicle_id: 7,
+                },
+                ReplayBlock::EntityVolatileOnGround {
+                    entity_id: 101,
+                    x: 11.0,
+                    z: 12.0,
+                    direction: [0.7, 0.8, 0.9],
+                    vehicle_id: 0,
+                },
+                ReplayBlock::EntityMethod {
+                    entity_id: 100,
+                    message_id: 5,
+                    data: vec![1, 2, 3],
+                },
+                ReplayBlock::EntityPropertyChange {
+                    entity_id: 100,
+                    is_slice: true,
+                    data: vec![4, 5],
+                },
+                ReplayBlock::EntityDelete { entity_id: 100 },
+                ReplayBlock::EntityPlayerStateChange {
+                    player_id: 100,
+                    has_become_player: true,
+                    aoi: vec![101, 102],
+                },
+                ReplayBlock::PlayerAoiChange {
+                    player_id: 100,
+                    entity_id: 103,
+                    has_entered_aoi: true,
+                },
+                ReplayBlock::SpaceData {
+                    entry_id: (0x01020304, 0x0506),
+                    key: 0x0708,
+                    value: "abc".to_string(),
+                },
+            ]
+        );
+    }
+
+    /// An entity-create whose nested `CompressionIStream` is raw (`NONE`)
+    /// consumes the remaining tick data, so it is the last block.
+    #[test]
+    fn a_raw_nested_entity_create_consumes_the_rest() {
+        let create = entity_create_block(
+            0,
+            200,
+            1,
+            [5.0, 6.0, 7.0],
+            [0.0; 3],
+            &[1, 2],
+            /*nested_zip*/ false,
+        );
+        let data = tick_blocks(&[(0, create), (9, Vec::new())]);
+        let blocks = parse_blocks(&data).expect("parses");
+        // The raw nested blob is `[NONE][id][type][pos][dir][props][FINAL]` —
+        // `CompressionIStream` for `NONE` is the whole remainder, so the
+        // trailing `FINAL` byte lands inside the create's properties.
+        assert_eq!(
+            blocks,
+            vec![ReplayBlock::EntityCreate {
+                vehicle_id: 0,
+                id: 200,
+                type_id: 1,
+                position: [5.0, 6.0, 7.0],
+                direction: [0.0, 0.0, 0.0],
+                properties: vec![1, 2, 9],
+            }]
+        );
+    }
+
+    /// An unknown block type is "Could not read valid block type".
+    #[test]
+    fn an_unknown_block_type_in_parse_is_rejected() {
+        assert_eq!(
+            parse_blocks(&[42, 0]),
+            Err(ReplayError::InvalidBlockType(42))
+        );
+    }
+
+    /// A block that runs off the end of the tick is `BlockDataOverrun`.
+    #[test]
+    fn a_truncated_block_is_rejected() {
+        // A volatile block needs 4+12+12+4 = 32 bytes; give it only 3.
+        let data = tick_blocks(&[(1, vec![0, 0, 0])]);
+        assert_eq!(parse_blocks(&data), Err(ReplayError::BlockDataOverrun));
+    }
+
+    /// The world follows create/volatile/on-ground/delete/player-state.
+    #[test]
+    fn entity_state_follows_create_and_volatile_blocks() {
+        let mut world = ReplayWorld::new();
+        world.apply(&ReplayBlock::EntityCreate {
+            vehicle_id: 0,
+            id: 1,
+            type_id: 3,
+            position: [0.0, 0.0, 0.0],
+            direction: [0.0, 0.0, 0.0],
+            properties: vec![],
+        });
+        assert_eq!(
+            world.get(1),
+            Some(&EntityState {
+                position: [0.0, 0.0, 0.0],
+                direction: [0.0, 0.0, 0.0],
+                vehicle_id: 0,
+                is_player: false,
+            })
+        );
+        world.apply(&ReplayBlock::EntityVolatile {
+            entity_id: 1,
+            position: [10.0, 20.0, 30.0],
+            direction: [0.1, 0.2, 0.3],
+            vehicle_id: 7,
+        });
+        assert_eq!(world.get(1).map(|e| e.position), Some([10.0, 20.0, 30.0]));
+        assert_eq!(world.get(1).map(|e| e.vehicle_id), Some(7));
+    }
+
+    /// An on-ground volatile stores `NO_POSITION` in the reconstructed y.
+    #[test]
+    fn a_ground_volatile_sets_no_position_y() {
+        let mut world = ReplayWorld::new();
+        world.apply(&ReplayBlock::EntityCreate {
+            vehicle_id: 0,
+            id: 1,
+            type_id: 3,
+            position: [0.0, 0.0, 0.0],
+            direction: [0.0, 0.0, 0.0],
+            properties: vec![],
+        });
+        world.apply(&ReplayBlock::EntityVolatileOnGround {
+            entity_id: 1,
+            x: 11.0,
+            z: 12.0,
+            direction: [0.7, 0.8, 0.9],
+            vehicle_id: 0,
+        });
+        assert_eq!(
+            world.get(1).map(|e| e.position),
+            Some([11.0, NO_POSITION, 12.0])
+        );
+    }
+
+    /// A delete removes the entity from the world.
+    #[test]
+    fn a_delete_removes_the_entity() {
+        let mut world = ReplayWorld::new();
+        world.apply(&ReplayBlock::EntityCreate {
+            vehicle_id: 0,
+            id: 1,
+            type_id: 3,
+            position: [0.0, 0.0, 0.0],
+            direction: [0.0, 0.0, 0.0],
+            properties: vec![],
+        });
+        world.apply(&ReplayBlock::EntityDelete { entity_id: 1 });
+        assert!(world.get(1).is_none());
+    }
+
+    /// A player-state change toggles the entity's `is_player`.
+    #[test]
+    fn a_player_state_change_marks_the_player() {
+        let mut world = ReplayWorld::new();
+        world.apply(&ReplayBlock::EntityCreate {
+            vehicle_id: 0,
+            id: 1,
+            type_id: 3,
+            position: [0.0, 0.0, 0.0],
+            direction: [0.0, 0.0, 0.0],
+            properties: vec![],
+        });
+        world.apply(&ReplayBlock::EntityPlayerStateChange {
+            player_id: 1,
+            has_become_player: true,
+            aoi: vec![2],
+        });
+        assert_eq!(world.get(1).map(|e| e.is_player), Some(true));
+        world.apply(&ReplayBlock::EntityPlayerStateChange {
+            player_id: 1,
+            has_become_player: false,
+            aoi: vec![],
+        });
+        assert_eq!(world.get(1).map(|e| e.is_player), Some(false));
+    }
+
+    /// Build a player over 4 ticks moving entity 1 along +x each tick.
+    fn moving_player(freq: u8) -> ReplayPlayer<()> {
+        let make_ticks = |steps: &[[f32; 3]]| -> Vec<Tick> {
+            steps
+                .iter()
+                .enumerate()
+                .map(|(i, pos)| {
+                    let mut data = Vec::new();
+                    if i == 0 {
+                        data.push(0); // EntityCreate
+                        data.extend_from_slice(&entity_create_block(
+                            0,
+                            1,
+                            3,
+                            *pos,
+                            [0.0; 3],
+                            &[],
+                            true,
+                        ));
+                    } else {
+                        data.push(1); // EntityVolatile
+                        data.extend_from_slice(&volatile_block(1, *pos, [0.0; 3], 0));
+                    }
+                    data.push(9); // Final
+                    Tick {
+                        game_time: i as u32,
+                        data,
+                    }
+                })
+                .collect()
+        };
+        ReplayPlayer::new(
+            make_ticks(&[
+                [0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [20.0, 0.0, 0.0],
+                [30.0, 0.0, 0.0],
+            ]),
+            100,
+            freq,
+            (),
+        )
+    }
+
+    /// The acceptance: seeking to a target tick, then playing it, reconstructs
+    /// the entity state at that tick.
+    #[test]
+    fn forward_seek_reconstructs_the_target_tick_state() {
+        let mut p = moving_player(10);
+        p.play();
+        p.set_current_tick(2);
+        // The seek processes ticks 0..2 (strictly before the target).
+        p.tick(0.0).expect("seek");
+        assert!(!p.is_seeking(), "the seek completed");
+        assert_eq!(p.current_tick(), 2);
+        assert_eq!(p.world().get(1).map(|e| e.position), Some([10.0, 0.0, 0.0]));
+        // Play the target tick itself.
+        p.tick(1.0 / 10.0).expect("play target tick");
+        assert_eq!(p.world().get(1).map(|e| e.position), Some([20.0, 0.0, 0.0]));
+    }
+
+    /// A backward seek rewinds the world and replays from tick 0 to the target.
+    #[test]
+    fn backward_seek_rewinds_and_replays() {
+        let mut p = moving_player(10);
+        p.play();
+        // Play all four ticks: the first call is forced to one tick
+        // (`currentTick_ == 0`), then a full second accumulates the rest.
+        p.tick(0.0).expect("first tick");
+        p.tick(1.0).expect("play through");
+        assert_eq!(p.current_tick(), 4);
+        assert_eq!(p.world().get(1).map(|e| e.position), Some([30.0, 0.0, 0.0]));
+        // Rewind to tick 1.
+        p.set_current_tick(1);
+        p.tick(0.0).expect("seek back");
+        assert_eq!(p.current_tick(), 1);
+        assert_eq!(p.world().get(1).map(|e| e.position), Some([0.0, 0.0, 0.0]));
+        p.tick(1.0 / 10.0).expect("play tick 1");
+        assert_eq!(p.world().get(1).map(|e| e.position), Some([10.0, 0.0, 0.0]));
+    }
+
+    /// Normal playback steps by the game-update rate; a sub-tick delta
+    /// accumulates instead of dropping.
+    #[test]
+    fn normal_playback_advances_by_the_update_frequency() {
+        let mut p = moving_player(10);
+        p.play();
+        // The first tick is forced.
+        p.tick(0.0).expect("first tick");
+        assert_eq!(p.current_tick(), 1);
+        // A half-tick delta does not advance yet.
+        p.tick(0.05).expect("half tick");
+        assert_eq!(p.current_tick(), 1);
+        // Two half-ticks make a full tick.
+        p.tick(0.05).expect("full tick");
+        assert_eq!(p.current_tick(), 2);
+    }
+
+    /// `getCurrentTickTime()` is `firstGameTime_ + currentTick_`.
+    #[test]
+    fn current_tick_time_offsets_by_the_first_game_time() {
+        let mut p = moving_player(10);
+        p.play();
+        assert_eq!(p.current_tick_time(), 100);
+        p.tick(0.0).expect("first tick");
+        assert_eq!(p.current_tick_time(), 101);
+    }
+
+    /// A corrupt tick (an invalid block type) propagates from `tick()`.
+    #[test]
+    fn a_corrupt_tick_is_propagated_from_tick() {
+        let ticks = vec![Tick {
+            game_time: 0,
+            // Two bytes so the `remaining > 1` loop reads the block type.
+            data: vec![42, 0],
+        }];
+        let mut p = ReplayPlayer::new(ticks, 0, 10, ());
+        p.play();
+        assert_eq!(p.tick(0.0), Err(ReplayError::InvalidBlockType(42)));
+    }
+
+    /// An empty replay reaches the finish condition once played.
+    #[test]
+    fn an_empty_replay_reaches_the_finish_condition() {
+        let mut p = ReplayPlayer::new(vec![], 0, 10, ());
+        p.play();
+        p.tick(0.0).expect("tick");
+        assert!(p.is_finished());
     }
 }
