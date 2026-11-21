@@ -26,12 +26,22 @@
 //! deterministic `calculateLod` value a model compares against its fixed
 //! thresholds. `settings` carries both, so the same thresholds always produce
 //! the same switch.
+//!
+//! BW-11-02-01/02/03 are the client entity layer: `player` carries the Player
+//! entity switch and the fixed order of its script callbacks (`entity.cpp`
+//! `onEnterWorld`/`onLeaveWorld`/`onChangeSpace`), `local_entity` the
+//! client-only entity and `UserDataObject` construction
+//! (`entity_udo_factory.cpp`), and `picker` the entity selection
+//! (`entity_picker.cpp`) — a hit focuses the target, a release blurs it, and
+//! the hidden grace period holds a line-of-sight-blocked target before it is
+//! released.
 
 pub mod camera;
 pub mod device;
 pub mod focus;
 pub mod frame;
 pub mod local_entity;
+pub mod picker;
 pub mod player;
 pub mod render;
 pub mod settings;
