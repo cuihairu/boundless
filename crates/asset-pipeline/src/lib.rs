@@ -13,8 +13,11 @@
 //! - [`conversion_rule`] — the abstract rule that maps a source file to a
 //!   task (`discovery/conversion_rule.hpp`);
 //! - [`task_finder`] — the recursive root-task discovery walk
-//!   (`discovery/task_finder.cpp`).
+//!   (`discovery/task_finder.cpp`);
+//! - [`content_addressable_cache`] — the hash-addressed file cache
+//!   (`conversion/content_addressable_cache.cpp`).
 
+pub mod content_addressable_cache;
 pub mod conversion_rule;
 pub mod conversion_task;
 pub mod dependency;
