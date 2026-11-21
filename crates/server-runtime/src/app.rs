@@ -7,6 +7,7 @@
 //! module fixes the role set, the startup contract and the shutdown
 //! contract.
 
+#[cfg(unix)]
 use crate::signals::{Blocker, Set, SignalProcessor};
 
 /// Server processes of this BigWorld revision (`server/*/` directories),
@@ -53,6 +54,32 @@ fn validate_role(role: &str) -> Result<(), AppError> {
     }
 }
 
+/// The runners lane's budget (`ci/runners.sh` starts each role with
+/// `CI_RUNNERS_TIMEOUT`): when it is set the process shuts down on it
+/// instead of waiting for an operator signal, so the lane records a role
+/// that both started and stopped instead of holding the runner until its
+/// job timeout.
+#[cfg(unix)]
+fn ci_runners_budget() -> Option<std::time::Duration> {
+    let budget = std::env::var("CI_RUNNERS_TIMEOUT").ok()?;
+    parse_budget(&budget)
+}
+
+/// Parse the lane's budget in seconds; anything that is not a whole
+/// number of seconds is ignored, so a server never shuts itself down on a
+/// typo in the variable.
+///
+/// The budget only exists where the POSIX watchdog does, so both the
+/// parser and its callers are unix-scoped; a non-unix entry keeps the
+/// startup smoke only.
+#[cfg(unix)]
+fn parse_budget(text: &str) -> Option<std::time::Duration> {
+    text.trim()
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
+}
+
 /// Runs the server process for `role`: validate, announce startup, block
 /// the quit signals, and shut down cleanly when one arrives.
 ///
@@ -63,28 +90,57 @@ fn validate_role(role: &str) -> Result<(), AppError> {
 /// (`TableSynchroniser::run`) path: the quit signals are held
 /// (`pthread_sigmask`) so `sigwaitinfo` can retrieve them, and the first
 /// arrival is the shutdown -- the minimal server has no tick loop yet.
+///
+/// Signal handling is the POSIX spelling, so a non-unix entry keeps the
+/// startup smoke only; the Windows stop path (console control events)
+/// arrives with BW-15-03.
 pub fn run(role: &str) -> Result<(), AppError> {
     validate_role(role)?;
     eprintln!("[{role}] starting (boundless minimal entry)");
 
-    let mut processor = SignalProcessor::new();
-    let mut set = Set::empty();
-    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGQUIT] {
-        set.set(sig);
-    }
-    let _blocker = Blocker::new(&set);
-    eprintln!("[{role}] running");
+    #[cfg(unix)]
+    {
+        let mut processor = SignalProcessor::new();
+        let mut set = Set::empty();
+        for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGQUIT] {
+            set.set(sig);
+        }
+        let _blocker = Blocker::new(&set);
+        eprintln!("[{role}] running");
 
-    let sig = processor.wait_for_signals(&set);
-    if sig < 0 {
-        // `sigwaitinfo` failed for a reason other than `EINTR` (which
-        // it retries); nothing was delivered, so end the run rather
-        // than spin. `wait_for_signals` already dispatched a signal
-        // when one arrived, printing
-        // `SignalProcessor::dispatchSignal: <name>`.
-        eprintln!("[{role}] signal wait ended without a signal");
+        // The lane that starts the server with a budget targets the main
+        // thread: it holds the quit set blocked, so the signal becomes
+        // pending there and `wait_for_signals` consumes it, which is the
+        // same clean stop an operator signal takes.
+        if let Some(budget) = ci_runners_budget() {
+            let main = unsafe { libc::pthread_self() };
+            let _ = std::thread::Builder::new()
+                .name("runners-timeout".into())
+                .spawn(move || {
+                    std::thread::sleep(budget);
+                    let _ = unsafe { libc::pthread_kill(main, libc::SIGTERM) };
+                });
+        }
+
+        let sig = processor.wait_for_signals(&set);
+        if sig < 0 {
+            // `sigwaitinfo` failed for a reason other than `EINTR`
+            // (which it retries); nothing was delivered, so end the run
+            // rather than spin. `wait_for_signals` already dispatched a
+            // signal when one arrived, printing
+            // `SignalProcessor::dispatchSignal: <name>`.
+            eprintln!("[{role}] signal wait ended without a signal");
+        }
+        eprintln!("[{role}] has shut down.");
     }
-    eprintln!("[{role}] has shut down.");
+
+    #[cfg(not(unix))]
+    {
+        // The role is already validated; nothing to do beyond the
+        // startup line until Windows console-event handling lands.
+        eprintln!("[{role}] has shut down.");
+    }
+
     Ok(())
 }
 
@@ -129,5 +185,20 @@ mod tests {
             "reviver",
         ];
         assert_eq!(KNOWN_ROLES, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn budget_parses_a_whole_number_of_seconds() {
+        use std::time::Duration;
+        assert_eq!(parse_budget("1"), Some(Duration::from_secs(1)));
+        assert_eq!(parse_budget(" 20 "), Some(Duration::from_secs(20)));
+        assert_eq!(parse_budget("0"), Some(Duration::from_secs(0)));
+        // A malformed budget is ignored rather than read as a tiny wait,
+        // so a typo never makes the server stop itself mid-startup.
+        assert_eq!(parse_budget(""), None);
+        assert_eq!(parse_budget("2.5"), None);
+        assert_eq!(parse_budget("soon"), None);
+        assert_eq!(parse_budget("-3"), None);
     }
 }

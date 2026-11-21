@@ -147,6 +147,64 @@ fn every_role_starts_and_shuts_down_on_sigterm() {
 }
 
 #[test]
+fn the_runners_lane_budget_stops_the_server_alone() {
+    // `ci/runners.sh` starts each role with `CI_RUNNERS_TIMEOUT` and
+    // sends nothing else: the process must come up and stop itself on
+    // that budget, or the lane would hold the runner for the job
+    // timeout. The stop goes through the same clean path an operator
+    // signal takes. The wait is bounded, so a regression shows up as a
+    // failure rather than a hung lane.
+    let mut child = Command::new(server_bin())
+        .arg("baseapp")
+        .env("CI_RUNNERS_TIMEOUT", "1")
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("baseapp: spawn: {e}"));
+    let stderr = child.stderr.take().expect("stderr pipe");
+
+    let (tx, rx) = mpsc::channel::<String>();
+    let reader = thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break, // EOF or a closed pipe
+                Ok(_) => {
+                    if tx.send(line.clone()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => panic!("baseapp: try_wait: {e}"),
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("baseapp: did not stop on its own budget");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let _ = reader.join();
+    let stderr: String = rx.try_iter().collect();
+    assert!(
+        status.success(),
+        "baseapp: non-zero exit on its own budget: {status:?}\n{stderr}"
+    );
+    assert!(stderr.contains("has shut down."), "{stderr}");
+    assert!(stderr.contains("dispatchSignal: SIGTERM"), "{stderr}");
+}
+
+#[test]
 fn sigint_and_sigquit_also_shut_down() {
     // SIGINT and SIGQUIT are held and consumed the same way. The base
     // reference re-raises SIGINT instead (ServerApp::onSignalled), so a
