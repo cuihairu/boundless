@@ -4,6 +4,7 @@ pub mod app;
 pub mod baseappmgr;
 pub mod cellappmgr;
 pub mod config;
+pub mod dbappmgr;
 pub mod dispatcher;
 pub mod machined;
 pub mod reviver;
