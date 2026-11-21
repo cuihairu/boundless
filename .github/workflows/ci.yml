@@ -503,10 +503,11 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # BW-00-02-01/BW-00-02-02 — the reference face: the original tree's commit,
-  # binary hashes and stated versions (the baseline), then its own unit tests
-  # rerun with list, command and result saved — the same way local and CI run
-  # them.
+  # BW-00-02-01/02/03 — the reference face: the original tree's commit, binary
+  # hashes and stated versions (the baseline), its own unit tests rerun with
+  # list, command and result saved, then the single-machine cluster face —
+  # topology, configuration and the launch gate — the same way local and CI
+  # run them.
   # A hosted runner has no reference checkout, so the job records the honest
   # SKIP naming the missing tree; the self-test in the harness job proves the
   # collection itself bites, and the durable record lives under
@@ -525,6 +526,9 @@ jobs:
 
       - name: Rerun the reference unit tests
         run: ci/reference-tests.sh
+
+      - name: Record the reference cluster baseline
+        run: ci/reference-cluster.sh
 
       - name: Bundle results
         if: always()
@@ -909,6 +913,7 @@ jobs:
           ci/checksums.sh self-test
           ci/reference-baseline.sh self-test
           ci/reference-tests.sh self-test
+          ci/reference-cluster.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results
