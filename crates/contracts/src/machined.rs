@@ -1624,6 +1624,179 @@ impl MachinedRegistry {
     }
 }
 
+/// A birth or death notification addressed to one listener.
+///
+/// The reference builds this in `Listeners::handleNotify`: the listener's
+/// `pre_addr`, the notifying process's `addr + port`, then the listener's
+/// `post_addr`. The listener embeds its own port in the registration so the
+/// payload slot is filled with the process that actually came up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    /// The listener's port the payload is sent to.
+    pub port: u16,
+    /// The listener's address the payload is sent to.
+    pub addr: [u8; 4],
+    /// `pre_addr` + notifying `addr` + notifying `port` + `post_addr`.
+    pub data: Vec<u8>,
+}
+
+/// One registered birth or death listener.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listener {
+    /// The registration message, whose process fields are the filters.
+    pub lm: ListenerMessage,
+    /// The address the listener registered from.
+    pub addr: [u8; 4],
+}
+
+impl Listener {
+    /// Whether this listener wants to hear about the given process.
+    ///
+    /// The reference matches on category, an optional uid (`ANY_UID` hears
+    /// every user) and an optional name (an empty name hears every name).
+    pub fn matches(&self, pm: &ProcessMessage) -> bool {
+        let filter = &self.lm.process;
+        filter.category == pm.category
+            && (filter.uid == listener_type::ANY_UID || filter.uid == pm.uid)
+            && (filter.name == pm.name || filter.name.is_empty())
+    }
+}
+
+/// Registered birth and death listeners.
+///
+/// Mirrors the reference `Listeners`: `add` appends a member, and
+/// `notify` walks the members in registration order, so every event reaches
+/// subscribers in the order they subscribed and events are delivered in the
+/// order machined observed them.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Listeners {
+    members: Vec<Listener>,
+}
+
+impl Listeners {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a listener. Order is preserved.
+    pub fn add(&mut self, lm: &ListenerMessage, addr: [u8; 4]) {
+        self.members.push(Listener {
+            lm: lm.clone(),
+            addr,
+        });
+    }
+
+    pub fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
+    pub fn members(&self) -> &[Listener] {
+        &self.members
+    }
+
+    /// Deliver a birth or death notification to every matching listener, in
+    /// registration order.
+    pub fn notify(&self, pm: &ProcessMessage, addr: [u8; 4]) -> Vec<Notification> {
+        self.members
+            .iter()
+            .filter(|listener| listener.matches(pm))
+            .map(|listener| {
+                let mut data = Vec::with_capacity(
+                    listener.lm.pre_addr.len() + 6 + listener.lm.post_addr.len(),
+                );
+                data.extend_from_slice(listener.lm.pre_addr.as_bytes());
+                data.extend_from_slice(&addr);
+                data.extend_from_slice(&pm.port.to_le_bytes());
+                data.extend_from_slice(listener.lm.post_addr.as_bytes());
+                Notification {
+                    port: listener.lm.process.port,
+                    addr: listener.addr,
+                    data,
+                }
+            })
+            .collect()
+    }
+
+    /// Drop listeners whose process is no longer running, matching the
+    /// reference `checkListeners`. Returns how many were dropped.
+    pub fn drop_dead<F>(&mut self, mut is_running: F) -> usize
+    where
+        F: FnMut(u16) -> bool,
+    {
+        let before = self.members.len();
+        self.members
+            .retain(|listener| is_running(listener.lm.process.pid));
+        before - self.members.len()
+    }
+}
+
+/// The machined's two listener lists, one for births and one for deaths,
+/// mirroring `birthListeners_` and `deathListeners_`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ListenerRegistry {
+    pub birth: Listeners,
+    pub death: Listeners,
+}
+
+impl ListenerRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.birth.len() + self.death.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.birth.is_empty() && self.death.is_empty()
+    }
+
+    /// Register a listener from a `ListenerMessage`.
+    ///
+    /// Returns whether the message type was recognised. The reference only
+    /// accepts `ADD_BIRTH_LISTENER` or `ADD_DEATH_LISTENER` or'ed with
+    /// `PARAM_IS_MSGTYPE`; anything else is logged and refused.
+    pub fn add(&mut self, lm: &ListenerMessage, addr: [u8; 4]) -> bool {
+        let param = lm.process.param;
+        if param & process_param::IS_MSGTYPE == 0 {
+            return false;
+        }
+        match param & !process_param::IS_MSGTYPE {
+            listener_type::ADD_BIRTH_LISTENER => {
+                self.birth.add(lm, addr);
+                true
+            }
+            listener_type::ADD_DEATH_LISTENER => {
+                self.death.add(lm, addr);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Deliver a birth notification to the birth listeners.
+    pub fn notify_birth(&self, pm: &ProcessMessage, addr: [u8; 4]) -> Vec<Notification> {
+        self.birth.notify(pm, addr)
+    }
+
+    /// Deliver a death notification to the death listeners.
+    pub fn notify_death(&self, pm: &ProcessMessage, addr: [u8; 4]) -> Vec<Notification> {
+        self.death.notify(pm, addr)
+    }
+
+    /// Drop listeners whose process died, in both lists.
+    pub fn drop_dead<F>(&mut self, mut is_running: F) -> usize
+    where
+        F: FnMut(u16) -> bool,
+    {
+        self.birth.drop_dead(&mut is_running) + self.death.drop_dead(is_running)
+    }
+}
+
 /// The machine and process state a Machined answers queries from. Built by
 /// the discovery and statistics steps (BW-05-01-02/04); the query path only
 /// needs to serialize it.
@@ -2838,5 +3011,181 @@ mod tests {
             panic!("expected unknown reply");
         };
         assert_ne!(unknown.header.flags & flags::MESSAGE_NOT_UNDERSTOOD, 0);
+    }
+
+    /// A birth listener registration for the given filter and endpoint.
+    fn birth_listener(
+        port: u16,
+        addr: [u8; 4],
+        pre: &str,
+        post: &str,
+        uid: u16,
+        name: &str,
+    ) -> (ListenerMessage, [u8; 4]) {
+        let mut process = ProcessMessage::default();
+        process.header.message = message_id::LISTENER;
+        process.param = process_param::IS_MSGTYPE | listener_type::ADD_BIRTH_LISTENER;
+        process.port = port;
+        process.uid = uid;
+        process.name = name.to_string();
+        (
+            ListenerMessage {
+                process,
+                pre_addr: pre.to_string(),
+                post_addr: post.to_string(),
+            },
+            addr,
+        )
+    }
+
+    /// A death listener registration for the given filter.
+    fn death_listener(port: u16, name: &str) -> ListenerMessage {
+        let mut process = ProcessMessage::default();
+        process.header.message = message_id::LISTENER;
+        process.param = process_param::IS_MSGTYPE | listener_type::ADD_DEATH_LISTENER;
+        process.port = port;
+        process.name = name.to_string();
+        ListenerMessage {
+            process,
+            pre_addr: String::new(),
+            post_addr: String::new(),
+        }
+    }
+
+    /// A process event as `Listeners::notify` sees it, with a sender address.
+    fn event(pid: u16, port: u16, name: &str, addr: [u8; 4]) -> (ProcessMessage, [u8; 4]) {
+        let mut pm = ProcessMessage {
+            pid,
+            port,
+            name: name.to_string(),
+            ..ProcessMessage::default()
+        };
+        pm.header.message = message_id::PROCESS;
+        (pm, addr)
+    }
+
+    /// A single event reaches every matching subscriber in the order they
+    /// subscribed.
+    #[test]
+    fn notification_reaches_subscribers_in_registration_order() {
+        let mut registry = ListenerRegistry::new();
+        let (a, a_addr) = birth_listener(3001, [10, 0, 0, 1], "preA", "postA", 500, "");
+        let (b, b_addr) = birth_listener(3002, [10, 0, 0, 2], "preB", "postB", 500, "");
+        assert!(registry.add(&a, a_addr));
+        assert!(registry.add(&b, b_addr));
+
+        // The event belongs to the same uid the listeners filter on.
+        let (mut pm, pm_addr) = event(1, 4001, "cellapp01", [10, 0, 0, 9]);
+        pm.uid = 500;
+        let notifications = registry.notify_birth(&pm, pm_addr);
+
+        assert_eq!(notifications.len(), 2);
+        assert_eq!(notifications[0].port, 3001);
+        assert_eq!(notifications[0].addr, a_addr);
+        assert_eq!(notifications[1].port, 3002);
+        assert_eq!(notifications[1].addr, b_addr);
+
+        // Payload is pre + notifying addr + notifying port + post.
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"preA");
+        expected.extend_from_slice(&pm_addr);
+        expected.extend_from_slice(&pm.port.to_le_bytes());
+        expected.extend_from_slice(b"postA");
+        assert_eq!(notifications[0].data, expected);
+    }
+
+    /// Two events are delivered in the order they occurred.
+    #[test]
+    fn notification_keeps_event_order() {
+        let mut registry = ListenerRegistry::new();
+        let (lm, addr) = birth_listener(3001, [10, 0, 0, 1], "", "", 0, "");
+        registry.add(&lm, addr);
+
+        let (first, first_addr) = event(1, 4001, "cellapp01", [10, 0, 0, 9]);
+        let (second, second_addr) = event(2, 4002, "cellapp02", [10, 0, 0, 9]);
+        let all = registry.notify_birth(&first, first_addr);
+        let mut all = all;
+        all.extend(registry.notify_birth(&second, second_addr));
+
+        assert_eq!(all.len(), 2);
+        assert!(all[0].data.ends_with(&first.port.to_le_bytes()));
+        assert!(all[1].data.ends_with(&second.port.to_le_bytes()));
+    }
+
+    /// Birth and death notifications reach their own listener lists.
+    #[test]
+    fn birth_and_death_listeners_are_separate() {
+        let mut registry = ListenerRegistry::new();
+        let (birth, birth_addr) = birth_listener(3001, [10, 0, 0, 1], "", "", 0, "");
+        let death = death_listener(3002, "");
+        assert!(registry.add(&birth, birth_addr));
+        assert!(registry.add(&death, birth_addr));
+
+        let (pm, pm_addr) = event(1, 4001, "cellapp01", [10, 0, 0, 9]);
+        assert_eq!(registry.notify_birth(&pm, pm_addr).len(), 1);
+        assert_eq!(registry.notify_death(&pm, pm_addr).len(), 1);
+        assert_eq!(registry.birth.len(), 1);
+        assert_eq!(registry.death.len(), 1);
+    }
+
+    /// A listener with a name or uid filter only hears matching processes.
+    #[test]
+    fn listener_filters_narrow_notifications() {
+        let mut registry = ListenerRegistry::new();
+        let (cell, cell_addr) = birth_listener(3001, [10, 0, 0, 1], "", "", 0, "cellapp01");
+        let (uid7, uid7_addr) = birth_listener(3002, [10, 0, 0, 2], "", "", 7, "");
+        registry.add(&cell, cell_addr);
+        registry.add(&uid7, uid7_addr);
+
+        // A baseapp01 for uid 7: the cell listener filters it out, the uid
+        // listener hears it.
+        let (mut pm, pm_addr) = event(1, 4001, "baseapp01", [10, 0, 0, 9]);
+        pm.uid = 7;
+        let hits = registry.notify_birth(&pm, pm_addr);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].port, 3002);
+    }
+
+    /// `ANY_UID` hears every user.
+    #[test]
+    fn any_uid_listener_hears_every_user() {
+        let mut registry = ListenerRegistry::new();
+        let (any, any_addr) =
+            birth_listener(3001, [10, 0, 0, 1], "", "", listener_type::ANY_UID, "");
+        registry.add(&any, any_addr);
+
+        let (mut pm, pm_addr) = event(1, 4001, "cellapp01", [10, 0, 0, 9]);
+        pm.uid = 42;
+        assert_eq!(registry.notify_birth(&pm, pm_addr).len(), 1);
+    }
+
+    /// An unrecognised listener param is refused.
+    #[test]
+    fn unrecognised_listener_param_is_refused() {
+        let mut registry = ListenerRegistry::new();
+        let (lm, addr) = birth_listener(3001, [10, 0, 0, 1], "", "", 0, "");
+        let mut bad = lm.clone();
+        bad.process.param = process_param::IS_MSGTYPE | 7; // not a listener type
+        assert!(!registry.add(&bad, addr));
+        assert!(registry.is_empty());
+    }
+
+    /// A dead listener is dropped on the next check.
+    #[test]
+    fn drop_dead_removes_stale_listeners() {
+        let mut registry = ListenerRegistry::new();
+        let (a, a_addr) = birth_listener(3001, [10, 0, 0, 1], "", "", 0, "");
+        let (b, b_addr) = birth_listener(3002, [10, 0, 0, 2], "", "", 0, "");
+        let mut a = a;
+        let mut b = b;
+        a.process.pid = 10;
+        b.process.pid = 20;
+        registry.add(&a, a_addr);
+        registry.add(&b, b_addr);
+
+        let dropped = registry.drop_dead(|pid| pid == 10);
+        assert_eq!(dropped, 1);
+        assert_eq!(registry.birth.len(), 1);
+        assert_eq!(registry.birth.members()[0].lm.process.pid, 10);
     }
 }
