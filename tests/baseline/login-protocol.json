@@ -1,0 +1,69 @@
+{
+  "face": "minimal client login protocol",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "e9cb96784c66ac1dd8318ecdc7689e3447703b49",
+  "protocol_version": "2.9.0.0",
+  "protocol_version_bytes": "00 00 09 02",
+  "login_message": {
+    "interface": "LoginInterface",
+    "name": "login",
+    "id": 2,
+    "reliability": "RELIABLE_NO",
+    "request_timeout_s": 8,
+    "retry_interval_s": 1,
+    "attempts": 10,
+    "source": "lib/connection/login_interface.hpp",
+    "payload": [
+      {"field": "ClientServerProtocolVersion", "type": "subpatch, patch, minor, major (each uint8)", "bytes": "00 00 09 02", "source": "lib/connection/loginapp_login_request_protocol.cpp"},
+      {"field": "LogOnParams", "type": "flags uint8 | username string | password string | encryptionKey string | digest (16 bytes) | nonce uint32", "source": "lib/connection/log_on_params.cpp"}
+    ]
+  },
+  "logon_params": {
+    "HAS_DIGEST": "0x1",
+    "HAS_ALL": "0x1",
+    "PASS_THRU": "0xFF",
+    "stream_order": "flags, username, password, encryptionKey, [digest if HAS_DIGEST], nonce",
+    "source": "lib/connection/log_on_params.cpp"
+  },
+  "challenge_response_message": {
+    "interface": "LoginInterface",
+    "name": "challengeResponse",
+    "id": 3,
+    "reliability": "RELIABLE_NO",
+    "payload": ["float challengeCalculationDuration", "blob response"],
+    "source": "lib/connection/loginapp_login_request_protocol.cpp"
+  },
+  "status_codes": {
+    "LOGGED_ON": 1,
+    "LOGIN_CHALLENGE_ISSUED": 66,
+    "LOGIN_MALFORMED_REQUEST": 64,
+    "LOGIN_BAD_PROTOCOL_VERSION": 65,
+    "LOGIN_REJECTED_NO_LOGINAPP_RESPONSE": 92,
+    "LAST_SERVER_SIDE_VALUE": 255,
+    "source": "lib/connection/log_on_status.hpp"
+  },
+  "callbacks": [
+    {"step": 1, "name": "start", "detail": "begins the login; arms a 1s retry and 8s timeout per attempt, up to 10 attempts", "source": "lib/connection/login_handler.cpp"},
+    {"step": 2, "name": "sendNextRequest", "detail": "creates a LoginRequest and sends LoginInterface::login (or challengeResponse then login)", "source": "lib/connection/login_handler.cpp"},
+    {"step": 3, "name": "onReply", "detail": "reads the reply status uint8; branches on it", "source": "lib/connection/loginapp_login_request_protocol.cpp"},
+    {"step": 4, "name": "onLoginAppLoginChallengeIssued", "detail": "only on LOGIN_CHALLENGE_ISSUED (66): create the challenge, then run it", "source": "lib/connection/login_handler.cpp"},
+    {"step": 5, "name": "onLoginChallengeCompleted", "detail": "only on challenge path: resets the attempt count and re-sends", "source": "lib/connection/login_handler.cpp"},
+    {"step": 6, "name": "onLoginAppLoginSuccess", "detail": "on LOGGED_ON (1): takes LoginReplyRecord {serverAddr, sessionKey} + optional serverMsg, switches to the BaseApp protocol", "source": "lib/connection/login_handler.cpp"},
+    {"step": 7, "name": "sendNextRequest", "detail": "re-sends to the BaseApp address from the reply record", "source": "lib/connection/login_handler.cpp"},
+    {"step": 8, "name": "onBaseAppLoginSuccess", "detail": "takes the winning channel and sessionKey; the sessionKey must be nonzero and differ from the reply record's", "source": "lib/connection/login_handler.cpp"},
+    {"step": 9, "name": "finish", "detail": "cancels timers, drops the child requests, sets the connection's session key and channel", "source": "lib/connection/login_handler.cpp"},
+    {"step": 10, "name": "onLoginComplete", "detail": "the LoginCompletionCallback the caller set; the login has completed", "source": "lib/connection/login_handler.cpp"}
+  ],
+  "reject_path": "onReply -> fail(status, serverMessage) for any non-LOGGED_ON status; onAttemptsExhausted -> LOGIN_REJECTED_NO_LOGINAPP_RESPONSE (92)",
+  "source_refs": [
+    "lib/connection/login_interface.hpp",
+    "lib/connection/loginapp_login_request_protocol.cpp",
+    "lib/connection/log_on_params.cpp",
+    "lib/connection/client_server_protocol_version.hpp",
+    "lib/connection/log_on_status.hpp",
+    "lib/connection/login_handler.cpp",
+    "server/loginapp/loginapp.cpp"
+  ],
+  "recorded_at": "2026-11-21T18:28:41Z",
+  "lane_git_sha": "dda27a0"
+}
