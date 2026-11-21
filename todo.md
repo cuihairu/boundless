@@ -84,7 +84,8 @@
 
 展开 Make/CMake、发布脚本及条件编译，列出可执行文件、库、扩展和平台矩阵。逐项标明已参编、条件启用、仅源码、仅发行物或缺依赖。整理 `third_party/`、资源许可证和 NOTICE，确认哪些复用依赖、哪些需替代实现。
 
-- [ ] **BW-00-01-01 展开 Linux Make 构建目标**。**验收** 清册包含二进制、库及所属规则。
+- [x] **BW-00-01-01 展开 Linux Make 构建目标**。**验收** 清册包含二进制、库及所属规则。
+  - 证据：`docs/review/bw00-01-01-linux-make-targets.md`（73a5e65）——清册 79 个声明的目标（19 binary + 1 copy_of_binary + 32 library + 5 shared_library + 21 unit_test + 1 非组件一次性拷贝 remove_db），每个目标列出目录与所属规则（组件 `Makefile.rules`/伴随 `Makefile.<name>` + `common_footer_config.mak` 类型分派 + `commands.mak` 创建命令）；规则链入口 `programming/Makefile`→`bigworld/build/make/Makefile`，聚合经 `includeMakefilesFrom`；类型全集 6 种（binary/copy_of_binary/copy_of_shared_library/library/shared_library/unit_test）；特性开关矩阵（usePython 30/useOpenSSL 15/useMySQL 6/useSQLite 5/usePyURLRequest 3/useCurl 3/useMongoDB 2/usePNG 2，useBigWorld 子树级、useSystemPython/useCustomBillingSystem 关）；客户端与编辑器（worldeditor/modeleditor/…）为 CMake 侧、非 Make 范围，归 BW-00-01-02。采集脚本 `docs/review/tools/make_inventory.py` 可复现（`python3 docs/review/tools/make_inventory.py` 扫 90 Makefile.rules + 3 伴随 Makefile，输出 79 目标）。
 - [ ] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。
 - [ ] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。
 - [ ] **BW-00-01-04 登记第三方依赖与资源来源**。**验收** 每项有许可证、NOTICE 及复用决策。
