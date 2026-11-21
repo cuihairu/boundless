@@ -3,10 +3,20 @@
 pub mod clock;
 
 /// `ioctl`-based network-interface enumeration (`endpoint.hpp:175-192`).
+/// Unix only: `ioctl` is the POSIX spelling; the Windows interface
+/// enumeration (`GetAdaptersAddresses`) is a separate BW-15-03 item.
+#[cfg(unix)]
 pub mod interface;
 
 #[cfg(unix)]
 pub mod socket;
+
+/// Subprocess control and exit-status decoding (BW-15-01-03,
+/// `lib/server/process.hpp`). Unix only: the reference's `Process` is
+/// `fork`/`execvp`/`waitpid`/`kill`; Windows `CreateProcess` is a
+/// separate BW-15-03 item.
+#[cfg(unix)]
+pub mod process;
 
 /// `epoll` primitives for the Mercury event poller. Linux only: the
 /// reference compiles `EPoller` only when `HAS_EPOLL` is defined
