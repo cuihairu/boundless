@@ -99,9 +99,18 @@ mod tests {
 
     #[test]
     fn compare_is_bytewise_then_by_length() {
-        assert_eq!(BinaryBlock::new(b"ab".to_vec()).compare(&BinaryBlock::new(b"ab".to_vec())), std::cmp::Ordering::Equal);
-        assert_eq!(BinaryBlock::new(b"ab".to_vec()).compare(&BinaryBlock::new(b"ac".to_vec())), std::cmp::Ordering::Less);
-        assert_eq!(BinaryBlock::new(b"ab".to_vec()).compare(&BinaryBlock::new(b"abc".to_vec())), std::cmp::Ordering::Less);
+        assert_eq!(
+            BinaryBlock::new(b"ab".to_vec()).compare(&BinaryBlock::new(b"ab".to_vec())),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            BinaryBlock::new(b"ab".to_vec()).compare(&BinaryBlock::new(b"ac".to_vec())),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            BinaryBlock::new(b"ab".to_vec()).compare(&BinaryBlock::new(b"abc".to_vec())),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]

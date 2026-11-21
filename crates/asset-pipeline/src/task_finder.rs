@@ -18,46 +18,51 @@
 //!   as a root, once as a dependency) is not created twice.
 //!
 //! The reference holds a `Compiler&` and `BWResource`; here the compiler's
-//! `shouldIterate*`/`queueTask` seam is [`TaskCompiler`] and the filesystem
-//! path services come from a `&BwResource` (its `fileSystem`/`dissolveFilename`).
+//! `shouldIterate*`/`queueTask` seam is passed per call as `&dyn
+//! TaskCompiler` (the reference's `Compiler&`), and the filesystem path
+//! services come from a shared `&BwResource`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use resources::bwresource::{BwResource, format_path, get_file_path};
 use resources::zip::FileType;
 
 use crate::conversion_rule::ConversionRule;
-use crate::conversion_task::{ConversionStatus, ConversionTask};
+use crate::conversion_task::{ConversionStatus, ConversionTask, TaskHandle};
 
 /// `Compiler`'s discovery seam: the reference `AssetCompiler` answers
 /// `shouldIterateFile`/`shouldIterateDirectory` (the exclusions) and
-/// `queueTask`. The real compiler implements this when the batch compiler
-/// lands; tests drive it directly.
+/// `queueTask`. The real compiler implements this; tests drive it directly.
 pub trait TaskCompiler {
     /// `shouldIterateFile`: whether discovery should descend into `file`.
     fn should_iterate_file(&self, file: &str) -> bool;
     /// `shouldIterateDirectory`: whether discovery should descend into `directory`.
     fn should_iterate_directory(&self, directory: &str) -> bool;
     /// `queueTask`: hand a discovered root task to the conversion queue.
-    fn queue_task(&self, task: ConversionTask);
+    fn queue_task(&self, task: TaskHandle);
 }
 
 /// `TaskFinder`: discovers root tasks under a directory tree.
-pub struct TaskFinder<'a, C: TaskCompiler> {
-    compiler: C,
-    rules: Vec<Box<dyn ConversionRule>>,
-    /// `tasks_`: the cache of tasks by absolute source path. `RefCell` gives
-    /// the reference's `ReadWriteLock`-guarded `StringHashMap` semantics.
-    tasks: RefCell<HashMap<String, ConversionTask>>,
-    resource: &'a BwResource,
+pub struct TaskFinder {
+    /// `conversionRules_`: the shared rule list (the reference holds a
+    /// reference to the compiler's vector, so `registerConversionRule` after
+    /// construction is visible here).
+    rules: Rc<RefCell<Vec<Box<dyn ConversionRule>>>>,
+    /// `tasks_`: the cache of tasks by absolute source path. Tasks are held in
+    /// shared `Rc` cells so the queue and processor observe the same status
+    /// mutations (the reference's shared `ConversionTask*`).
+    tasks: RefCell<HashMap<String, TaskHandle>>,
+    resource: Rc<BwResource>,
 }
 
-impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
-    /// `TaskFinder( compiler, rules )`.
-    pub fn new(compiler: C, rules: Vec<Box<dyn ConversionRule>>, resource: &'a BwResource) -> Self {
+impl TaskFinder {
+    /// `TaskFinder( compiler, rules )`: `rules` is the compiler's shared
+    /// conversion-rule list, so rules registered after construction are
+    /// visible here (the reference holds a reference to the same vector).
+    pub fn new(rules: Rc<RefCell<Vec<Box<dyn ConversionRule>>>>, resource: Rc<BwResource>) -> Self {
         Self {
-            compiler,
             rules,
             tasks: RefCell::new(HashMap::new()),
             resource,
@@ -66,12 +71,12 @@ impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
 
     /// `findTasks`: walk `directory` (a file or a directory) and create root
     /// tasks for matching files.
-    pub fn find_tasks(&mut self, directory: &str) {
+    pub fn find_tasks(&self, compiler: &dyn TaskCompiler, directory: &str) {
         let ft = self.resource.get_file_type(directory, None);
         match ft {
             FileType::NotFound => eprintln!("Directory passed in ({directory}) not found"),
-            FileType::File => self.iterate_file(directory),
-            FileType::Directory => self.iterate_directory(directory),
+            FileType::File => self.iterate_file(compiler, directory),
+            FileType::Directory => self.iterate_directory(compiler, directory),
             // The reference has no `FT_ARCHIVE` arm here; an archive root is
             // left alone.
             FileType::Archive => {}
@@ -80,20 +85,20 @@ impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
 
     /// `iterateFile`: create and queue a root task when the compiler accepts
     /// the file and a rule matches it.
-    fn iterate_file(&mut self, file: &str) {
-        if !self.compiler.should_iterate_file(file) {
+    fn iterate_file(&self, compiler: &dyn TaskCompiler, file: &str) {
+        if !compiler.should_iterate_file(file) {
             return;
         }
         if let Some(task) = self.get_task_inner(file, true) {
-            self.compiler.queue_task(task);
+            compiler.queue_task(task);
         }
     }
 
     /// `iterateDirectory`: recurse. Files are turned into root tasks only when
     /// they sit under a resource search path; sub-directories always recurse.
-    fn iterate_directory(&mut self, directory: &str) {
+    fn iterate_directory(&self, compiler: &dyn TaskCompiler, directory: &str) {
         let path = format_path(directory);
-        if !self.compiler.should_iterate_directory(&path) {
+        if !compiler.should_iterate_directory(&path) {
             return;
         }
 
@@ -107,8 +112,8 @@ impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
             let sub_path = format!("{path}{entry}");
             let ft = self.resource.get_file_type(&sub_path, None);
             match ft {
-                FileType::File if is_bw_path => self.iterate_file(&sub_path),
-                FileType::Directory => self.iterate_directory(&sub_path),
+                FileType::File if is_bw_path => self.iterate_file(compiler, &sub_path),
+                FileType::Directory => self.iterate_directory(compiler, &sub_path),
                 _ => {}
             }
         }
@@ -117,12 +122,11 @@ impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
     /// `getTask( filename )`: the task for `filename` (creating it if needed).
     /// A file the compiler excludes, or one no rule matches, yields a
     /// `FAILED` task with the unknown converter id.
-    pub fn get_task(&self, filename: &str) -> ConversionTask {
+    pub fn get_task(&self, compiler: &dyn TaskCompiler, filename: &str) -> TaskHandle {
         let directory = get_file_path(filename);
-        if !self.compiler.should_iterate_directory(&directory)
-            || !self.compiler.should_iterate_file(filename)
+        if !compiler.should_iterate_directory(&directory) || !compiler.should_iterate_file(filename)
         {
-            let failed = ConversionTask::failed(filename);
+            let failed = ConversionTask::failed(filename).handle();
             self.tasks
                 .borrow_mut()
                 .insert(filename.to_string(), failed.clone());
@@ -135,7 +139,7 @@ impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
     /// `getTask( filename, bRoot )`: the task for `filename` when it has a
     /// matching rule; `None` for a root file with no rule (the reference's
     /// `NULL`). Created tasks are cached by source path.
-    fn get_task_inner(&self, filename: &str, root: bool) -> Option<ConversionTask> {
+    fn get_task_inner(&self, filename: &str, root: bool) -> Option<TaskHandle> {
         let source = filename.to_string();
 
         // Cache hit: the task already exists.
@@ -146,7 +150,7 @@ impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
         // Create one from the rules, tried in reverse registration order.
         let mut task = ConversionTask::new(&source);
         let mut matched = false;
-        for rule in self.rules.iter().rev() {
+        for rule in self.rules.borrow().iter().rev() {
             let ok = if root {
                 rule.create_root_task(filename, &mut task)
             } else {
@@ -163,7 +167,7 @@ impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
                 return None;
             }
             // Warning + FAILED unknown task (the reference's inline build).
-            let failed = ConversionTask::failed(&source);
+            let failed = ConversionTask::failed(&source).handle();
             self.tasks
                 .borrow_mut()
                 .insert(source.clone(), failed.clone());
@@ -171,8 +175,11 @@ impl<'a, C: TaskCompiler> TaskFinder<'a, C> {
         }
 
         task.status = ConversionStatus::New;
-        self.tasks.borrow_mut().insert(source.clone(), task.clone());
-        Some(task)
+        let handle = task.handle();
+        self.tasks
+            .borrow_mut()
+            .insert(source.clone(), handle.clone());
+        Some(handle)
     }
 
     /// The number of tasks currently cached (diagnostics).
@@ -193,7 +200,7 @@ mod tests {
     /// A compiler that accepts every file and records queued root tasks.
     #[derive(Default)]
     struct MockCompiler {
-        queued: RefCell<Vec<ConversionTask>>,
+        queued: RefCell<Vec<TaskHandle>>,
         exclude_file: String,
         exclude_dir: String,
     }
@@ -205,7 +212,7 @@ mod tests {
         fn should_iterate_directory(&self, directory: &str) -> bool {
             directory != self.exclude_dir
         }
-        fn queue_task(&self, task: ConversionTask) {
+        fn queue_task(&self, task: TaskHandle) {
             self.queued.borrow_mut().push(task);
         }
     }
@@ -253,11 +260,11 @@ mod tests {
     /// Build a `BwResource` rooted at a fresh temp directory, with the
     /// `EDITOR_ENABLED` empty-base root enabled so absolute paths resolve
     /// (the asset tools run with this; `TaskFinder` walks absolute paths).
-    fn make_resource(tag: &str) -> (String, BwResource) {
+    fn make_resource(tag: &str) -> (String, Rc<BwResource>) {
         let root = temp_root(tag);
         let mut resource = BwResource::init_paths(&[root.as_str()]);
         resource.enable_editor_default_root();
-        (root, resource)
+        (root, Rc::new(resource))
     }
 
     #[test]
@@ -269,18 +276,16 @@ mod tests {
         std::fs::write(format!("{root}/sub/b.anim"), b"y").unwrap();
         std::fs::write(format!("{root}/c.txt"), b"z").unwrap();
 
-        let mut finder = TaskFinder::new(
-            MockCompiler::default(),
-            vec![Box::new(ModelRule)],
-            &resource,
-        );
-        finder.find_tasks(&root);
+        let finder = TaskFinder::new(Rc::new(RefCell::new(vec![Box::new(ModelRule)])), resource);
+        let compiler = MockCompiler::default();
+        finder.find_tasks(&compiler, &root);
 
-        let queued = finder.compiler.queued.borrow();
+        let queued = compiler.queued.borrow();
         assert_eq!(queued.len(), 1, "only the root .model is queued");
-        assert_eq!(queued[0].source, format!("{root}/a.model"));
-        assert_eq!(queued[0].converter_id, 1);
-        assert_eq!(queued[0].status, ConversionStatus::New);
+        let task = queued[0].borrow();
+        assert_eq!(task.source, format!("{root}/a.model"));
+        assert_eq!(task.converter_id, 1);
+        assert_eq!(task.status, ConversionStatus::New);
     }
 
     #[test]
@@ -289,29 +294,23 @@ mod tests {
         std::fs::write(format!("{root}/a.model"), b"x").unwrap();
 
         let path = format!("{root}/a.model");
-        let mut finder = TaskFinder::new(
-            MockCompiler {
-                exclude_file: path,
-                ..Default::default()
-            },
-            vec![Box::new(ModelRule)],
-            &resource,
-        );
-        finder.find_tasks(&root);
-        assert_eq!(finder.compiler.queued.borrow().len(), 0);
+        let finder = TaskFinder::new(Rc::new(RefCell::new(vec![Box::new(ModelRule)])), resource);
+        let compiler = MockCompiler {
+            exclude_file: path,
+            ..Default::default()
+        };
+        finder.find_tasks(&compiler, &root);
+        assert!(compiler.queued.borrow().is_empty());
     }
 
     #[test]
     fn non_root_file_without_rule_is_failed_task() {
         let (_root, resource) = make_resource("norule");
-        let path = format!("/nonexistent/nope.xyz");
+        let path = "/nonexistent/nope.xyz".to_string();
 
-        let finder = TaskFinder::new(
-            MockCompiler::default(),
-            vec![Box::new(ModelRule)],
-            &resource,
-        );
-        let task = finder.get_task(&path);
+        let finder = TaskFinder::new(Rc::new(RefCell::new(vec![Box::new(ModelRule)])), resource);
+        let task = finder.get_task(&MockCompiler::default(), &path);
+        let task = task.borrow();
         assert_eq!(task.status, ConversionStatus::Failed);
         assert_eq!(task.converter_id, UNKNOWN_ID);
     }
@@ -321,11 +320,7 @@ mod tests {
         let (_root, resource) = make_resource("rootnorule");
         let path = "/nonexistent/nope.xyz".to_string();
 
-        let finder = TaskFinder::new(
-            MockCompiler::default(),
-            vec![Box::new(ModelRule)],
-            &resource,
-        );
+        let finder = TaskFinder::new(Rc::new(RefCell::new(vec![Box::new(ModelRule)])), resource);
         // A root file with no rule produces no task (the reference's NULL).
         let task = finder.get_task_inner(&path, true);
         assert!(task.is_none());
@@ -336,14 +331,17 @@ mod tests {
         let (_root, resource) = make_resource("cache");
         let path = "/nonexistent/a.model".to_string();
 
-        let finder = TaskFinder::new(
-            MockCompiler::default(),
-            vec![Box::new(ModelRule)],
-            &resource,
+        let finder = TaskFinder::new(Rc::new(RefCell::new(vec![Box::new(ModelRule)])), resource);
+        let compiler = MockCompiler::default();
+        let a = finder.get_task(&compiler, &path);
+        let b = finder.get_task(&compiler, &path);
+        // The same source resolves to the same shared handle (the reference's
+        // pointer identity), and the tasks' contents are equal.
+        assert!(
+            std::rc::Rc::ptr_eq(&a, &b),
+            "same source yields the same handle"
         );
-        let a = finder.get_task(&path);
-        let b = finder.get_task(&path);
-        assert_eq!(a, b, "the same source yields the same cached task");
+        assert_eq!(*a.borrow(), *b.borrow());
         assert_eq!(finder.task_count(), 1);
     }
 }

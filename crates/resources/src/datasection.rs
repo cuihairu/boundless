@@ -69,9 +69,7 @@ pub fn is_valid_xml_tag(name: &str) -> bool {
     if bytes[0] >= 0x80 || bytes[0].is_ascii_digit() {
         return false;
     }
-    bytes
-        .iter()
-        .all(|&b| b != b' ' && b != b'\\' && b != b'/')
+    bytes.iter().all(|&b| b != b' ' && b != b'\\' && b != b'/')
 }
 
 fn is_ws(b: u8) -> bool {
@@ -139,9 +137,7 @@ impl<'a> Parser<'a> {
                 }
             } else if !self.alive() {
                 let name = self.open.last().map_or("NULL", |n| n.name.as_str());
-                return Err(XmlParseError::new(format!(
-                    "unterminated tag {name}"
-                )));
+                return Err(XmlParseError::new(format!("unterminated tag {name}")));
             } else if self.open.is_empty() {
                 return Err(XmlParseError::new("file must start with a tag"));
             } else {
@@ -210,8 +206,7 @@ impl<'a> Parser<'a> {
                 if count == 0 {
                     return Ok(());
                 }
-            } else if prev3 == b'<' && prev2 == b'!' && prev1 == b'-' && curr == b'-'
-            {
+            } else if prev3 == b'<' && prev2 == b'!' && prev1 == b'-' && curr == b'-' {
                 count += 1;
             }
         }
@@ -233,9 +228,7 @@ impl<'a> Parser<'a> {
                         .last_mut()
                         .ok_or_else(|| XmlParseError::new("CDATA outside section"))?;
                     if node.value_set {
-                        return Err(XmlParseError::new(
-                            "trying to set the value twice (CDATA)",
-                        ));
+                        return Err(XmlParseError::new("trying to set the value twice (CDATA)"));
                     }
                     let mut content = &self.data[start..content_end];
                     if let Some(nul) = content.iter().position(|&b| b == 0) {
@@ -412,9 +405,7 @@ impl<'a> Parser<'a> {
                 // Reference: "unable to find end of attribute", break.
                 break;
             }
-            let value = special_chars::reduce(&String::from_utf8_lossy(
-                &rest[value_start..p],
-            ));
+            let value = special_chars::reduce(&String::from_utf8_lossy(&rest[value_start..p]));
             p += 1;
 
             node.children.push(DataSection {
@@ -604,8 +595,7 @@ impl DataSection {
     pub fn as_int64(&self, default: i64) -> i64 {
         let mut p = 0usize;
         let bytes = self.value.as_bytes();
-        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C)
-        {
+        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C) {
             p += 1;
         }
         let mut negative = false;
@@ -631,11 +621,7 @@ impl DataSection {
         if !any || overflow {
             return default;
         }
-        if negative {
-            -acc
-        } else {
-            acc
-        }
+        if negative { -acc } else { acc }
     }
 
     /// `sscanf("%llu")`: whitespace and sign allowed, digits required
@@ -648,8 +634,7 @@ impl DataSection {
             return default;
         }
         let mut p = 0usize;
-        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C)
-        {
+        while p < bytes.len() && matches!(bytes[p], b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C) {
             p += 1;
         }
         let mut negative = false;
@@ -662,7 +647,9 @@ impl DataSection {
         let mut overflow = false;
         while p < bytes.len() && bytes[p].is_ascii_digit() {
             any = true;
-            acc = match acc.checked_mul(10).and_then(|v| v.checked_add((bytes[p] - b'0') as u64))
+            acc = match acc
+                .checked_mul(10)
+                .and_then(|v| v.checked_add((bytes[p] - b'0') as u64))
             {
                 Some(v) => v,
                 None => {
@@ -678,11 +665,7 @@ impl DataSection {
         if overflow {
             return u64::MAX;
         }
-        if negative {
-            acc.wrapping_neg()
-        } else {
-            acc
-        }
+        if negative { acc.wrapping_neg() } else { acc }
     }
 
     /// `strtod` prefix semantics: any successfully parsed prefix counts
@@ -823,9 +806,7 @@ impl DataSection {
                 if self.find_child(head).is_none() {
                     self.add_child(head);
                 }
-                let child = self
-                    .find_child_mut(head)
-                    .expect("child ensured just above");
+                let child = self.find_child_mut(head).expect("child ensured just above");
                 match path[slash..].find(|c: char| c != '/') {
                     None => Some(child),
                     Some(rest) => child.open_or_make(&path[slash + rest..]),
@@ -909,10 +890,7 @@ impl DataSection {
     }
 
     pub fn set_vector4(&mut self, v: Vector4) {
-        self.set_string(&format!(
-            "{:.6} {:.6} {:.6} {:.6}",
-            v.x, v.y, v.z, v.w
-        ));
+        self.set_string(&format!("{:.6} {:.6} {:.6} {:.6}", v.x, v.y, v.z, v.w));
     }
 
     /// Serialise as the reference `writeToStream` does from level 0:
@@ -1068,11 +1046,7 @@ fn strtoul(bytes: &[u8]) -> (u64, bool) {
     if overflow {
         return (u64::MAX, true);
     }
-    let value = if negative {
-        acc.wrapping_neg()
-    } else {
-        acc
-    };
+    let value = if negative { acc.wrapping_neg() } else { acc };
     (value, false)
 }
 
@@ -1103,11 +1077,19 @@ fn strtod_from(bytes: &[u8], from: usize) -> Option<(f64, usize)> {
     let rest = &bytes[q..];
     let lower: Vec<u8> = rest.iter().map(|b| b.to_ascii_lowercase()).collect();
     if lower.starts_with(b"infinity") {
-        let v = if negative { f64::NEG_INFINITY } else { f64::INFINITY };
+        let v = if negative {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
         return Some((v, q + 8));
     }
     if lower.starts_with(b"inf") {
-        let v = if negative { f64::NEG_INFINITY } else { f64::INFINITY };
+        let v = if negative {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
         return Some((v, q + 3));
     }
     if lower.starts_with(b"nan") {
@@ -1359,7 +1341,11 @@ mod tests {
     #[test]
     fn unterminated_comment_and_cdata_are_parse_errors() {
         assert!(parse_err("<!-- x").message.contains("comment"));
-        assert!(parse_err("<a><![CDATA[x]]></a").message.contains("unclosed"));
+        assert!(
+            parse_err("<a><![CDATA[x]]></a")
+                .message
+                .contains("unclosed")
+        );
     }
 
     #[test]
@@ -1417,7 +1403,9 @@ mod tests {
 
     #[test]
     fn as_int_prefix_semantics() {
-        let doc = parse_doc("<r><a>42</a><b>-7</b><c>42abc</c><d>abc</d><e></e><f>0</f><g>99999999999</g><h>99999999999999999999999</h></r>");
+        let doc = parse_doc(
+            "<r><a>42</a><b>-7</b><c>42abc</c><d>abc</d><e></e><f>0</f><g>99999999999</g><h>99999999999999999999999</h></r>",
+        );
         let r = &doc;
         assert_eq!(r.find_child("a").unwrap().as_int(0), 42);
         assert_eq!(r.find_child("b").unwrap().as_int(0), -7);
@@ -1437,7 +1425,9 @@ mod tests {
 
     #[test]
     fn as_uint_wraps_and_range_checks() {
-        let doc = parse_doc("<r><a>4294967295</a><b>4294967296</b><c>-1</c><d>abc</d><e></e><f>0</f></r>");
+        let doc = parse_doc(
+            "<r><a>4294967295</a><b>4294967296</b><c>-1</c><d>abc</d><e></e><f>0</f></r>",
+        );
         let r = &doc;
         assert_eq!(r.find_child("a").unwrap().as_uint(0), u32::MAX);
         // Fits u64, truncates to 0, and 0 from a non-"0" string → default.
@@ -1463,7 +1453,8 @@ mod tests {
 
     #[test]
     fn as_int64_stream_semantics() {
-        let doc = parse_doc("<r><a>12abc</a><b>abc</b><c></c><d>  5 </d><e>99999999999999999999</e></r>");
+        let doc =
+            parse_doc("<r><a>12abc</a><b>abc</b><c></c><d>  5 </d><e>99999999999999999999</e></r>");
         let r = &doc;
         assert_eq!(r.find_child("a").unwrap().as_int64(-1), 12, "junk tail ok");
         assert_eq!(r.find_child("b").unwrap().as_int64(-1), -1);
@@ -1534,7 +1525,8 @@ mod tests {
 
     #[test]
     fn as_vector3_is_prefix_strtod() {
-        let doc = parse_doc("<r><a>1 2 3</a><b>1 2 3 </b><c>1 2 3 junk</c><d>1 2</d><e>1x 2 3</e></r>");
+        let doc =
+            parse_doc("<r><a>1 2 3</a><b>1 2 3 </b><c>1 2 3 junk</c><d>1 2</d><e>1x 2 3</e></r>");
         let r = &doc;
         let v3 = Vector3::new(1.0, 2.0, 3.0);
         assert_eq!(r.find_child("a").unwrap().as_vector3(Vector3::ZERO), v3);
@@ -1827,7 +1819,11 @@ mod tests {
         s.set_string("1e3");
         assert_eq!(s.as_double(0.0), 1000.0);
         s.set_string("1e");
-        assert_eq!(s.as_double(0.0), 1.0, "exponent without digits is not consumed");
+        assert_eq!(
+            s.as_double(0.0),
+            1.0,
+            "exponent without digits is not consumed"
+        );
         s.set_string("+2.5");
         assert_eq!(s.as_double(0.0), 2.5);
         s.set_string("  3.5");
@@ -1879,7 +1875,10 @@ mod tests {
     fn bang_marker_at_eof_is_an_error() {
         // `<!` runs off the document before the body type can be read.
         let err = parse_err("<r><!");
-        assert!(err.message.contains("unexpected end of document"), "{err:?}");
+        assert!(
+            err.message.contains("unexpected end of document"),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -2026,7 +2025,10 @@ mod tests {
         let mut s = DataSection::new("v");
         // 1e400 overflows f64 to infinity, which is not a literal → failbit.
         s.set_string("1e400 2");
-        assert_eq!(s.as_vector2(Vector2::new(-1.0, -1.0)), Vector2::new(-1.0, -1.0));
+        assert_eq!(
+            s.as_vector2(Vector2::new(-1.0, -1.0)),
+            Vector2::new(-1.0, -1.0)
+        );
         // A signed literal inf passes through the sign-consume path.
         s.set_string("-inf 2");
         let v = s.as_vector2(Vector2::ZERO);
@@ -2058,18 +2060,9 @@ mod tests {
             doc.open_section("").unwrap().section_name(),
             doc.section_name()
         );
-        assert_eq!(
-            doc.open_section("a/b/c").unwrap().as_string(),
-            "deep"
-        );
-        assert_eq!(
-            doc.open_section("a/b/x").unwrap().as_string(),
-            "attr"
-        );
-        assert_eq!(
-            doc.open_section("a").unwrap().section_name(),
-            "a"
-        );
+        assert_eq!(doc.open_section("a/b/c").unwrap().as_string(), "deep");
+        assert_eq!(doc.open_section("a/b/x").unwrap().as_string(), "attr");
+        assert_eq!(doc.open_section("a").unwrap().section_name(), "a");
         // Missing intermediate or leaf: None, no creation.
         assert!(doc.open_section("z/c").is_none());
         assert!(doc.open_section("a/z").is_none());

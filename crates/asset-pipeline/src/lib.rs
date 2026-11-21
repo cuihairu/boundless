@@ -2,6 +2,12 @@
 //! (`tools/asset_pipeline`).
 //!
 //! Ported modules:
+//! - [`asset_compiler`] — the concrete compiler and task queue
+//!   (`compiler/asset_compiler.cpp`);
+//! - [`asset_compiler_options`] — the command-line options that configure an
+//!   [`asset_compiler`] (`compiler/asset_compiler_options.cpp`);
+//! - [`batch_compiler`] — the command-line batch driver and its options
+//!   (`tools/batch_compiler/batch_compiler.cpp`);
 //! - [`hash64`] — the `Hash64` FNV-1a hash used for dependency and file
 //!   hashes (`bw_hash64.cpp`);
 //! - [`dependency`] — the six dependency kinds and their DataSection
@@ -15,12 +21,36 @@
 //! - [`task_finder`] — the recursive root-task discovery walk
 //!   (`discovery/task_finder.cpp`);
 //! - [`content_addressable_cache`] — the hash-addressed file cache
-//!   (`conversion/content_addressable_cache.cpp`).
+//!   (`conversion/content_addressable_cache.cpp`);
+//! - [`compiler`] — the compiler seam the pipeline drives
+//!   (`compiler/compiler.hpp`);
+//! - [`converter`] — the converter plugin interface
+//!   (`conversion/converter.hpp`);
+//! - [`converter_info`] — the converter registry record and flags
+//!   (`conversion/converter_info.hpp|converter_creator.hpp`);
+//! - [`converter_map`] — the id → converter registry
+//!   (`conversion/converter_map.hpp`);
+//! - [`hierarchical_config`] — the path-hierarchical rule set behind
+//!   `asset_rules.xml` (`resmgr/hierarchical_config.cpp`);
+//! - [`generic_conversion_rule`] — the `asset_rules.xml`-backed rule
+//!   (`compiler/generic_conversion_rule.cpp`);
+//! - [`task_processor`] — the single-threaded task driver
+//!   (`conversion/task_processor.cpp`).
 
+pub mod asset_compiler;
+pub mod asset_compiler_options;
+pub mod batch_compiler;
+pub mod compiler;
 pub mod content_addressable_cache;
 pub mod conversion_rule;
 pub mod conversion_task;
+pub mod converter;
+pub mod converter_info;
+pub mod converter_map;
 pub mod dependency;
 pub mod dependency_list;
+pub mod generic_conversion_rule;
 pub mod hash64;
+pub mod hierarchical_config;
 pub mod task_finder;
+pub mod task_processor;

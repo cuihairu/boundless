@@ -37,15 +37,25 @@ pub enum ConversionStatus {
     Failed = 7,
 }
 
-/// A dependent task: `(source path, critical)`. The reference holds a
-/// `(const ConversionTask*, bool)` pair.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A dependent task: `(task, critical)`. The reference holds a
+/// `(const ConversionTask*, bool)` pair; here the pointer is a shared
+/// [`TaskHandle`], so the parent can see a sub-task's live `status`
+/// (needed by `hasSubTaskErrors`).
+#[derive(Debug, Clone)]
 pub struct SubTask {
-    /// `subTasks_[i].first`: the source path of the depended-on task.
-    pub source: String,
+    /// `subTasks_[i].first`: the depended-on task.
+    pub handle: TaskHandle,
     /// `subTasks_[i].second`: whether the dependency is critical.
     pub critical: bool,
 }
+
+impl PartialEq for SubTask {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.handle, &other.handle) && self.critical == other.critical
+    }
+}
+
+impl Eq for SubTask {}
 
 /// `ConversionTask`: everything needed to know how to convert one asset and
 /// where it is in the process.
@@ -70,6 +80,19 @@ pub struct ConversionTask {
 /// `ConversionTask::s_unknownId`: the converter id of a task the pipeline
 /// does not know how to convert.
 pub const UNKNOWN_ID: u64 = 0;
+
+/// The shared handle to a conversion task, standing in for the reference's
+/// `ConversionTask*` (the pipeline holds tasks in `Rc` cells so the finder,
+/// queue and processor all observe the same `status_` mutations — mirroring
+/// the reference's pointer sharing through its `ReadWriteLock` cache).
+pub type TaskHandle = std::rc::Rc<std::cell::RefCell<ConversionTask>>;
+
+impl ConversionTask {
+    /// A task held in an `Rc` cell (the pipeline's default ownership).
+    pub fn handle(self) -> TaskHandle {
+        std::rc::Rc::new(std::cell::RefCell::new(self))
+    }
+}
 
 impl Default for ConversionTask {
     fn default() -> Self {

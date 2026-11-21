@@ -204,6 +204,26 @@ impl<H: HashProvider> DependencyList<H> {
         self.outputs.push((file.into(), hash));
     }
 
+    /// Replace the stored intermediate outputs (`updateIntermediateOutputs`
+    /// clears before rebuilding).
+    pub fn set_intermediate_outputs(&mut self, outputs: Vec<Output>) {
+        self.intermediate_outputs = outputs;
+    }
+
+    /// Replace the stored final outputs (`updateOutputs` clears before
+    /// rebuilding).
+    pub fn set_outputs(&mut self, outputs: Vec<Output>) {
+        self.outputs = outputs;
+    }
+
+    /// `updateSecondaryDependencies`: recompute every secondary input's stored
+    /// hash through the hash provider.
+    pub fn update_secondary_input_hashes(&mut self) {
+        for (dependency, hash) in &mut self.secondary_inputs {
+            *hash = self.compiler.get_hash(dependency);
+        }
+    }
+
     /// `getInputHash( includeSecondary )`: fold the stored hashes with
     /// `Hash64::combine`, always including primary inputs and adding the
     /// secondary inputs (and their count) only when requested.

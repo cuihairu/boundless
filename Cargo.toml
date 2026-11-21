@@ -28,6 +28,8 @@ libc = "0.2"
 # Definition digest (BW-04-01-05): the reference `MD5::Digest::quote()` is
 # 32 nibbles of uppercase hex, which is this crate's digest bytes upper-cased.
 md-5 = "0.10"
+# Asset rules / directory dependency patterns (the reference uses RE2).
+regex = "1"
 
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).

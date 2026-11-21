@@ -24,8 +24,8 @@
 //! Positions are relative to the end of the block header.
 
 use crate::base64;
-use crate::datasection::stream_float;
 use crate::datasection::DataSection;
+use crate::datasection::stream_float;
 use foundation::math::{Matrix, Vector2, Vector3, Vector4};
 
 /// `PACKED_SECTION_MAGIC`.
@@ -165,10 +165,10 @@ impl PackedSection {
     /// `asString` and the virtual `asInt64` — reproduced by this port
     /// as unbounded recursion, never exercised on well-formed files.
     pub fn as_int(&self, default: i32) -> i32 {
-        if self.own_type == SectionType::INT {
-            if let Some(v) = get_integer_val(&self.own_data) {
-                return v as i32;
-            }
+        if self.own_type == SectionType::INT
+            && let Some(v) = get_integer_val(&self.own_data)
+        {
+            return v as i32;
         }
         self.fallback().as_int(default)
     }
@@ -187,10 +187,10 @@ impl PackedSection {
     /// `asString` and the virtual `asInt64` — reproduced by this port
     /// as unbounded recursion, never exercised on well-formed files.
     pub fn as_uint(&self, default: u32) -> u32 {
-        if self.own_type == SectionType::INT {
-            if let Some(v) = get_integer_val(&self.own_data) {
-                return v as u32;
-            }
+        if self.own_type == SectionType::INT
+            && let Some(v) = get_integer_val(&self.own_data)
+        {
+            return v as u32;
         }
         self.fallback().as_uint(default)
     }
@@ -202,10 +202,10 @@ impl PackedSection {
     /// `asString` and the virtual `asInt64` — reproduced by this port
     /// as unbounded recursion, never exercised on well-formed files.
     pub fn as_int64(&self, default: i64) -> i64 {
-        if self.own_type == SectionType::INT {
-            if let Some(v) = get_integer_val(&self.own_data) {
-                return v;
-            }
+        if self.own_type == SectionType::INT
+            && let Some(v) = get_integer_val(&self.own_data)
+        {
+            return v;
         }
         self.fallback().as_int64(default)
     }
@@ -248,9 +248,7 @@ impl PackedSection {
     /// `PackedSection::asString`.
     pub fn as_string(&self) -> String {
         match self.own_type {
-            SectionType::STRING => {
-                String::from_utf8_lossy(&self.own_data).into_owned()
-            }
+            SectionType::STRING => String::from_utf8_lossy(&self.own_data).into_owned(),
             SectionType::BLOB => base64::encode(&self.own_data),
             SectionType::INT => {
                 // Big uint64s are handled as string by the writer; the
@@ -261,7 +259,7 @@ impl PackedSection {
                 // A matrix is an empty string; it has children.
                 String::new()
             }
-            SectionType::FLOAT if self.own_len % 4 == 0 => {
+            SectionType::FLOAT if self.own_len.is_multiple_of(4) => {
                 let mut ds = DataSection::new("scratch");
                 match self.own_len / 4 {
                     1 => ds.set_float(self.as_float(0.0)),
@@ -287,10 +285,7 @@ impl PackedSection {
     /// `PackedSection::asVector2`.
     pub fn as_vector2(&self, default: Vector2) -> Vector2 {
         if self.own_type == SectionType::FLOAT && self.own_len == 8 {
-            return Vector2::new(
-                f32_le(&self.own_data, 0),
-                f32_le(&self.own_data, 4),
-            );
+            return Vector2::new(f32_le(&self.own_data, 0), f32_le(&self.own_data, 4));
         }
         self.fallback().as_vector2(default)
     }
@@ -324,9 +319,9 @@ impl PackedSection {
     pub fn as_matrix34(&self, default: Matrix) -> Matrix {
         let mut m = default;
         if self.own_type == SectionType::FLOAT && self.own_len == 4 * 12 {
-            for i in 0..4 {
-                for j in 0..3 {
-                    m.m[i][j] = f32_le(&self.own_data, (i * 3 + j) * 4);
+            for (i, row) in m.m.iter_mut().enumerate().take(4) {
+                for (j, cell) in row.iter_mut().enumerate().take(3) {
+                    *cell = f32_le(&self.own_data, (i * 3 + j) * 4);
                 }
             }
         } else {
@@ -350,10 +345,10 @@ impl PackedSection {
         if self.own_type == SectionType::STRING && self.own_len == 0 {
             return Vec::new();
         }
-        if self.own_type == SectionType::INT || self.own_type == SectionType::BOOL {
-            if let Some(decoded) = base64::decode_strict(&self.as_string()) {
-                return decoded;
-            }
+        if (self.own_type == SectionType::INT || self.own_type == SectionType::BOOL)
+            && let Some(decoded) = base64::decode_strict(&self.as_string())
+        {
+            return decoded;
         }
         // The XMLSection fallback ignores defaultVal entirely.
         let _ = default;
@@ -380,9 +375,7 @@ impl PackedSection {
         ds.set_string(&self.as_string());
         ds
     }
-
 }
-
 
 fn row_of(section: &PackedSection, tag: &str, default_row: [f32; 4]) -> [f32; 4] {
     let v = section
@@ -530,23 +523,25 @@ fn parse_children_block(name: &str, bytes: &[u8], strings: &[String]) -> PackedS
         let end = ((end_pos & DATA_POS_MASK) as i64 + offset) as usize;
         let child_type = SectionType::from_bits(end_pos);
 
-        let name_owned = strings
-            .get(key_pos as usize)
-            .cloned()
-            .unwrap_or_default();
+        let name_owned = strings.get(key_pos as usize).cloned().unwrap_or_default();
         let lo = start.min(bytes.len());
         let hi = end.min(bytes.len());
         if hi < lo {
             return degraded(name);
         }
-        children.push(parse_window(&name_owned, &bytes[lo..hi], child_type, strings));
+        children.push(parse_window(
+            &name_owned,
+            &bytes[lo..hi],
+            child_type,
+            strings,
+        ));
     }
 
     let n = num_children.max(0);
     let mut section = PackedSection {
         name: name.to_string(),
         own_type,
-        own_len: own_len as usize,
+        own_len,
         own_data,
         num_children: Some(n),
         children,
@@ -729,36 +724,37 @@ fn add_best_guess(ds: &DataSection, out: &mut Vec<u8>) -> SectionType {
     }
 
     // Big uint64s stay strings to avoid conversion errors downstream.
-    if let Some(u) = sscanf_u64(&s) {
-        if u > i64::MAX as u64 && s == u.to_string() {
-            out.extend_from_slice(s.as_bytes());
-            return SectionType::STRING;
-        }
+    if let Some(u) = sscanf_u64(s)
+        && u > i64::MAX as u64
+        && s == u.to_string()
+    {
+        out.extend_from_slice(s.as_bytes());
+        return SectionType::STRING;
     }
 
     // INT: the value must reformat to exactly the same string (no leading
     // zeros, no plus, no padding).
-    if let Some(v) = stream_i64(&s) {
-        if s == v.to_string() {
-            match v {
-                0 => {}
-                v if (-128..=127).contains(&v) => out.push(v as i8 as u8),
-                v if (i16::MIN as i64..=i16::MAX as i64).contains(&v) => {
-                    out.extend_from_slice(&(v as i16).to_le_bytes())
-                }
-                v if (i32::MIN as i64..=i32::MAX as i64).contains(&v) => {
-                    out.extend_from_slice(&(v as i32).to_le_bytes())
-                }
-                v => out.extend_from_slice(&v.to_le_bytes()),
+    if let Some(v) = stream_i64(s)
+        && s == v.to_string()
+    {
+        match v {
+            0 => {}
+            v if (-128..=127).contains(&v) => out.push(v as i8 as u8),
+            v if (i16::MIN as i64..=i16::MAX as i64).contains(&v) => {
+                out.extend_from_slice(&(v as i16).to_le_bytes())
             }
-            return SectionType::INT;
+            v if (i32::MIN as i64..=i32::MAX as i64).contains(&v) => {
+                out.extend_from_slice(&(v as i32).to_le_bytes())
+            }
+            v => out.extend_from_slice(&v.to_le_bytes()),
         }
+        return SectionType::INT;
     }
 
     // FLOAT: up to four iostream floats; the reference requires the value
     // to reformat identically through the XML writers.
-    if let Some(count) = stream_floats_up_to_4(&s) {
-        let vals = parse_floats(&s, count);
+    if let Some(count) = stream_floats_up_to_4(s) {
+        let vals = parse_floats(s, count);
         let f: Vec<f32> = vals.iter().map(|v| *v as f32).collect();
         let mut scratch = DataSection::new("scratch");
         let ok = match count {
@@ -790,11 +786,11 @@ fn add_best_guess(ds: &DataSection, out: &mut Vec<u8>) -> SectionType {
     }
 
     // BLOB: only when the base64 form is canonical.
-    if let Some(decoded) = base64::decode_strict(&s) {
-        if base64::encode(&decoded) == s {
-            out.extend_from_slice(&decoded);
-            return SectionType::BLOB;
-        }
+    if let Some(decoded) = base64::decode_strict(s)
+        && base64::encode(&decoded) == s
+    {
+        out.extend_from_slice(&decoded);
+        return SectionType::BLOB;
     }
 
     // STRING (everything else).
@@ -819,9 +815,7 @@ fn sscanf_u64(s: &str) -> Option<u64> {
     let mut any = false;
     while p < bytes.len() && bytes[p].is_ascii_digit() {
         any = true;
-        acc = acc
-            .wrapping_mul(10)
-            .wrapping_add((bytes[p] - b'0') as u64);
+        acc = acc.wrapping_mul(10).wrapping_add((bytes[p] - b'0') as u64);
         p += 1;
     }
     if !any {
@@ -847,13 +841,9 @@ fn stream_i64(s: &str) -> Option<i64> {
     let mut any = false;
     while p < bytes.len() && bytes[p].is_ascii_digit() {
         any = true;
-        acc = match acc
+        acc = acc
             .checked_mul(10)
-            .and_then(|v| v.checked_add((bytes[p] - b'0') as i64))
-        {
-            Some(v) => v,
-            None => return None, // failbit on overflow
-        };
+            .and_then(|v| v.checked_add((bytes[p] - b'0') as i64))?;
         p += 1;
     }
     if !any {
@@ -872,20 +862,14 @@ fn stream_floats_up_to_4(s: &str) -> Option<usize> {
     let mut p = 0usize;
     let mut count = 0usize;
     loop {
-        let Some((_, np)) = stream_float(bytes, p) else {
-            return None;
-        };
+        let (_, np) = stream_float(bytes, p)?;
         count += 1;
         p = np;
         if count == 4 || p == bytes.len() {
             break;
         }
     }
-    if p == bytes.len() {
-        Some(count)
-    } else {
-        None
-    }
+    if p == bytes.len() { Some(count) } else { None }
 }
 
 /// Re-parse the floats already validated by [`stream_floats_up_to_4`].
@@ -1054,7 +1038,11 @@ mod tests {
         ];
         let root = PackedSection::parse("f", &packed_file(&[], &block));
         assert_eq!(root.as_float(9.0), 1.5);
-        assert_eq!(root.as_string(), "1.500000", "floats print via the XML writer");
+        assert_eq!(
+            root.as_string(),
+            "1.500000",
+            "floats print via the XML writer"
+        );
         assert_eq!(root.as_double(9.0), 1.5);
         // A two-float section: asFloat falls back to the string prefix.
         let block2 = [
@@ -1073,7 +1061,9 @@ mod tests {
     #[test]
     fn float_string_data_parses_with_iostream_rules() {
         // TYPE_STRING holding "2.5junk": extraction takes the prefix.
-        let block = [0x00, 0x00, 0x07, 0x00, 0x00, 0x10, b'2', b'.', b'5', b'j', b'u', b'n', b'k'];
+        let block = [
+            0x00, 0x00, 0x07, 0x00, 0x00, 0x10, b'2', b'.', b'5', b'j', b'u', b'n', b'k',
+        ];
         let root = PackedSection::parse("s", &packed_file(&[], &block));
         assert_eq!(root.as_float(9.0), 2.5);
         // "abc" does not parse.
@@ -1086,7 +1076,12 @@ mod tests {
     fn matrix_synthesises_row_children() {
         // 48-byte float section: three basis rows plus a translation row.
         let mut data = Vec::new();
-        for row in [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [2.0, 3.0, 4.0]] {
+        for row in [
+            [1.0f32, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [2.0, 3.0, 4.0],
+        ] {
             for v in row {
                 data.extend_from_slice(&v.to_le_bytes());
             }
@@ -1114,10 +1109,15 @@ mod tests {
     #[test]
     fn encrypted_blob_xor_decrypts() {
         // First byte 1 (encrypted), then "hi" XOR 0xc9.
-        let payload = [BW_ENCRYPTED_BLOCK, b'h' ^ BW_ENCRYPTION_KEY, b'i' ^ BW_ENCRYPTION_KEY];
+        let payload = [
+            BW_ENCRYPTED_BLOCK,
+            b'h' ^ BW_ENCRYPTION_KEY,
+            b'i' ^ BW_ENCRYPTION_KEY,
+        ];
         let mut block = vec![0x00, 0x00];
-        block
-            .extend_from_slice(&((payload.len() as u32) | SectionType::ENCRYPTED_BLOB.0).to_le_bytes());
+        block.extend_from_slice(
+            &((payload.len() as u32) | SectionType::ENCRYPTED_BLOB.0).to_le_bytes(),
+        );
         block.extend_from_slice(&payload);
         let root = PackedSection::parse("e", &packed_file(&[], &block));
         assert_eq!(root.own_type(), SectionType::BLOB, "decrypted to BLOB");
@@ -1276,7 +1276,11 @@ mod tests {
             own("vec3").as_vector3(Vector3::ZERO),
             Vector3::new(1.0, 2.0, 3.0)
         );
-        assert_eq!(own("bigu").own_type(), SectionType::STRING, "big uint64 stays string");
+        assert_eq!(
+            own("bigu").own_type(),
+            SectionType::STRING,
+            "big uint64 stays string"
+        );
         assert_eq!(own("bigu").as_uint64(7), u64::MAX);
         assert_eq!(own("text").as_string(), "not a number");
         assert_eq!(own("blob64").own_type(), SectionType::BLOB);
@@ -1307,7 +1311,11 @@ mod tests {
         assert_eq!(parsed.open_child(1).unwrap().section_name(), "sub");
 
         let sub = parsed.find_child("sub").unwrap();
-        assert_eq!(sub.as_string(), "own value", "a parent may own typed data too");
+        assert_eq!(
+            sub.as_string(),
+            "own value",
+            "a parent may own typed data too"
+        );
         assert_eq!(sub.own_type(), SectionType::STRING);
         assert_eq!(sub.count_children(), 2);
         assert_eq!(sub.find_child("leaf1").unwrap().as_string(), "alpha");
@@ -1318,9 +1326,14 @@ mod tests {
     fn matrix_children_pack_as_raw_floats() {
         let mut root = DataSection::new("root");
         let m = root.add_child("m");
-        for (i, row) in [[1.0f32, 0.0, 2.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [7.0, 8.0, 9.0]]
-            .iter()
-            .enumerate()
+        for (i, row) in [
+            [1.0f32, 0.0, 2.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [7.0, 8.0, 9.0],
+        ]
+        .iter()
+        .enumerate()
         {
             let child = m.add_child(format!("row{i}").as_str());
             child.set_string(&format!(
@@ -1368,8 +1381,9 @@ mod tests {
         let mut encrypted = vec![BW_ENCRYPTED_BLOCK];
         encrypted.extend(raw.iter().map(|b| b ^ BW_ENCRYPTION_KEY));
         let mut block = vec![0x00, 0x00];
-        block
-            .extend_from_slice(&((encrypted.len() as u32) | SectionType::ENCRYPTED_BLOB.0).to_le_bytes());
+        block.extend_from_slice(
+            &((encrypted.len() as u32) | SectionType::ENCRYPTED_BLOB.0).to_le_bytes(),
+        );
         block.extend_from_slice(&encrypted);
         let root = PackedSection::parse("e", &packed_file(&[], &block));
         assert_eq!(root.as_blob(""), b"payload");
@@ -1377,8 +1391,9 @@ mod tests {
         // An already-decrypted block marker passes through.
         let mut block = vec![0x00, 0x00];
         let plain = [BW_DECRYPTED_BLOCK, b'x'];
-        block
-            .extend_from_slice(&((plain.len() as u32) | SectionType::ENCRYPTED_BLOB.0).to_le_bytes());
+        block.extend_from_slice(
+            &((plain.len() as u32) | SectionType::ENCRYPTED_BLOB.0).to_le_bytes(),
+        );
         block.extend_from_slice(&plain);
         let root = PackedSection::parse("e", &packed_file(&[], &block));
         assert_eq!(root.as_blob(""), b"x");
@@ -1427,10 +1442,7 @@ mod tests {
             "string form still parses as a vector"
         );
         let v3 = leaf_root(SectionType::STRING, b"1.000000 2.000000 3.000000");
-        assert_eq!(
-            v3.as_vector3(Vector3::ZERO),
-            Vector3::new(1.0, 2.0, 3.0)
-        );
+        assert_eq!(v3.as_vector3(Vector3::ZERO), Vector3::new(1.0, 2.0, 3.0));
         let v4 = leaf_root(SectionType::STRING, b"1.000000 2.000000 3.000000 4.000000");
         assert_eq!(
             v4.as_vector4(Vector4::ZERO),
@@ -1490,10 +1502,7 @@ mod tests {
         // One, three and four floats print through the XML writers.
         let mut f1 = [0u8; 4];
         f1.copy_from_slice(&1.5f32.to_le_bytes());
-        assert_eq!(
-            leaf_root(SectionType::FLOAT, &f1).as_string(),
-            "1.500000"
-        );
+        assert_eq!(leaf_root(SectionType::FLOAT, &f1).as_string(), "1.500000");
         let mut f3 = Vec::new();
         for v in [1.0f32, 2.0, 3.0] {
             f3.extend_from_slice(&v.to_le_bytes());
@@ -1524,14 +1533,8 @@ mod tests {
     fn blob_reads_from_int_and_bool_string_forms() {
         // "2544" is four base64 digits: the strict decode succeeds.
         let int_blob = leaf_root(SectionType::INT, &2544i16.to_le_bytes());
-        assert_eq!(
-            int_blob.as_blob(""),
-            base64::decode_strict("2544").unwrap()
-        );
-        assert_eq!(
-            int_blob.as_binary(),
-            base64::decode_strict("2544").unwrap()
-        );
+        assert_eq!(int_blob.as_blob(""), base64::decode_strict("2544").unwrap());
+        assert_eq!(int_blob.as_binary(), base64::decode_strict("2544").unwrap());
 
         // A decimal string of the wrong length misses strict decoding and
         // goes through the XML fallback (lenient decode, default ignored).
@@ -1558,9 +1561,14 @@ mod tests {
         // back falls back to per-row vector parsing, junk tolerated.
         let mut root = DataSection::new("root");
         let m = root.add_child("m");
-        for (i, row) in [[1.0f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [7.0, 8.0, 9.0]]
-            .iter()
-            .enumerate()
+        for (i, row) in [
+            [1.0f64, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [7.0, 8.0, 9.0],
+        ]
+        .iter()
+        .enumerate()
         {
             let junk = if i == 1 { "junk" } else { "" };
             m.add_child(format!("row{i}").as_str()).set_string(&format!(
@@ -1572,9 +1580,14 @@ mod tests {
         // A second node whose row2 does not parse at all exercises the
         // early exit of the writer's vector3 check.
         let m2 = root.add_child("m2");
-        for (i, row) in [[1.0f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [7.0, 8.0, 9.0]]
-            .iter()
-            .enumerate()
+        for (i, row) in [
+            [1.0f64, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [7.0, 8.0, 9.0],
+        ]
+        .iter()
+        .enumerate()
         {
             let value = if i == 2 {
                 "garbage".to_string()
@@ -1587,7 +1600,11 @@ mod tests {
         let bytes = pack(&root).expect("packs");
         let parsed = PackedSection::parse("root", &bytes);
         let pm = parsed.find_child("m").expect("m");
-        assert_ne!(pm.own_type(), SectionType::FLOAT, "junk defeats the matrix form");
+        assert_ne!(
+            pm.own_type(),
+            SectionType::FLOAT,
+            "junk defeats the matrix form"
+        );
         assert_eq!(
             pm.find_child("row1").unwrap().as_string(),
             "0.000000 1.000000 0.000000junk"
@@ -1614,7 +1631,7 @@ mod tests {
         ]
         .iter()
         .copied()
-        .chain(std::iter::repeat(0x41).take(10))
+        .chain(std::iter::repeat_n(0x41, 10))
         .collect::<Vec<u8>>();
         let root = PackedSection::parse("root", &packed_file(&["c"], &block));
         assert_eq!(root.own_type(), SectionType::STRING);
@@ -1623,10 +1640,18 @@ mod tests {
 
         // A leaf child carrying a valid encrypted marker decrypts.
         let block = [
-            0x01, 0x00, //
-            0x00, 0x00, 0x00, 0x00, // own: 0 | DATA_SECTION
-            0x00, 0x00, // key 0
-            0x03, 0x00, 0x00, 0x60, // child end 3 | ENCRYPTED_BLOB
+            0x01,
+            0x00, //
+            0x00,
+            0x00,
+            0x00,
+            0x00, // own: 0 | DATA_SECTION
+            0x00,
+            0x00, // key 0
+            0x03,
+            0x00,
+            0x00,
+            0x60, // child end 3 | ENCRYPTED_BLOB
             BW_ENCRYPTED_BLOCK,
             b'h' ^ BW_ENCRYPTION_KEY,
             b'i' ^ BW_ENCRYPTION_KEY,
@@ -1686,7 +1711,11 @@ mod tests {
         add(&mut root, "spaced_int", " -42");
         add(&mut root, "huge_int", "99999999999999999999");
         add(&mut root, "dash", "-");
-        add(&mut root, "five_floats", "1.000000 2.000000 3.000000 4.000000 5.000000");
+        add(
+            &mut root,
+            "five_floats",
+            "1.000000 2.000000 3.000000 4.000000 5.000000",
+        );
         add(&mut root, "double_b64", "Zg==Zg==");
         add(&mut root, "signed_wrap", "-5k");
 
