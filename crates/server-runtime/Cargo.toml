@@ -13,3 +13,4 @@ foundation = { workspace = true }
 libc = { workspace = true }
 platform = { workspace = true }
 resources = { workspace = true }
+sha2 = { workspace = true }

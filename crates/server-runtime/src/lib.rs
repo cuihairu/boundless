@@ -7,6 +7,7 @@ pub mod cluster_shutdown;
 pub mod config;
 pub mod dbappmgr;
 pub mod dispatcher;
+pub mod login_challenge;
 pub mod loginapp;
 pub mod machined;
 pub mod reviver;
