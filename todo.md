@@ -124,7 +124,8 @@
 - [ ] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
 - [ ] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
 - [ ] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
-- [ ] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
+- [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
+  - 证据：`run-full-stack` 以一份共享输入（`cases/full_stack/roles.txt`，八个参考角色）同时驱动两侧，产出两份证据表 `original.tsv` 与 `new.tsv`。`original.tsv` 八行全 `blocked`，点名 `original-full-stack`：二进制确实存在于 `game/bin/server/el7/server`（baseapp/baseappmgr/cellapp/cellappmgr/dbapp/dbappmgr/loginapp/reviver，逐行附真实字节数），但完整启动需已配置 res 树、`BW_RES_PATH`、`server/bw.xml` 与数据库 schema，本机均未配置——代表性探针 `baseapp --version` 即报 `No res path set` / `Could not find server/bw.xml`。`new.tsv` 八行全 `ran`，记录 `boundless-server` 每角色真实启动行 `[role] starting (boundless minimal entry)`。6 库测试 + 3 CLI 集成测试绿；fmt 净；新增文件 clippy 净（`cmake_targets.rs` 17 处 collapsible_if 系预存债，不在本席）。commit 84a0d79
 - [ ] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
 - [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
 
