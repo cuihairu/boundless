@@ -1185,6 +1185,7 @@
 验证原生服务端全角色、客户端、编辑器及产物。验证 CPython 加载、应用资源路径、图形设备行为和退出回收，并与 Linux/Windows 服务端互通。
 
 - [ ] **BW-15-04-01 跑 macOS 服务端全角色**。**验收** 能启动、停止并回收。
+  - 证据（部分，未勾）：macOS 编译前置已通（afe9973）——`server_runtime::signals` 可移植到 `aarch64-apple-darwin`：等待原语按平台分派（Linux `sigwaitinfo`，macOS `sigwait`——libc crate 只给 BSD 族 `sigwait`，二者同是 POSIX 等待且都可被 `EINTR` 打断，`wait_one` 统一为负错误码）；`signal_number_to_string` 的实时信号臂（`SIGRTMIN`/`SIGRTMAX`，glibc 专属）门控到 Linux，macOS 无实时信号范围；`SIGMAX` 按平台取（Linux `SIGSYS`=31，macOS `SIGUSR2`=31，二者皆最高标准信号，`AtomicU32` 掩码一致）；`SIGNAL_NAMES` 按平台分表（参考表是 Linux 编号；macOS 编号不同：`SIGEMT`=7/`SIGBUS`=10/`SIGSYS`=12/`SIGCHLD`=20/`SIGIO`=23/`SIGINFO`=29/`SIGUSR1`=30/`SIGUSR2`=31，无 `SIGSTKFLT`/`SIGPWR`；服务端用的退出信号 `SIGTERM`/`SIGINT`/`SIGQUIT` 两端同号）。实测 `cargo check -p boundless-server --target aarch64-apple-darwin` 绿（仅剩 resources 预存警告）。**剩余**：macOS 上真机运行（`cargo build`+启动/停止/回收，需 macOS runner）；`server_app.rs` 测试目标另有两处内联 `sigtimedwait`（953/1184，BSD 无此符号，兄弟席已重构为 `consume_pending_signal`、未提交）——不影响 `cargo build`（runners lane 只用 build），只影响 `--all-targets` 测试编译。
 - [ ] **BW-15-04-02 验证 CPython 与应用资源布局**。**验收** 从应用包可加载。
 - [ ] **BW-15-04-03 跑 macOS 客户端和编辑器**。**验收** 设备状态和固定地图测试通过。
 - [ ] **BW-15-04-04 跑 macOS 工具和发布包**。**验收** 干净安装后可执行。
@@ -1195,6 +1196,7 @@
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
