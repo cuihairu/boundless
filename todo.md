@@ -177,11 +177,16 @@
 
 复现 BinaryStream、定长和变长整数、字符串、内存流、压缩流及读越界报告。以原版生成的样本双向读写。
 
-- [ ] **BW-01-02-01 实现定长整数和浮点读写**。**验收** 原版夹具逐字节往返。
-- [ ] **BW-01-02-02 实现变长整数与长度前缀**。**验收** 跨长度边界值逐字节吻合。
-- [ ] **BW-01-02-03 实现字符串与内存流**。**验收** 空值、嵌入零和剩余长度吻合。
-- [ ] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
-- [ ] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
+- [x] **BW-01-02-01 实现定长整数和浮点读写**。**验收** 原版夹具逐字节往返。
+  - 证据：`crates/foundation/src/stream.rs`（ff80e05）——定长面 `write/read_{u8,i8,u16,i16,u32,i32,u64,i64,f32,f64,bool}` 走 `to_le_bytes`/`to_bits`，对应原版 `lib/cstdmf/binary_stream.ipp` 的 `bw_netshort/netlong/netlonglong` 写算子（`BW_HTON*` 在小端主机为恒等宏，故 x86-64 上逐字节原样）。**黄金夹具**：新增 `golden_fixed_width_bytes` 钉死 28 字节字面量 `f9012efb c0bdf0ff 00e68ee7 fdffffff 0000c0bf 00000000 000006c0`（i8 -7 / bool / i16 -1234 / i32 -1000000 / i64 -9000000000 / f32 -1.5 / f64 -2.75），期望字节由 python `struct.pack('<',…)` 独立算出（非自证）；`golden_fixed_width_bytes_unsigned_bounds` 钉 0x00..0xFF 全 14 字节；`golden_float_negative_zero_and_infinity` 钉 -0.0 / +inf / -inf 三个特殊值位形。
+- [x] **BW-01-02-02 实现变长整数与长度前缀**。**验收** 跨长度边界值逐字节吻合。
+  - 证据：`stream.rs`（ff80e05，变长面实现见 5d85ed7）——`write/read_packed_int` 一字节承载 `0..=254`、`0xFF`+三字节小端承载 `255..=(1<<24)-1`，上限 `MAX_PACKED_INT=2^24-1`；`packed_int_size` 给字节数。跨边界值 `0/1/254/255/256/1000/65535/65536/MAX` 全部逐一断言字节数+往返；`packed_int_length_prefix_forms` 钉死两形态精确字节 `[0xAB]` 与 `[0xFF,0x56,0x34,0x12]`。
+- [x] **BW-01-02-03 实现字符串与内存流**。**验收** 空值、嵌入零和剩余长度吻合。
+  - 证据：`stream.rs`（ff80e05）——字符串=packed 长度前缀+原始字节、**无 NUL 终止符**（原版 `appendString` 口径）。新增 `strings_embed_zero_and_track_remaining`：`"a\0b\0"`+`""` 钉死 6 字节 `04 61 00 62 00 00`，嵌入零按数据而非结束符处理；空值往返；`remaining()` 全程递减 6→1→0 与 `at_end()` 吻合。内存流操作面 `rewind/finish/peek/unread_bytes/read_blob_raw` 覆盖原版 `MemoryIStream` 的 `retrieve/remainingLength/finish` 语义。非 ASCII 往返（`实体与太空`）另有一测。
+- [x] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
+  - 证据：`stream.rs`（ff80e05，新增 `write_compressed`/`read_compressed`+`CompressionLevel`）——线格式照原版 `lib/network/zip_stream.cpp`：`ZipOStream` 析构里 `compress2(src,level)` 后按 `writeStringLength(srcLen)`+`writeStringLength(dstLen)`+`addBlob` 落盘，`writeStringLength`=`writePackedInt`（binary_stream.hpp:48/90），故帧=`[packed 未压缩长][packed 压缩长][zlib 字节]`；读侧 `ZipIStream::init` 先读两 packed 长度、再 `uncompress(retrieve(compressLen))`。**双方可解码**：`compressed_reads_reference_zlib_fixture` 解系统 zlib（`compress2` 同库）level 1 产出的 290 字节夹具→还原 279 字节明文；`compressed_frame_shape_matches_reference` 证明我方编码与参考 `compress2` **逐字节相同**（比可解码更强）。压缩级别 1..=9 对应 `BW_COMPRESSION_ZIP_1..9`（越界拒绝）；默认 level 1=`Z_BEST_SPEED`（`ZipOStream` 默认）。Rust 侧 zlib 替代=flate2 rust_backend（与 BW-01-03-03 zip 行同决策）。
+- [x] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
+  - 证据：`stream.rs`（ff80e05）——`StreamError::{Truncated,PackedIntTooLarge,InvalidCompressionLevel,Zlib}` 四类同类错误。越界读按原版语义**置 error 并把读游标钳到末尾**（`take`/`take_n`），后续读同错不恢复（`truncated_read_marks_error_and_clamps`）；`PackedIntTooLarge` 挡 `>2^24-1` 的长度；压缩面三类异常各成一测：坏体（`compressed_rejects_corrupt_body`）、谎报原始长度（`compressed_rejects_length_mismatch`）、体被截断（`compressed_truncated_body_reports_truncation`→`Truncated`），均置 `has_error()`。门禁：`cargo test -p foundation` 145 全绿（stream 28）；`cargo test -p contracts`（依赖方）8 绿；`cargo fmt -p foundation --check` 本文件 0 漂移；clippy 无本 crate 告警。
 
 #### BW-01-03 DataSection 和资源路径
 
