@@ -356,7 +356,7 @@ impl ListenerMessage {
 }
 
 /// A signal command for one process, `SignalMessage`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SignalMessage {
     pub process: ProcessMessage,
     pub signal: u8,
@@ -368,6 +368,13 @@ pub mod signal {
     pub const SIGINT: u8 = 2;
     pub const SIGQUIT: u8 = 3;
     pub const SIGUSR1: u8 = 10;
+}
+
+/// The build configurations the reference accepts for a process start,
+/// `BW_CONFIG_HYBRID` and `BW_CONFIG_DEBUG` from `build/make/Makefile`.
+pub mod config {
+    pub const HYBRID: &str = "hybrid";
+    pub const DEBUG: &str = "debug";
 }
 
 impl SignalMessage {
@@ -1130,6 +1137,39 @@ impl CreateMessage {
     }
 }
 
+/// Why a process start request is refused, mirroring the reference's exit
+/// states in `handleCreateMessage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateRejectReason {
+    /// The config is neither `hybrid` nor `debug`.
+    InvalidConfig,
+    /// The name or config contains a `..` path escape.
+    IllegalPath,
+    /// The name runs a `commands/_helpers` setuid helper.
+    HelperProcess,
+}
+
+/// Validate a process start request the way the reference
+/// `handleCreateMessage` does, returning the first reason it would refuse.
+///
+/// The order matches the reference: config first, then the `..` check, then
+/// the helper directory. The platform-dependent checks (the uid exists, its
+/// environment, and the binary location) are left to the caller.
+pub fn validate_create(cm: &CreateMessage) -> Option<CreateRejectReason> {
+    // `bw_stricmp`: a case-insensitive comparison against the two configs.
+    let config = cm.config.to_ascii_lowercase();
+    if config != config::HYBRID && config != config::DEBUG {
+        return Some(CreateRejectReason::InvalidConfig);
+    }
+    if cm.name.contains("..") || cm.config.contains("..") {
+        return Some(CreateRejectReason::IllegalPath);
+    }
+    if cm.name.contains("commands/_helpers") {
+        return Some(CreateRejectReason::HelperProcess);
+    }
+    None
+}
+
 /// `CreateWithArgsMessage`: a create with explicit command line arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateWithArgsMessage {
@@ -1678,6 +1718,19 @@ impl MachinedRegistry {
             .iter()
             .find(|p| p.process.pid == pid)
             .map(|p| (p.cpu, p.mem))
+    }
+
+    /// The pids a signal command targets.
+    ///
+    /// Matches the reference `sendSignal`, which signals every registered
+    /// process whose message matches the command's filter bits. The actual
+    /// `kill` syscall is left to the caller.
+    pub fn signal_targets(&self, sm: &SignalMessage) -> Vec<u16> {
+        self.processes
+            .iter()
+            .filter(|entry| entry.process.matches(&sm.process))
+            .map(|entry| entry.process.pid)
+            .collect()
     }
 
     /// Apply a register or deregister command.
@@ -3369,5 +3422,106 @@ mod tests {
         registry.deregister(9);
         registry.register(&re);
         assert_eq!(registry.process_stats(12), Some((0, 0)));
+    }
+
+    /// A create command for a valid executable, the two legal configs, and
+    /// the three illegal shapes.
+    fn create_message(name: &str, config: &str) -> CreateMessage {
+        CreateMessage {
+            name: name.to_string(),
+            config: config.to_string(),
+            ..CreateMessage::default()
+        }
+    }
+
+    /// Create validation refuses the illegal shapes the reference refuses,
+    /// in the reference's order.
+    #[test]
+    fn create_validation_matches_reference_exit_states() {
+        // The two legal configs, case-insensitively as `bw_stricmp` compares.
+        assert_eq!(validate_create(&create_message("cellapp", "hybrid")), None);
+        assert_eq!(validate_create(&create_message("cellapp", "debug")), None);
+        assert_eq!(validate_create(&create_message("cellapp", "Hybrid")), None);
+
+        // An unknown config is the first refusal.
+        assert_eq!(
+            validate_create(&create_message("cellapp", "release")),
+            Some(CreateRejectReason::InvalidConfig)
+        );
+        // Config is checked before the path escape.
+        assert_eq!(
+            validate_create(&create_message("../escape", "release")),
+            Some(CreateRejectReason::InvalidConfig)
+        );
+        // A `..` in either field refuses.
+        assert_eq!(
+            validate_create(&create_message("../escape", "hybrid")),
+            Some(CreateRejectReason::IllegalPath)
+        );
+        // The reference checks the config before the path, and a legal config
+        // can never contain `..`, so a `..`-bearing config is refused as an
+        // invalid config. The path branch is defensive there.
+        assert_eq!(
+            validate_create(&create_message("cellapp", "hybrid/../x")),
+            Some(CreateRejectReason::InvalidConfig)
+        );
+        // The setuid helper directory is denied.
+        assert_eq!(
+            validate_create(&create_message("commands/_helpers/snapshot", "hybrid")),
+            Some(CreateRejectReason::HelperProcess)
+        );
+    }
+
+    /// A signal command targets exactly the registered processes its filter
+    /// selects; an unregistered pid targets nothing.
+    #[test]
+    fn signal_targets_registered_processes() {
+        let mut registry = MachinedRegistry::new();
+        registry.register(&register_command(31, 5100, "baseapp01"));
+        registry.register(&register_command(32, 5200, "cellapp01"));
+
+        let mut by_pid = SignalMessage {
+            ..SignalMessage::default()
+        };
+        by_pid.process.param = process_param::USE_PID;
+        by_pid.process.pid = 31;
+        assert_eq!(registry.signal_targets(&by_pid), vec![31]);
+
+        // No filter bits matches every registered process.
+        let broadcast = SignalMessage::default();
+        assert_eq!(registry.signal_targets(&broadcast), vec![31, 32]);
+
+        // A pid nothing registered under targets nothing.
+        let mut unknown = SignalMessage::default();
+        unknown.process.param = process_param::USE_PID;
+        unknown.process.pid = 99;
+        assert!(registry.signal_targets(&unknown).is_empty());
+    }
+
+    /// The lifecycle helpers carry the reference's signal numbers.
+    #[test]
+    fn lifecycle_signals_carry_reference_numbers() {
+        let mut shutdown = SignalMessage::default();
+        shutdown.set_controlled_shutdown();
+        assert_eq!(shutdown.signal, signal::SIGUSR1);
+
+        let mut kill = SignalMessage::default();
+        kill.set_kill();
+        assert_eq!(kill.signal, signal::SIGINT);
+
+        let mut hard_kill = SignalMessage::default();
+        hard_kill.set_hard_kill();
+        assert_eq!(hard_kill.signal, signal::SIGQUIT);
+
+        // A controlled shutdown of one registered process resolves to that
+        // pid and the SIGUSR1 number.
+        let mut registry = MachinedRegistry::new();
+        registry.register(&register_command(41, 5300, "baseapp01"));
+        let mut command = SignalMessage::default();
+        command.set_controlled_shutdown();
+        command.process.param = process_param::USE_PID;
+        command.process.pid = 41;
+        assert_eq!(registry.signal_targets(&command), vec![41]);
+        assert_eq!(command.signal, signal::SIGUSR1);
     }
 }
