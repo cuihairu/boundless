@@ -324,7 +324,10 @@
 
 从接口定义及宏展开提取消息 ID、固定或可变长度、handler、请求/应答 ID 与超时。比对内部和外部接口的字节序、包头和请求回调。
 
-- [ ] **BW-02-02-01 提取内外部消息 ID 与长度表**。**验收** 同原版接口注册表比对。
+- [x] **BW-02-02-01 提取内外部消息 ID 与长度表**。**验收** 同原版接口注册表比对。（commit 67565a4）
+  - 证据：`crates/mercury/src/interface_element.rs` 移植 `InterfaceElement`（长度风格常量 FIXED=0/VARIABLE=1/CALLBACK=2/INVALID=3、`header_size`/`nominal_body_size`/`stream_size`/`can_handle_length`）与 `InterfaceMinder`（`add` 按声明序编号、`addRange` 按 `startID + (254-startID)/rangePortion` 填满），并给出 `mercury_interface!` 宏还原 `BEGIN_MERCURY_INTERFACE`/`MERCURY_MESSAGE` 展开；`exposed_message_range.rs` 移植 `ExposedMethodMessageRange`/`ExposedPropertyMessageRange`（255/256 双精度分包）。`misc.rs` 补 `MessageId = u8`。
+  - 比对：内部 `FragmentServerInterface`（4 条 `VARIABLE,2`）与外部 `LoginInterface`（login/challengeResponse `VARIABLE,2`、probe `FIXED,0`）逐条对到原版；参考自身单测接口 `CommonInterface`（msg1 `FIXED,12`、msgVar1/msgVar2 `VARIABLE,1/4`、disconnect `FIXED,4`）作第三金标。
+  - 测试：`the_common_interface_matches_the_reference_registry`、`the_internal_fragment_interface_matches_the_reference_registry`、`the_external_login_interface_matches_the_reference_registry`、`add_range_consumes_the_remaining_range_as_the_reference_does`、`the_header_width_bounds_the_lengths_it_can_handle`、`the_reply_element_is_variable_length_with_a_four_byte_width`、`the_method_range_round_trips_more_exposed_than_slots`（原版 300 暴露过 11 槽往返）、`the_overflow_uses_the_reference_255_per_slot_packing`。mercury 95 测试绿，workspace 全绿。
 - [ ] **BW-02-02-02 实现固定及变长消息帧**。**验收** 黄金包头及负载逐字节一致。
 - [ ] **BW-02-02-03 实现请求关联与应答派发**。**验收** 交错请求各自收到正确响应。
 - [ ] **BW-02-02-04 实现请求超时和取消**。**验收** 回调恰好一次并释放挂起状态。
