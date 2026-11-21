@@ -603,6 +603,7 @@ mod tests {
         "interpreter::tests::scenario_the_matrix_and_plane_methods_exercise_their_surface",
         "interpreter::tests::scenario_the_v4_providers_exercise_their_surface",
         "interpreter::tests::scenario_the_resmgr_module_serves_the_ported_surface",
+        "interpreter::tests::scenario_the_resmgr_editor_tools_serve_the_ported_surface",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -5167,6 +5168,52 @@ mod tests {
              </root>\n",
         )
         .expect("write the fixture resource");
+        std::fs::create_dir_all(root.join("settings/items")).expect("build the item tree");
+        // The typed fixture: one node per conversion the `as*` faces read.
+        std::fs::write(
+            root.join("settings/items/kit.xml"),
+            "<kit>\n\
+             <name>shield</name>\n\
+             <armour>40</armour>\n\
+             <price>12.5</price>\n\
+             <dir>1 2 3</dir>\n\
+             <quad>1 2 3 4</quad>\n\
+             <pair>5 6</pair>\n\
+             <flag>true</flag>\n\
+             <data>aGVsbG8=</data>\n\
+             <row0>1 0 0</row0>\n\
+             <row1>0 1 0</row1>\n\
+             <row2>0 0 1</row2>\n\
+             <row3>0 0 0</row3>\n\
+             <part>blade</part>\n\
+             <part>hilt</part>\n\
+             </kit>\n",
+        )
+        .expect("write the typed fixture");
+        // The write round-trip fixture: the writes land on the same tree the
+        // reads open again.
+        std::fs::write(
+            root.join("settings/items/writes.xml"),
+            "<writes>\n<note>start</note>\n</writes>\n",
+        )
+        .expect("write the round-trip fixture");
+        // The mapping fixture: one child per listing face, in order.
+        std::fs::write(
+            root.join("settings/items/list.xml"),
+            "<list>\n<one>1</one>\n<two>2</two>\n<three>3</three>\n</list>\n",
+        )
+        .expect("write the listing fixture");
+        // The deprecated table fixture: the `value` defaults plus one `key`
+        // entry.
+        std::fs::write(
+            root.join("settings/items/table.xml"),
+            "<table>\n\
+             <value>\n<cost>10</cost>\n<rare>false</rare>\n</value>\n\
+             <key>crab</key>\n\
+             <key>lobster</key>\n\
+             </table>\n",
+        )
+        .expect("write the table fixture");
         let root_path = root.to_str().expect("a UTF-8 root");
         crate::resmgr::init_paths(&[root_path]);
 
@@ -5340,6 +5387,308 @@ mod tests {
                  ResMgr.localise('a key'))",
             ),
             "(True, 'a key')",
+        );
+
+        // The typed attribute faces read the node's own value: the
+        // conversions answer the fixture, the vector and matrix reads
+        // build from the component nodes, and the setters write through --
+        // `asBool` included, whose write is the reference's own no-op.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/kit.xml')\n\
+                 name = s['name']\n\
+                 armour = s['armour']\n\
+                 price = s['price']\n\
+                 pair = s['pair']\n\
+                 quad = s['quad']\n\
+                 direction = s['dir']\n\
+                 flag = s['flag']\n\
+                 name.isAttribute = True\n\
+                 name.asBool = True\n\
+                 name.asBinary = 'ignored'\n\
+                 flag_bool = flag.asBool\n\
+                 s._flag = 7\n\
+                 __probe = (name.asString, name.asWideString, armour.asInt, armour.asInt64, \
+                 price.asFloat, tuple(pair.asVector2), tuple(direction.asVector3), \
+                 tuple(quad.asVector4), flag_bool, s['data'].asBlob, name.isAttribute, \
+                 name.asBool, s.asMatrix.get(0, 0), s.asMatrix.get(1, 1), \
+                 s.asMatrix.get(2, 2), s.asMatrix.get(3, 3), s.asMatrix.get(0, 3), \
+                 s.asBinary.startswith(b'<kit.xml'), name.name, len(s), s['no/such'], \
+                 s._pair.asString, s.readFloat('flag'))",
+            ),
+            "('shield', 'shield', 40, 40, 12.5, (5.0, 6.0), (1.0, 2.0, 3.0), \
+             (1.0, 2.0, 3.0, 4.0), True, 'hello', True, False, 1.0, 1.0, 1.0, 1.0, 0.0, True, \
+             'name', 14, None, '5 6', 7.0)",
+        );
+
+        // The typed read and write faces: the writes land on the shared
+        // tree, the reads answer them back, and a miss answers its default.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr, Math\n\
+                 s = ResMgr.openSection('settings/items/writes.xml')\n\
+                 matrix = Math.Matrix()\n\
+                 matrix.setElement(2, 1, 8)\n\
+                 written = s.writeString('str', 'hello')\n\
+                 s.writeWideString('wide', 'widevalue')\n\
+                 s.writeInt('int', 5)\n\
+                 s.writeInt64('int64', 4000000000)\n\
+                 s.writeFloat('float', 2.75)\n\
+                 s.writeBool('bool', 'true')\n\
+                 s.writeVector2('v2', (1, 2))\n\
+                 s.writeVector3('v3', (3, 4, 5))\n\
+                 s.writeVector4('v4', (6, 7, 8, 9))\n\
+                 s.writeBlob('blob', 'b64world')\n\
+                 s.writeMatrix('mat', matrix)\n\
+                 __probe = (written.asString, s.readString('str'), s.readWideString('wide'), \
+                 s.readInt('int'), s.readInt64('int64'), s.readFloat('float'), \
+                 s.readBool('bool'), tuple(s.readVector2('v2')), tuple(s.readVector3('v3')), \
+                 tuple(s.readVector4('v4')), s.readBlob('blob'), s.readMatrix('mat').get(2, 1), \
+                 s.readMatrix('mat').get(3, 3), s.readString('absent', 'fallback'), \
+                 s.readInt('absent', 42), s.readFloat('absent', 1.5), \
+                 s.readBool('absent', True), tuple(s.readVector2('absent', (1, 2))), \
+                 s.readMatrix('absent', matrix).get(2, 1))",
+            ),
+            "('hello', 'hello', 'widevalue', 5, 4000000000, 2.75, True, (1.0, 2.0), \
+             (3.0, 4.0, 5.0), (6.0, 7.0, 8.0, 9.0), 'b64world', 8.0, 1.0, 'fallback', 42, \
+             1.5, True, (1.0, 2.0), 8.0)",
+        );
+
+        // The plural faces write one child per item and read every child
+        // carrying the leaf tag.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/kit.xml')\n\
+                 s.writeStrings('slot', ('a', 'b', 'c'))\n\
+                 s.writeWideStrings('wide', ('w',))\n\
+                 s.writeInts('num', (10, 20, 30))\n\
+                 s.writeFloats('rate', (0.5, 0.25))\n\
+                 s.writeVector2s('p2', ((1, 2), (3, 4)))\n\
+                 s.writeVector3s('p3', ((1, 2, 3),))\n\
+                 s.writeVector4s('p4', ((1, 2, 3, 4),))\n\
+                 __probe = (s.readStrings('part'), s.readStrings('slot'), \
+                 s.readWideStrings('wide'), s.readInts('num'), s.readFloats('rate'), \
+                 tuple(tuple(v) for v in s.readVector2s('p2')), \
+                 tuple(tuple(v) for v in s.readVector3s('p3')), \
+                 tuple(tuple(v) for v in s.readVector4s('p4')), s.readStrings('absent'))",
+            ),
+            "(('blade', 'hilt'), ('a', 'b', 'c'), ('w',), (10, 20, 30), (0.5, 0.25), \
+             ((1.0, 2.0), (3.0, 4.0)), ((1.0, 2.0, 3.0),), ((1.0, 2.0, 3.0, 4.0),), ())",
+        );
+
+        // The type-dispatching `write`, the zip conversion answer, the
+        // section copy, `createSectionFromString` (the DETACHED parse, not
+        // the copy that landed), and the wrapper form of `deleteSection`.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr, Math\n\
+                 s = ResMgr.openSection('settings/items/kit.xml')\n\
+                 s.write('num', 9)\n\
+                 s.write('rate', 1.5)\n\
+                 s.write('word', 'written')\n\
+                 s.write('v2', (1, 2))\n\
+                 s.write('v3', (3, 4, 5))\n\
+                 s.write('v4', (6, 7, 8, 9))\n\
+                 s.write('mv3', Math.Vector3(4, 5, 6))\n\
+                 s.write('mat', Math.Matrix())\n\
+                 try:\n\
+                 \x20   s.write('bad', object())\n\
+                 except TypeError as error:\n\
+                 \x20   refuse = str(error)\n\
+                 zipped = s.copyToZip()\n\
+                 target = s['part']\n\
+                 target.copy(s['name'])\n\
+                 copied = (target.asString, target.name)\n\
+                 parsed = s.createSectionFromString('<thing><id>7</id></thing>')\n\
+                 deleted = s.deleteSection(s['part'])\n\
+                 __probe = (s.readInt('num'), s.readFloat('rate'), s.readString('word'), \
+                 tuple(s.readVector2('v2')), tuple(s.readVector3('v3')), \
+                 tuple(s.readVector4('v4')), tuple(s.readVector3('mv3')), \
+                 s.readMatrix('mat').get(0, 0), refuse, zipped[0].name, zipped[1], \
+                 copied[0], copied[1], parsed.name, parsed.readString('id'), \
+                 s.readString('thing/id'), deleted, s.readStrings('part'))",
+            ),
+            "(9, 1.5, 'written', (1.0, 2.0), (3.0, 4.0, 5.0), (6.0, 7.0, 8.0, 9.0), \
+             (4.0, 5.0, 6.0), 1.0, 'PyDataSection.write: Unrecognised object type object', \
+             'kit.xml', False, 'shield', 'part', 'thing', '7', '7', True, ('hilt',))",
+        );
+
+        // The mapping faces: the length and the subscript, the underscore
+        // attribute sugar, the membership, and the child listings.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/list.xml')\n\
+                 first = s['one']\n\
+                 __probe = (len(s), first.asString, s._two.asString, s['two/three'], \
+                 s.has_key('one'), s.has_key('one/two'), tuple(s.keys()), \
+                 tuple(name for name, _ in s.items()), \
+                 tuple(w.name for w in s.values()), \
+                 [w.asString for w in s.values()], first.name)",
+            ),
+            "(3, '1', '2', None, True, False, ('one', 'two', 'three'), \
+             ('one', 'two', 'three'), ('one', 'two', 'three'), ['1', '2', '3'], 'one')",
+        );
+
+        // `cleanName` sanitises the tag the way `XMLSection` does,
+        // `isNameClean` answers the always-true gated check, and the
+        // constructor builds a fresh in-memory section.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/list.xml')\n\
+                 leaf = s.createSection('9 bad')\n\
+                 changed = leaf.cleanName()\n\
+                 clean = leaf.isNameClean()\n\
+                 fresh = ResMgr.DataSection('scratch')\n\
+                 __probe = (changed, clean, s['id.9..bad'].name, fresh.name, len(fresh), \
+                 fresh.readString('nothing', 'empty'))",
+            ),
+            "(True, True, 'id.9..bad', 'scratch', 0, 'empty')",
+        );
+
+        // The module `save` of a never-opened id is the `IOError`, the
+        // recursive `purge` drops the whole directory's census, and an
+        // unsaved write is lost behind it.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/writes.xml')\n\
+                 s.writeString('str', 'unsaved')\n\
+                 ResMgr.purge('settings/items', True)\n\
+                 again = ResMgr.openSection('settings/items/writes.xml')\n\
+                 try:\n\
+                 \x20   ResMgr.save('settings/items/never.xml')\n\
+                 except IOError as error:\n\
+                 \x20   refused = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.purge()\n\
+                 except TypeError as error:\n\
+                 \x20   wall = str(error)\n\
+                 __probe = (again.readString('str', 'missing'), again.readString('note'), \
+                 refused, wall)",
+            ),
+            "('missing', 'start', 'Save of settings/items/never.xml failed', \
+             'purge() expects between 1 and 2 arguments of types BW::string, bool')",
+        );
+
+        // The deprecated `ResourceTable`: the keyed entries answer through
+        // `at`/`sub`/the subscripts, the `key`/`index`/`value` attributes
+        // read the wrapped node, the value struct's `get` walks the parent
+        // chain, and the links run their callable once each.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 calls = []\n\
+                 table = ResMgr.ResourceTable('settings/items/table.xml')\n\
+                 entry = table.at(0)\n\
+                 try:\n\
+                 \x20   table.at(9)\n\
+                 except ValueError as error:\n\
+                 \x20   at_wall = str(error)\n\
+                 try:\n\
+                 \x20   table.sub('absent')\n\
+                 except ValueError as error:\n\
+                 \x20   sub_wall = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.ResourceTable('settings/items/absent.xml')\n\
+                 except ValueError as error:\n\
+                 \x20   missing = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.ResourceTable('settings/items/table.xml', 42)\n\
+                 except TypeError as error:\n\
+                 \x20   not_callable = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.ResourceTable()\n\
+                 except TypeError as error:\n\
+                 \x20   count_wall = str(error)\n\
+                 table.link(lambda entry: calls.append(entry.key))\n\
+                 __probe = (len(table), entry.key, table.at(-1).key, table[1].key, \
+                 table.keyOfIndex(1), table.indexOfKey('crab'), table.indexOfKey('absent'), \
+                 table.keyOfIndex(9), table.sub('crab').key, table['crab'].key, table.index, \
+                 table.at(0).index, table.at(1).index, table.value.get('cost'), \
+                 table.value.cost, table.value.get('rare'), table.value.get('absent'), \
+                 table.value.get('absent', 7), table.at(0).value.get('cost'), calls, \
+                 table.link(lambda entry: None), table.unlink(lambda entry: None), \
+                 at_wall, sub_wall, missing, not_callable, count_wall)",
+            ),
+            "(2, 'crab', 'lobster', 'lobster', 'lobster', 0, -1, '', 'crab', 'crab', \
+             4294967295, 0, 1, 10, 10, False, None, 7, 10, [''], True, None, \
+             'ResourceTable.at: index 9 out of range', \
+             'ResourceTable.find: no entry for key absent', \
+             \"ResourceTable() no such resource 'settings/items/absent.xml'\", \
+             'ResourceTable() second arg must be callable', \
+             'ResourceTable() expects between 1 and 2 arguments of types BW::string, PyObjectPtr')",
+        );
+
+        interpreter.fini();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// BW-03-03-04 editor component. The `#ifdef EDITOR_ENABLED` trio the
+    /// `res_mgr_script.cpp` links only into an editor build: `remove`,
+    /// `rename` and `copy` act on the file system through the search path.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_resmgr_editor_tools_serve_the_ported_surface() {
+        let root =
+            std::env::temp_dir().join(format!("boundless-resmgr-editor-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("settings/items")).expect("build the editor tree");
+        std::fs::write(root.join("settings/items/scrap.xml"), "<scrap/>\n").expect("scrap");
+        std::fs::write(root.join("settings/items/moved.xml"), "<moved/>\n").expect("moved");
+        std::fs::write(
+            root.join("settings/items/kit.xml"),
+            "<kit>\n<name>shield</name>\n</kit>\n",
+        )
+        .expect("kit");
+        let root_path = root.to_str().expect("a UTF-8 root");
+        crate::resmgr::init_paths(&[root_path]);
+
+        let interpreter = Interpreter::init(&InitConfig {
+            component: String::from("editor"),
+            ..scenario_config(&InitConfig::default())
+        })
+        .expect("Script::init");
+
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 removed = ResMgr.remove('settings/items/scrap.xml')\n\
+                 gone = ResMgr.isFile('settings/items/scrap.xml')\n\
+                 try:\n\
+                 \x20   ResMgr.remove('settings/items/absent.xml')\n\
+                 except IOError as error:\n\
+                 \x20   no_remove = str(error)\n\
+                 renamed = ResMgr.rename('settings/items/moved.xml', 'settings/items/moved2.xml')\n\
+                 moved = ResMgr.isFile('settings/items/moved2.xml')\n\
+                 try:\n\
+                 \x20   ResMgr.rename('settings/items/absent.xml', 'settings/items/nope.xml')\n\
+                 except IOError as error:\n\
+                 \x20   no_rename = str(error)\n\
+                 copied = ResMgr.copy('settings/items/kit.xml', 'settings/items/kit_copy.xml')\n\
+                 present = ResMgr.isFile('settings/items/kit_copy.xml')\n\
+                 try:\n\
+                 \x20   ResMgr.copy('settings/items/absent.xml', 'settings/items/nope.xml')\n\
+                 except IOError as error:\n\
+                 \x20   no_copy = str(error)\n\
+                 __probe = (removed, gone, no_remove, renamed, moved, no_rename, copied, \
+                 present, no_copy)",
+            ),
+            "(True, False, 'Removing of settings/items/absent.xml failed', True, True, \
+             'Renaming of settings/items/absent.xml to settings/items/nope.xml failed', True, \
+             True, 'Copying of settings/items/absent.xml to settings/items/nope.xml failed')",
         );
 
         interpreter.fini();

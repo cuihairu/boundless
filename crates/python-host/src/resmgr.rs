@@ -2290,13 +2290,19 @@ unsafe fn write_values(
         WriteKind::Str | WriteKind::WStr | WriteKind::Blob => "BW::string",
         other => other.label(),
     };
-    for index in 0..size {
-        // SAFETY: the loop runs under the GIL with a live sequence.
-        let item = unsafe { capi::PySequence_GetItem(sequence, index) };
-        let ok = unsafe { coerce_write(item, kind) };
-        // SAFETY: the item reference is this loop's to drop.
-        unsafe { capi::dec_ref(item) };
-        if !ok {
+    // The items stay alive for the write below: the wall and the write
+    // re-parse each one, and the reference sets `values[i]` per item
+    // (`py_data_section.cpp:806-820`) -- the sequence itself is never the
+    // value.
+    let items: Vec<*mut capi::PyObject> = (0..size)
+        .map(|index| unsafe { capi::PySequence_GetItem(sequence, index) })
+        .collect();
+    for (index, item) in items.iter().enumerate() {
+        if !unsafe { coerce_write(*item, kind) } {
+            // SAFETY: every reference above is this function's to drop.
+            for acquired in &items {
+                unsafe { capi::dec_ref(*acquired) };
+            }
             raise_type_error(&format!("Section {index} is not of of type {item_kind}."));
             return std::ptr::null_mut();
         }
@@ -2305,13 +2311,18 @@ unsafe fn write_values(
     let mut tree = root.borrow_mut();
     if let Some(node) = walk_mut(&mut tree.data, &base) {
         if let Some((parent, leaf)) = split_tag_path(node, &path, true) {
-            for _ in 0..size {
+            for item in &items {
                 let child = parent.add_child(&leaf);
                 // SAFETY: the wall above accepted every item; the value
                 // carries the shape and each child write re-parses it.
-                unsafe { apply_write(child, sequence, kind) };
+                unsafe { apply_write(child, *item, kind) };
             }
         }
+    }
+    drop(tree);
+    // SAFETY: the write is done and the loop owns every reference.
+    for item in &items {
+        unsafe { capi::dec_ref(*item) };
     }
     capi::py_none()
 }
@@ -3727,8 +3738,14 @@ unsafe extern "C" fn fn_purge(
     let mut store_state = store()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let directory = recurse && store_state.resource.is_dir(&resource_id);
     store_state.resource.purge(&resource_id, recurse);
-    store_state.sections.remove(&resource_id);
+    // The recursive purge walks the directory (`bwresource.cpp` `BWResource::purge`),
+    // so the census drops every id under it, not just the path named.
+    let prefix = format!("{resource_id}/");
+    store_state
+        .sections
+        .retain(|id, _| !id.starts_with(&prefix) || !directory);
     drop(store_state);
     capi::py_none()
 }
