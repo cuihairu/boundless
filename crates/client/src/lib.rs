@@ -31,6 +31,7 @@ pub mod camera;
 pub mod device;
 pub mod focus;
 pub mod frame;
+pub mod local_entity;
 pub mod player;
 pub mod render;
 pub mod settings;
