@@ -87,7 +87,7 @@
 - [x] **BW-00-01-01 展开 Linux Make 构建目标**。**验收** 清册包含二进制、库及所属规则。`acb5b03` 清册落 `docs/review/bw00-01-01-linux-make-inventory.md`：make 累加器动态采集（recipe-time echo 权威清单）21 二进制+34 库+21 单测+16 杂项+8 三方，静态 77 声明交叉核对闭合，磁盘 `game/bin/server/el7`+`build/el7/lib` 审计，唯一缺口 `_bw_profile.so` 已登记（注册而产物缺失），png/zip/jsoncpp 声明悬空归 vcpkg。
 - [x] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。`ef5fd33` 清册落 `docs/review/bw00-01-02-cmake-windows-targets.md`：静态逐文件读 build/cmake 全量+驱动 py/bat+vcpkg.json，工程源目录逐一存在性核对；平台矩阵 win32/win64/远程 Linux + vc9-vc17/clang-cl 生成器 + Debug/Hybrid（_DEBUG/_HYBRID 宏）；11 个 BW_CMAKE_TARGET 启用宏全录（MF_SERVER/BW_CLIENT/EDITOR_ENABLED/BW_EXPORTER/_NAVGEN/PYMODULE/BW_BLOB_CONFIG），server 二进制 17+单测 21 与 Make 链同集，差异 8 项登记；本机 Linux 未跑 Windows configure，动态验证如实登记待验。
 - [x] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。`9a1ae6e` 清册落 `docs/review/bw00-01-03-release-and-rpm-inventory.md`：3 个原版 RPM（14.4.1-1.r0.el7）rpm -qpi/qpl/qpR 实查——独有交付物仅 bwmachined2 守护进程+服务化文件，devel/web-integration 为空 meta 包，无 spec/src.rpm 属仅发行物；现行 package-daily.sh/ps1（tar/deb/rpm/zip 三格式+SHA256 manifest，版本源 vcpkg.json 14.4.1，48h 门 artifacts-only 无 tag/release）与 daily-build/ci-windows 双车道登记；make 链无 RPM 实现、原版 vs daily 两套体系差异、Windows daily 11 exe 与 cmake 17 二进制差集逐项登记。
-- [ ] **BW-00-01-04 登记第三方依赖与资源来源**。**验收** 每项有许可证、NOTICE 及复用决策。
+- [x] **BW-00-01-04 登记第三方依赖与资源来源**。**验收** 每项有许可证、NOTICE 及复用决策。`6ea27fe` 清册落 `docs/review/bw00-01-04-thirdparty-and-resources.md`：22 个 third_party 目录 + vcpkg 7 项 + 资源面（res 122M 脚本树/site-packages/python_modules 18 sdist）逐项登记许可证、NOTICE 归属（THIRD-PARTY-NOTICES 16 节对照）与复用决策（vcpkg 切换/vendored 保留/fallback 三态，权威源 docs/vcpkg-migration.md §1）；缺口如实登记：bzip2 无 notice 节、6 项 vcpkg 化库 notices 版本漂移、putty/cmake 无节、python_modules README 版本漂移。
 
 #### BW-00-02 原版运行基准
 
