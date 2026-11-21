@@ -17,5 +17,6 @@ pub mod multiproc;
 pub mod release_artifacts;
 pub mod rng;
 pub mod standalone;
+pub mod third_party_deps;
 pub mod timer_scenarios;
 pub mod workspace;
