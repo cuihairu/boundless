@@ -85,6 +85,33 @@ pub fn category_name(category: u8) -> &'static str {
     }
 }
 
+/// Map a value onto the 0-255 byte a MachineGuard message carries, using the
+/// reference's `value * 0xff / max` scaling.
+pub fn scale_percentage(value: u64, max: u64) -> u8 {
+    if max == 0 {
+        return 0;
+    }
+    (value.saturating_mul(0xff) / max) as u8
+}
+
+/// CPU load from the change in busy jiffies over the change in total jiffies.
+///
+/// The reference clamps the divisor to at least one (`std::max( delta, 1 )`)
+/// so an idle period between samples does not divide by zero.
+pub fn cpu_load(busy_delta: u64, total_delta: u64) -> u8 {
+    scale_percentage(busy_delta, total_delta.max(1))
+}
+
+/// Memory used as a fraction of total, `used * 0xff / total`.
+pub fn memory_usage(used: u64, total: u64) -> u8 {
+    scale_percentage(used, total)
+}
+
+/// IO wait as a fraction of total jiffies, clamped divisor like cpu load.
+pub fn io_wait(io_delta: u64, total_delta: u64) -> u8 {
+    scale_percentage(io_delta, total_delta.max(1))
+}
+
 /// The shared message header: message id, flags and sequence number.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
@@ -1509,6 +1536,34 @@ pub enum DeregisterOutcome {
     NotFound,
 }
 
+/// A registered process and its most recently collected stats.
+///
+/// Mirrors the reference `ProcessInfo`: the process message plus the cpu and
+/// memory bytes the statistics query carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredProcess {
+    pub process: ProcessMessage,
+    /// CPU load as a 0-255 byte, `(busy_jiffies_delta * 0xff / cpu_delta)`.
+    pub cpu: u8,
+    /// Memory as a 0-255 byte, `(vsize * 0xff / total_mem)`.
+    pub mem: u8,
+}
+
+impl RegisteredProcess {
+    fn new(process: ProcessMessage) -> Self {
+        Self {
+            process,
+            cpu: 0,
+            mem: 0,
+        }
+    }
+
+    /// Whether this process matches a discovery query.
+    pub fn matches(&self, query: &ProcessMessage) -> bool {
+        self.process.matches(query)
+    }
+}
+
 /// The bwmachined process registry.
 ///
 /// Mirrors the reference `BWMachined::procs_` list. Registering appends a
@@ -1518,7 +1573,7 @@ pub enum DeregisterOutcome {
 /// it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct MachinedRegistry {
-    processes: Vec<ProcessMessage>,
+    processes: Vec<RegisteredProcess>,
 }
 
 impl MachinedRegistry {
@@ -1528,11 +1583,13 @@ impl MachinedRegistry {
 
     /// Build a registry pre-seeded with processes.
     pub fn from_processes(processes: Vec<ProcessMessage>) -> Self {
-        Self { processes }
+        Self {
+            processes: processes.into_iter().map(RegisteredProcess::new).collect(),
+        }
     }
 
     /// The registered processes, in registration order.
-    pub fn processes(&self) -> &[ProcessMessage] {
+    pub fn processes(&self) -> &[RegisteredProcess] {
         &self.processes
     }
 
@@ -1550,10 +1607,11 @@ impl MachinedRegistry {
     /// category and name re-uses its existing slot (re-registration), and any
     /// process already on the same port is removed first (the reference's
     /// "can't have two things on one port" rule, applied to port 0 as well).
+    /// Re-registration resets the collected stats.
     pub fn register(&mut self, pm: &ProcessMessage) -> RegisterOutcome {
         let mut i = 0;
         while i < self.processes.len() {
-            let existing = &self.processes[i];
+            let existing = &self.processes[i].process;
             if pm.pid == existing.pid
                 && pm.category == existing.category
                 && pm.name == existing.name
@@ -1570,17 +1628,17 @@ impl MachinedRegistry {
         }
 
         if i < self.processes.len() {
-            self.processes[i] = pm.clone();
+            self.processes[i] = RegisteredProcess::new(pm.clone());
             RegisterOutcome::ReRegistered
         } else {
-            self.processes.push(pm.clone());
+            self.processes.push(RegisteredProcess::new(pm.clone()));
             RegisterOutcome::Registered
         }
     }
 
     /// Deregister the first process with the given pid.
     pub fn deregister(&mut self, pid: u16) -> DeregisterOutcome {
-        match self.processes.iter().position(|p| p.pid == pid) {
+        match self.processes.iter().position(|p| p.process.pid == pid) {
             Some(index) => {
                 self.processes.remove(index);
                 DeregisterOutcome::Removed
@@ -1590,13 +1648,36 @@ impl MachinedRegistry {
     }
 
     /// The first process matching a discovery query's requested fields.
-    pub fn find(&self, query: &ProcessMessage) -> Option<&ProcessMessage> {
+    pub fn find(&self, query: &ProcessMessage) -> Option<&RegisteredProcess> {
         self.processes.iter().find(|p| p.matches(query))
     }
 
     /// Whether any registered process has the given pid.
     pub fn is_running(&self, pid: u16) -> bool {
-        self.processes.iter().any(|p| p.pid == pid)
+        self.processes.iter().any(|p| p.process.pid == pid)
+    }
+
+    /// Record freshly collected cpu and mem stats for a process.
+    ///
+    /// The values are the 0-255 bytes computed from the raw counters. Returns
+    /// false if the process is not registered.
+    pub fn set_process_stats(&mut self, pid: u16, cpu: u8, mem: u8) -> bool {
+        match self.processes.iter_mut().find(|p| p.process.pid == pid) {
+            Some(entry) => {
+                entry.cpu = cpu;
+                entry.mem = mem;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The most recently collected stats for a process, if registered.
+    pub fn process_stats(&self, pid: u16) -> Option<(u8, u8)> {
+        self.processes
+            .iter()
+            .find(|p| p.process.pid == pid)
+            .map(|p| (p.cpu, p.mem))
     }
 
     /// Apply a register or deregister command.
@@ -1953,7 +2034,7 @@ pub fn answer_query(
             let process = snapshot
                 .registry
                 .find(query)
-                .cloned()
+                .map(|entry| entry.process.clone())
                 .unwrap_or_else(ProcessMessage::default);
             let mut reply = process;
             reply.header = Header {
@@ -1964,19 +2045,31 @@ pub fn answer_query(
             MachineGuardMessage::Process(reply)
         }
         MachineGuardMessage::ProcessStats(query) => {
-            let process = snapshot
-                .registry
-                .find(&query.process)
-                .cloned()
-                .unwrap_or_else(ProcessMessage::default);
-            let mut process = process;
-            process.header.message = message_id::PROCESS_STATS;
-            process.header.seq = seq;
-            MachineGuardMessage::ProcessStats(ProcessStatsMessage {
-                process,
-                cpu: 0,
-                mem: 0,
-            })
+            let entry = snapshot.registry.find(&query.process);
+            let mut process = match entry {
+                Some(entry) => {
+                    // The reference answers each matching process with the
+                    // cpu and mem it last collected for it.
+                    let mut process = entry.process.clone();
+                    process.header.message = message_id::PROCESS_STATS;
+                    process.header.seq = seq;
+                    process
+                }
+                None => {
+                    // The reference zeroes the pid so the client's recv loop
+                    // can terminate on the miss.
+                    let mut process = query.process.clone();
+                    process.pid = 0;
+                    process.header.message = message_id::PROCESS_STATS;
+                    process.header.seq = seq;
+                    process
+                }
+            };
+            let (cpu, mem) = match entry {
+                Some(entry) => (entry.cpu, entry.mem),
+                None => (0, 0),
+            };
+            MachineGuardMessage::ProcessStats(ProcessStatsMessage { process, cpu, mem })
         }
         // Commands and notifications are not answered by this path.
         other => {
@@ -2945,7 +3038,7 @@ mod tests {
         second.port = 200;
         assert_eq!(registry.register(&second), RegisterOutcome::ReRegistered);
         assert_eq!(registry.len(), 1);
-        assert_eq!(registry.processes()[0].port, 200);
+        assert_eq!(registry.processes()[0].process.port, 200);
     }
 
     /// A new process claiming an already-used port displaces the old owner.
@@ -2958,7 +3051,7 @@ mod tests {
         registry.register(&new);
 
         assert_eq!(registry.len(), 1);
-        assert_eq!(registry.processes()[0].pid, 2);
+        assert_eq!(registry.processes()[0].process.pid, 2);
         assert!(!registry.is_running(1));
     }
 
@@ -3187,5 +3280,94 @@ mod tests {
         assert_eq!(dropped, 1);
         assert_eq!(registry.birth.len(), 1);
         assert_eq!(registry.birth.members()[0].lm.process.pid, 10);
+    }
+
+    /// The metric bytes are the reference's `value * 0xff / max` scaling.
+    #[test]
+    fn stat_formulas_match_reference_scaling() {
+        // 25 of 100 busy jiffies is 25% of the 0-255 scale.
+        assert_eq!(cpu_load(25, 100), 63);
+        // A quarter of memory used.
+        assert_eq!(memory_usage(1, 4), 63);
+        // Half of total jiffies in IO wait.
+        assert_eq!(io_wait(50, 100), 127);
+        // A quarter of cpu used.
+        assert_eq!(cpu_load(1, 4), 63);
+
+        // The reference clamps the divisor to at least one, so an idle
+        // sample still divides rather than trapping.
+        assert_eq!(cpu_load(1, 0), 255);
+        assert_eq!(io_wait(1, 0), 255);
+        // Zero memory total has no scale to report.
+        assert_eq!(memory_usage(100, 0), 0);
+    }
+
+    /// A process stats query carries the cpu and mem collected for the
+    /// matching process.
+    #[test]
+    fn process_stats_query_carries_collected_cpu_and_mem() {
+        let mut snapshot = base_snapshot();
+        let cmd = register_command(21, 50001, "cellapp01");
+        snapshot.registry.handle_command(&cmd);
+
+        assert!(snapshot.registry.set_process_stats(21, 90, 40));
+        assert_eq!(snapshot.registry.process_stats(21), Some((90, 40)));
+
+        let query = MachineGuardMessage::ProcessStats(ProcessStatsMessage {
+            process: ProcessMessage {
+                param: process_param::USE_PID,
+                pid: 21,
+                ..ProcessMessage::default()
+            },
+            ..ProcessStatsMessage::default()
+        });
+        let reply = answer_query(&snapshot, &query);
+        let MachineGuardMessage::ProcessStats(reply) = reply else {
+            panic!("expected process stats reply");
+        };
+        assert_eq!(reply.cpu, 90);
+        assert_eq!(reply.mem, 40);
+        assert_eq!(reply.process.pid, 21);
+    }
+
+    /// A missing process stats query reports the reference's pid 0 sentinel
+    /// with no load.
+    #[test]
+    fn missing_process_stats_reports_pid_zero() {
+        let snapshot = base_snapshot();
+        let query = MachineGuardMessage::ProcessStats(ProcessStatsMessage {
+            process: ProcessMessage {
+                param: process_param::USE_PID,
+                pid: 77,
+                ..ProcessMessage::default()
+            },
+            ..ProcessStatsMessage::default()
+        });
+        let reply = answer_query(&snapshot, &query);
+        let MachineGuardMessage::ProcessStats(reply) = reply else {
+            panic!("expected process stats reply");
+        };
+        assert_eq!(reply.process.pid, 0);
+        assert_eq!(reply.cpu, 0);
+        assert_eq!(reply.mem, 0);
+    }
+
+    /// Stats for an unregistered pid are refused, and collecting for a new
+    /// pid resets the previous sample.
+    #[test]
+    fn process_stats_track_only_registered_pids() {
+        let mut registry = MachinedRegistry::new();
+        assert!(!registry.set_process_stats(9, 10, 20));
+        assert_eq!(registry.process_stats(9), None);
+
+        registry.register(&register_command(9, 5000, "baseapp01"));
+        assert!(registry.set_process_stats(9, 10, 20));
+        assert_eq!(registry.process_stats(9), Some((10, 20)));
+
+        let mut re = register_command(9, 5000, "baseapp01");
+        re.pid = 12;
+        registry.deregister(9);
+        registry.register(&re);
+        assert_eq!(registry.process_stats(12), Some((0, 0)));
     }
 }
