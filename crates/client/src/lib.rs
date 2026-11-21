@@ -47,6 +47,7 @@
 //! collection — so a known recording reads out the same fields.
 
 pub mod camera;
+pub mod data_download;
 pub mod device;
 pub mod focus;
 pub mod frame;
