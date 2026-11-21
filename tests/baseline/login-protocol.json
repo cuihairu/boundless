@@ -4,10 +4,12 @@
   "reference_commit": "e9cb96784c66ac1dd8318ecdc7689e3447703b49",
   "protocol_version": "2.9.0.0",
   "protocol_version_bytes": "00 00 09 02",
+  "message_id_rule": "0-based, in interface declaration order — InterfaceMinder::add assigns id = elements_.size() (lib/network/interface_minder.cpp); the 2 in MERCURY_VARIABLE_MESSAGE(login, 2, ...) is the variable-length size field byte count, NOT the id",
   "login_message": {
     "interface": "LoginInterface",
     "name": "login",
-    "id": 2,
+    "id": 0,
+    "declared_after": [],
     "reliability": "RELIABLE_NO",
     "request_timeout_s": 8,
     "retry_interval_s": 1,
@@ -17,6 +19,13 @@
       {"field": "ClientServerProtocolVersion", "type": "subpatch, patch, minor, major (each uint8)", "bytes": "00 00 09 02", "source": "lib/connection/loginapp_login_request_protocol.cpp"},
       {"field": "LogOnParams", "type": "flags uint8 | username string | password string | encryptionKey string | digest (16 bytes) | nonce uint32", "source": "lib/connection/log_on_params.cpp"}
     ]
+  },
+  "probe_message": {
+    "interface": "LoginInterface",
+    "name": "probe",
+    "id": 1,
+    "reliability": "RELIABLE_NO",
+    "source": "lib/connection/login_interface.hpp"
   },
   "logon_params": {
     "HAS_DIGEST": "0x1",
@@ -28,7 +37,7 @@
   "challenge_response_message": {
     "interface": "LoginInterface",
     "name": "challengeResponse",
-    "id": 3,
+    "id": 2,
     "reliability": "RELIABLE_NO",
     "payload": ["float challengeCalculationDuration", "blob response"],
     "source": "lib/connection/loginapp_login_request_protocol.cpp"
@@ -64,6 +73,6 @@
     "lib/connection/login_handler.cpp",
     "server/loginapp/loginapp.cpp"
   ],
-  "recorded_at": "2026-11-21T18:28:41Z",
-  "lane_git_sha": "dda27a0"
+  "recorded_at": "2026-11-21T19:15:19Z",
+  "lane_git_sha": "bb7a03a"
 }

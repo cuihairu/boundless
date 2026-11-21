@@ -64,10 +64,12 @@ record_protocol() { # writes the JSON, prints the checksum-less summary line
   "reference_commit": "$head",
   "protocol_version": "$(proto_version)",
   "protocol_version_bytes": "00 00 09 02",
+  "message_id_rule": "0-based, in interface declaration order — InterfaceMinder::add assigns id = elements_.size() (lib/network/interface_minder.cpp); the 2 in MERCURY_VARIABLE_MESSAGE(login, 2, ...) is the variable-length size field byte count, NOT the id",
   "login_message": {
     "interface": "LoginInterface",
     "name": "login",
-    "id": 2,
+    "id": 0,
+    "declared_after": [],
     "reliability": "RELIABLE_NO",
     "request_timeout_s": 8,
     "retry_interval_s": 1,
@@ -77,6 +79,13 @@ record_protocol() { # writes the JSON, prints the checksum-less summary line
       {"field": "ClientServerProtocolVersion", "type": "subpatch, patch, minor, major (each uint8)", "bytes": "00 00 09 02", "source": "lib/connection/loginapp_login_request_protocol.cpp"},
       {"field": "LogOnParams", "type": "flags uint8 | username string | password string | encryptionKey string | digest (16 bytes) | nonce uint32", "source": "lib/connection/log_on_params.cpp"}
     ]
+  },
+  "probe_message": {
+    "interface": "LoginInterface",
+    "name": "probe",
+    "id": 1,
+    "reliability": "RELIABLE_NO",
+    "source": "lib/connection/login_interface.hpp"
   },
   "logon_params": {
     "HAS_DIGEST": "0x1",
@@ -88,7 +97,7 @@ record_protocol() { # writes the JSON, prints the checksum-less summary line
   "challenge_response_message": {
     "interface": "LoginInterface",
     "name": "challengeResponse",
-    "id": 3,
+    "id": 2,
     "reliability": "RELIABLE_NO",
     "payload": ["float challengeCalculationDuration", "blob response"],
     "source": "lib/connection/loginapp_login_request_protocol.cpp"
@@ -128,7 +137,7 @@ record_protocol() { # writes the JSON, prints the checksum-less summary line
   "lane_git_sha": "$(ci_git_sha)"
 }
 JSON
-    printf '%s|%s|%s\n' "$head" "$(proto_version)" "10 callbacks, login msg id 2"
+    printf '%s|%s|%s\n' "$head" "$(proto_version)" "10 callbacks, login msg id 0"
 }
 
 # The live capture gate: what a handshake needs — a client binary to send the
@@ -218,7 +227,7 @@ run_all() {
     ver="$(printf '%s' "$sum" | cut -d'|' -f2)"
     callbacks="$(printf '%s' "$sum" | cut -d'|' -f3)"
     ci_pass login-protocol \
-        "$callbacks (login msg id 2, protocol version $ver, commit $head) recorded in login-protocol.json"
+        "$callbacks (login msg id 0, protocol version $ver, commit $head) recorded in login-protocol.json"
 
     local gate detail rows
     rows="$(capture_gate)"
@@ -258,8 +267,9 @@ self_test() {
     rc=$?
     if [ "$rc" -eq 0 ] \
         && printf '%s\n' "$out" | grep -q 'login-protocol	PASS	' \
-        && grep -q '"name": "login"' "$r/out/reference-login/login-protocol.json" \
-        && grep -q '"name": "onLoginComplete"' "$r/out/reference-login/login-protocol.json"; then
+        && grep -q '"id": 0' "$r/out/reference-login/login-protocol.json" \
+        && grep -q '"name": "onLoginComplete"' "$r/out/reference-login/login-protocol.json" \
+        && grep -q '"id": 2' "$r/out/reference-login/login-protocol.json"; then
         ci_pass selftest-login "planted sources record the protocol face and the callback sequence"
     else
         ci_fail selftest-login "planted sources did not record: rc=$rc $(printf '%s\n' "$out" | grep 'login-' | head -2)"
