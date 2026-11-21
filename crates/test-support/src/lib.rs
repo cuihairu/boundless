@@ -14,6 +14,7 @@ pub mod config_fixture;
 pub mod harness;
 pub mod layering;
 pub mod multiproc;
+pub mod release_artifacts;
 pub mod rng;
 pub mod standalone;
 pub mod timer_scenarios;
