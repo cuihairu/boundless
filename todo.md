@@ -1031,7 +1031,8 @@
 
 - [x] **BW-13-01-01 实现资产发现和依赖图**。**验收** 修改选定输入只重排对应目标。
   - 证据：`crates/asset-pipeline/`（de69c53 依赖模型、7d0859b 发现走查）—— 依赖图：`Hash64`（FNV-1a 64-bit、`combine` golden-ratio 折叠）+ `DependencyType`（SourceFile=0…Invalid=6）+ `Dependency` 六种依赖（`critical` 标志、DataSection 序列化）+ `DependencyList`（primary/secondary 输入、intermediate/output、`get_input_hash(includeSecondary)`）。资产发现：`ConversionTask`（状态机 NEW…FAILED、`s_unknownId=0`）+ `ConversionRule` 抽象（`createRootTask`/`createTask`/`getSourceFile`）+ `TaskFinder`（递归目录走查、规则倒序匹配、root 任务入队、按源路径缓存；`Compiler` 经 `TaskCompiler` trait 接缝注入、文件系统经 `BwResource` 新增 `dissolve_filename`）。asset-pipeline 34 测绿 + resources `dissolve_filename` 2 测绿。**验收注**：完整「修改选定输入只重排对应目标」需增量缓存/编译（BW-13-01-02/03）落地方可端到端观察，本条目已交付其依赖图与发现走查。
-- [ ] **BW-13-01-02 实现增量缓存**。**验收** 第二次同输入可复用。
+- [x] **BW-13-01-02 实现增量缓存**。**验收** 第二次同输入可复用。
+  - 证据：`crates/asset-pipeline/src/content_addressable_cache.rs`（075e839）—— `CacheEvents` 四个回调（`onCacheRead`/`onCacheReadMiss`/`onCacheWrite`/`onCacheWriteMiss`）+ `NoCacheEvents` 空实现；`ContentAddressableCache`（`cache_path`/`read_enabled`/`write_enabled`/`set_cache_path`，配置在实例上而非原版静态）；`cache_filename` = `{cachePath}{hash 低字节 %hhX}/{文件名}.{hash %llX}`（无前导零桶、最多 256 桶）；读写都经「临时文件+rename」两段协议（失败即删临时并报 miss/write-miss）；禁用或空路径静默返回 false。4 测绿：同输入复用、命名与 `%hhX/%llX` 参照一致、禁用静默、默认值。
 - [ ] **BW-13-01-03 移植 batch compiler**。**验收** 按目标生成原版可读文件。
 - [ ] **BW-13-01-04 移植 jit compiler 与转换器注册**。**验收** 按需生成且可查转换器。
 - [ ] **BW-13-01-05 逐类验证 space/visual/primitive 转换**。**验收** 各有一份往返样本。
