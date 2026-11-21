@@ -1,0 +1,60 @@
+# windows client and tools targets
+# tree: /home/cui/workspaces/BigWorld
+# commit: e9cb96784c66ac1dd8318ecdc7689e3447703b49
+# derived from build/cmake/BWConfiguration_*.cmake (BW_BINARY_PROJECTS pairs)
+# columns: group	name	source_dir	windows_payload	linux_el7_equivalent
+client	bwclient	client	gap (no windows payload under game/bin — only server/el7 ships)	absent
+client	emptyvoip	lib/emptyvoip	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	cstdmf	lib/cstdmf	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	worldeditor	tools/worldeditor	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	modeleditor	tools/modeleditor	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	particle_editor	tools/particle_editor	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	offline_processor	tools/offline_processor	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	batch_compiler	tools/batch_compiler	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	jit_compiler	tools/jit_compiler	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	bsp_converter	tools/asset_pipeline/converters/bsp_converter	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	effect_converter	tools/asset_pipeline/converters/effect_converter	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	texformat_converter	tools/asset_pipeline/converters/texformat_converter	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	texture_converter	tools/asset_pipeline/converters/texture_converter	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	hierarchical_config_converter	tools/asset_pipeline/converters/hierarchical_config_converter	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	space_converter	tools/asset_pipeline/converters/space_converter	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	visual_processor	tools/asset_pipeline/converters/visual_processor	gap (no windows payload under game/bin — only server/el7 ships)	absent
+tools	primitive_processor	tools/asset_pipeline/converters/primitive_processor	gap (no windows payload under game/bin — only server/el7 ships)	absent
+navgen	navgen	tools/navgen	gap (no windows payload under game/bin — only server/el7 ships)	absent
+extras	simple_python_client	examples/client_integration/python/simple	gap (no windows payload under game/bin — only server/el7 ships)	present (el7/examples/simple_python_client)
+extras	process_defs	tools/process_defs	gap (no windows payload under game/bin — only server/el7 ships)	present (el7/tools/process_defs)
+extras	res_packer	tools/res_packer	gap (no windows payload under game/bin — only server/el7 ships)	present (el7/tools/res_packer)
+assetprocessor	assetprocessor	tools/assetprocessor	gap (no windows payload under game/bin — only server/el7 ships)	absent
+exporter-plugin	animationexporter_max2010	tools/animationexporter/max2010_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	animationexporter_max2011	tools/animationexporter/max2011_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	animationexporter_max2012	tools/animationexporter/max2012_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	mayavisualexporter_maya2010	tools/mayavisualexporter/maya2010_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	mayavisualexporter_maya2011	tools/mayavisualexporter/maya2011_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	mayavisualexporter_maya2012	tools/mayavisualexporter/maya2012_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	mayavisualexporter_maya2013	tools/mayavisualexporter/maya2013_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	visualexporter_max2010	tools/visualexporter/max2010_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	visualexporter_max2011	tools/visualexporter/max2011_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-plugin	visualexporter_max2012	tools/visualexporter/max2012_exporter	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	chunk	lib/chunk	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	cstdmf	lib/cstdmf	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	duplo	lib/duplo	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	entitydef	lib/entitydef	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	input	lib/input	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	math	lib/math	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	model	lib/model	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	moo	lib/moo	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	network	lib/network	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	particle	lib/particle	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	physics2	lib/physics2	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	pyscript	lib/pyscript	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	resmgr	lib/resmgr	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	romp	lib/romp	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	scene	lib/scene	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	script	lib/script	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	space	lib/space	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	terrain	lib/terrain	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	libpng	third_party/png/projects/visualc71	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	libpython	third_party/python	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	nvmeshmender	third_party/nvmeshmender	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	re2	third_party/re2	gap (DCC plugin build — no windows payload under game/bin)	absent
+exporter-lib	zip	third_party/zip	gap (DCC plugin build — no windows payload under game/bin)	absent

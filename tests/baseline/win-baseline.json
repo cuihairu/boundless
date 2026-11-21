@@ -1,0 +1,13 @@
+{
+  "face": "windows client and tools baseline",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "e9cb96784c66ac1dd8318ecdc7689e3447703b49",
+  "payload_targets": 22,
+  "exporter_plugins": 10,
+  "linux_el7_equivalents": 3,
+  "windows_payloads": "none (game/bin ships only server/el7 — every Windows target is a recorded gap)",
+  "retest_gate": "closed",
+  "retest_gate_detail": "no windows payload under game/bin and no windows build host — a retest records the gap until one is built",
+  "recorded_at": "2026-11-21T18:50:56Z",
+  "lane_git_sha": "40e1412"
+}

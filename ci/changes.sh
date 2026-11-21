@@ -164,7 +164,8 @@ main() {
         # The reference baseline follows its recorded snapshots and the lane.
         case "$p" in
         tests/baseline/* | ci/reference-baseline.sh | ci/reference-tests.sh \
-            | ci/reference-cluster.sh | ci/reference-login.sh) refbase=1 ;;
+            | ci/reference-cluster.sh | ci/reference-login.sh \
+            | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 
         if owner="$(owning_package "$p")" && [ "$owner" != workspace-root ] && [ -n "$owner" ]; then
