@@ -1,0 +1,8 @@
+Usage: test_program [OPTIONS] --name A name
+
+OPTIONS:
+	--count          A count                       
+	--help           Program usage                 
+452 tests run
+There were no test failures.
+Test time: 2.76 seconds.

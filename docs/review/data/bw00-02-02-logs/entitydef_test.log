@@ -1,0 +1,8 @@
+INFO: [Chunk] Registering factory for overlapper
+INFO: [Chunk] Registering factory for UserDataObject
+INFO: [Chunk] Registering factory for model
+INFO: [Chunk] Registering factory for shell
+INFO: [Chunk] Registering factory for terrain
+387 tests run
+There were no test failures.
+Test time: 0.477 seconds.
