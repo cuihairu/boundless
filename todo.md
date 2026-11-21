@@ -336,7 +336,10 @@
   - 证据：`crates/mercury/src/request_manager.rs` 移植 `RequestManager`：`addReplyOrder` 登记 pending 表（`BTreeMap<ReplyId, PendingRequest>`）、`getNextReplyID` 分配并回绕、`handleMessage` 按应答 ID 派发。应答帧体 `[reply_id u32 小端][负载]`，经 BW-02-02-02 的 `body_from_frame` 用 `InterfaceElement::reply()`（id 0xFF、变长宽 4）解出。
   - 黄金比对：回复 ID 上限 `REPLY_ID_MAX = 1000000`（`misc.hpp:112`），分配器过界回绕到 1（0 永不发出）；种子 `(timestamp()%100000)+10101` 改为由构造参数给定以便测试钉住。未知/已超时 ID 按参考打 WARNING 后丢弃（`DispatchOutcome::UnknownReply`）。
   - 测试：`interleaved_requests_each_receive_their_own_reply`（三请求乱序应答各自得到正确负载，验收主证）、`the_allocator_wraps_at_reply_id_max`、`a_second_reply_for_the_same_id_is_unknown`、`a_reply_frame_is_routed_by_its_wire_reply_id`、`a_reply_frame_with_a_short_body_is_corrupted`。mercury 114 测试绿，workspace 全绿。
-- [ ] **BW-02-02-04 实现请求超时和取消**。**验收** 回调恰好一次并释放挂起状态。
+- [x] **BW-02-02-04 实现请求超时和取消**。**验收** 回调恰好一次并释放挂起状态。（commit 81f99a4）
+  - 证据：`request_manager.rs` 的 `PendingRequest` 增加 `deadline_micros`（登记时 `now + timeout`），`add_request` 改三参 `(handler, timeout_micros, now_micros)`；`DEFAULT_REQUEST_TIMEOUT_MICROS = 5_000_000`（`bundle.hpp:25` 的 `DEFAULT_REQUEST_TIMEOUT`，微秒）。参考把超时交给 dispatcher 的一次性定时器（`Request::Request`）；移植无 channel 侧（BW-02-03），故统一在 `RequestManager::check_timeouts` 上按截止时间扫描。
+  - 证据：超时臂——`check_timeouts(now)` 收集 `deadline <= now` 的 id，逐一对 `fail_request(id, Reason::TimerExpired)`，返回失败数；`fail_request` 先移出 pending 表再调 `on_exception`，返回是否取消了真实请求，故回调恰好一次、后续 reply/timeout 均无物可找。取消臂——`fail_request(id, reason)` 即以调用方 reason 终结（`Request::cancel`/`cancelRequestsFor` 的通道丢失、关停路径）。
+  - 测试：`a_timed_out_request_fires_its_exception_once`（截止前一微秒 0 失败、到点恰一次 `TimerExpired`、pending 清空、再扫 0、迟到 reply 为 `UnknownReply` 且 `on_reply` 未调）、`a_replied_request_never_times_out`（先 reply 后过点扫描 0 失败）、`a_cancelled_request_fails_once_and_ignores_late_replies`（`ChannelLost` 恰好一次、未知 id 取消 false、迟到 reply/timeout 均 no-op）、`every_pending_request_fails_on_teardown`（四请求逐一取消，恰四 `ShuttingDown`）。mercury 118 测试绿，workspace 全绿。
 - [ ] **BW-02-02-05 注册处理器与校验**。**验收** 未知消息与长度错误结果吻合。
 
 #### BW-02-03 可靠 UDP
