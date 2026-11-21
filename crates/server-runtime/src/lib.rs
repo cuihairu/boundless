@@ -24,6 +24,7 @@ pub mod proxy_logoff;
 pub mod relogon;
 pub mod reviver;
 pub mod server_app;
+pub mod server_finder;
 pub mod shutdown;
 pub mod signals;
 pub mod task_manager;
