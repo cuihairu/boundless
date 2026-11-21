@@ -508,12 +508,24 @@ impl LoginChallengeState {
         self.pending.as_ref()
     }
 
-    /// `setLoginChallenge`.
-    fn set_login_challenge(&mut self, challenge_type: String, challenge: Box<dyn LoginChallenge>) {
+    /// `setLoginChallenge`: record the issued challenge. The reference also
+    /// resets the fail flag, since a new challenge supersedes a prior verdict.
+    pub fn set_login_challenge(
+        &mut self,
+        challenge_type: String,
+        challenge: Box<dyn LoginChallenge>,
+    ) {
+        self.did_fail_challenge = false;
         self.pending = Some(PendingChallenge {
             challenge_type,
             challenge,
         });
+    }
+
+    /// `clearChallenge`: drop the outstanding challenge. The fail flag is
+    /// deliberately left alone, as the reference `clearChallenge` does.
+    pub fn clear_challenge(&mut self) {
+        self.pending = None;
     }
 }
 

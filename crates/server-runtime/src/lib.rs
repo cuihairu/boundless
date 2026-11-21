@@ -8,6 +8,7 @@ pub mod config;
 pub mod dbappmgr;
 pub mod dispatcher;
 pub mod login_challenge;
+pub mod login_request;
 pub mod loginapp;
 pub mod machined;
 pub mod reviver;
