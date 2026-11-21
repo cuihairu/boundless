@@ -653,11 +653,7 @@ fn cancel_node<TS: Stamp>(node: &Rc<RefCell<Node<TS>>>, should_call_on_release: 
 /// currently being processed cancelled itself mid-pass (it is not in the
 /// queue any more, so the sweep cannot see it).
 fn purge_cancelled_nodes<TS: Stamp>(inner: &mut Inner<TS>) {
-    let num_purged = inner
-        .queue
-        .iter()
-        .filter(|node| is_cancelled(node))
-        .count() as isize;
+    let num_purged = inner.queue.iter().filter(|node| is_cancelled(node)).count() as isize;
     // std::partition + erase; the heapify below erases the ordering
     // difference between partition and retain.
     inner.queue.retain(|node| !is_cancelled(node));
@@ -781,6 +777,24 @@ impl DispatcherTimers {
         self.num_timer_calls
     }
 
+    /// `pTimeQueue_->nextExp( clock_() )`: stamps until the next timer
+    /// delivery (0 when the queue is empty or a timer is already due).
+    /// The seconds conversion is `calculateWait`'s job.
+    pub fn next_exp(&self) -> u64 {
+        self.time_queue.next_exp((self.clock)())
+    }
+
+    /// `pTimeQueue_->empty()`.
+    pub fn is_empty(&self) -> bool {
+        self.time_queue.is_empty()
+    }
+
+    /// `stampsPerSecond()`, for the `calculateWait` stamps-to-seconds
+    /// conversion (nanosecond stamps match `stamp_now`).
+    pub fn stamps_per_second(&self) -> u64 {
+        self.stamps_per_second
+    }
+
     /// `EventDispatcher::timerDeliveryTime`.
     pub fn timer_delivery_time(&self, handle: &TimerHandle<u64>) -> u64 {
         self.time_queue.timer_delivery_time(handle)
@@ -860,7 +874,10 @@ mod tests {
         queue.add(
             time,
             0,
-            Rc::new(TimerHandlerFn::new(move |_, _| log.borrow_mut().push(name), name)),
+            Rc::new(TimerHandlerFn::new(
+                move |_, _| log.borrow_mut().push(name),
+                name,
+            )),
             0,
             name,
         )
@@ -994,9 +1011,13 @@ mod tests {
             log: Rc::clone(&log),
             queue: Rc::clone(&queue),
         });
-        let handle: TimerHandle<u64> = queue
-            .borrow()
-            .add(0, 5, Rc::clone(&handler) as Rc<dyn TimerHandler<u64>>, 0, "self");
+        let handle: TimerHandle<u64> = queue.borrow().add(
+            0,
+            5,
+            Rc::clone(&handler) as Rc<dyn TimerHandler<u64>>,
+            0,
+            "self",
+        );
 
         assert_eq!(queue.borrow().process(100), 1);
         assert_eq!(*log.borrow(), ["fired"]);
@@ -1125,9 +1146,14 @@ mod tests {
         let queue = TimeQueue64::new();
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut handles = Vec::new();
-        for (time, name) in
-            [(1u64, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e"), (6, "f")]
-        {
+        for (time, name) in [
+            (1u64, "a"),
+            (2, "b"),
+            (3, "c"),
+            (4, "d"),
+            (5, "e"),
+            (6, "f"),
+        ] {
             handles.push(once_off(&queue, time, name, &log));
         }
         // Cancel four of six: the fourth cancel sees 4 * 2 > 2 and purges.
@@ -1242,7 +1268,9 @@ mod tests {
 
         // Unset handles report nothing.
         assert_eq!(
-            queue.borrow().get_timer_info(&TimerHandle::<u64>::default()),
+            queue
+                .borrow()
+                .get_timer_info(&TimerHandle::<u64>::default()),
             None
         );
     }
@@ -1312,12 +1340,10 @@ mod tests {
         let mut dispatcher = crate::dispatcher::Dispatcher::with_timers(timers);
 
         let log_for_task = Rc::clone(&log);
-        dispatcher.add_frequent_task(Rc::new(RefCell::new(
-            crate::dispatcher::FrequentTaskFn(
-                move || log_for_task.borrow_mut().push("frequent"),
-                "frequent",
-            ),
-        )));
+        dispatcher.add_frequent_task(Rc::new(RefCell::new(crate::dispatcher::FrequentTaskFn(
+            move || log_for_task.borrow_mut().push("frequent"),
+            "frequent",
+        ))));
         let log_for_timer = Rc::clone(&log);
         dispatcher.add_once_off_timer(
             500_000,
@@ -1355,9 +1381,10 @@ mod tests {
         let mut dispatcher = crate::dispatcher::Dispatcher::with_timers(timers);
 
         let break_flag = dispatcher.break_flag();
-        dispatcher.add_frequent_task(Rc::new(RefCell::new(
-            crate::dispatcher::FrequentTaskFn(move || break_flag.set(true), "breaker"),
-        )));
+        dispatcher.add_frequent_task(Rc::new(RefCell::new(crate::dispatcher::FrequentTaskFn(
+            move || break_flag.set(true),
+            "breaker",
+        ))));
 
         // Due at 1.1s; the clock is moved there first so the timer would
         // fire if the pass ran.
@@ -1421,10 +1448,7 @@ mod tests {
         assert_eq!(timers.num_timer_calls(), 5);
 
         // The last fire rescheduled onto the interval grid.
-        assert_eq!(
-            timers.time_queue.next_exp(1_500_000_000),
-            100_000_000
-        );
+        assert_eq!(timers.time_queue.next_exp(1_500_000_000), 100_000_000);
     }
 
     /// `timerDeliveryTime` / `timerIntervalTime` surface through the
@@ -1648,10 +1672,7 @@ mod tests {
                 self.log.borrow_mut().push("fired");
                 let delivery = self.queue.borrow().timer_delivery_time(&handle);
                 let me = Rc::clone(self.me.borrow().as_ref().expect("self set"));
-                let fresh = self
-                    .queue
-                    .borrow()
-                    .add(delivery, 5, me, 0, "reregistered");
+                let fresh = self.queue.borrow().add(delivery, 5, me, 0, "reregistered");
                 let mut old = self.handle.borrow_mut();
                 old.cancel();
                 *old = fresh;
@@ -1685,7 +1706,14 @@ mod tests {
         assert_eq!(queue.borrow().process(20), 1);
         assert_eq!(
             *log.borrow(),
-            ["fired", "reregistered", "fired", "reregistered", "fired", "reregistered"]
+            [
+                "fired",
+                "reregistered",
+                "fired",
+                "reregistered",
+                "fired",
+                "reregistered"
+            ]
         );
     }
 
@@ -1756,7 +1784,10 @@ mod tests {
         assert_eq!(queue.borrow().process(12), 1);
         assert_eq!(*log.borrow(), ["scheduled", "busy", "check", "scheduled"]);
         assert_eq!(queue.borrow().process(22), 1);
-        assert_eq!(*log.borrow(), ["scheduled", "busy", "check", "scheduled", "check"]);
+        assert_eq!(
+            *log.borrow(),
+            ["scheduled", "busy", "check", "scheduled", "check"]
+        );
     }
 
     /// The mutable `timerIntervalTime` (`Node::intervalRef`): a timer may
@@ -1812,8 +1843,7 @@ mod tests {
     fn the_dispatcher_interval_surface_mutates_the_reschedule() {
         let now = Rc::new(Cell::new(1_000_000_000u64));
         let now_for_clock = Rc::clone(&now);
-        let mut timers =
-            DispatcherTimers::with_clock(Box::new(move || now_for_clock.get()));
+        let mut timers = DispatcherTimers::with_clock(Box::new(move || now_for_clock.get()));
         let fired = Rc::new(Cell::new(0));
         let fired_for_handler = Rc::clone(&fired);
         let handler = Rc::new(TimerHandlerFn::new(
