@@ -4,8 +4,8 @@
 //! (`client/entity_picker.cpp`), whose target is the entity the camera is
 //! bound to (`pTarget_`, `entity_picker.ipp:353`). The view source is the
 //! scene binding: `EntityPicker::prepareViewMatrix` uses `pSource_->matrix`
-//! (`:808-830`) to place the selection frustum. The target changes go through
-//! `EntityPicker::setCurrentEntity` (`:738-775`):
+//! (`:777-805`) to place the selection frustum. The target changes go through
+//! `EntityPicker::setCurrentEntity` (`:738-771`):
 //!
 //! 1. if `(pTarget_ == pEntity) && (isFull == isFull_) && (isHidden ==
 //!    isHidden_)` → no change (`:742-747`);
@@ -125,7 +125,7 @@ impl EntityPicker {
         self.is_locked
     }
 
-    /// The scene binding: set the view source (`pSource_`, `:808-830`).
+    /// The scene binding: set the view source (`pSource_`, `:777-805`).
     pub fn set_source(&mut self, source: Option<EntityId>) {
         self.source = source;
     }
@@ -133,7 +133,7 @@ impl EntityPicker {
         self.source
     }
 
-    /// `EntityPicker::setCurrentEntity` (`:738-775`).
+    /// `EntityPicker::setCurrentEntity` (`:738-771`).
     fn set_current_entity(&mut self, entity: Option<EntityId>, is_full: bool, is_hidden: bool) {
         if self.target == entity && self.is_full == is_full && self.is_hidden == is_hidden {
             // `:742-747`: unchanged.
@@ -157,7 +157,7 @@ impl EntityPicker {
         }
     }
 
-    /// `EntityPicker::lockOn` (`:759-765`).
+    /// `EntityPicker::lockOn` (`:717-722`).
     pub fn lock_on(&mut self, entity: Option<EntityId>) {
         self.is_locked = entity.is_some();
         self.set_current_entity(entity, self.is_locked, false);
@@ -168,7 +168,7 @@ impl EntityPicker {
         self.lock_on(None);
     }
 
-    /// `EntityPicker::exclude` (`:689-705`): set the exclusion; an excluded
+    /// `EntityPicker::exclude` (`:696-711`): set the exclusion; an excluded
     /// target is cleared.
     pub fn exclude(&mut self, entity: Option<EntityId>) {
         self.exclude = entity;
@@ -179,7 +179,7 @@ impl EntityPicker {
 
     /// `EntityPicker::check` (`:599-645`): re-evaluate the target. `selectable`,
     /// `line_of_sight` and `is_now_full` are the engine-side results of
-    /// `isEntitySelectable` and `capsCheck` (`:612-616`) — the raycast and
+    /// `isEntitySelectable` and `capsCheck` (`:613-616`) — the raycast and
     /// bounding-box geometry is a deferred delta, so they come in as inputs.
     pub fn check(
         &mut self,
@@ -258,7 +258,7 @@ mod tests {
     }
 
     /// `exclude` clears the target when the excluded entity is it
-    /// (`entity_picker.cpp:699-704`).
+    /// (`entity_picker.cpp:696-711`).
     #[test]
     fn excluding_the_target_unbinds_it() {
         let mut picker = EntityPicker::new();
@@ -281,7 +281,7 @@ mod tests {
 
     /// The hidden grace period: a line-of-sight-blocked target is kept (and
     /// marked hidden) until `maxHiddenTime_` elapses, then released
-    /// (`entity_picker.cpp:611-636`).
+    /// (`entity_picker.cpp:624-644`).
     #[test]
     fn hidden_grace_keeps_then_releases_the_target() {
         let mut picker = EntityPicker::new();
