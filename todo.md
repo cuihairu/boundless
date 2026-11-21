@@ -85,7 +85,8 @@
 展开 Make/CMake、发布脚本及条件编译，列出可执行文件、库、扩展和平台矩阵。逐项标明已参编、条件启用、仅源码、仅发行物或缺依赖。整理 `third_party/`、资源许可证和 NOTICE，确认哪些复用依赖、哪些需替代实现。
 
 - [ ] **BW-00-01-01 展开 Linux Make 构建目标**。**验收** 清册包含二进制、库及所属规则。
-- [ ] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。
+- [x] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。
+  - 证据：`scan-cmake-targets` 扫描根 CMakeLists 的 `build/cmake/BWConfiguration_*.cmake` 集（`CMAKE_MODULE_PATH` 源），每配置记录平台 `win32,win64,linux`（根 CMakeLists：`BW_IS_REMOTE_ONLY`→远端 64 位 Linux、WIN32 指针宽→win32/win64）、`ADD_DEFINITIONS` 宏（server `MF_SERVER,MF_CONFIG="Hybrid"`、client `BW_CLIENT,USE_MEMHOOK,ALLOW_STACK_CONTAINER`、navgen `_NAVGEN`、exporters `BW_EXPORTER,_SECURE_SCL=1`）、`SET(BW_*/USE_MEMHOOK)` 开关（server `BW_PCH_SUPPORT=OFF,BW_FMOD_SUPPORT=OFF,BW_SCALEFORM_SUPPORT=OFF,BW_UMBRA_SUPPORT=OFF`、tools `USE_MEMHOOK=OFF`）、`BW_LIBRARY_PROJECTS`/`BW_BINARY_PROJECTS` 基表（server 33 lib + 17 bin `@dir`）、单元测试闸（bwentity/client/server/tools `on`）、`BW_TARGET_LINUX_COMMAND`（server start/stop/display）、`INCLUDE` 基配置（`*_blob`→`BW_BLOB_CONFIG=ON` 含 client/exporters/tools）、`IF(...)` 条件（server `NOT MSVC,BW_SPEEDTREE_SUPPORT,NOT ZLIB_FOUND,NOT PNG_FOUND`）。**登记差异**：取首个无条件基表（条件追加如 `IF(BW_FMOD_SUPPORT)` 的 speedtree/fmod 记入 conditions 而非并入）；导出器列表以 `${EXPORTER_PROJECTS}` 间接保留。**验收**：`cases/cmake_targets.txt` 11 配置全录；`cmake_targets` 5 单元 + `cmake_targets_cli` 2 集成（scratch 检出写盘==render(scan_reference)、无 config dir exit 2）通过；`rescanning_reference_reproduces_catalog` 锁死扫描器与清册不漂移（reference 检出在 CI 缺席时跳过）；test-support fmt/build/test 绿（rust-lint 红为既有 `resources` clippy 债，非本项）。commit 242a45d。
 - [ ] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。
 - [ ] **BW-00-01-04 登记第三方依赖与资源来源**。**验收** 每项有许可证、NOTICE 及复用决策。
 
