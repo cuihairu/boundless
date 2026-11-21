@@ -244,8 +244,15 @@ impl ApplicationHandler for ClientApp {
             // input enablement, cursor visibility and the frame's active path
             // (`App::handleSetFocus`, `app.cpp:2674`).
             WindowEvent::Focused(has_focus) => {
+                // Any focus event while fullscreen drops the client back to
+                // windowed (`app.cpp:2699-2702`, checked before the state
+                // updates — the reference reads `!windowed()` first).
+                let was_fullscreen = self.mode.is_fullscreen();
                 self.focus.set_focus(has_focus);
                 self.focus_transitions += 1;
+                if was_fullscreen {
+                    self.set_mode(WindowMode::Windowed);
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.frames += 1;
