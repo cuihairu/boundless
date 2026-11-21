@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod baseappmgr;
+pub mod billing;
 pub mod cellappmgr;
 pub mod cluster_shutdown;
 pub mod config;
