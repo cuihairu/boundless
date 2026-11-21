@@ -19,6 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use foundation::stream::BinaryStream;
 
+use crate::cluster_shutdown::{CellAppMgrShutDown, ShutDownAction};
+use crate::shutdown::ShutDownStage;
+
 /// A Mercury address as `(ip, port)` with `ip` in network byte order.
 pub type Addr = (u32, u16);
 
@@ -2569,6 +2572,21 @@ pub enum Outbound {
     RetireCell(Addr, SpaceId),
     /// `BaseAppMgrInterface::controlledShutDown` at `SHUTDOWN_TRIGGER`.
     TriggerControlledShutDown,
+    /// `BaseAppMgrInterface::controlledShutDown` at `SHUTDOWN_INFORM` with
+    /// the deadline tick.
+    InformBaseAppMgr(u32),
+    /// `CellAppInterface::controlledShutDown` at `SHUTDOWN_INFORM` with the
+    /// deadline tick: `(cell app, shut down time)`.
+    InformCellApp(Addr, u32),
+    /// `BaseAppMgrInterface::controlledShutDown` at `SHUTDOWN_PERFORM`.
+    PerformBaseAppMgr,
+    /// `DBAppMgrInterface::controlledShutDown` at `SHUTDOWN_PERFORM`.
+    PerformDbAppMgr,
+    /// `shutDown(shutDownOthers)`: the manager exits, telling its CellApps
+    /// to shut down when `shut_down_others` is set.
+    ShutDownCellAppMgr { shut_down_others: bool },
+    /// `CellAppInterface::shutDown` sent by `shutDownAll` to one CellApp.
+    ShutDownCellApp(Addr),
     /// `DBAppInterface::cellAppOverloadStatus`.
     CellAppOverloadStatus { has_overloaded: bool },
     /// `CellAppMgrInterface` reply to a `createEntity` with `NULL_ENTITY_ID`.
@@ -2646,6 +2664,8 @@ pub struct CellAppMgr {
     pub outbox: Vec<Outbound>,
     /// `lastCellAppDeath_`.
     pub last_cell_app_death: Option<Addr>,
+    /// `pShutDownHandler_`: the cluster shutdown cascade (BW-05-06-03).
+    pub shutdown: CellAppMgrShutDown,
     /// `avgCellAppOverloadStartTime_` in milliseconds, `0` when clear.
     avg_overload_start_ms: u64,
     /// `maxCellAppOverloadStartTime_` in milliseconds, `0` when clear.
@@ -3092,6 +3112,83 @@ impl CellAppMgr {
                 self.outbox.push(Outbound::AddCell(alt, space_id));
             }
             self.spaces.insert(space_id, space);
+        }
+    }
+
+    /// `CellAppMgr::controlledShutDown`: `SHUTDOWN_TRIGGER` forwards to the
+    /// BaseAppMgr, `SHUTDOWN_REQUEST` starts the Inform phase. The deadline
+    /// is `current_time + shutting_down_delay`, which the reference sets to
+    /// zero before the manager has started (`ShutDownHandler::start`).
+    pub fn controlled_shut_down(
+        &mut self,
+        stage: ShutDownStage,
+        current_time: u32,
+        shutting_down_delay: u32,
+    ) {
+        let cell_apps: Vec<Addr> = self.apps.iter().map(|app| app.addr).collect();
+        let actions = self.shutdown.controlled_shut_down(
+            stage,
+            current_time,
+            shutting_down_delay,
+            &cell_apps,
+        );
+        self.emit_shutdown_actions(actions);
+    }
+
+    /// `CellAppMgr::ackBaseAppsShutDown`: the BaseAppMgr's stage ack.
+    pub fn ack_base_apps_shut_down(&mut self, stage: ShutDownStage) {
+        let actions = self.shutdown.ack_base_apps_shut_down(stage);
+        self.emit_shutdown_actions(actions);
+    }
+
+    /// `InformHandler::ackCellApp`: a CellApp's stage ack.
+    pub fn ack_cell_app_shut_down(&mut self, addr: Addr, stage: ShutDownStage) {
+        let actions = self.shutdown.ack_cell_app_shut_down(addr, stage);
+        self.emit_shutdown_actions(actions);
+    }
+
+    /// `handleTimeout`'s shutdown path: each tick, when the phase is paused,
+    /// run the phase check.
+    pub fn shutdown_on_tick(&mut self, current_time: u32) {
+        let actions = self.shutdown.on_tick(current_time);
+        self.emit_shutdown_actions(actions);
+    }
+
+    /// The cascade's [`ShutDownAction`]s become the manager's own
+    /// [`Outbound`]s; the final `SHUT_DOWN` also sets `isShuttingDown_` and,
+    /// when told to, tells every CellApp to shut down (`shutDownAll`).
+    fn emit_shutdown_actions(&mut self, actions: Vec<ShutDownAction>) {
+        for action in actions {
+            match action {
+                ShutDownAction::TriggerAtBaseAppMgr => {
+                    self.outbox.push(Outbound::TriggerControlledShutDown);
+                }
+                ShutDownAction::InformBaseAppMgr(shut_down_time) => {
+                    self.outbox.push(Outbound::InformBaseAppMgr(shut_down_time));
+                }
+                ShutDownAction::InformCellApp(addr, shut_down_time) => {
+                    self.outbox
+                        .push(Outbound::InformCellApp(addr, shut_down_time));
+                }
+                ShutDownAction::PerformBaseAppMgr => {
+                    self.outbox.push(Outbound::PerformBaseAppMgr);
+                }
+                ShutDownAction::PerformDbAppMgr => {
+                    self.outbox.push(Outbound::PerformDbAppMgr);
+                }
+                ShutDownAction::ShutDownCellAppMgr(shut_down_others) => {
+                    // shutDown: isShuttingDown_ = true; breakProcessing().
+                    self.is_shutting_down = true;
+                    self.outbox
+                        .push(Outbound::ShutDownCellAppMgr { shut_down_others });
+                    if shut_down_others {
+                        // cellApps_.shutDownAll().
+                        for app in self.apps.iter() {
+                            self.outbox.push(Outbound::ShutDownCellApp(app.addr));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -3718,5 +3815,66 @@ mod tests {
         assert_eq!(default_space, None);
         assert!(apps.is_empty());
         assert!(mgr.has_started);
+    }
+
+    // ------------------------------------------------------------------
+    // BW-05-06-03: the cluster shutdown broadcast.
+    // ------------------------------------------------------------------
+
+    /// `CellAppMgr::controlledShutDown` wires the cascade: the trigger is
+    /// forwarded to the BaseAppMgr, a request starts the Inform phase, the
+    /// acks plus the deadline reach the Perform stage, and the BaseApps'
+    /// ack tells the DBAppMgr to perform and shuts the manager down.
+    #[test]
+    fn the_shutdown_cascade_broadcasts_the_stages() {
+        let c0 = (0x7f000001, 3000);
+        let c1 = (0x7f000002, 3000);
+        let mut mgr = mgr_with(vec![(c0, 0.5), (c1, 0.5)]);
+
+        mgr.controlled_shut_down(ShutDownStage::Trigger, 100, 0);
+        assert_eq!(mgr.outbox, vec![Outbound::TriggerControlledShutDown]);
+
+        mgr.outbox.clear();
+        mgr.controlled_shut_down(ShutDownStage::Request, 100, 10);
+        assert_eq!(
+            mgr.outbox,
+            vec![
+                Outbound::InformBaseAppMgr(110),
+                Outbound::InformCellApp(c0, 110),
+                Outbound::InformCellApp(c1, 110),
+            ]
+        );
+
+        mgr.outbox.clear();
+        mgr.ack_base_apps_shut_down(ShutDownStage::Inform);
+        mgr.ack_cell_app_shut_down(c0, ShutDownStage::Inform);
+        mgr.ack_cell_app_shut_down(c1, ShutDownStage::Inform);
+        mgr.shutdown_on_tick(110);
+        assert_eq!(mgr.outbox, vec![Outbound::PerformBaseAppMgr]);
+
+        mgr.outbox.clear();
+        mgr.ack_base_apps_shut_down(ShutDownStage::Perform);
+        assert_eq!(
+            mgr.outbox,
+            vec![
+                Outbound::PerformDbAppMgr,
+                Outbound::ShutDownCellAppMgr {
+                    shut_down_others: true,
+                },
+                Outbound::ShutDownCellApp(c0),
+                Outbound::ShutDownCellApp(c1),
+            ]
+        );
+        assert!(mgr.is_shutting_down);
+    }
+
+    /// A repeated `SHUTDOWN_TRIGGER` is forwarded again (idempotent).
+    #[test]
+    fn a_repeated_trigger_is_forwarded_again() {
+        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5)]);
+        mgr.controlled_shut_down(ShutDownStage::Trigger, 100, 0);
+        mgr.outbox.clear();
+        mgr.controlled_shut_down(ShutDownStage::Trigger, 100, 0);
+        assert_eq!(mgr.outbox, vec![Outbound::TriggerControlledShutDown]);
     }
 }

@@ -3,6 +3,7 @@
 pub mod app;
 pub mod baseappmgr;
 pub mod cellappmgr;
+pub mod cluster_shutdown;
 pub mod config;
 pub mod dbappmgr;
 pub mod dispatcher;

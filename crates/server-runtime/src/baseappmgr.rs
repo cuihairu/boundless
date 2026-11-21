@@ -45,30 +45,8 @@ pub const SHARED_DATA_TYPE_GLOBAL: u8 = 3;
 /// `SHARED_DATA_TYPE_GLOBAL_FROM_BASE_APP`.
 pub const SHARED_DATA_TYPE_GLOBAL_FROM_BASE_APP: u8 = 4;
 
-/// `ShutDownStage` (`lib/server/common.hpp`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ShutDownStage {
-    None = 0,
-    Request = 1,
-    Inform = 2,
-    DisconnectProxies = 3,
-    Perform = 4,
-    Trigger = 5,
-}
-
-impl ShutDownStage {
-    pub fn from_u8(value: u8) -> Self {
-        match value {
-            1 => Self::Request,
-            2 => Self::Inform,
-            3 => Self::DisconnectProxies,
-            4 => Self::Perform,
-            5 => Self::Trigger,
-            _ => Self::None,
-        }
-    }
-}
+/// `ShutDownStage` (`lib/server/common.hpp`): the one shared definition.
+pub use crate::shutdown::ShutDownStage;
 
 /// A host-order port and network-order ip pair.
 pub type Addr = (u32, u16);
@@ -1377,7 +1355,7 @@ mod tests {
     fn startup_sets_ready_and_bootstraps_one() {
         let mut scheduler = ready_scheduler();
         let base = add_base_apps(&mut scheduler, 2);
-        assert_eq!(scheduler.request_has_started(), false);
+        assert!(!scheduler.request_has_started());
 
         let outcome = scheduler.startup(false);
         let StartupOutcome::Started { apps, cell_app_mgr } = outcome else {
@@ -1390,7 +1368,7 @@ mod tests {
         assert!(!apps[1].bootstrap);
         assert!(!apps[1].did_auto_load_entities_from_db);
 
-        assert_eq!(scheduler.request_has_started(), true);
+        assert!(scheduler.request_has_started());
         assert_eq!(scheduler.startup(true), StartupOutcome::AlreadyStarted);
 
         // A BaseApp registered after the start is told it is ready.
@@ -1406,7 +1384,7 @@ mod tests {
     fn startup_refused_without_base_apps() {
         let mut scheduler = ready_scheduler();
         assert_eq!(scheduler.startup(false), StartupOutcome::NoBaseApps);
-        assert_eq!(scheduler.request_has_started(), false);
+        assert!(!scheduler.request_has_started());
     }
 
     /// The bootstrap flag never lands on a service app.

@@ -29,6 +29,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use foundation::stream::{BinaryStream, StreamError};
 
+use crate::shutdown::ShutDownStage;
+
 /// A Mercury address as `(ip, port)` with `ip` in network byte order.
 pub type Addr = (u32, u16);
 
@@ -122,6 +124,28 @@ pub enum Outbound {
     /// The `addLoginApp` reply: `(login app, reply id, login app id, DBApp
     /// alpha address)`.
     LoginAppAddReply(Addr, i32, LoginAppId, Addr),
+    /// `BaseAppMgrInterface::controlledShutDown` at `SHUTDOWN_REQUEST`,
+    /// forwarded by the manager's controlled shutdown.
+    ShutDownRequestToBaseAppMgr(Addr),
+    /// `DBAppInterface::controlledShutDown` at `SHUTDOWN_PERFORM`, to one
+    /// DBApp.
+    DbAppPerform(Addr),
+}
+
+/// `DBAppMgr::controlledShutDown` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbAppMgrShutDownOutcome {
+    /// `SHUTDOWN_REQUEST`: the manager is now shutting down and the request
+    /// is forwarded to the BaseAppMgr at the given address.
+    ForwardRequestToBaseAppMgr(Option<Addr>),
+    /// `SHUTDOWN_PERFORM`: every DBApp is told to shut down, then the
+    /// manager itself.
+    Perform {
+        /// The DBApps the manager told, in ascending ID order.
+        db_apps: Vec<Addr>,
+    },
+    /// A stage the manager does not handle.
+    Unhandled(ShutDownStage),
 }
 
 /// `DBAppMgr::addLoginApp` result.
@@ -207,6 +231,34 @@ impl DbAppMgr {
         self.address_map
             .get(&addr)
             .and_then(|id| self.db_apps.get(id))
+    }
+
+    /// `DBAppMgr::controlledShutDown`: `SHUTDOWN_REQUEST` marks the manager
+    /// as shutting down and forwards the request to the BaseAppMgr, which in
+    /// turn reaches the CellAppMgr; `SHUTDOWN_PERFORM` tells every DBApp to
+    /// shut down, after which the manager drains its channels and exits.
+    /// Other stages are the reference's `ERROR_MSG` arm and are ignored.
+    pub fn controlled_shut_down(&mut self, stage: ShutDownStage) -> DbAppMgrShutDownOutcome {
+        match stage {
+            ShutDownStage::Request => {
+                // Make sure we no longer send to anonymous channels etc.
+                self.is_shutting_down = true;
+                let target = self.base_app_mgr_addr;
+                if let Some(addr) = target {
+                    self.outbox
+                        .push(Outbound::ShutDownRequestToBaseAppMgr(addr));
+                }
+                DbAppMgrShutDownOutcome::ForwardRequestToBaseAppMgr(target)
+            }
+            ShutDownStage::Perform => {
+                let db_apps: Vec<Addr> = self.db_apps.values().map(|app| app.addr).collect();
+                for addr in &db_apps {
+                    self.outbox.push(Outbound::DbAppPerform(*addr));
+                }
+                DbAppMgrShutDownOutcome::Perform { db_apps }
+            }
+            stage => DbAppMgrShutDownOutcome::Unhandled(stage),
+        }
     }
 
     /// The tail of `DBAppMgr::init` once the BaseAppMgr start status is
@@ -794,5 +846,57 @@ mod tests {
         let outcome = mgr.add_login_app(L1, Some(4));
         assert_eq!(outcome, LoginAppAddOutcome::Accepted { id: 1, alpha: A1 });
         assert_eq!(mgr.outbox, vec![Outbound::LoginAppAddReply(L1, 4, 1, A1)]);
+    }
+
+    /// `SHUTDOWN_REQUEST` marks the manager as shutting down and forwards
+    /// the request to the BaseAppMgr; with no BaseAppMgr address nothing goes
+    /// out.
+    #[test]
+    fn request_marks_shutting_down_and_forwards() {
+        let mut mgr = DbAppMgr::new();
+        assert_eq!(
+            mgr.controlled_shut_down(ShutDownStage::Request),
+            DbAppMgrShutDownOutcome::ForwardRequestToBaseAppMgr(None)
+        );
+        assert!(mgr.is_shutting_down);
+        assert!(mgr.outbox.is_empty());
+
+        let mut mgr = DbAppMgr::new();
+        mgr.base_app_mgr_addr = Some(B);
+        mgr.outbox.clear();
+        assert_eq!(
+            mgr.controlled_shut_down(ShutDownStage::Request),
+            DbAppMgrShutDownOutcome::ForwardRequestToBaseAppMgr(Some(B))
+        );
+        assert_eq!(mgr.outbox, vec![Outbound::ShutDownRequestToBaseAppMgr(B)]);
+    }
+
+    /// `SHUTDOWN_PERFORM` tells every registered DBApp to shut down; other
+    /// stages are ignored.
+    #[test]
+    fn perform_tells_every_db_app() {
+        let mut mgr = DbAppMgr::new();
+        mgr.base_app_mgr_addr = Some(B);
+        mgr.recover_db_app(A1, 3);
+        mgr.recover_db_app(A2, 4);
+        mgr.outbox.clear();
+
+        assert_eq!(
+            mgr.controlled_shut_down(ShutDownStage::Perform),
+            DbAppMgrShutDownOutcome::Perform {
+                db_apps: vec![A1, A2],
+            }
+        );
+        assert_eq!(
+            mgr.outbox,
+            vec![Outbound::DbAppPerform(A1), Outbound::DbAppPerform(A2)]
+        );
+        assert!(!mgr.is_shutting_down);
+
+        // A stage the manager does not handle is the reference's error arm.
+        assert_eq!(
+            mgr.controlled_shut_down(ShutDownStage::Inform),
+            DbAppMgrShutDownOutcome::Unhandled(ShutDownStage::Inform)
+        );
     }
 }
