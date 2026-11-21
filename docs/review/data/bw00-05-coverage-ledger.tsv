@@ -136,3 +136,17 @@ visualexporter_max	plugin	tools/visualexporter	cmake	WIN32	BW-13-05-01	-	blocked
 assetprocessor	dll	tools/assetprocessor	cmake	WIN32	BW-13-02-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
 bwentity	dll	lib/bwentity	cmake	WIN32	BW-04-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
 navgen	exe	tools/navgen	cmake	WIN32	BW-10-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+py_chunk.cpp	source	bigworld/common/py_chunk.cpp	resource	-	BW-10-01	-	pending	-
+py_network.cpp	source	bigworld/common/py_network.cpp	resource	-	BW-02	-	pending	-
+py_physics2.cpp	source	bigworld/common/py_physics2.cpp	resource	-	BW-10-03	-	pending	-
+py_terrain.cpp	source	bigworld/common/py_terrain.cpp	resource	-	BW-10-03	-	pending	-
+py_server_lib.cpp	source	bigworld/common/py_server_lib.cpp	resource	-	BW-03-03	-	pending	-
+py_timer.cpp	source	bigworld/common/py_timer.cpp	resource	-	BW-03-03	-	pending	-
+py_urlrequest.cpp	source	bigworld/common/py_urlrequest.cpp	resource	-	BW-02-04	-	pending	-
+simple_client_entity.cpp	source	bigworld/common/simple_client_entity.cpp	resource	-	BW-14-02	-	pending	-
+space_data_types.hpp	source	bigworld/common/space_data_types.hpp	resource	-	BW-10-01	-	pending	-
+client_integration_cpp	script	bigworld/examples/client_integration/c_plus_plus	resource	-	BW-14-02	-	pending	C++ 客户端集成样例;android/ios 子目录
+fantasydemo_res	datadir	programming/fantasydemo/res	resource	-	BW-14-01	-	pending	Demo 资源树(server 配置+entities/defs/base/cell/client 脚本,占位由 generate-fantasydemo-assets.py 生成)
+fantasydemo_web_php	script	programming/fantasydemo/web/php	resource	-	BW-14-03	-	pending	PHP Web 集成(Authenticator/BigWorld.php 等)
+fantasydemo_kbengine	legacy	programming/fantasydemo/.kbengine	resource	-	BW-29	-	pending	KBEngine 时代遗留(debug.json/stubs),随 BW-29 差异复核
+generate-fantasydemo-assets.py	script	bigworld/scripts/generate-fantasydemo-assets.py	resource	-	BW-14-01	-	pending	参考树脚本;Boundless 侧尚未移植(仓内无 scripts/),生成 res 占位树
