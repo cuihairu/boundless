@@ -922,8 +922,8 @@ impl ReplayWorld {
     }
 }
 
-/// The replay handler notifications the player emits per tick
-/// (`onReplayControllerPostTick`). A no-op default keeps the player usable
+/// The replay handler notifications the player emits (`ReplayControllerHandler`,
+/// `replay_controller.hpp:226-242`). A no-op default keeps the player usable
 /// without a handler; the real client handler is a later item.
 pub trait ReplayHandler {
     /// `onReplayControllerPostTick(*this, currentTick_)`
@@ -932,6 +932,9 @@ pub trait ReplayHandler {
     /// `onReplayControllerIncreaseTotalTime(*this, 1.0/frequency)`, called once
     /// per tick processed while seeking (`:736-740`).
     fn on_increase_total_time(&mut self, _delta: f64) {}
+    /// `onReplayControllerFinish(*this)` (`handleFinal`, `:1384-1386`) — the
+    /// end-of-replay event, fired exactly once per playback segment.
+    fn on_finish(&mut self) {}
 }
 
 impl ReplayHandler for () {}
@@ -953,6 +956,14 @@ pub struct Tick {
 /// tick loader), so a backward seek rewinds the world and replays from tick 0,
 /// and a forward seek fast-forwards — the same `tick()` stepping
 /// (`:658-777`) with `numTicksLoaded_` fixed at the remaining count.
+///
+/// BW-11-03-04 adds the end-of-replay event: `handleFinal`
+/// (`:1384-1386`) fires `onReplayControllerFinish` from both the `FINAL`
+/// block (`processTick`, `:1067-1069`) and the all-ticks-consumed condition
+/// (`tick`, `:770-776`). The port latches it on `finished` so the finish
+/// event fires exactly once per playback segment, and honours `isReceiving_`
+/// (`!isReceiving_` in the condition) so a downloading replay does not
+/// finish early.
 pub struct ReplayPlayer<H: ReplayHandler = ()> {
     ticks: Vec<Tick>,
     game_update_frequency: u8,
@@ -964,10 +975,13 @@ pub struct ReplayPlayer<H: ReplayHandler = ()> {
     time_since_last_tick: f64,
     /// Whether playback is enabled (the caller started the stream).
     playing: bool,
+    /// Whether the stream is still receiving (`isReceiving_`); a receiving
+    /// replay does not fire the finish event.
+    receiving: bool,
     world: ReplayWorld,
     handler: H,
-    /// Whether all ticks have been played and `onReplayControllerFinish`
-    /// would have fired (the finish event itself is BW-11-03-04).
+    /// The `onReplayControllerFinish` latch — the finish event fires exactly
+    /// once, on the first `tick()` that meets the end condition.
     finished: bool,
 }
 
@@ -987,6 +1001,7 @@ impl<H: ReplayHandler> ReplayPlayer<H> {
             seek_to: None,
             time_since_last_tick: 0.0,
             playing: false,
+            receiving: false,
             world: ReplayWorld::new(),
             handler,
             finished: false,
@@ -1002,6 +1017,15 @@ impl<H: ReplayHandler> ReplayPlayer<H> {
     }
     pub fn is_playing(&self) -> bool {
         self.playing
+    }
+
+    /// `isReceiving()` / `isReceiving_` — a receiving (downloading) replay
+    /// does not fire the finish event (`tick`, `:772`).
+    pub fn set_receiving(&mut self, receiving: bool) {
+        self.receiving = receiving;
+    }
+    pub fn is_receiving(&self) -> bool {
+        self.receiving
     }
 
     /// `setCurrentTick(newTick)` (`replay_controller.cpp:500-518`): seek to a
@@ -1100,6 +1124,12 @@ impl<H: ReplayHandler> ReplayPlayer<H> {
             for block in &blocks {
                 self.world.apply(block);
             }
+            // `processTick`'s `BLOCK_TYPE_FINAL` case (`:1067-1069`) fires
+            // `handleFinal` for the end-of-replay block (the `FINAL` block is
+            // only read under the loop's playing/seeking gate).
+            if blocks.iter().any(|b| matches!(b, ReplayBlock::Final)) {
+                self.finish_once(self.playing || self.is_seeking());
+            }
             self.handler.on_post_tick(self.current_tick);
             self.current_tick += 1;
             remaining -= 1;
@@ -1109,14 +1139,25 @@ impl<H: ReplayHandler> ReplayPlayer<H> {
             self.seek_to = None;
         }
 
-        // `handleFinal` condition (`:770-776`): no tick left to read, playing,
-        // not receiving, and all ticks consumed. The finish event itself is
-        // BW-11-03-04; this flag records that it would have fired.
-        if self.playing && self.num_ticks_total() <= self.current_tick {
-            self.finished = true;
+        // `handleFinal` end condition (`:770-776`): no tick left to read,
+        // playing, not receiving, and all ticks consumed.
+        if self.playing && !self.receiving && self.num_ticks_total() <= self.current_tick {
+            self.finish_once(true);
         }
 
         Ok(())
+    }
+
+    /// `handleFinal` (`replay_controller.cpp:1384-1386`): fire
+    /// `onReplayControllerFinish` at most once per playback segment. `allowed`
+    /// is the call-site condition (the `FINAL` block path is gated on
+    /// playing/seeking, the end-condition path on
+    /// `playing && !receiving && numTicksTotal() <= currentTick_`).
+    fn finish_once(&mut self, allowed: bool) {
+        if allowed && !self.finished {
+            self.finished = true;
+            self.handler.on_finish();
+        }
     }
 }
 
@@ -1879,6 +1920,11 @@ mod tests {
 
     /// Build a player over 4 ticks moving entity 1 along +x each tick.
     fn moving_player(freq: u8) -> ReplayPlayer<()> {
+        moving_player_with(freq, ())
+    }
+
+    /// [`moving_player`] with a caller-supplied handler.
+    fn moving_player_with<H: ReplayHandler>(freq: u8, handler: H) -> ReplayPlayer<H> {
         let make_ticks = |steps: &[[f32; 3]]| -> Vec<Tick> {
             steps
                 .iter()
@@ -1917,7 +1963,7 @@ mod tests {
             ]),
             100,
             freq,
-            (),
+            handler,
         )
     }
 
@@ -2005,5 +2051,136 @@ mod tests {
         p.play();
         p.tick(0.0).expect("tick");
         assert!(p.is_finished());
+    }
+
+    // --- BW-11-03-04: the end-of-replay finish event fires exactly once ---
+
+    /// A handler that counts the finish and post-tick notifications.
+    #[derive(Debug, Default)]
+    struct FinishCounter {
+        finish: usize,
+        post_tick: usize,
+    }
+
+    impl ReplayHandler for FinishCounter {
+        fn on_post_tick(&mut self, _tick: u32) {
+            self.post_tick += 1;
+        }
+        fn on_finish(&mut self) {
+            self.finish += 1;
+        }
+    }
+
+    /// The acceptance: the finish event fires exactly once, however many
+    /// further `tick()` calls follow the end of the stream.
+    #[test]
+    fn finish_fires_exactly_once() {
+        let mut p = moving_player_with(10, FinishCounter::default());
+        p.play();
+        // Play through all four ticks.
+        p.tick(0.0).expect("first tick");
+        p.tick(1.0).expect("play through");
+        assert_eq!(p.current_tick(), 4);
+        assert_eq!(p.world().get(1).map(|e| e.position), Some([30.0, 0.0, 0.0]));
+        assert_eq!(p.handler.finish, 1, "the finish event fired once");
+        // Keep ticking past the end — it must not re-fire.
+        for _ in 0..10 {
+            p.tick(1.0).expect("tick past the end");
+        }
+        assert_eq!(p.handler.finish, 1, "the finish event fired exactly once");
+        assert!(p.is_finished());
+    }
+
+    /// The finish event does not fire before the stream is consumed.
+    #[test]
+    fn finish_does_not_fire_before_the_end() {
+        let mut p = moving_player_with(10, FinishCounter::default());
+        p.play();
+        p.tick(0.0).expect("first tick"); // one of four
+        assert_eq!(p.handler.finish, 0, "not at the end yet");
+        assert!(!p.is_finished());
+    }
+
+    /// A `FINAL` block read from a tick fires the finish event
+    /// (`processTick`'s `BLOCK_TYPE_FINAL` case).
+    #[test]
+    fn finish_fires_for_a_final_block() {
+        // A tick whose data ends with `[FINAL][padding]` so the FINAL byte is
+        // read (a lone FINAL is not read — `remaining > 1`).
+        let mut data = Vec::new();
+        data.push(0); // EntityCreate
+        data.extend_from_slice(&entity_create_block(
+            0,
+            1,
+            3,
+            [0.0, 0.0, 0.0],
+            [0.0; 3],
+            &[],
+            true,
+        ));
+        data.push(9); // Final
+        data.push(0); // padding so the loop reads the Final
+        let ticks = vec![Tick { game_time: 0, data }];
+        let mut p = ReplayPlayer::new(ticks, 0, 10, FinishCounter::default());
+        p.play();
+        p.tick(0.0).expect("tick");
+        assert_eq!(p.handler.finish, 1, "the FINAL block fired the finish");
+    }
+
+    /// A receiving (downloading) replay does not fire the finish event
+    /// (`tick`'s `!isReceiving_` gate).
+    #[test]
+    fn a_receiving_replay_does_not_finish() {
+        let mut p = moving_player_with(10, FinishCounter::default());
+        p.set_receiving(true);
+        p.play();
+        p.tick(0.0).expect("first tick");
+        p.tick(1.0).expect("play through");
+        assert_eq!(p.current_tick(), 4, "ticks still play while receiving");
+        assert_eq!(p.handler.finish, 0, "a receiving stream does not finish");
+        assert!(!p.is_finished());
+    }
+
+    /// Pausing before the end suppresses the finish event.
+    #[test]
+    fn pausing_before_the_end_suppresses_finish() {
+        let mut p = moving_player_with(10, FinishCounter::default());
+        p.play();
+        p.tick(0.0).expect("first tick");
+        p.pause();
+        p.tick(1.0).expect("paused tick");
+        assert_eq!(p.handler.finish, 0, "paused playback does not finish");
+        assert_eq!(p.current_tick(), 1, "no tick advanced while paused");
+    }
+
+    /// A backward rewind re-arms the finish event for the next segment.
+    #[test]
+    fn a_rewind_rearms_the_finish_event() {
+        let mut p = moving_player_with(10, FinishCounter::default());
+        p.play();
+        p.tick(0.0).expect("first tick");
+        p.tick(1.0).expect("play through");
+        assert_eq!(p.handler.finish, 1);
+        // Rewind to the start and replay — a second segment re-fires once.
+        p.set_current_tick(0);
+        p.tick(0.0).expect("the seek to tick 0 completes");
+        p.tick(0.0).expect("the forced first tick");
+        p.tick(1.0).expect("replay the rest");
+        assert_eq!(p.current_tick(), 4, "replayed to the end");
+        assert_eq!(
+            p.handler.finish, 2,
+            "the finish re-fired for the new segment"
+        );
+    }
+
+    /// An empty replay fires the finish event exactly once.
+    #[test]
+    fn an_empty_replay_finishes_exactly_once() {
+        let mut p = ReplayPlayer::new(vec![], 0, 10, FinishCounter::default());
+        p.play();
+        p.tick(0.0).expect("tick");
+        assert_eq!(p.handler.finish, 1);
+        p.tick(0.0).expect("tick again");
+        assert_eq!(p.handler.finish, 1, "still exactly once");
     }
 }
