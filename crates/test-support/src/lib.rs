@@ -16,6 +16,7 @@ pub mod layering;
 pub mod multiproc;
 pub mod release_artifacts;
 pub mod rng;
+pub mod runtime_env;
 pub mod standalone;
 pub mod third_party_deps;
 pub mod timer_scenarios;
