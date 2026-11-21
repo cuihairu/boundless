@@ -93,7 +93,11 @@
 
 记录二进制哈希、编译选项、配置、Python 标准库和数据库版本。复跑上游单测入口并记录实际参编用例。获取单机集群、最小客户端、Windows 客户端及工具的可运行基准。
 
-- [ ] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。
+- [x] **BW-00-02-01 采集原版运行环境**（commit c4f9c2e）。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。
+  - 原版：BigWorld `4657a17cf10d55e2fbebf258f96da96a3dbe0c22`（14.4.1 RPM 展开树），el7 载荷 `game/bin/server/el7/{server,tools,unit_tests}` 共 **53 个二进制**，捆绑 CPython **3.13.15**（`third_party/python/lib/libpython3.13.a`），DB 口径取参考树文档声明（vcpkg-migration.md:325 的 MySQL 8），构建参数以 TESTING.md 记载 make 行为准（检出版本无构建树，config.log 缺席如实记录为 absent）。
+  - 新版：`ci/reference-baseline.sh` 五条 leg——reference-commit（含 **provenance 守卫**：`rev-parse --show-toplevel` 不等于树自身即 FAIL，防 `git -C` 在无 `.git` 目录上向上走、把别仓 commit 认作原版基线）、reference-binaries（53 文件逐个 sha256 → `reference-binaries.tsv`，其整体指纹 `db7c171f…` 入 json）、reference-python（lib 名 + 解释器双探）、reference-db（文档声明 + 出处路径，无声明记 absent 不编造）、reference-build（TESTING.md make 行 + config.log 若在）；树缺席 → SKIP 点名 BW-00-02-01（CI 托管 runner 面即如此）；树在而坏 → FAIL 不出空心基线。持久记录入库 `tests/baseline/reference-env.json` + `tests/baseline/reference-binaries.tsv`（56 行=3 头+53 行）；活树与已冻结记录 commit 漂移时 ci_note（快照锚点语义，不失败）。
+  - 结果：本地实跑采集全 legs PASS；自测 **3/3 绿**（植入树 round-trip：64 位指纹 + 恰 3 行 tsv + json 可解析；缺席树 SKIP；坏树 FAIL——曾实测复现 `git -C` 上溯假 PASS（拿到的是本仓 1ce69a9 的 commit）后补守卫修掉）。
+  - 证据：CI run **44839762476**（Reference baseline **success**、Harness self-tests **success**，13 skip / 7 success / 0 failure），commit c4f9c2e；本地复跑命令 `ci/reference-baseline.sh`（`BW_REFERENCE=/home/cui/workspaces/BigWorld` 时实跑，输出 `ci-out/reference-baseline/`）。
 - [ ] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
 - [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
@@ -1644,6 +1648,7 @@ workflow 为 `.github/workflows/ci.yml`（push / pull_request / workflow_dispatc
 | **44793741916** | `092e962` | push | completed/**failure** | BW-22-04-04 上线首跑：`VSIX package and clean-host install` **success**（新编译→vsce 160K→档案完整性→干净宿主核心加载 PASS，editor 腿如实 SKIP 点名 BW-20-03-03——首跑曾咬中 `require('vscode')` 主入口裸 node 装不了的契约缺陷并修正）；`Harness self-tests` 含 vsix 自测 3/3。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 | **44795047237** | `f28df98` | push | completed/**failure** | BW-22-04-05 上线首跑：`Harness self-tests` **success** 含 checksums 自测 4/4（回环 PASS、单字节篡改→`CHANGED` 点名、删文件→`MISSING` 点名、错版本戳→`MISSTAMPED` 对 header 咬住）；installer/docs/sdk/vsix 四个打包面作业全 success。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
 | **44796370170** | `b45f330` | push | completed/**failure** | BW-00-03-02 收口：`Toolchain pin and lockfile` **success**——新增 `.python-version` 单一声明源，四处 `setup-python` 改读 `python-version-file`，CI 照录 `Successfully set up CPython (3.12.16)` 且 lane 行 `python_pinned=3.12 python_resolved=3.12.16`（CI 内不一致即 FAIL 的硬门）。唯一红仍为 `rust-lint` 历史债。该 HEAD 是本条目的最终推送状态 |
+| **44839762476** | `c4f9c2e` | push | completed/**success** | BW-00-02-01 上线首跑：`Reference baseline` **success**（活树五 leg 全 PASS，53 二进制指纹 `db7c171f…`，Python 3.13.15，DB/构建参数照文档口径记录，持久记录入 `tests/baseline/`）；`Harness self-tests` **success** 含 reference-baseline 自测 3/3（含坏树 FAIL 的 provenance 守卫）。本 run **0 failure**——变更仅触 ci/+tests/baseline/ 面，rust-lint 历史债未入选路，run 首次整绿 |
 
 本地等价门（`CI_OUT` 走默认仓根路径，与 CI 一致）在 `a2c0f66` 上全跑一次：28 PASS / 3 SKIP / 2 FAIL，两条 FAIL 均为 `rust-fmt`（211 处）与 `rust-lint`（32 处，全在 `crates/resources`），属各 crate 所属席位的历史债务，不属 CI 面；`archive` 行 `ok: 32 manifest row(s) round-tripped, bundle 60K`。
 
