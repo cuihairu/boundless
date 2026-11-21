@@ -1,0 +1,27 @@
+# reference unit tests
+# tree: /home/cui/workspaces/BigWorld
+# commit: 4657a17cf10d55e2fbebf258f96da96a3dbe0c22
+# participating list: derived from programming/**/unit_test/Makefile.rules (type := unit_test)
+# command: cd <component unit_test dir> && timeout 1800 <unit_tests binary> --root <tree>
+# budget per module: 1800s (the original bw-run-all-unit-tests budget)
+cstdmf_test	programming/bigworld/lib/cstdmf/unit_test	452 tests	There were no test failures. 	0
+db_test	programming/bigworld/lib/db/unit_test	11 tests	There were no test failures. 	0
+entitydef_test	programming/bigworld/lib/entitydef/unit_test	387 tests	There were no test failures. 	0
+math_test	programming/bigworld/lib/math/unit_test	44 tests	There were no test failures. 	0
+network_test	programming/bigworld/lib/network/unit_test	256 tests	There were no test failures. 	0
+physics2_test	programming/bigworld/lib/physics2/unit_test	44 tests	There were no test failures. 	0
+pyscript_test	programming/bigworld/lib/pyscript/unit_test	151 tests	There were no test failures. 	0
+resmgr_test	programming/bigworld/lib/resmgr/unit_test	88 tests	There were no test failures. 	0
+scene_test	programming/bigworld/lib/scene/unit_test	5 tests	There were no test failures. 	0
+script_test	programming/bigworld/lib/script/unit_test	18 tests	There were no test failures. 	0
+server_test	programming/bigworld/lib/server/unit_test	5 tests	There were no test failures. 	0
+terrain_test	programming/bigworld/lib/terrain/unit_test	8 tests	There were no test failures. 	0
+unit_test_lib_test	programming/bigworld/lib/unit_test_lib/unit_test	1 tests	There were no test failures. 	0
+baseappmgr_test	programming/bigworld/server/baseappmgr/unit_test	0 tests	There were no test failures. 	0
+baseapp_test	programming/bigworld/server/baseapp/unit_test	17 tests	There were no test failures. 	0
+cellappmgr_test	programming/bigworld/server/cellappmgr/unit_test	0 tests	There were no test failures. 	0
+cellapp_test	programming/bigworld/server/cellapp/unit_test	53 tests	There were no test failures. 	0
+dbappmgr_test	programming/bigworld/server/dbappmgr/unit_test	0 tests	There were no test failures. 	0
+dbapp_test	programming/bigworld/server/dbapp/unit_test	0 tests	There were no test failures. 	0
+loginapp_test	programming/bigworld/server/loginapp/unit_test	0 tests	There were no test failures. 	0
+reviver_test	programming/bigworld/server/reviver/unit_test	0 tests	There were no test failures. 	0

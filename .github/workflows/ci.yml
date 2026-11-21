@@ -503,14 +503,16 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # BW-00-02-01 — the reference baseline: the original tree's commit, binary
-  # hashes and stated versions, recorded the same way local and CI run it.
+  # BW-00-02-01/BW-00-02-02 — the reference face: the original tree's commit,
+  # binary hashes and stated versions (the baseline), then its own unit tests
+  # rerun with list, command and result saved — the same way local and CI run
+  # them.
   # A hosted runner has no reference checkout, so the job records the honest
   # SKIP naming the missing tree; the self-test in the harness job proves the
   # collection itself bites, and the durable record lives under
   # tests/baseline/ in the repo.
   refbase:
-    name: Reference baseline
+    name: Reference record and tests
     needs: changes
     if: contains(needs.changes.outputs.lanes, 'refbase')
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -520,6 +522,9 @@ jobs:
 
       - name: Record the reference baseline
         run: ci/reference-baseline.sh
+
+      - name: Rerun the reference unit tests
+        run: ci/reference-tests.sh
 
       - name: Bundle results
         if: always()
@@ -903,6 +908,7 @@ jobs:
           ci/vsix.sh self-test
           ci/checksums.sh self-test
           ci/reference-baseline.sh self-test
+          ci/reference-tests.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results
