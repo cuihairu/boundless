@@ -377,6 +377,41 @@ impl BwResource {
         self.paths.len()
     }
 
+    /// `BWResolver::dissolveFilename`: strip the first matching search-path
+    /// prefix off `file`, giving the path relative to that root.
+    ///
+    /// Quirks preserved:
+    /// - backslashes become `/` before anything else;
+    /// - a path with no drive that is already relative is returned unchanged
+    ///   (dissolving only makes sense for a path that has a root);
+    /// - each search path is tried in order with the "easiest test" first
+    ///   (`mf_pathcmp` on the prefix), then the fallback that compares the
+    ///   file's directory prefix so a differing drive specifier still matches
+    ///   (`getFilePath` of the file against `formatPath` of the root);
+    /// - a path that matches no root is returned unchanged (the reference
+    ///   merely logs "Invalid").
+    pub fn dissolve_filename(&self, file: &str) -> String {
+        let mut new_file = file.replace('\\', "/");
+        if !has_drive_in_path(&new_file) && path_is_relative(&new_file) {
+            return new_file;
+        }
+
+        for index in 0..self.paths.len() {
+            let path = format_path(&self.paths[index]);
+            // Easiest test: the search path is a prefix of the file.
+            if new_file.len() >= path.len() && new_file[..path.len()].eq_ignore_ascii_case(&path) {
+                return new_file[path.len()..].to_string();
+            }
+            // Otherwise compare the file's directory prefix.
+            let file_path = get_file_path(&new_file);
+            if file_path.len() > path.len() && file_path[..path.len()].eq_ignore_ascii_case(&path) {
+                return new_file[path.len()..].to_string();
+            }
+        }
+
+        new_file
+    }
+
     /// `isValid`: at least one res path is registered.
     pub fn is_valid(&self) -> bool {
         !self.paths.is_empty()
@@ -1854,6 +1889,35 @@ mod tests {
         // Root is always in /etc/passwd; an absurd uid is not.
         assert!(passwd_home(0).is_some());
         assert_eq!(passwd_home(u32::MAX - 1), None);
+    }
+
+    /// `dissolveFilename`: strips the first matching search-path prefix.
+    #[test]
+    fn dissolve_filename_strips_search_path_prefix() {
+        let resource = BwResource::init_paths(&["/some/root"]);
+        // The simplest test: the search path is a prefix of the file.
+        assert_eq!(
+            resource.dissolve_filename("/some/root/foo/bar.txt"),
+            "foo/bar.txt"
+        );
+        assert_eq!(resource.dissolve_filename("/some/root/foo.txt"), "foo.txt");
+        // Backslashes are normalised first.
+        assert_eq!(resource.dissolve_filename("/some/root\\foo.txt"), "foo.txt");
+    }
+
+    /// A path with no drive that is already relative, or one under no search
+    /// path, is returned unchanged.
+    #[test]
+    fn dissolve_filename_returns_unmatched_paths_unchanged() {
+        let resource = BwResource::init_paths(&["/some/root"]);
+        assert_eq!(
+            resource.dissolve_filename("relative/path.txt"),
+            "relative/path.txt"
+        );
+        assert_eq!(
+            resource.dissolve_filename("/elsewhere/file.txt"),
+            "/elsewhere/file.txt"
+        );
     }
 }
 
