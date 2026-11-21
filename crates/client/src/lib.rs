@@ -40,12 +40,24 @@
 //! filter, whose error-box trust logic turns a fixed input-sample trajectory
 //! into the same output trajectory.
 //!
+//! BW-11-02-05 applies server prediction correction with `avatar_filter`
+//! (`client/avatar_filter.cpp`, `lib/connection/avatar_filter_helper.cpp`):
+//! the helper keeps the last 8 server samples in a ring, adapts a rendering
+//! latency towards the ideal, and extracts the position at
+//! `time - latency` between waypoints chosen from the samples — so a linear
+//! sample baseline converges onto the line and a server correction is
+//! smoothed over the latency window instead of popping. The `AvatarFilter`
+//! wrapper applies the output to the entity as callbacks, and fires queued
+//! callbacks in target-time order once the output time passes them,
+//! snapping the position to the target time when a callback asks to.
+//!
 //! BW-11-03-01 is the replay file's head: `replay` parses the header block
 //! (`lib/connection/replay_header.cpp`) and the metadata block
 //! (`lib/connection/replay_metadata.cpp`) — the version, digest, frequency,
 //! timestamp, nonce, signature and tick count, and the metadata key/value
 //! collection — so a known recording reads out the same fields.
 
+pub mod avatar_filter;
 pub mod camera;
 pub mod data_download;
 pub mod device;
