@@ -10,6 +10,7 @@ pub mod db_login;
 pub mod dbappmgr;
 pub mod dispatcher;
 pub mod login_challenge;
+pub mod login_entity;
 pub mod login_gate;
 pub mod login_request;
 pub mod loginapp;
