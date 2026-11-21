@@ -138,12 +138,18 @@
 
 逐项核对 `lib/`、`server/`、`server/tools/`、`client/`、`tools/`、`common/`、`examples/` 和 FantasyDemo 的构建目标与用户功能。记录「原版路径、启用条件、功能编号、验证夹具、覆盖状态」。对第三方 SDK、发行物中的独有内容和缺失资源单独记录来源与验证缺口。每个已启用目标都要有可运行验收或可追踪的阻塞原因。
 
-- [ ] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。
-- [ ] **BW-00-05-02 映射引擎库和服务端目标**。**验收** 构建清册中的每项都有索引。
-- [ ] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。
-- [ ] **BW-00-05-04 映射公共代码、示例与 FantasyDemo**。**验收** 脚本及资源入口可追溯。
-- [ ] **BW-00-05-05 核查发行物、SDK 和缺失资源**。**验收** 缺口有来源与阻塞原因。
-- [ ] **BW-00-05-06 复核台账完整性**。**验收** 每个启用目标有运行证据或显式缺口。
+- [x] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。
+  - 证据：台账 `COVERAGE-LEDGER.md`「字段」表定 6 列（原版目标/类别/启用条件/任务号/夹具证据/状态），状态词表 5 值（已覆盖/进行中/已登记依赖/暂缓（范围外）/缺口）；基线头记录原版提交 `4657a17c`、哈希清单与 910 用例底本两条夹具路径。
+- [x] **BW-00-05-02 映射引擎库和服务端目标**。**验收** 构建清册中的每项都有索引。
+  - 证据：台账「引擎库」23 行（`build/el7/lib/` 38 个 `.a` 全部有名——29 引擎库 + 9 三方捆绑，`lib/testing` 无 goal 单列）+「服务端可执行与工具」15 行（11 服务器 ELF、`commands/` 5 工具、`_helpers/snapshot_helper`、bwmachined2、message_logger、process_defs、res_packer、`_bw_profile` 缺口）+「扩展与单测」3 行，合计 41 行，与 BW-00-01-01 清册逐项对应。
+- [x] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。
+  - 证据：台账「客户端、导出器与导航目标」10 行，索引源为 `build/cmake/BWConfiguration_*.cmake` 去重后的 **47 条 project→path**（max2009–2013、maya2009–2014、visualexporter×5、asset_pipeline 含 converter×8、modeleditor、worldeditor、particle_editor、navgen、jit_compiler 等）；门控宏 `FMOD`/`SPEEDTREE`/`UMBRA`/`-DBW_CLIENT`/`-DBW_EXPORTER`/`-D_SECURE_SCL=1` 已记；`client_blobs`/`tools_blob` 源缺失与 `libbwentity.a` 无 make 产物列为缺口。
+- [x] **BW-00-05-04 映射公共代码、示例与 FantasyDemo**。**验收** 脚本及资源入口可追溯。
+  - 证据：台账 5 行——`common/` Python 绑定（py_chunk/py_network/py_physics2）、examples 的 cellapp_extension/client_integration（`user_shouldBuildExamples` 门控）、已构建 `simple_python_client`、FantasyDemo（`programming/fantasydemo` 108 文件：res/scripts、res/server/bw.xml 19 行占位、web/php、遗留 `.kbengine/stubs`）、`docs/pdf/` 两份安装/构建指南（BW-19）。
+- [x] **BW-00-05-05 核查发行物、SDK 和缺失资源**。**验收** 缺口有来源与阻塞原因。
+  - 证据：台账 9 行——3 个上游 RPM（bwmachined 4.39MB 唯一有内容 / devel 2.1KB 空包 / web-integration 1.9KB 空包）、每日 tar.gz+deb+rpm 与 Windows zip（**设计上不打 tag 不发 release**，产物仅作 workflow artifact）、`game/res` 资源树；**缺口逐条给原因**：BW SDK 不在开源树（`find -iname "*sdk*"` 无命中）、blob×3 源缺失、libbwentity.a 无 make 产物、_bw_profile 条件 goal 未随产出。
+- [x] **BW-00-05-06 复核台账完整性**。**验收** 每个启用目标有运行证据或显式缺口。
+  - 证据：65 行数据表状态全数，闭合为 已覆盖 10 + 已登记依赖 38 + 缺口 10 + 暂缓 7 = 65；无空状态行。运行时基线类缺口（BW-00-02-03 集群、02-04 客户端登录、02-05 Windows）不在台账行内，转 todo.md 阻塞登记，注明解锁章节 BW-05/BW-06/BW-15。
 
 ### BW-01 基础运行时、配置和资源
 
