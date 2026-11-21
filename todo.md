@@ -141,7 +141,8 @@
 
 逐项核对 `lib/`、`server/`、`server/tools/`、`client/`、`tools/`、`common/`、`examples/` 和 FantasyDemo 的构建目标与用户功能。记录「原版路径、启用条件、功能编号、验证夹具、覆盖状态」。对第三方 SDK、发行物中的独有内容和缺失资源单独记录来源与验证缺口。每个已启用目标都要有可运行验收或可追踪的阻塞原因。
 
-- [ ] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。
+- [x] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。
+  - 证据：`docs/review/bw00-05-01-coverage-ledger-fields.md`（8674781）——交付：台账 `docs/review/data/bw00-05-coverage-ledger.tsv`（**79 行**=make_inventory 79 组件一一对应，行序=清单）+ 校验器 `docs/review/tools/check_coverage_ledger.py`。**字段契约** 9 列：验收五字段（`target` 原版目标/`enable` 启用条件/`task` 任务号/`fixture` 夹具/`status` 状态）+ 4 项账本列（`type` 类别、`dir` 原版目录、`origin` 行来源、`note` 备注）；值域：`origin`=make/cmake/release/resource/gap、`status`=covered/partial/pending/blocked/excluded、`task`=`BW-xx-yy[-zz]`/pending/n/a、`enable`=`-` 或逗号连接特性令牌、`fixture`=仓库相对路径（可运行验收或可追踪记录）；blocked/excluded 必填 note（阻塞原因/决策引用）、covered/partial 必填 fixture。**骨架** 79 行全以清单 use_flags 为 enable、task=pending/fixture=-/status=pending 起步（字段契约先行，映射是 02-04 填入面）；**有证据种子 20 行**：基础库 cstdmf（partial）/math（covered）/resmgr（partial）/server（partial）/unit_test_lib（partial）、原版单测 cstdmf/resmgr/entitydef 三个 unit_test=covered（451/88/380，余 18 行 pending）、服务端进程 baseappmgr/cellappmgr/dbappmgr/bwmachined2=partial（达 Version 14.4.1/bwmachined2 -f）、baseapp/cellapp/dbapp/loginapp/serviceapp=blocked（缺 bigworld.key/loginapp.privkey，note 引 00-02-03 日志）、第三方 CppUnitLite2/png/zip=excluded（note 引 BW-00-01-04 决策）。**校验**：`check_coverage_ledger.py` 79 行全字段合法、与清单双向 1:1、类型逐一吻合，rc=0；`--scaffold` 空；`--schema-only` rc=0；两脚本 py_compile 过。边界：本项只立字段+骨架+证据种子，系统性映射归 02-04（每批跑校验器，缺行由 `--scaffold` 列出）。
 - [ ] **BW-00-05-02 映射引擎库和服务端目标**。**验收** 构建清册中的每项都有索引。
 - [ ] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。
 - [ ] **BW-00-05-04 映射公共代码、示例与 FantasyDemo**。**验收** 脚本及资源入口可追溯。
