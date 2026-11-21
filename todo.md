@@ -95,7 +95,7 @@
 
 记录二进制哈希、编译选项、配置、Python 标准库和数据库版本。复跑上游单测入口并记录实际参编用例。获取单机集群、最小客户端、Windows 客户端及工具的可运行基准。
 
-- [ ] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。
+- [x] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。 证据：`crates/test-support/src/runtime_env.rs` + `src/bin/scan-runtime-env.rs` + `cases/runtime_env.txt`（8 事实：reference-commit、engine-version 14.4.1、bundled-python 3.13、db-backend MySQL、db-schema-version DBAPP_VERSION_LOGON_MAPPING_2、cxx-standard -std=c++23、build-configs、prebuilt-server-binaries none）。原版为源码检出（无预编译服务端二进制），reference-commit 为快照（参考仓库 HEAD 随端口工作移动）。CLI 测试 `tests/runtime_env_cli.rs`。commit 5e0bb8c
 - [ ] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
 - [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
