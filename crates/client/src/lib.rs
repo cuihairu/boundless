@@ -27,6 +27,7 @@
 //! thresholds. `settings` carries both, so the same thresholds always produce
 //! the same switch.
 
+pub mod camera;
 pub mod device;
 pub mod focus;
 pub mod frame;
