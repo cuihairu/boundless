@@ -10,6 +10,7 @@ members = [
     "crates/python-host",
     "crates/server-runtime",
     "crates/test-support",
+    "crates/client",
     "apps/server",
 ]
 
@@ -36,6 +37,7 @@ resources = { path = "crates/resources" }
 # entitydef = { path = "crates/entitydef" }  # re-add at BW-02+
 python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
+# client = { path = "crates/client" }  # re-add with first consumer
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 
 [profile.release]

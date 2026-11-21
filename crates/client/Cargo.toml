@@ -1,0 +1,24 @@
+[package]
+name = "client"
+description = "BW-11 client application: window, presentation mode and device lifecycle"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# foundation = { workspace = true }  # re-add with first consumer (BW-11 ids/math)
+
+[features]
+# The real window/event-loop binding (winit). Default-off keeps the workspace
+# gate lean: the server path never needs a window, and CI runners may lack the
+# X11/wayland build headers winit needs. The pure window-mode and device
+# lifecycle modules compile and test without it. Build the client with
+# `--features winit-backend` (or `--all-features`).
+default = []
+winit-backend = ["dep:winit"]
+
+[dependencies.winit]
+version = "0.30"
+optional = true
