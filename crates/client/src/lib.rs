@@ -39,6 +39,12 @@
 //! filter framework (`reset`/`input`/`output`/`getLastInput`) and the dumb
 //! filter, whose error-box trust logic turns a fixed input-sample trajectory
 //! into the same output trajectory.
+//!
+//! BW-11-03-01 is the replay file's head: `replay` parses the header block
+//! (`lib/connection/replay_header.cpp`) and the metadata block
+//! (`lib/connection/replay_metadata.cpp`) — the version, digest, frequency,
+//! timestamp, nonce, signature and tick count, and the metadata key/value
+//! collection — so a known recording reads out the same fields.
 
 pub mod camera;
 pub mod device;
@@ -49,6 +55,7 @@ pub mod movement_filter;
 pub mod picker;
 pub mod player;
 pub mod render;
+pub mod replay;
 pub mod settings;
 pub mod window_mode;
 
