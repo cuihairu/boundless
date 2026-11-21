@@ -718,6 +718,23 @@ mod tests {
         assert!(matches!(&mgr.outbox[2], Outbound::DbAppHashMessage(a, _, _) if *a == A2));
     }
 
+    // BW-05-06-05: a repeated death notification for an app already removed
+    // is a no-op — it must not re-promote an alpha or re-send the hash.
+    #[test]
+    fn a_repeated_death_notification_is_a_no_op() {
+        let mut mgr = started_mgr();
+        mgr.recover_login_app(L1, 1);
+        mgr.outbox.clear();
+
+        mgr.handle_db_app_death(A3);
+        let after_first = mgr.outbox.len();
+        assert_eq!(after_first, 3);
+
+        mgr.handle_db_app_death(A3);
+        assert_eq!(mgr.outbox.len(), after_first);
+        assert_eq!(mgr.alpha_id(), Some(1));
+    }
+
     // BW-05-05-03: login-app death removes it from the notify set, and a
     // revived manager gets the current topology / alpha re-sent.
     #[test]

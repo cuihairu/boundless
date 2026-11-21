@@ -3401,6 +3401,32 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_death_notification_is_a_no_op() {
+        let mut mgr = mgr_with(vec![
+            ((0x7f000001, 3000), 0.5),
+            ((0x7f000002, 3000), 0.5),
+        ]);
+        mgr.create_space(NULL_SPACE_ID, false, 0).unwrap();
+
+        mgr.handle_cell_app_death((0x7f000001, 3000));
+        let after_first = mgr.outbox.len();
+        assert!(after_first > 0);
+
+        // The same notification again: the app is already removed, so the
+        // manager must not broadcast, report or recreate a second time.
+        mgr.handle_cell_app_death((0x7f000001, 3000));
+        assert_eq!(mgr.outbox.len(), after_first);
+        assert!(mgr.apps.find((0x7f000001, 3000)).is_none());
+        assert_eq!(
+            mgr.outbox
+                .iter()
+                .filter(|o| matches!(o, Outbound::ReportDeathToBaseAppMgr(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn add_app_rejects_without_base_or_db() {
         let mut mgr = CellAppMgr::new();
         // No base app or DB alpha yet.
