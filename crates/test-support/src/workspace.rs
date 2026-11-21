@@ -9,10 +9,32 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Directory name shared by every fixture of this test process.
+/// Leaf name of the fixture base directory.
 pub const BASE_DIRECTORY: &str = "boundless-test";
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// The per-environment fixture base directory (BW-00-03-04).
+///
+/// Resolution order:
+/// 1. `BOUNDLESS_TEST_BASE` -- the explicit separation for two environments
+///    that deliberately share one checkout (or one build tree): each side
+///    points at its own scratch root and they cannot overlap;
+/// 2. this checkout's own `target/`. The workspace `target/` is gitignored
+///    and belongs to this checkout alone, so two checkouts on one machine
+///    are disjoint **by construction** -- the "same machine, two
+///    environments, no overwrite" acceptance needs no environment variable
+///    in the common case.
+pub fn base_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("BOUNDLESS_TEST_BASE")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // `<workspace>/crates/test-support` -> `<workspace>/target`.
+    manifest.join("../../target").join(BASE_DIRECTORY)
+}
 
 /// A throwaway directory tree, removed on drop unless kept on failure.
 pub struct TempWorkspace {
@@ -22,7 +44,7 @@ pub struct TempWorkspace {
 }
 
 impl TempWorkspace {
-    /// Create a unique directory.
+    /// Create a unique directory under the per-environment fixture base.
     pub fn new() -> Self {
         Self::with_label("test")
     }
@@ -30,8 +52,13 @@ impl TempWorkspace {
     /// Create a unique directory named after `label`, so an archived failure
     /// directory is readable (`label`-`pid`-`sequence`).
     pub fn with_label(label: &str) -> Self {
-        let base = std::env::temp_dir().join(BASE_DIRECTORY);
-        std::fs::create_dir_all(&base).expect("fixture base directory");
+        Self::with_base(&base_dir(), label)
+    }
+
+    /// Create a unique directory under an explicit `base`, so a test can pin
+    /// its environment's scratch root instead of the process default.
+    pub fn with_base(base: &Path, label: &str) -> Self {
+        std::fs::create_dir_all(base).expect("fixture base directory");
 
         let mut counter = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let mut root = base.join(qualified_name(label, counter));
@@ -237,5 +264,40 @@ mod tests {
         root.add_text("bw.xml", "<bw/>");
         assert!(root.exists("bw.xml"));
         assert!(root.path().is_absolute());
+    }
+
+    /// BW-00-03-04 acceptance: two environments on one machine, each with
+    /// its own fixture base, never overwrite each other -- even when both
+    /// drop a *same-named* file. The roots are disjoint and each side keeps
+    /// its own content.
+    #[test]
+    fn two_environments_do_not_overwrite_each_other() {
+        let scratch = std::env::temp_dir().join("boundless-bw03-04-acceptance");
+        let _ = std::fs::remove_dir_all(&scratch);
+
+        let env_a = scratch.join("env-a");
+        let env_b = scratch.join("env-b");
+        let a = TempWorkspace::with_base(&env_a, "baseapp");
+        let mut b = TempWorkspace::with_base(&env_b, "baseapp");
+
+        assert_ne!(a.root(), b.root(), "two environments are disjoint");
+        assert!(a.root().starts_with(&env_a));
+        assert!(b.root().starts_with(&env_b));
+
+        // The same fixture name in both environments, different content: the
+        // second write must not clobber the first.
+        a.write_text("state.db", "env-a");
+        b.write_text("state.db", "env-b");
+        assert_eq!(a.read("state.db"), b"env-a");
+        assert_eq!(b.read("state.db"), b"env-b");
+
+        // A dropped fixture in one environment leaves the other's file alone.
+        let a_path = a.root().to_path_buf();
+        drop(a);
+        assert!(!a_path.exists());
+        assert_eq!(b.read("state.db"), b"env-b");
+        b.keep(); // leave for the cleanup below
+        drop(b);
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }
