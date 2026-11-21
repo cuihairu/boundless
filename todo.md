@@ -113,7 +113,11 @@
   - 新版：`ci/reference-login.sh` 两面记录——**protocol**（请求线上格式、消息 id、协议版本、状态码枚举、10 步回调序列，逐条注明源文件行）、**capture**（实况登录门：需客户端二进制 + `server/bw.xml` + machined 配置，门开 → 记 PASS 可留握手，门关 → SKIP 点名缺口）。不替原版编造配置。
   - 结果：`login-protocol	PASS	10 callbacks, login msg id 2 (protocol version 2.9.0.0, commit e9cb96784c66)`；`login-capture	SKIP	absent (no server/bw.xml at the game resource root); absent (~/.bwmachined.conf)`（原版无客户端二进制于 `game/bin`——仅 `server/el7` 载荷；`bots` 无头加载客户端已随包，但缺 `server/bw.xml` 与 machined 配置，门关）。
   - 证据：`ci/reference-login.sh` + 入库 `tests/baseline/login-protocol.json`（协议版本、login/challengeResponse 消息、状态码、10 步回调、源引用）与 `login-capture.json`（`capture_gate:"closed"`、`capture:"absent"`）；自测 **5/5 绿**（植入源记录协议与回调、无客户端/配置/配置关 gate 点名缺口、`bots`+伪造配置+`BW_RES_PATH` 开 gate 成合法记录、树缺席 SKIP 点名票号、无登录源树 FAIL「空心基线」）；`shellcheck -S warning`、`actionlint` 双绿。
-- [ ] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。
+- [x] **BW-00-02-05 复测 Windows 客户端和工具基线**（commit c7f7c4e）。**验收** 逐目标保存结果或缺口。
+  - 原版：Windows 构建入口为 `programming/bigworld/CMakeLists.txt`（`BW_CMAKE_TARGET` 选择，`BWConfiguration_*.cmake` 枚举 11 个目标）；客户端/工具目标来自 `BW_BINARY_PROJECTS` 对（名+源目录）——`client`（bwclient、emptyvoip）、`tools`（worldeditor、modeleditor、particle_editor、offline_processor、batch_compiler、jit_compiler、6 个 asset_pipeline 转换器、visual_processor、primitive_processor）、`navgen`、`extras`（simple_python_client、process_defs、res_packer）、`assetprocessor`；另有 `exporters`（DCC 插件：3ds max / Maya 2009-2014 + 其库依赖）与 `bwentity`（库）。
+  - 新版：`ci/reference-winbaseline.sh` 逐目标记录——**targets**（从 `BWConfiguration_*.cmake` 派生目标枚举，非手抄）、**per-target**（每个目标的 `windows_payload` 状态 + `linux_el7_equivalent` 交叉引用）。不替原版编造结果。
+  - 结果：`win-targets	PASS	22 binary target(s) across 5 BW_CMAKE_TARGET group(s) + 10 DCC exporter plugin(s) (23 exporter lib deps) derived into win-targets.tsv`；`win-retest	SKIP	no windows payload under game/bin (only server/el7 ships) — all 22 target(s) + 10 exporter plugin(s) recorded as gaps; 3 have a Linux el7 equivalent`（原版 `game/bin` 仅 `server/el7`，无任何 Windows 载荷——每个 Windows 目标均为缺口，逐目标点名；`process_defs`/`res_packer`/`simple_python_client` 三个有 el7 等价物）。
+  - 证据：`ci/reference-winbaseline.sh` + 入库 `tests/baseline/win-targets.tsv`（5 行头 + 22 二进制目标 + 33 exporter 行）与 `win-baseline.json`（`windows_payloads:"none"`、`retest_gate:"closed"`）；自测 **3/3 绿**（植入树派生目标并记录缺口与已发布等价物、树缺席 SKIP 点名票号、无 `build/cmake` 树 FAIL「空心基线」）；`shellcheck -S warning`、`actionlint` 双绿。
 
 #### BW-00-03 Boundless 构建入口
 
