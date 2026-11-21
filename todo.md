@@ -87,7 +87,8 @@
 - [x] **BW-00-01-01 展开 Linux Make 构建目标**。**验收** 清册包含二进制、库及所属规则。
   - 证据：`docs/review/bw00-01-01-linux-make-targets.md`（73a5e65）——清册 79 个声明的目标（19 binary + 1 copy_of_binary + 32 library + 5 shared_library + 21 unit_test + 1 非组件一次性拷贝 remove_db），每个目标列出目录与所属规则（组件 `Makefile.rules`/伴随 `Makefile.<name>` + `common_footer_config.mak` 类型分派 + `commands.mak` 创建命令）；规则链入口 `programming/Makefile`→`bigworld/build/make/Makefile`，聚合经 `includeMakefilesFrom`；类型全集 6 种（binary/copy_of_binary/copy_of_shared_library/library/shared_library/unit_test）；特性开关矩阵（usePython 30/useOpenSSL 15/useMySQL 6/useSQLite 5/usePyURLRequest 3/useCurl 3/useMongoDB 2/usePNG 2，useBigWorld 子树级、useSystemPython/useCustomBillingSystem 关）；客户端与编辑器（worldeditor/modeleditor/…）为 CMake 侧、非 Make 范围，归 BW-00-01-02。采集脚本 `docs/review/tools/make_inventory.py` 可复现（`python3 docs/review/tools/make_inventory.py` 扫 90 Makefile.rules + 3 伴随 Makefile，输出 79 目标）。
 - [ ] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。
-- [ ] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。
+- [x] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。
+  - 证据：`docs/review/bw00-01-03-release-scripts-and-rpm.md`（64781c6）——发行脚本清册：Linux 侧 `build/bw_internal/scripts/` 3 脚本（makeRPM.py/makeServer.py/build_common.py），Windows 侧 8 脚本（makeSolutions.py/cmake_all_windows.py/winArchiveBuild.bat/winMakeClient.py/winCMakeClient.py/winCMakeShaders.py/winCMakeUnitTests.py/winMakeUnitTests.py/perforce_synchronizer.py/project_manager.py，另 testing 子目录）；RPM 目标登记为缺口（makeRPM.py 调 `make rpm`，但 `rpm`/`everything` 目标在当前参考树无定义——仅 `build/make/Makefile:5` 注释提及，全树 `grep '^rpm:'` 仅命中 third_party/curl 自带打包）；版本锚点：参考 tag bigworld-14.4.1、检出 bigworld-14.4.1-320-gb119c389、`BW_PYTHON_VERSION := 3.13`（third_party_python.mak:7）；makeSolutions.py 硬编码 `C:\Python27\python.exe` 为陈旧时代残留。
 - [ ] **BW-00-01-04 登记第三方依赖与资源来源**。**验收** 每项有许可证、NOTICE 及复用决策。
 
 #### BW-00-02 原版运行基准
