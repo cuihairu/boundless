@@ -85,7 +85,7 @@
 展开 Make/CMake、发布脚本及条件编译，列出可执行文件、库、扩展和平台矩阵。逐项标明已参编、条件启用、仅源码、仅发行物或缺依赖。整理 `third_party/`、资源许可证和 NOTICE，确认哪些复用依赖、哪些需替代实现。
 
 - [x] **BW-00-01-01 展开 Linux Make 构建目标**。**验收** 清册包含二进制、库及所属规则。`acb5b03` 清册落 `docs/review/bw00-01-01-linux-make-inventory.md`：make 累加器动态采集（recipe-time echo 权威清单）21 二进制+34 库+21 单测+16 杂项+8 三方，静态 77 声明交叉核对闭合，磁盘 `game/bin/server/el7`+`build/el7/lib` 审计，唯一缺口 `_bw_profile.so` 已登记（注册而产物缺失），png/zip/jsoncpp 声明悬空归 vcpkg。
-- [ ] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。
+- [x] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。`ef5fd33` 清册落 `docs/review/bw00-01-02-cmake-windows-targets.md`：静态逐文件读 build/cmake 全量+驱动 py/bat+vcpkg.json，工程源目录逐一存在性核对；平台矩阵 win32/win64/远程 Linux + vc9-vc17/clang-cl 生成器 + Debug/Hybrid（_DEBUG/_HYBRID 宏）；11 个 BW_CMAKE_TARGET 启用宏全录（MF_SERVER/BW_CLIENT/EDITOR_ENABLED/BW_EXPORTER/_NAVGEN/PYMODULE/BW_BLOB_CONFIG），server 二进制 17+单测 21 与 Make 链同集，差异 8 项登记；本机 Linux 未跑 Windows configure，动态验证如实登记待验。
 - [ ] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。
 - [ ] **BW-00-01-04 登记第三方依赖与资源来源**。**验收** 每项有许可证、NOTICE 及复用决策。
 
