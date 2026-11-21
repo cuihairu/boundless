@@ -1,5 +1,13 @@
 //! `Mercury::Reason` and its string table (`lib/network/misc.hpp`).
 
+/// `Mercury::MessageID` (`lib/network/misc.hpp`): a message identifier.
+///
+/// The reference types it as `uint8`, and its width is load-bearing -- the
+/// `InterfaceMinder` numbers its elements sequentially from 0 and the
+/// `EXPOSED_MESSAGE_RANGE` arithmetic assumes the two reserved Mercury ids,
+/// so a wider port would change `REPLY_MESSAGE_IDENTIFIER`'s meaning.
+pub type MessageId = u8;
+
 /// `Mercury::Reason`: reasons for Mercury errors, exceptions, and return
 /// codes. The reference numbers them downwards from 0 so that
 /// `-reason` indexes the string table; the port keeps the exact values
