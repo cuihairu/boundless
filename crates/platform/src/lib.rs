@@ -26,3 +26,9 @@ pub mod wakeup;
 /// backend lands with the Windows work under BW-15-05.
 #[cfg(unix)]
 pub mod file;
+
+/// Read-only memory mapping and dynamic-library lookup (BW-15-01-05).
+/// Unix only: `mmap(2)`/`dlopen`; the Windows `CreateFileMapping`/
+/// `LoadLibrary` backends land with the Windows work under BW-15-05.
+#[cfg(unix)]
+pub mod mmap;
