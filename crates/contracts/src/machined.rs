@@ -1489,6 +1489,141 @@ impl MachineGuardMessage {
 // Query answering (BW-05-01-01).
 // ---------------------------------------------------------------------------
 
+/// Outcome of a `register` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterOutcome {
+    /// A new process entry was appended.
+    Registered,
+    /// A process with the same pid, category and name already existed; its
+    /// fields were replaced in place. The reference logs this as a bad
+    /// re-registration but keeps the existing slot.
+    ReRegistered,
+}
+
+/// Outcome of a `deregister` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeregisterOutcome {
+    /// The process was found and removed.
+    Removed,
+    /// No process with that pid existed.
+    NotFound,
+}
+
+/// The bwmachined process registry.
+///
+/// Mirrors the reference `BWMachined::procs_` list. Registering appends a
+/// process (or replaces one that already claims the same pid/category/name or
+/// the same port), deregistering removes by pid, and discovery queries read
+/// from the same list, so a query issued immediately after a change reflects
+/// it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MachinedRegistry {
+    processes: Vec<ProcessMessage>,
+}
+
+impl MachinedRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a registry pre-seeded with processes.
+    pub fn from_processes(processes: Vec<ProcessMessage>) -> Self {
+        Self { processes }
+    }
+
+    /// The registered processes, in registration order.
+    pub fn processes(&self) -> &[ProcessMessage] {
+        &self.processes
+    }
+
+    pub fn len(&self) -> usize {
+        self.processes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.processes.is_empty()
+    }
+
+    /// Register a process.
+    ///
+    /// Matches the reference clash loop: a process with the same pid,
+    /// category and name re-uses its existing slot (re-registration), and any
+    /// process already on the same port is removed first (the reference's
+    /// "can't have two things on one port" rule, applied to port 0 as well).
+    pub fn register(&mut self, pm: &ProcessMessage) -> RegisterOutcome {
+        let mut i = 0;
+        while i < self.processes.len() {
+            let existing = &self.processes[i];
+            if pm.pid == existing.pid
+                && pm.category == existing.category
+                && pm.name == existing.name
+            {
+                break;
+            }
+            if pm.port == existing.port {
+                // The new process claims this port; drop the old owner and
+                // re-examine the slot its removal left behind.
+                self.processes.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        if i < self.processes.len() {
+            self.processes[i] = pm.clone();
+            RegisterOutcome::ReRegistered
+        } else {
+            self.processes.push(pm.clone());
+            RegisterOutcome::Registered
+        }
+    }
+
+    /// Deregister the first process with the given pid.
+    pub fn deregister(&mut self, pid: u16) -> DeregisterOutcome {
+        match self.processes.iter().position(|p| p.pid == pid) {
+            Some(index) => {
+                self.processes.remove(index);
+                DeregisterOutcome::Removed
+            }
+            None => DeregisterOutcome::NotFound,
+        }
+    }
+
+    /// The first process matching a discovery query's requested fields.
+    pub fn find(&self, query: &ProcessMessage) -> Option<&ProcessMessage> {
+        self.processes.iter().find(|p| p.matches(query))
+    }
+
+    /// Whether any registered process has the given pid.
+    pub fn is_running(&self, pid: u16) -> bool {
+        self.processes.iter().any(|p| p.pid == pid)
+    }
+
+    /// Apply a register or deregister command.
+    ///
+    /// Returns the confirmation process message the sender expects (the
+    /// request itself, as the reference appends the same `pm` to the reply),
+    /// or `None` for message types that are not registry commands — birth and
+    /// death notifications are listener traffic (BW-05-01-03), and a message
+    /// without `IS_MSGTYPE` is a plain discovery query.
+    pub fn handle_command(&mut self, pm: &ProcessMessage) -> Option<ProcessMessage> {
+        if pm.param & process_param::IS_MSGTYPE == 0 {
+            return None;
+        }
+        match pm.param & !process_param::IS_MSGTYPE {
+            process_type::REGISTER => {
+                self.register(pm);
+                Some(pm.clone())
+            }
+            process_type::DEREGISTER => {
+                self.deregister(pm.pid);
+                Some(pm.clone())
+            }
+            _ => None,
+        }
+    }
+}
+
 /// The machine and process state a Machined answers queries from. Built by
 /// the discovery and statistics steps (BW-05-01-02/04); the query path only
 /// needs to serialize it.
@@ -1506,7 +1641,8 @@ pub struct MachinedSnapshot {
     pub version: u8,
     pub platform_info: String,
     pub tags: Vec<String>,
-    pub processes: Vec<ProcessMessage>,
+    /// The process registry; discovery queries read from it.
+    pub registry: MachinedRegistry,
     pub user: UserMessage,
 }
 
@@ -1612,10 +1748,7 @@ pub fn answer_query(
             MachineGuardMessage::User(user)
         }
         MachineGuardMessage::Pid(p) => {
-            let running = snapshot
-                .processes
-                .iter()
-                .any(|process| process.pid == p.pid) as u8;
+            let running = snapshot.registry.is_running(p.pid) as u8;
             MachineGuardMessage::Pid(PidMessage {
                 header: Header {
                     message: message_id::PID,
@@ -1627,13 +1760,26 @@ pub fn answer_query(
             })
         }
         MachineGuardMessage::Process(query) => {
+            // A register/deregister command is not a discovery query; the
+            // registry command path handles it. The reference's Process
+            // handler switches on the msgtype and only the query case falls
+            // through to the match-and-answer behaviour.
+            if query.param & process_param::IS_MSGTYPE != 0 {
+                return MachineGuardMessage::Unknown(UnknownMessage {
+                    header: Header {
+                        message: message_id::PROCESS,
+                        flags: flags::MESSAGE_NOT_UNDERSTOOD,
+                        seq,
+                    },
+                    data: Vec::new(),
+                });
+            }
             // Return the first process matching the query's requested fields.
-            // The full match list is BW-05-01-02; the reference answers one
-            // process per reply for a targeted query.
+            // The reference answers one process per reply for a targeted
+            // query.
             let process = snapshot
-                .processes
-                .iter()
-                .find(|process| process.matches(query))
+                .registry
+                .find(query)
                 .cloned()
                 .unwrap_or_else(ProcessMessage::default);
             let mut reply = process;
@@ -1646,9 +1792,8 @@ pub fn answer_query(
         }
         MachineGuardMessage::ProcessStats(query) => {
             let process = snapshot
-                .processes
-                .iter()
-                .find(|process| process.matches(&query.process))
+                .registry
+                .find(&query.process)
                 .cloned()
                 .unwrap_or_else(ProcessMessage::default);
             let mut process = process;
@@ -2421,11 +2566,11 @@ mod tests {
             version: 1,
             platform_info: "Linux el7".to_string(),
             tags: vec!["dev".to_string()],
-            processes: vec![ProcessMessage {
+            registry: MachinedRegistry::from_processes(vec![ProcessMessage {
                 pid: 11,
                 name: "baseapp01".to_string(),
                 ..ProcessMessage::default()
-            }],
+            }]),
             user: UserMessage::default(),
         };
 
@@ -2513,5 +2658,185 @@ mod tests {
             }
             other => panic!("expected unknown, got {other:?}"),
         }
+    }
+
+    fn base_snapshot() -> MachinedSnapshot {
+        MachinedSnapshot {
+            hostname: "test".to_string(),
+            cpu_speed: 2000,
+            cpu_loads: vec![10],
+            io_wait_time: 0,
+            mem: 50,
+            interfaces: Vec::new(),
+            in_discards: 0,
+            out_discards: 0,
+            version: 1,
+            platform_info: "Linux".to_string(),
+            tags: Vec::new(),
+            registry: MachinedRegistry::new(),
+            user: UserMessage::default(),
+        }
+    }
+
+    /// A register command for a `cellapp01` process on port 50001.
+    fn register_command(pid: u16, port: u16, name: &str) -> ProcessMessage {
+        ProcessMessage {
+            pid,
+            port,
+            id: 1,
+            name: name.to_string(),
+            param: process_param::IS_MSGTYPE | process_type::REGISTER,
+            ..ProcessMessage::default()
+        }
+    }
+
+    /// A discovery query for a process by pid.
+    fn pid_query(pid: u16) -> MachineGuardMessage {
+        MachineGuardMessage::Pid(PidMessage {
+            pid,
+            ..PidMessage::default()
+        })
+    }
+
+    /// A discovery query for a process by name.
+    fn name_query(name: &str) -> MachineGuardMessage {
+        MachineGuardMessage::Process(ProcessMessage {
+            param: process_param::USE_NAME,
+            name: name.to_string(),
+            ..ProcessMessage::default()
+        })
+    }
+
+    /// Registering a process makes an immediately-following discovery query
+    /// report it as running; deregistering makes it disappear again.
+    #[test]
+    fn register_and_deregister_reflect_immediately_in_discovery() {
+        let mut snapshot = base_snapshot();
+        let cmd = register_command(101, 50001, "cellapp01");
+
+        let confirmation = snapshot.registry.handle_command(&cmd).expect("confirm");
+        assert_eq!(confirmation.pid, 101);
+        assert_eq!(confirmation.param, cmd.param);
+
+        let running = answer_query(&snapshot, &pid_query(101));
+        let MachineGuardMessage::Pid(pid) = running else {
+            panic!("expected pid reply");
+        };
+        assert_eq!(pid.running, 1);
+
+        let found = answer_query(&snapshot, &name_query("cellapp01"));
+        let MachineGuardMessage::Process(found) = found else {
+            panic!("expected process reply");
+        };
+        assert_eq!(found.pid, 101);
+
+        // The same query before registration would have missed; the registry
+        // also reports the process count.
+        assert_eq!(snapshot.registry.len(), 1);
+
+        let dereg = ProcessMessage {
+            pid: 101,
+            param: process_param::IS_MSGTYPE | process_type::DEREGISTER,
+            ..ProcessMessage::default()
+        };
+        snapshot.registry.handle_command(&dereg).expect("confirm");
+
+        let gone = answer_query(&snapshot, &pid_query(101));
+        let MachineGuardMessage::Pid(pid) = gone else {
+            panic!("expected pid reply");
+        };
+        assert_eq!(pid.running, 0);
+        assert!(snapshot.registry.is_empty());
+    }
+
+    /// A discovery query for a never-registered pid reports not-running.
+    #[test]
+    fn discovery_misses_absent_processes() {
+        let snapshot = base_snapshot();
+        let running = answer_query(&snapshot, &pid_query(999));
+        let MachineGuardMessage::Pid(pid) = running else {
+            panic!("expected pid reply");
+        };
+        assert_eq!(pid.running, 0);
+    }
+
+    /// Re-registering the same pid/category/name reuses the slot instead of
+    /// appending a duplicate.
+    #[test]
+    fn register_reuses_slot_for_same_pid_category_name() {
+        let mut registry = MachinedRegistry::new();
+        let first = register_command(7, 100, "baseapp01");
+        assert_eq!(registry.register(&first), RegisterOutcome::Registered);
+
+        let mut second = first.clone();
+        second.port = 200;
+        assert_eq!(registry.register(&second), RegisterOutcome::ReRegistered);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.processes()[0].port, 200);
+    }
+
+    /// A new process claiming an already-used port displaces the old owner.
+    #[test]
+    fn register_displaces_port_clash() {
+        let mut registry = MachinedRegistry::new();
+        let old = register_command(1, 6000, "baseapp01");
+        registry.register(&old);
+        let new = register_command(2, 6000, "cellapp01");
+        registry.register(&new);
+
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.processes()[0].pid, 2);
+        assert!(!registry.is_running(1));
+    }
+
+    /// Deregistering an unknown pid is reported as not found and leaves the
+    /// registry unchanged.
+    #[test]
+    fn deregister_unknown_pid_reports_not_found() {
+        let mut registry = MachinedRegistry::new();
+        registry.register(&register_command(1, 6000, "baseapp01"));
+        assert_eq!(registry.deregister(999), DeregisterOutcome::NotFound);
+        assert_eq!(registry.len(), 1);
+    }
+
+    /// `handle_command` confirms register and deregister with the same
+    /// message, and returns nothing for listener notifications.
+    #[test]
+    fn handle_command_confirms_commands_only() {
+        let mut registry = MachinedRegistry::new();
+        let register = register_command(3, 7000, "dbapp01");
+        let confirmed = registry.handle_command(&register).expect("confirm");
+        let confirmed_bytes = MachineGuardMessage::Process(confirmed)
+            .to_bytes()
+            .expect("write");
+        let register_bytes = MachineGuardMessage::Process(register)
+            .to_bytes()
+            .expect("write");
+        assert_eq!(confirmed_bytes, register_bytes);
+
+        let birth = ProcessMessage {
+            param: process_param::IS_MSGTYPE | process_type::NOTIFY_BIRTH,
+            ..ProcessMessage::default()
+        };
+        assert!(registry.handle_command(&birth).is_none());
+
+        let plain_query = ProcessMessage {
+            param: process_param::USE_PID,
+            ..ProcessMessage::default()
+        };
+        assert!(registry.handle_command(&plain_query).is_none());
+    }
+
+    /// A register/deregister command arriving at the query path is not
+    /// treated as a discovery query; it is rejected as not understood.
+    #[test]
+    fn query_path_rejects_register_command() {
+        let snapshot = base_snapshot();
+        let cmd = register_command(4, 8000, "cellapp01");
+        let reply = answer_query(&snapshot, &MachineGuardMessage::Process(cmd));
+        let MachineGuardMessage::Unknown(unknown) = reply else {
+            panic!("expected unknown reply");
+        };
+        assert_ne!(unknown.header.flags & flags::MESSAGE_NOT_UNDERSTOOD, 0);
     }
 }
