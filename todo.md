@@ -102,8 +102,11 @@
 - [x] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
   - 证据：**执行命令**（官方口径，`TESTING.md` §测试入口）：`cd programming/bigworld/<dir>/unit_test && /game/bin/server/el7/unit_tests/<name>_test --root /home/cui/workspaces/BigWorld`，每模块 `timeout 1800`（make 链同值）。**参编列表 21 模块 21 二进制**（源目录 `lib/{cstdmf,db,entitydef,math,network,physics2,pyscript,resmgr,scene,script,server,terrain,unit_test_lib}` + `server/{baseapp,baseappmgr,cellapp,cellappmgr,dbapp,dbappmgr,loginapp,reviver}`）。**结果 21/21 rc=0，参编用例合计 1540，0 失败**；逐模块：cstdmf 452（0.958s）、entitydef 387、network 256（**274s**）、pyscript 151、resmgr 88、cellapp 53、math 44、physics2 44、db 11、terrain 8、scene 5、server 5、script 18、baseapp 17、unit_test_lib 1；**6 模块登记 0 用例**（baseappmgr、cellappmgr、dbapp、dbappmgr、loginapp、reviver——空注册表，`0 tests run`/rc=0，门禁按 21 模块计数但实注册仅 15）；逐行结果落 `crates/test-support/cases/el7-unit-tests-run.txt`。**环境前置**：`net.core.rmem_max=16777216`、`wmem_max/wmem_default=1048576` 已达标（TESTING.md 记载回落 4MB 则 network_test 报 "Insufficient recv buffer"）；CPython 3.13 标准库已在 `game/bin/server/el7/third_party/python/lib/python3.13/`（os.py 在，153 个 .py）。**口径校验**：复跑期间主仓官方门禁循环（`STATUS=0 … timeout 1800 $bin_path --root …`）并发同跑，两者同 21 模块同 cwd 规则；network_test 首次 600s 上限被并发抢占 rc=124，单跑 274s 通过。
 - [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
+  （依赖运行时集群拓扑配置未就绪：原版树 `programming/fantasydemo/res/server/bw.xml` 仅 19 行占位（personality/archivePeriod/billingSystem 三节，脚本注释自述 `bigworld/res/server/development_defaults.xml` 不在本仓），无 machinedgroups/进程清单；冒烟已留存——`bwmachined2 -f` 输出仅 "Not running as daemon"、20s 内 rc=124 超时且**未派生任何子进程**（日志 `/tmp/el7-test-log/bwmachined-smoke.log`）。随 BW-05（集群控制、进程发现和恢复）立项时按 BIGWORLD_RES_PATH 自组拓扑解锁。）
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
+  （依赖 BW-00-02-03 集群基线未建：最小客户端 `game/bin/server/el7/examples/simple_python_client` 已构建且哈希在清单，但登录序列需先有运行中的 baseapp/loginapp 集群，同因未就绪。随 BW-05/BW-06 立项解锁。）
 - [ ] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。
+  （依赖 Windows 侧不可执行：本席位为 Linux 主机，原版 Windows 服务器构建需 VS 18 2026 + `DXSDK_DIR`（D3DX 9.29.952.8），客户端/导出器族需 Max/Maya 插件宿主（`BWConfiguration_exporters.cmake` 按 FMOD/SPEEDTREE/UMBRA 门控），均无法在本机复跑；可静态侧见 BW-00-01-02（平台与启用宏已登记）。随 BW-15（原生支持）立项补测。）
 
 #### BW-00-03 Boundless 构建入口
 
@@ -114,6 +117,7 @@
 - [ ] **BW-00-03-02 固定 Rust、Python 工具链与依赖**。**验收** 本地与 CI 解析同一版本。
   （Rust 侧已固定：`rust-toolchain.toml` channel=1.100.0（含 BW-00-03-02 指向注释）、`Cargo.lock` 17 包入库；CI 侧依赖 BW-22 席位 `.github/workflows` 未建，rustup 读同一 toolchain 文件后同源解析——依赖 BW-22 立项解锁；Python 工具链随 BW-03 席位。）
 - [ ] **BW-00-03-03 配置 Python 模块构建与导入**。**验收** 安装后能导入最小模块。
+  （依赖 python/ 模块目录与 python-host crate 未建：本席位 `crates/python-host` 已有嵌入面（output_writer/interpreter 等）但无对外发布模块包；`python/` 模块树与 `make python_install` 同构的安装规则归 BW-03 席位（原版对照：`third_party/python_modules/` 打包 pip 依赖 + `build/make/third_party_python.mak` sentinel 幂等安装）。随 BW-03 立项解锁。）
 - [x] **BW-00-03-04 分离资源、配置、原版产物和测试路径**。**验收** 同机两套环境互不覆盖。
   - 证据：**测试路径**——一切测试写入收拢到 `std::env::temp_dir()/boundless-test/`（`crates/test-support/src/workspace.rs:13` `BASE_DIRECTORY`，其下 `runs/<pid>/` 为 `RunRoot`（`allocation.rs:29-34`，进程号隔离、Drop 清理），`ConfigFixture` 建唯一命名配置根（`workspace.rs:15` `NEXT_ID` 原子递增），保留的失败目录自带属主测试名——同机并发两套测试环境互不覆盖。**资源/配置**——运行面 `apps/server`（Cargo.toml+src），仓内无测试直接写入的配置路径。**原版产物**——对照源在独立检出 `/home/cui/workspaces/BigWorld`，本仓代码与构建零路径引用（`grep -rn workspaces/BigWorld --include=*.rs --include=*.toml` 仅 todo.md 台账证据行命中，属文档）；其 `game/` 产物树与 `build/el7` 对象树不进本仓。**构建路径**——本仓为 git worktree（boundless 与 boundless6 并存），各自 `target/`（CACHEDIR.TAG/debug/test-results/llvm-cov-target），互不共享。
 - [x] **BW-00-03-05 提供最小启动与关闭入口**。**验收** 进程退出且留存启动日志。
