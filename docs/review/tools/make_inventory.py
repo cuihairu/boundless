@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -149,12 +150,27 @@ def build(root: Path) -> list[dict]:
     return records
 
 
+def default_reference_root() -> str:
+    """The reference tree, environment-declared like ``ci/parity.sh``.
+
+    ``CI_PARITY_REFERENCE`` / ``BW_REFERENCE`` name a tree root (the same
+    variables parity.sh reads); the home-relative checkout is the last
+    resort. No single machine's absolute path is baked in (BW-00-03-04):
+    each environment points at its own copy of the original artifacts, so
+    two environments never resolve one another's tree.
+    """
+    override = os.environ.get("CI_PARITY_REFERENCE") or os.environ.get("BW_REFERENCE")
+    tree = Path(override) if override else Path.home() / "workspaces" / "BigWorld"
+    return str(tree / "programming")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--root",
-        default="/home/cui/workspaces/BigWorld/programming",
-        help="the reference programming/ tree",
+        default=default_reference_root(),
+        help="the reference programming/ tree (default: the BW_REFERENCE / "
+        "CI_PARITY_REFERENCE tree, or ~/workspaces/BigWorld)",
     )
     ap.add_argument("--json", default="", help="optional JSON output path")
     args = ap.parse_args()
