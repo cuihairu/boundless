@@ -18,6 +18,12 @@ pub mod socket;
 #[cfg(unix)]
 pub mod process;
 
+/// Path casing, encoding and system directories (BW-15-01-06). Unix
+/// only: `$HOME`/`$TMPDIR`/`realpath`; Windows `%USERPROFILE%`/
+/// `%TEMP%`/`GetFullPathNameW` is a separate BW-15-03 item.
+#[cfg(unix)]
+pub mod path;
+
 /// `epoll` primitives for the Mercury event poller. Linux only: the
 /// reference compiles `EPoller` only when `HAS_EPOLL` is defined
 /// (`__linux__ && !EMSCRIPTEN`).
