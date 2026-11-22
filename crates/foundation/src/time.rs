@@ -1,9 +1,9 @@
 //! BW-01-01-02 game time and monotonic timestamps.
+//!
+//! Number of game ticks per second is a configured value of the running
+//! server; this module only carries the time primitives.
 
 use crate::ids::GameTime;
-
-/// Number of game ticks per second is a configured value of the running
-/// server; this module only carries the time primitives.
 
 /// Monotonic clock timestamp used for ordering and for the event timers.
 ///
