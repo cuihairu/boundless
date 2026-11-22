@@ -55,8 +55,30 @@
 //! order per domain, typed by the property's initial value — `i64`/`f64`
 //! little-endian, a `BW::string` packed-int length plus bytes, one bool byte,
 //! three `f32` little-endian.
+//!
+//! # BW-07-01-04 销毁驻留实体并归还 ID
+//!
+//! `Base::destroy(deleteFromDB, writeToDB, logOffFromDB)` (`base.cpp`)
+//! destroys a base and returns its id:
+//!
+//! 1. an already-destroyed base (`isDestroyed_`) or a re-entrant destroy
+//!    (`inDestroy_`) returns immediately — the acceptance, a repeated destroy
+//!    is a no-op and never recycles the id again;
+//! 2. `inDestroy_` is set, the script `onDestroy` is called and the
+//!    keep-alive timer is cancelled (not modelled yet);
+//! 3. a base that has written to the database (`hasWrittenToDB()` =
+//!    `databaseID_ != 0`) writes the flags back — `WRITE_LOG_OFF` when logging
+//!    off, plus `WRITE_DELETE_FROM_DB` when deleting, or `WRITE_BASE_CELL_DATA`
+//!    when only writing;
+//! 4. the global bases are told (`onBaseDestroyed`) and `discard` removes the
+//!    base, returns the id via `putUsedID` (a no-op while recycling is off, but
+//!    the call is recorded here) and clears the entity.
+//!
+//! The script path (`py_destroy`) passes `writeToDB = hasWrittenToDB()` and the
+//! default `logOffFromDB = true`.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use crate::baseappmgr::Addr;
@@ -264,6 +286,10 @@ pub struct BaseEntity {
     pub db_id: DatabaseId,
     /// Whether this is a proxy.
     pub is_proxy: bool,
+    /// `isDestroyed_`: set by `discard`.
+    pub destroyed: bool,
+    /// `inDestroy_`: set for the duration of a destroy.
+    pub in_destroy: bool,
     /// The assigned base properties.
     pub base_props: HashMap<String, PropValue>,
     /// The cell data (defaults plus the cell properties).
@@ -436,6 +462,49 @@ pub struct Uncheckout {
     pub entity_id: EntityId,
 }
 
+/// The `WriteDBFlag` values (`lib/server/writedb.hpp`).
+pub mod write_db {
+    /// `WRITE_LOG_OFF`.
+    pub const LOG_OFF: u16 = 1;
+    /// `WRITE_BASE_DATA`.
+    pub const BASE_DATA: u16 = 4;
+    /// `WRITE_CELL_DATA`.
+    pub const CELL_DATA: u16 = 8;
+    /// `WRITE_BASE_CELL_DATA`.
+    pub const BASE_CELL_DATA: u16 = BASE_DATA | CELL_DATA;
+    /// `WRITE_DELETE_FROM_DB`.
+    pub const DELETE_FROM_DB: u16 = 16;
+}
+
+/// A `writeToDB` issued by a destroy (`Base::destroy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteDbEvent {
+    /// The entity id.
+    pub entity_id: EntityId,
+    /// The `WriteDBFlags`.
+    pub flags: u16,
+}
+
+/// The outcome of [`EntityCreator::destroy_base`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DestroyOutcome {
+    /// The base was destroyed and its id returned once.
+    Destroyed {
+        /// The destroyed entity's id.
+        id: EntityId,
+    },
+    /// The base was already destroyed or is mid-destroy; a no-op.
+    AlreadyDestroyed {
+        /// The entity's id.
+        id: EntityId,
+    },
+    /// No base with this id is alive.
+    NotFound {
+        /// The entity's id.
+        id: EntityId,
+    },
+}
+
 /// A pending `createBaseFromDB` request (`LoadEntityHandler`'s state).
 #[derive(Clone, Debug)]
 struct PendingLoad {
@@ -454,6 +523,11 @@ pub struct EntityCreator {
     pending_loads: HashMap<LoadRequestId, PendingLoad>,
     next_load_id: LoadRequestId,
     uncheckouts: Vec<Uncheckout>,
+    destroyed_ids: HashSet<EntityId>,
+    destroy_calls: Vec<EntityId>,
+    base_destroyed_calls: Vec<EntityId>,
+    write_db: Vec<WriteDbEvent>,
+    returned_ids: Vec<EntityId>,
 }
 
 /// The `createBase` script arguments: the type name and the init values.
@@ -469,6 +543,11 @@ impl EntityCreator {
             pending_loads: HashMap::new(),
             next_load_id: 0,
             uncheckouts: Vec::new(),
+            destroyed_ids: HashSet::new(),
+            destroy_calls: Vec::new(),
+            base_destroyed_calls: Vec::new(),
+            write_db: Vec::new(),
+            returned_ids: Vec::new(),
         }
     }
 
@@ -571,6 +650,8 @@ impl EntityCreator {
             type_name: type_name.to_string(),
             db_id: 0,
             is_proxy,
+            destroyed: false,
+            in_destroy: false,
             base_props: HashMap::new(),
             cell_props: HashMap::new(),
             callbacks: Vec::new(),
@@ -764,6 +845,8 @@ impl EntityCreator {
             type_name: type_name.to_string(),
             db_id,
             is_proxy: false,
+            destroyed: false,
+            in_destroy: false,
             base_props,
             cell_props,
             callbacks: Vec::new(),
@@ -777,6 +860,91 @@ impl EntityCreator {
             .push(BaseCallback::Initialised { entity_id });
         self.bases.insert(entity_id, entity.clone());
         Ok(entity)
+    }
+
+    /// `Base::destroy`: run the destroy sequence and return the id once.
+    ///
+    /// The order matches `base.cpp`: an already-destroyed base (or a
+    /// re-entrant destroy) is a no-op; the script `onDestroy` runs; a base
+    /// that has written to the database writes the flags back; the global
+    /// bases are told; `discard` removes the base and returns the id via
+    /// `putUsedID` (recorded here so the single return is observable).
+    ///
+    /// A repeated destroy returns [`DestroyOutcome::AlreadyDestroyed`] without
+    /// returning the id again — the acceptance: 重复销毁不造成重复回收.
+    pub fn destroy_base(
+        &mut self,
+        entity_id: EntityId,
+        delete_from_db: bool,
+        write_to_db: bool,
+        log_off_from_db: bool,
+    ) -> DestroyOutcome {
+        if self.destroyed_ids.contains(&entity_id) {
+            return DestroyOutcome::AlreadyDestroyed { id: entity_id };
+        }
+        let (in_destroy, db_id) = match self.bases.get(&entity_id) {
+            Some(base) => (base.in_destroy, base.db_id),
+            None => return DestroyOutcome::NotFound { id: entity_id },
+        };
+        if in_destroy {
+            return DestroyOutcome::AlreadyDestroyed { id: entity_id };
+        }
+        self.bases.get_mut(&entity_id).unwrap().in_destroy = true;
+
+        // `Script::call(onDestroy)`.
+        self.destroy_calls.push(entity_id);
+
+        // `hasWrittenToDB()`: write the flags back to the database.
+        if db_id != 0 {
+            let mut flags = 0u16;
+            if log_off_from_db {
+                flags |= write_db::LOG_OFF;
+            }
+            if delete_from_db {
+                flags |= write_db::DELETE_FROM_DB;
+            } else if write_to_db {
+                flags |= write_db::BASE_CELL_DATA;
+            }
+            self.write_db.push(WriteDbEvent { entity_id, flags });
+        }
+
+        // `pGlobalBases()->onBaseDestroyed`.
+        self.base_destroyed_calls.push(entity_id);
+
+        // `discard`: remove the base and return the id.
+        let mut base = self.bases.remove(&entity_id).unwrap();
+        base.destroyed = true;
+        base.in_destroy = false;
+        self.id_pool.put_used_id(entity_id);
+        self.returned_ids.push(entity_id);
+        self.destroyed_ids.insert(entity_id);
+
+        DestroyOutcome::Destroyed { id: entity_id }
+    }
+
+    /// The ids returned by `putUsedID` during destroys, in order.
+    pub fn returned_ids(&self) -> &[EntityId] {
+        &self.returned_ids
+    }
+
+    /// The `writeToDB` events issued by destroys, in order.
+    pub fn write_db_events(&self) -> &[WriteDbEvent] {
+        &self.write_db
+    }
+
+    /// The `onDestroy` script calls, in order.
+    pub fn destroy_calls(&self) -> &[EntityId] {
+        &self.destroy_calls
+    }
+
+    /// The `onBaseDestroyed` global-base notifications, in order.
+    pub fn base_destroyed_calls(&self) -> &[EntityId] {
+        &self.base_destroyed_calls
+    }
+
+    /// Whether a base has been destroyed.
+    pub fn is_destroyed(&self, entity_id: EntityId) -> bool {
+        self.destroyed_ids.contains(&entity_id)
     }
 }
 
@@ -1280,5 +1448,133 @@ mod tests {
         let mut creator = EntityCreator::new(IdPool::new(5, 10, 50, 100));
         creator.add_type(player_type());
         assert_eq!(creator.on_load_reply(0, LoadReply::Exception), None);
+    }
+
+    // ---- BW-07-01-04 销毁驻留实体并归还 ID ----
+
+    #[test]
+    fn destroying_a_base_returns_its_id_once_and_repeated_destroy_is_a_noop() {
+        let mut creator = creator_with_one_id(60);
+        let base = creator
+            .create_base_locally("Player", CreateArgs::new())
+            .unwrap();
+        assert_eq!(base.id, 60);
+        assert!(!base.destroyed);
+        assert!(!base.in_destroy);
+        assert!(creator.bases().contains_key(&60));
+
+        let outcome = creator.destroy_base(60, false, true, true);
+        assert_eq!(outcome, DestroyOutcome::Destroyed { id: 60 });
+        assert_eq!(creator.returned_ids(), &[60]);
+        assert!(creator.is_destroyed(60));
+        assert!(!creator.bases().contains_key(&60));
+
+        // A repeated destroy is a no-op: the id is not returned again and no
+        // second callback runs.
+        let outcome = creator.destroy_base(60, false, true, true);
+        assert_eq!(outcome, DestroyOutcome::AlreadyDestroyed { id: 60 });
+        assert_eq!(creator.returned_ids(), &[60]);
+        assert_eq!(creator.destroy_calls().len(), 1);
+        assert_eq!(creator.base_destroyed_calls().len(), 1);
+    }
+
+    #[test]
+    fn destroying_a_persisted_base_writes_the_log_off_and_data_flags() {
+        let mut creator = creator_with_one_id(70);
+        let request = creator.create_base_from_db("Player", 42).unwrap();
+        let stream = player_stream("alice", [1.0, 2.0, 3.0], 120);
+        let callback = creator
+            .on_load_reply(request, LoadReply::Found { db_id: 42, stream })
+            .unwrap();
+        assert_eq!(callback.entity().unwrap().id, 70);
+
+        // `py_destroy`: writeToDB = hasWrittenToDB() = true, logOffFromDB =
+        // true, deleteFromDB = false.
+        let outcome = creator.destroy_base(70, false, true, true);
+        assert_eq!(outcome, DestroyOutcome::Destroyed { id: 70 });
+        assert_eq!(
+            creator.write_db_events(),
+            &[WriteDbEvent {
+                entity_id: 70,
+                flags: write_db::LOG_OFF | write_db::BASE_CELL_DATA,
+            }]
+        );
+    }
+
+    #[test]
+    fn destroying_with_delete_from_db_writes_the_delete_flag() {
+        let mut creator = creator_with_one_id(71);
+        let request = creator.create_base_from_db("Player", 42).unwrap();
+        let stream = player_stream("bob", [0.0; 3], 50);
+        creator
+            .on_load_reply(request, LoadReply::Found { db_id: 42, stream })
+            .unwrap();
+
+        let outcome = creator.destroy_base(71, true, true, true);
+        assert_eq!(outcome, DestroyOutcome::Destroyed { id: 71 });
+        assert_eq!(
+            creator.write_db_events(),
+            &[WriteDbEvent {
+                entity_id: 71,
+                flags: write_db::LOG_OFF | write_db::DELETE_FROM_DB,
+            }]
+        );
+    }
+
+    #[test]
+    fn destroying_a_local_base_writes_nothing_to_the_database() {
+        let mut creator = creator_with_one_id(72);
+        creator
+            .create_base_locally("Player", CreateArgs::new())
+            .unwrap();
+        // The local base has no database id, so `hasWrittenToDB()` is false
+        // and nothing is written even when `write_to_db` is true.
+        assert_eq!(
+            creator.destroy_base(72, false, true, true),
+            DestroyOutcome::Destroyed { id: 72 }
+        );
+        assert!(creator.write_db_events().is_empty());
+    }
+
+    #[test]
+    fn destroying_an_unknown_id_is_not_found() {
+        let mut creator = creator_with_one_id(73);
+        assert_eq!(
+            creator.destroy_base(999, false, true, true),
+            DestroyOutcome::NotFound { id: 999 }
+        );
+        assert!(creator.returned_ids().is_empty());
+        assert!(creator.destroy_calls().is_empty());
+        assert!(creator.write_db_events().is_empty());
+    }
+
+    #[test]
+    fn destroy_records_the_callbacks_in_order() {
+        let mut creator = EntityCreator::new({
+            let mut pool = IdPool::new(5, 10, 50, 100);
+            pool.refill(&[80, 81]);
+            pool
+        });
+        creator.add_type(player_type());
+        creator
+            .create_base_locally("Player", CreateArgs::new())
+            .unwrap();
+        creator
+            .create_base_locally("Player", CreateArgs::new())
+            .unwrap();
+
+        assert_eq!(
+            creator.destroy_base(80, false, true, true),
+            DestroyOutcome::Destroyed { id: 80 }
+        );
+        assert_eq!(
+            creator.destroy_base(81, false, true, true),
+            DestroyOutcome::Destroyed { id: 81 }
+        );
+
+        assert_eq!(creator.destroy_calls(), &[80, 81]);
+        assert_eq!(creator.base_destroyed_calls(), &[80, 81]);
+        assert_eq!(creator.returned_ids(), &[80, 81]);
+        assert!(creator.bases().is_empty());
     }
 }
