@@ -514,4 +514,77 @@ mod tests {
         s.write_bytes(b"ab").write_bytes(&[0x00, 0xFF]);
         assert_eq!(s.as_bytes(), b"ab\x00\xff");
     }
+
+    /// The BW-01-02-01 acceptance: the port reproduces the reference's exact
+    /// bytes for every fixed-width primitive, and reads them back — the
+    /// original fixtures round-trip byte for byte.
+    ///
+    /// The expected bytes are derived by hand from the reference's own wire
+    /// format (`lib/cstdmf/binary_stream.ipp`): the network order is
+    /// little-endian (`BW_HTON*` are identity on a little-endian host, so
+    /// every value is written as-is on x86-64), a byte/bool is one raw byte,
+    /// an integer is its two's-complement little-endian form, and a
+    /// float/double is its IEEE-754 bit pattern in little-endian order
+    /// (`bw_netlong`/`bw_netlonglong`).
+    #[test]
+    fn reproduces_the_reference_fixed_width_bytes() {
+        let mut s = BinaryStream::new();
+        s.write_u8(0xAB);
+        s.write_i8(-7);
+        s.write_bool(true);
+        s.write_bool(false);
+        s.write_u16(0x1234);
+        s.write_i16(-1234);
+        s.write_u32(0x0102_0304);
+        s.write_i32(-1_000_000);
+        s.write_u64(0x0102_0304_0506_0708);
+        s.write_i64(-9_000_000_000);
+        s.write_f32(-1.5);
+        s.write_f32(1.0);
+        s.write_f64(-2.75);
+        s.write_f64(2.75);
+
+        assert_eq!(
+            s.as_bytes(),
+            &[
+                0xAB, // u8 0xAB
+                0xF9, // i8 -7
+                0x01, // bool true
+                0x00, // bool false
+                0x34, 0x12, // u16 0x1234
+                0x2E, 0xFB, // i16 -1234
+                0x04, 0x03, 0x02, 0x01, // u32 0x01020304
+                0xC0, 0xBD, 0xF0, 0xFF, // i32 -1_000_000
+                0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // u64 0x0102030405060708
+                0x00, 0xE6, 0x8E, 0xE7, 0xFD, 0xFF, 0xFF, 0xFF, // i64 -9_000_000_000
+                0x00, 0x00, 0xC0, 0xBF, // f32 -1.5
+                0x00, 0x00, 0x80, 0x3F, // f32 1.0
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0xC0, // f64 -2.75
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x40, // f64 2.75
+            ]
+        );
+        // The reference's sizeof per primitive, in stream order.
+        assert_eq!(
+            s.length(),
+            1 + 1 + 1 + 1 + 2 + 2 + 4 + 4 + 8 + 8 + 4 + 4 + 8 + 8
+        );
+
+        // Reading those same bytes back reproduces every value.
+        s.rewind();
+        assert_eq!(s.read_u8(), Ok(0xAB));
+        assert_eq!(s.read_i8(), Ok(-7));
+        assert_eq!(s.read_bool(), Ok(true));
+        assert_eq!(s.read_bool(), Ok(false));
+        assert_eq!(s.read_u16(), Ok(0x1234));
+        assert_eq!(s.read_i16(), Ok(-1234));
+        assert_eq!(s.read_u32(), Ok(0x0102_0304));
+        assert_eq!(s.read_i32(), Ok(-1_000_000));
+        assert_eq!(s.read_u64(), Ok(0x0102_0304_0506_0708));
+        assert_eq!(s.read_i64(), Ok(-9_000_000_000));
+        assert_eq!(s.read_f32(), Ok(-1.5));
+        assert_eq!(s.read_f32(), Ok(1.0));
+        assert_eq!(s.read_f64(), Ok(-2.75));
+        assert_eq!(s.read_f64(), Ok(2.75));
+        assert!(s.at_end());
+    }
 }
