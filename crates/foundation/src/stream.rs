@@ -515,3 +515,101 @@ mod tests {
         assert_eq!(s.as_bytes(), b"ab\x00\xff");
     }
 }
+
+/// Byte-exact fixtures captured from the reference cstdmf streams
+/// (`lib/cstdmf/binary_stream.hpp`, `memory_stream.hpp`, `blob_or_null.hpp`
+/// compiled against the original tree). Every record below is the exact byte
+/// sequence the original wrote, so a divergence in layout fails here first.
+#[cfg(test)]
+mod original_fixtures {
+    use super::*;
+
+    fn decode_hex(hex: &str) -> Vec<u8> {
+        assert_eq!(hex.len() % 2, 0, "odd hex length: {hex}");
+        hex.as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    // --- BW-01-02-01: fixed-width integers and floats -----------------------
+
+    /// One record per original value, mirroring the harness that produced it:
+    /// each value went into its own stream, so each is checked in its own.
+    #[test]
+    fn fixed_width_matches_original_bytes() {
+        let mut s = BinaryStream::new();
+        s.write_u8(0x7f);
+        assert_eq!(s.as_bytes(), decode_hex("7f").as_slice());
+        s.rewind();
+        assert_eq!(s.read_u8(), Ok(0x7f));
+
+        let mut s = BinaryStream::new();
+        s.write_i8(-128);
+        assert_eq!(s.as_bytes(), decode_hex("80").as_slice());
+        s.rewind();
+        assert_eq!(s.read_i8(), Ok(-128));
+
+        let mut s = BinaryStream::new();
+        s.write_u16(0x1234);
+        assert_eq!(s.as_bytes(), decode_hex("3412").as_slice());
+        s.rewind();
+        assert_eq!(s.read_u16(), Ok(0x1234));
+
+        let mut s = BinaryStream::new();
+        s.write_i16(-12345);
+        assert_eq!(s.as_bytes(), decode_hex("c7cf").as_slice());
+        s.rewind();
+        assert_eq!(s.read_i16(), Ok(-12345));
+
+        let mut s = BinaryStream::new();
+        s.write_u32(0xdead_beef);
+        assert_eq!(s.as_bytes(), decode_hex("efbeadde").as_slice());
+        s.rewind();
+        assert_eq!(s.read_u32(), Ok(0xdead_beef));
+
+        let mut s = BinaryStream::new();
+        s.write_i32(-123_456_789);
+        assert_eq!(s.as_bytes(), decode_hex("eb32a4f8").as_slice());
+        s.rewind();
+        assert_eq!(s.read_i32(), Ok(-123_456_789));
+
+        let mut s = BinaryStream::new();
+        s.write_u64(0x0123_4567_89ab_cdef);
+        assert_eq!(s.as_bytes(), decode_hex("efcdab8967452301").as_slice());
+        s.rewind();
+        assert_eq!(s.read_u64(), Ok(0x0123_4567_89ab_cdef));
+
+        let mut s = BinaryStream::new();
+        s.write_i64(-1);
+        assert_eq!(s.as_bytes(), decode_hex("ffffffffffffffff").as_slice());
+        s.rewind();
+        assert_eq!(s.read_i64(), Ok(-1));
+
+        let mut s = BinaryStream::new();
+        s.write_f32(3.5);
+        assert_eq!(s.as_bytes(), decode_hex("00006040").as_slice());
+        s.rewind();
+        assert_eq!(s.read_f32(), Ok(3.5));
+
+        let mut s = BinaryStream::new();
+        // The original fixture wrote 2.718281828459045, which is exactly
+        // `f64::consts::E` at binary64 precision (bytes checked below).
+        s.write_f64(std::f64::consts::E);
+        assert_eq!(s.as_bytes(), decode_hex("6957148b0abf0540").as_slice());
+        s.rewind();
+        assert_eq!(s.read_f64(), Ok(std::f64::consts::E));
+    }
+
+    #[test]
+    fn bool_is_one_byte_per_value() {
+        let mut s = BinaryStream::new();
+        s.write_bool(true);
+        s.write_bool(false);
+        assert_eq!(s.as_bytes(), decode_hex("0100").as_slice());
+
+        s.rewind();
+        assert_eq!(s.read_bool(), Ok(true));
+        assert_eq!(s.read_bool(), Ok(false));
+    }
+}
