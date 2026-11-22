@@ -61,16 +61,64 @@ impl Authorization {
     }
 }
 
+/// Why a query was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryError {
+    /// The caller was not granted access to the target.
+    AccessDenied,
+    /// No such target is registered.
+    UnknownTarget,
+}
+
+/// What a query returns: the target's identity, when it was collected, and
+/// its structured statistics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryResult {
+    /// The queried target's name.
+    pub target: String,
+    /// What kind of target it is.
+    pub kind: TargetKind,
+    /// The process id, when the target is a process.
+    pub pid: Option<u32>,
+    /// When the statistics were collected.
+    pub collected_at: u64,
+    /// The structured statistics, name then value.
+    pub readings: Vec<(String, u64)>,
+}
+
 /// The diagnostic's target registry and its query surface.
-#[derive(Debug, Default)]
 pub struct Diagnostic {
     targets: Vec<DiagnosticTarget>,
+    readings: std::collections::BTreeMap<String, Vec<(String, u64)>>,
+    clock: Box<dyn Fn() -> u64>,
+}
+
+impl Default for Diagnostic {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Diagnostic {
-    /// A diagnostic with no targets.
+    /// A diagnostic with no targets, stamping collection times from the
+    /// wall clock.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_clock(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos() as u64)
+                .unwrap_or(0)
+        })
+    }
+
+    /// A diagnostic whose collection time comes from `clock`, so a test can
+    /// drive when a query was made.
+    pub fn with_clock(clock: impl Fn() -> u64 + 'static) -> Self {
+        Self {
+            targets: Vec::new(),
+            readings: std::collections::BTreeMap::new(),
+            clock: Box::new(clock),
+        }
     }
 
     /// Register a process target.
@@ -93,6 +141,16 @@ impl Diagnostic {
         self
     }
 
+    /// Attach structured statistics to a target, what a query of it returns.
+    pub fn set_readings(&mut self, target: &str, readings: Vec<(&str, u64)>) -> &mut Self {
+        let readings = readings
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect();
+        self.readings.insert(target.to_string(), readings);
+        self
+    }
+
     /// The local diagnostic targets the caller is authorized to see: the
     /// default scope is the local machine, and only granted targets are
     /// listed. Ordered by name so the output is stable.
@@ -104,6 +162,32 @@ impl Diagnostic {
             .collect();
         visible.sort_by(|a, b| a.name.cmp(&b.name));
         visible
+    }
+
+    /// Query a selected process or subsystem. The caller must be authorized;
+    /// the result names the target, when it was collected, and the target's
+    /// statistics.
+    pub fn query(
+        &self,
+        authorization: &Authorization,
+        target: &str,
+    ) -> Result<QueryResult, QueryError> {
+        if !authorization.is_granted(target) {
+            return Err(QueryError::AccessDenied);
+        }
+        let found = self
+            .targets
+            .iter()
+            .find(|registered| registered.name == target)
+            .ok_or(QueryError::UnknownTarget)?;
+        let readings = self.readings.get(target).cloned().unwrap_or_default();
+        Ok(QueryResult {
+            target: found.name.clone(),
+            kind: found.kind,
+            pid: found.pid,
+            collected_at: (self.clock)(),
+            readings,
+        })
     }
 }
 
@@ -161,5 +245,66 @@ mod tests {
         // The unlisted baseapp was never granted.
         assert!(!auth.is_granted("baseapp01"));
         assert!(visible.iter().all(|t| t.name != "baseapp01"));
+    }
+
+    #[test]
+    fn querying_a_target_returns_it_with_its_collection_time() {
+        // A driven clock stamps when the query was made.
+        let mut diagnostic = Diagnostic::with_clock(|| 42);
+        diagnostic.add_process("cellapp01", 100).set_readings(
+            "cellapp01",
+            vec![("rss_bytes", 8_000_000), ("entities", 512)],
+        );
+        let mut auth = Authorization::new();
+        auth.grant("cellapp01");
+
+        let result = diagnostic.query(&auth, "cellapp01").unwrap();
+        assert_eq!(result.target, "cellapp01");
+        assert_eq!(result.kind, TargetKind::Process);
+        assert_eq!(result.pid, Some(100));
+        // The acceptance: the result names the target and when it was collected.
+        assert_eq!(result.collected_at, 42);
+        assert_eq!(
+            result.readings,
+            vec![
+                ("rss_bytes".to_string(), 8_000_000),
+                ("entities".to_string(), 512)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unauthorized_query_is_refused() {
+        let diagnostic = diagnostic();
+        let auth = Authorization::new();
+        assert_eq!(
+            diagnostic.query(&auth, "cellapp01"),
+            Err(QueryError::AccessDenied)
+        );
+    }
+
+    #[test]
+    fn an_unknown_target_is_reported_even_when_granted() {
+        let diagnostic = diagnostic();
+        let mut auth = Authorization::new();
+        auth.grant("missing");
+        assert_eq!(
+            diagnostic.query(&auth, "missing"),
+            Err(QueryError::UnknownTarget)
+        );
+    }
+
+    #[test]
+    fn a_subsystem_query_reports_no_pid_and_no_readings_by_default() {
+        let mut diagnostic = Diagnostic::with_clock(|| 7);
+        diagnostic.add_subsystem("entities");
+        let mut auth = Authorization::new();
+        auth.grant("entities");
+
+        let result = diagnostic.query(&auth, "entities").unwrap();
+        assert_eq!(result.kind, TargetKind::Subsystem);
+        assert_eq!(result.pid, None);
+        assert_eq!(result.collected_at, 7);
+        assert!(result.readings.is_empty());
     }
 }
