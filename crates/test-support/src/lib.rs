@@ -20,6 +20,7 @@ pub mod flamegraph;
 pub mod full_stack;
 pub mod harness;
 pub mod layering;
+pub mod memory_snapshot;
 pub mod multiproc;
 pub mod protocol_fixtures;
 pub mod python_callbacks;
