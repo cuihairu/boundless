@@ -8,6 +8,7 @@
 pub mod allocation;
 pub mod case_registry;
 pub mod channel;
+pub mod client_login;
 pub mod clock;
 pub mod cmake_targets;
 pub mod config_fixture;
