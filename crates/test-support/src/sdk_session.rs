@@ -67,6 +67,64 @@ impl SdkError {
     }
 }
 
+/// One entity's identity.
+pub type EntityId = u64;
+
+/// One space event the SDK dispatches for an entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityEvent {
+    /// The entity was created.
+    Created,
+    /// The entity entered the client's space.
+    Entered,
+    /// The entity left the client's space.
+    Left,
+    /// The entity was destroyed.
+    Destroyed,
+}
+
+/// Why an entity transition was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityError {
+    /// The entity is not created — unknown, or already destroyed.
+    NotCreated,
+    /// The entity already exists.
+    AlreadyExists,
+    /// The entity never entered the space.
+    NotEntered,
+    /// The entity is already in the space.
+    AlreadyEntered,
+}
+
+impl EntityError {
+    /// The error's stable code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            EntityError::NotCreated => "entity-not-created",
+            EntityError::AlreadyExists => "entity-already-exists",
+            EntityError::NotEntered => "entity-not-entered",
+            EntityError::AlreadyEntered => "entity-already-entered",
+        }
+    }
+
+    /// The message a person reads.
+    pub fn message(&self) -> &'static str {
+        match self {
+            EntityError::NotCreated => "the entity is not created",
+            EntityError::AlreadyExists => "the entity already exists",
+            EntityError::NotEntered => "the entity never entered the space",
+            EntityError::AlreadyEntered => "the entity is already in the space",
+        }
+    }
+}
+
+/// One entity the SDK is tracking, and whether it is in the client's space.
+#[derive(Debug, Clone, Copy)]
+struct LiveEntity {
+    /// Whether the entity is in the client's space.
+    entered: bool,
+}
+
 /// One SDK session against one server.
 pub struct SdkSession {
     flavor: ServerFlavor,
@@ -75,6 +133,8 @@ pub struct SdkSession {
     disconnects: usize,
     calls: usize,
     reconnects: usize,
+    entities: std::collections::BTreeMap<EntityId, LiveEntity>,
+    dispatch: Vec<(EntityId, EntityEvent)>,
 }
 
 impl SdkSession {
@@ -87,6 +147,8 @@ impl SdkSession {
             disconnects: 0,
             calls: 0,
             reconnects: 0,
+            entities: std::collections::BTreeMap::new(),
+            dispatch: Vec::new(),
         }
     }
 
@@ -181,6 +243,69 @@ impl SdkSession {
         self.state = SdkState::Connecting;
         self.state = SdkState::Connected;
         self.reconnects += 1;
+        Ok(())
+    }
+
+    /// Record and dispatch one entity event.
+    fn dispatch_event(&mut self, id: EntityId, event: EntityEvent) {
+        self.dispatch.push((id, event));
+    }
+
+    /// The entity's dispatched events, in the order they were dispatched.
+    pub fn lifecycle(&self, id: EntityId) -> Vec<EntityEvent> {
+        self.dispatch
+            .iter()
+            .filter(|(event_id, _)| *event_id == id)
+            .map(|(_, event)| *event)
+            .collect()
+    }
+
+    /// Every dispatched event, every entity, in the order dispatched.
+    pub fn timeline(&self) -> &[(EntityId, EntityEvent)] {
+        &self.dispatch
+    }
+
+    /// Create an entity: the first event of its lifecycle. A live entity is
+    /// not created twice; a destroyed one can be created again.
+    pub fn spawn(&mut self, id: EntityId) -> Result<(), EntityError> {
+        if self.entities.contains_key(&id) {
+            return Err(EntityError::AlreadyExists);
+        }
+        self.entities.insert(id, LiveEntity { entered: false });
+        self.dispatch_event(id, EntityEvent::Created);
+        Ok(())
+    }
+
+    /// The entity enters the client's space: it must exist and not be in
+    /// already.
+    pub fn enter_space(&mut self, id: EntityId) -> Result<(), EntityError> {
+        let entity = self.entities.get_mut(&id).ok_or(EntityError::NotCreated)?;
+        if entity.entered {
+            return Err(EntityError::AlreadyEntered);
+        }
+        entity.entered = true;
+        self.dispatch_event(id, EntityEvent::Entered);
+        Ok(())
+    }
+
+    /// The entity leaves the client's space: it must exist and be in.
+    pub fn leave_space(&mut self, id: EntityId) -> Result<(), EntityError> {
+        let entity = self.entities.get_mut(&id).ok_or(EntityError::NotCreated)?;
+        if !entity.entered {
+            return Err(EntityError::NotEntered);
+        }
+        entity.entered = false;
+        self.dispatch_event(id, EntityEvent::Left);
+        Ok(())
+    }
+
+    /// Destroy an entity: the last event of its lifecycle. The identity is
+    /// freed, so the same id can be created again later.
+    pub fn destroy(&mut self, id: EntityId) -> Result<(), EntityError> {
+        if self.entities.remove(&id).is_none() {
+            return Err(EntityError::NotCreated);
+        }
+        self.dispatch_event(id, EntityEvent::Destroyed);
         Ok(())
     }
 }
@@ -327,5 +452,110 @@ mod tests {
         assert_eq!(error, SdkError::NotConnected);
         assert_eq!(error.code(), "not-connected");
         assert_eq!(session.calls(), 0);
+    }
+
+    #[test]
+    fn an_entity_lifecycle_dispatches_in_order() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        // Created, entered, left, destroyed: the lifecycle in order.
+        assert_eq!(session.spawn(1), Ok(()));
+        assert_eq!(session.enter_space(1), Ok(()));
+        assert_eq!(session.leave_space(1), Ok(()));
+        assert_eq!(session.destroy(1), Ok(()));
+        assert_eq!(
+            session.lifecycle(1),
+            vec![
+                EntityEvent::Created,
+                EntityEvent::Entered,
+                EntityEvent::Left,
+                EntityEvent::Destroyed,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_live_entity_is_not_created_twice() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        assert_eq!(session.spawn(1), Ok(()));
+
+        let error = session.spawn(1).unwrap_err();
+        assert_eq!(error, EntityError::AlreadyExists);
+        assert_eq!(error.code(), "entity-already-exists");
+    }
+
+    #[test]
+    fn a_destroyed_entity_frees_its_identity() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        assert_eq!(session.spawn(1), Ok(()));
+        assert_eq!(session.destroy(1), Ok(()));
+
+        // The identity is freed: the same id can be created again.
+        assert_eq!(session.spawn(1), Ok(()));
+        // And an unknown id is not in the space.
+        assert_eq!(session.enter_space(2), Err(EntityError::NotCreated));
+    }
+
+    #[test]
+    fn entering_needs_a_created_entity() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        // Nothing was created, so nothing can enter.
+        assert_eq!(session.enter_space(1), Err(EntityError::NotCreated));
+        assert_eq!(
+            session.enter_space(1).unwrap_err().code(),
+            "entity-not-created"
+        );
+    }
+
+    #[test]
+    fn leaving_needs_an_entered_entity() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        assert_eq!(session.spawn(1), Ok(()));
+
+        // Created but never entered: leaving is refused.
+        assert_eq!(session.leave_space(1), Err(EntityError::NotEntered));
+        assert_eq!(
+            session.leave_space(1).unwrap_err().code(),
+            "entity-not-entered"
+        );
+
+        // And entering twice is refused too.
+        assert_eq!(session.enter_space(1), Ok(()));
+        assert_eq!(session.enter_space(1), Err(EntityError::AlreadyEntered));
+    }
+
+    #[test]
+    fn destroying_needs_a_created_entity() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        assert_eq!(session.destroy(1), Err(EntityError::NotCreated));
+    }
+
+    #[test]
+    fn the_timeline_keeps_every_entitys_events_in_order() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        // Two entities, interleaved: the timeline is the whole dispatch,
+        // each event in the order it was dispatched.
+        session.spawn(1).unwrap();
+        session.spawn(2).unwrap();
+        session.enter_space(1).unwrap();
+        session.enter_space(2).unwrap();
+        session.destroy(1).unwrap();
+
+        assert_eq!(
+            session.timeline(),
+            &[
+                (1, EntityEvent::Created),
+                (2, EntityEvent::Created),
+                (1, EntityEvent::Entered),
+                (2, EntityEvent::Entered),
+                (1, EntityEvent::Destroyed),
+            ]
+        );
+        assert_eq!(
+            session.lifecycle(2),
+            vec![EntityEvent::Created, EntityEvent::Entered]
+        );
     }
 }
