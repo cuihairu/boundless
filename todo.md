@@ -97,7 +97,7 @@
 
 - [x] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。 证据：`crates/test-support/src/runtime_env.rs` + `src/bin/scan-runtime-env.rs` + `cases/runtime_env.txt`（8 事实：reference-commit、engine-version 14.4.1、bundled-python 3.13、db-backend MySQL、db-schema-version DBAPP_VERSION_LOGON_MAPPING_2、cxx-standard -std=c++23、build-configs、prebuilt-server-binaries none）。原版为源码检出（无预编译服务端二进制），reference-commit 为快照（参考仓库 HEAD 随端口工作移动）。CLI 测试 `tests/runtime_env_cli.rs`。commit 5e0bb8c
 - [ ] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
-- [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
+- [x] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。 证据：`crates/test-support/src/startup_baseline.rs` + `src/bin/scan-startup-baseline.rs` + `cases/startup_baseline.txt`（catalog：reference-commit 快照 8a74479c7877、8 个组件 topology.1-8（baseapp..reviver，全部已编译，含 source-dir/binary/bytes 真实大小 74-227MB）、config 链（res-path=programming/fantasydemo/res、bw.xml、personality=fantasydemo、baseApp.archivePeriod=0、billingSystem、development-defaults-xml=ABSENT 全仓缺失）、12 行启动尝试日志 log.1-12、blocker.standalone-start 命名缺口）+ `cases/startup_baseline/log.txt`（冻结的 baseapp 有界启动尝试日志：res path → bw.xml → bwmachined 接口发现超时 ×2 → 回退绑定 ens18 → watcher 初始化 → 寻找 loggers）。拓扑与配置由 scan-startup-baseline 从参考检出现场重导，日志为冻结工件重放；drift 测试 `rescanning_reference_reproduces_catalog` 校验扫描与提交一致（reference-commit 除外，随端口移动）。CLI 测试 `tests/startup_baseline_cli.rs`（写入 catalog/拒绝非 checkout）。commit e5c456e
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
 - [ ] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。
 
