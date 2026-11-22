@@ -1,5 +1,7 @@
 //! BW-02 transports, message framing and RPC.
 
+/// The block cipher `EncryptionFilter` encrypts a channel with (BW-02-05-02).
+pub mod block_cipher;
 pub mod bundle_dispatch;
 #[cfg(target_os = "linux")]
 pub mod channel_listener;
@@ -8,6 +10,10 @@ pub mod channel_map;
 pub mod circular_array;
 #[cfg(target_os = "linux")]
 pub mod condemned_channels;
+/// The per-channel encryption filter (BW-02-05-02). Linux only, because it
+/// implements `PacketFilter`, whose base methods touch the socket paths.
+#[cfg(target_os = "linux")]
+pub mod encryption_filter;
 pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;
@@ -51,6 +57,10 @@ pub mod reliable_order;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;
+
+/// The session cipher: Blowfish, byte-compatible with the original's
+/// OpenSSL (BW-02-05-02).
+pub mod symmetric_block_cipher;
 
 /// An external interface's recently-dead channel addresses (BW-02-05-01).
 /// Linux only, because the expiry timers arm on the EventDispatcher.

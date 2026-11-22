@@ -417,6 +417,13 @@ impl PacketReceiver {
         self.stats.borrow().clone()
     }
 
+    /// `stats().incCorruptedPackets()`: the filter path counts a packet it
+    /// dropped as corrupted here, exactly as the reference's
+    /// `EncryptionFilter::recv` does (encryption_filter.cpp:155-189).
+    pub(crate) fn inc_corrupted_packets(&self) {
+        self.stats.borrow_mut().num_corrupted_packets_received += 1;
+    }
+
     /// `processPacket` (packet_receiver.cpp:445): the entry point for new
     /// packets, running the filter chain in the reference's fixed order:
     /// a channel's own filter first, then the recently-dead check, then

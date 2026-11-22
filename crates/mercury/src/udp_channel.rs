@@ -534,6 +534,22 @@ impl UdpChannel {
         this.bundle.set_spare_size(spare as u8);
     }
 
+    /// `UDPChannel::setEncryption` (udp_channel.cpp:670): wrap a session
+    /// cipher in an `EncryptionFilter` and install it, or clear the
+    /// channel's filter when given `None` -- the two ends of session
+    /// negotiation (BW-02-05-02).
+    pub fn set_encryption(
+        channel: &ChannelPtr,
+        cipher: Option<Rc<dyn crate::block_cipher::BlockCipher>>,
+    ) {
+        let filter = cipher.map(|cipher| {
+            let filter: Rc<dyn PacketFilter> =
+                crate::encryption_filter::EncryptionFilter::create(cipher);
+            filter
+        });
+        Self::set_p_filter(channel, filter);
+    }
+
     /// `UDPChannel::setRemoteFailed()` (udp_channel.cpp:1792): the far end
     /// is gone. Internal channels cancel their outstanding requests, and
     /// anonymous ones clean themselves up -- no-one else will.
