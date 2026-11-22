@@ -17,6 +17,7 @@ pub mod cluster_query;
 pub mod cmake_targets;
 pub mod config_fixture;
 pub mod cpu_sampler;
+pub mod cross_reference;
 pub mod diagnostic;
 pub mod flamegraph;
 pub mod full_stack;
