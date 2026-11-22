@@ -28,6 +28,7 @@ pub mod full_stack;
 pub mod growth;
 pub mod harness;
 pub mod layering;
+pub mod login_funnel;
 pub mod memory_snapshot;
 pub mod multiproc;
 pub mod process_status;
