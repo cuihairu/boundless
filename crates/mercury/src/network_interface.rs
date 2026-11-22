@@ -5,28 +5,33 @@
 //! the routing seams the receiver draws on.
 //!
 //! The interface owns its child `EventDispatcher`, its `InterfaceTable`,
-//! and the `RequestManager` served as the reply element's handler
-//! (`network_interface.cpp:124-147`), and can finalise that manager on
-//! shutdown. Still not owned here: `registerWithMachined` has no machined
-//! to talk to; the `MF_SERVER` buffer sizing is BW-02-01-04; the channel
-//! map, dead-channel bookkeeping and rate limiter arrive with
-//! BW-02-03 / BW-02-05-04.
+//! the `RequestManager` served as the reply element's handler
+//! (`network_interface.cpp:124-147`), and the channel registry with its
+//! condemned and recently-dead recycling lanes (BW-02-03-02). It can
+//! finalise the manager on shutdown. Still not owned here:
+//! `registerWithMachined` has no machined to talk to; the `MF_SERVER`
+//! buffer sizing is BW-02-01-04; the rate limiter arrives with
+//! BW-02-05-04.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use platform::socket;
 
+use crate::channel_map::ChannelMap;
+use crate::condemned_channels::CondemnedChannels;
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
 use crate::event_dispatcher::EventDispatcher;
 use crate::interface_element::InterfaceElement;
 use crate::interface_table::InterfaceTable;
 use crate::interfaces::InputMessageHandler;
-use crate::misc::Reason;
+use crate::misc::{CHANNEL_ID_NULL, ChannelID, Reason};
 use crate::packet::Packet;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::poller::EventPoller;
+use crate::recently_dead_channels::RecentlyDeadChannels;
 use crate::request_manager::RequestManager;
+use crate::udp_channel::{ChannelTraits, UDPChannel};
 
 /// `Mercury::NetworkInterfaceType` (network_interface.hpp).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,10 +88,24 @@ pub struct NetworkInterface {
     /// Declared before the dispatcher so its drop cancels the request
     /// timers before the dispatcher's queue is inspected.
     request_manager: RefCell<Option<Rc<RequestManager>>>,
+    /// `pChannelMap_` (BW-02-03-02): the registered channels, keyed by
+    /// destination address.
+    channel_map: RefCell<ChannelMap>,
+    /// `pCondemnedChannels_` (BW-02-03-02): the recycling lane for
+    /// condemned channels, with its recurring recycle timer.
+    condemned_channels: Rc<CondemnedChannels>,
+    /// `pRecentlyDeadChannels_` (BW-02-03-02): the addresses of recently
+    /// deregistered external channels, `None` for internal interfaces. The
+    /// reference builds it in `attach` when external; the port builds it in
+    /// the constructor (the attach surface is BW-02-01-05) and documents the
+    /// seam.
+    recently_dead_channels: RefCell<Option<Rc<RecentlyDeadChannels>>>,
     /// `pInterfaceTable_`: the message-id registry this socket serves.
     interface_table: Rc<InterfaceTable>,
     /// `pDispatcher_`: the child dispatcher the request timeouts and the
-    /// reply element's handler are registered on.
+    /// reply element's handler are registered on. Declared after the
+    /// channel collections so their timer handles are cancelled before the
+    /// dispatcher's queue is inspected on drop.
     dispatcher: Rc<EventDispatcher>,
 }
 
@@ -113,6 +132,14 @@ impl NetworkInterface {
             interface_type == InterfaceType::External,
             Rc::clone(&dispatcher),
         ));
+        // The reference defers the recently-dead collection to `attach`
+        // (network_interface.cpp:166-168); the port builds it here because
+        // the main-dispatcher attach surface is BW-02-01-05.
+        let recently_dead_channels = if interface_type == InterfaceType::External {
+            Some(RecentlyDeadChannels::new(&dispatcher))
+        } else {
+            None
+        };
         let interface = NetworkInterface {
             udp_socket: RefCell::new(Endpoint::new()),
             address: RefCell::new(NONE),
@@ -123,6 +150,9 @@ impl NetworkInterface {
             reporter: RefCell::new(None),
             channel_finder: RefCell::new(None),
             request_manager: RefCell::new(Some(Rc::clone(&request_manager))),
+            channel_map: RefCell::new(ChannelMap::new()),
+            condemned_channels: Rc::new(CondemnedChannels::new()),
+            recently_dead_channels: RefCell::new(recently_dead_channels),
             interface_table,
             dispatcher,
         };
@@ -350,18 +380,184 @@ impl NetworkInterface {
         *self.reporter.borrow_mut() = reporter;
     }
 
-    /// `findChannel`, settable until the channel map lands (BW-02-03).
+    /// `registerChannelFinder` (network_interface.cpp:595): the indexed
+    /// channel lookup, consulted before the channel map by
+    /// [`find_channel`](Self::find_channel).
     pub fn set_channel_finder(&self, finder: Option<Rc<ChannelFinder>>) {
         *self.channel_finder.borrow_mut() = finder;
     }
 
-    /// `findChannel(addr)` (network_interface.cpp:636): `None` until the
-    /// channel map exists.
+    /// `findChannel(addr)` (network_interface.cpp:636): a settable finder
+    /// first (the indexed-channel seam), then the registered channel map.
+    /// `createAnonymous` stays false here: the anonymous-creation half is
+    /// [`find_or_create_channel`](Self::find_or_create_channel).
     pub fn find_channel(&self, addr: &Address) -> Option<Rc<dyn ChannelRef>> {
-        self.channel_finder
+        if let Some(channel) = self
+            .channel_finder
             .borrow()
             .as_ref()
             .and_then(|finder| finder(addr))
+        {
+            return Some(channel);
+        }
+        self.channel_map
+            .borrow()
+            .find(addr)
+            .map(|channel| -> Rc<dyn ChannelRef> { channel })
+    }
+
+    /// `findChannel( addr )` restricted to the registered channel map:
+    /// what [`UDPChannel::get`](crate::udp_channel::UDPChannel::get) looks
+    /// up when it claims an existing anonymous channel.
+    pub fn find_channel_owned(&self, addr: &Address) -> Option<Rc<UDPChannel>> {
+        self.channel_map.borrow().find(addr)
+    }
+
+    /// `findChannel( addr, createAnonymous )` with the anonymous-creation
+    /// half (channel_map.cpp:105-142): `createAnonymous` makes a new
+    /// internal channel when none is registered. Only the non-creating arm
+    /// may see an external interface (channel_map.cpp:124).
+    pub fn find_or_create_channel(
+        self: &Rc<Self>,
+        addr: &Address,
+        create_anonymous: bool,
+    ) -> Option<Rc<UDPChannel>> {
+        if !create_anonymous {
+            return self.channel_map.borrow().find(addr);
+        }
+
+        debug_assert!(
+            !self.is_external,
+            "findChannel: cannot create an anonymous channel on an external interface"
+        );
+        if let Some(channel) = self.channel_map.borrow().find(addr) {
+            return Some(channel);
+        }
+        if addr.ip == 0 {
+            return None;
+        }
+
+        let channel = UDPChannel::new(self, *addr, ChannelTraits::Internal, CHANNEL_ID_NULL);
+        channel.set_anonymous(true);
+        eprintln!(
+            "ChannelMap::find: Creating anonymous channel to {}",
+            addr.c_str()
+        );
+        Some(channel)
+    }
+
+    /// `registerChannel` (network_interface.cpp:485): add a channel to the
+    /// map. False when another channel is already registered there.
+    pub fn register_channel(&self, channel: &Rc<UDPChannel>) -> bool {
+        self.channel_map.borrow_mut().add(channel)
+    }
+
+    /// `deregisterChannel` (network_interface.cpp:497): remember the
+    /// address of an external channel as recently dead, then drop it from
+    /// the map.
+    pub fn deregister_channel(&self, channel: &Rc<UDPChannel>) -> bool {
+        if channel.is_external()
+            && let Some(dead) = self.recently_dead_channels.borrow().as_ref()
+        {
+            dead.add(channel.addr());
+        }
+        self.channel_map.borrow_mut().remove(channel)
+    }
+
+    /// `condemnedChannels()` (network_interface.hpp:141).
+    pub fn condemned_channels(&self) -> &Rc<CondemnedChannels> {
+        &self.condemned_channels
+    }
+
+    /// `condemnedChannels().add( channel )` (udp_channel.cpp:412), with the
+    /// now stamp threaded in from this interface's dispatcher clock.
+    pub fn condemned_channels_add(&self, channel: Rc<UDPChannel>) {
+        let now = self.dispatcher().now();
+        self.condemned_channels.add(channel, now);
+    }
+
+    /// `delAnonymousChannel( addr )` (network_interface.cpp:711):
+    /// condemn the anonymous channel to the address, if there is one.
+    pub fn del_anonymous_channel(&self, addr: &Address) {
+        let channel = {
+            // Do not hold the map borrow across `condemn` -- the condemn
+            // path deregisters through this same map.
+            self.channel_map.borrow().find(addr)
+        };
+        let Some(channel) = channel else {
+            eprintln!(
+                "ChannelMap::delAnonymous: Couldn't find channel for address {}",
+                addr.c_str()
+            );
+            return;
+        };
+        if !channel.is_anonymous() {
+            eprintln!(
+                "ChannelMap::delAnonymous: UDPChannel to {} is not anonymous!",
+                addr.c_str()
+            );
+            return;
+        }
+        channel.condemn();
+    }
+
+    /// `destroyOwnedChannels()` (channel_map.cpp:12): destroy every channel
+    /// the interface owns, warning about the registered ones it does not.
+    pub fn destroy_owned_channels(&self) {
+        let (owned, unowned) = {
+            let map = self.channel_map.borrow();
+            (map.owned_channels(), map.unowned_channels())
+        };
+        for channel in &owned {
+            channel.destroy();
+        }
+        for (_addr, channel) in &unowned {
+            eprintln!(
+                "ChannelMap::destroyOwnedChannels: Channel to {} is still registered",
+                channel.c_str()
+            );
+        }
+    }
+
+    /// `deleteFinishedChannels()` (network_interface.cpp:617): recycle the
+    /// condemned channels that are finished. True when none are left.
+    pub fn delete_finished_channels(&self) -> bool {
+        let now = self.dispatcher().now();
+        self.condemned_channels.delete_finished_channels(now)
+    }
+
+    /// `hasUnackedPackets()` (network_interface.cpp:606): any registered or
+    /// condemned channel still has outstanding packets. The once-off sender
+    /// is the BW-02-03-03/04 seam.
+    pub fn has_unacked_packets(&self) -> bool {
+        self.channel_map.borrow().has_unacked_packets()
+            || self.condemned_channels.has_unacked_packets()
+    }
+
+    /// `findCondemnedChannel( channelID )` (network_interface.cpp:585).
+    pub fn find_condemned_channel(&self, channel_id: ChannelID) -> Option<Rc<UDPChannel>> {
+        self.condemned_channels.find(channel_id)
+    }
+
+    /// `isDead( addr )` (network_interface.cpp:531): the address was
+    /// recently deregistered on an external interface.
+    pub fn is_dead(&self, addr: &Address) -> bool {
+        self.recently_dead_channels
+            .borrow()
+            .as_ref()
+            .map(|dead| dead.is_dead(addr))
+            .unwrap_or(false)
+    }
+
+    /// `onAddressDead( addr )` (network_interface.cpp:514): clean up the
+    /// anonymous channel to the dead address. The once-off sender's own
+    /// cleanup is the BW-02-03-03/04 seam.
+    pub fn on_address_dead(&self, addr: &Address) {
+        if let Some(channel) = self.find_channel_owned(addr)
+            && channel.is_anonymous()
+        {
+            channel.set_remote_failed();
+        }
     }
 
     /// `dispatcher().errorReporter()`: the registered reporter, or the
