@@ -27,6 +27,10 @@ pub const RESERVED_FOOTER_SIZE: usize = 27;
 /// Payload budget left after reserving header + worst-case footer.
 pub const MAX_CAPACITY: usize = PACKET_MAX_SIZE - HEADER_SIZE - RESERVED_FOOTER_SIZE;
 
+/// `Packet::MAX_ACKS` (packet.hpp:97): the most ack footers a packet can
+/// carry, the range of the one-byte `AckCount`.
+pub const MAX_ACKS: u8 = u8::MAX;
+
 /// Flags, `packet.hpp`. Unlisted bits are reserved and must stay zero when
 /// writing; readers tolerate anything inside `KNOWN_FLAGS`.
 pub mod flags {
@@ -81,6 +85,7 @@ pub const REPLY_MESSAGE_ID: u8 = 0xFF;
 /// claim. The request tracking fields hold the first request's body
 /// offset and the patch point of the last link written, exactly where the
 /// reference's `firstRequestOffset_`/`pLastRequestOffset_` sit.
+#[derive(Clone)]
 pub struct Packet {
     data: Box<[u8; PACKET_MAX_SIZE]>,
     msg_end_offset: usize,
@@ -97,6 +102,10 @@ pub struct Packet {
     channel_id: i32,
     /// `channelVersion_`.
     channel_version: u32,
+    /// `nAcks_` (packet.hpp: the `AckCount`): how many ack footers this
+    /// packet carries. Set by `writeFlags`/`writeFooter` on the send path,
+    /// read by `processFilteredPacket` on the receive path.
+    n_acks: u8,
     /// `fragBegin_`/`fragEnd_`: the fragment number range, when this
     /// packet is one tail of a multi-packet message.
     frag_begin: u32,
@@ -124,6 +133,7 @@ impl Packet {
             seq: crate::misc::SEQ_NULL,
             channel_id: crate::misc::CHANNEL_ID_NULL,
             channel_version: 0,
+            n_acks: 0,
             frag_begin: crate::misc::SEQ_NULL,
             frag_end: crate::misc::SEQ_NULL,
             is_piggyback: false,
@@ -157,6 +167,14 @@ impl Packet {
     /// footers included. The send path walks this.
     pub fn wire(&self) -> &[u8] {
         &self.data[..self.total_size()]
+    }
+
+    /// The mutable received bytes, so the receive dispatch can strip
+    /// footers and deliver the body. `data()[ .. msgEndOffset_ ]` is flags
+    /// plus body before a strip; after [`Packet::strip_footer_u8`] and
+    /// friends the body shrinks into place.
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.data[..self.msg_end_offset]
     }
 
     /// The whole backing array, for the read the kernel fills and for
@@ -269,6 +287,11 @@ impl Packet {
             .copy_from_slice(&value.to_le_bytes());
     }
 
+    /// `packFooter< int32 >( value )`, for the channel id footer.
+    pub fn pack_footer_i32(&mut self, value: i32) {
+        self.pack_footer_u32(value as u32);
+    }
+
     /// `stripFooter< uint8 >()`: false when the body has no room for it.
     pub fn strip_footer_u8(&mut self) -> Option<u8> {
         if self.msg_end_offset < HEADER_SIZE + 1 {
@@ -332,6 +355,12 @@ impl Packet {
         self.first_request_offset
     }
 
+    /// The receive path writes the stripped first-request footer back so
+    /// the message walk can see where the requests begin.
+    pub fn set_first_request_offset(&mut self, offset: usize) {
+        self.first_request_offset = offset;
+    }
+
     /// `seq()`.
     pub fn seq(&self) -> u32 {
         self.seq
@@ -374,6 +403,35 @@ impl Packet {
     /// `channelID()`.
     pub fn channel_id(&self) -> i32 {
         self.channel_id
+    }
+
+    /// `channelID( ChannelID )`: the write half, as the indexed-channel
+    /// send path stamps the id before packing the footer.
+    pub fn set_channel_id(&mut self, channel_id: i32) {
+        self.channel_id = channel_id;
+    }
+
+    /// `nAcks()` (packet.hpp): how many ack footers this packet carries.
+    pub fn n_acks(&self) -> u8 {
+        self.n_acks
+    }
+
+    /// `nAcks( AckCount )`: the write half, set by the channel's
+    /// `writeFlags` before the ack footers are packed.
+    pub fn set_n_acks(&mut self, n_acks: u8) {
+        self.n_acks = n_acks;
+    }
+
+    /// `updateChannelVersion( version, id )` (packet.hpp): stamp the
+    /// channel's version and id on an outbound packet, as `sendUnacked`
+    /// does to every packet it resends.
+    pub fn update_channel_version(
+        &mut self,
+        version: crate::misc::ChannelVersion,
+        id: crate::misc::ChannelID,
+    ) {
+        self.channel_version = version;
+        self.channel_id = id;
     }
 
     /// `channelVersion()`.

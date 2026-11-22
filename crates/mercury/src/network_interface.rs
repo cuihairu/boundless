@@ -20,11 +20,13 @@ use crate::channel_map::ChannelMap;
 use crate::condemned_channels::CondemnedChannels;
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
 use crate::event_dispatcher::EventDispatcher;
-use crate::misc::{CHANNEL_ID_NULL, Reason};
+use crate::misc::{CHANNEL_ID_NULL, Reason, SeqNumAllocator};
 use crate::packet::Packet;
+use crate::packet::flags;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::poller::EventPoller;
 use crate::request_manager::RequestManager;
+use crate::udp_bundle::UdpBundle;
 use crate::udp_channel::{
     ChannelPtr, DEFAULT_INACTIVITY_RESEND_DELAY, Traits as ChannelTraits, UdpChannel,
 };
@@ -87,6 +89,12 @@ pub struct NetworkInterface {
     /// This interface's own shared handle, so channel creation
     /// (`findChannel`'s anonymous arm) can hand out an `Rc` of it.
     self_weak: RefCell<Weak<NetworkInterface>>,
+    /// `seqNumAllocator_`: the off-channel sequence numbers this interface
+    /// hands out (packet_sender.hpp).
+    seq_num_allocator: RefCell<SeqNumAllocator>,
+    /// `shouldUseChecksums_`: whether outbound packets carry a checksum
+    /// footer (packet_sender.hpp). Off by default, as the reference's.
+    should_use_checksums: Cell<bool>,
 }
 
 impl NetworkInterface {
@@ -131,6 +139,8 @@ impl NetworkInterface {
             reporter: RefCell::new(None),
             channel_finder: RefCell::new(None),
             self_weak: RefCell::new(Weak::new()),
+            seq_num_allocator: RefCell::new(SeqNumAllocator::new(1)),
+            should_use_checksums: Cell::new(false),
         };
         let shared = Rc::new(interface);
         *shared.self_weak.borrow_mut() = Rc::downgrade(&shared);
@@ -405,6 +415,11 @@ impl NetworkInterface {
         *self.request_manager.borrow_mut() = manager;
     }
 
+    /// The registered request manager, if any.
+    pub fn request_manager(&self) -> Option<Rc<RequestManager>> {
+        self.request_manager.borrow().clone()
+    }
+
     /// `onChannelGone` (network_interface.hpp): a channel has died -- any
     /// requests waiting on it fail with `ChannelLost`.
     pub fn on_channel_gone(&self, addr: &Address) {
@@ -526,14 +541,84 @@ impl NetworkInterface {
         }
     }
 
-    /// The `PacketReceiver::processPacket` routing target: hand the packet
-    /// to the sink, or accept it silently while there is none (the
-    /// interface table that dispatches messages is BW-02-02).
+    /// The `PacketReceiver::processPacket` routing target: on-channel
+    /// packets with a live channel go to that channel's receive dispatch,
+    /// everything else to the sink (the interface table that dispatches
+    /// messages is BW-02-02). A channel-less on-channel packet falls to
+    /// the sink rather than the reference's `REASON_GENERAL_NETWORK`
+    /// drop: the sink is the message-dispatch seam, and the channel map's
+    /// condemned-handling covers the destroyed-channel case elsewhere.
     pub fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
+        if packet.has_flags(flags::ON_CHANNEL)
+            && let Some(channel) = self.find_channel(*addr, false)
+        {
+            return UdpChannel::process_packet(&channel, addr, packet);
+        }
+        self.deliver_packet(addr, packet)
+    }
+
+    /// The message-delivery seam: hand a footer-stripped packet to the
+    /// sink. The on-channel dispatch routes here after stripping its
+    /// footers; the off-channel entry routes straight here. Accept the
+    /// packet silently while there is no sink.
+    pub fn deliver_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
         match self.sink.borrow().as_ref() {
             Some(sink) => sink.process_packet(addr, packet),
             None => Reason::Success,
         }
+    }
+
+    /// `NetworkInterface::send` + `PacketSender::send`
+    /// (network_interface.cpp:809, packet_sender.cpp:61): finalise the
+    /// bundle, fill the footers, and hand each packet to the socket. The
+    /// channel is the bundle's owner (reliable, on-channel); off-channel
+    /// bundles pass `None`. The once-off resend timer, artificial-loss
+    /// knobs and retries of the reference sender are out of scope: the
+    /// port sends each datagram once.
+    pub fn send(&self, addr: &Address, bundle: &mut UdpBundle, channel: Option<&ChannelPtr>) {
+        if !bundle.is_finalised() {
+            bundle.finalise();
+            if let Some(manager) = self.request_manager() {
+                bundle.add_reply_orders_to(&manager, Some(*addr));
+            }
+        }
+
+        let first_overflow = bundle.prepare_packets(
+            &mut self.seq_num_allocator.borrow_mut(),
+            self.should_use_checksums.get(),
+            channel,
+        );
+
+        let count = bundle.num_data_units();
+        for index in 0..count {
+            if Some(index) == first_overflow {
+                break;
+            }
+            let packet = bundle.packet(index);
+            self.send_packet(addr, packet);
+        }
+    }
+
+    /// `PacketSender::sendPacket`'s physical arm: the datagram goes out on
+    /// this interface's socket. No result is trusted, as the reference's
+    /// -- the packet may never arrive.
+    pub fn send_packet(&self, addr: &Address, packet: &Packet) {
+        let socket = self.udp_socket.borrow();
+        let len = socket.sendto_address(packet.wire(), *addr);
+        if len != packet.wire().len() as i32 {
+            eprintln!(
+                "PacketSender::sendPacket( {} ): failed to send {} bytes to {} (sent {})",
+                self.c_str(),
+                packet.wire().len(),
+                addr.c_str(),
+                len
+            );
+        }
+    }
+
+    /// `c_str`: the interface's label for messages.
+    pub fn c_str(&self) -> String {
+        self.address.borrow().c_str()
     }
 }
 

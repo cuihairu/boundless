@@ -53,6 +53,11 @@ impl UnackedPacket {
         &self.packet
     }
 
+    /// The mutable packet, for `sendUnacked`'s channel-version refresh.
+    pub fn packet_mut(&mut self) -> &mut Rc<Packet> {
+        &mut self.packet
+    }
+
     /// `lastSentAtOutSeq_`.
     pub fn last_sent_at_out_seq(&self) -> SeqNum {
         self.last_sent_at_out_seq
