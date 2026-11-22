@@ -210,7 +210,10 @@
   - 缺失资源：**4 项缺口均有来源与阻塞原因**——捆绑脚本树（来源=服务端引导读 `game/res/bigworld/scripts`；阻塞=端口无捆绑脚本树，BW-03 python-host 嵌 CPython 而无脚本树）、游戏项目服务端配置 `res/server/bw.xml`（来源=服务进程从项目 res/server 加载；阻塞=端口无游戏项目 res，参考侧仅 fantasydemo 有，BW-14 开启）、实体定义 `res/scripts/entity_defs`（来源=EntityDef 加载器；同上 BW-14）、游戏脚本 `res/scripts/{base,cell,client}`（来源=服务进程运行项目脚本；同上 BW-14）——**acceptance 达成**。
   - 结果：`artifacts-record PASS 57 artifact(s) recorded (48 distribution, 5 sdk, 4 missing)`；参考缺席 SKIP 点名 BW-00-05-05；空发行且无缺口 FAIL（hollow——sdk/port 行恒在，故 hollow 定义为「无 distribution 行且无 missing 行」）。
   - 证据：`ci/coverage-artifacts.py`（发行物按目录枚举——扩展/命令目录内文件逐一入册不静默丢弃；SDK 根经 `--sdk-root`（默认 `$HOME/workspaces/bw-clientsdk`），缺席时 sdk/port 缺口行照记；缺口表 `PORT_RES_GAPS` 逐项带探针路径+加载方+阻塞原因，探针存在则不记）+ `ci/coverage-artifacts.sh` 记录面 **artifacts-record**；入库 `tests/baseline/coverage-artifacts.{json,tsv}`（快照锚点，漂移记 note 非 FAIL）；CI 接入 `refbase` 作业新增 `Record the reference distribution, SDK and resource gaps` 步骤、`harness` 作业新增 `ci/coverage-artifacts.sh self-test`、`ci/changes.sh` refbase case 收 `ci/coverage-artifacts.sh|.py`；自测 **3/3 绿**（种树发行+SDK+缺口各得索引、参考缺席 SKIP、hollow FAIL）；`shellcheck -S warning`、`actionlint`、`py_compile` 三绿。
-- [ ] **BW-00-05-06 复核台账完整性**。**验收** 每个启用目标有运行证据或显式缺口。
+- [x] **BW-00-05-06 复核台账完整性**（commit 6e2b131）。**验收** 每个启用目标有运行证据或显式缺口。
+  - 复核：台账 168 行与三类目图（BW-00-05-02 的 134、03 的 32、04 的 2）按 original_path 连接——**167 项有证据**（53 端口 crate、114 票号作用域，逐行有 index/ticket），**1 项显式缺口**（`urlrequest (lib/urlrequest)`——无端口 crate 且无 BW-xx 作用域点名，记录阻断原因：端口无 HTTP/curl 绑定、todo 作用域未收 lib/urlrequest，待计划圈定）——**acceptance 达成**。
+  - 结果：`reconcile-record PASS 168 target(s) reconciled (167 with evidence, 1 explicit gap)`；台账缺席 SKIP 点名 BW-00-05-06；裸目标无策展阻断原因 FAIL（hole 点名不放过）。
+  - 证据：`ci/coverage-reconcile.py`（台账×图连接、evidence=crate|ticket、裸行必须命中策展 `GAP_REASON`——通用兜底会令缺口不可追踪，故禁用；自检对「无证据且无策展原因」行 exit 3）+ `ci/coverage-reconcile.sh` 记录面 **reconcile-record**（ledger 优先读 refbase 刚产出的 `coverage-ledger/coverage-ledger.json`、回退已入库快照；图同）；入库 `tests/baseline/coverage-reconcile.{json,tsv}`（快照锚点，漂移记 note 非 FAIL）；CI 接入 `refbase` 作业新增 `Close the coverage ledger` 步骤（紧跟 artifacts 步）、`harness` 作业新增 `ci/coverage-reconcile.sh self-test`、`ci/changes.sh` refbase case 收 `ci/coverage-reconcile.sh|.py`；自测 **3/3 绿**（crate/ticket 行解析+裸行策展原因、台账缺席 SKIP、裸行无策展原因 FAIL）；`shellcheck -S warning`、`actionlint`、`py_compile` 三绿。
 
 ### BW-01 基础运行时、配置和资源
 
