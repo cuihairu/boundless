@@ -21,6 +21,8 @@ pub enum EventKind {
     Session,
     /// A player moved between spaces.
     Movement,
+    /// A business-custom event reported by the Python interface.
+    Custom,
 }
 
 impl EventKind {
@@ -30,6 +32,7 @@ impl EventKind {
             EventKind::Login => "login",
             EventKind::Session => "session",
             EventKind::Movement => "movement",
+            EventKind::Custom => "custom",
         }
     }
 
@@ -39,6 +42,7 @@ impl EventKind {
             EventKind::Login => &["account"],
             EventKind::Session => &["session", "player"],
             EventKind::Movement => &["player", "from_space", "to_space"],
+            EventKind::Custom => &["name"],
         }
     }
 }
@@ -56,8 +60,10 @@ pub struct GameEvent {
     pub at: u64,
     /// The source that emitted it (`cellapp01`).
     pub source: String,
-    /// The payload fields, kind-specific.
+    /// The payload fields the contract knows.
     pub fields: Vec<(String, String)>,
+    /// Fields the contract does not know: carried and marked, never dropped.
+    pub unknown: Vec<(String, String)>,
 }
 
 impl GameEvent {
@@ -67,6 +73,11 @@ impl GameEvent {
             .iter()
             .find(|(field, _)| field == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    /// Whether the event carries a field the contract does not know.
+    pub fn has_unknown(&self) -> bool {
+        !self.unknown.is_empty()
     }
 }
 
@@ -163,6 +174,34 @@ impl EventRecorder {
         )
     }
 
+    /// Record a business-custom event as the Python interface reports it: its
+    /// name, when it happened, the source, and its free-form fields. A field
+    /// the contract knows (listed in `known`) is kept as a contract field; a
+    /// field it does not know is carried and marked unknown, per the
+    /// contract — never dropped, never mistaken for a contract field.
+    pub fn custom(
+        &mut self,
+        at: u64,
+        source: &str,
+        name: &str,
+        fields: &[(&str, &str)],
+        known: &[&str],
+    ) -> GameEvent {
+        let mut known_fields = Vec::new();
+        let mut unknown_fields = Vec::new();
+        for &(field, value) in fields {
+            if known.contains(&field) {
+                known_fields.push((field.to_string(), value.to_string()));
+            } else {
+                unknown_fields.push((field.to_string(), value.to_string()));
+            }
+        }
+        let mut event = self.event(EventKind::Custom, at, source, vec![("name", name)]);
+        event.fields.extend(known_fields);
+        event.unknown = unknown_fields;
+        event
+    }
+
     /// Record an event of any kind with its payload fields.
     pub fn event(
         &mut self,
@@ -182,6 +221,7 @@ impl EventRecorder {
                 .into_iter()
                 .map(|(name, value)| (name.to_string(), value.to_string()))
                 .collect(),
+            unknown: Vec::new(),
         }
     }
 }
@@ -279,5 +319,76 @@ mod tests {
         // A custom event of no required kind verifies on its envelope alone.
         let custom = recorder.event(EventKind::Login, 2_000, "cellapp01", vec![("account", "x")]);
         assert_eq!(verify(&custom), Ok(()));
+    }
+
+    #[test]
+    fn a_custom_event_keeps_unknown_fields_marked_per_the_contract() {
+        let mut recorder = EventRecorder::new();
+        let purchase = recorder.custom(
+            1_000,
+            "cellapp01",
+            "purchase",
+            &[("item", "sword"), ("price", "100"), ("loyalty", "gold")],
+            &["item", "price"],
+        );
+
+        // The custom event meets the contract: the envelope checks out and it
+        // carries its name.
+        assert_eq!(verify(&purchase), Ok(()));
+        assert_eq!(purchase.kind, EventKind::Custom);
+        assert_eq!(purchase.id, "custom:1");
+        assert_eq!(purchase.source, "cellapp01");
+        assert_eq!(purchase.field("name"), Some("purchase"));
+
+        // Known fields are contract fields; the unknown one is carried and
+        // marked, per the contract — not dropped, not read as a contract
+        // field.
+        assert_eq!(purchase.field("item"), Some("sword"));
+        assert_eq!(purchase.field("price"), Some("100"));
+        assert_eq!(purchase.field("loyalty"), None);
+        assert_eq!(
+            purchase.unknown,
+            vec![("loyalty".to_string(), "gold".to_string())]
+        );
+        assert!(purchase.has_unknown());
+    }
+
+    #[test]
+    fn a_custom_event_verifies_with_unknown_only_fields() {
+        let mut recorder = EventRecorder::new();
+        let telemetry = recorder.custom(
+            2_000,
+            "baseapp01",
+            "telemetry",
+            &[("heartbeat_ms", "50")],
+            &["item"],
+        );
+
+        // An event whose every field is unknown still meets the contract: the
+        // envelope is what the contract checks.
+        assert_eq!(verify(&telemetry), Ok(()));
+        assert!(telemetry.has_unknown());
+        assert_eq!(telemetry.unknown.len(), 1);
+        assert_eq!(
+            telemetry.unknown[0],
+            ("heartbeat_ms".to_string(), "50".to_string())
+        );
+    }
+
+    #[test]
+    fn a_custom_event_requires_its_name() {
+        let mut recorder = EventRecorder::new();
+        let mut custom = recorder.custom(
+            1_000,
+            "cellapp01",
+            "purchase",
+            &[("item", "sword")],
+            &["item"],
+        );
+        custom.fields.retain(|(name, _)| name != "name");
+
+        // Without the name that makes a custom event a named one, the event
+        // does not meet the contract, and verification names the field.
+        assert_eq!(verify(&custom), Err(ContractError::MissingField("name")));
     }
 }
