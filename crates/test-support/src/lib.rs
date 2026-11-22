@@ -19,6 +19,7 @@ pub mod config_fixture;
 pub mod cpu_sampler;
 pub mod cross_reference;
 pub mod diagnostic;
+pub mod entitydef_index;
 pub mod event_aggregate;
 pub mod event_contract;
 pub mod event_filter;
