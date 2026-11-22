@@ -38,6 +38,7 @@ pub mod poller;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;
+pub mod tcp_frame;
 pub mod udp_bundle;
 #[cfg(target_os = "linux")]
 pub mod udp_channel;
