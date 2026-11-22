@@ -5,3 +5,4 @@ pub mod math;
 pub mod stream;
 pub mod time;
 pub mod time_queue;
+pub mod zip_stream;

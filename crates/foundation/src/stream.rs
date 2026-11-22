@@ -34,6 +34,12 @@ pub enum StreamError {
     Truncated,
     /// The requested length exceeds what a packed int can carry.
     PackedIntTooLarge,
+    /// The zlib container could not be encoded or decoded.
+    CompressionFailed,
+    /// A compressed container declares an original length beyond what its
+    /// compressed payload could ever inflate to (DEFLATE's worst case is
+    /// 1032:1), so the declaration cannot come from a real zlib stream.
+    CompressionRatioExceeded,
 }
 
 impl std::fmt::Display for StreamError {
@@ -41,6 +47,13 @@ impl std::fmt::Display for StreamError {
         match self {
             Self::Truncated => write!(f, "stream read would run past the end of the buffer"),
             Self::PackedIntTooLarge => write!(f, "packed int length exceeds 2^24 - 1"),
+            Self::CompressionFailed => write!(f, "zlib compression container is invalid"),
+            Self::CompressionRatioExceeded => {
+                write!(
+                    f,
+                    "declared original length exceeds the deflate expansion ratio"
+                )
+            }
         }
     }
 }
@@ -100,6 +113,12 @@ impl BinaryStream {
     /// Bytes not yet read, from the read cursor on.
     pub fn unread_bytes(&self) -> &[u8] {
         &self.buf[self.read..]
+    }
+
+    /// Record an unrecoverable read fault, the same way the reference sets
+    /// `error_ = true` before refusing to hand out further data.
+    pub(crate) fn mark_error(&mut self) {
+        self.error = true;
     }
 
     /// Reset the read cursor to the start without changing the contents.
