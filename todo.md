@@ -1163,10 +1163,14 @@
 
 盘点 FantasyDemo PHP 页面、BigWorld Web 接口及 RPM 可核实的交付内容，以 Python 实现已确认的登录、角色、物品和拍卖路径，比较会话、数据和错误语义。
 
-- [ ] **BW-14-03-01 核对 PHP 页面与 RPM**。**验收** 列出能够验证的接口和页面。
+- [x] **BW-14-03-01 核对 PHP 页面与 RPM**。**验收** 列出能够验证的接口和页面。（commit 9f69eeb）
+  - 证据：`docs/review/bw14-03-01-web-and-rpm-inventory.md`（9f69eeb）——**PHP 页面 28 项**（`programming/fantasydemo/web/php/`：认证/会话 5、角色 2、物品 4、拍卖 2、框架/工具 15 + index.php + 素材）逐项列功能；**Web 接口契约** = ServiceApp twisted Web 服务（`BigWorld.php` `http://localhost:13000`）+ `RemoteEntity("db")` 的 `authenticateUserPass`（返回 type/id）+ 会话 token；**RPM**（`fixwork/` 三 x86_64 RPM）：bwmachined 4.4MB **真 payload**（`bwmachined2`/`init.d`/systemd unit/`bwmachined.conf`/`sysctl.d`，`rpm2cpio` 可列）、devel + web-integration **占位**（Size=0 无 payload，头信息在）。可验证性：清单与 bwmachined payload 现可验；页面运行时后端（ServiceApp 服务 BW-07-03-02 + 登录链路 BW-14-01-02）未落地。
 - [ ] **BW-14-03-02 移植登录与会话**。**验收** 同样的会话状态可继续访问。
+  - 卡点（Web 服务面未落地）：登录/会话语义移植需 ServiceApp Web 服务（BW-07-03-02 启动并注册 Service 未勾）响应 `RemoteEntity("db")` 的 `authenticateUserPass`；参考侧运行时比对亦被 BW-00-02-03 记录的 `serviceapp`/`loginapp` 缺许可密钥（bigworld.key/loginapp.privkey）挡住。会话状态需可运行会话方比对，当前两侧均无运行面。
 - [ ] **BW-14-03-03 移植角色与物品查询**。**验收** 样本列表和错误语义一致。
+  - 卡点（db 查询面未落地）：角色/物品查询需 dbapp 查询（BW-09-01-04 lookup/01-05 未勾）经 ServiceApp Web 暴露；参考侧运行时同受许可密钥阻断（BW-00-02-03）。
 - [ ] **BW-14-03-04 移植拍卖工作流**。**验收** 提交和查询状态匹配。
+  - 卡点（同 03-03）：拍卖提交/查询需 db 读写 + ServiceApp Web；两侧运行面均缺（新侧未建服务、参考侧缺许可密钥）。
 
 #### BW-14-04 可安装发布物
 
