@@ -416,7 +416,18 @@
 
 按原版启用条件复现过滤链、会话加密协商、包校验和受控限流，使用双方合法客户端互操作。对照正常握手、认证失败及流量达到配置上限时的结果。
 
-- [ ] **BW-02-05-01 实现过滤链与包校验**。**验收** 过滤顺序及校验失败结果一致。
+- [x] **BW-02-05-01 实现过滤链与包校验**。**验收** 过滤顺序及校验失败结果一致。 — `24d5896`
+    - **证据**: `docs/review/bw02-05-01-filter-chain.md`
+    - **验收测试**: `message_filter.rs`；`UdpChannel::set_p_filter`/`p_filter`/`spare_size`；
+      `NetworkInterface::process_packet` 通道级 `PacketFilter` 臂（`packet_receiver.cpp:471-474`）；
+      `bundle_dispatch`/`tcp_bundle_dispatch` 投递点 `MessageFilter` 两臂
+      （`udp_bundle_processor.cpp:161-170`、`tcp_bundle_processor.cpp:178-185`）。
+      新增 12 个测试，388/0 绿；顺序测试锚定通道臂→offChannel→校验的短路语义。
+    - **有意偏离**: `PacketFilter` 发包臂（`packet_sender.cpp:245-255`）未移植——端口尚无
+      `PacketSender`；`MessageFilter` 不引入 `ReferenceCount` 层级，用 `Rc<dyn>`；
+      两通道类型的 `pMessageFilter` 字段各自独立（原版共基类）。
+    - **门禁**: clippy `-D warnings` 0；rustfmt 本批 8 文件 0 diff；
+      llvm-cov crate 行覆盖 98.29%（≥98%）。
 - [ ] **BW-02-05-02 对齐会话协商**。**验收** 原版和新版客户端可合法握手。
 - [ ] **BW-02-05-03 校验认证失败时的返回状态**。**验收** 无残留已建立会话。
 - [ ] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。
