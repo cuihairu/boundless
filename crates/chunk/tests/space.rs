@@ -6,8 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-use chunk::{Chunk, GeometryMapping, GridBounds};
-use foundation::math::Matrix;
+use chunk::{Chunk, GeometryMapping, GridBounds, PortalTarget};
+use foundation::math::{Matrix, Vector3};
 use resources::datasection;
 
 fn repo_root() -> PathBuf {
@@ -29,11 +29,32 @@ fn load_mapping() -> GeometryMapping {
     GeometryMapping::from_settings("space_00010001/", &settings)
 }
 
+/// Load a resource section by name from the fixture space root, the same
+/// lookup `BWResource` performs for the reference (includes and shell visuals).
+fn resource_resolver(name: &str) -> Option<datasection::DataSection> {
+    let path = space_root().join(name);
+    let raw = std::fs::read(path).ok()?;
+    datasection::parse("", &raw).ok()
+}
+
+/// The single portal of a boundary, wherever it landed: earth portals are
+/// born in `bound_portals`, everything else in `unbound_portals`.
+fn sole_portal(b: &chunk::ChunkBoundary) -> &chunk::Portal {
+    b.bound_portals
+        .first()
+        .or_else(|| b.unbound_portals.first())
+        .unwrap()
+}
+
 fn load_chunk_file(path: &Path, mapping: &GeometryMapping, id: &str) -> Chunk {
     let raw = std::fs::read(path).unwrap_or_else(|_| panic!("{} readable", path.display()));
     let section = datasection::parse("", &raw).expect("chunk file parses");
     let mut chunk = Chunk::new(id, mapping, &Matrix::identity());
-    assert!(chunk.load(&section, &Matrix::identity()), "{} loaded", id);
+    assert!(
+        chunk.load(&section, &Matrix::identity(), &resource_resolver),
+        "{} loaded",
+        id
+    );
     chunk
 }
 
@@ -124,4 +145,178 @@ fn chunk_files_load_into_the_same_objects() {
         inside.bounding_box.max,
         foundation::math::Vector3::new(160.0, 5.0, 260.0)
     );
+}
+
+/// BW-10-01-02: the six boundaries of an outside chunk are synthesised from
+/// its grid coordinates, with the reference's neighbour targets
+/// (`createBoundaries`, chunk.cpp:695-806). Order is right, left, bottom,
+/// top, back, front.
+#[test]
+fn outside_chunk_boundaries_match_the_reference_grid() {
+    let mapping = load_mapping();
+
+    // Grid (0, 0): the min-x and min-z edges are mapping boundaries, so the
+    // right and back faces leave the space.
+    let origin = chunk::create_boundaries("00000000o", &mapping);
+    assert_eq!(origin.len(), 6);
+    let targets: Vec<PortalTarget> = origin
+        .iter()
+        .map(|b| sole_portal(b).target.clone())
+        .collect();
+    assert_eq!(
+        targets,
+        vec![
+            PortalTarget::Extern,
+            PortalTarget::Chunk("00010000o".into()),
+            PortalTarget::Earth,
+            PortalTarget::Heaven,
+            PortalTarget::Extern,
+            PortalTarget::Chunk("00000001o".into()),
+        ]
+    );
+    // Planes: right x=0, left x=100, bottom y=-10000, top y=10000,
+    // back z=0, front z=100.
+    assert_eq!(origin[0].plane.normal(), &Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(origin[1].plane.normal(), &Vector3::new(-1.0, 0.0, 0.0));
+    assert_eq!(origin[1].plane.d(), -100.0);
+    assert_eq!(origin[2].plane.normal(), &Vector3::new(0.0, 1.0, 0.0));
+    assert_eq!(origin[2].plane.d(), -10000.0);
+    assert_eq!(origin[3].plane.normal(), &Vector3::new(0.0, -1.0, 0.0));
+    assert_eq!(origin[4].plane.normal(), &Vector3::new(0.0, 0.0, 1.0));
+    assert_eq!(origin[5].plane.normal(), &Vector3::new(0.0, 0.0, -1.0));
+    assert_eq!(origin[5].plane.d(), -100.0);
+    // u and v axes, then the local centres of the six faces.
+    assert_eq!(sole_portal(&origin[0]).u_axis, Vector3::new(0.0, 1.0, 0.0));
+    assert_eq!(sole_portal(&origin[0]).v_axis, Vector3::new(0.0, 0.0, 1.0));
+    assert_eq!(sole_portal(&origin[1]).u_axis, Vector3::new(0.0, 0.0, 1.0));
+    assert_eq!(sole_portal(&origin[5]).u_axis, Vector3::new(0.0, 1.0, 0.0));
+    let centres: Vec<_> = origin.iter().map(|b| sole_portal(b).lcentre).collect();
+    assert_eq!(
+        centres,
+        vec![
+            Vector3::new(0.0, 0.0, 50.0),
+            Vector3::new(100.0, 0.0, 50.0),
+            Vector3::new(50.0, -10000.0, 50.0),
+            Vector3::new(50.0, 10000.0, 50.0),
+            Vector3::new(50.0, 0.0, 0.0),
+            Vector3::new(50.0, 0.0, 100.0),
+        ]
+    );
+    // The polygon runs counter-clockwise seen from the plane's front:
+    // (minY, 0) -> (maxY, 0) -> (maxY, gridSize) -> (minY, gridSize).
+    assert_eq!(
+        sole_portal(&origin[0]).points,
+        vec![
+            foundation::math::Vector2::new(-10000.0, 0.0),
+            foundation::math::Vector2::new(10000.0, 0.0),
+            foundation::math::Vector2::new(10000.0, 100.0),
+            foundation::math::Vector2::new(-10000.0, 100.0),
+        ]
+    );
+
+    // Grid (17, 0): the far edge and the min-z edge; the prefixed cells name
+    // their neighbours with the hashed subdirectory prefix.
+    let far = chunk::create_boundaries("001xx000xx/sep/00110000o", &mapping);
+    let far_targets: Vec<PortalTarget> =
+        far.iter().map(|b| sole_portal(b).target.clone()).collect();
+    assert_eq!(
+        far_targets,
+        vec![
+            // Grid 16 also trips the 4-bit prefix level (16 >= 16).
+            PortalTarget::Chunk("001xx000xx/sep/00100000o".into()),
+            PortalTarget::Extern,
+            PortalTarget::Earth,
+            PortalTarget::Heaven,
+            PortalTarget::Extern,
+            PortalTarget::Chunk("001xx000xx/sep/00110001o".into()),
+        ]
+    );
+
+    // Grid (17, 1): the max-z edge is extern on the front face.
+    let corner = chunk::create_boundaries("001xx001xx/sep/00110001o", &mapping);
+    let corner_targets: Vec<PortalTarget> = corner
+        .iter()
+        .map(|b| sole_portal(b).target.clone())
+        .collect();
+    assert_eq!(
+        corner_targets,
+        vec![
+            // right -> grid (16, 1), back -> grid (17, 0).
+            PortalTarget::Chunk("001xx000xx/sep/00100001o".into()),
+            PortalTarget::Extern,
+            PortalTarget::Earth,
+            PortalTarget::Heaven,
+            PortalTarget::Chunk("001xx000xx/sep/00110000o".into()),
+            PortalTarget::Extern,
+        ]
+    );
+}
+
+/// BW-10-01-02: an inside chunk takes its boundaries from the shell visual,
+/// and `form_boundaries` splits them into joints and bounds the way the
+/// reference does (chunk.cpp:867-905).
+#[test]
+fn inside_chunk_boundaries_come_from_the_shell_visual() {
+    let mapping = load_mapping();
+    let root = space_root();
+    let raw = std::fs::read(root.join("00000000i.chunk")).expect("inside chunk readable");
+    let section = datasection::parse("", &raw).expect("inside chunk parses");
+    let mut chunk = Chunk::new("00000000i", &mapping, &Matrix::identity());
+    assert!(chunk.load(&section, &Matrix::identity(), &resource_resolver));
+
+    let boundaries = &chunk.boundaries;
+    assert_eq!(boundaries.len(), 6);
+    // +x (external portal), -x (wall), +z (internal portal), -z (wall),
+    // then the earth and heaven faces of the shell box.
+    assert_eq!(boundaries[0].plane.normal(), &Vector3::new(1.0, 0.0, 0.0));
+    let external = &boundaries[0].unbound_portals[0];
+    assert_eq!(external.target, PortalTarget::Chunk("00000000o".into()));
+    assert!(!external.internal);
+    assert!(external.permissive);
+
+    // The -x face has no portal at all: a wall, so a bound but not a joint.
+    assert!(boundaries[1].unbound_portals.is_empty());
+    assert!(boundaries[1].bound_portals.is_empty());
+
+    // The +z portal is written with the wrong winding; the parser reversed
+    // it, so it now runs counter-clockwise from the plane's front.
+    let internal = &boundaries[2].unbound_portals[0];
+    assert!(internal.internal);
+    assert_eq!(internal.target, PortalTarget::Chunk("00000001i".into()));
+    assert_eq!(
+        internal.points,
+        vec![
+            foundation::math::Vector2::new(-10.0, -10.0),
+            foundation::math::Vector2::new(10.0, -10.0),
+            foundation::math::Vector2::new(10.0, 10.0),
+            foundation::math::Vector2::new(-10.0, 10.0),
+        ]
+    );
+    // Portal geometry: the u/v basis, the origin on the plane and the local
+    // centre are all derived from the plane and uAxis (chunk_boundary.cpp:424-460).
+    assert_eq!(internal.u_axis, Vector3::new(1.0, 0.0, 0.0));
+    assert_eq!(internal.v_axis, Vector3::new(0.0, 1.0, 0.0));
+    assert_eq!(internal.origin, Vector3::new(0.0, 0.0, 10.0));
+    assert_eq!(internal.lcentre, Vector3::new(0.0, 0.0, 10.0));
+    // `inside` is an in-plane polygon test: it projects the point onto the
+    // u/v basis, so a point off the plane that projects outside is rejected.
+    assert!(internal.inside(&Vector3::new(0.0, 0.0, 10.0)));
+    assert!(!internal.inside(&Vector3::new(20.0, 0.0, 10.0)));
+
+    // Earth starts bound; heaven is unbound. Both are joints and bounds.
+    assert_eq!(boundaries[4].bound_portals.len(), 1);
+    assert_eq!(boundaries[4].bound_portals[0].target, PortalTarget::Earth);
+    assert_eq!(
+        boundaries[5].unbound_portals[0].target,
+        PortalTarget::Heaven
+    );
+
+    // Right face: an unbound external portal -> joint and bound.
+    // -x wall: bound only.  +z internal portal: joint only.
+    assert!(chunk.joints.contains(&0));
+    assert!(chunk.bounds.contains(&0));
+    assert!(chunk.bounds.contains(&1));
+    assert!(!chunk.joints.contains(&1));
+    assert!(chunk.joints.contains(&2));
+    assert!(!chunk.bounds.contains(&2));
 }

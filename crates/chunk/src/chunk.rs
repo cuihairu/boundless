@@ -11,6 +11,7 @@
 use foundation::math::{BoundBox, Matrix, Vector3};
 use resources::datasection::DataSection;
 
+use crate::boundary::{ChunkBoundary, form_boundaries};
 use crate::identifier::{grid_from_chunk_name, is_outside_chunk};
 use crate::mapping::GeometryMapping;
 
@@ -71,6 +72,14 @@ pub struct Chunk {
     pub unmapped_transform: Matrix,
     pub bounding_box: BoundBox,
     pub items: Vec<ChunkItem>,
+    /// The owning mapping (kept so `load` can form the synthetic boundaries).
+    pub mapping: GeometryMapping,
+    /// `bounds_` (`chunk.cpp:856`): indices into `boundaries` of the planes
+    /// that contain the chunk (formed by `form_boundaries`, BW-10-01-02).
+    pub bounds: Vec<usize>,
+    /// `joints_`: indices into `boundaries` of the passable faces.
+    pub joints: Vec<usize>,
+    pub boundaries: Vec<ChunkBoundary>,
 }
 
 impl Chunk {
@@ -113,16 +122,28 @@ impl Chunk {
             unmapped_transform: transform,
             bounding_box,
             items: Vec::new(),
+            mapping: mapping.clone(),
+            bounds: Vec::new(),
+            joints: Vec::new(),
+            boundaries: Vec::new(),
         }
     }
 
-    /// `Chunk::load` (`chunk.cpp:370-537`): fill in the transform, bounding
-    /// box and object set from the section. Outside chunks keep their
-    /// grid-derived transform; inside chunks read `<transform>` and
-    /// `<boundingBox>` from the section. `mapper` is the mapping's transform,
-    /// applied after the chunk-local transform. Returns `false` when the
-    /// bounding box stays degenerate.
-    pub fn load(&mut self, section: &DataSection, mapper: &Matrix) -> bool {
+    /// `Chunk::load` (`chunk.cpp:370-499`): fill in the transform, bounding
+    /// box, boundaries and object set from the section. Outside chunks keep
+    /// their grid-derived transform and get their six boundaries synthesised
+    /// from the grid; inside chunks read `<transform>` and `<boundingBox>`
+    /// and take their boundaries from the shell visual, which
+    /// `resource_resolver` loads (the reference opens it via `BWResource`,
+    /// `chunk.cpp:814-839`). Like the reference the result is
+    /// `good && !boundingBox_.insideOut()`: an inside chunk without a shell
+    /// visual that yields at least four boundaries fails to load.
+    pub fn load(
+        &mut self,
+        section: &DataSection,
+        mapper: &Matrix,
+        resource_resolver: &dyn Fn(&str) -> Option<DataSection>,
+    ) -> bool {
         if !self.is_outside {
             let t = read_matrix34(section, "transform");
             self.unmapped_transform = t;
@@ -133,8 +154,13 @@ impl Chunk {
                 self.bounding_box.transform_by(&self.transform);
             }
         }
-        self.items = load_include(section, self.is_outside, &|_| None);
-        !self.bounding_box.inside_out()
+        self.items = load_include(section, self.is_outside, resource_resolver);
+        let (boundaries, joints, bounds, good) =
+            form_boundaries(&self.identifier, section, &self.mapping, resource_resolver);
+        self.boundaries = boundaries;
+        self.joints = joints;
+        self.bounds = bounds;
+        good && !self.bounding_box.inside_out()
     }
 }
 
@@ -247,7 +273,10 @@ mod tests {
         let section = datasection::parse("", xml.as_bytes()).unwrap();
         let mut chunk = Chunk::new("00000000i", &mapping, &Matrix::identity());
         assert!(!chunk.is_outside);
-        assert!(chunk.load(&section, &Matrix::identity()));
+        // No shell visual resolves, so the chunk fails to load exactly like
+        // the reference (fewer than four boundaries) — but the transform and
+        // bounding box are still read before that failure.
+        assert!(!chunk.load(&section, &Matrix::identity(), &|_| None));
         assert_eq!(chunk.bounding_box.min, Vector3::new(5.0, 10.0, 15.0));
         assert_eq!(chunk.bounding_box.max, Vector3::new(25.0, 40.0, 55.0));
     }
@@ -279,7 +308,7 @@ mod tests {
             </00000000o.chunk>"#;
         let section = datasection::parse("", xml.as_bytes()).unwrap();
         let mut chunk = Chunk::new("00000000o", &mapping, &Matrix::identity());
-        chunk.load(&section, &Matrix::identity());
+        chunk.load(&section, &Matrix::identity(), &|_| None);
         let tags: Vec<&str> = chunk.items.iter().map(|i| i.tag.as_str()).collect();
         assert_eq!(tags, vec!["model", "entity", "light", "sound"]);
         assert_eq!(chunk.items[0].resource.as_deref(), Some("tree.model"));
@@ -314,7 +343,7 @@ mod tests {
                 None
             }
         };
-        chunk.load(&section, &Matrix::identity());
+        chunk.load(&section, &Matrix::identity(), &|_| None);
         // Without a resolver the include stays as an unexpanded item.
         assert_eq!(chunk.items.len(), 1);
         assert_eq!(chunk.items[0].tag, "include");

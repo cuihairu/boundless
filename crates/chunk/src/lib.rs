@@ -5,10 +5,12 @@
 //! chunk load path and the boundary/portal graph that drives adjacent chunk
 //! binding.
 
+pub mod boundary;
 pub mod chunk;
 pub mod identifier;
 pub mod mapping;
 
+pub use boundary::{ChunkBoundary, Portal, PortalTarget, create_boundaries, form_boundaries};
 pub use chunk::{Chunk, ChunkItem};
 pub use identifier::{
     grid_from_chunk_name, is_outside_chunk, outside_chunk_id_to_grid, outside_chunk_identifier,
