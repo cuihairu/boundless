@@ -27,6 +27,12 @@ impl SessionWindow {
     pub fn is_open(&self) -> bool {
         self.ended.is_none()
     }
+
+    /// The session's elapsed time, when it has ended. A session still open has
+    /// no duration yet.
+    pub fn duration(&self) -> Option<u64> {
+        self.ended.map(|ended| ended - self.started)
+    }
 }
 
 /// The session windows seen, keyed by session id.
