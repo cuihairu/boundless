@@ -2481,6 +2481,528 @@ mod plane {
     }
 }
 
+/// One provider type's destruction entry: release every held field, then
+/// hand the allocation back to the interpreter's allocator. The reference's
+/// `SmartPointer` members are Python references, so a provider whose body
+/// holds other providers must release them before the object is freed.
+macro_rules! provider_dealloc {
+    ($name:ident, $body:ty, $($field:ident),+ $(,)?) => {
+        unsafe extern "C" fn $name(self_: *mut capi::PyObject) {
+            $(
+                unsafe {
+                    v4provider::release_field::<{ std::mem::offset_of!($body, $field) }>(self_);
+                }
+            )+
+            unsafe { capi::PyObject_Free(self_.cast()) };
+        }
+    };
+}
+
+/// The `Math.Vector4Provider` base and `Math.Vector4Basic` value
+/// (`script_math.cpp:3150-3282`).
+///
+/// `Vector4Provider` is the abstract base every script-side `Vector4` source
+/// derives from; its one member is the read-only `value` attribute the
+/// reference's `pyGet_value` fills from the virtual `output`
+/// (`:3190-3195`). The reference's vtable is the port's [`OUTPUT`] registry:
+/// each concrete provider records its `output` at registration, and
+/// [`output_of`] looks it up by the object's concrete type address.
+///
+/// `Vector4Basic` is the constant provider `coerce` produces when a script
+/// hands a provider slot a `Vector4` or a tuple of four floats
+/// (`Vector4Provider::coerce`, `:3266-3279`); the reference gives it no
+/// factory and no `Math` name, so neither is registered here.
+mod v4provider {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    /// The one `Math.Vector4Provider` base type object, by address.
+    static BASE_ADDR: AtomicUsize = AtomicUsize::new(0);
+    /// The one `Math.Vector4Basic` type object, by address.
+    static BASIC_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    /// The base type object address, the concrete providers' `Py_tp_base`.
+    pub(super) fn base_addr() -> usize {
+        BASE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// A concrete provider's `output`: the four floats it yields for its
+    /// instance.
+    type Output = fn(*mut capi::PyObject) -> [f32; 4];
+
+    /// The concrete providers' `output`s, keyed by type object address: the
+    /// reference's virtual `Vector4Provider::output` dispatch.
+    static OUTPUT: Mutex<BTreeMap<usize, Output>> = Mutex::new(BTreeMap::new());
+
+    /// `Vector4Provider::Check` (`script.hpp:585`): any object whose type is
+    /// `Vector4Provider` or one of its subclasses.
+    fn provider_check(object: *mut capi::PyObject) -> bool {
+        let base = BASE_ADDR.load(Ordering::SeqCst);
+        if object.is_null() || base == 0 {
+            return false;
+        }
+        // SAFETY: the address is the type object `create_type` built.
+        unsafe {
+            capi::PyType_IsSubtype(capi::Py_TYPE(object), base as *mut capi::PyTypeObject) == 1
+        }
+    }
+
+    /// Record one concrete provider's `output` under its type object address.
+    /// Called from each provider's `register`, before a script can run.
+    pub(super) fn register_output(type_addr: usize, output: Output) {
+        OUTPUT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(type_addr, output);
+    }
+
+    /// The output of a held provider, the reference's virtual `output`. `None`
+    /// when the object is not a `Vector4Provider` or no `output` is registered
+    /// for its type.
+    pub(super) fn output_of(object: *mut capi::PyObject) -> Option<[f32; 4]> {
+        if !provider_check(object) {
+            return None;
+        }
+        let output = {
+            let table = OUTPUT
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            table
+                .get(&unsafe { capi::Py_TYPE(object) as usize })
+                .copied()
+        };
+        output.map(|output| output(object))
+    }
+
+    // -- `Math.Vector4Basic` ---------------------------------------------
+
+    /// The instance body beyond the `PyObject` header: the four f32s inline,
+    /// the layout of the reference's `Vector4Basic` (which embeds a
+    /// `Vector4`).
+    #[repr(C)]
+    struct BasicBody {
+        header: capi::PyObject,
+        data: [f32; 4],
+    }
+
+    const BASIC_INSTANCE_SIZE: usize =
+        std::mem::size_of::<BasicBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// `Vector4Basic::output` (`script_math.hpp:494`): the stored value.
+    fn basic_output(object: *mut capi::PyObject) -> [f32; 4] {
+        // SAFETY: only a `Vector4Basic` instance reaches this arm.
+        unsafe { std::ptr::addr_of!((*object.cast::<BasicBody>()).data).read() }
+    }
+
+    /// A fresh `Math.Vector4Basic` carrying `data`; the caller owns the
+    /// reference.
+    pub(super) fn basic_make(data: [f32; 4]) -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&basic_spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `BasicBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<BasicBody>()).data).write(data);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// `Vector4Provider::coerce` (`:3266-3279`): a `Vector4` or a tuple of
+    /// four floats becomes a fresh `Vector4Basic`; anything else is handed
+    /// back unchanged, the reference clearing the conversion error first.
+    /// The caller owns the returned reference: the one the fresh instance
+    /// carries, or an added reference on the returned object.
+    pub(super) fn coerce(object: *mut capi::PyObject) -> *mut capi::PyObject {
+        if let Some(data) = unsafe { as_vector::<4>(object, vector4::type_addr()) } {
+            return basic_make(data);
+        }
+        // SAFETY: the read is on the borrowed object; a failure leaves no
+        // pending error (`as_vector` clears it).
+        unsafe {
+            if object.is_null() {
+                return std::ptr::null_mut();
+            }
+            capi::inc_ref(object);
+        }
+        object
+    }
+
+    // -- the base's read-only `value` ------------------------------------
+
+    /// `Vector4Provider::pyGet_value`: the provider's output as a `Vector4`.
+    unsafe extern "C" fn get_value(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        match output_of(self_) {
+            Some(data) => vector4::make(data),
+            None => type_error("Vector4Provider.value on a non-Vector4Provider"),
+        }
+    }
+
+    // -- `Vector4Basic`'s read-write `value` -----------------------------
+
+    /// `Vector4Basic`'s `value` read (`PY_RW_ATTRIBUTE_DECLARE( value_, value )`):
+    /// the stored vector.
+    unsafe extern "C" fn basic_get_value(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        if unsafe { capi::Py_TYPE(self_) } as usize != BASIC_ADDR.load(Ordering::SeqCst) {
+            return type_error("Vector4Basic.value on a non-Vector4Basic");
+        }
+        let data = unsafe { std::ptr::addr_of!((*self_.cast::<BasicBody>()).data).read() };
+        vector4::make(data)
+    }
+
+    /// `Vector4Basic`'s `value` write: `Script::setData(value, value_)`
+    /// (`script.cpp:1946-1970`) -- a `Vector4` or a tuple of four floats.
+    unsafe extern "C" fn basic_set_value(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        if unsafe { capi::Py_TYPE(self_) } as usize != BASIC_ADDR.load(Ordering::SeqCst) {
+            type_error(&format!(
+                "{} must be set to a Vector4 or tuple of 4 floats",
+                attribute_name(_closure)
+            ));
+            return -1;
+        }
+        let Some(data) = (unsafe { as_vector::<4>(value, vector4::type_addr()) }) else {
+            type_error(&format!(
+                "{} must be set to a Vector4 or tuple of 4 floats",
+                attribute_name(_closure)
+            ));
+            return -1;
+        };
+        // SAFETY: the type check above gated the write to `BasicBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*self_.cast::<BasicBody>()).data).write(data);
+        }
+        0
+    }
+
+    // -- the held-provider attribute family, shared by every provider -----
+
+    /// The field's stored provider, by byte offset from the object start.
+    ///
+    /// # Safety
+    ///
+    /// `self_` is a borrowed instance whose body is the field's owner, and
+    /// `FIELD` is that body's offset of the provider slot.
+    pub(super) unsafe fn provider_field<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        unsafe {
+            std::ptr::addr_of!(*self_.cast::<u8>().add(FIELD).cast::<*mut capi::PyObject>()).read()
+        }
+    }
+
+    /// Store `value` in the field. The caller releases the previous occupant
+    /// first, the reference's `SmartPointer` assignment half.
+    ///
+    /// # Safety
+    ///
+    /// As [`provider_field`]: `FIELD` is the field's offset in `self_`'s body.
+    pub(super) unsafe fn provider_write<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+    ) {
+        unsafe {
+            std::ptr::addr_of_mut!(*self_.cast::<u8>().add(FIELD).cast::<*mut capi::PyObject>())
+                .write(value)
+        }
+    }
+
+    /// Release the field's occupant, the reference's `SmartPointer`
+    /// destructor half.
+    ///
+    /// # Safety
+    ///
+    /// As [`provider_field`].
+    pub(super) unsafe fn release_field<const FIELD: usize>(self_: *mut capi::PyObject) {
+        let stored = unsafe { provider_field::<FIELD>(self_) };
+        if !stored.is_null() {
+            unsafe { capi::dec_ref(stored) };
+        }
+    }
+
+    /// `Script::getData( ScriptObjectPtr )` (`script.hpp:604-608`) on a held
+    /// field: the stored provider, or `None` for an empty field.
+    ///
+    /// # Safety
+    ///
+    /// `self_` is a borrowed instance of the field's owner type.
+    pub(super) unsafe extern "C" fn provider_ptr_get<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let stored = unsafe { provider_field::<FIELD>(self_) };
+        let object = if stored.is_null() {
+            capi::py_none()
+        } else {
+            stored
+        };
+        // SAFETY: the field's occupant is a borrowed reference the read does
+        // not consume; the caller gets its own.
+        unsafe {
+            capi::inc_ref(object);
+        }
+        object
+    }
+
+    /// `Script::setData( pObject, Vector4ProviderPtr&, varName )`
+    /// (`script.hpp:577-631`): `coerce` the value, empty the field for
+    /// `None`, and otherwise hand the field the coerced provider. The field
+    /// owns the reference the way the reference's `SmartPointer` does: the
+    /// previous occupant is released before the new one is stored, and a
+    /// self-assignment is a no-op.
+    ///
+    /// # Safety
+    ///
+    /// As [`provider_ptr_get`].
+    pub(super) unsafe extern "C" fn provider_ptr_set<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let coerced = coerce(value);
+        if !coerced.is_null() && coerced == capi::py_none() {
+            // `pCoerced == Py_None`: the field is emptied and the reference
+            // `coerce` added on `None` goes back.
+            let old = unsafe { provider_field::<FIELD>(self_) };
+            if !old.is_null() {
+                unsafe { capi::dec_ref(old) };
+            }
+            unsafe { provider_write::<FIELD>(self_, std::ptr::null_mut()) };
+            unsafe { capi::dec_ref(coerced) };
+            return 0;
+        }
+        if !provider_check(coerced) {
+            if !coerced.is_null() {
+                unsafe { capi::dec_ref(coerced) };
+            }
+            type_error(&format!(
+                "{} must be set to a Vector4Provider or None",
+                attribute_name(closure)
+            ));
+            return -1;
+        }
+        let old = unsafe { provider_field::<FIELD>(self_) };
+        if old != coerced {
+            if !old.is_null() {
+                unsafe { capi::dec_ref(old) };
+            }
+            // The field takes over the reference `coerce` added.
+            unsafe { provider_write::<FIELD>(self_, coerced) };
+        } else {
+            // `rpDerived.get() == pCoerced`: the reference no-ops, so the
+            // added reference goes back and the field keeps its own.
+            unsafe { capi::dec_ref(coerced) };
+        }
+        0
+    }
+
+    /// The attribute name the handler family serves, carried in the
+    /// reference's `PyGetSetDef.closure`; the `%s` of its error text.
+    fn attribute_name(closure: *mut std::os::raw::c_void) -> String {
+        if closure.is_null() {
+            return "value".to_owned();
+        }
+        // SAFETY: the closure is the C string that lives for the type's
+        // lifetime; an attribute name is ASCII.
+        unsafe {
+            std::ffi::CStr::from_ptr(closure.cast::<c_char>())
+                .to_str()
+                .unwrap_or("value")
+                .to_owned()
+        }
+    }
+
+    // -- the specs and registration ---------------------------------------
+
+    /// `Math.Vector4Provider`'s spec: the abstract base. It is not named in
+    /// the `Math` module, the reference's `PY_TYPEOBJECT` with no factory
+    /// link.
+    fn provider_spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Provider")
+            .flags(capi::Py_TPFLAGS_BASETYPE)
+            .attribute("value", get_value, None)
+    }
+
+    /// `Vector4Basic`'s spec: the read-write `value` that shadows the base's
+    /// read-only one.
+    fn basic_spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Basic")
+            .base(BASE_ADDR.load(Ordering::SeqCst))
+            .attribute("value", basic_get_value, Some(basic_set_value))
+            .instance_size(BASIC_INSTANCE_SIZE)
+    }
+
+    /// The `TempPyVectorInit` of the provider pair: the base, then the
+    /// concrete value type and its dispatch entry. Neither is named in the
+    /// `Math` module, the reference's `PY_TYPEOBJECT` shape with no
+    /// `PY_FACTORY`.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let provider = binding::create_type(&provider_spec())?;
+        BASE_ADDR.store(provider.as_ptr() as usize, Ordering::SeqCst);
+        let basic = binding::create_type(&basic_spec())?;
+        BASIC_ADDR.store(basic.as_ptr() as usize, Ordering::SeqCst);
+        register_output(BASIC_ADDR.load(Ordering::SeqCst), basic_output);
+        Ok(basic)
+    }
+}
+
+/// The `Math.Vector4Product` provider (`script_math.cpp:3289-3421`): the
+/// componentwise product of the outputs of two held `Vector4Provider`s.
+///
+/// The reference's `output` reads `a` then `b` in that order and multiplies
+/// component by component (`Vector4::parallelMultiply`), falling back to the
+/// one source that is set and to the zero vector when neither is
+/// (`:3401-3421`). The port keeps the read order and the fallbacks, the
+/// evaluation-order acceptance.
+mod v4product {
+    use super::*;
+
+    /// The instance body beyond the `PyObject` header: the two held provider
+    /// references, the layout of the reference's `Vector4Product`.
+    #[repr(C)]
+    struct ProductBody {
+        header: capi::PyObject,
+        a: *mut capi::PyObject,
+        b: *mut capi::PyObject,
+    }
+
+    const A: usize = std::mem::offset_of!(ProductBody, a);
+    const B: usize = std::mem::offset_of!(ProductBody, b);
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<ProductBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Product` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4Product::output` (`script_math.cpp:3401-3421`).
+    fn product_output(object: *mut capi::PyObject) -> [f32; 4] {
+        let a = unsafe { v4provider::provider_field::<A>(object) };
+        let b = unsafe { v4provider::provider_field::<B>(object) };
+        if !a.is_null() {
+            let mut out = v4provider::output_of(a).unwrap_or([0.0; 4]);
+            if !b.is_null() {
+                let other = v4provider::output_of(b).unwrap_or([0.0; 4]);
+                for (slot, factor) in out.iter_mut().zip(other) {
+                    *slot *= factor;
+                }
+            }
+            out
+        } else if !b.is_null() {
+            v4provider::output_of(b).unwrap_or([0.0; 4])
+        } else {
+            [0.0; 4]
+        }
+    }
+
+    /// A fresh `Math.Vector4Product`; the caller owns the reference.
+    fn make() -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `ProductBody`; the two
+        // fields start empty, `PyType_GenericAlloc` zeroes the body.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<ProductBody>()).a).write(std::ptr::null_mut());
+            std::ptr::addr_of_mut!((*pointer.cast::<ProductBody>()).b).write(std::ptr::null_mut());
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `_pyNew`-shape factory of `PY_FACTORY( Vector4Product, Math )`:
+    /// a fresh product, the reference's `END` argument list meaning no
+    /// arguments.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Math.Vector4Product() takes no arguments");
+        }
+        make()
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4Product".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4Product` and its
+    /// destruction entry: the two held providers, each the reference's
+    /// `PY_RW_ATTRIBUTE_DECLARE( a_, a )` converter pair.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Product")
+            .base(v4provider::base_addr())
+            .attribute_with(
+                "a",
+                v4provider::provider_ptr_get::<A>,
+                Some(v4provider::provider_ptr_set::<A>),
+                c"a".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .attribute_with(
+                "b",
+                v4provider::provider_ptr_get::<B>,
+                Some(v4provider::provider_ptr_set::<B>),
+                c"b".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    provider_dealloc!(dealloc, ProductBody, a, b);
+
+    /// `TempPyVectorInit` for the product: the type object, its dispatch
+    /// entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), product_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4Product".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -2492,4 +3014,6 @@ pub fn register() {
     let _ = vector4::register();
     let _ = matrix::register();
     let _ = plane::register();
+    let _ = v4provider::register();
+    let _ = v4product::register();
 }

@@ -568,6 +568,8 @@ mod tests {
         "interpreter::tests::scenario_init_run_fini",
         "interpreter::tests::scenario_the_math_vectors_behave_like_the_reference",
         "interpreter::tests::scenario_the_math_matrix_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_plane_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4providers_behave_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -2778,9 +2780,9 @@ ck(callable(Math.Plane), 'Math.Plane callable')
 # Construction: the factory ignores its arguments entirely.
 p = Math.Plane()
 ck(p is not None, 'Plane constructs')
-ck(type(p).__name__ == 'Math.Plane', 'the Math.Plane type')
+ck(type(p).__name__ == 'Plane', 'the Math.Plane type')
 p2 = Math.Plane(1, 2, 3)
-ck(type(p2).__name__ == 'Math.Plane', 'factory ignores args')
+ck(type(p2).__name__ == 'Plane', 'factory ignores args')
 ck(not isinstance(p, Math.MatrixProvider), 'Plane is not a MatrixProvider')
 ck(not hasattr(p, 'translation'), 'no matrix attributes')
 
@@ -2828,6 +2830,125 @@ __probe = '; '.join(_f) or 'ok'
 "#,
             );
             assert_eq!(text, "ok", "math plane behaviour mismatch: {text}");
+        });
+    }
+
+    /// The `Math.Vector4Provider` base, `Math.Vector4Basic` and
+    /// `Math.Vector4Product` behave as the reference's provider family does:
+    /// `coerce` wraps a `Vector4` or a tuple of four floats into a
+    /// `Vector4Basic`, the held sources feed the read-only `value`, and
+    /// `Vector4Product` multiplies them componentwise in the reference's
+    /// `a`-then-`b` order.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4providers_behave_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+# Module surface: the concrete providers carry a factory, the base and the
+# basic value type do not, the reference's PY_TYPEOBJECT with no PY_FACTORY.
+ck(hasattr(Math, 'Vector4Product'), 'Vector4Product factory in module')
+ck(not hasattr(Math, 'Vector4Provider'), 'no Vector4Provider factory')
+ck(not hasattr(Math, 'Vector4Basic'), 'no Vector4Basic factory')
+
+p = Math.Vector4Product()
+ck(p is not None, 'Vector4Product constructs')
+ck(type(p).__name__ == 'Vector4Product', 'the Vector4Product type')
+ck(raises(TypeError, lambda: Math.Vector4Product(1)), 'factory takes no arguments')
+
+# Both sources unset: the reference provides the zero vector.
+zero = p.value
+ck(isinstance(zero, Math.Vector4), 'value is a Vector4')
+ck(zero.x == 0.0 and zero.y == 0.0 and zero.z == 0.0 and zero.w == 0.0,
+   'unset product is the zero vector')
+
+# The slots start empty, and read back as None.
+ck(p.a is None, 'a starts None')
+ck(p.b is None, 'b starts None')
+
+# Coercion: a tuple of four floats and a Vector4 both become a Vector4Basic.
+p.a = (1.0, 2.0, 3.0, 4.0)
+ck(type(p.a).__name__ == 'Vector4Basic', 'a tuple coerces to a Vector4Basic')
+ck(p.a.value.x == 1.0 and p.a.value.w == 4.0, 'the coerced value')
+p.b = Math.Vector4(2.0, 2.0, 2.0, 2.0)
+ck(type(p.b).__name__ == 'Vector4Basic', 'a Vector4 coerces to a Vector4Basic')
+
+# The componentwise product, the reference's parallelMultiply.
+prod = p.value
+ck(prod.x == 2.0 and prod.y == 4.0 and prod.z == 6.0 and prod.w == 8.0,
+   'componentwise product')
+
+# Replacing a set slot: the reference releases the old source and holds the
+# new one, the SmartPointer assignment's decref-and-incref.
+p.a = (9.0, 9.0, 9.0, 9.0)
+ck(p.a.value.x == 9.0, 'the slot replaced')
+ck(p.value.x == 18.0, 'the replacement feeds the product')
+
+# One source unset: the reference provides that source's value.
+p2 = Math.Vector4Product()
+p2.b = (3.0, 4.0, 5.0, 6.0)
+only = p2.value
+ck(only.x == 3.0 and only.y == 4.0 and only.z == 5.0 and only.w == 6.0,
+   'the lone source provides')
+
+# Nested providers: the sources themselves are providers, and their own
+# outputs are read on the way down.
+inner = Math.Vector4Product()
+inner.a = (2.0, 2.0, 2.0, 2.0)
+inner.b = (3.0, 3.0, 3.0, 3.0)
+outer = Math.Vector4Product()
+outer.a = inner
+outer.b = (1.0, 1.0, 1.0, 1.0)
+ck(outer.value.x == 6.0 and outer.value.w == 6.0, 'nested providers compose')
+
+# The Vector4Basic value is read-write, and a change reaches the product.
+p.a.value = (5.0, 5.0, 5.0, 5.0)
+ck(p.value.x == 10.0, 'a Vector4Basic value change reaches the product')
+ck(raises(TypeError, lambda: setattr(p.a, 'value', 'nope')),
+   'a Vector4Basic value wants a Vector4')
+
+# Self-assignment keeps the reference count straight and leaves the value.
+held = p.a
+self_assigned = p.a
+ck(self_assigned is held, 'reading a slot returns the same object')
+p.a = held
+ck(p.a is held, 'self-assignment is a no-op')
+ck(p.value.x == 10.0, 'the self-assignment kept the value')
+
+# None clears the slot, the reference's SmartPointer to empty.
+p.a = None
+ck(p.a is None, 'None clears a slot')
+ck(p.value.x == 2.0, 'the cleared slot leaves the other source')
+
+# Assignment that is neither a Vector4 nor a provider is refused.
+ck(raises(TypeError, lambda: p.__setattr__('b', 5)), 'a slot wants a provider or None')
+
+# Deletion is refused too: the reference cannot coerce a null assignment.
+ck(raises(TypeError, lambda: p.__delattr__('b')), 'deleting a slot refuses')
+ck(p.b.value.x == 2.0, 'the refused deletion kept the slot')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4 provider behaviour mismatch: {text}"
+            );
         });
     }
 
