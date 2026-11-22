@@ -29,9 +29,23 @@ public:
     bool set_property(int64_t entity_id, const String& path, const String& value);
     bool is_logged_in() const { return logged_in_; }
 
+    static void _bind_methods();
+
 private:
     bool logged_in_ = false;
 };
+
+/// Bind the script-callable methods, so a GDScript can log in and issue
+/// RPCs against the native class.
+void BwGodot::_bind_methods()
+{
+    ClassDB::bind_method(D_METHOD("login", "user", "password"), &BwGodot::login);
+    ClassDB::bind_method(D_METHOD("logout"), &BwGodot::logout);
+    ClassDB::bind_method(D_METHOD("rpc", "entity_id", "method", "parameters"), &BwGodot::rpc);
+    ClassDB::bind_method(D_METHOD("get_property", "entity_id", "path"), &BwGodot::get_property);
+    ClassDB::bind_method(
+        D_METHOD("set_property", "entity_id", "path", "value"), &BwGodot::set_property);
+}
 
 /// Register the class with the engine once the scene module is up.
 void initialize_boundless_sdk(ModuleInitializationLevel p_level)

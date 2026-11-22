@@ -8,6 +8,15 @@
 //! Python parses it with `configparser` ([`ini_parses`]) — a real toolchain
 //! check that the file is loadable-format.  Loading it into a clean project
 //! needs Godot itself, so that step is a recorded gap ([`GODOT_LOAD_GAP`]).
+//!
+//! BW-21-05-02 — the script methods are the SDK entry points the native
+//! class binds for GDScript ([`SCRIPT_METHODS`]), called by the script
+//! ([`SCRIPT_FILE`]); the binding is the cross-file check, since a bare
+//! runner has no Godot to run a script in.  Independently,
+//! [`script_login_and_rpc`] drives the script's two calls against the SDK
+//! session model, so the acceptance — a script can log in and issue an RPC —
+//! is checkable without an engine.  Running the script in Godot is a
+//! recorded gap ([`GODOT_SCRIPT_GAP`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,8 +32,36 @@ pub const PLUGIN_CONFIG_FILE: &str = "plugin.cfg";
 /// The GDExtension's native class and entry symbol.
 pub const NATIVE_SOURCE: &str = "BwGodot.cpp";
 
+/// The SDK script: the script methods a node calls to reach the SDK.
+pub const SCRIPT_FILE: &str = "bw_sdk.gd";
+
+/// The editor plugin script, as the plugin config names it.
+pub const PLUGIN_SCRIPT_FILE: &str = "bw_godot_plugin.gd";
+
 /// The files the delivery consists of.
-pub const DELIVERED_FILES: &[&str] = &[GD_EXTENSION_FILE, PLUGIN_CONFIG_FILE, NATIVE_SOURCE];
+pub const DELIVERED_FILES: &[&str] = &[
+    GD_EXTENSION_FILE,
+    PLUGIN_CONFIG_FILE,
+    NATIVE_SOURCE,
+    SCRIPT_FILE,
+    PLUGIN_SCRIPT_FILE,
+];
+
+/// The script methods the native class binds, as `(method, parameters)`.
+pub const SCRIPT_METHODS: &[(&str, &[&str])] = &[
+    ("login", &["user", "password"]),
+    ("logout", &[]),
+    ("rpc", &["entity_id", "method", "parameters"]),
+    ("get_property", &["entity_id", "path"]),
+    ("set_property", &["entity_id", "path", "value"]),
+];
+
+/// The recorded gap for the one step no bare runner can do: running the
+/// script methods in Godot.  This lane does not create the
+/// `sdk/engines/godot/` tree — an incomplete one would make
+/// `ci/sdk-archive.sh` fail (opening the tree obliges a check), so the
+/// harness stays at its honest SKIP naming the packaging ticket.
+pub const GODOT_SCRIPT_GAP: &str = "godot-sdk: running the script methods in Godot needs Godot itself — the engine is absent on this runner, and this lane does not create sdk/engines/godot/ (an incomplete tree would make ci/sdk-archive.sh fail), so the harness records a SKIP naming BW-21-05-02";
 
 /// The plugin's name, as the editor config declares it.
 pub const EXTENSION_NAME: &str = "Boundless SDK";
@@ -112,6 +149,37 @@ pub fn ini_parses(name: &str) -> Option<bool> {
         .output()
         .ok()?;
     Some(out.status.success())
+}
+
+/// What the script run reported: whether it logged in, and whether its RPC
+/// round trip answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptCallOutcome {
+    /// Whether the script logged in.
+    pub logged_in: bool,
+    /// Whether the script's RPC round trip answered.
+    pub rpc_answered: bool,
+}
+
+/// BW-21-05-02: run the script's two calls against the SDK session model —
+/// log in, then issue an RPC and let the server answer it.  The acceptance
+/// — a script can log in and issue an RPC — is checkable from the returned
+/// outcome.
+pub fn script_login_and_rpc() -> ScriptCallOutcome {
+    use crate::sdk_session::{SdkSession, ServerFlavor};
+
+    let mut session = SdkSession::new(ServerFlavor::New);
+    let logged_in = session.login().is_ok();
+
+    // The script's RPC: a call answers by its correlation id.
+    let call = session.rpc(1, "logOff", &["timeout"]);
+    let _ = session.answer(call, &["ok"]);
+    let rpc_answered = session.round_trip(call).is_some_and(|rpc| rpc.answered);
+
+    ScriptCallOutcome {
+        logged_in,
+        rpc_answered,
+    }
 }
 
 #[cfg(test)]
@@ -213,5 +281,70 @@ mod tests {
         assert!(GODOT_LOAD_GAP.contains("Godot"));
         assert!(GODOT_LOAD_GAP.contains("BW-21-05-01"));
         assert!(GODOT_LOAD_GAP.contains("sdk/engines/godot/"));
+    }
+
+    #[test]
+    fn the_native_class_binds_every_script_method() {
+        let source = delivered(NATIVE_SOURCE);
+
+        // Every method a script can call is bound with its parameter names,
+        // so the GDScript sees it with the right signature.
+        for (method, parameters) in SCRIPT_METHODS {
+            let args: Vec<String> = std::iter::once(method.to_string())
+                .chain(parameters.iter().copied().map(String::from))
+                .map(|arg| format!("\"{arg}\""))
+                .collect();
+            assert!(
+                source.contains(&format!("D_METHOD({})", args.join(", "))),
+                "the native class does not bind {method}",
+            );
+            assert!(
+                source.contains(&format!("&BwGodot::{method}")),
+                "the native class does not bind {method} to its method",
+            );
+        }
+    }
+
+    #[test]
+    fn the_script_calls_only_bound_methods() {
+        // Cross-file: every call the script makes resolves to a method the
+        // native class binds, so a script can log in and issue an RPC.
+        let script = delivered(SCRIPT_FILE);
+        for (method, _) in SCRIPT_METHODS {
+            assert!(
+                script.contains(&format!("_server.{method}(")),
+                "the script does not call {method}",
+            );
+        }
+
+        // The script instantiates the native class by name.
+        assert!(script.contains("BwGodot.new()"));
+    }
+
+    #[test]
+    fn the_plugin_script_matches_the_config() {
+        // The script the plugin config names is the editor plugin script
+        // that is delivered, so the config does not dangle.
+        let config = delivered(PLUGIN_CONFIG_FILE);
+        assert!(config.contains(&format!("script = \"{PLUGIN_SCRIPT}\"")));
+        assert_eq!(PLUGIN_SCRIPT, PLUGIN_SCRIPT_FILE);
+        assert!(fixture_dir().join(PLUGIN_SCRIPT_FILE).is_file());
+    }
+
+    #[test]
+    fn a_script_can_login_and_issue_an_rpc() {
+        // The acceptance: the script's two calls succeed.
+        let outcome = script_login_and_rpc();
+        assert!(outcome.logged_in, "the script did not log in");
+        assert!(outcome.rpc_answered, "the script's RPC did not answer");
+    }
+
+    #[test]
+    fn the_script_method_gap_is_named() {
+        // The one step a bare runner cannot do is named, with the ticket the
+        // harness skips for, and the reason the plugin tree is not created.
+        assert!(GODOT_SCRIPT_GAP.contains("Godot"));
+        assert!(GODOT_SCRIPT_GAP.contains("BW-21-05-02"));
+        assert!(GODOT_SCRIPT_GAP.contains("sdk/engines/godot/"));
     }
 }
