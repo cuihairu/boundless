@@ -119,11 +119,12 @@ fn derive_enable(source: &str, text: &str) -> &'static str {
 /// The rows the lane index reaches, as the mapping items widen it:
 /// the engine libraries and server targets (BW-00-05-02: `lib/`, `server/`,
 /// which also covers `server/tools/` and `server/dbapp_extensions/`), then
-/// the client and tool targets (BW-00-05-03: `tools/`, `client/`). The Linux
-/// Make inventory carries no `client/` target (the C# client tree is
-/// FantasyDemo-side, BW-14) and no editor or exporter target (those are
-/// CMake-built, BW-13), so the prefixes index what exists.
-const LANE_SCOPES: [&str; 4] = ["lib/", "server/", "tools/", "client/"];
+/// the client and tool targets (BW-00-05-03: `tools/`, `client/`), then the
+/// examples (BW-00-05-04: `examples/`, the FantasyDemo and example-client
+/// tree). The Linux Make inventory carries no `client/` target (the C#
+/// client tree is FantasyDemo-side, BW-14) and no editor or exporter target
+/// (those are CMake-built, BW-13), so the prefixes index what exists.
+const LANE_SCOPES: [&str; 5] = ["lib/", "server/", "tools/", "client/", "examples/"];
 
 /// The rows the BW-00-05-02 mapping item indexes: the engine libraries and
 /// the server targets.
@@ -274,6 +275,28 @@ pub fn unindexed(rows: &[CoverageRow]) -> Vec<&CoverageRow> {
         .collect()
 }
 
+/// The verification fixture of the example client: the committed asset-fixture
+/// tree (`BW-00-04-03`), which records its root, content digest, and entity
+/// list. The example client loads that tree, so the tree is its resource
+/// entry.
+const FIXTURE_EXAMPLE_TREE: &str = "asset_fixtures:client-integration-example";
+
+/// The verification fixture a row's resource entry is traced by
+/// (BW-00-05-04): the committed asset-fixture catalogs, whose `Tree` records
+/// the root, the content digest, and the entity list, and whose generator
+/// record anchors the FantasyDemo script (`…/scripts/generate-fantasydemo-assets.py`)
+/// that reproduces the FantasyDemo tree byte-for-byte. Only the resource-
+/// bearing example client carries one here; the cellapp extension is an
+/// in-cell load its acceptance is the cellapp cluster run, so it stays
+/// unmapped until the status item fills it.
+fn entry_fixture(source: &str) -> Option<&'static str> {
+    if source.starts_with("examples/client_integration/") {
+        Some(FIXTURE_EXAMPLE_TREE)
+    } else {
+        None
+    }
+}
+
 /// Scan a reference checkout into ledger rows.
 ///
 /// `bw_source` is the bigworld source directory (`programming/bigworld`);
@@ -302,6 +325,11 @@ pub fn scan_reference(bw_source: &Path, todo: &Path) -> Vec<CoverageRow> {
         .collect();
     let claims = todo_lane_claims(todo);
     index_tasks(&mut rows, &claims);
+    for row in rows.iter_mut() {
+        if let Some(fixture) = entry_fixture(&row.source) {
+            row.fixture = fixture.to_string();
+        }
+    }
     rows
 }
 
@@ -407,9 +435,10 @@ mod tests {
             assert!(!row.task.is_empty(), "{}", row.target);
             assert!(!row.fixture.is_empty(), "{}", row.target);
             assert!(!row.status.is_empty(), "{}", row.target);
-            // The fixture and status fields are established but not yet
-            // filled; the task field is the mapping items' work.
-            assert_eq!(row.fixture, STATUS_UNMAPPED, "{}", row.target);
+            // The fixture field is filled by the mapping items where a
+            // resource entry exists, and the status field stays unmapped
+            // until the status item (BW-00-05-06) fills it.
+            assert!(!row.fixture.is_empty(), "{}", row.target);
             assert_eq!(row.status, STATUS_UNMAPPED, "{}", row.target);
         }
     }
@@ -641,6 +670,61 @@ mod tests {
         assert_eq!(res_packer.task, "BW-13");
         // No gap remains in scope.
         assert!(unindexed(&catalog).is_empty());
+    }
+
+    /// The acceptance for BW-00-05-04: the examples are indexed to the lane
+    /// that claims `examples/` (BW-14, the FantasyDemo/发行 lane), and the
+    /// script and resource entries are traceable through the committed
+    /// asset-fixture catalogs: the example client's resource tree (recorded
+    /// with its root, digest and entity list) is its fixture, the FantasyDemo
+    /// tree is recorded the same way, and the generator script that
+    /// reproduces FantasyDemo byte-for-byte is anchored there.
+    #[test]
+    fn the_examples_are_indexed_and_their_entries_traceable() {
+        let catalog = catalog();
+        let simple_python_client = catalog
+            .iter()
+            .find(|r| r.target == "simple_python_client")
+            .expect("simple_python_client row");
+        let cellapp_example = catalog
+            .iter()
+            .find(|r| r.target == "cellapp_example")
+            .expect("cellapp_example row");
+        // Both examples are claimed by the lane that claims `examples/`.
+        assert_eq!(simple_python_client.task, "BW-14");
+        assert_eq!(cellapp_example.task, "BW-14");
+        // The example client's resource entry is its fixture; the cellapp
+        // extension carries no resource tree, so it stays unmapped here.
+        assert_eq!(simple_python_client.fixture, FIXTURE_EXAMPLE_TREE);
+        assert_eq!(cellapp_example.fixture, STATUS_UNMAPPED);
+
+        // The entry the fixture names is really committed: the asset-fixture
+        // catalog carries the example tree with its root and digest.
+        let trees = crate::asset_fixtures::trees();
+        let example_tree = trees
+            .iter()
+            .find(|t| t.id == "client-integration-example")
+            .expect("client-integration-example tree");
+        assert!(
+            example_tree
+                .root
+                .starts_with("programming/bigworld/examples/client_integration/python/simple/res"),
+            "{}",
+            example_tree.root
+        );
+        assert_eq!(example_tree.digest.len(), 64, "sha256 hex");
+        assert!(example_tree.entities.contains("Guard"));
+
+        // The FantasyDemo resource and script entries are traceable the same
+        // way: the tree is committed with the generator anchor, and that
+        // generator is the script entry that reproduces it.
+        let fantasydemo = trees
+            .iter()
+            .find(|t| t.id == "fantasydemo")
+            .expect("fantasydemo tree");
+        assert_eq!(fantasydemo.generator, crate::asset_fixtures::GENERATOR);
+        assert_eq!(fantasydemo.digest.len(), 64, "sha256 hex");
+        assert!(fantasydemo.entities.contains("Avatar"));
     }
 
     /// The scanner and the committed catalog cannot drift: re-scanning a real

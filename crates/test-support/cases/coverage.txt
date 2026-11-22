@@ -13,7 +13,7 @@ bwengine_xml	shared_library	server/dbapp_extensions/bwengine_xml/Makefile.rules	
 bwmachined2	binary	server/tools/bwmachined/Makefile.rules	always	BW-05	-	-
 cellapp	binary	server/cellapp/Makefile.rules	always	BW-08	-	-
 cellapp	unit_test	server/cellapp/unit_test/Makefile.rules	always	BW-08	-	-
-cellapp_example	shared_library	examples/cellapp_extension/Makefile.rules	user_shouldBuildExamples != 0	-	-	-
+cellapp_example	shared_library	examples/cellapp_extension/Makefile.rules	user_shouldBuildExamples != 0	BW-14	-	-
 cellappmgr	binary	server/cellappmgr/Makefile.rules	cellappmgr/Makefile present	BW-05	-	-
 cellappmgr	unit_test	server/cellappmgr/unit_test/Makefile.rules	cellappmgr/Makefile present	BW-05	-	-
 chunk	library	lib/chunk/Makefile.rules	always	BW-10	-	-
@@ -65,7 +65,7 @@ script	unit_test	lib/script/unit_test/Makefile.rules	always	BW-03	-	-
 server	library	lib/server/Makefile.rules	always	BW-08,BW-12	-	-
 server	unit_test	lib/server/unit_test/Makefile.rules	always	BW-08,BW-12	-	-
 serviceapp	copy_of_binary	server/baseapp/Makefile.serviceapp	always	BW-07	-	-
-simple_python_client	binary	examples/client_integration/python/simple/Makefile.rules	user_shouldBuildExamples != 0	-	-	-
+simple_python_client	binary	examples/client_integration/python/simple/Makefile.rules	user_shouldBuildExamples != 0	BW-14	asset_fixtures:client-integration-example	-
 snapshot_helper	binary	server/tools/snapshot_helper/Makefile.rules	MySQL development libraries present	BW-09	-	-
 speedtree	library	lib/speedtree/Makefile.rules	always	BW-11	-	-
 sqlite	library	lib/sqlite/Makefile.rules	always	BW-09	-	-
