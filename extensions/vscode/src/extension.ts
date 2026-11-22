@@ -28,6 +28,12 @@ import {
   pythonAttachConfig,
   rustLaunchConfig,
 } from "./workspace/launchConfig";
+import {
+  DOCS_MCP_DEFAULTS,
+  DOCS_MCP_NAME,
+  docsMcpServer,
+  mergeMcpJson,
+} from "./workspace/docsMcp";
 import { AliasRegistry } from "./def/registry";
 import { ScriptRole, scriptPath } from "./workspace/resourceRoot";
 import {
@@ -35,6 +41,11 @@ import {
   displayPath,
   findResourceRoots,
 } from "./workspace/resourceRoot";
+
+/** The workspace folder, as the editor's own variable: the configurations the
+ * extension writes keep the editor's own substitution instead of a path it
+ * would have to update itself. */
+const WORKSPACE_FOLDER = "${workspaceFolder}";
 
 let roots: ResourceRoot[] = [];
 
@@ -215,6 +226,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("boundless.setupRustDebug", () =>
       setupRustDebug(),
     ),
+    vscode.commands.registerCommand("boundless.setupDocsMcp", () =>
+      setupDocsMcp(),
+    ),
   );
 
   /** Adds the Python attach configurations to every workspace folder's
@@ -239,6 +253,43 @@ export function activate(context: vscode.ExtensionContext): void {
       }),
     );
     writeLaunchConfigurations(configs);
+  }
+
+  /** Writes the documentation MCP server into every workspace folder's
+   * `mcp.json`, keeping the servers the user already had there. */
+  function setupDocsMcp(): void {
+    const settings = vscode.workspace.getConfiguration("boundless.docs");
+    const server = settings.get<string>("server", "");
+    if (!server.trim()) {
+      vscode.window.showInformationMessage(
+        "No documentation MCP server configured — set boundless.docs.server.",
+      );
+      return;
+    }
+    const command = isAbsolute(server)
+      ? server
+      : `${WORKSPACE_FOLDER}/${server}`;
+    const entry = docsMcpServer({
+      command,
+      root: settings.get<string>("root", WORKSPACE_FOLDER),
+      prefix: settings.get<string>("prefix", DOCS_MCP_DEFAULTS.prefix),
+      version: settings.get<string>("version", DOCS_MCP_DEFAULTS.version),
+      langs:
+        settings.get<string[]>("langs", [...DOCS_MCP_DEFAULTS.langs]) ?? [],
+      docsUrl: settings.get<string>("url", DOCS_MCP_DEFAULTS.docsUrl),
+    });
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const file = join(folder.uri.fsPath, ".vscode", "mcp.json");
+      const merged = mergeMcpJson(
+        nodeProbe().read(file),
+        DOCS_MCP_NAME,
+        entry,
+      );
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, merged, "utf8");
+      status.appendLine(`wrote ${displayPath(file)}`);
+    }
+    status.show(true);
   }
 
   /** Merges configurations into every workspace folder's `launch.json`. */

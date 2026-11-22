@@ -6,12 +6,14 @@
 
 pub mod angle;
 pub mod boundbox;
+pub mod ema;
 pub mod matrix;
 pub mod quaternion;
 pub mod vector;
 
 pub use angle::{MATH_PI, normalise as normalise_angle};
 pub use boundbox::BoundBox;
+pub use ema::{AccumulatingEma, Accumulator, Ema};
 pub use matrix::Matrix;
 pub use quaternion::Quaternion;
 pub use vector::{Vector2, Vector3, Vector4, almost_zero, clamp};

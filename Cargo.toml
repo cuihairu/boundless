@@ -7,9 +7,13 @@ members = [
     "crates/mercury",
     "crates/contracts",
     "crates/entitydef",
+    # "crates/db",  # re-add when the db crate lands (BW-09): the member
+    #               # was committed before its crate, breaking `--workspace`.
     "crates/python-host",
     "crates/server-runtime",
     "crates/test-support",
+    "crates/asset-pipeline",
+    "crates/python-module",
     "apps/server",
 ]
 
@@ -22,6 +26,11 @@ repository = "https://github.com/cuihairu/boundless"
 [workspace.dependencies]
 # External dependencies.
 libc = "0.2"
+# Definition digest (BW-04-01-05): the reference `MD5::Digest::quote()` is
+# 32 nibbles of uppercase hex, which is this crate's digest bytes upper-cased.
+md-5 = "0.10"
+# Asset rules / directory dependency patterns (the reference uses RE2).
+regex = "1"
 
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
@@ -30,10 +39,11 @@ platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
 mercury = { path = "crates/mercury" }
 # contracts = { path = "crates/contracts" }  # re-add when a role runtime consumes it
-# entitydef = { path = "crates/entitydef" }  # re-add at BW-02+
+entitydef = { path = "crates/entitydef" }
 python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
+asset-pipeline = { path = "crates/asset-pipeline" }
 
 [profile.release]
 opt-level = 3

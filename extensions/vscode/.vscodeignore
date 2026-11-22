@@ -1,0 +1,18 @@
+# The editor needs the compiled extension and the contributed files only:
+# sources, tests, harnesses and the dev manifest stay out of the package.
+.vscodeignore
+.gitignore
+*.ts
+*.cjs
+*.sh
+*.py
+src/
+test/
+tools/
+tsconfig.json
+tsconfig.test.json
+vitest.config.ts
+pnpm-lock.yaml
+pnpm-workspace.yaml
+out/**/*.map
+*.vsix

@@ -1,0 +1,14 @@
+<root>
+	<Properties>
+		<rank>
+			<Type>	INT8	</Type>
+			<Flags>	BASE	</Flags>
+		</rank>
+	</Properties>
+
+	<BaseMethods>
+		<rankUp>
+			<Args>	<by>	INT8	</by>	</Args>
+		</rankUp>
+	</BaseMethods>
+</root>

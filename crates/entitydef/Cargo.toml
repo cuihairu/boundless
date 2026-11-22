@@ -9,4 +9,7 @@ repository.workspace = true
 
 [dependencies]
 foundation = { workspace = true }
-# resources = { workspace = true }  # re-add when entity tables load from xml
+md-5 = { workspace = true }
+# Entity tables load from `entities.xml` / `alias.xml` (BW-04-01-01), so the
+# DataSection and resource search path are needed here.
+resources = { workspace = true }

@@ -1,14 +1,30 @@
 //! BW-02 transports, message framing and RPC.
 
+pub mod bundle_dispatch;
+#[cfg(target_os = "linux")]
+pub mod channel_listener;
+#[cfg(target_os = "linux")]
+pub mod channel_map;
+pub mod circular_array;
+#[cfg(target_os = "linux")]
+pub mod condemned_channels;
 pub mod endpoint;
-pub mod exposed_message_range;
+#[cfg(target_os = "linux")]
+pub mod event_dispatcher;
+pub mod frequent_tasks;
 pub mod interface_element;
-pub mod message_frame;
+pub mod interface_minder;
+pub mod interface_table;
+pub mod interfaces;
+#[cfg(target_os = "linux")]
+pub mod irregular_channels;
+pub mod message_framing;
 pub mod misc;
 #[cfg(target_os = "linux")]
 pub mod network_interface;
 pub mod network_stats;
 pub mod network_utils;
+pub mod nub_exception;
 pub mod packet;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
@@ -18,4 +34,12 @@ pub mod packet_receiver;
 /// `HAS_EPOLL` and no other backend is ported yet.
 #[cfg(target_os = "linux")]
 pub mod poller;
+
+pub mod reply_order;
+pub mod request;
 pub mod request_manager;
+pub mod udp_bundle;
+#[cfg(target_os = "linux")]
+pub mod udp_channel;
+pub mod unacked_packet;
+pub mod unpacked_message_header;

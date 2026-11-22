@@ -1,0 +1,21 @@
+<root>
+	<Parent>	Alpha	</Parent>
+
+	<Properties>
+		<shield>
+			<Type>	INT16	</Type>
+			<Flags>	BASE_AND_CLIENT	</Flags>
+		</shield>
+	</Properties>
+
+	<BaseMethods>
+		<repair>
+			<ReturnValues>	<left>	INT32	</left>	</ReturnValues>
+			<Exposed/>
+		</repair>
+	</BaseMethods>
+
+	<ClientMethods>
+		<ping/>
+	</ClientMethods>
+</root>

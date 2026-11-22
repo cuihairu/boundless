@@ -691,7 +691,6 @@ version = "0.1.0"
     }
 
     #[test]
-    #[test]
     fn skipped_tests_render_and_count_in_archives() {
         // Ignored tests are common in real runs; their SKIP lines must
         // survive the render -> parse roundtrip and the summary.

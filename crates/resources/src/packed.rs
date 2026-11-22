@@ -165,10 +165,10 @@ impl PackedSection {
     /// `asString` and the virtual `asInt64` — reproduced by this port
     /// as unbounded recursion, never exercised on well-formed files.
     pub fn as_int(&self, default: i32) -> i32 {
-        if self.own_type == SectionType::INT {
-            if let Some(v) = get_integer_val(&self.own_data) {
-                return v as i32;
-            }
+        if self.own_type == SectionType::INT
+            && let Some(v) = get_integer_val(&self.own_data)
+        {
+            return v as i32;
         }
         self.fallback().as_int(default)
     }
@@ -187,10 +187,10 @@ impl PackedSection {
     /// `asString` and the virtual `asInt64` — reproduced by this port
     /// as unbounded recursion, never exercised on well-formed files.
     pub fn as_uint(&self, default: u32) -> u32 {
-        if self.own_type == SectionType::INT {
-            if let Some(v) = get_integer_val(&self.own_data) {
-                return v as u32;
-            }
+        if self.own_type == SectionType::INT
+            && let Some(v) = get_integer_val(&self.own_data)
+        {
+            return v as u32;
         }
         self.fallback().as_uint(default)
     }
@@ -202,10 +202,10 @@ impl PackedSection {
     /// `asString` and the virtual `asInt64` — reproduced by this port
     /// as unbounded recursion, never exercised on well-formed files.
     pub fn as_int64(&self, default: i64) -> i64 {
-        if self.own_type == SectionType::INT {
-            if let Some(v) = get_integer_val(&self.own_data) {
-                return v;
-            }
+        if self.own_type == SectionType::INT
+            && let Some(v) = get_integer_val(&self.own_data)
+        {
+            return v;
         }
         self.fallback().as_int64(default)
     }
@@ -259,7 +259,7 @@ impl PackedSection {
                 // A matrix is an empty string; it has children.
                 String::new()
             }
-            SectionType::FLOAT if self.own_len % 4 == 0 => {
+            SectionType::FLOAT if self.own_len.is_multiple_of(4) => {
                 let mut ds = DataSection::new("scratch");
                 match self.own_len / 4 {
                     1 => ds.set_float(self.as_float(0.0)),
@@ -319,9 +319,9 @@ impl PackedSection {
     pub fn as_matrix34(&self, default: Matrix) -> Matrix {
         let mut m = default;
         if self.own_type == SectionType::FLOAT && self.own_len == 4 * 12 {
-            for i in 0..4 {
-                for j in 0..3 {
-                    m.m[i][j] = f32_le(&self.own_data, (i * 3 + j) * 4);
+            for (i, row) in m.m.iter_mut().enumerate().take(4) {
+                for (j, cell) in row.iter_mut().enumerate().take(3) {
+                    *cell = f32_le(&self.own_data, (i * 3 + j) * 4);
                 }
             }
         } else {
@@ -345,10 +345,10 @@ impl PackedSection {
         if self.own_type == SectionType::STRING && self.own_len == 0 {
             return Vec::new();
         }
-        if self.own_type == SectionType::INT || self.own_type == SectionType::BOOL {
-            if let Some(decoded) = base64::decode_strict(&self.as_string()) {
-                return decoded;
-            }
+        if (self.own_type == SectionType::INT || self.own_type == SectionType::BOOL)
+            && let Some(decoded) = base64::decode_strict(&self.as_string())
+        {
+            return decoded;
         }
         // The XMLSection fallback ignores defaultVal entirely.
         let _ = default;
@@ -541,7 +541,7 @@ fn parse_children_block(name: &str, bytes: &[u8], strings: &[String]) -> PackedS
     let mut section = PackedSection {
         name: name.to_string(),
         own_type,
-        own_len: own_len as usize,
+        own_len,
         own_data,
         num_children: Some(n),
         children,
@@ -724,36 +724,37 @@ fn add_best_guess(ds: &DataSection, out: &mut Vec<u8>) -> SectionType {
     }
 
     // Big uint64s stay strings to avoid conversion errors downstream.
-    if let Some(u) = sscanf_u64(&s) {
-        if u > i64::MAX as u64 && s == u.to_string() {
-            out.extend_from_slice(s.as_bytes());
-            return SectionType::STRING;
-        }
+    if let Some(u) = sscanf_u64(s)
+        && u > i64::MAX as u64
+        && s == u.to_string()
+    {
+        out.extend_from_slice(s.as_bytes());
+        return SectionType::STRING;
     }
 
     // INT: the value must reformat to exactly the same string (no leading
     // zeros, no plus, no padding).
-    if let Some(v) = stream_i64(&s) {
-        if s == v.to_string() {
-            match v {
-                0 => {}
-                v if (-128..=127).contains(&v) => out.push(v as i8 as u8),
-                v if (i16::MIN as i64..=i16::MAX as i64).contains(&v) => {
-                    out.extend_from_slice(&(v as i16).to_le_bytes())
-                }
-                v if (i32::MIN as i64..=i32::MAX as i64).contains(&v) => {
-                    out.extend_from_slice(&(v as i32).to_le_bytes())
-                }
-                v => out.extend_from_slice(&v.to_le_bytes()),
+    if let Some(v) = stream_i64(s)
+        && s == v.to_string()
+    {
+        match v {
+            0 => {}
+            v if (-128..=127).contains(&v) => out.push(v as i8 as u8),
+            v if (i16::MIN as i64..=i16::MAX as i64).contains(&v) => {
+                out.extend_from_slice(&(v as i16).to_le_bytes())
             }
-            return SectionType::INT;
+            v if (i32::MIN as i64..=i32::MAX as i64).contains(&v) => {
+                out.extend_from_slice(&(v as i32).to_le_bytes())
+            }
+            v => out.extend_from_slice(&v.to_le_bytes()),
         }
+        return SectionType::INT;
     }
 
     // FLOAT: up to four iostream floats; the reference requires the value
     // to reformat identically through the XML writers.
-    if let Some(count) = stream_floats_up_to_4(&s) {
-        let vals = parse_floats(&s, count);
+    if let Some(count) = stream_floats_up_to_4(s) {
+        let vals = parse_floats(s, count);
         let f: Vec<f32> = vals.iter().map(|v| *v as f32).collect();
         let mut scratch = DataSection::new("scratch");
         let ok = match count {
@@ -785,11 +786,11 @@ fn add_best_guess(ds: &DataSection, out: &mut Vec<u8>) -> SectionType {
     }
 
     // BLOB: only when the base64 form is canonical.
-    if let Some(decoded) = base64::decode_strict(&s) {
-        if base64::encode(&decoded) == s {
-            out.extend_from_slice(&decoded);
-            return SectionType::BLOB;
-        }
+    if let Some(decoded) = base64::decode_strict(s)
+        && base64::encode(&decoded) == s
+    {
+        out.extend_from_slice(&decoded);
+        return SectionType::BLOB;
     }
 
     // STRING (everything else).
@@ -840,13 +841,9 @@ fn stream_i64(s: &str) -> Option<i64> {
     let mut any = false;
     while p < bytes.len() && bytes[p].is_ascii_digit() {
         any = true;
-        acc = match acc
+        acc = acc
             .checked_mul(10)
-            .and_then(|v| v.checked_add((bytes[p] - b'0') as i64))
-        {
-            Some(v) => v,
-            None => return None, // failbit on overflow
-        };
+            .and_then(|v| v.checked_add((bytes[p] - b'0') as i64))?;
         p += 1;
     }
     if !any {
@@ -865,9 +862,7 @@ fn stream_floats_up_to_4(s: &str) -> Option<usize> {
     let mut p = 0usize;
     let mut count = 0usize;
     loop {
-        let Some((_, np)) = stream_float(bytes, p) else {
-            return None;
-        };
+        let (_, np) = stream_float(bytes, p)?;
         count += 1;
         p = np;
         if count == 4 || p == bytes.len() {
@@ -1636,7 +1631,7 @@ mod tests {
         ]
         .iter()
         .copied()
-        .chain(std::iter::repeat(0x41).take(10))
+        .chain(std::iter::repeat_n(0x41, 10))
         .collect::<Vec<u8>>();
         let root = PackedSection::parse("root", &packed_file(&["c"], &block));
         assert_eq!(root.own_type(), SectionType::STRING);

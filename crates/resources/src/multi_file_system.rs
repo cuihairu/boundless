@@ -208,11 +208,11 @@ impl MultiFileSystem {
     pub fn resolve_to_absolute_path(&self, path: &mut String) -> FileType {
         for base in &self.base_file_systems {
             let ft = base.get_file_type(path, None);
-            if ft != FileType::NotFound {
-                if let Some(full_path) = base.get_absolute_path(path) {
-                    *path = full_path;
-                    return ft;
-                }
+            if ft != FileType::NotFound
+                && let Some(full_path) = base.get_absolute_path(path)
+            {
+                *path = full_path;
+                return ft;
             }
         }
         FileType::NotFound

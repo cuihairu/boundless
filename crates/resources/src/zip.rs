@@ -659,10 +659,10 @@ impl ZipFileSystem {
         // Already loaded rows sniff their in-memory (compressed) bytes.
         if let Some(data) = &file.data {
             if file.entry.compression_method == METHOD_DEFLATE {
-                if let Some(magic) = inflate_prefix(data, 4) {
-                    if magic == ZIP_HEADER_MAGIC {
-                        ft = FileType::Archive;
-                    }
+                if let Some(magic) = inflate_prefix(data, 4)
+                    && magic == ZIP_HEADER_MAGIC
+                {
+                    ft = FileType::Archive;
                 }
             } else if zip_test(data) {
                 ft = FileType::Archive;
@@ -855,7 +855,7 @@ impl ZipFileSystem {
         let mut real_name = name.to_string();
         clean_slashes(&mut real_name);
 
-        match self.file_map.get(&name.to_string()).copied() {
+        match self.file_map.get(name).copied() {
             None => {
                 // A decoded duplicate gets an encoded row name.
                 if self.duplicates.contains_key(name) {
@@ -1121,13 +1121,10 @@ fn compress_data(data: &[u8]) -> Option<Vec<u8>> {
     let mut encoder =
         flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
     std::io::Write::write_all(&mut encoder, data).ok()?;
-    encoder.finish().ok().and_then(|out| {
-        if out.len() <= data.len() + 1 {
-            Some(out)
-        } else {
-            None
-        }
-    })
+    encoder
+        .finish()
+        .ok()
+        .filter(|out| out.len() <= data.len() + 1)
 }
 
 /// Raw inflate of exactly `expected` bytes, requiring the stream to end
@@ -1138,7 +1135,9 @@ fn inflate_exact(data: &[u8], expected: usize) -> Option<Vec<u8>> {
     let mut out = vec![0u8; expected];
     decoder.read_exact(&mut out).ok()?;
     // The stream must terminate exactly at the expected length.
-    decoder.read(&mut [0u8; 1]).ok()?;
+    if decoder.read(&mut [0u8; 1]).ok()? != 0 {
+        return None;
+    }
     Some(out)
 }
 
@@ -2135,7 +2134,7 @@ mod tests {
         folder.entry.local_header_offset = -1;
         assert!(folder.is_folder());
         assert_eq!(folder.disk_name(), "dir/");
-        assert_eq!(folder.size_on_disk(), 30 + 8 + 0 + 46);
+        assert_eq!(folder.size_on_disk(), (30 + 8) + 46);
         assert!(!folder.is_valid());
         folder.clear();
         assert!(folder.filename.is_empty());

@@ -1,0 +1,20 @@
+### cstdmf_test ###
+OPTIONS:
+	--count          A count                       
+	--help           Program usage                 
+451 tests run
+There were no test failures.
+Test time: 1.05 seconds.
+
+### resmgr_test ###
+88 tests run
+There were no test failures.
+Test time: 2.74 seconds.
+
+### entitydef_test ###
+INFO: [Chunk] Registering factory for model
+INFO: [Chunk] Registering factory for shell
+INFO: [Chunk] Registering factory for terrain
+380 tests run
+There were no test failures.
+Test time: 0.373 seconds.

@@ -1,0 +1,60 @@
+name: Comparison report
+
+# BW-22-03-04 — the comparison report on demand, with an optional baseline.
+#
+# ci.yml's report job fires when ci/report.sh itself moves; this workflow is
+# the on-demand face: produce the report for any ref, optionally against a
+# baseline run archive to fill the compare section. The baseline is a path
+# inside the checkout to a committed run.txt; the diff behind the compare
+# section is the shared entry (BW-18-04-02), so the Rust toolchain is here
+# even though the report itself only reads.
+#
+# Nothing here publishes, releases or tags — the report lands in the run
+# artifact, which is as far as automation goes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Path in the checkout to a baseline run.txt (empty leaves compare as not given)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: comparison-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Comparison report
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust (pinned by rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Generate the comparison report
+        env:
+          CI_REPORT_BASELINE: ${{ inputs.baseline }}
+        run: ci/report.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-report-manual-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn

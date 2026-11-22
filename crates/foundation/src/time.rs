@@ -97,6 +97,18 @@ impl GameClock {
     }
 }
 
+/// The reference's `timestamp()`: monotonic nanosecond stamps with a
+/// process-local origin frozen at the first call. This is the real clock
+/// behind the dispatcher time queue (`realClock`); only differences are
+/// meaningful, like every stamp in this crate.
+pub fn stamp_now() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_nanos() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

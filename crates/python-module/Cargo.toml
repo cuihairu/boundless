@@ -1,0 +1,15 @@
+[package]
+name = "python-module"
+description = "BW-00-03-03: the minimal importable Python module the build entry produces"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# The library name is the importable module name: `import boundless` resolves
+# `libboundless.so` on the Python path, and the entry point is `PyInit_boundless`.
+name = "boundless"
+crate-type = ["rlib", "cdylib"]
+path = "src/lib.rs"

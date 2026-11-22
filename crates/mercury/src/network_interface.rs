@@ -12,15 +12,23 @@
 //! BW-02-02.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use platform::socket;
 
+use crate::channel_map::ChannelMap;
+use crate::condemned_channels::CondemnedChannels;
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
-use crate::misc::Reason;
+use crate::event_dispatcher::EventDispatcher;
+use crate::irregular_channels::IrregularChannels;
+use crate::misc::{CHANNEL_ID_NULL, Reason};
 use crate::packet::Packet;
-use crate::packet_receiver::{strerror, ErrorReporter, PacketReceiver, PacketSink};
+use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::poller::EventPoller;
+use crate::request_manager::RequestManager;
+use crate::udp_channel::{
+    ChannelPtr, DEFAULT_INACTIVITY_RESEND_DELAY, Traits as ChannelTraits, UdpChannel,
+};
 
 /// `Mercury::NetworkInterfaceType` (network_interface.hpp).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,22 +68,37 @@ pub struct NetworkInterface {
     is_external: bool,
     /// `verbosityLevel_`, defaulted to debug -- verbose.
     verbose: Cell<bool>,
-    /// The child-dispatcher stand-in this interface registers its socket
-    /// with. The reference builds an `EventDispatcher` here.
-    poller: EventPoller,
+    /// `dispatcher_.pPoller_`: the poller this interface registers its
+    /// socket on, shared with its dispatcher.
+    poller: Rc<EventPoller>,
+    /// `pDispatcher_`.
+    dispatcher: Rc<EventDispatcher>,
+    /// `channels_`: the live non-indexed channels (BW-02-03-02).
+    channels: RefCell<ChannelMap>,
+    /// The condemned channels waiting to be deleted.
+    condemned: RefCell<CondemnedChannels>,
+    /// `pIrregularChannels_` (BW-02-03-04): the shared resend timer for
+    /// the channels that do not send regularly.
+    irregular: RefCell<IrregularChannels>,
+    /// `pRequestManager_`.
+    request_manager: RefCell<Option<Rc<RequestManager>>>,
     /// Where `processPacket` hands datagrams until channels exist.
     sink: RefCell<Option<Rc<dyn PacketSink>>>,
     /// `dispatcher().errorReporter()`, defaulting to the logging reporter.
     reporter: RefCell<Option<Rc<dyn ErrorReporter>>>,
     /// `findChannel`, settable until the channel map lands (BW-02-03).
     channel_finder: RefCell<Option<Rc<ChannelFinder>>>,
+    /// This interface's own shared handle, so channel creation
+    /// (`findChannel`'s anonymous arm) can hand out an `Rc` of it.
+    self_weak: RefCell<Weak<NetworkInterface>>,
 }
 
 impl NetworkInterface {
     /// The reference constructor (network_interface.cpp:95): make the
-    /// socket and receiver, then `recreateListeningSocket`. Attaching a
-    /// main dispatcher and serving the reply interface element belong to
-    /// their owners (BW-02-01-05 / BW-02-02).
+    /// socket and receiver, then `recreateListeningSocket`. The
+    /// dispatcher is this interface's own (real clock); the reference
+    /// takes one from its owner, and the main-dispatcher coupling is the
+    /// owner's business (BW-02-01-05 / BW-02-02).
     ///
     /// Returns the interface and its receiver: the receiver is the handler
     /// registered on the interface's poller.
@@ -84,21 +107,39 @@ impl NetworkInterface {
         listening_port: u16,
         listening_interface: &str,
     ) -> (Rc<NetworkInterface>, Rc<PacketReceiver>) {
+        let shared = Self::new_with_dispatcher(interface_type, Rc::new(EventDispatcher::new()));
+        let receiver = PacketReceiver::new();
+        shared.recreate_listening_socket(&receiver, listening_port, listening_interface);
+        receiver.attach_interface(&shared);
+        (shared, receiver)
+    }
+
+    /// The channel-side constructor: no socket, only the dispatcher, the
+    /// channel map and the condemned list -- what the channel machinery
+    /// actually touches. Tests drive it with a pinned clock.
+    pub fn new_with_dispatcher(
+        interface_type: InterfaceType,
+        dispatcher: Rc<EventDispatcher>,
+    ) -> Rc<NetworkInterface> {
         let interface = NetworkInterface {
             udp_socket: RefCell::new(Endpoint::new()),
             address: RefCell::new(NONE),
             is_external: interface_type == InterfaceType::External,
             verbose: Cell::new(true),
-            poller: EventPoller::create(),
+            poller: dispatcher.poller(),
+            dispatcher,
+            channels: RefCell::new(ChannelMap::new()),
+            condemned: RefCell::new(CondemnedChannels::new()),
+            irregular: RefCell::new(IrregularChannels::new()),
+            request_manager: RefCell::new(None),
             sink: RefCell::new(None),
             reporter: RefCell::new(None),
             channel_finder: RefCell::new(None),
+            self_weak: RefCell::new(Weak::new()),
         };
-        let receiver = PacketReceiver::new();
-        interface.recreate_listening_socket(&receiver, listening_port, listening_interface);
         let shared = Rc::new(interface);
-        receiver.attach_interface(&shared);
-        (shared, receiver)
+        *shared.self_weak.borrow_mut() = Rc::downgrade(&shared);
+        shared
     }
 
     /// `recreateListeningSocket` (network_interface.cpp:339): discard the
@@ -118,9 +159,7 @@ impl NetworkInterface {
         // make the socket
         self.udp_socket.borrow_mut().socket(socket::SOCK_DGRAM);
         if !self.udp_socket.borrow().good() {
-            eprintln!(
-                "NetworkInterface::recreateListeningSocket: couldn't create a socket"
-            );
+            eprintln!("NetworkInterface::recreateListeningSocket: couldn't create a socket");
             return false;
         }
 
@@ -136,7 +175,11 @@ impl NetworkInterface {
         // ask endpoint to parse the interface specification into a name
         let mut ifname = String::new();
         let ifaddr = resolve_listening_interface(
-            |spec, name| self.udp_socket.borrow().find_indicated_interface(spec, name),
+            |spec, name| {
+                self.udp_socket
+                    .borrow()
+                    .find_indicated_interface(spec, name)
+            },
             |name, addr| self.udp_socket.borrow().get_interface_address(name, addr),
             listening_interface,
             &mut ifname,
@@ -243,9 +286,19 @@ impl NetworkInterface {
         self.udp_socket.borrow()
     }
 
-    /// The poller this interface registers on.
-    pub fn poller(&self) -> &EventPoller {
-        &self.poller
+    /// The poller this interface registers on -- its dispatcher's.
+    pub fn poller(&self) -> Rc<EventPoller> {
+        Rc::clone(&self.poller)
+    }
+
+    /// `dispatcher()`.
+    pub fn dispatcher(&self) -> Rc<EventDispatcher> {
+        Rc::clone(&self.dispatcher)
+    }
+
+    /// This interface as a shared handle, through the self weak cell.
+    pub(crate) fn self_rc(&self) -> Option<Rc<NetworkInterface>> {
+        self.self_weak.borrow().upgrade()
     }
 
     /// `isExternal`.
@@ -280,13 +333,239 @@ impl NetworkInterface {
         *self.channel_finder.borrow_mut() = finder;
     }
 
-    /// `findChannel(addr)` (network_interface.cpp:636): `None` until the
-    /// channel map exists.
-    pub fn find_channel(&self, addr: &Address) -> Option<Rc<dyn ChannelRef>> {
-        self.channel_finder
-            .borrow()
-            .as_ref()
-            .and_then(|finder| finder(addr))
+    /// `findChannel(addr)` as the error paths see it: the test seam when
+    /// one is installed, else the live channel map.
+    pub fn find_channel_ref(&self, addr: &Address) -> Option<Rc<dyn ChannelRef>> {
+        if let Some(finder) = self.channel_finder.borrow().as_ref() {
+            return finder(addr);
+        }
+        self.find_channel(*addr, false).map(|channel| {
+            // `Rc<ChannelRefHandle>` coerces at a typed binding -- `as`
+            // has no unsized cast.
+            let handle: Rc<dyn ChannelRef> = Rc::new(crate::udp_channel::ChannelRefHandle(channel));
+            handle
+        })
+    }
+
+    /// `NetworkInterface::findChannel( addr, createAnonymous )`
+    /// (network_interface.cpp:636) over `ChannelMap::find`
+    /// (channel_map.cpp:64): an anonymous channel is built to order on an
+    /// internal interface; external ones refuse the shortcut outright.
+    pub fn find_channel(&self, addr: Address, create_anonymous: bool) -> Option<ChannelPtr> {
+        assert!(
+            !create_anonymous || !self.is_external,
+            "NetworkInterface::findChannel: MF_ASSERT( !createAnonymous || !isExternal() )"
+        );
+
+        if addr.ip == 0 {
+            assert!(
+                !create_anonymous,
+                "ChannelMap::find: MF_ASSERT( !createAnonymous )"
+            );
+            return None;
+        }
+
+        if let Some(channel) = self.channels.borrow().find(addr) {
+            assert!(
+                channel.borrow().id() == CHANNEL_ID_NULL,
+                "ChannelMap::find: MF_ASSERT( pChannel->id() == CHANNEL_ID_NULL )"
+            );
+            return Some(channel);
+        }
+
+        if create_anonymous {
+            let interface = self
+                .self_rc()
+                .expect("NetworkInterface::findChannel: the interface holds its own handle");
+            let channel = UdpChannel::new(
+                &interface,
+                addr,
+                ChannelTraits::Internal,
+                DEFAULT_INACTIVITY_RESEND_DELAY,
+                CHANNEL_ID_NULL,
+            );
+            UdpChannel::set_is_anonymous(&channel, true);
+            Some(channel)
+        } else {
+            None
+        }
+    }
+
+    /// `registerChannel` (network_interface.cpp:651): file the channel
+    /// under its address.
+    pub fn register_channel(&self, channel: &ChannelPtr) -> bool {
+        self.channels.borrow_mut().add(channel)
+    }
+
+    /// `deregisterChannel` (network_interface.cpp:662): drop the
+    /// channel's address. Recently-dead bookkeeping for external
+    /// channels is BW-02-05.
+    pub fn deregister_channel(&self, channel: &ChannelPtr) -> bool {
+        self.channels.borrow_mut().remove(channel)
+    }
+
+    /// `setRequestManager`'s seam: the reply bookkeeping the channel
+    /// deaths and failures report to.
+    pub fn set_request_manager(&self, manager: Option<Rc<RequestManager>>) {
+        *self.request_manager.borrow_mut() = manager;
+    }
+
+    /// `onChannelGone` (network_interface.hpp): a channel has died -- any
+    /// requests waiting on it fail with `ChannelLost`.
+    pub fn on_channel_gone(&self, addr: &Address) {
+        if let Some(manager) = self.request_manager.borrow().as_ref() {
+            manager.cancel_requests_for_channel(addr);
+        }
+    }
+
+    /// `cancelRequestsFor( addr )` (network_interface.hpp): a channel's
+    /// remote has failed -- same fate for its requests.
+    pub fn cancel_requests_for(&self, addr: &Address) {
+        if let Some(manager) = self.request_manager.borrow().as_ref() {
+            manager.cancel_requests_for_channel(addr);
+        }
+    }
+
+    /// `delAnonymousChannel` (network_interface.cpp:672): anonymous
+    /// channels are cleaned up through here when their remote fails;
+    /// anything else is a bookkeeping error to report.
+    pub fn del_anonymous(&self, addr: &Address) {
+        let channel = match self.find_channel(*addr, false) {
+            Some(channel) => channel,
+            None => {
+                eprintln!(
+                    "NetworkInterface::delAnonymousChannel: Tried to delete an anonymous channel that doesn't exist ({addr})"
+                );
+                return;
+            }
+        };
+
+        if !channel.borrow().is_anonymous() {
+            eprintln!(
+                "NetworkInterface::delAnonymousChannel: Tried to delete a channel that is not anonymous ({addr})"
+            );
+            return;
+        }
+
+        UdpChannel::condemn(&channel);
+    }
+
+    /// `onAddressDead` (network_interface.cpp:684): an ICMP-style death
+    /// for an address fails its anonymous channel -- nobody else holds
+    /// it, so nobody else would clean it up.
+    pub fn on_address_dead(&self, addr: Address) {
+        if let Some(channel) = self.find_channel(addr, false)
+            && channel.borrow().is_anonymous()
+        {
+            UdpChannel::set_remote_failed(&channel);
+        }
+    }
+
+    /// `addCondemnedChannel`: the channel handed itself over with
+    /// `condemn`; the interface supplies the dispatcher and its own
+    /// handle for the sweep timer.
+    pub fn add_condemned_channel(&self, channel: &ChannelPtr) {
+        self.condemned
+            .borrow_mut()
+            .add(channel, &self.dispatcher, &self.self_weak.borrow());
+    }
+
+    /// `deleteFinishedChannels`: one sweep of the condemned collections.
+    pub fn delete_finished_channels(&self) {
+        let now = self.dispatcher.now();
+        self.condemned.borrow_mut().delete_finished_channels(now);
+    }
+
+    /// `destroyOwnedChannels` (network_interface.cpp:704): destroy every
+    /// channel the interface itself owns -- the anonymous and condemned
+    /// ones. Explicitly held channels survive with a warning.
+    pub fn destroy_owned_channels(&self) {
+        let owned: Vec<ChannelPtr> = {
+            let map = self.channels.borrow();
+            let mut owned = Vec::new();
+            for channel in map.iter() {
+                if channel.borrow().is_owned_by_interface() {
+                    owned.push(channel.clone());
+                } else {
+                    eprintln!(
+                        "ChannelMap::destroyOwnedChannels: Channel to {} is still registered",
+                        channel.borrow().c_str()
+                    );
+                }
+            }
+            owned
+        };
+
+        // Destroyed outside the map borrow: `destroy` deregisters through
+        // this same map.
+        for channel in owned {
+            UdpChannel::destroy(&channel);
+        }
+    }
+
+    /// Test access to the condemned collections.
+    #[cfg(test)]
+    pub fn condemned_channels(&self) -> &RefCell<CondemnedChannels> {
+        &self.condemned
+    }
+
+    /// How many channels the condemned collections hold, for tests.
+    #[cfg(test)]
+    pub fn condemned_size(&self) -> usize {
+        self.condemned.borrow().size()
+    }
+
+    /// Drop everything condemned without destroying, for tests that must
+    /// leave no sweep timer behind.
+    #[cfg(test)]
+    pub fn condemned_clear_for_test(&self) {
+        self.condemned.borrow_mut().clear();
+    }
+
+    // -- Irregular channels (BW-02-03-04) ---------------------------------
+
+    /// `pNetworkInterface_->irregularChannels().addIfNecessary( *this )`,
+    /// as the channel's `isLocalRegular` setter and send path reach it.
+    pub fn add_irregular_channel_if_necessary(&self, channel: &ChannelPtr) {
+        self.irregular.borrow_mut().add_if_necessary(
+            channel,
+            &self.dispatcher,
+            &self.self_weak.borrow(),
+        );
+    }
+
+    /// `pNetworkInterface_->irregularChannels().delIfNecessary( *this )`,
+    /// as `clearState` and `switchInterface` reach it.
+    pub fn del_irregular_channel_if_necessary(&self, channel: &ChannelPtr) {
+        self.irregular.borrow_mut().del_if_necessary(channel);
+    }
+
+    /// `setIrregularChannelsResendPeriod( seconds )`
+    /// (network_interface.cpp:718): set the shared resend-check period;
+    /// zero or less stops the monitoring.
+    pub fn set_irregular_channels_resend_period(&self, seconds: f32) {
+        self.irregular
+            .borrow_mut()
+            .set_period(seconds, &self.dispatcher, &self.self_weak.borrow());
+    }
+
+    /// `IrregularChannels::handleTimeout`: the shared timer's verdict --
+    /// every member gets its resend check.
+    pub fn check_irregular_channels(&self) {
+        self.irregular.borrow_mut().check();
+    }
+
+    /// Test access to the irregular collection.
+    #[cfg(test)]
+    pub fn irregular_channels(&self) -> &RefCell<IrregularChannels> {
+        &self.irregular
+    }
+
+    /// Drop everything irregular without destroying, for tests that must
+    /// leave no resend timer behind.
+    #[cfg(test)]
+    pub fn irregular_clear_for_test(&self) {
+        self.irregular.borrow_mut().clear();
     }
 
     /// `dispatcher().errorReporter()`: the registered reporter, or the
@@ -401,9 +680,7 @@ fn resolve_default_route_address(
 
 /// The `errno` after the failed bind.
 fn last_bind_errno() -> i32 {
-    std::io::Error::last_os_error()
-        .raw_os_error()
-        .unwrap_or(0)
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -466,22 +743,13 @@ mod tests {
 
         // Unparseable non-empty spec: warn and use all interfaces.
         consulted.set(false);
-        let addr = resolve_listening_interface(
-            |_spec, _name| -2,
-            addressless,
-            "not-a-spec",
-            &mut ifname,
-        );
+        let addr =
+            resolve_listening_interface(|_spec, _name| -2, addressless, "not-a-spec", &mut ifname);
         assert_eq!(addr, INADDR_ANY);
         assert!(!consulted.get(), "no name means no address query");
 
         // Empty spec: the same fallback, silently.
-        let addr = resolve_listening_interface(
-            |_spec, _name| -2,
-            addressless,
-            "",
-            &mut ifname,
-        );
+        let addr = resolve_listening_interface(|_spec, _name| -2, addressless, "", &mut ifname);
         assert_eq!(addr, INADDR_ANY);
         assert!(!consulted.get(), "no name means no address query");
     }
@@ -508,7 +776,11 @@ mod tests {
         assert_eq!(ip, Some(0x0100_00ac));
 
         assert_eq!(
-            resolve_default_route_address(|_name| -1, |_name, _addr| panic!("no name"), &mut ifname),
+            resolve_default_route_address(
+                |_name| -1,
+                |_name, _addr| panic!("no name"),
+                &mut ifname
+            ),
             None,
             "no default route refuses"
         );
@@ -586,11 +858,8 @@ mod tests {
         blocker.socket(socket::SOCK_DGRAM);
         assert_eq!(blocker.bind(39_757, LOOPBACK), 0);
 
-        let (interface, _receiver) = NetworkInterface::new(
-            InterfaceType::Internal,
-            39_757,
-            "127.0.0.1",
-        );
+        let (interface, _receiver) =
+            NetworkInterface::new(InterfaceType::Internal, 39_757, "127.0.0.1");
 
         assert!(!interface.is_good());
         assert!(interface.address().is_none());
@@ -620,13 +889,11 @@ mod tests {
         let (recv_wanted, send_wanted) = crate::network_utils::buffer_sizes();
 
         assert!(
-            interface.udp_socket().get_buffer_size(socket::SO_RCVBUF)
-                >= recv_wanted,
+            interface.udp_socket().get_buffer_size(socket::SO_RCVBUF) >= recv_wanted,
             "the receive buffer was raised to the wanted size"
         );
         assert!(
-            interface.udp_socket().get_buffer_size(socket::SO_SNDBUF)
-                >= send_wanted,
+            interface.udp_socket().get_buffer_size(socket::SO_SNDBUF) >= send_wanted,
             "the send buffer was raised to the wanted size"
         );
     }
@@ -688,6 +955,119 @@ mod tests {
         assert_eq!(sink.packets.borrow()[0].0, addr);
     }
 
+    /// A pinned-clock interface with no socket, for the channel-map
+    /// paths. The dispatcher's clock is the shared cell.
+    fn channel_interface(
+        interface_type: InterfaceType,
+    ) -> (Rc<NetworkInterface>, Rc<std::cell::Cell<u64>>) {
+        let clock = Rc::new(std::cell::Cell::new(1_000_000u64));
+        let clock_cell = Rc::clone(&clock);
+        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || {
+            clock_cell.get()
+        })));
+        (
+            NetworkInterface::new_with_dispatcher(interface_type, dispatcher),
+            clock,
+        )
+    }
+
+    /// `findChannelRef` wraps a live channel, and the receiver's error
+    /// paths run through it: an internal remote failure reports to the
+    /// request manager, an anonymous one cleans itself up, and the two
+    /// `delAnonymousChannel` bookkeeping errors are voiced.
+    #[test]
+    fn the_error_paths_run_through_the_live_map() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        let address = Address::new(LOOPBACK, socket::htons(7001));
+
+        let channel = UdpChannel::new(
+            &interface,
+            address,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // The live map answers, wrapped for the receiver.
+        let handle = interface
+            .find_channel_ref(&address)
+            .expect("the registered channel is found");
+        assert_eq!(handle.c_str(), channel.borrow().c_str());
+        assert!(handle.is_internal());
+        assert!(!handle.has_remote_failed());
+
+        // An internal failure cancels its requests through the manager.
+        let manager = Rc::new(RequestManager::new(false, interface.dispatcher()));
+        interface.set_request_manager(Some(manager.clone()));
+        handle.set_remote_failed();
+        assert!(handle.has_remote_failed());
+        assert_eq!(manager.num_pending(), 0);
+
+        // Not anonymous: `delAnonymousChannel` reports the mistake and
+        // leaves the channel alone.
+        interface.del_anonymous(&address);
+        assert!(!channel.borrow().is_destroyed());
+
+        // An anonymous channel at a fresh address is condemned and,
+        // nothing unacked, destroyed -- delAnonymousChannel's real work.
+        // The first channel still holds the old address, so the anonymous
+        // build needs its own.
+        let anonymous_address = Address::new(LOOPBACK, socket::htons(7002));
+        let anonymous = interface
+            .find_channel(anonymous_address, true)
+            .expect("an anonymous channel is built");
+        assert!(anonymous.borrow().is_anonymous());
+        interface.del_anonymous(&anonymous_address);
+        assert!(anonymous.borrow().is_destroyed());
+
+        // Nobody is registered there any more: the not-found arm.
+        interface.del_anonymous(&anonymous_address);
+
+        // `onAddressDead` on an address with no channel is silent; on the
+        // anonymous one it fails the channel.
+        interface.on_address_dead(Address::new(LOOPBACK, socket::htons(7004)));
+        let fresh_address = Address::new(LOOPBACK, socket::htons(7005));
+        let fresh = interface
+            .find_channel(fresh_address, true)
+            .expect("another anonymous channel");
+        interface.on_address_dead(fresh_address);
+        assert!(fresh.borrow().has_remote_failed());
+        assert!(fresh.borrow().is_destroyed(), "failed and anonymous: gone");
+    }
+
+    /// `destroyOwnedChannels` destroys what the interface owns -- the
+    /// anonymous channels -- and warns over the explicitly held ones,
+    /// which survive registered.
+    #[test]
+    fn destroy_owned_channels_takes_the_anonymous_and_leaves_the_held() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        let held_address = Address::new(LOOPBACK, socket::htons(7010));
+        let owned_address = Address::new(LOOPBACK, socket::htons(7011));
+
+        let held = UdpChannel::new(
+            &interface,
+            held_address,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        let anonymous = interface
+            .find_channel(owned_address, true)
+            .expect("an anonymous channel");
+        assert!(anonymous.borrow().is_anonymous());
+
+        interface.destroy_owned_channels();
+
+        assert!(!held.borrow().is_destroyed(), "the held channel survives");
+        assert!(interface.find_channel(held_address, false).is_some());
+        assert!(
+            anonymous.borrow().is_destroyed(),
+            "the anonymous one is gone"
+        );
+        assert!(interface.find_channel(owned_address, false).is_none());
+        assert_eq!(interface.condemned_size(), 0);
+    }
+
     /// The default reporter logs; a registered reporter receives instead.
     #[test]
     fn the_error_reporter_is_replaceable() {
@@ -705,9 +1085,6 @@ mod tests {
         interface
             .error_reporter()
             .report_exception(Reason::Inactivity, None);
-        assert_eq!(
-            *reporter.reports.borrow(),
-            vec![(Reason::Inactivity, None)]
-        );
+        assert_eq!(*reporter.reports.borrow(), vec![(Reason::Inactivity, None)]);
     }
 }

@@ -1,0 +1,7 @@
+NOTICE: [DataDescription] EntityDescriptionMap::parse: scripts/entities.xml does not have a <ClientServerEntities> section. Reverting to old-style parsing where server-only entities types were detected by non-existence of client Python script file.
+WARNING: [DataDescription] Couldn't open aliases file 'scripts/entity_defs/alias.xml'
+ERROR: [DataDescription] DataType::buildDataType: Could not find MetaDataType 'NOSUCHTYPE'
+ERROR: [DataDescription] DataDescription::parse: Unable to find data type 'NOSUCHTYPE' for Bad.hp
+WARNING: [DataDescription] Error parsing properties for Bad
+ERROR: [DataDescription] EntityDescriptionMap: Failed to load or parse def for entity type Bad
+ERROR: Failed to parse .def files

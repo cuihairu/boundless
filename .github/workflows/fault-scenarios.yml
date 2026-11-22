@@ -1,0 +1,60 @@
+name: Fault scenarios
+
+# BW-22-03-03 — manual fault scenarios.
+#
+# Fault drills are on demand: an operator picks a fixture filter and
+# dispatches; the lane runs the drill and leaves topology.tsv, the run
+# archive and the full log as artifacts whichever way it ends. There is no
+# schedule on purpose — a drill reproduces a specific failure question, it
+# is not a nightly measurement.
+#
+# The fixtures live in crates/test-support (BW-18-03-04) and run through the
+# local/CI shared entry (BW-18-04-01). Live-cluster drills against a
+# deployed topology join here once that substrate exists (BW-05-06-04).
+
+on:
+  workflow_dispatch:
+    inputs:
+      fixtures:
+        description: Fixture filter passed to run-tests
+        type: string
+        default: multiproc
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fault-scenarios
+  cancel-in-progress: false
+
+jobs:
+  fault-scenario:
+    name: Fault drill (manual)
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust (pinned by rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Run the fault drill
+        env:
+          CI_FAULT_FIXTURES: ${{ inputs.fixtures || 'multiproc' }}
+        run: ci/fault.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-fault-scenarios-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 30
+          if-no-files-found: warn

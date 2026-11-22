@@ -1,0 +1,50 @@
+<root>
+	<Properties>
+		<pid>
+			<Type>	INT64	</Type>
+			<Flags>	BASE_AND_CLIENT	</Flags>
+		</pid>
+		<hp>
+			<Type>	INT32	</Type>
+			<Flags>	BASE	</Flags>
+			<Default>	3	</Default>
+		</hp>
+		<label>
+			<Type>	STRING	</Type>
+			<Flags>	BASE_AND_CLIENT	</Flags>
+		</label>
+		<spin>
+			<Type>	FLOAT	</Type>
+			<Flags>	CELL_PRIVATE	</Flags>
+		</spin>
+	</Properties>
+
+	<BaseMethods>
+		<damage>
+			<Args>	<amount>	INT32	</amount>	</Args>
+			<Exposed/>
+		</damage>
+		<shout>
+			<Args>	<text>	STRING	</text>	</Args>
+			<Exposed/>
+		</shout>
+		<retire/>
+	</BaseMethods>
+
+	<CellMethods>
+		<explode>
+			<Args>	<radius>	FLOAT	</radius>	</Args>
+			<Exposed/>
+		</explode>
+		<vanish/>
+	</CellMethods>
+
+	<ClientMethods>
+		<blink>
+			<Args>	<count>	INT32	</count>	</Args>
+		</blink>
+		<wave>
+			<Args>	<hand>	STRING	</hand>	</Args>
+		</wave>
+	</ClientMethods>
+</root>

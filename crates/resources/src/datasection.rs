@@ -492,6 +492,19 @@ impl DataSection {
         self.children.get_mut(index)
     }
 
+    /// `XMLSection::isAttribute( isAttr )`: mark a section as an attribute
+    /// node (serialised on its own line inside its parent, before element
+    /// children). Needed by the asset pipeline's dependency serialisation.
+    pub fn set_attribute(&mut self, is_attribute: bool) {
+        self.is_attribute = is_attribute;
+    }
+
+    /// `XMLSection::delChildren()`: remove every child (attributes included).
+    /// The asset pipeline calls this before re-serialising a dependency list.
+    pub fn del_children(&mut self) {
+        self.children.clear();
+    }
+
     pub fn is_attribute(&self) -> bool {
         self.is_attribute
     }

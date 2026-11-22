@@ -300,7 +300,7 @@ mod tests {
         );
         // Relinking to the head must not touch the byte accounting.
         assert_eq!(cache.current_bytes(), 3);
-        assert_eq!(find_str(&mut cache, "ghost").is_none(), true);
+        assert!(find_str(&mut cache, "ghost").is_none());
         assert_eq!((cache.hits(), cache.misses()), (1, 1));
 
         // Heads stay put on repeated finds.
@@ -365,8 +365,8 @@ mod tests {
     fn clear_resets_the_statistics_too() {
         let mut cache = DataSectionCache::<String>::with_size(100);
         cache.add("a", 1, section("a"));
-        assert_eq!(cache.find("a").is_some(), true);
-        assert_eq!(cache.find("x").is_none(), true);
+        assert!(cache.find("a").is_some());
+        assert!(cache.find("x").is_none());
         assert_eq!((cache.hits(), cache.misses()), (1, 1));
 
         cache.clear();

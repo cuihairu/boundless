@@ -1,0 +1,26 @@
+<root>
+	<Properties>
+		<color>
+			<Type>	FIXED_DICT
+				<Properties>
+					<r>	<Type>	UINT8	</Type>	</r>
+					<g>	<Type>	UINT8	</Type>	</g>
+					<b>	<Type>	UINT8	</Type>	</b>
+				</Properties>
+			</Type>
+			<Flags>	CELL_PUBLIC	</Flags>
+		</color>
+		<pulses>
+			<Type>	INT32	</Type>
+			<Flags>	CELL_PRIVATE	</Flags>
+			<Default>	0	</Default>
+		</pulses>
+	</Properties>
+
+	<CellMethods>
+		<flash>
+			<Args>	<times>	UINT8	</times>	</Args>
+			<Exposed/>
+		</flash>
+	</CellMethods>
+</root>

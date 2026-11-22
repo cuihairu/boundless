@@ -1,12 +1,22 @@
 //! `Mercury::Reason` and its string table (`lib/network/misc.hpp`).
 
-/// `Mercury::MessageID` (`lib/network/misc.hpp`): a message identifier.
-///
-/// The reference types it as `uint8`, and its width is load-bearing -- the
-/// `InterfaceMinder` numbers its elements sequentially from 0 and the
-/// `EXPOSED_MESSAGE_RANGE` arithmetic assumes the two reserved Mercury ids,
-/// so a wider port would change `REPLY_MESSAGE_IDENTIFIER`'s meaning.
-pub type MessageId = u8;
+/// `MessageID` (`misc.hpp:90`): the identifier of the message inside the
+/// packet. One byte, so an interface owns at most 256 messages and
+/// `REPLY_MESSAGE_IDENTIFIER` reserves the top one.
+pub type MessageID = u8;
+
+/// `ReplyID` (`misc.hpp:110`): the number a request carries so that its
+/// reply can find it again. Four bytes on the wire, so a reply id is not
+/// the one byte a message id is.
+pub type ReplyID = i32;
+
+/// `REPLY_ID_NONE` (`misc.hpp:111`): no reply expected, and the value a
+/// header carries until one is handed out.
+pub const REPLY_ID_NONE: ReplyID = -1;
+
+/// `REPLY_ID_MAX` (`misc.hpp:112`): the top of the range the id generator
+/// hands out before it wraps back down.
+pub const REPLY_ID_MAX: ReplyID = 1_000_000;
 
 /// `Mercury::Reason`: reasons for Mercury errors, exceptions, and return
 /// codes. The reference numbers them downwards from 0 so that
@@ -72,6 +82,68 @@ impl Reason {
     }
 }
 
+/// `SeqNum` (`misc.hpp:25`): a packet sequence number. Only 28 bits are
+/// usable; `SEQ_NULL` sits exactly one past the mask, so it can never be
+/// a real number.
+pub type SeqNum = u32;
+
+/// `SEQ_SIZE` (`misc.hpp:26`).
+pub const SEQ_SIZE: SeqNum = 0x1000_0000;
+
+/// `SEQ_MASK` (`misc.hpp:27`).
+pub const SEQ_MASK: SeqNum = SEQ_SIZE - 1;
+
+/// `SEQ_NULL` (`misc.hpp:28`): "no sequence number".
+pub const SEQ_NULL: SeqNum = SEQ_SIZE;
+
+/// `seqMask` (`misc.hpp:34`): fold a sequence number back into range.
+pub fn seq_mask(x: SeqNum) -> SeqNum {
+    x & SEQ_MASK
+}
+
+/// `seqLessThan` (`misc.hpp:44`): whether `a` comes before `b` on the
+/// ring. The masked difference answers "did we wrap between them".
+pub fn seq_less_than(a: SeqNum, b: SeqNum) -> bool {
+    seq_mask(a.wrapping_sub(b)) > SEQ_SIZE / 2
+}
+
+/// `ChannelID` (`misc.hpp:96`).
+pub type ChannelID = i32;
+
+/// `CHANNEL_ID_NULL` (`misc.hpp:97`): not on a channel.
+pub const CHANNEL_ID_NULL: ChannelID = 0;
+
+/// `ChannelVersion` (`misc.hpp`): the generation a channel carries, so a
+/// peer that restarted can be told apart from the live one.
+pub type ChannelVersion = u32;
+
+/// `SeqNumAllocator` (`misc.hpp:53`): doles out sequence numbers for
+/// off-channel packets, wrapping through [`seq_mask`].
+pub struct SeqNumAllocator {
+    next_num: SeqNum,
+}
+
+impl SeqNumAllocator {
+    /// `SeqNumAllocator( firstSeqNum )`.
+    pub fn new(first_seq_num: SeqNum) -> Self {
+        Self {
+            next_num: first_seq_num,
+        }
+    }
+
+    /// `getNext`: hand out the current number, advance masked.
+    pub fn get_next(&mut self) -> SeqNum {
+        let ret_val = self.next_num;
+        self.next_num = seq_mask(self.next_num.wrapping_add(1));
+        ret_val
+    }
+
+    /// `operator SeqNum`: the number the next call hands out.
+    pub fn peek(&self) -> SeqNum {
+        self.next_num
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +190,28 @@ mod tests {
         for (reason, expected) in named {
             assert_eq!(reason.to_string(), expected, "{reason:?} names itself");
         }
+    }
+
+    /// The sequence ring: masking folds wraps, `seqLessThan` answers
+    /// across the wrap point, and the allocator hands out masked numbers
+    /// in order, `SEQ_NULL` unreachable.
+    #[test]
+    fn the_sequence_ring_wraps_through_the_mask() {
+        assert_eq!(SEQ_MASK, 0x0FFF_FFFF);
+        assert_eq!(SEQ_NULL, SEQ_SIZE, "null sits one past every real number");
+        assert_eq!(seq_mask(SEQ_SIZE + 5), 5);
+
+        assert!(seq_less_than(5, 6), "the plain order holds");
+        assert!(!seq_less_than(6, 5));
+        // Across the wrap: SEQ_MASK is before 0, a half-ring away.
+        assert!(seq_less_than(SEQ_MASK, 0));
+        assert!(seq_less_than(0, SEQ_MASK / 2));
+        assert!(!seq_less_than(0, SEQ_MASK), "the far half ring is behind");
+
+        let mut allocator = SeqNumAllocator::new(SEQ_SIZE - 2);
+        assert_eq!(allocator.get_next(), SEQ_SIZE - 2);
+        assert_eq!(allocator.get_next(), SEQ_SIZE - 1);
+        assert_eq!(allocator.get_next(), 0, "wraps through the mask");
+        assert_eq!(allocator.peek(), 1);
     }
 }

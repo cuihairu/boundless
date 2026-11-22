@@ -237,19 +237,15 @@ impl BwResource {
             remaining.push(arg.clone());
         }
 
-        if self.paths.is_empty() {
-            if let Some(res_path) = bw_res_path {
-                self.add_paths_with_source(
-                    res_path,
-                    "from BW_RES_PATH env variable",
-                    executable_dir,
-                );
-            }
+        if self.paths.is_empty()
+            && let Some(res_path) = bw_res_path
+        {
+            self.add_paths_with_source(res_path, "from BW_RES_PATH env variable", executable_dir);
         }
-        if self.paths.is_empty() {
-            if let Some(home) = home_of_uid(uid) {
-                self.add_paths_from_machined_conf(home.as_str(), executable_dir);
-            }
+        if self.paths.is_empty()
+            && let Some(home) = home_of_uid(uid)
+        {
+            self.add_paths_from_machined_conf(home.as_str(), executable_dir);
         }
 
         self.refresh_paths();
@@ -364,6 +360,67 @@ impl BwResource {
         self.paths.len()
     }
 
+    /// `BWResolver::dissolveFilename`: strip the first matching search-path
+    /// prefix off `file`, giving the path relative to that root.
+    ///
+    /// Quirks preserved:
+    /// - backslashes become `/` before anything else;
+    /// - a path with no drive that is already relative is returned unchanged
+    ///   (dissolving only makes sense for a path that has a root);
+    /// - each search path is tried in order with the "easiest test" first
+    ///   (`mf_pathcmp` on the prefix), then the fallback that compares the
+    ///   file's directory prefix so a differing drive specifier still matches
+    ///   (`getFilePath` of the file against `formatPath` of the root);
+    /// - a path that matches no root is returned unchanged (the reference
+    ///   merely logs "Invalid").
+    pub fn dissolve_filename(&self, file: &str) -> String {
+        let new_file = file.replace('\\', "/");
+        if !has_drive_in_path(&new_file) && path_is_relative(&new_file) {
+            return new_file;
+        }
+
+        for raw_path in &self.paths {
+            let path = format_path(raw_path);
+            // Easiest test: the search path is a prefix of the file.
+            if new_file.len() >= path.len() && new_file[..path.len()].eq_ignore_ascii_case(&path) {
+                return new_file[path.len()..].to_string();
+            }
+            // Otherwise compare the file's directory prefix.
+            let file_path = get_file_path(&new_file);
+            if file_path.len() > path.len() && file_path[..path.len()].eq_ignore_ascii_case(&path) {
+                return new_file[path.len()..].to_string();
+            }
+        }
+
+        new_file
+    }
+
+    /// `resolveToRelativePathT`: rewrite an absolute path to be relative to
+    /// the first matching resource path. Reports `false` (leaving `path`
+    /// untouched) for a path that is already relative or matches no resource
+    /// path with a `/` boundary.
+    ///
+    /// The reference finds the resource path as a substring anywhere then
+    /// splits at the resource path's length (ignoring the found position);
+    /// in practice the resource path is a prefix, so that is what is matched
+    /// here.
+    pub fn resolve_to_relative_path(&self, path: &mut String) -> bool {
+        if path_is_relative(path) {
+            return false;
+        }
+        let formatted = path.replace('\\', "/");
+        for res_path in &self.paths {
+            if formatted.len() > res_path.len()
+                && formatted.starts_with(res_path)
+                && formatted.as_bytes()[res_path.len()] == b'/'
+            {
+                *path = formatted[res_path.len() + 1..].to_string();
+                return true;
+            }
+        }
+        false
+    }
+
     /// `isValid`: at least one res path is registered.
     pub fn is_valid(&self) -> bool {
         !self.paths.is_empty()
@@ -391,22 +448,22 @@ impl BwResource {
             let pak_path = format!("{}/res.zip", path);
             if get_extension(path) == "zip" && (base == FileType::Archive || base == FileType::File)
             {
-                if let Some(data) = self.native_file_system.read_file(path) {
-                    if let Some(zip) = ZipArchiveFs::open(data) {
-                        self.file_system.add_base_file_system(Box::new(zip), -1);
-                        continue;
-                    }
+                if let Some(data) = self.native_file_system.read_file(path)
+                    && let Some(zip) = ZipArchiveFs::open(data)
+                {
+                    self.file_system.add_base_file_system(Box::new(zip), -1);
+                    continue;
                 }
                 // Invalid archives are dropped like the reference's
                 // "not a valid zip file" critical.
                 continue;
             }
             if self.native_file_system.get_file_type(&pak_path, None) == FileType::File {
-                if let Some(data) = self.native_file_system.read_file(&pak_path) {
-                    if let Some(zip) = ZipArchiveFs::open(data) {
-                        self.file_system.add_base_file_system(Box::new(zip), -1);
-                        continue;
-                    }
+                if let Some(data) = self.native_file_system.read_file(&pak_path)
+                    && let Some(zip) = ZipArchiveFs::open(data)
+                {
+                    self.file_system.add_base_file_system(Box::new(zip), -1);
+                    continue;
                 }
                 continue;
             }
@@ -472,6 +529,24 @@ impl BwResource {
         self.native_file_system.get_file_type(file, None) != FileType::NotFound
     }
 
+    /// `ensureAbsolutePathExists`: create the parent directory chain for
+    /// `path` (empty is rejected). When `path` already names a directory (a
+    /// trailing separator) its own chain is created instead. The reference
+    /// walks the separators and `mkdir`s each prefix (tolerating the Unix
+    /// `ENOENT` race); `create_dir_all` is the same contract — a path that
+    /// already exists, or whose chain is fully created, reports success.
+    pub fn ensure_absolute_path_exists(&self, path: &str) -> bool {
+        if path.is_empty() {
+            return false;
+        }
+        let dir = if path.ends_with('/') {
+            path.to_string()
+        } else {
+            get_file_path(path)
+        };
+        std::fs::create_dir_all(&dir).is_ok()
+    }
+
     /// `resolveToAbsolutePath`: relative (or empty) paths resolve against the
     /// multiplexer; absolute paths are probed natively. Directories gain a
     /// trailing `/`.
@@ -486,6 +561,43 @@ impl BwResource {
             path.push('/');
         }
         ft
+    }
+
+    /// `BWResolver::resolveFilename`: rewrite backslashes, then resolve a
+    /// relative path against the res paths (returning the first absolute
+    /// hit), falling back to a path whose directory matches, and finally to
+    /// the first res path. An already-absolute path is returned unchanged.
+    pub fn resolve_filename(&self, file: &str) -> String {
+        let file = file.replace('\\', "/");
+        if !path_is_relative(&file) {
+            return file;
+        }
+
+        // The file itself, as a child of each res path.
+        for index in 0..self.get_path_num() {
+            let candidate = format!("{}{}", format_path(self.get_path(index)), file);
+            if self.file_absolutely_exists(&candidate) {
+                return candidate;
+            }
+        }
+
+        // The file's directory matches a res path (its entry not found yet).
+        let dir = get_file_path(&file);
+        for index in 0..self.get_path_num() {
+            let path = format_path(self.get_path(index));
+            if self.file_absolutely_exists(&format!("{path}{dir}.")) {
+                return format!("{path}{file}");
+            }
+        }
+
+        // Fallback: the first res path stands in for the reference's
+        // `getDefaultPath`.
+        let default = if self.get_path_num() > 0 {
+            format_path(self.get_path(0))
+        } else {
+            String::new()
+        };
+        format!("{default}{file}")
     }
 
     /// `searchPathsForFile`: finds `file` by name under any res path,
@@ -652,16 +764,17 @@ impl BwResource {
     /// before their parents. The census half of the reference (`del` from
     /// `DataSectionCensus`) is a later task.
     pub fn purge(&self, path: &str, recursive: bool) {
-        if recursive && self.get_file_type(path, None) == FileType::Directory {
-            if let Some(entries) = self.file_system.read_directory(path) {
-                for entry in entries {
-                    let child = if path.is_empty() {
-                        entry
-                    } else {
-                        format!("{}/{}", path, entry)
-                    };
-                    self.purge(&child, true);
-                }
+        if recursive
+            && self.get_file_type(path, None) == FileType::Directory
+            && let Some(entries) = self.file_system.read_directory(path)
+        {
+            for entry in entries {
+                let child = if path.is_empty() {
+                    entry
+                } else {
+                    format!("{}/{}", path, entry)
+                };
+                self.purge(&child, true);
             }
         }
         self.section_cache.borrow_mut().remove(path);
@@ -959,7 +1072,7 @@ mod tests {
         write(&b, "/f.txt", b"b");
 
         let mut resource = BwResource::new();
-        resource.add_paths(&format!("{}:{}:{}:", a, b, format!("{}/gone", a)));
+        resource.add_paths(&format!("{}:{}:{}/gone:", a, b, a));
         assert_eq!(resource.get_path_num(), 2);
         // Like the reference, the multiplexer is only (re)built once a
         // refresh runs -- init calls postAddPaths at the very end.
@@ -1822,5 +1935,34 @@ mod tests {
         // Root is always in /etc/passwd; an absurd uid is not.
         assert!(passwd_home(0).is_some());
         assert_eq!(passwd_home(u32::MAX - 1), None);
+    }
+
+    /// `dissolveFilename`: strips the first matching search-path prefix.
+    #[test]
+    fn dissolve_filename_strips_search_path_prefix() {
+        let resource = BwResource::init_paths(&["/some/root"]);
+        // The simplest test: the search path is a prefix of the file.
+        assert_eq!(
+            resource.dissolve_filename("/some/root/foo/bar.txt"),
+            "foo/bar.txt"
+        );
+        assert_eq!(resource.dissolve_filename("/some/root/foo.txt"), "foo.txt");
+        // Backslashes are normalised first.
+        assert_eq!(resource.dissolve_filename("/some/root\\foo.txt"), "foo.txt");
+    }
+
+    /// A path with no drive that is already relative, or one under no search
+    /// path, is returned unchanged.
+    #[test]
+    fn dissolve_filename_returns_unmatched_paths_unchanged() {
+        let resource = BwResource::init_paths(&["/some/root"]);
+        assert_eq!(
+            resource.dissolve_filename("relative/path.txt"),
+            "relative/path.txt"
+        );
+        assert_eq!(
+            resource.dissolve_filename("/elsewhere/file.txt"),
+            "/elsewhere/file.txt"
+        );
     }
 }

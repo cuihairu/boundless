@@ -1,0 +1,9 @@
+<root>
+	<Distribution>	<Base>	true	</Base>	</Distribution>
+
+	<Methods>
+		<repair>
+			<Args>	<item>	INT32	</item>	</Args>
+		</repair>
+	</Methods>
+</root>

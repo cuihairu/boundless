@@ -2,7 +2,7 @@
 //!
 //! The reference operates on NUL-terminated byte buffers, not UTF-8: bytes
 //! >= 0x80 are escaped individually on write and character-code escapes
-//! truncate to `i8` on read. Everything here is therefore byte-oriented.
+//! > truncate to `i8` on read. Everything here is therefore byte-oriented.
 
 /// Reduce escape sequences in place, ported from `XmlSpecialChars::reduce`.
 ///

@@ -11,7 +11,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::workspace::BASE_DIRECTORY;
+use crate::workspace::base_dir;
 
 static NEXT_SLOT: AtomicU64 = AtomicU64::new(1);
 
@@ -26,7 +26,10 @@ pub struct RunRoot {
 impl RunRoot {
     /// Open a uniquely named run root.
     pub fn open(label: &str) -> io::Result<Self> {
-        let base = std::env::temp_dir().join(BASE_DIRECTORY).join("runs");
+        // The run root hangs off the per-environment fixture base
+        // (BW-00-03-04), so two environments on one machine keep their
+        // logs, databases and artifacts separate.
+        let base = base_dir().join("runs");
         std::fs::create_dir_all(&base)?;
         let unique = format!(
             "{}-{}-{}",

@@ -266,8 +266,8 @@ impl Dispatcher {
 
         // `if (!pTimeQueue_->empty()) maxWait = min(maxWait,
         // pTimeQueue_->nextExp( clock_() ) / stampsPerSecondD());`
-        if !self.timers.is_empty() {
-            let next = self.timers.next_exp() as f64 / self.timers.stamps_per_second() as f64;
+        if !self.timers.time_queue.is_empty() {
+            let next = self.timers.next_exp_seconds();
             max_wait = max_wait.min(next);
         }
 
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn calculate_wait_is_capped_by_max_wait_and_the_next_timer() {
         // Empty queue: the 0.1s ceiling.
-        let mut dispatcher = Dispatcher::new();
+        let dispatcher = Dispatcher::new();
         assert!((dispatcher.calculate_wait() - 0.1).abs() < f64::EPSILON);
 
         let clock = Rc::new(Cell::new(0u64));
@@ -778,5 +778,84 @@ mod tests {
         assert_eq!(read, 1);
         assert_eq!(dispatcher.process_once(false), 0);
         assert_eq!(counter.0.get(), 1);
+    }
+
+    /// delivery time passes.
+    #[test]
+    fn the_dispatcher_runs_frequent_tasks_then_timers() {
+        use crate::timers::TimerHandlerFn;
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let clock = Rc::new(Cell::new(1_000_000_000u64));
+        let clock_for_closure = Rc::clone(&clock);
+        let timers = DispatcherTimers::with_clock(Box::new(move || clock_for_closure.get()));
+        let mut dispatcher = Dispatcher::with_timers(timers);
+
+        let log_for_task = Rc::clone(&log);
+        dispatcher.add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
+            move || log_for_task.borrow_mut().push("frequent"),
+            "frequent",
+        ))));
+        let log_for_timer = Rc::clone(&log);
+        dispatcher.add_once_off_timer(
+            500_000,
+            Rc::new(TimerHandlerFn::new(
+                move |_, _| log_for_timer.borrow_mut().push("timer"),
+                "timer",
+            )),
+            0,
+            "timer",
+        );
+
+        // addTimer maps 500000us to 0.5s of stamps on the pinned clock.
+        assert_eq!(dispatcher.timers().time_queue.next_exp(0), 1_500_000_000);
+
+        // First pass: not due yet.
+        dispatcher.process_once(false);
+        assert_eq!(*log.borrow(), ["frequent"]);
+        assert_eq!(dispatcher.timers().num_timer_calls(), 0);
+
+        // Second pass at t=1.5s: the frequent task repeats, the timer
+        // fires.
+        clock.set(1_500_000_000);
+        dispatcher.process_once(false);
+        assert_eq!(*log.borrow(), ["frequent", "frequent", "timer"]);
+        assert_eq!(dispatcher.timers().num_timer_calls(), 1);
+    }
+
+    /// the timer pass (`if (!breakProcessing_) processTimers()`).
+    #[test]
+    fn a_break_inside_a_frequent_task_skips_the_timer_pass() {
+        use crate::timers::TimerHandlerFn;
+
+        let clock = Rc::new(Cell::new(1_000_000_000u64));
+        let clock_for_closure = Rc::clone(&clock);
+        let timers = DispatcherTimers::with_clock(Box::new(move || clock_for_closure.get()));
+        let mut dispatcher = Dispatcher::with_timers(timers);
+
+        let break_flag = dispatcher.break_flag();
+        dispatcher.add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
+            move || break_flag.set(true),
+            "breaker",
+        ))));
+
+        // Due at 1.1s; the clock is moved there first so the timer would
+        // fire if the pass ran.
+        let skipped_log = Rc::new(RefCell::new(Vec::new()));
+        let skipped_for_closure = Rc::clone(&skipped_log);
+        dispatcher.add_timer(
+            100_000,
+            Rc::new(TimerHandlerFn::new(
+                move |_, _| skipped_for_closure.borrow_mut().push("skipped"),
+                "skipped",
+            )),
+            0,
+            "skipped",
+        );
+        clock.set(1_100_000_000);
+
+        dispatcher.process_once(false);
+        assert_eq!(*skipped_log.borrow(), Vec::<&'static str>::new());
+        assert_eq!(dispatcher.timers().num_timer_calls(), 0);
     }
 }

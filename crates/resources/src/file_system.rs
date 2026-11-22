@@ -129,12 +129,12 @@ impl FileSystem for NativeFileSystem {
 
     fn get_file_type_ex(&self, path: &str, info: Option<&mut FileInfo>) -> FileType {
         let ft = self.get_file_type(path, info);
-        if ft == FileType::File {
-            if let Ok(mut file) = fs::File::open(self.resolve(path)) {
-                let mut magic = [0u8; 2];
-                if file.read_exact(&mut magic).is_ok() && u16::from_le_bytes(magic) == ZIP_MAGIC {
-                    return FileType::Archive;
-                }
+        if ft == FileType::File
+            && let Ok(mut file) = fs::File::open(self.resolve(path))
+        {
+            let mut magic = [0u8; 2];
+            if file.read_exact(&mut magic).is_ok() && u16::from_le_bytes(magic) == ZIP_MAGIC {
+                return FileType::Archive;
             }
         }
         ft
