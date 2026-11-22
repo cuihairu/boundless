@@ -578,6 +578,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4adaptor_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4swizzle_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4combiner_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4shader_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -3973,6 +3974,241 @@ __probe = '; '.join(_f) or 'ok'
                 text, "ok",
                 "math vector4combiner behaviour mismatch: {text}"
             );
+        });
+    }
+
+    /// `Math.Vector4Shader` against the reference (`script_math.cpp:4826-5320`):
+    /// the thirteen opcodes run into a register file every shader shares --
+    /// `Math.getRegister`'s sixty-three temporaries and one user register per
+    /// unique input, `r_[0]` the output, nothing reset between passes.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4shader_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+def close(a, b, tol=1e-6):
+    return abs(a - b) < tol
+
+ck(hasattr(Math, 'Vector4Shader'), 'Vector4Shader in module')
+ck(hasattr(Math, 'getRegister'), 'getRegister in module')
+
+# The temporary registers: one provider per number, all created on the first
+# call, the same object for the same number.
+r0 = Math.getRegister(0)
+r1 = Math.getRegister(1)
+r2 = Math.getRegister(2)
+r3 = Math.getRegister(3)
+r4 = Math.getRegister(4)
+r5 = Math.getRegister(5)
+r6 = Math.getRegister(6)
+r7 = Math.getRegister(7)
+r8 = Math.getRegister(8)
+r9 = Math.getRegister(9)
+r10 = Math.getRegister(10)
+r11 = Math.getRegister(11)
+r12 = Math.getRegister(12)
+r13 = Math.getRegister(13)
+r14 = Math.getRegister(14)
+ck(type(r0).__name__ == 'Vector4Register', 'the register type')
+ck('Vector4Provider' in [x.__name__ for x in type(r0).__mro__],
+   'the Vector4Provider base chain')
+ck(Math.getRegister(0) is r0, 'the same register for the same number')
+ck(type(Math.getRegister(62)).__name__ == 'Vector4Register',
+   'the last temporary register')
+
+# A fresh shader reads the file's r_[0], still the zero default.
+empty = Math.Vector4Shader()
+ck(type(empty).__name__ == 'Vector4Shader', 'the shader type')
+ck('Vector4Provider' in [x.__name__ for x in type(empty).__mro__],
+   'the Vector4Provider base chain')
+v = empty.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'an empty shader is zero')
+ck(raises(TypeError, lambda: Math.Vector4Shader(1)),
+   'the factory takes no arguments')
+
+# The opcodes in enum order against r_[1] = (2,3,4,5) and r_[6] = (4,6,8,10).
+src = Math.Vector4(2.0, 3.0, 4.0, 5.0)
+src2 = Math.Vector4(4.0, 6.0, 8.0, 10.0)
+src3 = Math.Vector4(5.0, 0.0, 0.0, 0.0)
+sh = Math.Vector4Shader()
+sh.addOp(0, r1, src)          # MOVE r1 = src
+sh.addOp(0, r6, src2)         # MOVE r6 = src2
+sh.addOp(0, r0, r1)           # MOVE r0 = r1
+sh.addOp(1, r2, r1)           # RECIPROCAL
+sh.addOp(2, r3, r1)           # BIAS
+sh.addOp(3, r4, r1)           # COMPLEMENT
+sh.addOp(4, r5, r1, r6)       # MULTIPLY
+sh.addOp(5, r7, r1, r6)       # DIVIDE
+sh.addOp(6, r8, r1, r6)       # ADD
+sh.addOp(7, r9, r1, r6)       # SUBTRACT
+sh.addOp(8, r10, r1, r6)      # DOT
+sh.addOp(9, r11, r1, r6)      # MIN
+sh.addOp(10, r12, r1, r6)     # MAX
+sh.addOp(11, r13, src3, r6)   # SGE
+sh.addOp(12, r14, src3, r6)   # SLT
+out = sh.value
+ck(out.x == 2.0 and out.y == 3.0 and out.z == 4.0 and out.w == 5.0,
+   'the final output is r_[0]')
+v = r1.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0, 'MOVE')
+v = r6.value
+ck(v.x == 4.0 and v.y == 6.0 and v.z == 8.0 and v.w == 10.0, 'the second MOVE')
+v = r2.value
+ck(close(v.x, 0.5) and close(v.y, 1.0 / 3.0) and close(v.z, 0.25) and
+   close(v.w, 0.2), 'RECIPROCAL')
+v = r3.value
+ck(v.x == 1.5 and v.y == 2.5 and v.z == 3.5 and v.w == 4.5, 'BIAS')
+v = r4.value
+ck(v.x == -1.0 and v.y == -2.0 and v.z == -3.0 and v.w == -4.0, 'COMPLEMENT')
+v = r5.value
+ck(v.x == 8.0 and v.y == 18.0 and v.z == 32.0 and v.w == 50.0, 'MULTIPLY')
+v = r7.value
+ck(close(v.x, 0.5) and close(v.y, 0.5) and close(v.z, 0.5) and close(v.w, 0.5),
+   'DIVIDE')
+v = r8.value
+ck(v.x == 6.0 and v.y == 9.0 and v.z == 12.0 and v.w == 15.0, 'ADD')
+v = r9.value
+ck(v.x == -2.0 and v.y == -3.0 and v.z == -4.0 and v.w == -5.0, 'SUBTRACT')
+v = r10.value
+ck(v.x == 108.0 and v.y == 108.0 and v.z == 108.0 and v.w == 108.0,
+   'DOT spreads the product sum')
+v = r11.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0, 'MIN')
+v = r12.value
+ck(v.x == 4.0 and v.y == 6.0 and v.z == 8.0 and v.w == 10.0, 'MAX')
+v = r13.value
+ck(v.x == 1.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'SGE compares i0.x down the lanes')
+v = r14.value
+ck(v.x == 0.0 and v.y == 1.0 and v.z == 1.0 and v.w == 1.0,
+   'SLT compares i0.x down the lanes')
+
+# Nothing clears the file between passes: a fresh shader reads whatever
+# r_[0] held after the last output, and a register reads it live.
+later = Math.Vector4Shader()
+v = later.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0,
+   'the register file persists across shaders')
+ck(r0.value.x == 2.0, 'the register reads the file live')
+ck(raises(AttributeError,
+          lambda: setattr(r1, 'value', Math.Vector4(0.0, 0.0, 0.0, 0.0))),
+   'the register value is read-only')
+
+# Refusals that append nothing: the argument counts, the uint8 conversion,
+# the provider slots.
+ck(msg(TypeError, lambda: sh.addOp(0, r0)) ==
+   'addOp() expects between 3 and 4 arguments of types uint8, '
+   'Vector4Provider, Vector4Provider, Vector4Provider',
+   'the two-argument count error')
+ck(raises(TypeError, lambda: sh.addOp(0, r0, src, src2, src3)),
+   'the five-argument count error')
+ck(msg(TypeError, lambda: sh.addOp('x', r0, src)) ==
+   '() argument 1 must be set to a long', 'the opcode TypeError')
+ck(msg(TypeError, lambda: sh.addOp(300, r0, src)) ==
+   'Integer is out of range', 'the opcode range error')
+ck(msg(TypeError, lambda: Math.getRegister(63)) ==
+   'argument 1 is greater than maximum value', 'the register maximum')
+ck(type(Math.getRegister(6.9)).__name__ == 'Vector4Register',
+   'the float register number truncates')
+ck(msg(TypeError, lambda: Math.getRegister(10 ** 20)) ==
+   '() argument 1 must be set to a long', 'the register overflow error')
+ck(msg(TypeError, lambda: Math.getRegister(300)) ==
+   'Integer is out of range', 'the register range error')
+ck(msg(TypeError, lambda: Math.getRegister(-1)) ==
+   'Integer is out of range', 'the negative register')
+ck(msg(TypeError, lambda: Math.getRegister('x')) ==
+   '() argument 1 must be set to a long', 'the register TypeError')
+ck(msg(TypeError, lambda: Math.getRegister()) ==
+   'getRegister() expects 1 argument of type uint8', 'the register count error')
+ck(raises(TypeError, lambda: Math.getRegister(1, 2)),
+   'the register two-argument count error')
+ck(msg(TypeError, lambda: sh.addOp(0, 'no', src)) ==
+   '() argument 2 must be set to a Vector4Provider or None',
+   'the output slot TypeError')
+ck(msg(TypeError, lambda: sh.addOp(0, r0, 'no')) ==
+   '() argument 3 must be set to a Vector4Provider or None',
+   'the first input TypeError')
+ck(msg(TypeError, lambda: sh.addOp(0, r0, src, 'no')) ==
+   '() argument 4 must be set to a Vector4Provider or None',
+   'the second input TypeError')
+v = sh.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0,
+   'the refusals left the program alone')
+
+# An output that is not a temporary register is reported, the instruction
+# still appended -- writing the unused register, so r_[0] stays.
+sh_refused = Math.Vector4Shader()
+sh_refused.addOp(0, src, r0)
+ck(sh_refused.value.x == 2.0, 'a refused output register keeps the file value')
+
+# None is the empty provider, not a refusal: the instruction is appended
+# with the unused register on its empty side, on a shader of its own.
+sh_none = Math.Vector4Shader()
+sh_none.addOp(0, r2, src, None)
+sh_none.value
+ck(close(r2.value.x, 2.0) and close(r2.value.y, 3.0),
+   'the None input keeps the instruction whole')
+
+# A provider passed twice answers one user register, the reference's
+# pointer-identity lookup of `uniqueInputs_`.
+inner = Math.Vector4Shader()
+sh_same = Math.Vector4Shader()
+sh_same.addOp(6, r2, inner, inner)   # ADD r2 = inner + inner
+sh_same.value
+ck(close(r2.value.x, 4.0) and close(r2.value.y, 6.0) and
+   close(r2.value.z, 8.0) and close(r2.value.w, 10.0),
+   'the same provider answers one user register')
+
+# An opcode outside the thirteen leaves its register alone: the reference's
+# switch has no default arm.
+sh_bad = Math.Vector4Shader()
+sh_bad.addOp(13, r2, src)
+sh_bad.value
+ck(r2.value.x == 4.0, 'an unknown opcode leaves the register')
+
+# Sixty-four unique inputs fill the user registers; the sixty-fifth is
+# refused and answers the unused register. Register one keeps its own input,
+# and the last MOVE of the sixty-four leaves (63,0,0,0) in r_[0].
+sh_full = Math.Vector4Shader()
+inputs = [Math.Vector4(float(i), 0.0, 0.0, 0.0) for i in range(65)]
+for i in range(64):
+    sh_full.addOp(0, Math.getRegister(i % 63), inputs[i])
+sh_full.addOp(0, Math.getRegister(62), inputs[64])
+v = sh_full.value
+ck(v.x == 63.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the sixty-fifth unique input is refused')
+v = r1.value
+ck(v.x == 1.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the sixty-four inputs got user registers')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4shader behaviour mismatch: {text}");
         });
     }
 

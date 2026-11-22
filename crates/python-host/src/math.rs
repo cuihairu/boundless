@@ -5169,6 +5169,647 @@ mod v4combiner {
     }
 }
 
+/// The `Math.Vector4Shader` provider and the `Math.Vector4Register`
+/// scratch registers it reads (`script_math.cpp:4826-5320`).
+///
+/// A shader is a small program: `addOp` appends one instruction (opcode,
+/// output register, two inputs) and `output` runs the list into a register
+/// file every shader shares. The file is the reference's static `r_[128]`:
+/// `r_[0]` the final output, `r_[0..63]` the temporary registers the
+/// `Math.getRegister` providers address, `r_[64..]` the user registers each
+/// unique input is assigned once per pass. Nothing clears the file between
+/// passes, so a fresh shader reads whatever `r_[0]` held last -- the
+/// reference's never-reset statics are the port's statics too.
+///
+/// The thirteen opcodes run in the reference's switch order
+/// (`:5136-5236`), including its `OP_SGE`/`OP_SLT` compare of `i0.x`
+/// against all four `i1` lanes: the original reads the scalar into every
+/// lane, and the port keeps the result, so a script sees the reference
+/// arithmetic.
+mod v4shader {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// The reference's magic numbers (`script_math.cpp:4846-4850`).
+    const MAX_TEMP_REGISTERS: usize = 63;
+    const NUM_USER_REGISTERS: usize = 64;
+    /// The register number of a missing provider. It is also a live file
+    /// index: a null input reads `r_[63]`, a refused output register writes
+    /// there, the reference's `UNUSED_REGISTER`.
+    const UNUSED_REGISTER: u8 = 63;
+    const BASE_USER_REGISTER: usize = 64;
+    const NUM_REGISTERS: usize = 128;
+
+    /// The shared register file, the reference's static
+    /// `Vector4 Vector4Shader::r_[NUM_REGISTERS]` (`:5017`).
+    static REGISTERS: Mutex<[[f32; 4]; NUM_REGISTERS]> = Mutex::new([[0.0; 4]; NUM_REGISTERS]);
+
+    /// The temporary register providers, the reference's static
+    /// `Vector4ProviderPtr Vector4Shader::pr_[MAX_TEMP_REGISTERS]`
+    /// (`:5016`): empty until the first `Math.getRegister` call creates all
+    /// sixty-three, and held forever after, the reference's "smartpointers
+    /// default to NULL" note plus its never-released statics. Addresses sit
+    /// as `usize`, the static-storage rule that keeps the state `Send`.
+    static TEMP_PROVIDERS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+    /// One temporary register's value, `Vector4Register::output` reading its
+    /// `value_` (`:4827`).
+    pub(super) fn register_read(index: u8) -> [f32; 4] {
+        REGISTERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())[index as usize]
+    }
+
+    /// One instruction: the opcode and its three register numbers
+    /// (`script_math.hpp`'s `Vector4Shader::Instruction`). The output is
+    /// always a temporary register; an input may be one, a user register, or
+    /// [`UNUSED_REGISTER`].
+    #[derive(Clone, Copy)]
+    struct Instruction {
+        op: u8,
+        out: u8,
+        in0: u8,
+        in1: u8,
+    }
+
+    /// The instance body beyond the `PyObject` header: the instruction list
+    /// and the unique input providers, the layout of the reference's
+    /// `instructions_` and `uniqueInputs_`.
+    #[repr(C)]
+    struct ShaderBody {
+        header: capi::PyObject,
+        instructions: Vec<Instruction>,
+        unique_inputs: Vec<*mut capi::PyObject>,
+    }
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<ShaderBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Shader` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `ERROR_MSG` (`:5070`, `:5088`): the two refusal paths of
+    /// `addInputVector` report and carry on, the reference's console noise
+    /// with the instruction still appended.
+    fn shader_log(message: &str) {
+        eprintln!("{message}");
+    }
+
+    /// Release an owned reference the conversion handed over; a null means
+    /// the conversion produced no object.
+    unsafe fn drop_owned(pointer: *mut capi::PyObject) {
+        if !pointer.is_null() {
+            unsafe { capi::dec_ref(pointer) };
+        }
+    }
+
+    /// `Script::setData( pObject, Vector4ProviderPtr&, varName )`
+    /// (`script.hpp:610-631`) for one `addOp` argument: `coerce` the object,
+    /// `None` the empty provider, a `Vector4Provider` held, anything else the
+    /// converter's own `TypeError`. The returned pointer owns one reference,
+    /// or is null for `None`.
+    unsafe fn as_provider(
+        object: *mut capi::PyObject,
+        var_name: &str,
+    ) -> Result<*mut capi::PyObject, ()> {
+        let coerced = v4provider::coerce(object);
+        if !coerced.is_null() && coerced == capi::py_none() {
+            unsafe { capi::dec_ref(coerced) };
+            return Ok(std::ptr::null_mut());
+        }
+        if v4provider::provider_check(coerced) {
+            return Ok(coerced);
+        }
+        unsafe { drop_owned(coerced) };
+        type_error(&format!(
+            "{var_name} must be set to a Vector4Provider or None"
+        ));
+        Err(())
+    }
+
+    /// `Script::setData( pObject, long&, varName )` (`script.cpp:1693-1741`):
+    /// a long read as-is, a float truncating, anything else the reference's
+    /// own refusal.
+    unsafe fn as_script_long(object: *mut capi::PyObject, var_name: &str) -> Option<i64> {
+        if object.is_null() {
+            return None;
+        }
+        // SAFETY: the read is on the borrowed argument; a failed conversion
+        // leaves the error the caller's `None` arm replaces.
+        unsafe {
+            if capi::py_long_check(object) {
+                // LP64: a C long is the 64-bit width, so `PyLong_AsLong` is
+                // the reference's `PyLong_AsLongLong`.
+                let value = capi::PyLong_AsLong(object);
+                if !capi::PyErr_Occurred().is_null() {
+                    capi::PyErr_Clear();
+                    type_error(&format!("{var_name} must be set to a long"));
+                    return None;
+                }
+                return Some(value as i64);
+            }
+            if capi::py_float_check(object) {
+                return Some(capi::PyFloat_AsDouble(object) as i64);
+            }
+        }
+        type_error(&format!("{var_name} must be set to a long"));
+        None
+    }
+
+    /// `Script::setData( pObject, uint8&, varName )` (`script.hpp:208-234`,
+    /// the Linux `INT_ACCESSOR( uint8, long )`): the long conversion, then
+    /// the round-trip through `uint8` whose failure is the accessor's own
+    /// "Integer is out of range".
+    unsafe fn as_uint8(object: *mut capi::PyObject, var_name: &str) -> Option<u8> {
+        let value = unsafe { as_script_long(object, var_name)? };
+        let narrowed = value as u8;
+        if narrowed as i64 != value {
+            type_error("Integer is out of range");
+            return None;
+        }
+        Some(narrowed)
+    }
+
+    /// `Vector4Shader::addInputVector` (`:5059-5100`): the register number
+    /// of one input. A temporary register answers its own index; a new
+    /// input is appended and given the next user register; the `must_be_temp`
+    /// output path refuses a non-register with the reference's `ERROR_MSG`;
+    /// the sixty-fifth unique input is refused too. The second return is
+    /// whether the vector took over the caller's owned reference.
+    fn add_input(
+        shader: &mut ShaderBody,
+        provider: *mut capi::PyObject,
+        must_be_temp: bool,
+    ) -> (u8, bool) {
+        // No pointer, no register.
+        if provider.is_null() {
+            return (UNUSED_REGISTER, false);
+        }
+        // A temporary register answers its own number.
+        if v4register::check(provider) {
+            return (unsafe { v4register::index_of(provider) }, false);
+        }
+        if must_be_temp {
+            shader_log("Vector4Shader::addInputVector - register that must be temporary was not");
+            return (UNUSED_REGISTER, false);
+        }
+        if let Some(found) = shader
+            .unique_inputs
+            .iter()
+            .position(|&stored| stored == provider)
+        {
+            return ((found + BASE_USER_REGISTER) as u8, false);
+        }
+        if shader.unique_inputs.len() == NUM_USER_REGISTERS {
+            shader_log(
+                "Vector4Shader::addInputVector - shader has exceeded \
+                       the maximum number of user registers",
+            );
+            return (UNUSED_REGISTER, false);
+        }
+        shader.unique_inputs.push(provider);
+        (
+            (shader.unique_inputs.len() - 1 + BASE_USER_REGISTER) as u8,
+            true,
+        )
+    }
+
+    /// The componentwise `std::min`/`std::max` of the reference's switch:
+    /// `min` answers `b` on a tie, `max` answers `a`.
+    fn std_min(a: f32, b: f32) -> f32 {
+        if b < a { b } else { a }
+    }
+
+    fn std_max(a: f32, b: f32) -> f32 {
+        if a < b { b } else { a }
+    }
+
+    /// One opcode against the register file, the reference's switch
+    /// (`:5136-5236`). The inputs are read into locals first, so an
+    /// instruction writing the register it reads stays the reference's
+    /// read-then-assign.
+    fn run_instruction(registers: &mut [[f32; 4]; NUM_REGISTERS], ins: &Instruction) {
+        let i0 = registers[ins.in0 as usize];
+        let i1 = registers[ins.in1 as usize];
+        let out = &mut registers[ins.out as usize];
+        match ins.op {
+            // OP_MOVE.
+            0 => *out = i0,
+            // OP_RECIPROCAL.
+            1 => {
+                out[0] = 1.0 / i0[0];
+                out[1] = 1.0 / i0[1];
+                out[2] = 1.0 / i0[2];
+                out[3] = 1.0 / i0[3];
+            }
+            // OP_BIAS.
+            2 => {
+                out[0] = i0[0] - 0.5;
+                out[1] = i0[1] - 0.5;
+                out[2] = i0[2] - 0.5;
+                out[3] = i0[3] - 0.5;
+            }
+            // OP_COMPLEMENT.
+            3 => {
+                out[0] = 1.0 - i0[0];
+                out[1] = 1.0 - i0[1];
+                out[2] = 1.0 - i0[2];
+                out[3] = 1.0 - i0[3];
+            }
+            // OP_MULTIPLY.
+            4 => {
+                out[0] = i0[0] * i1[0];
+                out[1] = i0[1] * i1[1];
+                out[2] = i0[2] * i1[2];
+                out[3] = i0[3] * i1[3];
+            }
+            // OP_DIVIDE.
+            5 => {
+                out[0] = i0[0] / i1[0];
+                out[1] = i0[1] / i1[1];
+                out[2] = i0[2] / i1[2];
+                out[3] = i0[3] / i1[3];
+            }
+            // OP_ADD.
+            6 => {
+                out[0] = i0[0] + i1[0];
+                out[1] = i0[1] + i1[1];
+                out[2] = i0[2] + i1[2];
+                out[3] = i0[3] + i1[3];
+            }
+            // OP_SUBTRACT.
+            7 => {
+                out[0] = i0[0] - i1[0];
+                out[1] = i0[1] - i1[1];
+                out[2] = i0[2] - i1[2];
+                out[3] = i0[3] - i1[3];
+            }
+            // OP_DOT: the four-term product sum spread into all components.
+            8 => {
+                let s = i0[0] * i1[0] + i0[1] * i1[1] + i0[2] * i1[2] + i0[3] * i1[3];
+                *out = [s, s, s, s];
+            }
+            // OP_MIN.
+            9 => {
+                out[0] = std_min(i0[0], i1[0]);
+                out[1] = std_min(i0[1], i1[1]);
+                out[2] = std_min(i0[2], i1[2]);
+                out[3] = std_min(i0[3], i1[3]);
+            }
+            // OP_MAX.
+            10 => {
+                out[0] = std_max(i0[0], i1[0]);
+                out[1] = std_max(i0[1], i1[1]);
+                out[2] = std_max(i0[2], i1[2]);
+                out[3] = std_max(i0[3], i1[3]);
+            }
+            // OP_SGE: the reference compares `i0.x` against all four `i1`
+            // lanes, the quirk `:5199-5203`.
+            11 => {
+                out[0] = (i0[0] >= i1[0]) as u8 as f32;
+                out[1] = (i0[0] >= i1[1]) as u8 as f32;
+                out[2] = (i0[0] >= i1[2]) as u8 as f32;
+                out[3] = (i0[0] >= i1[3]) as u8 as f32;
+            }
+            // OP_SLT: the same scalar compare.
+            12 => {
+                out[0] = (i0[0] < i1[0]) as u8 as f32;
+                out[1] = (i0[0] < i1[1]) as u8 as f32;
+                out[2] = (i0[0] < i1[2]) as u8 as f32;
+                out[3] = (i0[0] < i1[3]) as u8 as f32;
+            }
+            // An opcode outside the enum: the reference's switch has no
+            // default, so the output register keeps its previous value.
+            _ => {}
+        }
+    }
+
+    /// `Vector4Shader::output` (`:5104-5246`): every unique input evaluated
+    /// once into its user register, then the instruction list, then
+    /// `finalOutput = r_[0]`. The unique inputs are evaluated outside the
+    /// file lock, the reference's single pass through `uniqueInputs_` before
+    /// `instructions_`.
+    fn shader_output(object: *mut capi::PyObject) -> [f32; 4] {
+        // SAFETY: the receiver is a `ShaderBody`.
+        let body = unsafe { &*object.cast::<ShaderBody>() };
+        let mut user_values = Vec::with_capacity(body.unique_inputs.len());
+        for &input in &body.unique_inputs {
+            user_values.push(
+                v4provider::output_of(input)
+                    .expect("a stored unique input is a registered Vector4Provider"),
+            );
+        }
+        let mut registers = REGISTERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (offset, value) in user_values.iter().enumerate() {
+            registers[BASE_USER_REGISTER + offset] = *value;
+        }
+        for instruction in &body.instructions {
+            run_instruction(&mut registers, instruction);
+        }
+        registers[0]
+    }
+
+    /// A fresh `Math.Vector4Shader`; the caller owns the reference. No
+    /// instructions, the reference's default constructor.
+    fn make() -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `ShaderBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<ShaderBody>()).instructions).write(Vec::new());
+            std::ptr::addr_of_mut!((*pointer.cast::<ShaderBody>()).unique_inputs).write(Vec::new());
+        };
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// `Math.Vector4Shader` with no arguments (`PY_AUTO_FACTORY_DECLARE`
+    /// with `END`).
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Math.Vector4Shader() takes no arguments");
+        }
+        make()
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4Shader".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// `Vector4Shader::addOp` (`:5101-5117`): one instruction appended, the
+    /// arguments the reference's `ARG(uint8, ARG(Vector4ProviderPtr,
+    /// ARG(Vector4ProviderPtr, OPTARG(Vector4ProviderPtr, NULL, END))))`.
+    unsafe extern "C" fn add_op(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the count read is on the borrowed arguments tuple.
+        let count = unsafe { capi::PyTuple_Size(args) };
+        if !(3..=4).contains(&count) {
+            return type_error(
+                "addOp() expects between 3 and 4 arguments of types uint8, \
+                 Vector4Provider, Vector4Provider, Vector4Provider",
+            );
+        }
+        let Some(opcode) = (unsafe { as_uint8(arg(args, 0), "() argument 1") }) else {
+            // The conversion left its own error.
+            return std::ptr::null_mut();
+        };
+        let Ok(out_reg) = (unsafe { as_provider(arg(args, 1), "() argument 2") }) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(reg1) = (unsafe { as_provider(arg(args, 2), "() argument 3") }) else {
+            unsafe { drop_owned(out_reg) };
+            return std::ptr::null_mut();
+        };
+        let reg2 = if count == 4 {
+            match unsafe { as_provider(arg(args, 3), "() argument 4") } {
+                Ok(provider) => provider,
+                Err(()) => {
+                    unsafe {
+                        drop_owned(out_reg);
+                        drop_owned(reg1);
+                    };
+                    return std::ptr::null_mut();
+                }
+            }
+        } else {
+            std::ptr::null_mut()
+        };
+        // SAFETY: the receiver is a `ShaderBody`; the inputs are borrowed
+        // objects the conversions handed over.
+        let body = unsafe { &mut *self_.cast::<ShaderBody>() };
+        // The output register must be a temporary; the two inputs may be
+        // anything, each answered once per pass.
+        let (out, _) = add_input(body, out_reg, true);
+        let (in0, stored0) = add_input(body, reg1, false);
+        let (in1, stored1) = add_input(body, reg2, false);
+        body.instructions.push(Instruction {
+            op: opcode,
+            out,
+            in0,
+            in1,
+        });
+        // The inputs that were already registered keep the references the
+        // conversions added for the rest of this call to release.
+        if !stored0 {
+            unsafe { drop_owned(reg1) };
+        }
+        if !stored1 {
+            unsafe { drop_owned(reg2) };
+        }
+        unsafe { drop_owned(out_reg) };
+        none_ref()
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4Shader`: none. The one
+    /// method and the destruction entry are the type's whole surface.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Shader")
+            .base(v4provider::base_addr())
+            .method("addOp", add_op)
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    /// The shader's destruction entry: the held unique-input references go
+    /// back, then the instruction and input lists, then the allocation.
+    unsafe extern "C" fn dealloc(self_: *mut capi::PyObject) {
+        // SAFETY: the receiver is a `ShaderBody`.
+        let body = unsafe { &*self_.cast::<ShaderBody>() };
+        for &input in &body.unique_inputs {
+            unsafe { drop_owned(input) };
+        }
+        // SAFETY: dropping the body runs the two list destructors.
+        unsafe {
+            std::ptr::drop_in_place(self_.cast::<ShaderBody>());
+            capi::PyObject_Free(self_.cast());
+        }
+    }
+
+    /// `Vector4Shader::getRegister` (`:5026-5038`): the `r`-th temporary
+    /// register provider, all sixty-three created on the first call, the
+    /// `MAX_ARG( uint8, MAX_TEMP_REGISTERS - 1, END )` argument cap.
+    unsafe extern "C" fn get_register(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the count read is on the borrowed arguments tuple.
+        if unsafe { capi::PyTuple_Size(args) } != 1 {
+            return type_error("getRegister() expects 1 argument of type uint8");
+        }
+        let Some(register) = (unsafe { as_uint8(arg(args, 0), "() argument 1") }) else {
+            return std::ptr::null_mut();
+        };
+        if register as usize > MAX_TEMP_REGISTERS - 1 {
+            return type_error("argument 1 is greater than maximum value");
+        }
+        let mut providers = TEMP_PROVIDERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if providers.is_empty() {
+            // The reference's lazy init (`:5028-5034`): the first call
+            // creates every temporary register at once.
+            for index in 0..MAX_TEMP_REGISTERS {
+                providers.push(v4register::make(index as u8) as usize);
+            }
+        }
+        let provider = providers[register as usize] as *mut capi::PyObject;
+        // SAFETY: the provider is a live object this module's statics hold;
+        // the caller gets its own reference, the reference's `getData`.
+        unsafe { capi::inc_ref(provider) };
+        provider
+    }
+
+    /// The `Math.getRegister` module method descriptor; leaked for the
+    /// module's lifetime, the reference's static method table.
+    fn get_register_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"getRegister".as_ptr() as *const c_char,
+            ml_meth: Some(get_register),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// `TempPyVectorInit` for the shader: the type object, its `output`
+    /// dispatch entry, the factory and the `Math.getRegister` module method
+    /// into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), shader_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4Shader".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+                let get_register = capi::PyCFunction_New(get_register_def(), std::ptr::null_mut());
+                if !get_register.is_null() {
+                    capi::PyDict_SetItemString(dict, c"getRegister".as_ptr(), get_register);
+                    capi::dec_ref(get_register);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
+/// The `Math.Vector4Register` scratch register (`script_math.cpp:4816-4841`):
+/// one temporary register of the shader file, answered by number. No
+/// attributes and no factory, the reference's empty method and attribute
+/// tables; `Math.getRegister` is the only way to one.
+mod v4register {
+    use super::*;
+
+    /// The instance body beyond the `PyObject` header: the register number,
+    /// the layout of the reference's `index_` (its `value_` is the shared
+    /// file slot, which the port reads through [`v4shader::register_read`]).
+    #[repr(C)]
+    struct RegisterBody {
+        header: capi::PyObject,
+        index: u8,
+    }
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<RegisterBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Register` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4Register::Check` (`script.hpp:585`): is this object one of the
+    /// temporary registers? `addInputVector` asks before it reads the index.
+    pub(super) fn check(object: *mut capi::PyObject) -> bool {
+        let address = type_addr();
+        !object.is_null()
+            && address != 0
+            // SAFETY: the read is on the borrowed object.
+            && unsafe { capi::Py_TYPE(object) as usize } == address
+    }
+
+    /// `Vector4Register::index()` (`:4828`): the register number.
+    ///
+    /// # Safety
+    ///
+    /// `check` answered true for this object.
+    pub(super) unsafe fn index_of(object: *mut capi::PyObject) -> u8 {
+        unsafe { std::ptr::addr_of!((*object.cast::<RegisterBody>()).index).read() }
+    }
+
+    /// `Vector4Register::output` (`:4827`): the register's current value.
+    fn register_output(object: *mut capi::PyObject) -> [f32; 4] {
+        // SAFETY: only a `Vector4Register` instance reaches this arm.
+        v4shader::register_read(unsafe { index_of(object) })
+    }
+
+    /// A fresh `Math.Vector4Register` for one register number; the caller
+    /// owns the reference. `getRegister`'s lazy init is the only caller.
+    pub(super) fn make(index: u8) -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `RegisterBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<RegisterBody>()).index).write(index);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `PY_BEGIN_METHODS`/`PY_BEGIN_ATTRIBUTES` tables of
+    /// `Vector4Register`: both empty.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Register")
+            .base(v4provider::base_addr())
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    /// `TempPyVectorInit` for the register: the type object and its `output`
+    /// dispatch entry. Not named in the `Math` module, the reference's
+    /// `PY_TYPEOBJECT` shape with no `PY_FACTORY`.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), register_output);
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -5190,4 +5831,6 @@ pub fn register() {
     let _ = v4adaptor::register();
     let _ = v4swizzle::register();
     let _ = v4combiner::register();
+    let _ = v4shader::register();
+    let _ = v4register::register();
 }
