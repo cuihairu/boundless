@@ -2,21 +2,21 @@
 //! `lib/network/udp_channel.hpp`): the lifecycle identity of a regular
 //! connection between two addresses, and the window it sends through.
 //!
-//! Scope of BW-02-03-02 through -05: registration and closing (the address
+//! Scope of BW-02-03-02 through -06: registration and closing (the address
 //! identity, the traits/version bookkeeping, and the condemn / destroy /
 //! remote-failed lifecycle that [`ChannelMap`], `CondemnedChannels` and
 //! `RecentlyDeadChannels` drive), the acknowledgement half of the data
 //! plane -- the unacked-packet send window, the sequence allocators and the
 //! wrap math, ACK application, unreliable-sequence validation, and the
 //! channel's part of a packet's flags and footer -- the timed resend
-//! scan (`checkResendTimers` / `resend` / `sendUnacked`), and the receive
+//! scan (`checkResendTimers` / `resend` / `sendUnacked`), the receive
 //! window (`addToReceiveWindow`, the buffered receives that restore the
-//! original order).
+//! original order), and the fragment chain holder (`pFragments_`).
 //!
 //! Still the seam: piggybacks and their `reliableOrders_` (the on-bundle
-//! half of `resend`), fragments and the fragment chain (-06), and the
-//! receiver that walks a next-in-window chain into bundles plus the
-//! physical wire send that `sendUnacked` leaves to the interface (-07).
+//! half of `resend`), the receiver that walks a next-in-window chain into
+//! bundles plus the physical wire send that `sendUnacked` leaves to the
+//! interface (-07).
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
@@ -24,6 +24,7 @@ use std::rc::{Rc, Weak};
 
 use crate::endpoint::{Address, NONE};
 use crate::event_dispatcher::STAMPS_PER_SECOND;
+use crate::fragmented_bundle::FragmentedBundle;
 use crate::misc::{
     CHANNEL_ID_NULL, ChannelID, ChannelVersion, SEQ_MASK, SEQ_NULL, SeqNum, SeqNumAllocator,
     seq_less_than, seq_mask,
@@ -261,6 +262,9 @@ pub struct UDPChannel {
     /// `pushUnsentAcksThreshold_`: how many unsent ACKs before the channel
     /// pushes them out immediately (`0` disables it).
     push_unsent_acks_threshold: Cell<u32>,
+    /// `pFragments_`: the partially reassembled bundle whose fragments are
+    /// arriving on this channel.
+    p_fragments: RefCell<Option<Rc<RefCell<FragmentedBundle>>>>,
     /// `acksToSend_`: the ACKs that have been received but not sent yet.
     acks_to_send: RefCell<BTreeSet<SeqNum>>,
     /// `highestAck_`.
@@ -330,6 +334,7 @@ impl UDPChannel {
             num_buffered_receives: Cell::new(0),
             should_auto_switch_to_src_addr: Cell::new(false),
             push_unsent_acks_threshold: Cell::new(0),
+            p_fragments: RefCell::new(None),
             acks_to_send: RefCell::new(BTreeSet::new()),
             // seqMask( smallOutSeqAt_ - 1 ) with smallOutSeqAt_ == 0.
             highest_ack: Cell::new(SEQ_MASK),
@@ -1053,6 +1058,17 @@ impl UDPChannel {
         self.num_buffered_receives.get()
     }
 
+    /// `pFragments()` (udp_channel.hpp:225): the partially reassembled bundle
+    /// whose fragments are arriving on this channel, if any.
+    pub fn p_fragments(&self) -> Option<Rc<RefCell<FragmentedBundle>>> {
+        self.p_fragments.borrow().clone()
+    }
+
+    /// `pFragments( pFragments )` (udp_channel.hpp:226).
+    pub fn set_p_fragments(&self, p_fragments: Option<Rc<RefCell<FragmentedBundle>>>) {
+        *self.p_fragments.borrow_mut() = p_fragments;
+    }
+
     /// `addToReceiveWindow( p, srcAddr, stats )` (udp_channel.cpp:1233): file
     /// a reliable packet in the receive window. The next-in-window packet is
     /// returned as-is with every buffered successor chained onto it; the
@@ -1542,6 +1558,17 @@ impl UDPChannel {
 
             self.buffered_receives.borrow_mut().clear();
             self.num_buffered_receives.set(0);
+        }
+
+        // Clear any chained fragments (udp_channel.cpp:301-310).
+        if let Some(fragments) = self.p_fragments.take()
+            && warn_on_discard
+        {
+            eprintln!(
+                "UDPChannel::clearState( {} ): Forgetting {} unprocessed packet(s) in the fragment chain",
+                self.c_str(),
+                fragments.borrow().chain_length()
+            );
         }
 
         // Reset fields.
@@ -2072,6 +2099,38 @@ mod tests {
             "the window is back at the top"
         );
         assert_eq!(channel.round_trip_time(), STAMPS_PER_SECOND / 10);
+    }
+
+    /// `pFragments_` holds the channel's half-reassembled bundle, and
+    /// `clearState` lets it go when the remote side restarts.
+    #[test]
+    fn clear_state_forgets_the_fragment_chain() {
+        let interface = interface();
+        let channel = UDPChannel::new(
+            &interface,
+            address(6009),
+            ChannelTraits::Internal,
+            CHANNEL_ID_NULL,
+        );
+        assert!(channel.p_fragments().is_none());
+
+        let first = Packet::fragment_for_test(10, 12, 11, true);
+        let fragments = Rc::new(RefCell::new(FragmentedBundle::new(&first, 0)));
+        fragments.borrow_mut().add_packet(
+            Packet::fragment_for_test(10, 12, 12, true),
+            false,
+            "test",
+            0,
+        );
+        channel.set_p_fragments(Some(Rc::clone(&fragments)));
+
+        let held = channel.p_fragments().expect("the channel holds the bundle");
+        assert_eq!(held.borrow().chain_length(), 2);
+        assert!(!held.borrow().is_complete());
+
+        channel.clear_state(true);
+
+        assert!(channel.p_fragments().is_none());
     }
 
     /// The window doubles as packets fill it, carrying the packets it holds

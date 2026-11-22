@@ -656,6 +656,44 @@ impl Default for Packet {
     }
 }
 
+/// Test-only fragment builders, shared by the `FragmentedBundle` and channel
+/// tests.
+#[cfg(test)]
+impl Packet {
+    /// Builds a packet as the receive path sees a fragment: footers and all.
+    /// The footers name the `[begin, end]` packet-sequence range of the whole
+    /// bundle, and this packet's own `seq` must fall inside it. When
+    /// `reliable` is set, `FLAG_IS_RELIABLE` is on.
+    pub(crate) fn fragment_for_test(
+        begin: SeqNum,
+        end: SeqNum,
+        seq: SeqNum,
+        reliable: bool,
+    ) -> Rc<RefCell<Packet>> {
+        let mut sent = Packet::new();
+        sent.set_msg_end_offset(HEADER_SIZE + 2);
+        sent.reserve_footer(8);
+        sent.grow(8);
+        sent.pack_footer_u32(end); // fragEnd
+        sent.pack_footer_u32(begin); // fragBegin
+        if reliable {
+            sent.enable_flags(flags::IS_RELIABLE);
+        }
+        sent.set_seq(seq);
+        let wire = sent.datagram().to_vec();
+
+        let mut received = Packet::new();
+        received.set_msg_end_offset(wire.len());
+        received
+            .byte_range_mut(0, wire.len())
+            .copy_from_slice(&wire);
+        received.set_seq(seq);
+        assert!(received.strip_frag_info());
+
+        Rc::new(RefCell::new(received))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::flags as f;

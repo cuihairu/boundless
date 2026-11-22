@@ -9,6 +9,10 @@ pub mod condemned_channels;
 pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;
+
+/// The partial-bundle reassembly buffer (BW-02-03-06).
+#[cfg(target_os = "linux")]
+pub mod fragmented_bundle;
 pub mod frequent_tasks;
 pub mod interface_element;
 pub mod interface_minder;
