@@ -351,6 +351,13 @@ impl Packet {
         self.chain_next.as_mut()
     }
 
+    /// The chain link itself, so a chain can be walked by taking each link
+    /// out of its predecessor (`FragmentedBundle` splices fragments in
+    /// sequence order).
+    pub(crate) fn chain_next_slot_mut(&mut self) -> &mut Option<Rc<Packet>> {
+        &mut self.chain_next
+    }
+
     /// `chain( Packet * )` (packet.hpp): link `next` behind this packet in
     /// the receive-window chain, so one dispatch walks the run in sequence
     /// order. The reference also folds the chained length into its message
@@ -387,6 +394,14 @@ impl Packet {
     /// `fragEnd()`.
     pub fn frag_end(&self) -> u32 {
         self.frag_end
+    }
+
+    /// The write half of `fragBegin`/`fragEnd`, as the send path writes a
+    /// fragment's footers (`strip_frag_info` is the read half the receive
+    /// side uses).
+    pub fn set_frag_info(&mut self, frag_begin: u32, frag_end: u32) {
+        self.frag_begin = frag_begin;
+        self.frag_end = frag_end;
     }
 
     /// `isPiggyback()`.

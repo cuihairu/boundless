@@ -64,7 +64,9 @@ pub fn real_clock() -> u64 {
 }
 
 /// `stampsPerSecond()`: microsecond stamps across the whole dispatcher.
-const STAMPS_PER_SECOND: u64 = 1_000_000;
+/// `pub(crate)` so [`crate::fragmented_bundle`] can express `MAX_AGE` in
+/// the same unit without a second constant.
+pub(crate) const STAMPS_PER_SECOND: u64 = 1_000_000;
 
 /// `stampsPerSecondD()`.
 const STAMPS_PER_SECOND_D: f64 = STAMPS_PER_SECOND as f64;

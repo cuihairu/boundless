@@ -20,6 +20,7 @@ use foundation::time_queue::{TimerHandle, TimerHandler};
 use crate::channel_listener::ChannelListener;
 use crate::circular_array::CircularArray;
 use crate::endpoint::{Address, NONE};
+use crate::fragmented_bundle::FragmentedBundlePtr;
 use crate::misc::{
     CHANNEL_ID_NULL, ChannelID, ChannelVersion, SEQ_NULL, SeqNum, seq_less_than, seq_mask,
 };
@@ -178,6 +179,10 @@ pub struct UdpChannel {
     buffered_receives: CircularArray<Option<Rc<Packet>>>,
     /// `numBufferedReceives_`.
     num_buffered_receives: u32,
+    /// `pFragments_` (udp_channel.hpp:449): this channel's own partially
+    /// reassembled bundle, while a fragmented one is in flight. The receive
+    /// dispatch drives it (BW-02-03-07).
+    p_fragments: Option<FragmentedBundlePtr>,
 
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
@@ -220,6 +225,7 @@ impl UdpChannel {
             unacked_packets: CircularArray::new(size),
             buffered_receives: CircularArray::new(size),
             num_buffered_receives: 0,
+            p_fragments: None,
             small_out_seq_at: 0,
             large_out_seq_at: 0,
             oldest_unacked_seq: SEQ_NULL,
@@ -817,6 +823,18 @@ impl UdpChannel {
     /// `numBufferedReceives_`.
     pub fn num_buffered_receives(&self) -> u32 {
         self.num_buffered_receives
+    }
+
+    /// `pFragments()` (udp_channel.hpp:225): this channel's in-flight
+    /// fragment bundle, if one is being reassembled.
+    pub fn p_fragments(&self) -> Option<FragmentedBundlePtr> {
+        self.p_fragments.clone()
+    }
+
+    /// `pFragments( pFragments )` (udp_channel.hpp:226): file or clear the
+    /// channel's fragment bundle.
+    pub fn set_p_fragments(channel: &ChannelPtr, p_fragments: Option<FragmentedBundlePtr>) {
+        channel.borrow_mut().p_fragments = p_fragments;
     }
 
     /// `addResendTimer( seq, p, roBeg, roEnd )` (udp_channel.cpp:817):
