@@ -839,4 +839,200 @@ mod tests {
         assert!(ch.has_remote_failed());
         assert_eq!(ch.addr(), source_a());
     }
+
+    // BW-02-02-04: exactly-once and pending-state release. A request must
+    // deliver exactly one callback (message, exception, or shutdown) no
+    // matter which of the timeout / reply / cancel / drop paths wins, and
+    // once resolved its pending state (map entry and once-off timer) is gone.
+
+    /// A reply resolves the request *and* releases its pending once-off timer:
+    /// advancing past the timeout afterwards fires nothing.
+    #[test]
+    fn a_reply_releases_the_pending_timer() {
+        let (manager, clock) = manager_at(false, 0);
+        let h = RecordingHandler::new();
+        let mut slot = [0u8; 4];
+
+        manager.add_reply_order(
+            ReplyOrder {
+                handler: trait_ref(&h),
+                arg: 5,
+                microseconds: 1000,
+                p_reply_id: &mut slot,
+            },
+            None,
+        );
+        let id = slot_reply_id(&slot);
+
+        deliver(&manager, id, &[0x77]);
+        assert_eq!(h.payloads.borrow().as_slice(), &[(5, vec![0x77])]);
+
+        // The timer that was armed at add-time is now cancelled.
+        clock.set(5000);
+        assert_eq!(manager.dispatcher.process_timers(), 0);
+        assert!(h.exceptions.borrow().is_empty());
+        assert_eq!(h.payloads.borrow().len(), 1);
+    }
+
+    /// A reply after the timeout does not call the handler a second time: the
+    /// timeout already released the request, so the late reply is dropped.
+    #[test]
+    fn a_reply_after_a_timeout_does_not_call_back_twice() {
+        let (manager, clock) = manager_at(false, 0);
+        let h = RecordingHandler::new();
+        let mut slot = [0u8; 4];
+
+        manager.add_reply_order(
+            ReplyOrder {
+                handler: trait_ref(&h),
+                arg: 5,
+                microseconds: 1000,
+                p_reply_id: &mut slot,
+            },
+            None,
+        );
+        let id = slot_reply_id(&slot);
+
+        clock.set(1000);
+        manager.dispatcher.process_timers();
+        assert_eq!(
+            h.exceptions.borrow().as_slice(),
+            &[(Reason::TimerExpired, 5)]
+        );
+
+        deliver(&manager, id, &[0x77]);
+        assert_eq!(
+            h.exceptions.borrow().len(),
+            1,
+            "timeout callback stays once"
+        );
+        assert!(h.payloads.borrow().is_empty());
+    }
+
+    /// Cancelling a channel after the request already resolved does not call
+    /// the handler again.
+    #[test]
+    fn a_cancel_after_a_reply_does_not_call_back() {
+        let (manager, _clock) = manager_at(false, 0);
+        let h = RecordingHandler::new();
+        let channel: Rc<dyn ChannelRef> = Rc::new(FakeChannel {
+            addr: source_a(),
+            failed: Cell::new(false),
+        });
+        let mut slot = [0u8; 4];
+
+        manager.add_reply_order(
+            request_order(trait_ref(&h), 5, &mut slot),
+            Some(channel.clone()),
+        );
+        let id = slot_reply_id(&slot);
+
+        // Resolve by reply, then try to cancel the same channel.
+        deliver(&manager, id, &[0x77]);
+        assert_eq!(h.payloads.borrow().as_slice(), &[(5, vec![0x77])]);
+
+        manager.cancel_requests_for_channel(&channel);
+        assert!(h.exceptions.borrow().is_empty());
+        assert_eq!(h.payloads.borrow().len(), 1);
+    }
+
+    /// Cancelling a channel twice fails each of its requests once.
+    #[test]
+    fn cancelling_a_channel_twice_fails_each_request_once() {
+        let (manager, _clock) = manager_at(false, 0);
+        let h = RecordingHandler::new();
+        let channel: Rc<dyn ChannelRef> = Rc::new(FakeChannel {
+            addr: source_a(),
+            failed: Cell::new(false),
+        });
+
+        manager.add_reply_order(
+            request_order(trait_ref(&h), 5, &mut [0u8; 4]),
+            Some(channel.clone()),
+        );
+
+        manager.cancel_requests_for_channel(&channel);
+        assert_eq!(
+            h.exceptions.borrow().as_slice(),
+            &[(Reason::ChannelLost, 5)]
+        );
+
+        // The second cancel finds nothing left to fail.
+        manager.cancel_requests_for_channel(&channel);
+        assert_eq!(
+            h.exceptions.borrow().as_slice(),
+            &[(Reason::ChannelLost, 5)]
+        );
+    }
+
+    /// A timeout then a cancel does not call back again: the timeout already
+    /// released the request, so the cancel finds nothing left to fail.
+    #[test]
+    fn a_cancel_after_a_timeout_does_not_call_back() {
+        let (manager, clock) = manager_at(false, 0);
+        let h = RecordingHandler::new();
+
+        manager.add_reply_order(
+            ReplyOrder {
+                handler: trait_ref(&h),
+                arg: 5,
+                microseconds: 1000,
+                p_reply_id: &mut [0u8; 4],
+            },
+            None,
+        );
+
+        clock.set(1000);
+        manager.dispatcher.process_timers();
+        assert_eq!(
+            h.exceptions.borrow().as_slice(),
+            &[(Reason::TimerExpired, 5)]
+        );
+
+        manager.cancel_requests_for_handler(&trait_ref(&h), Reason::NoSuchPort);
+        assert_eq!(
+            h.exceptions.borrow().as_slice(),
+            &[(Reason::TimerExpired, 5)],
+            "the timeout callback stays once"
+        );
+    }
+
+    /// Dropping the manager only fails still-pending requests: one that already
+    /// timed out gets no shutdown notice, and one already answered gets no
+    /// callback at all.
+    #[test]
+    fn dropping_the_manager_after_resolution_sends_no_notice() {
+        let h = RecordingHandler::new();
+        let (manager, clock) = manager_at(false, 0);
+
+        manager.add_reply_order(
+            ReplyOrder {
+                handler: trait_ref(&h),
+                arg: 5,
+                microseconds: 1000,
+                p_reply_id: &mut [0u8; 4],
+            },
+            None,
+        );
+
+        clock.set(1000);
+        manager.dispatcher.process_timers();
+        assert_eq!(
+            h.exceptions.borrow().as_slice(),
+            &[(Reason::TimerExpired, 5)]
+        );
+
+        // `manager` drops here with nothing pending.
+        drop(manager);
+
+        assert_eq!(
+            h.exceptions.borrow().as_slice(),
+            &[(Reason::TimerExpired, 5)],
+            "the timeout callback stays once"
+        );
+        assert!(
+            h.shutdowns.borrow().is_empty(),
+            "a resolved request takes no shutdown notice"
+        );
+    }
 }
