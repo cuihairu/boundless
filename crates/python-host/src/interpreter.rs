@@ -404,6 +404,19 @@ fn create_big_world_module(component: &str) {
         // `crate::urlrequest::init` itself and the face refuses until it
         // has: `PyURLRequest has not been initialised`.
         crate::urlrequest::install(module);
+        // The server re-asserts the module with its mode marker
+        // (`ScriptApp::initScript`, `script_app.cpp:219-225`), the value
+        // `ServerAppConfig::serverMode()` reads. That is a read-only
+        // option defaulting to "standalone" (`server_app_config.cpp:19`)
+        // and the port has no config source, so the default is what every
+        // server component gets.
+        if crate::manifest::is_server_component(component) {
+            let mode = capi::PyUnicode_FromString(c"standalone".as_ptr());
+            if !mode.is_null() {
+                capi::PyObject_SetAttrString(module, c"serverMode".as_ptr(), mode);
+                capi::dec_ref(mode);
+            }
+        }
     }
 }
 
@@ -616,6 +629,14 @@ mod tests {
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
+        "interpreter::tests::scenario_the_base_component_sees_the_server_surface",
+        "interpreter::tests::scenario_the_cell_component_sees_the_server_surface",
+        "interpreter::tests::scenario_the_database_component_sees_the_server_surface",
+        "interpreter::tests::scenario_the_bot_component_sees_the_server_surface",
+        "interpreter::tests::scenario_the_client_component_sees_the_client_surface",
+        "interpreter::tests::scenario_the_editor_component_sees_the_client_surface",
+        "interpreter::tests::scenario_an_unknown_component_sees_only_the_shared_surface",
+        "interpreter::tests::scenario_an_empty_component_sees_only_the_shared_surface",
         "interpreter::tests::scenario_the_math_module_serves_the_ported_surface",
         "interpreter::tests::scenario_the_vector_types_exercise_their_surface",
         "interpreter::tests::scenario_the_matrix_and_plane_types_exercise_their_surface",
@@ -2927,6 +2948,127 @@ mod tests {
                 unsafe { capi::dec_ref(math) };
             },
         );
+    }
+
+    /// One role's `BigWorld` surface agrees with the manifest two ways:
+    /// `check()` walks the live module under the component it reads and
+    /// finds every ported row present-or-absent as its scope demands, and
+    /// the exact non-dunder name list the scripts see matches the
+    /// manifest's ported set for that role -- so a face that registered
+    /// under the wrong gate, or one the manifest forgot to row, fails here.
+    fn assert_role_visible_surface(interpreter: &Interpreter, component: &str) {
+        // SAFETY: the interpreter is up and this thread owns the GIL; the
+        // manifest check reads the live `BigWorld.component`.
+        assert_eq!(unsafe { manifest::check() }, Ok(()));
+        let expected = manifest::ported_surface_for_role(component).join(", ");
+        assert_eq!(
+            probe(
+                interpreter,
+                "import BigWorld\n\
+                 __probe = ', '.join(sorted(n for n in dir(BigWorld) \
+                 if not n.startswith('_')))",
+            ),
+            expected,
+            "the {component} component's visible BigWorld surface",
+        );
+    }
+
+    /// The role-visible `BigWorld` surface (BW-03-04-01): each named
+    /// component of the reference's role list (`script.cpp:599`) sees
+    /// exactly its manifest surface -- the server builds (`base`, `cell`,
+    /// `database`, `bot`) carry the timer trio and the mode marker, the
+    /// client and the editor carry the callback pair, and an unknown or
+    /// empty name carries only the shared `component` and `fetchURL`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_base_component_sees_the_server_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("base"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "base"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_cell_component_sees_the_server_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "cell"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_database_component_sees_the_server_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("database"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "database"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_bot_component_sees_the_server_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("bot"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "bot"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_client_component_sees_the_client_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("client"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "client"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_editor_component_sees_the_client_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("editor"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "editor"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_unknown_component_sees_only_the_shared_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("watcher"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "watcher"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_empty_component_sees_only_the_shared_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert_role_visible_surface(interpreter, "")
+        });
     }
 
     /// The Math module serves the ported surface: the delivered factory

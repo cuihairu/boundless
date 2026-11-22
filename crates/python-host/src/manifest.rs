@@ -429,6 +429,24 @@ static BIG_WORLD_ITEMS: &[Item] = &[
          ValueError \"Failed to register for update\"",
         "lib/server/script_frequent_tasks.cpp:142 (parse :99, errors :99-104,:120)",
     ),
+    // The server's own marker: `ScriptApp::initScript` re-asserts the
+    // module with the mode `ServerAppConfig::serverMode()` chose
+    // (`script_app.cpp:219-225`), a read-only option defaulting to
+    // "standalone" (`server_app_config.cpp:19`). The port has no config
+    // source, so `create_big_world_module` writes the default every server
+    // build reads.
+    item(
+        "serverMode",
+        Kind::Attribute,
+        Scope::Server,
+        Status::Ported,
+        "str",
+        "'standalone' -- the reference's default; a config would choose \
+         'center' / 'periphery'",
+        "none: the reference sets it unconditionally on every server app",
+        "lib/server/script_app.cpp:219-225 \
+         (ServerAppConfig::serverMode, server_app_config.cpp:19,32)",
+    ),
     item(
         "saveAllocationsToFile",
         Kind::Function,
@@ -1288,16 +1306,6 @@ impl Mismatch {
     }
 }
 
-/// Which build a component name belongs to: the `MF_SERVER` component list
-/// against the non-server builds, the split the timer faces are gated by
-/// (`py_callback.cpp:9`, the `@components{}` lists of
-/// `app_script_timers.cpp:189-201` and `script_frequent_tasks.cpp:129-141`).
-/// A component without a name -- the interpreter's default, or a NUL-mangled
-/// one -- carries neither side.
-fn is_server_component(component: &str) -> bool {
-    matches!(component, "base" | "cell" | "database" | "bot")
-}
-
 /// Whether a build carrying `component` would link a surface of `scope`:
 /// an ungated scope is always carried, the gated ones follow the build
 /// split -- the server component list, the client/editor pair, and an
@@ -1311,6 +1319,40 @@ fn carries_role(scope: Scope, component: &str) -> bool {
         Scope::Server => is_server_component(component),
         Scope::Client => matches!(component, "client" | "editor"),
     }
+}
+
+/// Whether a component name belongs to a server build: the role split
+/// [`carries_role`] applies, published so the interpreter can gate the
+/// surfaces it registers outside the method tables -- the `serverMode`
+/// marker is the one that follows this list today.
+///
+/// A component without a name -- the interpreter's default, or a
+/// NUL-mangled one -- is not a server build.
+pub fn is_server_component(component: &str) -> bool {
+    matches!(component, "base" | "cell" | "database" | "bot")
+}
+
+/// The exact non-dunder names a component should see on `BigWorld`: every
+/// ported row the role carries, sorted. This is the list BW-03-04-01's
+/// scenarios compare against live `dir(BigWorld)` -- the manifest stays
+/// the single source of the per-role surface.
+pub fn ported_surface_for_role(component: &str) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    for entry in ENTRIES {
+        if entry.module != "BigWorld" {
+            continue;
+        }
+        for surface in entry.items {
+            if surface.status != Status::Ported {
+                continue;
+            }
+            if carries_role(surface.scope, component) {
+                names.push(surface.name);
+            }
+        }
+    }
+    names.sort_unstable();
+    names
 }
 
 /// The inventory walk: every [`Status::Ported`] module must pass `imports`
@@ -1559,6 +1601,43 @@ mod tests {
         assert_eq!(big_world.scope, Scope::Both);
     }
 
+    /// The per-role visible surface (BW-03-04-01) pinned as the strings the
+    /// scenarios compare live `dir(BigWorld)` against: the server builds
+    /// carry the timer trio and the mode marker, the client and the editor
+    /// carry the callback pair, and an unknown or empty name carries only
+    /// the shared faces.
+    #[test]
+    fn the_role_visible_surface_is_pinned() {
+        for (component, expected) in [
+            (
+                "base",
+                "addFrequentTask, addTimer, component, delTimer, fetchURL, serverMode",
+            ),
+            (
+                "cell",
+                "addFrequentTask, addTimer, component, delTimer, fetchURL, serverMode",
+            ),
+            (
+                "database",
+                "addFrequentTask, addTimer, component, delTimer, fetchURL, serverMode",
+            ),
+            (
+                "bot",
+                "addFrequentTask, addTimer, component, delTimer, fetchURL, serverMode",
+            ),
+            ("client", "callback, cancelCallback, component, fetchURL"),
+            ("editor", "callback, cancelCallback, component, fetchURL"),
+            ("watcher", "component, fetchURL"),
+            ("", "component, fetchURL"),
+        ] {
+            assert_eq!(
+                ported_surface_for_role(component).join(", "),
+                expected,
+                "{component}"
+            );
+        }
+    }
+
     /// The role gate is the build split in runtime shape: a server
     /// component list against the non-server builds, an unknown name
     /// carrying neither side.
@@ -1650,6 +1729,7 @@ mod tests {
                 "addTimer",
                 "delTimer",
                 "addFrequentTask",
+                "serverMode",
             ]
         );
         let math = find("Math").unwrap();
