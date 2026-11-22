@@ -119,6 +119,10 @@ pub struct DisplayNode {
     /// The nearest enclosing request id (0 = outside any request scope).
     /// A section opened inside `scoped_request` inherits its id.
     pub request: u32,
+    /// Whether the section got its matching `End`. A section whose thread
+    /// exited (or whose guard was forgotten) stays open and is marked here —
+    /// the missing marker for an interval that never closed.
+    pub closed: bool,
 }
 
 /// Which process recorded a snapshot: the role name plus its pid. A profiler
@@ -191,6 +195,9 @@ pub struct Snapshot {
     pub counters: Vec<CounterStat>,
     /// Request spans, grouped by request id (sorted by id).
     pub requests: Vec<RequestSpan>,
+    /// How many sections never closed (thread exit or a forgotten guard) —
+    /// the missing markers. Zero means every interval closed normally.
+    pub unbalanced: u32,
 }
 
 struct Inner {
@@ -200,6 +207,8 @@ struct Inner {
     thread_ids: HashMap<ThreadId, u32>,
     /// The next thread index to hand out.
     next_thread: u32,
+    /// Small thread indices handed back by `remove_thread`, reused first.
+    free_threads: Vec<u32>,
     /// The clock producing monotonic stamps.
     clock: Box<dyn Fn() -> u64 + Send + Sync>,
     /// The current frame number.
@@ -240,6 +249,7 @@ impl Profiler {
                 clock: Box::new(clock),
                 frame: 0,
                 identity: ProfilerIdentity::default(),
+                free_threads: Vec::new(),
                 nodes: Vec::new(),
                 stacks: HashMap::new(),
                 tails: HashMap::new(),
@@ -257,6 +267,33 @@ impl Profiler {
             role: role.to_string(),
             pid,
         };
+    }
+
+    /// Remove the calling thread — the reference's `removeThread`/
+    /// `__onThreadEnd`. Any section it still has open is marked as a missing
+    /// interval (never closed) rather than left silently open, and its thread
+    /// index is freed for a later thread to reuse. Call it last, before the
+    /// thread exits: no event may come from that thread afterwards.
+    pub fn remove_thread(&self) {
+        let mut inner = self.inner.lock().expect("profiler lock");
+        // The stacks are built from buffered events, so drain them first;
+        // otherwise the still-open sections would not exist yet. The reference
+        // removes a thread at the tick when it is active.
+        process_entries(&mut inner);
+        let id = std::thread::current().id();
+        let Some(&idx) = inner.thread_ids.get(&id) else {
+            return;
+        };
+        if let Some(stack) = inner.stacks.remove(&idx) {
+            for node in stack {
+                if let Some(node) = inner.nodes.get_mut(node) {
+                    node.closed = false;
+                }
+            }
+        }
+        inner.tails.remove(&idx);
+        inner.thread_ids.remove(&id);
+        inner.free_threads.push(idx);
     }
 
     /// Record a raw event — the reference's `addEntry`.
@@ -351,6 +388,8 @@ impl Profiler {
         let mut counters: Vec<CounterStat> = inner.counters.values().cloned().collect();
         counters.sort_by(|a, b| a.name.cmp(&b.name));
         let requests = aggregate_requests(&inner.nodes);
+        let unbalanced = u32::try_from(inner.nodes.iter().filter(|node| !node.closed).count())
+            .unwrap_or(u32::MAX);
         Snapshot {
             identity: inner.identity.clone(),
             roots,
@@ -358,6 +397,7 @@ impl Profiler {
             stats,
             counters,
             requests,
+            unbalanced,
         }
     }
 }
@@ -423,8 +463,12 @@ fn thread_index(inner: &mut Inner) -> u32 {
     if let Some(&idx) = inner.thread_ids.get(&id) {
         return idx;
     }
-    let idx = inner.next_thread;
-    inner.next_thread += 1;
+    // Reuse an index a removed thread handed back before growing the table.
+    let idx = inner.free_threads.pop().unwrap_or_else(|| {
+        let n = inner.next_thread;
+        inner.next_thread += 1;
+        n
+    });
     // The reference caps at MAXIMUM_NUMBER_OF_THREADS; overflow indices clamp
     // so the table stays bounded.
     let clamped = idx.min(MAX_THREADS - 1);
@@ -469,6 +513,7 @@ fn process_entries(inner: &mut Inner) {
                     thread,
                     frame: entry.frame,
                     request,
+                    closed: true,
                 });
                 if let Some(p) = parent {
                     inner.nodes[p].children.push(node_idx);
@@ -876,5 +921,87 @@ mod tests {
         // not a second request span.
         assert_eq!(snap.requests.len(), 1);
         assert_eq!(snap.requests[0].calls, 1);
+    }
+
+    #[test]
+    fn a_caught_panic_still_closes_the_section() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+
+        // The RAII guard drops during unwinding, so an exception unwinding
+        // through the section closes it normally — no missing marker.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _section = prof.scoped("handleRequest");
+            advance(&source, 20);
+            panic!("boom");
+        }));
+        assert!(result.is_err(), "the panic was caught");
+
+        let snap = prof.snapshot();
+        let handle = snap
+            .nodes
+            .iter()
+            .find(|n| n.name == "handleRequest")
+            .unwrap();
+        assert!(handle.closed, "unwinding closed the interval");
+        assert_eq!(handle.inclusive_cycles, 20);
+        assert_eq!(snap.unbalanced, 0, "no interval is missing");
+    }
+
+    #[test]
+    fn a_thread_that_exits_with_open_sections_marks_them_missing() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+
+        // A worker opens a section, drops its guard without closing it, then
+        // removes itself — the thread exit analog of the reference's
+        // `__onThreadEnd`.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // Forget the guard: the section never ends, so its interval is
+                // still open when the thread removes itself.
+                std::mem::forget(prof.scoped("workerJob"));
+                advance(&source, 8);
+                prof.remove_thread();
+            });
+        });
+
+        let snap = prof.snapshot();
+        let job = snap.nodes.iter().find(|n| n.name == "workerJob").unwrap();
+        assert!(!job.closed, "the open section is marked missing");
+        assert_eq!(job.thread, 1, "the worker got the first free index");
+        assert_eq!(snap.unbalanced, 1, "the snapshot reports the missing one");
+
+        // The freed index is handed back to the next thread, which links a
+        // fresh root rather than continuing the dead thread's section.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _s = prof.scoped("nextJob");
+                advance(&source, 4);
+            });
+        });
+        let snap = prof.snapshot();
+        let next = snap.nodes.iter().find(|n| n.name == "nextJob").unwrap();
+        assert_eq!(next.thread, 1, "the index was reused");
+        assert!(next.closed, "the new section closes normally");
+        assert_eq!(next.parent, None, "it is not nested under the dead section");
+        assert_eq!(snap.unbalanced, 1, "only the original section is missing");
+    }
+
+    #[test]
+    fn a_forgotten_guard_leaves_a_missing_marker() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+
+        // No End is ever emitted for the forgotten guard; removing the thread
+        // flags the still-open interval as missing.
+        std::mem::forget(prof.scoped("leakMe"));
+        advance(&source, 6);
+        prof.remove_thread();
+
+        let snap = prof.snapshot();
+        let leak = snap.nodes.iter().find(|n| n.name == "leakMe").unwrap();
+        assert!(!leak.closed, "the forgotten interval is marked missing");
+        assert_eq!(snap.unbalanced, 1);
     }
 }
