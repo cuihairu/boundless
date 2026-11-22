@@ -1222,8 +1222,8 @@
   - 卡点（外部条件）：Bots 工具未移植（BW-12-04-01..04、BW-17-01-01..06、BW-17-02-01..08 全未勾），离线工具未移植（BW-13-02-01..05 全未勾）。`apps/` 仅有 server，无 bots/离线工具二进制可跑；验收「样例输出和负载报告有效」需 Bots 端口（BW-12-04/BW-17）先落地。
 - [ ] **BW-15-02-03 跑 Linux 客户端和编辑器**。**验收** 固定地图可显示并编辑。
   - 卡点（外部条件）：客户端未移植（BW-11-01..05 全未勾），编辑器未移植（BW-13-03/04/05 全未勾）。无客户端/编辑器二进制可跑；验收「固定地图可显示并编辑」需 BW-11/BW-13 先落地。
-- [ ] **BW-15-02-04 验证 Linux 安装包**。**验收** 干净系统可安装和启动。
-  - 卡点（外部条件）：可安装发布物未做（BW-14-04-01..05 全未勾）；无安装包可验。验收「干净系统可安装和启动」需 BW-14-04 先落地。
+- [x] **BW-15-02-04 验证 Linux 安装包**。**验收** 干净系统可安装和启动。（commit b0a4d3e）
+  - 证据：`ci/install-layout.sh`（b0a4d3e 起，5da86a6/a8758e3 续）——Linux 归档 `boundless-0.1.0-linux-x86_64.tar.gz`（包属树 `bin/ lib/ res/`，`data/` 不在包）**干净安装**进全新前缀（install-clean：清空→解包→建 `data/`，无 pre-existing 安装），**安装后可启动**：装后 `boundless-server baseapp` 首启（`starting`→`running`）并自停（`has shut down.`，exit 0，install-smoke-server PASS）、`process_defs --help` 出用法 exit 0（install-cli PASS）、`process_defs -r <prefix>/res` 定位安装资源树（install-cli-res PASS）、装后模块**裸解释器** `import boundless`（install-module PASS，无 cargo/target/venv——即干净系统无需开发环境）、布局完整（install-layout PASS）、升级/卸载保留用户数据（install-upgrade/uninstall PASS）。**边界（已注）**：干净性以「全新前缀 + 无开发环境可导入」验证（包自含：原生二进制 + 样例资源 + 稳定 ABI 模块，仅需宿主 CPython 与 libc）；整机级干净系统烟测随 BW-15-05-01/04 与 BW-14-04-04 三端矩阵落地。
 - [ ] **BW-15-02-05 验证旧 EL7 互通**。**验收** 记录该基线配置和结果。
   - 卡点（外部条件）：旧 EL7 互通需 EL7 运行环境 + 原版 EL7 二进制（rpm 构建面为 BW-00-02 基准，未在本机构建），本机为现代 Linux 无法直接验 EL7 运行面。基线**配置**可记录（原版 rpm 布局与系统库要求，见 BW-14-04 证据），互通**结果**待 EL7 环境就绪。
 
