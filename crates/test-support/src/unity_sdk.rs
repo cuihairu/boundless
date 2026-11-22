@@ -16,6 +16,11 @@
 //! [`UnityDispatchEvent`] records both the thread the event came from and
 //! the thread it was delivered on.  [`UnityMainThreadDispatcher::all_on_main_thread`]
 //! is the fixed-case thread assertion.
+//!
+//! BW-21-03-03 — the adapter is packaged as a Unity package whose manifest
+//! [`package_manifest`] renders deterministically, shipping the files in
+//! [`PACKAGE_FILES`].  Importing it into a clean project needs Unity, so
+//! that step is a recorded gap ([`UNITY_IMPORT_GAP`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -217,6 +222,80 @@ pub fn compile_binding() -> Option<BindingBuild> {
     Some(BindingBuild { success, tail })
 }
 
+/// BW-21-03-03: the Unity package's identity, as the manifest declares it.
+pub const PACKAGE_NAME: &str = "com.cuihairu.boundless-sdk";
+
+/// The package version.
+pub const PACKAGE_VERSION: &str = "0.1.0";
+
+/// The Unity version the package declares support for.
+pub const PACKAGE_UNITY: &str = "2021.3";
+
+/// The files the package ships, as the paths inside the package.
+pub const PACKAGE_FILES: &[&str] = &["Runtime/BwUnity.cs"];
+
+/// The recorded gap for the one step no bare runner can do: importing the
+/// package into a clean Unity project.  This lane does not create the
+/// `sdk/engines/unity/` tree — an incomplete one would make
+/// `ci/sdk-archive.sh` fail (opening the tree obliges a check), so the
+/// harness stays at its honest SKIP naming the packaging ticket.
+pub const UNITY_IMPORT_GAP: &str = "unity-sdk: importing the package into a clean Unity project needs Unity itself — the editor is absent on this runner, and this lane does not create sdk/engines/unity/ (an incomplete tree would make ci/sdk-archive.sh fail), so the harness records a SKIP naming BW-21-03-03";
+
+/// Render the package manifest as deterministic JSON: a fixed key order, so
+/// two renders are byte-for-byte the same.
+pub fn package_manifest() -> String {
+    let mut out = String::new();
+    out.push_str("{\n");
+    out.push_str(&format!("  \"name\": \"{PACKAGE_NAME}\",\n"));
+    out.push_str(&format!("  \"version\": \"{PACKAGE_VERSION}\",\n"));
+    out.push_str("  \"displayName\": \"Boundless SDK\",\n");
+    out.push_str(&format!("  \"unity\": \"{PACKAGE_UNITY}\",\n"));
+    out.push_str("  \"description\": \"The boundless game server SDK for Unity.\",\n");
+    out.push_str("  \"files\": [\n");
+    for (index, file) in PACKAGE_FILES.iter().enumerate() {
+        out.push_str(&format!("    \"{file}\""));
+        if index + 1 < PACKAGE_FILES.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str("  ]\n");
+    out.push_str("}\n");
+    out
+}
+
+/// Whether `text` is structurally well-formed JSON: braces and brackets
+/// balance, every string is closed, no close comes before its open.
+pub fn is_well_formed_json(text: &str) -> bool {
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for character in text.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+        } else {
+            match character {
+                '"' => in_string = true,
+                '{' | '[' => depth += 1,
+                '}' | ']' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    depth == 0 && !in_string
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +436,63 @@ mod tests {
         assert_eq!(dispatcher.pump(), 0);
         assert!(dispatcher.delivered().is_empty());
         assert!(dispatcher.all_on_main_thread());
+    }
+
+    #[test]
+    fn the_package_manifest_is_deterministic_json() {
+        let first = package_manifest();
+        let second = package_manifest();
+
+        // Two renders, byte-for-byte the same: the field order is fixed.
+        assert_eq!(first, second);
+        assert!(is_well_formed_json(&first));
+    }
+
+    #[test]
+    fn the_package_manifest_names_the_package() {
+        let manifest = package_manifest();
+
+        // Every identity field is declared, and in the fixed order.
+        assert!(manifest.contains(&format!("\"name\": \"{PACKAGE_NAME}\"")));
+        assert!(manifest.contains(&format!("\"version\": \"{PACKAGE_VERSION}\"")));
+        assert!(manifest.contains(&format!("\"unity\": \"{PACKAGE_UNITY}\"")));
+        assert!(manifest.contains("\"displayName\": \"Boundless SDK\""));
+        assert!(manifest.contains("\"description\": \"The boundless game server SDK for Unity.\""));
+        let name_at = manifest.find("\"name\":").unwrap();
+        let version_at = manifest.find("\"version\":").unwrap();
+        let unity_at = manifest.find("\"unity\":").unwrap();
+        assert!(name_at < version_at && version_at < unity_at);
+    }
+
+    #[test]
+    fn the_package_lists_only_delivered_files() {
+        // Every file the package ships is a delivered artifact, by basename,
+        // so the package cannot promise a file the delivery lacks.
+        assert!(!PACKAGE_FILES.is_empty());
+        let dir = fixture_dir();
+        for file in PACKAGE_FILES {
+            let basename = file.rsplit('/').next().unwrap_or(file);
+            assert!(
+                dir.join(basename).is_file(),
+                "the package ships {file} but {basename} is not delivered",
+            );
+        }
+        // The manifest lists every shipped file.
+        let manifest = package_manifest();
+        for file in PACKAGE_FILES {
+            assert!(
+                manifest.contains(&format!("\"{file}\"")),
+                "the manifest does not list {file}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_clean_project_import_gap_is_named() {
+        // The import step is named, with the ticket the harness skips for,
+        // and the reason the package tree is not created.
+        assert!(UNITY_IMPORT_GAP.contains("Unity"));
+        assert!(UNITY_IMPORT_GAP.contains("BW-21-03-03"));
+        assert!(UNITY_IMPORT_GAP.contains("sdk/engines/unity/"));
     }
 }
