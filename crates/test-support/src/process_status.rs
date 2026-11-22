@@ -130,6 +130,22 @@ impl StatusCollector {
         self.record(role, "heartbeat", &beat.to_string(), "process heartbeat")
     }
 
+    /// Record a reading that replaces every earlier reading of the same
+    /// item: the latest sample stands in for the item, so a re-sampled item
+    /// never leaves a stale value behind.
+    pub fn record_latest(
+        &mut self,
+        role: &str,
+        item: &str,
+        value: &str,
+        source: &str,
+    ) -> &mut Self {
+        if let Some(status) = self.processes.get_mut(role) {
+            status.readings.retain(|reading| reading.item != item);
+        }
+        self.record(role, item, value, source)
+    }
+
     /// A process's collected status.
     pub fn status(&self, role: &str) -> Option<&ProcessStatus> {
         self.processes.get(role)
