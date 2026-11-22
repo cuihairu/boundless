@@ -134,6 +134,18 @@ pub unsafe fn py_list_check(obj: *mut PyObject) -> bool {
     unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyList_Type)) }
 }
 
+/// `PyUnicode_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyUnicode_Type`); exact match as for the other concrete-type checks
+/// (`str` is not subclassable in CPython 3).
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_unicode_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyUnicode_Type)) }
+}
+
 /// `PyBytes_Check`, the C API macro (`PyObject_TypeCheck` against
 /// `&PyBytes_Type`). A `bytes` type cannot be subclassed in the interpreter's
 /// own sense for our purposes, so an exact type match is the same test.
@@ -172,6 +184,9 @@ pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mu
 
 /// `PyCapsule_Destructor`, the `destructor` argument of `PyCapsule_New`.
 pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
+
+/// `destructor`, the `Py_tp_dealloc` slot signature (`pyobject.h`).
+pub type Destructor = unsafe extern "C" fn(*mut PyObject);
 
 /// A `PyGetSetDef` getter (`descrobject.h`).
 pub type Getter = unsafe extern "C" fn(*mut PyObject, *mut std::os::raw::c_void) -> *mut PyObject;
@@ -268,6 +283,15 @@ pub const Py_tp_new: c_int = 65;
 pub const Py_tp_repr: c_int = 66;
 /// `Py_tp_base` (`typeslots.h`): the heap type's base, a `PyTypeObject*`.
 pub const Py_tp_base: c_int = 48;
+/// `Py_tp_dealloc` (`typeslots.h`): the instance destruction entry, the
+/// reference's `PyObjectPlus` `__dealloc__` (`pyobject_plus.cpp`).
+pub const Py_tp_dealloc: c_int = 52;
+/// `Py_tp_free` (`typeslots.h`): the instance free entry. `PyType_GetSlot`
+/// with this slot returns the dealloc path's `tp_free` function pointer,
+/// which is what a custom `Py_tp_dealloc` must call after dropping its own
+/// resources -- `PyType_GenericDealloc` is not an exported C API on 3.13, so
+/// the slot indirection is the sound replacement.
+pub const Py_tp_free: c_int = 74;
 /// `Py_TPFLAGS_BASETYPE` (`cpython/object.h`): the type may be subclassed.
 pub const Py_TPFLAGS_BASETYPE: c_uint = 1 << 10;
 /// `PyMappingMethods` (`cpython/object.h`): the mapping protocol table.
@@ -412,6 +436,7 @@ unsafe extern "C" {
     pub static mut PyTraceBack_Type: PyTypeObject;
     pub static mut PyTuple_Type: PyTypeObject;
     pub static mut PyList_Type: PyTypeObject;
+    pub static mut PyUnicode_Type: PyTypeObject;
     pub static mut PyBytes_Type: PyTypeObject;
 }
 
@@ -500,6 +525,8 @@ unsafe extern "C" {
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
+    pub fn PyType_GetSlot(type_: *mut PyTypeObject, slot: c_int) -> *mut std::os::raw::c_void;
+    pub fn PyObject_Free(ptr: *mut std::os::raw::c_void);
     pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
     pub fn PyObject_GenericGetAttr(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericSetAttr(

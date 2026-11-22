@@ -107,6 +107,11 @@ pub struct TypeSpec {
     richcompare: Option<capi::RichcmpFunction>,
     /// The construction entry; `None` is the reference's refusal.
     new_: Option<capi::NewFunction>,
+    /// The destruction entry (`Py_tp_dealloc`); `None` keeps the heap
+    /// type's default. The reference's provider bodies own references
+    /// (`Vector4ProviderPtr` members), so their types carry one that drops
+    /// the body before the generic free.
+    dealloc: Option<capi::Destructor>,
     /// The address of a previously registered heap type this type derives
     /// from, wired as the `Py_tp_base` slot; `None` is the `object` root.
     base: Option<usize>,
@@ -127,6 +132,7 @@ impl TypeSpec {
             number: None,
             richcompare: None,
             new_: None,
+            dealloc: None,
             base: None,
             flags: 0,
             instance_size: 0,
@@ -240,6 +246,16 @@ impl TypeSpec {
     #[must_use]
     pub fn instance_size(mut self, bytes: usize) -> Self {
         self.instance_size = bytes;
+        self
+    }
+
+    /// The destruction entry of the reference's `_pyDealloc` shape: `handler`
+    /// runs the body's own teardown (the `PyObjectPlus` virtual destructor's
+    /// work) and then frees the instance through the generic dealloc. Used
+    /// by the provider types whose bodies own reference-counted members.
+    #[must_use]
+    pub fn with_dealloc(mut self, handler: capi::Destructor) -> Self {
+        self.dealloc = Some(handler);
         self
     }
 
@@ -829,6 +845,15 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
         slots.push(capi::PyTypeSlot {
             slot: capi::Py_tp_base,
             pfunc: base as *mut std::os::raw::c_void,
+        });
+    }
+    if let Some(dealloc) = spec.dealloc {
+        // A body that owns reference-counted members carries its own
+        // teardown: drop the members, then free the instance generically.
+        // The reference's `PyObjectPlus` destructors run before the free.
+        slots.push(capi::PyTypeSlot {
+            slot: capi::Py_tp_dealloc,
+            pfunc: dealloc as *mut std::os::raw::c_void,
         });
     }
     slots.push(capi::PyTypeSlot {

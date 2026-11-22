@@ -25,7 +25,14 @@ use super::capi::{self, PyObject};
 /// Not `Send`: the reference is only valid while the owning thread holds the
 /// GIL, the same bracket the reference enforces with
 /// `Script::acquireLock`/`Script::releaseLock`.
+///
+/// `repr(transparent)`: the handle is exactly the pointer, so a `PyRef`
+/// stored in a provider's `#[repr(C)]` instance body (`script_math.cpp`'s
+/// `Vector4ProviderPtr` members, BW-03-03-02) has the layout the body
+/// declares, and `Option<PyRef>` folds the null niche the same way the
+/// reference's null `SmartPointer` does.
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct PyRef {
     ptr: *mut PyObject,
 }

@@ -1610,7 +1610,7 @@ mod matrix {
         TYPE_ADDR.load(Ordering::SeqCst)
     }
 
-    fn provider_addr() -> usize {
+    pub(super) fn provider_addr() -> usize {
         PROVIDER_ADDR.load(Ordering::SeqCst)
     }
 
@@ -1662,7 +1662,7 @@ mod matrix {
 
     /// `MatrixProvider::Check` (`script_math.cpp:785`): any object whose type
     /// is `MatrixProvider` or one of its subclasses.
-    fn provider_check(object: *mut capi::PyObject) -> bool {
+    pub(super) fn provider_check(object: *mut capi::PyObject) -> bool {
         let provider = provider_addr();
         if object.is_null() || provider == 0 {
             return false;
@@ -1674,13 +1674,15 @@ mod matrix {
     }
 
     /// The matrix a `MatrixProvider` yields. The dispatch is the reference's
-    /// virtual `matrix()`: today `PyMatrix` is the only concrete provider, so
-    /// the single arm reads the embedded body; the provider classes add arms.
+    /// virtual `matrix()`: the `PyMatrix` arm reads the embedded body, and
+    /// the provider classes (`MatrixProduct`, `MatrixInverse`,
+    /// `Vector4MatrixAdaptor`) add their own arms in
+    /// [`providers`](super::providers) through the fallback dispatch.
     fn provider_matrix(object: *mut capi::PyObject) -> Option<Matrix> {
         if !provider_check(object) {
             return None;
         }
-        matrix_read(object)
+        matrix_read(object).or_else(|| super::providers::provider_matrix_dispatch(object))
     }
 
     // -- the method handlers, one per `PY_AUTO_METHOD_DECLARE` in
@@ -2491,5 +2493,14 @@ pub fn register() {
     let _ = vector3::register();
     let _ = vector4::register();
     let _ = matrix::register();
+    let _ = providers::register();
     let _ = plane::register();
 }
+
+// The provider layer (BW-03-03-02): `MatrixProduct`, `MatrixInverse`, the
+// `Vector4Provider` family and `Math.getRegister`, following the reference's
+// `script_math.cpp` provider classes. Kept as a sibling module so the
+// provider dispatch can extend `matrix::provider_matrix` and reuse the
+// module's value helpers.
+#[path = "math_providers.rs"]
+mod providers;
