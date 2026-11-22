@@ -503,6 +503,45 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-00-04-04 — the full-stack comparison: the same input through the original
+  # stack and the new stack, each producer leaving its own evidence. The
+  # entity-definition scenario runs both halves live when the reference tree is
+  # present; the protocol and callback scenarios record the reference evidence
+  # and SKIP the new half, naming the missing producer (mercury wire,
+  # python-host callbacks). Like the parity job this expects to SKIP on a
+  # hosted runner: the original binary lives in a reference checkout
+  # (BW_REFERENCE) that a clean runner does not have. On a self-hosted runner
+  # that carries the reference tree the same step becomes the gate.
+  fullstack:
+    name: Full-stack comparison against the reference stack
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'fullstack')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Run the comparison
+        run: ci/fullstack-compare.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-fullstack-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # BW-22-02-05 — SDK and plugin cases: does a produced artifact load in a
   # host? Three of the four substrates do not exist yet, so those cases SKIP
   # and name the ticket that turns them on (BW-21-01-01, BW-13-06-03,
@@ -862,6 +901,7 @@ jobs:
           ci/check-docs.sh self-test
           ci/runners.sh self-test
           ci/parity.sh self-test
+          ci/fullstack-compare.sh self-test
           ci/sdk.sh self-test
           ci/load.sh self-test
           ci/fault.sh self-test
