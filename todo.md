@@ -472,7 +472,12 @@
   - 证据：**频道分支接入**——`udp_bundle.rs::prepare_packets` 增加 `Option<&UDPChannel>` 参，按 udp_bundle.cpp:398-615 落 `pChannel->writeFlags/writeFooter`、外部频道强制序号、可靠包走 `useNextSequenceID`+`addResendTimer`、溢出返回首包；off-channel 四调用点传 `None`。
   - 证据：**测试与覆盖**——8 个新测（跨回绕窗口/单包 ACK 逐释放/溢出拒收/窗口尺寸按型/ACK 脚回读/不可靠序号校验/clear_state/窗口加倍），mercury 217 通过 / 0 失败；fmt clean；clippy 零警告；门禁 `[ci] no failed lane`。
   - 接缝：重传扫描（`checkResendTimers`）、piggyback 与 `reliableOrders_`（BW-02-03-04）；接收窗/乱序（BW-02-03-05）；分片链（BW-02-03-06）；`send_unacked` 的物理 `sendPacket` 与 `numReliablePacketsSent_` 推进（BW-02-03-07）。
-- [ ] **BW-02-03-04 实现重传计时**。**验收** 单次可控丢包后仅交付一次。
+- [x] **BW-02-03-04 实现重传计时**（6616410）。**验收** 单次可控丢包后仅交付一次。
+  - 证据：**扫描面**——`check_resend_timers`（udp_channel.rs）按 udp_channel.cpp:1080：无未确认包或远端失败即返回；`resend_period = max(round_trip_time*2, min_inactivity_resend_delay)`；`is_irregular = !is_remote_regular` 定 `end_seq`（不规则→`small_out_seq_at`，规则→`highest_ack`）；`MAX_RESENDS = window_size/8` 节流；逐包判定 `should_resend = hasNewerAck || (isIrregular && now-last_sent_time > resend_period)`，`hasNewerAck = seqLessThan(last_sent_at_out_seq, highest_ack)`。
+  - 证据：**重发面**——`resend` 按 udp_channel.cpp:1181 先 `++num_packets_resent`，piggyback 路径以接缝留白，否则 `send_unacked`；`send_unacked` 按 :1212 更新 channel version/id、`last_sent_at_out_seq = small_out_seq_at`、置 `was_resent`、刷新 `last_sent_time` 与 `last_reliable_resend_time`（物理 `sendPacket` 为 -07 缝）；`last_reliable_send_or_resend_time` 按 udp_channel.hpp:275；`set_min_inactivity_resend_delay` 按 :102（秒→stamps）。
+  - 证据：**验收核心**——单次可控丢包仅交付一次：规则频道发 0、1，只 ACK 1（新 ACK 越过旧包），`check_resend_timers` 重发 0 恰一次且二次扫描静默（重发后 `last_sent_at_out_seq` 已推到 `small_out_seq_at`，不再落在 `highest_ack` 之后）；不规则频道经 `debug_make_packets_old` 回拨时钟后两个陈旧包均重发、再扫描静默；规则频道只靠时间不重发；远端失败不重发。
+  - 证据：**测试与覆盖**——4 个新测（新 ACK 越过重发恰一次/不规则非活动重发/规则忽略时间/远端失败不重发），mercury **221 通过 / 0 失败**；fmt clean；clippy 零警告（仅存量 workspace `python-host` 无关警告）；门禁 `ci/check-rust.sh all --packages mercury` 四 lane 全 PASS 以 `[ci] no failed lane` 收尾。
+  - 接缝：piggyback 与 `reliableOrders_`（`resend` 的 on-bundle 半区，BW-02-03-07）；接收窗/乱序（BW-02-03-05）；分片链（BW-02-03-06）；`send_unacked` 的物理 `sendPacket` 与 `numReliablePacketsSent_` 推进（BW-02-03-07）。
 - [ ] **BW-02-03-05 实现乱序与重复过滤**。**验收** 按原版顺序派发。
 - [ ] **BW-02-03-06 实现分片重组**。**验收** 乱序片段可恢复且超时可回收。
 - [ ] **BW-02-03-07 运行双向 UDP 混跑**。**验收** 两个方向可交换并正确统计重传。
