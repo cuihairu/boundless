@@ -87,7 +87,7 @@
 - [x] **BW-00-01-01 展开 Linux Make 构建目标**。**验收** 清册包含二进制、库及所属规则。
   - 证据：`docs/review/bw00-01-build-targets.md`（由 `tools/make_component_scan.py` + `tools/make_components_doc.py` 生成，源数据 `reference/bw00_01_make_components.tsv`）。79 个声明组件（19 binary、1 copy_of_binary、32 library、5 shared_library、1 script_copy、21 unit_test），77 个在当前 Make 构建图内；`third_party/png` 与 `third_party/zip` 是 vcpkg 迁移后的残留空壳（不再由 Make 构建）。聚合规则 `bw-libraries/bw-binaries/third-party-libraries/bw-miscellaneous`（+可选 `bw-unit-tests`/`bw-run-unit-tests`），安装布局 `bin/server/<platform>_<config>/{server,server/commands,server/commands/_helpers,tools}` 与 `BW_*_BIN_DIR` 定义对齐；与实盘 `game/bin/server/el7/` 差分：server/ 10 项、commands/ 5 项（snapshot_helper 已声明未装）、cellapp-extensions 与 dbapp-extensions 三个 .so、tools/ 6 项全对上。cellappmgr 的 LICENSE_SERVER 门（Makefile 缺失才滤出）、examples 的 `user_shouldBuildExamples` 门（缺省构建）、remove_db 一次性脚本拷贝、message_logger 元 makefile 分别记录。commit `b15eb38`。
 - [x] **BW-00-01-02 展开 CMake 与 Windows 目标**。**验收** 清册记录平台及启用宏。证据面 `docs/review/bw00-01-cmake-targets.md`，`cmake_target_scan.py` 扫描 11 个 BWConfiguration，平台仅 Windows（win32/win64）+ 远程 Linux，配置 Debug/Hybrid(+Consumer_Release)，启用宏按目标列全。commit 6058f53。
-- [ ] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。
+- [x] **BW-00-01-03 登记发行脚本与 RPM 目标**。**验收** 标出独有交付物及版本。证据面 `docs/review/bw00-01-release-scripts.md`：三条 lane（linux tar/deb/rpm、windows zip、SDK nupkg/tgz/wheel）独有交付物与版本号源（vcpkg.json 14.4.1 / TS 0.0.1）列全；spec 由 package-daily.sh 现场生成，树内无 *.spec。commit 7ce2a95。
 - [ ] **BW-00-01-04 登记第三方依赖与资源来源**。**验收** 每项有许可证、NOTICE 及复用决策。
 
 #### BW-00-02 原版运行基准
