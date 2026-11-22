@@ -5,7 +5,7 @@
 //! transform as row vectors: `v' = v · M`. The default-constructed matrix is
 //! the *zero* matrix, not the identity.
 
-use super::vector::{clamp, Vector3, Vector4};
+use super::vector::{Vector3, Vector4, clamp};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
@@ -96,6 +96,112 @@ impl Matrix {
     /// The translation row (`matrix.ipp:378-382`).
     pub fn apply_to_origin(&self) -> Vector3 {
         Vector3::new(self.m[3][0], self.m[3][1], self.m[3][2])
+    }
+
+    /// Transform a full Vector4 point including the w row
+    /// (`matrix.ipp:234-248`, scalar branch).
+    pub fn apply_v4_point(&self, v: &Vector4) -> Vector4 {
+        Vector4::new(
+            (v.x * self.m[0][0])
+                + (v.y * self.m[1][0])
+                + (v.z * self.m[2][0])
+                + (v.w * self.m[3][0]),
+            (v.x * self.m[0][1])
+                + (v.y * self.m[1][1])
+                + (v.z * self.m[2][1])
+                + (v.w * self.m[3][1]),
+            (v.x * self.m[0][2])
+                + (v.y * self.m[1][2])
+                + (v.z * self.m[2][2])
+                + (v.w * self.m[3][2]),
+            (v.x * self.m[0][3])
+                + (v.y * self.m[1][3])
+                + (v.z * self.m[2][3])
+                + (v.w * self.m[3][3]),
+        )
+    }
+
+    /// View matrix from position/direction/up (`matrix.cpp:695-718`). The
+    /// basis vectors land in *columns*: col0=Right, col1=Up, col2=Direction.
+    /// The reference leaves `m[0][3]`/`m[1][3]`/`m[2][3]` untouched, so a
+    /// caller must start from a zero matrix for a clean result.
+    pub fn look_at(&mut self, position: &Vector3, direction: &Vector3, up: &Vector3) {
+        let mut zaxis = *direction;
+        zaxis.normalise();
+        let mut xaxis = Vector3::new(0.0, 0.0, 0.0);
+        xaxis = xaxis.cross_product(up, &zaxis);
+        xaxis.normalise();
+        let mut yaxis = Vector3::new(0.0, 0.0, 0.0);
+        yaxis = yaxis.cross_product(&zaxis, &xaxis);
+
+        self.m[0][0] = xaxis.x;
+        self.m[1][0] = xaxis.y;
+        self.m[2][0] = xaxis.z;
+        self.m[3][0] = 0.0;
+
+        self.m[0][1] = yaxis.x;
+        self.m[1][1] = yaxis.y;
+        self.m[2][1] = yaxis.z;
+        self.m[3][1] = 0.0;
+
+        self.m[0][2] = zaxis.x;
+        self.m[1][2] = zaxis.y;
+        self.m[2][2] = zaxis.z;
+        self.m[3][2] = 0.0;
+
+        self.m[3][0] = -position.dot_product(&xaxis);
+        self.m[3][1] = -position.dot_product(&yaxis);
+        self.m[3][2] = -position.dot_product(&zaxis);
+        self.m[3][3] = 1.0;
+    }
+
+    /// Mirror test: `cross(row0, row2) · row1 > 0` (`matrix.cpp:129-132`).
+    pub fn is_mirrored(&self) -> bool {
+        let r0 = Vector3::new(self.m[0][0], self.m[0][1], self.m[0][2]);
+        let r1 = Vector3::new(self.m[1][0], self.m[1][1], self.m[1][2]);
+        let r2 = Vector3::new(self.m[2][0], self.m[2][1], self.m[2][2]);
+        let v = Vector3::new(0.0, 0.0, 0.0);
+        let v = v.cross_product(&r0, &r2);
+        v.dot_product(&r1) > 0.0
+    }
+
+    /// Left-handed orthographic projection (`matrix.ipp:563-575`).
+    pub fn orthogonal_projection(&mut self, w: f32, h: f32, zn: f32, zf: f32) {
+        self.m[0] = [2.0 / w, 0.0, 0.0, 0.0];
+        self.m[1] = [0.0, 2.0 / h, 0.0, 0.0];
+        self.m[2] = [0.0, 0.0, 1.0 / (zf - zn), 0.0];
+        self.m[3] = [0.0, 0.0, zn / (zn - zf), 1.0];
+    }
+
+    /// Left-handed perspective projection (`matrix.ipp:579-611`).
+    pub fn perspective_projection(&mut self, fov: f32, aspect: f32, near: f32, far: f32) {
+        let cot = 1.0 / (fov * 0.5).tan();
+        let rcp = 1.0 / (far - near);
+
+        self.m[0] = [cot / aspect, 0.0, 0.0, 0.0];
+        self.m[1] = [0.0, cot, 0.0, 0.0];
+        self.m[2] = [0.0, 0.0, rcp * far, 1.0];
+        self.m[3] = [0.0, 0.0, -(rcp * far * near), 0.0];
+    }
+
+    /// Set only the translation row (`matrix.ipp:614-619`): the linear part
+    /// is preserved, unlike `set_translate`.
+    pub fn translation(&mut self, v: &Vector3) {
+        self.m[3][0] = v.x;
+        self.m[3][1] = v.y;
+        self.m[3][2] = v.z;
+        self.m[3][3] = 1.0;
+    }
+
+    /// `m[col&3][row&3]`, matching the reference `operator[](int)`
+    /// reinterpretation (`script_math.hpp:209`).
+    pub fn get_element(&self, col: usize, row: usize) -> f32 {
+        self.m[col & 3][row & 3]
+    }
+
+    /// `m[col&3][row&3] = value` (`script_math.hpp:206`).
+    pub fn set_element(&mut self, col: usize, row: usize, value: f32) {
+        self.m[col & 3][row & 3] = value;
     }
 
     pub fn row(&self, i: usize) -> Vector4 {
@@ -452,8 +558,14 @@ mod tests {
         // Rotating +J (0,1,0) by +90° about X moves it to +K (0,0,1): Y→Z.
         let mapped = rot.apply_vector(&Vector3::J);
         assert!(crate::math::almost_zero(mapped.x, 1e-6));
-        assert!(crate::math::almost_zero(mapped.y, 1e-6), "y component vanishes");
-        assert!(crate::math::almost_zero(mapped.z - 1.0, 1e-6), "z component becomes +1");
+        assert!(
+            crate::math::almost_zero(mapped.y, 1e-6),
+            "y component vanishes"
+        );
+        assert!(
+            crate::math::almost_zero(mapped.z - 1.0, 1e-6),
+            "z component becomes +1"
+        );
     }
 
     #[test]
@@ -533,8 +645,18 @@ mod tests {
         let mut m = Matrix::zero();
         m.set_rotate_ypr(yaw, pitch, roll);
         assert!((m.yaw() - yaw).abs() < 1e-5, "yaw {} vs {}", m.yaw(), yaw);
-        assert!((m.pitch() - pitch).abs() < 1e-5, "pitch {} vs {}", m.pitch(), pitch);
-        assert!((m.roll() - roll).abs() < 1e-4, "roll {} vs {}", m.roll(), roll);
+        assert!(
+            (m.pitch() - pitch).abs() < 1e-5,
+            "pitch {} vs {}",
+            m.pitch(),
+            pitch
+        );
+        assert!(
+            (m.roll() - roll).abs() < 1e-4,
+            "roll {} vs {}",
+            m.roll(),
+            roll
+        );
     }
 
     #[test]
@@ -709,7 +831,10 @@ mod tests {
     fn scale_sets_diagonal() {
         let mut m = Matrix::zero();
         m.set_scale(2.0, 3.0, 4.0);
-        assert_eq!(m.apply_vector(&Vector3::new(1.0, 1.0, 1.0)), Vector3::new(2.0, 3.0, 4.0));
+        assert_eq!(
+            m.apply_vector(&Vector3::new(1.0, 1.0, 1.0)),
+            Vector3::new(2.0, 3.0, 4.0)
+        );
         assert_eq!(m.m[3][3], 1.0);
     }
 
@@ -738,5 +863,111 @@ mod tests {
         let mut s = Matrix::zero();
         s.set_scale(2.0, 3.0, 4.0);
         assert_eq!(s.determinant(), 24.0);
+    }
+
+    #[test]
+    fn apply_v4_point_matches_apply_point_with_w_one() {
+        let mut m = Matrix::zero();
+        m.set_translate(3.0, 4.0, 5.0);
+        let p = Vector3::new(1.0, 2.0, 3.0);
+        let v4 = Vector4::new(p.x, p.y, p.z, 1.0);
+        let via4 = m.apply_v4_point(&v4);
+        let via3 = m.apply_point(&p);
+        assert_eq!(via3.x, via4.x);
+        assert_eq!(via3.y, via4.y);
+        assert_eq!(via3.z, via4.z);
+        assert_eq!(via4.w, 1.0);
+    }
+
+    #[test]
+    fn look_at_builds_orthonormal_view() {
+        let mut m = Matrix::zero();
+        let pos = Vector3::new(0.0, 0.0, 0.0);
+        let dir = Vector3::new(0.0, 0.0, 1.0);
+        let up = Vector3::new(0.0, 1.0, 0.0);
+        m.look_at(&pos, &dir, &up);
+        // Straight-down-the-z view: identity rotation, zero translation.
+        assert_eq!(m.m[0][0], 1.0);
+        assert_eq!(m.m[1][1], 1.0);
+        assert_eq!(m.m[2][2], 1.0);
+        assert_eq!(m.m[3][0], 0.0);
+        assert_eq!(m.m[3][1], 0.0);
+        assert_eq!(m.m[3][2], 0.0);
+        assert_eq!(m.m[3][3], 1.0);
+
+        // Offset position shifts the translation by -pos·axis.
+        let pos2 = Vector3::new(10.0, 0.0, 0.0);
+        let mut m2 = Matrix::zero();
+        m2.look_at(&pos2, &dir, &up);
+        assert_eq!(m2.m[3][0], -10.0);
+        assert_eq!(m2.m[3][1], 0.0);
+        assert_eq!(m2.m[3][2], 0.0);
+    }
+
+    #[test]
+    fn is_mirrored_flags_reflected_basis() {
+        let i = Matrix::identity();
+        assert!(!i.is_mirrored());
+        // Negate the x basis row: right-handed becomes left-handed.
+        let mut m = Matrix::zero();
+        m.set_scale(-1.0, 1.0, 1.0);
+        assert!(m.is_mirrored());
+    }
+
+    #[test]
+    fn orthogonal_projection_fills_rows() {
+        let mut m = Matrix::zero();
+        m.orthogonal_projection(100.0, 50.0, 0.5, 100.5);
+        assert_eq!(m.m[0][0], 2.0 / 100.0);
+        assert_eq!(m.m[1][1], 2.0 / 50.0);
+        assert_eq!(m.m[2][2], 1.0 / 100.0);
+        assert_eq!(m.m[3][2], 0.5 / (0.5 - 100.5));
+        assert_eq!(m.m[3][3], 1.0);
+    }
+
+    #[test]
+    fn perspective_projection_fills_rows() {
+        let mut m = Matrix::zero();
+        m.perspective_projection(1.0, 1.5, 0.5, 100.5);
+        let cot = 1.0 / 0.5f32.tan();
+        let rcp = 1.0 / 100.0;
+        assert!((m.m[0][0] - cot / 1.5).abs() < 1e-6);
+        assert_eq!(m.m[1][1], cot);
+        assert_eq!(m.m[2][2], rcp * 100.5);
+        assert_eq!(m.m[2][3], 1.0);
+        assert_eq!(m.m[3][2], -(rcp * 100.5 * 0.5));
+        assert_eq!(m.m[3][3], 0.0);
+    }
+
+    #[test]
+    fn translation_setter_preserves_linear_part() {
+        let mut m = Matrix::zero();
+        m.set_scale(2.0, 3.0, 4.0);
+        m.translation(&Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(m.m[3][0], 1.0);
+        assert_eq!(m.m[3][1], 2.0);
+        assert_eq!(m.m[3][2], 3.0);
+        assert_eq!(m.m[3][3], 1.0);
+        // Linear part untouched.
+        assert_eq!(m.m[0][0], 2.0);
+        assert_eq!(m.m[1][1], 3.0);
+        assert_eq!(m.m[2][2], 4.0);
+    }
+
+    #[test]
+    fn element_accessors_use_col_row_masking() {
+        let mut m = Matrix::zero();
+        m.set_element(3, 0, 1.0);
+        m.set_element(3, 1, 2.0);
+        m.set_element(3, 2, 4.0);
+        assert_eq!(m.m[3][0], 1.0);
+        assert_eq!(m.m[3][1], 2.0);
+        assert_eq!(m.m[3][2], 4.0);
+        assert_eq!(m.get_element(3, 0), 1.0);
+        assert_eq!(m.get_element(3, 1), 2.0);
+        assert_eq!(m.get_element(3, 2), 4.0);
+        // Out-of-range indices wrap mod 4.
+        m.set_element(5, 1, 9.0);
+        assert_eq!(m.get_element(1, 1), 9.0);
     }
 }

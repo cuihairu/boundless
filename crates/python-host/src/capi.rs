@@ -134,6 +134,18 @@ pub unsafe fn py_list_check(obj: *mut PyObject) -> bool {
     unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyList_Type)) }
 }
 
+/// `PyBytes_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyBytes_Type`). A `bytes` type cannot be subclassed in the interpreter's
+/// own sense for our purposes, so an exact type match is the same test.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_bytes_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyBytes_Type)) }
+}
+
 /// `PyObjectPlus::refCount()` (`pyobject_plus.hpp:1100`) and the cstdmf
 /// `hasZeroReferenceCount` specialisation that reads `ob_refcnt` directly
 /// (`pyobject_pointer.hpp:40`): the reference inspects the count for its own
@@ -254,6 +266,10 @@ pub const Py_tp_methods: c_int = 64;
 pub const Py_tp_new: c_int = 65;
 /// `Py_tp_repr` (`typeslots.h`).
 pub const Py_tp_repr: c_int = 66;
+/// `Py_tp_base` (`typeslots.h`): the heap type's base, a `PyTypeObject*`.
+pub const Py_tp_base: c_int = 48;
+/// `Py_TPFLAGS_BASETYPE` (`cpython/object.h`): the type may be subclassed.
+pub const Py_TPFLAGS_BASETYPE: c_uint = 1 << 10;
 /// `PyMappingMethods` (`cpython/object.h`): the mapping protocol table.
 #[repr(C)]
 pub struct PyMappingMethods {
@@ -396,6 +412,7 @@ unsafe extern "C" {
     pub static mut PyTraceBack_Type: PyTypeObject;
     pub static mut PyTuple_Type: PyTypeObject;
     pub static mut PyList_Type: PyTypeObject;
+    pub static mut PyBytes_Type: PyTypeObject;
 }
 
 unsafe extern "C" {
@@ -492,6 +509,13 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyLong_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyLong_AsLong(obj: *mut PyObject) -> std::os::raw::c_long;
+
+    // The bytes protocol the pickling state methods use: `__getstate__`
+    // hands out a raw copy of the instance body, `__setstate__` reads one
+    // back, both against `PyBytes_FromStringAndSize`/`PyBytes_AsString`.
+    pub fn PyBytes_FromStringAndSize(string: *const c_char, length: PySsize) -> *mut PyObject;
+    pub fn PyBytes_AsString(bytes: *mut PyObject) -> *mut c_char;
+    pub fn PyBytes_Size(bytes: *mut PyObject) -> PySsize;
 
     // The number-protocol building blocks, the ones the math types need:
     // every reference arithmetic handler converts its operands through
