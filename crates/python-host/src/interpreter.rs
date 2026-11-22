@@ -579,6 +579,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4swizzle_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4combiner_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4shader_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_matrixproduct_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -4209,6 +4210,109 @@ __probe = '; '.join(_f) or 'ok'
 "#,
             );
             assert_eq!(text, "ok", "math vector4shader behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Math.MatrixProduct` against the reference (`script_math.cpp:810-908`):
+    /// the `a x b` product over the two held `MatrixProvider` slots, the
+    /// identity for an unassigned side, and the reference's non-volatile copy
+    /// (a `Math.Matrix` snapshot does not follow later slot writes).
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_matrixproduct_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+
+# Module surface and inheritance.
+ck(hasattr(Math, 'MatrixProduct'), 'MatrixProduct in module')
+mp = Math.MatrixProduct()
+ck(type(mp).__name__ == 'MatrixProduct', 'the product type')
+ck(isinstance(mp, Math.MatrixProvider), 'the product is a MatrixProvider')
+ck(mp.a is None and mp.b is None, 'the slots start empty')
+ck(msg(TypeError, lambda: Math.MatrixProduct(1)) ==
+   'Math.MatrixProduct() takes no arguments', 'the factory count error')
+
+# Both slots empty: the identity, the reference's `m = identity` half.
+m = Math.Matrix(mp)
+ck(m.get(0,0) == 1.0 and m.get(1,1) == 1.0 and m.get(2,2) == 1.0 and
+   m.get(3,3) == 1.0 and m.get(0,1) == 0.0, 'both empty is the identity')
+
+# 'a' alone: no post-multiplication, the reference's `if (b_)` half.
+a = Math.Matrix()
+a.setScale((2.0, 3.0, 4.0))
+mp.a = a
+ck(mp.a is a, 'the a slot keeps its object')
+m = Math.Matrix(mp)
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 4.0 and
+   m.get(3,3) == 1.0, 'a alone')
+
+# 'b' alone: a's half skipped, b read into the out argument.
+mp.b = Math.Matrix()
+mp.a = None
+m = Math.Matrix(mp)
+ck(m.get(0,0) == 1.0 and m.get(1,1) == 1.0 and m.get(0,1) == 0.0,
+   'b alone')
+
+# Both: 'a x b', b post-multiplied onto a.
+b = Math.Matrix()
+b.setTranslate((1.0, 0.0, 0.0))
+mp.a = a
+mp.b = b
+m = Math.Matrix(mp)
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 4.0 and
+   m.get(3,0) == 1.0 and m.get(3,1) == 0.0 and m.get(3,2) == 0.0 and
+   m.get(3,3) == 1.0, 'the product of a and b')
+
+# The order is not commutative: the translation column scales with a.
+c = Math.Matrix()
+c.setTranslate((1.0, 0.0, 0.0))
+mp.a = c
+mp.b = a
+m = Math.Matrix(mp)
+ck(m.get(3,0) == 2.0 and m.get(0,0) == 2.0, 'swapping a and b changes the result')
+
+# A copy is a snapshot, the reference's documented non-volatile behaviour.
+snap = Math.Matrix(mp)
+ck(snap.get(0,0) == 2.0 and snap.get(3,0) == 2.0, 'the snapshot took the product')
+mp.b = None
+ck(snap.get(0,0) == 2.0, 'the snapshot does not follow the slots')
+live = Math.Matrix(mp)
+ck(live.get(0,0) == 1.0 and live.get(3,0) == 1.0, 'the live product is a alone')
+
+# The slot refusals, and that a refusal leaves the slots alone.
+ck(msg(TypeError, lambda: setattr(mp, 'a', Math.Vector3(1.0, 2.0, 3.0))) ==
+   'a must be set to a MatrixProvider or None', 'the a slot refusal')
+ck(msg(TypeError, lambda: setattr(mp, 'b', 1)) ==
+   'b must be set to a MatrixProvider or None', 'the b slot refusal')
+ck(mp.a is c and mp.b is None, 'a refusal leaves the slots alone')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math matrixproduct behaviour mismatch: {text}");
         });
     }
 
