@@ -18,11 +18,20 @@ pub struct Completion {
 
 /// The candidates for an entity's field context, in declaration order and
 /// narrowed to those starting with `prefix`. An entity the index does not
-/// know — never indexed, or deleted since — completes to nothing.
+/// know — never indexed, or deleted since — completes to nothing, and so does
+/// one whose name is declared in several files: guessing would mix their
+/// candidates, so completion needs the open path to be sure.
 pub fn complete(index: &EntityDefIndex, entity: &str, prefix: &str) -> Vec<Completion> {
+    crate::entitydef_lookup::resolve(index, entity, "")
+        .map(|path| complete_in_file(index, &path, prefix))
+        .unwrap_or_default()
+}
+
+/// The candidates of one file's field context: what the editor of that file
+/// sees, and nothing of a same-stem file in another root.
+pub fn complete_in_file(index: &EntityDefIndex, path: &str, prefix: &str) -> Vec<Completion> {
     index
-        .file_of(entity)
-        .and_then(|path| index.file(path))
+        .file(path)
         .map(|file| {
             file.properties
                 .iter()

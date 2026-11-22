@@ -95,12 +95,25 @@ impl EntityDefIndex {
             .collect()
     }
 
-    /// The path that declares an entity, by name.
+    /// The path that declares an entity, by name. When several files share
+    /// the name this picks one — callers that must not mix same-stem files
+    /// should use [`EntityDefIndex::file_of_all`] instead.
     pub fn file_of(&self, entity: &str) -> Option<&str> {
         self.files
             .values()
             .find(|file| file.entity == entity)
             .map(|file| file.path.as_str())
+    }
+
+    /// Every path declaring an entity, in path order. A rename can leave the
+    /// old path behind for a while, and two roots can each declare a file of
+    /// the same stem — so an entity may have more than one candidate.
+    pub fn file_of_all(&self, entity: &str) -> Vec<&str> {
+        self.files
+            .values()
+            .filter(|file| file.entity == entity)
+            .map(|file| file.path.as_str())
+            .collect()
     }
 
     /// One indexed file, by path.

@@ -30,13 +30,25 @@ pub struct Definition {
 
 /// The definition a script reference jumps to. `property` selects a field of
 /// the entity — its declared span in that entity's file — while a `None`
-/// property is the entity itself, at its root element.
+/// property is the entity itself, at its root element. An entity declared in
+/// several files (a rename, a second root) does not jump by name alone: that
+/// would mix the same-stem files, so it needs the open path to be sure.
 pub fn definition_of(
     index: &EntityDefIndex,
     entity: &str,
     property: Option<&str>,
 ) -> Option<Definition> {
-    let path = index.file_of(entity)?;
+    crate::entitydef_lookup::resolve(index, entity, "")
+        .and_then(|path| definition_of_file(index, &path, property))
+}
+
+/// The definition in one named file: what the editor of that file jumps to,
+/// and nothing of a same-stem file in another root.
+pub fn definition_of_file(
+    index: &EntityDefIndex,
+    path: &str,
+    property: Option<&str>,
+) -> Option<Definition> {
     let file = index.file(path)?;
     let lines = &file.lines;
     let (line, column, end_line, end_column) = match property {
