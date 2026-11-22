@@ -38,6 +38,7 @@ pub mod event_partition;
 pub mod fault_presentation;
 pub mod flamegraph;
 pub mod full_stack;
+pub mod godot_sdk;
 pub mod growth;
 pub mod harness;
 pub mod layering;
