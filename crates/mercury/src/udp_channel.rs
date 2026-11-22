@@ -147,6 +147,16 @@ pub struct UdpChannel {
     has_seen_overflow_warning: bool,
     /// `lastReliableResendTime_`, in micros.
     last_reliable_resend_time: u64,
+    /// `numPacketsResent_` (udp_channel.hpp:528): how many packets
+    /// `checkResendTimers` has re-sent.
+    num_packets_resent: u32,
+    /// `isLocalRegular_` (BW-02-03-04): whether this channel sends
+    /// regularly. The setter's `irregularChannels()` registration lands
+    /// with the send path (BW-02-03-06).
+    is_local_regular: bool,
+    /// `isRemoteRegular_` (BW-02-03-04): whether the peer acknowledges
+    /// regularly. False means the channel ages its unacked packets.
+    is_remote_regular: bool,
 
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
@@ -206,6 +216,9 @@ impl UdpChannel {
             unacked_critical_seq: SEQ_NULL,
             has_seen_overflow_warning: false,
             last_reliable_resend_time: 0,
+            num_packets_resent: 0,
+            is_local_regular: true,
+            is_remote_regular: true,
             network_interface: Rc::downgrade(interface),
         }));
 
@@ -815,6 +828,80 @@ impl UdpChannel {
         true
     }
 
+    // -- Retransmit timing (BW-02-03-04) ---------------------------------
+
+    /// `checkResendTimers( bundle )` (udp_channel.cpp:1068): resend any
+    /// unacked packet that has taken too long to come back, or that a newer
+    /// ack has moved past. Called when the channel's bundle is finalised
+    /// (`doPreFinaliseBundle`, udp_channel.cpp:686). The piggyback re-send
+    /// path the reference uses for external channels is deferred with the
+    /// send path (BW-02-03-06), so every resend currently takes the
+    /// `sendUnacked` fallback and the packet stays unacked.
+    pub fn check_resend_timers(channel: &ChannelPtr) {
+        let now = UdpChannel::now(channel);
+        let mut this = channel.borrow_mut();
+
+        // There are no un-acked packets.
+        if this.oldest_unacked_seq == SEQ_NULL {
+            return;
+        }
+
+        // Don't do anything if the remote process has failed.
+        if this.has_remote_failed {
+            return;
+        }
+
+        // Anything that has taken more than twice the RTT on the channel to
+        // come back is considered too old.
+        let resend_period =
+            std::cmp::max(this.round_trip_time * 2, this.min_inactivity_resend_delay);
+        let is_irregular = !this.is_remote_regular;
+        let end_seq = if is_irregular {
+            this.small_out_seq_at
+        } else {
+            this.highest_ack
+        };
+
+        // Throttle resends a little in extreme situations (udp_channel.cpp:
+        // 1104): no more than a windowSize_/8 per pass.
+        let max_resends = this.window_size / 8;
+        let mut num_resends = 0;
+        let mut seq = this.oldest_unacked_seq;
+        while seq_less_than(seq, end_seq) && num_resends < max_resends {
+            let should_resend = match this.unacked_packets.get(seq as usize) {
+                Some(unacked) => {
+                    let has_newer_ack =
+                        seq_less_than(unacked.last_sent_at_out_seq(), this.highest_ack);
+                    has_newer_ack
+                        || (is_irregular
+                            && (now.saturating_sub(unacked.last_sent_time()) > resend_period))
+                }
+                None => false,
+            };
+            if should_resend {
+                drop(this);
+                UdpChannel::resend(channel, seq);
+                num_resends += 1;
+                this = channel.borrow_mut();
+            }
+            seq = seq_mask(seq.wrapping_add(1));
+        }
+    }
+
+    /// `resend( seq, bundle )` (udp_channel.cpp:1168): re-send an unacked
+    /// packet. Returns whether the packet is no longer unacked; without the
+    /// piggyback path (BW-02-03-06) every resend goes through
+    /// `sendUnacked` and the packet stays unacked, so this is always false
+    /// here.
+    fn resend(channel: &ChannelPtr, seq: SeqNum) -> bool {
+        {
+            let mut this = channel.borrow_mut();
+            this.num_packets_resent += 1;
+        }
+        UdpChannel::send_unacked(channel, seq);
+        false
+    }
+
     // -- Channel base accessors (channel.hpp) ----------------------------
 
     /// `addr()`.
@@ -1002,6 +1089,41 @@ impl UdpChannel {
     /// packet went back out. The resend timing reads this (BW-02-03-04).
     pub fn last_reliable_resend_time(&self) -> u64 {
         self.last_reliable_resend_time
+    }
+
+    /// `lastReliableSendOrResendTime()` (udp_channel.hpp:275): the last
+    /// time a reliable packet was sent for the first time or re-sent.
+    pub fn last_reliable_send_or_resend_time(&self) -> u64 {
+        std::cmp::max(self.last_reliable_send_time, self.last_reliable_resend_time)
+    }
+
+    /// `numPacketsResent()` (udp_channel.hpp:257).
+    pub fn num_packets_resent(&self) -> u32 {
+        self.num_packets_resent
+    }
+
+    /// `isLocalRegular()` (udp_channel.hpp:142).
+    pub fn is_local_regular(&self) -> bool {
+        self.is_local_regular
+    }
+
+    /// `isRemoteRegular()` (udp_channel.hpp:145).
+    pub fn is_remote_regular(&self) -> bool {
+        self.is_remote_regular
+    }
+
+    /// `isRemoteRegular( bool )` (udp_channel.cpp:1730). The reference
+    /// setter is a plain flag store; irregular channels reach the periodic
+    /// resend check through `irregularChannels()`, which lands with the
+    /// send path (BW-02-03-06).
+    pub fn set_is_remote_regular(channel: &ChannelPtr, regular: bool) {
+        channel.borrow_mut().is_remote_regular = regular;
+    }
+
+    /// `isLocalRegular( bool )` (udp_channel.cpp:1715), minus the
+    /// `irregularChannels()` registration (BW-02-03-06).
+    pub fn set_is_local_regular(channel: &ChannelPtr, regular: bool) {
+        channel.borrow_mut().is_local_regular = regular;
     }
 
     /// `unackedCriticalSeq()`: the seq holding the critical unacked
@@ -2096,6 +2218,165 @@ mod tests {
             let this = indexed.borrow();
             assert_eq!(this.send_window_size(), 1024);
             assert!(!this.has_seen_overflow_warning());
+        }
+    }
+
+    // -- BW-02-03-04: retransmit timing (checkResendTimers) ---------------
+
+    /// The acceptance for the item: a packet whose ack is lost is resent
+    /// exactly once per resend period — re-checking immediately after does
+    /// not resend it again, so a single controlled loss yields a single
+    /// delivery.
+    #[test]
+    fn an_old_packet_is_resent_once_per_resend_period() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00e0),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        // Irregular channels age their unacked packets and resend them.
+        UdpChannel::set_is_remote_regular(&channel, false);
+
+        send(&channel); // seq 0, at now = 1_000_000
+        assert_eq!(channel.borrow().num_packets_resent(), 0);
+
+        // A fresh packet is not resent within the resend period.
+        UdpChannel::check_resend_timers(&channel);
+        assert_eq!(channel.borrow().num_packets_resent(), 0);
+
+        // resendPeriod = max(RTT*2, minInactivityResendDelay). The internal
+        // RTT opens at 100ms (200ms doubled); the default delay is 1s.
+        clock.set(2_000_001); // just past one second of inactivity
+        UdpChannel::check_resend_timers(&channel);
+        assert_eq!(channel.borrow().num_packets_resent(), 1);
+        {
+            let this = channel.borrow();
+            assert!(this.is_unacked(0), "no piggyback yet: the slot stays");
+            let unacked = this.unacked_packets().get(0).as_ref().unwrap();
+            assert!(unacked.was_resent(), "the resend is flagged");
+            assert_eq!(unacked.last_sent_time(), 2_000_001);
+            assert_eq!(this.last_reliable_resend_time(), 2_000_001);
+            assert_eq!(this.last_reliable_send_or_resend_time(), 2_000_001);
+        }
+
+        // Re-checking at the same instant does not re-resend: one delivery
+        // per resend period.
+        UdpChannel::check_resend_timers(&channel);
+        assert_eq!(channel.borrow().num_packets_resent(), 1);
+    }
+
+    /// A regular channel only resends a packet when a newer ack has moved
+    /// past it — the age-based resend is an irregular-channel behaviour.
+    #[test]
+    fn a_regular_channel_resends_only_for_a_newer_ack() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00e1),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        assert!(channel.borrow().is_remote_regular());
+
+        send(&channel); // seq 0
+        clock.set(2_000_001); // old, but regular: no age resend
+        UdpChannel::check_resend_timers(&channel);
+        assert_eq!(
+            channel.borrow().num_packets_resent(),
+            0,
+            "a regular channel's endSeq (highestAck) excludes the unacked packet"
+        );
+
+        // An out-of-order ack for a later packet makes the low packet
+        // "stale": its last sent position is behind the highest ack.
+        send(&channel); // seq 1
+        assert!(UdpChannel::handle_ack(&channel, 1));
+        UdpChannel::check_resend_timers(&channel);
+        assert_eq!(
+            channel.borrow().num_packets_resent(),
+            1,
+            "a newer ack forces a resend of the stale packet"
+        );
+    }
+
+    /// The remote-failure gate: a channel whose peer failed does not resend.
+    #[test]
+    fn a_failed_remote_never_triggers_a_resend() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00e2),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_is_remote_regular(&channel, false);
+        send(&channel);
+        UdpChannel::set_remote_failed(&channel);
+        clock.set(2_000_001);
+        UdpChannel::check_resend_timers(&channel);
+        assert_eq!(channel.borrow().num_packets_resent(), 0);
+    }
+
+    /// With nothing unacked, the check is a no-op.
+    #[test]
+    fn no_unacked_packets_resends_nothing() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00e3),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_is_remote_regular(&channel, false);
+        clock.set(2_000_001);
+        UdpChannel::check_resend_timers(&channel);
+        assert_eq!(channel.borrow().num_packets_resent(), 0);
+    }
+
+    /// One pass resends at most `windowSize_/8` packets (the throttle so a
+    /// pathological burst does not re-send the whole window at once).
+    #[test]
+    fn a_pass_resends_at_most_a_quarter_of_the_window() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00e4),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_is_remote_regular(&channel, false);
+        for _ in 0..40 {
+            send(&channel);
+        }
+        // The external RTT opens at 1s, so the resend period is 2s: the
+        // packets must be older than that before the age path fires.
+        clock.set(3_000_001);
+        UdpChannel::check_resend_timers(&channel);
+        assert_eq!(
+            channel.borrow().num_packets_resent(),
+            256 / 8,
+            "the pass is capped at windowSize_/8"
+        );
+        {
+            let this = channel.borrow();
+            let unacked = |seq| this.unacked_packets().get(seq).as_ref().unwrap();
+            assert!(unacked(31).was_resent(), "the 32nd oldest was resent");
+            assert!(
+                !unacked(32).was_resent(),
+                "the pass stopped at the cap, leaving the tail"
+            );
         }
     }
 }
