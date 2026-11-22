@@ -149,6 +149,123 @@ impl ReclamationTrend {
     }
 }
 
+/// One round of a long-stability sampling run, as Bots drives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StabilitySample {
+    /// The round's index, from the first.
+    pub round: u64,
+    /// How long the snapshot collection took, in clock cycles.
+    pub snapshot_duration_cycles: u64,
+    /// The active object count at the round.
+    pub active_objects: u64,
+    /// The live bytes held at the round.
+    pub live_bytes: u64,
+}
+
+/// The long-stability report: what Bots' sampling run leaves behind. It names
+/// the snapshot duration (how long a collection took), the growth between the
+/// first and last round, and the collection overhead (the total time sampling
+/// itself spent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LongStabilityReport {
+    /// One entry per round, in round order.
+    pub samples: Vec<StabilitySample>,
+    /// The highest active object count seen.
+    pub peak_active_objects: u64,
+    /// Last round minus first round's active objects.
+    pub growth_objects: i64,
+    /// Last round minus first round's live bytes.
+    pub growth_bytes: i64,
+    /// The longest a snapshot collection took.
+    pub max_snapshot_duration_cycles: u64,
+    /// The mean snapshot collection time, rounded.
+    pub avg_snapshot_duration_cycles: u64,
+    /// The total time sampling spent: the run's collection overhead.
+    pub collection_overhead_cycles: u64,
+}
+
+/// The sampler a long-stability Bots run feeds: it records each round's
+/// snapshot duration, active count and live bytes, then folds them into a
+/// report.
+#[derive(Debug, Default)]
+pub struct LongStabilitySampler {
+    samples: Vec<StabilitySample>,
+}
+
+impl LongStabilitySampler {
+    /// A sampler with no rounds recorded.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record one round of the run.
+    pub fn record(
+        &mut self,
+        round: u64,
+        snapshot_duration_cycles: u64,
+        active_objects: u64,
+        live_bytes: u64,
+    ) -> &mut Self {
+        self.samples.push(StabilitySample {
+            round,
+            snapshot_duration_cycles,
+            active_objects,
+            live_bytes,
+        });
+        self
+    }
+
+    /// The run's report. With no rounds, growth and the averages are zero.
+    pub fn report(&self) -> LongStabilityReport {
+        let peak_active_objects = self
+            .samples
+            .iter()
+            .map(|sample| sample.active_objects)
+            .max()
+            .unwrap_or(0);
+        let max_snapshot_duration_cycles = self
+            .samples
+            .iter()
+            .map(|sample| sample.snapshot_duration_cycles)
+            .max()
+            .unwrap_or(0);
+        let collection_overhead_cycles: u64 = self
+            .samples
+            .iter()
+            .map(|sample| sample.snapshot_duration_cycles)
+            .sum();
+        let count = self.samples.len() as u64;
+        let avg_snapshot_duration_cycles =
+            collection_overhead_cycles.checked_div(count).unwrap_or(0);
+        let (growth_objects, growth_bytes) = match (self.samples.first(), self.samples.last()) {
+            (Some(first), Some(last)) => (
+                signed_delta(first.active_objects, last.active_objects),
+                signed_delta(first.live_bytes, last.live_bytes),
+            ),
+            _ => (0, 0),
+        };
+        LongStabilityReport {
+            samples: self.samples.clone(),
+            peak_active_objects,
+            growth_objects,
+            growth_bytes,
+            max_snapshot_duration_cycles,
+            avg_snapshot_duration_cycles,
+            collection_overhead_cycles,
+        }
+    }
+}
+
+/// The signed movement from one reading to another, saturating at the edges
+/// of `i64`.
+fn signed_delta(from: u64, to: u64) -> i64 {
+    if to >= from {
+        i64::try_from(to - from).unwrap_or(i64::MAX)
+    } else {
+        -i64::try_from(from - to).unwrap_or(i64::MAX)
+    }
+}
+
 /// A controlled allocation-and-release fixture.
 pub struct GrowthFixture {
     tracker: LiveAllocationTracker,
@@ -374,5 +491,67 @@ mod tests {
         assert!(!trend.fell());
         assert_eq!(trend.reclaimed(), None);
         assert!(trend.samples().is_empty());
+    }
+
+    #[test]
+    fn a_long_stability_run_reports_duration_growth_and_overhead() {
+        let fixture = GrowthFixture::new();
+        let mut sampler = LongStabilitySampler::new();
+
+        // A five-round run as Bots drives it: the load grows round over round,
+        // and each round's snapshot took a known number of cycles.
+        for (round, (objects, bytes, duration)) in [
+            (10, 1_000, 50),
+            (20, 3_000, 60),
+            (30, 6_000, 40),
+            (30, 6_000, 55),
+            (40, 8_000, 45),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let allocation = fixture.hold(bytes);
+            sampler.record(round as u64, duration, objects, fixture.live_bytes());
+            drop(allocation);
+        }
+
+        let report = sampler.report();
+        assert_eq!(report.samples.len(), 5);
+        assert_eq!(report.peak_active_objects, 40);
+
+        // The growth between the first and last round: objects and bytes.
+        assert_eq!(report.growth_objects, 30);
+        assert_eq!(report.growth_bytes, 7_000);
+
+        // The snapshot durations: the worst round, the mean round, and the
+        // run's total collection overhead.
+        assert_eq!(report.max_snapshot_duration_cycles, 60);
+        assert_eq!(report.avg_snapshot_duration_cycles, 50);
+        assert_eq!(report.collection_overhead_cycles, 250);
+    }
+
+    #[test]
+    fn a_single_round_reports_no_growth() {
+        let mut sampler = LongStabilitySampler::new();
+        sampler.record(0, 40, 12, 2_400);
+        let report = sampler.report();
+        assert_eq!(report.samples.len(), 1);
+        assert_eq!(report.growth_objects, 0);
+        assert_eq!(report.growth_bytes, 0);
+        assert_eq!(report.max_snapshot_duration_cycles, 40);
+        assert_eq!(report.avg_snapshot_duration_cycles, 40);
+        assert_eq!(report.collection_overhead_cycles, 40);
+    }
+
+    #[test]
+    fn an_empty_long_stability_run_reports_nothing() {
+        let report = LongStabilitySampler::new().report();
+        assert_eq!(report.samples.len(), 0);
+        assert_eq!(report.peak_active_objects, 0);
+        assert_eq!(report.growth_objects, 0);
+        assert_eq!(report.growth_bytes, 0);
+        assert_eq!(report.max_snapshot_duration_cycles, 0);
+        assert_eq!(report.avg_snapshot_duration_cycles, 0);
+        assert_eq!(report.collection_overhead_cycles, 0);
     }
 }
