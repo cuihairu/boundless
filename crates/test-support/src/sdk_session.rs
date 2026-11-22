@@ -125,6 +125,50 @@ struct LiveEntity {
     entered: bool,
 }
 
+/// One RPC the SDK can compare against the server's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rpc {
+    /// The call's correlation id.
+    pub id: u32,
+    /// The target entity.
+    pub entity: EntityId,
+    /// The method the call invokes.
+    pub method: String,
+    /// The parameters the call sent, in order.
+    pub parameters: Vec<String>,
+    /// Whether the answer has arrived.
+    pub answered: bool,
+    /// The values the answer returned, in order.
+    pub answer: Vec<String>,
+}
+
+/// Why an answer was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcError {
+    /// No call with that id was sent.
+    UnknownCall,
+    /// The call already has an answer.
+    AlreadyAnswered,
+}
+
+impl RpcError {
+    /// The error's stable code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            RpcError::UnknownCall => "rpc-unknown-call",
+            RpcError::AlreadyAnswered => "rpc-already-answered",
+        }
+    }
+
+    /// The message a person reads.
+    pub fn message(&self) -> &'static str {
+        match self {
+            RpcError::UnknownCall => "no call with that id was sent",
+            RpcError::AlreadyAnswered => "the call already has an answer",
+        }
+    }
+}
+
 /// One SDK session against one server.
 pub struct SdkSession {
     flavor: ServerFlavor,
@@ -136,6 +180,8 @@ pub struct SdkSession {
     entities: std::collections::BTreeMap<EntityId, LiveEntity>,
     dispatch: Vec<(EntityId, EntityEvent)>,
     properties: std::collections::BTreeMap<(EntityId, String), String>,
+    rpcs: std::collections::BTreeMap<u32, Rpc>,
+    next_rpc_id: u32,
 }
 
 impl SdkSession {
@@ -151,6 +197,8 @@ impl SdkSession {
             entities: std::collections::BTreeMap::new(),
             dispatch: Vec::new(),
             properties: std::collections::BTreeMap::new(),
+            rpcs: std::collections::BTreeMap::new(),
+            next_rpc_id: 0,
         }
     }
 
@@ -326,6 +374,46 @@ impl SdkSession {
         self.properties
             .get(&(id, path.to_string()))
             .map(String::as_str)
+    }
+
+    /// Send one RPC: the parameters go to the server, and the answer comes
+    /// back matched by the call's id. Returns the id the answer is matched
+    /// against.
+    pub fn rpc(&mut self, entity: EntityId, method: &str, parameters: &[&str]) -> u32 {
+        let id = self.next_rpc_id;
+        self.next_rpc_id += 1;
+        self.rpcs.insert(
+            id,
+            Rpc {
+                id,
+                entity,
+                method: method.to_string(),
+                parameters: parameters
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+                answered: false,
+                answer: Vec::new(),
+            },
+        );
+        id
+    }
+
+    /// The server's answer arrives for the call with `id`.
+    pub fn answer(&mut self, id: u32, values: &[&str]) -> Result<(), RpcError> {
+        let rpc = self.rpcs.get_mut(&id).ok_or(RpcError::UnknownCall)?;
+        if rpc.answered {
+            return Err(RpcError::AlreadyAnswered);
+        }
+        rpc.answer = values.iter().map(|value| (*value).to_string()).collect();
+        rpc.answered = true;
+        Ok(())
+    }
+
+    /// The recorded call with its parameters and its answer side by side, so
+    /// the two can be compared.
+    pub fn round_trip(&self, id: u32) -> Option<&Rpc> {
+        self.rpcs.get(&id)
     }
 }
 
@@ -632,5 +720,73 @@ mod tests {
 
         assert_eq!(session.property(1, "hp"), Some("100"));
         assert_eq!(session.property(2, "hp"), Some("50"));
+    }
+
+    #[test]
+    fn an_rpc_call_round_trips_its_parameters_and_answer() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        // The call goes to the server, the answer comes back by its id.
+        let id = session.rpc(1, "logOff", &["timeout"]);
+        assert_eq!(session.answer(id, &["ok"]), Ok(()));
+
+        // Parameters and answer sit side by side, so they compare.
+        let rpc = session.round_trip(id).unwrap();
+        assert_eq!(rpc.id, id);
+        assert_eq!(rpc.entity, 1);
+        assert_eq!(rpc.method, "logOff");
+        assert_eq!(rpc.parameters, vec!["timeout"]);
+        assert!(rpc.answered);
+        assert_eq!(rpc.answer, vec!["ok"]);
+    }
+
+    #[test]
+    fn answers_match_calls_by_their_id() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        let first = session.rpc(1, "logOff", &["timeout"]);
+        let second = session.rpc(2, "fromCell", &["hello"]);
+
+        // Two calls, each answered by its own id: the answers do not mix.
+        assert_eq!(session.answer(first, &["ok"]), Ok(()));
+        assert_eq!(session.answer(second, &["received"]), Ok(()));
+        assert_eq!(session.round_trip(first).unwrap().answer, vec!["ok"]);
+        assert_eq!(
+            session.round_trip(second).unwrap().parameters,
+            vec!["hello"]
+        );
+    }
+
+    #[test]
+    fn an_answer_for_a_call_that_was_never_sent_is_refused() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        let error = session.answer(9, &["ok"]).unwrap_err();
+        assert_eq!(error, RpcError::UnknownCall);
+        assert_eq!(error.code(), "rpc-unknown-call");
+        assert_eq!(error.message(), "no call with that id was sent");
+    }
+
+    #[test]
+    fn an_answered_call_is_not_answered_twice() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        let id = session.rpc(1, "logOff", &[]);
+        assert_eq!(session.answer(id, &["ok"]), Ok(()));
+
+        let error = session.answer(id, &["again"]).unwrap_err();
+        assert_eq!(error, RpcError::AlreadyAnswered);
+        assert_eq!(error.code(), "rpc-already-answered");
+        // The first answer stands.
+        assert_eq!(session.round_trip(id).unwrap().answer, vec!["ok"]);
+    }
+
+    #[test]
+    fn rpc_ids_are_numbered_in_order() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        let first = session.rpc(1, "logOff", &[]);
+        let second = session.rpc(1, "fromCell", &["hello"]);
+
+        // Each call gets its own id, in the order sent.
+        assert_ne!(first, second);
+        assert_eq!((first, second), (0, 1));
     }
 }
