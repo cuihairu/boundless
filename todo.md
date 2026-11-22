@@ -1136,10 +1136,15 @@
 - [x] **BW-14-01-01 加载原版实体定义与配置**。**验收** 五类示例定义摘要吻合。（commit 845831f）
   - 证据：`crates/entitydef/tests/bwentity_load.rs::fantasydemo_loads_the_five_sample_definitions`（845831f）+ 新夹具 `docs/review/fixtures/fantasydemo_def/res/`（20 文件，与参考 `programming/fantasydemo/res/scripts/` **字节一致**：5 个 .def + `entities.xml`/`alias.xml`/`db.xml` + base/cell/client 脚本）——`EntityDescriptionMapFactory` 走 `scripts/entities.xml` 载入，**五类**（Account=0/Avatar=1/Guard=2/Space=3/ClientOnly=4）逐类断言摘要吻合参考 `process_defs` 捕获（`docs/review/reference/fantasydemo_entitydef.json`）：name/index/canBeOn*/isPersistent/client_index + 逐属性 name/type/persistent/identifier + base/cell/client 方法数与名（Account: 2 属性 base-only 无 cell、Avatar: 4 属性 1 exposed base 方法 2 client 方法、Guard/Space: 无方法、ClientOnly: client-only 2 属性）；全树 digest 亦吻合。**行覆盖 99.34%**（`cargo llvm-cov -p entitydef`，门禁 ≥98%）。夹具即后续 01-02..05 复用的「已跟踪」实体定义。
 - [ ] **BW-14-01-02 运行账号登录及角色创建**。**验收** 回调与持久化状态吻合。
+  - 卡点（服务端登录链路未落地）：`apps/server/src/main.rs` 仅为最小入口（进程生命周期 + 信号退出，见 BW-15-02-01 证据），全树无登录/建角色处理（grep `logon|log_in|onLogOn` 于 apps/server + server-runtime 零命中），亦不读 `scripts/db.xml` 的 `LogOnMapping`（FantasyAccount/password/type=Account/entityID=2）。缺：登录挑战协商 BW-06-01-02、baseapp onLogin/onCreateCharacter（BW-07-01）、dbapp createAccount/getAccount/loadCharacter（BW-09-01-04/05）。夹具已备（845831f 跟踪 FantasyDemo 实体定义与 db.xml）。
 - [ ] **BW-14-01-03 运行入场、移动和 AOI**。**验收** 同一轨迹的观察事件可比。
+  - 卡点（cell/场景运行时未落地）：需 CellApp 创建与注册（BW-08-01-02 未勾）、chunk 解析（BW-10-01-01 未勾）、compiled space 解析（BW-10-02-01 未勾）；入场/移动/AOI 观测事件依赖同批空间运行时，当前无 cell 角色实体模型可驱动轨迹。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
+  - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f），但 pyscript 容器/宿主与 ServerApp/CellApp 接线（BW-03-03 服务面）未落地，无脚本宿主可运行其 onCellEnter/onSpaceStart 类回调。
 - [ ] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。
-- [ ] **BW-14-01-06 登记资源生成与完整包**。**验收** 每个样本可追溯至来源。
+  - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）+ 登录链路（同 01-02 卡点）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
+- [x] **BW-14-01-06 登记资源生成与完整包**。**验收** 每个样本可追溯至来源。（commit fccd8bd）
+  - 证据：`docs/review/bw14-01-06-resource-generation-registry.md`（fccd8bd）——生成器 `programming/bigworld/scripts/generate-fantasydemo-assets.py`（参考 HEAD `167688a4`），输出基址 `programming/fantasydemo/res/`，**完整包 = 21 项**（`server/bw.xml` + `scripts/` 20 项），逐项登记生成器内嵌常量（`BW_XML`/`ENTITIES_XML`/`DB_XML`/`ALIAS_XML`/5×`*_DEF`/11×`{BASE,CELL,CLIENT}_*_PY`）；跟踪镜像 `docs/review/fixtures/fantasydemo_def/res/`（fccd8bd 补 `server/bw.xml` 后 **21 文件**，`diff -r` 与参考 res 树字节一致）+ 01-01 逐类摘要吻合（845831f）。边界：美术资源生成器明确不产出（非美术代餐），`development_defaults.xml` 父配置在参考仓不存在故 `bw.xml` 自含。
 
 #### BW-14-02 SDK 和扩展样例
 
