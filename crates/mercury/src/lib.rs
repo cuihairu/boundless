@@ -9,10 +9,10 @@ pub mod channel_map;
 pub mod circular_array;
 #[cfg(target_os = "linux")]
 pub mod condemned_channels;
-pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod encryption_filter;
 pub mod encryption_stream_filter;
+pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;
 pub mod fragmented_bundle;
@@ -42,6 +42,7 @@ pub mod packet_receiver_stats;
 #[cfg(target_os = "linux")]
 pub mod poller;
 
+pub mod recently_dead_channels;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;

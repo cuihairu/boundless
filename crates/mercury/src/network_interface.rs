@@ -14,6 +14,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use foundation::time_queue::TimerHandle;
 use platform::socket;
 
 use crate::channel_map::ChannelMap;
@@ -28,6 +29,7 @@ use crate::packet_filter::PacketFilter;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::packet_receiver_stats::PacketReceiverStats;
 use crate::poller::EventPoller;
+use crate::recently_dead_channels::RecentlyDeadChannels;
 use crate::request_manager::RequestManager;
 use crate::udp_bundle::UdpBundle;
 use crate::udp_channel::{
@@ -82,6 +84,9 @@ pub struct NetworkInterface {
     channels: RefCell<ChannelMap>,
     /// The condemned channels waiting to be deleted.
     condemned: RefCell<CondemnedChannels>,
+    /// `pRecentlyDeadChannels_` (network_interface.cpp:160-170): only an
+    /// external interface has one.
+    recently_dead: RefCell<Option<RecentlyDeadChannels>>,
     /// `pRequestManager_`.
     request_manager: RefCell<Option<Rc<RequestManager>>>,
     /// `pInterfaceTable_` (network_interface.hpp:326): the message table
@@ -152,6 +157,9 @@ impl NetworkInterface {
             dispatcher,
             channels: RefCell::new(ChannelMap::new()),
             condemned: RefCell::new(CondemnedChannels::new()),
+            recently_dead: RefCell::new(
+                (interface_type == InterfaceType::External).then(RecentlyDeadChannels::new),
+            ),
             request_manager: RefCell::new(None),
             interface_table: RefCell::new(None),
             sink: RefCell::new(None),
@@ -435,11 +443,35 @@ impl NetworkInterface {
         self.channels.borrow_mut().add(channel)
     }
 
-    /// `deregisterChannel` (network_interface.cpp:662): drop the
-    /// channel's address. Recently-dead bookkeeping for external
-    /// channels is BW-02-05.
+    /// `deregisterChannel` (network_interface.cpp:487-497): drop the
+    /// channel's address, remembering it as recently dead when the
+    /// interface has that memory at all.
     pub fn deregister_channel(&self, channel: &ChannelPtr) -> bool {
+        let (external, addr) = {
+            let channel = channel.borrow();
+            (channel.is_external(), channel.addr())
+        };
+        if external && let Some(dead) = self.recently_dead.borrow_mut().as_mut() {
+            dead.add(&addr, &self.dispatcher, &self.self_weak.borrow());
+        }
         self.channels.borrow_mut().remove(channel)
+    }
+
+    /// `isDead( addr )` (network_interface.cpp:525-528): has this address
+    /// lost a channel recently?
+    pub fn is_dead(&self, addr: &Address) -> bool {
+        self.recently_dead
+            .borrow()
+            .as_ref()
+            .is_some_and(|dead| dead.is_dead(addr))
+    }
+
+    /// The arm `RecentlyDeadChannels::handleTimeout` fires through: the
+    /// interface hands the expired handle back to its collection.
+    pub(crate) fn forget_recently_dead(&self, handle: TimerHandle<u64>) {
+        if let Some(dead) = self.recently_dead.borrow_mut().as_mut() {
+            dead.forget_by_handle(handle);
+        }
     }
 
     /// `setRequestManager`'s seam: the reply bookkeeping the channel
@@ -589,15 +621,15 @@ impl NetworkInterface {
     /// that dispatches them is BW-02-02.
     ///
     /// `PacketReceiver::processPacket` (packet_receiver.cpp:445): the
-    /// entry point for a new datagram. Rate limiting and the dead-channel
-    /// monitor arrive with BW-02-05-04. A found channel first-passes the
-    /// datagram through its own packet filter
-    /// (`pChannel->pFilter() && !pChannel->hasRemoteFailed()`,
+    /// entry point for a new datagram. Rate limiting arrives with
+    /// BW-02-05-04. A found channel first-passes the datagram through its
+    /// own packet filter (`pChannel->pFilter() && !pChannel->hasRemoteFailed()`,
     /// packet_receiver.cpp:471-474) -- the filter's verdict is the
     /// result, and the base `PacketFilter::recv` is the pass-through to
-    /// the receive path below. A datagram that finds no channel meets the
-    /// interface's connection filter (`pOffChannelFilter_`, :492) before
-    /// the receive path.
+    /// the receive path below. A datagram that finds no channel but whose
+    /// address recently lost one (the recently-dead guard, :474-487) is
+    /// dropped. Otherwise it meets the interface's connection filter
+    /// (`pOffChannelFilter_`, :492) before the receive path.
     pub fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
         let create_anonymous = !self.is_external && packet.should_create_anonymous();
 
@@ -614,6 +646,17 @@ impl NetworkInterface {
             if let (Some(filter), false) = (p_filter, remote_failed) {
                 return filter.recv(self, addr, packet);
             }
+        } else if self.is_external && self.is_dead(addr) {
+            // A recently dead channel's datagrams are dropped, not
+            // processed raw (packet_receiver.cpp:474-487): the client's
+            // session is over, so nothing it sends is worth parsing.
+            if self.is_verbose() {
+                eprintln!(
+                    "PacketReceiver::processPacket( {} ): Ignoring incoming packet on recently dead channel",
+                    addr.c_str()
+                );
+            }
+            return Reason::Success;
         } else if let Some(filter) = self.p_off_channel_filter() {
             // The interface's connection filter decides what a channel-less
             // datagram is worth; the else-if is the reference's, so a
@@ -2740,6 +2783,122 @@ mod tests {
             "the channel's filter spoke before the connection filter could"
         );
         assert!(sink.packets.borrow().is_empty());
+    }
+
+    /// Deregistering a channel on the external interface remembers its
+    /// address as recently dead (network_interface.cpp:493-501): the
+    /// session the address held is gone, but the address is not yet
+    /// cleared.
+    #[test]
+    fn a_deregistered_external_channel_becomes_recently_dead() {
+        let (interface, _clock) = channel_interface(InterfaceType::External);
+        let addr = Address::new(LOOPBACK, socket::htons(9121));
+        let channel = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        assert!(!interface.is_dead(&addr), "a live channel is not dead");
+        interface.deregister_channel(&channel);
+        assert!(
+            interface.is_dead(&addr),
+            "a deregistered external channel is remembered"
+        );
+    }
+
+    /// `pRecentlyDeadChannels_` only exists on external interfaces
+    /// (network_interface.cpp:160-170): an internal deregistration
+    /// forgets nothing.
+    #[test]
+    fn an_internal_interface_keeps_no_recently_dead() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        let addr = Address::new(LOOPBACK, socket::htons(9122));
+        let channel = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        interface.deregister_channel(&channel);
+        assert!(!interface.is_dead(&addr));
+    }
+
+    /// BW-02-05-03 acceptance: an auth failure tears the session down,
+    /// and the address stays remembered, so a follow-up datagram finds no
+    /// channel and is dropped -- the guard sits before the connection
+    /// filter, so nothing is re-processed raw and no session lingers.
+    #[test]
+    fn a_failed_handshake_leaves_no_residual_session() {
+        let (interface, _clock) = channel_interface(InterfaceType::External);
+        interface.set_verbose(true);
+        interface.set_p_off_channel_filter(Some(Rc::new(InitialConnectionFilter::new(
+            BASE_APP_LOGIN_ID,
+        ))));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        // The client's session channel, and the app tearing it down when
+        // the login fails.
+        let addr = Address::new(LOOPBACK, socket::htons(9123));
+        let channel = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::destroy(&channel);
+
+        // A retry from the same address: no channel to find, so the
+        // recently-dead guard answers.
+        let mut retry = wire(flags::ON_CHANNEL, &[0x41]);
+        assert_eq!(
+            interface.process_packet(&addr, &mut retry),
+            Reason::Success,
+            "the dead guard drops the datagram"
+        );
+        assert!(
+            sink.packets.borrow().is_empty(),
+            "nothing a dead address sent reached the dispatch"
+        );
+    }
+
+    /// The guard is a short memory, not a ban: once the 60-second timer
+    /// has run, the address is forgotten and its datagrams go back to the
+    /// connection filter (packet_receiver.cpp:474-487).
+    #[test]
+    fn the_recently_dead_guard_expires_after_a_minute() {
+        let (interface, clock) = channel_interface(InterfaceType::External);
+        let addr = Address::new(LOOPBACK, socket::htons(9124));
+        let channel = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        interface.deregister_channel(&channel);
+        assert!(interface.is_dead(&addr));
+
+        clock.set(1_000_000 + 60_000_000);
+        interface.dispatcher().process_timers();
+        assert!(!interface.is_dead(&addr), "the address was forgotten");
+
+        // A datagram from it now meets the connection filter again.
+        interface.set_p_off_channel_filter(Some(Rc::new(InitialConnectionFilter::new(
+            BASE_APP_LOGIN_ID,
+        ))));
+        let mut noise = wire(flags::ON_CHANNEL, &[0x41]);
+        assert_eq!(
+            interface.process_packet(&addr, &mut noise),
+            Reason::GeneralNetwork,
+            "the filter speaks once the guard has expired"
+        );
     }
 
     /// The bare `PacketFilter` is the pass-through: with no override
