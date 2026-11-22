@@ -1,4 +1,5 @@
-//! BW-21-03 Unity adapter: the C# binding and the main-thread dispatch.
+//! BW-21-03: the Unity adapter — the C# binding, the main-thread dispatch,
+//! the package manifest and the example run.
 //!
 //! BW-21-03-01 — the binding is delivered as C# under `cases/unity_sdk/`:
 //! the component itself ([`BINDING_FILE`]) and a stand-in for the engine
@@ -21,6 +22,12 @@
 //! [`package_manifest`] renders deterministically, shipping the files in
 //! [`PACKAGE_FILES`].  Importing it into a clean project needs Unity, so
 //! that step is a recorded gap ([`UNITY_IMPORT_GAP`]).
+//!
+//! BW-21-03-04 — [`run_unity_example`] drives the example against the SDK
+//! session model, one step at a time, and every step records its result
+//! ([`ExampleStep`]), so login, entity, property, movement and RPC each have
+//! an outcome.  Running the example inside the editor is a recorded gap
+//! ([`UNITY_RUN_GAP`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -296,6 +303,108 @@ pub fn is_well_formed_json(text: &str) -> bool {
     depth == 0 && !in_string
 }
 
+/// BW-21-03-04: one step the Unity example ran, and the result it produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExampleStep {
+    /// What the step did: login, entity, property, movement, rpc or logout.
+    pub action: String,
+    /// The result the step produced.
+    pub result: String,
+}
+
+/// The recorded gap for the one step no bare runner can do: running the
+/// example inside the Unity Editor.
+pub const UNITY_RUN_GAP: &str = "unity-sdk: running the example inside the Unity Editor needs Unity itself — the editor is absent on this runner, so the in-editor run is recorded as a gap (naming BW-21-03-04)";
+
+/// Run the Unity example against the SDK session model: log in, walk one
+/// entity through its lifecycle, sync a property, send movement input, make
+/// an RPC round trip, then log out.  Every step records its result, so the
+/// acceptance — login, entity, movement and RPC each have a result — is
+/// checkable from the returned steps.
+pub fn run_unity_example() -> Vec<ExampleStep> {
+    use crate::sdk_session::{MovementInput, SdkSession, ServerFlavor};
+
+    let mut steps = Vec::new();
+    let mut session = SdkSession::new(ServerFlavor::New);
+
+    // Login: the example connects, and the handshake rounds are a result.
+    let result = match session.login() {
+        Ok(()) => format!("connected ({})", session.handshake_rounds()),
+        Err(error) => error.code().to_string(),
+    };
+    steps.push(ExampleStep {
+        action: "login".to_string(),
+        result,
+    });
+
+    // Entity: spawn and enter one entity; its lifecycle is a result.
+    let _ = session.spawn(1);
+    let _ = session.enter_space(1);
+    let lifecycle: Vec<String> = session
+        .lifecycle(1)
+        .iter()
+        .map(|event| format!("{event:?}"))
+        .collect();
+    steps.push(ExampleStep {
+        action: "entity".to_string(),
+        result: lifecycle.join(","),
+    });
+
+    // Property: a representative nested sync reads back.
+    session.sync_property(1, "position.x", "1.5");
+    steps.push(ExampleStep {
+        action: "property".to_string(),
+        result: format!("x={}", session.property(1, "position.x").unwrap_or("-")),
+    });
+
+    // Movement: the server receives the input the client sent.
+    session.send_input(MovementInput {
+        entity: 1,
+        x: 1.5,
+        y: 0.0,
+        z: -2.5,
+        timestamp: 1,
+    });
+    steps.push(ExampleStep {
+        action: "movement".to_string(),
+        result: format!("received {}", session.server_received().len()),
+    });
+
+    // RPC: a call answers by its correlation id, and the round trip reads
+    // the answer beside the parameters.
+    let call = session.rpc(1, "logOff", &["timeout"]);
+    let _ = session.answer(call, &["ok"]);
+    let result = session
+        .round_trip(call)
+        .map(|rpc| {
+            format!(
+                "answered={} params={}",
+                rpc.answered,
+                rpc.parameters.join(",")
+            )
+        })
+        .unwrap_or_else(|| "no-round-trip".to_string());
+    steps.push(ExampleStep {
+        action: "rpc".to_string(),
+        result,
+    });
+
+    // Logout: the example leaves the space, destroys the entity, and logs
+    // out.
+    let _ = session.leave_space(1);
+    let _ = session.destroy(1);
+    let result = match session.disconnect() {
+        Ok(()) => "disconnected".to_string(),
+        Err(error) => error.code().to_string(),
+    };
+    steps.push(ExampleStep {
+        action: "logout".to_string(),
+        result,
+    });
+
+    steps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +603,60 @@ mod tests {
         assert!(UNITY_IMPORT_GAP.contains("Unity"));
         assert!(UNITY_IMPORT_GAP.contains("BW-21-03-03"));
         assert!(UNITY_IMPORT_GAP.contains("sdk/engines/unity/"));
+    }
+
+    fn step<'a>(steps: &'a [ExampleStep], action: &str) -> &'a str {
+        steps
+            .iter()
+            .find(|step| step.action == action)
+            .map(|step| step.result.as_str())
+            .unwrap_or("<absent>")
+    }
+
+    #[test]
+    fn the_unity_example_reports_each_step_result() {
+        let steps = run_unity_example();
+
+        // The acceptance: login, entity, movement and RPC each have a result.
+        let actions: Vec<&str> = steps.iter().map(|step| step.action.as_str()).collect();
+        for required in ["login", "entity", "property", "movement", "rpc", "logout"] {
+            assert!(actions.contains(&required), "missing step {required}");
+        }
+        // Every step's result is a real outcome, not empty.
+        for step in &steps {
+            assert!(!step.result.is_empty(), "{} has no result", step.action);
+        }
+
+        // The outcomes the acceptance names.
+        assert!(
+            step(&steps, "login").contains("connected"),
+            "login: {}",
+            step(&steps, "login")
+        );
+        assert!(
+            step(&steps, "entity").contains("Created"),
+            "entity: {}",
+            step(&steps, "entity")
+        );
+        assert_eq!(step(&steps, "movement"), "received 1");
+        assert!(
+            step(&steps, "rpc").contains("answered=true"),
+            "rpc: {}",
+            step(&steps, "rpc")
+        );
+        assert_eq!(step(&steps, "logout"), "disconnected");
+    }
+
+    #[test]
+    fn the_unity_example_is_deterministic() {
+        // Two runs, the same transcript: the example is reproducible.
+        assert_eq!(run_unity_example(), run_unity_example());
+    }
+
+    #[test]
+    fn the_in_editor_run_gap_is_named() {
+        // The one step a bare runner cannot do is named with its ticket.
+        assert!(UNITY_RUN_GAP.contains("Unity Editor"));
+        assert!(UNITY_RUN_GAP.contains("BW-21-03-04"));
     }
 }
