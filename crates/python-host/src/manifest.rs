@@ -195,7 +195,7 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "callback",
         Kind::Function,
         Scope::Client,
-        Status::Pending,
+        Status::Ported,
         "\"dO\" (float time, callable function)",
         "int callback handle",
         "TypeError \"BigWorld.callback: Argument parsing error.\"; \
@@ -206,7 +206,7 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "cancelCallback",
         Kind::Function,
         Scope::Client,
-        Status::Pending,
+        Status::Ported,
         "\"i\" (int handle)",
         "None",
         "TypeError \"py_cancelCallback: Argument parsing error.\"",
@@ -1499,7 +1499,10 @@ mod tests {
             .filter(|item| item.status == Status::Ported)
             .map(|item| item.name)
             .collect();
-        assert_eq!(ported_items, vec!["component"]);
+        assert_eq!(
+            ported_items,
+            vec!["component", "callback", "cancelCallback"]
+        );
         let math_items: Vec<_> = find("Math")
             .unwrap()
             .items
@@ -1597,10 +1600,20 @@ mod tests {
         );
         assert_eq!(
             uncarried,
-            vec![Mismatch::ItemMissing {
-                module: "BigWorld",
-                item: "component"
-            }]
+            vec![
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "component"
+                },
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "callback"
+                },
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "cancelCallback"
+                },
+            ]
         );
         assert_eq!(
             uncarried[0].render(),
