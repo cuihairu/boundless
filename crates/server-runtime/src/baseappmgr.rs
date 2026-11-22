@@ -16,6 +16,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::entity_creator::EntityMailBoxRef;
+use crate::services_map::ServicesMap;
+
 /// `BaseAppMgrInterface::CreateEntityError::CREATE_ENTITY_ERROR_NO_BASEAPPS`.
 pub const CREATE_ENTITY_ERROR_NO_BASEAPPS: u8 = 1;
 /// `CREATE_ENTITY_ERROR_BASEAPPS_OVERLOADED`.
@@ -150,11 +153,55 @@ pub enum ToBaseApp {
     },
     /// `BaseAppIntInterface::delGlobalBase`.
     DelGlobalBase { name: String },
+    /// `BaseAppIntInterface::addServiceFragment`.
+    AddServiceFragment {
+        name: String,
+        mailbox: EntityMailBoxRef,
+    },
+    /// `BaseAppIntInterface::delServiceFragment`.
+    DelServiceFragment { name: String, addr: Addr },
     /// `BaseAppIntInterface::controlledShutDown`.
     ControlledShutDown {
         stage: ShutDownStage,
         shut_down_time: u32,
     },
+}
+
+/// A service-fragment update the BaseAppMgr forwards to the CellAppMgr
+/// (`CellAppMgrInterface::addServiceFragment` / `delServiceFragment`,
+/// `baseappmgr.cpp:2801` / `2841`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CellAppMgrServiceMessage {
+    /// `CellAppMgrInterface::addServiceFragment`.
+    AddServiceFragment {
+        name: String,
+        mailbox: EntityMailBoxRef,
+    },
+    /// `CellAppMgrInterface::delServiceFragment`.
+    DelServiceFragment { name: String, addr: Addr },
+}
+
+/// The outcome of a `registerServiceFragment` / `deregisterServiceFragment`
+/// request: the manager's authoritative map change, the broadcasts to the
+/// BaseApps, the forward to the CellAppMgr, and whether the server should
+/// shut down because a service lost its last fragment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServiceFragmentOutcome {
+    /// The number of fragments the map changed by (1 on a register, the
+    /// removed count on a deregister).
+    pub removed: usize,
+    /// Whether the service no longer has any fragments anywhere
+    /// (`*pDidLoseService`).
+    pub did_lose_service: bool,
+    /// `BaseAppIntInterface::addServiceFragment` / `delServiceFragment` to
+    /// every managed BaseApp and ServiceApp, including the sender.
+    pub broadcasts: Vec<(Addr, ToBaseApp)>,
+    /// The `CellAppMgrInterface` forward, if the app was registered.
+    pub cell_app_mgr: Option<CellAppMgrServiceMessage>,
+    /// Whether `Config::shutDownServerOnServiceDeath()` asks for a shutdown
+    /// because a service lost its last fragment outside a controlled
+    /// shutdown.
+    pub shut_down_server: bool,
 }
 
 /// Why `BaseAppMgr::add` refused to register a BaseApp.
@@ -279,6 +326,10 @@ pub struct BaseAppScheduler {
     shared_base_app_data: BTreeMap<String, String>,
     shared_global_data: BTreeMap<String, String>,
     global_bases: BTreeMap<String, GlobalBaseMailbox>,
+    /// `ServiceAppSubSet::services_`: the service-fragment map.
+    services: ServicesMap,
+    /// `Config::shutDownServerOnServiceDeath()`.
+    shut_down_on_service_death: bool,
     best_base_app: Option<Addr>,
     has_init_data: bool,
     has_started: bool,
@@ -306,6 +357,8 @@ impl BaseAppScheduler {
             shared_base_app_data: BTreeMap::new(),
             shared_global_data: BTreeMap::new(),
             global_bases: BTreeMap::new(),
+            services: ServicesMap::new(),
+            shut_down_on_service_death: false,
             best_base_app: None,
             has_init_data: false,
             has_started: false,
@@ -737,6 +790,121 @@ impl BaseAppScheduler {
                 )
             })
             .collect()
+    }
+
+    /// `Config::shutDownServerOnServiceDeath`.
+    pub fn set_shut_down_on_service_death(&mut self, enabled: bool) {
+        self.shut_down_on_service_death = enabled;
+    }
+
+    /// The registered service names (`ServicesMap::getServiceNames`).
+    pub fn service_names(&self) -> Vec<String> {
+        self.services.service_names()
+    }
+
+    /// The fragments of one service (`ServicesMap::getFragmentsForService`).
+    pub fn fragments_for_service(&self, name: &str) -> Vec<EntityMailBoxRef> {
+        self.services.fragments_for_service(name)
+    }
+
+    /// Choose a fragment of one service by `rand() % count`
+    /// (`ServicesMap::chooseFragment`).
+    pub fn choose_service_fragment(&self, name: &str, draw: usize) -> Option<EntityMailBoxRef> {
+        self.services.choose_fragment(name, draw)
+    }
+
+    /// `BaseAppMgr::registerServiceFragment`
+    /// (`ServiceAppSubSet::addServiceFragmentFromStream`, `baseappmgr.cpp:2755`):
+    /// a ServiceApp registers one of its service entities as a fragment of a
+    /// service. The sender must be a registered app; the fragment joins the
+    /// authoritative map, every managed BaseApp and ServiceApp is told to add
+    /// it, and the CellAppMgr is forwarded the update.
+    pub fn register_service_fragment(
+        &mut self,
+        sender: Addr,
+        name: &str,
+        mailbox: EntityMailBoxRef,
+    ) -> ServiceFragmentOutcome {
+        if self.find_ready(sender).is_none() {
+            // An unregistered app's message is dropped (ERROR_MSG and return).
+            return ServiceFragmentOutcome {
+                removed: 0,
+                did_lose_service: false,
+                broadcasts: Vec::new(),
+                cell_app_mgr: None,
+                shut_down_server: false,
+            };
+        }
+
+        self.services.add_fragment(name, mailbox);
+        let broadcasts = self
+            .all_ready_addrs()
+            .into_iter()
+            .map(|addr| {
+                (
+                    addr,
+                    ToBaseApp::AddServiceFragment {
+                        name: name.to_string(),
+                        mailbox,
+                    },
+                )
+            })
+            .collect();
+
+        ServiceFragmentOutcome {
+            removed: 1,
+            did_lose_service: false,
+            broadcasts,
+            cell_app_mgr: Some(CellAppMgrServiceMessage::AddServiceFragment {
+                name: name.to_string(),
+                mailbox,
+            }),
+            shut_down_server: false,
+        }
+    }
+
+    /// `BaseAppMgr::deregisterServiceFragment`
+    /// (`ServiceAppSubSet::deregisterServiceFragment`, `baseappmgr.cpp:2812`):
+    /// a ServiceApp deregisters one of its fragments. The fragment for the
+    /// sender's address leaves the map, every managed app is told to delete
+    /// it, and the CellAppMgr is forwarded the update. When the service loses
+    /// its last fragment and `shutDownServerOnServiceDeath` is set (and the
+    /// manager is not already shutting down), the server is to be shut down.
+    pub fn deregister_service_fragment(
+        &mut self,
+        sender: Addr,
+        name: &str,
+    ) -> ServiceFragmentOutcome {
+        let (removed, did_lose_service) = self.services.remove_fragment(name, sender);
+
+        let broadcasts = self
+            .all_ready_addrs()
+            .into_iter()
+            .map(|addr| {
+                (
+                    addr,
+                    ToBaseApp::DelServiceFragment {
+                        name: name.to_string(),
+                        addr: sender,
+                    },
+                )
+            })
+            .collect();
+
+        let shut_down_server = did_lose_service
+            && self.shut_down_stage == ShutDownStage::None
+            && self.shut_down_on_service_death;
+
+        ServiceFragmentOutcome {
+            removed,
+            did_lose_service,
+            broadcasts,
+            cell_app_mgr: Some(CellAppMgrServiceMessage::DelServiceFragment {
+                name: name.to_string(),
+                addr: sender,
+            }),
+            shut_down_server,
+        }
     }
 
     fn all_ready_addrs(&self) -> Vec<Addr> {
@@ -1409,5 +1577,204 @@ mod tests {
         assert!(apps[0].did_auto_load_entities_from_db);
         assert_eq!(apps[1].addr, service);
         assert!(!apps[1].bootstrap);
+    }
+
+    // ------------------------------------------------------------------
+    // BW-07-03-02 启动并注册 Service
+    // ------------------------------------------------------------------
+
+    use crate::entity_creator::MailBoxComponent;
+
+    /// Register and finish the init of one BaseApp and one ServiceApp.
+    fn scheduler_with_service_and_base() -> (BaseAppScheduler, Addr, Addr) {
+        let mut scheduler = ready_scheduler();
+        let base = cell_addr(1);
+        let service = cell_addr(2);
+        assert!(matches!(
+            scheduler.register(base, client_addr(1), false, 10),
+            RegisterOutcome::Registered(_)
+        ));
+        scheduler.finished_init(base);
+        assert!(matches!(
+            scheduler.register(service, client_addr(2), true, 10),
+            RegisterOutcome::Registered(_)
+        ));
+        scheduler.finished_init(service);
+        (scheduler, base, service)
+    }
+
+    /// A service entity's mailbox on `service`: the address is the ServiceApp
+    /// that hosts it (`MF_ASSERT_DEV(srcAddr == mailBox.addr)`).
+    fn service_mailbox(id: u32, service: Addr) -> EntityMailBoxRef {
+        EntityMailBoxRef::init(id, service, MailBoxComponent::Base, 1)
+    }
+
+    /// The same configuration (the same fragments registered in the same
+    /// order) yields the same available services on the manager.
+    #[test]
+    fn the_same_configuration_yields_the_same_available_services() {
+        fn run() -> BaseAppScheduler {
+            let (mut scheduler, base, service) = scheduler_with_service_and_base();
+            // One ServiceApp registers two fragments of one service and one
+            // of another.
+            scheduler.register_service_fragment(service, "A", service_mailbox(1, service));
+            scheduler.register_service_fragment(service, "B", service_mailbox(2, service));
+            scheduler.register_service_fragment(service, "A", service_mailbox(3, service));
+            assert_eq!(scheduler.fragments_for_service("A").len(), 2);
+            assert_eq!(scheduler.service_names().len(), 2);
+            let _ = base;
+            scheduler
+        }
+        let first = run();
+        let second = run();
+        assert_eq!(first.service_names(), second.service_names());
+        assert_eq!(
+            first.service_names(),
+            vec!["A".to_string(), "B".to_string()]
+        );
+        assert_eq!(
+            first.fragments_for_service("A"),
+            second.fragments_for_service("A")
+        );
+        assert_eq!(
+            first.choose_service_fragment("A", 0),
+            second.choose_service_fragment("A", 0)
+        );
+    }
+
+    /// A registered fragment is broadcast to every managed app, including the
+    /// sender, and forwarded to the CellAppMgr.
+    #[test]
+    fn a_registered_fragment_reaches_every_app_and_the_cell_app_mgr() {
+        let (mut scheduler, base, service) = scheduler_with_service_and_base();
+        let mailbox = service_mailbox(42, service);
+        let outcome = scheduler.register_service_fragment(service, "DBAppMgr", mailbox);
+
+        assert_eq!(outcome.removed, 1);
+        assert!(!outcome.did_lose_service);
+        // Every ready app is told to add the fragment, including the sender.
+        let mut addrs: Vec<_> = outcome.broadcasts.iter().map(|(addr, _)| *addr).collect();
+        addrs.sort();
+        assert_eq!(addrs, vec![base, service]);
+        for (_addr, message) in &outcome.broadcasts {
+            assert_eq!(
+                message,
+                &ToBaseApp::AddServiceFragment {
+                    name: "DBAppMgr".to_string(),
+                    mailbox,
+                }
+            );
+        }
+        assert_eq!(
+            outcome.cell_app_mgr,
+            Some(CellAppMgrServiceMessage::AddServiceFragment {
+                name: "DBAppMgr".to_string(),
+                mailbox,
+            })
+        );
+        assert!(!outcome.shut_down_server);
+
+        // The service is available on the manager.
+        assert_eq!(scheduler.service_names(), vec!["DBAppMgr".to_string()]);
+        assert_eq!(scheduler.fragments_for_service("DBAppMgr"), vec![mailbox]);
+        assert_eq!(
+            scheduler.choose_service_fragment("DBAppMgr", 0),
+            Some(mailbox)
+        );
+    }
+
+    /// A message from an app the manager does not know is dropped: no map
+    /// change, no broadcasts, no CellAppMgr forward.
+    #[test]
+    fn an_unregistered_app_cannot_register_a_fragment() {
+        let (mut scheduler, _base, _service) = scheduler_with_service_and_base();
+        let stranger = cell_addr(99);
+        let outcome =
+            scheduler.register_service_fragment(stranger, "A", service_mailbox(1, stranger));
+        assert_eq!(outcome.removed, 0);
+        assert!(outcome.broadcasts.is_empty());
+        assert_eq!(outcome.cell_app_mgr, None);
+        assert_eq!(scheduler.service_names(), Vec::<String>::new());
+    }
+
+    /// A deregistered fragment leaves the map, reaches every app and the
+    /// CellAppMgr; losing the last fragment may ask for a shutdown.
+    #[test]
+    fn a_deregistered_fragment_leaves_the_map() {
+        let (mut scheduler, base, service) = scheduler_with_service_and_base();
+        scheduler.register_service_fragment(service, "A", service_mailbox(1, service));
+
+        let outcome = scheduler.deregister_service_fragment(service, "A");
+        assert_eq!(outcome.removed, 1);
+        assert!(outcome.did_lose_service);
+        let mut addrs: Vec<_> = outcome.broadcasts.iter().map(|(addr, _)| *addr).collect();
+        addrs.sort();
+        assert_eq!(addrs, vec![base, service]);
+        for (_addr, message) in &outcome.broadcasts {
+            assert_eq!(
+                message,
+                &ToBaseApp::DelServiceFragment {
+                    name: "A".to_string(),
+                    addr: service,
+                }
+            );
+        }
+        assert_eq!(
+            outcome.cell_app_mgr,
+            Some(CellAppMgrServiceMessage::DelServiceFragment {
+                name: "A".to_string(),
+                addr: service,
+            })
+        );
+
+        // The service is gone from the manager.
+        assert_eq!(scheduler.service_names(), Vec::<String>::new());
+        assert!(scheduler.fragments_for_service("A").is_empty());
+    }
+
+    /// A service that keeps another fragment is not lost, and no shutdown is
+    /// asked for.
+    #[test]
+    fn a_service_with_a_remaining_fragment_is_not_lost() {
+        let (mut scheduler, _base, service) = scheduler_with_service_and_base();
+        let peer = cell_addr(3);
+        assert!(matches!(
+            scheduler.register(peer, client_addr(3), true, 10),
+            RegisterOutcome::Registered(_)
+        ));
+        scheduler.finished_init(peer);
+
+        scheduler.register_service_fragment(service, "A", service_mailbox(1, service));
+        scheduler.register_service_fragment(peer, "A", service_mailbox(2, peer));
+
+        let outcome = scheduler.deregister_service_fragment(service, "A");
+        assert_eq!(outcome.removed, 1);
+        assert!(!outcome.did_lose_service);
+        assert!(!outcome.shut_down_server);
+        // The service is still available on the peer.
+        assert_eq!(
+            scheduler.fragments_for_service("A"),
+            vec![service_mailbox(2, peer)]
+        );
+    }
+
+    /// `shutDownServerOnServiceDeath` asks for a shutdown only when a service
+    /// loses its last fragment outside a controlled shutdown.
+    #[test]
+    fn losing_the_last_fragment_may_shut_the_server_down() {
+        let (mut scheduler, _base, service) = scheduler_with_service_and_base();
+        scheduler.set_shut_down_on_service_death(true);
+        scheduler.register_service_fragment(service, "A", service_mailbox(1, service));
+
+        let outcome = scheduler.deregister_service_fragment(service, "A");
+        assert!(outcome.did_lose_service);
+        assert!(outcome.shut_down_server);
+
+        // Without the config the same loss does not shut the server down.
+        let (mut scheduler, _base, service) = scheduler_with_service_and_base();
+        scheduler.register_service_fragment(service, "A", service_mailbox(1, service));
+        let outcome = scheduler.deregister_service_fragment(service, "A");
+        assert!(outcome.did_lose_service);
+        assert!(!outcome.shut_down_server);
     }
 }

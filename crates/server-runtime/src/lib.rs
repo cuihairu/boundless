@@ -34,6 +34,7 @@ pub mod reviver;
 pub mod script_timers;
 pub mod server_app;
 pub mod server_finder;
+pub mod services_map;
 pub mod shutdown;
 pub mod signals;
 pub mod task_manager;
