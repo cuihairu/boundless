@@ -73,6 +73,8 @@ pub struct SdkSession {
     state: SdkState,
     logins: usize,
     disconnects: usize,
+    calls: usize,
+    reconnects: usize,
 }
 
 impl SdkSession {
@@ -83,6 +85,8 @@ impl SdkSession {
             state: SdkState::Disconnected,
             logins: 0,
             disconnects: 0,
+            calls: 0,
+            reconnects: 0,
         }
     }
 
@@ -137,6 +141,46 @@ impl SdkSession {
         self.state = SdkState::LoggingOut;
         self.state = SdkState::Disconnected;
         self.disconnects += 1;
+        Ok(())
+    }
+
+    /// The method calls the session completed.
+    pub fn calls(&self) -> usize {
+        self.calls
+    }
+
+    /// The reconnects the session completed.
+    pub fn reconnects(&self) -> usize {
+        self.reconnects
+    }
+
+    /// Call one method on the server. Only a connected session can call; a
+    /// dropped one cannot until it reconnects.
+    pub fn call(&mut self) -> Result<(), SdkError> {
+        if self.state != SdkState::Connected {
+            return Err(SdkError::NotConnected);
+        }
+        self.calls += 1;
+        Ok(())
+    }
+
+    /// The connection dropped — the network, or the server, went away. The
+    /// session's identity is kept, but nothing can be called until it
+    /// reconnects.
+    pub fn drop_connection(&mut self) {
+        self.state = SdkState::Disconnected;
+    }
+
+    /// Restore the dropped session and its identity. A session still
+    /// connected cannot reconnect; a restored one does not count as a new
+    /// login.
+    pub fn reconnect(&mut self) -> Result<(), SdkError> {
+        if self.state == SdkState::Connected {
+            return Err(SdkError::AlreadyConnected);
+        }
+        self.state = SdkState::Connecting;
+        self.state = SdkState::Connected;
+        self.reconnects += 1;
         Ok(())
     }
 }
@@ -228,5 +272,60 @@ mod tests {
         assert_eq!(session.logins(), 1);
         assert_eq!(session.disconnects(), 1);
         assert_eq!(session.state(), SdkState::Disconnected);
+    }
+
+    #[test]
+    fn a_dropped_session_reconnects_and_calls_again() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        session.login().unwrap();
+        assert_eq!(session.call(), Ok(()));
+        assert_eq!(session.calls(), 1);
+
+        // The connection drops: a call now fails, a reconnect restores it,
+        // and the restored session calls again.
+        session.drop_connection();
+        assert_eq!(session.state(), SdkState::Disconnected);
+        assert_eq!(session.call(), Err(SdkError::NotConnected));
+
+        assert_eq!(session.reconnect(), Ok(()));
+        assert_eq!(session.state(), SdkState::Connected);
+        assert_eq!(session.call(), Ok(()));
+        assert_eq!(session.calls(), 2);
+    }
+
+    #[test]
+    fn a_reconnect_restores_the_session_not_a_new_login() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        session.login().unwrap();
+        session.drop_connection();
+        session.reconnect().unwrap();
+
+        // The session's identity was restored: the login count is untouched,
+        // and the reconnect is counted on its own.
+        assert_eq!(session.logins(), 1);
+        assert_eq!(session.reconnects(), 1);
+        assert_eq!(session.state(), SdkState::Connected);
+    }
+
+    #[test]
+    fn a_connected_session_cannot_reconnect() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        session.login().unwrap();
+
+        // Reconnecting a live session is the other error.
+        let error = session.reconnect().unwrap_err();
+        assert_eq!(error, SdkError::AlreadyConnected);
+        assert_eq!(error.code(), "already-connected");
+    }
+
+    #[test]
+    fn a_method_call_needs_a_connected_session() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        // A session that never logged in cannot call.
+        let error = session.call().unwrap_err();
+        assert_eq!(error, SdkError::NotConnected);
+        assert_eq!(error.code(), "not-connected");
+        assert_eq!(session.calls(), 0);
     }
 }
