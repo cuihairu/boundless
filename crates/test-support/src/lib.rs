@@ -64,6 +64,7 @@ pub mod space_heat;
 pub mod standalone;
 pub mod startup_baseline;
 pub mod stats_report;
+pub mod task_executor;
 pub mod third_party_deps;
 pub mod timer_scenarios;
 pub mod tool_output;
