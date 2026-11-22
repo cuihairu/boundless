@@ -35,6 +35,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::rc::Weak;
 
+use crate::block_cipher::BlockCipher;
+use crate::encryption_stream_filter::EncryptionStreamFilter;
 use crate::endpoint::Address;
 use crate::message_filter::MessageFilter;
 use crate::misc::Reason;
@@ -132,6 +134,11 @@ pub struct TcpChannel {
     /// before the parser frames it, so until it resolves, the raw bytes
     /// sit here rather than in the parser.
     pending_header: Vec<u8>,
+    /// `pStreamFilter_` (tcp_channel.cpp:579): the session encryption the
+    /// stream passes through, installed by `setEncryption`. `on_data` hands
+    /// every incoming byte to its `read_into` first, so the framing loop only
+    /// ever sees plaintext.
+    p_encryption: Option<EncryptionStreamFilter>,
 }
 
 impl TcpChannel {
@@ -156,7 +163,17 @@ impl TcpChannel {
             shut_down_sent: false,
             inactivity_timed_out: Cell::new(false),
             pending_header: Vec::new(),
+            p_encryption: None,
         }
+    }
+
+    /// `TCPChannel::setEncryption` (tcp_channel.cpp:578-590): wrap the
+    /// channel's stream in an `EncryptionStreamFilter`, or drop the
+    /// encryption for a `None` key. The reference stacks the filter on the
+    /// channel stream adaptor; the port has no stream object, so the codec
+    /// hangs off the channel and `on_data` drives it.
+    pub fn set_encryption(&mut self, cipher: Option<Rc<dyn BlockCipher>>) {
+        self.p_encryption = cipher.map(EncryptionStreamFilter::new);
     }
 
     // -- handshake --------------------------------------------------------
@@ -259,8 +276,24 @@ impl TcpChannel {
     /// first bytes go through the WebSockets sniff first, then whatever
     /// bytes resolve it are framed and dispatched.
     pub fn on_data(&mut self, bytes: &[u8]) {
+        // The stream filter sits between the transport and the framing: the
+        // channel decrypts what `on_data` brings, and the framing loop only
+        // ever sees plaintext (tcp_channel.cpp:166-180).
+        let decrypted;
+        let data: &[u8] = match &mut self.p_encryption {
+            Some(filter) => {
+                decrypted = filter.read_into(bytes);
+                if decrypted.is_empty() {
+                    // Incomplete encrypted block; wait for more bytes.
+                    return;
+                }
+                &decrypted
+            }
+            None => bytes,
+        };
+
         if self.header_state == HeaderState::ServerWaitForHeader {
-            self.pending_header.extend_from_slice(bytes);
+            self.pending_header.extend_from_slice(data);
             if self.pending_header.len() < HTTP_HEADER_START.len() {
                 // `pFrameData_->remainingLength() < HTTP_HEADER_START_SIZE`:
                 // wait for more data.
@@ -278,7 +311,7 @@ impl TcpChannel {
             let wire = std::mem::take(&mut self.pending_header);
             self.feed_and_dispatch(&wire);
         } else {
-            self.feed_and_dispatch(bytes);
+            self.feed_and_dispatch(data);
         }
     }
 
@@ -1138,5 +1171,71 @@ mod tests {
         channel.on_data(&wire);
 
         assert!(recorder.delivered().is_empty(), "nothing past the bad id");
+    }
+
+    /// The session cipher both halves share, derived from the negotiated
+    /// key the app layer passes `setEncryption`.
+    fn session_cipher() -> Rc<dyn BlockCipher> {
+        crate::symmetric_block_cipher::SymmetricBlockCipher::create(b"abcdefghijklmnopqrstuvwxyz")
+            .expect("the reference accepts 4..=56 byte keys")
+    }
+
+    /// `setEncryption` wraps the channel stream (tcp_channel.cpp:578-590):
+    /// a peer's encrypted header frame and bundle decrypt into exactly the
+    /// message the bare bytes dispatch.
+    #[test]
+    fn set_encryption_decrypts_the_receive_stream() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+        channel.set_encryption(Some(session_cipher()));
+
+        // `doSend` encrypts one frame at a time (tcp_channel.cpp:446), so
+        // each frame's tail is padded on its own; the receiver reads the
+        // concatenated ciphertext as one block stream.
+        let mut peer = EncryptionStreamFilter::new(session_cipher());
+        let mut wire = peer.write_from(&client_header_wire());
+        wire.extend_from_slice(&peer.write_from(&small_bundle_wire(0x07, b"ABCD")));
+
+        channel.on_data(&wire);
+
+        assert_eq!(channel.header_state(), HeaderState::None);
+        assert_eq!(
+            recorder.delivered(),
+            vec![(0x07, b"ABCD".to_vec())],
+            "the encrypted stream dispatched the message"
+        );
+    }
+
+    /// An incomplete encrypted block is held back: nothing frames or
+    /// dispatches until the block completes (tcp_channel.cpp:166-180).
+    #[test]
+    fn an_incomplete_encrypted_block_waits_for_more_bytes() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+        channel.set_encryption(Some(session_cipher()));
+
+        let mut peer = EncryptionStreamFilter::new(session_cipher());
+        let wire = peer.write_from(&client_header_wire());
+        assert_eq!(wire.len(), 16, "the header frame pads to two blocks");
+
+        channel.on_data(&wire[..7]);
+        assert!(
+            recorder.delivered().is_empty(),
+            "a partial block frames nothing"
+        );
+        assert_eq!(
+            channel.header_state(),
+            HeaderState::ServerWaitForHeader,
+            "the gate still waits for the header"
+        );
+
+        channel.on_data(&wire[7..]);
+        assert_eq!(
+            channel.header_state(),
+            HeaderState::None,
+            "the header arrived"
+        );
     }
 }

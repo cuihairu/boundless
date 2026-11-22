@@ -17,8 +17,10 @@ use std::rc::{Rc, Weak};
 
 use foundation::time_queue::{TimerHandle, TimerHandler};
 
+use crate::block_cipher::BlockCipher;
 use crate::channel_listener::ChannelListener;
 use crate::circular_array::CircularArray;
+use crate::encryption_filter::EncryptionFilter;
 use crate::endpoint::{Address, NONE};
 use crate::fragmented_bundle::FragmentedBundle;
 use crate::message_filter::MessageFilter;
@@ -1491,6 +1493,18 @@ impl UdpChannel {
         channel.p_filter = p_filter;
     }
 
+    /// `UDPChannel::setEncryption` (udp_channel.cpp:675-687): the session
+    /// encryption the app layer installs from the negotiated key --
+    /// `EncryptionFilter` wrapping the cipher, dropped through
+    /// `pFilter` so the channel's filter arm sees it (and `None` removes it).
+    pub fn set_encryption(channel: &ChannelPtr, cipher: Option<Rc<dyn BlockCipher>>) {
+        let filter: Option<Rc<dyn PacketFilter>> = match cipher {
+            Some(cipher) => Some(EncryptionFilter::create(cipher)),
+            None => None,
+        };
+        Self::set_p_filter(channel, filter);
+    }
+
     /// The spare size the channel's bundle reserves, the filter's
     /// `maxSpareSize` or zero.
     pub fn spare_size(&self) -> u8 {
@@ -1996,6 +2010,43 @@ mod tests {
 
         // Clearing the filter returns the bundle to no spare.
         UdpChannel::set_p_filter(&channel, None);
+        assert_eq!(channel.borrow().spare_size(), 0);
+    }
+
+    /// `setEncryption` installs the session `EncryptionFilter`
+    /// (udp_channel.cpp:675-687) and drops it through `pFilter`: the filter
+    /// is in place and its spare size reaches the bundle, and `None` clears
+    /// both, exactly as `set_p_filter` does for any packet filter.
+    #[test]
+    fn set_encryption_installs_the_session_filter() {
+        use crate::block_cipher::NullCipher;
+
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_0007),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        assert!(channel.borrow().p_filter().is_none());
+        UdpChannel::set_encryption(&channel, Some(NullCipher::create(8)));
+        let installed = channel
+            .borrow()
+            .p_filter()
+            .expect("the session filter is installed");
+        // An 8-byte-cipher filter: block + magic + MTU allowance.
+        assert_eq!(installed.max_spare_size(), 212);
+        assert_eq!(
+            channel.borrow().spare_size(),
+            212,
+            "the session filter's spare size reaches the bundle"
+        );
+
+        UdpChannel::set_encryption(&channel, None);
+        assert!(channel.borrow().p_filter().is_none());
         assert_eq!(channel.borrow().spare_size(), 0);
     }
 
