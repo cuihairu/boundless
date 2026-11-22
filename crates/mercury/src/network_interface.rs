@@ -28,9 +28,11 @@ use crate::interfaces::InputMessageHandler;
 use crate::misc::{CHANNEL_ID_NULL, ChannelID, Reason};
 use crate::packet::Packet;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
+use crate::packet_sender::PacketSender;
 use crate::poller::EventPoller;
 use crate::recently_dead_channels::RecentlyDeadChannels;
 use crate::request_manager::RequestManager;
+use crate::udp_bundle::UDPBundle;
 use crate::udp_channel::{ChannelTraits, UDPChannel};
 
 /// `Mercury::NetworkInterfaceType` (network_interface.hpp).
@@ -100,6 +102,13 @@ pub struct NetworkInterface {
     /// the constructor (the attach surface is BW-02-01-05) and documents the
     /// seam.
     recently_dead_channels: RefCell<Option<Rc<RecentlyDeadChannels>>>,
+    /// `pPacketSender_`: the physical send half of the data plane, plus the
+    /// off-channel sequence-number allocator it owns.
+    packet_sender: Rc<PacketSender>,
+    /// `pPacketReceiver_`: the read loop this interface hands datagrams to.
+    /// The receiver holds only a `Weak` back here, so this ownership is the
+    /// one direction of the pair.
+    packet_receiver: RefCell<Option<Rc<PacketReceiver>>>,
     /// `pInterfaceTable_`: the message-id registry this socket serves.
     interface_table: Rc<InterfaceTable>,
     /// `pDispatcher_`: the child dispatcher the request timeouts and the
@@ -153,10 +162,13 @@ impl NetworkInterface {
             channel_map: RefCell::new(ChannelMap::new()),
             condemned_channels: Rc::new(CondemnedChannels::new()),
             recently_dead_channels: RefCell::new(recently_dead_channels),
+            packet_sender: Rc::new(PacketSender::new()),
+            packet_receiver: RefCell::new(None),
             interface_table,
             dispatcher,
         };
         let receiver = PacketReceiver::new();
+        *interface.packet_receiver.borrow_mut() = Some(Rc::clone(&receiver));
         interface.recreate_listening_socket(&receiver, listening_port, listening_interface);
 
         // And put our request manager in as the reply handler
@@ -374,6 +386,42 @@ impl NetworkInterface {
         *self.sink.borrow_mut() = sink;
     }
 
+    /// `send( address, bundle, channel )` (network_interface.cpp:809): push
+    /// a bundle through the physical sender.
+    pub fn send(&self, address: &Address, bundle: &mut UDPBundle, channel: Option<&UDPChannel>) {
+        let socket = self.udp_socket.borrow();
+        self.packet_sender.send(&socket, address, bundle, channel);
+    }
+
+    /// `sendPacket( address, packet, channel, isResend )`
+    /// (network_interface.cpp:840): push a single packet. The reference's
+    /// channel slot feeds the sender's packet filter and once-off timer,
+    /// both seams, so the port takes none.
+    pub fn send_packet(&self, address: &Address, packet: &Rc<RefCell<Packet>>, is_resend: bool) {
+        let socket = self.udp_socket.borrow();
+        self.packet_sender
+            .send_packet(&socket, address, packet, is_resend);
+    }
+
+    /// `dropNextSend()`: arrange for the next sent packet to be dropped.
+    pub fn drop_next_send(&self) {
+        self.packet_sender.drop_next_send();
+    }
+
+    /// `packetSender()`: the physical sender and its statistics.
+    pub fn packet_sender(&self) -> Rc<PacketSender> {
+        Rc::clone(&self.packet_sender)
+    }
+
+    /// `cancelRequestsFor( bundle, reason )` (network_interface.cpp:860):
+    /// fail the request orders a failed bundle carries. With no request
+    /// manager yet it is a no-op, matching the reply-correlation seam.
+    pub fn cancel_requests_for(&self, bundle: &mut UDPBundle, reason: Reason) {
+        if let Some(manager) = self.request_manager.borrow().as_ref() {
+            bundle.cancel_requests(Some(manager), reason);
+        }
+    }
+
     /// `dispatcher().errorReporter()`, replaced by tests and by the
     /// dispatcher's own reporter later.
     pub fn set_error_reporter(&self, reporter: Option<Rc<dyn ErrorReporter>>) {
@@ -570,11 +618,15 @@ impl NetworkInterface {
     }
 
     /// The `PacketReceiver::processPacket` routing target: hand the packet
-    /// to the sink, or accept it silently while there is none (the
-    /// interface table that dispatches messages is BW-02-02).
-    pub fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
-        match self.sink.borrow().as_ref() {
-            Some(sink) => sink.process_packet(addr, packet),
+    /// to the sink, or to the receiver's channel routing when there is none.
+    /// Takes the shared handle so the receiver's `findChannel` can create an
+    /// anonymous channel.
+    pub fn process_packet(self: &Rc<Self>, addr: &Address, packet: Rc<RefCell<Packet>>) -> Reason {
+        if let Some(sink) = self.sink.borrow().as_ref() {
+            return sink.process_packet(addr, packet);
+        }
+        match self.packet_receiver.borrow().as_ref() {
+            Some(receiver) => receiver.process_packet(self, addr, packet),
             None => Reason::Success,
         }
     }
@@ -958,25 +1010,27 @@ mod tests {
         assert!(interface.poller().is_registered(fd, true));
     }
 
-    /// An interface with no sink accepts packets silently; with one, it
-    /// hands them over (the routing entry of `processPacket`).
+    /// The routing entry of `processPacket`: a packet goes to the sink when
+    /// there is one, otherwise to the receiver's channel routing. An empty
+    /// packet is corrupt in that routing, so the no-sink arm records nothing.
     #[test]
     fn the_sink_receives_what_the_interface_processes() {
         let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
 
-        let mut packet = crate::packet::Packet::new();
+        let packet = crate::packet::Packet::new();
         let addr = Address::new(LOOPBACK, socket::htons(1234));
 
-        // No sink yet: accepted, nothing recorded.
+        // No sink yet: the real receiver routes it, and an empty packet is
+        // corrupt there, so it is not dispatched.
         assert_eq!(
-            interface.process_packet(&addr, &mut packet),
-            Reason::Success
+            interface.process_packet(&addr, Rc::new(RefCell::new(packet))),
+            Reason::CorruptedPacket
         );
 
         let sink = Rc::new(RecordingSink::default());
         interface.set_packet_sink(Some(sink.clone()));
         assert_eq!(
-            interface.process_packet(&addr, &mut packet),
+            interface.process_packet(&addr, Rc::new(RefCell::new(crate::packet::Packet::new()))),
             Reason::Success
         );
         assert_eq!(sink.packets.borrow().len(), 1);

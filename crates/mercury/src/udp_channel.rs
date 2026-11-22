@@ -26,12 +26,13 @@ use crate::endpoint::{Address, NONE};
 use crate::event_dispatcher::STAMPS_PER_SECOND;
 use crate::fragmented_bundle::FragmentedBundle;
 use crate::misc::{
-    CHANNEL_ID_NULL, ChannelID, ChannelVersion, SEQ_MASK, SEQ_NULL, SeqNum, SeqNumAllocator,
-    seq_less_than, seq_mask,
+    CHANNEL_ID_NULL, ChannelID, ChannelVersion, Reason, SEQ_MASK, SEQ_NULL, SeqNum,
+    SeqNumAllocator, seq_less_than, seq_mask,
 };
 use crate::network_interface::{ChannelRef, NetworkInterface};
 use crate::packet::{MAX_ACKS, Packet, flags};
 use crate::packet_receiver::PacketReceiverStats;
+use crate::udp_bundle::UDPBundle;
 
 /// `EXTERNAL_CHANNEL_SIZE` (udp_channel.cpp:27).
 const EXTERNAL_CHANNEL_SIZE: usize = 256;
@@ -279,6 +280,16 @@ pub struct UDPChannel {
     num_packets_resent: Cell<u32>,
     /// `numReliablePacketsSent_`.
     num_reliable_packets_sent: Cell<u32>,
+    /// `numDataUnitsSent_` (udp_channel.cpp:785): how many bundles this
+    /// channel has pushed, not packets.
+    num_data_units_sent: Cell<u32>,
+    /// `numBytesSent_`.
+    num_bytes_sent: Cell<u64>,
+    /// `shouldDropNextSend_`: arrange for the next bundle to be dropped.
+    should_drop_next_send: Cell<bool>,
+    /// `wantsFirstPacket_`: a reset established channel waits for
+    /// `FLAG_CREATE_CHANNEL` before accepting packets.
+    wants_first_packet: Cell<bool>,
     /// The previous high-water mark for the internal send window backlog
     /// (udp_channel.cpp:1756).
     send_window_warn_threshold: Cell<u32>,
@@ -347,6 +358,10 @@ impl UDPChannel {
             min_inactivity_resend_delay: Cell::new(0),
             num_packets_resent: Cell::new(0),
             num_reliable_packets_sent: Cell::new(0),
+            num_data_units_sent: Cell::new(0),
+            num_bytes_sent: Cell::new(0),
+            should_drop_next_send: Cell::new(false),
+            wants_first_packet: Cell::new(false),
             send_window_warn_threshold: Cell::new(if is_internal {
                 SEND_WINDOW_WARN_THRESHOLDS[0]
             } else if id != CHANNEL_ID_NULL {
@@ -638,6 +653,13 @@ impl UDPChannel {
         self.is_remote_regular.set(regular);
     }
 
+    /// Test-only: mark the local side as irregular so the receiver pushes an
+    /// ACK as soon as it queues one (the real detection is BW-02-01-04).
+    #[cfg(test)]
+    pub fn debug_set_local_regular(&self, regular: bool) {
+        self.is_local_regular.set(regular);
+    }
+
     /// Test-only: rewind every unacked packet to the start of the clock and
     /// pin the round-trip time just above it, so the inactivity resend
     /// period is half the channel's current stamp and a scan fires
@@ -707,6 +729,126 @@ impl UDPChannel {
     /// its bundle (BW-02-03-07).
     pub fn has_unsent_data(&self) -> bool {
         !self.acks_to_send.borrow().is_empty()
+    }
+
+    /// `hasAcks()` (udp_channel.hpp:176): the channel has queued ACKs for the
+    /// next outgoing packet.
+    pub fn has_acks(&self) -> bool {
+        !self.acks_to_send.borrow().is_empty()
+    }
+
+    /// `numDataUnitsSent_` (udp_channel.cpp:785): the bundles this channel
+    /// has pushed, packets apart from.
+    pub fn num_data_units_sent(&self) -> u32 {
+        self.num_data_units_sent.get()
+    }
+
+    /// `numBytesSent_`.
+    pub fn num_bytes_sent(&self) -> u64 {
+        self.num_bytes_sent.get()
+    }
+
+    /// `shouldDropNextSend( b )` (udp_channel.hpp:231): arrange for the next
+    /// bundle to be dropped, which the sender turns into artificial loss.
+    pub fn set_should_drop_next_send(&self, b: bool) {
+        self.should_drop_next_send.set(b);
+    }
+
+    /// `wantsFirstPacket()` (udp_channel.hpp:191): a reset established channel
+    /// accepts nothing but a `FLAG_CREATE_CHANNEL` packet.
+    pub fn wants_first_packet(&self) -> bool {
+        self.wants_first_packet.get()
+    }
+
+    /// `gotFirstPacket()` (udp_channel.hpp:192).
+    pub fn got_first_packet(&self) {
+        self.wants_first_packet.set(false);
+    }
+
+    /// `onPacketReceived( bytes )` (udp_channel.cpp:1844): what the channel
+    /// learns about itself from a packet that reached it. The data-unit and
+    /// byte receive counters belong to the interface statistics item
+    /// (BW-02-01-04).
+    pub fn on_packet_received(&self, _bytes: i32) {
+        self.last_received_time.set(self.now());
+    }
+
+    /// `doSend( bundle )` (udp_channel.cpp:700): push a bundle through the
+    /// interface's sender and count what the channel sent. The channel's own
+    /// bundle is not ported yet (see [`has_unsent_data`](Self::has_unsent_data)),
+    /// so every bundle here is an external one.
+    pub fn send(&self, bundle: &mut UDPBundle) {
+        // Don't do anything if the remote process has failed.
+        if self.has_remote_failed.get() {
+            if self.network_interface().is_verbose() {
+                eprintln!(
+                    "UDPChannel::doSend( {} ): Remote process failure. Cancelling requests.\n",
+                    self.c_str()
+                );
+            }
+            self.network_interface()
+                .cancel_requests_for(bundle, Reason::ChannelLost);
+            return;
+        }
+
+        // Not the channel's own bundle: no interleaved messages, and no
+        // bundle primer (both seams while the channel owns no bundle).
+        debug_assert!(!self.is_indexed() || bundle.is_empty());
+
+        if self.addr().ip == 0 {
+            eprintln!(
+                "UDPChannel::doSend({}): no address to send to, dropping bundle\n",
+                self.c_str()
+            );
+            self.network_interface()
+                .cancel_requests_for(bundle, Reason::GeneralNetwork);
+            return;
+        }
+
+        // All internal traffic must be marked as reliable by the
+        // startMessage calls.
+        debug_assert!(
+            self.is_external() || bundle.is_empty() || bundle.is_reliable(),
+            "doSend: internal bundle {} is not reliable",
+            self.c_str()
+        );
+
+        // Enable artificial loss if required.
+        if self.should_drop_next_send.get() {
+            self.network_interface().drop_next_send();
+            self.should_drop_next_send.set(false);
+        }
+
+        let interface = self.network_interface();
+        interface.send(&self.addr(), bundle, Some(self));
+
+        // Update our stats.
+        self.num_data_units_sent
+            .set(self.num_data_units_sent.get() + 1);
+        self.num_bytes_sent
+            .set(self.num_bytes_sent.get() + bundle.size() as u64);
+
+        if bundle.is_reliable() {
+            self.num_reliable_packets_sent
+                .set(self.num_reliable_packets_sent.get() + 1);
+        }
+
+        // Channels that do not send regularly are added to a collection to do
+        // their resend checking periodically (BW-02-01-04).
+
+        // If the bundle that was just sent was critical, the sequence number
+        // of its last packet is the new unackedCriticalSeq_.
+        if bundle.is_critical()
+            && let Some(first) = bundle.first_packet()
+        {
+            self.unacked_critical_seq.set(seq_mask(
+                first
+                    .borrow()
+                    .seq()
+                    .wrapping_add(bundle.num_data_units() as SeqNum)
+                    .wrapping_sub(1),
+            ));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -888,8 +1030,7 @@ impl UDPChannel {
     }
 
     /// `sendUnacked( unacked )` (udp_channel.cpp:1200): push a queued packet
-    /// again and record what the channel learns from it. The physical
-    /// `sendPacket` is the BW-02-03-07 wire seam.
+    /// over the wire again and record what the channel learns from it.
     fn send_unacked(&self, out_seq: SeqNum) {
         let now = self.now();
 
@@ -900,11 +1041,17 @@ impl UDPChannel {
             };
 
             // updateChannelVersion( version_, id_ ).
-            let mut packet = unacked.packet.borrow_mut();
-            packet.set_channel_version(self.version());
-            if self.is_indexed() {
-                packet.set_channel_id(self.id());
+            {
+                let mut packet = unacked.packet.borrow_mut();
+                packet.set_channel_version(self.version());
+                if self.is_indexed() {
+                    packet.set_channel_id(self.id());
+                }
             }
+
+            // sendPacket( addr_, pPacket_, this, isResend = true ).
+            self.network_interface()
+                .send_packet(&self.addr.get(), &unacked.packet, true);
 
             unacked
                 .last_sent_at_out_seq

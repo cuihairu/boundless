@@ -26,8 +26,12 @@ pub mod network_stats;
 pub mod network_utils;
 pub mod nub_exception;
 pub mod packet;
+
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
+/// The physical send half of the data plane (BW-02-03-07).
+#[cfg(target_os = "linux")]
+pub mod packet_sender;
 #[cfg(target_os = "linux")]
 pub mod recently_dead_channels;
 

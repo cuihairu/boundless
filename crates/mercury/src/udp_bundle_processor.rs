@@ -384,7 +384,9 @@ impl BundleIterator {
         };
 
         // A packet can have no body (only footers); skip to the first one
-        // with a message.
+        // with a message. Like the reference's `for (cursor_ = first; ...)`:
+        // when the chain runs out, the cursor stays null, so the iterator
+        // is the end.
         let mut node = first;
         while let Some(packet) = node {
             iter.cursor = Some(Rc::clone(&packet));
@@ -392,6 +394,7 @@ impl BundleIterator {
             if iter.offset < iter.body_end_offset {
                 break;
             }
+            iter.cursor = None;
             node = packet.borrow().next();
         }
 

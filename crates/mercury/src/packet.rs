@@ -440,6 +440,13 @@ impl Packet {
         self.channel_version = version;
     }
 
+    /// `shouldCreateAnonymous()` (packet.hpp:195): a packet that rides on a
+    /// channel and asks to create one, which is how an off-channel receiver
+    /// knows to make an anonymous channel for its reply.
+    pub fn should_create_anonymous(&self) -> bool {
+        self.has_flags(flags::ON_CHANNEL) && self.has_flags(flags::CREATE_CHANNEL)
+    }
+
     /// `isPiggyback()`.
     pub fn is_piggyback(&self) -> bool {
         self.is_piggyback
