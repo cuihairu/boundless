@@ -766,4 +766,57 @@ mod tests {
              \"readings\":{\"rss_bytes\":8000000}}"
         );
     }
+
+    #[test]
+    fn the_access_boundary_refuses_unauthorized_reads_and_stays_read_only() {
+        // Consumed as an immutable binding: every public read takes `&self`,
+        // so no read can mutate the diagnostic — the interface is read-only
+        // by construction.
+        let mut diagnostic = Diagnostic::with_clock(|| 42);
+        diagnostic
+            .add_process("cellapp01", 100)
+            .set_readings("cellapp01", vec![("rss_bytes", 8_000_000)]);
+        let diagnostic: Diagnostic = diagnostic;
+
+        let mut authorized = Authorization::new();
+        authorized.grant("cellapp01");
+        let outsider = Authorization::new();
+
+        // An unauthorized caller's read is refused on every read surface.
+        assert_eq!(
+            diagnostic.query(&outsider, "cellapp01"),
+            Err(QueryError::AccessDenied)
+        );
+        assert_eq!(
+            diagnostic.snapshot(&outsider, "cellapp01"),
+            Err(QueryError::AccessDenied)
+        );
+        let before = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 1,
+            readings: vec![("rss_bytes".to_string(), 8_000_000)],
+        };
+        let after = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 2,
+            readings: vec![("rss_bytes".to_string(), 8_000_000)],
+        };
+        assert_eq!(
+            diagnostic.compare(&outsider, &before, &after),
+            Err(QueryError::AccessDenied)
+        );
+
+        // The authorized reads are repeatable: no read changed any state, so
+        // reading again returns the same result. Unauthorized targets stay
+        // hidden from the listing.
+        assert_eq!(
+            diagnostic.query(&authorized, "cellapp01"),
+            diagnostic.query(&authorized, "cellapp01")
+        );
+        let first = diagnostic.snapshot(&authorized, "cellapp01").unwrap();
+        let second = diagnostic.snapshot(&authorized, "cellapp01").unwrap();
+        assert_eq!(first, second);
+        assert_eq!(diagnostic.list_local(&authorized).len(), 1);
+        assert_eq!(diagnostic.list_local(&outsider).len(), 0);
+    }
 }
