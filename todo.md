@@ -1854,7 +1854,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 支持列出诊断目标、按进程或子系统查询、生成快照、比较两次快照和导出 JSON。默认查询范围为本机且只读，按需授权访问，输出结构化统计。
 
-- [ ] **BW-24-02-01 列出本地诊断进程**。**验收** 仅显示获授权目标。
+- [x] **BW-24-02-01 列出本地诊断进程**。**验收** 仅显示获授权目标。 证据：新增 `test-support/src/diagnostic.rs`（+`pub mod diagnostic`，BW-24-02 交互查询接口模块，本轮做**列出本地诊断进程**）——**`TargetKind{Process,Subsystem}`** + **`DiagnosticTarget{name,kind,pid}`**（进程=按角色命名且带 pid、子系统=进程内子系统无 pid）+ **`Authorization`**（`granted: BTreeSet`，**默认一无所有**；`grant/is_granted/granted()`=最省权限=访问边界的最小面）+ **`Diagnostic`**（`add_process(name,pid)`/`add_subsystem(name)` 注册 + **`list_local(&auth) -> Vec<&DiagnosticTarget>`**：**默认查询范围为本机**（目标表即本机）、只按授权过滤、**按名升序稳定输出**）。验收由 3 测实证：`an_unauthorized_caller_sees_nothing`（全新 `Authorization` → 列表空、`granted()` 空=未获授权什么都看不到）+ `only_granted_targets_are_listed`（仅授权 cellapp01 → 列表恰 1 条、name=cellapp01/kind=Process/pid=Some(100)、`granted()=["cellapp01"]`）+ `granted_targets_come_out_sorted_and_filtered`（授权 python/cellapp01/entities → 列表恰 3 条按名 `["cellapp01","entities","python"]`、未授权 baseapp01 不在列且 `is_granted`=false=**仅显示获授权目标**且排序稳定）。foundation 149 全绿；test-support 228 全绿 + 1 环境性红（`startup_baseline::rescanning_reference_reproduces_catalog` 非本席：参考仓 cellapp 227349240/mtime 14:46:37 兄弟会话重建、基线 e5c456e 陈旧；本席仅动 diagnostic/lib 两文件）；fmt 净、clippy 净（0 发现）。commit 312b110。
 - [ ] **BW-24-02-02 查询选定进程或子系统**。**验收** 结果含目标和采集时间。
 - [ ] **BW-24-02-03 生成内存快照**。**验收** 返回稳定快照 ID。
 - [ ] **BW-24-02-04 比较两次快照**。**验收** 按字段展示差异。
