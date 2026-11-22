@@ -14,6 +14,10 @@ pub struct IndexedProperty {
     pub name: String,
     /// The `Flags` the declaration carries, when it declares them.
     pub flags: String,
+    /// The `Type` the declaration carries, when it declares one: the text
+    /// between `<Type>` and `</Type>`, or the rest of the opening line when
+    /// the type body spans lines (a FIXED_DICT).
+    pub type_name: String,
     /// The 0-based line the declaration opens on.
     pub line: usize,
     /// The 0-based line just past the declaration's close.
@@ -127,6 +131,7 @@ pub(crate) fn scan(content: &str) -> Scan {
     let mut root_open: Option<usize> = None;
     let mut open: Option<(String, usize)> = None;
     let mut flags = String::new();
+    let mut type_name = String::new();
     let mut has_type = false;
     let mut missing_type: Vec<(String, usize)> = Vec::new();
 
@@ -156,6 +161,7 @@ pub(crate) fn scan(content: &str) -> Scan {
                 properties.push(IndexedProperty {
                     name,
                     flags: std::mem::take(&mut flags),
+                    type_name: std::mem::take(&mut type_name),
                     line,
                     end_line: number + 1,
                 });
@@ -170,8 +176,19 @@ pub(crate) fn scan(content: &str) -> Scan {
             let name = trimmed[1..trimmed.len() - 1].to_string();
             open = Some((name, number));
             has_type = false;
+            type_name = String::new();
         } else if depth == 1 && open.is_some() && trimmed.contains("<Type>") {
             has_type = true;
+            if type_name.is_empty() {
+                let from = trimmed.find("<Type>").map(|from| from + 6).unwrap_or(0);
+                let rest = &trimmed[from..];
+                type_name = rest
+                    .split("</Type>")
+                    .next()
+                    .unwrap_or(rest)
+                    .trim()
+                    .to_string();
+            }
         } else if depth == 1
             && open.is_some()
             && let Some(from) = trimmed.find("<Flags>").map(|from| from + 7)
@@ -269,9 +286,11 @@ mod tests {
         let name = &file.properties[0];
         assert_eq!(name.line, 2);
         assert_eq!(name.end_line, 7);
+        assert_eq!(name.type_name, "STRING");
         let hp = &file.properties[1];
         assert_eq!(hp.line, 7);
         assert_eq!(hp.end_line, 11);
+        assert_eq!(hp.type_name, "HP");
 
         // Re-sending the same content keeps the fingerprint, so an unchanged
         // re-send is skippable; an edit changes it.
@@ -291,5 +310,6 @@ mod tests {
         let names: Vec<&str> = file.properties.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["pos"]);
         assert_eq!(file.properties[0].flags, "CELL_PUBLIC_AND_OWN");
+        assert_eq!(file.properties[0].type_name, "FIXED_DICT");
     }
 }

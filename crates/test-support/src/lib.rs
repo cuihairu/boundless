@@ -21,6 +21,7 @@ pub mod cross_reference;
 pub mod diagnostic;
 pub mod entitydef_completion;
 pub mod entitydef_diagnostics;
+pub mod entitydef_hover;
 pub mod entitydef_index;
 pub mod event_aggregate;
 pub mod event_contract;
