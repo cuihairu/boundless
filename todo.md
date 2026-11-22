@@ -466,7 +466,17 @@
 
 按原版启用条件复现过滤链、会话加密协商、包校验和受控限流，使用双方合法客户端互操作。对照正常握手、认证失败及流量达到配置上限时的结果。
 
-- [ ] **BW-02-05-01 实现过滤链与包校验**。**验收** 过滤顺序及校验失败结果一致。
+- [x] **BW-02-05-01 实现过滤链与包校验**。**验收** 过滤顺序及校验失败结果一致。
+  - 新增（2555093）：`crates/mercury/src/packet_filter.rs`——`PacketFilter` trait 三方法（packet_filter.hpp:29）：`send` 默认直通重试写 `basic_send_with_retries`（packet_filter.cpp:34）、`recv` 默认直通头校验 `process_filtered_packet`（packet_filter.cpp:44）、`max_spare_size()` 默认 0（packet_filter.hpp:61）；有意偏离：参考 `recv` 三参（receiver/addr/packet），本移植把存在 receiver 上的 `interface`/`channel` 随行传过（packet_receiver.cpp:526/:584），六参签名。
+  - 接收链顺序（`route_packet`，packet_receiver.cpp:455-500）：`find_channel`+`on_packet_received`；有信道且 `pFilter && !hasRemoteFailed` → 信道过滤器裁决（直通则落回头校验）；无信道且 external+`isDead` → 丢弃返回 `REASON_SUCCESS`；无信道且有 `pOffChannelFilter` → 该过滤器裁决；否则裸走头校验。`else if` 挂在「无信道」上——有信道但无过滤器时不查 off-channel，与参考一致。
+  - 新增 `crates/mercury/src/recently_dead_channels.rs`：external 接口注销外部信道时记地址 60s（`deregisterChannel` 旁路，network_interface.cpp:499-501），期间该地址包被丢弃而非裸解（recently_dead_channels.hpp:20）；`isDead` 即成员测试（:77）；到期一次性计时器删除条目（:47）；Drop 注销全部计时器（析构 :26-36）。有意偏离：参考 `add` 取消首个条目计时器但不删条目（:38-43，最低地址永不过期、永久死记属参考缺陷），本移植每条目按自身计时器到期，重挂地址覆盖条目。
+  - 挂点：`NetworkInterface` 增 `pOffChannelFilter_`（network_interface.hpp:134-135/:328）与 `pRecentlyDeadChannels_`（:307；参考在 `setMainDispatcher` 仅 external 创建 cpp:165-170，本移植构造期建——端口无主派发器挂接步，BW-02-01-05）与 `isDead`（cpp:531）；`UdpChannel` 增 `pFilter_`（udp_channel.hpp:139-140/:381）+ `set_p_filter`；构造器无过滤参数，`pFilter_ && id_` 临界仍不可表示（udp_channel.cpp:129-133）。
+  - 发送钩子：`PacketSender::send_rescheduled_packet`（packet_sender.cpp:241-255）信道过滤器先行，无过滤器/off-channel 走 `basic_send_with_retries`；基类默认 `send` 即该重试写，`basic_send_with_retries` 转 `pub(crate)` 供之。
+  - `maxSpareSize` 布线：`UdpBundle::set_spare_size`，`set_p_filter` 挂过滤器即取 `max_spare_size` 进 bundle（参考只在 `newBundle` 首建时读，udp_channel.cpp:1526-1531；本移植 bundle 构造期即存在故挂点即捕获点，信道先挂过滤后发包则值一致）；包打开时 `reserve_filter_space` 已有（BW-02-02）。
+  - 校验失败结果：裸走头校验（`process_filtered_packet`，BW-02-01-03 交付）不变——欠尺寸/坏 flags/坏校验和/坏 piggyback 仍 `CorruptedPacket` 且计数 `numCorruptedPacketsReceived`；过滤器拒绝则其理由即 `processPacket` 返回、计数不动（夹具断言两态）。
+  - 验收夹具（packet_receiver.rs 测试组 +10）：`a_channel_filter_is_consulted_before_the_walk`、`a_rejecting_channel_filter_stops_the_walk`、`a_remote_failed_channel_skips_its_filter`、`a_channel_without_a_filter_skips_the_off_channel_filter`、`an_off_channel_packet_goes_to_the_off_channel_filter`、`a_dead_external_address_is_dropped_before_any_filter`、`deregister_marks_only_external_channels_dead`、`a_filter_spare_room_is_reserved_in_the_bundle`、`the_send_path_consults_the_channel_filter`、`the_default_filter_hands_everything_to_the_transport`（默认三方法皆直通传输）；`recently_dead_channels.rs` 内 +3（记住→到期忘、重挂延长死期、Drop 注销计时器）。
+  - 测试与覆盖：mercury **430 通过 / 0 失败**（+13）；workspace 全绿 0 failed；llvm-cov TOTAL **15010 行 / 残 279 = 98.14%** ≥98% 门禁；`packet_filter.rs` **100%**；`recently_dead_channels.rs` 99.22%（残 1 行为 `weak.upgrade()` None 臂——Drop 注销全部计时器使其不可达，与参考析构 :26-36 的保证同构，接受）。clippy scoped `-D warnings` 零告警；rustfmt `--check` 0 差异。
+  - 压力：mercury `--test-threads=1` **100 轮 43000 通过 / 0 失败**。
 - [ ] **BW-02-05-02 对齐会话协商**。**验收** 原版和新版客户端可合法握手。
 - [ ] **BW-02-05-03 校验认证失败时的返回状态**。**验收** 无残留已建立会话。
 - [ ] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。
