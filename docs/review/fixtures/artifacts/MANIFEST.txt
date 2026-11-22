@@ -1,0 +1,10 @@
+BW-00-04-03 artifact fixtures
+source: BigWorld 8a74479c78773d89f1c44ce9a84c804730514cda reference stack (x86-64 Linux)
+captured by docs/review/tools/capture_artifacts.cpp
+
+resource  scripts/entity_defs/Avatar.def  input sha256 e35472f0279ff43da1c9bbcb057bf3cb0a16f43d803a81c70031da69b1fa50fa  -> resource-Avatar.def.tree.txt
+resource  scripts/entities.xml  input sha256 b2e348d5313173d15cb2c7f419b8ac0ff48c5949b2f40e7d979ead3e26371951  -> resource-entities.xml.tree.txt
+resource  scripts/db.xml  input sha256 412252c6fb8066c81922d0d4de011d70416442b853d6f016476fae800428d140  -> resource-db.xml.tree.txt
+resource  server/bw.xml  input sha256 212eecded7bb5e648f5709e29584fa9ca940bbb02b2a81ea8b557387da8a4d79  -> resource-server-bw.xml.tree.txt
+entity    Avatar (programming/fantasydemo/res/scripts/entity_defs/Avatar.def) -> entity-Avatar.meta.txt + entity-Avatar.snapshot.hex (15 bytes)
+database  Avatar row (persistent props + spatial data) -> database-Avatar.row.hex (38 bytes)

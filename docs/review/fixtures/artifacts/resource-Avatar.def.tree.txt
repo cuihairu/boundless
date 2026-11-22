@@ -1,0 +1,33 @@
+  Volatile
+    position = 
+    yaw = 
+    pitch = 20
+  Properties
+    playerName
+      Type = STRING
+      Flags = ALL_CLIENTS
+      Persistent = true
+      Editable = true
+      Identifier = true
+    prop1
+      Type = INT32
+      Flags = BASE_AND_CLIENT
+      Default = 1
+    prop2
+      Type = INT16
+      Flags = ALL_CLIENTS
+      Default = 2
+      Persistent = true
+    prop3
+      Type = INT8
+      Flags = OTHER_CLIENTS
+      Default = 3
+  ClientMethods
+    fromCell
+      Arg = STRING
+    cellTick
+      Arg = INT32
+  CellMethods = 
+  BaseMethods
+    logOff
+      Exposed =
