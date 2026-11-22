@@ -453,7 +453,14 @@
   - 有意偏离：(a) 挂起应答以 `usize` 计数（本仓请求管理器 `RequestManager::cancel_requests_for_channel` 按 Address 键，通道级账目留给通道集成），destroy 时归零语义与原版通道释放时请求随之消失一致; (b) keepalive/shutdown 的 socket 应用是调用方的（经 `platform` 的 `set_bool_option`/`set_int_option`/`shutdown` 应用 `KeepaliveOptions`），本模块只出配置与动作决策，同 BW-02-04-02 的 `SendFn` seam 先例。
   - 测试与覆盖：mercury **416 通过 / 0 失败**（本轮 +10，tcp_channel_lifecycle 10/10）；workspace **1500 passed / 0 failed / 64 ignored**；llvm-cov TOTAL **14659 行 / 残 277 = 98.11%**（区域 98.58%、函数 99.31%）≥98% 门禁；tcp_channel_lifecycle.rs **223 行 / 残 0 = 100%**。clippy scoped `-D warnings` 零告警；rustfmt `--check` 0 差异。
   - 压力：mercury `--test-threads=1` **100 轮 41600 通过 / 0 失败**。
-- [ ] **BW-02-04-05 核查其余已启用传输方式**。**验收** 每种有混跑夹具或阻塞记录。
+- [x] **BW-02-04-05 核查其余已启用传输方式**。**验收** 每种有混跑夹具或阻塞记录。
+  - 新增（8ce724b）：`crates/mercury/src/tcp_transport_tests.rs`（`#[cfg(test)] mod tcp_transport_tests`，`lib.rs` +1 挂载）——**TCP 混跑夹具** `the_tcp_transports_run_together_under_backpressure`：客户端 `doSend` 单次写出连接头伪帧+请求束帧（`tcp_channel.cpp:418-439`），经 `TcpChannelLifecycle` 的写径先半发（背压排队）后排空，字节流恰等于头帧+束帧按序拼接；服务端 `ServerOpening` 放行头帧、`take_leftover_frames` 归还束帧 → `dispatch_messages` 记录 `(REQ_MSG_ID, 0x12345678, [0xde,0xad])`；服务端 `start_reply` 回包经其写径排队（closed-to-writes seam）后排空；客户端 `TcpFrameAssembler` 解出回复帧（`REPLY_MESSAGE_IDENTIFIER`+id 0x12345678），挂起应答归零；两端 `note_received(0)` 拆链后 `!is_connected`/`!has_unsent_data`/`pending_reply_count()==0` 一致。
+  - 其余已启用传输方式核查（参考 `bots_config.cpp` transport 默认 UDP 可选 TCP/WebSockets，三方式均在构建启用）：
+    - **UDP**——混跑夹具已在 BW-02-01..03 交付：真实 socket 往返 `udp_sendto_and_recvfrom_round_trip`（endpoint.rs:902，sendto 两重载+recvfrom 字节精确回环）、`the_loss_and_checksum_knobs_round_trip`（network_interface.rs:1207）、udp_channel 重传/乱序/RTT 夹具群（BW-02-03 已勾）。**无需新夹具**。
+    - **TCP**——本轮混跑夹具（上述）。**已交付**。
+    - **WebSockets**——**阻塞记录**：`WebSocketStreamFilter`（websocket_stream_filter.cpp 1411 行 + handshake handler + frame mask 编解码）是独立传输，非原始 TCP 通道的一种模式；本车道原始 TCP 开门的 `GET ` 拒绝（BW-02-04-03，`tcp_channel.cpp:207-229`）与 `handleInput` 行为一致，WebSocket 完整传输（握手、帧掩码、ping/pong）属其自身移植，随 BW-02-05-02 会话协商或专门 lane 立项。**本轮不实施**。
+  - 测试与覆盖：mercury **417 通过 / 0 失败**（本轮 +1 混跑夹具）；workspace **1501 passed / 0 failed / 64 ignored**；llvm-cov TOTAL **14659 行 / 残 277 = 98.11%** ≥98% 门禁（夹具为 test-only 模块，库行不变）。clippy scoped `-D warnings` 零告警；rustfmt `--check` 0 差异。
+  - 压力：mercury `--test-threads=1` **100 轮 41700 通过 / 0 失败**。
 
 #### BW-02-05 包过滤和加密互通
 
