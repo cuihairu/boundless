@@ -1263,7 +1263,8 @@
 
 维护渲染后端和 DCC/插件支持表。三端验证等价的客户端与编辑工作流，宿主专属插件在可用宿主测试，并用导出文件检验其他平台消费能力。
 
-- [ ] **BW-15-06-01 维护图形后端列表**。**验收** 每个平台记录能力及依赖。
+- [x] **BW-15-06-01 维护图形后端列表**。**验收** 每个平台记录能力及依赖。（commit 42d431d）
+  - 证据：`docs/review/bw15-06-01-graphics-backend-list.md`——四后端五平台：桌面 **Direct3D 9**（`lib/moo`，`bwclient`，`IF(BW_PLATFORM_WINDOWS)` 下链 `d3d9/d3dx9/dxguid/setupapi/psapi`，`moo_dx.cpp`/`render_context.cpp` 设备面；`IF(NOT BW_IS_SERVER)` 剥离服务端依赖）、工具 **OpenGL**（`navgen` 预览，`opengl32` + `<GL/gl.h>`/`HGLRC`）、移动 **cocos2d/OpenGL ES**（Android `-lEGL -lGLESv1_CM`、iOS libs 随树）、web **Awesomium**（`BW_AWESOMIUM_SUPPORT` 门控，`web_app` → `PyAwesomiumProvider`）。平台基线：顶层 `CMakeLists.txt:57-72` 构建门仅 Windows（win32/win64）+ Linux remote-only 服务端，无 macOS 桌面分支——Linux/macOS 桌面**无图形后端**（全树 `wgl|glX|CGL|glViewport` 扫描仅命中 navgen），macOS 侧按 BW-15 开篇约定以原版样本+跨端混跑验收。缺口：`third_party/` 无 `awesomium/`（同 DCC SDK 缺口）；新版渲染栈未建（BW-11），服务端零图形后端由 BW-16-02-02 对齐。
 - [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
   - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
 - [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
