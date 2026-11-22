@@ -106,7 +106,6 @@ pub struct Stopped {
     pub variables: Vec<Variable>,
 }
 
-/// One debug session against one target.
 /// What disconnecting does to the target the session is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisconnectPolicy {
@@ -116,6 +115,7 @@ pub enum DisconnectPolicy {
     Terminate,
 }
 
+/// One debug session against one target.
 pub struct DapSession {
     config: Config,
     script: Vec<Step>,
