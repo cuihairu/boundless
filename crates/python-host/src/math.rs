@@ -4774,6 +4774,163 @@ mod v4adaptor {
     }
 }
 
+/// The `Math.Vector4Swizzle` provider (`script_math.cpp:4511-4641`).
+///
+/// Four held `Vector4Provider`s, one per output component: each slot's
+/// provider contributes its own `x` component to the matching component of
+/// the output.
+mod v4swizzle {
+    use super::*;
+
+    /// The instance body beyond the `PyObject` header: the four held
+    /// `Vector4Provider`s, the layout of the reference's `Vector4Swizzle`.
+    #[repr(C)]
+    struct SwizzleBody {
+        header: capi::PyObject,
+        x: *mut capi::PyObject,
+        y: *mut capi::PyObject,
+        z: *mut capi::PyObject,
+        w: *mut capi::PyObject,
+    }
+
+    const X: usize = std::mem::offset_of!(SwizzleBody, x);
+    const Y: usize = std::mem::offset_of!(SwizzleBody, y);
+    const Z: usize = std::mem::offset_of!(SwizzleBody, z);
+    const W: usize = std::mem::offset_of!(SwizzleBody, w);
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<SwizzleBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Swizzle` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4Swizzle::output` (`script_math.cpp:4605-4628`): each held
+    /// provider's `x` into the matching component. An empty slot leaves the
+    /// caller's component untouched, which `Vector4 val;` defaults to zero.
+    fn swizzle_output(object: *mut capi::PyObject) -> [f32; 4] {
+        let mut out = [0.0f32; 4];
+        if let Some(values) = v4provider::output_of(unsafe { v4provider::slot_read::<X>(object) }) {
+            out[0] = values[0];
+        }
+        if let Some(values) = v4provider::output_of(unsafe { v4provider::slot_read::<Y>(object) }) {
+            out[1] = values[0];
+        }
+        if let Some(values) = v4provider::output_of(unsafe { v4provider::slot_read::<Z>(object) }) {
+            out[2] = values[0];
+        }
+        if let Some(values) = v4provider::output_of(unsafe { v4provider::slot_read::<W>(object) }) {
+            out[3] = values[0];
+        }
+        out
+    }
+
+    /// A fresh `Math.Vector4Swizzle`; the caller owns the reference. All four
+    /// slots are empty, the reference's constructor initialisers.
+    fn make() -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `SwizzleBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<SwizzleBody>()).x).write(std::ptr::null_mut());
+            std::ptr::addr_of_mut!((*pointer.cast::<SwizzleBody>()).y).write(std::ptr::null_mut());
+            std::ptr::addr_of_mut!((*pointer.cast::<SwizzleBody>()).z).write(std::ptr::null_mut());
+            std::ptr::addr_of_mut!((*pointer.cast::<SwizzleBody>()).w).write(std::ptr::null_mut());
+        };
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// `Math.Vector4Swizzle` with no arguments (`PY_AUTO_FACTORY_DECLARE`
+    /// with `END`): a swizzle with all four slots empty.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Math.Vector4Swizzle() takes no arguments");
+        }
+        make()
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4Swizzle".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4Swizzle` and its
+    /// destruction entry: the four held providers, the reference's
+    /// `PY_RW_ATTRIBUTE_DECLARE` converter pairs.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Swizzle")
+            .base(v4provider::base_addr())
+            .attribute_with(
+                "x",
+                v4provider::slot_get::<X>,
+                Some(v4provider::slot_set::<X>),
+                c"x".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .attribute_with(
+                "y",
+                v4provider::slot_get::<Y>,
+                Some(v4provider::slot_set::<Y>),
+                c"y".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .attribute_with(
+                "z",
+                v4provider::slot_get::<Z>,
+                Some(v4provider::slot_set::<Z>),
+                c"z".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .attribute_with(
+                "w",
+                v4provider::slot_get::<W>,
+                Some(v4provider::slot_set::<W>),
+                c"w".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    provider_dealloc!(dealloc, SwizzleBody, x, y, z, w);
+
+    /// `TempPyVectorInit` for the swizzle: the type object, its `output`
+    /// dispatch entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), swizzle_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4Swizzle".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -4793,4 +4950,5 @@ pub fn register() {
     let _ = v4distance::register();
     let _ = v4lfo::register();
     let _ = v4adaptor::register();
+    let _ = v4swizzle::register();
 }

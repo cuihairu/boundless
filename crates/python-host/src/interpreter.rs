@@ -576,6 +576,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4distance_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4lfo_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4adaptor_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4swizzle_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -3738,6 +3739,104 @@ __probe = '; '.join(_f) or 'ok'
 "#,
             );
             assert_eq!(text, "ok", "math vector4adaptor behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Math.Vector4Swizzle` against the reference (`script_math.cpp:4511-4641`):
+    /// four `Vector4Provider` slots, each contributing its own `x` component
+    /// to the matching output component; an empty slot leaves the caller's
+    /// zero behind.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4swizzle_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+
+ck(hasattr(Math, 'Vector4Swizzle'), 'Vector4Swizzle in module')
+s = Math.Vector4Swizzle()
+ck(type(s).__name__ == 'Vector4Swizzle', 'the swizzle type')
+ck('Vector4Provider' in [c.__name__ for c in type(s).__mro__],
+   'the Vector4Provider base chain')
+
+# The reference's defaults: all four slots empty, and an all-empty swizzle
+# is the caller's zero vector.
+ck(s.x is None and s.y is None and s.z is None and s.w is None,
+   'the empty slots')
+v = s.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the all-empty value is zero')
+ck(raises(TypeError, lambda: Math.Vector4Swizzle(1)),
+   'the factory takes no arguments')
+
+# Each slot reads its provider's x component only.
+s.x = Math.Vector4(1.0, 2.0, 3.0, 4.0)
+v = s.value
+ck(v.x == 1.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the x slot reads x only')
+ck(type(s.x).__name__ == 'Vector4Basic', 'a Vector4 coerces to a basic')
+s.y = Math.Vector4(5.0, 6.0, 7.0, 8.0)
+s.z = Math.Vector4(9.0, 10.0, 11.0, 12.0)
+s.w = Math.Vector4(13.0, 14.0, 15.0, 16.0)
+v = s.value
+ck(v.x == 1.0 and v.y == 5.0 and v.z == 9.0 and v.w == 13.0,
+   'the four slots combine')
+
+# A provider slot is stored as itself and tracks it live: the SINE LFO at
+# amplitude 7 reads (sin(2*pi*t/period)*0.5+0.5)*7, 7.0 at t=0.25 and 0.0
+# at t=0.75.
+lfo = Math.Vector4LFO()
+lfo.amplitude = 7.0
+lfo.time = 0.25
+s.y = lfo
+ck(s.y is lfo, 'a provider slot is stored as itself')
+v = s.value
+ck(abs(v.y - 7.0) < 1e-4, 'the slot tracks the provider')
+lfo.time = 0.75
+v = s.value
+ck(abs(v.y - 0.0) < 1e-4, 'the slot follows the provider live')
+
+# None empties the slot again, and the component falls back to zero.
+s.x = None
+ck(s.x is None, 'None empties the slot')
+v = s.value
+ck(v.x == 0.0 and abs(v.y - 0.0) < 1e-4, 'the emptied component is zero')
+
+# Refusals: the converter, the deletions, and the non-provider.
+ck(raises(TypeError, lambda: setattr(s, 'z', 5)), 'z wants a provider')
+ck(msg(TypeError, lambda: setattr(s, 'w', 'x')) ==
+   'w must be set to a Vector4Provider or None',
+   'the slot TypeError message')
+ck(raises(TypeError, lambda: setattr(s, 'x', Math.Matrix())),
+   'a MatrixProvider is no Vector4Provider')
+ck(raises(TypeError, lambda: s.__delattr__('x')), 'x cannot be deleted')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4swizzle behaviour mismatch: {text}");
         });
     }
 
