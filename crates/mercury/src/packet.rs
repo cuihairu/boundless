@@ -404,6 +404,18 @@ impl Packet {
         true
     }
 
+    /// Test hook: force the fragment range. `stripFragInfo` guards against
+    /// a `seq` outside the range, so the defensive
+    /// `MF_ASSERT( remaining_ > 0 )` in `FragmentedBundle::addPacket` cannot
+    /// be reached through a stripped fragment -- every in-range sequence
+    /// number is a chain member before the count reaches zero. This lets the
+    /// test hand `addPacket` a fragment that overflows the count anyway.
+    #[cfg(test)]
+    pub fn set_frag_range_for_test(&mut self, frag_begin: u32, frag_end: u32) {
+        self.frag_begin = frag_begin;
+        self.frag_end = frag_end;
+    }
+
     // -- checksum ---------------------------------------------------------
 
     /// `writeChecksum( pChecksum )`: zero the four-byte field at
