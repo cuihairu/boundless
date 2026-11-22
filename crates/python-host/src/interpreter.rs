@@ -664,6 +664,7 @@ mod tests {
         "interpreter::tests::scenario_replacing_a_script_class_updates_existing_instances",
         "interpreter::tests::scenario_swapping_in_a_module_window_keeps_sys_and_main",
         "interpreter::tests::scenario_migrate_reports_the_hook_success_and_failure",
+        "interpreter::tests::scenario_a_failed_reload_leaves_the_old_definitions_callable",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -7053,6 +7054,73 @@ mod tests {
                 unsafe { crate::reload::migrate_instance(p4, ih) },
                 (true, true)
             );
+        });
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_failed_reload_leaves_the_old_definitions_callable() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            probe(
+                interpreter,
+                "import sys\n\
+                 class Old:\n    def greet(self): return 'old'\n\
+                 old = Old()\n\
+                 __probe = 'ok'",
+            );
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let (modules, old_window, scratch) = unsafe {
+                (
+                    capi::PySys_GetObject(c"modules".as_ptr()),
+                    capi::PyDict_Copy(capi::PySys_GetObject(c"modules".as_ptr())),
+                    capi::PyDict_Copy(capi::PySys_GetObject(c"modules".as_ptr())),
+                )
+            };
+            let scratch_mod = unsafe { capi::PyModule_New(c"scratch_mod".as_ptr()) };
+            assert!(!scratch_mod.is_null());
+            unsafe {
+                // Park the scratch module so `refcount` can read it; this is
+                // its only owner at the baseline, before the scratch window
+                // takes its own.
+                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                let dictionary = capi::PyModule_GetDict(main);
+                assert_eq!(
+                    capi::PyDict_SetItemString(dictionary, c"__handle".as_ptr(), scratch_mod),
+                    0
+                );
+                // Release the host's own `PyModule_New` reference: the park
+                // keeps the module alive, so the baseline counts exactly the
+                // references the failure tail is meant to return to.
+                capi::dec_ref(scratch_mod);
+            }
+            let before = refcount(interpreter);
+            unsafe {
+                // The scratch window takes the only owner role next.
+                assert_eq!(
+                    capi::PyDict_SetItemString(scratch, c"scratch_mod".as_ptr(), scratch_mod),
+                    0
+                );
+            }
+            // The attempt swaps the scratch window in and out, the way the
+            // plan's SWAP_IN / SWAP_BACK bracket the loads inside the scratch
+            // interpreter (`reload_plan.rs`).
+            unsafe { crate::reload::swap_in_modules(modules, scratch) };
+            let during = refcount(interpreter);
+            assert!(during > before, "the attempt holds a live reference");
+            // Failure tail (planReload): SWAP_BACK restores the live window
+            // and DESTROY releases the scratch window's references; nothing
+            // in between restores anything the old definitions need, because
+            // the live window was the one restored.
+            unsafe { crate::reload::swap_in_modules(modules, old_window) };
+            unsafe {
+                capi::dec_ref(scratch);
+                capi::dec_ref(old_window);
+            }
+            // The old definition is still callable after the failed reload...
+            assert_eq!(probe(interpreter, "__probe = old.greet()"), "old");
+            // ...and the scratch references are released: the module is back
+            // to the baseline its `__handle` park held before the attempt.
+            assert_eq!(refcount(interpreter), before);
         });
     }
 }
