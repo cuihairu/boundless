@@ -144,7 +144,7 @@
 - [x] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。→ 证据 `docs/review/bw00-05-03-client-tools-index.md`（CMake 组逐产品索引 45 行：客户端 1、编辑器 5、导出器 10、离线工具 5、资产管线/转换器 16；Windows 面缺口 43、已映射 2；`client_tools_index.py`），commit 3ee70ca。
 - [x] **BW-00-05-04 映射公共代码、示例与 FantasyDemo**。**验收** 脚本及资源入口可追溯。→ 证据 `docs/review/bw00-05-04-script-resource-index.md`（17 入口点/4871 文件：公共代码 stage 5 + simple_python_client 示例 1 已覆盖；FantasyDemo 8 + C++/cellapp 示例 3 缺口——FantasyDemo 为独立游戏资产，本机证据均取自 simple_python_client 示例，bw00-04-03 的 24 份资源夹具即该示例；`script_resource_index.py`），commit bbbade4。
 - [x] **BW-00-05-05 核查发行物、SDK 和缺失资源**。**验收** 缺口有来源与阻塞原因。→ 证据 `docs/review/bw00-05-05-artifact-sdk-check.md`（13 核查行：present 8；缺口 12 项全部带来源+阻塞——Windows 服务端包/win32/win64 无 MSVC 由 windows-latest CI 承载、client_sdk 四件套仅 0.0.1 无发布面、snapshot_helper 声明未装、third_party/png|zip 空壳；仅 el7 Linux 树已覆盖；`artifact_sdk_check.py`），commit a4c7234。
-- [ ] **BW-00-05-06 复核台账完整性**。**验收** 每个启用目标有运行证据或显式缺口。
+- [x] **BW-00-05-06 复核台账完整性**。**验收** 每个启用目标有运行证据或显式缺口。 证据 `b4f42ee`
 
 ### BW-01 基础运行时、配置和资源
 
