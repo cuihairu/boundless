@@ -552,6 +552,42 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # BW-00-05-06 — the coverage ledger is the index of every original build
+  # target. The lane validates the committed ledger in place and, when the
+  # reference tree is present (BW_REFERENCE), that it is the one the generator
+  # produces from it. On a runner without the reference tree the regeneration
+  # check SKIPs and the in-place completeness gate still runs.
+  ledger:
+    name: Feature-coverage ledger completeness
+    needs: changes
+    if: contains(needs.changes.outputs.lanes, 'ledger')
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Run the completeness gate
+        run: |
+          ci/ledger-check.sh
+
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-ledger-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 14
+          if-no-files-found: warn
+
   # BW-22-02-05 — SDK and plugin cases: does a produced artifact load in a
   # host? Three of the four substrates do not exist yet, so those cases SKIP
   # and name the ticket that turns them on (BW-21-01-01, BW-13-06-03,
@@ -913,6 +949,7 @@ jobs:
           ci/parity.sh self-test
           ci/fullstack-compare.sh self-test
           ci/diff-report.sh self-test
+          ci/ledger-check.sh self-test
           ci/sdk.sh self-test
           ci/load.sh self-test
           ci/fault.sh self-test
