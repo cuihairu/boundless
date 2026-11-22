@@ -128,7 +128,8 @@
   - 证据：`run-full-stack` 以一份共享输入（`cases/full_stack/roles.txt`，八个参考角色）同时驱动两侧，产出两份证据表 `original.tsv` 与 `new.tsv`。`original.tsv` 八行全 `blocked`，点名 `original-full-stack`：二进制确实存在于 `game/bin/server/el7/server`（baseapp/baseappmgr/cellapp/cellappmgr/dbapp/dbappmgr/loginapp/reviver，逐行附真实字节数），但完整启动需已配置 res 树、`BW_RES_PATH`、`server/bw.xml` 与数据库 schema，本机均未配置——代表性探针 `baseapp --version` 即报 `No res path set` / `Could not find server/bw.xml`。`new.tsv` 八行全 `ran`，记录 `boundless-server` 每角色真实启动行 `[role] starting (boundless minimal entry)`。6 库测试 + 3 CLI 集成测试绿；fmt 净；新增文件 clippy 净（`cmake_targets.rs` 17 处 collapsible_if 系预存债，不在本席）。commit 84a0d79
 - [x] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
   - 证据：`run-full-stack ... --replace <role>` 以同一输入运行单组件替换——被命名的角色以新版运行、其余角色保持原版——产出 `cases/full_stack/replacement.tsv`，首行 `replaced-role\tcellapp` 明写被替换角色。提交的样例行：`cellapp new ran`，其余七角色 `original blocked`（附各自二进制真实字节数）。`replacement_evidence()` 与 CLI `--replace` 双向测试各覆盖「替换角色=新、余者=原」与「点名被替换角色」。132 库测试 + 4 CLI 集成测试绿；新增/改动文件 clippy 净。commit 0f44c7c
-- [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+- [x] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+  - 证据：`diff-stack <original.tsv> <new.tsv> [output]` 比对两侧证据表，产出 `kind\trole\tsummary` 三列差异表 `cases/full_stack/differences.tsv`（提交版=真实证据 diff：8 行全 `field`，逐角色定位 blocked/ran 落差）。三类注入差异各有关键词且逐一定位：`field`（状态或 detail 变化，summary 含双方值）、`timeout`（一侧缺行或 detail 含 `timed out`）、`order`（角色序列不一致）。注入测试 `injected_field_difference_is_located` / `injected_timeout_difference_is_located` / `injected_order_difference_is_located` 分别断言 kind+role 可定位；CLI 注入 v1→v2 字段差异断言 `field [baseapp]` 命中。137 库测试 + 6 CLI 集成测试绿；新增文件 clippy 净。commit 7437a16
 
 #### BW-00-05 功能覆盖台账
 
