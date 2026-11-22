@@ -223,3 +223,79 @@ fn sigint_and_sigquit_also_shut_down() {
         );
     }
 }
+
+/// BW-14-04-03: on its first start the role initialises the resource roots
+/// and the `server/bw.xml` chain from the command line (the reference's
+/// `BIGWORLD_MAIN`). The chain logs nothing when it locates `bw.xml` and
+/// the reference's failure lines when it does not (BW-01-04-02/03), so the
+/// located-vs-unlocated difference is observable on the process's own
+/// stderr — no new output had to be invented.
+///
+/// `CI_RUNNERS_TIMEOUT` stops the role on its own, which keeps this a
+/// start-and-stop observation rather than a hang.
+fn first_start_stderr(res_path: Option<&str>) -> String {
+    let mut cmd = Command::new(server_bin());
+    cmd.arg("baseapp").env("CI_RUNNERS_TIMEOUT", "1");
+    match res_path {
+        Some(res) => {
+            cmd.env("BW_RES_PATH", res);
+        }
+        None => {
+            cmd.env_remove("BW_RES_PATH");
+        }
+    }
+    let output = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("baseapp: spawn: {e}"));
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "baseapp: non-zero exit on its first start: {:?}\n{stderr}",
+        output.status
+    );
+    stderr
+}
+
+/// The tracked fantasydemo res tree (BW-14-01): `server/bw.xml` plus the
+/// sample entity definitions, as an install would lay them down.
+fn fixture_res() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/review/fixtures/fantasydemo_def/res");
+    assert!(
+        path.join("server/bw.xml").is_file(),
+        "fixture res tree missing at {}",
+        path.display()
+    );
+    // An absolute path: `BW_RES_PATH` parts are used as given, and a
+    // relative one would be anchored at the executable's directory.
+    path.canonicalize()
+        .expect("canonicalise the fixture res root")
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn first_start_locates_the_installed_style_res_tree() {
+    let stderr = first_start_stderr(Some(&fixture_res()));
+    assert!(
+        !stderr.contains("Could not find"),
+        "the located chain still complained:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("No configuration section."),
+        "the chain resolved no config:\n{stderr}"
+    );
+}
+
+#[test]
+fn first_start_without_a_res_tree_logs_the_reference_failure() {
+    // The last res-path fallback is `~/.bwmachined.conf` of the real uid;
+    // neither the dev machines nor the CI runners carry one, so with
+    // `BW_RES_PATH` removed nothing resolves and the reference's
+    // "Could not find" line is the expected observable.
+    let stderr = first_start_stderr(None);
+    assert!(
+        stderr.contains("Could not find"),
+        "the unlocated first start did not log the reference failure:\n{stderr}"
+    );
+}

@@ -2,7 +2,7 @@
 
 **验收** 为三端提供运行时、Python 模块/标准库、配置样例、工具与资源安装布局；比对公开配置和 CLI；测试干净安装、升级保留数据、启动与卸载。
 
-**结论** 安装布局（bin + lib/python + res + data）、归档、干净安装、升级保留数据、卸载均已在 Linux 落地并通过 lane 自检与实测（`ci/install-layout.sh`）。模块导入无需开发环境。比对原版公开配置与 CLI 逐项给出。Windows/macOS 两端的干净安装烟测与服务器进程首启消费 bw.xml 登记为卡点。
+**结论** 安装布局（bin + lib/python + res + data）、归档、干净安装、升级保留数据、卸载均已在 Linux 落地并通过 lane 自检与实测（`ci/install-layout.sh`）。模块导入无需开发环境；首启定位（工具半 + 服务器半）实测通过。比对原版公开配置与 CLI 逐项给出。Windows/macOS 两端的干净安装烟测登记为卡点。
 
 ## 1. 安装布局（本移植）
 
@@ -42,6 +42,7 @@
 - **install-smoke-server**（01/04 Linux 半）：装后 `boundless-server baseapp` 在 `CI_RUNNERS_TIMEOUT=3` 预算内启动（`starting`→`running`）并自停（`has shut down.`），exit 0。
 - **install-cli**（01）：装后 `process_defs --help` 输出用法，exit 0。
 - **install-cli-res**（03 工具半）：装后 `process_defs -r <prefix>/res` 定位并加载安装资源树（含定义摘要）。
+- **install-res-server**（03 服务器半）：装后 `boundless-server <role>` 在 `BW_RES_PATH=<prefix>/res` 下首启，配置链定位 `server/bw.xml`（无「Could not find」/「No configuration section」行），并正常启动/停止。
 - **install-module**（02）：`PYTHONPATH=<prefix>/lib/python` 下用裸解释器 `import boundless`（`__version__`、`version()` 一致），无 cargo/无 target 目录/无 venv。
 - **install-layout**：配置、样例资源、两二进制、模块、`data/` 齐全。
 - **install-upgrade**（05）：篡改包属文件 `res/server/bw.xml` → 升级解包将其还原为打包字节，种子用户数据 `data/db/user.db` 保留。
@@ -53,9 +54,10 @@
 
 ## 4. 卡点
 
-- **BW-14-04-03 服务器首启半**：`app::run`（apps/server 最小入口）尚未消费 bw.xml——资源根初始化（`resources::init_from_args`）与配置链（BW-01-04）已在库层落地，**接入 `app::run` 属 BW-15-02-01 剩余**（该行已记「bw.xml/接口初始化（BW-01-04）」）。本项已由装后 `process_defs -r res` 验证安装资源树可定位可加载；服务器进程首启消费 bw.xml 待 BW-15-02-01。
 - **BW-14-04-04 三端**：Linux 干净安装烟测绿；Windows/macOS 无 runner（BW-15-03/04 启动目标前，`signals.rs` 用 Linux 专用信号 API），三端启动/停止烟测随 BW-15-03/04 落地。
 
 ## 5. 结论
 
-01（装后命令可执行）、02（无开发环境可导入）、05（升级/卸载保留用户数据）验收满足并勾行；03 布局与工具侧定位满足、服务器首启消费 bw.xml 卡 BW-15-02-01；04 Linux 半满足、三端卡 BW-15-03/04。
+01（装后命令可执行）、02（无开发环境可导入）、03（首启可定位——工具半 `process_defs -r res`、服务器半 `BW_RES_PATH` 首启配置链静默定位，两半均已实测）、05（升级/卸载保留用户数据）验收满足并勾行；04 Linux 半满足、三端卡 BW-15-03/04。
+
+**服务器首启接线**（本项的证据支撑）：`apps/server/src/main.rs` 按参考 `BIGWORLD_MAIN` 在跑角色前初始化 `BWResource`（argv `--res`/`-r` → `BW_RES_PATH` → `~/.bwmachined.conf`）与 `BWConfig` 链（`server/bw.xml` 继承与覆盖），返回值按参考丢弃（缺配置不中止、选项落默认、失败仅记录——BW-01-04-03）。角色 app 消费选项（BW-04/BW-02）前，链的解析即观测点：定位则静默、未定位则记参考「Could not find」/「No configuration section」行（`role_lifecycle.rs::first_start_locates_the_installed_style_res_tree` / `first_start_without_a_res_tree_logs_the_reference_failure`）。

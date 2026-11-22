@@ -159,7 +159,7 @@ server_launch() {
     role="$(first_role)"
     [ -n "$role" ] || { echo "no role list at $ROLES_SOURCE"; return 1; }
     [ -x "$prefix/bin/$SERVER" ] || { echo "no installed bin/$SERVER"; return 2; }
-    out="$(CI_RUNNERS_TIMEOUT=3 timeout 30 "$prefix/bin/$SERVER" "$role" 2>&1)"
+    out="$(BW_RES_PATH="$prefix/res" CI_RUNNERS_TIMEOUT=3 timeout 30 "$prefix/bin/$SERVER" "$role" 2>&1)"
     rc=$?
     if [ "$rc" -ne 0 ]; then
         printf 'exit %s: %s' "$rc" "$out"
@@ -210,6 +210,36 @@ cli_res_load() {
     if ! printf '%s\n' "$out" | grep -q '"digest"'; then
         printf 'exit 0 but no def digest in dump: %.200s' "$out"
         return 4
+    fi
+    printf '%s' "$out"
+}
+
+# server_locates_res <prefix> — the installed role process locates the
+# installed `server/bw.xml` on its first start: the config chain logs
+# nothing when it resolves and the reference's "Could not find" /
+# "No configuration section" lines when it does not. This is the
+# server-first-start half of BW-14-04-03.
+server_locates_res() {
+    local prefix="$1" role out rc
+    role="$(first_role)"
+    [ -n "$role" ] || { echo "no role list at $ROLES_SOURCE"; return 1; }
+    out="$(BW_RES_PATH="$prefix/res" CI_RUNNERS_TIMEOUT=1 timeout 30 "$prefix/bin/$SERVER" "$role" 2>&1)"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf 'exit %s: %s' "$rc" "$out"
+        return 2
+    fi
+    if ! printf '%s\n' "$out" | grep -q 'starting'; then
+        printf 'exit 0 but no startup line: %s' "$out"
+        return 3
+    fi
+    if printf '%s\n' "$out" | grep -q 'Could not find'; then
+        printf 'the located chain still complained: %s' "$out"
+        return 4
+    fi
+    if printf '%s\n' "$out" | grep -q 'No configuration section'; then
+        printf 'the chain resolved no config: %s' "$out"
+        return 5
     fi
     printf '%s' "$out"
 }
@@ -350,6 +380,14 @@ run_all() {
         ci_fail install-cli-res "installed $CLI could not locate/load the installed res tree: $(tsv_escape "$out")"
     else
         ci_pass install-cli-res "installed res tree locatable and loads on first run"
+    fi
+
+    # BW-14-04-03 (server first-start half): the installed role process
+    # locates the installed bw.xml on its first start.
+    if ! out="$(server_locates_res "$prefix")"; then
+        ci_fail install-res-server "installed $SERVER did not locate the installed config on first start: $(tsv_escape "$out")"
+    else
+        ci_pass install-res-server "installed $SERVER locates the installed config on first start"
     fi
 
     # BW-14-04-02: the installed module imports with no dev environment.
@@ -518,6 +556,25 @@ exit 1'
         ci_fail selftest-module-red "the junk module did not fail the import: $(printf '%s\n' "$out" | grep install-module | head -1)"
         fails=$((fails + 1))
     fi
+
+    ci_step "self-test: a server stub that reports an unlocated config goes red at the res-locate check"
+    make_stub "$bin" 'echo "[baseapp] starting (stub)" >&2
+echo "Could not find server/bw.xml" >&2
+echo "[baseapp] has shut down." >&2
+exit 0'
+    out="$(CI_OUT="$r/manifest" CI_LAYOUT_OUT="$r/out" CI_LAYOUT_BIN="$bin" CI_LAYOUT_CLI="$cli" \
+        CI_LAYOUT_MOD="$mod" CI_LAYOUT_RES="$res" "$0" 2>&1)"
+    rc=$?
+    if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'install-res-server	FAIL.*still complained'; then
+        ci_pass selftest-res-server-red "an unlocated config is named at the res-locate check"
+    else
+        ci_fail selftest-res-server-red "the unlocated stub did not fail the res-locate: $(printf '%s\n' "$out" | grep install-res-server | head -1)"
+        fails=$((fails + 1))
+    fi
+    # Restore the green server stub for the remaining arm.
+    make_stub "$bin" 'echo "[baseapp] starting (stub)" >&2
+echo "[baseapp] has shut down." >&2
+exit 0'
 
     ci_step "self-test: a res tree without the entity defs goes red at the res-load check"
     # Staging must still succeed (bw.xml is there); what fails is the
