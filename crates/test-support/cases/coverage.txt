@@ -49,11 +49,11 @@ network	unit_test	lib/network/unit_test/Makefile.rules	always	BW-02,BW-12	-	-
 physics2	library	lib/physics2/Makefile.rules	always	BW-10	-	-
 physics2	unit_test	lib/physics2/unit_test/Makefile.rules	always	BW-10	-	-
 png	library	third_party/png/Makefile.rules	always	-	-	-
-process_defs	binary	tools/process_defs/Makefile.rules	always	-	-	-
+process_defs	binary	tools/process_defs/Makefile.rules	always	BW-04,BW-13	-	-
 pyscript	library	lib/pyscript/Makefile.rules	always	BW-03	-	-
 pyscript	unit_test	lib/pyscript/unit_test/Makefile.rules	always	BW-03	-	-
 remove_db	-	server/tools/remove_db/Makefile.rules	always	BW-09	-	-
-res_packer	binary	tools/res_packer/Makefile.rules	always	-	-	-
+res_packer	binary	tools/res_packer/Makefile.rules	always	BW-13	-	-
 resmgr	library	lib/resmgr/Makefile.rules	always	BW-01	-	-
 resmgr	unit_test	lib/resmgr/unit_test/Makefile.rules	always	BW-01	-	-
 reviver	binary	server/reviver/Makefile.rules	always	BW-05	-	-

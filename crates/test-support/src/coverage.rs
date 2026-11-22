@@ -116,10 +116,24 @@ fn derive_enable(source: &str, text: &str) -> &'static str {
     }
 }
 
-/// The rows under the scope of the mapping item BW-00-05-02: the engine
-/// libraries (`lib/`) and the server targets (`server/`, which also covers
-/// `server/tools/` and `server/dbapp_extensions/`).
-const LANE_SCOPES: [&str; 2] = ["lib/", "server/"];
+/// The rows the lane index reaches, as the mapping items widen it:
+/// the engine libraries and server targets (BW-00-05-02: `lib/`, `server/`,
+/// which also covers `server/tools/` and `server/dbapp_extensions/`), then
+/// the client and tool targets (BW-00-05-03: `tools/`, `client/`). The Linux
+/// Make inventory carries no `client/` target (the C# client tree is
+/// FantasyDemo-side, BW-14) and no editor or exporter target (those are
+/// CMake-built, BW-13), so the prefixes index what exists.
+const LANE_SCOPES: [&str; 4] = ["lib/", "server/", "tools/", "client/"];
+
+/// The rows the BW-00-05-02 mapping item indexes: the engine libraries and
+/// the server targets.
+#[cfg(test)]
+const ENGINE_AND_SERVER_SCOPES: [&str; 2] = ["lib/", "server/"];
+
+/// The rows the BW-00-05-03 mapping item indexes: the client and tool
+/// targets.
+#[cfg(test)]
+const CLIENT_AND_TOOL_SCOPES: [&str; 2] = ["tools/", "client/"];
 
 /// The engine directories a lane claims in prose rather than on its `源码`
 /// line. `lib/urlrequest/` is named by BW-03-03's preamble —「网络/URL 请求
@@ -572,7 +586,11 @@ mod tests {
         let catalog = catalog();
         let scoped: Vec<&CoverageRow> = catalog
             .iter()
-            .filter(|row| LANE_SCOPES.iter().any(|s| row.source.starts_with(s)))
+            .filter(|row| {
+                ENGINE_AND_SERVER_SCOPES
+                    .iter()
+                    .any(|s| row.source.starts_with(s))
+            })
             .collect();
         assert_eq!(scoped.len(), 72, "42 lib + 30 server rows");
         for row in &scoped {
@@ -588,6 +606,39 @@ mod tests {
             .find(|r| r.target == "urlrequest" && r.source == "lib/urlrequest/Makefile.rules")
             .expect("urlrequest row");
         assert_eq!(urlrequest.task, "BW-03");
+        // No gap remains in scope.
+        assert!(unindexed(&catalog).is_empty());
+    }
+
+    /// The acceptance for BW-00-05-03: every client and tool target carries a
+    /// lane index. The Make inventory's tool targets are the two offline
+    /// tools (`tools/process_defs` — also claimed by BW-04, so both lanes
+    /// carry it — and `tools/res_packer`, the resource pipeline's); no
+    /// `client/` or editor/exporter target exists here (CMake-side, BW-13).
+    #[test]
+    fn every_client_and_tool_row_carries_a_lane_index() {
+        let catalog = catalog();
+        let scoped: Vec<&CoverageRow> = catalog
+            .iter()
+            .filter(|row| {
+                CLIENT_AND_TOOL_SCOPES
+                    .iter()
+                    .any(|s| row.source.starts_with(s))
+            })
+            .collect();
+        assert_eq!(
+            scoped.len(),
+            2,
+            "process_defs and res_packer: the inventory's only tools/ targets"
+        );
+        let process_defs = &scoped[0];
+        assert_eq!(process_defs.target, "process_defs");
+        // The entity-definition tool is claimed by its own lane and by the
+        // tool lane that claims `tools/`.
+        assert_eq!(process_defs.task, "BW-04,BW-13");
+        let res_packer = &scoped[1];
+        assert_eq!(res_packer.target, "res_packer");
+        assert_eq!(res_packer.task, "BW-13");
         // No gap remains in scope.
         assert!(unindexed(&catalog).is_empty());
     }
