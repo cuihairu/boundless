@@ -53,6 +53,34 @@ pub trait PacketSink {
     fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason;
 }
 
+/// The slice of `PacketReceiverStats` (packet_receiver_stats.hpp) the
+/// channel's receive window touches: the duplicate-packet counter. The full
+/// statistics container and its one-second gathering belong to the
+/// EventDispatcher item (BW-02-01-05).
+#[derive(Default)]
+pub struct PacketReceiverStats {
+    num_duplicate_packets_received: Cell<u32>,
+}
+
+impl PacketReceiverStats {
+    pub fn new() -> Self {
+        Self {
+            num_duplicate_packets_received: Cell::new(0),
+        }
+    }
+
+    /// `incDuplicatePackets()`.
+    pub fn inc_duplicate_packets(&self) {
+        self.num_duplicate_packets_received
+            .set(self.num_duplicate_packets_received.get() + 1);
+    }
+
+    /// `numDuplicatePacketsReceived()`.
+    pub fn num_duplicate_packets_received(&self) -> u32 {
+        self.num_duplicate_packets_received.get()
+    }
+}
+
 /// `INoSuchPort::onNoSuchPort`: told when a send to `address` bounced.
 pub type NoSuchPortCallback = dyn Fn(&Address);
 
