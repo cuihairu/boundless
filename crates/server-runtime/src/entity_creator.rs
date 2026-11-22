@@ -121,6 +121,17 @@
 //!
 //! The recorded callbacks and the pending/address state are the acceptance:
 //! 回调及 Base 状态一致.
+//!
+//! # BW-07-02-03 处理 Cell 丢失通知
+//!
+//! `Base::setCurrentCell( spaceID, NONE )` (`base.cpp:954`, the `!haveCell`
+//! branch) retires the old cell reference: the cell mailbox address becomes
+//! `NONE` and the space is updated unconditionally, and when the base had a
+//! cell (`hadCell != haveCell`) the contact pending clears, the cell backup
+//! data drops (`cellBackupData_.clear()` — the backup model itself is
+//! BW-07-04), a proxy base is told `cellEntityDestroyed` first, and the
+//! script `onLoseCell` is called. A base with no cell has no transition and
+//! records nothing. The acceptance: Base 清退旧 Cell 引用.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -330,6 +341,16 @@ pub enum BaseCallback {
         space_id: u32,
         /// The cell app address of the cell entity.
         cell_addr: BaseAddr,
+    },
+    /// `Proxy::cellEntityDestroyed` was called (a proxy base losing its cell).
+    CellEntityDestroyed {
+        /// The entity id.
+        entity_id: EntityId,
+    },
+    /// `onLoseCell` was called.
+    OnLoseCell {
+        /// The entity id.
+        entity_id: EntityId,
     },
 }
 
@@ -866,6 +887,39 @@ impl EntityCreator {
             space_id,
             cell_addr,
         });
+        true
+    }
+
+    /// `Base::setCurrentCell( spaceID, NONE )` (`base.cpp:954`, the
+    /// `!haveCell` branch): the cell entity is gone. The old cell reference
+    /// is cleared and the space updated; when the base had a cell the contact
+    /// pending clears, a proxy base is told its cell entity was destroyed and
+    /// `onLoseCell` is recorded. Returns false for an unknown or destroyed
+    /// base.
+    pub fn cell_lost(&mut self, entity_id: EntityId, space_id: u32) -> bool {
+        let Some(entity) = self.bases.get_mut(&entity_id) else {
+            return false;
+        };
+        if entity.destroyed {
+            return false;
+        }
+        let had_cell = entity.cell_entity_addr.is_some();
+        // The mailbox address and the space are set unconditionally.
+        entity.cell_entity_addr = None;
+        entity.cell_space_id = space_id;
+        if !had_cell {
+            // No transition: the base had no cell and has none now.
+            return true;
+        }
+        entity.is_get_cell_pending = false;
+        if entity.is_proxy {
+            entity
+                .callbacks
+                .push(BaseCallback::CellEntityDestroyed { entity_id });
+        }
+        entity
+            .callbacks
+            .push(BaseCallback::OnLoseCell { entity_id });
         true
     }
 
@@ -1471,6 +1525,120 @@ mod tests {
             creator.begin_cell_creation(base.id),
             Err(CellCreateError::AlreadyHasCell)
         );
+    }
+
+    /// A base that has a cell and then loses it clears the cell reference and
+    /// records `onLoseCell` (a non-proxy base gets no proxy notification).
+    #[test]
+    fn losing_a_cell_clears_the_reference_and_fires_on_lose_cell() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+        creator.begin_cell_creation(base.id).unwrap();
+        creator.cell_creation_result(base.id, true);
+        let cell_addr = crate::cell_data::BaseAddr {
+            ip: 0x0a000002,
+            port: 30001,
+        };
+        creator.cell_contact(base.id, 7, cell_addr);
+
+        assert!(creator.cell_lost(base.id, 7));
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert_eq!(entity.cell_entity_addr, None);
+        assert_eq!(entity.cell_space_id, 7);
+        assert!(!entity.is_get_cell_pending);
+        // No proxy notification for a non-proxy base.
+        assert!(
+            !entity
+                .callbacks
+                .iter()
+                .any(|c| matches!(c, BaseCallback::CellEntityDestroyed { .. }))
+        );
+        assert_eq!(
+            entity.callbacks.last(),
+            Some(&BaseCallback::OnLoseCell { entity_id: base.id })
+        );
+    }
+
+    /// A proxy base losing its cell is told `cellEntityDestroyed` before
+    /// `onLoseCell`, in the reference order.
+    #[test]
+    fn a_proxy_base_is_told_its_cell_was_destroyed_first() {
+        let mut creator = creator_with_one_id(10);
+        let mut proxy_type = account_type();
+        proxy_type.is_proxy = true;
+        creator.add_type(proxy_type);
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+        assert!(base.is_proxy);
+        creator.begin_cell_creation(base.id).unwrap();
+        creator.cell_creation_result(base.id, true);
+        creator.cell_contact(
+            base.id,
+            7,
+            crate::cell_data::BaseAddr {
+                ip: 0x0a000002,
+                port: 30001,
+            },
+        );
+
+        creator.cell_lost(base.id, 7);
+        let entity = creator.bases().get(&base.id).unwrap();
+        let tail: Vec<&BaseCallback> = entity
+            .callbacks
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    BaseCallback::CellEntityDestroyed { .. } | BaseCallback::OnLoseCell { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                &BaseCallback::CellEntityDestroyed { entity_id: base.id },
+                &BaseCallback::OnLoseCell { entity_id: base.id }
+            ]
+        );
+    }
+
+    /// A base with no cell has no transition: the loss is applied but records
+    /// no callback.
+    #[test]
+    fn a_base_without_a_cell_has_no_loss_transition() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        assert!(creator.cell_lost(base.id, 1));
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert_eq!(entity.cell_entity_addr, None);
+        assert!(
+            !entity
+                .callbacks
+                .iter()
+                .any(|c| matches!(c, BaseCallback::OnLoseCell { .. }))
+        );
+    }
+
+    /// An unknown or destroyed base cannot lose a cell.
+    #[test]
+    fn a_destroyed_or_unknown_base_cannot_lose_a_cell() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        assert!(!creator.cell_lost(99, 1));
+        creator.destroy_base(base.id, false, false, false);
+        assert!(!creator.cell_lost(base.id, 1));
     }
 
     #[test]
