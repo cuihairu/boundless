@@ -7,8 +7,7 @@ members = [
     "crates/mercury",
     "crates/contracts",
     "crates/entitydef",
-    # "crates/db",  # re-add when the db crate lands (BW-09): the member
-    #               # was committed before its crate, breaking `--workspace`.
+    "crates/db",
     "crates/python-host",
     "crates/server-runtime",
     "crates/test-support",
