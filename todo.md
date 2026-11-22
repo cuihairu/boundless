@@ -248,7 +248,12 @@
   - 原版字节：**编译** 参考 cstdmf 的生成器实跑 `writePackedInt` 边界值，逐字节吻合——`0→00`、`1→01`、`2→02`、`253→fd`、`254→fe`（恰在转义下方 1 字节）、`255→ff ff 00 00`（转义：标记+PACK3）、`256→ff 00 01 00`、`1000→ff e8 03 00`、`65535→ff ff ff 00`、`65536→ff 00 00 01`、`0xFFFFFF→ff ff ff ff`——**acceptance 达成**。
   - 结果：`cargo test -p foundation --lib` **138/138 绿**（stream 21/21，含新夹具）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用依赖警告系工作区既有、非本项）；`rustfmt` 本文件绿。
   - 证据：crates/foundation/src/stream.rs 新增 `reference_wire_fixtures_packed_int`（11 个边界值逐字节钉死 + `packed_int_size` 长度 + 逐值往返）。
-- [ ] **BW-01-02-03 实现字符串与内存流**。**验收** 空值、嵌入零和剩余长度吻合。
+- [x] **BW-01-02-03 实现字符串与内存流**（commit 96399ab）。**验收** 空值、嵌入零和剩余长度吻合。
+  - 夹具：参考侧 `binary_stream.hpp` `operator<<(BinaryOStream&, const BW::string&)` → `appendString(str.data(), str.length())`——`writePackedInt(length)` + `addBlob`（原始字节、无 NUL 终止，注释明言 BW::string 可含 NUL 字符）——端口 `write_string`/`read_string` 逐条一致（打包长度前缀 + 原字节，`String::from_utf8` 接受嵌入 `\0`）。
+  - 原版字节：**编译** 参考 cstdmf 的生成器实跑，逐字节吻合——空串 `→00`、`"a"→01 61`、`"hello"→05 68 65 6c 6c 6f`、嵌入零 `"ab\0cd"→05 61 62 00 63 64`（00 是内容非终止符）、CJK `"实体与太空"→0f` + 15 字节 UTF-8——**acceptance 达成**。
+  - 内存流：端口 `BinaryStream` 即内存流——`new()` 可增长缓冲（= `MemoryOStream` 构造）、`capacity`/`length`（= `size()`）、`remaining`（= `remainingLength()`）、`rewind`/`finish`、`peek`（下一个字节不消费，= `peek()`）、`as_bytes`（= `data()`）——语义齐备。
+  - 结果：`cargo test -p foundation --lib` **139/139 绿**（stream 22/22，含新夹具）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用依赖警告系工作区既有、非本项）；`rustfmt` 本文件绿。
+  - 证据：crates/foundation/src/stream.rs 新增 `reference_wire_fixtures_string`（空/ASCII/嵌入零/CJK 逐字节钉死 + 嵌入零往返 + `remaining` 恰扣前缀+字节、余下内容不动）。
 - [ ] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
 - [ ] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
 
