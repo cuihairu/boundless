@@ -2580,6 +2580,98 @@ ck(raises(TypeError, lambda: Math.Vector3(1,2,3).set('abc')), 'set non sequence'
 ck(raises(TypeError, lambda: Math.Vector3(1,2,3).distTo(5)), 'distTo no splat')
 ck(raises(TypeError, lambda: Math.Vector3(1,2,3).distTo([1,2,3])), 'distTo no list')
 
+# Item assignment (`py_sq_ass_item`, `:1738`): the indexed write and its
+# out-of-range / non-float refusals.
+ix = Math.Vector3(1,2,3)
+ix[0] = 5.0
+ck(tuple(ix) == (5.0,2.0,3.0), 'index assign')
+ck(raises(IndexError, lambda: ix.__setitem__(5, 1.0)), 'index assign out of range')
+ck(raises(TypeError, lambda: ix.__setitem__(0, 'a')), 'index assign non float')
+# A negative index is normalised through `sq_length` to the last component.
+ix.__setitem__(-1, 9.0)
+ck(ix.z == 9.0, 'index assign negative wraps to the last component')
+
+# `py_scale` (`:1860`): a scaled copy, never a mutation, with the
+# argument-table refusals.
+ck(tuple(Math.Vector3(1,2,3).scale(2)) == (2.0,4.0,6.0), 'scale')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).scale()), 'scale no args')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).scale('a')), 'scale non float')
+
+# `py_tuple`/`py_list` (`:1938`/`:1950`) and their no-argument rules.
+ck(Math.Vector3(1,2,3).tuple() == (1.0,2.0,3.0), 'tuple method')
+ck(Math.Vector3(1,2,3).list() == [1.0,2.0,3.0], 'list method')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).tuple(1)), 'tuple takes no arguments')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).list(1)), 'list takes no arguments')
+
+# The component attribute writes (`pySet_x` and friends, `:2285`).
+cw = Math.Vector3(1,2,3)
+cw.x = 4.0
+cw.y = 5.0
+cw.z = 6.0
+ck(tuple(cw) == (4.0,5.0,6.0), 'attribute write')
+c4 = Math.Vector4(1,2,3,4)
+c4.w = 9.0
+ck(c4.w == 9.0, 'Vector4 w write')
+ck(raises(TypeError, lambda: setattr(Math.Vector3(1,2,3), 'x', 'a')),
+   'attribute write non float')
+
+# Rich compare `>=` (`:2500`), and the deferred binary arms the reference
+# answers with `Py_NotImplemented`.
+ck(Math.Vector3(1,2,3) >= Math.Vector3(1,2,3), 'ge')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3) - 5), 'sub float defers')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3) / 'a'), 'divide non number defers')
+
+# In-place with a refused operand falls back to the binary arm and raises.
+def iadd_bad():
+    z = Math.Vector3(1,2,3)
+    z += 5
+def isub_bad():
+    z = Math.Vector3(1,2,3)
+    z -= 5
+def imul_bad():
+    z = Math.Vector3(1,2,3)
+    z *= 'a'
+def idiv_bad():
+    z = Math.Vector3(1,2,3)
+    z /= 'a'
+ck(raises(TypeError, iadd_bad), 'iadd float defers')
+ck(raises(TypeError, isub_bad), 'isub float defers')
+ck(raises(TypeError, imul_bad), 'imul non number defers')
+ck(raises(TypeError, idiv_bad), 'idiv non number defers')
+
+# Argument-table refusals of the remaining method faces.
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).dot('abc')), 'dot non sequence')
+ck(raises(TypeError, lambda: Math.Vector2(1,2).cross2D('abc')), 'cross2D non sequence')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).normalise(1)),
+   'normalise takes no arguments')
+
+# The distance family: the whole-tuple form works, a single float is no
+# splat, and each width raises its own message.
+ck(Math.Vector3(0,0,0).distTo(3,4,0) == 5.0, 'distTo three floats')
+ck(raises(TypeError, lambda: Math.Vector2(1,2).distTo('abc')), 'Vector2 distTo message')
+ck(raises(TypeError, lambda: Math.Vector4(1,2,3,4).distTo('abc')), 'Vector4 distTo message')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).distSqrTo(5)), 'distSqrTo no splat')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).flatDistTo(5)), 'flatDistTo no splat')
+ck(raises(TypeError, lambda: Math.Vector2(1,2).flatDistSqrTo(Math.Vector2(3,4))),
+   'flatDistSqrTo refused on Vector2')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).flatDistSqrTo(5)),
+   'flatDistSqrTo no splat')
+
+# `py_setPitchYaw` (`:2139`): only `Vector3`, exactly two floats.
+ck(raises(TypeError, lambda: Math.Vector2(1,2).setPitchYaw(0.0, 0.0)),
+   'setPitchYaw refused on Vector2')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).setPitchYaw(0.0)),
+   'setPitchYaw needs two arguments')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).setPitchYaw('a', 0.0)),
+   'setPitchYaw expects floats')
+
+# In-place on a width without a cross defers, the reference falling back to
+# the binary arm.
+def imul_cross_bad():
+    z = Math.Vector2(1, 2)
+    z *= Math.Vector2(3, 4)
+ck(raises(TypeError, imul_cross_bad), 'imul cross refused on Vector2')
+
 __probe = '; '.join(_f) or 'ok'
 "#,
             );
@@ -2752,6 +2844,103 @@ ck(tuple(restored.translation) == (4.0, 5.0, 6.0), 'setstate roundtrip')
 ck(raises(ValueError, lambda: Math.Matrix().__setstate__(b'bad')),
    'setstate bad state rejected')
 
+# Argument-table and provider-refusal arms.
+ck(raises(TypeError, lambda: Math.Matrix().set()), 'set no args')
+ck(raises(TypeError, lambda: Math.Matrix().set(5)), 'set non provider')
+ck(raises(TypeError, lambda: Math.Matrix(1, 2)), 'factory extra args')
+
+# setZero / setIdentity and their no-argument rules.
+z = Math.Matrix()
+z.setZero()
+ck(z.get(0,0) == 0.0 and z.get(3,3) == 0.0, 'setZero')
+ck(raises(TypeError, lambda: Math.Matrix().setZero(1)), 'setZero takes no arguments')
+ck(raises(TypeError, lambda: Math.Matrix().setIdentity(1)), 'setIdentity takes no arguments')
+
+# setScale / setTranslate argument errors.
+ck(raises(TypeError, lambda: Math.Matrix().setScale()), 'setScale no args')
+ck(raises(TypeError, lambda: Math.Matrix().setScale('abc')), 'setScale non vector')
+ck(raises(TypeError, lambda: Math.Matrix().setTranslate()), 'setTranslate no args')
+ck(raises(TypeError, lambda: Math.Matrix().setTranslate('abc')), 'setTranslate non vector')
+
+# Rotate X and Z (Y is covered above), plus the angle-validation arms.
+rx = Math.Matrix()
+rx.setRotateX(0.0)
+ck(rx.get(1,1) == 1.0, 'rotateX')
+rz = Math.Matrix()
+rz.setRotateZ(0.0)
+ck(rz.get(0,0) == 1.0, 'rotateZ')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateX()), 'setRotateX no args')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateX('a')), 'setRotateX non real')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateY()), 'setRotateY no args')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateZ()), 'setRotateZ no args')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateZ('a')), 'setRotateZ non real')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateYPR()), 'setRotateYPR no args')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateYPR('abc')), 'setRotateYPR non vector')
+
+# pre/postMultiply refusal arms.
+ck(raises(TypeError, lambda: Math.Matrix().preMultiply()), 'preMultiply no args')
+ck(raises(TypeError, lambda: Math.Matrix().preMultiply(5)), 'preMultiply non provider')
+ck(raises(TypeError, lambda: Math.Matrix().postMultiply()), 'postMultiply no args')
+ck(raises(TypeError, lambda: Math.Matrix().postMultiply(5)), 'postMultiply non provider')
+
+# invert's no-argument rule.
+ck(raises(TypeError, lambda: Math.Matrix().invert(1)), 'invert takes no arguments')
+
+# lookAt argument errors.
+ck(raises(TypeError, lambda: Math.Matrix().lookAt()), 'lookAt no args')
+ck(raises(TypeError, lambda: Math.Matrix().lookAt('a',
+   Math.Vector3(0.0, 0.0, 1.0), Math.Vector3(0.0, 1.0, 0.0))), 'lookAt bad position')
+ck(raises(TypeError, lambda: Math.Matrix().lookAt(
+   Math.Vector3(10.0, 0.0, 0.0), 'a', Math.Vector3(0.0, 1.0, 0.0))),
+   'lookAt bad direction')
+ck(raises(TypeError, lambda: Math.Matrix().lookAt(
+   Math.Vector3(10.0, 0.0, 0.0), Math.Vector3(0.0, 0.0, 1.0), 'a')),
+   'lookAt bad up')
+
+# setElement / get argument errors, and the integer overflow arm.
+ck(raises(TypeError, lambda: Math.Matrix().setElement()), 'setElement no args')
+ck(raises(TypeError, lambda: Math.Matrix().setElement('a', 0, 1.0)),
+   'setElement bad column')
+ck(raises(TypeError, lambda: Math.Matrix().setElement(0, 'a', 1.0)), 'setElement bad row')
+ck(raises(TypeError, lambda: Math.Matrix().setElement(0, 0, 'a')), 'setElement bad value')
+ck(raises(TypeError, lambda: Math.Matrix().setElement(2**100, 0, 1.0)),
+   'setElement overflow column')
+ck(raises(TypeError, lambda: Math.Matrix().get()), 'get no args')
+ck(raises(TypeError, lambda: Math.Matrix().get('a', 0)), 'get bad column')
+ck(raises(TypeError, lambda: Math.Matrix().get(0, 'a')), 'get bad row')
+
+# apply* argument errors.
+ck(raises(TypeError, lambda: Math.Matrix().applyPoint()), 'applyPoint no args')
+ck(raises(TypeError, lambda: Math.Matrix().applyPoint('a')), 'applyPoint bad vector')
+ck(raises(TypeError, lambda: Math.Matrix().applyV4Point()), 'applyV4Point no args')
+ck(raises(TypeError, lambda: Math.Matrix().applyV4Point('a')), 'applyV4Point bad vector')
+ck(raises(TypeError, lambda: Math.Matrix().applyVector()), 'applyVector no args')
+ck(raises(TypeError, lambda: Math.Matrix().applyVector('a')), 'applyVector bad vector')
+ck(raises(TypeError, lambda: Math.Matrix().applyToAxis()), 'applyToAxis no args')
+ck(raises(TypeError, lambda: Math.Matrix().applyToAxis('a')), 'applyToAxis bad axis')
+ck(raises(TypeError, lambda: Math.Matrix().applyToOrigin(1)),
+   'applyToOrigin takes no arguments')
+
+# Projection argument errors.
+ck(raises(TypeError, lambda: Math.Matrix().orthogonalProjection()), 'ortho no args')
+ck(raises(TypeError, lambda: Math.Matrix().orthogonalProjection('a', 1, 2, 3)),
+   'ortho bad float')
+ck(raises(TypeError, lambda: Math.Matrix().perspectiveProjection()), 'persp no args')
+ck(raises(TypeError, lambda: Math.Matrix().perspectiveProjection('a', 1, 2, 3)),
+   'persp bad float')
+
+# roll extraction and the translation attribute write.
+ck(abs(e.roll) < 1e-5, 'roll roundtrip')
+tx = Math.Matrix()
+tx.translation = Math.Vector3(1.0, 2.0, 3.0)
+ck(tuple(tx.translation) == (1.0, 2.0, 3.0), 'translation attribute write')
+ck(raises(TypeError, lambda: setattr(Math.Matrix(), 'translation', 5)),
+   'translation non vector')
+
+# Pickle state argument rules.
+ck(raises(TypeError, lambda: Math.Matrix().__getstate__(1)), 'getstate no args')
+ck(raises(TypeError, lambda: Math.Matrix().__setstate__()), 'setstate no args')
+
 __probe = '; '.join(_f) or 'ok'
 "#,
             );
@@ -2836,6 +3025,13 @@ ck(raises(TypeError, lambda: p.intersectRay(Math.Vector3(0.0, 0.0, 2.0))),
    'intersectRay wants two vectors')
 ck(raises(TypeError, lambda: p.intersectRay(1, 2)),
    'intersectRay rejects non-vectors')
+ck(raises(TypeError, lambda: p.init(Math.Vector3(0.0, 0.0, 0.0), 1, 2)),
+   'init rejects a non-vector second point')
+ck(raises(TypeError, lambda: p.init(Math.Vector3(0.0, 0.0, 0.0),
+                                    Math.Vector3(1.0, 0.0, 0.0), 1)),
+   'init rejects a non-vector third point')
+ck(raises(TypeError, lambda: p.intersectRay(Math.Vector3(0.0, 0.0, 2.0), 1)),
+   'intersectRay rejects a non-vector direction')
 
 __probe = '; '.join(_f) or 'ok'
 "#,
@@ -2896,6 +3092,10 @@ ck(p.b is None, 'b starts None')
 p.a = (1.0, 2.0, 3.0, 4.0)
 ck(type(p.a).__name__ == 'Vector4Basic', 'a tuple coerces to a Vector4Basic')
 ck(p.a.value.x == 1.0 and p.a.value.w == 4.0, 'the coerced value')
+ck(raises(TypeError, lambda: setattr(p.a, 'value', 5)),
+   'the basic value refuses a non-vector4')
+p.a = p.a
+ck(p.a.value.x == 1.0, 'a self assignment keeps the slot')
 p.b = Math.Vector4(2.0, 2.0, 2.0, 2.0)
 ck(type(p.b).__name__ == 'Vector4Basic', 'a Vector4 coerces to a Vector4Basic')
 
@@ -3532,6 +3732,8 @@ ck(raises(TypeError, lambda: setattr(l, 'waveform', None)),
    'None is no waveform')
 ck(raises(TypeError, lambda: setattr(l, 'period', 'x')),
    'period wants a float')
+ck(raises(TypeError, lambda: setattr(l, 'period', 2**100)),
+   'an overflowing int is no float')
 ck(msg(TypeError, lambda: setattr(l, 'time', None)) == 'time must be set to a float',
    'the float TypeError message')
 ck(raises(TypeError, lambda: l.__delattr__('waveform')),
@@ -3897,6 +4099,8 @@ ck(raises(TypeError, lambda: Math.Vector4Combiner(1)),
 c.a = Math.Vector4(2.0, 3.0, 4.0, 5.0)
 c.b = Math.Vector4(4.0, 6.0, 8.0, 10.0)
 ck(type(c.a).__name__ == 'Vector4Basic', 'a Vector4 coerces to a basic')
+c.a = c.a
+ck(c.a.value.x == 2.0, 'a slot self assignment keeps the provider')
 
 # ADD is the default.
 v = c.value
@@ -4310,6 +4514,14 @@ ck(msg(TypeError, lambda: setattr(mp, 'b', 1)) ==
    'b must be set to a MatrixProvider or None', 'the b slot refusal')
 ck(mp.a is c and mp.b is None, 'a refusal leaves the slots alone')
 
+# Emptying an already empty slot and assigning a slot to itself are both
+# no-ops, the reference's `SmartPointer` not touching a null old occupant
+# and not dropping the shared reference it already holds.
+mp.b = None
+ck(mp.b is None, 'emptying an empty slot')
+mp.a = mp.a
+ck(mp.a is c, 'a self assignment keeps the slot')
+
 __probe = '; '.join(_f) or 'ok'
 "#,
             );
@@ -4409,10 +4621,9 @@ __probe = '; '.join(_f) or 'ok'
     /// The export manifest agrees with the live interpreter: the surface it
     /// marks ported imports and resolves, and its scoping records read true
     /// against the modules that exist today -- `BigWorld.component` is
-    /// present, the client-only `BigWorld.callback` is not, and `Math`
-    /// imports because the vector widths are ported, while the module row
-    /// stays pending until `Matrix`, `Plane` and the `*Provider` factories
-    /// land.
+    /// present, the client-only `BigWorld.callback` is not, and the `Math`
+    /// module and every delivered row it carries are ported, the
+    /// Client-scope `MatrixAnimation` row still pending.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_the_manifest_matches_the_interpreter() {
