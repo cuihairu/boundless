@@ -17,6 +17,7 @@ pub mod harness;
 pub mod layering;
 pub mod multiproc;
 pub mod protocol_fixtures;
+pub mod python_callbacks;
 pub mod release_artifacts;
 pub mod rng;
 pub mod runtime_env;
