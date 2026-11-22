@@ -172,7 +172,11 @@
   - 新版：`crates/server-runtime/src/app.rs` 的 `KNOWN_ROLES`（8 角色）是替换清单的权威源；`boundless-server <role>` 单入口按角色名启动。新版实况运行门关：server-runtime 仅校验角色名，无网络无登录路径（Mercury 随 BW-02 接入）。
   - 结果：`replace-record	PASS	8 role(s) named in replace-roles.tsv (report notes the replaced role)`；`replace-run	SKIP	no server/bw.xml at the resource root (BW_RES_PATH=unset); the port role validates the role name only — no network, no login path (Mercury joins at BW-02) — the substitution run is retained when both gates open; 8 role(s) named in replace-roles.tsv`——替换报告逐行**注明被替换角色**（acceptance 达成），运行门关点名两侧缺口（原版 bw.xml/machined、端口 Mercury/BW-02）。
   - 证据：`ci/replace-role.py`（从端口源码 `KNOWN_ROLES` 与参考角色二进制派生逐角色替换清单——角色、参考二进制在场、端口入口、替换门；参考树缺席记「不在场」而非崩）+ `ci/replace-role.sh` 两记录面——**replace-record**（8 角色逐行：角色列+参考二进制+端口入口+门）、**replace-run**（替换运行：门开 → 逐角色实跑替换并要求日志**点名被替换角色**（静默不点名即空心 FAIL）；门关 → 记录关态点名缺口与角色）；入库 `tests/baseline/replace-roles.json` 与 `replace-roles.tsv`（快照锚点，漂移记 note 非 FAIL）；CI 接入 `refbase` 作业新增 `Record the single-component replacement run` 步骤、`harness` 作业新增 `ci/replace-role.sh self-test`、`ci/changes.sh` refbase case 收 `ci/replace-role.sh|.py`；自测 **4/4 绿**（可跑原版+接线端口替换两角色且各日志点名角色、缺 bw.xml 关运行仍点名角色、端口无 Mercury 关运行点名 BW-02、树缺席仍点名全部 8 角色并跳过运行）；`shellcheck -S warning`、`actionlint`、`py_compile` 三绿。
-- [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+- [x] **BW-00-04-06 实现差异报告**（commit 8653958）。**验收** 注入字段、超时和顺序差异时分别可定位。
+  - 输入：BW-00-04-04 的 `compare-summary.json`（refbase 作业刚产出的新鲜对照，或已入库快照）——每条兼容边界一行：boundary/original/new/agree/note。
+  - 报告：每条不匹配边界一行，按类别归类——**order**（边界或注记含 order/sequence，如回调顺序）、**timeout**（含 timeout/timed out，如握手超时）、**field**（其余：消息字段、长度参数、种子）。agree 的边界无差异、不入报告。逐行带 category+boundary+original+new，故每一处差异**分别可定位**。
+  - 结果：`compat-report	PASS	2 difference(s) located by kind (order/timeout/field)`——`callback.order`（order，新版 11 站点/5 运行时路径 vs 「not implemented」）与 `db_state.seed`（field，LogOnMapping+2 表 vs 「no consumer」）各定位为一行。
+  - 证据：`ci/compat-report.py`（分类器按边界名+注记归类，类别随端口演进由自身文本驱动）+ `ci/compat-report.sh`（读取 refbase 作业刚产出的 `compare-fullstack/compare-summary.json`，缺失则回退已入库快照；快照锚点漂移记 note 非 FAIL）；入库 `tests/baseline/compat-report.json` 与 `compat-report.tsv`；CI 接入 `refbase` 作业新增 `Locate the compatibility differences` 步骤（紧跟 `Record the original and new full-stack comparison`）、`harness` 作业新增 `ci/compat-report.sh self-test`、`ci/changes.sh` refbase case 收 `ci/compat-report.sh|.py`；自测 **3/3 绿**（注入 field/timeout/order 三类差异各自被定位成行、全 agree 对照记 0 差异且不空心、无对照 SKIP 点名票号）；`shellcheck -S warning`、`actionlint`、`py_compile` 三绿。
 
 #### BW-00-05 功能覆盖台账
 
