@@ -76,6 +76,26 @@
 //!
 //! The script path (`py_destroy`) passes `writeToDB = hasWrittenToDB()` and the
 //! default `logOffFromDB = true`.
+//!
+//! # BW-07-01-05 处理创建及装载失败
+//!
+//! The create and load failures keep the model consistent and retryable:
+//!
+//! * a local `createBase` failure (invalid type, empty id pool) raises a
+//!   Python exception and fires no callback — the synchronous path has no
+//!   callback — and leaves no base and no consumed id (`createBase` allocates
+//!   the id only after the type is resolved and `newEntityBase` succeeds);
+//! * `createBaseFromDB` validates the database id and the type before it
+//!   allocates the id, so a validation failure consumes nothing; a failure to
+//!   allocate consumes nothing either;
+//! * a load reply that fails (`sendFailure`) or a channel exception
+//!   (`handleException`) fires the callback exactly once with
+//!   `(None, 0, false)` and returns the id via `putUsedID` (`entity_creator.cpp`
+//!   and `load_entity_handler.cpp`) — the request is consumed, so a retry is a
+//!   fresh `createBaseFromDB` that allocates a new id (recycling is off, so a
+//!   failed load's id is never reused);
+//! * a base that fails to build from an existing record fires the callback once
+//!   with `(None, dbID, false)` and writes the record back (`unCheckoutEntity`).
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -1576,5 +1596,146 @@ mod tests {
         assert_eq!(creator.base_destroyed_calls(), &[80, 81]);
         assert_eq!(creator.returned_ids(), &[80, 81]);
         assert!(creator.bases().is_empty());
+    }
+
+    // ---- BW-07-01-05 处理创建及装载失败 ----
+
+    #[test]
+    fn a_creation_failure_leaves_no_state_and_is_retryable() {
+        let mut creator = creator_with_one_id(90);
+        // Invalid type: the synchronous path has no callback, no base is made
+        // and no id is consumed.
+        assert_eq!(
+            creator.create_base_locally("Nope", CreateArgs::new()),
+            Err(CreateError::InvalidType {
+                name: "Nope".to_string()
+            })
+        );
+        assert!(creator.bases().is_empty());
+        assert_eq!(creator.id_pool().len(), 1); // id 90 is still available.
+
+        // A valid create after the failure succeeds — the state is retryable.
+        let base = creator
+            .create_base_locally("Player", CreateArgs::new())
+            .unwrap();
+        assert_eq!(base.id, 90);
+        assert_eq!(creator.bases().len(), 1);
+    }
+
+    #[test]
+    fn a_load_validation_failure_consumes_no_id_and_is_retryable() {
+        let mut creator = creator_with_one_id(91);
+        // `createBaseFromDB` validates the database id and the type before it
+        // allocates the id.
+        assert_eq!(
+            creator.create_base_from_db("Player", 0),
+            Err(CreateError::InvalidDbId)
+        );
+        assert_eq!(
+            creator.create_base_from_db("Nope", 5),
+            Err(CreateError::InvalidType {
+                name: "Nope".to_string()
+            })
+        );
+        assert_eq!(creator.id_pool().len(), 1); // no id consumed.
+        assert_eq!(creator.pending_load_count(), 0);
+
+        // A valid load after the failures succeeds.
+        let request = creator.create_base_from_db("Player", 5).unwrap();
+        let stream = player_stream("carol", [0.0; 3], 5);
+        let callback = creator
+            .on_load_reply(request, LoadReply::Found { db_id: 5, stream })
+            .unwrap();
+        assert_eq!(callback.entity().unwrap().id, 91);
+    }
+
+    #[test]
+    fn a_load_failure_fires_the_callback_once_and_is_retryable() {
+        let mut creator = EntityCreator::new({
+            let mut pool = IdPool::new(5, 10, 50, 100);
+            pool.refill(&[100, 101]);
+            pool
+        });
+        creator.add_type(player_type());
+
+        // First load: the record is missing.
+        let request = creator.create_base_from_db("Player", 5).unwrap();
+        let callback = creator
+            .on_load_reply(
+                request,
+                LoadReply::Failed {
+                    status: load_status::LOGIN_REJECTED_NO_SUCH_USER,
+                    description: "No such user.".to_string(),
+                },
+            )
+            .unwrap();
+        assert!(callback.is_none());
+        assert_eq!(callback.db_id, 0);
+        assert!(!callback.was_active);
+        assert_eq!(creator.pending_load_count(), 0);
+
+        // The callback fires exactly once: the request is consumed.
+        assert_eq!(creator.on_load_reply(request, LoadReply::Exception), None);
+
+        // The state is retryable: a fresh load with the same db id issues a new
+        // request and succeeds with the next id (recycling is off, so the
+        // failed load's id is not reused).
+        let retry = creator.create_base_from_db("Player", 5).unwrap();
+        assert_ne!(retry, request);
+        let stream = player_stream("dave", [1.0; 3], 10);
+        let callback = creator
+            .on_load_reply(retry, LoadReply::Found { db_id: 5, stream })
+            .unwrap();
+        assert_eq!(callback.entity().unwrap().id, 101);
+    }
+
+    #[test]
+    fn a_channel_exception_fires_the_callback_once_and_is_retryable() {
+        let mut creator = EntityCreator::new({
+            let mut pool = IdPool::new(5, 10, 50, 100);
+            pool.refill(&[92, 93]);
+            pool
+        });
+        creator.add_type(player_type());
+
+        let request = creator.create_base_from_db("Player", 5).unwrap();
+        let callback = creator
+            .on_load_reply(request, LoadReply::Exception)
+            .unwrap();
+        assert!(callback.is_none());
+        assert_eq!(callback.db_id, 0);
+        assert_eq!(creator.pending_load_count(), 0);
+        assert_eq!(creator.on_load_reply(request, LoadReply::Exception), None);
+
+        // A retry issues a fresh request with a new id (the failed load's id
+        // was consumed and is not reused).
+        let retry = creator.create_base_from_db("Player", 6).unwrap();
+        assert_ne!(retry, request);
+        let stream = player_stream("erin", [0.0; 3], 5);
+        let callback = creator
+            .on_load_reply(retry, LoadReply::Found { db_id: 6, stream })
+            .unwrap();
+        assert_eq!(callback.entity().unwrap().id, 93);
+    }
+
+    #[test]
+    fn a_base_that_fails_to_build_fires_the_callback_once_with_the_db_id() {
+        let mut creator = creator_with_one_id(93);
+        let request = creator.create_base_from_db("Player", 42).unwrap();
+        // Truncate the base section mid-value (6 bytes for the name, then 4 of
+        // the 8 bytes of the base `health`): the strict base parse fails.
+        let mut stream = player_stream("alice", [1.0, 2.0, 3.0], 120);
+        stream.truncate(6 + 4);
+        let callback = creator
+            .on_load_reply(request, LoadReply::Found { db_id: 42, stream })
+            .unwrap();
+        assert!(callback.is_none());
+        assert_eq!(callback.db_id, 42); // the build failure keeps the db id.
+        assert!(!callback.was_active);
+        // The record is written back so it can be loaded again.
+        assert_eq!(creator.uncheckouts().len(), 1);
+        assert_eq!(creator.uncheckouts()[0].db_id, 42);
+        // The callback fired exactly once.
+        assert_eq!(creator.on_load_reply(request, LoadReply::Exception), None);
     }
 }
