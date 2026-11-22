@@ -9,8 +9,10 @@ exists today.
 There is no `sdk/` directory and no client code in the repository. The planned
 layout is `sdk/core`, `sdk/ffi`, `sdk/python` and `sdk/engines/{unity,unreal,
 godot}`, tracked by **BW-21** (`todo.md`). The wire contract the SDK builds on is
-already present: Mercury framing in `crates/mercury/src/packet.rs` and the
-entity type ids in `crates/entitydef/src/entities.rs`.
+already present: Mercury framing in `crates/mercury/src/packet.rs` and
+`crates/mercury/src/message_framing.rs`, the bundle and channel footers in
+`crates/mercury/src/udp_bundle.rs`, and the entity type ids in
+`crates/entitydef/src/entity_description.rs`.
 :::
 
 ## Required capabilities

@@ -95,8 +95,32 @@ The transport layer around the packet, delivered by BW-02-01-01..04:
 | `packet_receiver` (linux) | `PacketReceiver`, `LogReporter`, `NoSuchPortCallback` | drains the socket into registered receivers |
 | `poller` (linux) | `EventPoller`, `InputHandlerEntry` | epoll-backed registration, wake-up and input/error notification |
 
-The message layer on top (`BW-02-02`) and the Channel/Bundle layer (`BW-02-03`)
-are not there yet.
+The message layer, delivered by BW-02-02:
+
+| Module | Items | Meaning |
+| --- | --- | --- |
+| `interfaces` | `InputMessageHandler`, `ReplyMessageHandler` | the reference's handler traits; handlers are matched by identity |
+| `interface_element` | `FIXED_LENGTH_MESSAGE`, `VARIABLE_LENGTH_MESSAGE`, `CALLBACK_LENGTH_MESSAGE`, `REPLY_MESSAGE_IDENTIFIER = 0xFF` | message length kinds and the reply sentinel |
+| `interface_table` | `InterfaceTable::serve / element / handler / msg_name` | the per-interface message registry |
+| `interface_minder` | `InterfaceMinder::add / add_range`, `MAX_MESSAGE_ID = 254` | id allocation across ranges |
+| `request_manager` | `RequestManager::add_reply_order / cancel_requests_for_channel / cancel_requests_for_handler`, `DEFAULT_REQUEST_TIMEOUT = 5_000_000` | reply correlation, timeouts and cancellation |
+| `reply_order` | `ReplyOrder` | per-request reply bookkeeping |
+| `message_framing` | `REQUEST_PREAMBLE_SIZE`, body offset and expand/compress length | the wire preamble and length encoding |
+
+The Channel/Bundle layer (`BW-02-03`) is partial: `BW-02-03-01..03` (packet and
+bundle codec, channel registration and lifecycle, acks and the send window) are
+in; `BW-02-03-04..07` (retransmission timers, out-of-order filtering,
+fragmentation reassembly, bidirectional mixed runs) are not yet.
+
+| Module | Items | Meaning |
+| --- | --- | --- |
+| `udp_channel` | `UdpChannel::new`, `Traits`, `EXTERNAL_CHANNEL_SIZE = 256`, `INTERNAL_CHANNEL_SIZE = 4096`, `INDEXED_CHANNEL_SIZE = 512` | channel registration, lifecycle and the send window |
+| `channel_map` | `ChannelMap::add / remove / find / iter` | address-keyed channel table |
+| `unacked_packet` | `UnackedPacket`, sequence and resend bookkeeping | one outstanding packet in the window |
+| `udp_bundle` | `UdpBundle`, `ReliableType`, `prepare_packets` | bundle write side across a packet chain, footers owed |
+| `bundle_dispatch` | `dispatch_messages` | walks an incoming bundle into handler calls |
+| `condemned_channels` | `CondemnedChannels::add / delete_finished_channels` | dead-channel reaping |
+| `channel_listener` | `ChannelListener` | per-channel event hook |
 
 ```bash
 cargo test -p mercury
@@ -104,14 +128,19 @@ cargo test -p mercury
 
 ## `entitydef`
 
+Definition compilation, data type streams and visibility (BW-04).
+
 | Item | Meaning |
 | --- | --- |
-| `FIRST_ENTITY_TYPE_ID = 0` | ids are assigned in load order |
-| `INVALID_ENTITY_TYPE_ID = 0xFFFF` | "no type" on the wire |
-| `EntityDescription { name, type_id }` | one entity definition |
-| `EntityTypeRegistry::new / register / lookup / name_of` | the load-order registry |
-
-Property and method tables are not there yet — they are BW-04-02.
+| `EntityTypeID = u16`, `INVALID_ENTITY_TYPE_ID = 0xFFFF` | the wire type id space; ids are stamped in load order from `0` |
+| `EntityDescription` | one entity definition: `name`, `index`/`client_index`, `can_be_on_{cell,base,client}`, `is_service`, `is_persistent` |
+| `EntityDescriptionMap::entity_description / name_to_index` | the load-order map over all entities and services |
+| `MessageRanges` | the exposed message id ranges |
+| `DataType`, `Arc<DataType>` | the data type tree (scalars, `ARRAY`/`TUPLE`, `FIXED_DICT`, `USER_TYPE`, `MAILBOX`) |
+| `MemberDescription` | a property/member table entry |
+| `MethodDescription`, `EntityMethodDescriptions`, `ExposedMessageRange` | method tables and their exposed ranges |
+| `PropertyChange`, `SinglePropertyChange`, `SlicePropertyChange` | nested property change encoding |
+| definition digest (`digest.rs`) | the byte-identical definition digest over the loaded set |
 
 ```bash
 cargo test -p entitydef

@@ -167,7 +167,7 @@ callable from the client.
 
 The target directory for these is `examples/fantasydemo/res/scripts/entity_defs/`
 (BW-14); the wire id space they map into already exists in
-`crates/entitydef/src/entities.rs`.
+`crates/entitydef/src/entity_description.rs`.
 
 ## Timers and entity lifecycle
 

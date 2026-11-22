@@ -64,7 +64,8 @@ and, where a page describes a target that is not implemented yet, names the
 | `bw.xml` configuration chain | Implemented | `crates/server-runtime/src/config.rs` |
 | Mercury packet framing | Implemented | `crates/mercury/src/packet.rs` |
 | Mercury endpoint, poll and interface dispatch | Implemented (`BW-02-01`) | `crates/mercury/src/{endpoint,poller,network_interface,packet_receiver}.rs` |
-| Mercury message layer and channels | Not implemented | `todo.md` BW-02-02, BW-02-03 |
+| Mercury message layer and RPC | Implemented (`BW-02-02`) | `crates/mercury/src/{interfaces,interface_table,interface_element,request_manager,reply_order}.rs` |
+| Mercury channel lifecycle and retransmission | Partial (`BW-02-03-01..03`: packet/bundle codec, channel registration, acks and send window); `BW-02-03-04..07` pending | `crates/mercury/src/{udp_channel,channel_map,unacked_packet,udp_bundle}.rs` |
 | bwmachined message contracts | Types only, no consumer yet | `crates/contracts/src/machined.rs` |
 | CPython host and object bridge | Implemented, minimal (**BW-03**) | `crates/python-host/src/{interpreter,pyref,output_writer}.rs` |
 | PostgreSQL persistence | Not implemented | `todo.md` BW-09-06 |

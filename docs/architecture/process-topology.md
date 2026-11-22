@@ -66,12 +66,13 @@ server](/guide/standalone-server).
 | --- | --- |
 | Role validation and startup contract | Implemented (`server-runtime/src/app.rs`) |
 | Process bootstrap, exit codes, signals | Implemented (`server-runtime/src/server_app.rs`, `signals.rs`, `shutdown.rs`) |
-| Game tick, timers, task dispatch | Implemented (`tick.rs`, `timers.rs`, `task_manager.rs`, `dispatcher.rs`) |
+| Game tick, timers, task dispatch | Implemented (`tick.rs`, `dispatcher.rs`, `task_manager.rs`; timers are `foundation::time_queue` re-exported as `timers`) |
 | Role-to-role message contracts | Types only (`crates/contracts/src/machined.rs`): the bwmachined header and wire messages exist, no role sends them |
 | Service discovery | **Not implemented** |
 | Mercury transport framing | Implemented (`crates/mercury/src/packet.rs`) |
 | UDP endpoint, event poll and interface dispatch | Implemented (**BW-02-01-01..04**: `endpoint.rs`, `poller.rs`, `network_interface.rs`, `packet_receiver.rs`) |
-| Mercury message layer and channels | **Not implemented** — BW-02-02 and BW-02-03 |
+| Mercury message layer and RPC | Implemented (**BW-02-02**: `interfaces.rs`, `interface_table.rs`, `interface_element.rs`, `request_manager.rs`, `reply_order.rs`) |
+| Mercury channel lifecycle and retransmission | Partial (**BW-02-03-01..03**: packet/bundle codec, channel registration, acks and send window in `udp_channel.rs`, `channel_map.rs`, `unacked_packet.rs`); `BW-02-03-04..07` pending |
 
 `contracts` now carries the bwmachined wire layouts, but nothing depends on it:
 the crate is still commented out of the root `[workspace.dependencies]`, and no

@@ -63,14 +63,19 @@ GDExtension, script bindings and signal dispatch.
 
 ## What the bindings share
 
-Whichever engine you use, the wire contract is fixed by two source files that
+Whichever engine you use, the wire contract is fixed by source files that
 already exist:
 
 - `crates/mercury/src/packet.rs` — payload cap, header and footer sizes, flag
   layout. An engine binding that ignores these will not interoperate with the
   reference server.
-- `crates/entitydef/src/entities.rs` — type ids assigned in load order from `0`,
-  with `0xFFFF` as the sentinel.
+- `crates/mercury/src/message_framing.rs` — the message preamble (reply id and
+  next-request offset) and the fixed/variable length encoding.
+- `crates/mercury/src/udp_bundle.rs` — the bundle-side footers (checksums and
+  acks) written across the packet chain.
+- `crates/entitydef/src/entity_description.rs` — the `EntityTypeID` space
+  (`u16`, `INVALID_ENTITY_TYPE_ID = 0xFFFF`) and `EntityDescription`; ids are
+  stamped in load order from `0` by `EntityDescriptionMap`.
 
 See the [Compatibility matrix](/architecture/compatibility-matrix) for the list of
 engine and SDK targets and their current status.
