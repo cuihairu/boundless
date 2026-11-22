@@ -226,6 +226,188 @@ impl EventRecorder {
     }
 }
 
+/// The marker a sensitive value takes at the export boundary.
+pub const REDACTED: &str = "[redacted]";
+
+/// What the export boundary does to an event.
+///
+/// An export hands a sample or a batch to someone outside the recording
+/// process, so a value that names a credential or a contact never crosses
+/// unchanged: the policy names the fields whose values are masked, and decides
+/// whether a custom event's unknown fields are carried at all. An unknown
+/// field is exactly the free-form one a producer added, and a free-form field
+/// is where a sensitive value is likeliest to hide.
+#[derive(Debug, Clone)]
+pub struct ExportPolicy {
+    /// Field names, matched case-insensitively, whose values are masked on
+    /// export.
+    pub redacted: Vec<String>,
+    /// Whether a custom event's unknown fields cross the boundary. When false
+    /// they are dropped.
+    pub carry_unknown: bool,
+}
+
+impl ExportPolicy {
+    /// The default policy: the credential and contact fields are masked and
+    /// unknown custom fields do not cross the boundary.
+    pub fn default_policy() -> Self {
+        Self {
+            redacted: ["password", "token", "secret", "email", "phone", "ip"]
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
+            carry_unknown: false,
+        }
+    }
+
+    /// Whether the policy masks a field's value, by field name.
+    pub fn redacts(&self, name: &str) -> bool {
+        self.redacted
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(name))
+    }
+}
+
+/// One event at the export boundary: a single NDJSON line, its sensitive
+/// values masked and its unknown fields handled per the policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedEvent {
+    line: String,
+}
+
+impl ExportedEvent {
+    /// The event as one NDJSON line.
+    pub fn line(&self) -> &str {
+        &self.line
+    }
+}
+
+/// A batch export of events: one NDJSON line per event, in the order given.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct EventExport {
+    lines: Vec<String>,
+}
+
+impl EventExport {
+    /// An empty export.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many events the export carries.
+    pub fn count(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// The export's lines, one per event.
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    /// The export as NDJSON text.
+    pub fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    /// The first of the given values the export still carries, when any — the
+    /// acceptance that a sample leaks nothing sensitive. The value borrowed is
+    /// the one passed in, never one composed from the export.
+    pub fn leaks<'a>(&self, values: &[&'a str]) -> Option<&'a str> {
+        values
+            .iter()
+            .find(|value| self.lines.iter().any(|line| line.contains(**value)))
+            .copied()
+    }
+}
+
+/// Export events under a policy: one line each, sensitive values masked and
+/// unknown fields handled at the boundary.
+pub fn export(events: &[GameEvent], policy: &ExportPolicy) -> EventExport {
+    let mut batch = EventExport::new();
+    for event in events {
+        batch.lines.push(export_event(event, policy).line);
+    }
+    batch
+}
+
+/// Export one event under a policy: its envelope is carried verbatim, a
+/// sensitive field's value is replaced by [`REDACTED`], and a custom event's
+/// unknown field is dropped or carried per the policy — always masked when
+/// carried and sensitive.
+pub fn export_event(event: &GameEvent, policy: &ExportPolicy) -> ExportedEvent {
+    let mut line = String::from("{\"version\":\"");
+    line.push_str(&escape(&event.version));
+    line.push_str("\",\"id\":\"");
+    line.push_str(&escape(&event.id));
+    line.push_str("\",\"kind\":\"");
+    line.push_str(event.kind.prefix());
+    line.push_str("\",\"at\":");
+    line.push_str(&event.at.to_string());
+    line.push_str(",\"source\":\"");
+    line.push_str(&escape(&event.source));
+    line.push_str("\",\"fields\":{");
+    let mut first = true;
+    for (name, value) in &event.fields {
+        if !first {
+            line.push(',');
+        }
+        first = false;
+        line.push('"');
+        line.push_str(&escape(name));
+        line.push_str("\":\"");
+        let shown = if policy.redacts(name) {
+            REDACTED
+        } else {
+            value.as_str()
+        };
+        line.push_str(&escape(shown));
+        line.push('"');
+    }
+    line.push('}');
+    if policy.carry_unknown && !event.unknown.is_empty() {
+        line.push_str(",\"unknown\":{");
+        let mut first = true;
+        for (name, value) in &event.unknown {
+            if !first {
+                line.push(',');
+            }
+            first = false;
+            line.push('"');
+            line.push_str(&escape(name));
+            line.push_str("\":\"");
+            let shown = if policy.redacts(name) {
+                REDACTED
+            } else {
+                value.as_str()
+            };
+            line.push_str(&escape(shown));
+            line.push('"');
+        }
+        line.push('}');
+    }
+    line.push('}');
+    ExportedEvent { line }
+}
+
+/// Quotes and escapes a string as a JSON string value.
+fn escape(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +572,121 @@ mod tests {
         // Without the name that makes a custom event a named one, the event
         // does not meet the contract, and verification names the field.
         assert_eq!(verify(&custom), Err(ContractError::MissingField("name")));
+    }
+
+    #[test]
+    fn the_default_policy_names_the_sensitive_fields() {
+        let policy = ExportPolicy::default_policy();
+
+        // The credential and contact fields are masked, matched
+        // case-insensitively.
+        assert!(policy.redacts("password"));
+        assert!(policy.redacts("TOKEN"));
+        assert!(policy.redacts("Email"));
+        assert!(policy.redacts("ip"));
+        assert!(policy.redacts("secret"));
+        assert!(policy.redacts("phone"));
+
+        // A field an analysis needs is not masked.
+        assert!(!policy.redacts("account"));
+        assert!(!policy.redacts("player"));
+        assert!(!policy.redacts("item"));
+    }
+
+    #[test]
+    fn a_sample_export_masks_sensitive_fields() {
+        let mut recorder = EventRecorder::new();
+        let audit = recorder.custom(
+            1_000,
+            "baseapp01",
+            "login_audit",
+            &[
+                ("account", "alice"),
+                ("password", "hunter2"),
+                ("email", "alice@example.com"),
+                ("ip", "10.0.0.7"),
+                ("token", "abc123"),
+            ],
+            &["account", "password", "email", "ip", "token"],
+        );
+        let login = recorder.login(1_100, "baseapp01", "alice");
+
+        // The batch is one line per event, in the order given.
+        let batch = export(&[audit, login], &ExportPolicy::default_policy());
+        assert_eq!(batch.count(), 2);
+        assert_eq!(batch.lines().len(), 2);
+
+        // The core acceptance: no sensitive value leaks in the sample. Each is
+        // replaced by the redaction marker instead.
+        assert_eq!(
+            batch.leaks(&["hunter2", "alice@example.com", "10.0.0.7", "abc123"]),
+            None
+        );
+        let line = &batch.lines()[0];
+        assert_eq!(line.matches(REDACTED).count(), 4);
+        assert!(line.contains("\"account\":\"alice\""));
+
+        // The non-sensitive login line is untouched.
+        assert!(batch.lines()[1].contains("\"kind\":\"login\""));
+        assert!(batch.lines()[1].contains("\"account\":\"alice\""));
+    }
+
+    #[test]
+    fn the_export_carries_the_envelope_and_contract_fields() {
+        let mut recorder = EventRecorder::new();
+        let movement = recorder.movement(2_000, "cellapp01", "alice", 1, 2);
+
+        let exported = export_event(&movement, &ExportPolicy::default_policy());
+        let line = exported.line();
+        assert!(line.contains("\"version\":\"1\""));
+        assert!(line.contains("\"id\":\"movement:1\""));
+        assert!(line.contains("\"kind\":\"movement\""));
+        assert!(line.contains("\"at\":2000"));
+        assert!(line.contains("\"source\":\"cellapp01\""));
+        assert!(line.contains("\"player\":\"alice\""));
+        assert!(line.contains("\"from_space\":\"1\""));
+        assert!(line.contains("\"to_space\":\"2\""));
+    }
+
+    #[test]
+    fn unknown_fields_cross_the_boundary_only_when_the_policy_allows() {
+        let mut recorder = EventRecorder::new();
+        let purchase = recorder.custom(
+            1_000,
+            "cellapp01",
+            "purchase",
+            &[("item", "sword"), ("loyalty", "gold")],
+            &["item"],
+        );
+
+        // The default policy drops a custom event's unknown field.
+        let dropped = export_event(&purchase, &ExportPolicy::default_policy());
+        let default = dropped.line();
+        assert!(!default.contains("loyalty"));
+        assert!(!default.contains("gold"));
+
+        // A policy that carries unknown fields keeps it.
+        let mut permissive = ExportPolicy::default_policy();
+        permissive.carry_unknown = true;
+        let carried = export_event(&purchase, &permissive);
+        let line = carried.line();
+        assert!(line.contains("\"unknown\":{\"loyalty\":\"gold\"}"));
+    }
+
+    #[test]
+    fn a_carried_sensitive_unknown_field_is_still_masked() {
+        let mut recorder = EventRecorder::new();
+        let telemetry =
+            recorder.custom(2_000, "baseapp01", "telemetry", &[("token", "abc123")], &[]);
+
+        let mut permissive = ExportPolicy::default_policy();
+        permissive.carry_unknown = true;
+        let exported = export_event(&telemetry, &permissive);
+        let line = exported.line();
+
+        // The unknown field crosses, but its sensitive value is masked: the
+        // field name is there, the value is not.
+        assert!(line.contains("\"unknown\":{\"token\":\"[redacted]\"}"));
+        assert!(!line.contains("abc123"));
     }
 }
