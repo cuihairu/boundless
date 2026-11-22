@@ -155,6 +155,75 @@ impl FnvHasher {
     }
 }
 
+/// One field's movement between two snapshots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldDelta {
+    /// The field's name.
+    pub field: String,
+    /// The value in the earlier snapshot, or zero when it had no such field.
+    pub before: u64,
+    /// The value in the later snapshot, or zero when it dropped the field.
+    pub after: u64,
+    /// Later minus earlier, signed.
+    pub delta: i64,
+}
+
+/// How two snapshots differ, shown field by field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotDelta {
+    /// The target both snapshots describe.
+    pub target: String,
+    /// The earlier snapshot's stable id.
+    pub before_id: String,
+    /// The later snapshot's stable id.
+    pub after_id: String,
+    /// One entry per field present in either snapshot, in ascending field
+    /// order so the difference reads the same way every time.
+    pub fields: Vec<FieldDelta>,
+}
+
+/// Compare two snapshots of the same target field by field: each field present
+/// in either snapshot gets its before and after values and the signed movement
+/// between them. Fields in only one snapshot read as zero on the other side.
+pub fn compare_snapshots(before: &MemorySnapshot, after: &MemorySnapshot) -> SnapshotDelta {
+    let mut names: BTreeSet<&str> = BTreeSet::new();
+    for (name, _) in &before.readings {
+        names.insert(name.as_str());
+    }
+    for (name, _) in &after.readings {
+        names.insert(name.as_str());
+    }
+    let fields = names
+        .into_iter()
+        .map(|name| {
+            let before_value = before.reading(name).unwrap_or(0);
+            let after_value = after.reading(name).unwrap_or(0);
+            FieldDelta {
+                field: name.to_string(),
+                before: before_value,
+                after: after_value,
+                delta: signed_delta(before_value, after_value),
+            }
+        })
+        .collect();
+    SnapshotDelta {
+        target: after.target.clone(),
+        before_id: before.id(),
+        after_id: after.id(),
+        fields,
+    }
+}
+
+/// The signed movement from one reading to another, saturating at the edges
+/// of `i64` (readings never approach it in practice).
+fn signed_delta(from: u64, to: u64) -> i64 {
+    if to >= from {
+        i64::try_from(to - from).unwrap_or(i64::MAX)
+    } else {
+        -i64::try_from(from - to).unwrap_or(i64::MAX)
+    }
+}
+
 /// The diagnostic's target registry and its query surface.
 pub struct Diagnostic {
     targets: Vec<DiagnosticTarget>,
@@ -267,6 +336,19 @@ impl Diagnostic {
             collected_at: (self.clock)(),
             readings,
         })
+    }
+
+    /// Compare two snapshots of the same target, field by field. Both targets
+    /// must be authorized, so the read boundary holds here too.
+    pub fn compare(
+        &self,
+        authorization: &Authorization,
+        before: &MemorySnapshot,
+        after: &MemorySnapshot,
+    ) -> Result<SnapshotDelta, QueryError> {
+        self.authorized_target(authorization, &before.target)?;
+        self.authorized_target(authorization, &after.target)?;
+        Ok(compare_snapshots(before, after))
     }
 
     /// The access boundary shared by every read: an unauthorized target is
@@ -452,5 +534,97 @@ mod tests {
             diagnostic.snapshot(&auth, "cellapp01"),
             Err(QueryError::AccessDenied)
         );
+    }
+
+    #[test]
+    fn comparing_two_snapshots_shows_each_field_delta() {
+        let before = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 10,
+            readings: vec![
+                ("entities".to_string(), 512),
+                ("rss_bytes".to_string(), 8_000_000),
+                ("python_objects".to_string(), 64),
+            ],
+        };
+        let after = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 20,
+            readings: vec![
+                ("caches".to_string(), 8),
+                ("entities".to_string(), 600),
+                ("rss_bytes".to_string(), 9_000_000),
+            ],
+        };
+
+        let delta = compare_snapshots(&before, &after);
+        assert_eq!(delta.target, "cellapp01");
+        assert_eq!(delta.before_id, before.id());
+        assert_eq!(delta.after_id, after.id());
+
+        // Field by field, ascending, with a delta for every field in either
+        // snapshot; a field only in one side reads as zero on the other.
+        let shown: Vec<(&str, u64, u64, i64)> = delta
+            .fields
+            .iter()
+            .map(|f| (f.field.as_str(), f.before, f.after, f.delta))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                ("caches", 0, 8, 8),
+                ("entities", 512, 600, 88),
+                ("python_objects", 64, 0, -64),
+                ("rss_bytes", 8_000_000, 9_000_000, 1_000_000),
+            ]
+        );
+    }
+
+    #[test]
+    fn comparing_snapshots_of_same_readings_reports_zero_deltas() {
+        let before = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 10,
+            readings: vec![("rss_bytes".to_string(), 8_000_000)],
+        };
+        let after = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 20,
+            readings: vec![("rss_bytes".to_string(), 8_000_000)],
+        };
+        let delta = compare_snapshots(&before, &after);
+        assert_eq!(delta.fields.len(), 1);
+        assert_eq!(delta.fields[0].field, "rss_bytes");
+        assert_eq!(delta.fields[0].delta, 0);
+    }
+
+    #[test]
+    fn compare_via_the_diagnostic_enforces_authorization() {
+        let mut diagnostic = Diagnostic::with_clock(|| 3);
+        diagnostic
+            .add_process("cellapp01", 100)
+            .set_readings("cellapp01", vec![("rss_bytes", 8_000_000)]);
+        let auth = Authorization::new();
+
+        let before = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 1,
+            readings: vec![("rss_bytes".to_string(), 8_000_000)],
+        };
+        let after = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 2,
+            readings: vec![("rss_bytes".to_string(), 9_000_000)],
+        };
+        assert_eq!(
+            diagnostic.compare(&auth, &before, &after),
+            Err(QueryError::AccessDenied)
+        );
+
+        // Granting the target lets the same read through.
+        let mut granted = auth;
+        granted.grant("cellapp01");
+        let delta = diagnostic.compare(&granted, &before, &after).unwrap();
+        assert_eq!(delta.fields[0].delta, 1_000_000);
     }
 }
