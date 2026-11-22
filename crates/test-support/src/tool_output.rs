@@ -1,4 +1,4 @@
-//! BW-27-03-01: the tool's stable machine-readable output.
+//! BW-27-03-01/02: the tool's stable machine-readable output.
 //!
 //! The CLI, the IDE and an independent protocol client read the tool's
 //! answers through one contract. Two documents answer the two questions — the
@@ -6,6 +6,10 @@
 //! deterministic: the same input renders the same bytes, every field appears
 //! in a fixed order, and values are JSON-escaped, so a client parses either
 //! with one field set and no guesses.
+//!
+//! The test and load runs report the same way: one line per result, each
+//! carrying the source location or the produced artifact path as a
+//! `path:line` / `path` token, so an editor's terminal links open it.
 
 use crate::dap_session::Adapter;
 use crate::dap_targets::DebugTarget;
@@ -100,6 +104,79 @@ pub fn targets_jsonl(targets: &[DebugTarget]) -> String {
         out.push_str("\",\"address\":\"");
         out.push_str(&escape(&target.address));
         out.push_str("\"}\n");
+    }
+    out
+}
+
+/// One test's outcome, for the stable test output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestResult {
+    /// The test's full name.
+    pub name: String,
+    /// The source file the test is declared in.
+    pub file: String,
+    /// The line the test is declared on.
+    pub line: usize,
+    /// Whether the test passed.
+    pub passed: bool,
+}
+
+/// The stable test output: one line per result, ordered by test name.
+///
+/// ```text
+/// PASS crates/server/src/cellapp.rs:120 space::CellApp::update
+/// FAIL crates/server/src/space.rs:88 space::CellApp::update
+/// ```
+///
+/// The `file:line` token is a link the editor's terminal opens, so a failing
+/// test jumps straight to its source.
+pub fn test_output(results: &[TestResult]) -> String {
+    let mut sorted: Vec<&TestResult> = results.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut out = String::new();
+    for result in sorted {
+        out.push_str(if result.passed { "PASS " } else { "FAIL " });
+        out.push_str(&result.file);
+        out.push(':');
+        out.push_str(&result.line.to_string());
+        out.push(' ');
+        out.push_str(&result.name);
+        out.push('\n');
+    }
+    out
+}
+
+/// One load run's artifact, for the stable load output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadReport {
+    /// The scenario that ran.
+    pub scenario: String,
+    /// The artifact the run produced: the report file.
+    pub path: String,
+    /// How long the run took.
+    pub duration_ms: u64,
+}
+
+/// The stable load output: one line per report, ordered by scenario.
+///
+/// ```text
+/// REPORT load_scenario 1200ms target/load/scenario.json
+/// ```
+///
+/// The trailing path is the produced artifact; the editor's terminal opens
+/// it, so a run's report is one click away.
+pub fn load_output(reports: &[LoadReport]) -> String {
+    let mut sorted: Vec<&LoadReport> = reports.iter().collect();
+    sorted.sort_by(|a, b| a.scenario.cmp(&b.scenario));
+    let mut out = String::new();
+    for report in sorted {
+        out.push_str("REPORT ");
+        out.push_str(&report.scenario);
+        out.push(' ');
+        out.push_str(&report.duration_ms.to_string());
+        out.push_str("ms ");
+        out.push_str(&report.path);
+        out.push('\n');
     }
     out
 }
@@ -259,5 +336,148 @@ mod tests {
     #[test]
     fn an_empty_selection_lists_nothing() {
         assert_eq!(targets_jsonl(&[]), "");
+    }
+
+    fn test_result(name: &str, file: &str, line: usize, passed: bool) -> TestResult {
+        TestResult {
+            name: name.to_string(),
+            file: file.to_string(),
+            line,
+            passed,
+        }
+    }
+
+    #[test]
+    fn the_test_output_lists_each_result_with_its_location() {
+        let results = vec![
+            test_result(
+                "space::CellApp::update",
+                "crates/server/src/space.rs",
+                88,
+                false,
+            ),
+            test_result(
+                "space::CellApp::tick",
+                "crates/server/src/cellapp.rs",
+                120,
+                true,
+            ),
+        ];
+
+        // One line per result: the outcome, the clickable location, the name.
+        assert_eq!(
+            test_output(&results),
+            "PASS crates/server/src/cellapp.rs:120 space::CellApp::tick\n\
+             FAIL crates/server/src/space.rs:88 space::CellApp::update\n"
+        );
+    }
+
+    #[test]
+    fn a_test_location_is_one_clickable_token() {
+        let results = vec![test_result(
+            "space::CellApp::update",
+            "crates/server/src/space.rs",
+            88,
+            false,
+        )];
+        let output = test_output(&results);
+
+        // The editor's terminal link regex finds `file:line` as one token.
+        let line = output.trim_end();
+        let location = line.split(' ').nth(1).unwrap();
+        assert_eq!(location, "crates/server/src/space.rs:88");
+        assert_eq!(line.split(' ').count(), 3);
+    }
+
+    #[test]
+    fn the_test_output_orders_results_by_name() {
+        let results = vec![
+            test_result("zebra", "a.rs", 1, true),
+            test_result("alpha", "b.rs", 2, true),
+        ];
+        let output = test_output(&results);
+        assert!(output.find("alpha").unwrap() < output.find("zebra").unwrap());
+    }
+
+    #[test]
+    fn the_load_output_reports_each_artifact() {
+        let reports = vec![
+            LoadReport {
+                scenario: "load_scenario".to_string(),
+                path: "target/load/scenario.json".to_string(),
+                duration_ms: 1200,
+            },
+            LoadReport {
+                scenario: "bots_compare".to_string(),
+                path: "target/load/bots.json".to_string(),
+                duration_ms: 450,
+            },
+        ];
+
+        // The trailing path is the artifact the editor opens.
+        assert_eq!(
+            load_output(&reports),
+            "REPORT bots_compare 450ms target/load/bots.json\n\
+             REPORT load_scenario 1200ms target/load/scenario.json\n"
+        );
+    }
+
+    #[test]
+    fn a_load_artifact_is_the_trailing_token() {
+        let reports = vec![LoadReport {
+            scenario: "load_scenario".to_string(),
+            path: "target/load/scenario.json".to_string(),
+            duration_ms: 1200,
+        }];
+        let output = load_output(&reports);
+
+        // The last token on the line is the produced report path.
+        let line = output.trim_end();
+        let tokens: Vec<&str> = line.split(' ').collect();
+        assert_eq!(tokens.last().unwrap(), &"target/load/scenario.json");
+        assert_eq!(&tokens[..2], &["REPORT", "load_scenario"]);
+    }
+
+    #[test]
+    fn the_load_output_orders_reports_by_scenario() {
+        let reports = vec![
+            LoadReport {
+                scenario: "zulu".to_string(),
+                path: "z.json".to_string(),
+                duration_ms: 1,
+            },
+            LoadReport {
+                scenario: "alpha".to_string(),
+                path: "a.json".to_string(),
+                duration_ms: 1,
+            },
+        ];
+        let output = load_output(&reports);
+        assert!(output.find("alpha").unwrap() < output.find("zulu").unwrap());
+    }
+
+    #[test]
+    fn the_same_test_and_load_input_renders_the_same_bytes() {
+        let results = vec![test_result(
+            "space::CellApp::tick",
+            "crates/server/src/cellapp.rs",
+            120,
+            true,
+        )];
+        let reports = vec![LoadReport {
+            scenario: "load_scenario".to_string(),
+            path: "target/load/scenario.json".to_string(),
+            duration_ms: 1200,
+        }];
+
+        // Deterministic output: the contract is byte-for-byte stable.
+        assert_eq!(test_output(&results), test_output(&results));
+        assert_eq!(load_output(&reports), load_output(&reports));
+    }
+
+    #[test]
+    fn an_empty_run_outputs_nothing() {
+        assert_eq!(test_output(&[]), "");
+        assert_eq!(load_output(&[]), "");
     }
 }
