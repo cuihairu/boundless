@@ -834,4 +834,73 @@ mod tests {
             ]
         );
     }
+
+    // ------------------------------------------------------------------
+    // The BW-02-04-05 audit: the raw transport methods the channel build
+    // will call, run together over a real socket.
+    // ------------------------------------------------------------------
+
+    /// A framed bundle rides a real TCP socket: the sender's `basicSend`,
+    /// the receiver's `readInto` read into `TcpFrameReader`, and the
+    /// frame's messages dispatched. The raw transport methods are proven
+    /// end-to-end without the channel's poller wiring.
+    #[test]
+    fn a_frame_rides_a_real_tcp_socket_into_the_reader_and_dispatch() {
+        use platform::socket;
+
+        use crate::endpoint::{Endpoint, INADDR_ANY};
+
+        const LOOPBACK: u32 = 0x0100_007f;
+
+        // One message body: flags, no requests, then a variable message.
+        let mut body = vec![0u8];
+        fill_variable(&mut body, &variable(5, 2), b"over the wire");
+        let wire = frame_around(&body, false);
+
+        // A real TCP pair on loopback.
+        let mut listener = Endpoint::new();
+        listener.socket(socket::SOCK_STREAM);
+        assert_eq!(listener.set_reuseaddr(true), 0);
+        assert_eq!(listener.bind(0, INADDR_ANY), 0);
+        let port = listener.local().port;
+        assert_eq!(listener.listen(5), 0);
+
+        let mut client = Endpoint::new();
+        client.socket(socket::SOCK_STREAM);
+        assert_eq!(client.connect(port, LOOPBACK), 0);
+        let conn = listener
+            .accept(None, None)
+            .expect("the loopback pair connects");
+
+        // `basicSend`: the frame goes out on the accepted socket.
+        assert_eq!(Endpoint::send(&conn, &wire) as usize, wire.len());
+
+        // `readInto`: the peer reads what arrived into the frame reader.
+        let mut reader = TcpFrameReader::new();
+        let mut buf = vec![0u8; 4096];
+        let mut pending = wire.len();
+        while pending > 0 {
+            let read = client.recv(&mut buf);
+            assert!(read > 0, "the connection is still up");
+            reader.feed(&buf[..read as usize]);
+            pending -= read as usize;
+        }
+
+        // `readHeader`: the whole frame arrived, and its body is intact.
+        assert!(reader.has_frame());
+        let mut arrived = reader.next_frame().unwrap().to_vec();
+
+        // The message walk delivers the message.
+        let table = InterfaceTable::new();
+        let known = Rc::new(Recorder::default());
+        table.serve(&variable(5, 2), Some(handler_of(&known)));
+        assert_eq!(
+            dispatch_messages(&table, &source(), &mut arrived),
+            Reason::Success
+        );
+        assert_eq!(
+            known.notes(),
+            vec![(5, REPLY_ID_NONE, b"over the wire".to_vec())]
+        );
+    }
 }
