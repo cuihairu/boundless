@@ -575,6 +575,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4translation_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4distance_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4lfo_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4adaptor_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -3544,6 +3545,199 @@ __probe = '; '.join(_f) or 'ok'
 "#,
             );
             assert_eq!(text, "ok", "math vector4lfo behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Vector4MatrixAdaptor` reads like the reference: a `MatrixProvider`
+    /// over a `Vector4Provider`, with the seven styles reading their own
+    /// components, the position provider as the translation, the empty
+    /// source the untouched out argument, and the reference's converter
+    /// refusals on the slots and the style.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4adaptor_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+def close(a, b, tol=1e-5):
+    return abs(a - b) < tol
+
+ck(hasattr(Math, 'Vector4MatrixAdaptor'), 'Vector4MatrixAdaptor in module')
+a = Math.Vector4MatrixAdaptor()
+ck(type(a).__name__ == 'Vector4MatrixAdaptor', 'the adaptor type')
+ck('MatrixProvider' in [c.__name__ for c in type(a).__mro__],
+   'the MatrixProvider base chain')
+ck('Vector4Provider' not in [c.__name__ for c in type(a).__mro__],
+   'the adaptor is no Vector4Provider')
+
+# The reference's defaults: the XY_SCALE style and two empty slots.
+ck(a.style == 'XY_SCALE', 'the default style')
+ck(a.source is None and a.position is None, 'the empty provider slots')
+ck(raises(TypeError, lambda: Math.Vector4MatrixAdaptor(1)),
+   'the factory takes no arguments')
+
+# An empty source leaves the reference's out argument untouched, the zero
+# matrix its callers default it to.
+m = Math.Matrix(a)
+ck(m.get(0,0) == 0.0 and m.get(3,3) == 0.0, 'no source is the zero matrix')
+
+# The slot assignment coerces a Vector4 into a fresh basic.
+a.source = Math.Vector4(2.0, 3.0, 4.0, 5.0)
+ck(type(a.source).__name__ == 'Vector4Basic', 'a Vector4 coerces to a basic')
+ck(a.source.value.x == 2.0 and a.source.value.w == 5.0, 'the coerced value')
+
+# XY_SCALE: x and y scale, z stays one, the translation row lands.
+m = Math.Matrix(a)
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 1.0,
+   'the XY_SCALE diagonal')
+ck(m.get(3,3) == 1.0, 'the translation row is set')
+
+# A provider source is stored as itself, and tracks it live.
+lfo = Math.Vector4LFO()
+lfo.waveform = 'SQUARE'
+lfo.amplitude = 7.0
+lfo.time = 0.75
+a.source = lfo
+ck(a.source is lfo, 'a provider source is stored as itself')
+m = Math.Matrix(a)
+ck(m.get(1,1) == 7.0, 'the source tracks the provider')
+
+# XYZ_SCALE scales all three axes, and the position provider translates.
+a.source = Math.Vector4(2.0, 3.0, 4.0, 5.0)
+a.style = 'XYZ_SCALE'
+a.position = Math.Vector4(10.0, 20.0, 30.0, 1.0)
+m = Math.Matrix(a)
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 4.0,
+   'the XYZ_SCALE diagonal')
+ck(tuple(m.translation) == (10.0, 20.0, 30.0), 'the position translates')
+ck(m.get(0,0) == 2.0, 'the translation keeps the linear part')
+
+# The rotation styles read their own component only. `get(col, row)` reads
+# m[col][row] (`script_math.hpp:209`), and setRotateX/Y/Z write m[1][2]=sin,
+# m[2][1]=-sin etc. (`matrix.cpp:414-445`).
+a.position = None
+a.source = Math.Vector4(1.5707963, 0.0, 0.0, 0.0)
+a.style = 'X_ROTATE'
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 1.0) and close(m.get(1,2), 1.0) and
+   close(m.get(2,1), -1.0) and close(m.get(1,1), 0.0),
+   'the X rotation reads x')
+a.source = Math.Vector4(0.0, 1.5707963, 0.0, 0.0)
+a.style = 'Y_ROTATE'
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 0.0) and close(m.get(1,1), 1.0) and
+   close(m.get(0,2), -1.0) and close(m.get(2,0), 1.0),
+   'the Y rotation reads y')
+a.source = Math.Vector4(0.0, 0.0, 1.5707963, 0.0)
+a.style = 'Z_ROTATE'
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 0.0) and close(m.get(1,0), -1.0) and
+   close(m.get(0,1), 1.0) and close(m.get(2,2), 1.0),
+   'the Z rotation reads z')
+
+# LOOKAT: the view basis of the direction, inverted back to a world matrix
+# (`script_math.cpp:4461-4469`). For the +z direction the view basis is the
+# identity. The (1,1,0) direction flips up to (0,0,1) because the default
+# (0,1,0) is nearly parallel, and the world basis is m = (lookAt)^-1:
+# row0 (-s, s, 0), row1 (0, 0, 1), row2 (s, s, 0), s = 1/sqrt(2).
+a.source = Math.Vector4(0.0, 0.0, 1.0, 0.0)
+a.style = 'LOOKAT'
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 1.0) and close(m.get(1,1), 1.0) and
+   close(m.get(2,2), 1.0) and tuple(m.translation) == (0.0, 0.0, 0.0),
+   'the +z look-at is the identity world')
+a.source = Math.Vector4(1.0, 1.0, 0.0, 0.0)
+m = Math.Matrix(a)
+ck(close(m.get(0,0), -0.70710678) and close(m.get(0,1), 0.70710678) and
+   close(m.get(1,2), 1.0) and close(m.get(2,0), 0.70710678) and
+   close(m.get(0,2), 0.0),
+   'the look-at direction basis is inverted')
+
+# LOOKAT with a position is the world matrix at that point.
+a.source = Math.Vector4(0.0, 0.0, 1.0, 0.0)
+a.position = Math.Vector4(10.0, 0.0, 0.0, 0.0)
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 1.0) and tuple(m.translation) == (10.0, 0.0, 0.0),
+   'the look-at position translates')
+
+# LOOKAT_SCALEZ scales the direction row by the four-component length.
+a.source = Math.Vector4(2.0, 0.0, 0.0, 0.0)
+a.style = 'LOOKAT_SCALEZ'
+a.position = None
+m = Math.Matrix(a)
+ck(close(m.get(2,0), 2.0) and close(m.get(0,2), -1.0) and
+   close(m.get(1,1), 1.0) and close(m.get(2,2), 0.0) and
+   m.get(3,3) == 1.0,
+   'the scaled look-at')
+
+# LOOKAT_SCALEZ with a direction nearly parallel to the default up flips
+# the up to (0,0,1) too; the four-component length of (1,1,0,0) is sqrt(2),
+# which scales the z row from (-s, -s) to (-1, -1).
+a.source = Math.Vector4(1.0, 1.0, 0.0, 0.0)
+m = Math.Matrix(a)
+ck(close(m.get(0,0), -0.70710678) and close(m.get(1,2), 1.0) and
+   close(m.get(2,0), 1.0) and close(m.get(2,1), 1.0) and
+   close(m.get(0,2), 0.0),
+   'the scaled look-at flips a parallel up')
+
+# The style round-trips through all seven names.
+for name in ('XYZ_SCALE', 'XY_SCALE', 'X_ROTATE', 'Y_ROTATE', 'Z_ROTATE',
+             'LOOKAT', 'LOOKAT_SCALEZ'):
+    a.style = name
+    ck(a.style == name, 'style round-trip ' + name)
+
+# Refusals: the enum converter, the provider slots, and the deletions.
+ck(raises(ValueError, lambda: setattr(a, 'style', 'LOUD')),
+   'a bad style name is a ValueError')
+ck(msg(ValueError, lambda: setattr(a, 'style', 'LOUD')) ==
+   'style must be set to one of XYZ_SCALE, XY_SCALE, X_ROTATE, Y_ROTATE, '
+   'Z_ROTATE, LOOKAT, or LOOKAT_SCALEZ',
+   'the ValueError message')
+ck(raises(ValueError, lambda: setattr(a, 'style', 'xy_scale')),
+   'the enum is case-sensitive')
+ck(raises(TypeError, lambda: setattr(a, 'style', 5)),
+   'a non-string style is a TypeError')
+ck(raises(TypeError, lambda: setattr(a, 'source', 5)), 'source wants a provider')
+ck(msg(TypeError, lambda: setattr(a, 'position', 'x')) ==
+   'position must be set to a Vector4Provider or None',
+   'the slot TypeError message')
+ck(raises(TypeError, lambda: setattr(a, 'source', Math.Matrix())),
+   'a MatrixProvider is no Vector4Provider')
+ck(raises(TypeError, lambda: a.__delattr__('source')), 'source cannot be deleted')
+ck(raises(TypeError, lambda: a.__delattr__('style')), 'style cannot be deleted')
+
+# None empties the slots again, back to the zero matrix.
+a.source = None
+ck(a.source is None, 'None empties the source')
+m = Math.Matrix(a)
+ck(m.get(0,0) == 0.0 and m.get(3,3) == 0.0, 'the emptied source is zero again')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4adaptor behaviour mismatch: {text}");
         });
     }
 

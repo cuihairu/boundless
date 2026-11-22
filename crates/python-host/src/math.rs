@@ -1636,6 +1636,8 @@ vector_type!(vector4, 4, "Math.Vector4", no_cross);
 mod matrix {
     use super::*;
     use foundation::math::Matrix;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
 
     /// The instance body beyond the `PyObject` header: the 16 f32s of the
     /// matrix inline, the layout of the reference's `PyMatrix` (which embeds
@@ -1658,7 +1660,8 @@ mod matrix {
         TYPE_ADDR.load(Ordering::SeqCst)
     }
 
-    fn provider_addr() -> usize {
+    /// The base type object address, the derived providers' `Py_tp_base`.
+    pub(super) fn provider_addr() -> usize {
         PROVIDER_ADDR.load(Ordering::SeqCst)
     }
 
@@ -1723,14 +1726,47 @@ mod matrix {
         }
     }
 
+    // -- the `matrix()` registry: the reference's virtual dispatch, filled by
+    //    the providers that compute rather than store (`Vector4MatrixAdaptor`,
+    //    the matrix products) --
+
+    /// A computed provider's `matrix`: the fills-the-out-argument virtual.
+    type MatrixOutput = fn(*mut capi::PyObject) -> Matrix;
+
+    /// The computed providers' `matrix`s, keyed by type object address.
+    static MATRIX_OUTPUT: Mutex<BTreeMap<usize, MatrixOutput>> = Mutex::new(BTreeMap::new());
+
+    /// Record one computed provider's `matrix` under its type object address.
+    /// Called from the provider's `register`, before a script can run.
+    pub(super) fn register_matrix_output(type_addr: usize, output: MatrixOutput) {
+        MATRIX_OUTPUT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(type_addr, output);
+    }
+
     /// The matrix a `MatrixProvider` yields. The dispatch is the reference's
-    /// virtual `matrix()`: today `PyMatrix` is the only concrete provider, so
-    /// the single arm reads the embedded body; the provider classes add arms.
+    /// virtual `matrix()`: a `PyMatrix` reads its embedded body, a computed
+    /// provider fills the out argument, and anything else is not a provider
+    /// at all. An empty computed slot (no source) keeps the reference's
+    /// "leave the out argument untouched" contract -- the caller's
+    /// default-constructed matrix, the zero matrix.
     pub(super) fn provider_matrix(object: *mut capi::PyObject) -> Option<Matrix> {
         if !provider_check(object) {
             return None;
         }
-        matrix_read(object)
+        let output = {
+            let table = MATRIX_OUTPUT
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            table
+                .get(&unsafe { capi::Py_TYPE(object) as usize })
+                .copied()
+        };
+        match output {
+            Some(output) => Some(output(object)),
+            None => matrix_read(object),
+        }
     }
 
     // -- the `MatrixProvider` slot family, shared by the providers that hold
@@ -2734,6 +2770,125 @@ mod v4provider {
                 .copied()
         };
         output.map(|output| output(object))
+    }
+
+    // -- the `Vector4ProviderPtr` slot family, shared by the providers that
+    //    hold one (`Vector4MatrixAdaptor`'s source and position, the
+    //    swizzle's four slots) --
+
+    /// The stored provider of a slot, by byte offset from the object start.
+    ///
+    /// # Safety
+    ///
+    /// `self_` is a borrowed instance of the slot's owner type, and `FIELD`
+    /// is that body's offset of the slot.
+    pub(super) unsafe fn slot_read<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        unsafe {
+            std::ptr::addr_of!(*self_.cast::<u8>().add(FIELD).cast::<*mut capi::PyObject>()).read()
+        }
+    }
+
+    /// Store `value` in the slot. The caller releases the previous occupant
+    /// first, the reference's `SmartPointer` assignment half.
+    ///
+    /// # Safety
+    ///
+    /// As [`slot_read`].
+    pub(super) unsafe fn slot_write<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+    ) {
+        unsafe {
+            std::ptr::addr_of_mut!(*self_.cast::<u8>().add(FIELD).cast::<*mut capi::PyObject>())
+                .write(value)
+        }
+    }
+
+    /// `Script::getData( Vector4ProviderPtr )` (`script.hpp:604-608`) on a
+    /// held slot: the stored provider, or `None` for an empty slot.
+    ///
+    /// # Safety
+    ///
+    /// `self_` is a borrowed instance of the slot's owner type.
+    pub(super) unsafe extern "C" fn slot_get<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let stored = unsafe { slot_read::<FIELD>(self_) };
+        let object = if stored.is_null() {
+            capi::py_none()
+        } else {
+            stored
+        };
+        // SAFETY: the slot's occupant is a borrowed reference the read does
+        // not consume; the caller gets its own.
+        unsafe {
+            capi::inc_ref(object);
+        }
+        object
+    }
+
+    /// `Script::setData( pObject, Vector4ProviderPtr&, varName )`
+    /// (`script.hpp:610-631`): the `Vector4Provider::coerce` runs first
+    /// (`:3266-3279`), so a `Vector4` or a tuple of four floats becomes a
+    /// fresh `Vector4Basic`; a `None` empties the slot; anything the
+    /// coercion left that is not a provider is refused with the converter's
+    /// own error. The field owns one reference the way the reference's
+    /// `SmartPointer` does, the previous occupant released before the new
+    /// one is stored, and a self-assignment a no-op.
+    ///
+    /// # Safety
+    ///
+    /// As [`slot_get`].
+    pub(super) unsafe extern "C" fn slot_set<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        if value.is_null() {
+            type_error(&format!(
+                "{} must be set to a Vector4Provider or None",
+                attribute_name(closure)
+            ));
+            return -1;
+        }
+        // `PyObjectPtr pCoerced = CLASS::coerce( pObject )`: a reference this
+        // body either owns outright (a fresh `Vector4Basic`) or holds one
+        // added reference of.
+        let coerced = coerce(value);
+        if coerced == capi::py_none() {
+            // `pCoerced == Py_None`: the slot is emptied.
+            unsafe { capi::dec_ref(coerced) };
+            let old = unsafe { slot_read::<FIELD>(self_) };
+            if !old.is_null() {
+                unsafe { capi::dec_ref(old) };
+            }
+            unsafe { slot_write::<FIELD>(self_, std::ptr::null_mut()) };
+            return 0;
+        }
+        if !provider_check(coerced) {
+            unsafe { capi::dec_ref(coerced) };
+            type_error(&format!(
+                "{} must be set to a Vector4Provider or None",
+                attribute_name(closure)
+            ));
+            return -1;
+        }
+        let old = unsafe { slot_read::<FIELD>(self_) };
+        if old != coerced {
+            if !old.is_null() {
+                unsafe { capi::dec_ref(old) };
+            }
+            // The slot takes over the coerced reference, the assignment's
+            // `SmartPointer` incref half already paid by `coerce`.
+            unsafe { slot_write::<FIELD>(self_, coerced) };
+        } else {
+            // The self-assignment no-op: the coercion's reference goes back.
+            unsafe { capi::dec_ref(coerced) };
+        }
+        0
     }
 
     // -- `Math.Vector4Basic` ---------------------------------------------
@@ -4345,6 +4500,280 @@ mod v4lfo {
     }
 }
 
+/// The `Math.Vector4MatrixAdaptor` provider
+/// (`script_math.cpp:4308-4510`): takes a `Vector4Provider` and elevates it
+/// to a `MatrixProvider`, under a `style` that says how the four components
+/// read -- a scale, an axis rotation, or a look-at basis -- with an optional
+/// position provider for the translation.
+///
+/// The reference's `matrix()` leaves the out argument untouched when the
+/// source slot is empty (`:4435-4437`); the port's out argument is the
+/// `Matrix::zero()` the reference's callers default it to, so an empty
+/// source is the zero matrix, and a `None` position provider is the zero
+/// translation. The two provider slots are the reference's
+/// `Vector4ProviderPtr` members, whose `setData` coerces a `Vector4` or a
+/// tuple into a fresh `Vector4Basic`.
+mod v4adaptor {
+    use super::*;
+    use foundation::math::Matrix;
+    use foundation::math::Vector3;
+    use foundation::math::Vector4;
+
+    /// The `Style` names in enum order (`script_math.cpp:4322-4336`): the
+    /// map's index is the enum value, `STYLE_XYZ_SCALE` first.
+    const STYLES: [&str; 7] = [
+        "XYZ_SCALE",
+        "XY_SCALE",
+        "X_ROTATE",
+        "Y_ROTATE",
+        "Z_ROTATE",
+        "LOOKAT",
+        "LOOKAT_SCALEZ",
+    ];
+
+    /// The instance body beyond the `PyObject` header: the style, then the
+    /// two held `Vector4Provider`s, the layout of the reference's
+    /// `Vector4MatrixAdaptor` minus the vtable.
+    #[repr(C)]
+    struct AdaptorBody {
+        header: capi::PyObject,
+        style: u8,
+        source: *mut capi::PyObject,
+        position: *mut capi::PyObject,
+    }
+
+    const SOURCE: usize = std::mem::offset_of!(AdaptorBody, source);
+    const POSITION: usize = std::mem::offset_of!(AdaptorBody, position);
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<AdaptorBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4MatrixAdaptor` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4MatrixAdaptor::matrix` (`script_math.cpp:4434-4509`): the
+    /// source becomes a scale, an axis rotation or a look-at basis, the
+    /// position provider the translation.
+    fn adaptor_matrix(object: *mut capi::PyObject) -> Matrix {
+        let mut m = Matrix::zero();
+        // `if ( !source_ ) return;`: the out argument is left untouched.
+        let Some(source) =
+            v4provider::output_of(unsafe { v4provider::slot_read::<SOURCE>(object) })
+        else {
+            return m;
+        };
+        let v = Vector4::new(source[0], source[1], source[2], source[3]);
+
+        // `Vector4 tr( Vector4::zero() );` then the position provider, when
+        // held, overwrites it.
+        let tr = v4provider::output_of(unsafe { v4provider::slot_read::<POSITION>(object) })
+            .unwrap_or([0.0, 0.0, 0.0, 0.0]);
+        let pos = Vector3::new(tr[0], tr[1], tr[2]);
+
+        // SAFETY: the receiver is an `AdaptorBody`.
+        let style = unsafe { std::ptr::addr_of!((*object.cast::<AdaptorBody>()).style).read() };
+        match style {
+            // STYLE_XYZ_SCALE
+            0 => {
+                m.set_scale(v.x, v.y, v.z);
+                m.translation(&pos);
+            }
+            // STYLE_XY_SCALE
+            1 => {
+                m.set_scale(v.x, v.y, 1.0);
+                m.translation(&pos);
+            }
+            // STYLE_X_ROTATE
+            2 => {
+                m.set_rotate_x(v.x);
+                m.translation(&pos);
+            }
+            // STYLE_Y_ROTATE
+            3 => {
+                m.set_rotate_y(v.y);
+                m.translation(&pos);
+            }
+            // STYLE_Z_ROTATE
+            4 => {
+                m.set_rotate_z(v.z);
+                m.translation(&pos);
+            }
+            // STYLE_LOOKAT
+            5 => {
+                let at = Vector3::new(v.x, v.y, v.z);
+                let mut up = Vector3::new(0.0, 1.0, 0.0);
+                if up.dot_product(&at) > 0.95 {
+                    up = Vector3::new(0.0, 0.0, 1.0);
+                }
+                m.look_at(&pos, &at, &up);
+                let _ = m.invert();
+            }
+            // STYLE_LOOKAT_SCALEZ
+            6 => {
+                let at = Vector3::new(v.x, v.y, v.z);
+                let mut up = Vector3::new(0.0, 1.0, 0.0);
+                if up.dot_product(&at) > 0.95 {
+                    up = Vector3::new(0.0, 0.0, 1.0);
+                }
+                let origin = Vector3::new(0.0, 0.0, 0.0);
+                m.look_at(&origin, &at, &up);
+                let _ = m.invert();
+                let scale = v.length();
+                let mut sc = Matrix::zero();
+                sc.set_scale(1.0, 1.0, scale);
+                m.pre_multiply(&sc);
+                m.translation(&pos);
+            }
+            // A style value outside the enum leaves the reference's switch
+            // with `m` as the caller's default.
+            _ => {}
+        }
+        m
+    }
+
+    /// `Vector4MatrixAdaptor::pyGet_style` (the enum `getData` at
+    /// `script.hpp:872-886`): the style's name.
+    unsafe extern "C" fn get_style(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the receiver is an `AdaptorBody`.
+        let index = unsafe { std::ptr::addr_of!((*self_.cast::<AdaptorBody>()).style).read() };
+        match STYLES.get(index as usize) {
+            Some(name) => unsafe { capi::unicode_from_bytes(name.as_bytes()) },
+            None => capi::py_none(),
+        }
+    }
+
+    /// `Vector4MatrixAdaptor::pySet_style` (the enum `setData` at
+    /// `script.hpp:830-869`): one of the seven names, `ValueError` for a
+    /// string that names no style, `TypeError` for anything else.
+    unsafe extern "C" fn set_style(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let is_string = unsafe { capi::py_unicode_check(value) };
+        if is_string {
+            let name = unsafe { capi::to_string(value) };
+            if let Some(index) = STYLES.iter().position(|style| *style == name) {
+                // SAFETY: the receiver is an `AdaptorBody`.
+                unsafe {
+                    std::ptr::addr_of_mut!((*self_.cast::<AdaptorBody>()).style).write(index as u8);
+                }
+                return 0;
+            }
+        }
+        // `PyErr_SetString( PyUnicode_Check(...) ? ValueError : TypeError )`.
+        let message = "style must be set to one of XYZ_SCALE, XY_SCALE, X_ROTATE, Y_ROTATE, Z_ROTATE, \
+             LOOKAT, or LOOKAT_SCALEZ";
+        if is_string {
+            value_error(message);
+        } else {
+            type_error(message);
+        }
+        -1
+    }
+
+    /// A fresh `Math.Vector4MatrixAdaptor`; the caller owns the reference.
+    /// The constructor's field values are the reference's (`:4345-4350`):
+    /// the `XY_SCALE` style and two empty provider slots.
+    fn make() -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly an `AdaptorBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<AdaptorBody>()).style).write(1);
+            std::ptr::addr_of_mut!((*pointer.cast::<AdaptorBody>()).source)
+                .write(std::ptr::null_mut());
+            std::ptr::addr_of_mut!((*pointer.cast::<AdaptorBody>()).position)
+                .write(std::ptr::null_mut());
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `PY_AUTO_FACTORY_DECLARE( Vector4MatrixAdaptor, END )` factory: a
+    /// fresh adaptor, the reference's `END` argument list meaning no
+    /// arguments.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Math.Vector4MatrixAdaptor() takes no arguments");
+        }
+        make()
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4MatrixAdaptor".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4MatrixAdaptor`: the two
+    /// provider slots and the style, the reference's
+    /// `PY_RW_ATTRIBUTE_DECLARE` converter pairs.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4MatrixAdaptor")
+            .base(matrix::provider_addr())
+            .attribute_with(
+                "source",
+                v4provider::slot_get::<SOURCE>,
+                Some(v4provider::slot_set::<SOURCE>),
+                c"source".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .attribute_with(
+                "position",
+                v4provider::slot_get::<POSITION>,
+                Some(v4provider::slot_set::<POSITION>),
+                c"position".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .attribute("style", get_style, Some(set_style))
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    provider_dealloc!(dealloc, AdaptorBody, source, position);
+
+    /// `TempPyVectorInit` for the adaptor: the type object, its `matrix()`
+    /// dispatch entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        matrix::register_matrix_output(type_addr(), adaptor_matrix);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4MatrixAdaptor".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -4363,4 +4792,5 @@ pub fn register() {
     let _ = v4translation::register();
     let _ = v4distance::register();
     let _ = v4lfo::register();
+    let _ = v4adaptor::register();
 }
