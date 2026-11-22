@@ -168,6 +168,23 @@ impl DapSession {
     pub fn finished(&self) -> bool {
         self.stopped.is_none() && self.next >= self.script.len()
     }
+
+    /// The stack the adapter reported at the stop, when a breakpoint hit.
+    pub fn stack(&self) -> &[Frame] {
+        self.stopped
+            .as_ref()
+            .map(|stopped| stopped.frames.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// The variables in scope the adapter reported at the stop, when a
+    /// breakpoint hit.
+    pub fn variables(&self) -> &[Variable] {
+        self.stopped
+            .as_ref()
+            .map(|stopped| stopped.variables.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 #[cfg(test)]
@@ -279,5 +296,98 @@ mod tests {
         session.run();
         let stopped = session.stopped().expect("the breakpoint hits");
         assert_eq!(stopped.line, 120);
+    }
+
+    fn populated_script() -> Vec<Step> {
+        // One fixed breakpoint with a full report: three frames and three
+        // variables in scope.
+        vec![Step {
+            file: FILE.to_string(),
+            line: 40,
+            frames: vec![
+                Frame {
+                    level: 0,
+                    file: FILE.to_string(),
+                    line: 40,
+                    function: "Avatar.onEnterWorld".to_string(),
+                },
+                Frame {
+                    level: 1,
+                    file: "scripts/baseapp/BaseApp.py".to_string(),
+                    line: 88,
+                    function: "BaseApp.onAvatarEnter".to_string(),
+                },
+                Frame {
+                    level: 2,
+                    file: "apps/baseapp/main.py".to_string(),
+                    line: 12,
+                    function: "<module>".to_string(),
+                },
+            ],
+            variables: vec![
+                Variable {
+                    name: "name".to_string(),
+                    value: "Avatar".to_string(),
+                },
+                Variable {
+                    name: "hp".to_string(),
+                    value: "100".to_string(),
+                },
+                Variable {
+                    name: "mood".to_string(),
+                    value: "calm".to_string(),
+                },
+            ],
+        }]
+    }
+
+    #[test]
+    fn a_stopped_session_reports_the_frames_at_the_breakpoint() {
+        let mut session = DapSession::open(baseapp_config(Mode::Launch), populated_script());
+        session.set_breakpoint(FILE, 40);
+        session.run();
+
+        // The fixed breakpoint carries a fixed stack: three frames, innermost
+        // first, each with its own file and function.
+        let stack = session.stack();
+        assert_eq!(stack.len(), 3);
+        assert_eq!(stack[0].level, 0);
+        assert_eq!(stack[0].function, "Avatar.onEnterWorld");
+        assert_eq!(stack[1].function, "BaseApp.onAvatarEnter");
+        assert_eq!(stack[2].function, "<module>");
+        assert_eq!(stack[0].line, 40);
+        assert_eq!(stack[1].line, 88);
+    }
+
+    #[test]
+    fn a_stopped_session_reports_the_variables_in_scope() {
+        let mut session = DapSession::open(baseapp_config(Mode::Launch), populated_script());
+        session.set_breakpoint(FILE, 40);
+        session.run();
+
+        // The same fixed breakpoint carries a fixed scope: the three variables
+        // in the order the adapter reported them.
+        let variables = session.variables();
+        let names: Vec<(&str, &str)> = variables
+            .iter()
+            .map(|v| (v.name.as_str(), v.value.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("name", "Avatar"), ("hp", "100"), ("mood", "calm")]
+        );
+    }
+
+    #[test]
+    fn before_a_stop_or_after_a_clean_finish_there_is_no_report() {
+        let mut session = DapSession::open(baseapp_config(Mode::Launch), populated_script());
+        assert!(session.stack().is_empty());
+        assert!(session.variables().is_empty());
+
+        // The breakpoint never matches: the target finishes, still no report.
+        session.set_breakpoint(FILE, 99);
+        session.run();
+        assert!(session.finished());
+        assert!(session.stack().is_empty());
     }
 }
