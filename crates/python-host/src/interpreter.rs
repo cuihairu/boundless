@@ -577,6 +577,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4lfo_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4adaptor_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4swizzle_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4combiner_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -3837,6 +3838,141 @@ __probe = '; '.join(_f) or 'ok'
 "#,
             );
             assert_eq!(text, "ok", "math vector4swizzle behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Math.Vector4Combiner` against the reference (`script_math.cpp:4643-4811`):
+    /// two `Vector4Provider` slots combined componentwise by one of seven
+    /// named functions, `ADD` the default, and an empty slot a zero output.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4combiner_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+def close(a, b, tol=1e-6):
+    return abs(a - b) < tol
+
+ck(hasattr(Math, 'Vector4Combiner'), 'Vector4Combiner in module')
+c = Math.Vector4Combiner()
+ck(type(c).__name__ == 'Vector4Combiner', 'the combiner type')
+ck('Vector4Provider' in [x.__name__ for x in type(c).__mro__],
+   'the Vector4Provider base chain')
+
+# The reference's defaults: the ADD function and two empty slots, and either
+# empty slot leaves the caller's zero vector.
+ck(c.fn == 'ADD', 'the default function')
+ck(c.a is None and c.b is None, 'the empty slots')
+v = c.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'an empty slot is zero')
+ck(raises(TypeError, lambda: Math.Vector4Combiner(1)),
+   'the factory takes no arguments')
+
+c.a = Math.Vector4(2.0, 3.0, 4.0, 5.0)
+c.b = Math.Vector4(4.0, 6.0, 8.0, 10.0)
+ck(type(c.a).__name__ == 'Vector4Basic', 'a Vector4 coerces to a basic')
+
+# ADD is the default.
+v = c.value
+ck(v.x == 6.0 and v.y == 9.0 and v.z == 12.0 and v.w == 15.0,
+   'the ADD function')
+c.fn = 'MULTIPLY'
+v = c.value
+ck(v.x == 8.0 and v.y == 18.0 and v.z == 32.0 and v.w == 50.0,
+   'the MULTIPLY function')
+c.fn = 'DIVIDE'
+v = c.value
+ck(close(v.x, 0.5) and close(v.y, 0.5) and close(v.z, 0.5) and
+   close(v.w, 0.5),
+   'the DIVIDE function')
+c.fn = 'SUBTRACT'
+v = c.value
+ck(v.x == -2.0 and v.y == -3.0 and v.z == -4.0 and v.w == -5.0,
+   'the SUBTRACT function')
+c.fn = 'DOT'
+v = c.value
+ck(v.x == 108.0 and v.y == 108.0 and v.z == 108.0 and v.w == 108.0,
+   'the DOT function spreads the dot')
+c.fn = 'MIN'
+v = c.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0,
+   'the MIN function')
+c.fn = 'MAX'
+v = c.value
+ck(v.x == 4.0 and v.y == 6.0 and v.z == 8.0 and v.w == 10.0,
+   'the MAX function')
+
+# A combiner is itself a provider, so a nested combiner feeds the slot.
+inner = Math.Vector4Combiner()
+inner.a = Math.Vector4(2.0, 2.0, 2.0, 2.0)
+inner.b = Math.Vector4(3.0, 3.0, 3.0, 3.0)
+ck(inner.value.x == 5.0, 'a combiner is a provider')
+c.fn = 'ADD'
+c.a = inner
+v = c.value
+ck(v.x == 9.0 and v.y == 11.0 and v.z == 13.0 and v.w == 15.0,
+   'a nested combiner feeds the slot')
+
+# The function round-trips through all seven names.
+for name in ('MULTIPLY', 'DIVIDE', 'ADD', 'SUBTRACT', 'DOT', 'MIN', 'MAX'):
+    c.fn = name
+    ck(c.fn == name, 'fn round-trip ' + name)
+
+# Refusals: the enum converter, the provider slots, and the deletions.
+ck(raises(ValueError, lambda: setattr(c, 'fn', 'LOUD')),
+   'a bad function name is a ValueError')
+ck(msg(ValueError, lambda: setattr(c, 'fn', 'LOUD')) ==
+   'fn must be set to one of MULTIPLY, DIVIDE, ADD, SUBTRACT, DOT, MIN, or MAX',
+   'the ValueError message')
+ck(raises(ValueError, lambda: setattr(c, 'fn', 'add')),
+   'the enum is case-sensitive')
+ck(raises(TypeError, lambda: setattr(c, 'fn', 5)),
+   'a non-string function is a TypeError')
+ck(raises(TypeError, lambda: setattr(c, 'a', 5)), 'a wants a provider')
+ck(msg(TypeError, lambda: setattr(c, 'b', 'x')) ==
+   'b must be set to a Vector4Provider or None',
+   'the slot TypeError message')
+ck(raises(TypeError, lambda: setattr(c, 'a', Math.Matrix())),
+   'a MatrixProvider is no Vector4Provider')
+ck(raises(TypeError, lambda: c.__delattr__('a')), 'a cannot be deleted')
+
+# None empties a slot again, back to the zero output.
+c.b = None
+ck(c.b is None, 'None empties the slot')
+v = c.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the emptied slot is zero')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4combiner behaviour mismatch: {text}"
+            );
         });
     }
 

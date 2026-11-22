@@ -4931,6 +4931,244 @@ mod v4swizzle {
     }
 }
 
+/// The `Math.Vector4Combiner` provider (`script_math.cpp:4643-4811`).
+///
+/// Two held `Vector4Provider`s combined componentwise by one of seven named
+/// functions; the `ADD` function is the constructor default.
+mod v4combiner {
+    use super::*;
+
+    /// The `Fn` names in enum order (`script_math.cpp:4653-4676`): the map's
+    /// index is the enum value, `FN_MULTIPLY` first.
+    const FNS: [&str; 7] = ["MULTIPLY", "DIVIDE", "ADD", "SUBTRACT", "DOT", "MIN", "MAX"];
+
+    /// The instance body beyond the `PyObject` header: the function, then the
+    /// two held `Vector4Provider`s, the layout of the reference's
+    /// `Vector4Combiner`.
+    #[repr(C)]
+    struct CombinerBody {
+        header: capi::PyObject,
+        fn_: u8,
+        a: *mut capi::PyObject,
+        b: *mut capi::PyObject,
+    }
+
+    const A: usize = std::mem::offset_of!(CombinerBody, a);
+    const B: usize = std::mem::offset_of!(CombinerBody, b);
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<CombinerBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Combiner` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4Combiner::output` (`script_math.cpp:4770-4811`): `a` combined
+    /// with `b` by the selected function. Either slot empty leaves the
+    /// caller's vector, the zero default.
+    fn combiner_output(object: *mut capi::PyObject) -> [f32; 4] {
+        let a_values = v4provider::output_of(unsafe { v4provider::slot_read::<A>(object) });
+        let b_values = v4provider::output_of(unsafe { v4provider::slot_read::<B>(object) });
+        let (Some(mut v), Some(b)) = (a_values, b_values) else {
+            return [0.0; 4];
+        };
+        // SAFETY: the receiver is a `CombinerBody`.
+        let function = unsafe { std::ptr::addr_of!((*object.cast::<CombinerBody>()).fn_).read() };
+        match function {
+            // FN_MULTIPLY: the componentwise product.
+            0 => {
+                v[0] *= b[0];
+                v[1] *= b[1];
+                v[2] *= b[2];
+                v[3] *= b[3];
+            }
+            // FN_DIVIDE: the componentwise quotient.
+            1 => {
+                v[0] /= b[0];
+                v[1] /= b[1];
+                v[2] /= b[2];
+                v[3] /= b[3];
+            }
+            // FN_ADD.
+            2 => {
+                v[0] += b[0];
+                v[1] += b[1];
+                v[2] += b[2];
+                v[3] += b[3];
+            }
+            // FN_SUBTRACT.
+            3 => {
+                v[0] -= b[0];
+                v[1] -= b[1];
+                v[2] -= b[2];
+                v[3] -= b[3];
+            }
+            // FN_DOT: the four-term dot, set into all components.
+            4 => {
+                let s = v[0] * b[0] + v[1] * b[1] + v[2] * b[2] + v[3] * b[3];
+                v = [s, s, s, s];
+            }
+            // FN_MIN: `std::min( v, b )` per component, `b` on ties.
+            5 => {
+                v[0] = if b[0] < v[0] { b[0] } else { v[0] };
+                v[1] = if b[1] < v[1] { b[1] } else { v[1] };
+                v[2] = if b[2] < v[2] { b[2] } else { v[2] };
+                v[3] = if b[3] < v[3] { b[3] } else { v[3] };
+            }
+            // FN_MAX: `std::max( v, b )` per component, `v` on ties.
+            6 => {
+                v[0] = if v[0] < b[0] { b[0] } else { v[0] };
+                v[1] = if v[1] < b[1] { b[1] } else { v[1] };
+                v[2] = if v[2] < b[2] { b[2] } else { v[2] };
+                v[3] = if v[3] < b[3] { b[3] } else { v[3] };
+            }
+            // A function value outside the enum leaves the reference's
+            // switch with `v` as `a`'s output.
+            _ => {}
+        }
+        v
+    }
+
+    /// `Vector4Combiner::pyGet_fn` (the enum `getData` at
+    /// `script.hpp:872-886`): the function's name.
+    unsafe extern "C" fn get_fn(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the receiver is a `CombinerBody`.
+        let index = unsafe { std::ptr::addr_of!((*self_.cast::<CombinerBody>()).fn_).read() };
+        match FNS.get(index as usize) {
+            Some(name) => unsafe { capi::unicode_from_bytes(name.as_bytes()) },
+            // The out-of-range arm the reference's converter leaves for a
+            // corrupted enum value.
+            None => capi::py_none(),
+        }
+    }
+
+    /// `Vector4Combiner::pySet_fn` (the enum `setData` at
+    /// `script.hpp:830-869`): one of the seven names, `ValueError` for a
+    /// string that names no function, `TypeError` for anything else.
+    unsafe extern "C" fn set_fn(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let is_string = unsafe { capi::py_unicode_check(value) };
+        if is_string {
+            let name = unsafe { capi::to_string(value) };
+            if let Some(index) = FNS.iter().position(|function| *function == name) {
+                // SAFETY: the receiver is a `CombinerBody`.
+                unsafe {
+                    std::ptr::addr_of_mut!((*self_.cast::<CombinerBody>()).fn_).write(index as u8);
+                }
+                return 0;
+            }
+        }
+        // `PyErr_SetString( PyUnicode_Check(...) ? ValueError : TypeError )`.
+        let message = "fn must be set to one of MULTIPLY, DIVIDE, ADD, SUBTRACT, DOT, MIN, or MAX";
+        if is_string {
+            value_error(message);
+        } else {
+            type_error(message);
+        }
+        -1
+    }
+
+    /// A fresh `Math.Vector4Combiner`; the caller owns the reference. The
+    /// constructor's field values are the reference's (`:4681-4687`): the
+    /// `FN_ADD` function and two empty provider slots.
+    fn make() -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `CombinerBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<CombinerBody>()).fn_).write(2u8);
+            std::ptr::addr_of_mut!((*pointer.cast::<CombinerBody>()).a).write(std::ptr::null_mut());
+            std::ptr::addr_of_mut!((*pointer.cast::<CombinerBody>()).b).write(std::ptr::null_mut());
+        };
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// `Math.Vector4Combiner` with no arguments (`PY_AUTO_FACTORY_DECLARE`
+    /// with `END`): a combiner with the `ADD` function and two empty slots.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Math.Vector4Combiner() takes no arguments");
+        }
+        make()
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4Combiner".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4Combiner`: the function
+    /// and the two provider slots, the reference's `PY_DEFERRED_ATTRIBUTE`
+    /// and `PY_RW_ATTRIBUTE_DECLARE` converter pairs.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Combiner")
+            .base(v4provider::base_addr())
+            .attribute("fn", get_fn, Some(set_fn))
+            .attribute_with(
+                "a",
+                v4provider::slot_get::<A>,
+                Some(v4provider::slot_set::<A>),
+                c"a".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .attribute_with(
+                "b",
+                v4provider::slot_get::<B>,
+                Some(v4provider::slot_set::<B>),
+                c"b".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    provider_dealloc!(dealloc, CombinerBody, a, b);
+
+    /// `TempPyVectorInit` for the combiner: the type object, its `output`
+    /// dispatch entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), combiner_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4Combiner".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -4951,4 +5189,5 @@ pub fn register() {
     let _ = v4lfo::register();
     let _ = v4adaptor::register();
     let _ = v4swizzle::register();
+    let _ = v4combiner::register();
 }
