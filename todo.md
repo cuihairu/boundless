@@ -182,7 +182,11 @@
 
 逐项核对 `lib/`、`server/`、`server/tools/`、`client/`、`tools/`、`common/`、`examples/` 和 FantasyDemo 的构建目标与用户功能。记录「原版路径、启用条件、功能编号、验证夹具、覆盖状态」。对第三方 SDK、发行物中的独有内容和缺失资源单独记录来源与验证缺口。每个已启用目标都要有可运行验收或可追踪的阻塞原因。
 
-- [ ] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。
+- [x] **BW-00-05-01 建立覆盖台账字段**（commit 38d9160）。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。
+  - 原版：参考 CMake 构建目标宏（`BW_ADD_LIBRARY/EXECUTABLE/TEST/TOOL_EXE/TOOL_TEST/ASSETPIPELINE_DLL/ASSETPIPELINE_EXE`）在 `lib/ server/ client/ tools/ common/ examples/` 六根下枚举——**168 个目标**（library 73、executable 51、test 28、asset pipeline dll 8、asset pipeline exe 2、tool 4、tool test 2）；启用条件 163 always、2 else branch、1 `TARGET unofficial::sqlite3::sqlite3`、1 `SQLite3_FOUND`、1 `BW_USE_CSTDMF_DLL`（lib/cstdmf 静态/共享两变体即 IF/ELSE 双声明，如实记两行）。
+  - 台账：每行五字段——**original_path**（目标名+所在目录）、**enable_condition**（最内层 IF 门或 always）、**task**（lib+server→BW-00-05-02、client+tools→03、common+examples→04）、**fixture**（pending 待映射项落）、**status**（unmapped 待映射项落）——acceptance「每行含原版目标、启用条件、任务号、夹具及状态」达成。
+  - 结果：`ledger-record	PASS	168 reference target(s) recorded, each with original path, enable condition, task, fixture and status`；树缺席 SKIP 点名 BW-00-05-01；无目标树 FAIL（空心不是记录）。
+  - 证据：`ci/coverage-ledger.py`（按 IF/ELSEIF/ELSE/ENDIF 嵌套栈跟踪最内层启用门，ELSE 分支记 else branch，未门控记 always；源根缺席记「missing source」退出 2、空心记「hollow ledger」退出 3）+ `ci/coverage-ledger.sh` 记录面 **ledger-record**（枚举参考源码树生成 `coverage-ledger.json`（含 schema+count）与 `coverage-ledger.tsv`（五行列））；入库 `tests/baseline/coverage-ledger.json` 与 `coverage-ledger.tsv`（快照锚点，漂移记 note 非 FAIL）；CI 接入 `refbase` 作业新增 `Record the coverage ledger fields` 步骤、`harness` 作业新增 `ci/coverage-ledger.sh self-test`、`ci/changes.sh` refbase case 收 `ci/coverage-ledger.sh|.py`；自测 **3/3 绿**（种树 4 目标（无条件/IF 门/ELSE 分支）各记五字段与门、树缺席 SKIP 点名 BW-00-05-01、空心树 FAIL）；`shellcheck -S warning`、`actionlint`、`py_compile` 三绿。
 - [ ] **BW-00-05-02 映射引擎库和服务端目标**。**验收** 构建清册中的每项都有索引。
 - [ ] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。
 - [ ] **BW-00-05-04 映射公共代码、示例与 FantasyDemo**。**验收** 脚本及资源入口可追溯。
