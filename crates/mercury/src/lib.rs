@@ -30,12 +30,18 @@ pub mod packet;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
 
+/// The socket write path (BW-02-03-06). Linux only, because it writes
+/// through the interface's UDP socket and dispatcher.
+#[cfg(target_os = "linux")]
+pub mod packet_sender;
+
 /// The event poller (BW-02-01-02). Linux only, because the reference's
 /// `EPoller` backend is what `EventPoller::create()` picks under
 /// `HAS_EPOLL` and no other backend is ported yet.
 #[cfg(target_os = "linux")]
 pub mod poller;
 
+pub mod reliable_order;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;

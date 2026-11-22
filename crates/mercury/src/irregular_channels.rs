@@ -141,7 +141,9 @@ impl IrregularChannels {
             };
 
             if has_unacked && !is_local_regular {
-                UdpChannel::check_resend_timers(&channel);
+                // `channel.send()` in the reference: the send path runs its
+                // own resend check, piggybacking onto the channel's bundle.
+                UdpChannel::send(&channel);
 
                 // checkResendTimers() sets remote failure status
                 if channel.borrow().has_remote_failed() {

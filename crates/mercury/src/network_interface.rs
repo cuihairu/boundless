@@ -20,12 +20,16 @@ use crate::channel_map::ChannelMap;
 use crate::condemned_channels::CondemnedChannels;
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
 use crate::event_dispatcher::EventDispatcher;
+use crate::interface_table::InterfaceTable;
+use crate::interfaces::InputMessageHandler;
 use crate::irregular_channels::IrregularChannels;
 use crate::misc::{CHANNEL_ID_NULL, Reason};
 use crate::packet::Packet;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
+use crate::packet_sender::{PacketSender, SendingStats};
 use crate::poller::EventPoller;
 use crate::request_manager::RequestManager;
+use crate::udp_bundle::UdpBundle;
 use crate::udp_channel::{
     ChannelPtr, DEFAULT_INACTIVITY_RESEND_DELAY, Traits as ChannelTraits, UdpChannel,
 };
@@ -84,6 +88,9 @@ pub struct NetworkInterface {
     request_manager: RefCell<Option<Rc<RequestManager>>>,
     /// Where `processPacket` hands datagrams until channels exist.
     sink: RefCell<Option<Rc<dyn PacketSink>>>,
+    /// `pInterfaceTable_` (network_interface.cpp:122): the message-id to
+    /// handler map the receive dispatch draws on.
+    interface_table: Rc<InterfaceTable>,
     /// `dispatcher().errorReporter()`, defaulting to the logging reporter.
     reporter: RefCell<Option<Rc<dyn ErrorReporter>>>,
     /// `findChannel`, settable until the channel map lands (BW-02-03).
@@ -91,6 +98,9 @@ pub struct NetworkInterface {
     /// This interface's own shared handle, so channel creation
     /// (`findChannel`'s anonymous arm) can hand out an `Rc` of it.
     self_weak: RefCell<Weak<NetworkInterface>>,
+    /// `pPacketSender_` (network_interface.cpp:110): the socket write path
+    /// (BW-02-03-06), created once this interface's own `Rc` exists.
+    packet_sender: RefCell<PacketSender>,
 }
 
 impl NetworkInterface {
@@ -133,12 +143,15 @@ impl NetworkInterface {
             irregular: RefCell::new(IrregularChannels::new()),
             request_manager: RefCell::new(None),
             sink: RefCell::new(None),
+            interface_table: Rc::new(InterfaceTable::new()),
             reporter: RefCell::new(None),
             channel_finder: RefCell::new(None),
             self_weak: RefCell::new(Weak::new()),
+            packet_sender: RefCell::new(PacketSender::new(Weak::new())),
         };
         let shared = Rc::new(interface);
         *shared.self_weak.borrow_mut() = Rc::downgrade(&shared);
+        *shared.packet_sender.borrow_mut() = PacketSender::new(Rc::downgrade(&shared));
         shared
     }
 
@@ -296,6 +309,12 @@ impl NetworkInterface {
         Rc::clone(&self.dispatcher)
     }
 
+    /// `interfaceTable()` (network_interface.cpp:743): the message-id to
+    /// handler map the receive dispatch draws on.
+    pub fn interface_table(&self) -> Rc<InterfaceTable> {
+        Rc::clone(&self.interface_table)
+    }
+
     /// This interface as a shared handle, through the self weak cell.
     pub(crate) fn self_rc(&self) -> Option<Rc<NetworkInterface>> {
         self.self_weak.borrow().upgrade()
@@ -405,8 +424,16 @@ impl NetworkInterface {
     }
 
     /// `setRequestManager`'s seam: the reply bookkeeping the channel
-    /// deaths and failures report to.
+    /// deaths and failures report to. Setting one also registers it as
+    /// the `InterfaceElement::REPLY` handler, as the reference's
+    /// constructor does (network_interface.cpp:147).
     pub fn set_request_manager(&self, manager: Option<Rc<RequestManager>>) {
+        if let Some(manager) = manager.as_ref() {
+            self.interface_table.serve(
+                &crate::interface_element::InterfaceElement::reply(),
+                Some(manager.clone() as Rc<dyn InputMessageHandler>),
+            );
+        }
         *self.request_manager.borrow_mut() = manager;
     }
 
@@ -424,6 +451,92 @@ impl NetworkInterface {
         if let Some(manager) = self.request_manager.borrow().as_ref() {
             manager.cancel_requests_for_channel(addr);
         }
+    }
+
+    // -- Sending (BW-02-03-06) -------------------------------------------
+
+    /// `addReplyOrdersTo( bundle, pChannel )` (network_interface.cpp:729):
+    /// hand a finalised bundle's request reply orders to the manager.
+    pub fn add_reply_orders_to(&self, bundle: &mut UdpBundle, channel: Option<&ChannelPtr>) {
+        let manager = self.request_manager.borrow();
+        let Some(manager) = manager.as_deref() else {
+            // Bundle::addReplyOrdersTo returns early on a null manager.
+            return;
+        };
+        let channel_addr = channel.map(|channel| channel.borrow().addr());
+        bundle.add_reply_orders_to(manager, channel_addr);
+    }
+
+    /// `send( address, bundle, pChannel )` (network_interface.cpp:809):
+    /// the bundle leaves through the packet sender.
+    pub fn send(&self, address: &Address, bundle: &mut UdpBundle, channel: Option<&ChannelPtr>) {
+        self.packet_sender
+            .borrow_mut()
+            .send(address, bundle, channel);
+    }
+
+    /// `sendPacket( address, pPacket, pChannel, isResend )`
+    /// (network_interface.cpp:840).
+    pub fn send_packet(
+        &self,
+        address: &Address,
+        packet: &Rc<Packet>,
+        channel: Option<&ChannelPtr>,
+        is_resend: bool,
+    ) {
+        self.packet_sender
+            .borrow_mut()
+            .send_packet(address, packet, channel, is_resend);
+    }
+
+    /// `sendingStats()`: a snapshot of the outbound counters.
+    pub fn sending_stats(&self) -> SendingStats {
+        self.packet_sender.borrow().stats().clone()
+    }
+
+    /// `PacketSender::sendRescheduledPacket` reached from the resend timer:
+    /// a delayed packet goes out through the interface's sender.
+    pub(crate) fn send_rescheduled_packet(
+        &self,
+        addr: &Address,
+        packet: &Rc<Packet>,
+        channel: Option<&ChannelPtr>,
+    ) {
+        self.packet_sender
+            .borrow_mut()
+            .send_rescheduled_packet(addr, packet, channel);
+    }
+
+    /// `dropNextSend()` (network_interface.cpp:875): the next packet is
+    /// counted and dropped.
+    pub fn drop_next_send(&self) {
+        self.packet_sender.borrow_mut().drop_next_send();
+    }
+
+    /// `setLossRatio( lossRatio )` (network_interface.cpp:866).
+    pub fn set_loss_ratio(&self, loss_ratio: f32) {
+        self.packet_sender
+            .borrow_mut()
+            .loss_mut()
+            .set_loss_ratio(loss_ratio);
+    }
+
+    /// `setLatency( latencyMin, latencyMax )` (network_interface.cpp:854).
+    pub fn set_latency(&self, latency_min: f32, latency_max: f32) {
+        let mut sender = self.packet_sender.borrow_mut();
+        let loss = sender.loss_mut();
+        loss.set_min_latency(latency_min);
+        loss.set_max_latency(latency_max);
+    }
+
+    /// `shouldUseChecksums()`.
+    pub fn should_use_checksums(&self) -> bool {
+        self.packet_sender.borrow().should_use_checksums()
+    }
+
+    /// `shouldUseChecksums( v )`.
+    pub fn set_should_use_checksums(&self, v: bool) {
+        self.packet_sender.borrow_mut().set_should_use_checksums(v);
     }
 
     /// `delAnonymousChannel` (network_interface.cpp:672): anonymous
@@ -1086,5 +1199,67 @@ mod tests {
             .error_reporter()
             .report_exception(Reason::Inactivity, None);
         assert_eq!(*reporter.reports.borrow(), vec![(Reason::Inactivity, None)]);
+    }
+
+    /// The loss and checksum knobs round-trip through the interface
+    /// (network_interface.cpp:854-875).
+    #[test]
+    fn the_loss_and_checksum_knobs_round_trip() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+
+        interface.set_loss_ratio(0.25);
+        assert_eq!(
+            interface.packet_sender.borrow().loss().drop_per_million(),
+            250_000
+        );
+
+        interface.set_latency(0.1, 0.2);
+        assert_eq!(
+            interface
+                .packet_sender
+                .borrow()
+                .loss()
+                .min_latency_million(),
+            100
+        );
+        assert_eq!(
+            interface
+                .packet_sender
+                .borrow()
+                .loss()
+                .max_latency_million(),
+            200
+        );
+
+        assert!(!interface.should_use_checksums());
+        interface.set_should_use_checksums(true);
+        assert!(interface.should_use_checksums());
+    }
+
+    /// With no request manager, reply orders have nowhere to go and the
+    /// bundle stays as it was (network_interface.cpp:729).
+    #[test]
+    fn reply_orders_without_a_manager_stop_quietly() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+        let mut bundle = UdpBundle::new(0);
+        bundle.start_message(
+            &crate::interface_element::InterfaceElement::new(
+                "m",
+                1,
+                crate::interface_element::FIXED_LENGTH_MESSAGE,
+                4,
+                None,
+            ),
+            crate::udp_bundle::ReliableType::Driver,
+        );
+        bundle.write_bytes(&7u32.to_le_bytes());
+        bundle.finalise();
+
+        interface.set_request_manager(None);
+        interface.add_reply_orders_to(&mut bundle, None);
+        assert!(
+            !bundle.is_empty(),
+            "the bundle is untouched without a manager"
+        );
     }
 }

@@ -22,12 +22,13 @@ use foundation::time_queue::{TimerHandle, TimerHandler};
 use crate::channel_listener::ChannelListener;
 use crate::circular_array::CircularArray;
 use crate::endpoint::{Address, NONE};
+use crate::fragmented_bundle::FragmentedBundle;
 use crate::misc::{
     CHANNEL_ID_NULL, ChannelID, ChannelVersion, SEQ_NULL, SeqNum, seq_less_than, seq_mask,
 };
 use crate::network_interface::{ChannelRef, NetworkInterface};
-use crate::packet::Packet;
-use crate::reply_order::ReplyOrder;
+use crate::packet::{Packet, flags};
+use crate::reliable_order::ReliableOrder;
 use crate::udp_bundle::UdpBundle;
 use crate::unacked_packet::UnackedPacket;
 
@@ -177,6 +178,10 @@ pub struct UdpChannel {
     last_reliable_resend_time: u64,
     /// `numPacketsResent_` (BW-02-03-04).
     num_packets_resent: u32,
+    /// `numReliablePacketsSent_`: the reliable bundles sent on this
+    /// channel, read by [`write_flags`](Self::write_flags) to flag the
+    /// first one `CREATE_CHANNEL`.
+    num_reliable_packets_sent: u32,
     /// `bufferedReceives_` (udp_channel.hpp:444, BW-02-03-05): reliable
     /// packets that arrived ahead of their predecessors, parked by
     /// sequence number until the hole fills.
@@ -194,6 +199,13 @@ pub struct UdpChannel {
     /// `PacketReceiverStats::numDuplicatePackets_`; the stats struct is
     /// not ported yet, so the channel keeps the tally (BW-02-03-05).
     num_duplicate_packets: u32,
+    /// `pFragments_` (udp_channel.hpp:436): the fragment chain being
+    /// reassembled on this channel, wired by the receive dispatch
+    /// (BW-02-03-07). `None` while no fragment bundle is in flight.
+    pub(crate) fragments: Option<FragmentedBundle>,
+    /// `wantsFirstPacket_`: a re-addressed established channel refuses
+    /// traffic until a `FLAG_CREATE_CHANNEL` packet arrives.
+    wants_first_packet: bool,
 
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
@@ -256,17 +268,28 @@ impl UdpChannel {
             has_seen_overflow_warning: false,
             last_reliable_resend_time: 0,
             num_packets_resent: 0,
+            num_reliable_packets_sent: 0,
             // `bufferedReceives_( windowSize_ )` (udp_channel.cpp:108).
             buffered_receives: CircularArray::new(size),
             num_buffered_receives: 0,
             acks_to_send: BTreeSet::new(),
             should_auto_switch_to_src_addr: false,
             num_duplicate_packets: 0,
+            fragments: None,
+            wants_first_packet: false,
             network_interface: Rc::downgrade(interface),
         }));
 
         // This corresponds to the decRef in Channel::destroy: the port's
         // lifetime bookkeeping is the Rc, nothing to balance here.
+
+        // The bundle's reliable-order recording runs only on an external
+        // channel (the segments tell a resend what to carry to a peer),
+        // so tag the bundle with the trait up front.
+        channel
+            .borrow_mut()
+            .bundle
+            .set_external_channel(traits == Traits::External);
 
         // This registers non-indexed channels.
         UdpChannel::set_address_fn(&channel, addr);
@@ -328,6 +351,13 @@ impl UdpChannel {
             .map(|interface| interface.dispatcher().now())
             .unwrap_or(0);
         channel.borrow_mut().last_received_time = now;
+
+        // If this channel was previously established, it waits for a
+        // `FLAG_CREATE_CHANNEL` packet from the new address before
+        // accepting traffic again (udp_channel.cpp:1655-1661).
+        if !old.is_none() {
+            channel.borrow_mut().wants_first_packet = true;
+        }
 
         if !is_indexed {
             if let Some(interface) = interface.as_ref()
@@ -668,22 +698,268 @@ impl UdpChannel {
     }
 
     /// `sendUnacked( unacked )` (udp_channel.cpp:1187): push a packet in
-    /// the window out again, stamping the bookkeeping the ack and resend
-    /// paths read. The channel-version refresh
-    /// (`pPacket_->updateChannelVersion`) and the hand to the interface
-    /// (`pNetworkInterface_->sendPacket`) arrive with the send path
-    /// (BW-02-03-06); an absent slot is a no-op where the reference would
-    /// dereference null.
+    /// the window out again -- re-stamp an indexed packet's channel
+    /// version, hand it to the interface as a resend, and refresh the
+    /// window's stamps. An absent slot is a no-op where the reference
+    /// would dereference null.
     fn send_unacked(channel: &ChannelPtr, seq: SeqNum) {
         let now = UdpChannel::now(channel);
-        let mut this = channel.borrow_mut();
-        let small = this.small_out_seq_at;
-        if let Some(unacked) = this.unacked_packets.get_mut(seq as usize).as_mut() {
-            unacked.set_last_sent_at_out_seq(small);
-            unacked.set_was_resent(true);
-            unacked.set_last_sent_time(now);
+        let (version, id, addr, small) = {
+            let this = channel.borrow();
+            (this.version, this.id, this.addr, this.small_out_seq_at)
+        };
+        let interface = channel.borrow().network_interface.upgrade();
+
+        let mut sent_packet: Option<Rc<Packet>> = None;
+        {
+            let mut this = channel.borrow_mut();
+            if let Some(unacked) = this.unacked_packets.get_mut(seq as usize).as_mut() {
+                unacked.packet_mut().update_channel_version(version, id);
+                unacked.set_last_sent_at_out_seq(small);
+                unacked.set_was_resent(true);
+                unacked.set_last_sent_time(now);
+                sent_packet = Some(Rc::clone(unacked.packet()));
+            }
+            this.last_reliable_resend_time = now;
         }
-        this.last_reliable_resend_time = now;
+
+        if let (Some(interface), Some(packet)) = (interface, sent_packet) {
+            interface.send_packet(&addr, &packet, Some(channel), true);
+        }
+    }
+
+    /// `writeFlags( p )` (udp_channel.cpp:1526): the flags a packet riding
+    /// on this channel owes, plus the footer room each one costs: the
+    /// channel tag, a cumulative ack pruning the acks already covered, as
+    /// many individual acks as fit, and the first-reliable `CREATE_CHANNEL`
+    /// flag.
+    pub fn write_flags(&mut self, packet: &mut Packet) {
+        packet.enable_flags(flags::ON_CHANNEL);
+
+        if self.is_indexed() {
+            packet.enable_flags(flags::INDEXED_CHANNEL);
+            packet.set_channel_id(self.id);
+            packet.set_channel_version(self.version);
+            packet.reserve_footer(4 + 4);
+        }
+
+        // Add a cumulative ACK: everything before `in_seq_at_` arrived.
+        if packet.free_space() >= 4 {
+            packet.enable_flags(flags::HAS_CUMULATIVE_ACK);
+            packet.reserve_footer(4);
+
+            // Prune the acks the cumulative one already covers.
+            let in_seq_at = self.in_seq_at;
+            self.acks_to_send
+                .retain(|&seq| !seq_less_than(seq, in_seq_at));
+        }
+
+        // Put on as many acks as we can.
+        if !self.acks_to_send.is_empty() && packet.free_space() > 4 {
+            packet.enable_flags(flags::HAS_ACKS);
+            packet.reserve_footer(1);
+
+            let min_space = packet.free_space() / 4; // in SeqNums
+            let min_space_size = min_space.min(self.acks_to_send.len());
+            let n_acks = min_space_size.min(crate::packet::MAX_ACKS);
+            packet.set_n_acks(n_acks as u8);
+            packet.reserve_footer(4 * n_acks);
+        }
+
+        // If this is the first reliable outbound packet, flag it.
+        if packet.has_flags(flags::IS_RELIABLE)
+            && self.is_internal()
+            && self.large_out_seq_at == 0
+            && self.num_reliable_packets_sent == 0
+        {
+            packet.enable_flags(flags::CREATE_CHANNEL);
+        }
+    }
+
+    /// `writeFooter( p )` (udp_channel.cpp:1593): the footers the flags
+    /// owe, packed back after the bundle's own -- the channel tag, the
+    /// cumulative ack, then the individual acks, consuming them.
+    pub fn write_footer(&mut self, packet: &mut Packet) {
+        if packet.has_flags(flags::INDEXED_CHANNEL) {
+            let channel_id = packet.channel_id() as u32;
+            packet.pack_footer_u32(channel_id);
+            let channel_version = packet.channel_version();
+            packet.pack_footer_u32(channel_version);
+        }
+
+        if packet.has_flags(flags::HAS_CUMULATIVE_ACK) {
+            let in_seq_at = self.in_seq_at;
+            packet.pack_footer_u32(in_seq_at);
+        }
+
+        if packet.has_flags(flags::HAS_ACKS) {
+            let n_acks = packet.n_acks();
+            packet.pack_footer_u8(n_acks);
+            let mut acks_added = 0u8;
+            while !self.acks_to_send.is_empty() && acks_added < n_acks {
+                let seq = *self.acks_to_send.iter().next().expect("non-empty set");
+                packet.pack_footer_u32(seq);
+                self.acks_to_send.remove(&seq);
+                acks_added += 1;
+            }
+        }
+    }
+
+    /// `hasUnsentData()` (udp_channel.cpp:645): does the bundle hold
+    /// anything a send would put on the wire? The bundle primer's
+    /// unreliable messages are BW-02-05 and do not exist here. Used by
+    /// [`send`](Self::send), which reads the bundle it moved out.
+    pub fn has_unsent_data(&self) -> bool {
+        let bundle = &self.bundle;
+        bundle.num_messages() > 0
+            || bundle.has_data_footers()
+            || bundle.is_reliable()
+            || !self.acks_to_send.is_empty()
+    }
+
+    /// `hasUnsentData()` for a bundle that has been moved out of the
+    /// channel: [`do_send`](Self::do_send) holds the channel's bundle by
+    /// value while the channel's own `bundle` slot is a placeholder, so
+    /// the reference's gate reads the bundle being sent, not the slot.
+    fn has_unsent_data_for(bundle: &UdpBundle, acks_to_send: &BTreeSet<SeqNum>) -> bool {
+        bundle.num_messages() > 0
+            || bundle.has_data_footers()
+            || bundle.is_reliable()
+            || !acks_to_send.is_empty()
+    }
+
+    /// `Channel::send` (channel.cpp) with `UDPChannel::doPreFinaliseBundle`
+    /// (checkResendTimers), `finalise`, `addReplyOrdersTo` and
+    /// `UDPChannel::doSend` inlined: resend-check, close the bundle, send
+    /// it, update the stats, and clear. The bundle is moved out of the
+    /// channel first so the resend check and the interface send can borrow
+    /// the channel freely -- the reference reads both through raw pointers.
+    pub fn send(channel: &ChannelPtr) {
+        if !channel.borrow().is_connected() {
+            eprintln!(
+                "Channel::send( {} ): Channel is not connected",
+                channel.borrow().c_str()
+            );
+            return;
+        }
+
+        // The send path cancels requests rather than sending when the
+        // remote has failed.
+        if channel.borrow().has_remote_failed {
+            let interface = channel.borrow().network_interface.upgrade();
+            if let Some(interface) = interface {
+                interface.cancel_requests_for(&channel.borrow().addr);
+            }
+            return;
+        }
+
+        // Move the bundle out so `check_resend_timers` and the interface
+        // send can borrow the channel; the placeholder is put back below.
+        let mut bundle = std::mem::replace(&mut channel.borrow_mut().bundle, UdpBundle::new(0));
+
+        UdpChannel::do_send(channel, &mut bundle, true);
+
+        // Clear the bundle, keeping the channel's external tag.
+        bundle.clear();
+        channel.borrow_mut().bundle = bundle;
+
+        if let Some(listener) = channel.borrow().listener.clone() {
+            listener.on_channel_send(channel);
+        }
+    }
+
+    /// `Channel::send( &emptyBundle )` (channel.cpp:149): push the channel's
+    /// acknowledgements out through a throwaway bundle, the way the receive
+    /// path sends an ack the moment an out-of-order packet arrives.
+    pub fn send_acks(channel: &ChannelPtr) {
+        if !channel.borrow().is_connected() {
+            eprintln!(
+                "Channel::send( {} ): Channel is not connected",
+                channel.borrow().c_str()
+            );
+            return;
+        }
+
+        if channel.borrow().has_remote_failed {
+            let interface = channel.borrow().network_interface.upgrade();
+            if let Some(interface) = interface {
+                interface.cancel_requests_for(&channel.borrow().addr);
+            }
+            return;
+        }
+
+        let mut bundle = UdpBundle::new(0);
+        UdpChannel::do_send(channel, &mut bundle, false);
+        bundle.clear();
+
+        if let Some(listener) = channel.borrow().listener.clone() {
+            listener.on_channel_send(channel);
+        }
+    }
+
+    /// `Channel::send`'s body from `doPreFinaliseBundle` down through
+    /// `UDPChannel::doSend` (udp_channel.cpp:693-768). `is_own` says whether
+    /// the bundle is the channel's own: only that one may skip the wire
+    /// while it carries no data.
+    fn do_send(channel: &ChannelPtr, bundle: &mut UdpBundle, is_own: bool) {
+        let addr = channel.borrow().addr;
+
+        // `doSend` drops the bundle when there is nowhere to send it.
+        if addr.is_none() {
+            eprintln!(
+                "UDPChannel::doSend( {} ): no address to send to, dropping bundle",
+                channel.borrow().c_str()
+            );
+            return;
+        }
+
+        // `doPreFinaliseBundle`: tack on piggybacks from resends.
+        UdpChannel::check_resend_timers(channel, bundle);
+
+        bundle.finalise();
+
+        // `addReplyOrdersTo`.
+        let interface = channel.borrow().network_interface.upgrade();
+        if let Some(interface) = interface.as_ref() {
+            interface.add_reply_orders_to(bundle, Some(channel));
+        }
+
+        // A channel's own empty bundle sends nothing (after the resend
+        // check, so channels still get their resends checked). The
+        // piggybacks a resend folded in count as data. The bundle was
+        // moved out of the channel's slot, so the gate reads it here.
+        let has_unsent = {
+            let this = channel.borrow();
+            Self::has_unsent_data_for(bundle, &this.acks_to_send)
+        };
+        if is_own && !has_unsent {
+            return;
+        }
+
+        if let Some(interface) = interface.as_ref() {
+            interface.send(&addr, bundle, Some(channel));
+        }
+
+        {
+            let mut this = channel.borrow_mut();
+            this.num_data_units_sent += 1;
+            this.num_bytes_sent += bundle.size() as u32;
+            if bundle.is_reliable() {
+                this.num_reliable_packets_sent += 1;
+            }
+        }
+
+        // Channels that do not send regularly are checked periodically.
+        if let Some(interface) = channel.borrow().network_interface.upgrade() {
+            interface.add_irregular_channel_if_necessary(channel);
+        }
+
+        // A critical bundle's last packet sequence is the new critical.
+        if bundle.is_critical() {
+            let num_packets = bundle.num_data_units();
+            let last_seq = bundle.packet(num_packets - 1).seq();
+            channel.borrow_mut().unacked_critical_seq = last_seq;
+        }
     }
 
     /// `addResendTimer( seq, p, roBeg, roEnd )` (udp_channel.cpp:817):
@@ -694,7 +970,7 @@ impl UdpChannel {
         channel: &ChannelPtr,
         seq: SeqNum,
         packet: Rc<Packet>,
-        reply_orders: &[Rc<ReplyOrder>],
+        reliable_orders: &[ReliableOrder],
     ) -> bool {
         let now = UdpChannel::now(channel);
         let mut this = channel.borrow_mut();
@@ -723,8 +999,8 @@ impl UdpChannel {
         unacked.set_last_sent_time(now);
         this.last_reliable_send_time = now;
         unacked.set_was_resent(false);
-        if !reply_orders.is_empty() {
-            unacked.set_reliable_orders(reply_orders.to_vec());
+        if !reliable_orders.is_empty() {
+            unacked.set_reliable_orders(reliable_orders.to_vec());
         }
 
         // Grow the unackedPackets_ array, if necessary.
@@ -923,12 +1199,11 @@ impl UdpChannel {
 
     // -- The resend timing (BW-02-03-04) ----------------------------------
 
-    /// `checkResendTimers()` (udp_channel.cpp:1051): resend any unacked
-    /// packets as appropriate. This can be because of time since last
-    /// sent, receiving later acks before earlier ones. The `UDPBundle &`
-    /// parameter rides with `UdpBundle::piggyback` (BW-02-03-06), so
-    /// every resend here takes the standalone path.
-    pub fn check_resend_timers(channel: &ChannelPtr) {
+    /// `checkResendTimers( bundle )` (udp_channel.cpp:1051): resend any
+    /// unacked packets as appropriate. This can be because of time since
+    /// last sent, receiving later acks before earlier ones. The bundle is
+    /// the piggyback target of a resend that folds into the next send.
+    pub fn check_resend_timers(channel: &ChannelPtr, bundle: &mut UdpBundle) {
         let now = UdpChannel::now(channel);
 
         // There are no un-acked packets
@@ -1001,7 +1276,7 @@ impl UdpChannel {
             };
 
             if should_resend {
-                UdpChannel::resend(channel, seq);
+                UdpChannel::resend(channel, seq, bundle);
                 num_resends += 1;
             }
 
@@ -1011,17 +1286,49 @@ impl UdpChannel {
 
     /// `resend( seq, bundle )` (udp_channel.cpp:1151): resends an un-acked
     /// packet by the most sensible method available. True when the packet
-    /// is no longer un-acked -- which only the piggyback arm says, and
-    /// that arm waits for `UdpBundle::piggyback` (BW-02-03-06), so the
-    /// port always takes the standalone path.
-    fn resend(channel: &ChannelPtr, seq: SeqNum) -> bool {
+    /// is no longer un-acked -- the piggyback arm folded it into the
+    /// outgoing bundle and acked it.
+    fn resend(channel: &ChannelPtr, seq: SeqNum, bundle: &mut UdpBundle) -> bool {
         {
             let mut this = channel.borrow_mut();
             this.num_packets_resent += 1;
         }
 
-        // The piggyback arm -- external channels, non-fragment packets,
-        // a free slot at `smallOutSeqAt_` -- is BW-02-03-06.
+        // If possible, piggyback this packet onto the next outgoing
+        // bundle: external channels, non-fragment packets, and a free slot
+        // at `small_out_seq_at_` (so the resend does not overflow).
+        let is_external = channel.borrow().is_external();
+        let slot_free = {
+            let this = channel.borrow();
+            this.unacked_packets
+                .get(this.small_out_seq_at as usize)
+                .is_none()
+        };
+        let (is_fragment, orders, packet) = {
+            let this = channel.borrow();
+            match this.unacked_packets.get(seq as usize) {
+                Some(unacked) => (
+                    unacked.packet().has_flags(flags::IS_FRAGMENT),
+                    unacked.reliable_orders().to_vec(),
+                    Rc::clone(unacked.packet()),
+                ),
+                None => return false,
+            }
+        };
+
+        if is_external && !is_fragment && slot_free && bundle.piggyback(seq, &orders, packet) {
+            // Don't count this for RTT calculations.
+            if let Some(unacked) = channel
+                .borrow_mut()
+                .unacked_packets
+                .get_mut(seq as usize)
+                .as_mut()
+            {
+                unacked.set_was_resent(true);
+            }
+            UdpChannel::handle_ack(channel, seq);
+            return true;
+        }
 
         // If there are any acks on this packet, then they will be resent
         // too, but it does no harm.
@@ -1381,6 +1688,19 @@ impl UdpChannel {
     /// `isEstablished()`: the address is real.
     pub fn is_established(&self) -> bool {
         !self.addr.is_none()
+    }
+
+    /// `wantsFirstPacket()` (udp_channel.hpp:191): a re-addressed
+    /// established channel waits for `FLAG_CREATE_CHANNEL` before it
+    /// accepts traffic again.
+    pub fn wants_first_packet(&self) -> bool {
+        self.wants_first_packet
+    }
+
+    /// `gotFirstPacket()` (udp_channel.hpp:192): the create-channel packet
+    /// arrived.
+    pub fn got_first_packet(channel: &ChannelPtr) {
+        channel.borrow_mut().wants_first_packet = false;
     }
 
     /// `windowSize()`.
@@ -2420,7 +2740,12 @@ mod tests {
         channel.borrow_mut().force_out_seq_at(0);
 
         let handler: Rc<dyn ReplyMessageHandler> = Rc::new(NoOp);
-        let order = Rc::new(ReplyOrder::new(Rc::clone(&handler), 1, 500_000, 0));
+        let order = crate::reliable_order::ReliableOrder {
+            packet: 0,
+            offset: 1,
+            length: 5,
+            part_of_request: false,
+        };
         let seq = UdpChannel::use_next_sequence_id(&channel);
         let mut packet = Packet::new();
         packet.set_seq(seq);
@@ -2436,8 +2761,7 @@ mod tests {
         let slot = this.unacked_packets().get(seq as usize).as_ref();
         assert!(slot.is_some(), "the slot is filed");
         let orders = slot.unwrap().reliable_orders();
-        assert_eq!(orders.len(), 1);
-        assert!(Rc::ptr_eq(&orders[0], &order));
+        assert_eq!(orders, [order]);
 
         // The placeholder's whole contract: say nothing.
         handler.handle_message(
@@ -2748,7 +3072,7 @@ mod tests {
         assert!(UdpChannel::handle_ack(&channel, second));
         assert_eq!(channel.borrow().oldest_unacked_seq(), first);
 
-        UdpChannel::check_resend_timers(&channel);
+        UdpChannel::check_resend_timers(&channel, &mut UdpBundle::new(0));
         {
             let this = channel.borrow();
             assert_eq!(
@@ -2834,7 +3158,7 @@ mod tests {
         assert!(UdpChannel::handle_ack(&channel, last));
         assert_eq!(channel.borrow().num_packets_resent(), 0);
 
-        UdpChannel::check_resend_timers(&channel);
+        UdpChannel::check_resend_timers(&channel, &mut UdpBundle::new(0));
         assert_eq!(
             channel.borrow().num_packets_resent(),
             256 / 8,
@@ -2863,7 +3187,7 @@ mod tests {
 
         clock.set(clock.get() + 10_000_000); // ten seconds old
         UdpChannel::set_remote_failed(&channel);
-        UdpChannel::check_resend_timers(&channel);
+        UdpChannel::check_resend_timers(&channel, &mut UdpBundle::new(0));
         assert_eq!(channel.borrow().num_packets_resent(), 0);
     }
 
@@ -2886,7 +3210,7 @@ mod tests {
         UdpChannel::set_remote_regular(&channel, false);
 
         // Nothing outstanding: the scan refuses at the gate.
-        UdpChannel::check_resend_timers(&channel);
+        UdpChannel::check_resend_timers(&channel, &mut UdpBundle::new(0));
         assert_eq!(channel.borrow().num_packets_resent(), 0);
 
         // Three packets, the middle one acked: an irregular channel's scan
@@ -2899,7 +3223,7 @@ mod tests {
         // The middle ack NACKs the older packet -- the reference resends
         // on a later ack regardless of regularity -- and the walk steps
         // over the emptied hole to the fresh tail without touching it.
-        UdpChannel::check_resend_timers(&channel);
+        UdpChannel::check_resend_timers(&channel, &mut UdpBundle::new(0));
         {
             let this = channel.borrow();
             assert_eq!(

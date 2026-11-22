@@ -17,10 +17,13 @@
 //! [`crate::bundle_dispatch`] translates on the walk in.
 //!
 //! Left with the channel layer (BW-02-03-02 and on): the owning
-//! `UDPChannel` (`pChannel_`), the reliable-order segments a packet
-//! splitting breaks a reliable message into, the piggyback send path,
-//! and the channel footer and its `writeFlags`/`writeFooter` hooks --
-//! every `isOnExternalChannel` branch here is that machinery waiting.
+//! `UDPChannel` (`pChannel_`), and the channel footer with its
+//! `writeFlags`/`writeFooter` hooks. The reliable-order segments a
+//! packet splitting breaks a reliable message into, and the piggyback
+//! send path, are carried here: a channel marks its bundle as external
+//! ([`set_external_channel`](Self::set_external_channel)) and the bundle
+//! records one order for every packet-boundary a reliable message
+//! crosses, so a later packet can carry the lost bytes along.
 
 use std::rc::Rc;
 
@@ -30,8 +33,11 @@ use crate::interfaces::ReplyMessageHandler;
 use crate::message_framing::{NEXT_REQUEST_OFFSET_SIZE, REPLY_ID_SIZE, SPECIAL_LENGTH_SIZE};
 use crate::misc::{SEQ_NULL, SeqNum, SeqNumAllocator};
 use crate::packet::{HEADER_SIZE, Packet, flags};
+use crate::reliable_order::ReliableOrder;
 use crate::reply_order::ReplyOrder;
 use crate::request_manager::RequestManager;
+#[cfg(target_os = "linux")]
+use crate::udp_channel::{ChannelPtr, UdpChannel};
 
 /// `DEFAULT_REQUEST_TIMEOUT` (`bundle.hpp`): requests on a channel never
 /// carry a non-default timeout, the reference warns and ignores it.
@@ -80,6 +86,27 @@ struct PendingRequest {
     order: ReplyOrder,
 }
 
+/// `Mercury::BundlePiggyback` (`udp_bundle.hpp:48-60`): one dropped
+/// packet folded into a later one. The reliable orders say which runs of
+/// the dropped packet's bytes to copy out; `len` is the footer length
+/// the block will occupy (everything but its 2-byte size suffix).
+struct BundlePiggyback {
+    /// `seq_`: the sequence number of the packet being piggybacked.
+    seq: SeqNum,
+    /// `flags_`: the header the embedded packet carries.
+    flags: u16,
+    /// `rvec_`: the runs of reliable message bytes to copy out.
+    rvec: Vec<ReliableOrder>,
+    /// `len_`: the block's byte count without the size suffix.
+    len: usize,
+    /// `pPacket_`: the dropped packet itself, kept for the sub-piggyback
+    /// it may owe (a lost piggyback that had piggybacks of its own). The
+    /// block is skipped until `Packet::piggyFooters` is ported, so the
+    /// field is stored but unread in the meantime.
+    #[allow(dead_code)]
+    packet: Rc<Packet>,
+}
+
 /// The write side of a bundle. The reference chains its packets with
 /// `PacketPtr`s; here the bundle owns them in send order, which is the
 /// only order anything reads them in until a channel takes the chain
@@ -93,6 +120,17 @@ pub struct UdpBundle {
     num_messages: u32,
     /// `replyOrders_`.
     reply_orders: Vec<PendingRequest>,
+    /// `reliableOrders_`: the runs of reliable bytes one packet's split
+    /// of a reliable message left behind, tagged with the packet they
+    /// sit on.
+    reliable_orders: Vec<ReliableOrder>,
+    /// `piggybacks_`: dropped packets folded into a later one.
+    piggybacks: Vec<BundlePiggyback>,
+    /// `isOnExternalChannel()`: whether the channel this bundle is being
+    /// built for sends outside the process. Reliable orders are only
+    /// recorded there; the port tags the bundle up front instead of
+    /// reaching back through `pChannel_`.
+    external_channel: bool,
     /// `hasEndedMsgEarly_`.
     #[allow(dead_code)]
     has_ended_msg_early: bool,
@@ -122,6 +160,9 @@ pub struct UdpBundle {
     msg_is_request: bool,
     /// `numReliableMessages_`.
     num_reliable_messages: u32,
+    /// `isFinalised_`: the bundle has been [`finalise`](Self::finalise)d
+    /// and owes the wire nothing but its footers.
+    is_finalised: bool,
 }
 
 impl UdpBundle {
@@ -132,6 +173,9 @@ impl UdpBundle {
             current: 0,
             num_messages: 0,
             reply_orders: Vec::new(),
+            reliable_orders: Vec::new(),
+            piggybacks: Vec::new(),
+            external_channel: false,
             has_ended_msg_early: false,
             reliable_driver: false,
             extra_size: spare_size,
@@ -144,6 +188,7 @@ impl UdpBundle {
             msg_is_reliable: false,
             msg_is_request: false,
             num_reliable_messages: 0,
+            is_finalised: false,
         };
         bundle.packets.push(Packet::new());
         bundle.start_packet();
@@ -160,9 +205,26 @@ impl UdpBundle {
 
     /// `UDPBundle::clear( spareSize )`: reset to construction state,
     /// keeping the spare size the bundle was built with. The channel
-    /// calls this from `clearBundle` after every send.
+    /// calls this from `clearBundle` after every send. The external
+    /// channel tag survives the reset -- the bundle still belongs to the
+    /// same channel.
     pub fn clear(&mut self) {
+        let external_channel = self.external_channel;
         *self = Self::new(self.extra_size);
+        self.external_channel = external_channel;
+    }
+
+    /// `isOnExternalChannel()`: whether the bundle's channel sends
+    /// outside the process, the gate the reliable-order recording runs
+    /// under.
+    pub fn is_on_external_channel(&self) -> bool {
+        self.external_channel
+    }
+
+    /// Set the bundle's channel-is-external tag. The channel does this
+    /// when it claims its own bundle, before any message is written.
+    pub fn set_external_channel(&mut self, is_external: bool) {
+        self.external_channel = is_external;
     }
 
     // -- packet chain -----------------------------------------------------
@@ -178,13 +240,52 @@ impl UdpBundle {
     }
 
     /// `endPacket( isExtending )`: close the current packet, folding the
-    /// bytes it holds into the open message's length. The `isExtending`
-    /// reliable-order bookkeeping is external-channel machinery, so the
-    /// argument is carried for shape and ignored for now.
-    fn end_packet(&mut self, _is_extending: bool) {
-        let packet = &mut self.packets[self.current];
-        self.msg_len += packet.msg_end_offset() as i32 - self.msg_chunk_offset as i32;
-        self.msg_chunk_offset = packet.msg_end_offset();
+    /// bytes it holds into the open message's length. A packet that is
+    /// not the last one owes a reliable order too, so the message's runs
+    /// are findable again when a resend has to carry them along.
+    fn end_packet(&mut self, is_extending: bool) {
+        // add a partial reliable order if in the middle of a message
+        if is_extending
+            && self.is_on_external_channel()
+            && self.msg_beg.is_some()
+            && self.msg_is_reliable
+        {
+            self.add_reliable_order();
+        }
+
+        let msg_end = self.packets[self.current].msg_end_offset();
+        self.msg_len += msg_end as i32 - self.msg_chunk_offset as i32;
+        self.msg_chunk_offset = msg_end;
+    }
+
+    /// `addReliableOrder`: add a reliable order for the current
+    /// (reliable) message. Multiple orders are necessary if the message
+    /// spans packets, one per packet the message touches.
+    fn add_reliable_order(&mut self) {
+        assert!(
+            self.is_on_external_channel(),
+            "UDPBundle::addReliableOrder: MF_ASSERT( this->isOnExternalChannel() )"
+        );
+        let (beg_packet, beg) = self
+            .msg_beg
+            .expect("UDPBundle::addReliableOrder: no message open");
+
+        // If this message actually began on this packet, we can start
+        // from the actual message header.  Otherwise, we have to settle
+        // for the part of the message that's on this packet.
+        let offset = if beg_packet == self.current {
+            beg
+        } else {
+            self.msg_chunk_offset
+        };
+        let length = self.packets[self.current].msg_end_offset() - offset;
+
+        self.reliable_orders.push(ReliableOrder {
+            packet: self.current,
+            offset,
+            length: length as u16,
+            part_of_request: self.msg_is_request,
+        });
     }
 
     /// `qreserve( nBytes )`: claim `n` contiguous bytes in the current
@@ -399,9 +500,12 @@ impl UdpBundle {
                 .expect("a fitting length compresses into its own header");
         }
 
-        // record its details if it was reliable. `addReliableOrder` is
-        // external-channel machinery, so only the reset survives here.
+        // record its details if it was reliable
         if self.msg_is_reliable {
+            if self.is_on_external_channel() {
+                self.add_reliable_order();
+            }
+
             self.msg_is_reliable = false; // for sanity
         }
 
@@ -444,8 +548,15 @@ impl UdpBundle {
     // -- finalising -------------------------------------------------------
 
     /// `finalise`: close the message and the packet. The stray-bytes
-    /// check prints the reference's `CRITICAL_MSG` and carries on.
+    /// check prints the reference's `CRITICAL_MSG` and carries on. A
+    /// second call is a no-op, the way the reference's `isFinalised_`
+    /// guard keeps `PacketSender::send` from closing an already-closed
+    /// channel bundle.
     pub fn finalise(&mut self) {
+        if self.is_finalised {
+            return;
+        }
+
         // make sure we're not sending a packet where the message
         // wasn't properly started...
         if self.msg_beg.is_none()
@@ -456,26 +567,61 @@ impl UdpBundle {
 
         self.end_message(false);
         self.end_packet(false);
+        self.is_finalised = true;
+    }
+
+    /// `isFinalised`.
+    pub fn is_finalised(&self) -> bool {
+        self.is_finalised
     }
 
     /// `writeFlags`: set up a packet's flags in accordance with the
     /// bundle's information, reserving the footer room each flag owes.
-    /// The `reliableOrders_.size()` term of the reference's reliable
-    /// condition is external-channel state, so it is absent here.
+    /// A bundle whose messages left reliable orders behind is reliable
+    /// even once every message has ended -- the orders still need their
+    /// sequence numbers.
     fn write_flags_terms(&self) -> (bool, bool, bool) {
         (
-            self.msg_is_reliable || self.num_reliable_messages > 0,
+            !self.reliable_orders.is_empty()
+                || self.msg_is_reliable
+                || self.num_reliable_messages > 0,
             self.packets.len() > 1,
             self.ack != SEQ_NULL,
         )
+    }
+
+    /// `writeFlags( p )` (udp_bundle.cpp:614): the flags the bundle owes
+    /// every packet, plus the footer room each one costs. Both
+    /// `prepare_packets` variants run it before their channel's own
+    /// `writeFlags`.
+    fn write_bundle_flags(
+        packet: &mut Packet,
+        flag_reliable: bool,
+        flag_fragment: bool,
+        has_ack: bool,
+    ) {
+        if flag_reliable {
+            packet.enable_flags(flags::IS_RELIABLE);
+        }
+        if packet.has_flags(flags::HAS_REQUESTS) {
+            packet.reserve_footer(2);
+        }
+        if flag_fragment {
+            packet.enable_flags(flags::IS_FRAGMENT);
+            packet.reserve_footer(8);
+        }
+        if has_ack {
+            packet.enable_flags(flags::HAS_ACKS);
+            packet.reserve_footer(1 + 4);
+        }
     }
 
     /// `preparePackets` for off-channel sending: fill in all the footers
     /// that are left to us, so every packet is a datagram ready for
     /// `sendto`. The reference's `pChannel` branch -- the channel's
     /// `writeFlags`/`writeFooter`, its sequence numbers, and the
-    /// reliable-order extraction into the resend timer -- is BW-02-03-02
-    /// and on, as is the first overflow packet it returns.
+    /// reliable-order extraction into the resend timer -- is
+    /// [`prepare_packets_on_channel`](Self::prepare_packets_on_channel).
     pub fn prepare_packets(
         &mut self,
         seq_num_allocator: &mut SeqNumAllocator,
@@ -487,6 +633,30 @@ impl UdpBundle {
         let mut first_seq = 0u32;
         let mut last_seq = 0u32;
 
+        // Snapshot each piggyback's byte run: writing them back walks
+        // the current packet's cursor, and the run may live in that very
+        // packet, so the source and destination can alias.
+        let piggyback_payloads: Vec<(usize, Vec<u8>)> = self
+            .piggybacks
+            .iter()
+            .map(|piggyback| {
+                let mut bytes = Vec::with_capacity(piggyback.len);
+                bytes.extend_from_slice(&piggyback.flags.to_be_bytes());
+                for order in &piggyback.rvec {
+                    let start = order.offset;
+                    let end = start + order.length as usize;
+                    bytes.extend_from_slice(&self.packets[order.packet].data()[start..end]);
+                }
+                bytes.extend_from_slice(&piggyback.seq.to_be_bytes());
+                assert_eq!(
+                    bytes.len(),
+                    piggyback.len,
+                    "the piggyback block is the header, the runs, and the seq"
+                );
+                (piggyback.len, bytes)
+            })
+            .collect();
+
         for (index, packet) in self.packets.iter_mut().enumerate() {
             if should_use_checksums {
                 // Reserve space for the checksum footer
@@ -496,20 +666,7 @@ impl UdpBundle {
             }
 
             // `this->writeFlags( pPacket )`
-            if flag_reliable {
-                packet.enable_flags(flags::IS_RELIABLE);
-            }
-            if packet.has_flags(flags::HAS_REQUESTS) {
-                packet.reserve_footer(2);
-            }
-            if flag_fragment {
-                packet.enable_flags(flags::IS_FRAGMENT);
-                packet.reserve_footer(8);
-            }
-            if has_ack {
-                packet.enable_flags(flags::HAS_ACKS);
-                packet.reserve_footer(1 + 4);
-            }
+            Self::write_bundle_flags(packet, flag_reliable, flag_fragment, has_ack);
 
             // Off-channel, the sequence footer follows from the flags:
             // reliable or fragmented packets carry one.
@@ -528,6 +685,45 @@ impl UdpBundle {
             if packet.has_flags(flags::HAS_CHECKSUM) {
                 packet.pack_footer_u32(0);
                 checksum_at = Some(packet.msg_end_offset());
+            }
+
+            // Write piggyback info.  Note that we should only ever do
+            // this to the last packet in a bundle as it should be the
+            // only packet with piggybacks on it.  Piggybacks go first so
+            // that they can be stripped and the rest of the packet can
+            // be dealt with as normal.
+            if packet.has_flags(flags::HAS_PIGGYBACKS) {
+                assert!(
+                    index + 1 == num_packets,
+                    "piggybacks ride on the last packet of a bundle"
+                );
+                let mut last_len = 0usize;
+                for &(len, ref bytes) in &piggyback_payloads {
+                    // Stream on the length first
+                    packet.pack_footer_u16(len as u16);
+                    last_len = packet.msg_end_offset();
+
+                    // Reserve the area for the packet data
+                    packet.shrink(len);
+                    let mut at = packet.msg_end_offset();
+                    packet.buffer_mut()[at..at + bytes.len()].copy_from_slice(bytes);
+                    at += bytes.len();
+
+                    // Sanity check
+                    assert_eq!(
+                        at, last_len,
+                        "the piggyback block fills the room its length reserved"
+                    );
+                }
+
+                // One's complement the length of the last piggyback to
+                // indicate that it's the last one.
+                let length = u16::from_be_bytes([
+                    packet.buffer_mut()[last_len],
+                    packet.buffer_mut()[last_len + 1],
+                ]);
+                packet.buffer_mut()[last_len..last_len + 2]
+                    .copy_from_slice(&(!length).to_be_bytes());
             }
 
             if has_ack && packet.has_flags(flags::HAS_ACKS) {
@@ -573,6 +769,179 @@ impl UdpBundle {
         }
     }
 
+    /// `preparePackets` on a channel (udp_bundle.cpp:398 with a non-null
+    /// `pChannel`): the same footer walk, but the channel's own
+    /// `writeFlags`/`writeFooter` run in the middle, its sequence numbers
+    /// take over from the nub's, and every reliable packet is filed in the
+    /// channel's resend window. Returns the first overflow packet index --
+    /// the reference's `pFirstOverflowPacket`, `num_data_units` when
+    /// everything fit.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_packets_on_channel(
+        &mut self,
+        channel: &ChannelPtr,
+        seq_num_allocator: &mut SeqNumAllocator,
+        should_use_checksums: bool,
+    ) -> usize {
+        let (flag_reliable, flag_fragment, has_ack) = self.write_flags_terms();
+        let num_packets = self.packets.len();
+        let mut first_seq = 0u32;
+        let mut last_seq = 0u32;
+        let mut first_overflow_packet: Option<usize> = None;
+
+        let is_external = channel.borrow().is_external();
+        let is_internal = channel.borrow().is_internal();
+
+        // Snapshot the reliable orders and piggyback payloads before the
+        // packet walk, so the walk's mutable borrow of `packets` never
+        // aliases a read of `self`.
+        let reliable_orders_per_packet: Vec<Vec<ReliableOrder>> = (0..num_packets)
+            .map(|index| {
+                if is_internal {
+                    Vec::new()
+                } else {
+                    self.reliable_orders_for(index)
+                }
+            })
+            .collect();
+
+        let piggyback_payloads: Vec<(usize, Vec<u8>)> = self
+            .piggybacks
+            .iter()
+            .map(|piggyback| {
+                let mut bytes = Vec::with_capacity(piggyback.len);
+                bytes.extend_from_slice(&piggyback.flags.to_be_bytes());
+                for order in &piggyback.rvec {
+                    let start = order.offset;
+                    let end = start + order.length as usize;
+                    bytes.extend_from_slice(&self.packets[order.packet].data()[start..end]);
+                }
+                bytes.extend_from_slice(&piggyback.seq.to_be_bytes());
+                assert_eq!(bytes.len(), piggyback.len);
+                (piggyback.len, bytes)
+            })
+            .collect();
+
+        for (index, packet) in self.packets.iter_mut().enumerate() {
+            if should_use_checksums {
+                assert!(!packet.has_flags(flags::HAS_CHECKSUM));
+                packet.reserve_footer(4);
+                packet.enable_flags(flags::HAS_CHECKSUM);
+            }
+
+            // `this->writeFlags( pPacket )` then the channel's own flags.
+            Self::write_bundle_flags(packet, flag_reliable, flag_fragment, has_ack);
+            channel.borrow_mut().write_flags(packet);
+
+            // On a channel, external, reliable or fragmented packets carry
+            // a sequence number.
+            if is_external
+                || packet.has_flags(flags::IS_RELIABLE)
+                || packet.has_flags(flags::IS_FRAGMENT)
+            {
+                packet.reserve_footer(4);
+                packet.enable_flags(flags::HAS_SEQUENCE_NUMBER);
+            }
+
+            let msg_end_offset = packet.msg_end_offset();
+            packet.grow(packet.footer_size());
+
+            // Pack in a zero checksum. We'll calculate it later.
+            let mut checksum_at = None;
+            if packet.has_flags(flags::HAS_CHECKSUM) {
+                packet.pack_footer_u32(0);
+                checksum_at = Some(packet.msg_end_offset());
+            }
+
+            // Write piggyback info -- last packet of the bundle only.
+            if packet.has_flags(flags::HAS_PIGGYBACKS) {
+                assert!(
+                    index + 1 == num_packets,
+                    "piggybacks ride on the last packet of a bundle"
+                );
+                let mut last_len = 0usize;
+                for &(len, ref bytes) in &piggyback_payloads {
+                    // Stream on the length first
+                    packet.pack_footer_u16(len as u16);
+                    last_len = packet.msg_end_offset();
+
+                    // Reserve the area for the packet data
+                    packet.shrink(len);
+                    let mut at = packet.msg_end_offset();
+                    packet.buffer_mut()[at..at + bytes.len()].copy_from_slice(bytes);
+                    at += bytes.len();
+
+                    assert_eq!(at, last_len);
+                }
+
+                // One's complement the length of the last piggyback.
+                let length = u16::from_be_bytes([
+                    packet.buffer_mut()[last_len],
+                    packet.buffer_mut()[last_len + 1],
+                ]);
+                packet.buffer_mut()[last_len..last_len + 2]
+                    .copy_from_slice(&(!length).to_be_bytes());
+            }
+
+            // The channel writes the ack footers here; the bundle's own
+            // off-channel `addAck` arm does not apply.
+
+            channel.borrow_mut().write_footer(packet);
+
+            // Add the sequence number: reliable traffic on a channel takes
+            // the channel's numbers, everything else the nub's.
+            if packet.has_flags(flags::HAS_SEQUENCE_NUMBER) {
+                let seq = if packet.has_flags(flags::IS_RELIABLE) {
+                    UdpChannel::use_next_sequence_id(channel)
+                } else {
+                    seq_num_allocator.get_next()
+                };
+                packet.set_seq(seq);
+                packet.pack_footer_u32(seq);
+
+                if index == 0 {
+                    first_seq = seq;
+                    last_seq = seq + num_packets as u32 - 1;
+                }
+            }
+
+            // Add the first request offset.
+            if packet.has_flags(flags::HAS_REQUESTS) {
+                packet.pack_footer_u16(packet.first_request_offset() as u16);
+            }
+
+            // add the fragment info
+            if packet.has_flags(flags::IS_FRAGMENT) {
+                packet.pack_footer_u32(last_seq);
+                packet.pack_footer_u32(first_seq);
+            }
+
+            // Make sure writing all the footers brought us back to the
+            // end of the message data.
+            assert_eq!(packet.msg_end_offset(), msg_end_offset);
+
+            if let Some(at) = checksum_at {
+                packet.write_checksum(at);
+            }
+
+            // Set up the reliable machinery: file the packet in the
+            // channel's resend window, or mark it as the first overflow.
+            if packet.has_flags(flags::IS_RELIABLE) {
+                let orders = &reliable_orders_per_packet[index];
+                let window_packet = Rc::new(packet.clone());
+                if !UdpChannel::add_resend_timer(channel, packet.seq(), window_packet, orders) {
+                    if first_overflow_packet.is_none() {
+                        first_overflow_packet = Some(index);
+                    }
+                } else {
+                    assert!(first_overflow_packet.is_none());
+                }
+            }
+        }
+
+        first_overflow_packet.unwrap_or(num_packets)
+    }
+
     /// `addAck( seq )`: the one ack an off-channel bundle carries.
     pub fn add_ack(&mut self, seq: SeqNum) {
         assert!(self.ack == SEQ_NULL, "UDPBundle::addAck: ack already set");
@@ -583,6 +952,90 @@ impl UdpBundle {
     pub fn get_ack(&self) -> SeqNum {
         assert!(self.ack != SEQ_NULL, "UDPBundle::getAck: no ack to give");
         self.ack
+    }
+
+    /// `reliableOrders( p, roBeg, roEnd )`: the reliable orders of the
+    /// packet at `packet_index` -- the runs a resend of that packet has
+    /// to carry out. Each order tags its own packet, so no gap sentinel
+    /// or extraction cursor is needed here as in the reference.
+    pub fn reliable_orders_for(&self, packet_index: usize) -> Vec<ReliableOrder> {
+        self.reliable_orders
+            .iter()
+            .filter(|order| order.packet == packet_index)
+            .cloned()
+            .collect()
+    }
+
+    /// `piggyback( seq, reliableOrders, p )`: fold the reliable bytes of
+    /// the dropped packet `dropped` into the current one, so the resend
+    /// that re-sends the dropped packet does not lose the data it
+    /// carried. Answers false when the bundle has no room, or the packet
+    /// is a request (requests are not piggybacked).
+    pub fn piggyback(
+        &mut self,
+        seq: SeqNum,
+        reliable_orders: &[ReliableOrder],
+        dropped: Rc<Packet>,
+    ) -> bool {
+        // A reliable packet always has reliable orders to carry: a resend
+        // with none would stream a block claiming `len` carried bytes and
+        // provide none, corrupting the packet. The reference relies on the
+        // same invariant (reliable packets record their orders).
+        if reliable_orders.is_empty() {
+            return false;
+        }
+
+        let flags = flags::HAS_SEQUENCE_NUMBER | flags::IS_RELIABLE | flags::ON_CHANNEL;
+
+        // First figure out if we have enough space to piggyback these
+        // messages.  Allocate for packet header, sequence number footer,
+        // and 2-byte size suffix.
+        let mut total_size = HEADER_SIZE + 4 + 2;
+
+        for order in reliable_orders {
+            total_size += order.length as usize;
+
+            // We don't support piggybacking requests at the moment.
+            if order.part_of_request {
+                return false;
+            }
+        }
+
+        // End the message before dealing with the current packet,
+        // because when we allow for endMessage() to be called later, it
+        // may change the actual size of the message and even add a new
+        // packet to the chain because of the special case in message
+        // length compression.
+        if self.msg_beg.is_some() {
+            self.end_message(true);
+        }
+
+        if total_size > self.packets[self.current].free_space() {
+            return false;
+        }
+
+        // It fits, so tag packet with piggyback and reliable flags,
+        // because we are about to discard the original packet and
+        // therefore can't afford to lose this packet too.
+        self.packets[self.current]
+            .enable_flags(flags::HAS_PIGGYBACKS | flags::IS_RELIABLE | flags::HAS_SEQUENCE_NUMBER);
+
+        let piggyback = BundlePiggyback {
+            seq,
+            flags,
+            rvec: reliable_orders.to_vec(),
+            // Don't include the size suffix in the packet length
+            len: total_size - 2,
+            packet: dropped,
+        };
+        self.piggybacks.push(piggyback);
+
+        // Reserve enough footer space for the piggyback.  It's OK to do
+        // this late since we've already worked out that this fits on the
+        // current packet.
+        self.packets[self.current].reserve_footer(total_size);
+
+        true
     }
 
     /// `addReplyOrdersTo( pRequestManager, pChannel )`: hand every
@@ -645,6 +1098,12 @@ impl UdpBundle {
         self.reliable_driver
     }
 
+    /// `isCritical` (udp_bundle.hpp:87): the bundle carries a
+    /// `RELIABLE_CRITICAL` message.
+    pub fn is_critical(&self) -> bool {
+        self.is_critical
+    }
+
     /// `hasDataFooters`: whether any packet owes an ack or piggyback
     /// block.
     pub fn has_data_footers(&self) -> bool {
@@ -662,6 +1121,11 @@ impl UdpBundle {
     /// `numMessages_`.
     pub fn num_messages(&self) -> u32 {
         self.num_messages
+    }
+
+    /// `numReliableMessages_`.
+    pub fn num_reliable_messages(&self) -> u32 {
+        self.num_reliable_messages
     }
 }
 
@@ -1158,6 +1622,151 @@ mod tests {
         );
     }
 
+    /// `addReliableOrder`: a reliable message that a packet split
+    /// straddles leaves one order per packet it touches, so a resend can
+    /// carry the lost bytes to the peer. A bundle built for an internal
+    /// channel records none.
+    #[test]
+    fn reliable_orders_follow_a_split_message() {
+        let mut bundle = UdpBundle::new(0);
+        bundle.set_external_channel(true);
+        bundle.start_message(&fixed(5, 2000), ReliableType::Driver);
+        bundle.write_bytes(&[0xAB; 2000]);
+        bundle.finalise();
+
+        assert!(
+            bundle.num_data_units() >= 2,
+            "the body spans more than one packet"
+        );
+
+        let mut orders = Vec::new();
+        for index in 0..bundle.num_data_units() {
+            orders.extend(bundle.reliable_orders_for(index));
+        }
+        assert_eq!(
+            orders.len(),
+            bundle.num_data_units(),
+            "every packet the message touched owes an order"
+        );
+        assert_eq!(
+            orders
+                .iter()
+                .map(|order| order.length as usize)
+                .sum::<usize>(),
+            2000 + 1,
+            "the orders cover the body plus the id byte the message began with"
+        );
+        assert!(
+            orders.iter().all(|order| !order.part_of_request),
+            "a driver message is not a request"
+        );
+
+        // The same body on an internal channel records nothing: the
+        // orders exist only to rebuild a lost peer-to-peer packet.
+        let mut internal = UdpBundle::new(0);
+        internal.start_message(&fixed(5, 2000), ReliableType::Driver);
+        internal.write_bytes(&[0xAB; 2000]);
+        internal.finalise();
+        assert!(internal.reliable_orders_for(0).is_empty());
+    }
+
+    /// `piggyback` refuses a request's orders, and a message it has to
+    /// close early folds in first (`endMessage(true)`).
+    #[test]
+    fn piggyback_refuses_requests_and_closes_its_message_first() {
+        let mut bundle = UdpBundle::new(0);
+        bundle.set_external_channel(true);
+        bundle.start_message(&fixed(5, 100), ReliableType::Driver);
+        bundle.write_bytes(&[0xAB; 100]);
+        bundle.finalise();
+
+        let orders = bundle.reliable_orders_for(0);
+        assert!(!orders.is_empty(), "the message left an order to carry");
+
+        // A request's runs are not piggybacked at all.
+        let request_order = ReliableOrder {
+            part_of_request: true,
+            ..orders[0]
+        };
+        assert!(
+            !bundle.piggyback(42, &[request_order], Rc::new(Packet::new())),
+            "requests are never piggybacked"
+        );
+
+        // An open message closes first, so the block lands in a settled
+        // packet rather than the middle of one, and the message it closed
+        // is still counted.
+        bundle.start_message(&fixed(6, 2), ReliableType::Driver);
+        bundle.write_bytes(&[1, 2]);
+        assert!(
+            bundle.piggyback(42, &orders, Rc::new(Packet::new())),
+            "the block fits once the open message closes"
+        );
+        assert_eq!(bundle.num_messages(), 2, "both messages are counted");
+    }
+
+    /// The piggyback block lands in the footer -- length (one's
+    /// complemented), header flags, the carried bytes, then the dropped
+    /// packet's sequence number -- with the bundle's own off-channel
+    /// sequence number behind it.
+    #[test]
+    fn the_piggyback_block_lands_in_the_footer() {
+        let mut bundle = UdpBundle::new(0);
+        bundle.set_external_channel(true);
+        bundle.start_message(&fixed(5, 100), ReliableType::Driver);
+        bundle.write_bytes(&[0xAB; 100]);
+        bundle.finalise();
+
+        let orders = bundle.reliable_orders_for(0);
+        assert!(!orders.is_empty());
+        let carried: Vec<u8> = bundle.packet(0).data()
+            [orders[0].offset..orders[0].offset + orders[0].length as usize]
+            .to_vec();
+
+        assert!(bundle.piggyback(42, &orders, Rc::new(Packet::new())));
+        bundle.prepare_packets(&mut SeqNumAllocator::new(3), false);
+
+        let packet = bundle.packet(0);
+        assert_eq!(
+            packet.flags(),
+            flags::HAS_PIGGYBACKS | flags::IS_RELIABLE | flags::HAS_SEQUENCE_NUMBER,
+            "the block carries its own reliable sequence number"
+        );
+
+        // The footers are packed back to front, so the bundle's own
+        // off-channel sequence number -- the last one packed -- sits
+        // closest to the message data, and the piggyback block follows.
+        let footer = &packet.wire()[packet.msg_end_offset()..];
+        assert_eq!(
+            &footer[..4],
+            &3u32.to_le_bytes(),
+            "the bundle's own sequence footer rides first"
+        );
+        // The block itself lays out, low to high, as: the embedded
+        // header flags, the carried bytes, the dropped packet's
+        // sequence number, then the (one's complemented) length that
+        // ends the run.
+        let block = &footer[4..];
+        let len = (HEADER_SIZE + 4 + 2 + orders[0].length as usize) - 2;
+        let mut expected = Vec::new();
+        expected.extend_from_slice(
+            &(flags::HAS_SEQUENCE_NUMBER | flags::IS_RELIABLE | flags::ON_CHANNEL).to_be_bytes(),
+        );
+        expected.extend_from_slice(&carried);
+        expected.extend_from_slice(&42u32.to_be_bytes());
+        expected.extend_from_slice(&(!(len as u16)).to_le_bytes());
+        assert_eq!(
+            &block[..expected.len()],
+            &expected,
+            "the block lays out low to high"
+        );
+        assert_eq!(
+            block.len(),
+            expected.len(),
+            "the block is the last footer here"
+        );
+    }
+
     /// `write_u16`/`write_u32` stream through `addBlob`, and a value that
     /// does not fit the current packet opens the next one (`qreserve`'s
     /// `sreserve` arm).
@@ -1403,5 +2012,18 @@ mod tests {
             fresh - 10 - 1,
             "the id byte and the body ate their room"
         );
+    }
+
+    /// A second `finalise` is the no-op the `isFinalised_` guard makes it
+    /// (`PacketSender::send` closes an already-closed channel bundle).
+    #[test]
+    fn finalising_twice_is_a_no_op() {
+        let mut bundle = UdpBundle::new(0);
+        bundle.start_message(&fixed(3, 4), ReliableType::No);
+        bundle.write_bytes(&[b'y'; 4]);
+        bundle.finalise();
+        let size = bundle.packet(0).total_size();
+        bundle.finalise();
+        assert_eq!(bundle.packet(0).total_size(), size, "nothing grew");
     }
 }
