@@ -132,7 +132,8 @@
   - 证据：`docs/review/bw00-04-04-stack-comparison.md`（`stack_comparison_run.py` 执行 + `stack_comparison_doc.py` 生成）：一份输入（`reference/bw00_04_04_input.json`：角色集 8 + 资源路径 + `server/bw.xml`）同时驱动两栈，各自产出证据文件——原版侧 `reference/bw00_04_04_reference_evidence.json`（参考仓 4b637c8d，mode=live 只读轮询至全稳态 full_steady=true：dbappmgr/cellappmgr/baseappmgr/dbapp/cellapp/baseapp×2/loginapp/serviceapp 全部在位且日志出现 `---- <App> is running ----`），新版侧 `reference/bw00_04_04_new_evidence.json`（boundless-server，逐角色 rc=0 + `[role] starting` 启动行）。对照结论：7/8 角色双栈均有证据；`serviceapp` 新版尚不认识（`KNOWN_ROLES` 无此项，拒绝 rc=1，缺口记录在案）；深度差在预期内——原版到达完整稳态，新版入口当前只到进程启动，更深的 init 链由 BW-01-04 落地。两栈各自如实记录到达深度，同一输入产生两份证据。commit 3971b34。
 - [x] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
   - 证据：`docs/review/bw00-04-05-substitution-run.md`（`substitution_run.py` 执行 + `substitution_doc.py` 生成，报告 `reference/bw00_04_05_substitution.json`，输入 `reference/bw00_04_05_input.json`）：同一角色集只换一个角色——**被替换角色 `baseapp`**，由新版 `boundless-server baseapp` 启动（接受 rc=0、启动行 `[baseapp] starting (boundless minimal entry)`），其余 7 角色（dbappmgr/cellappmgr/baseappmgr/dbapp/cellapp/loginapp/serviceapp）保持原版侧（参考仓 4b637c8d，mode=live 只读旁听 full_steady=true）。替换后果如实记录：被替换角色接受输入并启动但只到进程启动，替换后全栈无法维持稳态（更深 init 链 BW-01-04 落地）；报告注明被替换角色与两侧到达深度。commit b216453。
-- [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+- [x] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+  - 证据：`docs/review/bw00-04-06-diff-report.md`（`diff_report.py` 泛型记录序列差异器 + `diff_report_selftest.py` 注入测试 + `diff_report_doc.py` 生成）：回调夹具与全栈对照证据统一归一化为 `{key, order, value, ignorable, timed_out}`，一份差异器定位三类差异——`field`（value 不同且非可忽略）、`ignored`（value 不同但可忽略）、`timeout`（timed_out 不同）、`ordering`（相对顺序不同）。注入测试以 BW-00-04-02 真实夹具为基线每次只注入一类：field 注入定位 {field:1,timeout:0,ordering:0}、timeout 注入 {0,1,0}、ordering 注入 {0,0,2}，全部通过（all_ok=true）。真实对照演示（BW-00-04-04 两证据）定位 7 角色 `running`→`started` 与 `serviceapp` `running`→`rejected`，逐条不混淆。commit 35e604b。
 
 #### BW-00-05 功能覆盖台账
 
