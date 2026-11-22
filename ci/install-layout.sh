@@ -244,6 +244,47 @@ server_locates_res() {
     printf '%s' "$out"
 }
 
+# build_install_parity <prefix> <build-cli> <build-server> — a launch from
+# the build tree and a launch from the install prefix find the same
+# resources (BW-16-03-03): the staged res is a byte-exact copy of the
+# tracked fixture, the defs dump the two CLIs produce over their respective
+# trees is byte-identical, and both server exes locate their (identical)
+# config silently.
+build_install_parity() {
+    local prefix="$1" build_cli="$2" build_server="$3" dump_a dump_b role out
+    if ! diff -r "$(cur_res)" "$prefix/res" >/dev/null; then
+        echo "the installed res tree differs from the source fixture"
+        return 1
+    fi
+    dump_a="$("$build_cli" -r "$(cur_res)" 2>/dev/null)" || {
+        echo "the build-tree CLI failed to load the fixture"
+        return 2
+    }
+    dump_b="$("$prefix/bin/$CLI" -r "$prefix/res" 2>/dev/null)" || {
+        echo "the installed CLI failed to load the installed tree"
+        return 3
+    }
+    if [ "$dump_a" != "$dump_b" ]; then
+        echo "the two launches dumped different defs"
+        return 4
+    fi
+    role="$(first_role)"
+    [ -n "$role" ] || { echo "no role list at $ROLES_SOURCE"; return 5; }
+    out="$(BW_RES_PATH="$(cur_res)" CI_RUNNERS_TIMEOUT=1 timeout 30 "$build_server" "$role" 2>&1)"
+    if ! printf '%s\n' "$out" | grep -q 'starting' \
+        || printf '%s\n' "$out" | grep -q 'Could not find'; then
+        printf 'the build-tree launch did not locate the fixture config: %s' "$out"
+        return 6
+    fi
+    out="$(BW_RES_PATH="$prefix/res" CI_RUNNERS_TIMEOUT=1 timeout 30 "$prefix/bin/$SERVER" "$role" 2>&1)"
+    if ! printf '%s\n' "$out" | grep -q 'starting' \
+        || printf '%s\n' "$out" | grep -q 'Could not find'; then
+        printf 'the installed launch did not locate the installed config: %s' "$out"
+        return 7
+    fi
+    printf 'identical res, identical defs dump, both launches locate the config'
+}
+
 # module_import <prefix> — the installed CPython module imports into a bare
 # interpreter with no dev environment: no cargo, no target dir, no venv.
 module_import() {
@@ -388,6 +429,14 @@ run_all() {
         ci_fail install-res-server "installed $SERVER did not locate the installed config on first start: $(tsv_escape "$out")"
     else
         ci_pass install-res-server "installed $SERVER locates the installed config on first start"
+    fi
+
+    # BW-16-03-03: a launch from the build tree and a launch from the
+    # install prefix find the same resources.
+    if ! out="$(build_install_parity "$prefix" "$cli" "$bin")"; then
+        ci_fail install-build-parity "build and install launches found different resources: $(tsv_escape "$out")"
+    else
+        ci_pass install-build-parity "build and install launches find the same resources"
     fi
 
     # BW-14-04-02: the installed module imports with no dev environment.
@@ -575,6 +624,16 @@ exit 0'
     make_stub "$bin" 'echo "[baseapp] starting (stub)" >&2
 echo "[baseapp] has shut down." >&2
 exit 0'
+
+    ci_step "self-test: the parity check goes red when the install tree is gone"
+    # Reuse the current fixture stub tree as the source; the install side is
+    # missing, which is exactly the defect the check must name.
+    if CI_LAYOUT_RES="$res" build_install_parity "$r/no-such-install" "$cli" "$bin" >/dev/null 2>&1; then
+        ci_fail selftest-parity-red "the parity check did not go red on a missing install"
+        fails=$((fails + 1))
+    else
+        ci_pass selftest-parity-red "the parity check goes red on a missing install"
+    fi
 
     ci_step "self-test: a res tree without the entity defs goes red at the res-load check"
     # Staging must still succeed (bw.xml is there); what fails is the
