@@ -19,6 +19,11 @@
 //! status: a node reappears when its drill reached recovery and it answers
 //! again, and its state updated when it recorded something after the fault —
 //! and a node that is back with a state that never moved is not verified.
+//!
+//! The cluster smoke check ([`ClusterSmoke`]) runs the fault view over the
+//! whole cluster: every process must be healthy, and a failing check names
+//! each unhealthy process and its conditions, so a not-ready process fails
+//! with a diagnosable line instead of a bare assertion.
 
 use crate::process_status::{ProcessStatus, StatusCollector};
 use crate::recovery::{RecoveryPhase, RecoveryTracker};
@@ -219,6 +224,43 @@ impl<'a> FaultView<'a> {
         FaultReport {
             role: role.to_string(),
             faults,
+        }
+    }
+}
+
+/// The cluster smoke check: every process the fault view knows must be
+/// healthy. A failing check names each unhealthy process and the condition it
+/// shows, so the failure is diagnosable — an operator reads off exactly which
+/// node is not ready, overloaded or stale, and why.
+pub struct ClusterSmoke<'a> {
+    view: &'a FaultView<'a>,
+}
+
+impl<'a> ClusterSmoke<'a> {
+    /// A smoke check over the given fault view.
+    pub fn new(view: &'a FaultView<'a>) -> Self {
+        Self { view }
+    }
+
+    /// Whether every process is healthy.
+    pub fn passed(&self) -> bool {
+        self.view.reports().iter().all(|report| report.is_healthy())
+    }
+
+    /// The failure a failing smoke prints: one line per unhealthy process,
+    /// naming it and its conditions. `None` when the cluster passed.
+    pub fn failure(&self) -> Option<String> {
+        let unhealthy: Vec<String> = self
+            .view
+            .reports()
+            .into_iter()
+            .filter(|report| !report.is_healthy())
+            .map(|report| report.render())
+            .collect();
+        if unhealthy.is_empty() {
+            None
+        } else {
+            Some(unhealthy.join("\n"))
         }
     }
 }
@@ -708,5 +750,54 @@ mod tests {
         assert!(verified.reappeared);
         assert!(!verified.state_updated);
         assert!(!verified.is_verified());
+    }
+
+    #[test]
+    fn a_not_ready_process_fails_the_smoke_with_a_diagnosable_line() {
+        let mut status = StatusCollector::with_clock(|| 1_000);
+        status
+            .register("cellapp01", Some(100))
+            .register("baseapp01", Some(200));
+        status.record("baseapp01", "ready", "true", "readiness announcement");
+
+        let view = FaultView::new(&status);
+        let smoke = ClusterSmoke::new(&view);
+
+        // The not-ready process fails the smoke, and the failure names it and
+        // its condition: the diagnosis says which node and why.
+        assert!(!smoke.passed());
+        let failure = smoke.failure().unwrap();
+        assert!(failure.contains("cellapp01: not ready"));
+        assert!(!failure.contains("baseapp01"));
+    }
+
+    #[test]
+    fn an_overloaded_process_fails_the_smoke_by_name() {
+        let mut status = StatusCollector::with_clock(|| 1_000);
+        status.register("cellapp01", Some(100));
+        status.record("cellapp01", "ready", "true", "readiness announcement");
+        status.record("cellapp01", "load", "140", "process load");
+
+        let view = FaultView::new(&status);
+        let smoke = ClusterSmoke::new(&view);
+        assert!(!smoke.passed());
+        assert_eq!(smoke.failure().unwrap(), "cellapp01: overloaded");
+    }
+
+    #[test]
+    fn a_healthy_cluster_passes_the_smoke() {
+        let mut status = StatusCollector::with_clock(|| 0);
+        status
+            .register("cellapp01", Some(100))
+            .register("baseapp01", Some(200));
+        for role in ["cellapp01", "baseapp01"] {
+            status.record(role, "ready", "true", "readiness announcement");
+            status.record(role, "load", "90", "process load");
+        }
+
+        let view = FaultView::new(&status);
+        let smoke = ClusterSmoke::new(&view);
+        assert!(smoke.passed());
+        assert_eq!(smoke.failure(), None);
     }
 }
