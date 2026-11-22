@@ -237,10 +237,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// SIGKILL a role's whole process group (`kill(-pid)`), then the direct
 /// pid in case the group was already gone.
 fn kill_process_group(pid: i32) {
-    unsafe {
-        libc::kill(-pid, libc::SIGKILL);
-        libc::kill(pid, libc::SIGKILL);
-    }
+    platform::signals::kill(-pid, platform::signals::SIGKILL);
+    platform::signals::kill(pid, platform::signals::SIGKILL);
 }
 
 /// A live topology: every role's process, plus the order they were started

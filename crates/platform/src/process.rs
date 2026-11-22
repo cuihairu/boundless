@@ -212,10 +212,10 @@ mod tests {
     #[test]
     fn signal_terminates_the_child() {
         let mut child = sh("sleep 30");
-        child.signal(libc::SIGTERM).expect("kill");
+        child.signal(crate::signals::SIGTERM).expect("kill");
         let status = child.wait().expect("wait");
         assert_eq!(status.code, None);
-        assert_eq!(status.signal, Some(libc::SIGTERM));
+        assert_eq!(status.signal, Some(crate::signals::SIGTERM));
         assert!(!status.success());
     }
 
