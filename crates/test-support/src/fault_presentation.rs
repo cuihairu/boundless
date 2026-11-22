@@ -9,8 +9,13 @@
 //! condition was measured from — so a presentation never merges them, and a
 //! fresh beat (even one taken this instant) is never mistaken for a stale
 //! one.
+//!
+//! A cluster query also tolerates partial failure ([`PartialQuery`]): an
+//! expected node that did not answer is marked unreachable, and the nodes
+//! that did answer keep their results readable. A node on record with no
+//! readings is not unreachable — its empty status is a readable zero value.
 
-use crate::process_status::StatusCollector;
+use crate::process_status::{ProcessStatus, StatusCollector};
 
 /// One fault condition a process can be seen in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +217,69 @@ impl<'a> FaultView<'a> {
     }
 }
 
+/// The result of querying one expected node of a cluster.
+#[derive(Debug)]
+pub enum NodeResult<'a> {
+    /// The node answered; its collected status is readable.
+    Status(&'a ProcessStatus),
+    /// The node did not answer: it is unreachable, or the query to it failed.
+    Unreachable(&'a str),
+}
+
+impl<'a> NodeResult<'a> {
+    /// The role the result is about.
+    pub fn role(&self) -> &'a str {
+        match self {
+            NodeResult::Status(status) => &status.role,
+            NodeResult::Unreachable(role) => role,
+        }
+    }
+
+    /// Whether the node did not answer.
+    pub fn is_unreachable(&self) -> bool {
+        matches!(self, NodeResult::Unreachable(_))
+    }
+
+    /// The node's status, when it answered.
+    pub fn status(&self) -> Option<&'a ProcessStatus> {
+        match self {
+            NodeResult::Status(status) => Some(status),
+            NodeResult::Unreachable(_) => None,
+        }
+    }
+}
+
+/// A cluster query over the expected nodes that tolerates partial failure: a
+/// node that did not answer is marked unreachable, and the nodes that did
+/// answer keep their results readable.
+pub struct PartialQuery<'a> {
+    status: &'a StatusCollector,
+}
+
+impl<'a> PartialQuery<'a> {
+    /// A partial query over the collected status.
+    pub fn new(status: &'a StatusCollector) -> Self {
+        Self { status }
+    }
+
+    /// Query the expected nodes, in the order given: each answers with its
+    /// status, or is marked unreachable when it is not on record. A node on
+    /// record with no readings is not unreachable — its empty status is a
+    /// zero value, and it is still readable.
+    pub fn query<'b>(&self, expected: &[&'b str]) -> Vec<NodeResult<'a>>
+    where
+        'b: 'a,
+    {
+        expected
+            .iter()
+            .map(|role| match self.status.status(role) {
+                Some(status) => NodeResult::Status(status),
+                None => NodeResult::Unreachable(role),
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,5 +437,64 @@ mod tests {
         assert_eq!(view.heartbeat("cellapp02"), HeartbeatState::None);
         assert_eq!(view.heartbeat("cellapp02").age(), None);
         assert!(!view.report("cellapp02").shows(FaultKind::HeartbeatStale));
+    }
+
+    #[test]
+    fn a_query_with_a_lost_node_still_reads_the_healthy_ones() {
+        let mut status = StatusCollector::with_clock(|| 1_000);
+        status
+            .register("cellapp01", Some(100))
+            .register("baseapp01", Some(200));
+        for role in ["cellapp01", "baseapp01"] {
+            status.record(role, "version", "0.1.0", "build metadata");
+            status.record(role, "ready", "true", "readiness announcement");
+        }
+        // cellapp02 is expected but never answered: the query to it fails.
+        let query = PartialQuery::new(&status);
+        let results = query.query(&["cellapp01", "cellapp02", "baseapp01"]);
+
+        // Every expected node answers with a result; the lost one is marked.
+        assert_eq!(results.len(), 3);
+        assert!(!results[0].is_unreachable());
+        assert_eq!(results[0].role(), "cellapp01");
+        assert!(results[1].is_unreachable());
+        assert_eq!(results[1].role(), "cellapp02");
+        assert!(results[1].status().is_none());
+        assert!(!results[2].is_unreachable());
+
+        // The healthy nodes' results stay readable through the failure.
+        let cellapp = results[0].status().unwrap();
+        assert_eq!(cellapp.pid, Some(100));
+        assert!(cellapp.is_ready());
+        assert_eq!(cellapp.reading("version").unwrap().value, "0.1.0");
+        let baseapp = results[2].status().unwrap();
+        assert_eq!(baseapp.role, "baseapp01");
+        assert!(baseapp.is_ready());
+    }
+
+    #[test]
+    fn a_silent_node_is_readable_but_not_unreachable() {
+        let mut status = StatusCollector::with_clock(|| 0);
+        status.register("cellapp01", Some(100));
+
+        // On record even with no readings: reachable, and its empty status is
+        // a readable zero value — not an unreachable node.
+        let query = PartialQuery::new(&status);
+        let results = query.query(&["cellapp01", "ghost"]);
+        assert!(!results[0].is_unreachable());
+        let silent = results[0].status().unwrap();
+        assert!(!silent.is_ready());
+        assert!(silent.readings.is_empty());
+        assert_eq!(silent.role, "cellapp01");
+
+        // Never on record: unreachable.
+        assert!(results[1].is_unreachable());
+    }
+
+    #[test]
+    fn querying_no_expected_nodes_yields_nothing() {
+        let status = StatusCollector::with_clock(|| 0);
+        let query = PartialQuery::new(&status);
+        assert!(query.query(&[]).is_empty());
     }
 }
