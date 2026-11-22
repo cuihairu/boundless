@@ -801,4 +801,77 @@ mod original_fixtures {
         assert_eq!(s.as_bytes(), decode_hex("02010403").as_slice());
         assert_eq!(s.unread_bytes(), decode_hex("02010403").as_slice());
     }
+
+    // --- BW-01-02-05: truncation and out-of-bounds reporting ----------------
+
+    /// Every one of the original's overread records reports `error=1` with
+    /// `remaining=0`, which is this stream's `has_error()` plus a clamped read
+    /// cursor. The reference hands back an internal `errBuf` for reads of at
+    /// most 2048 bytes so a failed fixed-width read yields a zeroed
+    /// destination instead of aborting (the harness prints `value=0x00000000`
+    /// for a read into `0xAAAAAAAA`); the Rust analogue is an error value, so
+    /// those out-param zeroes map onto `Err` here.
+    #[test]
+    fn short_fixed_width_read_reports_error() {
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("3412"));
+        s.rewind();
+        assert_eq!(s.read_u32(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn read_from_an_empty_stream_reports_error() {
+        let mut s = BinaryStream::new();
+        assert_eq!(s.read_u8(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn string_overrun_reports_error() {
+        // Declares 5 bytes, has 2.
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("056162"));
+        s.rewind();
+        assert_eq!(s.read_string(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn packed_int_payload_truncation_reports_error() {
+        // Starts the 4-byte extension but has only one byte behind it.
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("ff00"));
+        s.rewind();
+        assert_eq!(s.read_packed_int(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn error_is_sticky_across_reads() {
+        // A one-byte stream: the u32 read fails, and the original clamps the
+        // cursor to the end, so the surviving byte is unreachable and the later
+        // u8 read reports the same error too.
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("01"));
+        s.rewind();
+        assert_eq!(s.read_u32(), Err(StreamError::Truncated));
+        assert_eq!(s.read_u8(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn retrieve_beyond_end_reports_error() {
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("0102"));
+        s.rewind();
+        assert_eq!(s.read_blob_raw(4), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
 }
