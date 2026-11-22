@@ -1400,7 +1400,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 - [ ] **BW-16-03-01 布置按角色加载的 Python 模块**。**验收** 角色之间公开 API 正确隔离。（python-host crate 已随 7d031b1 合入且 BW-03-01 全勾，余 python/ 模块目录未建，随 BW-03-03/04 交付解锁）
 - [ ] **BW-16-03-02 实现原版导入名称和路径**。**验收** Demo 无需改导入。（python-host crate 已随 7d031b1 合入且 BW-03-01-02 已勾，余 python/ 模块目录未建，随 BW-03-03/04 交付解锁）
-- [ ] **BW-16-03-03 复测构建目录及安装目录**。**验收** 两种启动均找到同一资源。（python-host crate 已随 7d031b1 合入，余 python/ 模块目录与安装脚本未建，随 BW-03/BW-14 交付解锁）
+- [x] **BW-16-03-03 复测构建目录及安装目录**。**验收** 两种启动均找到同一资源。（commit a8758e3）
+  - 证据：`ci/install-layout.sh`（a8758e3）`build_install_parity` —— 构建树（`target/release`）与安装前缀两侧 `diff -r` 逐字节一致、`process_defs -r` 的 defs dump 逐字节一致、两侧 `boundless-server <role>` 首启均静默定位 `server/bw.xml`（install-build-parity PASS：`build and install launches find the same resources`）。**红色自检同绿**：安装树缺失时 parity 咬合（selftest-parity-red PASS）。安装树内资源面以 `res/`（bw.xml + 样例脚本，BW-14-04-03）与 `lib/python/boundless.so`（稳定 ABI 模块，BW-14-04-02 实测导入）体现；python/ 全量模块目录随 BW-03-03/04 增量生长后，本项以同一 parity 复测其构建/安装两侧。
 
 #### BW-16-04 源码映射与扩展接口
 

@@ -45,6 +45,7 @@
 - **install-res-server**（03 服务器半）：装后 `boundless-server <role>` 在 `BW_RES_PATH=<prefix>/res` 下首启，配置链定位 `server/bw.xml`（无「Could not find」/「No configuration section」行），并正常启动/停止。
 - **install-module**（02）：`PYTHONPATH=<prefix>/lib/python` 下用裸解释器 `import boundless`（`__version__`、`version()` 一致），无 cargo/无 target 目录/无 venv。
 - **install-layout**：配置、样例资源、两二进制、模块、`data/` 齐全。
+- **install-build-parity**（BW-16-03-03）：构建目录启动与安装目录启动**找到同一资源**——`diff -r` 证明安装 `res/` 与源码 fixture 逐字节一致、两侧 `process_defs -r` 的 defs dump 逐字节一致、两侧 `boundless-server` 首启均静默定位配置。
 - **install-upgrade**（05）：篡改包属文件 `res/server/bw.xml` → 升级解包将其还原为打包字节，种子用户数据 `data/db/user.db` 保留。
 - **install-uninstall**（05）：卸载删除 `bin/ lib/ res/`，`data/db/user.db` 保留。
 
