@@ -20,6 +20,7 @@ use foundation::time_queue::{TimerHandle, TimerHandler};
 use crate::channel_listener::ChannelListener;
 use crate::circular_array::CircularArray;
 use crate::endpoint::{Address, NONE};
+use crate::fragmented_bundle::FragmentedBundle;
 use crate::misc::{
     CHANNEL_ID_NULL, ChannelID, ChannelVersion, SEQ_NULL, SeqNum, seq_less_than, seq_mask,
 };
@@ -75,6 +76,26 @@ pub enum AddToReceiveWindowResult {
     /// The sequence is invalid, or the packet came from an unexpected
     /// source address.
     PacketIsCorrupt,
+}
+
+/// `processOrderedPacket`'s fragment branch, on-channel half
+/// (packet_receiver.cpp:1236-1360): the verdict after one on-channel
+/// fragment was offered to [`UdpChannel::process_fragment`].
+///
+/// `Packet` carries no derives, so the variants are matched with
+/// `matches!` rather than `assert_eq!`.
+pub enum FragmentResult {
+    /// The fragment was stashed in the channel's bundle, which is still
+    /// waiting for the rest (the reference's `REASON_SUCCESS` with no
+    /// chain handed off yet).
+    Waiting,
+    /// The bundle just completed: the ordered fragment chain is handed out
+    /// for dispatch, the reference's `pChain`.
+    Complete(Vec<Packet>),
+    /// The fragment is corrupt and the caller should drop it: the footers
+    /// would not strip, or the chain is a reliable fragment whose range
+    /// disagrees with the bundle already held.
+    Corrupt,
 }
 
 /// The window size the constructor picks: external channels are small
@@ -200,6 +221,11 @@ pub struct UdpChannel {
     /// with the send path (BW-02-03-06); until then, crossing the push
     /// threshold parks the demand here for the caller to observe.
     acks_need_push: bool,
+    /// `pFragments_` (udp_channel.hpp:449, BW-02-03-06): the bundle this
+    /// channel is mid-reassembly on. The reference keeps a refcounted
+    /// `FragmentedBundlePtr`; here the channel owns the one bundle
+    /// outright, and a `None` is the reference's null.
+    p_fragments: Option<FragmentedBundle>,
 
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
@@ -268,6 +294,7 @@ impl UdpChannel {
             push_unsent_acks_threshold: 0,
             should_auto_switch_to_src_addr: false,
             acks_need_push: false,
+            p_fragments: None,
             network_interface: Rc::downgrade(interface),
         }));
 
@@ -1091,6 +1118,72 @@ impl UdpChannel {
         }
     }
 
+    // -- Fragment reassembly (BW-02-03-06) -------------------------------
+
+    /// `pFragments()` (udp_channel.hpp:225): the bundle this channel is
+    /// mid-reassembly on, if any. `None` is the reference's null.
+    pub fn p_fragments(&self) -> Option<&FragmentedBundle> {
+        self.p_fragments.as_ref()
+    }
+
+    /// `processOrderedPacket`'s fragment branch, on-channel half
+    /// (packet_receiver.cpp:1236-1360): strip the footers off one
+    /// on-channel fragment and join it into the channel's bundle.
+    ///
+    /// Call this for a reliable, on-channel packet carrying
+    /// `FLAG_IS_FRAGMENT`. The reference walks the same branch for both
+    /// on- and off-channel packets; here the channel's own [`Self::p_fragments`]
+    /// slot is the seam, and the off-channel map lives with the once-off
+    /// receiver (BW-02-03-06). The "expecting a fragment" guard for a
+    /// non-fragment packet (packet_receiver.cpp:1209-1232) and the
+    /// `clearState` reclaim (udp_channel.cpp:301) belong to the wired
+    /// receive path, still to come.
+    ///
+    /// The fragment is corrupt when its footers will not strip, when it
+    /// would start the channel's bundle off its head (channel traffic is
+    /// ordered, so the first fragment seen must be the bundle's first),
+    /// or when `FragmentedBundle::add_packet` rejects it as mangled. A
+    /// completed bundle hands its ordered chain back through
+    /// [`FragmentResult::Complete`] and clears the slot; anything else
+    /// leaves the bundle parked.
+    pub fn process_fragment(
+        &mut self,
+        mut packet: Packet,
+        is_external: bool,
+        source_str: &str,
+        now: u64,
+    ) -> FragmentResult {
+        // The footers come off before the bundle looks at fragBegin/End.
+        if !packet.strip_frag_info() {
+            return FragmentResult::Corrupt;
+        }
+
+        if self.p_fragments.is_none() {
+            // Channel traffic is ordered, so the first fragment of a
+            // bundle on a channel must be the bundle's first.
+            if packet.seq() != packet.frag_begin() {
+                return FragmentResult::Corrupt;
+            }
+
+            self.p_fragments = Some(FragmentedBundle::new(packet, now));
+            return FragmentResult::Waiting;
+        }
+
+        let fragments = self.p_fragments.as_mut().expect("checked above");
+        if !fragments.add_packet(packet, is_external, source_str, now) {
+            return FragmentResult::Corrupt;
+        }
+        if !fragments.is_complete() {
+            return FragmentResult::Waiting;
+        }
+
+        // The bundle is complete: hand the ordered chain out and clear
+        // the slot for the next one.
+        let chain = fragments.take_chain();
+        self.p_fragments = None;
+        FragmentResult::Complete(chain)
+    }
+
     // -- Channel base accessors (channel.hpp) ----------------------------
 
     /// `addr()`.
@@ -1484,6 +1577,7 @@ mod tests {
     use super::*;
     use crate::event_dispatcher::EventDispatcher;
     use crate::misc::SEQ_MASK;
+    use crate::packet::flags;
     use std::cell::Cell;
 
     /// An interface on a pinned clock with no socket: the channel
@@ -2946,5 +3040,201 @@ mod tests {
         );
         assert_eq!(stats.num_duplicate_packets_received(), 1);
         assert_eq!(channel.borrow().num_buffered_receives(), 1);
+    }
+
+    // -- BW-02-03-06: fragment reassembly -------------------------------
+
+    /// A reliable fragment of the bundle spanning `[frag_begin, frag_end]`,
+    /// with the footers still on: `process_fragment` strips them itself,
+    /// like the reference's fragment branch.
+    fn fragment_packet(seq: SeqNum, frag_begin: SeqNum, frag_end: SeqNum) -> Packet {
+        let mut packet = packet_with_seq(seq);
+        packet.enable_flags(flags::IS_FRAGMENT | flags::IS_RELIABLE);
+        packet.grow(crate::packet::HEADER_SIZE);
+        packet.grow(4); // a body the footers trail
+        let buf = packet.buffer_mut();
+        buf[crate::packet::HEADER_SIZE + 4..crate::packet::HEADER_SIZE + 8]
+            .copy_from_slice(&frag_begin.to_le_bytes());
+        buf[crate::packet::HEADER_SIZE + 8..crate::packet::HEADER_SIZE + 12]
+            .copy_from_slice(&frag_end.to_le_bytes());
+        packet.grow(8);
+        packet
+    }
+
+    /// The acceptance for the item: fragments that arrive out of order are
+    /// reassembled in sequence order on the channel, and the channel's
+    /// fragment slot is empty again once the bundle hands off.
+    #[test]
+    fn fragments_arriving_out_of_order_reassemble_on_the_channel() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fa),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // The head anchors the bundle and waits for the rest.
+        let result =
+            channel
+                .borrow_mut()
+                .process_fragment(fragment_packet(0, 0, 2), true, "TEST", 0);
+        assert!(matches!(result, FragmentResult::Waiting));
+        assert!(
+            channel
+                .borrow()
+                .p_fragments()
+                .is_some_and(|f| f.chain_length() == 1),
+            "the first fragment anchors the channel's bundle"
+        );
+
+        // The last fragment arrives next and leaves a hole.
+        let result =
+            channel
+                .borrow_mut()
+                .process_fragment(fragment_packet(2, 0, 2), true, "TEST", 1);
+        assert!(matches!(result, FragmentResult::Waiting));
+
+        // The hole-filling fragment completes the bundle; the chain hands
+        // out in sequence order and the slot is cleared for the next one.
+        let result =
+            channel
+                .borrow_mut()
+                .process_fragment(fragment_packet(1, 0, 2), true, "TEST", 2);
+        let chain = match result {
+            FragmentResult::Complete(chain) => chain,
+            FragmentResult::Waiting => panic!("the bundle still waits for fragments"),
+            FragmentResult::Corrupt => panic!("a valid fragment was reported corrupt"),
+        };
+        let seqs: Vec<_> = chain.iter().map(|p| p.seq()).collect();
+        assert_eq!(seqs, vec![0, 1, 2], "按原版顺序恢复");
+        assert!(
+            channel.borrow().p_fragments().is_none(),
+            "the completed bundle clears the channel's slot"
+        );
+    }
+
+    /// A fragment with unusable footers is corrupt before any bundle is
+    /// touched (the reference's `Invalid fragment footers` path).
+    #[test]
+    fn a_fragment_with_bad_footers_is_corrupt() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fb),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // Too short to hold the two footers.
+        let mut short = packet_with_seq(0);
+        short.enable_flags(flags::IS_FRAGMENT | flags::IS_RELIABLE);
+        let result = channel
+            .borrow_mut()
+            .process_fragment(short, true, "TEST", 0);
+        assert!(matches!(result, FragmentResult::Corrupt));
+        assert!(channel.borrow().p_fragments().is_none());
+    }
+
+    /// Channel traffic is ordered, so a bundle that starts mid-way -- the
+    /// first fragment the channel ever sees is not the bundle's head -- is
+    /// corrupt (the reference's `missing packets before` path).
+    #[test]
+    fn an_on_channel_bundle_must_start_at_its_head() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fc),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // Fragment 1 of [0,2]: the head (0) never showed up.
+        let result =
+            channel
+                .borrow_mut()
+                .process_fragment(fragment_packet(1, 0, 2), true, "TEST", 0);
+        assert!(matches!(result, FragmentResult::Corrupt));
+        assert!(
+            channel.borrow().p_fragments().is_none(),
+            "no bundle is created for a mid-stream start"
+        );
+    }
+
+    /// A fragment whose footers disagree with the bundle the channel is
+    /// already holding is mangled: `add_packet` rejects it, the chain
+    /// keeps what it had, and the caller is told the packet is corrupt.
+    #[test]
+    fn a_mismatched_fragment_is_corrupt_on_the_channel() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fd),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        assert!(matches!(
+            channel
+                .borrow_mut()
+                .process_fragment(fragment_packet(0, 0, 2), true, "TEST", 0),
+            FragmentResult::Waiting
+        ));
+
+        // A reliable fragment of a different bundle ([1,3]) cannot join.
+        assert!(matches!(
+            channel
+                .borrow_mut()
+                .process_fragment(fragment_packet(1, 1, 3), false, "TEST", 1),
+            FragmentResult::Corrupt
+        ));
+        assert!(
+            channel
+                .borrow()
+                .p_fragments()
+                .is_some_and(|f| f.chain_length() == 1),
+            "the bundle keeps the chain it had"
+        );
+    }
+
+    /// The off-channel half of the timeout acceptance: bundles too old to
+    /// be worth finishing are swept, fresh ones are kept, and the map
+    /// ends up holding only the live reassembly.
+    #[test]
+    fn the_fragment_timeout_sweep_reclaims_stale_bundles() {
+        use crate::fragmented_bundle::{
+            FragmentedBundle, FragmentedBundles, discard_old_fragmented_bundles,
+        };
+
+        let stale = (0, addr(0x0100_00fe));
+        let fresh = (5, addr(0x0100_00ff));
+        let mut bundles = FragmentedBundles::new();
+        bundles.insert(
+            stale,
+            Rc::new(RefCell::new(FragmentedBundle::new(
+                fragment_packet(0, 0, 2),
+                0,
+            ))),
+        );
+        bundles.insert(
+            fresh,
+            Rc::new(RefCell::new(FragmentedBundle::new(
+                fragment_packet(5, 5, 7),
+                9_000_000,
+            ))),
+        );
+
+        discard_old_fragmented_bundles(&mut bundles, 11_000_001);
+        assert!(!bundles.contains_key(&stale), "the stale one was reclaimed");
+        assert!(bundles.contains_key(&fresh), "the fresh one survives");
+        assert_eq!(bundles.len(), 1);
     }
 }

@@ -11,6 +11,7 @@ pub mod condemned_channels;
 pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;
+pub mod fragmented_bundle;
 pub mod frequent_tasks;
 pub mod interface_element;
 pub mod interface_minder;
