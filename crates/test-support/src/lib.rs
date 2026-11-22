@@ -7,6 +7,7 @@
 
 pub mod allocation;
 pub mod asset_fixtures;
+pub mod capture_session;
 pub mod case_registry;
 pub mod channel;
 pub mod client_login;

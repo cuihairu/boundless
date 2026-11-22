@@ -269,6 +269,21 @@ impl Profiler {
         };
     }
 
+    /// The role/process label currently set on this profiler.
+    pub fn identity(&self) -> ProfilerIdentity {
+        self.inner.lock().expect("profiler lock").identity.clone()
+    }
+
+    /// Take the raw events buffered since the last drain, in order — the
+    /// entry-buffer swap the reference performs each tick. A capture session
+    /// uses this to bound its window: draining at start discards the baseline,
+    /// draining at stop yields exactly the events recorded in between. The
+    /// drained events are consumed, so they are not processed into snapshots.
+    pub fn drain_entries(&self) -> Vec<ProfileEntry> {
+        let mut inner = self.inner.lock().expect("profiler lock");
+        std::mem::take(&mut inner.entries)
+    }
+
     /// Remove the calling thread — the reference's `removeThread`/
     /// `__onThreadEnd`. Any section it still has open is marked as a missing
     /// interval (never closed) rather than left silently open, and its thread
@@ -336,12 +351,15 @@ impl Profiler {
         self.scoped_category(name, Category::Cpp)
     }
 
-    /// Open a scoped section in a specific category.
+    /// Open a scoped section in a specific category. Both the opening `Start`
+    /// and the closing `End` carry the category, like the reference's
+    /// `ScopedDynamicStringProfiler`.
     pub fn scoped_category(&self, name: &str, category: Category) -> ScopedProfiler<'_> {
         self.add_entry(name, EventKind::Start, 0, category);
         ScopedProfiler {
             profiler: self,
             name: name.to_string(),
+            category,
             request: 0,
         }
     }
@@ -352,6 +370,7 @@ impl Profiler {
         ScopedProfiler {
             profiler: self,
             name: name.to_string(),
+            category: Category::Cpp,
             request: 0,
         }
     }
@@ -364,6 +383,7 @@ impl Profiler {
         ScopedProfiler {
             profiler: self,
             name: name.to_string(),
+            category: Category::Cpp,
             request,
         }
     }
@@ -408,20 +428,22 @@ impl Default for Profiler {
     }
 }
 
-/// The RAII guard returned by `Profiler::scoped`/`scoped_request`/
-/// `scoped_idle`. Dropping it closes the section, exactly like the
-/// reference's `ScopedProfiler`; the request id the section opened with is
-/// carried so the matching `End` closes the same scope.
+/// The RAII guard returned by `Profiler::scoped`/`scoped_category`/
+/// `scoped_request`/`scoped_idle`. Dropping it closes the section, exactly
+/// like the reference's `ScopedProfiler`; the category and request id the
+/// section opened with are carried so the matching `End` closes the same
+/// scope (the reference's `ScopedDynamicStringProfiler` does the same).
 pub struct ScopedProfiler<'a> {
     profiler: &'a Profiler,
     name: String,
+    category: Category,
     request: u32,
 }
 
 impl Drop for ScopedProfiler<'_> {
     fn drop(&mut self) {
         self.profiler
-            .add_entry_request(&self.name, EventKind::End, 0, Category::Cpp, self.request);
+            .add_entry_request(&self.name, EventKind::End, 0, self.category, self.request);
     }
 }
 
@@ -921,6 +943,25 @@ mod tests {
         // not a second request span.
         assert_eq!(snap.requests.len(), 1);
         assert_eq!(snap.requests[0].calls, 1);
+    }
+
+    #[test]
+    fn a_scoped_section_closes_in_the_category_it_opened_in() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+
+        {
+            let _s = prof.scoped_category("pyWork", Category::Python);
+            advance(&source, 3);
+        }
+
+        // The closing End carries the section's own category (the reference's
+        // ScopedDynamicStringProfiler does the same), so a capture filtered
+        // by category keeps whole sections, not halves.
+        let entries = prof.drain_entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].category, Category::Python);
+        assert_eq!(entries[1].category, Category::Python);
     }
 
     #[test]
