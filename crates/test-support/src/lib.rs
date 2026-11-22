@@ -24,6 +24,7 @@ pub mod event_contract;
 pub mod event_filter;
 pub mod event_import;
 pub mod event_log;
+pub mod event_partition;
 pub mod fault_presentation;
 pub mod flamegraph;
 pub mod full_stack;
