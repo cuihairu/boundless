@@ -426,14 +426,23 @@ impl PacketReceiver {
 
     /// `processPacket` (packet_receiver.cpp:445): the entry point for new
     /// packets, running the filter chain in the reference's fixed order:
-    /// a channel's own filter first, then the recently-dead check, then
-    /// the interface's off-channel filter, and the header walk last. The
-    /// rate limiter (BW-02-05-04) comes before all of these in the
-    /// reference and is still to come.
+    /// the rate limiter first, then a channel's own filter, then the
+    /// recently-dead check, then the interface's off-channel filter, and
+    /// the header walk last (BW-02-05-04).
     pub fn route_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
         let Some(interface) = self.interface.borrow().upgrade() else {
             return Reason::Success;
         };
+
+        if interface.increment_and_check_rate_limit(addr) {
+            if interface.is_verbose() {
+                eprintln!(
+                    "PacketReceiver::processPacket( {} ): Ignoring packet from rate-limited address",
+                    addr.c_str()
+                );
+            }
+            return Reason::GeneralNetwork;
+        }
 
         // Packets arriving on external interface will probably be
         // encrypted, so there's no point examining their header flags
@@ -2179,6 +2188,44 @@ mod tests {
             receiver.route_packet(&addr, &mut wire_packet(0, b"x")),
             Reason::Success
         );
+    }
+
+    // ------------------------------------------------------------------
+    // The rate limiter (processPacket, BW-02-05-04)
+    // ------------------------------------------------------------------
+
+    /// A packet from an address over its per-period budget is refused with
+    /// `REASON_GENERAL_NETWORK` before any channel or filter is consulted
+    /// (packet_receiver.cpp:448-460), and the same address is served again
+    /// once the period expires and the counters are cleared.
+    #[test]
+    fn a_rate_limited_address_is_refused_until_the_period_ends() {
+        let clock = Rc::new(SoloCell::new(1_000_000u64));
+        let handle = Rc::clone(&clock);
+        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || handle.get())));
+        let interface =
+            NetworkInterface::new_with_dispatcher(InterfaceType::External, Rc::clone(&dispatcher));
+        let receiver = PacketReceiver::new();
+        receiver.attach_interface(&interface);
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_rate_limit(1);
+
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        // The first packet is within budget; it is not refused.
+        let within = receiver.route_packet(&addr, &mut wire_packet(0, b"x"));
+        assert_ne!(within, Reason::GeneralNetwork, "within budget");
+        // The second crosses the budget and is refused outright.
+        assert_eq!(
+            receiver.route_packet(&addr, &mut wire_packet(0, b"x")),
+            Reason::GeneralNetwork,
+            "over budget"
+        );
+        // A period later the counters are cleared and the address is
+        // served again.
+        clock.set(clock.get() + 1_000_000);
+        dispatcher.process_timers();
+        let after = receiver.route_packet(&addr, &mut wire_packet(0, b"x"));
+        assert_ne!(after, Reason::GeneralNetwork, "after the period");
     }
 
     // ------------------------------------------------------------------

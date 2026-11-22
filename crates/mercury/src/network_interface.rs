@@ -7,9 +7,9 @@
 //! dispatcher stand-in -- the full `EventDispatcher` (timers, tasks,
 //! attached children) is BW-02-01-05; `registerWithMachined` has no
 //! machined to talk to; the `MF_SERVER` buffer sizing is BW-02-01-04; the
-//! channel map, dead-channel bookkeeping and rate limiter arrive with
-//! BW-02-03 / BW-02-05-04; the interface table (message dispatch) is
-//! BW-02-02.
+//! channel map and dead-channel bookkeeping arrived with BW-02-03, the
+//! rate limiter with BW-02-05-04; the interface table (message dispatch)
+//! is BW-02-02.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -29,6 +29,7 @@ use crate::packet_filter::PacketFilter;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::packet_sender::{PacketSender, SendingStats};
 use crate::poller::EventPoller;
+use crate::rate_limiter::RateLimiter;
 use crate::recently_dead_channels::RecentlyDeadChannels;
 use crate::request_manager::RequestManager;
 use crate::udp_bundle::UdpBundle;
@@ -112,6 +113,9 @@ pub struct NetworkInterface {
     /// `None` on an internal interface, like the reference's unset
     /// `pRecentlyDeadChannels_` on one (network_interface.cpp:165-170).
     recently_dead: RefCell<Option<Rc<RecentlyDeadChannels>>>,
+    /// `rateLimitPeriod_` and the rest of the rate-limiting state
+    /// (network_interface.hpp:294-304, BW-02-05-04).
+    rate_limiter: Rc<RateLimiter>,
 }
 
 impl NetworkInterface {
@@ -149,6 +153,10 @@ impl NetworkInterface {
         let recently_dead = (interface_type == InterfaceType::External)
             .then(|| RecentlyDeadChannels::new(Rc::clone(&dispatcher)));
 
+        // The rate limiter's period timer arms on this same dispatcher
+        // (network_interface.cpp:947).
+        let rate_limiter = RateLimiter::new(Rc::clone(&dispatcher));
+
         let interface = NetworkInterface {
             udp_socket: RefCell::new(Endpoint::new()),
             address: RefCell::new(NONE),
@@ -168,6 +176,7 @@ impl NetworkInterface {
             packet_sender: RefCell::new(PacketSender::new(Weak::new())),
             off_channel_filter: RefCell::new(None),
             recently_dead: RefCell::new(recently_dead),
+            rate_limiter,
         };
         let shared = Rc::new(interface);
         *shared.self_weak.borrow_mut() = Rc::downgrade(&shared);
@@ -586,6 +595,61 @@ impl NetworkInterface {
     /// `shouldUseChecksums( v )`.
     pub fn set_should_use_checksums(&self, v: bool) {
         self.packet_sender.borrow_mut().set_should_use_checksums(v);
+    }
+
+    // ------------------------------------------------------------------
+    // Rate limiting (BW-02-05-04)
+    // ------------------------------------------------------------------
+
+    /// `rateLimitPeriod()` (network_interface.hpp:242).
+    pub fn rate_limit_period(&self) -> f32 {
+        self.rate_limiter.rate_limit_period()
+    }
+
+    /// `rateLimitPeriod( rateLimitPeriod )` (network_interface.cpp:936):
+    /// set the period over which a source may stay within budget before
+    /// its packets are refused. Zero disables rate limiting.
+    pub fn set_rate_limit_period(&self, period: f32) {
+        RateLimiter::set_rate_limit_period(&self.rate_limiter, period);
+    }
+
+    /// `perIPAddressRateLimit()` (network_interface.hpp:245).
+    pub fn per_ip_address_rate_limit(&self) -> u32 {
+        self.rate_limiter.per_ip_address_rate_limit()
+    }
+
+    /// `perIPAddressRateLimit( limitPerPeriod )`.
+    pub fn set_per_ip_address_rate_limit(&self, limit_per_period: u32) {
+        self.rate_limiter
+            .set_per_ip_address_rate_limit(limit_per_period);
+    }
+
+    /// `perIPAddressPortRateLimit()` (network_interface.hpp:252).
+    pub fn per_ip_address_port_rate_limit(&self) -> u32 {
+        self.rate_limiter.per_ip_address_port_rate_limit()
+    }
+
+    /// `perIPAddressPortRateLimit( limitPerPeriod )`.
+    pub fn set_per_ip_address_port_rate_limit(&self, limit_per_period: u32) {
+        self.rate_limiter
+            .set_per_ip_address_port_rate_limit(limit_per_period);
+    }
+
+    /// `incrementAndCheckRateLimit( addr )` (network_interface.cpp:970):
+    /// count a packet against the source and answer whether it was
+    /// refused. The receive path checks this before anything else.
+    pub fn increment_and_check_rate_limit(&self, addr: &Address) -> bool {
+        self.rate_limiter.increment_and_check_rate_limit(addr)
+    }
+
+    /// `ipAddressRateLimitAverage()` (watcher, network_interface.cpp:1222).
+    pub fn ip_address_rate_limit_average(&self) -> f32 {
+        self.rate_limiter.ip_address_rate_limit_average()
+    }
+
+    /// `ipAddressPortRateLimitAverage()` (watcher, network_interface.cpp:1227).
+    pub fn ip_address_port_rate_limit_average(&self) -> f32 {
+        self.rate_limiter.ip_address_port_rate_limit_average()
     }
 
     /// `delAnonymousChannel` (network_interface.cpp:672): anonymous

@@ -52,6 +52,7 @@ pub mod packet_sender;
 /// `HAS_EPOLL` and no other backend is ported yet.
 #[cfg(target_os = "linux")]
 pub mod poller;
+pub mod rate_limiter;
 
 pub mod reliable_order;
 pub mod reply_order;
