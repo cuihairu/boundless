@@ -1,0 +1,17 @@
+{
+ "config": "server/bw.xml",
+ "log_dir": "/tmp/cluster-smoke",
+ "reference_bin_dir": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server",
+ "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+ "roles": [
+  "dbappmgr",
+  "cellappmgr",
+  "baseappmgr",
+  "dbapp",
+  "cellapp",
+  "baseapp",
+  "loginapp",
+  "serviceapp"
+ ],
+ "substitute": "baseapp"
+}

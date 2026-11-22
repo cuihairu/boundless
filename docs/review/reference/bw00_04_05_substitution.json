@@ -1,0 +1,123 @@
+{
+ "bringup_rc": null,
+ "bringup_seconds": null,
+ "captured_at": "2026-11-23 03:04:25 +0800",
+ "full_steady": true,
+ "input": {
+  "config": "server/bw.xml",
+  "log_dir": "/tmp/cluster-smoke",
+  "reference_bin_dir": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server",
+  "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+  "roles": [
+   "dbappmgr",
+   "cellappmgr",
+   "baseappmgr",
+   "dbapp",
+   "cellapp",
+   "baseapp",
+   "loginapp",
+   "serviceapp"
+  ],
+  "substitute": "baseapp"
+ },
+ "mode": "live",
+ "new_commit": "fbb44a7",
+ "poll_seconds": 0.0,
+ "reference": [
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseapp",
+   "log_file": "/tmp/cluster-smoke/baseapp.log",
+   "marker": "---- BaseApp is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "baseapp"
+  },
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseappmgr",
+   "log_file": "/tmp/cluster-smoke/baseappmgr.log",
+   "marker": "---- BaseAppMgr is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "baseappmgr"
+  },
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/cellapp",
+   "log_file": "/tmp/cluster-smoke/cellapp.log",
+   "marker": "---- CellApp is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "cellapp"
+  },
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/cellappmgr",
+   "log_file": "/tmp/cluster-smoke/cellappmgr.log",
+   "marker": "---- CellAppMgr is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "cellappmgr"
+  },
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/dbapp",
+   "log_file": "/tmp/cluster-smoke/dbapp.log",
+   "marker": "---- DBApp is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "dbapp"
+  },
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/dbappmgr",
+   "log_file": "/tmp/cluster-smoke/dbappmgr.log",
+   "marker": "---- DBAppMgr is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "dbappmgr"
+  },
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/loginapp",
+   "log_file": "/tmp/cluster-smoke/loginapp.log",
+   "marker": "---- LoginApp is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "loginapp"
+  },
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/serviceapp",
+   "log_file": "/tmp/cluster-smoke/serviceapp.log",
+   "marker": "---- ServiceApp is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "serviceapp"
+  },
+  {
+   "binary": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseapp",
+   "log_file": "/tmp/cluster-smoke/baseapp2.log",
+   "marker": "---- BaseApp is running ----",
+   "marker_found": true,
+   "process_present": true,
+   "role": "baseapp(2)"
+  }
+ ],
+ "reference_commit": "4b637c8d",
+ "reference_roles": [
+  "dbappmgr",
+  "cellappmgr",
+  "baseappmgr",
+  "dbapp",
+  "cellapp",
+  "loginapp",
+  "serviceapp"
+ ],
+ "steady_holds": true,
+ "substituted_by": "boundless-server (crates/server-runtime app::run)",
+ "substituted_role": "baseapp",
+ "substitution": {
+  "accepted": true,
+  "output": "[baseapp] starting (boundless minimal entry)",
+  "rc": 0,
+  "role": "baseapp",
+  "stderr": "[baseapp] starting (boundless minimal entry)",
+  "stdout": "",
+  "timed_out": false
+ },
+ "verdict": "the substituted role accepts the input and starts, but reaches process startup only, so a cluster running the substitution cannot hold steady state"
+}
