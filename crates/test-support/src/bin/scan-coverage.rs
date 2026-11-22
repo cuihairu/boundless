@@ -4,7 +4,9 @@
 //!
 //! `<reference-checkout>` is the BigWorld repository root; the ledger rows
 //! are derived from `<reference-checkout>/programming/bigworld/`'s Make build
-//! catalog and gate machinery. The catalog is written to `[output]` (default
+//! catalog and gate machinery. The lane index is read from this repo's own
+//! `todo.md` (`BOUNDLESS_TODO` overrides its location for a checkout that
+//! carries a different ledger). The catalog is written to `[output]` (default
 //! stdout), and the record count plus the enable-condition census are printed
 //! to stderr.
 
@@ -29,7 +31,10 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let scan = test_support::coverage::scan_reference(&bw_source);
+    let todo = std::env::var_os("BOUNDLESS_TODO")
+        .map(PathBuf::from)
+        .unwrap_or_else(test_support::coverage::todo_path);
+    let scan = test_support::coverage::scan_reference(&bw_source, &todo);
     let catalog = test_support::coverage::render(&scan);
 
     if let Some(output) = args.get(2) {

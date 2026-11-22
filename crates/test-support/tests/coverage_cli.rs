@@ -103,6 +103,14 @@ fn the_cli_writes_one_row_per_target_with_its_enable_condition() {
         &format!("{bigworld}/server/tools/sync_db/Makefile.rules"),
         MYSQL_COMPONENT,
     );
+    // The lane ledger the CLI indexes against: one lane claiming baseapp.
+    let todo = root.join("todo.md");
+    write_file(
+        &root,
+        "todo.md",
+        "### BW-99 假车道\n\n源码 `server/baseapp/`、`lib/network/`。\n\n\
+         - [ ] 占位任务\n",
+    );
 
     let output = root.join("catalog.tsv");
     let result = std::process::Command::new(scanner())
@@ -110,6 +118,7 @@ fn the_cli_writes_one_row_per_target_with_its_enable_condition() {
             root.to_str().expect("root path"),
             output.to_str().expect("output path"),
         ])
+        .env("BOUNDLESS_TODO", &todo)
         .output()
         .expect("run scan-coverage");
     assert!(
@@ -138,7 +147,7 @@ fn the_cli_writes_one_row_per_target_with_its_enable_condition() {
     let bw_source = root.join("programming").join("bigworld");
     assert_eq!(
         written,
-        test_support::coverage::render(&test_support::coverage::scan_reference(&bw_source))
+        test_support::coverage::render(&test_support::coverage::scan_reference(&bw_source, &todo))
     );
 
     // One row per target, each carrying its enable condition and the unmapped
@@ -164,10 +173,24 @@ fn the_cli_writes_one_row_per_target_with_its_enable_condition() {
         test_support::coverage::ENABLE_MYSQL
     );
     for record in &records {
-        assert_eq!(record.task, test_support::coverage::STATUS_UNMAPPED);
         assert_eq!(record.fixture, test_support::coverage::STATUS_UNMAPPED);
         assert_eq!(record.status, test_support::coverage::STATUS_UNMAPPED);
     }
+    // The lane that claims a row indexes it; rows no lane in this scratch
+    // ledger claims, and rows outside the lane's scope, stay unmapped.
+    assert_eq!(by_target["baseapp"].task, "BW-99");
+    assert_eq!(
+        by_target["cellapp_example"].task,
+        test_support::coverage::STATUS_UNMAPPED
+    );
+    assert_eq!(
+        by_target["cellappmgr"].task,
+        test_support::coverage::STATUS_UNMAPPED
+    );
+    assert_eq!(
+        by_target["sync_db"].task,
+        test_support::coverage::STATUS_UNMAPPED
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

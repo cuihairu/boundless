@@ -40,7 +40,7 @@
 //! so none of them is an enable condition.
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The committed catalog, embedded so tests and the CLI never touch the
 /// reference checkout at run time.
@@ -116,15 +116,162 @@ fn derive_enable(source: &str, text: &str) -> &'static str {
     }
 }
 
+/// The rows under the scope of the mapping item BW-00-05-02: the engine
+/// libraries (`lib/`) and the server targets (`server/`, which also covers
+/// `server/tools/` and `server/dbapp_extensions/`).
+const LANE_SCOPES: [&str; 2] = ["lib/", "server/"];
+
+/// The engine directories a lane claims in prose rather than on its `源码`
+/// line. `lib/urlrequest/` is named by BW-03-03's preamble —「网络/URL 请求
+/// （`lib/urlrequest/`）」— while the lane's `源码` line lists only
+/// `lib/script/`、`lib/pyscript/`、`common/`; the supplement carries the claim
+/// the prose makes.
+const EXTRA_CLAIMS: [(&str, &str); 1] = [("lib/urlrequest", "03")];
+
+/// The repo's own `todo.md`, two levels above the crate directory — the lane
+/// claims are read from it.
+pub fn todo_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("todo.md")
+}
+
+/// Expand one directory token's brace group: `lib/{a,b}/` (already stripped
+/// of its trailing slash) carries `lib/a` and `lib/b`.
+fn expand_braces(token: &str) -> Vec<String> {
+    let Some(open) = token.find('{') else {
+        return vec![token.to_string()];
+    };
+    let Some(close_rel) = token[open..].find('}') else {
+        return vec![token.to_string()];
+    };
+    let close = open + close_rel;
+    let head = &token[..open];
+    let alts = &token[open + 1..close];
+    let rest = &token[close + 1..];
+    alts.split(',')
+        .map(|alt| format!("{head}{alt}{rest}"))
+        .collect()
+}
+
+/// Parse `todo.md`'s lane `源码` preamble lines into (directory, lane) claims.
+///
+/// Each `### BW-NN …` lane is followed by a `源码 …` line whose backtick-
+/// quoted tokens name the source it owns. Directory tokens are the quoted
+/// pieces ending in `/`; brace groups expand (`lib/{db,db_storage}/` →
+/// `lib/db`, `lib/db_storage`). File tokens (`lib/server/bwservice.hpp`) and
+/// globs (`server/dbapp/*login*`) are not directories, so they claim
+/// nothing. An absent `todo.md` yields no claims.
+pub fn todo_lane_claims(todo: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(todo) else {
+        return Vec::new();
+    };
+    let mut claims = Vec::new();
+    let mut lane: Option<&str> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("### BW-") {
+            let id_end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            lane = if id_end == 0 {
+                None
+            } else {
+                Some(&rest[..id_end])
+            };
+            continue;
+        }
+        let Some(src) = line.strip_prefix("源码") else {
+            continue;
+        };
+        let Some(lane_id) = lane else { continue };
+        for (i, piece) in src.split('`').enumerate() {
+            if i % 2 == 0 {
+                continue;
+            }
+            let piece = piece.trim().trim_start_matches("../");
+            if !piece.ends_with('/') {
+                continue;
+            }
+            for expanded in expand_braces(piece.trim_end_matches('/')) {
+                claims.push((expanded, lane_id.to_string()));
+            }
+        }
+    }
+    // The prose-only claims ride along (see [`EXTRA_CLAIMS`]).
+    claims.extend(
+        EXTRA_CLAIMS
+            .iter()
+            .map(|(dir, lane)| ((*dir).to_string(), (*lane).to_string())),
+    );
+    claims
+}
+
+/// The lane index of one row: the lanes whose claimed directory contains the
+/// registering file's directory, in lane order, joined with `,`. A lane
+/// claims a row when its directory equals or is below the claimed directory
+/// (a `unit_test` sub-directory belongs to its component's lane).
+fn lane_index(claims: &[(String, String)], source: &str) -> Option<String> {
+    let dir = source.rsplit_once('/').map_or("", |(d, _)| d);
+    let mut lanes: Vec<&str> = claims
+        .iter()
+        .filter(|(claim, _)| dir == claim || dir.starts_with(&format!("{claim}/")))
+        .map(|(_, lane)| lane.as_str())
+        .collect();
+    lanes.sort_unstable();
+    lanes.dedup();
+    if lanes.is_empty() {
+        None
+    } else {
+        // The lane is stored digit-only (`01`); the index carries the todo's
+        // own task numbering (`BW-01`).
+        Some(
+            lanes
+                .iter()
+                .map(|lane| format!("BW-{lane}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    }
+}
+
+/// Fill the `task` field of the rows in scope from the lane claims, returning
+/// how many were indexed. Rows no lane claims stay [`STATUS_UNMAPPED`].
+fn index_tasks(rows: &mut [CoverageRow], claims: &[(String, String)]) -> usize {
+    let mut filled = 0;
+    for row in rows.iter_mut() {
+        if !LANE_SCOPES.iter().any(|s| row.source.starts_with(s)) {
+            continue;
+        }
+        if let Some(index) = lane_index(claims, &row.source) {
+            row.task = index;
+            filled += 1;
+        }
+    }
+    filled
+}
+
+/// The rows in scope that no lane claim indexes: the traceable gaps the
+/// ledger has to name (BW-00-05-06's 显式缺口).
+pub fn unindexed(rows: &[CoverageRow]) -> Vec<&CoverageRow> {
+    rows.iter()
+        .filter(|row| {
+            LANE_SCOPES.iter().any(|s| row.source.starts_with(s)) && row.task == STATUS_UNMAPPED
+        })
+        .collect()
+}
+
 /// Scan a reference checkout into ledger rows.
 ///
-/// `bw_source` is the bigworld source directory (`programming/bigworld`).
-/// The rows are exactly the Make build catalog ([`crate::make_targets`])
-/// with the enable condition derived from the reference's gate machinery
-/// and the mapping fields left [`STATUS_UNMAPPED`]; the order is the
-/// catalog's (name, source) order.
-pub fn scan_reference(bw_source: &Path) -> Vec<CoverageRow> {
-    crate::make_targets::scan_reference(bw_source)
+/// `bw_source` is the bigworld source directory (`programming/bigworld`);
+/// `todo` is the repo's own `todo.md` (its lane `源码` preambles index the
+/// rows). The rows are exactly the Make build catalog
+/// ([`crate::make_targets`]) with the enable condition derived from the
+/// reference's gate machinery, the `task` field of the in-scope engine
+/// library and server rows indexed to their owning lane, and the remaining
+/// mapping fields left [`STATUS_UNMAPPED`]; the order is the catalog's
+/// (name, source) order.
+pub fn scan_reference(bw_source: &Path, todo: &Path) -> Vec<CoverageRow> {
+    let mut rows: Vec<CoverageRow> = crate::make_targets::scan_reference(bw_source)
         .into_iter()
         .map(|t| {
             let text = std::fs::read_to_string(bw_source.join(&t.source)).unwrap_or_default();
@@ -138,7 +285,10 @@ pub fn scan_reference(bw_source: &Path) -> Vec<CoverageRow> {
                 status: String::from(STATUS_UNMAPPED),
             }
         })
-        .collect()
+        .collect();
+    let claims = todo_lane_claims(todo);
+    index_tasks(&mut rows, &claims);
+    rows
 }
 
 /// Render the scan into the tab-separated catalog text.
@@ -224,7 +374,9 @@ mod tests {
 
     /// The acceptance: every committed row carries the five fields — the
     /// reference target (name, kind, source), the enable condition, and the
-    /// three mapping fields (present, `-` until the mapping items fill them).
+    /// three mapping fields (present; `fixture` and `status` stay `-` until
+    /// the mapping items fill them, while `task` is indexed from BW-00-05-02
+    /// on).
     #[test]
     fn every_row_carries_the_five_fields() {
         let catalog = catalog();
@@ -241,8 +393,8 @@ mod tests {
             assert!(!row.task.is_empty(), "{}", row.target);
             assert!(!row.fixture.is_empty(), "{}", row.target);
             assert!(!row.status.is_empty(), "{}", row.target);
-            // The mapping fields are established but not yet filled.
-            assert_eq!(row.task, STATUS_UNMAPPED, "{}", row.target);
+            // The fixture and status fields are established but not yet
+            // filled; the task field is the mapping items' work.
             assert_eq!(row.fixture, STATUS_UNMAPPED, "{}", row.target);
             assert_eq!(row.status, STATUS_UNMAPPED, "{}", row.target);
         }
@@ -361,6 +513,85 @@ mod tests {
         assert_eq!(parse_catalog(&text), original);
     }
 
+    /// The lane claims parse the `源码` preambles of `todo.md`: the engine
+    /// directories the lanes name, with brace groups expanded and file/glob
+    /// tokens ignored.
+    #[test]
+    fn todo_lane_claims_parse_the_source_preambles() {
+        let todo = todo_path();
+        assert!(todo.is_file(), "{}", todo.display());
+        let claims = todo_lane_claims(&todo);
+        let has = |dir: &str, lane: &str| claims.iter().any(|(d, l)| d == dir && l == lane);
+
+        // BW-01, BW-02, BW-03 single-directory claims.
+        assert!(has("lib/cstdmf", "01"));
+        assert!(has("lib/math", "01"));
+        assert!(has("lib/resmgr", "01"));
+        assert!(has("lib/build", "01"));
+        assert!(has("lib/memhook", "01"));
+        assert!(has("lib/network", "02"));
+        assert!(has("lib/script", "03"));
+        assert!(has("lib/pyscript", "03"));
+        // Brace-group expansion.
+        assert!(has("lib/connection", "02"));
+        assert!(has("lib/connection_model", "06"));
+        assert!(has("lib/db", "09"));
+        assert!(has("lib/db_storage_mysql", "09"));
+        assert!(has("lib/sqlite", "09"));
+        assert!(has("server/tools/sync_db", "09"));
+        assert!(has("server/tools/remove_db", "09"));
+        assert!(has("lib/unit_test_lib", "12"));
+        assert!(has("server/tools/bots", "12"));
+        assert!(has("server/tools/message_logger", "12"));
+        assert!(has("lib/moo", "11"));
+        assert!(has("lib/speedtree", "11"));
+        assert!(has("lib/chunk", "10"));
+        assert!(has("lib/delegate_interface", "10"));
+        assert!(has("tools/process_defs", "04"));
+        assert!(has("tools", "13"));
+        assert!(has("examples", "14"));
+        assert!(has("fantasydemo", "14"));
+        assert!(has("lib/urlrequest", "03"), "the prose supplement");
+        // File tokens and globs claim nothing.
+        assert!(
+            !has("lib/server", "01"),
+            "lib/server/bwservice.hpp is a file, not a dir claim"
+        );
+        assert!(
+            !has("server/dbapp", "06"),
+            "server/dbapp/*login* is a glob, not a dir claim"
+        );
+    }
+
+    /// The acceptance for BW-00-05-02: every engine library and server target
+    /// in the build inventory carries a lane index. The engine's own
+    /// directories are claimed by the lanes; `lib/urlrequest` is the one
+    /// claimed by a lane's prose rather than its `源码` line.
+    #[test]
+    fn every_engine_library_and_server_row_carries_a_lane_index() {
+        let catalog = catalog();
+        let scoped: Vec<&CoverageRow> = catalog
+            .iter()
+            .filter(|row| LANE_SCOPES.iter().any(|s| row.source.starts_with(s)))
+            .collect();
+        assert_eq!(scoped.len(), 72, "42 lib + 30 server rows");
+        for row in &scoped {
+            assert_ne!(
+                row.task, STATUS_UNMAPPED,
+                "{} at {} has no lane index",
+                row.target, row.source
+            );
+        }
+        // The prose-claimed one is indexed to the lane that names it.
+        let urlrequest = catalog
+            .iter()
+            .find(|r| r.target == "urlrequest" && r.source == "lib/urlrequest/Makefile.rules")
+            .expect("urlrequest row");
+        assert_eq!(urlrequest.task, "BW-03");
+        // No gap remains in scope.
+        assert!(unindexed(&catalog).is_empty());
+    }
+
     /// The scanner and the committed catalog cannot drift: re-scanning a real
     /// reference checkout reproduces the embedded text. Skipped when the
     /// reference checkout is absent (CI).
@@ -374,7 +605,7 @@ mod tests {
             eprintln!("reference checkout absent; skipping rescan");
             return;
         }
-        let scan = scan_reference(&bw_source);
+        let scan = scan_reference(&bw_source, &todo_path());
         assert_eq!(render(&scan), CATALOG_TEXT);
     }
 }
