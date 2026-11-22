@@ -1,0 +1,16 @@
+[package]
+name = "python-module"
+description = "BW-00-03-03 minimal native Python module: build and install, then import"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# The cdylib is the importable extension module (`libpython_module.so` becomes
+# `boundless_core.so` at install time); the rlib lets the integration test
+# drive the same constants the module exposes.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

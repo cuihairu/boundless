@@ -146,6 +146,10 @@ name = "python-host"
 version = "0.1.0"
 
 [[package]]
+name = "python-module"
+version = "0.1.0"
+
+[[package]]
 name = "resources"
 version = "0.1.0"
 dependencies = [
