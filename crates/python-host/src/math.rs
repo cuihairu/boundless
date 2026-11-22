@@ -3407,6 +3407,257 @@ mod v4animation {
     }
 }
 
+/// The `Math.Vector4Morph` provider (`script_math.cpp:3696-3868`): the value
+/// that morphs from where it was to the target over the duration.
+///
+/// The reference's `output` is `(t * target) + ((1-t) * old)` at
+/// `t = time / duration` (`:3802-3809`); setting a new target snapshots the
+/// current output into the morph source and restarts the timer
+/// (`:3830-3838`), and the duration setter keeps the fraction through the
+/// cycle (`:3845-3857`). The clamps follow `Math::clamp`
+/// (`math/mathdef.hpp:223-227`) and `std::max( 0.0001f, d )` exactly, a
+/// `NaN` passing through the clamp and pinning the duration at its minimum.
+/// The `tick` advance is not ported, the per-frame delta the rest of the
+/// math surface leaves alone too.
+mod v4morph {
+    use super::*;
+
+    /// The duration floor of `Vector4Morph::duration` and `time`.
+    const MIN_DURATION: f32 = 0.0001;
+
+    /// The instance body beyond the `PyObject` header: the target, the two
+    /// floats and the morph source, the layout of the reference's
+    /// `Vector4Morph`.
+    #[repr(C)]
+    struct MorphBody {
+        header: capi::PyObject,
+        target: [f32; 4],
+        duration: f32,
+        time: f32,
+        old: [f32; 4],
+    }
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<MorphBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Morph` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4Morph::output` (`script_math.cpp:3802-3809`).
+    fn morph_output(object: *mut capi::PyObject) -> [f32; 4] {
+        let target = unsafe { std::ptr::addr_of!((*object.cast::<MorphBody>()).target).read() };
+        let duration = unsafe { std::ptr::addr_of!((*object.cast::<MorphBody>()).duration).read() };
+        let time = unsafe { std::ptr::addr_of!((*object.cast::<MorphBody>()).time).read() };
+        let old = unsafe { std::ptr::addr_of!((*object.cast::<MorphBody>()).old).read() };
+        let t = time / duration;
+        let mut val = [0.0f32; 4];
+        for index in 0..4 {
+            val[index] = t * target[index] + (1.0 - t) * old[index];
+        }
+        val
+    }
+
+    /// `Vector4Morph::pyGet_target` (`:3759`).
+    unsafe extern "C" fn get_target(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let target = unsafe { std::ptr::addr_of!((*self_.cast::<MorphBody>()).target).read() };
+        vector4::make(target)
+    }
+
+    /// `Vector4Morph::pySet_target` and `target()` (`:3830-3838`): the
+    /// current output becomes the morph source, the target moves and the
+    /// timer restarts.
+    unsafe extern "C" fn set_target(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let Some(target) = (unsafe { as_vector::<4>(value, vector4::type_addr()) }) else {
+            type_error("target must be set to a Vector4 or tuple of 4 floats");
+            return -1;
+        };
+        let current = morph_output(self_);
+        // SAFETY: the receiver is the morph body.
+        unsafe {
+            std::ptr::addr_of_mut!((*self_.cast::<MorphBody>()).old).write(current);
+            std::ptr::addr_of_mut!((*self_.cast::<MorphBody>()).target).write(target);
+            std::ptr::addr_of_mut!((*self_.cast::<MorphBody>()).time).write(0.0);
+        }
+        0
+    }
+
+    /// `Vector4Morph::duration` (`:3845-3857`): the new duration has a
+    /// minimum, and the fraction through the old cycle is kept.
+    unsafe extern "C" fn set_duration(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let Some(d) = (unsafe { as_script_float(value) }) else {
+            type_error("duration must be set to a float");
+            return -1;
+        };
+        let old_duration =
+            unsafe { std::ptr::addr_of!((*self_.cast::<MorphBody>()).duration).read() };
+        let time = unsafe { std::ptr::addr_of!((*self_.cast::<MorphBody>()).time).read() };
+        // `std::max( 0.0001f, d )`: a `NaN` fails the comparison and pins
+        // the duration at the minimum.
+        let new_duration = if MIN_DURATION < d { d } else { MIN_DURATION };
+        let fraction = time / old_duration;
+        // The reference goes through `time()`, whose clamp is
+        // `Math::clamp( 0.0001f, t, duration_ )`.
+        let new_time = if fraction * new_duration < MIN_DURATION {
+            MIN_DURATION
+        } else if fraction * new_duration > new_duration {
+            new_duration
+        } else {
+            fraction * new_duration
+        };
+        // SAFETY: the receiver is the morph body.
+        unsafe {
+            std::ptr::addr_of_mut!((*self_.cast::<MorphBody>()).duration).write(new_duration);
+            std::ptr::addr_of_mut!((*self_.cast::<MorphBody>()).time).write(new_time);
+        }
+        0
+    }
+
+    /// `Vector4Morph::time` (`:3862-3867`): the timer, clamped into the
+    /// cycle.
+    unsafe extern "C" fn set_time(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let Some(t) = (unsafe { as_script_float(value) }) else {
+            type_error("time must be set to a float");
+            return -1;
+        };
+        let duration = unsafe { std::ptr::addr_of!((*self_.cast::<MorphBody>()).duration).read() };
+        let clamped = if t < MIN_DURATION {
+            MIN_DURATION
+        } else if t > duration {
+            duration
+        } else {
+            t
+        };
+        // SAFETY: the receiver is the morph body.
+        unsafe { std::ptr::addr_of_mut!((*self_.cast::<MorphBody>()).time).write(clamped) };
+        0
+    }
+
+    /// `duration` read, `PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( float, duration,
+    /// duration )`.
+    unsafe extern "C" fn get_duration(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the receiver is the morph body.
+        let duration = unsafe { std::ptr::addr_of!((*self_.cast::<MorphBody>()).duration).read() };
+        unsafe { capi::PyFloat_FromDouble(duration as f64) }
+    }
+
+    /// `time` read, `PY_RW_ACCESSOR_ATTRIBUTE_DECLARE( float, time, time )`.
+    unsafe extern "C" fn get_time(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the receiver is the morph body.
+        let time = unsafe { std::ptr::addr_of!((*self_.cast::<MorphBody>()).time).read() };
+        unsafe { capi::PyFloat_FromDouble(time as f64) }
+    }
+
+    /// A fresh `Math.Vector4Morph` morphing from `orig`; the caller owns the
+    /// reference. The constructor's field values are the reference's
+    /// (`:3709-3713`): the source starts at the given value with a
+    /// one-second cycle and a zero timer.
+    fn make(orig: [f32; 4]) -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `MorphBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<MorphBody>()).target).write(orig);
+            std::ptr::addr_of_mut!((*pointer.cast::<MorphBody>()).duration).write(1.0);
+            std::ptr::addr_of_mut!((*pointer.cast::<MorphBody>()).time).write(0.0);
+            std::ptr::addr_of_mut!((*pointer.cast::<MorphBody>()).old).write(orig);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `PY_AUTO_FACTORY_DECLARE( Vector4Morph, OPTARG( Vector4, END ) )`
+    /// factory: a fresh morph from the optional `Vector4`.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        let count = unsafe { capi::PyTuple_Size(args) };
+        let orig = match count {
+            0 => [0.0; 4],
+            1 => match unsafe { as_vector::<4>(arg(args, 0), vector4::type_addr()) } {
+                Some(orig) => orig,
+                None => return type_error("Math.Vector4Morph(): Expected an optional Vector4"),
+            },
+            _ => return type_error("Math.Vector4Morph(): Expected an optional Vector4"),
+        };
+        make(orig)
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4Morph".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4Morph`: the target, the
+    /// duration and the timer, the reference's accessor attribute pair.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Morph")
+            .base(v4provider::base_addr())
+            .attribute("target", get_target, Some(set_target))
+            .attribute("duration", get_duration, Some(set_duration))
+            .attribute("time", get_time, Some(set_time))
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    /// `TempPyVectorInit` for the morph: the type object, its dispatch
+    /// entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), morph_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4Morph".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -3421,4 +3672,5 @@ pub fn register() {
     let _ = v4provider::register();
     let _ = v4product::register();
     let _ = v4animation::register();
+    let _ = v4morph::register();
 }

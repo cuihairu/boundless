@@ -571,6 +571,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_plane_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4providers_behave_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4animation_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4morph_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -3098,6 +3099,115 @@ __probe = '; '.join(_f) or 'ok'
                 text, "ok",
                 "math vector4animation behaviour mismatch: {text}"
             );
+        });
+    }
+
+    /// `Math.Vector4Morph` behaves as the reference's morpher does: the
+    /// value lerps from the snapshot taken when the target moved, the
+    /// duration keeps the fraction through the cycle, and the timer clamps
+    /// into it.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4morph_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def close(a, b):
+    return abs(a - b) < 1e-6
+
+# The factory takes an optional Vector4, the zero vector default.
+m = Math.Vector4Morph()
+ck(type(m).__name__ == 'Vector4Morph', 'the Vector4Morph type')
+ck(m.target.x == 0.0, 'the default target')
+ck(m.duration == 1.0, 'the default duration')
+ck(m.time == 0.0, 'the default time')
+ck(m.value.x == 0.0, 'the default morph is zero')
+
+m2 = Math.Vector4Morph((1.0, 2.0, 3.0, 4.0))
+ck(m2.value.x == 1.0 and m2.value.w == 4.0, 'the factory value morphs')
+m2 = Math.Vector4Morph(Math.Vector4(1.0, 2.0, 3.0, 4.0))
+ck(m2.value.y == 2.0, 'a Vector4 argument works too')
+
+# A new target snapshots the current output and restarts the timer.
+m2.target = (4.0, 5.0, 6.0, 7.0)
+ck(m2.value.x == 1.0, 'the snapshot holds before the timer moves')
+m2.time = m2.duration
+v = m2.value
+ck(v.x == 4.0 and v.w == 7.0, 'the timer at the duration reaches the target')
+
+# Midway the morph is the lerp, `(t*target) + ((1-t)*old)`.
+m3 = Math.Vector4Morph((0.0, 0.0, 0.0, 0.0))
+m3.target = (10.0, 20.0, 30.0, 40.0)
+m3.time = 0.5
+v = m3.value
+ck(v.x == 5.0 and v.y == 10.0 and v.z == 15.0 and v.w == 20.0,
+   'the midpoint morph')
+
+# The timer clamps into the cycle, `Math::clamp( 0.0001f, t, duration )`.
+m3.time = 99.0
+ck(m3.time == 1.0, 'the time clamps to the duration')
+v = m3.value
+ck(v.x == 10.0, 'past the cycle the target holds')
+m3.time = -5.0
+ck(close(m3.time, 0.0001), 'the time clamps to the minimum')
+
+# The duration keeps the fraction through the cycle.
+m4 = Math.Vector4Morph((0.0, 0.0, 0.0, 0.0))
+m4.target = (10.0, 0.0, 0.0, 0.0)
+m4.time = 0.5
+ck(m4.value.x == 5.0, 'halfway over a one-second cycle')
+m4.duration = 2.0
+ck(m4.duration == 2.0, 'the duration is set')
+ck(m4.time == 1.0, 'the fraction through the cycle is kept')
+ck(m4.value.x == 5.0, 'the value does not change with the duration')
+
+# The duration has a minimum, `std::max( 0.0001f, d )`.
+m4.duration = 0.0
+ck(close(m4.duration, 0.0001), 'the duration clamps to its minimum')
+ck(m4.value.x == 10.0, 'the minimum cycle is at the target')
+
+# A snapshot partway through, the docstring's `time = duration` pattern.
+m5 = Math.Vector4Morph((0.0, 0.0, 0.0, 0.0))
+m5.target = (10.0, 10.0, 10.0, 10.0)
+m5.time = 0.25
+ck(m5.value.x == 2.5, 'a quarter through the cycle')
+m5.target = (20.0, 20.0, 20.0, 20.0)
+ck(m5.value.x == 2.5, 'a new target snapshots the current output')
+ck(m5.time == 0.0, 'a new target restarts the timer')
+m5.time = 1.0
+ck(m5.value.x == 20.0, 'the restarted morph reaches its target')
+
+# Conversion refusals, the reference's converter messages.
+ck(raises(TypeError, lambda: setattr(m5, 'target', 5)),
+   'target wants a Vector4')
+ck(raises(TypeError, lambda: setattr(m5, 'target', (1.0, 2.0))),
+   'target wants four floats')
+ck(raises(TypeError, lambda: setattr(m5, 'duration', 'x')),
+   'duration wants a float')
+ck(raises(TypeError, lambda: setattr(m5, 'time', None)), 'time wants a float')
+ck(raises(TypeError, lambda: Math.Vector4Morph((1.0, 2.0))),
+   'the factory wants a Vector4')
+ck(raises(TypeError, lambda: Math.Vector4Morph((1.0, 2.0, 3.0, 4.0), 9)),
+   'the factory takes at most one argument')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4morph behaviour mismatch: {text}");
         });
     }
 
