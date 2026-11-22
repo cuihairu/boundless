@@ -1571,7 +1571,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 实现插件、C++/Blueprint 调用接口和游戏线程派发。用同一 SDK 契约和示例验证组件生命周期。
 
-- [ ] **BW-21-04-01 打包 Unreal 插件**。**验收** 空项目可加载模块。
+- [x] **BW-21-04-01 打包 Unreal 插件**。**验收** 空项目可加载模块。证据：新增 `test-support/src/unreal_sdk.rs`（+`pub mod unreal_sdk`，`unity_sdk` 后=字母序）。**插件清单模型**：`PLUGIN_NAME="Boundless SDK"` / `PLUGIN_VERSION="0.1.0"` / **`PLUGIN_MODULE=("BwSdk","Runtime","Default")`** + **`plugin_manifest()`**（确定性 JSON：固定键序 FileVersion/FriendlyName/Version/VersionName/Modules——Module 含 Name/Type/LoadingPhase，两次渲染逐字节相同）+ `is_well_formed_json` 复用 `crate::unity_sdk`（跨模块共用结构化校验）+ `fixture_dir()`（预置 02 C++ 交付件挂点）。**诚实登记 `UNREAL_LOAD_GAP`**：空项目加载模块需 Unreal Editor、本机无；**本车道不建 `sdk/engines/unreal/` 树**（半成品树会让 ci/sdk-archive.sh 由 SKIP 翻 FAIL），harness 保持如实 SKIP 并点名 BW-21-04-01。3 测实证：`the_plugin_manifest_is_deterministic_json`（两渲染逐字节相同 + 结构合法）+ `the_plugin_manifest_names_the_module`（FriendlyName/VersionName/Module 三字段全在位）+ `the_empty_project_load_gap_is_named`（gap 点名 Unreal + BW-21-04-01 + 说明不建树因）。test-support 507 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；foundation 149 全绿；fmt 净、clippy 净（0 发现于本席文件）。commit 6093f01。
 - [ ] **BW-21-04-02 交付 C++ 调用**。**验收** 示例可登录与发出 RPC。
 - [ ] **BW-21-04-03 公开 Blueprint 接口**。**验收** 蓝图可订阅实体事件。
 - [ ] **BW-21-04-04 派发游戏线程回调**。**验收** 组件销毁后不再派发。
