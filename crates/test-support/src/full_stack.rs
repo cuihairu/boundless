@@ -292,6 +292,154 @@ pub fn replacement_evidence() -> ReplacementReport {
     parse_replacement(EVIDENCE_REPLACEMENT)
 }
 
+/// The kind of difference the report located (BW-00-04-06).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffKind {
+    /// A field's value differs between the two evidence tables.
+    Field,
+    /// A probe did not complete (a row is missing, or a detail says it timed
+    /// out).
+    Timeout,
+    /// The role order differs between the two evidence tables.
+    Order,
+}
+
+impl DiffKind {
+    /// The kind label, as written in the difference table.
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffKind::Field => "field",
+            DiffKind::Timeout => "timeout",
+            DiffKind::Order => "order",
+        }
+    }
+}
+
+/// One located difference between the original and new evidence tables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diff {
+    /// Which kind of difference this is.
+    pub kind: DiffKind,
+    /// The role the difference concerns (empty for a whole-table order diff).
+    pub role: String,
+    /// Where and what the difference is, so it can be located.
+    pub summary: String,
+}
+
+/// The committed differences report.
+const EVIDENCE_DIFFERENCES: &str = include_str!("../cases/full_stack/differences.tsv");
+
+/// Compare the original and new evidence tables and locate field, timeout and
+/// order differences, each keyed by kind and role.
+pub fn diff_reports(original: &[Evidence], new: &[Evidence]) -> Vec<Diff> {
+    let mut diffs = Vec::new();
+
+    // Order difference: the role sequences disagree.
+    let orig_roles: Vec<&str> = original.iter().map(|e| e.role.as_str()).collect();
+    let new_roles: Vec<&str> = new.iter().map(|e| e.role.as_str()).collect();
+    if orig_roles != new_roles {
+        diffs.push(Diff {
+            kind: DiffKind::Order,
+            role: String::new(),
+            summary: format!(
+                "role order differs (original: {}; new: {})",
+                orig_roles.join(","),
+                new_roles.join(",")
+            ),
+        });
+    }
+
+    // Per-role field differences (status or detail changed), and a role that
+    // appears on one side only is a timeout on the side that is missing it.
+    for ev in original {
+        match new.iter().find(|n| n.role == ev.role) {
+            Some(nv) if ev.status != nv.status || ev.detail != nv.detail => diffs.push(Diff {
+                kind: DiffKind::Field,
+                role: ev.role.clone(),
+                summary: format!(
+                    "field differs (original: {} {}; new: {} {})",
+                    ev.status.label(),
+                    ev.detail,
+                    nv.status.label(),
+                    nv.detail
+                ),
+            }),
+            Some(_) => {}
+            None => diffs.push(Diff {
+                kind: DiffKind::Timeout,
+                role: ev.role.clone(),
+                summary: "role present in original but missing in new".to_string(),
+            }),
+        }
+    }
+    for ev in new {
+        if !original.iter().any(|o| o.role == ev.role) {
+            diffs.push(Diff {
+                kind: DiffKind::Timeout,
+                role: ev.role.clone(),
+                summary: "role present in new but missing in original".to_string(),
+            });
+        }
+    }
+
+    // A probe whose detail names a timeout is located as such.
+    for ev in original.iter().chain(new) {
+        if ev.detail.to_lowercase().contains("timed out") {
+            diffs.push(Diff {
+                kind: DiffKind::Timeout,
+                role: ev.role.clone(),
+                summary: format!("probe timed out ({})", ev.detail),
+            });
+        }
+    }
+
+    diffs
+}
+
+/// Render the differences as a tab-separated table.
+pub fn render_differences(diffs: &[Diff]) -> String {
+    let mut out = String::from("kind\trole\tsummary\n");
+    for diff in diffs {
+        let _ = writeln!(
+            out,
+            "{}\t{}\t{}",
+            diff.kind.label(),
+            diff.role,
+            diff.summary
+        );
+    }
+    out
+}
+
+/// Parse a difference table back into diffs.
+pub fn parse_differences(text: &str) -> Vec<Diff> {
+    text.lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let kind = match parts.next()? {
+                "field" => DiffKind::Field,
+                "timeout" => DiffKind::Timeout,
+                "order" => DiffKind::Order,
+                _ => return None,
+            };
+            let role = parts.next().unwrap_or("").to_string();
+            let summary = parts.next().unwrap_or("").to_string();
+            Some(Diff {
+                kind,
+                role,
+                summary,
+            })
+        })
+        .collect()
+}
+
+/// The committed differences between the original and new evidence, parsed.
+pub fn differences() -> Vec<Diff> {
+    parse_differences(EVIDENCE_DIFFERENCES)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,5 +602,104 @@ mod tests {
         let text = render_replacement(&report);
         assert_eq!(parse_replacement(&text), report);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A synthetic pair of evidence rows, with a given status and detail.
+    fn row(side: Side, role: &str, status: Status, detail: &str) -> Evidence {
+        Evidence {
+            side,
+            role: role.to_string(),
+            status,
+            detail: detail.to_string(),
+        }
+    }
+
+    /// An injected field difference is located as a `field` diff for that
+    /// role.
+    #[test]
+    fn injected_field_difference_is_located() {
+        let original = vec![row(Side::Original, "baseapp", Status::Ran, "v1")];
+        let new = vec![row(Side::New, "baseapp", Status::Ran, "v2")];
+        let diffs = diff_reports(&original, &new);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].kind, DiffKind::Field);
+        assert_eq!(diffs[0].role, "baseapp");
+        assert!(diffs[0].summary.contains("v1") && diffs[0].summary.contains("v2"));
+    }
+
+    /// An injected timeout difference is located as a `timeout` diff for that
+    /// role.
+    #[test]
+    fn injected_timeout_difference_is_located() {
+        let original = vec![
+            row(Side::Original, "baseapp", Status::Ran, "v1"),
+            row(Side::Original, "cellapp", Status::Ran, "v1"),
+        ];
+        let new = vec![row(Side::New, "baseapp", Status::Ran, "v1")];
+        let diffs = diff_reports(&original, &new);
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.kind == DiffKind::Timeout && d.role == "cellapp")
+        );
+
+        // A detail that names a timeout is located too.
+        let timed_out = vec![row(
+            Side::Original,
+            "baseapp",
+            Status::Blocked,
+            "probe timed out after 5s",
+        )];
+        let missing = vec![row(
+            Side::New,
+            "baseapp",
+            Status::Blocked,
+            "probe timed out after 5s",
+        )];
+        let diffs = diff_reports(&timed_out, &missing);
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.kind == DiffKind::Timeout && d.summary.contains("timed out"))
+        );
+    }
+
+    /// An injected order difference is located as an `order` diff.
+    #[test]
+    fn injected_order_difference_is_located() {
+        let original = vec![
+            row(Side::Original, "a", Status::Ran, "v"),
+            row(Side::Original, "b", Status::Ran, "v"),
+        ];
+        let new = vec![
+            row(Side::New, "b", Status::Ran, "v"),
+            row(Side::New, "a", Status::Ran, "v"),
+        ];
+        let diffs = diff_reports(&original, &new);
+        assert!(diffs.iter().any(|d| d.kind == DiffKind::Order));
+    }
+
+    /// The committed differences report locates the status field difference on
+    /// every reference role (the original side is blocked, the new side ran).
+    #[test]
+    fn committed_differences_locate_the_status_gap() {
+        let diffs = differences();
+        let roles = roles();
+        for role in &roles {
+            let diff = diffs
+                .iter()
+                .find(|d| d.role == *role)
+                .unwrap_or_else(|| panic!("{role} not located"));
+            assert_eq!(diff.kind, DiffKind::Field);
+            assert!(diff.summary.contains("blocked"), "{:?}", diff.summary);
+            assert!(diff.summary.contains("ran"), "{:?}", diff.summary);
+        }
+    }
+
+    /// A difference table round-trips through render and parse.
+    #[test]
+    fn differences_render_parse_round_trip() {
+        let diffs = differences();
+        assert_eq!(parse_differences(&render_differences(&diffs)), diffs);
     }
 }

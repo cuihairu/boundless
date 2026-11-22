@@ -28,6 +28,23 @@ fn harness() -> std::path::PathBuf {
     panic!("compiled run-full-stack not found");
 }
 
+/// The compiled `diff-stack`, found the same way as `run-full-stack`.
+fn diff_harness() -> std::path::PathBuf {
+    let exe = std::env::current_exe().expect("test executable path");
+    let mut dir = exe.parent().expect("test exe parent").to_path_buf();
+    loop {
+        for candidate in [dir.join("diff-stack"), dir.join("deps").join("diff-stack")] {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    panic!("compiled diff-stack not found");
+}
+
 fn scratch(tag: &str) -> std::path::PathBuf {
     let root =
         std::env::temp_dir().join(format!("bw00-full-stack-cli-{}-{tag}", std::process::id()));
@@ -205,5 +222,70 @@ fn the_cli_refuses_a_missing_new_binary() {
     assert_eq!(result.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("new stack binary"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_diff_stack_cli_locates_an_injected_field_difference() {
+    let root = scratch("diff");
+    // Two evidence tables differing in one role's detail field.
+    write_file(
+        &root,
+        "ev/original.tsv",
+        "role\tside\tstatus\tdetail\nbaseapp\toriginal\tran\tv1\ncellapp\toriginal\tran\tv1\n",
+    );
+    write_file(
+        &root,
+        "ev/new.tsv",
+        "role\tside\tstatus\tdetail\nbaseapp\tnew\tran\tv2\ncellapp\tnew\tran\tv1\n",
+    );
+    let out = root.join("out/differences.tsv");
+    std::fs::create_dir_all(root.join("out")).expect("mkdir out");
+
+    let result = std::process::Command::new(diff_harness())
+        .args([
+            root.join("ev/original.tsv").to_str().expect("orig"),
+            root.join("ev/new.tsv").to_str().expect("new"),
+            out.to_str().expect("out"),
+        ])
+        .output()
+        .expect("run diff-stack");
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(stdout.contains("1 differences located"), "{stdout}");
+    assert!(stdout.contains("field [baseapp]"), "{stdout}");
+
+    // The written report locates the field difference for the injected role.
+    let text = std::fs::read_to_string(&out).expect("differences.tsv");
+    let diffs = test_support::full_stack::parse_differences(&text);
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].kind, test_support::full_stack::DiffKind::Field);
+    assert_eq!(diffs[0].role, "baseapp");
+    assert!(diffs[0].summary.contains("v1") && diffs[0].summary.contains("v2"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_diff_stack_cli_refuses_a_missing_evidence_file() {
+    let root = scratch("diffmissing");
+    write_file(
+        &root,
+        "ev/new.tsv",
+        "role\tside\tstatus\tdetail\nbaseapp\tnew\trun\tv1\n",
+    );
+    let result = std::process::Command::new(diff_harness())
+        .args([
+            root.join("ev/original.tsv").to_str().expect("orig"),
+            root.join("ev/new.tsv").to_str().expect("new"),
+        ])
+        .output()
+        .expect("run diff-stack");
+    assert_eq!(result.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("cannot read"), "{stderr}");
     let _ = std::fs::remove_dir_all(&root);
 }
