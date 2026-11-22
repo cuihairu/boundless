@@ -558,6 +558,9 @@ jobs:
       - name: Locate the compatibility differences
         run: ci/compat-report.sh
 
+      - name: Record the coverage ledger fields
+        run: ci/coverage-ledger.sh
+
       - name: Record the reference windows baseline
         run: ci/reference-winbaseline.sh
 
@@ -952,6 +955,7 @@ jobs:
           ci/compare-fullstack.sh self-test
           ci/replace-role.sh self-test
           ci/compat-report.sh self-test
+          ci/coverage-ledger.sh self-test
           ci/reference-winbaseline.sh self-test
           ci/archive-results.sh self-test
 

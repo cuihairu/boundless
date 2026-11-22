@@ -171,6 +171,7 @@ main() {
             | ci/compare-fullstack.sh | ci/compare-fullstack.py \
             | ci/replace-role.sh | ci/replace-role.py \
             | ci/compat-report.sh | ci/compat-report.py \
+            | ci/coverage-ledger.sh | ci/coverage-ledger.py \
             | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 

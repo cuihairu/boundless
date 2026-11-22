@@ -1,0 +1,1356 @@
+{
+  "rows": [
+    {
+      "original_path": "model (lib/model)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "model_unit_test (lib/model/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "model_unit_test (lib/model/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "terrain (lib/terrain)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "terrain_unit_test (lib/terrain/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "terrain_unit_test (lib/terrain/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "waypoint_generator (lib/waypoint_generator)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "scaleform (lib/scaleform)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "sqlite (lib/sqlite)",
+      "kind": "library",
+      "enable_condition": "TARGET unofficial::sqlite3::sqlite3",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "sqlite (lib/sqlite)",
+      "kind": "library",
+      "enable_condition": "SQLite3_FOUND",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "sqlite (lib/sqlite)",
+      "kind": "library",
+      "enable_condition": "else branch",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "romp (lib/romp)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "ual (lib/ual)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "gizmo (lib/gizmo)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "guimanager (lib/guimanager)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "asset_pipeline (lib/asset_pipeline)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "controls (lib/controls)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "network (lib/network)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "network_unit_test (lib/network/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "network_unit_test (lib/network/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "guitabs (lib/guitabs)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "appmgr (lib/appmgr)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "pyscript (lib/pyscript)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "pyscript_unit_test (lib/pyscript/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "pyscript_unit_test (lib/pyscript/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "duplo (lib/duplo)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "duplo_unit_test (lib/duplo/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "duplo_unit_test (lib/duplo/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "physics2 (lib/physics2)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "physics2_unit_test (lib/physics2/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "physics2_unit_test (lib/physics2/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "db_storage_xml (lib/db_storage_xml)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "particle (lib/particle)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "particle_unit_test (lib/particle/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "particle_unit_test (lib/particle/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "moo (lib/moo)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "moo_unit_test (lib/moo/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "moo_unit_test (lib/moo/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "unit_test_lib (lib/unit_test_lib)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "unit_test_lib_unit_test (lib/unit_test_lib/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "unit_test_lib_unit_test (lib/unit_test_lib/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "connection_model (lib/connection_model)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "chunk_loading (lib/chunk_loading)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cstdmf (lib/cstdmf)",
+      "kind": "library",
+      "enable_condition": "BW_USE_CSTDMF_DLL",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cstdmf (lib/cstdmf)",
+      "kind": "library",
+      "enable_condition": "else branch",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cstdmf_unit_test (lib/cstdmf/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cstdmf_unit_test (lib/cstdmf/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "memhook (lib/memhook)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "speedtree (lib/speedtree)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "script (lib/script)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "script_unit_test (lib/script/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "script_unit_test (lib/script/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "open_automate (lib/open_automate)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "compiled_space (lib/compiled_space)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "compiled_space_writers (lib/compiled_space/binary_writers)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "compiled_space_unit_test (lib/compiled_space/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "compiled_space_unit_test (lib/compiled_space/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "waypoint (lib/waypoint)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "resmgr (lib/resmgr)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "resmgr_unit_test (lib/resmgr/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "resmgr_unit_test (lib/resmgr/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "entitydef_script (lib/entitydef_script)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "input (lib/input)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "space (lib/space)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "space_unit_test (lib/space/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "space_unit_test (lib/space/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "chunk (lib/chunk)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "math (lib/math)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "math_unit_test (lib/math/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "math_unit_test (lib/math/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bwentity (lib/bwentity)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bwentity_unit_test (lib/bwentity/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bwentity_unit_test (lib/bwentity/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "fmodsound (lib/fmodsound)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "navigation_recast (lib/navigation_recast)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "visual_manipulator (lib/visual_manipulator)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "build (lib/build)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "db_storage_mysql (lib/db_storage_mysql)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "urlrequest (lib/urlrequest)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "emptyvoip (lib/emptyvoip)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "connection (lib/connection)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "camera (lib/camera)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "post_processing (lib/post_processing)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "db_storage (lib/db_storage)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "db (lib/db)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "db_unit_test (lib/db/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "db_unit_test (lib/db/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "web_render (lib/web_render)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "delegate_interface (lib/delegate_interface)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "ashes (lib/ashes)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "server (lib/server)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "server_unit_test (lib/server/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "server_unit_test (lib/server/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "chunk_scene_adapter (lib/chunk_scene_adapter)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "scene (lib/scene)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "scene_unit_test (lib/scene/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "scene_unit_test (lib/scene/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "entitydef (lib/entitydef)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "entitydef_unit_test (lib/entitydef/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "entitydef_unit_test (lib/entitydef/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cellappmgr (server/cellappmgr)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cellappmgr_unit_test (server/cellappmgr/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cellappmgr_unit_test (server/cellappmgr/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cellapp (server/cellapp)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cellapp_unit_test (server/cellapp/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cellapp_unit_test (server/cellapp/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "reviver (server/reviver)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "reviver_unit_test (server/reviver/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "reviver_unit_test (server/reviver/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bwengine_xml (server/dbapp_extensions/bwengine_xml)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bwengine_mysql (server/dbapp_extensions/bwengine_mysql)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "baseapp (server/baseapp)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "baseapp_unit_test (server/baseapp/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "baseapp_unit_test (server/baseapp/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dbappmgr (server/dbappmgr)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dbappmgr_unit_test (server/dbappmgr/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dbappmgr_unit_test (server/dbappmgr/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dbapp (server/dbapp)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dbapp_unit_test (server/dbapp/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dbapp_unit_test (server/dbapp/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "loginapp (server/loginapp)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "loginapp_unit_test (server/loginapp/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "loginapp_unit_test (server/loginapp/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "sync_db (server/tools/sync_db)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "clear_auto_load (server/tools/clear_auto_load)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bwmachined (server/tools/bwmachined)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "snapshot_helper (server/tools/snapshot_helper)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bots (server/tools/bots)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "_bw_profile (server/tools/bw_profile)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "transfer_db (server/tools/transfer_db)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "consolidate_dbs (server/tools/consolidate_dbs)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "baseappmgr (server/baseappmgr)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "baseappmgr_unit_test (server/baseappmgr/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "baseappmgr_unit_test (server/baseappmgr/unit_test)",
+      "kind": "test",
+      "enable_condition": "always",
+      "task": "BW-00-05-02",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bwclient (client)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "texformat_converter (tools/asset_pipeline/converters/texformat_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "texture_converter (tools/asset_pipeline/converters/texture_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bsp_converter (tools/asset_pipeline/converters/bsp_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "primitive_processor (tools/asset_pipeline/converters/primitive_processor)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "visual_processor (tools/asset_pipeline/converters/visual_processor)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "space_converter (tools/asset_pipeline/converters/space_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "hierarchical_config_converter (tools/asset_pipeline/converters/hierarchical_config_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "effect_converter (tools/asset_pipeline/converters/effect_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dependency (tools/asset_pipeline/dependency)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dependency_unit_test (tools/asset_pipeline/dependency/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "dependency_unit_test (tools/asset_pipeline/dependency/unit_test)",
+      "kind": "tool test",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "compiler (tools/asset_pipeline/compiler)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "test_compiler (tools/asset_pipeline/compiler/test_compiler)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "test_converter (tools/asset_pipeline/compiler/test_converter)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "compiler_unit_test (tools/asset_pipeline/compiler/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "compiler_unit_test (tools/asset_pipeline/compiler/unit_test)",
+      "kind": "tool test",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "discovery (tools/asset_pipeline/discovery)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "conversion (tools/asset_pipeline/conversion)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "particle_editor (tools/particle_editor)",
+      "kind": "tool",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "modeleditor (tools/modeleditor)",
+      "kind": "tool",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "worldeditor (tools/worldeditor)",
+      "kind": "tool",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "jit_compiler (tools/jit_compiler)",
+      "kind": "asset pipeline exe",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "modeleditor_core (tools/modeleditor_core)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "offline_processor (tools/offline_processor)",
+      "kind": "tool",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "assetprocessor (tools/assetprocessor)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "bwlauncher (tools/bwlauncher)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "tools_common (tools/common)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "batch_compiler (tools/batch_compiler)",
+      "kind": "asset pipeline exe",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "navgen (tools/navgen)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "process_defs (tools/process_defs)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "res_packer (tools/res_packer)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-03",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "cellapp_extension (examples/cellapp_extension)",
+      "kind": "library",
+      "enable_condition": "always",
+      "task": "BW-00-05-04",
+      "fixture": "pending",
+      "status": "unmapped"
+    },
+    {
+      "original_path": "simple_python_client (examples/client_integration/python/simple)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "task": "BW-00-05-04",
+      "fixture": "pending",
+      "status": "unmapped"
+    }
+  ],
+  "count": 168,
+  "schema": [
+    "original_path",
+    "enable_condition",
+    "task",
+    "fixture",
+    "status"
+  ]
+}
