@@ -180,6 +180,17 @@ pub struct CounterStat {
     pub sum: i64,
 }
 
+/// One CPU sample: the call stack a thread had open at the sample instant,
+/// outermost section first. Aggregated by (thread, stack) signature, the
+/// samples locate where the time goes — the hot spot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackSample {
+    /// The small thread index the stack belongs to.
+    pub thread: u32,
+    /// The open section names, outermost first.
+    pub stack: Vec<String>,
+}
+
 /// The result of a snapshot: the per-thread hierarchy plus counter aggregates.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -419,6 +430,28 @@ impl Profiler {
             requests,
             unbalanced,
         }
+    }
+
+    /// The call stack each thread has open right now, outermost section first —
+    /// what a CPU sampler reads when it samples. Buffered events are drained
+    /// first so the stacks are current. Threads with nothing open are omitted.
+    pub fn sample_stacks(&self) -> Vec<StackSample> {
+        let mut inner = self.inner.lock().expect("profiler lock");
+        process_entries(&mut inner);
+        let mut samples: Vec<StackSample> = inner
+            .stacks
+            .iter()
+            .filter(|(_, stack)| !stack.is_empty())
+            .map(|(&thread, stack)| StackSample {
+                thread,
+                stack: stack
+                    .iter()
+                    .map(|&idx| inner.nodes[idx].name.clone())
+                    .collect(),
+            })
+            .collect();
+        samples.sort_by_key(|sample| sample.thread);
+        samples
     }
 }
 

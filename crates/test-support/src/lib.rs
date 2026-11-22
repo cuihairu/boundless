@@ -14,6 +14,7 @@ pub mod client_login;
 pub mod clock;
 pub mod cmake_targets;
 pub mod config_fixture;
+pub mod cpu_sampler;
 pub mod full_stack;
 pub mod harness;
 pub mod layering;
