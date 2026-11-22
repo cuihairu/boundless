@@ -1151,9 +1151,13 @@
 将 Python simple client、Android/iOS 客户端和 CellApp Controller/Extra 扩展示例纳入 `examples/sdk/` 兼容验证。SDK 实现与游戏引擎适配由 BW-21 交付。
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
-- [ ] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。
-- [ ] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。
+  - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
+- [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
+  - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
+- [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
+  - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/ios/`（`FantasyDemo.xcodeproj`/`.xcworkspace` + cocos2d/cocoslive/CocosDenshion libs + `Settings.bundle`）需 macOS + Xcode 构建运行，本机为 Linux 无 macOS 宿主（同 BW-15-01-01 macOS 卡点）；互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [ ] **BW-14-02-04 移植 Controller/Extra 样例**。**验收** 注册、回调及卸载可验。
+  - 卡点（cell 侧扩展宿主未落地）：参考 `examples/cellapp_extension/`（13 文件 1142 行）为 `BW_ADD_LIBRARY(... MODULE ...)` 加载时解析共享库，深绑 cell 运行时——`EgExtra : EntityExtra`（`Py_EntityExtraHeader`/`Instance` 注册进 Python 实体系统）、`EgController`（`ControllerPtr`）、`debug_extension.cpp`（`cellapp/entity.hpp`、`real_entity.hpp`、`entitydef/script_data_source.hpp`、`server/stream_helper.hpp`）+ `bwpython313`。需 CellApp Entity/EntityExtra/Controller（BW-08）+ 脚本宿主（BW-03-03/BW-17）先落地，非 plugin-host（BW-13-06-03）面。
 
 #### BW-14-03 Web Integration
 
