@@ -6,10 +6,12 @@ part (a shadow on the client). This page documents the script model and the
 callback names a script can implement.
 
 ::: warning Not runnable against this tree yet
-The Python host is not implemented: `crates/python-host/src/lib.rs` is a four-line
-doc comment reserving the public surface, and there are no `.py` files in the
-repository. The scripts below are the reference revision's, which is the
-compatibility contract the host must honour (BW-03, BW-14).
+The Python host crate is implemented (`crates/python-host/`: interpreter
+lifecycle, import paths, script output, object bridge), but no role runtime
+wires scripts into it yet — `apps/server` is the entry point and only starts a
+role without running entity scripts (BW-00-03-05, BW-14). The scripts below are
+the reference revision's, which is the compatibility contract the host must
+honour (BW-03, BW-14).
 :::
 
 ## Parts and base classes
