@@ -6,7 +6,7 @@
 //! `Quaternion::from_matrix`.
 
 use super::matrix::Matrix;
-use super::vector::{clamp, Vector3, Vector4};
+use super::vector::{Vector3, Vector4, clamp};
 
 /// Default epsilon for the reference `almostEqual` equality.
 pub const QUATERNION_ALMOST_EQUAL_EPSILON: f32 = 0.0004;

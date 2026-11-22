@@ -135,7 +135,10 @@ mod tests {
     fn point_containment_is_half_open() {
         let b = BoundBox::new(Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0));
         assert!(b.contains(&Vector3::ZERO), "min corner is inside");
-        assert!(!b.contains(&Vector3::new(10.0, 0.0, 0.0)), "max corner is outside");
+        assert!(
+            !b.contains(&Vector3::new(10.0, 0.0, 0.0)),
+            "max corner is outside"
+        );
         assert!(b.contains(&Vector3::new(9.999, 0.0, 0.0)));
         assert!(!b.contains(&Vector3::new(-0.001, 0.0, 0.0)));
     }
@@ -143,11 +146,11 @@ mod tests {
     #[test]
     fn box_overlap_is_closed_interval() {
         let a = BoundBox::new(Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0));
-        let touching = BoundBox::new(
-            Vector3::new(10.0, 0.0, 0.0),
-            Vector3::new(20.0, 10.0, 10.0),
+        let touching = BoundBox::new(Vector3::new(10.0, 0.0, 0.0), Vector3::new(20.0, 10.0, 10.0));
+        assert!(
+            a.intersects(&touching),
+            "closed interval includes touching faces"
         );
-        assert!(a.intersects(&touching), "closed interval includes touching faces");
 
         let apart = BoundBox::new(
             Vector3::new(10.001, 0.0, 0.0),
