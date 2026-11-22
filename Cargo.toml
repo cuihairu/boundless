@@ -14,6 +14,7 @@ members = [
     "crates/test-support",
     "crates/asset-pipeline",
     "crates/python-module",
+    "crates/plugin-host",
     "apps/server",
 ]
 
@@ -44,6 +45,7 @@ python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }
+# plugin-host = { path = "crates/plugin-host" }  # re-add with first consumer
 
 [profile.release]
 opt-level = 3
