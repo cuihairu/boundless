@@ -28,6 +28,7 @@ pub mod process_status;
 pub mod protocol_fixtures;
 pub mod python_callbacks;
 pub mod python_profile;
+pub mod queue_state;
 pub mod release_artifacts;
 pub mod request_capture;
 pub mod rng;
