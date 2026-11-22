@@ -383,9 +383,135 @@ pub fn catalog() -> Vec<CoverageRow> {
     parse_catalog(CATALOG_TEXT)
 }
 
+/// One named gap (BW-00-05-05): the reference source the gap concerns, the
+/// blocking reason, and the committed record that carries the evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gap {
+    /// The 来源: the reference source the gap is about.
+    pub source: String,
+    /// The 阻塞原因: why the gap is not covered.
+    pub blocker: String,
+    /// The committed catalog that records the evidence.
+    pub record: String,
+}
+
+/// The bundled third-party blocker: the port's workspace carries no binding
+/// for the reference's `third_party/` components, so it builds none of them.
+const THIRD_PARTY_BLOCKER: &str = "third-party C++ library not vendored or ported: the workspace carries no binding for the reference's bundled third_party component, so the port builds none of them";
+
+/// The SDK blocker: the multi-engine client SDK lanes (BW-21) are not
+/// delivered yet, so the reference's client SDK surface has no ported
+/// counterpart.
+const SDK_BLOCKER: &str = "multi-engine client SDK lanes (BW-21) are not delivered yet: the port exposes a per-crate ABI surface, and the reference's client SDK integration has no ported counterpart";
+
+/// The release-artifact blocker: the reference checkout carries no prebuilt
+/// server binary, so the original side of a differential acceptance has
+/// nothing to run; only the port's own nightly builds exist.
+const RELEASE_BLOCKER: &str = "source-only checkout: no prebuilt reference server binary exists to run the original side of a differential acceptance against, and no reference release artifact to compare deliverables with";
+
+/// The gaps the release-artifact, SDK, and missing-resource audit names
+/// (BW-00-05-05), each with its source and blocking reason: the bundled
+/// third-party components the port does not vendor, the absent reference
+/// release binaries, the live asset capture that cannot be taken, and the
+/// undelivered client SDK.
+pub fn gaps() -> Vec<Gap> {
+    let mut out = Vec::new();
+
+    // The bundled third-party libraries: one gap per component.
+    for row in catalog()
+        .iter()
+        .filter(|r| r.source.starts_with("third_party/"))
+    {
+        out.push(Gap {
+            source: format!("{} ({})", row.source, row.kind),
+            blocker: String::from(THIRD_PARTY_BLOCKER),
+            record: String::from("cases/make_targets.txt"),
+        });
+    }
+
+    // The release artifacts: the checkout's own recorded prebuilt-binary fact.
+    let Some(prebuilt) = crate::runtime_env::catalog()
+        .into_iter()
+        .find(|fact| fact.item == "prebuilt-server-binaries")
+    else {
+        return out;
+    };
+    out.push(Gap {
+        source: format!("{} ({})", prebuilt.source, prebuilt.value),
+        blocker: String::from(RELEASE_BLOCKER),
+        record: String::from("cases/runtime_env.txt"),
+    });
+
+    // The missing resources: live capture is blocked, so the reference's own
+    // committed asset trees stand in as the recorded fixtures.
+    out.push(Gap {
+        source: String::from(
+            "programming/fantasydemo/res; \
+             programming/bigworld/examples/client_integration/python/simple/res",
+        ),
+        blocker: crate::asset_fixtures::blocker(),
+        record: String::from("cases/asset_fixtures.txt"),
+    });
+
+    // The SDK: the port's client-integration fixtures, with the lane that
+    // would deliver the SDK surface.
+    out.push(Gap {
+        source: String::from(
+            "cases/{godot_sdk,unity_sdk,unreal_sdk,python_sdk}: \
+             the port's client-integration fixtures",
+        ),
+        blocker: String::from(SDK_BLOCKER),
+        record: String::from("cases/{godot_sdk,unity_sdk,unreal_sdk,python_sdk}"),
+    });
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The release-artifact / SDK / missing-resource audit: every gap names the
+    /// source it is about and the blocking reason behind it (BW-00-05-05).
+    #[test]
+    fn every_gap_names_a_source_and_its_blocker() {
+        let gaps = gaps();
+        assert!(!gaps.is_empty(), "the gap ledger must not be empty");
+
+        // Every gap carries its source, its blocking reason, and the committed
+        // record that holds the evidence.
+        for gap in &gaps {
+            assert!(!gap.source.trim().is_empty(), "gap without a source");
+            assert!(!gap.blocker.trim().is_empty(), "gap without a blocker");
+            assert!(!gap.record.trim().is_empty(), "gap without a record");
+        }
+
+        // The three bundled third-party libraries are each a gap.
+        for lib in ["CppUnitLite2", "png", "zip"] {
+            assert!(
+                gaps.iter()
+                    .any(|gap| gap.source.starts_with(&format!("third_party/{lib}"))
+                        && gap.record == "cases/make_targets.txt"),
+                "bundled third-party component {lib} is not a recorded gap"
+            );
+        }
+
+        // The prebuilt server binaries, the missing resources, and the
+        // undelivered client SDK are recorded too — one gap per blocked
+        // category.
+        let categories = [
+            String::from("source-only checkout:"),
+            crate::asset_fixtures::blocker(),
+            String::from("multi-engine client SDK"),
+        ];
+        for category in &categories {
+            assert!(
+                gaps.iter()
+                    .any(|gap| gap.blocker.starts_with(category.as_str())),
+                "blocked category is not a recorded gap: {category}"
+            );
+        }
+    }
 
     #[test]
     fn derive_keys_on_the_path_and_the_marker() {
