@@ -566,6 +566,60 @@ mod tests {
     }
 
     #[test]
+    fn reference_wire_fixtures_string() {
+        // Strings: a packed-int length prefix plus the raw bytes, with no NUL
+        // terminator. The reference `binary_stream.hpp` `appendString` comment
+        // explicitly notes BW::strings can contain null characters, so the
+        // embedded-NUL case is pinned too. The bytes below are what a generator
+        // linked to the reference cstdmf emits.
+        let mut s = BinaryStream::new();
+        s.write_string("").unwrap();
+        assert_eq!(s.as_bytes(), &[0x00]); // empty: packed length 0 only
+
+        let mut s = BinaryStream::new();
+        s.write_string("a").unwrap();
+        assert_eq!(s.as_bytes(), &[0x01, 0x61]);
+
+        let mut s = BinaryStream::new();
+        s.write_string("hello").unwrap();
+        assert_eq!(s.as_bytes(), &[0x05, 0x68, 0x65, 0x6C, 0x6C, 0x6F]);
+
+        let mut s = BinaryStream::new();
+        s.write_string("ab\0cd").unwrap();
+        assert_eq!(s.as_bytes(), &[0x05, 0x61, 0x62, 0x00, 0x63, 0x64]);
+
+        let mut s = BinaryStream::new();
+        s.write_string("实体与太空").unwrap();
+        assert_eq!(
+            s.as_bytes(),
+            &[
+                0x0F, // 15 UTF-8 bytes
+                0xE5, 0xAE, 0x9E, 0xE4, 0xBD, 0x93, 0xE4, 0xB8, 0x8E, 0xE5, 0xA4, 0xAA, 0xE7, 0xA9,
+                0xBA,
+            ]
+        );
+
+        // The embedded-NUL string round-trips exactly (length-delimited, so
+        // the 0x00 byte is content, not a terminator).
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("实体与太空".to_string()));
+
+        // Remaining length: reading a string consumes exactly its prefix plus
+        // its bytes, and leaves the rest of the stream intact.
+        let mut s = BinaryStream::new();
+        s.write_string("ab\0cd").unwrap();
+        s.write_u32(0xDEAD_BEEF);
+        assert_eq!(s.length(), 6 + 4);
+        s.rewind();
+        assert_eq!(s.remaining(), 10);
+        assert_eq!(s.read_string(), Ok("ab\0cd".to_string()));
+        assert_eq!(s.remaining(), 4);
+        assert_eq!(s.read_u32(), Ok(0xDEAD_BEEF));
+        assert_eq!(s.remaining(), 0);
+        assert!(s.at_end());
+    }
+
+    #[test]
     fn packed_int_boundaries() {
         for value in [0u32, 1, 254, 255, 256, 1000, 65535, 65536, MAX_PACKED_INT] {
             let mut s = BinaryStream::new();
