@@ -32,6 +32,20 @@ pub const SO_RCVTIMEO: i32 = libc::SO_RCVTIMEO;
 pub const SO_SNDTIMEO: i32 = libc::SO_SNDTIMEO;
 /// `SO_KEEPALIVE`.
 pub const SO_KEEPALIVE: i32 = libc::SO_KEEPALIVE;
+/// `IPPROTO_TCP`, the option level of the keepalive interval knobs.
+pub const IPPROTO_TCP: i32 = libc::IPPROTO_TCP;
+/// `TCP_KEEPIDLE`, the idle seconds before the first keepalive probe.
+/// Linux only: macOS spells the same knob `TCP_KEEPALIVE`.
+#[cfg(target_os = "linux")]
+pub const TCP_KEEPIDLE: i32 = libc::TCP_KEEPIDLE;
+/// `TCP_KEEPINTVL`, the seconds between keepalive probes.
+#[cfg(target_os = "linux")]
+pub const TCP_KEEPINTVL: i32 = libc::TCP_KEEPINTVL;
+/// `TCP_KEEPCNT`, the probes before the socket is declared dead.
+#[cfg(target_os = "linux")]
+pub const TCP_KEEPCNT: i32 = libc::TCP_KEEPCNT;
+/// `SHUT_WR`, the `shutdown` mode of `TCPChannel::doShutDown`'s half-close.
+pub const SHUT_WR: i32 = libc::SHUT_WR;
 /// `SO_SNDBUF`.
 pub const SO_SNDBUF: i32 = libc::SO_SNDBUF;
 /// `SO_RCVBUF`.
@@ -165,6 +179,11 @@ pub fn recvfrom(fd: RawFd, buf: &mut [u8]) -> (i32, u16, u32) {
 /// `::recv`.
 pub fn recv(fd: RawFd, buf: &mut [u8]) -> i32 {
     unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0) as i32 }
+}
+
+/// `::shutdown` -- the `TCPChannel::doShutDown` half-close.
+pub fn shutdown(fd: RawFd, how: i32) -> i32 {
+    unsafe { libc::shutdown(fd, how) as i32 }
 }
 
 /// `::getsockname`.
