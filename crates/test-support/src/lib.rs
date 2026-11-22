@@ -16,6 +16,7 @@ pub mod clock;
 pub mod cluster_query;
 pub mod cmake_targets;
 pub mod config_fixture;
+pub mod coverage;
 pub mod cpu_sampler;
 pub mod cross_reference;
 pub mod dap_session;
