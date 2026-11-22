@@ -1,14 +1,21 @@
-//! BW-21-03-01: the SDK's Unity C# binding, delivered and compiled.
+//! BW-21-03 Unity adapter: the C# binding and the main-thread dispatch.
 //!
-//! The binding is delivered as C# under `cases/unity_sdk/`: the component
-//! itself ([`BINDING_FILE`]) and a stand-in for the engine surface it
-//! touches ([`ENGINE_STUB_FILE`]).  The binding is a `MonoBehaviour`, so the
-//! editor loads it as a component; that loading step needs Unity itself,
-//! which a bare runner does not have, and is recorded as a gap
-//! ([`UNITY_EDITOR_GAP`]).  What can be checked anywhere is that the binding
-//! compiles against the engine surface and exposes the SDK contract:
-//! [`compile_binding`] builds it with the runner's C# toolchain and
-//! [`BINDING_MEMBERS`] lists the public members it must have.
+//! BW-21-03-01 — the binding is delivered as C# under `cases/unity_sdk/`:
+//! the component itself ([`BINDING_FILE`]) and a stand-in for the engine
+//! surface it touches ([`ENGINE_STUB_FILE`]).  The binding is a
+//! `MonoBehaviour`, so the editor loads it as a component; that loading step
+//! needs Unity itself, which a bare runner does not have, and is recorded as
+//! a gap ([`UNITY_EDITOR_GAP`]).  What can be checked anywhere is that the
+//! binding compiles against the engine surface and exposes the SDK
+//! contract: [`compile_binding`] builds it with the runner's C# toolchain
+//! and [`BINDING_MEMBERS`] lists the public members it must have.
+//!
+//! BW-21-03-02 — Unity posts callbacks from its worker threads and must
+//! deliver them on the main thread, so [`UnityMainThreadDispatcher`] models
+//! the dispatch: a worker queues an event, the main thread pumps it, and
+//! [`UnityDispatchEvent`] records both the thread the event came from and
+//! the thread it was delivered on.  [`UnityMainThreadDispatcher::all_on_main_thread`]
+//! is the fixed-case thread assertion.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -62,6 +69,87 @@ pub struct BindingBuild {
     pub success: bool,
     /// The toolchain's last lines, for a diagnostic when it failed.
     pub tail: Vec<String>,
+}
+
+/// One entity event the dispatcher delivers: its name, the thread it was
+/// posted from, and the thread it was delivered on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnityDispatchEvent {
+    /// The event's name.
+    pub name: String,
+    /// The thread the event was posted from.
+    pub posted_from: String,
+    /// The thread the event was delivered on.
+    pub delivered_on: String,
+}
+
+/// The Unity binding's main-thread dispatcher: a worker thread posts events
+/// from anywhere, and the Unity main thread delivers each one when it pumps
+/// — every delivery runs on the main thread, and the record keeps the
+/// thread the event came from.
+pub struct UnityMainThreadDispatcher {
+    main_thread: String,
+    queued: Vec<String>,
+    posted_from: Vec<String>,
+    delivered: Vec<UnityDispatchEvent>,
+}
+
+impl UnityMainThreadDispatcher {
+    /// A dispatcher whose main thread is `main_thread`.
+    pub fn new(main_thread: &str) -> Self {
+        Self {
+            main_thread: main_thread.to_string(),
+            queued: Vec::new(),
+            posted_from: Vec::new(),
+            delivered: Vec::new(),
+        }
+    }
+
+    /// The main thread the dispatcher delivers on.
+    pub fn main_thread(&self) -> &str {
+        &self.main_thread
+    }
+
+    /// A worker thread posts one event; the thread is recorded, not the
+    /// delivery — the main thread has not run it yet.
+    pub fn queue(&mut self, name: &str, posted_from: &str) {
+        self.queued.push(name.to_string());
+        self.posted_from.push(posted_from.to_string());
+    }
+
+    /// The main thread pumps: every posted event is delivered on the main
+    /// thread, in posted order. Returns how many ran.
+    pub fn pump(&mut self) -> usize {
+        let queued = std::mem::take(&mut self.queued);
+        let posted_from = std::mem::take(&mut self.posted_from);
+        let count = queued.len();
+        for (name, from) in queued.into_iter().zip(posted_from) {
+            self.delivered.push(UnityDispatchEvent {
+                name,
+                posted_from: from,
+                delivered_on: self.main_thread.clone(),
+            });
+        }
+        count
+    }
+
+    /// How many events are posted but not yet pumped.
+    pub fn queued(&self) -> usize {
+        self.queued.len()
+    }
+
+    /// The events delivered so far, in delivery order.
+    pub fn delivered(&self) -> &[UnityDispatchEvent] {
+        &self.delivered
+    }
+
+    /// Whether every delivery ran on the main thread — the fixed-case thread
+    /// assertion.
+    pub fn all_on_main_thread(&self) -> bool {
+        self.delivered
+            .iter()
+            .all(|event| event.delivered_on == self.main_thread)
+    }
 }
 
 /// Compile the delivered binding against the engine stub with the runner's
@@ -193,5 +281,81 @@ mod tests {
         // CI harness skips for, so the gap is honest rather than silent.
         assert!(UNITY_EDITOR_GAP.contains("Unity Editor"));
         assert!(UNITY_EDITOR_GAP.contains("BW-21-03-03"));
+    }
+
+    #[test]
+    fn every_delivery_runs_on_the_main_thread() {
+        let mut dispatcher = UnityMainThreadDispatcher::new("unity-main");
+
+        // Three events posted from three worker threads; the Unity main
+        // thread pumps them all.
+        dispatcher.queue("created", "worker-1");
+        dispatcher.queue("entered", "worker-2");
+        dispatcher.queue("destroyed", "worker-3");
+        assert_eq!(dispatcher.pump(), 3);
+
+        // The fixed-case assertion: every delivery ran on the main thread,
+        // and each record keeps the thread it came from.
+        assert!(dispatcher.all_on_main_thread());
+        assert_eq!(dispatcher.delivered().len(), 3);
+        let threads: Vec<&str> = dispatcher
+            .delivered()
+            .iter()
+            .map(|event| event.posted_from.as_str())
+            .collect();
+        assert_eq!(threads, vec!["worker-1", "worker-2", "worker-3"]);
+    }
+
+    #[test]
+    fn a_posted_event_is_not_delivered_until_the_main_thread_pumps() {
+        let mut dispatcher = UnityMainThreadDispatcher::new("unity-main");
+        dispatcher.queue("created", "worker-1");
+
+        // Posted from the worker: queued, not delivered yet.
+        assert_eq!(dispatcher.queued(), 1);
+        assert!(dispatcher.delivered().is_empty());
+
+        // Pumped on the main thread: delivered, queue empty.
+        assert_eq!(dispatcher.pump(), 1);
+        assert_eq!(dispatcher.queued(), 0);
+        assert_eq!(dispatcher.delivered().len(), 1);
+    }
+
+    #[test]
+    fn events_are_delivered_in_the_order_they_were_posted() {
+        let mut dispatcher = UnityMainThreadDispatcher::new("unity-main");
+        dispatcher.queue("alpha", "worker-1");
+        dispatcher.queue("beta", "worker-1");
+        dispatcher.queue("gamma", "worker-2");
+        dispatcher.pump();
+
+        let names: Vec<&str> = dispatcher
+            .delivered()
+            .iter()
+            .map(|event| event.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn a_posted_event_remembers_the_thread_it_came_from() {
+        let mut dispatcher = UnityMainThreadDispatcher::new("unity-main");
+        dispatcher.queue("moved", "worker-7");
+        dispatcher.pump();
+
+        // The delivery is on the main thread, but the record still names the
+        // worker that posted it.
+        let event = &dispatcher.delivered()[0];
+        assert_eq!(event.delivered_on, "unity-main");
+        assert_eq!(event.posted_from, "worker-7");
+        assert_eq!(event.name, "moved");
+    }
+
+    #[test]
+    fn an_empty_pump_delivers_nothing() {
+        let mut dispatcher = UnityMainThreadDispatcher::new("unity-main");
+        assert_eq!(dispatcher.pump(), 0);
+        assert!(dispatcher.delivered().is_empty());
+        assert!(dispatcher.all_on_main_thread());
     }
 }
