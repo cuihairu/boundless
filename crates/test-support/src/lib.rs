@@ -45,6 +45,7 @@ pub mod runtime_env;
 pub mod session_duration;
 pub mod session_metrics;
 pub mod space_cell;
+pub mod space_heat;
 pub mod standalone;
 pub mod startup_baseline;
 pub mod stats_report;
