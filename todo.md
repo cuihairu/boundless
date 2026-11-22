@@ -436,7 +436,12 @@
   - 证据：**参考对照**——`Request::handleTimeout`→`failRequest(*this, REASON_TIMER_EXPIRED)`；`failRequest` 先 `requestMap_.erase(replyID)` 再 `handleFailure`；`cancelRequestsFor` 迭代时**先移迭代器**再 fail（fail 改 map 会使迭代器失效），端口先收集 id 再逐个 fail 同序。
   - 待接入：`cancelRequestsFor(Bundle&, reason)`→`bundle.cancelRequests` 属 Bundle（BW-02-03-01）；`NetworkInterface::finaliseRequestManager` 关停接线随 05 的注册/校验面。
   - 测试与覆盖：mercury **173 通过 / 0 失败**（新增 6，均为 request_manager 生命周期）；全 workspace **844 通过 / 0 失败 / 33 ignored**；`cargo clippy -p mercury --all-targets -- -D warnings` 零告警、`cargo fmt --check -p mercury` 0 差异；llvm-cov request_manager.rs **99.68%** 行。
-- [ ] **BW-02-02-05 注册处理器与校验**。**验收** 未知消息与长度错误结果吻合。
+- [x] **BW-02-02-05 注册处理器与校验**（4e5e0d5）。**验收** 未知消息与长度错误结果吻合。
+  - 证据：**注册接线**——`NetworkInterface::new` 建立 dispatcher、interface table、request manager 后，按 network_interface.cpp:147 `interfaceTable().serve(InterfaceElement::REPLY, pRequestManager_)` 把请求管理器登记为应答消息的 handler；`finalise_request_manager`（network_interface.cpp:189 `finaliseRequestManager`）serve(REPLY, NULL) 再置空，`prepare_for_shutdown`（:178）委托之。字段声明序 request_manager→interface_table→dispatcher，使析构先取消请求定时器、再交 dispatcher 队列。
+  - 证据：**校验臂（验收核心）**——`resolve_message(msg_id)` 复现 udp_bundle_processor.cpp 分派循环前段：handler 为 NULL→`Reason::NonexistentEntry`（unknown 消息）；`InterfaceElement updatedIE = ie; updatedIE.updateLengthDetails(...)` 失败→`Reason::CorruptedPacket`（长度错误）。更新在拷贝上进行，回调定尺寸不粘在注册元素上。
+  - 证据：**交付面**——`InputMessageHandler` 补齐 `handle_message`（参考纯虚、无默认）；`RequestManager` 实现之（REPLY 元素为 VARIABLE_LENGTH_MESSAGE，定尺寸半永不询问）。调用方经 `resolve_message` 取 `(updated_element, handler)` 后自行 `handler.handle_message(...)` 投递（bundle 层 BW-02-03）。
+  - 证据：**参考对照**——`REASON_NONEXISTENT_ENTRY=-5`、`REASON_CORRUPTED_PACKET=-4` 与 misc.rs 一致；未服务 id 与 REPLY id 均报 NonexistentEntry（`an_unserved_message_id_is_a_nonexistent_entry`）；回调拒绝 bundle 报 CorruptedPacket（`a_callback_that_rejects_the_bundle_is_a_corrupted_packet`）；`get_message_stream_size` 默认参考 `MF_ASSERT(0)` 后 -1，本移植去掉 abort 保留 -1（误声明回调→无效 bundle 而非杀进程）。
+  - 测试与覆盖：mercury **181 通过 / 0 失败**；全 workspace **849 通过 / 0 失败 / 33 ignored**；`cargo clippy -p mercury --all-targets -- -D warnings` 零告警、`cargo fmt --check -p mercury` 0 差异；gate `ci/check-rust.sh all --packages mercury` 四 lane 全 PASS `[ci] no failed lane`。llvm-cov 行覆盖 interfaces.rs / interface_element.rs / interface_minder.rs / interface_table.rs **100.00%**、request_manager.rs **99.70%**、network_interface.rs **97.11%**（仅余既有 socket 失败路径）。
 
 #### BW-02-03 可靠 UDP
 
