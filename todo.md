@@ -243,7 +243,11 @@
   - 原版字节：**编译** `lib/cstdmf/binary_stream.hpp`+`memory_stream.hpp`（链 `build/el7/lib/libcstdmf.a`）的夹具生成器实跑，逐基元与拼接流均与端口逐字节吻合——`u8 0xAB→ab`、`i8 -7→f9`、`u16 0x1234→34 12`、`i16 -1234→2e fb`、`u32 0x01020304→04 03 02 01`、`i32 -1→ff×4`、`u64 0x0102…0708→08…01`、`i64 -1→ff×8`、`f32 -1.5→00 00 c0 bf`、`f64 -2.75→00 00 00 00 00 00 06 c0`、NaN/±inf/次正规保位型、`all_primitives` 43 字节拼接逐字节相同——**acceptance 达成**。
   - 结果：`cargo test -p foundation --lib` **137/137 绿**（stream 20/20，含三夹具测试）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用工作区依赖警告系既有工作区清单级，非本项）；`rustfmt` 本文件绿。
   - 证据：crates/foundation/src/stream.rs 新增 `reference_wire_fixtures_fixed_width`（边界/哨兵逐字节钉死）、`reference_wire_fixtures_floats_special`（NaN/±inf/次正规位型不规范化）、`reference_wire_fixtures_roundtrip_each_width`（43 字节参考拼接逐字节 + 逐值往返）。
-- [ ] **BW-01-02-02 实现变长整数与长度前缀**。**验收** 跨长度边界值逐字节吻合。
+- [x] **BW-01-02-02 实现变长整数与长度前缀**（commit a1ff9dc）。**验收** 跨长度边界值逐字节吻合。
+  - 夹具：参考侧 `binary_stream.hpp` `writePackedInt`——`value < 0xFF` 写 1 字节，否则 `0xFF` 标记 + `BW_PACK3`（低三字节 LE，`value < 2^24`）；`readPackedInt` 反向：首字节 `< 0xFF` 即值，否则取后续 `BW_UNPACK3` 三字节；`calculatePackedIntSize` 同判据（`>= 0xFF` 4 字节、否则 1 字节）——端口 `stream.rs` 的 `write_packed_int`/`read_packed_int`/`packed_int_size` 逐条一致。
+  - 原版字节：**编译** 参考 cstdmf 的生成器实跑 `writePackedInt` 边界值，逐字节吻合——`0→00`、`1→01`、`2→02`、`253→fd`、`254→fe`（恰在转义下方 1 字节）、`255→ff ff 00 00`（转义：标记+PACK3）、`256→ff 00 01 00`、`1000→ff e8 03 00`、`65535→ff ff ff 00`、`65536→ff 00 00 01`、`0xFFFFFF→ff ff ff ff`——**acceptance 达成**。
+  - 结果：`cargo test -p foundation --lib` **138/138 绿**（stream 21/21，含新夹具）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用依赖警告系工作区既有、非本项）；`rustfmt` 本文件绿。
+  - 证据：crates/foundation/src/stream.rs 新增 `reference_wire_fixtures_packed_int`（11 个边界值逐字节钉死 + `packed_int_size` 长度 + 逐值往返）。
 - [ ] **BW-01-02-03 实现字符串与内存流**。**验收** 空值、嵌入零和剩余长度吻合。
 - [ ] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
 - [ ] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
