@@ -27,6 +27,9 @@ const EVIDENCE_ORIGINAL: &str = include_str!("../cases/full_stack/original.tsv")
 /// The committed new evidence.
 const EVIDENCE_NEW: &str = include_str!("../cases/full_stack/new.tsv");
 
+/// The committed single-component replacement report (BW-00-04-05).
+const EVIDENCE_REPLACEMENT: &str = include_str!("../cases/full_stack/replacement.tsv");
+
 /// The shared input as parsed records.
 pub fn roles() -> Vec<String> {
     parse_roles(ROLES_TEXT)
@@ -188,6 +191,63 @@ pub fn render_side(evs: &[Evidence]) -> String {
     out
 }
 
+/// A single-component replacement report (BW-00-04-05): one role runs as the
+/// new implementation, every other role stays as the original stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacementReport {
+    /// The role the new implementation replaces.
+    pub replaced_role: String,
+    /// One row per input role; the replaced row probes the new stack, the rest
+    /// probe the original.
+    pub rows: Vec<Evidence>,
+}
+
+/// Build a replacement report for one role: that role runs as the new stack,
+/// every other role stays as the original stack.
+pub fn replacement(
+    input: &[String],
+    replaced_role: &str,
+    original_bin_dir: &Path,
+    new_binary: &Path,
+) -> ReplacementReport {
+    let rows = input
+        .iter()
+        .map(|role| {
+            if role == replaced_role {
+                probe_new(role, new_binary)
+            } else {
+                probe_original(role, original_bin_dir)
+            }
+        })
+        .collect();
+    ReplacementReport {
+        replaced_role: replaced_role.to_string(),
+        rows,
+    }
+}
+
+/// Render a replacement report: a header naming the replaced role, then rows.
+pub fn render_replacement(report: &ReplacementReport) -> String {
+    let mut out = format!("replaced-role\t{}\n", report.replaced_role);
+    let _ = write!(out, "{}", render_side(&report.rows));
+    out
+}
+
+/// Parse a replacement report back into its parts.
+pub fn parse_replacement(text: &str) -> ReplacementReport {
+    let mut lines = text.lines();
+    let replaced_role = lines
+        .next()
+        .and_then(|line| line.strip_prefix("replaced-role\t"))
+        .unwrap_or("")
+        .to_string();
+    let rest: String = lines.map(|line| format!("{line}\n")).collect();
+    ReplacementReport {
+        replaced_role,
+        rows: parse_side(&rest),
+    }
+}
+
 /// Parse a tab-separated side table back into rows (header skipped).
 pub fn parse_side(text: &str) -> Vec<Evidence> {
     text.lines()
@@ -225,6 +285,11 @@ pub fn evidence_original() -> Vec<Evidence> {
 /// The committed new evidence, parsed.
 pub fn evidence_new() -> Vec<Evidence> {
     parse_side(EVIDENCE_NEW)
+}
+
+/// The committed single-component replacement report, parsed.
+pub fn replacement_evidence() -> ReplacementReport {
+    parse_replacement(EVIDENCE_REPLACEMENT)
 }
 
 #[cfg(test)]
@@ -311,6 +376,83 @@ mod tests {
         let absent = probe_original("loginapp", &dir);
         assert!(absent.detail.contains("absent"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A replacement report runs the replaced role as the new stack and every
+    /// other role as the original, and names the replaced role.
+    #[test]
+    fn replacement_replaces_one_role_and_names_it() {
+        let dir = std::env::temp_dir().join(format!("bw00-full-stack-repl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let orig = dir.join("orig");
+        let new = dir.join("new");
+        std::fs::create_dir_all(&orig).expect("mkdir orig");
+        std::fs::create_dir_all(&new).expect("mkdir new");
+        let orig_bin = orig.join("baseapp");
+        std::fs::write(&orig_bin, "fake").expect("write orig");
+        let new_bin = new.join("boundless-server");
+        std::fs::write(&new_bin, "fake").expect("write new");
+
+        let input = vec!["baseapp".to_string(), "cellapp".to_string()];
+        let report = replacement(&input, "cellapp", &orig, &new_bin);
+        assert_eq!(report.replaced_role, "cellapp");
+
+        let baseapp = report.rows.iter().find(|e| e.role == "baseapp").unwrap();
+        assert_eq!(baseapp.side, Side::Original);
+        assert_eq!(baseapp.status, Status::Blocked);
+
+        let cellapp = report.rows.iter().find(|e| e.role == "cellapp").unwrap();
+        assert_eq!(cellapp.side, Side::New);
+        assert_eq!(cellapp.status, Status::Blocked); // fake binary not executable
+
+        let text = render_replacement(&report);
+        assert!(text.starts_with("replaced-role\tcellapp\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The committed replacement report names the replaced role, runs that
+    /// role as the new stack and keeps every other role as the original.
+    #[test]
+    fn committed_replacement_report_notes_the_replaced_role() {
+        let report = replacement_evidence();
+        assert_eq!(report.replaced_role, "cellapp");
+        assert_eq!(report.rows.len(), roles().len());
+
+        let replaced = report
+            .rows
+            .iter()
+            .find(|e| e.role == "cellapp")
+            .expect("cellapp row");
+        assert_eq!(replaced.side, Side::New);
+        assert_eq!(replaced.status, Status::Ran);
+
+        for ev in report
+            .rows
+            .iter()
+            .filter(|e| e.role != report.replaced_role)
+        {
+            assert_eq!(ev.side, Side::Original);
+            assert_eq!(ev.status, Status::Blocked);
+            assert!(ev.detail.contains("original-full-stack"));
+        }
+    }
+
+    /// A replacement report round-trips through render and parse.
+    #[test]
+    fn replacement_render_parse_round_trip() {
+        let dir =
+            std::env::temp_dir().join(format!("bw00-full-stack-repl-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let new_bin = dir.join("boundless-server");
+        std::fs::write(&new_bin, "fake").expect("write new");
+
+        let input = roles();
+        let report = replacement(&input, "dbapp", &dir, &new_bin);
+        let text = render_replacement(&report);
+        assert_eq!(parse_replacement(&text), report);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

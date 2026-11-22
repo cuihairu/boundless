@@ -1,12 +1,15 @@
-//! Full-stack comparison run (BW-00-04-04).
+//! Full-stack comparison run (BW-00-04-04) and single-component replacement
+//! run (BW-00-04-05).
 //!
-//! Usage: `run-full-stack <input-file> <original-bin-dir> <new-binary> <out-dir>`
+//! Usage:
+//!   `run-full-stack <input-file> <original-bin-dir> <new-binary> <out-dir>`
+//!   `run-full-stack <input-file> <original-bin-dir> <new-binary> <out-dir> --replace <role>`
 //!
-//! Feeds one shared input (a role list, one role per line) to both stacks and
-//! writes two evidence tables into `<out-dir>`: `original.tsv` and `new.tsv`.
-//! Each row records whether that stack produced a clean observable start for
-//! the role, and the detail — the captured output, or the named reason it
-//! could not run here.
+//! The first form feeds one shared input (a role list, one role per line) to
+//! both stacks and writes two evidence tables into `<out-dir>`: `original.tsv`
+//! and `new.tsv`. The second form runs a single-component replacement — the
+//! named role runs as the new stack, every other role stays as the original —
+//! and writes `replacement.tsv`, a report that names the replaced role.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -14,8 +17,10 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 5 {
-        eprintln!("usage: run-full-stack <input-file> <original-bin-dir> <new-binary> <out-dir>");
+    if args.len() < 5 {
+        eprintln!(
+            "usage: run-full-stack <input-file> <original-bin-dir> <new-binary> <out-dir> [--replace <role>]"
+        );
         return ExitCode::from(2);
     }
 
@@ -23,6 +28,16 @@ fn main() -> ExitCode {
     let original_dir = PathBuf::from(&args[2]);
     let new_binary = PathBuf::from(&args[3]);
     let out_dir = PathBuf::from(&args[4]);
+
+    // Optional `--replace <role>` selects the single-component replacement run.
+    let replace_role: Option<String> = match args.get(5).map(String::as_str) {
+        Some("--replace") => args.get(6).cloned(),
+        Some(other) => {
+            eprintln!("error: unexpected argument '{other}' (expected --replace <role>)");
+            return ExitCode::from(2);
+        }
+        None => None,
+    };
 
     let input_text = match std::fs::read_to_string(&input_path) {
         Ok(text) => text,
@@ -43,6 +58,34 @@ fn main() -> ExitCode {
     if let Err(err) = std::fs::create_dir_all(&out_dir) {
         eprintln!("error: cannot create {}: {err}", out_dir.display());
         return ExitCode::from(1);
+    }
+
+    if let Some(replaced) = &replace_role {
+        if !roles.iter().any(|role| role == replaced) {
+            eprintln!("error: replaced role '{replaced}' is not in the input");
+            return ExitCode::from(2);
+        }
+        let report =
+            test_support::full_stack::replacement(&roles, replaced, &original_dir, &new_binary);
+        let path = out_dir.join("replacement.tsv");
+        if let Err(err) =
+            std::fs::write(&path, test_support::full_stack::render_replacement(&report))
+        {
+            eprintln!("error: cannot write {}: {err}", path.display());
+            return ExitCode::from(1);
+        }
+        let ran = report
+            .rows
+            .iter()
+            .filter(|e| e.status == test_support::full_stack::Status::Ran)
+            .count();
+        println!("replacement run: '{replaced}' runs as the new stack");
+        println!(
+            "  {} roles; {ran} ran (the replaced role), the rest stay original",
+            report.rows.len()
+        );
+        println!("  report written to {}", path.display());
+        return ExitCode::SUCCESS;
     }
 
     let (original, new) = test_support::full_stack::compare(&roles, &original_dir, &new_binary);

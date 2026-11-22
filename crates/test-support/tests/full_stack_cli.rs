@@ -107,6 +107,71 @@ fn the_cli_writes_two_evidence_files_for_one_input() {
 }
 
 #[test]
+fn the_cli_replacement_mode_notes_the_replaced_role() {
+    let root = scratch("repl");
+    write_file(&root, "input/roles.txt", "baseapp\ncellapp\n");
+    // The original binary dir holds the non-replaced role's binary.
+    write_file(&root, "orig/bin/baseapp", "baseapp-fake");
+    // The replaced role runs as the new stack.
+    let new_bin = root.join("new/boundless-server");
+    write_file(
+        &root,
+        "new/boundless-server",
+        "#!/bin/sh\necho \"[$1] starting (test entry)\" >&2\nexit 0\n",
+    );
+    let mut perms = std::fs::metadata(&new_bin).expect("new meta").permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&new_bin, perms).expect("chmod new");
+    let out_dir = root.join("out");
+
+    let result = std::process::Command::new(harness())
+        .args([
+            root.join("input/roles.txt").to_str().expect("input"),
+            root.join("orig/bin").to_str().expect("orig"),
+            new_bin.to_str().expect("new"),
+            out_dir.to_str().expect("out"),
+            "--replace",
+            "cellapp",
+        ])
+        .output()
+        .expect("run run-full-stack");
+    assert!(
+        result.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        stdout.contains("'cellapp' runs as the new stack"),
+        "{stdout}"
+    );
+
+    // The report names the replaced role, then rows.
+    let text = std::fs::read_to_string(out_dir.join("replacement.tsv")).expect("replacement.tsv");
+    assert!(text.starts_with("replaced-role\tcellapp\n"), "{text}");
+    let report = test_support::full_stack::parse_replacement(&text);
+    assert_eq!(report.replaced_role, "cellapp");
+
+    // The non-replaced role stays as the original; the replaced role ran as
+    // the new stack.
+    let baseapp = report
+        .rows
+        .iter()
+        .find(|e| e.role == "baseapp")
+        .expect("baseapp row");
+    assert_eq!(baseapp.side, test_support::full_stack::Side::Original);
+    let cellapp = report
+        .rows
+        .iter()
+        .find(|e| e.role == "cellapp")
+        .expect("cellapp row");
+    assert_eq!(cellapp.side, test_support::full_stack::Side::New);
+    assert_eq!(cellapp.status, test_support::full_stack::Status::Ran);
+    assert_eq!(cellapp.detail, "[cellapp] starting (test entry)");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn the_cli_refuses_a_missing_input() {
     let root = scratch("noinput");
     let result = std::process::Command::new(harness())
