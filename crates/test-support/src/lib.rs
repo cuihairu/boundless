@@ -65,6 +65,7 @@ pub mod startup_baseline;
 pub mod stats_report;
 pub mod third_party_deps;
 pub mod timer_scenarios;
+pub mod tool_output;
 pub mod trace_json;
 pub mod trace_timeline;
 pub mod wait_capture;
