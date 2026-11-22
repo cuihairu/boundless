@@ -1176,11 +1176,16 @@
 
 为三端分别提供运行时、Python 模块/标准库、配置样例、工具与资源安装布局。比对公开配置和 CLI，测试干净安装、升级保留数据、启动与卸载。
 
-- [ ] **BW-14-04-01 布置原生二进制和 CLI**。**验收** 安装后的命令可执行。
-- [ ] **BW-14-04-02 随包交付 CPython 模块与标准库**。**验收** 无开发环境可导入。
+- [x] **BW-14-04-01 布置原生二进制和 CLI**。**验收** 安装后的命令可执行。（commit b0a4d3e）
+  - 证据：`ci/install-layout.sh`（b0a4d3e）+ `docs/review/bw14-04-installable-artifact-layout.md`（b0a4d3e）——lane 把 release 产物布置进安装前缀 `bin/boundless-server`（角色 CLI）与 `bin/process_defs`（工具 CLI），装后实测（install-smoke-server/install-cli）：`boundless-server baseapp` 在预算内启动（`starting`→`running`）并自停（`has shut down.`，exit 0）、`process_defs --help` 出用法 exit 0。归档 `boundless-0.1.0-linux-x86_64.tar.gz`（8.4M）解包即得两命令。
+- [x] **BW-14-04-02 随包交付 CPython 模块与标准库**。**验收** 无开发环境可导入。（commit b0a4d3e）
+  - 证据：装后 `lib/python/boundless.so`（cdylib 的 CPython 发现名安装改名，`crates/python-module/tests/import.rs` 钉死）——`PYTHONPATH=<prefix>/lib/python` 下**裸解释器** `import boundless`（`__version__`、`version()` 与 `__version__` 一致）通过，无 cargo、无 target 目录、无 venv（install-module PASS）。**边界（已注）**：稳定 ABI 模块载入**宿主解释器**的标准库（无开发环境即导入成立）；私有 CPython+stdlib 打包随内嵌宿主落地（python-host / BW-03），参考侧 Python 3.13 内嵌对应此半。
 - [ ] **BW-14-04-03 布置配置及样例资源**。**验收** 首次启动可定位。
+  - 证据（部分，未勾）：`ci/install-layout.sh`（b0a4d3e）——`res/server/bw.xml` + `res/scripts/`（21 项样例资源镜像）随包布置（install-layout PASS：配置/资源/二进制/模块/`data/` 齐全）；**装后工具首启可定位**：`process_defs -r <prefix>/res` 定位并加载安装资源树（install-cli-res PASS）。**卡点（服务器首启半未接）**：`app::run`（apps/server 最小入口）尚未消费 bw.xml——资源根初始化（`resources::init_from_args`）与配置链（BW-01-04）已在库层落地，接入 `app::run` 属 **BW-15-02-01 剩余**（该行已记「bw.xml/接口初始化（BW-01-04）」）。
 - [ ] **BW-14-04-04 执行干净安装烟测**。**验收** 三端能启动和停止。
-- [ ] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。
+  - 证据（部分，未勾）：Linux 干净安装烟测绿（b0a4d3e：install-clean 装前缀→install-smoke-server 装后启动并停止）。**卡点（三端）**：Windows/macOS 无 runner（`signals.rs` 用 Linux 专用信号 API；BW-15-03/04 启动目标前该两腿 report-only），三端启动/停止烟测随 BW-15-03/04 落地。
+- [x] **BW-14-04-05 执行升级与卸载**。**验收** 验证用户数据保留行为。（commit b0a4d3e）
+  - 证据：`ci/install-layout.sh`（b0a4d3e）——归档只携带包属树（`bin lib res`），用户数据在 `data/`（**不在归档**）。装后种子 `data/db/user.db`，篡改包属文件 `res/server/bw.xml` 后**升级**解包：包属文件还原为打包字节、`data/db/user.db` 保留（install-upgrade PASS）；**卸载**删除 `bin/ lib/ res/`、`data/db/user.db` 保留（install-uninstall PASS）。self-test 绿色全链路 + 4 条红色臂（启动失败/CLI 失败/坏模块/缺定义资源树均按预期咬合）。
 
 ### BW-15 Linux、Windows、macOS 原生支持
 
