@@ -123,6 +123,19 @@ pub unsafe fn py_tuple_check(obj: *mut PyObject) -> bool {
     unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTuple_Type)) }
 }
 
+/// `PyCallable_Check`, the C API macro (`cpython/abstract.h`: the object has
+/// `__call__`). The macro is `PyObject_CheckMethod(obj) ||
+/// PyObject_HasAttr(obj, "_call_")`; the attribute test is the portable half,
+/// the same choice the port's other macro ports make.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn is_callable(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyObject_HasAttrString(obj, c"__call__".as_ptr()) == 1 }
+}
+
 /// `PyList_Check`, the C API macro (`PyObject_TypeCheck` against
 /// `&PyList_Type`), exact match as for `py_tuple_check`.
 ///
@@ -523,6 +536,14 @@ unsafe extern "C" {
         value: *mut PyObject,
     ) -> c_int;
     pub fn PyObject_CallNoArgs(func: *mut PyObject) -> *mut PyObject;
+    /// `PyObject_Vectorcall` (`cpython/object.h`): the 3.13 vectorcall form
+    /// `PyObject_CallObject` expands to, for a tuple of arguments.
+    pub fn PyObject_Vectorcall(
+        callable: *mut PyObject,
+        args: *const *mut PyObject,
+        nargs: PySsize,
+        kwnames: *mut PyObject,
+    ) -> *mut PyObject;
     pub fn PyCFunction_New(def: *mut PyMethodDef, self_: *mut PyObject) -> *mut PyObject;
     pub fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
     pub fn PyTuple_GetItem(tuple: *mut PyObject, index: PySsize) -> *mut PyObject;

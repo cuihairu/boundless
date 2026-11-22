@@ -234,13 +234,17 @@ impl Interpreter {
         // last item here". A double drain only logs in the reference; the
         // port ignores the error and finalises regardless.
         let _ = init_time_job::run_fini_time_jobs();
+        // The gil queue's callback posts, drained before the collect loop so
+        // a posted-but-never-run callback is not a dangling one for
+        // `Py_Finalize` to find.
+        gil::clear();
         // `Script::clearTimers` (`py_callback.cpp:81-91`): the reference reaches it
         // from the app's shutdown, ahead of `Script::fini`; the port places it here,
         // behind the fini-time jobs, so a job that posts a callback is not the one
-        // that leaves a callback behind for `Py_Finalize` to find. Nothing survives
-        // the drain to the collect loop, which is what keeps a posted-but-never-run
-        // callback from being a dangling one.
-        gil::clear();
+        // that leaves a callback behind for `Py_Finalize` to find. The timer
+        // records hold script references, so they go while the allocator lives.
+        super::timers::clear();
+        super::timers::set_total_game_time(0.0);
         // The native registries die before the script system finalises --
         // `CellApp::shutDown` deletes its entities before `Script::fini` --
         // so every native wrapper `Py_DecRef`s here, allocator still alive.
@@ -364,6 +368,9 @@ fn create_big_world_module(component: &str) {
         // reference leaves the attribute unset and moves on.
         capi::PyObject_SetAttrString(module, c"component".as_ptr(), value);
         capi::dec_ref(value);
+        // The timer pair, the reference's `PY_MODULE_FUNCTION` links into the
+        // same module (`lib/pyscript/py_callback.cpp:288,:333`).
+        super::timers::register(module);
     }
 }
 
@@ -481,6 +488,7 @@ mod tests {
     use crate::manifest;
     use crate::pyref::PyRef;
     use crate::sequence;
+    use crate::timers;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -581,6 +589,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4shader_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_matrixproduct_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_matrixinverse_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_bigworld_timers_behave_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -4618,12 +4627,375 @@ __probe = '; '.join(_f) or 'ok'
         });
     }
 
+    /// `BigWorld.callback` and `BigWorld.cancelCallback` behave as the
+    /// reference's client timer pair does (`lib/pyscript/py_callback.cpp`,
+    /// the `#ifndef MF_SERVER` file): a registration returns a positive
+    /// `int` handle that increases with every registration, a pending
+    /// callback fires once at its deadline and not again, cancelling a
+    /// pending callback keeps it from firing while cancelling a missing,
+    /// invalid or already-fired handle is a quiet `None` no-op,
+    /// re-registering a fired function issues a fresh higher handle, a
+    /// negative delay clamps to zero, equal deadlines fire in registration
+    /// order, a zero-delay timer registered during its own tick waits one
+    /// frame, a callback cannot cancel the record running it (it still
+    /// leaves and the tick keeps going), a callback that raises is logged
+    /// with the reference's composed message without stopping the tick, and
+    /// the two argument-parsing errors carry the reference's strings.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_bigworld_timers_behave_like_the_reference() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let lines = lines.clone();
+            output_writer::set_log_sink(move |line, is_stderr| {
+                lines.lock().unwrap().push((line.to_owned(), is_stderr));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let read = |source: &str| probe(interpreter, source);
+            let mut faults: Vec<String> = Vec::new();
+            macro_rules! ck {
+                ($cond:expr, $($arg:tt)*) => {
+                    if !($cond) {
+                        faults.push(format!($($arg)*));
+                    }
+                };
+            }
+
+            // The fixture: a log of every firing, the error capture, and the
+            // callback targets.
+            read(
+                r#"
+import BigWorld
+log = []
+def make(name):
+    def f():
+        log.append(name)
+    return f
+a = make('a'); b = make('b'); c = make('c'); d = make('d')
+after_self = make('after_self'); after_boom = make('after_boom')
+then = make('then')
+def boom():
+    raise ValueError('boom message')
+"#,
+            );
+            // A positive int handle that climbs per registration, and `None`
+            // from cancelling `b` before it ever fires.
+            let r = read(
+                "h1 = BigWorld.callback(10.0, a)\n\
+                 h2 = BigWorld.callback(10.0, b)\n\
+                 h3 = BigWorld.callback(10.0, c)\n\
+                 __probe = repr((type(h1).__name__, h1 > 0, h2 > h1, h3 > h2,\n\
+                                 BigWorld.cancelCallback(h2) is None))",
+            );
+            ck!(r == "('int', True, True, True, True)", "handles: {r}");
+
+            // Nothing due at 5; a and c fire at 10, once each.
+            timers::set_total_game_time(5.0);
+            timers::tick(5.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "[]", "nothing due at 5: {r}");
+            timers::set_total_game_time(10.0);
+            timers::tick(10.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "['a', 'c']", "a and c fire, cancelled b does not: {r}");
+            timers::set_total_game_time(20.0);
+            timers::tick(20.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "['a', 'c']", "one-shot: nothing fires again: {r}");
+
+            // Cancelling an invalid, unknown or already-fired handle is a
+            // quiet no-op.
+            let r = read(
+                "__probe = repr((BigWorld.cancelCallback(0) is None,\n\
+                                 BigWorld.cancelCallback(999999) is None,\n\
+                                 BigWorld.cancelCallback(h1) is None))",
+            );
+            ck!(r == "(True, True, True)", "quiet cancels: {r}");
+
+            // Re-registration: a fresh, higher handle for the same function
+            // that fires again (game time 20 + 5 = 25).
+            let h3n: i64 = read("__probe = h3").parse().expect("h3 is an int handle");
+            let r = read("h4 = BigWorld.callback(5.0, b)\n__probe = h4");
+            let h4n: i64 = r.parse().expect("h4 is an int handle");
+            ck!(
+                h4n > h3n,
+                "re-registration raises the handle: {h3n} -> {h4n}"
+            );
+            timers::set_total_game_time(24.0);
+            timers::tick(24.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "['a', 'c']", "re-registered b not due at 24: {r}");
+            timers::set_total_game_time(25.0);
+            timers::tick(25.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "['a', 'c', 'b']", "re-registered b fires at 25: {r}");
+
+            // A zero-delay timer registered during its own tick waits one
+            // frame: `reenter` fires at 30, the `d` it registers (deadline
+            // 30) is not reached until the next tick.
+            let r = read(
+                "def reenter():\n\
+                 \x20   log.append('r')\n\
+                 \x20   BigWorld.callback(0.0, d)\n\
+                 h5 = BigWorld.callback(0.0, reenter)\n\
+                 __probe = h5",
+            );
+            let h5n: i64 = r.parse().expect("h5 is an int handle");
+            ck!(
+                h5n > h4n,
+                "re-entrant registration raises the handle: {h4n} -> {h5n}"
+            );
+            timers::set_total_game_time(30.0);
+            timers::tick(30.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r']",
+                "reenter fires, its zero-delay child waits a frame: {r}"
+            );
+            timers::tick(30.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd']",
+                "the child fires next tick: {r}"
+            );
+
+            // A callback cannot cancel the record running it: the cancel is
+            // a no-op, the record still leaves, and the tick keeps going to
+            // the next due callback.
+            read(
+                "def self_cancel():\n\
+                 \x20   log.append('s')\n\
+                 \x20   BigWorld.cancelCallback(mine)\n\
+                 mine = BigWorld.callback(0.0, self_cancel)\n\
+                 BigWorld.callback(0.0, after_self)\n\
+                 __probe = 0",
+            );
+            timers::tick(30.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self']",
+                "self-cancel is a no-op and the tick continues: {r}"
+            );
+
+            // Cancelling a later pending callback keeps it from firing; a
+            // sibling with a later deadline still does (deadlines 35 and 40).
+            read(
+                "h_never = BigWorld.callback(5.0, make('never'))\n\
+                 BigWorld.callback(10.0, then)\n\
+                 __probe = 0",
+            );
+            let r = read("__probe = repr(BigWorld.cancelCallback(h_never) is None)");
+            ck!(
+                r == "True",
+                "cancelling the later callback returns None: {r}"
+            );
+            timers::set_total_game_time(40.0);
+            timers::tick(40.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then']",
+                "cancelled never does not fire, then does: {r}"
+            );
+
+            // A negative delay clamps to zero: due at the current game time
+            // (40), it fires on the next tick.
+            read("BigWorld.callback(-5.0, make('neg'))\n__probe = 0");
+            timers::set_total_game_time(50.0);
+            timers::tick(50.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg']",
+                "a negative delay clamps to zero and fires: {r}"
+            );
+
+            // Equal deadlines keep registration order.
+            read(
+                "seq = []\n\
+                 def make_seq(name):\n\
+                 \x20   def f():\n\
+                 \x20       seq.append(name)\n\
+                 \x20   return f\n\
+                 BigWorld.callback(0.0, make_seq('p'))\n\
+                 BigWorld.callback(0.0, make_seq('q'))\n\
+                 BigWorld.callback(0.0, make_seq('w'))\n\
+                 __probe = 0",
+            );
+            timers::set_total_game_time(60.0);
+            timers::tick(60.0);
+            let r = read("__probe = repr(seq)");
+            ck!(
+                r == "['p', 'q', 'w']",
+                "equal deadlines fire in registration order: {r}"
+            );
+
+            // The argument-parsing errors carry the reference's messages.
+            let r = read(
+                "def cap(exc, fn):\n\
+                 \x20   try:\n\
+                 \x20       fn()\n\
+                 \x20   except exc as e:\n\
+                 \x20       return str(e)\n\
+                 \x20   except Exception:\n\
+                 \x20       return 'unexpected'\n\
+                 \x20   return 'no error'\n\
+                 __probe = repr((cap(TypeError, lambda: BigWorld.callback(5.0)),\n\
+                 \x20               cap(TypeError, lambda: BigWorld.callback(5.0, 42)),\n\
+                 \x20               cap(TypeError, lambda: BigWorld.cancelCallback('x'))))",
+            );
+            ck!(
+                r == "('BigWorld.callback: Argument parsing error.', \
+                      'BigWorld.callback: Argument parsing error.', \
+                      'py_cancelCallback: Argument parsing error.')",
+                "argument errors: {r}"
+            );
+
+            // A callback that raises is logged with the reference's composed
+            // message -- `str(value) + " (" + str(type) + ")"` behind the
+            // prefix -- and the tick continues to the next due callback.
+            read("BigWorld.callback(0.0, boom)\nBigWorld.callback(0.0, after_boom)\n__probe = 0");
+            timers::set_total_game_time(70.0);
+            timers::tick(70.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg', \
+                      'after_boom']",
+                "the tick continues past a raising callback: {r}"
+            );
+            {
+                let captured = lines.lock().unwrap();
+                let logged = captured
+                    .iter()
+                    .filter(|(_, stderr)| *stderr)
+                    .map(|(line, _)| line.clone())
+                    .collect::<Vec<_>>();
+                ck!(
+                    logged
+                        .iter()
+                        .any(|line| line
+                            == "BigWorld Callback:  boom message (<class 'ValueError'>)"),
+                    "the raising callback is logged: {logged:?}"
+                );
+            }
+
+            // A malformed record is `Script::ask`'s generic contract, not a
+            // timer-path shape: `BigWorld.callback` validates the callable and
+            // always passes an empty tuple, so these records are only
+            // reachable through the port's `add` (the `Script::addTimer`
+            // surface). Each fires the reference's TypeError, is logged, and
+            // the tick keeps going to the next record.
+            read(
+                "def vec(a, b):\n\
+                 \x20   log.append('vec')\n\
+                 \x20   return a + b\n\
+                 __probe = 0",
+            );
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            unsafe {
+                // A non-callable function with an empty argument tuple.
+                let non_callable =
+                    PyRef::from_owned(capi::PyLong_FromLong(5)).expect("an int object");
+                let empty = PyRef::from_owned(capi::PyTuple_New(0)).expect("an empty tuple");
+                timers::add(non_callable, empty, "Script: ", 0.0);
+
+                // A record whose function and arguments are both null.
+                timers::add(PyRef::empty(), PyRef::empty(), "Script: ", 0.0);
+
+                // A callable with a two-element argument tuple: the general
+                // `call_object` walk, not the empty-tuple fast path.
+                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                let dictionary = capi::PyModule_GetDict(main);
+                let vec_fn = capi::PyDict_GetItemString(dictionary, c"vec".as_ptr());
+                capi::inc_ref(vec_fn);
+                let vec_fn = PyRef::from_owned(vec_fn).expect("the vec function");
+                let pair = capi::PyTuple_New(2);
+                assert_eq!(capi::PyTuple_SetItem(pair, 0, capi::PyLong_FromLong(1)), 0);
+                assert_eq!(capi::PyTuple_SetItem(pair, 1, capi::PyLong_FromLong(2)), 0);
+                let pair = PyRef::from_owned(pair).expect("a pair tuple");
+                timers::add(vec_fn, pair, "Script: ", 0.0);
+            }
+            timers::set_total_game_time(90.0);
+            timers::tick(90.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg', \
+                      'after_boom', 'vec']",
+                "the malformed records leave the tick running to vec: {r}"
+            );
+            {
+                let captured = lines.lock().unwrap();
+                let logged = captured
+                    .iter()
+                    .filter(|(_, stderr)| *stderr)
+                    .map(|(line, _)| line.clone())
+                    .collect::<Vec<_>>();
+                ck!(
+                    logged.iter().any(|line| line
+                        == "Script:  Script call attempted on a non-callable object or  pArgs is not a tuple. (<class 'TypeError'>)"),
+                    "the non-callable record is logged: {logged:?}"
+                );
+                ck!(
+                    logged.iter().any(|line| line
+                        == "Script:  Script call attempted with a NULL function or argument pointers. (<class 'TypeError'>)"),
+                    "the null record is logged: {logged:?}"
+                );
+            }
+
+            // `Script::ask`'s first guard (`if (PyErr_Occurred())
+            // PyErr_Print()`): an exception already pending when the tick
+            // starts is printed before the call, and the record still runs.
+            // `BigWorld.callback` cannot leave one pending (every failed
+            // callback is printed and cleared), so the pending error is set
+            // the way a host-side caller would leave it.
+            read("def quiet():\n\x20   log.append('quiet')\n__probe = 0");
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            unsafe {
+                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                let dictionary = capi::PyModule_GetDict(main);
+                let quiet = capi::PyDict_GetItemString(dictionary, c"quiet".as_ptr());
+                capi::inc_ref(quiet);
+                let quiet = PyRef::from_owned(quiet).expect("the quiet function");
+                let empty = PyRef::from_owned(capi::PyTuple_New(0)).expect("an empty tuple");
+                timers::add(quiet, empty, "Script: ", 0.0);
+                capi::PyErr_SetString(capi::PyExc_TypeError, c"pending before the tick".as_ptr());
+            }
+            timers::set_total_game_time(100.0);
+            timers::tick(100.0);
+            let r = read("__probe = repr(log[-1])");
+            ck!(
+                r == "'quiet'",
+                "the record ran behind the pending error: {r}"
+            );
+            {
+                let captured = lines.lock().unwrap();
+                let logged = captured
+                    .iter()
+                    .filter(|(_, stderr)| *stderr)
+                    .map(|(line, _)| line.clone())
+                    .collect::<Vec<_>>();
+                ck!(
+                    logged
+                        .iter()
+                        .any(|line| line.contains("pending before the tick")),
+                    "the pending error is printed before the call: {logged:?}"
+                );
+            }
+
+            assert!(
+                faults.is_empty(),
+                "timer behaviour mismatch:\n  {}",
+                faults.join("\n  ")
+            );
+        });
+    }
+
     /// The export manifest agrees with the live interpreter: the surface it
     /// marks ported imports and resolves, and its scoping records read true
-    /// against the modules that exist today -- `BigWorld.component` is
-    /// present, the client-only `BigWorld.callback` is not, and the `Math`
-    /// module and every delivered row it carries are ported, the
-    /// Client-scope `MatrixAnimation` row still pending.
+    /// against the modules that exist today -- `BigWorld.component` and the
+    /// client-only timer pair `BigWorld.callback`/`cancelCallback` are
+    /// present and callable, and the `Math` module and every delivered row
+    /// it carries are ported, the Client-scope `MatrixAnimation` row still
+    /// pending.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_the_manifest_matches_the_interpreter() {
@@ -4641,10 +5013,20 @@ __probe = '; '.join(_f) or 'ok'
             // SAFETY: both results are owned references from the calls above.
             unsafe {
                 capi::dec_ref(component);
-                // `callback` is client-only surface: its absence is the
-                // scoping fact the manifest pins for BW-03-03-03.
-                let callback = capi::PyObject_GetAttrString(big_world, c"callback".as_ptr());
-                assert!(callback.is_null(), "BigWorld.callback is not here");
+                // The timer pair is the BW-03-03-03 deliverable, and it is
+                // client-only surface: its presence is the fact the manifest
+                // pins for this lane.
+                for name in [c"callback", c"cancelCallback"] {
+                    // SAFETY: `name` is a NUL-terminated C string and the
+                    // module is live.
+                    let function = capi::PyObject_GetAttrString(big_world, name.as_ptr());
+                    assert!(
+                        !function.is_null() && capi::is_callable(function),
+                        "BigWorld.{} is present and callable",
+                        name.to_str().unwrap_or("<non-utf8>")
+                    );
+                    capi::dec_ref(function);
+                }
                 capi::clear_error();
                 capi::dec_ref(big_world);
             }
