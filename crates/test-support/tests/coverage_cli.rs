@@ -174,7 +174,20 @@ fn the_cli_writes_one_row_per_target_with_its_enable_condition() {
     );
     for record in &records {
         assert_eq!(record.fixture, test_support::coverage::STATUS_UNMAPPED);
-        assert_eq!(record.status, test_support::coverage::STATUS_UNMAPPED);
+    }
+    // The status column is derived (BW-00-05-06): the baseapp binary carries
+    // a captured run in the committed startup baseline, so it is covered; the
+    // scratch-only components are gaps.
+    assert_eq!(
+        by_target["baseapp"].status,
+        test_support::coverage::STATUS_COVERED
+    );
+    for name in ["cellapp_example", "cellappmgr", "sync_db"] {
+        assert_eq!(
+            by_target[name].status,
+            test_support::coverage::STATUS_GAP,
+            "{name}"
+        );
     }
     // The lane that claims a row indexes it; rows no lane in this scratch
     // ledger claims, and rows outside the lane's scope, stay unmapped.

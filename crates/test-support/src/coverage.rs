@@ -8,7 +8,9 @@
 //! (原版目标: name, kind, source) and the enable condition (启用条件), read
 //! from the reference's own gate machinery. The mapping fields (任务号 task,
 //! 夹具 fixture, 状态 status) are carried as [`STATUS_UNMAPPED`] until the
-//! BW-00-05-02…05-05 mapping items fill them.
+//! BW-00-05-02…05-06 mapping items fill them — `task` from the lane index,
+//! `fixture` from the resource entries, `status` as [`STATUS_COVERED`] or
+//! [`STATUS_GAP`].
 //!
 //! The enable conditions are the *complete* gate machinery, verified in the
 //! reference — every target falls in exactly one of four buckets:
@@ -297,6 +299,35 @@ fn entry_fixture(source: &str) -> Option<&'static str> {
     }
 }
 
+/// The server roles whose own bounded startup run was captured and committed
+/// (BW-00-05-06): the role each captured log line is sourced from
+/// (`baseapp --res … (bounded 9s startup attempt)`), read off the baseline's
+/// own committed catalog.
+fn captured_run_roles() -> Vec<String> {
+    crate::startup_baseline::catalog()
+        .into_iter()
+        .filter(|fact| fact.item.starts_with("log."))
+        .filter_map(|fact| fact.source.split(' ').next().map(str::to_string))
+        .collect()
+}
+
+/// The 状态 of a row (BW-00-05-06): [`STATUS_COVERED`] where the reference
+/// target carries runnable evidence — a committed verification fixture (the
+/// example client's resource tree) or a captured run (a server binary whose
+/// bounded startup was recorded in the startup baseline), [`STATUS_GAP`]
+/// where the acceptance is a traceable blocker instead: the owning lane has
+/// not delivered the port yet, or the BW-00-05-05 gap ledger names it.
+fn derive_status(target: &str, kind: &str, fixture: &str) -> &'static str {
+    if fixture != STATUS_UNMAPPED {
+        return STATUS_COVERED;
+    }
+    if kind == "binary" && captured_run_roles().iter().any(|role| role == target) {
+        STATUS_COVERED
+    } else {
+        STATUS_GAP
+    }
+}
+
 /// Scan a reference checkout into ledger rows.
 ///
 /// `bw_source` is the bigworld source directory (`programming/bigworld`);
@@ -304,8 +335,9 @@ fn entry_fixture(source: &str) -> Option<&'static str> {
 /// rows). The rows are exactly the Make build catalog
 /// ([`crate::make_targets`]) with the enable condition derived from the
 /// reference's gate machinery, the `task` field of the in-scope engine
-/// library and server rows indexed to their owning lane, and the remaining
-/// mapping fields left [`STATUS_UNMAPPED`]; the order is the catalog's
+/// library and server rows indexed to their owning lane, the `fixture` field
+/// filled from the resource entries, and the `status` field filled as
+/// [`STATUS_COVERED`] or [`STATUS_GAP`]; the order is the catalog's
 /// (name, source) order.
 pub fn scan_reference(bw_source: &Path, todo: &Path) -> Vec<CoverageRow> {
     let mut rows: Vec<CoverageRow> = crate::make_targets::scan_reference(bw_source)
@@ -329,6 +361,7 @@ pub fn scan_reference(bw_source: &Path, todo: &Path) -> Vec<CoverageRow> {
         if let Some(fixture) = entry_fixture(&row.source) {
             row.fixture = fixture.to_string();
         }
+        row.status = derive_status(&row.target, &row.kind, &row.fixture).to_string();
     }
     rows
 }
@@ -562,10 +595,75 @@ mod tests {
             assert!(!row.fixture.is_empty(), "{}", row.target);
             assert!(!row.status.is_empty(), "{}", row.target);
             // The fixture field is filled by the mapping items where a
-            // resource entry exists, and the status field stays unmapped
-            // until the status item (BW-00-05-06) fills it.
+            // resource entry exists, and the status field is filled by the
+            // status item (BW-00-05-06): every enabled target is either
+            // covered or carries an explicit gap.
             assert!(!row.fixture.is_empty(), "{}", row.target);
-            assert_eq!(row.status, STATUS_UNMAPPED, "{}", row.target);
+            assert!(
+                row.status == STATUS_COVERED || row.status == STATUS_GAP,
+                "{} at {} has an unmapped status: {}",
+                row.target,
+                row.source,
+                row.status
+            );
+        }
+    }
+
+    /// The acceptance for BW-00-05-06: every enabled target in the ledger
+    /// has runnable evidence or an explicit gap, and every gap is
+    /// traceable — to the lane that owns the porting, or to the BW-00-05-05
+    /// gap ledger for the bundled third-party libraries.
+    #[test]
+    fn every_enabled_target_is_covered_or_carries_a_traceable_gap() {
+        let catalog = catalog();
+        let covered: Vec<&CoverageRow> = catalog
+            .iter()
+            .filter(|row| row.status == STATUS_COVERED)
+            .collect();
+        let ledger_gaps: Vec<&CoverageRow> = catalog
+            .iter()
+            .filter(|row| row.status == STATUS_GAP)
+            .collect();
+        assert_eq!(
+            covered.len() + ledger_gaps.len(),
+            catalog.len(),
+            "covered and gap must partition the ledger"
+        );
+
+        // The covered rows are exactly the runnable evidence the audit
+        // infrastructure committed: the example client's resource tree and
+        // the server binary whose bounded startup was captured.
+        assert_eq!(covered.len(), 2, "{covered:?}");
+        assert!(
+            covered
+                .iter()
+                .any(|row| row.target == "simple_python_client"
+                    && row.fixture == FIXTURE_EXAMPLE_TREE)
+        );
+        assert!(covered.iter().any(|row| row.target == "baseapp"
+            && row.kind == "binary"
+            && row.source == "server/baseapp/Makefile.rules"));
+
+        // Every gap row is traceable: a lane owns its porting, or the bundled
+        // third-party libraries are in scope by none and recorded by the
+        // gap ledger instead.
+        let ledger = gaps();
+        for row in &ledger_gaps {
+            assert!(
+                row.task != STATUS_UNMAPPED || row.source.starts_with("third_party/"),
+                "{} at {} is a gap with neither a lane nor a gap record",
+                row.target,
+                row.source
+            );
+            if row.source.starts_with("third_party/") {
+                assert!(
+                    ledger
+                        .iter()
+                        .any(|gap| gap.source.starts_with(row.source.as_str())),
+                    "{} is not recorded in the BW-00-05-05 gap ledger",
+                    row.source
+                );
+            }
         }
     }
 
