@@ -14,6 +14,7 @@
 //! `destroy`/`start_inactivity_detection` pair here.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::rc::{Rc, Weak};
 
 use foundation::time_queue::{TimerHandle, TimerHandler};
@@ -46,6 +47,24 @@ pub enum Traits {
     Internal,
     /// Client-to-server: high latency, low bandwidth, high loss.
     External,
+}
+
+/// `UDPChannel::AddToReceiveWindowResult` (udp_channel.hpp:161): what the
+/// receive window made of one reliable incoming packet.
+pub enum AddToReceiveWindowResult {
+    /// `PACKET_IS_NEXT_IN_WINDOW`: the packet was the next expected one.
+    /// The reference chains whatever buffered successors now follow onto
+    /// it; the port hands the chain back in the original send order.
+    NextInWindow(Vec<Rc<Packet>>),
+    /// `PACKET_IS_BUFFERED_IN_WINDOW`: a future packet, parked until its
+    /// predecessors arrive.
+    BufferedInWindow,
+    /// `PACKET_IS_DUPLICATE`: already seen below `inSeqAt_`, discarded.
+    Duplicate,
+    /// `PACKET_IS_OUT_OF_WINDOW`: too far in the future to even buffer.
+    OutOfWindow,
+    /// `PACKET_IS_CORRUPT`.
+    Corrupt,
 }
 
 /// `EXTERNAL_CHANNEL_SIZE` (udp_channel.cpp:27).
@@ -158,6 +177,23 @@ pub struct UdpChannel {
     last_reliable_resend_time: u64,
     /// `numPacketsResent_` (BW-02-03-04).
     num_packets_resent: u32,
+    /// `bufferedReceives_` (udp_channel.hpp:444, BW-02-03-05): reliable
+    /// packets that arrived ahead of their predecessors, parked by
+    /// sequence number until the hole fills.
+    buffered_receives: CircularArray<Option<Rc<Packet>>>,
+    /// `numBufferedReceives_`.
+    num_buffered_receives: u32,
+    /// `acksToSend_` (udp_channel.hpp:174, BW-02-03-05): the seqs the
+    /// next send must acknowledge, ordered set like the reference's
+    /// `BW::set`.
+    acks_to_send: BTreeSet<SeqNum>,
+    /// `shouldAutoSwitchToSrcAddr_`: an indexed channel may re-address
+    /// itself from incoming packets' source addresses.
+    should_auto_switch_to_src_addr: bool,
+    /// The duplicates the reference counts into
+    /// `PacketReceiverStats::numDuplicatePackets_`; the stats struct is
+    /// not ported yet, so the channel keeps the tally (BW-02-03-05).
+    num_duplicate_packets: u32,
 
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
@@ -220,6 +256,12 @@ impl UdpChannel {
             has_seen_overflow_warning: false,
             last_reliable_resend_time: 0,
             num_packets_resent: 0,
+            // `bufferedReceives_( windowSize_ )` (udp_channel.cpp:108).
+            buffered_receives: CircularArray::new(size),
+            num_buffered_receives: 0,
+            acks_to_send: BTreeSet::new(),
+            should_auto_switch_to_src_addr: false,
+            num_duplicate_packets: 0,
             network_interface: Rc::downgrade(interface),
         }));
 
@@ -588,6 +630,12 @@ impl UdpChannel {
         } else {
             MAX_OVERFLOW_PACKETS[usize::from(self.is_indexed()) * 2]
         }
+    }
+
+    /// `maxWindowSize()` (udp_channel.hpp:435): the receive window's
+    /// reject ceiling, overflow headroom included.
+    fn max_window_size(&self) -> usize {
+        self.window_size + self.get_max_overflow_packets()
     }
 
     /// `checkOverflowErrors()` (udp_channel.cpp:421) minus the
@@ -982,6 +1030,254 @@ impl UdpChannel {
         false
     }
 
+    /// `addToReceiveWindow( p, srcAddr, stats )` (udp_channel.cpp:1208):
+    /// file a reliable incoming packet -- delivering the next-in-order
+    /// chain, buffering a future one, discarding a duplicate, or
+    /// rejecting it. The port returns the delivered chain in the
+    /// `NextInWindow` variant (the reference chains onto the packet); the
+    /// caller walks it in the original send order.
+    pub fn add_to_receive_window(
+        channel: &ChannelPtr,
+        packet: Rc<Packet>,
+        src_addr: &Address,
+    ) -> AddToReceiveWindowResult {
+        let seq = packet.seq();
+
+        // Make sure the sequence number is valid.
+        if seq_mask(seq) != seq {
+            {
+                let this = channel.borrow();
+                if this
+                    .network_interface
+                    .upgrade()
+                    .is_some_and(|interface| interface.is_verbose())
+                {
+                    eprintln!(
+                        "UDPChannel::addToReceiveWindow( {} ): \
+                         Got out-of-range incoming seq #{} (inSeqAt: #{})",
+                        this.c_str(),
+                        seq,
+                        this.in_seq_at
+                    );
+                }
+            }
+
+            return AddToReceiveWindowResult::Corrupt;
+        }
+
+        // An auto-switching indexed channel re-addresses itself from the
+        // packet when the version is acceptable. We switch on equal
+        // version numbers because the first packet from a cell entity
+        // sets the address and is version 0. The re-addressing runs
+        // outside the borrow: `set_address_fn` borrows the channel too.
+        let should_switch = {
+            let mut this = channel.borrow_mut();
+            let should_switch = this.should_auto_switch_to_src_addr
+                && !seq_less_than(packet.channel_version(), this.version);
+
+            if !this.should_auto_switch_to_src_addr && this.addr != *src_addr {
+                if this
+                    .network_interface
+                    .upgrade()
+                    .is_some_and(|interface| interface.is_verbose())
+                {
+                    eprintln!(
+                        "UDPChannel::addToReceiveWindow( {} ): \
+                         Got packet #{} from wrong source address: {}",
+                        this.c_str(),
+                        seq,
+                        src_addr
+                    );
+                }
+
+                return AddToReceiveWindowResult::Corrupt;
+            }
+
+            if should_switch {
+                this.version = packet.channel_version();
+            }
+
+            should_switch
+        };
+        if should_switch {
+            UdpChannel::set_address_fn(channel, *src_addr);
+        }
+
+        {
+            let mut this = channel.borrow_mut();
+
+            // No need to ACK piggybacks as they are implicitly ACKed by
+            // the containing packet's ACK.
+            if !packet.is_piggyback() {
+                // Always add the ACK for others even though a cumulative
+                // ack may mean it is not sent. This still shows that the
+                // channel is not empty.
+                this.acks_to_send.insert(seq);
+            }
+
+            // check the good case first
+            if seq == this.in_seq_at {
+                this.in_seq_at = seq_mask(this.in_seq_at.wrapping_add(1));
+
+                let mut chain = vec![packet];
+
+                // Attach as many buffered packets as possible to this one.
+                loop {
+                    let slot = this.in_seq_at as usize;
+                    match this.buffered_receives.get_mut(slot).take() {
+                        Some(buffered) => {
+                            this.num_buffered_receives -= 1;
+                            chain.push(buffered);
+                            this.in_seq_at = seq_mask(this.in_seq_at.wrapping_add(1));
+                        }
+                        None => break,
+                    }
+                }
+
+                return AddToReceiveWindowResult::NextInWindow(chain);
+            }
+
+            // see if we've got this one before. We have if seq < inSeqAt_.
+            if seq_less_than(seq, this.in_seq_at) {
+                if this
+                    .network_interface
+                    .upgrade()
+                    .is_some_and(|interface| interface.is_verbose())
+                {
+                    eprintln!(
+                        "UDPChannel::addToReceiveWindow( {} ): \
+                         Discarding already-seen packet #{} below inSeqAt #{}",
+                        this.c_str(),
+                        seq,
+                        this.in_seq_at
+                    );
+                }
+                this.num_duplicate_packets += 1;
+
+                return AddToReceiveWindowResult::Duplicate;
+            }
+
+            // make sure it's in range
+            let required_window_size = seq_mask(seq.wrapping_sub(this.in_seq_at)) as usize;
+
+            // Note that we store packets between
+            //  [inSeqAt_ + 1, inSeqAt_ + bufferedReceives_.size()]
+            // in bufferedReceives. This is why we have > instead of >= in
+            // the below conditions.
+            if required_window_size > 2 * this.buffered_receives.size()
+                || required_window_size > this.max_window_size()
+            {
+                if this
+                    .network_interface
+                    .upgrade()
+                    .is_some_and(|interface| interface.is_verbose())
+                {
+                    eprintln!(
+                        "UDPChannel::addToReceiveWindow( {} ): \
+                         Sequence number #{} is way out of window #{}",
+                        this.c_str(),
+                        seq,
+                        this.in_seq_at
+                    );
+                }
+
+                return AddToReceiveWindowResult::OutOfWindow;
+            } else if required_window_size > this.buffered_receives.size() {
+                // Copy buffered receives from the start of our buffered
+                // receives, the first starting at inSeqAt_ + 1.
+                let start_index = this.in_seq_at.wrapping_add(1) as usize;
+                this.buffered_receives.double_size(start_index);
+
+                if this
+                    .network_interface
+                    .upgrade()
+                    .is_some_and(|interface| interface.is_verbose())
+                {
+                    eprintln!(
+                        "UDPChannel::addToReceiveWindow( {} ): \
+                         Doubled receive buffer size to {}",
+                        this.c_str(),
+                        this.buffered_receives.size()
+                    );
+                }
+            }
+
+            // ok - we'll buffer this packet then....
+            let slot = this.buffered_receives.get_mut(seq as usize);
+
+            if slot.is_some() {
+                // ... but only if we don't already have it. The reference
+                // CRITICALs when the slot holds a different seq; the
+                // port's slots are addressed by the very seq that keys
+                // them, so an occupied slot always holds this packet and
+                // the mismatch arm is unrepresentable.
+                if this
+                    .network_interface
+                    .upgrade()
+                    .is_some_and(|interface| interface.is_verbose())
+                {
+                    eprintln!(
+                        "UDPChannel::addToReceiveWindow( {} ): \
+                         Discarding already-buffered packet #{}",
+                        this.c_str(),
+                        seq
+                    );
+                }
+                this.num_duplicate_packets += 1;
+            } else {
+                *slot = Some(packet);
+                this.num_buffered_receives += 1;
+
+                if this
+                    .network_interface
+                    .upgrade()
+                    .is_some_and(|interface| interface.is_verbose())
+                {
+                    eprintln!(
+                        "UDPChannel::addToReceiveWindow( {} ): \
+                         Buffering packet #{} above #{}",
+                        this.c_str(),
+                        seq,
+                        this.in_seq_at
+                    );
+                }
+            }
+
+            AddToReceiveWindowResult::BufferedInWindow
+        }
+    }
+
+    /// `validateUnreliableSeqNum( seqNum )` (udp_channel.cpp:1765): the
+    /// unreliable sanity check -- reject an out-of-range seq, or one older
+    /// than the last accepted one. Returns true when the slot moves.
+    pub fn validate_unreliable_seq_num(channel: &ChannelPtr, seq_num: SeqNum) -> bool {
+        let mut this = channel.borrow_mut();
+
+        if seq_mask(seq_num) != seq_num {
+            if this
+                .network_interface
+                .upgrade()
+                .is_some_and(|interface| interface.is_verbose())
+            {
+                eprintln!(
+                    "UDPChannel:validateUnreliableSeqNum: Invalid sequence number ({}).",
+                    seq_num
+                );
+            }
+            return false;
+        }
+
+        if seq_less_than(seq_num, this.unreliable_in_seq_at)
+            && this.unreliable_in_seq_at != SEQ_NULL
+        {
+            return false;
+        }
+
+        // Only store the new seqNum if it has been completely validated.
+        this.unreliable_in_seq_at = seq_num;
+        true
+    }
+
     // -- Channel base accessors (channel.hpp) ----------------------------
 
     /// `addr()`.
@@ -1117,10 +1413,44 @@ impl UdpChannel {
         self.in_seq_at
     }
 
-    /// `unreliableInSeqAt()`: the unreliable slot's ring position, still
-    /// unset until BW-02-03-05 moves it.
+    /// `unreliableInSeqAt()`: the newest unreliable sequence the channel
+    /// has accepted, or `SEQ_NULL` before the first.
     pub fn unreliable_in_seq_at(&self) -> SeqNum {
         self.unreliable_in_seq_at
+    }
+
+    /// `hasAcks()` (udp_channel.hpp:176): the next send must carry
+    /// acknowledgements (BW-02-03-05).
+    pub fn has_acks(&self) -> bool {
+        !self.acks_to_send.is_empty()
+    }
+
+    /// `numBufferedReceives_`: reliable packets parked ahead of
+    /// `inSeqAt_` (BW-02-03-05).
+    pub fn num_buffered_receives(&self) -> u32 {
+        self.num_buffered_receives
+    }
+
+    /// `shouldAutoSwitchToSrcAddr()` (udp_channel.hpp:202).
+    pub fn should_auto_switch_to_src_addr(&self) -> bool {
+        self.should_auto_switch_to_src_addr
+    }
+
+    /// `shouldAutoSwitchToSrcAddr( b )` (udp_channel.cpp:1450): enabling
+    /// is only allowed for indexed channels.
+    pub fn set_should_auto_switch_to_src_addr(channel: &ChannelPtr, b: bool) {
+        let mut this = channel.borrow_mut();
+        this.should_auto_switch_to_src_addr = b;
+        assert!(
+            !this.should_auto_switch_to_src_addr || this.is_indexed(),
+            "MF_ASSERT( !shouldAutoSwitchToSrcAddr_ || this->isIndexed() )"
+        );
+    }
+
+    /// `numDuplicatePackets()`: the receive-side duplicate tally the
+    /// reference keeps in `PacketReceiverStats` (BW-02-03-05).
+    pub fn num_duplicate_packets(&self) -> u32 {
+        self.num_duplicate_packets
     }
 
     /// `minInactivityResendDelay()`, in micros: the first check may not
@@ -1211,6 +1541,20 @@ impl UdpChannel {
         self.highest_ack = seq_mask(seq.wrapping_sub(1));
     }
 
+    /// A test hook parking the incoming sequence at `seq`, so a receive
+    /// chain can straddle the seq ring seam.
+    #[cfg(test)]
+    pub fn force_in_seq_at(&mut self, seq: SeqNum) {
+        self.in_seq_at = seq;
+    }
+
+    /// A test hook raising the channel version, the state the reference
+    /// reaches through `clearState`'s indexed bump (udp_channel.cpp:341).
+    #[cfg(test)]
+    pub fn force_version(&mut self, version: ChannelVersion) {
+        self.version = version;
+    }
+
     /// A test hook ageing `lastReceivedTime_` for the condemned sweep.
     #[cfg(test)]
     pub fn force_last_received_time(&mut self, micros: u64) {
@@ -1294,7 +1638,7 @@ impl ChannelRef for ChannelRefHandle {
 mod tests {
     use super::*;
     use crate::event_dispatcher::EventDispatcher;
-    use crate::misc::SEQ_MASK;
+    use crate::misc::{SEQ_MASK, SEQ_SIZE};
     use std::cell::Cell;
 
     /// An interface on a pinned clock with no socket: the channel
@@ -2605,5 +2949,400 @@ mod tests {
         // And the destructor's clearState takes it back out again.
         UdpChannel::destroy(&channel);
         assert_eq!(interface.irregular_channels().borrow().size(), 0);
+    }
+
+    // -- BW-02-03-05: the receive window ----------------------------------
+
+    /// Deliver one reliable packet to the channel from its own address:
+    /// the bookkeeping a real receive's footer walk does, minus the wire.
+    fn receive(channel: &ChannelPtr, seq: SeqNum) -> AddToReceiveWindowResult {
+        let src = channel.borrow().addr();
+        let mut packet = Packet::new();
+        packet.set_seq(seq);
+        UdpChannel::add_to_receive_window(channel, Rc::new(packet), &src)
+    }
+
+    /// Unwrap the delivered chain, as the sequence numbers the caller
+    /// gets to dispatch, in the order it gets to dispatch them.
+    fn delivered(result: AddToReceiveWindowResult) -> Vec<SeqNum> {
+        match result {
+            AddToReceiveWindowResult::NextInWindow(chain) => {
+                chain.iter().map(|packet| packet.seq()).collect()
+            }
+            _ => panic!("expected NextInWindow, got a different outcome"),
+        }
+    }
+
+    /// THE acceptance fixture (验收: 按原版顺序派发): one packet of many is
+    /// lost on the way in, the rest arrive buffered, and the hole's
+    /// arrival hands the whole chain back in the original send order --
+    /// the reference's lose-one-packet walk, at the window level.
+    #[test]
+    fn the_lost_packet_releases_the_buffer_in_the_original_order() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        interface.set_verbose(false);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00f0),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // Five packets go out (seqs 0..4); #1 is lost. 2..4 arrive
+        // buffered, 3 last, so the buffering order is shuffled too.
+        assert!(matches!(
+            receive(&channel, 2),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert!(matches!(
+            receive(&channel, 4),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert!(matches!(
+            receive(&channel, 3),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert_eq!(channel.borrow().num_buffered_receives(), 3);
+        assert_eq!(channel.borrow().in_seq_at(), 0);
+
+        // #0 arrives, but the hole is still #1: it delivers alone.
+        assert_eq!(delivered(receive(&channel, 0)), vec![0]);
+
+        // The hole fills: the buffered tail drains with it, in send
+        // order, not in arrival order.
+        assert_eq!(
+            delivered(receive(&channel, 1)),
+            vec![1, 2, 3, 4],
+            "the chain follows the original order, not the arrival order"
+        );
+        assert_eq!(channel.borrow().in_seq_at(), 5);
+        assert_eq!(channel.borrow().num_buffered_receives(), 0);
+
+        // A later packet hands back just itself.
+        assert_eq!(delivered(receive(&channel, 5)), vec![5]);
+
+        // Every reliable receive queued its acknowledgement -- the set
+        // collapses the duplicates to come.
+        assert!(channel.borrow().has_acks());
+    }
+
+    /// The buffered chain crosses the seq ring seam like everything else
+    /// in the window arithmetic: no wrap special case anywhere.
+    #[test]
+    fn the_buffer_chain_crosses_the_seq_seam() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        interface.set_verbose(false);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00f1),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        channel.borrow_mut().force_in_seq_at(SEQ_MASK - 1);
+
+        assert!(matches!(
+            receive(&channel, SEQ_MASK),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert!(matches!(
+            receive(&channel, 0),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert_eq!(
+            delivered(receive(&channel, SEQ_MASK - 1)),
+            vec![SEQ_MASK - 1, SEQ_MASK, 0]
+        );
+        assert_eq!(channel.borrow().in_seq_at(), 1);
+    }
+
+    /// `PACKET_IS_DUPLICATE`: a packet at or below `inSeqAt_` was seen;
+    /// it counts as a duplicate and never re-buffers.
+    #[test]
+    fn duplicates_below_in_seq_at_are_discarded() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00f2),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        receive(&channel, 0);
+        assert!(matches!(
+            receive(&channel, 0),
+            AddToReceiveWindowResult::Duplicate
+        ));
+        assert!(matches!(
+            receive(&channel, 2),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert_eq!(delivered(receive(&channel, 1)), vec![1, 2]);
+        // 1 went out with the 2-chain: re-delivering it is a dup.
+        assert!(matches!(
+            receive(&channel, 1),
+            AddToReceiveWindowResult::Duplicate
+        ));
+        assert_eq!(channel.borrow().num_duplicate_packets(), 2);
+        assert_eq!(channel.borrow().num_buffered_receives(), 0);
+    }
+
+    /// An occupied slot holds the same seq: the re-delivery counts as a
+    /// duplicate and does not double-book the slot.
+    #[test]
+    fn an_already_buffered_packet_is_counted_not_rebuffered() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00f3),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        assert!(matches!(
+            receive(&channel, 5),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert!(matches!(
+            receive(&channel, 5),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert_eq!(channel.borrow().num_buffered_receives(), 1);
+        assert_eq!(channel.borrow().num_duplicate_packets(), 1);
+    }
+
+    /// An out-of-range sequence number is corrupt (the `seqMask` gate,
+    /// udp_channel.cpp:1212).
+    #[test]
+    fn an_out_of_range_sequence_number_is_corrupt() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00f4),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        assert!(matches!(
+            receive(&channel, SEQ_SIZE),
+            AddToReceiveWindowResult::Corrupt
+        ));
+    }
+
+    /// A packet from a source the channel is not bound to is corrupt,
+    /// unless the channel is an auto-switching indexed one.
+    #[test]
+    fn a_packet_from_the_wrong_source_address_is_corrupt() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00f5),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        let stranger = addr(0x0100_00f6);
+        let mut packet = Packet::new();
+        packet.set_seq(0);
+        assert!(matches!(
+            UdpChannel::add_to_receive_window(&channel, Rc::new(packet), &stranger),
+            AddToReceiveWindowResult::Corrupt
+        ));
+        assert!(!channel.borrow().has_acks(), "nothing was accepted");
+    }
+
+    /// `shouldAutoSwitchToSrcAddr`: the indexed channel follows the
+    /// source address on an acceptable (not older) channel version -- on
+    /// equal versions too, since the first cell-entity packet is v0.
+    #[test]
+    fn an_auto_switching_indexed_channel_follows_the_source() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        interface.set_verbose(false);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00f7),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            7,
+        );
+        UdpChannel::set_should_auto_switch_to_src_addr(&channel, true);
+        assert!(channel.borrow().should_auto_switch_to_src_addr());
+        channel.borrow_mut().force_version(10);
+
+        // An older version does not move the channel.
+        let mut older = Packet::new();
+        older.set_seq(0);
+        older.set_channel_version(9);
+        let first_src = addr(0x0100_00f8);
+        assert!(matches!(
+            UdpChannel::add_to_receive_window(&channel, Rc::new(older), &first_src),
+            AddToReceiveWindowResult::NextInWindow(_)
+        ));
+        assert_eq!(channel.borrow().addr(), addr(0x0100_00f7));
+        assert_eq!(channel.borrow().version(), 10);
+
+        // An equal-or-newer version from a new source re-addresses it.
+        let mut newer = Packet::new();
+        newer.set_seq(1);
+        newer.set_channel_version(10);
+        let second_src = addr(0x0100_00f9);
+        assert!(matches!(
+            UdpChannel::add_to_receive_window(&channel, Rc::new(newer), &second_src),
+            AddToReceiveWindowResult::NextInWindow(_)
+        ));
+        assert_eq!(channel.borrow().addr(), second_src);
+        assert_eq!(channel.borrow().version(), 10);
+    }
+
+    /// Enabling the auto-switch on a non-indexed channel trips the
+    /// reference's assert.
+    #[test]
+    #[should_panic(expected = "MF_ASSERT( !shouldAutoSwitchToSrcAddr_ || this->isIndexed() )")]
+    fn enabling_the_auto_switch_requires_an_indexed_channel() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fa),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_should_auto_switch_to_src_addr(&channel, true);
+    }
+
+    /// `PACKET_IS_OUT_OF_WINDOW`, both arms: past twice the buffered
+    /// array, and past the overflow-padded window ceiling.
+    #[test]
+    fn a_far_future_sequence_is_out_of_window() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fb),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        // Twice the 256-slot array, but inside the 256+8192 ceiling.
+        assert!(matches!(
+            receive(&channel, 600),
+            AddToReceiveWindowResult::OutOfWindow
+        ));
+        assert_eq!(channel.borrow().num_buffered_receives(), 0);
+
+        // Past the ceiling as well.
+        assert!(matches!(
+            receive(&channel, 10_000),
+            AddToReceiveWindowResult::OutOfWindow
+        ));
+    }
+
+    /// A future packet inside the range but beyond the current array
+    /// doubles the receive buffer (NOTICE branch) and then buffers.
+    #[test]
+    fn a_far_packet_doubles_the_receive_buffer() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fc),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // 400 is beyond the 256 slots but within 2*256: double, buffer.
+        assert!(matches!(
+            receive(&channel, 400),
+            AddToReceiveWindowResult::BufferedInWindow
+        ));
+        assert_eq!(channel.borrow().buffered_receives.size(), 512);
+        assert_eq!(channel.borrow().num_buffered_receives(), 1);
+
+        // The doubling carried nothing and the chain still drains right.
+        let mut chain = Vec::new();
+        for seq in 0..400 {
+            match receive(&channel, seq) {
+                AddToReceiveWindowResult::NextInWindow(packets) => {
+                    chain.extend(packets.iter().map(|p| p.seq()));
+                }
+                _ => panic!("the arrivals before 400 are all next-in-window"),
+            }
+        }
+        assert_eq!(chain.last(), Some(&400));
+        assert_eq!(channel.borrow().num_buffered_receives(), 0);
+        assert_eq!(channel.borrow().in_seq_at(), 401);
+    }
+
+    /// Piggybacks are not acknowledged: the containing packet's ACK
+    /// covers them (udp_channel.cpp:1253).
+    #[test]
+    fn piggybacks_do_not_queue_an_ack() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fd),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        let src = channel.borrow().addr();
+        let mut packet = Packet::new();
+        packet.set_seq(0);
+        packet.set_is_piggyback(true);
+        assert!(matches!(
+            UdpChannel::add_to_receive_window(&channel, Rc::new(packet), &src),
+            AddToReceiveWindowResult::NextInWindow(_)
+        ));
+        assert!(
+            !channel.borrow().has_acks(),
+            "the containing packet's ack covers the piggyback"
+        );
+    }
+
+    /// `validateUnreliableSeqNum`: the unreliable arm accepts and moves
+    /// on equal-or-newer, rejects old and out-of-range ones without
+    /// moving.
+    #[test]
+    fn the_unreliable_sequence_check_moves_only_forward() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00fe),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // The first packet can be anything in range.
+        assert!(UdpChannel::validate_unreliable_seq_num(&channel, 5));
+        assert_eq!(channel.borrow().unreliable_in_seq_at(), 5);
+
+        // An equal seq is fine (not seqLessThan itself).
+        assert!(UdpChannel::validate_unreliable_seq_num(&channel, 5));
+
+        // An older one is refused and does not move the slot.
+        assert!(!UdpChannel::validate_unreliable_seq_num(&channel, 4));
+        assert_eq!(channel.borrow().unreliable_in_seq_at(), 5);
+
+        // An out-of-range one is refused too.
+        assert!(!UdpChannel::validate_unreliable_seq_num(&channel, SEQ_SIZE));
+        assert_eq!(channel.borrow().unreliable_in_seq_at(), 5);
     }
 }

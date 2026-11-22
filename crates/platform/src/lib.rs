@@ -48,3 +48,10 @@ pub mod file;
 /// `LoadLibrary` backends land with the Windows work under BW-15-05.
 #[cfg(unix)]
 pub mod mmap;
+
+/// Signal syscalls and the `sigset_t` family, the sole landing point for
+/// them (BW-16-02-01). Unix only: `sigaction`/`pthread_sigmask` are the
+/// POSIX spelling; Windows console control events are a separate
+/// BW-15-03 item.
+#[cfg(unix)]
+pub mod signals;

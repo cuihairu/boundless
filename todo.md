@@ -409,7 +409,8 @@
   - 有意偏离：(a) `resend` 不带 `UDPBundle` 参数、piggyback 臂（external+非分片+`smallOutSeqAt_` 有空位则 `bundle.piggyback`+`handleAck`）整体随发送路径归 BW-02-03-06，本轮恒走 `sendUnacked` 且返回 false。(b) `handleTimeout` 逐成员直呼 `check_resend_timers`（参考呼 `channel.send()`，wire send 同归 BW-02-03-06），共享定时器驱动的验收面等价。(c) `MonitoredChannels` 折入本模块，迭代器成员账 → `Rc::ptr_eq` 搜索（与 condemned 集同一取舍）。(d) `stopMonitoring` 落为 `set_period(0)`，方法本体不搬——树内唯一调用点目标是 keepAliveChannels（network_interface.cpp:259，后置任务）。(e) 告警按移植 `interface.is_verbose()` 门（参考 `isDebugVerbose()`）；dead-channel 告警保留参考原文。(f) `numPacketsResent_` 全生命周期不重置（参考析构前亦不重置，统计口径与既有计数一致）。
   - 测试与覆盖：mercury **295 通过 / 0 失败**（较上轮 +15：IrregularChannels 8 + 信道 7）。workspace **1238 passed / 0 failed / 61 ignored**（合 lane 后他 crate 计数已迁移，非本轮范围）。llvm-cov：irregular_channels.rs **99.58%**（残 1 行=定时器闭包 `if let` 收括号伪影，与 condemned_channels.rs:79 同形）、udp_channel.rs **99.06%**（98.85%→99.06%，残 14 行=5 处收括号伪影 + 测试夹具 `Empty::handle_message` 9 行，口径同上轮）、network_interface.rs **98.98%**（残 6 行=socket 创建/默认路由失败既有分支）；mercury 全 crate **99.53%** 行；circular_array.rs/unacked_packet.rs 仍 100%。clippy 零新增（仅既有 workspace 级 `python-host` 未用依赖告警；`IrregularChannels` 补 `#[derive(Default)]` 应对 clippy 建议）；rustfmt 本轮触及 3 个独立文件 0 差异。
   - 压力：mercury `--test-threads=1` **100 轮 29500 通过 / 0 失败**；python-host `--test-threads=8` **30 轮 1140 通过 / 0 失败**；全量输出 `grep -E "FAILED|panicked"` 0 命中。
-- [ ] **BW-02-03-05 实现乱序与重复过滤**。**验收** 按原版顺序派发。
+- [x] **BW-02-03-05 实现乱序与重复过滤**。**验收** 按原版顺序派发。
+  - 证据：`crates/mercury/src/udp_channel.rs`（3c4cc4a）——接收窗五态 `AddToReceiveWindowResult` 对齐参考 udp_channel.cpp 的 `PACKET_IS_*`：`NextInWindow(Vec<Packet>)`（参考把缓冲的后继链上挂；端口把链按**原始发送序**交回＝验收「按原版顺序派发」）、`BufferedInWindow`（未来包停靠）、`Duplicate`（`in_seq_at` 以下重复丢弃）、`OutOfWindow`（远期不缓存）、`Corrupt`。**重复过滤**：`duplicates_below_in_seq_at_are_discarded`（`numDuplicatePackets_` 计数）、已缓存的重复只计数不重缓存；**乱序恢复**：丢包在途时后续包缓存，丢包重传到达后整链原序释放（`the_lost_packet_releases_the_buffer_in_the_original_order`）、序号回绕缝隙处链不断（`the_buffer_chain_crosses_the_seq_seam`）；**越界与损坏**：超出窗的远期序号拒绝（`a_far_future_sequence_is_out_of_window`，参考的接收环翻倍策略 `a_far_packet_doubles_the_receive_buffer`）、越界序号与换源地址判 corrupt、indexed channel 可跟随换源（`an_auto_switching_indexed_channel_follows_the_source`）；**piggyback 不进 ACK**（参考 receive 端口约定，`piggybacks_do_not_queue_an_ack`，`packet.rs` 补 `set_is_piggyback` 标记）；不可靠序号校验只前移（`the_unreliable_sequence_check_moves_only_forward`）。12 测全绿；`cargo test --workspace` 1391 passed 0 failed。
 - [ ] **BW-02-03-06 实现分片重组**。**验收** 乱序片段可恢复且超时可回收。
 - [ ] **BW-02-03-07 运行双向 UDP 混跑**。**验收** 两个方向可交换并正确统计重传。
 
@@ -785,7 +786,8 @@
 
 复现 get/load/write/delete/lookup、DBID 分配、在线实体记录、按类型查找和回调。对照写入、调用重试、并发登录与重复载入。
 
-- [ ] **BW-09-01-01 实现 get/load**。**验收** 存在和缺失 DBID 的返回匹配。
+- [x] **BW-09-01-01 实现 get/load**。**验收** 存在和缺失 DBID 的返回匹配。
+  - 证据：`crates/db/src/{lib,error,record,storage}.rs`（adbbea8）——契约对齐原版 `lib/db_storage/idatabase.hpp` `class IDatabase`：`EntityKey { type_id, db_id }`（`entity_key.hpp`，`dbID==0` 为按名解析腿，留给 BW-09-01-04 的 `getDatabaseIDFromName`）；`EntityStorage` trait 的 `get_entity` 返回 `Ok(None)`=原版 `isOK=false` 的"行缺失"而非失败；`load_entity` = `get_entity()?.ok_or(NotFound)`，即 DBApp 的 get/load 语义。内存后端 `MemoryStorage`（`insert`/`len`/`is_empty`）先承载验收用例，后续 `put_entity`（09-01-02）复用其 `insert`。**验收**：存在 DBID 返回记录、缺失 DBID→`NotFound`、同 DBID 异 type→`NotFound`、`PENDING_DATABASE_ID` 可存但非真实键（`entity_key.hpp` `PENDING_DATABASE_ID`），4 测全绿。另修复 main CI 红根因：工作区声明 `crates/db` 成员但目录从未入 git（`cargo metadata --locked` ENOENT，Toolchain pin and lockfile job 连续红）——本提交把 crate 目录纳入版本库，干净 HEAD 复跑 `ci/toolchain-check.sh --offline` PASS（members=13）、离线 workspace 构建通过、`cargo test --workspace` 0 失败。
 - [ ] **BW-09-01-02 实现 write**。**验收** 创建与更新可从独立连接复读。
 - [ ] **BW-09-01-03 实现 delete**。**验收** 删除后的查询和重复删除结果匹配。
 - [ ] **BW-09-01-04 实现 lookup**。**验收** 按名称或类型返回对应记录。
@@ -1361,7 +1363,8 @@ boundless/
 
 OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `storage`，CPython FFI 进 `python-host`。应用入口装配具体实现，通过 workspace 依赖图检查循环及跨层引用。
 
-- [ ] **BW-16-02-01 收敛系统调用至 platform**。**验收** 依赖扫描确认调用位置。（依赖 crates/platform 改动冻结，主席位 flake 调查在途，解禁后解锁）
+- [x] **BW-16-02-01 收敛系统调用至 platform**。**验收** 依赖扫描确认调用位置。（依赖 crates/platform 改动冻结，主席位 flake 调查在途，解禁后解锁）
+  - 证据：`crates/platform/src/signals.rs`（7a7f23d）新建——信号 syscall 唯一落点（`libc::sigwait*`/`pthread_sigmask`/`sigaction`/`sig*set` 族/`sigpending`/`pthread_kill`/`kill`/`raise`/`signal` 拼写与 `SIG*` 常量），Unix-only（POSIX 拼写；Windows 控制台事件归 BW-15-03）。**调用方收敛**：`server-runtime/src/signals.rs` 改经 `platform::signals`（去 `libc` 直调，`signal_handler.cpp` 移植面）；`app.rs` 的 `SIGTERM/SIGINT/SIGQUIT` 屏蔽/`thread_self`/`thread_kill`、`test-support/multiproc.rs` 的 `kill(-pid,SIGKILL)`、`platform/process.rs` 的 `child.signal(SIGTERM)` 全部改走 `platform::signals`；`server-runtime`/`test-support` 的 Cargo.toml 依赖由 `libc` 换 `platform`（syscall 落点归位）。**验收**：`crates/platform/tests/signal_call_sites.rs` 扫描全工作区 `.rs` 源（剔除注释/字符串/字符字面量，防 assert 消息与 doc 的误报），凡在 `platform::signals` 之外命中即报 `file:line`；保留 `server_app.rs` 过渡条目（`bw_main` 移植在途）。测试绿（`cargo test -p platform --test signal_call_sites` 1 passed）；`cargo test --workspace` 1391 passed 0 failed。
 - [ ] **BW-16-02-02 隔离图形后端**。**验收** 服务端构建不加载图形后端。（依赖 rendering crate 未建，随 BW-11 立项解锁）
 - [ ] **BW-16-02-03 隔离数据库驱动**。**验收** 可单独启用后端。（依赖 storage crate 未建，随 BW-09 立项解锁）
 - [x] **BW-16-02-04 隔离 CPython FFI**。**验收** 绑定与解释器所有权有测试。（commit 02a009a）

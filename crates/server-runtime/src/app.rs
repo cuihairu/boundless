@@ -102,7 +102,11 @@ pub fn run(role: &str) -> Result<(), AppError> {
     {
         let mut processor = SignalProcessor::new();
         let mut set = Set::empty();
-        for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGQUIT] {
+        for sig in [
+            platform::signals::SIGTERM,
+            platform::signals::SIGINT,
+            platform::signals::SIGQUIT,
+        ] {
             set.set(sig);
         }
         let _blocker = Blocker::new(&set);
@@ -113,12 +117,12 @@ pub fn run(role: &str) -> Result<(), AppError> {
         // pending there and `wait_for_signals` consumes it, which is the
         // same clean stop an operator signal takes.
         if let Some(budget) = ci_runners_budget() {
-            let main = unsafe { libc::pthread_self() };
+            let main = platform::signals::thread_self();
             let _ = std::thread::Builder::new()
                 .name("runners-timeout".into())
                 .spawn(move || {
                     std::thread::sleep(budget);
-                    let _ = unsafe { libc::pthread_kill(main, libc::SIGTERM) };
+                    let _ = platform::signals::thread_kill(main, platform::signals::SIGTERM);
                 });
         }
 

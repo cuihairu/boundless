@@ -364,6 +364,13 @@ impl Packet {
         self.is_piggyback
     }
 
+    /// `isPiggyback( value )` (packet.hpp:166): mark this packet as
+    /// recovered from a piggyback block -- the receive window does not
+    /// ack piggybacks (BW-02-03-05).
+    pub fn set_is_piggyback(&mut self, value: bool) {
+        self.is_piggyback = value;
+    }
+
     /// `shouldCreateAnonymous()`: the first packet on a non-indexed
     /// channel asks its peer to create one.
     pub fn should_create_anonymous(&self) -> bool {
