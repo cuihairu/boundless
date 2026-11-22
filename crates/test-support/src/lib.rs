@@ -20,6 +20,7 @@ pub mod cpu_sampler;
 pub mod cross_reference;
 pub mod diagnostic;
 pub mod entitydef_completion;
+pub mod entitydef_definition;
 pub mod entitydef_diagnostics;
 pub mod entitydef_hover;
 pub mod entitydef_index;

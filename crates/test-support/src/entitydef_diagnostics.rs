@@ -72,7 +72,7 @@ pub fn diagnose(content: &str) -> Vec<Diagnostic> {
 }
 
 /// A range: start line, start column, end line, end column.
-type Range = (usize, usize, usize, usize);
+pub(crate) type Range = (usize, usize, usize, usize);
 
 fn diagnostic(message: String, (line, column, end_line, end_column): Range) -> Diagnostic {
     Diagnostic {
@@ -85,14 +85,14 @@ fn diagnostic(message: String, (line, column, end_line, end_column): Range) -> D
 }
 
 /// The range of one trimmed tag on its line.
-fn tag_range(lines: &[&str], line: usize) -> Range {
-    let text = lines.get(line).copied().unwrap_or_default();
+pub(crate) fn tag_range<T: AsRef<str>>(lines: &[T], line: usize) -> Range {
+    let text = lines.get(line).map(|text| text.as_ref()).unwrap_or("");
     let indent = text.len() - text.trim_start().len();
     (line, indent, line, indent + text.trim().len())
 }
 
 /// The range of one whole declaration: its open tag through its close tag.
-fn declaration_range(lines: &[&str], property: &IndexedProperty) -> Range {
+pub(crate) fn declaration_range<T: AsRef<str>>(lines: &[T], property: &IndexedProperty) -> Range {
     let (line, column, _, _) = tag_range(lines, property.line);
     let (_, _, end_line, end_column) = tag_range(lines, property.end_line - 1);
     (line, column, end_line, end_column)

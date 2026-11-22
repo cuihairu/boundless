@@ -33,6 +33,8 @@ pub struct IndexedFile {
     pub entity: String,
     /// The properties the file declares, in declaration order.
     pub properties: Vec<IndexedProperty>,
+    /// The content's lines, so a jump can reach a property's column.
+    pub lines: Vec<String>,
     /// A fingerprint of the indexed content, so an unchanged re-send is
     /// detectable without re-reading.
     pub fingerprint: u64,
@@ -67,6 +69,7 @@ impl EntityDefIndex {
                 path: path.to_string(),
                 entity,
                 properties: scanned.properties,
+                lines: content.lines().map(str::to_string).collect(),
                 fingerprint: scanned.fingerprint,
             },
         );
