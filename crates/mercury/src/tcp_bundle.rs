@@ -285,8 +285,15 @@ impl TcpBundle {
     /// escapes at `UINT16_MAX` and above, which the fixture calls
     /// `bundle.size() >= 0xffff`.
     pub fn frame_encode(&self) -> Vec<u8> {
+        let mut wire = Vec::with_capacity(self.data().len() + LARGE_FRAME_HEADER_SIZE);
+        self.frame_encode_into(&mut wire);
+        wire
+    }
+
+    /// The same encoding into a caller's buffer, the send path's seam so a
+    /// frame is assembled once and handed to the socket in one piece.
+    pub fn frame_encode_into(&self, wire: &mut Vec<u8>) {
         let frame = self.data();
-        let mut wire = Vec::with_capacity(frame.len() + LARGE_FRAME_HEADER_SIZE);
         if frame.len() >= LARGE_FRAME_ESCAPE as usize {
             wire.extend_from_slice(&LARGE_FRAME_ESCAPE.to_le_bytes());
             wire.extend_from_slice(&(frame.len() as u32).to_le_bytes());
@@ -294,7 +301,6 @@ impl TcpBundle {
             wire.extend_from_slice(&(frame.len() as u16).to_le_bytes());
         }
         wire.extend_from_slice(frame);
-        wire
     }
 
     /// `flags` (`tcp_bundle.cpp:348-351`): the frame's first byte.

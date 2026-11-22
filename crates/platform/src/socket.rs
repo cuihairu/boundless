@@ -65,6 +65,13 @@ pub const EHOSTUNREACH: i32 = libc::EHOSTUNREACH;
 pub const EMSGSIZE: i32 = libc::EMSGSIZE;
 /// `ENOBUFS`, the socket's transmit queue could not take the datagram.
 pub const ENOBUFS: i32 = libc::ENOBUFS;
+/// `EWOULDBLOCK`, `EAGAIN` under another name (equal on the platforms the
+/// reference builds for).
+pub const EWOULDBLOCK: i32 = libc::EWOULDBLOCK;
+/// `EINPROGRESS`, a non-blocking connect still running.
+pub const EINPROGRESS: i32 = libc::EINPROGRESS;
+/// `EINTR`, a signal interrupted the call.
+pub const EINTR: i32 = libc::EINTR;
 
 /// `htons`: host order to network order.
 pub fn htons(value: u16) -> u16 {
