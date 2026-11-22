@@ -23,6 +23,14 @@
 //! entity events the component raises.  Compiling a Blueprint graph needs
 //! the Unreal Editor, so that step is a recorded gap
 //! ([`BLUEPRINT_COMPILE_GAP`]).
+//!
+//! BW-21-04-04 — the game-thread dispatch is delivered as
+//! [`GAME_THREAD_DISPATCH_HEADER`] and modeled by
+//! [`GameThreadDispatch`]: the SDK worker threads post events from anywhere,
+//! the game thread pumps them ([`GameThreadDispatch::pump`]) so every
+//! delivery runs on the game thread, and [`GameThreadDispatch::destroy`]
+//! makes the component dispatch nothing afterward — it drops the queued
+//! events and rejects every post after that.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -86,12 +94,17 @@ pub const EXAMPLE_FILE: &str = "simple.cpp";
 /// entity-event delegate it subscribes to.
 pub const BLUEPRINT_HEADER: &str = "BwBlueprint.h";
 
+/// The game-thread dispatch surface: posting an event to the game thread
+/// and the destroy guard that stops it.
+pub const GAME_THREAD_DISPATCH_HEADER: &str = "GameThreadDispatch.h";
+
 /// The files the delivery consists of.
 pub const DELIVERED_FILES: &[&str] = &[
     ADAPTER_HEADER,
     ADAPTER_SOURCE,
     EXAMPLE_FILE,
     BLUEPRINT_HEADER,
+    GAME_THREAD_DISPATCH_HEADER,
 ];
 
 /// The expected transcript of the simple example: the login, the answered
@@ -268,6 +281,100 @@ impl BlueprintEntitySubscription {
 impl Default for BlueprintEntitySubscription {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// BW-21-04-04: one entity event the game-thread dispatch delivered, with
+/// the thread it was posted from and the thread it was delivered on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameThreadEvent {
+    /// The event's name.
+    pub name: String,
+    /// The thread the event was posted from.
+    pub posted_from: String,
+    /// The thread the event was delivered on.
+    pub delivered_on: String,
+}
+
+/// The adapter's game-thread dispatch: the SDK worker threads post entity
+/// events from anywhere, the game thread delivers each one when it pumps,
+/// and a destroyed component dispatches nothing — destroying drops the
+/// queued events and rejects every post afterward.
+pub struct GameThreadDispatch {
+    game_thread: String,
+    live: bool,
+    queued: Vec<String>,
+    posted_from: Vec<String>,
+    delivered: Vec<GameThreadEvent>,
+}
+
+impl GameThreadDispatch {
+    /// A live dispatch whose deliveries run on `game_thread`.
+    pub fn new(game_thread: &str) -> Self {
+        Self {
+            game_thread: game_thread.to_string(),
+            live: true,
+            queued: Vec::new(),
+            posted_from: Vec::new(),
+            delivered: Vec::new(),
+        }
+    }
+
+    /// Whether the component is still dispatching.
+    pub fn live(&self) -> bool {
+        self.live
+    }
+
+    /// An SDK worker thread posts one event.  A destroyed component
+    /// rejects the post.
+    pub fn post(&mut self, name: &str, posted_from: &str) {
+        if self.live {
+            self.queued.push(name.to_string());
+            self.posted_from.push(posted_from.to_string());
+        }
+    }
+
+    /// The game thread pumps: every queued event is delivered on the game
+    /// thread, in posted order. Returns how many ran.
+    pub fn pump(&mut self) -> usize {
+        let queued = std::mem::take(&mut self.queued);
+        let posted_from = std::mem::take(&mut self.posted_from);
+        let count = queued.len();
+        for (name, from) in queued.into_iter().zip(posted_from) {
+            self.delivered.push(GameThreadEvent {
+                name,
+                posted_from: from,
+                delivered_on: self.game_thread.clone(),
+            });
+        }
+        count
+    }
+
+    /// The component was destroyed: the queued events are dropped and every
+    /// post afterward is rejected, so a destroyed component dispatches
+    /// nothing.
+    pub fn destroy(&mut self) {
+        self.live = false;
+        self.queued.clear();
+        self.posted_from.clear();
+    }
+
+    /// How many events are posted but not yet pumped.
+    pub fn queued(&self) -> usize {
+        self.queued.len()
+    }
+
+    /// The events delivered so far, in delivery order.
+    pub fn delivered(&self) -> &[GameThreadEvent] {
+        &self.delivered
+    }
+
+    /// Whether every delivery ran on the game thread — the fixed-case
+    /// thread assertion.
+    pub fn all_on_game_thread(&self) -> bool {
+        self.delivered
+            .iter()
+            .all(|event| event.delivered_on == self.game_thread)
     }
 }
 
@@ -483,5 +590,85 @@ mod tests {
         assert!(BLUEPRINT_COMPILE_GAP.contains("Unreal Editor"));
         assert!(BLUEPRINT_COMPILE_GAP.contains("BW-21-04-03"));
         assert!(BLUEPRINT_COMPILE_GAP.contains("sdk/engines/unreal/"));
+    }
+
+    fn dispatch_transcript() -> Vec<GameThreadEvent> {
+        let mut dispatch = GameThreadDispatch::new("game-thread");
+        dispatch.post("created", "net-worker-1");
+        dispatch.post("entered", "net-worker-2");
+        dispatch.pump();
+        dispatch.delivered().to_vec()
+    }
+
+    #[test]
+    fn worker_posts_are_delivered_on_the_game_thread() {
+        let mut dispatch = GameThreadDispatch::new("game-thread");
+
+        // Three events posted from three worker threads; the game thread
+        // pumps them all.
+        for (name, from) in [
+            ("created", "net-worker-1"),
+            ("entered", "net-worker-2"),
+            ("destroyed", "net-worker-3"),
+        ] {
+            dispatch.post(name, from);
+        }
+        assert_eq!(dispatch.queued(), 3);
+        assert_eq!(dispatch.pump(), 3);
+
+        // The fixed-case thread assertion: every delivery ran on the game
+        // thread, and each record keeps the worker that posted it.
+        assert!(dispatch.all_on_game_thread());
+        assert_eq!(dispatch.delivered().len(), 3);
+        let threads: Vec<&str> = dispatch
+            .delivered()
+            .iter()
+            .map(|event| event.posted_from.as_str())
+            .collect();
+        assert_eq!(
+            threads,
+            vec!["net-worker-1", "net-worker-2", "net-worker-3"]
+        );
+    }
+
+    #[test]
+    fn a_destroyed_component_dispatches_nothing_afterward() {
+        let mut dispatch = GameThreadDispatch::new("game-thread");
+        dispatch.post("created", "net-worker-1");
+        assert_eq!(dispatch.pump(), 1);
+
+        // The component is destroyed: what is queued is dropped, and every
+        // post afterward is rejected.
+        dispatch.post("entered", "net-worker-2");
+        dispatch.destroy();
+        assert!(!dispatch.live());
+        assert_eq!(dispatch.queued(), 0);
+        assert_eq!(dispatch.pump(), 0);
+        dispatch.post("destroyed", "net-worker-3");
+        assert_eq!(dispatch.pump(), 0);
+
+        // Only the event delivered before the destroy remains.
+        assert_eq!(dispatch.delivered().len(), 1);
+        assert!(dispatch.all_on_game_thread());
+    }
+
+    #[test]
+    fn the_dispatch_is_deterministic() {
+        // Two runs, the same transcript: the dispatch is reproducible.
+        assert_eq!(dispatch_transcript(), dispatch_transcript());
+    }
+
+    #[test]
+    fn the_dispatch_surface_declares_the_destroy_guard() {
+        assert!(fixture_dir().join(GAME_THREAD_DISPATCH_HEADER).is_file());
+
+        let header = std::fs::read_to_string(fixture_dir().join(GAME_THREAD_DISPATCH_HEADER))
+            .expect("the dispatch surface is a committed fixture");
+
+        // The component posts to the game thread and stops dispatching when
+        // it is destroyed.
+        assert!(header.contains("DispatchEntityEvent(int64 EntityId, const FString& Kind)"));
+        assert!(header.contains("void OnGameThread(int64 EntityId, const FString& Kind)"));
+        assert!(header.contains("OnComponentDestroyed(bool bDestroyingHierarchy) override"));
     }
 }
