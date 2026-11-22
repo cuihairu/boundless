@@ -434,14 +434,16 @@ impl Matrix {
         let (d, e, f) = (self.m[1][0], self.m[1][1], self.m[1][2]);
         let (g, h, i) = (self.m[2][0], self.m[2][1], self.m[2][2]);
 
+        // Row-major layout follows `matrix.cpp:631-639` exactly: the cofactor of
+        // (c, r) lands in m[r][c].
         out.m[0][0] = (e * i - f * h) * inv_det;
-        out.m[1][0] = (c * h - b * i) * inv_det;
-        out.m[2][0] = (b * f - c * e) * inv_det;
-        out.m[0][1] = (f * g - d * i) * inv_det;
+        out.m[0][1] = (c * h - b * i) * inv_det;
+        out.m[0][2] = (b * f - c * e) * inv_det;
+        out.m[1][0] = (f * g - d * i) * inv_det;
         out.m[1][1] = (a * i - c * g) * inv_det;
-        out.m[2][1] = (c * d - a * f) * inv_det;
-        out.m[0][2] = (d * h - e * g) * inv_det;
-        out.m[1][2] = (b * g - a * h) * inv_det;
+        out.m[1][2] = (c * d - a * f) * inv_det;
+        out.m[2][0] = (d * h - e * g) * inv_det;
+        out.m[2][1] = (b * g - a * h) * inv_det;
         out.m[2][2] = (a * e - b * d) * inv_det;
 
         // Translation: negate and transform by the inverted linear part.
@@ -693,6 +695,30 @@ mod tests {
         assert!((back.x - 4.0).abs() < 1e-5);
         assert!((back.y - 5.0).abs() < 1e-5);
         assert!((back.z - 6.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn general_invert_matches_the_reference_adjugate() {
+        // A rotation's linear part is not symmetric, so a transposed inverse
+        // would not round-trip; this pins the reference's adjugate layout.
+        let mut m = Matrix::zero();
+        m.set_rotate_x(0.3);
+        m.post_translate_by(&Vector3::new(1.0, -2.0, 3.0));
+
+        let mut inv = m;
+        assert!(inv.invert());
+
+        for &p in &[Vector3::new(1.0, 2.0, 3.0), Vector3::new(-4.0, 0.5, 7.5)] {
+            let back = inv.apply_point(&m.apply_point(&p));
+            assert!((back.x - p.x).abs() < 1e-4, "x {}", back.x - p.x);
+            assert!((back.y - p.y).abs() < 1e-4, "y {}", back.y - p.y);
+            assert!((back.z - p.z).abs() < 1e-4, "z {}", back.z - p.z);
+        }
+
+        // Inverting twice returns the matrix it started from.
+        let mut twice = inv;
+        assert!(twice.invert());
+        assert!(twice.almost(&m, 1e-5));
     }
 
     #[test]
