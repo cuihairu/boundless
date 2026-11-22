@@ -50,6 +50,7 @@ pub mod profile_link;
 pub mod protocol_fixtures;
 pub mod python_callbacks;
 pub mod python_profile;
+pub mod python_sdk;
 pub mod queue_state;
 pub mod recovery;
 pub mod release_artifacts;
