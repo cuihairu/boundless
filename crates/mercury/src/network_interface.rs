@@ -12,9 +12,11 @@
 //! BW-02-02.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 
-use foundation::time_queue::TimerHandle;
+use foundation::math::ema::{AccumulatingEma, Ema};
+use foundation::time_queue::{TimerHandle, TimerHandlerFn};
 use platform::socket;
 
 use crate::channel_map::ChannelMap;
@@ -87,6 +89,27 @@ pub struct NetworkInterface {
     /// `pRecentlyDeadChannels_` (network_interface.cpp:160-170): only an
     /// external interface has one.
     recently_dead: RefCell<Option<RecentlyDeadChannels>>,
+    /// `rateLimitPeriod_` (network_interface.hpp:294): the rate-limiting
+    /// window in seconds. A zero period turns the whole feature off, and
+    /// a zero per-address limit turns that bucket off.
+    rate_limit_period: Cell<f64>,
+    /// `rateLimitTimer_` (hpp:295): fires once per period, sampling both
+    /// averages and clearing the counts.
+    rate_limit_timer: RefCell<TimerHandle<u64>>,
+    /// `rateLimitPerIPAddress_` (hpp:297): the per-address limit.
+    rate_limit_per_ip_address: Cell<u32>,
+    /// `rateLimitedIPAddresses_` (hpp:298): datagram counts per address,
+    /// keyed with the port zeroed.
+    rate_limited_ip_addresses: RefCell<BTreeMap<Address, u32>>,
+    /// `ipAddressRateLimitAverage_` (hpp:300).
+    ip_address_rate_limit_average: RefCell<AccumulatingEma<u32>>,
+    /// `rateLimitPerIPAddressPort_` (hpp:302): the per-full-address limit.
+    rate_limit_per_ip_address_port: Cell<u32>,
+    /// `rateLimitedIPAddressPorts_` (hpp:303): datagram counts per full
+    /// address.
+    rate_limited_ip_address_ports: RefCell<BTreeMap<Address, u32>>,
+    /// `ipAddressPortRateLimitAverage_` (hpp:304).
+    ip_address_port_rate_limit_average: RefCell<AccumulatingEma<u32>>,
     /// `pRequestManager_`.
     request_manager: RefCell<Option<Rc<RequestManager>>>,
     /// `pInterfaceTable_` (network_interface.hpp:326): the message table
@@ -160,6 +183,22 @@ impl NetworkInterface {
             recently_dead: RefCell::new(
                 (interface_type == InterfaceType::External).then(RecentlyDeadChannels::new),
             ),
+            rate_limit_period: Cell::new(0.0),
+            rate_limit_timer: RefCell::new(TimerHandle::default()),
+            rate_limit_per_ip_address: Cell::new(0),
+            rate_limited_ip_addresses: RefCell::new(BTreeMap::new()),
+            ip_address_rate_limit_average: RefCell::new(AccumulatingEma::new(
+                Ema::calculate_bias_from_num_samples(5.0, 0.95),
+                0.0,
+                0,
+            )),
+            rate_limit_per_ip_address_port: Cell::new(0),
+            rate_limited_ip_address_ports: RefCell::new(BTreeMap::new()),
+            ip_address_port_rate_limit_average: RefCell::new(AccumulatingEma::new(
+                Ema::calculate_bias_from_num_samples(5.0, 0.95),
+                0.0,
+                0,
+            )),
             request_manager: RefCell::new(None),
             interface_table: RefCell::new(None),
             sink: RefCell::new(None),
@@ -474,6 +513,132 @@ impl NetworkInterface {
         }
     }
 
+    /// `rateLimitPeriod()` (network_interface.hpp:242): the window in
+    /// seconds, or zero when rate limiting is off.
+    pub fn rate_limit_period(&self) -> f64 {
+        self.rate_limit_period.get()
+    }
+
+    /// `perIPAddressRateLimit()` (network_interface.hpp:245).
+    pub fn per_ip_address_rate_limit(&self) -> u32 {
+        self.rate_limit_per_ip_address.get()
+    }
+
+    /// `perIPAddressPortRateLimit()` (network_interface.hpp:252).
+    pub fn per_ip_address_port_rate_limit(&self) -> u32 {
+        self.rate_limit_per_ip_address_port.get()
+    }
+
+    /// `perIPAddressRateLimit( uint )` (network_interface.hpp:247).
+    pub fn set_per_ip_address_rate_limit(&self, limit: u32) {
+        self.rate_limit_per_ip_address.set(limit);
+    }
+
+    /// `perIPAddressPortRateLimit( uint )` (network_interface.hpp:257).
+    pub fn set_per_ip_address_port_rate_limit(&self, limit: u32) {
+        self.rate_limit_per_ip_address_port.set(limit);
+    }
+
+    /// `rateLimitPeriod( float )` (network_interface.cpp:936-951): cancel
+    /// the period timer, clear the counters, then re-arm a recurring
+    /// timer when the period is a positive number of seconds.
+    pub fn set_rate_limit_period(&self, period: f64) {
+        self.rate_limit_timer.borrow_mut().cancel();
+        self.clear_rate_limit_counts();
+        self.rate_limit_period.set(period);
+
+        if period != 0.0 && period > 0.0 {
+            let interface = self.self_weak.borrow().clone();
+            let handler = Rc::new(TimerHandlerFn::new(
+                move |_handle: TimerHandle<u64>, _user: usize| {
+                    if let Some(interface) = interface.upgrade() {
+                        interface.on_rate_limit_timeout();
+                    }
+                },
+                "NetworkInterface::rateLimitPeriod",
+            ));
+            *self.rate_limit_timer.borrow_mut() = self.dispatcher.add_timer(
+                (period * 1_000_000.0) as i64,
+                handler,
+                0,
+                "NetworkInterface::rateLimitPeriod",
+            );
+        }
+    }
+
+    /// `clearRateLimitCounts` (network_interface.cpp:957-964).
+    fn clear_rate_limit_counts(&self) {
+        self.rate_limited_ip_addresses.borrow_mut().clear();
+        self.rate_limited_ip_address_ports.borrow_mut().clear();
+        *self.ip_address_rate_limit_average.borrow_mut().value_mut() = 0;
+        *self
+            .ip_address_port_rate_limit_average
+            .borrow_mut()
+            .value_mut() = 0;
+    }
+
+    /// `handleTimeout` (network_interface.cpp:540-546): the period has
+    /// elapsed, so sample both accumulated counters into their weighted
+    /// averages and reset them.
+    fn on_rate_limit_timeout(&self) {
+        self.ip_address_rate_limit_average.borrow_mut().sample(true);
+        self.ip_address_port_rate_limit_average
+            .borrow_mut()
+            .sample(true);
+        self.clear_rate_limit_counts();
+    }
+
+    /// `incrementAndCheckRateLimit( addr )`
+    /// (network_interface.cpp:970-1004): count the datagram against the
+    /// two limits and say whether the address has now gone over. A zero
+    /// period means the feature is off and the counts stay at zero.
+    pub fn increment_and_check_rate_limit(&self, addr: &Address) -> bool {
+        if self.rate_limit_period.get() == 0.0 {
+            return false;
+        }
+
+        let mut should_rate_limit = false;
+
+        // Check and update the IP address.
+        if self.rate_limit_per_ip_address.get() > 0 {
+            let zeroed_port = Address::new(addr.ip, 0);
+            let mut counts = self.rate_limited_ip_addresses.borrow_mut();
+            let count = counts.entry(zeroed_port).or_insert(0);
+            *count += 1;
+            if *count > self.rate_limit_per_ip_address.get() {
+                self.ip_address_rate_limit_average
+                    .borrow_mut()
+                    .increment_value();
+                should_rate_limit = true;
+            }
+        }
+
+        // Check and update the IP address and port pair.
+        if self.rate_limit_per_ip_address_port.get() > 0 {
+            let mut counts = self.rate_limited_ip_address_ports.borrow_mut();
+            let count = counts.entry(*addr).or_insert(0);
+            *count += 1;
+            if *count > self.rate_limit_per_ip_address_port.get() {
+                self.ip_address_port_rate_limit_average
+                    .borrow_mut()
+                    .increment_value();
+                should_rate_limit = true;
+            }
+        }
+
+        should_rate_limit
+    }
+
+    /// The two rate-limit averages, per address and per address-and-port,
+    /// as the reference's `rateLimit/stats/*` watchers expose them
+    /// (network_interface.cpp:1220-1228): per address first.
+    pub fn rate_limit_averages(&self) -> (f32, f32) {
+        (
+            self.ip_address_rate_limit_average.borrow().average(),
+            self.ip_address_port_rate_limit_average.borrow().average(),
+        )
+    }
+
     /// `setRequestManager`'s seam: the reply bookkeeping the channel
     /// deaths and failures report to.
     pub fn set_request_manager(&self, manager: Option<Rc<RequestManager>>) {
@@ -631,6 +796,20 @@ impl NetworkInterface {
     /// dropped. Otherwise it meets the interface's connection filter
     /// (`pOffChannelFilter_`, :492) before the receive path.
     pub fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
+        // Rate limiting speaks before anything else
+        // (packet_receiver.cpp:445-455): an address over its limit is
+        // answered with REASON_GENERAL_NETWORK, and its datagram never
+        // reaches a channel, even a registered one.
+        if self.increment_and_check_rate_limit(addr) {
+            if self.is_verbose() {
+                eprintln!(
+                    "PacketReceiver::processPacket( {} ): Ignoring packet from rate-limited address",
+                    addr.c_str()
+                );
+            }
+            return Reason::GeneralNetwork;
+        }
+
         let create_anonymous = !self.is_external && packet.should_create_anonymous();
 
         if let Some(channel) = self.find_channel(*addr, create_anonymous) {
@@ -1449,6 +1628,16 @@ fn resolve_default_route_address(
 /// The `errno` after the failed bind.
 fn last_bind_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+impl Drop for NetworkInterface {
+    /// The period timer is the interface's own, and nothing needs it once
+    /// the interface goes. The reference only cancels it in
+    /// `rateLimitPeriod( float )`; cancelling here as well keeps the
+    /// recurring timer from firing into a dead interface.
+    fn drop(&mut self) {
+        self.rate_limit_timer.borrow_mut().cancel();
+    }
 }
 
 #[cfg(test)]
@@ -2898,6 +3087,239 @@ mod tests {
             interface.process_packet(&addr, &mut noise),
             Reason::GeneralNetwork,
             "the filter speaks once the guard has expired"
+        );
+    }
+
+    /// Rate limiting starts off: zero period, no per-address limits, and
+    /// no datagram refused for rate (network_interface.cpp:99-105).
+    #[test]
+    fn rate_limiting_starts_disabled() {
+        let (interface, sink, addr) = filtered_interface(9131);
+
+        assert_eq!(interface.rate_limit_period(), 0.0);
+        assert_eq!(interface.per_ip_address_rate_limit(), 0);
+        assert_eq!(interface.per_ip_address_port_rate_limit(), 0);
+
+        for _ in 0..8 {
+            let mut login = login_wire(BASE_APP_LOGIN_ID);
+            assert_eq!(
+                interface.process_packet(&addr, &mut login),
+                Reason::Success,
+                "nothing is rate-limited while the period is zero"
+            );
+        }
+        assert_eq!(sink.packets.borrow().len(), 8);
+        assert_eq!(interface.rate_limit_averages(), (0.0, 0.0));
+    }
+
+    /// The per-address limit counts every port of the address: three
+    /// datagrams pass, the fourth meets `REASON_GENERAL_NETWORK` before
+    /// the connection filter ever sees it
+    /// (network_interface.cpp:980-989).
+    #[test]
+    fn the_per_ip_address_limit_drops_over_the_boundary() {
+        let (interface, sink, _addr) = filtered_interface(9131);
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_rate_limit(3);
+
+        for port in 9132..=9134 {
+            let addr = Address::new(LOOPBACK, socket::htons(port));
+            let mut login = login_wire(BASE_APP_LOGIN_ID);
+            assert_eq!(
+                interface.process_packet(&addr, &mut login),
+                Reason::Success,
+                "the limit is still met"
+            );
+        }
+        let addr = Address::new(LOOPBACK, socket::htons(9135));
+        let mut over = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&addr, &mut over),
+            Reason::GeneralNetwork,
+            "the fourth datagram from the same address is dropped"
+        );
+        assert_eq!(sink.packets.borrow().len(), 3);
+    }
+
+    /// The per-address-and-port limit is a separate bucket per full
+    /// address, so a different port starts again from zero
+    /// (network_interface.cpp:993-1002).
+    #[test]
+    fn the_per_ip_address_port_limit_counts_each_port_separately() {
+        let (interface, _sink, _addr) = filtered_interface(9132);
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_port_rate_limit(2);
+
+        let addr = Address::new(LOOPBACK, socket::htons(9136));
+        let mut first = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(interface.process_packet(&addr, &mut first), Reason::Success);
+        let mut second = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&addr, &mut second),
+            Reason::Success
+        );
+        let mut third = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&addr, &mut third),
+            Reason::GeneralNetwork,
+            "the third from one port is over its limit"
+        );
+
+        let other = Address::new(LOOPBACK, socket::htons(9137));
+        let mut fresh = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&other, &mut fresh),
+            Reason::Success,
+            "the other port keeps its own bucket"
+        );
+    }
+
+    /// When the period elapses the counters sample into their averages
+    /// and reset, so the address can send again
+    /// (network_interface.cpp:540-546).
+    #[test]
+    fn the_period_timer_samples_the_averages_and_clears_the_counts() {
+        let (interface, clock) = channel_interface(InterfaceType::External);
+        let dispatcher = interface.dispatcher();
+        interface.set_verbose(true);
+        let addr = Address::new(LOOPBACK, socket::htons(9141));
+        interface.set_p_off_channel_filter(Some(Rc::new(InitialConnectionFilter::new(
+            BASE_APP_LOGIN_ID,
+        ))));
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_port_rate_limit(1);
+
+        let mut first = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(interface.process_packet(&addr, &mut first), Reason::Success);
+        let mut second = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&addr, &mut second),
+            Reason::GeneralNetwork,
+            "one per period"
+        );
+        assert_eq!(interface.rate_limit_averages(), (0.0, 0.0));
+
+        // One period later the counts are sampled and cleared.
+        clock.set(1_000_000 + 1_000_001);
+        dispatcher.process_timers();
+        let bias = Ema::calculate_bias_from_num_samples(5.0, 0.95);
+        assert_eq!(
+            interface.rate_limit_averages(),
+            (0.0, (1.0 - bias) * 1.0),
+            "the address-port bucket saw exactly one over-limit datagram"
+        );
+        let mut third = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&addr, &mut third),
+            Reason::Success,
+            "the reset counters admit the address again"
+        );
+    }
+
+    /// Both limits count at once and each keeps its own average
+    /// (network_interface.cpp:978-1002): the per-address one trips first
+    /// here, so only its bucket accumulates.
+    #[test]
+    fn both_limits_trip_and_accumulate_separately() {
+        let (interface, clock) = channel_interface(InterfaceType::External);
+        let dispatcher = interface.dispatcher();
+        interface.set_p_off_channel_filter(Some(Rc::new(InitialConnectionFilter::new(
+            BASE_APP_LOGIN_ID,
+        ))));
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_rate_limit(1);
+        interface.set_per_ip_address_port_rate_limit(1);
+
+        let first_addr = Address::new(LOOPBACK, socket::htons(9138));
+        let mut login = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&first_addr, &mut login),
+            Reason::Success
+        );
+        let second_addr = Address::new(LOOPBACK, socket::htons(9139));
+        let mut login = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&second_addr, &mut login),
+            Reason::GeneralNetwork,
+            "the second address of the IP is over the per-address limit"
+        );
+
+        clock.set(1_000_000 + 1_000_001);
+        dispatcher.process_timers();
+        let bias = Ema::calculate_bias_from_num_samples(5.0, 0.95);
+        assert_eq!(
+            interface.rate_limit_averages(),
+            ((1.0 - bias) * 1.0, 0.0),
+            "only the per-address bucket went over"
+        );
+    }
+
+    /// The rate check precedes the channel lookup, so a datagram for a
+    /// registered channel is dropped rather than dispatched
+    /// (packet_receiver.cpp:445-455).
+    #[test]
+    fn a_channelled_address_is_limited_before_its_channel_is_found() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        interface.set_verbose(true);
+        let addr = Address::new(LOOPBACK, socket::htons(9139));
+        UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_port_rate_limit(1);
+
+        let mut first = ordered_wire(0, 0x41);
+        assert_eq!(
+            interface.process_packet(&addr, &mut first),
+            Reason::Success,
+            "the first reaches the channel"
+        );
+        let mut second = ordered_wire(1, 0x42);
+        assert_eq!(
+            interface.process_packet(&addr, &mut second),
+            Reason::GeneralNetwork,
+            "the limit speaks before the channel lookup"
+        );
+        assert_eq!(
+            sink.packets.borrow().len(),
+            1,
+            "the second never dispatched"
+        );
+    }
+
+    /// `rateLimitPeriod( 0 )` cancels the period timer and turns the
+    /// limits off again (network_interface.cpp:936-951).
+    #[test]
+    fn setting_the_period_to_zero_disables_and_cancels() {
+        let (interface, clock) = channel_interface(InterfaceType::External);
+        interface.set_verbose(true);
+        interface.set_p_off_channel_filter(Some(Rc::new(InitialConnectionFilter::new(
+            BASE_APP_LOGIN_ID,
+        ))));
+        let addr = Address::new(LOOPBACK, socket::htons(9140));
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_port_rate_limit(1);
+        let mut first = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(interface.process_packet(&addr, &mut first), Reason::Success);
+
+        interface.set_rate_limit_period(0.0);
+        let mut second = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(
+            interface.process_packet(&addr, &mut second),
+            Reason::Success,
+            "no period, no limit"
+        );
+        clock.set(1_000_000 + 1_000_001);
+        assert_eq!(
+            interface.dispatcher().process_timers(),
+            0,
+            "the period timer was cancelled"
         );
     }
 
