@@ -96,6 +96,59 @@ impl HotspotSampler {
     }
 }
 
+/// A reclamation-trend recorder: it samples the active object count over time,
+/// so the fall after a release is visible as a trend — the count rises while
+/// objects load, then falls back toward the baseline when they are released.
+#[derive(Debug, Default)]
+pub struct ReclamationTrend {
+    samples: Vec<(u64, u64)>,
+}
+
+impl ReclamationTrend {
+    /// A trend with no samples.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record the active count at `when`.
+    pub fn sample(&mut self, when: u64, active: u64) {
+        self.samples.push((when, active));
+    }
+
+    /// The (when, active) samples, in the order recorded.
+    pub fn samples(&self) -> &[(u64, u64)] {
+        &self.samples
+    }
+
+    /// The highest active count seen.
+    pub fn peak(&self) -> u64 {
+        self.samples
+            .iter()
+            .map(|(_, active)| *active)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The last active count, when there is one.
+    pub fn last(&self) -> Option<u64> {
+        self.samples.last().map(|(_, active)| *active)
+    }
+
+    /// Whether the count fell from its peak to the last reading: the release
+    /// reclaimed some of what the load held.
+    pub fn fell(&self) -> bool {
+        match self.last() {
+            Some(last) => last < self.peak(),
+            None => false,
+        }
+    }
+
+    /// How much the count reclaimed from its peak to the last reading.
+    pub fn reclaimed(&self) -> Option<u64> {
+        self.last().map(|last| self.peak() - last)
+    }
+}
+
 /// A controlled allocation-and-release fixture.
 pub struct GrowthFixture {
     tracker: LiveAllocationTracker,
@@ -258,5 +311,68 @@ mod tests {
         assert_eq!(sampler.dominant(), None);
         assert!(sampler.hotspots().is_empty());
         assert_eq!(sampler.live_share_per_cent("entity_loader"), 0);
+    }
+
+    #[test]
+    fn releasing_objects_makes_the_active_count_fall_back() {
+        let mut counts = crate::memory_snapshot::ObjectCounts::new();
+        let mut trend = ReclamationTrend::new();
+
+        // Nothing active at the baseline.
+        trend.sample(0, counts.entity_total());
+        assert_eq!(trend.samples().len(), 1);
+
+        // Load ten known entities: the count climbs to its peak, and it has
+        // not fallen yet — every reading is the highest so far.
+        for _ in 0..10 {
+            counts.add_entity("Character");
+        }
+        trend.sample(1, counts.entity_total());
+        assert_eq!(counts.entity_total(), 10);
+        assert_eq!(trend.peak(), 10);
+        assert!(!trend.fell());
+
+        // Release eight: the active count falls back, and the trend reports
+        // how much it reclaimed.
+        for _ in 0..8 {
+            assert!(counts.remove_entity("Character"));
+        }
+        trend.sample(2, counts.entity_total());
+        assert_eq!(counts.entity_total(), 2);
+        assert_eq!(trend.last(), Some(2));
+        assert!(trend.fell());
+        assert_eq!(trend.reclaimed(), Some(8));
+
+        // Release the rest: the count is back at the baseline, fully
+        // reclaimed from the peak.
+        for _ in 0..2 {
+            assert!(counts.remove_entity("Character"));
+        }
+        trend.sample(3, counts.entity_total());
+        assert_eq!(counts.entity_total(), 0);
+        assert_eq!(counts.entity_count("Character"), 0);
+        assert_eq!(trend.last(), Some(0));
+        assert_eq!(trend.reclaimed(), Some(10));
+        assert_eq!(trend.samples().len(), 4);
+    }
+
+    #[test]
+    fn a_still_growing_count_has_not_fallen() {
+        let mut trend = ReclamationTrend::new();
+        trend.sample(0, 4);
+        trend.sample(1, 8);
+        assert_eq!(trend.peak(), 8);
+        assert!(!trend.fell());
+        assert_eq!(trend.reclaimed(), Some(0));
+    }
+
+    #[test]
+    fn an_empty_trend_has_no_fall() {
+        let trend = ReclamationTrend::new();
+        assert_eq!(trend.peak(), 0);
+        assert_eq!(trend.last(), None);
+        assert!(!trend.fell());
+        assert_eq!(trend.reclaimed(), None);
+        assert!(trend.samples().is_empty());
     }
 }
