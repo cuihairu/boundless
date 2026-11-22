@@ -139,6 +139,11 @@ impl StatusCollector {
     pub fn roles(&self) -> Vec<&str> {
         self.processes.keys().map(String::as_str).collect()
     }
+
+    /// The collector's current time: the stamp a snapshot carries.
+    pub fn now(&self) -> u64 {
+        (self.clock)()
+    }
 }
 
 /// The cluster's known topology: how many players and entities of each type a
