@@ -29,14 +29,25 @@ public:
     bool set_property(int64_t entity_id, const String& path, const String& value);
     bool is_logged_in() const { return logged_in_; }
 
+    /// Raise one entity event on the signal, so a connected node receives
+    /// it.
+    void emit_entity_event(int64_t entity_id, const String& kind);
+
     static void _bind_methods();
 
 private:
     bool logged_in_ = false;
 };
 
+/// Raise one entity event on the signal.
+void BwGodot::emit_entity_event(int64_t entity_id, const String& kind)
+{
+    emit_signal("entity_event", entity_id, kind);
+}
+
 /// Bind the script-callable methods, so a GDScript can log in and issue
-/// RPCs against the native class.
+/// RPCs against the native class, and declare the signal a node connects
+/// to for entity events.
 void BwGodot::_bind_methods()
 {
     ClassDB::bind_method(D_METHOD("login", "user", "password"), &BwGodot::login);
@@ -45,6 +56,9 @@ void BwGodot::_bind_methods()
     ClassDB::bind_method(D_METHOD("get_property", "entity_id", "path"), &BwGodot::get_property);
     ClassDB::bind_method(
         D_METHOD("set_property", "entity_id", "path", "value"), &BwGodot::set_property);
+    ADD_SIGNAL(MethodInfo("entity_event",
+                          PropertyInfo(Variant::Type::INT, "entity_id"),
+                          PropertyInfo(Variant::Type::STRING, "kind")));
 }
 
 /// Register the class with the engine once the scene module is up.

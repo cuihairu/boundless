@@ -17,6 +17,13 @@
 //! session model, so the acceptance — a script can log in and issue an RPC —
 //! is checkable without an engine.  Running the script in Godot is a
 //! recorded gap ([`GODOT_SCRIPT_GAP`]).
+//!
+//! BW-21-05-03 — the entity-event signal is declared on the native class
+//! ([`SIGNAL_NAME`] with [`SIGNAL_PARAMS`]) and the target node
+//! ([`TARGET_SCRIPT_FILE`]) connects to it; [`SignalConnection`] models the
+//! connection, so the acceptance — the target node receives the entity
+//! events — is checkable without an engine.  Running the signal in Godot is
+//! a recorded gap ([`GODOT_SIGNAL_GAP`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -38,6 +45,9 @@ pub const SCRIPT_FILE: &str = "bw_sdk.gd";
 /// The editor plugin script, as the plugin config names it.
 pub const PLUGIN_SCRIPT_FILE: &str = "bw_godot_plugin.gd";
 
+/// The signal target: a node that connects to the entity_event signal.
+pub const TARGET_SCRIPT_FILE: &str = "bw_signal_target.gd";
+
 /// The files the delivery consists of.
 pub const DELIVERED_FILES: &[&str] = &[
     GD_EXTENSION_FILE,
@@ -45,6 +55,7 @@ pub const DELIVERED_FILES: &[&str] = &[
     NATIVE_SOURCE,
     SCRIPT_FILE,
     PLUGIN_SCRIPT_FILE,
+    TARGET_SCRIPT_FILE,
 ];
 
 /// The script methods the native class binds, as `(method, parameters)`.
@@ -62,6 +73,19 @@ pub const SCRIPT_METHODS: &[(&str, &[&str])] = &[
 /// `ci/sdk-archive.sh` fail (opening the tree obliges a check), so the
 /// harness stays at its honest SKIP naming the packaging ticket.
 pub const GODOT_SCRIPT_GAP: &str = "godot-sdk: running the script methods in Godot needs Godot itself — the engine is absent on this runner, and this lane does not create sdk/engines/godot/ (an incomplete tree would make ci/sdk-archive.sh fail), so the harness records a SKIP naming BW-21-05-02";
+
+/// BW-21-05-03: the entity-event signal a node connects to.
+pub const SIGNAL_NAME: &str = "entity_event";
+
+/// The signal's parameters, as `(name, godot variant type)`.
+pub const SIGNAL_PARAMS: &[(&str, &str)] = &[("entity_id", "INT"), ("kind", "STRING")];
+
+/// The recorded gap for the one step no bare runner can do: running the
+/// signal in Godot.  This lane does not create the `sdk/engines/godot/`
+/// tree — an incomplete one would make `ci/sdk-archive.sh` fail (opening
+/// the tree obliges a check), so the harness stays at its honest SKIP
+/// naming the packaging ticket.
+pub const GODOT_SIGNAL_GAP: &str = "godot-sdk: running the signal in Godot needs Godot itself — the engine is absent on this runner, and this lane does not create sdk/engines/godot/ (an incomplete tree would make ci/sdk-archive.sh fail), so the harness records a SKIP naming BW-21-05-03";
 
 /// The plugin's name, as the editor config declares it.
 pub const EXTENSION_NAME: &str = "Boundless SDK";
@@ -179,6 +203,64 @@ pub fn script_login_and_rpc() -> ScriptCallOutcome {
     ScriptCallOutcome {
         logged_in,
         rpc_answered,
+    }
+}
+
+/// One entity event a connected node received.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityEventSignal {
+    /// The entity the event is about.
+    pub entity_id: i64,
+    /// The event's kind: created, entered, left, destroyed.
+    pub kind: String,
+}
+
+/// A node's connection to the entity_event signal: the node connects its
+/// handler, and every entity event the component raises is delivered to it.
+/// A node that never connected receives nothing.
+pub struct SignalConnection {
+    connected: bool,
+    received: Vec<EntityEventSignal>,
+}
+
+impl SignalConnection {
+    /// A connection that is not yet made.
+    pub fn new() -> Self {
+        Self {
+            connected: false,
+            received: Vec::new(),
+        }
+    }
+
+    /// The node connects its handler to the signal.
+    pub fn connect(&mut self) {
+        self.connected = true;
+    }
+
+    /// Whether the node is connected to the signal.
+    pub fn connected(&self) -> bool {
+        self.connected
+    }
+
+    /// The component raises one entity event; a connected node receives it.
+    pub fn emit(&mut self, entity_id: i64, kind: &str) {
+        if self.connected {
+            self.received.push(EntityEventSignal {
+                entity_id,
+                kind: kind.to_string(),
+            });
+        }
+    }
+
+    /// The entity events the connected node received, in order.
+    pub fn received(&self) -> &[EntityEventSignal] {
+        &self.received
+    }
+}
+
+impl Default for SignalConnection {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -346,5 +428,66 @@ mod tests {
         assert!(GODOT_SCRIPT_GAP.contains("Godot"));
         assert!(GODOT_SCRIPT_GAP.contains("BW-21-05-02"));
         assert!(GODOT_SCRIPT_GAP.contains("sdk/engines/godot/"));
+    }
+
+    #[test]
+    fn the_native_class_declares_the_entity_event_signal() {
+        let source = delivered(NATIVE_SOURCE);
+
+        // The signal is declared with its parameter types, and raising it
+        // emits on the same name.
+        assert!(source.contains(&format!("ADD_SIGNAL(MethodInfo(\"{SIGNAL_NAME}\"")));
+        for (name, kind) in SIGNAL_PARAMS {
+            assert!(
+                source.contains(&format!("PropertyInfo(Variant::Type::{kind}, \"{name}\")")),
+                "the signal lacks the {name} parameter",
+            );
+        }
+        assert!(source.contains(&format!("emit_signal(\"{SIGNAL_NAME}\"")));
+    }
+
+    #[test]
+    fn the_signal_target_connects_to_the_signal() {
+        // Cross-file: the target node connects to the signal by name and
+        // records what it receives.
+        let target = delivered(TARGET_SCRIPT_FILE);
+        assert!(target.contains(&format!("{SIGNAL_NAME}.connect(")));
+        assert!(target.contains("_on_entity_event"));
+    }
+
+    #[test]
+    fn a_target_node_receives_entity_events() {
+        let mut target = SignalConnection::new();
+        target.connect();
+
+        // Three events raised; the connected node receives each, in order.
+        for (entity_id, kind) in [(9_i64, "created"), (9, "entered"), (9, "destroyed")] {
+            target.emit(entity_id, kind);
+        }
+        let kinds: Vec<&str> = target
+            .received()
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect();
+        assert_eq!(kinds, vec!["created", "entered", "destroyed"]);
+    }
+
+    #[test]
+    fn an_unconnected_node_receives_nothing() {
+        let mut target = SignalConnection::new();
+        target.emit(9, "created");
+
+        // Not connected, so the event is dropped rather than delivered.
+        assert!(!target.connected());
+        assert!(target.received().is_empty());
+    }
+
+    #[test]
+    fn the_signal_gap_is_named() {
+        // The one step a bare runner cannot do is named, with the ticket the
+        // harness skips for, and the reason the plugin tree is not created.
+        assert!(GODOT_SIGNAL_GAP.contains("Godot"));
+        assert!(GODOT_SIGNAL_GAP.contains("BW-21-05-03"));
+        assert!(GODOT_SIGNAL_GAP.contains("sdk/engines/godot/"));
     }
 }
