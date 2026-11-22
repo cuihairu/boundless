@@ -254,7 +254,12 @@
   - 内存流：端口 `BinaryStream` 即内存流——`new()` 可增长缓冲（= `MemoryOStream` 构造）、`capacity`/`length`（= `size()`）、`remaining`（= `remainingLength()`）、`rewind`/`finish`、`peek`（下一个字节不消费，= `peek()`）、`as_bytes`（= `data()`）——语义齐备。
   - 结果：`cargo test -p foundation --lib` **139/139 绿**（stream 22/22，含新夹具）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用依赖警告系工作区既有、非本项）；`rustfmt` 本文件绿。
   - 证据：crates/foundation/src/stream.rs 新增 `reference_wire_fixtures_string`（空/ASCII/嵌入零/CJK 逐字节钉死 + 嵌入零往返 + `remaining` 恰扣前缀+字节、余下内容不动）。
-- [ ] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
+- [x] **BW-01-02-04 实现压缩流**（commit 5961e0e）。**验收** 双方可解码同一夹具。
+  - 夹具：参考侧 `lib/network/zip_stream.{hpp,cpp}` 的 `ZipOStream`/`ZipIStream`（仅依赖 cstdmf+zlib，不耦合网络类型——放在 `lib/network` 只因压缩历史上是 bundle 关切）——`ZipOStream` 析构即冲刷：`writeStringLength(srcLen)` + `writeStringLength(dstLen)` + `compress2`（zlib 格式，默认 level 1=Z_BEST_SPEED）；`ZipIStream::init` 读两长度，拒 `compressLen > remainingLength()`、拒 `origLen > compressLen*1032`（RFC 1951 最坏膨胀比，CR-P2-21 防护）、`uncompress` 到自有缓冲后成读流。
+  - 原版字节：**编译** 参考 cstdmf+`libnetwork.a` 的生成器实跑——payload `"entitydef:base/Avatar"`×5（109 字节）经 `zip << BW::string(payload)` 得 `[6e][21][78 01 cb 4d cd 2b … ba 29 d9]`（srcLen=110、dstLen=33、zlib blob），`peekOriginalLength=110`，参考 ZipIStream 自解码 `roundtrip_ok=yes`。
+  - 双方可解码（**acceptance 达成**）：**参考夹具→端口**——端口 `read_compressed` 解码该 35 字节夹具，`remaining`=110、`read_string`=原 payload（Rust 测试 `reference_zip_fixture_decodes`）；**端口→参考**——端口 `CompressedWriter` 同 payload 得 `[6e][2f][78 01 …]`（srcLen=110、dstLen=47，miniz 压缩但同 zlib 格式），**编译** 参考 ZipIStream 实跑解码该端口产物，`ref_decoded_ok=yes`（109 字节全等）。
+  - 结果：`cargo test -p foundation --lib` **142/142 绿**（新增 `compressed.rs` 3 测试：参考夹具解码、端口往返+线形断言、三守卫）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用依赖警告系工作区既有、非本项）；`rustfmt` 绿。
+  - 证据：crates/foundation/src/compressed.rs 新建（`CompressedWriter`=ZipOStream 冲刷形、`BinaryStream::read_compressed`=ZipIStream init 形、`DEFAULT_COMPRESSION_LEVEL`/`WORST_CASE_EXPANSION` 常量）+ stream.rs 增 `StreamError::CorruptData` + foundation/Cargo.toml 增 flate2（rust_backend，同 resources）。
 - [ ] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
 
 #### BW-01-03 DataSection 和资源路径
