@@ -122,7 +122,8 @@
 
 建立二进制帧、Python 回调序列、资源产物、实体快照及数据库行的基准样本。支持原版全栈、新版全栈和替换单个组件三种模式。按兼容边界报告字段差异、超时及回调顺序差异。
 
-- [ ] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
+- [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
+  - 证据：`docs/review/bw00-04-01-protocol-fixtures.md`（`protocol_fixture_scan.py` 抓取 + `protocol_fixture_doc.py` 生成，源数据 `reference/bw00_04_01_protocol_fixtures.json`，原始报文 `reference/bw00_04_01_machined.pcap.gz`，10.6 KB）：在参考仓自带 `scripts/cluster-smoke/deep-chain.sh` 全栈拉起期间抓 UDP 20018（`lib/network/portmap.hpp` `PORT_MACHINED`），90s 窗口 386 个报文、12 个（消息 ID, 方向）键——`WHOLE_MACHINE`(1) in×38、`PROCESS`(2) in×60/out×30、`PROCESS_STATS`(3) in×47/out×47、`LISTENER`(4) in×44/out×44、`TAGS`(7) in×1/out×1、`QUERY_INTERFACE`(12) in×31/out×31、`MACHINED_ANNOUNCE`(64) in×4，各带原始字节样本。帧格式按**观测线路**记录：`u8 packet flags`+`u32 buddy`（小端）+按 `[u16 消息长度][消息体]` 重复；消息体 `u8 message`+`u8 flags`+`u16 seq`+子类字段（`lib/network/machine_guard.hpp`）；方向以 20018 端口为参照（目的 20018=`in`、源 20018=`out`；`MACHINED_ANNOUNCE` 为 machined→machined 广播、目的也是 20018 故记 `in`）。**发现并登记线路/源 delta**：参考**二进制**把消息长度字段写为**小端**（多报文观测一致），而参考**源码** `machine_guard.cpp:114` 用 `BW_HTONS`（大端）——夹具按观测线路记录，移植侧 `crates/contracts/src/machined.rs`（`Header`/`ProcessMessage`）应以二进制线路为准核对，不能照抄源码字节序。消息 ID 表（`machine_guard.hpp` `MachineGuardMessage::Message` 1..15 与 64）与 `contracts` 的 `message_id` 逐项一致。参考仓 `525449e8`，mode=owned（拉起 47.0s rc=0、拆除 rc=0）。commit 1a4865d。
 - [ ] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
 - [ ] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
 - [ ] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
