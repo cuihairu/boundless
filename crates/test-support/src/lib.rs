@@ -32,6 +32,7 @@ pub mod release_artifacts;
 pub mod request_capture;
 pub mod rng;
 pub mod runtime_env;
+pub mod space_cell;
 pub mod standalone;
 pub mod startup_baseline;
 pub mod stats_report;
