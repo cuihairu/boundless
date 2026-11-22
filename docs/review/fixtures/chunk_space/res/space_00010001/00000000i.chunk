@@ -1,0 +1,38 @@
+<00000000i.chunk>
+	<!-- Editor-written inside chunk (see editor_chunk_cache.cpp:1167-1179):
+	     transform + boundingBox are local-space, the shell is the model. -->
+	<transform>
+		<row0>1 0 0</row0>
+		<row1>0 1 0</row1>
+		<row2>0 0 1</row2>
+		<row3>150 0 250</row3>
+	</transform>
+	<boundingBox>
+		<min>-10 -5 -10</min>
+		<max>10 5 10</max>
+	</boundingBox>
+	<shell>
+		<resource>hut_shell.model</resource>
+	</shell>
+	<model>
+		<resource>table.model</resource>
+		<transform>
+			<row3>2 0 -1</row3>
+		</transform>
+	</model>
+	<entity>
+		<id>5</id>
+		<type>Innkeeper</type>
+		<position>-2 0 3</position>
+		<instantiate>SIMULATION</instantiate>
+	</entity>
+	<light>
+		<type>Omni</type>
+		<colour>1 1 1</colour>
+		<innerRadius>2</innerRadius>
+		<outerRadius>4</outerRadius>
+		<transform>
+			<row3>0 3 0</row3>
+		</transform>
+	</light>
+</00000000i.chunk>

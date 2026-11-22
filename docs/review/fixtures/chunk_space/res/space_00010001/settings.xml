@@ -1,0 +1,12 @@
+<root>
+	<!-- A 18x2 grid so both flat (|coord| < 16) and prefixed (coord >= 16)
+	     outside chunk identifiers appear in one space. -->
+	<chunkSize>100</chunkSize>
+	<bounds>
+		<minX>0</minX>
+		<minY>0</minY>
+		<maxX>17</maxX>
+		<maxY>1</maxY>
+	</bounds>
+	<singleDir>false</singleDir>
+</root>
