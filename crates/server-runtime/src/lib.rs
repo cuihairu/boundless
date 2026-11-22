@@ -1,11 +1,12 @@
 //! BW-01 process bootstrap, configuration and the game tick.
 
 pub mod app;
-pub mod baseappmgr;
 pub mod baseapp_continuation;
 pub mod baseapp_relogon;
+pub mod baseappmgr;
 pub mod billing;
 pub mod cellappmgr;
+pub mod client_login;
 pub mod cluster_shutdown;
 pub mod config;
 pub mod db_login;
