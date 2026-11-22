@@ -5,6 +5,19 @@
 /// `REPLY_MESSAGE_IDENTIFIER` reserves the top one.
 pub type MessageID = u8;
 
+/// `ReplyID` (`misc.hpp:101`): the unique id carried by every request so its
+/// reply can be correlated back to it. An `int32` in the reference, written
+/// on the wire in network byte order.
+pub type ReplyID = i32;
+
+/// `REPLY_ID_NONE` (`misc.hpp:102`): the sentinel "no reply expected" /
+/// "no reply received".
+pub const REPLY_ID_NONE: ReplyID = -1;
+
+/// `REPLY_ID_MAX` (`misc.hpp:103`): the ceiling [`RequestManager`] rolls
+/// over to 1 after. (See [`crate::request_manager`].)
+pub const REPLY_ID_MAX: ReplyID = 1_000_000;
+
 /// `Mercury::Reason`: reasons for Mercury errors, exceptions, and return
 /// codes. The reference numbers them downwards from 0 so that
 /// `-reason` indexes the string table; the port keeps the exact values

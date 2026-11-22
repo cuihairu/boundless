@@ -146,9 +146,9 @@ impl PacketReceiver {
 
                 num_packets_processed += 1;
 
-                let processing_elapsed =
-                    platform::clock::monotonic_now_micros().micros()
-                        .saturating_sub(processing_start.micros());
+                let processing_elapsed = platform::clock::monotonic_now_micros()
+                    .micros()
+                    .saturating_sub(processing_start.micros());
                 let max_stamps = self.max_socket_processing_time_stamps.get();
 
                 if should_process && max_stamps != 0 && processing_elapsed > max_stamps {
@@ -245,12 +245,7 @@ impl PacketReceiver {
                 .udp_socket()
                 .read_error_queue(&mut queue_err_no, &mut offender, &mut info)
             {
-                return self.dispatch_queued_send_error(
-                    interface,
-                    queue_err_no,
-                    &offender,
-                    info,
-                );
+                return self.dispatch_queued_send_error(interface, queue_err_no, &offender, info);
             } else {
                 eprintln!(
                     "PacketReceiver::checkSocketErrors: \
@@ -501,6 +496,9 @@ mod tests {
             self.failed.set(true);
             self.marks.set(self.marks.get() + 1);
         }
+        fn addr(&self) -> Address {
+            crate::endpoint::NONE
+        }
     }
 
     /// An internal interface on the loopback, with recording plumbing.
@@ -510,8 +508,7 @@ mod tests {
         Rc<tests_support::RecordingSink>,
         Rc<tests_support::RecordingReporter>,
     ) {
-        let (interface, receiver) =
-            NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
+        let (interface, receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
         let sink = Rc::new(tests_support::RecordingSink::default());
         let reporter = Rc::new(tests_support::RecordingReporter::default());
         interface.set_packet_sink(Some(sink.clone()));
@@ -711,7 +708,11 @@ mod tests {
         let watched = external.clone();
         interface.set_channel_finder(Some(Rc::new(move |_| Some(watched.clone()))));
         receiver.on_connection_refused_to(&interface, &Address::new(LOOPBACK, socket::htons(1)));
-        assert_eq!(external.marks.get(), 0, "external channels are never marked");
+        assert_eq!(
+            external.marks.get(),
+            0,
+            "external channels are never marked"
+        );
 
         // An internal channel that already failed is left alone.
         let failed = FakeChannel::internal();
@@ -759,7 +760,11 @@ mod tests {
         receiver.max_socket_processing_time(-1.0);
         receiver.max_socket_processing_time(0.000_001);
         assert!(interface.poller().process_pending_events(0.05) >= 1);
-        assert_eq!(sink.packets.borrow().len(), 1, "the budget stopped the drain");
+        assert_eq!(
+            sink.packets.borrow().len(),
+            1,
+            "the budget stopped the drain"
+        );
 
         // The remaining two wait for the next notification.
         receiver.max_socket_processing_time(0.0);

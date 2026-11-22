@@ -14,12 +14,20 @@ pub mod misc;
 pub mod network_interface;
 pub mod network_stats;
 pub mod network_utils;
+pub mod nub_exception;
 pub mod packet;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
+
+/// The reply-correlation layer (BW-02-02-03). Linux only: it registers its
+/// request timeouts on the Linux `EventDispatcher`.
+#[cfg(target_os = "linux")]
+pub mod request_manager;
 
 /// The event poller (BW-02-01-02). Linux only, because the reference's
 /// `EPoller` backend is what `EventPoller::create()` picks under
 /// `HAS_EPOLL` and no other backend is ported yet.
 #[cfg(target_os = "linux")]
 pub mod poller;
+
+pub mod unpacked_message_header;

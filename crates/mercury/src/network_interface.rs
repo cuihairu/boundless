@@ -19,7 +19,7 @@ use platform::socket;
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
 use crate::misc::Reason;
 use crate::packet::Packet;
-use crate::packet_receiver::{strerror, ErrorReporter, PacketReceiver, PacketSink};
+use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::poller::EventPoller;
 
 /// `Mercury::NetworkInterfaceType` (network_interface.hpp).
@@ -42,6 +42,9 @@ pub trait ChannelRef {
     fn has_remote_failed(&self) -> bool;
     /// `setRemoteFailed`.
     fn set_remote_failed(&self);
+    /// `addr()`: the channel's destination address, used by the request
+    /// manager to check that a reply came from the right peer.
+    fn addr(&self) -> Address;
 }
 
 /// `findChannel(addr)` as a settable seam: `None` until channels exist.
@@ -118,9 +121,7 @@ impl NetworkInterface {
         // make the socket
         self.udp_socket.borrow_mut().socket(socket::SOCK_DGRAM);
         if !self.udp_socket.borrow().good() {
-            eprintln!(
-                "NetworkInterface::recreateListeningSocket: couldn't create a socket"
-            );
+            eprintln!("NetworkInterface::recreateListeningSocket: couldn't create a socket");
             return false;
         }
 
@@ -136,7 +137,11 @@ impl NetworkInterface {
         // ask endpoint to parse the interface specification into a name
         let mut ifname = String::new();
         let ifaddr = resolve_listening_interface(
-            |spec, name| self.udp_socket.borrow().find_indicated_interface(spec, name),
+            |spec, name| {
+                self.udp_socket
+                    .borrow()
+                    .find_indicated_interface(spec, name)
+            },
             |name, addr| self.udp_socket.borrow().get_interface_address(name, addr),
             listening_interface,
             &mut ifname,
@@ -401,9 +406,7 @@ fn resolve_default_route_address(
 
 /// The `errno` after the failed bind.
 fn last_bind_errno() -> i32 {
-    std::io::Error::last_os_error()
-        .raw_os_error()
-        .unwrap_or(0)
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -466,22 +469,13 @@ mod tests {
 
         // Unparseable non-empty spec: warn and use all interfaces.
         consulted.set(false);
-        let addr = resolve_listening_interface(
-            |_spec, _name| -2,
-            addressless,
-            "not-a-spec",
-            &mut ifname,
-        );
+        let addr =
+            resolve_listening_interface(|_spec, _name| -2, addressless, "not-a-spec", &mut ifname);
         assert_eq!(addr, INADDR_ANY);
         assert!(!consulted.get(), "no name means no address query");
 
         // Empty spec: the same fallback, silently.
-        let addr = resolve_listening_interface(
-            |_spec, _name| -2,
-            addressless,
-            "",
-            &mut ifname,
-        );
+        let addr = resolve_listening_interface(|_spec, _name| -2, addressless, "", &mut ifname);
         assert_eq!(addr, INADDR_ANY);
         assert!(!consulted.get(), "no name means no address query");
     }
@@ -508,7 +502,11 @@ mod tests {
         assert_eq!(ip, Some(0x0100_00ac));
 
         assert_eq!(
-            resolve_default_route_address(|_name| -1, |_name, _addr| panic!("no name"), &mut ifname),
+            resolve_default_route_address(
+                |_name| -1,
+                |_name, _addr| panic!("no name"),
+                &mut ifname
+            ),
             None,
             "no default route refuses"
         );
@@ -586,11 +584,8 @@ mod tests {
         blocker.socket(socket::SOCK_DGRAM);
         assert_eq!(blocker.bind(39_757, LOOPBACK), 0);
 
-        let (interface, _receiver) = NetworkInterface::new(
-            InterfaceType::Internal,
-            39_757,
-            "127.0.0.1",
-        );
+        let (interface, _receiver) =
+            NetworkInterface::new(InterfaceType::Internal, 39_757, "127.0.0.1");
 
         assert!(!interface.is_good());
         assert!(interface.address().is_none());
@@ -620,13 +615,11 @@ mod tests {
         let (recv_wanted, send_wanted) = crate::network_utils::buffer_sizes();
 
         assert!(
-            interface.udp_socket().get_buffer_size(socket::SO_RCVBUF)
-                >= recv_wanted,
+            interface.udp_socket().get_buffer_size(socket::SO_RCVBUF) >= recv_wanted,
             "the receive buffer was raised to the wanted size"
         );
         assert!(
-            interface.udp_socket().get_buffer_size(socket::SO_SNDBUF)
-                >= send_wanted,
+            interface.udp_socket().get_buffer_size(socket::SO_SNDBUF) >= send_wanted,
             "the send buffer was raised to the wanted size"
         );
     }
@@ -705,9 +698,6 @@ mod tests {
         interface
             .error_reporter()
             .report_exception(Reason::Inactivity, None);
-        assert_eq!(
-            *reporter.reports.borrow(),
-            vec![(Reason::Inactivity, None)]
-        );
+        assert_eq!(*reporter.reports.borrow(), vec![(Reason::Inactivity, None)]);
     }
 }
