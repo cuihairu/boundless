@@ -134,6 +134,11 @@ export default {
     "Boundless is a Rust re-implementation of the BigWorld MMO server. " +
     "Installation, scripting, deployment and operations documentation.",
   cleanUrls: false,
+  // docs/review/ is the seats' evidence area (per-task audit markdown and
+  // fixtures), not site content. Its files are written for humans and git,
+  // and prose like `Foo<Bar>` breaks the Vue markdown compiler, so the site
+  // neither builds nor indexes them.
+  srcExclude: ["review/**"],
   // A broken internal link must fail the production build, not just the
   // link checker: this is the second gate behind scripts/check-docs-links.py.
   ignoreDeadLinks: false,
