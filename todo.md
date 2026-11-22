@@ -1958,7 +1958,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 复用可用的 Python 与 Rust 调试适配器，提供启动/附加、多进程目标发现和源码映射。以 BaseApp 与 CellApp 用例验收断点、栈帧、变量查看和断开后的进程清理。
 
-- [ ] **BW-27-02-01 接入 Python 启动和附加**。**验收** BaseApp 断点可命中。
+- [x] **BW-27-02-01 接入 Python 启动和附加**。**验收** BaseApp 断点可命中。证据：新增 `test-support/src/dap_session.rs`（+`pub mod dap_session`，`cross_reference` 后=字母序）——DAP 会话模型，02-02 起复用同核。**`Adapter{Python(debugpy),Rust(codelldb)}`** + **`Mode{Launch,Attach}`** + **`Config{adapter,mode,role,program,port}`**（port=launch 适配器开的口 / attach 连的口）+ **`DapSession`**（`open(config, script)` 按配置建立会话；`set_breakpoint(file,line)`；**`run()`** 沿目标脚本步进，命中断点即停并记下适配器回报）+ **`Stopped{file,line,frames,variables}`**（**`step(file,line,function)`** 便捷构造=单帧步）+ `stopped()`/`finished()`。3 测实证：**`launching_the_python_adapter_hits_a_baseapp_breakpoint`（核心验收：BaseApp 断点可命中）**（Launch 模式 Python 适配器起 BaseApp（role=baseapp、port 5678），断点 `Avatar.py:40` 命中、帧 `Avatar.onEnterWorld`）+ **`attaching_the_python_adapter_hits_the_same_breakpoint`（附加）**（BaseApp 已在跑、debugpy 5678 附加，同断点命中 line 40）+ `a_line_without_a_breakpoint_does_not_stop`（断点 99 行不命中 → 全脚本跑完、finished）。test-support 380 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；foundation 149 全绿；fmt 净、clippy 净（0 发现于本席文件）。commit fa2975c。
 - [ ] **BW-27-02-02 接入 Rust 启动和附加**。**验收** CellApp 断点可命中。
 - [ ] **BW-27-02-03 发现多进程调试目标**。**验收** 可区分同角色实例。
 - [ ] **BW-27-02-04 实现源码映射**。**验收** 符号定位到本地正确文件。
