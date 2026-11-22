@@ -375,6 +375,166 @@ mod tests {
         assert_eq!(s.read_u32(), Ok(0x0102_0304));
     }
 
+    // BW-01-02-01: the fixed-width wire bytes the reference produces. The
+    // reference `lib/cstdmf/binary_stream.ipp` writes each primitive through
+    // `bw_netbyte/netshort/netlong/netlonglong` with `BW_HTON*`, which is
+    // identity on little-endian hosts, and float/double through a union with a
+    // `u32`/`u64` member (`n.f = x; out << n`) — i.e. the raw IEEE bit pattern
+    // in little-endian byte order. These fixtures pin those bytes for boundary
+    // and sentinel values, and the round-trip back reads the exact value.
+    //
+    // Every byte below was confirmed against a real reference build: a
+    // generator compiled against the reference's `lib/cstdmf/binary_stream.hpp`
+    // + `memory_stream.hpp` (linked to `build/el7/lib/libcstdmf.a`) emitted
+    // each of these value/byte pairs, and the port reproduces them exactly.
+    #[test]
+    fn reference_wire_fixtures_fixed_width() {
+        // u8 / i8 / bool — one byte each.
+        let mut s = BinaryStream::new();
+        s.write_u8(0xAB);
+        assert_eq!(s.as_bytes(), &[0xAB]);
+        let mut s = BinaryStream::new();
+        s.write_i8(-7);
+        assert_eq!(s.as_bytes(), &[0xF9]);
+        let mut s = BinaryStream::new();
+        s.write_bool(true);
+        assert_eq!(s.as_bytes(), &[0x01]);
+        let mut s = BinaryStream::new();
+        s.write_bool(false);
+        assert_eq!(s.as_bytes(), &[0x00]);
+
+        // u16 / i16 — two bytes little-endian.
+        let mut s = BinaryStream::new();
+        s.write_u16(0x1234);
+        assert_eq!(s.as_bytes(), &[0x34, 0x12]);
+        let mut s = BinaryStream::new();
+        s.write_i16(-1234);
+        assert_eq!(s.as_bytes(), &[0x2E, 0xFB]); // 0xFB2E
+
+        // u32 / i32 — four bytes little-endian, boundary sentinels.
+        let mut s = BinaryStream::new();
+        s.write_u32(0x0102_0304);
+        assert_eq!(s.as_bytes(), &[0x04, 0x03, 0x02, 0x01]);
+        let mut s = BinaryStream::new();
+        s.write_i32(-1);
+        assert_eq!(s.as_bytes(), &[0xFF, 0xFF, 0xFF, 0xFF]);
+        let mut s = BinaryStream::new();
+        s.write_u32(0);
+        assert_eq!(s.as_bytes(), &[0, 0, 0, 0]);
+
+        // u64 / i64 — eight bytes little-endian.
+        let mut s = BinaryStream::new();
+        s.write_u64(0x0102_0304_0506_0708);
+        assert_eq!(
+            s.as_bytes(),
+            &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
+        );
+        let mut s = BinaryStream::new();
+        s.write_i64(-1);
+        assert_eq!(s.as_bytes(), &[0xFF; 8]);
+
+        // f32 — raw IEEE bit pattern little-endian (union n.f, BW_HTONL identity).
+        let mut s = BinaryStream::new();
+        s.write_f32(-1.5);
+        assert_eq!(s.as_bytes(), &[0x00, 0x00, 0xC0, 0xBF]); // 0xBFC00000
+        let mut s = BinaryStream::new();
+        s.write_f32(0.0);
+        assert_eq!(s.as_bytes(), &[0x00, 0x00, 0x00, 0x00]);
+        let mut s = BinaryStream::new();
+        s.write_f32(-0.0);
+        assert_eq!(s.as_bytes(), &[0x00, 0x00, 0x00, 0x80]); // sign bit only
+
+        // f64 — raw IEEE bit pattern little-endian (union n.d, BW_HTONLL identity).
+        let mut s = BinaryStream::new();
+        s.write_f64(-2.75);
+        assert_eq!(
+            s.as_bytes(),
+            &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0xC0]
+        );
+    }
+
+    #[test]
+    fn reference_wire_fixtures_floats_special() {
+        // NaN, ±infinity and denormals keep their exact bit pattern — the
+        // reference stores the raw union bits, so no canonicalization happens.
+        let mut s = BinaryStream::new();
+        s.write_f32(f32::NAN);
+        assert_eq!(s.as_bytes(), &[0x00, 0x00, 0xC0, 0x7F]); // 0x7FC00000 quiet NaN
+        let mut s = BinaryStream::new();
+        s.write_f32(f32::INFINITY);
+        assert_eq!(s.as_bytes(), &[0x00, 0x00, 0x80, 0x7F]); // 0x7F800000
+        let mut s = BinaryStream::new();
+        s.write_f32(f32::NEG_INFINITY);
+        assert_eq!(s.as_bytes(), &[0x00, 0x00, 0x80, 0xFF]); // 0xFF800000
+        let mut s = BinaryStream::new();
+        s.write_f32(f32::from_bits(0x0000_0001)); // denormal
+        assert_eq!(s.as_bytes(), &[0x01, 0x00, 0x00, 0x00]);
+        let mut s = BinaryStream::new();
+        s.write_f64(f64::NAN);
+        assert_eq!(
+            s.as_bytes(),
+            &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x7F]
+        );
+    }
+
+    #[test]
+    fn reference_wire_fixtures_roundtrip_each_width() {
+        // Byte-exact round-trip: write the wire bytes, read them back, and
+        // recover the exact value for every fixed-width primitive.
+        //
+        // The expected byte sequence is the reference's own output: it was
+        // produced by compiling a fixture generator against the reference's
+        // cstdmf (`lib/cstdmf/binary_stream.ipp` + `memory_stream.hpp`, linked
+        // against `build/el7/lib/libcstdmf.a`) and writing the same value set
+        // through a `BW::MemoryOStream`. The port reproduces those 43 bytes
+        // exactly, then reads each value back.
+        let mut s = BinaryStream::new();
+        s.write_u8(0xFE)
+            .write_i8(-3)
+            .write_bool(true)
+            .write_u16(0xBEEF)
+            .write_i16(-32_000)
+            .write_u32(0xDEAD_BEEF)
+            .write_i32(-2_000_000_000)
+            .write_u64(0x0123_4567_89AB_CDEF)
+            .write_i64(-9_000_000_000)
+            .write_f32(3.25)
+            .write_f64(-123.456);
+        assert_eq!(
+            s.as_bytes(),
+            &[
+                0xFE, 0xFD, 0x01, // u8, i8, bool
+                0xEF, 0xBE, // u16 0xBEEF
+                0x00, 0x83, // i16 -32000 (0x8300)
+                0xEF, 0xBE, 0xAD, 0xDE, // u32 0xDEADBEEF
+                0x00, 0x6C, 0xCA, 0x88, // i32 -2000000000
+                0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01, // u64
+                0x00, 0xE6, 0x8E, 0xE7, 0xFD, 0xFF, 0xFF, 0xFF, // i64 -9000000000
+                0x00, 0x00, 0x50, 0x40, // f32 3.25
+                0x77, 0xBE, 0x9F, 0x1A, 0x2F, 0xDD, 0x5E, 0xC0, // f64 -123.456
+            ]
+        );
+        s.rewind();
+        assert_eq!(s.read_u8(), Ok(0xFE));
+        assert_eq!(s.read_i8(), Ok(-3));
+        assert_eq!(s.read_bool(), Ok(true));
+        assert_eq!(s.read_u16(), Ok(0xBEEF));
+        assert_eq!(s.read_i16(), Ok(-32_000));
+        assert_eq!(s.read_u32(), Ok(0xDEAD_BEEF));
+        assert_eq!(s.read_i32(), Ok(-2_000_000_000));
+        assert_eq!(s.read_u64(), Ok(0x0123_4567_89AB_CDEF));
+        assert_eq!(s.read_i64(), Ok(-9_000_000_000));
+        assert_eq!(s.read_f32(), Ok(3.25));
+        assert_eq!(s.read_f64(), Ok(-123.456));
+        assert!(s.at_end());
+
+        // The concatenated stream is exactly the sum of the primitive bytes.
+        assert_eq!(
+            s.as_bytes().len(),
+            1 + 1 + 1 + 2 + 2 + 4 + 4 + 8 + 8 + 4 + 8
+        );
+    }
+
     #[test]
     fn packed_int_boundaries() {
         for value in [0u32, 1, 254, 255, 256, 1000, 65535, 65536, MAX_PACKED_INT] {
