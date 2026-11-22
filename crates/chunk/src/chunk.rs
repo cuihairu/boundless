@@ -80,6 +80,10 @@ pub struct Chunk {
     /// `joints_`: indices into `boundaries` of the passable faces.
     pub joints: Vec<usize>,
     pub boundaries: Vec<ChunkBoundary>,
+    /// `loaded_` (`chunk.cpp:397,497`): the chunk section was read.
+    pub is_loaded: bool,
+    /// `isBound_` (`chunk.cpp:1069`): the chunk's portals were bound.
+    pub is_bound: bool,
 }
 
 impl Chunk {
@@ -126,6 +130,8 @@ impl Chunk {
             bounds: Vec::new(),
             joints: Vec::new(),
             boundaries: Vec::new(),
+            is_loaded: false,
+            is_bound: false,
         }
     }
 
@@ -160,6 +166,8 @@ impl Chunk {
         self.boundaries = boundaries;
         self.joints = joints;
         self.bounds = bounds;
+        // `loaded_ = true` even when `good` is false (`chunk.cpp:497`).
+        self.is_loaded = true;
         good && !self.bounding_box.inside_out()
     }
 }

@@ -55,4 +55,11 @@
 
 ## BW-10-01-03 派生痕迹
 
-（见对应 leaf 提交。）
+- `ChunkSpace`（`space.rs`）复刻 `ChunkSpace`/`ChunkMap` 与流式装载切片：`point_to_grid`/`grid_to_point`（`base_chunk_space.hpp:181-189`）、`find_chunk_by_grid`（`chunk_manager.cpp:2199`）、`add_chunk`（`chunk_space.cpp`）。
+- `ChunkSpace::scan`（`chunk_manager.cpp:2132-2222`）复刻 `scan()` 的候选收集：`GridComp` 按偏移平方半径排序、世界距离超 `maxLoadPath` 即断、`inWorldBounds` 过滤、`gridToLocal`（本 port 恒等，变换映射属 BW-10-02+）、`findChunkByGrid`→`new Chunk`→`addChunk`、仅收集未装载块、`MAX_WORTHY_CHUNKS=50` 上限。
+  - **登记分歧**: 参考 `std::sort` 在同半径层内顺序未定，本 port 以（半径，偏移 x，偏移 z）作确定性 tie-break，测试只断言半径序与单元集合而非逐层脆序。
+- `ChunkSpace::bind`/`bind_back` 复刻 `Chunk::bind`/`bindPortals`（`chunk.cpp:1039-1288`、`1741-1774`）：先按 `chunk.cpp:3339` 给全部 portal 写世界 `centre`；heaven 立即绑定；目标块已绑定才连接；连接双向（`Chunk::bind(Chunk*)` 只移走首个匹配 portal）；`bindPortal` 移动 bound/unbound 列表；`is_bound` 置位并记录 `bind_order`。
+  - **登记分歧**: extern/invasive/Nothing 连接的解析需空间列（`resolveExtern`/`guessChunk`）与 `ChunkOverlappers`（场景适配面，BW-10-02），此处保持未绑定；同步 `load_and_bind` 取代 `checkLoadingChunks` 的异步完成序（单线程装载器按启动序完成）。
+- 集成测试 `streaming_scan_loads_the_grid_nearest_first` 钉死 (0,0) 相机、半径 200 的候选序（含越界单元格剔除与二次扫描幂等）；`streaming_bind_sequence_connects_neighbours` 钉死绑定序列 `[00000000o,00000001o,00010000o,00010001o]`、双向连接（left/front/back 对移）、exter extern 保持未绑定、`centre=transform∘lcentre` 与重入幂等；`inside_chunk_binds_to_a_bound_outside_chunk` 钉死室内块外部 portal 绑定到已绑定室外块、未装载邻居保持未绑定、未装载/缺失块拒绝绑定；`space_map_accessors_track_created_chunks` 覆盖 `find_chunk_by_grid`/`add_chunk`/`chunk_mut`/`chunks`/缺失文件与未装载拒绝。
+- lib 单测补 `bind_back` 双 portal 只移首个、混合 joint 保留 extern 未绑定、`MAX_WORTHY_CHUNKS` 截断（>50 格扫描）。
+- 覆盖率（llvm-cov 0.9.1，`cargo llvm-cov -p chunk --summary-only`）: `space.rs` 行 97.85%、全 crate 行 98.62%（≥98% 纪律通过；剩余未覆盖行为控制流闭括号记录条目）。

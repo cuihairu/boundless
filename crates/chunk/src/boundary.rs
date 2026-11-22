@@ -520,3 +520,185 @@ pub fn form_boundaries(
     }
     (boundaries, joints, bounds, good)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mapping::{GeometryMapping, GridBounds};
+    use resources::datasection;
+
+    fn identity_mapping() -> GeometryMapping {
+        GeometryMapping::new(
+            "space/",
+            100.0,
+            GridBounds {
+                min_l_grid_x: 0,
+                min_l_grid_y: 0,
+                max_l_grid_x: 1,
+                max_l_grid_y: 1,
+                min_grid_x: 0,
+                min_grid_y: 0,
+                max_grid_x: 1,
+                max_grid_y: 1,
+            },
+            false,
+        )
+    }
+
+    fn parse(xml: &str) -> DataSection {
+        datasection::parse("", xml.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn target_kinds_and_flags_cover_every_variant() {
+        // `hasChunk` / `isConnectingToSpecial` for every target.
+        assert!(!PortalTarget::Nothing.has_chunk());
+        assert!(!PortalTarget::Nothing.is_connecting_to_special());
+        assert!(PortalTarget::Chunk("00000000o".into()).has_chunk());
+        assert!(!PortalTarget::Chunk("00000000o".into()).is_connecting_to_special());
+        for t in [
+            PortalTarget::Heaven,
+            PortalTarget::Earth,
+            PortalTarget::Invasive,
+            PortalTarget::Extern,
+        ] {
+            assert!(!t.has_chunk());
+            assert!(t.is_connecting_to_special());
+        }
+        // The empty and invasive spellings.
+        assert_eq!(target_from_chunk_name(""), PortalTarget::Nothing);
+        assert_eq!(target_from_chunk_name("invasive"), PortalTarget::Invasive);
+        assert_eq!(
+            target_from_chunk_name("00000001i"),
+            PortalTarget::Chunk("00000001i".into())
+        );
+    }
+
+    #[test]
+    fn portal_section_reads_permissive_and_empty_points() {
+        let plane = PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 10.0);
+        let xml = r#"
+            <portal>
+                <internal>true</internal>
+                <permissive>false</permissive>
+                <chunk>00000001i</chunk>
+                <uAxis>1 0 0</uAxis>
+            </portal>"#;
+        let portal = Portal::from_section(&parse(xml), plane);
+        assert!(portal.internal);
+        assert!(!portal.permissive);
+        assert_eq!(portal.target, PortalTarget::Chunk("00000001i".into()));
+        // No <point> children: the portal is empty, the centre is the origin.
+        assert!(portal.points.is_empty());
+        assert_eq!(portal.lcentre, portal.origin);
+
+        // `objectSpacePoint` and the projection/containment round-trip.
+        let xml = r#"
+            <portal>
+                <chunk>00000000o</chunk>
+                <uAxis>1 0 0</uAxis>
+                <point>-10 -10 0</point>
+                <point>10 -10 0</point>
+                <point>10 10 0</point>
+                <point>-10 10 0</point>
+            </portal>"#;
+        let portal = Portal::from_section(&parse(xml), plane);
+        assert_eq!(
+            portal.object_space_point(0),
+            Vector3::new(-10.0, -10.0, 10.0)
+        );
+        let corner = portal.object_space_point(0);
+        assert!(portal.inside(&corner));
+        assert!(!portal.inside(&Vector3::new(100.0, 0.0, 10.0)));
+        assert!(portal.inside_2d(&portal.project(&corner)));
+        assert!(!portal.inside_2d(&Vector2::new(100.0, 0.0)));
+    }
+
+    #[test]
+    fn boundary_section_normalises_a_non_unit_normal() {
+        // normal (2,0,0), d=20: normalised to (1,0,0), d=10.
+        let xml = r#"
+            <boundary>
+                <normal>2 0 0</normal>
+                <d>20</d>
+                <portal><chunk>earth</chunk><uAxis>0 1 0</uAxis></portal>
+            </boundary>"#;
+        let boundary = ChunkBoundary::from_section(&parse(xml));
+        assert_eq!(boundary.plane.normal(), &Vector3::new(1.0, 0.0, 0.0));
+        assert_eq!(boundary.plane.d(), 10.0);
+        // Earth portals are born bound.
+        assert_eq!(boundary.bound_portals.len(), 1);
+        assert!(boundary.unbound_portals.is_empty());
+    }
+
+    #[test]
+    fn shell_falls_back_to_first_model_and_static_visual() {
+        // No <shell>: the first <model> is the shell; the primary visual is
+        // missing so the .static.visual fallback supplies the boundaries.
+        let xml = r#"
+            <00000000i.chunk>
+                <model>
+                    <resource>old.model</resource>
+                </model>
+            </00000000i.chunk>"#;
+        let visual = r#"
+            <old.static.visual>
+                <boundary>
+                    <normal>1 0 0</normal>
+                    <d>10</d>
+                </boundary>
+                <boundary>
+                    <normal>-1 0 0</normal>
+                    <d>10</d>
+                </boundary>
+                <boundary>
+                    <normal>0 1 0</normal>
+                    <d>10</d>
+                </boundary>
+                <boundary>
+                    <normal>0 -1 0</normal>
+                    <d>10</d>
+                </boundary>
+            </old.static.visual>"#;
+        let section = parse(xml);
+        let resolver = |name: &str| (name == "old.static.visual").then(|| parse(visual));
+        let boundaries = create_boundaries_from_shell(&section, &resolver);
+        assert_eq!(boundaries.len(), 4);
+
+        // No visual at all: no boundaries, like the reference.
+        let none = create_boundaries_from_shell(&section, &|_| None);
+        assert!(none.is_empty());
+
+        // A shell with no resource and a section with no model: empty.
+        let empty =
+            parse(r#"<00000000i.chunk><model><resource></resource></model></00000000i.chunk>"#);
+        assert!(create_boundaries_from_shell(&empty, &|_| None).is_empty());
+        let no_model = parse(r#"<00000000i.chunk></00000000i.chunk>"#);
+        assert!(create_boundaries_from_shell(&no_model, &|_| None).is_empty());
+    }
+
+    #[test]
+    fn form_boundaries_rejects_a_degenerate_plane() {
+        // An inside chunk whose shell visual has a zero-normal boundary:
+        // `good` drops to false even with four planes (chunk.cpp:867-873).
+        let visual = r#"
+            <bad.visual>
+                <boundary>
+                    <normal>0 0 0</normal>
+                    <d>1</d>
+                </boundary>
+                <boundary><normal>1 0 0</normal><d>1</d></boundary>
+                <boundary><normal>-1 0 0</normal><d>1</d></boundary>
+                <boundary><normal>0 1 0</normal><d>1</d></boundary>
+                <boundary><normal>0 -1 0</normal><d>1</d></boundary>
+            </bad.visual>"#;
+        let section = parse(
+            r#"<00000000i.chunk><shell><resource>bad.model</resource></shell></00000000i.chunk>"#,
+        );
+        let resolver = |name: &str| (name == "bad.visual").then(|| parse(visual));
+        let (boundaries, _joints, _bounds, good) =
+            form_boundaries("00000000i", &section, &identity_mapping(), &resolver);
+        assert_eq!(boundaries.len(), 5);
+        assert!(!good, "zero normal fails the form");
+    }
+}

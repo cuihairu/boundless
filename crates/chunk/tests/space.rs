@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chunk::{Chunk, GeometryMapping, GridBounds, PortalTarget};
+use chunk::{Chunk, ChunkSpace, GeometryMapping, GridBounds, PortalTarget};
 use foundation::math::{Matrix, Vector3};
 use resources::datasection;
 
@@ -319,4 +319,213 @@ fn inside_chunk_boundaries_come_from_the_shell_visual() {
     assert!(!chunk.joints.contains(&1));
     assert!(chunk.joints.contains(&2));
     assert!(!chunk.bounds.contains(&2));
+}
+
+/// BW-10-01-03: the scan walks the grid offsets around the camera cell
+/// nearest-first (`ChunkManager::scan`, chunk_manager.cpp:2132-2222), creates
+/// the outside chunks for in-bounds cells and returns the not-yet-loaded ones
+/// as the candidates to load.
+#[test]
+fn streaming_scan_loads_the_grid_nearest_first() {
+    let mapping = load_mapping();
+    let mut space = ChunkSpace::new(0, vec![mapping]);
+    assert_eq!(space.grid_size(), 100.0);
+    assert_eq!(space.point_to_grid(250.0), 2);
+    assert_eq!(space.grid_to_point(3), 300.0);
+
+    // Camera at the origin cell, load radius two cells.
+    let camera = Vector3::new(50.0, 0.0, 50.0);
+    let candidates = space.scan(&camera, 200.0);
+
+    // Nearest first: (0,0), then the radius-1 ring in-bounds cells, then
+    // (1,1), then (2,0); the out-of-bounds cells never appear.
+    let expected = [
+        "00000000o",
+        "00000001o",
+        "00010000o",
+        "00010001o",
+        "00020000o",
+    ];
+    assert_eq!(candidates, expected.map(String::from).to_vec());
+    // The scan created every visited chunk but loaded none of them
+    // (`findChunkByGrid` + `new Chunk` + `addChunk`).
+    for id in &candidates {
+        let chunk = space.chunk(id).expect("scan created the chunk");
+        assert!(!chunk.is_loaded, "{id} not loaded yet");
+    }
+    assert!(
+        space.chunk("00000000i").is_none(),
+        "scan never leaves the grid"
+    );
+
+    // A second scan returns nothing new: everything is already created and
+    // none is loaded, so they are still candidates — but creating is
+    // idempotent.
+    let again = space.scan(&camera, 200.0);
+    assert_eq!(again, candidates);
+}
+
+/// BW-10-01-03: the space map API. `findChunkByGrid` resolves a cell to the
+/// chunk owning it; `addChunk`/`chunk_mut`/`chunks` maintain the map; a
+/// missing `.chunk` file and a not-yet-loaded chunk both fail cleanly.
+#[test]
+fn space_map_accessors_track_created_chunks() {
+    let mapping = load_mapping();
+    let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+    assert!(space.bind_order().is_empty());
+
+    let camera = Vector3::new(50.0, 0.0, 50.0);
+    let candidates = space.scan(&camera, 200.0);
+
+    // `findChunkByGrid`: the cell that owns grid (0, 0) is 00000000o; a cell
+    // outside the mapping has no chunk.
+    let by_grid = space
+        .find_chunk_by_grid(0, 0)
+        .expect("grid (0,0) owns a chunk");
+    assert_eq!(by_grid.identifier, "00000000o");
+    assert!(space.find_chunk_by_grid(-1, 0).is_none());
+    assert!(space.find_chunk_by_grid(0, -1).is_none());
+
+    // `chunk_mut` reaches the created chunk.
+    space.chunk_mut("00000000o").unwrap().is_loaded = true;
+    assert!(space.chunk("00000000o").unwrap().is_loaded);
+
+    // `chunks` iterates the map, `add_chunk` registers a new one.
+    assert_eq!(space.chunks().count(), candidates.len());
+    space.add_chunk(Chunk::new("00030000o", &mapping, &Matrix::identity()));
+    assert_eq!(space.chunks().count(), candidates.len() + 1);
+    assert!(space.chunk("00030000o").is_some());
+
+    // A missing `.chunk` file fails to load; a created-but-not-loaded chunk
+    // refuses to bind.
+    assert!(!space.load_chunk("00030000o", &resource_resolver));
+    assert!(!space.bind("00020000o"));
+    assert!(!space.bind("00000000i"));
+    assert!(space.bind_order().is_empty());
+}
+
+/// BW-10-01-03: the bind sequence. Chunks load and bind in scan order; a
+/// portal binds when its target chunk is already bound, and the connection is
+/// two-way (`bindPortals` + `Chunk::bind(Chunk*)`).
+#[test]
+fn streaming_bind_sequence_connects_neighbours() {
+    let mapping = load_mapping();
+    let mut space = ChunkSpace::new(0, vec![mapping]);
+    let camera = Vector3::new(50.0, 0.0, 50.0);
+    let candidates = space.scan(&camera, 200.0);
+
+    let bound = space.load_and_bind(&candidates, &resource_resolver);
+    // `00020000o` has no .chunk file in the fixture, so it fails to load and
+    // never binds; the other four bind in scan order.
+    let order = ["00000000o", "00000001o", "00010000o", "00010001o"];
+    let order: Vec<String> = order.iter().map(|s| s.to_string()).collect();
+    assert_eq!(space.bind_order(), &order[..]);
+    assert_eq!(bound, order);
+
+    let targets = |id: &str, boundary: usize| -> Vec<PortalTarget> {
+        space.chunk(id).unwrap().boundaries[boundary]
+            .bound_portals
+            .iter()
+            .map(|p| p.target.clone())
+            .collect()
+    };
+    let unbound_targets = |id: &str, boundary: usize| -> Vec<PortalTarget> {
+        space.chunk(id).unwrap().boundaries[boundary]
+            .unbound_portals
+            .iter()
+            .map(|p| p.target.clone())
+            .collect()
+    };
+
+    // 00000000o bound first: only heaven bound at its own turn, but the
+    // neighbours' binds moved its left and front portals over (`Chunk::bind`).
+    assert_eq!(
+        targets("00000000o", 1),
+        vec![PortalTarget::Chunk("00010000o".into())]
+    );
+    assert_eq!(targets("00000000o", 3), vec![PortalTarget::Heaven]);
+    assert_eq!(
+        targets("00000000o", 5),
+        vec![PortalTarget::Chunk("00000001o".into())]
+    );
+    // The extern faces stay unbound: resolving them needs the space column.
+    assert_eq!(unbound_targets("00000000o", 0), vec![PortalTarget::Extern]);
+    assert_eq!(unbound_targets("00000000o", 4), vec![PortalTarget::Extern]);
+
+    // 00000001o connected back to 00000000o and later to 00010001o.
+    assert_eq!(
+        targets("00000001o", 1),
+        vec![PortalTarget::Chunk("00010001o".into())]
+    );
+    assert_eq!(
+        targets("00000001o", 4),
+        vec![PortalTarget::Chunk("00000000o".into())]
+    );
+
+    // 00010001o connected to both bound neighbours at its own turn.
+    assert_eq!(
+        targets("00010001o", 0),
+        vec![PortalTarget::Chunk("00000001o".into())]
+    );
+    assert_eq!(
+        targets("00010001o", 4),
+        vec![PortalTarget::Chunk("00010000o".into())]
+    );
+
+    // The failed load left 00020000o created but not loaded, so 00010000o's
+    // left face never bound and 00010000o's own portals to it stay unbound.
+    assert!(unbound_targets("00010000o", 1).contains(&PortalTarget::Chunk("00020000o".into())));
+    assert!(!space.chunk("00020000o").unwrap().is_loaded);
+    assert!(!space.chunk("00020000o").unwrap().is_bound);
+
+    // The world centre is the chunk transform applied to the local centre
+    // (chunk.cpp:3339): grid (1,0) sits at x=100.
+    let right = &space.chunk("00010000o").unwrap().boundaries[0].bound_portals[0];
+    assert_eq!(right.lcentre, Vector3::new(0.0, 0.0, 50.0));
+    assert_eq!(right.centre, Vector3::new(100.0, 0.0, 50.0));
+
+    // Binding again is a no-op and does not duplicate the bind order.
+    assert!(space.bind("00010001o"));
+    assert_eq!(space.bind_order(), &order[..]);
+}
+
+/// BW-10-01-03: an inside chunk binds its external portal to an already-bound
+/// outside chunk, while portals to chunks that are not bound stay open.
+#[test]
+fn inside_chunk_binds_to_a_bound_outside_chunk() {
+    let mapping = load_mapping();
+    let mut space = ChunkSpace::new(0, vec![mapping]);
+
+    assert!(space.load_chunk("00000000o", &resource_resolver));
+    assert!(space.bind("00000000o"));
+
+    // Not loaded yet: binding a missing or unloaded chunk is refused.
+    assert!(!space.bind("00000000i"));
+    assert!(!space.bind("no-such-chunk"));
+
+    assert!(space.load_chunk("00000000i", &resource_resolver));
+    assert!(space.bind("00000000i"));
+
+    let inside = space.chunk("00000000i").unwrap();
+    // +x external portal -> 00000000o: bound now.
+    assert_eq!(
+        inside.boundaries[0].bound_portals[0].target,
+        PortalTarget::Chunk("00000000o".into())
+    );
+    // +z internal portal -> 00000001i: never loaded, stays unbound.
+    assert_eq!(
+        inside.boundaries[2].unbound_portals[0].target,
+        PortalTarget::Chunk("00000001i".into())
+    );
+    // Heaven bound at its own turn; earth was born bound.
+    assert_eq!(
+        inside.boundaries[5].bound_portals[0].target,
+        PortalTarget::Heaven
+    );
+    assert_eq!(
+        inside.boundaries[4].bound_portals[0].target,
+        PortalTarget::Earth
+    );
+    let order = ["00000000o", "00000000i"].map(String::from).to_vec();
+    assert_eq!(space.bind_order(), &order[..]);
 }
