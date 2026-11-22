@@ -49,7 +49,7 @@ impl CaptureFilter {
 
     /// Whether one event (its recording identity and category) is kept.
     pub fn accepts(&self, identity: &ProfilerIdentity, category: Category) -> bool {
-        (self.roles.is_empty() || self.roles.iter().any(|role| *role == identity.role))
+        (self.roles.is_empty() || self.roles.contains(&identity.role))
             && (self.categories.is_empty() || self.categories.contains(&category))
     }
 }
