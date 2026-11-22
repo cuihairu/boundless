@@ -1552,7 +1552,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 定义原生句柄、回调线程、内存归属、错误码和版本协商，生成公开头文件。验证加载、断线和销毁。Python 客户端覆盖原版 simple 示例。
 
-- [ ] **BW-21-02-01 定义 ABI 句柄与释放约定**。**验收** 重复释放错误可识别。
+- [x] **BW-21-02-01 定义 ABI 句柄与释放约定**。**验收** 重复释放错误可识别。证据：新增 `test-support/src/sdk_abi.rs`（+`pub mod sdk_abi`，`runtime_env` 后、`sdk_session` 前=字母序）。**`HandleId=u64`** + **`NULL_HANDLE=0`**（空句柄：从不签发、从不有效）+ **`HandleError{UnknownHandle,DoubleRelease}`**（`code()`=`unknown-handle`/`double-release` + 可读 `message()`；二者**互异可区分**）+ **`HandleTable`**（`issue()->HandleId` **自 1 起按序**、`release(id)->Result`——在册→Ok/已释→`DoubleRelease`/从未签发→`UnknownHandle`；`is_live(id)`/`live_count()`）。6 测实证：**`a_double_release_is_recognizable`（核心验收：重复释放错误可识别）**（释放两次→第二次 `DoubleRelease`、`code()`=`double-release`）+ `a_handle_issues_live_and_releases_once`（签发→live、一次释放 Ok→不再 live）+ **`an_unknown_number_is_a_different_error_from_a_double_release`（可区分）**（从未签发的 99→`UnknownHandle`、**≠`DoubleRelease`**）+ `the_null_handle_is_never_issued_or_valid`（NULL_HANDLE 释放→UnknownHandle、首签=1、NULL 不 live）+ `handles_are_numbered_in_order`（1/2/3）+ `the_live_count_tracks_issued_minus_released`（3 签 2 释→1）。test-support 466 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；foundation 149 全绿；fmt 净、clippy 净（0 发现于本席文件）。commit eac3300。
 - [ ] **BW-21-02-02 定义回调线程和事件派发**。**验收** 固定用例可断言线程。
 - [ ] **BW-21-02-03 定义 ABI 版本及错误码**。**验收** 版本不匹配可诊断。
 - [ ] **BW-21-02-04 生成并验证公开头文件**。**验收** C 示例能加载及调用。
