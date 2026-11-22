@@ -43,6 +43,7 @@
 //!   part of session negotiation and lands in BW-02-05-02; the assembler
 //!   here frames raw TCP only.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use foundation::stream::BinaryStream;
@@ -462,7 +463,14 @@ pub fn dispatch_messages(table: &InterfaceTable, source: &Address, frame: &[u8])
         pos = TCP_FLAGS_SIZE + TCP_OFFSET_SIZE;
     }
 
-    while pos < bundle_length {
+    // `bool shouldBreakLoop = false; ... while (... && !shouldBreakLoop)`:
+    // one flag per walk, handed to every header via `pBreakLoop`, the way
+    // the reference points each header at its one `shouldBreakLoop` local
+    // (`tcp_bundle_processor.cpp:57`). A handler breaks with
+    // `header.breakBundleLoop()`.
+    let break_loop = Rc::new(Cell::new(false));
+
+    while pos < bundle_length && !break_loop.get() {
         let offset = pos;
 
         // `data_ >> messageID`
@@ -572,6 +580,10 @@ pub fn dispatch_messages(table: &InterfaceTable, source: &Address, frame: &[u8])
         header.set_length(length);
         header.set_reply_id(reply_id);
         header.set_interface_element(served.clone());
+
+        // `header.pBreakLoop = &shouldBreakLoop`, for the duration of this
+        // message's delivery: the handler may break the walk.
+        header.set_break_loop(Rc::clone(&break_loop));
 
         // `MemoryIStream mis( data_.retrieve( header.length ), ... )`
         let mut stream = BinaryStream::new();
@@ -1742,5 +1754,54 @@ mod tests {
         assert!(assembler.push(&[]).is_empty());
         assert_eq!(assembler.num_data_units_received(), 0);
         assert_eq!(assembler.num_bytes_received(), 0);
+    }
+
+    /// A handler that breaks the walk stops the TCP dispatch too: the
+    /// reference points every header at its one `shouldBreakLoop` flag
+    /// (`tcp_bundle_processor.cpp:57`), so `header.breakBundleLoop()`
+    /// skips the rest of the frame. A broken loop is still a success.
+    #[test]
+    fn a_handler_break_stops_the_rest_of_the_frame() {
+        let table = InterfaceTable::new();
+        let breaking = Rc::new(BreakOnFirst::default());
+        table.serve(
+            &var(VAR1_MSG_ID, 1),
+            Some(Rc::clone(&breaking) as Rc<dyn InputMessageHandler>),
+        );
+        let later = Rc::new(Recorder::default());
+        serve(&table, &var(VAR2_MSG_ID, 1), &later);
+
+        // `[flags][id][len][payload]`: the breaking message, then a
+        // message the break must leave undelivered.
+        let frame = [0x00, VAR1_MSG_ID, 0x02, b'h', b'i', VAR2_MSG_ID, 0x01, b'x'];
+
+        let reason = dispatch_messages(&table, &source(), &frame);
+
+        assert_eq!(reason, Reason::Success, "a broken loop is not an error");
+        assert_eq!(breaking.calls.get(), 1);
+        assert!(later.notes().is_empty(), "the rest of the frame is skipped");
+    }
+
+    /// A handler that breaks the walk on its first delivery and carries on
+    /// afterwards, the TCP mirror of the UDP per-dispatch probe.
+    #[derive(Default)]
+    struct BreakOnFirst {
+        calls: Cell<u32>,
+    }
+
+    impl InputMessageHandler for BreakOnFirst {
+        fn handle_message(
+            &self,
+            _source: &Address,
+            header: &mut UnpackedMessageHeader,
+            data: &mut BinaryStream,
+        ) {
+            data.finish();
+            let call = self.calls.get();
+            self.calls.set(call + 1);
+            if call == 0 {
+                header.break_bundle_loop();
+            }
+        }
     }
 }
