@@ -408,6 +408,7 @@ mod tests {
                 PropDesc::new("speed", false, true, false, true, PropValue::Float(0.0)),
                 PropDesc::new("alive", false, true, false, true, PropValue::Bool(true)),
             ],
+            methods: vec![],
         }
     }
 

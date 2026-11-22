@@ -139,6 +139,7 @@ use std::collections::VecDeque;
 
 use crate::baseappmgr::Addr;
 use crate::cell_data::BaseAddr;
+use crate::mailbox_call::{MailboxCallError, MailboxMethodCall, value_matches};
 
 /// `EntityID`.
 pub type EntityId = u32;
@@ -200,6 +201,62 @@ impl PropDesc {
     }
 }
 
+/// `MethodDescription::Component` (`method_description.hpp:60`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MethodComponent {
+    /// `CLIENT`: a method the server calls on the owning client.
+    Client,
+    /// `CELL`: a method on the cell entity.
+    Cell,
+    /// `BASE`: a method on the base entity.
+    Base,
+}
+
+/// One method of an entity type (`MethodDescription`-lite): the wire index
+/// plus the argument and return-value type witnesses, which is what the
+/// mailbox codec needs to stream and parse a call and its reply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodDesc {
+    /// The method name.
+    pub name: String,
+    /// `MethodDescription::internalIndex()`: the index a call carries.
+    pub internal_index: u32,
+    /// `MethodDescription::component()`: where the method lives.
+    pub component: MethodComponent,
+    /// `MethodDescription::isExposed()`: a client-exposed method.
+    pub exposed: bool,
+    /// One type witness per argument, in stream order.
+    pub arg_kinds: Vec<PropValue>,
+    /// One type witness per return value, in stream order.
+    pub return_kinds: Vec<PropValue>,
+}
+
+impl MethodDesc {
+    /// Build a method description.
+    pub fn new(
+        name: &str,
+        internal_index: u32,
+        component: MethodComponent,
+        exposed: bool,
+        arg_kinds: Vec<PropValue>,
+        return_kinds: Vec<PropValue>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            internal_index,
+            component,
+            exposed,
+            arg_kinds,
+            return_kinds,
+        }
+    }
+
+    /// `MethodDescription::hasReturnValues()`.
+    pub fn has_return_values(&self) -> bool {
+        !self.return_kinds.is_empty()
+    }
+}
+
 /// An entity type (`EntityType`-lite).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EntityType {
@@ -217,12 +274,22 @@ pub struct EntityType {
     pub can_be_on_cell: bool,
     /// The properties.
     pub properties: Vec<PropDesc>,
+    /// The methods (`MethodDescription`s), in definition order.
+    pub methods: Vec<MethodDesc>,
 }
 
 impl EntityType {
     /// Find a property by name.
     pub fn property(&self, name: &str) -> Option<&PropDesc> {
         self.properties.iter().find(|p| p.name == name)
+    }
+
+    /// Find a method by its wire index (`MethodDescription` lookup by
+    /// `internalIndex`).
+    pub fn method(&self, internal_index: u32) -> Option<&MethodDesc> {
+        self.methods
+            .iter()
+            .find(|m| m.internal_index == internal_index)
     }
 }
 
@@ -351,6 +418,21 @@ pub enum BaseCallback {
     OnLoseCell {
         /// The entity id.
         entity_id: EntityId,
+    },
+    /// A mailbox method call was delivered to the base
+    /// (`ServerEntityMailBox::callMethod` reaching its target).
+    MethodCalled {
+        /// The entity id.
+        entity_id: EntityId,
+        /// The method name.
+        method_name: String,
+        /// The method's internal index.
+        method_index: u32,
+        /// The source entity id for an exposed CELL method, `None` for
+        /// `NULL_ENTITY_ID`.
+        source_entity_id: Option<EntityId>,
+        /// The delivered arguments.
+        args: Vec<PropValue>,
     },
 }
 
@@ -923,6 +1005,69 @@ impl EntityCreator {
         true
     }
 
+    /// `ServerEntityMailBox::callMethod` reaching its target: deliver a
+    /// decoded [`MailboxMethodCall`] to the base the mailbox addresses.
+    ///
+    /// A base-addressed mailbox (`BASE`, `SERVICE` or `BASE_VIA_CELL`) is
+    /// resolved against the tracked bases; the method must live on the base
+    /// component and the arguments must match the method's schema. A
+    /// cell- or client-addressed mailbox is outside the base-side model and
+    /// is rejected. The call is recorded as a [`BaseCallback::MethodCalled`]
+    /// and the resolved description returned so the caller can build the
+    /// reply ([`MethodReply`](crate::mailbox_call::MethodReply)).
+    pub fn deliver_mailbox_call(
+        &mut self,
+        mailbox: &EntityMailBoxRef,
+        call: MailboxMethodCall,
+    ) -> Result<MethodDesc, MailboxCallError> {
+        let is_base_target = matches!(
+            mailbox.component,
+            MailBoxComponent::Base | MailBoxComponent::Service | MailBoxComponent::BaseViaCell
+        );
+        if !is_base_target {
+            return Err(MailboxCallError::CellTarget);
+        }
+        let base = self
+            .bases
+            .get(&call.target_id)
+            .ok_or(MailboxCallError::UnknownBase)?;
+        let ty = self
+            .types
+            .get(&base.type_name)
+            .ok_or(MailboxCallError::UnknownBase)?;
+        let method = ty
+            .method(call.method_index)
+            .ok_or(MailboxCallError::UnknownMethod)?;
+        if method.component != MethodComponent::Base {
+            return Err(MailboxCallError::WrongComponent);
+        }
+        if call.args.len() != method.arg_kinds.len() {
+            return Err(MailboxCallError::BadArgs {
+                expected: method.arg_kinds.len(),
+                got: call.args.len(),
+            });
+        }
+        for (index, (value, kind)) in call.args.iter().zip(&method.arg_kinds).enumerate() {
+            if !value_matches(value, kind) {
+                return Err(MailboxCallError::BadArgKind { index });
+            }
+        }
+        let resolved = method.clone();
+        let method_name = method.name.clone();
+        self.bases
+            .get_mut(&call.target_id)
+            .expect("base still present")
+            .callbacks
+            .push(BaseCallback::MethodCalled {
+                entity_id: call.target_id,
+                method_name,
+                method_index: call.method_index,
+                source_entity_id: call.source_entity_id,
+                args: call.args,
+            });
+        Ok(resolved)
+    }
+
     /// `createBaseFromDB`: validate the type and the database id, allocate an
     /// entity id and register the pending `loadEntity` request.
     ///
@@ -1278,6 +1423,7 @@ fn read_packed_int(reader: &mut PersistenceReader<'_>) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mailbox_call::{MailboxCallError, MailboxMethodCall};
 
     fn account_type() -> EntityType {
         EntityType {
@@ -1300,6 +1446,7 @@ mod tests {
                 PropDesc::new("pos", false, true, false, true, PropValue::Vec3([0.0; 3])),
                 PropDesc::new("health", true, true, false, true, PropValue::Int(100)),
             ],
+            methods: vec![],
         }
     }
 
@@ -1674,6 +1821,7 @@ mod tests {
             is_proxy: false,
             can_be_on_cell: true,
             properties: vec![],
+            methods: vec![],
         });
         creator.add_type(EntityType {
             id: 3,
@@ -1683,6 +1831,7 @@ mod tests {
             is_proxy: false,
             can_be_on_cell: true,
             properties: vec![],
+            methods: vec![],
         });
         assert_eq!(
             creator.create_base_locally("Service", CreateArgs::new()),
@@ -1750,6 +1899,7 @@ mod tests {
                 PropDesc::new("pos", false, true, false, true, PropValue::Vec3([0.0; 3])),
                 PropDesc::new("health", true, true, false, true, PropValue::Int(100)),
             ],
+            methods: vec![],
         }
     }
 
@@ -1936,6 +2086,7 @@ mod tests {
             is_proxy: false,
             can_be_on_cell: true,
             properties: vec![],
+            methods: vec![],
         });
         assert_eq!(
             creator.create_base_from_db("Nope", 5),
@@ -2249,5 +2400,184 @@ mod tests {
         assert_eq!(creator.uncheckouts()[0].db_id, 42);
         // The callback fired exactly once.
         assert_eq!(creator.on_load_reply(request, LoadReply::Exception), None);
+    }
+
+    /// A type with a base method `rename(string, int) -> int` for the
+    /// mailbox delivery tests.
+    fn rename_type() -> EntityType {
+        let mut ty = account_type();
+        ty.id = 5;
+        ty.name = "Player".to_string();
+        ty.methods = vec![MethodDesc::new(
+            "rename",
+            7,
+            MethodComponent::Base,
+            false,
+            vec![PropValue::Str(String::new()), PropValue::Int(0)],
+            vec![PropValue::Int(0)],
+        )];
+        ty
+    }
+
+    fn creator_with_rename() -> (EntityCreator, EntityId) {
+        let mut pool = IdPool::new(5, 10, 50, 100);
+        pool.refill(&[20]);
+        let mut creator = EntityCreator::new(pool);
+        creator.add_type(rename_type());
+        let base = creator
+            .create_base_locally("Player", Default::default())
+            .expect("create");
+        (creator, base.id)
+    }
+
+    fn base_mailbox(id: EntityId) -> EntityMailBoxRef {
+        EntityMailBoxRef::init(id, (0x7f000001, 20000), MailBoxComponent::Base, 5)
+    }
+
+    #[test]
+    fn a_mailbox_call_is_delivered_to_its_target_base() {
+        let (mut creator, id) = creator_with_rename();
+        let method = creator
+            .deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+                },
+            )
+            .expect("deliver");
+        assert_eq!(method.name, "rename");
+        assert_eq!(method.internal_index, 7);
+        assert_eq!(method.return_kinds, vec![PropValue::Int(0)]);
+        let callbacks = &creator.bases()[&id].callbacks;
+        assert_eq!(
+            callbacks.last(),
+            Some(&BaseCallback::MethodCalled {
+                entity_id: id,
+                method_name: "rename".to_string(),
+                method_index: 7,
+                source_entity_id: None,
+                args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_target_base_is_rejected() {
+        let (mut creator, _id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &base_mailbox(99),
+                MailboxMethodCall {
+                    target_id: 99,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+                },
+            ),
+            Err(MailboxCallError::UnknownBase)
+        );
+    }
+
+    #[test]
+    fn an_unknown_method_index_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 99,
+                    source_entity_id: None,
+                    args: vec![],
+                },
+            ),
+            Err(MailboxCallError::UnknownMethod)
+        );
+    }
+
+    #[test]
+    fn a_cell_addressed_mailbox_is_out_of_the_model() {
+        let (mut creator, id) = creator_with_rename();
+        let mailbox = EntityMailBoxRef::init(id, (0x7f000001, 20001), MailBoxComponent::Cell, 5);
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &mailbox,
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+                },
+            ),
+            Err(MailboxCallError::CellTarget)
+        );
+    }
+
+    #[test]
+    fn a_wrong_argument_count_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string())],
+                },
+            ),
+            Err(MailboxCallError::BadArgs {
+                expected: 2,
+                got: 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_wrong_argument_type_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![
+                        PropValue::Str("bob".to_string()),
+                        PropValue::Str("bad".to_string())
+                    ],
+                },
+            ),
+            Err(MailboxCallError::BadArgKind { index: 1 })
+        );
+    }
+
+    #[test]
+    fn a_delivered_call_builds_a_matching_reply() {
+        let (mut creator, id) = creator_with_rename();
+        let method = creator
+            .deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+                },
+            )
+            .expect("deliver");
+        // The reply a method would send: status 0 then its return value.
+        let reply = crate::mailbox_call::MethodReply::success(&method, vec![PropValue::Int(9)])
+            .expect("reply");
+        let mut stream = foundation::stream::BinaryStream::new();
+        reply.write_to(&mut stream, &method).expect("write");
+        let parsed =
+            crate::mailbox_call::MethodReply::read_from(&mut stream, &method).expect("read");
+        assert_eq!(parsed.status, 0);
+        assert_eq!(parsed.values, vec![PropValue::Int(9)]);
     }
 }
