@@ -1,0 +1,25 @@
+{
+  "differences": [
+    {
+      "category": "order",
+      "boundary": "callback.order",
+      "original": "11 site(s), 5 runtime path(s)",
+      "new": "not implemented",
+      "note": "the callback sequence order; the new side carries it when BW-02 lands"
+    },
+    {
+      "category": "field",
+      "boundary": "db_state.seed",
+      "original": "LogOnMapping [{'logOnName': 'FantasyAccount', 'password': 'a', 'type': 'Account', 'entityID': '2'}] + 2 table(s)",
+      "new": "no consumer",
+      "note": "the database seed the login consumes"
+    }
+  ],
+  "counts": {
+    "timeout": 0,
+    "order": 1,
+    "field": 1
+  },
+  "located": 2,
+  "source": "compare-summary.json (BW-00-04-04)"
+}

@@ -555,6 +555,9 @@ jobs:
       - name: Record the single-component replacement run
         run: ci/replace-role.sh
 
+      - name: Locate the compatibility differences
+        run: ci/compat-report.sh
+
       - name: Record the reference windows baseline
         run: ci/reference-winbaseline.sh
 
@@ -948,6 +951,7 @@ jobs:
           ci/reference-fixtures.sh self-test
           ci/compare-fullstack.sh self-test
           ci/replace-role.sh self-test
+          ci/compat-report.sh self-test
           ci/reference-winbaseline.sh self-test
           ci/archive-results.sh self-test
 

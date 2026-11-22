@@ -170,6 +170,7 @@ main() {
             | ci/reference-fixtures.sh | ci/reference-fixtures.py \
             | ci/compare-fullstack.sh | ci/compare-fullstack.py \
             | ci/replace-role.sh | ci/replace-role.py \
+            | ci/compat-report.sh | ci/compat-report.py \
             | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 
