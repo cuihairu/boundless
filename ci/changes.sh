@@ -174,6 +174,7 @@ main() {
             | ci/coverage-ledger.sh | ci/coverage-ledger.py \
             | ci/map-coverage.sh | ci/map-coverage.py \
             | ci/map-entry.sh | ci/map-entry.py | ci/coverage_scope.py \
+            | ci/coverage-artifacts.sh | ci/coverage-artifacts.py \
             | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 

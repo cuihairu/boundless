@@ -572,6 +572,9 @@ jobs:
           CI_MAP_TASKS=BW-00-05-04 ci/map-coverage.sh
           ci/map-entry.sh
 
+      - name: Record the reference distribution, SDK and resource gaps
+        run: ci/coverage-artifacts.sh
+
       - name: Record the reference windows baseline
         run: ci/reference-winbaseline.sh
 
@@ -969,6 +972,7 @@ jobs:
           ci/coverage-ledger.sh self-test
           ci/map-coverage.sh self-test
           ci/map-entry.sh self-test
+          ci/coverage-artifacts.sh self-test
           ci/reference-winbaseline.sh self-test
           ci/archive-results.sh self-test
 

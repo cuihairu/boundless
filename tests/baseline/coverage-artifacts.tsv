@@ -1,0 +1,58 @@
+artifact	kind	source	index	how
+distribution/baseapp	server process	game/bin/server/el7/server/baseapp	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/baseappmgr	server process	game/bin/server/el7/server/baseappmgr	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/bots	server process	game/bin/server/el7/server/bots	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/cellapp	server process	game/bin/server/el7/server/cellapp	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/cellapp-extensions/cellapp_example.so	server extension	game/bin/server/el7/server/cellapp-extensions/cellapp_example.so	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/cellappmgr	server process	game/bin/server/el7/server/cellappmgr	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/commands/clear_auto_load	server command	game/bin/server/el7/server/commands/clear_auto_load	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/commands/consolidate_dbs	server command	game/bin/server/el7/server/commands/consolidate_dbs	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/commands/remove_db	server command	game/bin/server/el7/server/commands/remove_db	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/commands/sync_db	server command	game/bin/server/el7/server/commands/sync_db	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/commands/transfer_db	server command	game/bin/server/el7/server/commands/transfer_db	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/dbapp	server process	game/bin/server/el7/server/dbapp	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/dbapp-extensions/bwengine_mysql.so	server extension	game/bin/server/el7/server/dbapp-extensions/bwengine_mysql.so	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/dbapp-extensions/bwengine_xml.so	server extension	game/bin/server/el7/server/dbapp-extensions/bwengine_xml.so	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/dbappmgr	server process	game/bin/server/el7/server/dbappmgr	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/loginapp	server process	game/bin/server/el7/server/loginapp	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/reviver	server process	game/bin/server/el7/server/reviver	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/serviceapp	server process	game/bin/server/el7/server/serviceapp	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/_bw_profile.so	tool	game/bin/server/el7/tools/_bw_profile.so	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/_bwlog.so	tool	game/bin/server/el7/tools/_bwlog.so	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/bwmachined2	tool	game/bin/server/el7/tools/bwmachined2	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/message_logger	tool	game/bin/server/el7/tools/message_logger	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/process_defs	tool	game/bin/server/el7/tools/process_defs	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/res_packer	tool	game/bin/server/el7/tools/res_packer	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/simple_python_client	example	game/bin/server/el7/examples/simple_python_client	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/baseapp_test	unit test	game/bin/server/el7/unit_tests/baseapp_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/baseappmgr_test	unit test	game/bin/server/el7/unit_tests/baseappmgr_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/cellapp_test	unit test	game/bin/server/el7/unit_tests/cellapp_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/cellappmgr_test	unit test	game/bin/server/el7/unit_tests/cellappmgr_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/cstdmf_test	unit test	game/bin/server/el7/unit_tests/cstdmf_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/db_test	unit test	game/bin/server/el7/unit_tests/db_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/dbapp_test	unit test	game/bin/server/el7/unit_tests/dbapp_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/dbappmgr_test	unit test	game/bin/server/el7/unit_tests/dbappmgr_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/entitydef_test	unit test	game/bin/server/el7/unit_tests/entitydef_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/loginapp_test	unit test	game/bin/server/el7/unit_tests/loginapp_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/math_test	unit test	game/bin/server/el7/unit_tests/math_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/network_test	unit test	game/bin/server/el7/unit_tests/network_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/physics2_test	unit test	game/bin/server/el7/unit_tests/physics2_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/pyscript_test	unit test	game/bin/server/el7/unit_tests/pyscript_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/resmgr_test	unit test	game/bin/server/el7/unit_tests/resmgr_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/reviver_test	unit test	game/bin/server/el7/unit_tests/reviver_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/scene_test	unit test	game/bin/server/el7/unit_tests/scene_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/script_test	unit test	game/bin/server/el7/unit_tests/script_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/server_test	unit test	game/bin/server/el7/unit_tests/server_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/terrain_test	unit test	game/bin/server/el7/unit_tests/terrain_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/unit_test_lib_test	unit test	game/bin/server/el7/unit_tests/unit_test_lib_test	BW-14	the reference's prebuilt distribution; BW-14's scope names the 发行物
+distribution/python	bundled python	game/bin/server/el7/third_party/python	BW-14	the reference bundles its Python runtime; BW-14's scope names the 发行物
+distribution/scripts	runtime scripts tree	game/res/bigworld/scripts	BW-14	the reference ships the runtime scripts tree (common/ Lib, site-packages, server_common) as 发行物; BW-14's scope names it
+sdk/unity	sdk part	client_sdk/unity	BW-21	the reference's client SDK (unity); BW-21 owns the SDK
+sdk/unreal	sdk part	client_sdk/unreal	BW-21	the reference's client SDK (unreal); BW-21 owns the SDK
+sdk/typescript	sdk part	client_sdk/typescript	BW-21	the reference's client SDK (typescript); BW-21 owns the SDK
+sdk/generator	sdk part	client_sdk/generator	BW-21	the reference's client SDK (generator); BW-21 owns the SDK
+sdk/port	port sdk gap	the reference client_sdk	none yet	the port's sdk/ tree is planned by BW-21-01-01; the reference ships 4 SDK part(s) on its own lane/client-sdk branch
+missing/bundled-scripts	missing resource	the server bootstrap reads the runtime scripts from game/res/bigworld/scripts	none yet	the port ships no bundled runtime scripts tree; BW-03 (python-host) embeds CPython but no scripts tree
+missing/game-project-server-config	missing resource	the server processes load bw.xml from the game project's res/server	none yet	the port ships no game-project res; the reference keeps it only in fantasydemo's res/server (turned on by BW-14)
+missing/entity-definitions	missing resource	the EntityDef loader reads entity_defs from the game project's res	none yet	the port ships no game-project res; the reference keeps it only in fantasydemo's res/scripts (turned on by BW-14)
+missing/game-scripts	missing resource	the server processes run the game scripts from the game project's res	none yet	the port ships no game-project res; the reference keeps it only in fantasydemo's res/scripts (turned on by BW-14)
