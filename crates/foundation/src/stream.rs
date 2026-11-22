@@ -12,7 +12,8 @@
 //!   three low bytes little-endian, capped at `1 << 24`;
 //! * a container is a fixed 4-byte element count followed by its elements;
 //! * an over-long read sets the stream error and clamps the read cursor to the
-//!   end instead of aborting, so following reads fail the same way.
+//!   end instead of aborting, so following reads fail the same way (`retrieve`
+//!   in `lib/cstdmf/memory_stream.ipp`).
 
 /// Maximum size of the zero buffer a failed bounded read hands out.
 ///
@@ -674,5 +675,162 @@ mod tests {
         assert_eq!(s.remaining(), 1);
         assert_eq!(s.read_u8(), Ok(0xEE));
         assert!(s.at_end());
+    }
+
+    /// Read a `u8`, failing the closure if the stream is over-run.
+    fn over_read_u8(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_u8().map(drop)
+    }
+
+    /// Read a `u16`, failing the closure if the stream is over-run.
+    fn over_read_u16(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_u16().map(drop)
+    }
+
+    /// Read an `f64`, failing the closure if the stream is over-run.
+    fn over_read_f64(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_f64().map(drop)
+    }
+
+    /// Read a packed int, failing the closure if the stream is over-run.
+    fn over_read_packed_int(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_packed_int().map(drop)
+    }
+
+    /// Read a string, failing the closure if the stream is over-run.
+    fn over_read_string(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_string().map(drop)
+    }
+
+    /// Read a prefixed blob, failing the closure if the stream is over-run.
+    fn over_read_blob(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_blob().map(drop)
+    }
+
+    /// Read 100 raw bytes, failing the closure if the stream is over-run.
+    fn over_read_raw_100(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_blob_raw(100).map(drop)
+    }
+
+    /// The BW-01-02-05 acceptance: abnormal inputs produce the same class of
+    /// stream error as the reference. `MemoryIStream::retrieve`
+    /// (`lib/cstdmf/memory_stream.ipp`) answers an over-read by clamping the
+    /// read cursor to `pEnd_`, setting `error_`, and handing out a zero buffer
+    /// (or NULL). Every read funnel — fixed width, packed int, string, blob —
+    /// goes through it, so every kind of over-run lands in that one report.
+    ///
+    /// The port reports the same class: `Err(StreamError::Truncated)`, the
+    /// error flag set, the cursor clamped to the end, and every following
+    /// read failing identically. Unlike the reference it hands out no bytes
+    /// at all, so a failed read can never masquerade as a silently-zero value.
+    /// One abnormal input: a name, the fixture bytes, and the read that
+    /// over-runs them.
+    type OverReadCase = (
+        &'static str,
+        &'static [u8],
+        fn(&mut BinaryStream) -> Result<(), StreamError>,
+    );
+
+    #[test]
+    fn abnormal_reads_all_report_the_same_stream_error_class() {
+        let cases: [OverReadCase; 7] = [
+            // The cursor sits on the end already: any positive read over-runs
+            // (`pCurr_ + nBytes <= pEnd_` fails in the reference).
+            ("u8 read on an exhausted stream", b"", over_read_u8),
+            // Partial bytes of a wider fixed-width value.
+            ("u16 read with one byte left", b"\xAB", over_read_u16),
+            (
+                "f64 read with five bytes left",
+                &[0x01, 0x02, 0x03, 0x04, 0x05],
+                over_read_f64,
+            ),
+            // The packed int's four-byte form is declared but under-filled.
+            (
+                "packed int with a two-byte tail",
+                &[0xFF, 0x01, 0x02],
+                over_read_packed_int,
+            ),
+            // The length prefix declares more bytes than remain.
+            (
+                "string prefix beyond the remaining bytes",
+                &[0x05, b'a', b'b'],
+                over_read_string,
+            ),
+            (
+                "blob prefix beyond the remaining bytes",
+                &[0xFF, 0x00, 0x01, 0x00, 0x00, 0xAB],
+                over_read_blob,
+            ),
+            (
+                "raw blob request beyond the remaining bytes",
+                &[0x01, 0x02, 0x03, 0x04],
+                over_read_raw_100,
+            ),
+        ];
+
+        for (name, bytes, read) in cases {
+            let mut s = BinaryStream::new();
+            s.write_bytes(bytes);
+            s.rewind();
+
+            assert_eq!(read(&mut s), Err(StreamError::Truncated), "{name}");
+            assert!(s.has_error(), "{name}: the reference's error_ is set");
+            assert!(
+                s.at_end(),
+                "{name}: the reference clamps the cursor to pEnd_"
+            );
+            assert_eq!(s.remaining(), 0, "{name}: no bytes left to read");
+
+            // Following reads keep failing: the report sticks and the cursor
+            // stays on the end.
+            assert_eq!(s.read_u8(), Err(StreamError::Truncated), "{name}");
+            assert_eq!(s.read_string(), Err(StreamError::Truncated), "{name}");
+            assert!(s.has_error(), "{name}");
+            assert!(s.at_end(), "{name}");
+        }
+    }
+
+    /// The class boundary: a zero-length read is not an over-read. The
+    /// reference's `retrieve(0)` returns the cursor pointer without touching
+    /// `error_` (`pCurr_ + 0 <= pEnd_` always holds), so an empty string reads
+    /// fine. The reference reports a failed *bounded* read with a zero buffer
+    /// of at most `BS_BUFF_MAX_SIZE` (`binary_stream.hpp`) bytes or NULL; the
+    /// port pins the same ceiling and hands out none of them.
+    #[test]
+    fn zero_length_reads_are_not_the_error_class() {
+        assert_eq!(STREAM_ERROR_BUFFER_MAX, 2048); // `BS_BUFF_MAX_SIZE`
+
+        let mut s = BinaryStream::new();
+        s.write_u8(0x00); // packed length 0
+        s.rewind();
+        assert_eq!(s.read_string(), Ok(String::new()));
+        assert!(!s.has_error());
+        assert!(s.at_end());
+
+        let mut s = BinaryStream::new();
+        assert_eq!(s.read_blob_raw(0), Ok(Vec::new()));
+        assert!(!s.has_error());
+    }
+
+    /// The report is a sticky flag, not a latch: `MemoryIStream::rewind`
+    /// moves the read point back but leaves `error_` set, so a rewound stream
+    /// reads successfully again while the report of the earlier over-read
+    /// remains — exactly the reference's class of report.
+    #[test]
+    fn a_reported_over_read_still_reports_after_a_rewind() {
+        let mut s = BinaryStream::new();
+        s.write_u32(0x01020304);
+        s.rewind();
+        assert_eq!(s.read_u64(), Err(StreamError::Truncated)); // 4 of 8 bytes
+        assert!(s.has_error());
+
+        s.rewind();
+        assert!(s.has_error(), "the report sticks across a rewind");
+        assert_eq!(s.remaining(), 4);
+
+        // The reference's error_ does not stop reads once the cursor is back
+        // in range — only the over-run report is recorded.
+        assert_eq!(s.read_u32(), Ok(0x01020304));
+        assert!(s.has_error());
     }
 }
