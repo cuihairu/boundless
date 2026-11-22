@@ -9,8 +9,24 @@
 //! `pid`, `readings`, each reading carrying `item`, `value`, `source` and
 //! `collected_at` — and the document is produced deterministically, so every
 //! consumer keys on the same names.
+//!
+//! The view refreshes live: a query borrows the collector, so every read sees
+//! the cluster as it now stands, and each refresh surfaces the updates taken
+//! since the last one — every update carrying the time it was taken, so a
+//! viewer locates it on the timeline.
 
-use crate::process_status::{ProcessStatus, StatusCollector};
+use crate::process_status::{ProcessStatus, StatusCollector, StatusReading};
+
+/// One state update a refresh surfaced: the process it belongs to, and the
+/// reading as taken — the reading names its source and the time it was
+/// collected, so the update is locatable in time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusUpdate {
+    /// The process the reading belongs to.
+    pub role: String,
+    /// The reading as taken.
+    pub reading: StatusReading,
+}
 
 /// The read-only view of the cluster a query answers. It borrows the
 /// collector, so a query always reads the current state.
@@ -108,6 +124,35 @@ impl<'a> ClusterQuery<'a> {
         }
         out.push_str("]}");
         out
+    }
+
+    /// The updates a refresh surfaced since the last one: every reading taken
+    /// after `since`, ordered by the time it was taken, then by process role.
+    ///
+    /// A viewer refreshing at `since` and now again sees exactly what the
+    /// cluster did in between, each update carrying the time it was taken.
+    /// A reading taken at `since` itself is not surfaced: the refresh that
+    /// happened at `since` already saw it.
+    pub fn updates_since(&self, since: u64) -> Vec<StatusUpdate> {
+        let mut updates = Vec::new();
+        for status in self.cluster() {
+            for reading in &status.readings {
+                if reading.collected_at > since {
+                    updates.push(StatusUpdate {
+                        role: status.role.clone(),
+                        reading: reading.clone(),
+                    });
+                }
+            }
+        }
+        updates.sort_by(|newer, later| {
+            newer
+                .reading
+                .collected_at
+                .cmp(&later.reading.collected_at)
+                .then_with(|| newer.role.cmp(&later.role))
+        });
+        updates
     }
 }
 
@@ -267,5 +312,92 @@ mod tests {
         assert!(doc.contains("\\\\backslash"));
         // The raw characters do not leak into the document.
         assert!(!doc.contains("\"a \"quote\""));
+    }
+
+    #[test]
+    fn a_refresh_surfaces_only_the_updates_since_the_last_refresh() {
+        let now = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000));
+        let mut collector = {
+            let now = std::sync::Arc::clone(&now);
+            StatusCollector::with_clock(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        collector
+            .register("cellapp01", Some(100))
+            .register("baseapp01", Some(200));
+        collector.record("cellapp01", "version", "0.1.0", "build metadata");
+        collector.record("baseapp01", "version", "0.1.0", "build metadata");
+
+        // Refresh one reads the cluster and notes the time it did so.
+        let query = ClusterQuery::new(&collector);
+        assert_eq!(query.cluster().len(), 2);
+        let first_refresh_at = collector.now();
+
+        // The cluster moves on: both processes beat, at the same instant.
+        now.store(1_100, std::sync::atomic::Ordering::SeqCst);
+        collector.beat("cellapp01");
+        collector.beat("baseapp01");
+
+        // Refresh two surfaces exactly what changed since refresh one: the two
+        // beats, ordered by time then by role. The version readings taken at
+        // the first refresh are not surfaced again.
+        let updates = ClusterQuery::new(&collector).updates_since(first_refresh_at);
+        let surfaced: Vec<(&str, &str, u64)> = updates
+            .iter()
+            .map(|update| {
+                (
+                    update.role.as_str(),
+                    update.reading.item.as_str(),
+                    update.reading.collected_at,
+                )
+            })
+            .collect();
+        assert_eq!(
+            surfaced,
+            vec![
+                ("baseapp01", "heartbeat", 1_100),
+                ("cellapp01", "heartbeat", 1_100),
+            ]
+        );
+    }
+
+    #[test]
+    fn updates_are_locatable_by_the_time_they_were_taken() {
+        let now = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(500));
+        let mut collector = {
+            let now = std::sync::Arc::clone(&now);
+            StatusCollector::with_clock(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        collector.register("cellapp01", Some(100));
+        collector.record("cellapp01", "players", "4", "topology state");
+        now.store(600, std::sync::atomic::Ordering::SeqCst);
+        collector.record("cellapp01", "players", "6", "topology state");
+        now.store(700, std::sync::atomic::Ordering::SeqCst);
+        collector.record("cellapp01", "players", "2", "topology state");
+
+        let query = ClusterQuery::new(&collector);
+
+        // The whole refresh history, oldest first: every update carries the
+        // time it was taken, so a viewer places it on the timeline.
+        let all = query.updates_since(0);
+        let times: Vec<u64> = all.iter().map(|u| u.reading.collected_at).collect();
+        assert_eq!(times, vec![500, 600, 700]);
+
+        // A viewer that refreshed at 600 locates the single update after it.
+        let later = query.updates_since(600);
+        assert_eq!(later.len(), 1);
+        assert_eq!(later[0].role, "cellapp01");
+        assert_eq!(later[0].reading.value, "2");
+        assert_eq!(later[0].reading.collected_at, 700);
+    }
+
+    #[test]
+    fn a_refresh_with_no_changes_surfaces_nothing() {
+        let mut collector = StatusCollector::with_clock(|| 900);
+        collector.register("cellapp01", Some(100));
+        collector.record("cellapp01", "version", "0.1.0", "build metadata");
+
+        // Nothing was collected after the refresh time: no update.
+        let query = ClusterQuery::new(&collector);
+        assert!(query.updates_since(collector.now()).is_empty());
     }
 }
