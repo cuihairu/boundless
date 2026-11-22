@@ -1933,7 +1933,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 验证重复导入、失败续跑、日期切分和大批量输入。将查询示例、指标口径及使用说明纳入 VitePress。
 
 - [x] **BW-26-03-01 验证重复导入**。**验收** 聚合结果不增加。证据：新增 `test-support/src/event_import.rs`（+`pub mod event_import`，event_log 前=字母序）——**`Import`**（包 BW-26-01-04 的 `EventLog`：`import(&[GameEvent])->ImportReport{stored,duplicates}` 每事件只存一次、重发计 duplicate；`count()`、`in_order()`、`aggregates(sum_field)` 委托 BW-26-02-06 的聚合、`report(sum_field)` 报表文本）。验收由 2 测实证：**`re_importing_a_batch_adds_nothing`（核心验收）**（4 事件首导 stored 4/duplicates 0、报表 "join: count=1\npurchase: count=2 total=250\ntelemetry: count=1"；**整批再导 → stored 0/duplicates 4、count 仍 4、`report` 与首次逐字节相等=聚合结果不增加**）+ `a_new_batch_is_imported_once`（异 ID 新批 stored 2/duplicates 0、报表 "purchase: count=2 total=50"=新数据照常计入）。foundation 149 全绿；test-support 338 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；fmt 净、clippy 净（0 发现于本席文件）。commit 76e39ad。
-- [ ] **BW-26-03-02 验证失败续跑**。**验收** 恢复后与一次性输入结果一致。
+- [x] **BW-26-03-02 验证失败续跑**。**验收** 恢复后与一次性输入结果一致。证据：扩展 `event_import.rs` 测试——新增 **`resuming_after_a_failure_matches_a_one_shot_import`**（三批事件同一铸造器（同 ID 基准）：**一次性路径** import 批1+批2+批3；**续跑路径** import 批1 → 批2 → **批2 再发**（作业死时在途批次重投）→ 批3；断言 `resumed.in_order()` ID 序列 == one-shot ID 序列、`count()` 相等（4）、`report("price")` 逐字节相等=**恢复后与一次性输入结果一致**——不缺、不重、行序同）。复用 BW-26-01-04 按 ID 去重（重投不再存）+ BW-26-01-04 全序（分批不分序）。foundation 149 全绿；test-support 339 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；fmt 净、clippy 净（0 发现于本席文件）。commit 694619f。
 - [ ] **BW-26-03-03 验证日期切分和大批次**。**验收** 边界与批次大小不会改变计数。
 - [ ] **BW-26-03-04 编写指标口径及查询例**。**验收** VitePress 示例能独立执行。
 
