@@ -112,6 +112,12 @@ const operationsSidebar = [
     ]
   },
   {
+    text: "Environment",
+    items: [
+      { text: "Environment layout", link: "/operations/environment-layout" }
+    ]
+  },
+  {
     text: "Release",
     items: [
       { text: "Testing and release", link: "/operations/testing-and-release" }

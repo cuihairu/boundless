@@ -842,4 +842,73 @@ mod tests {
         assert_eq!(config.get_int("app/port", 0), 5000);
         assert!(personalised || config.sections.len() == 1);
     }
+
+    /// BW-00-03-04: two environments sharing one machine and one resource
+    /// root stay separate. The personalised `server/bw_<username>.xml`
+    /// filename scopes the chain per environment, so each environment
+    /// reads its own file; a command-line write-through updates the
+    /// writing environment's front section only, the shared resource
+    /// cache is keyed by the per-environment filename, and nothing on
+    /// disk is overwritten.
+    #[test]
+    fn two_environments_on_one_machine_do_not_overwrite() {
+        let root = temp_root("envsplit");
+        // One shared base both environments inherit, plus one personalised
+        // file per environment with a distinct app/name.
+        write(
+            &format!("{root}/server/bw.xml"),
+            "<root>\n\t<shared><limit>10</limit></shared>\n</root>\n",
+        );
+        let alice_xml = "<root>\n\t<parentFile>server/bw.xml</parentFile>\n\t<app><name>alice</name></app>\n</root>\n";
+        let bob_xml = "<root>\n\t<parentFile>server/bw.xml</parentFile>\n\t<app><name>bob</name></app>\n</root>\n";
+        write(&format!("{root}/server/bw_alice.xml"), alice_xml);
+        write(&format!("{root}/server/bw_bob.xml"), bob_xml);
+        let resource = BwResource::init_paths(&[&root]);
+
+        // Environment A resolves alice's chain, environment B bob's --
+        // same resource root, different front files.
+        let mut alice = BwConfig::new();
+        alice.init_from_sources(&resource, Some("alice"));
+        assert_eq!(alice.section_names()[0], "server/bw_alice.xml");
+        assert_eq!(alice.get_string("app/name", ""), "alice");
+
+        let mut bob = BwConfig::new();
+        bob.init_from_sources(&resource, Some("bob"));
+        assert_eq!(bob.section_names()[0], "server/bw_bob.xml");
+        assert_eq!(bob.get_string("app/name", ""), "bob");
+
+        // Alice writes a value through the command line: it lands in her
+        // front section, and bob's view through the same shared resource
+        // is unaffected.
+        let args = vec![
+            "arg0".to_string(),
+            "+app/name".to_string(),
+            "alice-updated".to_string(),
+        ];
+        assert!(alice.init_from_sources_with_args(&resource, Some("alice"), &args));
+        assert_eq!(alice.get_string("app/name", ""), "alice-updated");
+        assert_eq!(bob.get_string("app/name", ""), "bob");
+
+        // A fresh environment B re-resolves from the same root and still
+        // sees its own value -- alice's write did not leak.
+        let mut bob_again = BwConfig::new();
+        bob_again.init_from_sources(&resource, Some("bob"));
+        assert_eq!(bob_again.get_string("app/name", ""), "bob");
+
+        // And nothing on disk was overwritten: the write-through is
+        // cache-scoped to the writing environment's filename, and the
+        // shared base and the other environment's file keep their bytes.
+        assert_eq!(
+            fs::read_to_string(format!("{root}/server/bw_alice.xml")).unwrap(),
+            alice_xml
+        );
+        assert_eq!(
+            fs::read_to_string(format!("{root}/server/bw_bob.xml")).unwrap(),
+            bob_xml
+        );
+        assert_eq!(
+            fs::read_to_string(format!("{root}/server/bw.xml")).unwrap(),
+            "<root>\n\t<shared><limit>10</limit></shared>\n</root>\n"
+        );
+    }
 }
