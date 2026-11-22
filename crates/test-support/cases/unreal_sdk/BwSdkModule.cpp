@@ -50,6 +50,18 @@ namespace bw
         return result;
     }
 
+    bool SdkComponent::SyncProperty(long long entityId,
+                                    const std::string& path,
+                                    const std::string& value)
+    {
+        if (!logged_in_)
+        {
+            return false;
+        }
+
+        return server_.SyncProperty(entityId, path, value);
+    }
+
     bool SdkComponent::GetProperty(long long entityId, const std::string& path, std::string& value)
     {
         return server_.GetProperty(entityId, path, value);

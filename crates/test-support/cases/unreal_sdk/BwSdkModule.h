@@ -31,6 +31,9 @@ namespace bw
                          const std::string& method,
                          const std::vector<std::string>& parameters,
                          std::string& answer) = 0;
+        virtual bool SyncProperty(long long entityId,
+                                  const std::string& path,
+                                  const std::string& value) = 0;
         virtual bool GetProperty(long long entityId,
                                  const std::string& path,
                                  std::string& value) = 0;
@@ -53,6 +56,10 @@ namespace bw
         RpcResult Rpc(long long entityId,
                       const std::string& method,
                       const std::vector<std::string>& parameters);
+
+        /// Sync one property by its entity and path; a logged-out component
+        /// refuses.
+        bool SyncProperty(long long entityId, const std::string& path, const std::string& value);
 
         /// Read one property by its entity and path.
         bool GetProperty(long long entityId, const std::string& path, std::string& value);

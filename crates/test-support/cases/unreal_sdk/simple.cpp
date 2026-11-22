@@ -42,12 +42,26 @@ namespace
             return true;
         }
 
+        bool SyncProperty(long long entityId,
+                          const std::string& path,
+                          const std::string& value) override
+        {
+            entity_ = entityId;
+            sync_path_ = path;
+            sync_value_ = value;
+            syncs_ = 1;
+            return true;
+        }
+
         long long logins_ = 0;
         long long logouts_ = 0;
         long long rpcs_ = 0;
+        long long syncs_ = 0;
         long long entity_ = 0;
         std::string method_;
         std::string path_;
+        std::string sync_path_;
+        std::string sync_value_;
     };
 }
 
@@ -67,13 +81,19 @@ int main()
     const bool served = component.GetProperty(42, "hp", value);
     std::printf("PROPERTY hp=%s\n", served ? value.c_str() : "<none>");
 
+    const bool synced = component.SyncProperty(42, "position.x", "1.5");
+    std::printf("SYNC %s\n", synced ? "ok" : "refused");
+
     component.Logout();
     std::printf("LOGOUT ok\n");
 
     // The stand-in must have seen exactly one login, one logout, the RPC's
-    // two parameters, its entity and the property path.
+    // two parameters, the sync, its entity, the property path and the sync
+    // value.
     return server.logins_ == 1 && server.logouts_ == 1 && server.rpcs_ == 2 &&
-                   server.entity_ == 42 && server.method_ == "heal" && server.path_ == "hp"
+                   server.syncs_ == 1 && server.entity_ == 42 && server.method_ == "heal" &&
+                   server.path_ == "hp" && server.sync_path_ == "position.x" &&
+                   server.sync_value_ == "1.5"
                ? 0
                : 1;
 }

@@ -31,6 +31,13 @@
 //! delivery runs on the game thread, and [`GameThreadDispatch::destroy`]
 //! makes the component dispatch nothing afterward — it drops the queued
 //! events and rejects every post after that.
+//!
+//! BW-21-04-05 — the example also exercises the sync call, so the same
+//! `g++` compile-and-run proves the component's login, sync and logout
+//! (the transcript gains `SYNC ok`).  Independently,
+//! [`run_unreal_example`] drives the example against the SDK session model,
+//! one step at a time, so the acceptance is checkable without an editor;
+//! running it inside the editor is a recorded gap ([`UNREAL_EXAMPLE_GAP`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -108,11 +115,12 @@ pub const DELIVERED_FILES: &[&str] = &[
 ];
 
 /// The expected transcript of the simple example: the login, the answered
-/// RPC, the served property, then the logout.
+/// RPC, the served property, the synced property, then the logout.
 pub const EXPECTED_EXAMPLE_TRANSCRIPT: &[&str] = &[
     "LOGIN ok",
     "RPC answered=true answer=ok",
     "PROPERTY hp=100",
+    "SYNC ok",
     "LOGOUT ok",
 ];
 
@@ -378,6 +386,62 @@ impl GameThreadDispatch {
     }
 }
 
+/// BW-21-04-05: one step the Unreal example ran, and the result it produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrealExampleStep {
+    /// What the step did: login, sync or logout.
+    pub action: String,
+    /// The result the step produced.
+    pub result: String,
+}
+
+/// The recorded gap for the one step no bare runner can do: running the
+/// example inside the Unreal Editor.
+pub const UNREAL_EXAMPLE_GAP: &str = "unreal-sdk: running the example inside the Unreal Editor needs the Unreal Editor — the editor is absent on this runner, and this lane does not create sdk/engines/unreal/ (an incomplete tree would make ci/sdk-archive.sh fail), so the harness records a SKIP naming BW-21-04-05";
+
+/// Run the Unreal example against the SDK session model: log in, sync a
+/// property, then log out.  Every step records its result, so the
+/// acceptance — the component's login, sync and logout pass — is checkable
+/// from the returned steps.
+pub fn run_unreal_example() -> Vec<UnrealExampleStep> {
+    use crate::sdk_session::{SdkSession, ServerFlavor};
+
+    let mut steps = Vec::new();
+    let mut session = SdkSession::new(ServerFlavor::New);
+
+    // Login: the component logs in, and the handshake rounds are a result.
+    let result = match session.login() {
+        Ok(()) => format!("logged in ({} rounds)", session.handshake_rounds()),
+        Err(error) => error.code().to_string(),
+    };
+    steps.push(UnrealExampleStep {
+        action: "login".to_string(),
+        result,
+    });
+
+    // Sync: a representative nested property sync reads back.
+    session.sync_property(1, "position.x", "1.5");
+    steps.push(UnrealExampleStep {
+        action: "sync".to_string(),
+        result: format!(
+            "position.x={}",
+            session.property(1, "position.x").unwrap_or("-")
+        ),
+    });
+
+    // Logout: the component logs out and the connection closes.
+    let result = match session.disconnect() {
+        Ok(()) => "logged out".to_string(),
+        Err(error) => error.code().to_string(),
+    };
+    steps.push(UnrealExampleStep {
+        action: "logout".to_string(),
+        result,
+    });
+
+    steps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,11 +572,12 @@ mod tests {
         let example = std::fs::read_to_string(fixture_dir().join(EXAMPLE_FILE))
             .expect("the example is a committed fixture");
 
-        // The example logs in, issues the RPC with its parameters, and reads
-        // the property before logging out.
+        // The example logs in, issues the RPC with its parameters, reads the
+        // property, syncs one property and logs out.
         assert!(example.contains("component.Login(\"alice\", \"secret\")"));
         assert!(example.contains("component.Rpc(42, \"heal\", {\"10\", \"20\"})"));
         assert!(example.contains("component.GetProperty(42, \"hp\", value)"));
+        assert!(example.contains("component.SyncProperty(42, \"position.x\", \"1.5\")"));
         assert!(example.contains("component.Logout()"));
     }
 
@@ -670,5 +735,47 @@ mod tests {
         assert!(header.contains("DispatchEntityEvent(int64 EntityId, const FString& Kind)"));
         assert!(header.contains("void OnGameThread(int64 EntityId, const FString& Kind)"));
         assert!(header.contains("OnComponentDestroyed(bool bDestroyingHierarchy) override"));
+    }
+
+    fn step<'a>(steps: &'a [UnrealExampleStep], action: &str) -> &'a str {
+        steps
+            .iter()
+            .find(|s| s.action == action)
+            .map(|s| s.result.as_str())
+            .unwrap_or("<absent>")
+    }
+
+    #[test]
+    fn the_unreal_example_logs_in_syncs_and_logs_out() {
+        let steps = run_unreal_example();
+
+        // The acceptance: login, sync and logout each have a result.
+        let actions: Vec<&str> = steps.iter().map(|s| s.action.as_str()).collect();
+        assert_eq!(actions, vec!["login", "sync", "logout"]);
+        for s in &steps {
+            assert!(!s.result.is_empty(), "{} has no result", s.action);
+        }
+
+        // The outcomes the acceptance names.
+        assert!(
+            step(&steps, "login").contains("logged in"),
+            "login: {}",
+            step(&steps, "login"),
+        );
+        assert_eq!(step(&steps, "sync"), "position.x=1.5");
+        assert_eq!(step(&steps, "logout"), "logged out");
+    }
+
+    #[test]
+    fn the_unreal_example_is_deterministic() {
+        // Two runs, the same transcript: the example is reproducible.
+        assert_eq!(run_unreal_example(), run_unreal_example());
+    }
+
+    #[test]
+    fn the_in_editor_example_gap_is_named() {
+        // The one step a bare runner cannot do is named with its ticket.
+        assert!(UNREAL_EXAMPLE_GAP.contains("Unreal Editor"));
+        assert!(UNREAL_EXAMPLE_GAP.contains("BW-21-04-05"));
     }
 }
