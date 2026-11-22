@@ -260,7 +260,11 @@
   - 双方可解码（**acceptance 达成**）：**参考夹具→端口**——端口 `read_compressed` 解码该 35 字节夹具，`remaining`=110、`read_string`=原 payload（Rust 测试 `reference_zip_fixture_decodes`）；**端口→参考**——端口 `CompressedWriter` 同 payload 得 `[6e][2f][78 01 …]`（srcLen=110、dstLen=47，miniz 压缩但同 zlib 格式），**编译** 参考 ZipIStream 实跑解码该端口产物，`ref_decoded_ok=yes`（109 字节全等）。
   - 结果：`cargo test -p foundation --lib` **142/142 绿**（新增 `compressed.rs` 3 测试：参考夹具解码、端口往返+线形断言、三守卫）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用依赖警告系工作区既有、非本项）；`rustfmt` 绿。
   - 证据：crates/foundation/src/compressed.rs 新建（`CompressedWriter`=ZipOStream 冲刷形、`BinaryStream::read_compressed`=ZipIStream init 形、`DEFAULT_COMPRESSION_LEVEL`/`WORST_CASE_EXPANSION` 常量）+ stream.rs 增 `StreamError::CorruptData` + foundation/Cargo.toml 增 flate2（rust_backend，同 resources）。
-- [ ] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
+- [x] **BW-01-02-05 实现截断和越界报告**（commit b3e6e4c）。**验收** 异常输入产生同类流错误。
+  - 语义（逐条对照参考源码）：参考 `memory_stream.ipp` `MemoryIStream::retrieve(n)` 越读时**读游标钳到末尾**（`pCurr_ = pEnd_`）+ 置 `error_`，≤`BS_BUFF_MAX_SIZE`(=2048) 返回静态 `errBuf`、更大返回 NULL（两臂同置错）——端口 `take` 同钳制+同置错、以 `Err(Truncated)` 呈现两臂（不递垃圾缓冲）；参考 `operator>>` 字符串的 `retrieve(length)` 路径同置错——端口 `read_string` 长度超余返回 `Truncated`；参考 `writePackedInt` 对 `value >= 2^24` 走 `MF_ASSERT`——端口以 `PackedIntTooLarge` 报错不杀进程（BW-02-02-02 同口径先例）。
+  - 有意偏离（两条，如实登记）：① 参考字符串越读把 `errBuf` 垃圾/不完整内容赋进 `str`（仅长度>2048 才不赋值），端口 Result 面直接报错不产垃圾；② 参考 `peek` 到末尾会置 `error_`（副作用毒化），端口 `peek(&self)` 只读、以 `None` 示尽不置错。
+  - 结果：`cargo test -p foundation --lib` **143/143 绿**（stream 23/23，新增 `truncation_and_bounds_report_like_the_reference`：定宽越读钳制+置错+后续同败、2048 边界两侧同 `Truncated`、字符串长度超余 `Truncated`、`MAX_PACKED_INT+1` → `PackedIntTooLarge`）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用依赖警告系工作区既有、非本项）；`rustfmt` 绿。
+  - 证据：crates/foundation/src/stream.rs 新增 `truncation_and_bounds_report_like_the_reference`；`STREAM_ERROR_BUFFER_MAX=2048` 对齐参考 `BS_BUFF_MAX_SIZE`（binary_stream.hpp:14）；错误状态机（`has_error`/`at_end`/后续读取同败）与参考 `error_` 语义一致。
 
 #### BW-01-03 DataSection 和资源路径
 
