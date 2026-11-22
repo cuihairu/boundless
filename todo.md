@@ -122,7 +122,7 @@
 - [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
 - [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
 - [x] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
-- [ ] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
+- [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。`c872783` 新增 `ci/fullstack-compare.sh`（BW-00-04-04：同一输入喂原版栈与新版栈、各留证据；`entitydef` 场景双份现场产出，`protocol`/`callbacks` 场景记录参考侧并点名缺失的新版生产者；`self-test` 植入偏差判 FAIL、干净对判 PASS），接线 `ci/changes.sh` 新 `fullstack` lane + `ci.yml` 新 `fullstack` job 与 harness 自证；证据 `docs/review/bw00-04-04-fullstack-comparison.md`。**验收实测**：full_def/service_def/entity_index 三棵 fixture res 树，参考 `process_defs`（`-m process_defs_dump -f dump -p docs/review/tools -r <fixture> -r <game/res/bigworld>`）与新版 `process_defs`（`-r <fixture>`）各自产出 JSON，**逐字节 ref==new==oracle**（sha256 `cdbc9584…`/`f77b6b14…`/`621b37f0…`，与 BW-04-04-03 oracle 一致）；参考二进制在 dump 写盘后 teardown 以 SIGABRT/SIGSEGV 退出（rc 139/134），已登记为参考工具行为、按证据字节判定；protocol 8 件+callbacks 1 件参考证据已记录、新版侧点名缺失生产者（SKIP 不虚勾）；`ci/fullstack-compare.sh self-test` 双绿；workspace `cargo test --offline` 26 ok 0 failed。
 - [ ] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
 - [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
 
