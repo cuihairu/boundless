@@ -22,6 +22,7 @@ use crate::misc::{SEQ_NULL, SeqNum, SeqNumAllocator};
 use crate::network_interface::ChannelRef;
 use crate::packet::{HEADER_SIZE, Packet, flags};
 use crate::request_manager::{ReplyOrder, RequestManager};
+use crate::udp_channel::UDPChannel;
 
 /// `ReliableTypeEnum` (bundle.hpp): the three reliability levels a message
 /// can ask for. `RELIABLE_PASSENGER` messages only ride along when the
@@ -751,14 +752,17 @@ impl UDPBundle {
     }
 
     /// `preparePackets`: fill in all the footers that are left to the
-    /// bundle and stamp sequence numbers. Off-channel form: the channel
-    /// branches (`pChannel->writeFlags`/`writeFooter`, channel sequence
-    /// numbers and resend timers) are BW-02-03-02/03/04 seams.
+    /// bundle and stamp sequence numbers, on a channel when one is given.
+    /// The channel's part is the flags and footer of BW-02-03-03, the
+    /// sequence numbers of that window, and the resend timers the window
+    /// keeps. The reliable-order records the reference gathers for external
+    /// piggybacks are BW-02-03-04.
     ///
-    /// Returns the first packet that could not get a resend timer — always
-    /// `None` off-channel, where there is no send window to overflow.
+    /// Returns the first packet that could not get a resend timer — `None`
+    /// off-channel, and off-channel when nothing overflowed.
     pub fn prepare_packets(
         &mut self,
+        channel: Option<&UDPChannel>,
         seq_num_allocator: &mut SeqNumAllocator,
         should_use_checksums: bool,
     ) -> Option<Rc<RefCell<Packet>>> {
@@ -782,9 +786,14 @@ impl UDPBundle {
 
             self.write_flags(&p);
 
-            if p.borrow().has_flags(flags::IS_RELIABLE) || p.borrow().has_flags(flags::IS_FRAGMENT)
-            {
-                // (the reference also does this for an external channel)
+            if let Some(channel) = channel {
+                channel.write_flags(&p);
+            }
+
+            let needs_sequence_number = p.borrow().has_flags(flags::IS_RELIABLE)
+                || p.borrow().has_flags(flags::IS_FRAGMENT)
+                || channel.is_some_and(|channel| channel.is_external());
+            if needs_sequence_number {
                 p.borrow_mut().reserve_footer(4);
                 p.borrow_mut().enable_flags(flags::HAS_SEQUENCE_NUMBER);
             }
@@ -808,17 +817,27 @@ impl UDPBundle {
             // Piggybacks go first so that they can be stripped and the
             // rest of the packet can be dealt with as normal (BW-02-03-04).
 
-            // Off-channel acking: we only ever have one ack.
-            if p.borrow().has_flags(flags::HAS_ACKS) {
+            if let Some(channel) = channel {
+                channel.write_footer(&p);
+            } else if p.borrow().has_flags(flags::HAS_ACKS) {
+                // Off-channel acking: we only ever have one ack.
                 p.borrow_mut().pack_footer_u8(1);
                 let ack = self.get_ack();
                 p.borrow_mut().pack_footer_u32(ack);
             }
 
             // Add the sequence number. Off-channel, the nub's allocator
-            // numbers every packet that asks for one.
+            // numbers every packet that asks for one; a reliable packet on a
+            // channel uses that channel's window instead.
             if p.borrow().has_flags(flags::HAS_SEQUENCE_NUMBER) {
-                let seq = seq_num_allocator.get_next();
+                let is_reliable = p.borrow().has_flags(flags::IS_RELIABLE);
+                let seq = if channel.is_some() && is_reliable {
+                    channel
+                        .map(|channel| channel.use_next_sequence_id())
+                        .unwrap()
+                } else {
+                    seq_num_allocator.get_next()
+                };
                 p.borrow_mut().set_seq(seq);
                 p.borrow_mut().pack_footer_u32(seq);
 
@@ -856,13 +875,20 @@ impl UDPBundle {
                 p.borrow_mut().write_checksum(at);
             }
 
-            // set up the reliable machinery — the channel's resend window
-            // (BW-02-03-02/03/04); off-channel there is none.
+            // Set up the reliable machinery: remember the packet in the
+            // channel's send window, which is what resends it (BW-02-03-04).
+            if p.borrow().has_flags(flags::IS_RELIABLE)
+                && let Some(channel) = channel
+            {
+                let seq = p.borrow().seq();
+                if !channel.add_resend_timer(seq, &p) {
+                    first_overflow_packet.get_or_insert(p.clone());
+                }
+            }
 
             node = p.borrow().next();
         }
 
-        let _ = &mut first_overflow_packet;
         first_overflow_packet
     }
 }

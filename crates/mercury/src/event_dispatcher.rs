@@ -63,8 +63,9 @@ pub fn real_clock() -> u64 {
     platform::clock::monotonic_now_micros().micros()
 }
 
-/// `stampsPerSecond()`: microsecond stamps across the whole dispatcher.
-const STAMPS_PER_SECOND: u64 = 1_000_000;
+/// `stampsPerSecond()`: microsecond stamps across the whole dispatcher. The
+/// channels read it for their `roundTripTime_` and resend delays.
+pub const STAMPS_PER_SECOND: u64 = 1_000_000;
 
 /// `stampsPerSecondD()`.
 const STAMPS_PER_SECOND_D: f64 = STAMPS_PER_SECOND as f64;

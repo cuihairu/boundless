@@ -768,7 +768,7 @@ mod tests {
 
         let mut allocator = SeqNumAllocator::new(0);
         assert!(
-            bundle.prepare_packets(&mut allocator, true).is_none(),
+            bundle.prepare_packets(None, &mut allocator, true).is_none(),
             "off-channel there is no resend window to overflow"
         );
         assert_eq!(bundle.num_data_units(), 1, "it all fits one packet");
@@ -828,7 +828,7 @@ mod tests {
         bundle.finalise();
 
         let mut allocator = SeqNumAllocator::new(0);
-        assert!(bundle.prepare_packets(&mut allocator, true).is_none());
+        assert!(bundle.prepare_packets(None, &mut allocator, true).is_none());
         let num_packets = bundle.num_data_units();
         assert!(
             num_packets > 1,
@@ -894,7 +894,7 @@ mod tests {
         bundle.add_reply_orders_to(&manager, None);
 
         let mut allocator = SeqNumAllocator::new(0);
-        assert!(bundle.prepare_packets(&mut allocator, true).is_none());
+        assert!(bundle.prepare_packets(None, &mut allocator, true).is_none());
         assert_eq!(bundle.num_data_units(), 1);
 
         let (sender, listener, dest) = loopback();
@@ -931,7 +931,7 @@ mod tests {
         bundle.finalise();
 
         let mut allocator = SeqNumAllocator::new(0);
-        assert!(bundle.prepare_packets(&mut allocator, true).is_none());
+        assert!(bundle.prepare_packets(None, &mut allocator, true).is_none());
 
         let (sender, listener, dest) = loopback();
         let head = send_and_receive(&sender, &listener, dest, bundle.first_packet().unwrap());
