@@ -19,6 +19,7 @@ pub mod config_fixture;
 pub mod cpu_sampler;
 pub mod cross_reference;
 pub mod dap_session;
+pub mod dap_targets;
 pub mod diagnostic;
 pub mod entitydef_completion;
 pub mod entitydef_definition;
