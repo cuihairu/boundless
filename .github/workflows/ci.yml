@@ -564,6 +564,9 @@ jobs:
       - name: Map the engine library and server targets
         run: ci/map-coverage.sh
 
+      - name: Map the client and tool targets
+        run: CI_MAP_TASKS=BW-00-05-03 ci/map-coverage.sh
+
       - name: Record the reference windows baseline
         run: ci/reference-winbaseline.sh
 

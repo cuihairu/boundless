@@ -89,22 +89,18 @@ def expand_braces(text):
 def scope_dir(token):
     """A scope token normalized to a static source directory, or None.
 
-    File names and glob tails drop to their directory (`lib/server/bwservice.hpp`
+    A bare root is a scope (`tools/` -> tools, `examples/` -> examples); file
+    names and glob tails drop to their directory (`lib/server/bwservice.hpp`
     -> lib/server, `server/dbapp/*login*` -> server/dbapp); tokens outside the
     six source roots (links, bare file names, ../ paths) are not scopes.
     """
-    t = token.strip().strip("`").rstrip("/")
-    if "/" not in t:
+    t = token.strip().rstrip("/")
+    if t.split("/", 1)[0] not in ROOTS:
         return None
-    root = t.split("/", 1)[0]
-    if root not in ROOTS:
-        return None
-    last = t.rsplit("/", 1)[1]
-    if not last or "." in last or "*" in last:
+    last = t.rsplit("/", 1)[1] if "/" in t else ""
+    if last and ("." in last or "*" in last):
         t = t.rsplit("/", 1)[0]
-        if not t or t.split("/", 1)[0] not in ROOTS:
-            return None
-    return t
+    return t or None
 
 
 def parse_scopes(todo_path):

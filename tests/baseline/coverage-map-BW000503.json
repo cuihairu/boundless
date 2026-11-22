@@ -1,0 +1,308 @@
+{
+  "tasks": [
+    "BW-00-05-03"
+  ],
+  "rows": [
+    {
+      "original_path": "bwclient (client)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-11",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "texformat_converter (tools/asset_pipeline/converters/texformat_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "texture_converter (tools/asset_pipeline/converters/texture_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "bsp_converter (tools/asset_pipeline/converters/bsp_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "primitive_processor (tools/asset_pipeline/converters/primitive_processor)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "visual_processor (tools/asset_pipeline/converters/visual_processor)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "space_converter (tools/asset_pipeline/converters/space_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "hierarchical_config_converter (tools/asset_pipeline/converters/hierarchical_config_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "effect_converter (tools/asset_pipeline/converters/effect_converter)",
+      "kind": "asset pipeline dll",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "dependency (tools/asset_pipeline/dependency)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "dependency_unit_test (tools/asset_pipeline/dependency/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "dependency_unit_test (tools/asset_pipeline/dependency/unit_test)",
+      "kind": "tool test",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "compiler (tools/asset_pipeline/compiler)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "test_compiler (tools/asset_pipeline/compiler/test_compiler)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "test_converter (tools/asset_pipeline/compiler/test_converter)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "compiler_unit_test (tools/asset_pipeline/compiler/unit_test)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "compiler_unit_test (tools/asset_pipeline/compiler/unit_test)",
+      "kind": "tool test",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "discovery (tools/asset_pipeline/discovery)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "conversion (tools/asset_pipeline/conversion)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "particle_editor (tools/particle_editor)",
+      "kind": "tool",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "modeleditor (tools/modeleditor)",
+      "kind": "tool",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "worldeditor (tools/worldeditor)",
+      "kind": "tool",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "jit_compiler (tools/jit_compiler)",
+      "kind": "asset pipeline exe",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "modeleditor_core (tools/modeleditor_core)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "offline_processor (tools/offline_processor)",
+      "kind": "tool",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "assetprocessor (tools/assetprocessor)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "bwlauncher (tools/bwlauncher)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "tools_common (tools/common)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "batch_compiler (tools/batch_compiler)",
+      "kind": "asset pipeline exe",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "navgen (tools/navgen)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "process_defs (tools/process_defs)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-04,BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    },
+    {
+      "original_path": "res_packer (tools/res_packer)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-13",
+      "mapped": false,
+      "how": "no port counterpart; no BW-xx source scope covers it"
+    }
+  ],
+  "count": 32,
+  "to_crate": 0,
+  "to_ticket": 32,
+  "bare": 0,
+  "schema": [
+    "original_path",
+    "kind",
+    "enable_condition",
+    "index",
+    "ticket",
+    "mapped",
+    "how"
+  ]
+}

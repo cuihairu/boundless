@@ -23,9 +23,20 @@ set -uo pipefail
 
 MODE="${1:-all}"
 cur_out() { printf '%s' "${CI_MAP_OUT:-$CI_OUT}"; }
-map_dir() { printf '%s/coverage-map' "$(cur_out)"; }
 cur_port() { printf '%s' "${CI_MAP_PORT_ROOT:-$REPO_ROOT}"; }
 cur_todo() { printf '%s' "${CI_MAP_TODO:-$REPO_ROOT/todo.md}"; }
+# The category suffix keys both the out dir and the snapshot, so the
+# BW-00-05-02/03/04 records each keep their own file and anchor.
+map_tag() { # the category tag, from the first mapped task
+    local t
+    for t in $(map_tasks); do
+        printf '%s' "$t" | tr -d '.-'
+        return
+    done
+    printf 'BW000502'
+}
+map_dir() { printf '%s/coverage-map-%s' "$(cur_out)" "$(map_tag)"; }
+map_snapshot() { printf '%s/coverage-map-%s.%s' "$REPO_ROOT/tests/baseline" "$(map_tag)" "$1"; }
 
 # The ledger the map reads: the refbase job's fresh run when it is present
 # (coverage-ledger ran just before), else the committed snapshot.
@@ -86,10 +97,11 @@ run_all() {
     # The committed snapshot is the anchor; a map that grows as later mapping
     # items land is a note, not a failure.
     local f
-    for f in coverage-map.json coverage-map.tsv; do
-        if [ -f "$REPO_ROOT/tests/baseline/$f" ] && [ -f "$out_dir/$f" ] \
-            && ! cmp -s "$REPO_ROOT/tests/baseline/$f" "$out_dir/$f"; then
-            ci_note "the committed tests/baseline/$f differs from this run — snapshot-time anchor, not a failure"
+    for f in json tsv; do
+        if [ -f "$(map_snapshot "$f")" ] \
+            && [ -f "$out_dir/coverage-map.$f" ] \
+            && ! cmp -s "$(map_snapshot "$f")" "$out_dir/coverage-map.$f"; then
+            ci_note "the committed $(basename "$(map_snapshot "$f")") differs from this run — snapshot-time anchor, not a failure"
         fi
     done
 
@@ -150,11 +162,11 @@ self_test() {
         "$0" >/dev/null 2>&1
     rc=$?
     if [ "$rc" -eq 0 ] \
-        && grep -q '^cstdmf (lib/cstdmf)	library	crates/foundation	BW-01	' "$r/out/coverage-map/coverage-map.tsv" \
-        && grep -q '^terrain (lib/terrain)	library	none yet	BW-10	' "$r/out/coverage-map/coverage-map.tsv" \
-        && grep -q '^baseapp (server/baseapp)	executable	apps/server	BW-05	' "$r/out/coverage-map/coverage-map.tsv" \
-        && grep -q '^moo (lib/moo)	library	none yet	none	' "$r/out/coverage-map/coverage-map.tsv" \
-        && [ "$(grep -c '^gizmo' "$r/out/coverage-map/coverage-map.tsv")" -eq 0 ]; then
+        && grep -q '^cstdmf (lib/cstdmf)	library	crates/foundation	BW-01	' "$r/out/coverage-map-BW000502/coverage-map.tsv" \
+        && grep -q '^terrain (lib/terrain)	library	none yet	BW-10	' "$r/out/coverage-map-BW000502/coverage-map.tsv" \
+        && grep -q '^baseapp (server/baseapp)	executable	apps/server	BW-05	' "$r/out/coverage-map-BW000502/coverage-map.tsv" \
+        && grep -q '^moo (lib/moo)	library	none yet	none	' "$r/out/coverage-map-BW000502/coverage-map.tsv" \
+        && [ "$(grep -c '^gizmo' "$r/out/coverage-map-BW000502/coverage-map.tsv")" -eq 0 ]; then
         ci_pass selftest-map-indexes "each disposition is indexed (crate/ticket/bare) and out-of-category rows stay out"
     else
         ci_fail selftest-map-indexes "planted targets were not indexed as expected: rc=$rc $(grep 'map-record' "$M" 2>/dev/null | head -1)"
