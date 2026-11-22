@@ -113,6 +113,37 @@ unsafe fn as_float(object: *mut capi::PyObject) -> Option<f32> {
     }
 }
 
+/// `Script::setData(obj, float&)` (`script.cpp:1840-1877`): a float or an
+/// int converts, anything else is refused. Unlike [`as_float`] this does not
+/// accept an object with only a `__float__`, the reference's two accepted
+/// types; an overflowing int is refused too, the reference ending in the
+/// same `TypeError`.
+///
+/// # Safety
+///
+/// `object` must be a borrowed object the interpreter handed out, or null.
+unsafe fn as_script_float(object: *mut capi::PyObject) -> Option<f32> {
+    if object.is_null() {
+        return None;
+    }
+    // SAFETY: the conversion reads the borrowed object; a failed `PyLong`
+    // read leaves an error the caller replaces with its own.
+    unsafe {
+        if capi::py_float_check(object) {
+            return Some(capi::PyFloat_AsDouble(object) as f32);
+        }
+        if capi::py_long_check(object) {
+            let value = capi::PyLong_AsLong(object);
+            if !capi::PyErr_Occurred().is_null() {
+                capi::PyErr_Clear();
+                return None;
+            }
+            return Some(value as f32);
+        }
+    }
+    None
+}
+
 /// One vector operand out of a script object, `Script::setData(obj, Vector)`
 /// (`script.cpp:1905`): a same-width `PyVector` or a tuple of that many
 /// floats. A single float and a list are both refused, exactly what the
@@ -2536,8 +2567,9 @@ mod v4provider {
     static OUTPUT: Mutex<BTreeMap<usize, Output>> = Mutex::new(BTreeMap::new());
 
     /// `Vector4Provider::Check` (`script.hpp:585`): any object whose type is
-    /// `Vector4Provider` or one of its subclasses.
-    fn provider_check(object: *mut capi::PyObject) -> bool {
+    /// `Vector4Provider` or one of its subclasses. The keyframe converter
+    /// calls it on a coerced candidate, so it leaves the module.
+    pub(super) fn provider_check(object: *mut capi::PyObject) -> bool {
         let base = BASE_ADDR.load(Ordering::SeqCst);
         if object.is_null() || base == 0 {
             return false;
@@ -3003,6 +3035,378 @@ mod v4product {
     }
 }
 
+/// The `Math.Vector4Animation` provider (`script_math.cpp:3425-3673`): the
+/// keyframed animation between `Vector4Provider`s.
+///
+/// The reference's `output` holds the first keyframe before the cycle
+/// reaches it, the last after it passes, and lerps between the two
+/// neighbours otherwise (`:3640-3671`); the port walks the same list once,
+/// reads the `oit` output before the `nit` output, and lerps with the
+/// reference's `XPVec4Lerp`. The `tick` advance is not ported -- a script
+/// sets the read-write `time` itself, the reference's auto-tick is the
+/// per-frame delta the rest of the math surface leaves alone too.
+mod v4animation {
+    use super::*;
+
+    /// The instance body beyond the `PyObject` header: the keyframe list and
+    /// the two floats of the reference's `Vector4Animation`.
+    #[repr(C)]
+    struct AnimationBody {
+        header: capi::PyObject,
+        keyframes: Vec<(f32, *mut capi::PyObject)>,
+        time: f32,
+        duration: f32,
+    }
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<AnimationBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Animation` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// The stored keyframe list of an instance.
+    ///
+    /// # Safety
+    ///
+    /// `self_` is a borrowed `Vector4Animation` instance, the type table's
+    /// own handler receiver.
+    unsafe fn keyframes_of<'a>(self_: *mut capi::PyObject) -> &'a Vec<(f32, *mut capi::PyObject)> {
+        // SAFETY: the receiver is the animation body.
+        unsafe { &*std::ptr::addr_of!((*self_.cast::<AnimationBody>()).keyframes) }
+    }
+
+    /// The output of a held provider, the reference's virtual call.
+    fn held_output(provider: *mut capi::PyObject) -> [f32; 4] {
+        v4provider::output_of(provider).unwrap_or([0.0; 4])
+    }
+
+    /// `Vector4Animation::output` (`script_math.cpp:3640-3671`).
+    fn animation_output(object: *mut capi::PyObject) -> [f32; 4] {
+        let keyframes = unsafe { keyframes_of(object) };
+        if keyframes.is_empty() {
+            return [0.0; 4];
+        }
+        // The reference walks the list once: `nit` is the first keyframe at
+        // or after `time`, `oit` the one before it (`:3652-3657`). The
+        // strict `<` leaves a keyframe at exactly `time` as the `nit` that
+        // lerps to 1, and a time before the first one unadvanced.
+        let time = unsafe { std::ptr::addr_of!((*object.cast::<AnimationBody>()).time).read() };
+        let mut nit = 0;
+        while nit < keyframes.len() && keyframes[nit].0 < time {
+            nit += 1;
+        }
+        if nit == 0 {
+            // `nit == oit`: before the first keyframe, its value.
+            held_output(keyframes[0].1)
+        } else if nit == keyframes.len() {
+            // after the last keyframe, its value.
+            held_output(keyframes[nit - 1].1)
+        } else {
+            // between `oit` and `nit`: the reference reads `oit` first,
+            // then `nit`, and lerps with `XPVec4Lerp`.
+            let oit = nit - 1;
+            let ov = held_output(keyframes[oit].1);
+            let nv = held_output(keyframes[nit].1);
+            let t = (time - keyframes[oit].0) / (keyframes[nit].0 - keyframes[oit].0);
+            let mut val = [0.0f32; 4];
+            for index in 0..4 {
+                val[index] = ov[index] + (nv[index] - ov[index]) * t;
+            }
+            val
+        }
+    }
+
+    /// `PY_RW_ATTRIBUTE_DECLARE( time_, time )` read: `Script::getData(float)`.
+    unsafe extern "C" fn time_get(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the receiver is the animation body.
+        let time = unsafe { std::ptr::addr_of!((*self_.cast::<AnimationBody>()).time).read() };
+        unsafe { capi::PyFloat_FromDouble(time as f64) }
+    }
+
+    /// `time` write, the reference's own `pySet_time`: `Script::setData` for a
+    /// float.
+    unsafe extern "C" fn time_set(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let Some(v) = (unsafe { as_script_float(value) }) else {
+            type_error("time must be set to a float");
+            return -1;
+        };
+        // SAFETY: the receiver is the animation body.
+        unsafe { std::ptr::addr_of_mut!((*self_.cast::<AnimationBody>()).time).write(v) };
+        0
+    }
+
+    /// `duration` read, `PY_RW_ATTRIBUTE_DECLARE( duration_, duration )`.
+    unsafe extern "C" fn duration_get(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the receiver is the animation body.
+        let duration =
+            unsafe { std::ptr::addr_of!((*self_.cast::<AnimationBody>()).duration).read() };
+        unsafe { capi::PyFloat_FromDouble(duration as f64) }
+    }
+
+    /// `duration` write, the reference's own `pySet_duration`.
+    unsafe extern "C" fn duration_set(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let Some(v) = (unsafe { as_script_float(value) }) else {
+            type_error("duration must be set to a float");
+            return -1;
+        };
+        // SAFETY: the receiver is the animation body.
+        unsafe { std::ptr::addr_of_mut!((*self_.cast::<AnimationBody>()).duration).write(v) };
+        0
+    }
+
+    /// The reference passes `s_varNameValue_` ("An item of a PySTLSequence
+    /// of <the pair's mangled type name>", `stl_to_py.hpp:316-335`) to the
+    /// keyframe converter's `%s`; the port spells the list the mangled name
+    /// stood for.
+    const KEYFRAME_ERROR: &str = "An item of a PySTLSequence of keyframes must be set to a tuple \
+                                  of a float and a Vector4Provider";
+
+    /// The keyframe converter (`script_math.cpp:3433-3454`): a 2-tuple of a
+    /// float and a `Vector4Provider`. The provider is `coerce`d, so a
+    /// `Vector4` or a tuple of four floats becomes a `Vector4Basic`; `None`
+    /// is refused too, the reference's `good = (ret == 0) && t.second`. Any
+    /// failure is the one `TypeError`, the reference overwriting the
+    /// sub-converter's own error. The caller owns the returned provider
+    /// reference.
+    ///
+    /// # Safety
+    ///
+    /// `item` is a borrowed object the interpreter handed out, or null.
+    fn as_keyframe(item: *mut capi::PyObject) -> Option<(f32, *mut capi::PyObject)> {
+        // SAFETY: the checks read the borrowed item.
+        if !unsafe { capi::py_tuple_check(item) } || unsafe { capi::PyTuple_Size(item) } != 2 {
+            return None;
+        }
+        let time = unsafe { capi::PyTuple_GetItem(item, 0) };
+        let provider = unsafe { capi::PyTuple_GetItem(item, 1) };
+        let time = (unsafe { as_script_float(time) })?;
+        let coerced = v4provider::coerce(provider);
+        if !v4provider::provider_check(coerced) {
+            if !coerced.is_null() {
+                unsafe { capi::dec_ref(coerced) };
+            }
+            return None;
+        }
+        Some((time, coerced))
+    }
+
+    /// `Script::getData(const PySTLSequenceHolderBase&)` (`stl_to_py.cpp:481`)
+    /// on the keyframes: the list of `(float, Vector4Provider)` tuples. The
+    /// reference returns a live `PySTLSequence` view over the stored vector;
+    /// the port returns a fresh list, which behaves the same for every read
+    /// that does not mutate the returned object in place.
+    unsafe extern "C" fn keyframes_get(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let keyframes = unsafe { keyframes_of(self_) };
+        // SAFETY: the list and its tuple items are fresh references the
+        // setters steal one by one.
+        unsafe {
+            let list = capi::PyList_New(keyframes.len() as capi::PySsize);
+            if list.is_null() {
+                return std::ptr::null_mut();
+            }
+            for (index, (time, provider)) in keyframes.iter().enumerate() {
+                let value = capi::PyFloat_FromDouble(*time as f64);
+                if value.is_null() {
+                    capi::dec_ref(list);
+                    return std::ptr::null_mut();
+                }
+                let tuple = capi::PyTuple_New(2);
+                if tuple.is_null() {
+                    capi::dec_ref(value);
+                    capi::dec_ref(list);
+                    return std::ptr::null_mut();
+                }
+                capi::PyTuple_SetItem(tuple, 0, value);
+                if !provider.is_null() {
+                    capi::inc_ref(*provider);
+                }
+                capi::PyTuple_SetItem(tuple, 1, *provider);
+                capi::PyList_SetItem(list, index as capi::PySsize, tuple);
+            }
+            list
+        }
+    }
+
+    /// `Script::setData(value, PySTLSequenceHolderBase&, "keyframes")`
+    /// (`stl_to_py.cpp:422-478`): a sequence whose items are the keyframe
+    /// converter's `(float, Vector4Provider)` tuples. The whole list is
+    /// converted before it replaces the stored one, so a failed assignment
+    /// leaves the original keyframes intact -- the reference's `cancel`
+    /// restores them the same way, without the reference's dangling re-hold.
+    unsafe extern "C" fn keyframes_set(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        // `PySequence_Check` first, the reference's `%s must be set to a
+        // sequence` arm (`stl_to_py.cpp:437-442`).
+        if unsafe { capi::PySequence_Check(value) } == 0 {
+            type_error("keyframes must be set to a sequence");
+            return -1;
+        }
+        let size = unsafe { capi::PySequence_Size(value) };
+        if size < 0 {
+            // `PySequence_Size` left the error.
+            return -1;
+        }
+        let mut staged: Vec<(f32, *mut capi::PyObject)> = Vec::new();
+        for index in 0..size {
+            let item = unsafe { capi::PySequence_GetItem(value, index) };
+            let ok = if item.is_null() {
+                false
+            } else {
+                let keyframe = as_keyframe(item);
+                unsafe { capi::dec_ref(item) };
+                if let Some(keyframe) = keyframe {
+                    staged.push(keyframe);
+                    true
+                } else {
+                    false
+                }
+            };
+            if !ok {
+                for (_, provider) in staged {
+                    if !provider.is_null() {
+                        unsafe { capi::dec_ref(provider) };
+                    }
+                }
+                type_error(KEYFRAME_ERROR);
+                return -1;
+            }
+        }
+        // Commit: the staged list takes over, releasing the old occupants.
+        let keyframes =
+            unsafe { &mut *std::ptr::addr_of_mut!((*self_.cast::<AnimationBody>()).keyframes) };
+        let old = std::mem::replace(keyframes, staged);
+        for (_, provider) in old {
+            if !provider.is_null() {
+                unsafe { capi::dec_ref(provider) };
+            }
+        }
+        0
+    }
+
+    /// The reference's `Vector4Animation` has no `tp_dealloc` of its own;
+    /// the keyframe providers are released as the C++ member dies, then the
+    /// instance goes back through the type's free function.
+    unsafe extern "C" fn dealloc(self_: *mut capi::PyObject) {
+        // SAFETY: only `Vector4Animation` instances reach its dealloc; the
+        // vector is moved out so its buffer is freed by Rust's allocator as
+        // it is consumed.
+        let keyframes =
+            unsafe { std::ptr::addr_of!((*self_.cast::<AnimationBody>()).keyframes).read() };
+        for (_, provider) in keyframes {
+            if !provider.is_null() {
+                unsafe { capi::dec_ref(provider) };
+            }
+        }
+        // SAFETY: as `provider_dealloc!`.
+        unsafe { capi::PyObject_Free(self_.cast()) };
+    }
+
+    /// A fresh `Math.Vector4Animation`; the caller owns the reference.
+    fn make() -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly an `AnimationBody`; the
+        // fields start at the reference's constructor values
+        // (`script_math.cpp:3666-3671`): an empty keyframe list, zero time
+        // and a one-second duration.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<AnimationBody>()).keyframes).write(Vec::new());
+            std::ptr::addr_of_mut!((*pointer.cast::<AnimationBody>()).time).write(0.0);
+            std::ptr::addr_of_mut!((*pointer.cast::<AnimationBody>()).duration).write(1.0);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `_pyNew`-shape factory of `PY_FACTORY( Vector4Animation, Math )`:
+    /// a fresh animation, the reference's `END` argument list meaning no
+    /// arguments.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Math.Vector4Animation() takes no arguments");
+        }
+        make()
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4Animation".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4Animation` and its
+    /// destruction entry: the keyframe sequence and the two floats, the
+    /// reference's `PY_RW_ATTRIBUTE_DECLARE` pair.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Animation")
+            .base(v4provider::base_addr())
+            .attribute("keyframes", keyframes_get, Some(keyframes_set))
+            .attribute("time", time_get, Some(time_set))
+            .attribute("duration", duration_get, Some(duration_set))
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    /// `TempPyVectorInit` for the animation: the type object, its dispatch
+    /// entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), animation_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4Animation".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -3016,4 +3420,5 @@ pub fn register() {
     let _ = plane::register();
     let _ = v4provider::register();
     let _ = v4product::register();
+    let _ = v4animation::register();
 }

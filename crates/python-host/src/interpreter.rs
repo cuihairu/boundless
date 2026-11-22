@@ -570,6 +570,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_matrix_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_plane_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4providers_behave_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4animation_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -2948,6 +2949,154 @@ __probe = '; '.join(_f) or 'ok'
             assert_eq!(
                 text, "ok",
                 "math vector4 provider behaviour mismatch: {text}"
+            );
+        });
+    }
+
+    /// `Math.Vector4Animation` behaves as the reference's keyframed provider
+    /// does: the `(float, Vector4Provider)` keyframe list drives the `time`
+    /// lerp between the two surrounding keyframes, holding the first before
+    /// the cycle reaches it and the last afterwards, and a failed keyframe
+    /// assignment leaves the stored list intact.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4animation_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def close(a, b):
+    return abs(a - b) < 1e-4
+
+# The factory constructs, and takes no arguments.
+a = Math.Vector4Animation()
+ck(a is not None, 'Vector4Animation constructs')
+ck(type(a).__name__ == 'Vector4Animation', 'the Vector4Animation type')
+ck(raises(TypeError, lambda: Math.Vector4Animation(1)),
+   'factory takes no arguments')
+
+# The constructor defaults, the reference's `time_( 0.f )`,
+# `duration_( 1.f )` and an empty keyframe list.
+ck(a.time == 0.0, 'the default time')
+ck(a.duration == 1.0, 'the default duration')
+ck(a.keyframes == [], 'the default keyframe list')
+
+# An empty animation provides the zero vector.
+zero = a.value
+ck(zero.x == 0.0 and zero.y == 0.0 and zero.z == 0.0 and zero.w == 0.0,
+   'empty animation is the zero vector')
+
+# The keyframes accept a list of (float, provider) tuples; a provider slot
+# takes a tuple of four floats as a Vector4Basic, as the docstring does.
+b = Math.Vector4Animation()
+b.keyframes = [(0.0, (10.0, 0.0, 0.0, 0.0)), (1.0, (0.0, 10.0, 0.0, 0.0))]
+b.duration = 1.0
+ck(len(b.keyframes) == 2, 'the keyframes read back')
+ck(b.keyframes[0][0] == 0.0 and b.keyframes[1][0] == 1.0, 'the keyframe times')
+ck(type(b.keyframes[0][1]).__name__ == 'Vector4Basic', 'a tuple coerces')
+ck(b.keyframes[0][1].value.x == 10.0, 'the coerced keyframe value')
+ck(b.keyframes[0][1] is b.keyframes[0][1], 'reading keeps the same provider')
+
+# A tuple is a sequence too, the reference's PySequence_Check.
+c = Math.Vector4Animation()
+c.keyframes = ((0.0, (1.0, 0.0, 0.0, 0.0)), (2.0, (0.0, 1.0, 0.0, 0.0)))
+ck(len(c.keyframes) == 2, 'a tuple assigns')
+
+# Before the first keyframe the reference holds its value.
+b.time = 0.0
+v = b.value
+ck(v.x == 10.0 and v.y == 0.0, 'before the first keyframe')
+
+# Midway the reference lerps, XPVec4Lerp.
+b.time = 0.5
+v = b.value
+ck(v.x == 5.0 and v.y == 5.0, 'the midpoint lerp')
+
+# At the last keyframe the lerp reaches exactly 1.
+b.time = 1.0
+v = b.value
+ck(v.x == 0.0 and v.y == 10.0, 'at the last keyframe')
+
+# After the last keyframe the reference holds its value.
+b.time = 2.0
+v = b.value
+ck(v.x == 0.0 and v.y == 10.0, 'after the last keyframe')
+
+# The read-write time accepts a float and an int, and refuses other types.
+b.time = 2
+ck(b.time == 2.0, 'an int sets the time')
+ck(raises(TypeError, lambda: setattr(b, 'time', 'x')), 'time wants a float')
+ck(raises(TypeError, lambda: setattr(b, 'duration', None)), 'duration wants a float')
+
+# A provider slot is a provider: an animation can key off another, the
+# reference's Vector4Provider::coerce handing the provider through. At
+# nested time 0.25 the lerp mixes b's current output -- still held after
+# its last keyframe at time 2 -- with the blue keyframe.
+nested = Math.Vector4Animation()
+nested.keyframes = [(0.0, b), (1.0, (0.0, 0.0, 10.0, 0.0))]
+nested.time = 0.25
+v = nested.value
+ck(v.y == 7.5 and v.z == 2.5, 'a provider keyframe feeds the lerp')
+
+# Out-of-order keyframes: the reference walks the list once, so a keyframe
+# at a time before the previous one snaps rather than lerping.
+d = Math.Vector4Animation()
+d.keyframes = [(0.5, (10.0, 0.0, 0.0, 0.0)), (0.1, (0.0, 10.0, 0.0, 0.0)),
+               (1.0, (0.0, 0.0, 10.0, 0.0)), (0.1, (0.0, 0.0, 0.0, 10.0))]
+d.time = 0.05
+ck(d.value.x == 10.0, 'before the first out-of-order keyframe')
+d.time = 0.6
+v = d.value
+ck(close(v.y, 10.0 * 4.0 / 9.0) and close(v.z, 10.0 * 5.0 / 9.0),
+   'the out-of-order neighbours lerp')
+
+# A non-sequence is refused with the reference's message.
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', 5)),
+   'keyframes wants a sequence')
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', 'x')),
+   'a string keyframe item refuses')
+
+# A malformed keyframe is refused, and the failed assignment leaves the
+# stored list intact -- the reference's cancel.
+b.time = 0.5
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [(0.0, (1.0, 2.0, 3.0, 4.0)), (1.0, 5)])),
+   'a keyframe wants a float and a provider')
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [(0.0,)])),
+   'a keyframe wants two items')
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [(0.0, (1.0, 2.0, 3.0, 4.0), 9)])),
+   'a keyframe wants exactly two items')
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [(0.0, None)])),
+   'a keyframe provider cannot be None')
+ck(b.value.y == 5.0, 'the refused assignment kept the keyframes')
+
+# A bad time inside a keyframe refuses too.
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [('x', (1.0, 2.0, 3.0, 4.0))])),
+   'a keyframe time wants a float')
+
+# The keyframe list can be replaced wholesale by a provider-carrying one.
+b.keyframes = [(0.0, (0.0, 0.0, 0.0, 0.0)), (1.0, (10.0, 10.0, 10.0, 10.0))]
+b.time = 0.5
+ck(b.value.x == 5.0, 'a replacement list feeds the lerp')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4animation behaviour mismatch: {text}"
             );
         });
     }

@@ -134,6 +134,30 @@ pub unsafe fn py_list_check(obj: *mut PyObject) -> bool {
     unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyList_Type)) }
 }
 
+/// `PyFloat_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyFloat_Type`). Subtype-aware, so a float subclass passes; the
+/// reference's float converter relies on that.
+///
+/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
+pub unsafe fn py_float_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyFloat_Type)) == 1 }
+}
+
+/// `PyLong_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyLong_Type`). Subtype-aware, so `bool` -- a subclass of `int` -- passes,
+/// exactly as the reference's float converter accepts a truth value.
+///
+/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
+pub unsafe fn py_long_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyLong_Type)) == 1 }
+}
+
 /// `PyBytes_Check`, the C API macro (`PyObject_TypeCheck` against
 /// `&PyBytes_Type`). A `bytes` type cannot be subclassed in the interpreter's
 /// own sense for our purposes, so an exact type match is the same test.
@@ -419,6 +443,8 @@ unsafe extern "C" {
     pub static mut PyTuple_Type: PyTypeObject;
     pub static mut PyList_Type: PyTypeObject;
     pub static mut PyBytes_Type: PyTypeObject;
+    pub static mut PyFloat_Type: PyTypeObject;
+    pub static mut PyLong_Type: PyTypeObject;
 }
 
 unsafe extern "C" {
@@ -540,6 +566,7 @@ unsafe extern "C" {
     pub fn PyList_AsTuple(list: *mut PyObject) -> *mut PyObject;
     pub fn PySequence_Size(obj: *mut PyObject) -> PySsize;
     pub fn PySequence_GetItem(obj: *mut PyObject, index: PySsize) -> *mut PyObject;
+    pub fn PySequence_Check(obj: *mut PyObject) -> c_int;
 }
 
 #[cfg(test)]
