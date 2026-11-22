@@ -447,7 +447,15 @@
 
 实现 Packet、Bundle、UDPChannel、ACK/序号窗口、重传、乱序处理、分片重组、Channel 生命周期及统计。双向混跑并覆盖丢包、延迟、重复包和序号回绕。
 
-- [ ] **BW-02-03-01 实现 Packet/Bundle 编解码**。**验收** 真实 UDP 帧逐字节往返。
+- [x] **BW-02-03-01 实现 Packet/Bundle 编解码**（41a33ed）。**验收** 真实 UDP 帧逐字节往返。
+  - 证据：**编码面**——`UDPBundle`（udp_bundle.rs）自 bundle.cpp/udp_bundle.cpp 移植：`start_message`/`start_request`/`start_reply` 开消息，`add_blob` 逐段追加（满包自动 `sreserve` 滚包），`finalise`→`prepare_packets` 按参考 405-580 自后向前填脚：checksum→acks（AckCount+SeqNum）→序号→firstRequestOffset→frag（fragEnd 先、fragBegin 后）；`write_flags` 依 IS_RELIABLE/IS_FRAGMENT/HAS_REQUESTS/HAS_ACKS 预留对应脚。off-channel 无频道、无 reliableOrders_/piggyback，其分支为 BW-02-03-02/03/04 接缝。
+  - 证据：**特殊形式（编码）**——`compress_length_into_bundle` 正常形 `ie.compress_length`；宽度 1/2/3 且长度放不下时置长度字段全 1、真实长度 4 字节写体头、原体头 4 字节搬消息尾（`SPECIAL_LENGTH_SIZE`=4，BW-02-02-02 定）。`qreserve` 滚包前先记 `length` 再预留，头尾经 `chain_read`/`chain_write` 跨包搬移。
+  - 证据：**解码面**——`UDPBundleProcessor`（udp_bundle_processor.rs）复现 udp_bundle_processor.cpp 迭代器：`unpack` 逐消息读头（头必须在本包内）、请求前导（`REPLY_ID_SIZE+NEXT_REQUEST_OFFSET_SIZE`=6）读出 reply_id 与 next_request_offset、体跨包用 `data()` 缝合临时缓冲；`advance` 用 `chain_unexpand_length` 恢复特殊形式再定位下一消息。`chain_advance`（=参考 `BundleDataPos::advance`）把"绝对流偏移"换算回 (包, 包内偏移)，供特殊形式尾部跨包读写——本席发现纯偏移调用在跨包时错位、已修。
+  - 证据：**接收剥脚**——`Packet::strip_receive_footers` 按打包逆序剥：checksum→acks→seq→firstRequestOffset→frag；任一不足返回 `CorruptedPacket`。`recv_from_endpoint` 成功时设 `msg_end_offset`。每条测试经真实 loopback UDP：`sendto`→`recv_from_endpoint`→断言 `datagram()` 与所发**逐字节相等**→剥脚通过，再 `windows(2)` 链回。
+  - 证据：**验收核心（真实 UDP 帧逐字节往返）**——四条测试：单包（width-1 变长+width-4 变长+fixed-0 ping，HAS_CHECKSUM/IS_RELIABLE/HAS_SEQUENCE_NUMBER/HAS_ACKS，n_acks=1、seq=0，3 条按序交付）；跨包特殊形式（4000B 体 width-1 强制滚包，IS_FRAGMENT、frag_begin=0、frag_end=num_packets-1、body 逐字节缝合、尾 ping 仍交付）；请求（`start_request`+`add_reply_orders_to`+`RequestManager::new(false, dispatcher)`，length=4 前导除外、reply_id≠`REPLY_ID_NONE`）；应答（`start_reply(77)`，id=`REPLY_MESSAGE_IDENTIFIER`、length=8、body=77,0,0,0,1,2,3,4）。
+  - 证据：**参考对照**——声明长度不含请求前导（`compressLength` 不加 msgExtra_、decode 置 `dataLength_=length` 且 `dataOffset_` 越过前导）；`reserveFooter` 只加 `footerSize_` 不涨 `msgEndOffset_`（packet.hpp:159），`preparePackets` 一次 `grow(footerSize())` 后 `pack_footer_*` 逆写，故剥脚顺序=打包顺序；特殊形式阈值各为容量-1（`<0xff`/`<0xffff`/`<0xffffff`）；`expandLength` 对不下的形式重创、`unexpandLength` 复原；`seqLessThan`/`getNext` 用 u32 回绕（debug 下 `a-b` 会 panic，改 `wrapping_sub`/`wrapping_add`），本席修正 misc.rs 既有回绕测试。
+  - 待接入：频道分支（`pChannel->writeFlags`/`writeFooter`、`useNextSequenceID`、`addResendTimer`、reliableOrders_ 记录/清除）随 BW-02-03-02/03/04；分片重组（IS_FRAGMENT 的 fragEnd/fragBegin 组装）随 BW-02-03-06；piggyback 剥/附随 BW-02-03-04；`NetworkInterface::send`/`processPacket` 接线随 BW-02-03-07。
+  - 测试与覆盖：mercury **194 通过 / 0 失败**（新增 4 条真实 UDP 往返，全部走真实 loopback socket 并断言逐字节一致）；`cargo fmt -p mercury --check` 0 差异、`cargo clippy -p mercury --all-targets` 零告警；gate `ci/check-rust.sh all --packages mercury` 四 lane 全 PASS 以 `[ci] no failed lane` 收尾。
 - [ ] **BW-02-03-02 实现 Channel 注册与关闭**。**验收** 重复创建和旧 Channel 回收吻合。
 - [ ] **BW-02-03-03 实现 ACK 与序号窗口**。**验收** 序号回绕夹具通过。
 - [ ] **BW-02-03-04 实现重传计时**。**验收** 单次可控丢包后仅交付一次。
