@@ -140,7 +140,7 @@
 逐项核对 `lib/`、`server/`、`server/tools/`、`client/`、`tools/`、`common/`、`examples/` 和 FantasyDemo 的构建目标与用户功能。记录「原版路径、启用条件、功能编号、验证夹具、覆盖状态」。对第三方 SDK、发行物中的独有内容和缺失资源单独记录来源与验证缺口。每个已启用目标都要有可运行验收或可追踪的阻塞原因。
 
 - [x] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。→ 证据 `docs/review/bw00-05-01-coverage-ledger.md`（台账 `reference/bw00_05_01_coverage_ledger.json`：Make 79 行=已覆盖 35/部分 9/缺口 35，CMake 11 组全缺口；`coverage_ledger_scan.py` 映射表 + `coverage_ledger_doc.py`），commit 853fc61。
-- [ ] **BW-00-05-02 映射引擎库和服务端目标**。**验收** 构建清册中的每项都有索引。
+- [x] **BW-00-05-02 映射引擎库和服务端目标**。**验收** 构建清册中的每项都有索引。→ 证据 `docs/review/bw00-05-02-engine-server-index.md`（`lib`+`server` 72 行：已映射 44、缺口带来源 28、未索引 0；`coverage_index_doc.py`），commit b2de662。
 - [ ] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。
 - [ ] **BW-00-05-04 映射公共代码、示例与 FantasyDemo**。**验收** 脚本及资源入口可追溯。
 - [ ] **BW-00-05-05 核查发行物、SDK 和缺失资源**。**验收** 缺口有来源与阻塞原因。
