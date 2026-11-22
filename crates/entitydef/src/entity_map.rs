@@ -227,10 +227,8 @@ impl EntityDescriptionMap {
             }
         }
 
-        if is_okay {
-            if let Some(services_section) = services_section {
-                is_okay &= self.parse_services(&services_section, resolver, ctx, diag);
-            }
+        if is_okay && let Some(services_section) = services_section {
+            is_okay &= self.parse_services(&services_section, resolver, ctx, diag);
         }
 
         // The ClientName feature is deprecated but still honoured.

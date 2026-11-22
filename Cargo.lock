@@ -38,6 +38,7 @@ dependencies = [
 name = "boundless-server"
 version = "0.1.0"
 dependencies = [
+ "resources",
  "server-runtime",
 ]
 
@@ -176,6 +177,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-host"
+version = "0.1.0"
+dependencies = [
+ "platform",
+]
+
+[[package]]
 name = "python-host"
 version = "0.1.0"
 dependencies = [
@@ -230,6 +238,7 @@ version = "0.1.0"
 dependencies = [
  "foundation",
  "libc",
+ "mercury",
  "platform",
  "resources",
 ]

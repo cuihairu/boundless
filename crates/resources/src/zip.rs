@@ -1498,6 +1498,19 @@ mod tests {
         assert_eq!(fs.get_file_type("log.txt", None), FileType::File);
     }
 
+    /// A deflate stream produced by the reference zlib implementation (not by
+    /// this crate's encoder) decodes byte-for-byte: the fixture was made with
+    /// Python's `zlib.compressobj(6, DEFLATED, -15)`, so this pins cross
+    /// implementation agreement on one committed stream.
+    #[test]
+    fn a_third_party_produced_deflate_stream_decodes_byte_for_byte() {
+        let payload = include_bytes!("../fixtures/zlib_ref.log.txt");
+        let stream = include_bytes!("../fixtures/zlib_ref.log.bin");
+        assert_eq!(inflate_exact(stream, payload.len()), Some(payload.to_vec()));
+        // The stream is compressed, so it is strictly shorter than the payload.
+        assert!(stream.len() < payload.len());
+    }
+
     #[test]
     fn empty_archive_opens_with_a_root_directory() {
         let mut fs = ZipFileSystem::open("", empty_zip()).unwrap();

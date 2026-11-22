@@ -143,3 +143,160 @@ fn factory_loads_the_fantasydemo_scripts() {
     assert!(map.size() > 0);
     check_navigation(&map, "fantasydemo_entitydef.json");
 }
+
+/// BW-14-01-01: the fantasydemo entity definitions load from the tracked
+/// fixture, and every one of the five sample classes agrees with the summary
+/// captured from the stock `process_defs` (`fantasydemo_entitydef.json`).
+#[test]
+fn fantasydemo_loads_the_five_sample_definitions() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("a crates/ parent")
+        .parent()
+        .expect("the repository root");
+    let map = factory_create(&repo_root.join("docs/review/fixtures/fantasydemo_def/res"));
+
+    // The ClientServerEntities list is exactly the five sample classes, in the
+    // order the factory assigns indexes (Account, Avatar, Guard, Space, ClientOnly).
+    assert_eq!(map.size(), 5, "five sample definitions");
+    for (name, index) in [
+        ("Account", 0),
+        ("Avatar", 1),
+        ("Guard", 2),
+        ("Space", 3),
+        ("ClientOnly", 4),
+    ] {
+        assert_eq!(map.name_to_index(name), Some(index), "{name} index");
+        assert_eq!(
+            map.entity_description(index).expect("index valid").name,
+            name,
+            "index {index} round trips"
+        );
+    }
+    // Whole-set digest agrees with the reference `process_defs` capture.
+    check_navigation(&map, "fantasydemo_entitydef.json");
+
+    // Account: base-only proxy — two persistent base properties, one client
+    // method, no cell part.
+    let account = map.entity_description(0).unwrap();
+    assert!(account.can_be_on_base() && !account.can_be_on_cell() && account.can_be_on_client());
+    assert!(account.is_persistent() && !account.is_service());
+    assert_eq!(account.property_count(), 2);
+    assert_eq!(account.client_server_property_count(), 1, "playerName only");
+    assert_eq!(account.base().size(), 0);
+    assert_eq!(account.cell().size(), 0);
+    assert_eq!(account.client().size(), 1, "chatMessage");
+    assert_eq!(account.client_index(), 0);
+    assert!(account.identifier().is_none());
+    for (i, (name, ty, persistent, identifier)) in [
+        ("playerName", "STRING", true, false),
+        ("character", "STRING", true, false),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let p = account.property(i).expect("property");
+        assert_eq!(p.name(), *name);
+        assert_eq!(p.data_type.type_name(), *ty);
+        assert_eq!(p.data_flags.is_persistent(), *persistent);
+        assert_eq!(p.data_flags.is_identifier(), *identifier);
+    }
+
+    // Avatar: player proxy — four properties, two client methods, one exposed
+    // base method, all three halves present.
+    let avatar = map.entity_description(1).unwrap();
+    assert!(avatar.can_be_on_base() && avatar.can_be_on_cell() && avatar.can_be_on_client());
+    assert!(avatar.is_persistent() && !avatar.is_service());
+    assert_eq!(avatar.property_count(), 4);
+    assert_eq!(
+        avatar.client_server_property_count(),
+        4,
+        "all client-visible"
+    );
+    assert_eq!(avatar.base().size(), 1, "logOff");
+    assert_eq!(avatar.cell().size(), 0);
+    assert_eq!(avatar.client().size(), 2, "fromCell and cellTick");
+    assert_eq!(avatar.client_index(), 1);
+    assert_eq!(
+        avatar.identifier().map(|p| p.name()),
+        Some("playerName"),
+        "the identifier property"
+    );
+    for (i, (name, ty, persistent, identifier)) in [
+        ("playerName", "STRING", true, true),
+        ("prop1", "INT32", false, false),
+        ("prop2", "INT16", true, false),
+        ("prop3", "INT8", false, false),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let p = avatar.property(i).expect("property");
+        assert_eq!(p.name(), *name);
+        assert_eq!(p.data_type.type_name(), *ty);
+        assert_eq!(p.data_flags.is_persistent(), *persistent);
+        assert_eq!(p.data_flags.is_identifier(), *identifier);
+    }
+    assert_eq!(avatar.base().internal_method(0).unwrap().name(), "logOff");
+    assert_eq!(
+        avatar.client().internal_method(0).unwrap().name(),
+        "fromCell"
+    );
+    assert_eq!(
+        avatar.client().internal_method(1).unwrap().name(),
+        "cellTick"
+    );
+
+    // Guard: cell + client placeholder — one non-persistent client property.
+    let guard = map.entity_description(2).unwrap();
+    assert!(guard.can_be_on_base() && guard.can_be_on_cell() && guard.can_be_on_client());
+    assert!(guard.is_persistent() && !guard.is_service());
+    assert_eq!(guard.property_count(), 1);
+    assert_eq!(guard.client_server_property_count(), 1, "name");
+    assert_eq!(guard.base().size(), 0);
+    assert_eq!(guard.cell().size(), 0);
+    assert_eq!(guard.client().size(), 0);
+    assert_eq!(guard.client_index(), 2);
+    let name = guard.property(0).expect("name");
+    assert_eq!(name.name(), "name");
+    assert_eq!(name.data_type.type_name(), "STRING");
+    assert!(!name.data_flags.is_persistent());
+
+    // Space: the bootstrap space — no properties, no methods.
+    let space = map.entity_description(3).unwrap();
+    assert!(space.can_be_on_base() && space.can_be_on_cell() && space.can_be_on_client());
+    assert!(space.is_persistent() && !space.is_service());
+    assert_eq!(space.property_count(), 0);
+    assert_eq!(space.base().size(), 0);
+    assert_eq!(space.cell().size(), 0);
+    assert_eq!(space.client().size(), 0);
+
+    // ClientOnly: a client-only entity — two client properties, one client
+    // method, no base or cell part.
+    let client_only = map.entity_description(4).unwrap();
+    assert!(
+        !client_only.can_be_on_base()
+            && !client_only.can_be_on_cell()
+            && client_only.can_be_on_client()
+    );
+    assert!(!client_only.is_persistent() && !client_only.is_service());
+    assert_eq!(client_only.property_count(), 2);
+    assert_eq!(client_only.client_server_property_count(), 2);
+    assert_eq!(client_only.base().size(), 0);
+    assert_eq!(client_only.cell().size(), 0);
+    assert_eq!(client_only.client().size(), 1, "method1");
+    assert_eq!(client_only.client_index(), 4);
+    assert_eq!(
+        client_only.client().internal_method(0).unwrap().name(),
+        "method1"
+    );
+    for (i, (name, ty, persistent)) in [("name", "STRING", false), ("prop1", "INT32", false)]
+        .iter()
+        .enumerate()
+    {
+        let p = client_only.property(i).expect("property");
+        assert_eq!(p.name(), *name);
+        assert_eq!(p.data_type.type_name(), *ty);
+        assert_eq!(p.data_flags.is_persistent(), *persistent);
+    }
+}

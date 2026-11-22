@@ -401,20 +401,20 @@ impl EntityDescription {
 
         let parent_name = section.read_string("Parent", "");
 
-        if !parent_name.is_empty() {
-            if !self.parse(
+        if !parent_name.is_empty()
+            && !self.parse(
                 parent_name.as_str(),
                 component_name,
                 None,
                 resolver,
                 ctx,
                 diag,
-            ) {
-                diag.error(format!(
-                    "EntityDescription::parse: Could not parse {parent_name}, parent of {name}\n"
-                ));
-                return false;
-            }
+            )
+        {
+            diag.error(format!(
+                "EntityDescription::parse: Could not parse {parent_name}, parent of {name}\n"
+            ));
+            return false;
         }
 
         self.name = name.to_string();
@@ -636,7 +636,7 @@ impl EntityDescription {
 
             if !self.parse_interface_for_implements(
                 interface.as_ref(),
-                &interface_name,
+                interface_name,
                 component_name,
                 resolver,
                 ctx,

@@ -779,6 +779,19 @@ impl DispatcherTimers {
         self.num_timer_calls
     }
 
+    /// `stampsPerSecondD()`: the nanosecond-stamp conversion factor the
+    /// dispatcher's `calculateWait` divides by.
+    pub fn stamps_per_second(&self) -> u64 {
+        self.stamps_per_second
+    }
+
+    /// `nextExp( clock_() ) / stampsPerSecondD()`: the stamp of the
+    /// earliest pending timer, in seconds, measured against the clock the
+    /// timers were built with (absent when the queue is empty).
+    pub fn next_exp_seconds(&self) -> f64 {
+        self.time_queue.next_exp((self.clock)()) as f64 / self.stamps_per_second as f64
+    }
+
     /// `EventDispatcher::timerDeliveryTime`.
     pub fn timer_delivery_time(&self, handle: &TimerHandle<u64>) -> u64 {
         self.time_queue.timer_delivery_time(handle)

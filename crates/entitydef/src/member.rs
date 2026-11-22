@@ -95,11 +95,11 @@ impl MemberDescription {
         self.interface_name = interface_name.to_string();
         self.is_for_client = is_for_client;
 
-        if let Some(counter) = num_latest_event_members {
-            if crate::data_type::read_bool(section, "SendLatestOnly", false) {
-                self.latest_event_index = *counter as i32;
-                *counter += 1;
-            }
+        if let Some(counter) = num_latest_event_members
+            && crate::data_type::read_bool(section, "SendLatestOnly", false)
+        {
+            self.latest_event_index = *counter as i32;
+            *counter += 1;
         }
 
         // The default is the current value, so an absent tag stays reliable.

@@ -533,6 +533,17 @@ mod tests {
         assert_eq!(s.read_string(), Ok("实体与太空".to_string()));
     }
 
+    /// Length prefixing preserves embedded zeros: no terminator is written,
+    /// so `a\0b` round-trips instead of truncating at the NUL.
+    #[test]
+    fn embedded_zeros_survive_string_roundtrip() {
+        let mut s = BinaryStream::new();
+        s.write_string("a\0b").unwrap();
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("a\0b".to_string()));
+        assert_eq!(s.length(), 1 + 3);
+    }
+
     #[test]
     fn strings_embed_zero_and_track_remaining() {
         // The reference string has no terminator, so an embedded NUL is data,
@@ -855,7 +866,7 @@ mod tests {
 
     #[test]
     fn compressed_truncated_body_reports_truncation() {
-        let mut s = reference_zlib_fixture();
+        let s = reference_zlib_fixture();
         let cut = s.length() - 10;
         let mut truncated = BinaryStream::new();
         truncated.write_blob_raw(&s.as_bytes()[..cut]);
