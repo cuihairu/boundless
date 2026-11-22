@@ -5,6 +5,7 @@ pub mod baseapp_continuation;
 pub mod baseapp_relogon;
 pub mod baseappmgr;
 pub mod billing;
+pub mod cell_data;
 pub mod cellappmgr;
 pub mod client_login;
 pub mod cluster_shutdown;
