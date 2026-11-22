@@ -19,9 +19,47 @@
 //! The recorded callbacks are the acceptance: 类型、初始化参数和回调吻合. The
 //! remote `createBase*` paths (which carry an explicit callback over the wire)
 //! are a later item; this models the local script path.
+//!
+//! # BW-07-01-02 按 DBID 装载 Base
+//!
+//! `EntityCreator::createBaseFromDB` (`entity_creator.cpp`) loads a base by its
+//! database id: the type is validated (services excluded), an entity id is
+//! allocated up front and a `loadEntity` request goes to the DBApp. The reply
+//! is handled by `LoadEntityHandler::handleMessage`
+//! (`server/baseapp/load_entity_handler.cpp`, the DBApp side is
+//! `server/dbapp/load_entity_handler.cpp`) and is one of:
+//!
+//! * `LOGGED_ON` + dbID + the persisted data — the record existed. The base
+//!   section (`EntityDescription::readStreamToDict` with
+//!   `ONLY_PERSISTENT_DATA`) is parsed strictly: non-persistent base
+//!   properties are filled from their initial values
+//!   (`insertDefaultProperties`) and a truncated stream fails the build. The
+//!   cell section is captured whole by `PyCellData` and parsed only when used,
+//!   so the model reads it leniently — a bad cell section never fails the
+//!   load. A build calls `Base::init` (`__init__` then
+//!   `onEntityInitialised`) and the callback gets
+//!   `(base, dbID, wasActive = false)`;
+//! * `LOGIN_REJECTED_ALREADY_LOGGED_IN` + dbID + a mailbox — the record is
+//!   already checked out elsewhere. The id goes back via `putUsedID` (a no-op
+//!   while recycling is off) and the callback gets `(mailbox, dbID, true)`;
+//! * a failure (`sendFailure`, e.g. `LOGIN_REJECTED_NO_SUCH_USER` for a
+//!   missing record) or a channel exception — the callback gets
+//!   `(None, 0, false)`.
+//!
+//! A base that fails to build from an existing record is written back with
+//! `unCheckoutEntity` (`writeEntity` + `WRITE_LOG_OFF`) so the record can be
+//! loaded again; the callback still fires once, with `(None, dbID, false)`.
+//!
+//! The persisted stream is modelled with a compact stand-in for the per-type
+//! `DataDescription::createFromStream` encoding: values appear in definition
+//! order per domain, typed by the property's initial value — `i64`/`f64`
+//! little-endian, a `BW::string` packed-int length plus bytes, one bool byte,
+//! three `f32` little-endian.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+
+use crate::baseappmgr::Addr;
 
 /// `EntityID`.
 pub type EntityId = u32;
@@ -55,6 +93,9 @@ pub struct PropDesc {
     pub cell_data: bool,
     /// `isComponentised()`.
     pub componentised: bool,
+    /// `isPersistent()`: a non-persistent property is not in the persisted
+    /// stream and is filled from its initial value on a load.
+    pub persistent: bool,
     /// `pInitialValue()`.
     pub initial: PropValue,
 }
@@ -66,6 +107,7 @@ impl PropDesc {
         base_data: bool,
         cell_data: bool,
         componentised: bool,
+        persistent: bool,
         initial: PropValue,
     ) -> Self {
         Self {
@@ -73,6 +115,7 @@ impl PropDesc {
             base_data,
             cell_data,
             componentised,
+            persistent,
             initial,
         }
     }
@@ -234,16 +277,183 @@ pub struct BaseEntity {
 pub enum CreateError {
     /// The type name is unknown, not on the base or is a service.
     InvalidType { name: String },
+    /// The database id must be non-zero (`createBaseFromDB` ValueError).
+    InvalidDbId,
     /// The id pool had no id to hand out.
     NoId,
 }
 
-/// `EntityCreator`: the type registry, the id pool and the created bases.
+/// The reference `LogOnStatus` values this load path answers with
+/// (`lib/connection/log_on_status.hpp`).
+pub mod load_status {
+    /// `LOGGED_ON`.
+    pub const LOGGED_ON: u8 = 1;
+    /// `LOGIN_REJECTED_NO_SUCH_USER`.
+    pub const LOGIN_REJECTED_NO_SUCH_USER: u8 = 67;
+    /// `LOGIN_REJECTED_ALREADY_LOGGED_IN`.
+    pub const LOGIN_REJECTED_ALREADY_LOGGED_IN: u8 = 69;
+    /// `LOGIN_REJECTED_DB_GENERAL_FAILURE`.
+    pub const LOGIN_REJECTED_DB_GENERAL_FAILURE: u8 = 71;
+}
+
+/// `EntityMailBoxRef::Component` (`lib/network/basictypes.hpp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailBoxComponent {
+    /// `CELL`.
+    Cell,
+    /// `BASE`.
+    Base,
+    /// `CLIENT`.
+    Client,
+    /// `BASE_VIA_CELL`.
+    BaseViaCell,
+    /// `CLIENT_VIA_CELL`.
+    ClientViaCell,
+    /// `CELL_VIA_BASE`.
+    CellViaBase,
+    /// `CLIENT_VIA_BASE`.
+    ClientViaBase,
+    /// `SERVICE`.
+    Service,
+}
+
+/// The mailbox reference of an entity (`EntityMailBoxRef`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityMailBoxRef {
+    /// The entity's id.
+    pub id: EntityId,
+    /// The address the entity lives at.
+    pub addr: Addr,
+    /// The mailbox component.
+    pub component: MailBoxComponent,
+    /// The entity type id.
+    pub type_id: u32,
+}
+
+impl EntityMailBoxRef {
+    /// `init`: build a reference from the id, address, component and type.
+    pub fn init(id: EntityId, addr: Addr, component: MailBoxComponent, type_id: u32) -> Self {
+        Self {
+            id,
+            addr,
+            component,
+            type_id,
+        }
+    }
+}
+
+/// A handle to a pending `createBaseFromDB` request.
+pub type LoadRequestId = usize;
+
+/// The DBApp's reply to a `loadEntity` request.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LoadReply {
+    /// `LOGGED_ON`: the record existed and was checked out to us. `stream` is
+    /// the persisted entity data (base section, then the cell section).
+    Found {
+        /// The record's database id.
+        db_id: DatabaseId,
+        /// The persisted entity data.
+        stream: Vec<u8>,
+    },
+    /// `LOGIN_REJECTED_ALREADY_LOGGED_IN`: the record is checked out
+    /// elsewhere.
+    AlreadyActive {
+        /// The record's database id.
+        db_id: DatabaseId,
+        /// Where the entity currently lives.
+        mailbox: EntityMailBoxRef,
+    },
+    /// A `sendFailure` reply (a missing record is
+    /// `LOGIN_REJECTED_NO_SUCH_USER` / "No such user.").
+    Failed {
+        /// The `LogOnStatus` value.
+        status: u8,
+        /// The failure description.
+        description: String,
+    },
+    /// The request channel failed (`handleException`).
+    Exception,
+}
+
+/// The argument of the load callback (`onLoadedFromDB`'s `pArg`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CallbackArg {
+    /// The Base built from the persisted data.
+    Loaded(BaseEntity),
+    /// The mailbox of the already-checked-out entity.
+    MailBox(EntityMailBoxRef),
+    /// No entity (`Py_None`).
+    None,
+}
+
+/// The recorded load callback: `pResultHandler(arg, dbID, wasActive)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoadCallback {
+    /// The entity argument.
+    pub arg: CallbackArg,
+    /// The record's database id (0 on a failure).
+    pub db_id: DatabaseId,
+    /// Whether the entity was already active (`pMailbox != NULL`).
+    pub was_active: bool,
+}
+
+impl LoadCallback {
+    /// The created base, if the load built one.
+    pub fn entity(&self) -> Option<&BaseEntity> {
+        if let CallbackArg::Loaded(base) = &self.arg {
+            Some(base)
+        } else {
+            None
+        }
+    }
+
+    /// The mailbox of an already-active entity, if there was one.
+    pub fn mailbox(&self) -> Option<&EntityMailBoxRef> {
+        if let CallbackArg::MailBox(mailbox) = &self.arg {
+            Some(mailbox)
+        } else {
+            None
+        }
+    }
+
+    /// Whether the callback got no entity at all.
+    pub fn is_none(&self) -> bool {
+        matches!(self.arg, CallbackArg::None)
+    }
+}
+
+/// The BaseApp→DBApp `writeEntity` message issued when a base fails to build
+/// from an existing record (`unCheckoutEntity`): the record is written back
+/// with `WRITE_LOG_OFF` so it can be loaded again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Uncheckout {
+    /// The entity type id.
+    pub type_id: u32,
+    /// The record's database id.
+    pub db_id: DatabaseId,
+    /// The entity id allocated for the failed load.
+    pub entity_id: EntityId,
+}
+
+/// A pending `createBaseFromDB` request (`LoadEntityHandler`'s state).
+#[derive(Clone, Debug)]
+struct PendingLoad {
+    entity_id: EntityId,
+    type_id: u32,
+    type_name: String,
+}
+
+/// `EntityCreator`: the type registry, the id pool, the created bases and the
+/// pending `createBaseFromDB` requests.
 #[derive(Debug)]
 pub struct EntityCreator {
     types: HashMap<String, EntityType>,
     id_pool: IdPool,
     bases: HashMap<EntityId, BaseEntity>,
+    pending_loads: HashMap<LoadRequestId, PendingLoad>,
+    next_load_id: LoadRequestId,
+    uncheckouts: Vec<Uncheckout>,
 }
 
 /// The `createBase` script arguments: the type name and the init values.
@@ -256,6 +466,9 @@ impl EntityCreator {
             types: HashMap::new(),
             id_pool,
             bases: HashMap::new(),
+            pending_loads: HashMap::new(),
+            next_load_id: 0,
+            uncheckouts: Vec::new(),
         }
     }
 
@@ -380,6 +593,266 @@ impl EntityCreator {
         self.bases.insert(id, entity.clone());
         Ok(entity)
     }
+
+    /// `createBaseFromDB`: validate the type and the database id, allocate an
+    /// entity id and register the pending `loadEntity` request.
+    ///
+    /// The order matches the reference: a zero database id is rejected first,
+    /// then the type (services excluded), then the id allocation. On success
+    /// the returned handle is passed to [`on_load_reply`].
+    ///
+    /// [`on_load_reply`]: EntityCreator::on_load_reply
+    pub fn create_base_from_db(
+        &mut self,
+        type_name: &str,
+        db_id: DatabaseId,
+    ) -> Result<LoadRequestId, CreateError> {
+        if db_id == 0 {
+            return Err(CreateError::InvalidDbId);
+        }
+        let ty = self
+            .types
+            .get(type_name)
+            .ok_or_else(|| CreateError::InvalidType {
+                name: type_name.to_string(),
+            })?;
+        if ty.is_service {
+            return Err(CreateError::InvalidType {
+                name: type_name.to_string(),
+            });
+        }
+        let entity_id = self.id_pool.get_id().ok_or(CreateError::NoId)?;
+        let handle = self.next_load_id;
+        self.next_load_id += 1;
+        self.pending_loads.insert(
+            handle,
+            PendingLoad {
+                entity_id,
+                type_id: ty.id,
+                type_name: type_name.to_string(),
+            },
+        );
+        Ok(handle)
+    }
+
+    /// `LoadEntityHandler::handleMessage`: the DBApp answered a pending load.
+    ///
+    /// `Found` builds the base from the persisted data (`EntityType::create` →
+    /// `Base::init`); `AlreadyActive`, a failure or an exception fire the
+    /// callback with the mailbox or `None` and return the id via `putUsedID`
+    /// (a no-op while recycling is off).
+    pub fn on_load_reply(
+        &mut self,
+        request: LoadRequestId,
+        reply: LoadReply,
+    ) -> Option<LoadCallback> {
+        let pending = self.pending_loads.remove(&request)?;
+        let type_name = pending.type_name.clone();
+        match reply {
+            LoadReply::Found { db_id, stream } => {
+                let built = self.build_from_stream(
+                    pending.type_id,
+                    &type_name,
+                    pending.entity_id,
+                    db_id,
+                    &stream,
+                );
+                match built {
+                    Ok(base) => Some(LoadCallback {
+                        arg: CallbackArg::Loaded(base),
+                        db_id,
+                        was_active: false,
+                    }),
+                    Err(()) => {
+                        // The record was checked out to us but the base could
+                        // not be built; write it back so it can be loaded
+                        // again. The callback still fires, with the dbID.
+                        self.uncheckouts.push(Uncheckout {
+                            type_id: pending.type_id,
+                            db_id,
+                            entity_id: pending.entity_id,
+                        });
+                        Some(LoadCallback {
+                            arg: CallbackArg::None,
+                            db_id,
+                            was_active: false,
+                        })
+                    }
+                }
+            }
+            LoadReply::AlreadyActive { db_id, mailbox } => {
+                self.id_pool.put_used_id(pending.entity_id);
+                Some(LoadCallback {
+                    arg: CallbackArg::MailBox(mailbox),
+                    db_id,
+                    was_active: true,
+                })
+            }
+            LoadReply::Failed { .. } | LoadReply::Exception => {
+                self.id_pool.put_used_id(pending.entity_id);
+                Some(LoadCallback {
+                    arg: CallbackArg::None,
+                    db_id: 0,
+                    was_active: false,
+                })
+            }
+        }
+    }
+
+    /// The number of pending `createBaseFromDB` requests.
+    pub fn pending_load_count(&self) -> usize {
+        self.pending_loads.len()
+    }
+
+    /// The `unCheckoutEntity` writes issued by failed loads, in order.
+    pub fn uncheckouts(&self) -> &[Uncheckout] {
+        &self.uncheckouts
+    }
+
+    /// `EntityType::create`: build a base from the persisted stream.
+    ///
+    /// The base section is read strictly in definition order (persistent
+    /// base-data properties), with non-persistent base properties defaulted;
+    /// a truncated stream fails the build. The cell section is read leniently
+    /// (the reference captures it in `PyCellData` and parses it later), so a
+    /// bad cell section leaves the remaining cell properties at their initial
+    /// values without failing the load.
+    fn build_from_stream(
+        &mut self,
+        type_id: u32,
+        type_name: &str,
+        entity_id: EntityId,
+        db_id: DatabaseId,
+        stream: &[u8],
+    ) -> Result<BaseEntity, ()> {
+        let ty = self.types.get(type_name).ok_or(())?;
+        let mut reader = PersistenceReader::new(stream);
+
+        let mut base_props = HashMap::new();
+        for prop in &ty.properties {
+            if !prop.base_data {
+                continue;
+            }
+            let value = if prop.persistent {
+                reader.read_prop(&prop.initial).ok_or(())?
+            } else {
+                prop.initial.clone()
+            };
+            base_props.insert(prop.name.clone(), value);
+        }
+
+        let mut cell_props = HashMap::new();
+        if ty.can_be_on_cell {
+            for prop in &ty.properties {
+                if !prop.cell_data {
+                    continue;
+                }
+                let value = if prop.persistent {
+                    reader
+                        .read_prop(&prop.initial)
+                        .unwrap_or_else(|| prop.initial.clone())
+                } else {
+                    prop.initial.clone()
+                };
+                cell_props.insert(prop.name.clone(), value);
+            }
+        }
+
+        let mut entity = BaseEntity {
+            id: entity_id,
+            type_id,
+            type_name: type_name.to_string(),
+            db_id,
+            is_proxy: false,
+            base_props,
+            cell_props,
+            callbacks: Vec::new(),
+        };
+        entity.callbacks.push(BaseCallback::Init {
+            entity_id,
+            type_name: type_name.to_string(),
+        });
+        entity
+            .callbacks
+            .push(BaseCallback::Initialised { entity_id });
+        self.bases.insert(entity_id, entity.clone());
+        Ok(entity)
+    }
+}
+
+/// A read cursor over the persisted entity stream. The value encoding is
+/// typed by the property's initial value, matching the compact stand-in
+/// described in the module docs.
+struct PersistenceReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> PersistenceReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let end = self.pos.checked_add(n)?;
+        let slice = self.data.get(self.pos..end)?;
+        self.pos = end;
+        Some(slice)
+    }
+
+    fn read_u8(&mut self) -> Option<u8> {
+        let byte = self.data.get(self.pos).copied();
+        if byte.is_some() {
+            self.pos += 1;
+        }
+        byte
+    }
+
+    /// Read one property value of the type of `expected`.
+    fn read_prop(&mut self, expected: &PropValue) -> Option<PropValue> {
+        match expected {
+            PropValue::Int(_) => {
+                let bytes = self.take(8)?;
+                Some(PropValue::Int(i64::from_le_bytes(bytes.try_into().ok()?)))
+            }
+            PropValue::Float(_) => {
+                let bytes = self.take(8)?;
+                Some(PropValue::Float(f64::from_le_bytes(bytes.try_into().ok()?)))
+            }
+            PropValue::Str(_) => {
+                let length = read_packed_int(self)?;
+                if length < 0 {
+                    return None;
+                }
+                let bytes = self.take(length as usize)?;
+                let value = String::from_utf8(bytes.to_vec()).ok()?;
+                Some(PropValue::Str(value))
+            }
+            PropValue::Bool(_) => Some(PropValue::Bool(self.read_u8()? != 0)),
+            PropValue::Vec3(_) => {
+                let mut value = [0.0f32; 3];
+                for component in &mut value {
+                    let bytes = self.take(4)?;
+                    *component = f32::from_le_bytes(bytes.try_into().ok()?);
+                }
+                Some(PropValue::Vec3(value))
+            }
+        }
+    }
+}
+
+/// `readPackedInt` (`binary_stream.hpp`): one byte, or `0xFF` followed by
+/// three little-endian bytes for lengths of 255 and above.
+fn read_packed_int(reader: &mut PersistenceReader<'_>) -> Option<i32> {
+    let first = reader.read_u8()?;
+    if first == 0xff {
+        let b0 = reader.read_u8()? as i32;
+        let b1 = reader.read_u8()? as i32;
+        let b2 = reader.read_u8()? as i32;
+        Some(b0 | (b1 << 8) | (b2 << 16))
+    } else {
+        Some(first as i32)
+    }
 }
 
 #[cfg(test)]
@@ -395,10 +868,17 @@ mod tests {
             is_proxy: false,
             can_be_on_cell: true,
             properties: vec![
-                PropDesc::new("id", true, false, false, PropValue::Int(0)),
-                PropDesc::new("name", true, false, false, PropValue::Str(String::new())),
-                PropDesc::new("pos", false, true, false, PropValue::Vec3([0.0; 3])),
-                PropDesc::new("health", true, true, false, PropValue::Int(100)),
+                PropDesc::new("id", true, false, false, true, PropValue::Int(0)),
+                PropDesc::new(
+                    "name",
+                    true,
+                    false,
+                    false,
+                    true,
+                    PropValue::Str(String::new()),
+                ),
+                PropDesc::new("pos", false, true, false, true, PropValue::Vec3([0.0; 3])),
+                PropDesc::new("health", true, true, false, true, PropValue::Int(100)),
             ],
         }
     }
@@ -544,5 +1024,261 @@ mod tests {
         // `putUsedID` is a no-op while recycling is off.
         pool.put_used_id(1);
         assert_eq!(pool.len(), 1);
+    }
+
+    // ---- BW-07-01-02 按 DBID 装载 Base ----
+
+    fn player_type() -> EntityType {
+        EntityType {
+            id: 10,
+            name: "Player".to_string(),
+            can_be_on_base: true,
+            is_service: false,
+            is_proxy: false,
+            can_be_on_cell: true,
+            properties: vec![
+                PropDesc::new(
+                    "name",
+                    true,
+                    false,
+                    false,
+                    true,
+                    PropValue::Str(String::new()),
+                ),
+                // A non-persistent base prop: defaulted on a load.
+                PropDesc::new("session", true, false, false, false, PropValue::Int(0)),
+                PropDesc::new("pos", false, true, false, true, PropValue::Vec3([0.0; 3])),
+                PropDesc::new("health", true, true, false, true, PropValue::Int(100)),
+            ],
+        }
+    }
+
+    /// Encode a property value in the model's persistence encoding (short
+    /// strings only — the tests never hit the three-byte packed length).
+    fn write_prop(buf: &mut Vec<u8>, value: &PropValue) {
+        match value {
+            PropValue::Int(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            PropValue::Float(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            PropValue::Str(s) => {
+                buf.push(s.len() as u8);
+                buf.extend_from_slice(s.as_bytes());
+            }
+            PropValue::Bool(v) => buf.push(*v as u8),
+            PropValue::Vec3(v) => {
+                for component in v {
+                    buf.extend_from_slice(&component.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    /// A persisted `Player` stream: the base section (persistent base-data
+    /// props: `name`, `health`) then the cell section (`pos`, `health`).
+    fn player_stream(name: &str, pos: [f32; 3], health: i64) -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_prop(&mut buf, &PropValue::Str(name.to_string()));
+        write_prop(&mut buf, &PropValue::Int(health));
+        write_prop(&mut buf, &PropValue::Vec3(pos));
+        write_prop(&mut buf, &PropValue::Int(health));
+        buf
+    }
+
+    fn creator_with_one_id(id: EntityId) -> EntityCreator {
+        let mut creator = EntityCreator::new({
+            let mut pool = IdPool::new(5, 10, 50, 100);
+            pool.refill(&[id]);
+            pool
+        });
+        creator.add_type(player_type());
+        creator
+    }
+
+    #[test]
+    fn an_existing_record_builds_the_base_and_fires_the_callback() {
+        let mut creator = creator_with_one_id(50);
+        let request = creator.create_base_from_db("Player", 42).unwrap();
+        assert_eq!(creator.pending_load_count(), 1);
+
+        let stream = player_stream("alice", [1.0, 2.0, 3.0], 120);
+        let callback = creator
+            .on_load_reply(request, LoadReply::Found { db_id: 42, stream })
+            .unwrap();
+        assert_eq!(creator.pending_load_count(), 0);
+
+        let base = callback.entity().unwrap();
+        assert_eq!(base.id, 50);
+        assert_eq!(base.type_id, 10);
+        assert_eq!(base.type_name, "Player");
+        assert_eq!(base.db_id, 42);
+        assert!(!base.is_proxy);
+
+        // The persistent base props come from the stream; the non-persistent
+        // `session` is defaulted (`insertDefaultProperties`).
+        assert_eq!(
+            base.base_props.get("name"),
+            Some(&PropValue::Str("alice".to_string()))
+        );
+        assert_eq!(base.base_props.get("session"), Some(&PropValue::Int(0)));
+
+        // The cell props carry the cell section.
+        assert_eq!(
+            base.cell_props.get("pos"),
+            Some(&PropValue::Vec3([1.0, 2.0, 3.0]))
+        );
+        assert_eq!(base.cell_props.get("health"), Some(&PropValue::Int(120)));
+
+        // `Base::init`: `__init__` then `onEntityInitialised`.
+        assert_eq!(
+            base.callbacks,
+            vec![
+                BaseCallback::Init {
+                    entity_id: 50,
+                    type_name: "Player".to_string(),
+                },
+                BaseCallback::Initialised { entity_id: 50 },
+            ]
+        );
+
+        assert_eq!(callback.db_id, 42);
+        assert!(!callback.was_active);
+        assert!(creator.bases().contains_key(&50));
+        assert!(creator.uncheckouts().is_empty());
+    }
+
+    #[test]
+    fn a_missing_record_fires_the_callback_with_none() {
+        let mut creator = creator_with_one_id(51);
+        let request = creator.create_base_from_db("Player", 99).unwrap();
+
+        let callback = creator
+            .on_load_reply(
+                request,
+                LoadReply::Failed {
+                    status: load_status::LOGIN_REJECTED_NO_SUCH_USER,
+                    description: "No such user.".to_string(),
+                },
+            )
+            .unwrap();
+
+        assert!(callback.is_none());
+        assert_eq!(callback.db_id, 0);
+        assert!(!callback.was_active);
+        assert!(creator.bases().is_empty());
+        assert!(creator.uncheckouts().is_empty());
+        assert_eq!(creator.pending_load_count(), 0);
+    }
+
+    #[test]
+    fn an_already_active_record_fires_the_callback_with_the_mailbox() {
+        let mut creator = creator_with_one_id(52);
+        let request = creator.create_base_from_db("Player", 7).unwrap();
+
+        let mailbox = EntityMailBoxRef::init(999, (0x7f00_0001, 20016), MailBoxComponent::Base, 10);
+        let callback = creator
+            .on_load_reply(request, LoadReply::AlreadyActive { db_id: 7, mailbox })
+            .unwrap();
+
+        assert_eq!(callback.mailbox(), Some(&mailbox));
+        assert_eq!(callback.db_id, 7);
+        assert!(callback.was_active);
+        assert!(creator.bases().is_empty());
+        assert_eq!(creator.pending_load_count(), 0);
+    }
+
+    #[test]
+    fn a_truncated_stream_writes_the_record_back() {
+        let mut creator = creator_with_one_id(53);
+        let request = creator.create_base_from_db("Player", 42).unwrap();
+
+        let mut stream = player_stream("alice", [1.0, 2.0, 3.0], 120);
+        // 6 bytes for the name, then 4 of the 8 bytes of the base `health`:
+        // the base section is truncated mid-value, so the build fails.
+        stream.truncate(6 + 4);
+        let callback = creator
+            .on_load_reply(request, LoadReply::Found { db_id: 42, stream })
+            .unwrap();
+
+        // The build failed; the record is written back so it can be loaded
+        // again, and the callback still fires once with the dbID.
+        assert!(callback.is_none());
+        assert_eq!(callback.db_id, 42);
+        assert!(!callback.was_active);
+        assert!(creator.bases().is_empty());
+        assert_eq!(
+            creator.uncheckouts(),
+            &[Uncheckout {
+                type_id: 10,
+                db_id: 42,
+                entity_id: 53,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_zero_db_id_is_rejected_before_allocating() {
+        let mut creator = creator_with_one_id(60);
+        assert_eq!(
+            creator.create_base_from_db("Player", 0),
+            Err(CreateError::InvalidDbId)
+        );
+        assert_eq!(creator.pending_load_count(), 0);
+        assert_eq!(creator.id_pool().len(), 1); // no id was consumed
+    }
+
+    #[test]
+    fn an_unknown_type_or_service_is_rejected() {
+        let mut creator = EntityCreator::new(IdPool::new(5, 10, 50, 100));
+        creator.add_type(EntityType {
+            id: 3,
+            name: "Svc".to_string(),
+            can_be_on_base: true,
+            is_service: true,
+            is_proxy: false,
+            can_be_on_cell: true,
+            properties: vec![],
+        });
+        assert_eq!(
+            creator.create_base_from_db("Nope", 5),
+            Err(CreateError::InvalidType {
+                name: "Nope".to_string()
+            })
+        );
+        assert_eq!(
+            creator.create_base_from_db("Svc", 5),
+            Err(CreateError::InvalidType {
+                name: "Svc".to_string()
+            })
+        );
+        assert_eq!(creator.pending_load_count(), 0);
+    }
+
+    #[test]
+    fn an_empty_pool_fails_the_request() {
+        let mut creator = EntityCreator::new(IdPool::new(5, 10, 50, 100));
+        creator.add_type(player_type());
+        assert_eq!(
+            creator.create_base_from_db("Player", 5),
+            Err(CreateError::NoId)
+        );
+        assert_eq!(creator.pending_load_count(), 0);
+    }
+
+    #[test]
+    fn a_channel_exception_fires_the_callback_with_none() {
+        let mut creator = creator_with_one_id(54);
+        let request = creator.create_base_from_db("Player", 5).unwrap();
+        let callback = creator
+            .on_load_reply(request, LoadReply::Exception)
+            .unwrap();
+        assert!(callback.is_none());
+        assert_eq!(callback.db_id, 0);
+        assert_eq!(creator.pending_load_count(), 0);
+    }
+
+    #[test]
+    fn an_unknown_request_is_ignored() {
+        let mut creator = EntityCreator::new(IdPool::new(5, 10, 50, 100));
+        creator.add_type(player_type());
+        assert_eq!(creator.on_load_reply(0, LoadReply::Exception), None);
     }
 }
