@@ -1,4 +1,4 @@
-//! BW-23-02-01: bounded capture session control.
+//! BW-23-02-01 / BW-23-02-05: bounded capture session control.
 //!
 //! A session runs over a set of profilers (one per role/process) and yields
 //! exactly the events its filter selects — only the chosen processes, only
@@ -7,8 +7,12 @@
 //! them from the profilers' buffers (the reference's entry-buffer swap each
 //! `Profiler::tick`, plus its enable/category-mask gating, expressed as an
 //! explicit session). A stopped session is inert until `start` reopens it.
+//!
+//! A [`BoundedCapture`] adds the resource limits on top: a duration, after
+//! which nothing more is captured, and a buffer cap, past which the events
+//! are counted as lost instead of silently missing.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use foundation::profiler::{Category, ProfileEntry, Profiler, ProfilerIdentity};
 
@@ -100,14 +104,13 @@ impl<'a> CaptureSession<'a> {
         }
     }
 
-    /// Stop capturing and return the events recorded since `start`, keeping
-    /// only those the filter selects. A stopped session is inert: calling
-    /// `stop` again (or any time the session is not active) returns nothing.
-    pub fn stop(&self) -> Vec<CapturedEvent> {
+    /// Return the events buffered since the last drain, keeping only those
+    /// the filter selects. The session keeps capturing: this is the poll a
+    /// bounded session uses to pull events as the load runs.
+    pub fn drain(&self) -> Vec<CapturedEvent> {
         if !self.active.get() {
             return Vec::new();
         }
-        self.active.set(false);
         let mut events = Vec::new();
         for profiler in &self.profilers {
             let identity = profiler.identity();
@@ -121,6 +124,178 @@ impl<'a> CaptureSession<'a> {
             }
         }
         events
+    }
+
+    /// Stop capturing and return the events recorded since `start`, keeping
+    /// only those the filter selects. A stopped session is inert: calling
+    /// `stop` again (or any time the session is not active) returns nothing.
+    pub fn stop(&self) -> Vec<CapturedEvent> {
+        let events = self.drain();
+        self.active.set(false);
+        events
+    }
+}
+
+/// How long and how much a bounded session may capture. Either limit may be
+/// 0, which means unlimited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureLimit {
+    /// The clock stamps after which the session stops capturing (0 = none).
+    pub max_duration: u64,
+    /// The number of events buffered before the overflow is counted as lost
+    /// (0 = unlimited).
+    pub max_events: usize,
+}
+
+impl CaptureLimit {
+    /// Capture for as long and as much as the caller asks.
+    pub fn unbounded() -> Self {
+        Self {
+            max_duration: 0,
+            max_events: 0,
+        }
+    }
+
+    /// Stop after `stamps` clock stamps.
+    pub fn duration(stamps: u64) -> Self {
+        Self {
+            max_duration: stamps,
+            max_events: 0,
+        }
+    }
+
+    /// Buffer at most `count` events.
+    pub fn events(count: usize) -> Self {
+        Self {
+            max_duration: 0,
+            max_events: count,
+        }
+    }
+}
+
+/// Why a bounded session stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// The caller called `stop`.
+    Explicit,
+    /// The duration limit ran out: nothing recorded after it is captured.
+    Expired,
+    /// The buffer limit was reached: what came after was counted as lost.
+    BufferFull,
+}
+
+/// What a bounded session captured: the events, what was lost, and why it
+/// stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureReport {
+    /// The events kept within the limits.
+    pub events: Vec<CapturedEvent>,
+    /// The events dropped once the buffer filled, so losses are reported
+    /// rather than silently absent.
+    pub dropped: usize,
+    /// Why the session stopped.
+    pub reason: StopReason,
+}
+
+/// A capture session bounded by a duration and a buffer. The caller drives
+/// it: `start`, run the load, `poll` as the clock moves, `stop`. The clock
+/// is read to see whether the duration limit is due.
+pub struct BoundedCapture<'a> {
+    session: CaptureSession<'a>,
+    limit: CaptureLimit,
+    clock: Box<dyn Fn() -> u64>,
+    started_at: Cell<u64>,
+    buffer: RefCell<Vec<CapturedEvent>>,
+    dropped: Cell<usize>,
+    outcome: Cell<Option<StopReason>>,
+}
+
+impl<'a> BoundedCapture<'a> {
+    /// A session with the given limits, timing off `clock`.
+    pub fn with_clock(
+        profilers: &[&'a Profiler],
+        limit: CaptureLimit,
+        clock: impl Fn() -> u64 + 'static,
+    ) -> Self {
+        Self {
+            session: CaptureSession::new(profilers),
+            limit,
+            clock: Box::new(clock),
+            started_at: Cell::new(0),
+            buffer: RefCell::new(Vec::new()),
+            dropped: Cell::new(0),
+            outcome: Cell::new(None),
+        }
+    }
+
+    /// A session with the given limits and a filter.
+    pub fn with_filter(
+        profilers: &[&'a Profiler],
+        filter: CaptureFilter,
+        limit: CaptureLimit,
+        clock: impl Fn() -> u64 + 'static,
+    ) -> Self {
+        Self {
+            session: CaptureSession::with_filter(profilers, filter),
+            limit,
+            clock: Box::new(clock),
+            started_at: Cell::new(0),
+            buffer: RefCell::new(Vec::new()),
+            dropped: Cell::new(0),
+            outcome: Cell::new(None),
+        }
+    }
+
+    /// Start capturing: discard everything buffered so far, so the window —
+    /// and the duration limit — begin now.
+    pub fn start(&self) {
+        self.session.start();
+        self.started_at.set((self.clock)());
+        self.buffer.borrow_mut().clear();
+        self.dropped.set(0);
+        self.outcome.set(None);
+    }
+
+    /// Pull in the events buffered since the last poll, if the duration limit
+    /// is not yet due. Events beyond the buffer limit are counted as lost.
+    pub fn poll(&self) {
+        if self.outcome.get().is_some() {
+            return;
+        }
+        if self.limit.max_duration > 0
+            && (self.clock)() - self.started_at.get() >= self.limit.max_duration
+        {
+            self.outcome.set(Some(StopReason::Expired));
+            return;
+        }
+        let events = self.session.drain();
+        let mut buffer = self.buffer.borrow_mut();
+        for event in events {
+            if self.limit.max_events > 0 && buffer.len() >= self.limit.max_events {
+                self.dropped.set(self.dropped.get() + 1);
+            } else {
+                buffer.push(event);
+            }
+        }
+    }
+
+    /// Stop capturing and report what was captured: the events, the losses,
+    /// and why the session stopped.
+    pub fn stop(&self) -> CaptureReport {
+        // One last pull, so events buffered after the final poll are not lost.
+        if self.outcome.get().is_none() {
+            self.poll();
+        }
+        let reason = match self.outcome.get() {
+            Some(reason) => reason,
+            None if self.dropped.get() > 0 => StopReason::BufferFull,
+            None => StopReason::Explicit,
+        };
+        CaptureReport {
+            events: self.buffer.take(),
+            dropped: self.dropped.get(),
+            reason,
+        }
     }
 }
 
@@ -274,5 +449,95 @@ mod tests {
         session.start();
         let events = session.stop();
         assert_eq!(events.len(), 0, "the outside events were not in the window");
+    }
+
+    fn record_section(source: &Pinned, prof: &Profiler, name: &str, by: u64) {
+        {
+            let _s = prof.scoped(name);
+            advance(source, by);
+        }
+    }
+
+    #[test]
+    fn the_session_stops_when_the_duration_expires() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+        prof.set_identity("cellapp01", 100);
+
+        let clock = source.clone();
+        let session = BoundedCapture::with_clock(&[&prof], CaptureLimit::duration(50), move || {
+            clock.load(Ordering::SeqCst)
+        });
+        session.start();
+
+        // Two sections land before the deadline, one crosses it.
+        record_section(&source, &prof, "early", 20);
+        session.poll();
+        record_section(&source, &prof, "mid", 20);
+        session.poll();
+        record_section(&source, &prof, "late", 20);
+        session.poll();
+
+        let report = session.stop();
+        assert_eq!(report.reason, StopReason::Expired, "the deadline stops it");
+        assert_eq!(report.events.len(), 4, "{:?}", report.events);
+        assert_eq!(report.dropped, 0);
+        let names: Vec<&str> = report
+            .events
+            .iter()
+            .map(|event| event.entry.name.as_str())
+            .collect();
+        assert!(
+            !names.contains(&"late"),
+            "nothing after the deadline: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_buffer_reports_the_losses() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+        prof.set_identity("cellapp01", 100);
+
+        let clock = source.clone();
+        let session = BoundedCapture::with_clock(&[&prof], CaptureLimit::events(4), move || {
+            clock.load(Ordering::SeqCst)
+        });
+        session.start();
+
+        // Four sections of two events each against a four-event buffer: the
+        // first two sections fit, the next two are counted as lost.
+        for name in ["first", "second", "third", "fourth"] {
+            record_section(&source, &prof, name, 4);
+            session.poll();
+        }
+
+        let report = session.stop();
+        assert_eq!(report.events.len(), 4, "the buffer holds its cap");
+        assert_eq!(report.dropped, 4, "the losses are reported");
+        assert_eq!(report.reason, StopReason::BufferFull);
+    }
+
+    #[test]
+    fn an_unbounded_session_captures_everything() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+        prof.set_identity("cellapp01", 100);
+
+        let clock = source.clone();
+        let session = BoundedCapture::with_clock(&[&prof], CaptureLimit::unbounded(), move || {
+            clock.load(Ordering::SeqCst)
+        });
+        session.start();
+
+        for name in ["one", "two", "three"] {
+            record_section(&source, &prof, name, 3);
+            session.poll();
+        }
+
+        let report = session.stop();
+        assert_eq!(report.events.len(), 6, "3 sections x 2 events");
+        assert_eq!(report.dropped, 0);
+        assert_eq!(report.reason, StopReason::Explicit);
     }
 }
