@@ -9,6 +9,11 @@ func connect_to_server(server: Node) -> void:
     server.entity_event.connect(_on_entity_event)
 
 
+func disconnect_from_server(server: Node) -> void:
+    if server.entity_event.is_connected(_on_entity_event):
+        server.entity_event.disconnect(_on_entity_event)
+
+
 func _on_entity_event(entity_id: int, kind: String) -> void:
     _received.append([entity_id, kind])
 

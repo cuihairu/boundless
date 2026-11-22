@@ -24,6 +24,13 @@
 //! connection, so the acceptance — the target node receives the entity
 //! events — is checkable without an engine.  Running the signal in Godot is
 //! a recorded gap ([`GODOT_SIGNAL_GAP`]).
+//!
+//! BW-21-05-04 — the example ([`EXAMPLE_FILE`]) logs in, syncs a property
+//! and cleans up on exit: leaving the scene drops the connection and frees
+//! the callback ([`SignalConnection::disconnect_all`]), so nothing more is
+//! delivered.  Independently, [`run_godot_example`] drives the example's
+//! connection side against the SDK session model; running it in Godot is a
+//! recorded gap ([`GODOT_EXAMPLE_GAP`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,6 +55,9 @@ pub const PLUGIN_SCRIPT_FILE: &str = "bw_godot_plugin.gd";
 /// The signal target: a node that connects to the entity_event signal.
 pub const TARGET_SCRIPT_FILE: &str = "bw_signal_target.gd";
 
+/// The example: a node logs in, syncs a property and cleans up on exit.
+pub const EXAMPLE_FILE: &str = "bw_example.gd";
+
 /// The files the delivery consists of.
 pub const DELIVERED_FILES: &[&str] = &[
     GD_EXTENSION_FILE,
@@ -56,6 +66,7 @@ pub const DELIVERED_FILES: &[&str] = &[
     SCRIPT_FILE,
     PLUGIN_SCRIPT_FILE,
     TARGET_SCRIPT_FILE,
+    EXAMPLE_FILE,
 ];
 
 /// The script methods the native class binds, as `(method, parameters)`.
@@ -86,6 +97,13 @@ pub const SIGNAL_PARAMS: &[(&str, &str)] = &[("entity_id", "INT"), ("kind", "STR
 /// the tree obliges a check), so the harness stays at its honest SKIP
 /// naming the packaging ticket.
 pub const GODOT_SIGNAL_GAP: &str = "godot-sdk: running the signal in Godot needs Godot itself — the engine is absent on this runner, and this lane does not create sdk/engines/godot/ (an incomplete tree would make ci/sdk-archive.sh fail), so the harness records a SKIP naming BW-21-05-03";
+
+/// The recorded gap for the one step no bare runner can do: running the
+/// example in Godot.  This lane does not create the `sdk/engines/godot/`
+/// tree — an incomplete one would make `ci/sdk-archive.sh` fail (opening
+/// the tree obliges a check), so the harness stays at its honest SKIP
+/// naming the packaging ticket.
+pub const GODOT_EXAMPLE_GAP: &str = "godot-sdk: running the example in Godot needs Godot itself — the engine is absent on this runner, and this lane does not create sdk/engines/godot/ (an incomplete tree would make ci/sdk-archive.sh fail), so the harness records a SKIP naming BW-21-05-04";
 
 /// The plugin's name, as the editor config declares it.
 pub const EXTENSION_NAME: &str = "Boundless SDK";
@@ -256,12 +274,72 @@ impl SignalConnection {
     pub fn received(&self) -> &[EntityEventSignal] {
         &self.received
     }
+
+    /// The node left the scene: the connection is dropped and the callback
+    /// is freed, so nothing more is delivered.
+    pub fn disconnect_all(&mut self) {
+        self.connected = false;
+        self.received.clear();
+    }
 }
 
 impl Default for SignalConnection {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// BW-21-05-04: one step the Godot example ran, and the result it produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GodotExampleStep {
+    /// What the step did: login, sync or logout.
+    pub action: String,
+    /// The result the step produced.
+    pub result: String,
+}
+
+/// Run the Godot example against the SDK session model: log in, sync a
+/// property, then log out.  Every step records its result, so the
+/// acceptance — the connection side of the run — is checkable from the
+/// returned steps; the exit cleanup (leaving the scene cleans the
+/// connections and callbacks) is [`SignalConnection::disconnect_all`].
+pub fn run_godot_example() -> Vec<GodotExampleStep> {
+    use crate::sdk_session::{SdkSession, ServerFlavor};
+
+    let mut steps = Vec::new();
+    let mut session = SdkSession::new(ServerFlavor::New);
+
+    // Login: the node logs in, and the handshake rounds are a result.
+    let result = match session.login() {
+        Ok(()) => format!("logged in ({} rounds)", session.handshake_rounds()),
+        Err(error) => error.code().to_string(),
+    };
+    steps.push(GodotExampleStep {
+        action: "login".to_string(),
+        result,
+    });
+
+    // Sync: a representative property sync reads back.
+    session.sync_property(1, "position.x", "1.5");
+    steps.push(GodotExampleStep {
+        action: "sync".to_string(),
+        result: format!(
+            "position.x={}",
+            session.property(1, "position.x").unwrap_or("-")
+        ),
+    });
+
+    // Logout: the node leaves the scene and the connection closes.
+    let result = match session.disconnect() {
+        Ok(()) => "logged out".to_string(),
+        Err(error) => error.code().to_string(),
+    };
+    steps.push(GodotExampleStep {
+        action: "logout".to_string(),
+        result,
+    });
+
+    steps
 }
 
 #[cfg(test)]
@@ -489,5 +567,75 @@ mod tests {
         assert!(GODOT_SIGNAL_GAP.contains("Godot"));
         assert!(GODOT_SIGNAL_GAP.contains("BW-21-05-03"));
         assert!(GODOT_SIGNAL_GAP.contains("sdk/engines/godot/"));
+    }
+
+    #[test]
+    fn leaving_the_scene_cleans_up_connections_and_callbacks() {
+        let mut target = SignalConnection::new();
+        target.connect();
+        target.emit(9, "created");
+        assert_eq!(target.received().len(), 1);
+
+        // The node left the scene: the connection is dropped and the
+        // callback is freed.
+        target.disconnect_all();
+        assert!(!target.connected());
+        assert!(target.received().is_empty());
+
+        // Nothing more is delivered.
+        target.emit(9, "entered");
+        assert!(target.received().is_empty());
+    }
+
+    #[test]
+    fn the_example_cleans_up_on_exit() {
+        // Cross-file: the example logs out and disconnects the signal when
+        // the node leaves the scene, and the target disconnects only while
+        // it is connected.
+        let example = delivered(EXAMPLE_FILE);
+        assert!(example.contains("func _exit_tree()"));
+        assert!(example.contains("_sdk.logout()"));
+        assert!(example.contains("_target.disconnect_from_server(_sdk)"));
+
+        let target = delivered(TARGET_SCRIPT_FILE);
+        assert!(target.contains("func disconnect_from_server(server: Node)"));
+        assert!(target.contains("is_connected(_on_entity_event)"));
+        assert!(target.contains("disconnect(_on_entity_event)"));
+    }
+
+    #[test]
+    fn the_godot_example_logs_in_syncs_and_logs_out() {
+        let steps = run_godot_example();
+
+        // The acceptance: login, sync and logout each have a result.
+        let actions: Vec<&str> = steps.iter().map(|s| s.action.as_str()).collect();
+        assert_eq!(actions, vec!["login", "sync", "logout"]);
+        for s in &steps {
+            assert!(!s.result.is_empty(), "{} has no result", s.action);
+        }
+
+        // The outcomes the acceptance names.
+        assert!(
+            steps[0].result.contains("logged in"),
+            "login: {}",
+            steps[0].result
+        );
+        assert_eq!(steps[1].result, "position.x=1.5");
+        assert_eq!(steps[2].result, "logged out");
+    }
+
+    #[test]
+    fn the_godot_example_is_deterministic() {
+        // Two runs, the same transcript: the example is reproducible.
+        assert_eq!(run_godot_example(), run_godot_example());
+    }
+
+    #[test]
+    fn the_example_gap_is_named() {
+        // The one step a bare runner cannot do is named, with the ticket the
+        // harness skips for, and the reason the plugin tree is not created.
+        assert!(GODOT_EXAMPLE_GAP.contains("Godot"));
+        assert!(GODOT_EXAMPLE_GAP.contains("BW-21-05-04"));
+        assert!(GODOT_EXAMPLE_GAP.contains("sdk/engines/godot/"));
     }
 }
