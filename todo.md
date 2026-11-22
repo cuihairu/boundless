@@ -177,7 +177,8 @@
 
 - [x] **BW-01-02-01 实现定长整数和浮点读写**。**验收** 原版夹具逐字节往返。
   - 证据：`crates/foundation/src/stream.rs` `BinaryStream` 的定宽读写 API（u8/i8/bool/u16/i16/u32/i32/u64/i64/f32/f64 全套 write_* / read_*）早已在位（BW-01-01-03 期建立），本项补钉验收夹具 `reproduces_the_reference_fixed_width_bytes`：14 个定宽值（含 i8/-7、i16/-1234、i32/-1000000、i64/-9000000000、f32/-1.5、f32/1.0、f64/-2.75、f64/2.75、bool 真假、边界字节 0xAB）逐一手推原版字节（`lib/cstdmf/binary_stream.ipp`：BW_HTON* 在小端机为恒等宏→网络序=小端；整数=补码小端；float/double=bw_netlong/bw_netlonglong 联合体直写 IEEE-754 位型小端；byte/bool=单原始字节），断言 port 写出字节序列与手推原版字节 66 字节逐字节相等 + 按 reference sizeof 计长（1/1/1/1/2/2/4/4/8/8/4/4/8/8）+ 同批字节读回逐值复原（逐字节往返）。手推过程纠错留档：i64 与 f64 初稿手推错位，经独立按位复算纠正（i64 -9e9=`00 E6 8E E7 FD FF FF FF`、f64 -2.75=`…06 C0`、f64 2.75=`…06 40`）——夹具是硬编码期望字节而非由实现同式再推，杜绝同源谬误。foundation 156 测试全绿；fmt 净；clippy 净。commit b6f1362。
-- [ ] **BW-01-02-02 实现变长整数与长度前缀**。**验收** 跨长度边界值逐字节吻合。
+- [x] **BW-01-02-02 实现变长整数与长度前缀**。**验收** 跨长度边界值逐字节吻合。
+  - 证据：`crates/foundation/src/stream.rs` 新增 `reproduces_the_reference_packed_int_bytes`——8 个值（0、254、255、256、0x010203、0xFFFF、0x10000、MAX_PACKED_INT）逐一手推原版字节（`lib/cstdmf/binary_stream.hpp` `writePackedInt`/`readPackedInt`/`calculatePackedIntSize`：`value >= 255` 写 `0xFF`+BW_PACK3 三个低字节小端，否则单字节；size=`value >= 0xff ? 4 : 1`；断言 `value < 1<<24`），断言写出字节序列与手推字节逐字节相等、`packed_int_size` 与 reference 同式、读回复原、at_end——重点覆盖 **254/255 跨长度边界**（254→`[0xFE]` 1 字节，255→`[0xFF,0xFF,0x00,0x00]` 4 字节，读端 UNPACK3 恢复 255；256→`[0xFF,0x00,0x01,0x00]`）。另附字符串长度前缀跨边界夹具：254 字节串→1 字节前缀 `[0xFE]`+254 数据（总长 255）、255 字节串→4 字节前缀 `[0xFF,0xFF,0x00,0x00]`+255 数据（总长 259），读回逐值复原。port 的 `write_packed_int`（`value < 255` 单字节、否则 0xFF+三低字节）与 reference 分派完全等价（ref `>=255`、port `<255`），MAX_PACKED_INT=0xFFFFFF 与 ref 断言 `value < 1<<24` 同界。foundation 157 测试全绿；fmt 净；clippy 净。commit 5160a80。
 - [ ] **BW-01-02-03 实现字符串与内存流**。**验收** 空值、嵌入零和剩余长度吻合。
 - [ ] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
 - [ ] **BW-01-02-05 实现截断和越界报告**。**验收** 异常输入产生同类流错误。
