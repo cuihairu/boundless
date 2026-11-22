@@ -160,6 +160,76 @@ impl CallbackDispatcher {
     }
 }
 
+/// The ABI's version: a major change breaks the contract, a minor addition
+/// does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AbiVersion {
+    /// The major version.
+    pub major: u32,
+    /// The minor version.
+    pub minor: u32,
+}
+
+impl AbiVersion {
+    /// The version as `major.minor`, for messages.
+    pub fn name(&self) -> String {
+        format!("{}.{}", self.major, self.minor)
+    }
+}
+
+/// The ABI version this SDK speaks.
+pub const ABI_VERSION: AbiVersion = AbiVersion { major: 1, minor: 0 };
+
+/// Why the ABI handshake failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiError {
+    /// The host and the SDK disagree on their major version.
+    MajorMismatch,
+    /// The host speaks a newer minor than the SDK knows.
+    HostNewer,
+}
+
+impl AbiError {
+    /// The error's stable code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            AbiError::MajorMismatch => "abi-major-mismatch",
+            AbiError::HostNewer => "abi-host-newer",
+        }
+    }
+
+    /// The message a person reads: names the host and the SDK versions, so a
+    /// mismatch is diagnosable, not just reported.
+    pub fn message(&self, host: AbiVersion, sdk: AbiVersion) -> String {
+        match self {
+            AbiError::MajorMismatch => format!(
+                "the host speaks {} but the SDK is {}; ABI majors must agree",
+                host.name(),
+                sdk.name(),
+            ),
+            AbiError::HostNewer => format!(
+                "the host speaks {} but the SDK is {}; the SDK does not \
+                 know that minor",
+                host.name(),
+                sdk.name(),
+            ),
+        }
+    }
+}
+
+/// Negotiate the ABI between the host's version and the SDK's. The same
+/// major and a host not newer than the SDK agree; anything else is an error
+/// that names both versions.
+pub fn negotiate(host: AbiVersion, sdk: AbiVersion) -> Result<AbiVersion, AbiError> {
+    if host.major != sdk.major {
+        return Err(AbiError::MajorMismatch);
+    }
+    if host.minor > sdk.minor {
+        return Err(AbiError::HostNewer);
+    }
+    Ok(sdk)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +379,61 @@ mod tests {
         assert_eq!(dispatcher.pending(), 0);
         // Nothing was delivered, so the thread assertion holds vacuously.
         assert!(dispatcher.all_on_callback_thread());
+    }
+
+    #[test]
+    fn an_abi_handshake_agrees_on_the_same_version() {
+        let host = AbiVersion { major: 1, minor: 0 };
+
+        // Same major, host not newer: the handshake agrees.
+        assert_eq!(negotiate(host, host), Ok(host));
+        assert_eq!(ABI_VERSION.name(), "1.0");
+    }
+
+    #[test]
+    fn a_host_older_than_the_sdk_still_agrees() {
+        let host = AbiVersion { major: 1, minor: 0 };
+        let sdk = AbiVersion { major: 1, minor: 2 };
+
+        // An older host on the same major is backward compatible.
+        assert_eq!(negotiate(host, sdk), Ok(sdk));
+    }
+
+    #[test]
+    fn a_major_mismatch_names_both_versions() {
+        let host = AbiVersion { major: 2, minor: 0 };
+        let sdk = AbiVersion { major: 1, minor: 3 };
+
+        // The error names the two versions, so the mismatch is diagnosable.
+        let error = negotiate(host, sdk).unwrap_err();
+        assert_eq!(error, AbiError::MajorMismatch);
+        assert_eq!(error.code(), "abi-major-mismatch");
+        let message = error.message(host, sdk);
+        assert!(message.contains("2.0") && message.contains("1.3"));
+        assert!(message.contains("majors must agree"));
+    }
+
+    #[test]
+    fn a_host_newer_minor_is_diagnosable() {
+        let host = AbiVersion { major: 1, minor: 5 };
+        let sdk = AbiVersion { major: 1, minor: 3 };
+
+        let error = negotiate(host, sdk).unwrap_err();
+        assert_eq!(error, AbiError::HostNewer);
+        assert_eq!(error.code(), "abi-host-newer");
+        // The message names both versions again.
+        let message = error.message(host, sdk);
+        assert!(message.contains("1.5") && message.contains("1.3"));
+    }
+
+    #[test]
+    fn the_two_abi_errors_are_distinguishable() {
+        let older = AbiVersion { major: 1, minor: 0 };
+        let host = AbiVersion { major: 2, minor: 0 };
+
+        let major = negotiate(host, older).unwrap_err();
+        let minor = negotiate(AbiVersion { major: 1, minor: 5 }, older).unwrap_err();
+        assert_ne!(major, minor);
+        assert_ne!(major.code(), minor.code());
     }
 }
