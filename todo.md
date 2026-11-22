@@ -432,7 +432,13 @@
   - 有意偏离：(a) MSS 以数值传入（参考读活动 socket）; (b) offset 数值代参考 `ReplyIDOrOffset` 指针 hack; (c) 转义 u32 追加式（`compressLength` 的 standalone `-1` 形态）; (d) 请求 8 字节前导（`sizeof(ReplyID)+sizeof(Offset)`，UDP 端口的 6 字节前导不复用）; (e) 连接头/WebSocket 嗅探随 BW-02-05-02; (f) 越界判定 `as i32` 复刻参考 `static_cast<int>`，0xFFFFFFFF 链尾哨兵（-1）放行。
   - 测试与覆盖：mercury **386 通过 / 0 失败**（本轮 +37，tcp_bundle 37/37）；workspace **1470 passed / 0 failed / 64 ignored**；llvm-cov TOTAL **14150 行 / 残 275 = 98.06%**（区域 98.53%、函数 99.27%）≥98% 门禁；tcp_bundle.rs **956 行 / 残 20 = 97.91%**。clippy scoped `-D warnings` 零告警；rustfmt `--check` 0 差异。
   - 压力：mercury `--test-threads=1` **100 轮 38600 通过 / 0 失败**。
-- [ ] **BW-02-04-02 实现短写和待发送缓冲**。**验收** 背压下按序发出完整帧。
+- [x] **BW-02-04-02 实现短写和待发送缓冲**。**验收** 背压下按序发出完整帧。
+  - 新增（59b0cfe）：`crates/mercury/src/tcp_send_buffer.rs`（`TcpSendBuffer`：`write_from`/`send_buffered_data`/`basic_send`/`has_unsent_data`/`is_errno_ignorable`，socket send 为可注入 seam `SendFn`——无活动 socket 即可测，cork 标志折入 seam；参考 `TCPChannel::writeFrom`/`basicSend`/`sendBufferedData` tcp_channel.cpp:707-858 + `isErrnoIgnorable` network_utils.cpp:25）；`lib.rs`（+1 模块）；`tcp_bundle.rs`（`frame_encode_into` 供发送路径一次拼装）；`platform/src/socket.rs`（+`EWOULDBLOCK`/`EINPROGRESS`/`EINTR`）。
+  - 语义：短写（`sent < 输入`）余量入队、写事件时按序排空（`sent==0` 等待、部分前进游标、清空即停等）、队列非空时新帧追加不抢跑、硬 errno（非 ignorable）消费输入并上报（通道销毁）、ignorable（`EAGAIN`/`EWOULDBLOCK`/`EINPROGRESS`/`EINTR`）视为 0 字节。
+  - 验收夹具：`frames_leave_in_order_under_backpressure`——两帧、首帧半发、第二帧整帧排队、排空后发射字节流恰等于两帧编码按序拼接；辅助：全发不排队、短写排队+按序排空、部分排空续等、硬 errno（写/排空两径）、ignorable 延迟、重试集判定、cork 模拟整帧延迟。
+  - 有意偏离：(a) 计数（`numBytesSent_`/`numDataUnitsSent_`）留在通道（BW-02-04-05），缓冲只持未发字节; (b) 写事件注册/注销（`registerWriteFileDescriptor`/`deregisterWriteFileDescriptor`）与延迟 shutdown 属通道与 dispatcher 接线。
+  - 测试与覆盖：mercury **395 通过 / 0 失败**（本轮 +9，tcp_send_buffer 9/9）；workspace **1479 passed / 0 failed / 64 ignored**；llvm-cov TOTAL **14324 行 / 残 277 = 98.07%**（区域 98.55%、函数 99.29%）≥98% 门禁；tcp_send_buffer.rs **171 行 / 残 2 = 98.83%**。clippy scoped `-D warnings` 零告警；rustfmt `--check` 0 差异。
+  - 压力：mercury `--test-threads=1` **100 轮 39500 通过 / 0 失败**。
 - [ ] **BW-02-04-03 接入原版启用的连接过滤**。**验收** 允许及拒绝分别匹配。
 - [ ] **BW-02-04-04 实现超时和断链清理**。**验收** 挂起应答与队列状态吻合。
 - [ ] **BW-02-04-05 核查其余已启用传输方式**。**验收** 每种有混跑夹具或阻塞记录。
