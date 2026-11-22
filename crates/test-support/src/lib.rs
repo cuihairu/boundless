@@ -22,6 +22,7 @@ pub mod diagnostic;
 pub mod event_aggregate;
 pub mod event_contract;
 pub mod event_filter;
+pub mod event_import;
 pub mod event_log;
 pub mod fault_presentation;
 pub mod flamegraph;
