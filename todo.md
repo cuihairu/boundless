@@ -413,7 +413,9 @@
 
 移植 TCPBundle/TCPChannel、帧边界、读写缓冲、连接过滤及在构建中启用的传输方式。对照短读写、背压、超时和断链。
 
-- [ ] **BW-02-04-01 实现 TCPBundle 帧解析**。**验收** 短读与合并读取两类夹具通过。
+- [x] **BW-02-04-01 实现 TCPBundle 帧解析**。**验收** 短读与合并读取两类夹具通过。
+  - 实现：`crates/mercury/src/tcp_bundle.rs`。接收帧层 = `TcpFrameReader`（`TCPChannel::handleInput` 的长度状态机：缓冲→`readSmallFrameLength` 16-bit 帧长 BE→`0xFFFF` 时 `readLargeFrameLength` 32-bit 帧长 BE→整帧到达即出帧体，余量留待下帧；短读拆包/合并读取同机）+ `dispatch_messages`（`TCPBundleProcessor::dispatchMessages`：flags 字节校验 → `FLAG_HAS_REQUESTS` 时读 32-bit BE firstRequestOffset（带符号比对，"无下一请求"值不越界）→ 逐消息查表/回调折叠长度/`read_message_header` 解 id+长度字段+oversize 长度+请求前置(replyID+nextOffset，均 32-bit BE) → 越界判 corrupt → 交 handler，未消费余量按 reference 口径告警）。多字节字段一律 BE（经 `bw_netshort`/`bw_netlong` 网络序）——与 port 共享 `message_framing` 的 LE 是有意分叉，记在 BW-02-03 侧对账；TCP oversize 无位移（`expandLength(,NULL,)` 无包链可走）= 全 1 字段后跟 32-bit 长度、body 原样。
+  - 测试：12 项 `tcp_bundle` 夹具——**验收两类** `a_frame_read_in_short_reads_is_assembled`（逐字节 feed，末字节前 `next_frame` 皆 None，恰出帧体）、`two_frames_in_one_read_are_split`（一次 feed 两帧，逐帧出）；另 `a_short_read_that_splits_the_length_header_assembles`（帧长头内拆）、`a_large_frame_uses_the_32_bit_length_form`（70KB 走 32-bit 长）、`a_plain_frame_dispatches_its_messages`、`a_request_frame_dispatches_with_its_reply_id`、`chained_requests_are_each_delivered_as_requests`、`a_fixed_message_dispatches_without_a_length_field`、`an_oversize_variable_message_uses_the_undispaced_32_bit_length`、`an_unhandled_message_id_discards_the_rest_of_the_frame`、`an_invalid_flags_byte_discards_the_frame`、`the_reader_and_walker_compose_end_to_end`。mercury 307 全绿（+12）；fmt 净；clippy 净。commit 3cb4e7d。
 - [ ] **BW-02-04-02 实现短写和待发送缓冲**。**验收** 背压下按序发出完整帧。
 - [ ] **BW-02-04-03 接入原版启用的连接过滤**。**验收** 允许及拒绝分别匹配。
 - [ ] **BW-02-04-04 实现超时和断链清理**。**验收** 挂起应答与队列状态吻合。
