@@ -423,7 +423,12 @@
   - 证据：**反向与溢出臂**——`expandLength` 宽 0→0、1/2/3/4 分别 `BW_UNPACK*`，4 字节顶位为 1 时 `(int)len < 0` 报溢出（`a_four_byte_length_can_overflow` 以 `u32::MAX` 钉死）；只有 `!canHandleLength(len)` 才走 `specialExpandLength`。unknown 宽度走参考 default 臂（记 CRITICAL 后 `len` 保持 0 → 返回 0），fixed 直接返回 `lengthParam`；fixed 长度不符时参考记 CRITICAL 仍返回 0，本移植以 `debug_assert_eq` 复现该断言并用 `#[should_panic]` 钉住。
   - 证据：**单包连续缓冲的等价性**——参考借 `BundleDataPos` 跨 `Packet::next()` 链推进，本移植在一块连续缓冲内框；特殊形式只在 body 远大于 4 字节时发生，head 与 tail 永不重叠，整字复制与逐字节复制同解。多包消息留待 BW-02-03 的 channel 层。
   - 测试与覆盖：全 workspace **814 通过 / 0 失败 / 33 ignored**（mercury 151 = 135 + 新增 16 个 message_framing 测试）；`cargo clippy -p foundation -p mercury --all-targets` 仅余既有 workspace 级 `python-host` 未用依赖警告；`rustfmt --check` message_framing.rs 0 差异。llvm-cov（四 crate）：message_framing.rs **100.00%** 行 / 区域 / 函数（331 行全覆盖），ema.rs、interface_element.rs、interface_minder.rs、interface_table.rs、interfaces.rs 仍 **100.00%**，TOTAL **99.55%** 行 / **99.62%** 函数，交付面全 ≥98% 门。并行稳定：`timeout` 兜底下 mercury **0/100**。
-- [ ] **BW-02-02-03 实现请求关联与应答派发**。**验收** 交错请求各自收到正确响应。
+- [x] **BW-02-02-03 实现请求关联与应答派发**（2380a11）。**验收** 交错请求各自收到正确响应。
+  - 证据：**交错关联**——三笔请求依次发出、应答按逆序返回，每个 handler 恰收到自己那笔的负载与 arg（验收测试 `interleaved_requests_each_receive_their_own_reply`），且应答后再重放该 id 找不到 handler（请求已释放）。
+  - 证据：**槽位与字节序**——`add_reply_order` 分配的 id 以 `write_i32`（小端）写入请求前导的 4 字节槽；参考 `BW_HTONL` 在小端目标上恒等（BW-01-02-01 已固定），故端口用小端 `read_i32`/`write_i32`；`get_next_reply_id` 越过 `REPLY_ID_MAX` 回绕到 1，种子为 `(stamp%100000)+10101`。
+  - 证据：**守卫**——消息类型非 `REPLY_MESSAGE_IDENTIFIER`、body 短于 4 字节、id 无匹配者均告警丢弃不派发；外部 nub 只接受频道地址的应答，错误来源应答告警后**请求保留挂起**，内部 nub 不设来源检查（参考注释：内部频道卸载后应答可来自不同地址）。
+  - 证据：**生命周期**——无频道请求在 `!pChannel` 时挂 once-off 定时器（超时 `TimerExpired` 恰好一次并释放），频道请求不带定时器（超时归频道 BW-02-03）；`cancel_requests_for_channel` 只以 `ChannelLost` 失败该频道的请求，`cancel_requests_for_handler` 以指定 reason 失败该 handler 的全部请求；析构以 `ShuttingDown` 失败全部挂起。定时器闭包捕获 `Weak<RequestManager>` 断 Rc 环（管理器→请求→定时器→闭包→管理器）。
+  - 测试与覆盖：mercury **167 通过 / 0 失败**（新增 16：13 request_manager + 2 nub_exception + 1 unpacked_message_header）；全 workspace **838 通过 / 0 失败 / 33 ignored**；`cargo clippy -p mercury --all-targets -- -D warnings` 零告警、`cargo fmt --check -p mercury` 0 差异。llvm-cov 行覆盖 request_manager.rs **99.60%**、nub_exception.rs **100.00%**、unpacked_message_header.rs **100.00%**（唯一未覆为 `fail_request` 的防御性未命中臂——请求被解析时其定时器必已取消，参考 `failRequest(Request&)` 恒持有存活请求，该臂不可达）。`ChannelRef` 新增 `addr()`，仅 packet_receiver 测试的 `FakeChannel` 与 request_manager 测试实现，无仓外实现者。
 - [ ] **BW-02-02-04 实现请求超时和取消**。**验收** 回调恰好一次并释放挂起状态。
 - [ ] **BW-02-02-05 注册处理器与校验**。**验收** 未知消息与长度错误结果吻合。
 
