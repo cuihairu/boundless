@@ -107,6 +107,11 @@ pub struct TypeSpec {
     richcompare: Option<capi::RichcmpFunction>,
     /// The construction entry; `None` is the reference's refusal.
     new_: Option<capi::NewFunction>,
+    /// The address of a previously registered heap type this type derives
+    /// from, wired as the `Py_tp_base` slot; `None` is the `object` root.
+    base: Option<usize>,
+    /// `Py_TPFLAGS_*` layered onto the heap type; zero is the default set.
+    flags: u32,
     /// Extra bytes of instance body the allocated objects carry.
     instance_size: usize,
 }
@@ -122,6 +127,8 @@ impl TypeSpec {
             number: None,
             richcompare: None,
             new_: None,
+            base: None,
+            flags: 0,
             instance_size: 0,
         }
     }
@@ -233,6 +240,24 @@ impl TypeSpec {
     #[must_use]
     pub fn instance_size(mut self, bytes: usize) -> Self {
         self.instance_size = bytes;
+        self
+    }
+
+    /// Derive this type from an already-registered type, the reference's
+    /// `public MatrixProvider` inheritance: `PyMatrix` and the providers are
+    /// `MatrixProvider` subclasses before they are themselves, so
+    /// `isinstance` and the provider conversion both see the base.
+    #[must_use]
+    pub fn base(mut self, base: usize) -> Self {
+        self.base = Some(base);
+        self
+    }
+
+    /// Layer `Py_TPFLAGS_*` onto the heap type: `BASETYPE` is what lets
+    /// `PyType_FromSpec` accept this type as another spec's `Py_tp_base`.
+    #[must_use]
+    pub fn flags(mut self, flags: u32) -> Self {
+        self.flags |= flags;
         self
     }
 }
@@ -619,190 +644,198 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
     // `PyObject_GenericSetAttr` (a `NULL` value in the slot layer is the
     // delete, which `PyObject_GenericSetAttr` itself handles), `_pyNew` the
     // refusal, `pyRepr` the address format.
-    let slots: &'static mut [capi::PyTypeSlot] = Box::leak(
-        vec![
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_getattro,
-                pfunc: capi::PyObject_GenericGetAttr as *mut std::os::raw::c_void,
+    let mut slots = vec![
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_getattro,
+            pfunc: capi::PyObject_GenericGetAttr as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_setattro,
+            pfunc: capi::PyObject_GenericSetAttr as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_new,
+            pfunc: spec.new_.unwrap_or(refuse_new) as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_repr,
+            pfunc: default_repr as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_sq_length,
+            pfunc: spec
+                .sequence
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |sequence| {
+                    sequence.length as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_sq_item,
+            pfunc: spec
+                .sequence
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |sequence| {
+                    sequence.item as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_sq_ass_item,
+            pfunc: spec
+                .sequence
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |sequence| {
+                    sequence.ass_item as *mut std::os::raw::c_void
+                }),
+        },
+        // The mapping protocol wins `obj[i]` for heap types, so the
+        // reference bridges it back into the sequence handlers instead
+        // of filling a second table (`pyobject_plus.cpp:294`).
+        capi::PyTypeSlot {
+            slot: capi::Py_mp_subscript,
+            pfunc: if spec.sequence.is_some() {
+                seq_subscript as *mut std::os::raw::c_void
+            } else {
+                std::ptr::null_mut()
             },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_setattro,
-                pfunc: capi::PyObject_GenericSetAttr as *mut std::os::raw::c_void,
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_mp_ass_subscript,
+            pfunc: if spec.sequence.is_some() {
+                seq_ass_subscript as *mut std::os::raw::c_void
+            } else {
+                std::ptr::null_mut()
             },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_new,
-                pfunc: spec.new_.unwrap_or(refuse_new) as *mut std::os::raw::c_void,
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_repr,
-                pfunc: default_repr as *mut std::os::raw::c_void,
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_sq_length,
-                pfunc: spec
-                    .sequence
-                    .as_ref()
-                    .map_or(std::ptr::null_mut(), |sequence| {
-                        sequence.length as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_sq_item,
-                pfunc: spec
-                    .sequence
-                    .as_ref()
-                    .map_or(std::ptr::null_mut(), |sequence| {
-                        sequence.item as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_sq_ass_item,
-                pfunc: spec
-                    .sequence
-                    .as_ref()
-                    .map_or(std::ptr::null_mut(), |sequence| {
-                        sequence.ass_item as *mut std::os::raw::c_void
-                    }),
-            },
-            // The mapping protocol wins `obj[i]` for heap types, so the
-            // reference bridges it back into the sequence handlers instead
-            // of filling a second table (`pyobject_plus.cpp:294`).
-            capi::PyTypeSlot {
-                slot: capi::Py_mp_subscript,
-                pfunc: if spec.sequence.is_some() {
-                    seq_subscript as *mut std::os::raw::c_void
-                } else {
-                    std::ptr::null_mut()
-                },
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_mp_ass_subscript,
-                pfunc: if spec.sequence.is_some() {
-                    seq_ass_subscript as *mut std::os::raw::c_void
-                } else {
-                    std::ptr::null_mut()
-                },
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_richcompare,
-                pfunc: spec.richcompare.map_or(std::ptr::null_mut(), |handler| {
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_richcompare,
+            pfunc: spec.richcompare.map_or(std::ptr::null_mut(), |handler| {
+                handler as *mut std::os::raw::c_void
+            }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_add,
+            pfunc: spec
+                .number
+                .and_then(|number| number.add)
+                .map_or(std::ptr::null_mut(), |handler| {
                     handler as *mut std::os::raw::c_void
                 }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_add,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.add)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_subtract,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.subtract)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_multiply,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.multiply)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_true_divide,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.true_divide)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_negative,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.negative)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_positive,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.positive)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_bool,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.bool_)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_inplace_add,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.inplace_add)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_inplace_subtract,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.inplace_subtract)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_inplace_multiply,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.inplace_multiply)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_nb_inplace_true_divide,
-                pfunc: spec
-                    .number
-                    .and_then(|number| number.inplace_true_divide)
-                    .map_or(std::ptr::null_mut(), |handler| {
-                        handler as *mut std::os::raw::c_void
-                    }),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_methods,
-                pfunc: methods.as_mut_ptr().cast(),
-            },
-            capi::PyTypeSlot {
-                slot: capi::Py_tp_getset,
-                pfunc: attributes.as_mut_ptr().cast(),
-            },
-            capi::PyTypeSlot {
-                slot: 0,
-                pfunc: std::ptr::null_mut(),
-            },
-        ]
-        .into_boxed_slice(),
-    );
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_subtract,
+            pfunc: spec
+                .number
+                .and_then(|number| number.subtract)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_multiply,
+            pfunc: spec
+                .number
+                .and_then(|number| number.multiply)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_true_divide,
+            pfunc: spec
+                .number
+                .and_then(|number| number.true_divide)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_negative,
+            pfunc: spec
+                .number
+                .and_then(|number| number.negative)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_positive,
+            pfunc: spec
+                .number
+                .and_then(|number| number.positive)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_bool,
+            pfunc: spec
+                .number
+                .and_then(|number| number.bool_)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_inplace_add,
+            pfunc: spec
+                .number
+                .and_then(|number| number.inplace_add)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_inplace_subtract,
+            pfunc: spec
+                .number
+                .and_then(|number| number.inplace_subtract)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_inplace_multiply,
+            pfunc: spec
+                .number
+                .and_then(|number| number.inplace_multiply)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_nb_inplace_true_divide,
+            pfunc: spec
+                .number
+                .and_then(|number| number.inplace_true_divide)
+                .map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_methods,
+            pfunc: methods.as_mut_ptr().cast(),
+        },
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_getset,
+            pfunc: attributes.as_mut_ptr().cast(),
+        },
+    ];
+    if let Some(base) = spec.base {
+        // The registry only stores addresses of type objects `create_type`
+        // built, so the cast is the real type object. The slot is emitted
+        // only when a base is present: CPython packs a `Py_tp_base` slot
+        // into a one-element bases tuple and a null pointer would crash.
+        slots.push(capi::PyTypeSlot {
+            slot: capi::Py_tp_base,
+            pfunc: base as *mut std::os::raw::c_void,
+        });
+    }
+    slots.push(capi::PyTypeSlot {
+        slot: 0,
+        pfunc: std::ptr::null_mut(),
+    });
+    let slots: &'static mut [capi::PyTypeSlot] = Box::leak(slots.into_boxed_slice());
 
     // The instance body is the `PyObject` header plus whatever the spec
     // asked for: a container proxy carries its state pointer there.
@@ -811,7 +844,7 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
         basicsize: (std::mem::size_of::<capi::PyObject>() + spec.instance_size)
             as std::os::raw::c_int,
         itemsize: 0,
-        flags: 0,
+        flags: spec.flags,
         slots: slots.as_mut_ptr(),
     }));
 

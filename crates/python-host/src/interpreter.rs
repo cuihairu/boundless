@@ -567,6 +567,7 @@ mod tests {
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
         "interpreter::tests::scenario_the_math_vectors_behave_like_the_reference",
+        "interpreter::tests::scenario_the_math_matrix_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -2570,6 +2571,178 @@ __probe = '; '.join(_f) or 'ok'
 "#,
             );
             assert_eq!(text, "ok", "math vector behaviour mismatch: {text}");
+        });
+    }
+
+    /// `TempPyVectorInit` also puts the `MatrixProvider` base and the
+    /// `Matrix` factory on `Math`; the method table, the attribute table and
+    /// the pickling state methods behave as the reference's `PyMatrix` does.
+    /// The check list mirrors the reference semantics one by one, so the
+    /// acceptance is that the live object and the C++ semantics agree.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_matrix_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import math
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+# Module surface and inheritance.
+ck(hasattr(Math, 'MatrixProvider'), 'MatrixProvider in module')
+ck(hasattr(Math, 'Matrix'), 'Matrix factory in module')
+ck(callable(Math.Matrix), 'Math.Matrix callable')
+m = Math.Matrix()
+ck(isinstance(m, Math.MatrixProvider), 'Matrix is a MatrixProvider')
+
+# Construction: `Math.Matrix()` is the identity matrix.
+ck(tuple(m.translation) == (0.0, 0.0, 0.0), 'identity translation')
+ck(m.get(0,0) == 1.0 and m.get(1,1) == 1.0 and m.get(2,2) == 1.0 and
+   m.get(3,3) == 1.0, 'identity diagonal')
+
+# setTranslate resets the linear part and moves the translation row.
+m.setTranslate((1.0, 2.0, 3.0))
+ck(tuple(m.translation) == (1.0, 2.0, 3.0), 'setTranslate')
+ck(m.get(3,0) == 1.0 and m.get(3,1) == 2.0 and m.get(3,2) == 3.0,
+   'get translation column')
+m.setIdentity()
+ck(m.get(0,0) == 1.0, 'setIdentity resets linear part')
+
+# setScale fills the diagonal and leaves w=1.
+m.setScale(Math.Vector3(2.0, 3.0, 4.0))
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 4.0 and
+   m.get(3,3) == 1.0, 'setScale')
+
+# determinant.
+m.setIdentity()
+ck(m.determinant == 1.0, 'determinant identity')
+m.setScale((2.0, 3.0, 4.0))
+ck(abs(m.determinant - 24.0) < 1e-6, 'determinant scale')
+
+# setElement / get: (col, row), translation lands in column 3.
+m2 = Math.Matrix()
+m2.setElement(3, 0, 5.0)
+m2.setElement(3, 1, 6.0)
+m2.setElement(3, 2, 7.0)
+ck(tuple(m2.translation) == (5.0, 6.0, 7.0), 'setElement translation')
+ck(m2.get(3,0) == 5.0 and m2.get(3,1) == 6.0 and m2.get(3,2) == 7.0,
+   'get translation by element')
+ck(m2.get(7,0) == 5.0, 'get wraps column mod 4')
+
+# Rotation and angle validation.
+r = Math.Matrix()
+r.setRotateY(1.5707963267948966)
+ck(abs(r.get(0,0)) < 1e-6 and abs(r.get(0,2) + 1.0) < 1e-6, 'rotateY')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateY(500.0)),
+   'angle out of range rejected')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateYPR(Math.Vector3(200.0, 0.0, 0.0))),
+   'setRotateYPR element out of range rejected')
+
+# applyPoint / applyVector / applyToOrigin / applyToAxis.
+t = Math.Matrix()
+t.setTranslate((10.0, 20.0, 30.0))
+p = t.applyPoint(Math.Vector3(1.0, 2.0, 3.0))
+ck(p.x == 11.0 and p.y == 22.0 and p.z == 33.0, 'applyPoint')
+v = t.applyVector(Math.Vector3(1.0, 2.0, 3.0))
+ck(v.x == 1.0 and v.y == 2.0 and v.z == 3.0, 'applyVector ignores translation')
+o = t.applyToOrigin()
+ck(o.x == 10.0 and o.y == 20.0 and o.z == 30.0, 'applyToOrigin')
+axis = t.applyToAxis(2)
+ck(axis.z == 1.0, 'applyToAxis row')
+a4 = t.applyV4Point(Math.Vector4(1.0, 2.0, 3.0, 1.0))
+ck(a4.x == 11.0 and a4.y == 22.0 and a4.z == 33.0 and a4.w == 1.0,
+   'applyV4Point')
+
+# Multiplication order: preMultiply left-composes, postMultiply right-composes.
+a = Math.Matrix()
+a.setScale((2.0, 3.0, 4.0))
+b = Math.Matrix()
+b.setTranslate((1.0, 0.0, 0.0))
+b.postMultiply(a)
+ck(b.get(3,0) == 2.0 and b.get(0,0) == 2.0, 'postMultiply')
+b.preMultiply(a)
+ck(b.get(3,0) == 2.0, 'preMultiply scales the translation')
+
+# invert: singular raises ValueError, invertible inverts the diagonal.
+i = Math.Matrix()
+i.setScale((0.0, 0.0, 0.0))
+ck(raises(ValueError, lambda: i.invert()), 'invert singular raises')
+i.setScale((2.0, 3.0, 4.0))
+i.invert()
+ck(abs(i.get(0,0) - 0.5) < 1e-6 and abs(i.get(1,1) - (1.0/3.0)) < 1e-6 and
+   abs(i.get(2,2) - 0.25) < 1e-6, 'invert diagonal')
+
+# set from a provider, and the factory copy.
+src = Math.Matrix()
+src.setTranslate((7.0, 8.0, 9.0))
+dst = Math.Matrix()
+dst.set(src)
+ck(tuple(dst.translation) == (7.0, 8.0, 9.0), 'set from provider')
+copied = Math.Matrix(src)
+ck(tuple(copied.translation) == (7.0, 8.0, 9.0), 'factory copy from provider')
+ck(raises(TypeError, lambda: Math.Matrix(None)), 'factory rejects None')
+
+# lookAt: a view down +z from an offset position.
+view = Math.Matrix()
+view.lookAt(Math.Vector3(10.0, 0.0, 0.0), Math.Vector3(0.0, 0.0, 1.0),
+            Math.Vector3(0.0, 1.0, 0.0))
+ck(view.get(3,0) == -10.0 and abs(view.get(0,0) - 1.0) < 1e-6 and
+   abs(view.get(1,1) - 1.0) < 1e-6, 'lookAt')
+
+# yaw/pitch/roll extraction roundtrips setRotateYPR.
+e = Math.Matrix()
+e.setRotateYPR(Math.Vector3(0.5, 0.25, 0.0))
+ck(abs(e.yaw - 0.5) < 1e-5 and abs(e.pitch - 0.25) < 1e-5, 'yaw pitch roundtrip')
+
+# isMirrored.
+nm = Math.Matrix()
+nm.setScale((-1.0, 1.0, 1.0))
+ck(nm.isMirrored, 'isMirrored for reflected basis')
+nm.setIdentity()
+ck(not nm.isMirrored, 'not mirrored for identity')
+
+# projections.
+proj = Math.Matrix()
+proj.orthogonalProjection(100.0, 50.0, 0.5, 100.5)
+ck(abs(proj.get(0,0) - 0.02) < 1e-6 and abs(proj.get(1,1) - 0.04) < 1e-6,
+   'orthogonalProjection')
+persp = Math.Matrix()
+persp.perspectiveProjection(1.0, 1.5, 0.5, 100.5)
+cot = 1.0 / math.tan(0.5)
+rcp = 1.0 / (100.5 - 0.5)
+ck(abs(persp.get(0,0) - cot / 1.5) < 1e-6 and abs(persp.get(1,1) - cot) < 1e-6
+   and abs(persp.get(2,2) - rcp * 100.5) < 1e-6 and persp.get(2,3) == 1.0
+   and abs(persp.get(3,2) - (-rcp * 100.5 * 0.5)) < 1e-6 and persp.get(3,3) == 0.0,
+   'perspectiveProjection')
+
+# Pickling state methods: a raw 64-byte blob roundtrips the matrix.
+state = Math.Matrix()
+state.setTranslate((4.0, 5.0, 6.0))
+blob = state.__getstate__()
+ck(isinstance(blob, bytes) and len(blob) == 64, 'getstate bytes')
+restored = Math.Matrix()
+restored.__setstate__(blob)
+ck(tuple(restored.translation) == (4.0, 5.0, 6.0), 'setstate roundtrip')
+ck(raises(ValueError, lambda: Math.Matrix().__setstate__(b'bad')),
+   'setstate bad state rejected')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math matrix behaviour mismatch: {text}");
         });
     }
 

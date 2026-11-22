@@ -22,6 +22,7 @@
 //! element-wise f32 arithmetic and the f32 `lengthSquared`), so a script
 //! sees the same results and the same failures in the same order.
 
+use std::ffi::c_char;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -432,14 +433,14 @@ macro_rules! vector_type {
             /// instance-type check of `PyVector<V>::Check`.
             static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
 
-            fn type_addr() -> usize {
+            pub(super) fn type_addr() -> usize {
                 TYPE_ADDR.load(Ordering::SeqCst)
             }
 
             /// A fresh instance carrying `data`; the caller owns the one
             /// reference. `Script::getData(V)`, the result arm of every
             /// arithmetic handler.
-            fn make(data: [f32; N]) -> *mut capi::PyObject {
+            pub(super) fn make(data: [f32; N]) -> *mut capi::PyObject {
                 let Ok(type_object) = binding::create_type(&spec()) else {
                     return std::ptr::null_mut();
                 };
@@ -1502,12 +1503,823 @@ vector_type!(vector2, 2, "Math.Vector2", no_cross);
 vector_type!(vector3, 3, "Math.Vector3", cross);
 vector_type!(vector4, 4, "Math.Vector4", no_cross);
 
+/// The `Math.Matrix` and `Math.MatrixProvider` types
+/// (`script_math.cpp:740-...`): `MatrixProvider` is the abstract base every
+/// matrix-carrying script object derives from, and `PyMatrix` is the concrete
+/// 4x4 value the scripts mutate directly.
+///
+/// The reference's `MatrixProvider::matrix(Matrix&)` is a virtual that each
+/// subclass fills in; the port dispatches on the concrete type address in
+/// [`provider_matrix`], the same dispatch the reference's vtable performs.
+mod matrix {
+    use super::*;
+    use foundation::math::{Matrix, Vector3, Vector4};
+
+    /// The instance body beyond the `PyObject` header: the 16 f32s of the
+    /// matrix inline, the layout of the reference's `PyMatrix` (which embeds
+    /// a `Matrix`).
+    #[repr(C)]
+    struct MatrixBody {
+        header: capi::PyObject,
+        m: [[f32; 4]; 4],
+    }
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<MatrixBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Matrix` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+    /// The one `Math.MatrixProvider` base type object, by address.
+    static PROVIDER_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    fn provider_addr() -> usize {
+        PROVIDER_ADDR.load(Ordering::SeqCst)
+    }
+
+    fn matrix_read(object: *mut capi::PyObject) -> Option<Matrix> {
+        if object.is_null() {
+            return None;
+        }
+        // SAFETY: the type check gates the body read to `MatrixBody`.
+        unsafe {
+            if capi::Py_TYPE(object) as usize != type_addr() {
+                return None;
+            }
+            Some(Matrix {
+                m: std::ptr::addr_of!((*object.cast::<MatrixBody>()).m).read(),
+            })
+        }
+    }
+
+    fn matrix_write(object: *mut capi::PyObject, m: &Matrix) -> bool {
+        if object.is_null() {
+            return false;
+        }
+        // SAFETY: the type check gates the body write to `MatrixBody`.
+        unsafe {
+            if capi::Py_TYPE(object) as usize != type_addr() {
+                return false;
+            }
+            std::ptr::addr_of_mut!((*object.cast::<MatrixBody>()).m).write(m.m);
+        }
+        true
+    }
+
+    /// A fresh `Math.Matrix` carrying `m`; the caller owns the reference.
+    fn make(m: &Matrix) -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `MatrixBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<MatrixBody>()).m).write(m.m);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// `MatrixProvider::Check` (`script_math.cpp:785`): any object whose type
+    /// is `MatrixProvider` or one of its subclasses.
+    fn provider_check(object: *mut capi::PyObject) -> bool {
+        let provider = provider_addr();
+        if object.is_null() || provider == 0 {
+            return false;
+        }
+        // SAFETY: the registry only stores type objects `create_type` built.
+        unsafe {
+            capi::PyType_IsSubtype(capi::Py_TYPE(object), provider as *mut capi::PyTypeObject) == 1
+        }
+    }
+
+    /// The matrix a `MatrixProvider` yields. The dispatch is the reference's
+    /// virtual `matrix()`: today `PyMatrix` is the only concrete provider, so
+    /// the single arm reads the embedded body; the provider classes add arms.
+    fn provider_matrix(object: *mut capi::PyObject) -> Option<Matrix> {
+        if !provider_check(object) {
+            return None;
+        }
+        matrix_read(object)
+    }
+
+    /// One `Math.Vector3` argument, `Script::setData(obj, Vector3)`: the
+    /// same-width vector or a tuple of three floats.
+    fn parse_vec3(item: *mut capi::PyObject) -> Option<Vector3> {
+        let data = unsafe { as_vector::<3>(item, super::vector3::type_addr()) };
+        data.map(|d| Vector3::new(d[0], d[1], d[2]))
+    }
+
+    /// One `Math.Vector4` argument, `Script::setData(obj, Vector4)`.
+    fn parse_vec4(item: *mut capi::PyObject) -> Option<Vector4> {
+        let data = unsafe { as_vector::<4>(item, super::vector4::type_addr()) };
+        data.map(|d| Vector4::new(d[0], d[1], d[2], d[3]))
+    }
+
+    /// One unsigned integer argument, the reference's `uint` parameters.
+    fn parse_uint(item: *mut capi::PyObject) -> Option<usize> {
+        if item.is_null() {
+            return None;
+        }
+        // SAFETY: the conversion reads the borrowed object; a failure leaves
+        // a pending error which is cleared here.
+        unsafe {
+            let value = capi::PyLong_AsLong(item);
+            if !capi::PyErr_Occurred().is_null() {
+                capi::PyErr_Clear();
+                return None;
+            }
+            Some(value as usize)
+        }
+    }
+
+    /// A float angle in the reference's `[-100, 100]` range
+    /// (`script_math.hpp:68-74`); `Err` carries the raised `TypeError`.
+    fn parse_angle(item: *mut capi::PyObject) -> Result<f32, *mut capi::PyObject> {
+        let Some(value) = (unsafe { as_float(item) }) else {
+            return Err(type_error("must be real number"));
+        };
+        if !(-100.0..=100.0).contains(&value) {
+            return Err(type_error("must be a valid angle"));
+        }
+        Ok(value)
+    }
+
+    fn type_error(message: &str) -> *mut capi::PyObject {
+        // SAFETY: raising only sets the error; the interpreter is up because
+        // the handler that got here is a C API callback.
+        unsafe {
+            let message = std::ffi::CString::new(message).expect("a message has no embedded NUL");
+            capi::PyErr_SetString(capi::PyExc_TypeError, message.as_ptr());
+        }
+        std::ptr::null_mut()
+    }
+
+    fn value_error(message: &str) -> *mut capi::PyObject {
+        // SAFETY: as `type_error`.
+        unsafe {
+            let message = std::ffi::CString::new(message).expect("a message has no embedded NUL");
+            capi::PyErr_SetString(capi::PyExc_ValueError, message.as_ptr());
+        }
+        std::ptr::null_mut()
+    }
+
+    /// The number of arguments the reference `PyArg_ParseTuple` would accept
+    /// for a handler's format; an unexpected count raises the same
+    /// `TypeError` family the format parser raises.
+    fn want_args(args: *mut capi::PyObject, count: usize) -> bool {
+        // SAFETY: the count read is on the borrowed arguments tuple.
+        unsafe { capi::PyTuple_Size(args) == count as capi::PySsize }
+    }
+
+    fn arg(args: *mut capi::PyObject, index: usize) -> *mut capi::PyObject {
+        // SAFETY: the caller has already checked the tuple length.
+        unsafe { capi::PyTuple_GetItem(args, index as capi::PySsize) }
+    }
+
+    // -- the method handlers, one per `PY_AUTO_METHOD_DECLARE` in
+    //    `script_math.hpp:171-232` -------------------------------------------
+
+    unsafe extern "C" fn set(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.set expects 1 argument");
+        }
+        let provider = arg(args, 0);
+        let Some(m) = provider_matrix(provider) else {
+            return type_error("Matrix.set expects a MatrixProvider");
+        };
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_zero(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Matrix.setZero takes no arguments");
+        }
+        matrix_write(self_, &Matrix::zero());
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_identity(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Matrix.setIdentity takes no arguments");
+        }
+        matrix_write(self_, &Matrix::identity());
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_scale(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.setScale expects 1 argument");
+        }
+        let Some(v) = parse_vec3(arg(args, 0)) else {
+            return type_error("Matrix.setScale expects a Vector3");
+        };
+        let mut m = Matrix::zero();
+        m.set_scale(v.x, v.y, v.z);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_translate(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.setTranslate expects 1 argument");
+        }
+        let Some(v) = parse_vec3(arg(args, 0)) else {
+            return type_error("Matrix.setTranslate expects a Vector3");
+        };
+        let mut m = Matrix::zero();
+        m.set_translate(v.x, v.y, v.z);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_rotate_x(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.setRotateX expects 1 argument");
+        }
+        let angle = match parse_angle(arg(args, 0)) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let mut m = Matrix::zero();
+        m.set_rotate_x(angle);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_rotate_y(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.setRotateY expects 1 argument");
+        }
+        let angle = match parse_angle(arg(args, 0)) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let mut m = Matrix::zero();
+        m.set_rotate_y(angle);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_rotate_z(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.setRotateZ expects 1 argument");
+        }
+        let angle = match parse_angle(arg(args, 0)) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let mut m = Matrix::zero();
+        m.set_rotate_z(angle);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_rotate_ypr(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.setRotateYPR expects 1 argument");
+        }
+        let Some(v) = parse_vec3(arg(args, 0)) else {
+            return type_error("Matrix.setRotateYPR expects a Vector3");
+        };
+        // The reference's `VALID_ANGLE_VECTOR3_ARG` checks each element
+        // (`script_math.hpp:76-83`).
+        for (index, value) in [v.x, v.y, v.z].iter().enumerate() {
+            if !(-100.0..=100.0).contains(value) {
+                return type_error(&format!(
+                    "() argument 1 element {index} must be a valid angle"
+                ));
+            }
+        }
+        let mut m = Matrix::zero();
+        m.set_rotate_ypr(v.x, v.y, v.z);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn pre_multiply(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.preMultiply expects 1 argument");
+        }
+        let Some(rhs) = provider_matrix(arg(args, 0)) else {
+            return type_error("Matrix.preMultiply expects a MatrixProvider");
+        };
+        let Some(mut m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        m.pre_multiply(&rhs);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn post_multiply(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.postMultiply expects 1 argument");
+        }
+        let Some(rhs) = provider_matrix(arg(args, 0)) else {
+            return type_error("Matrix.postMultiply expects a MatrixProvider");
+        };
+        let Some(mut m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        m.post_multiply(&rhs);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    /// `RETOK` (`script.hpp:1270`): `None` on success, the `ValueError` the
+    /// reference's `PyMatrix::invert` raises on a singular matrix.
+    unsafe extern "C" fn invert(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Matrix.invert takes no arguments");
+        }
+        let Some(mut m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        if !m.invert() {
+            return value_error("Matrix could not be inverted");
+        }
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn look_at(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 3) {
+            return type_error("Matrix.lookAt expects 3 arguments");
+        }
+        let Some(position) = parse_vec3(arg(args, 0)) else {
+            return type_error("Matrix.lookAt expects a Vector3 position");
+        };
+        let Some(direction) = parse_vec3(arg(args, 1)) else {
+            return type_error("Matrix.lookAt expects a Vector3 direction");
+        };
+        let Some(up) = parse_vec3(arg(args, 2)) else {
+            return type_error("Matrix.lookAt expects a Vector3 up");
+        };
+        let mut m = Matrix::zero();
+        m.look_at(&position, &direction, &up);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn set_element(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 3) {
+            return type_error("Matrix.setElement expects 3 arguments");
+        }
+        let Some(col) = parse_uint(arg(args, 0)) else {
+            return type_error("Matrix.setElement expects an integer column");
+        };
+        let Some(row) = parse_uint(arg(args, 1)) else {
+            return type_error("Matrix.setElement expects an integer row");
+        };
+        let Some(value) = (unsafe { as_float(arg(args, 2)) }) else {
+            return type_error("Matrix.setElement expects a float value");
+        };
+        let Some(mut m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        m.set_element(col, row, value);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn get(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 2) {
+            return type_error("Matrix.get expects 2 arguments");
+        }
+        let Some(col) = parse_uint(arg(args, 0)) else {
+            return type_error("Matrix.get expects an integer column");
+        };
+        let Some(row) = parse_uint(arg(args, 1)) else {
+            return type_error("Matrix.get expects an integer row");
+        };
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        // SAFETY: the interpreter is up (a handler is running).
+        unsafe { capi::PyFloat_FromDouble(m.get_element(col, row) as f64) }
+    }
+
+    unsafe extern "C" fn apply_point(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.applyPoint expects 1 argument");
+        }
+        let Some(v) = parse_vec3(arg(args, 0)) else {
+            return type_error("Matrix.applyPoint expects a Vector3");
+        };
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        let out = m.apply_point(&v);
+        super::vector3::make([out.x, out.y, out.z])
+    }
+
+    unsafe extern "C" fn apply_v4_point(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.applyV4Point expects 1 argument");
+        }
+        let Some(v) = parse_vec4(arg(args, 0)) else {
+            return type_error("Matrix.applyV4Point expects a Vector4");
+        };
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        let out = m.apply_v4_point(&v);
+        super::vector4::make([out.x, out.y, out.z, out.w])
+    }
+
+    unsafe extern "C" fn apply_vector(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.applyVector expects 1 argument");
+        }
+        let Some(v) = parse_vec3(arg(args, 0)) else {
+            return type_error("Matrix.applyVector expects a Vector3");
+        };
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        let out = m.apply_vector(&v);
+        super::vector3::make([out.x, out.y, out.z])
+    }
+
+    unsafe extern "C" fn apply_to_axis(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.applyToAxis expects 1 argument");
+        }
+        let Some(axis) = parse_uint(arg(args, 0)) else {
+            return type_error("Matrix.applyToAxis expects an integer axis");
+        };
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        let out = m.apply_to_unit_axis_vector(axis & 3);
+        super::vector3::make([out.x, out.y, out.z])
+    }
+
+    unsafe extern "C" fn apply_to_origin(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Matrix.applyToOrigin takes no arguments");
+        }
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        let out = m.apply_to_origin();
+        super::vector3::make([out.x, out.y, out.z])
+    }
+
+    unsafe extern "C" fn orthogonal_projection(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 4) {
+            return type_error("Matrix.orthogonalProjection expects 4 arguments");
+        }
+        let mut values = [0.0f32; 4];
+        for (index, slot) in values.iter_mut().enumerate() {
+            let Some(value) = (unsafe { as_float(arg(args, index)) }) else {
+                return type_error("Matrix.orthogonalProjection expects floats");
+            };
+            *slot = value;
+        }
+        let mut m = Matrix::zero();
+        m.orthogonal_projection(values[0], values[1], values[2], values[3]);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    unsafe extern "C" fn perspective_projection(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 4) {
+            return type_error("Matrix.perspectiveProjection expects 4 arguments");
+        }
+        let mut values = [0.0f32; 4];
+        for (index, slot) in values.iter_mut().enumerate() {
+            let Some(value) = (unsafe { as_float(arg(args, index)) }) else {
+                return type_error("Matrix.perspectiveProjection expects floats");
+            };
+            *slot = value;
+        }
+        let mut m = Matrix::zero();
+        m.perspective_projection(values[0], values[1], values[2], values[3]);
+        matrix_write(self_, &m);
+        none_ref()
+    }
+
+    // -- `__getstate__`/`__setstate__` (`script_math.cpp:741-772`) ----------
+
+    unsafe extern "C" fn getstate(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Matrix.__getstate__ takes no arguments");
+        }
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        // SAFETY: the matrix body is 64 bytes of repr(C) f32s, live for the
+        // call's duration; `PyBytes_FromStringAndSize` copies them.
+        unsafe {
+            let ptr = std::ptr::addr_of!(m.m).cast::<c_char>();
+            capi::PyBytes_FromStringAndSize(ptr, std::mem::size_of::<Matrix>() as capi::PySsize)
+        }
+    }
+
+    unsafe extern "C" fn setstate(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Matrix.__setstate__ was given wrong args");
+        }
+        let state = arg(args, 0);
+        // SAFETY: the checks read the borrowed object.
+        unsafe {
+            if !capi::py_bytes_check(state)
+                || capi::PyBytes_Size(state) != std::mem::size_of::<Matrix>() as capi::PySsize
+            {
+                return value_error("Matrix.__setstate__ was given bad state");
+            }
+            let mut m = [[0.0f32; 4]; 4];
+            let src = capi::PyBytes_AsString(state).cast::<u8>();
+            std::ptr::copy_nonoverlapping(
+                src,
+                (&mut m as *mut [[f32; 4]; 4]).cast::<u8>(),
+                std::mem::size_of::<Matrix>(),
+            );
+            matrix_write(self_, &Matrix { m });
+        }
+        none_ref()
+    }
+
+    // -- attribute accessors (`script_math.hpp:198-239`) ---------------------
+
+    unsafe extern "C" fn get_determinant(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        // SAFETY: the interpreter is up.
+        unsafe { capi::PyFloat_FromDouble(m.determinant() as f64) }
+    }
+
+    unsafe extern "C" fn get_is_mirrored(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        bool_ref(m.is_mirrored())
+    }
+
+    unsafe extern "C" fn get_translation(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        let out = m.apply_to_origin();
+        super::vector3::make([out.x, out.y, out.z])
+    }
+
+    unsafe extern "C" fn set_translation(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let Some(v) = parse_vec3(value) else {
+            let _ = type_error("translation must be a Vector3");
+            return -1;
+        };
+        let Some(mut m) = matrix_read(self_) else {
+            let _ = type_error("not a Matrix");
+            return -1;
+        };
+        m.translation(&v);
+        matrix_write(self_, &m);
+        0
+    }
+
+    unsafe extern "C" fn get_yaw(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        // SAFETY: the interpreter is up.
+        unsafe { capi::PyFloat_FromDouble(m.yaw() as f64) }
+    }
+
+    unsafe extern "C" fn get_pitch(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        // SAFETY: the interpreter is up.
+        unsafe { capi::PyFloat_FromDouble(m.pitch() as f64) }
+    }
+
+    unsafe extern "C" fn get_roll(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let Some(m) = matrix_read(self_) else {
+            return type_error("not a Matrix");
+        };
+        // SAFETY: the interpreter is up.
+        unsafe { capi::PyFloat_FromDouble(m.roll() as f64) }
+    }
+
+    // -- the `Math.Matrix(...)` factory (`script_math.cpp:781-796`) ---------
+
+    /// `Math.Matrix`: a fresh matrix, optionally copied from a
+    /// `MatrixProvider`. The factory is a plain function, not the type, the
+    /// reference's `PY_FACTORY_NAMED`.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        let count = unsafe { capi::PyTuple_Size(args) };
+        let m = match count {
+            0 => Matrix::identity(),
+            1 => match provider_matrix(arg(args, 0)) {
+                Some(m) => m,
+                None => return type_error("Math.Matrix(): Expected an optional MatrixProvider"),
+            },
+            _ => return type_error("Math.Matrix(): Expected an optional MatrixProvider"),
+        };
+        make(&m)
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Matrix".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// `Math.MatrixProvider`'s spec: the abstract base, no methods or
+    /// attributes, and the reference's refusal to construct it directly.
+    pub(super) fn provider_spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.MatrixProvider").flags(capi::Py_TPFLAGS_BASETYPE)
+    }
+
+    /// The `PY_BEGIN_METHODS` table and `PY_BEGIN_ATTRIBUTES` table of
+    /// `PyMatrix` (`script_math.cpp:...`), the port's builder shape of the
+    /// reference's macro pair.
+    pub(super) fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Matrix")
+            .base(provider_addr())
+            .attribute("determinant", get_determinant, None)
+            .attribute("isMirrored", get_is_mirrored, None)
+            .attribute("translation", get_translation, Some(set_translation))
+            .attribute("yaw", get_yaw, None)
+            .attribute("pitch", get_pitch, None)
+            .attribute("roll", get_roll, None)
+            .method("set", set)
+            .method("setZero", set_zero)
+            .method("setIdentity", set_identity)
+            .method("setScale", set_scale)
+            .method("setTranslate", set_translate)
+            .method("setRotateX", set_rotate_x)
+            .method("setRotateY", set_rotate_y)
+            .method("setRotateZ", set_rotate_z)
+            .method("setRotateYPR", set_rotate_ypr)
+            .method("preMultiply", pre_multiply)
+            .method("postMultiply", post_multiply)
+            .method("invert", invert)
+            .method("lookAt", look_at)
+            .method("setElement", set_element)
+            .method("get", get)
+            .method("applyPoint", apply_point)
+            .method("applyV4Point", apply_v4_point)
+            .method("applyVector", apply_vector)
+            .method("applyToAxis", apply_to_axis)
+            .method("applyToOrigin", apply_to_origin)
+            .method("orthogonalProjection", orthogonal_projection)
+            .method("perspectiveProjection", perspective_projection)
+            .method("__getstate__", getstate)
+            .method("__setstate__", setstate)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    /// `TempPyVectorInit` for the matrix pair: the `MatrixProvider` base, the
+    /// `Matrix` type deriving from it, the `MatrixProvider` name and the
+    /// `Matrix` factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        // The base must exist before the derived type resolves its
+        // `Py_tp_base` slot.
+        let provider = binding::create_type(&provider_spec())
+            .inspect_err(|e| eprintln!("matrix provider create_type failed: {e:?}"))?;
+        PROVIDER_ADDR.store(provider.as_ptr() as usize, Ordering::SeqCst);
+        let matrix_type = binding::create_type(&spec())
+            .inspect_err(|e| eprintln!("matrix create_type failed: {e:?}"))?;
+        TYPE_ADDR.store(matrix_type.as_ptr() as usize, Ordering::SeqCst);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                capi::PyDict_SetItemString(dict, c"MatrixProvider".as_ptr(), provider.as_ptr());
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Matrix".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(matrix_type)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
-/// module with the three vector widths. A width that cannot be created
-/// reports and leaves the rest registered, the shape of the reference's
-/// fire-and-forget init-time job.
+/// module with the three vector widths, the `MatrixProvider` base and the
+/// `Matrix` type. A type that cannot be created reports and leaves the rest
+/// registered, the shape of the reference's fire-and-forget init-time job.
 pub fn register() {
     let _ = vector2::register();
     let _ = vector3::register();
     let _ = vector4::register();
+    let _ = matrix::register();
 }
