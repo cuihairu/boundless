@@ -637,4 +637,42 @@ mod tests {
         t.rewind();
         assert_eq!(t.read_string().unwrap(), long255);
     }
+
+    /// The BW-01-02-03 acceptance: a string is length-prefixed, not
+    /// NUL-terminated — the reference's own comment in `appendString`
+    /// (`binary_stream.hpp`) says so because "BW::strings can contain null
+    /// characters" — so an embedded NUL survives the round trip, and the read
+    /// cursor's remaining length is exact.
+    #[test]
+    fn strings_carry_embedded_nul_and_remaining_length() {
+        // Empty value: a zero length prefix, read back empty.
+        let mut s = BinaryStream::new();
+        s.write_string("").unwrap();
+        assert_eq!(s.as_bytes(), &[0x00]);
+        assert_eq!(s.length(), 1);
+        s.rewind();
+        assert_eq!(s.remaining(), 1);
+        assert_eq!(s.read_string(), Ok(String::new()));
+        assert!(s.at_end());
+
+        // Embedded NUL survives: the length prefix counts bytes, not up to
+        // the first NUL.
+        let mut s = BinaryStream::new();
+        s.write_string("a\u{0}b").unwrap();
+        assert_eq!(s.as_bytes(), &[0x03, 0x61, 0x00, 0x62]);
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("a\u{0}b".to_string()));
+        assert!(s.at_end());
+
+        // A string followed by a trailing value: after reading the string,
+        // the remaining length is exact.
+        let mut s = BinaryStream::new();
+        s.write_string("hello").unwrap();
+        s.write_u8(0xEE);
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("hello".to_string()));
+        assert_eq!(s.remaining(), 1);
+        assert_eq!(s.read_u8(), Ok(0xEE));
+        assert!(s.at_end());
+    }
 }
