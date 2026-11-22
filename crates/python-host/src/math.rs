@@ -4063,6 +4063,288 @@ mod v4distance {
     }
 }
 
+/// The `Math.Vector4LFO` provider (`script_math.cpp:4066-4304`): the Low
+/// Frequency Oscillator, one wave value on every component.
+///
+/// The four waveforms are the reference's `Waveform` enum, a string
+/// converter (`script.hpp:830-886`): the getter returns the name, the setter
+/// takes it, a value that is not a string is a `TypeError` while a string
+/// that names no wave is a `ValueError`, both with the reference's
+/// "must be set to one of" message. The `output` keeps the reference's
+/// side effect: the square, triangle and sawtooth waves fold `time` into
+/// the current cycle. The reference's `tick` advance -- and the square
+/// wave's `parity_` it drives -- is not ported; a script sets the
+/// read-write `time` itself, the lane's standing delta.
+mod v4lfo {
+    use super::*;
+
+    /// The `Waveform` names in enum order (`script_math.cpp:4077-4090`):
+    /// the map's index is the enum value, `WAVE_SQUARE` first.
+    const WAVEFORMS: [&str; 4] = ["SQUARE", "TRIANGLE", "SINE", "SAWTOOTH"];
+
+    /// `almostZero`'s default epsilon (`stdmf.hpp:616-619`).
+    const ALMOST_ZERO: f32 = 0.0004;
+
+    /// The instance body beyond the `PyObject` header: the wave, its four
+    /// floats, the layout of the reference's `Vector4LFO` minus the
+    /// unported `parity_` counter.
+    #[repr(C)]
+    struct LfoBody {
+        header: capi::PyObject,
+        waveform: u8,
+        period: f32,
+        amplitude: f32,
+        phase: f32,
+        time: f32,
+    }
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<LfoBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4LFO` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4LFO::output` (`script_math.cpp:4240-4304`). Only registered
+    /// for this type, so the receiver is an `LfoBody`.
+    fn lfo_output(object: *mut capi::PyObject) -> [f32; 4] {
+        // SAFETY: the receiver is an `LfoBody`.
+        let (waveform, period, amplitude, phase, time) = unsafe {
+            let body = &*object.cast::<LfoBody>();
+            (
+                body.waveform,
+                body.period,
+                body.amplitude,
+                body.phase,
+                body.time,
+            )
+        };
+        // `almostZero( period_ )`: the wave is flat at a zero period, and
+        // the `time` fold is skipped -- its value is left alone.
+        let x = if -ALMOST_ZERO < period && period < ALMOST_ZERO {
+            0.0
+        } else {
+            match waveform {
+                // WAVE_SQUARE
+                0 => {
+                    let folded = fold_time(object, time, period);
+                    let t = folded + phase;
+                    // `period_ > 0` reads the half-cycle, else `parity_%2` --
+                    // advanced only by the unported `tick`, so always zero.
+                    let positive = period > 0.0 && t - period / 2.0 > 0.0;
+                    if positive { amplitude } else { 0.0 }
+                }
+                // WAVE_TRIANGLE
+                1 => {
+                    let folded = fold_time(object, time, period);
+                    let t = folded + phase;
+                    let f = 1.0 / period;
+                    let positive = t - period / 2.0 > 0.0;
+                    let mut x = (t * f) % 1.0;
+                    if !positive {
+                        x = 1.0 - x;
+                    }
+                    x * amplitude
+                }
+                // WAVE_SINE
+                2 => {
+                    let t = (time + phase) % period;
+                    let t = (t / period) * 2.0 * foundation::math::MATH_PI;
+                    (t.sin() * 0.5 + 0.5) * amplitude
+                }
+                // WAVE_SAWTOOTH
+                3 => {
+                    let folded = fold_time(object, time, period);
+                    let t = folded + phase;
+                    let f = 1.0 / period;
+                    ((t * f) % 1.0) * amplitude
+                }
+                // A wave value outside the enum leaves the reference's
+                // switch with `x` still zero.
+                _ => 0.0,
+            }
+        };
+        [x, x, x, x]
+    }
+
+    /// The `time_ = fmodf( time_, period_ )` fold three of the four waves
+    /// perform before they read the phase.
+    fn fold_time(object: *mut capi::PyObject, time: f32, period: f32) -> f32 {
+        let folded = time % period;
+        // SAFETY: the receiver is an `LfoBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*object.cast::<LfoBody>()).time).write(folded);
+        }
+        folded
+    }
+
+    /// The float attribute pair the reference's `PY_RW_ATTRIBUTE_DECLARE`
+    /// makes: `Script::getData(float)` back, `Script::setData(float)` in.
+    macro_rules! lfo_float_attribute {
+        ($get:ident, $set:ident, $field:ident, $name:literal) => {
+            unsafe extern "C" fn $get(
+                self_: *mut capi::PyObject,
+                _closure: *mut std::os::raw::c_void,
+            ) -> *mut capi::PyObject {
+                // SAFETY: the receiver is an `LfoBody`.
+                let value = unsafe { std::ptr::addr_of!((*self_.cast::<LfoBody>()).$field).read() };
+                unsafe { capi::PyFloat_FromDouble(value as f64) }
+            }
+
+            unsafe extern "C" fn $set(
+                self_: *mut capi::PyObject,
+                value: *mut capi::PyObject,
+                _closure: *mut std::os::raw::c_void,
+            ) -> c_int {
+                let Some(value) = (unsafe { as_script_float(value) }) else {
+                    type_error(concat!($name, " must be set to a float"));
+                    return -1;
+                };
+                // SAFETY: the receiver is an `LfoBody`.
+                unsafe {
+                    std::ptr::addr_of_mut!((*self_.cast::<LfoBody>()).$field).write(value);
+                }
+                0
+            }
+        };
+    }
+
+    lfo_float_attribute!(get_period, set_period, period, "period");
+    lfo_float_attribute!(get_amplitude, set_amplitude, amplitude, "amplitude");
+    lfo_float_attribute!(get_phase, set_phase, phase, "phase");
+    lfo_float_attribute!(get_time, set_time, time, "time");
+
+    /// `Vector4LFO::pyGet_waveform` (`:4130`, the enum `getData` at
+    /// `script.hpp:872-886`): the wave's name.
+    unsafe extern "C" fn get_waveform(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        // SAFETY: the receiver is an `LfoBody`.
+        let index = unsafe { std::ptr::addr_of!((*self_.cast::<LfoBody>()).waveform).read() };
+        match WAVEFORMS.get(index as usize) {
+            Some(name) => unsafe { capi::unicode_from_bytes(name.as_bytes()) },
+            // The out-of-range arm the reference's converter leaves for a
+            // corrupted enum value.
+            None => capi::py_none(),
+        }
+    }
+
+    /// `Vector4LFO::pySet_waveform` (the enum `setData` at
+    /// `script.hpp:830-869`): one of the four names, `ValueError` for a
+    /// string that names no wave, `TypeError` for anything else.
+    unsafe extern "C" fn set_waveform(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        let is_string = unsafe { capi::py_unicode_check(value) };
+        if is_string {
+            let name = unsafe { capi::to_string(value) };
+            if let Some(index) = WAVEFORMS.iter().position(|wave| *wave == name) {
+                // SAFETY: the receiver is an `LfoBody`.
+                unsafe {
+                    std::ptr::addr_of_mut!((*self_.cast::<LfoBody>()).waveform).write(index as u8);
+                }
+                return 0;
+            }
+        }
+        // `PyErr_SetString( PyUnicode_Check(...) ? ValueError : TypeError )`.
+        let message = "waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH";
+        if is_string {
+            value_error(message);
+        } else {
+            type_error(message);
+        }
+        -1
+    }
+
+    /// A fresh `Math.Vector4LFO`; the caller owns the reference. The
+    /// constructor's field values are the reference's (`:4092-4100`): the
+    /// sine wave, a one-second period, unit amplitude and a zero phase and
+    /// timer.
+    fn make() -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly an `LfoBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<LfoBody>()).waveform).write(2);
+            std::ptr::addr_of_mut!((*pointer.cast::<LfoBody>()).period).write(1.0);
+            std::ptr::addr_of_mut!((*pointer.cast::<LfoBody>()).amplitude).write(1.0);
+            std::ptr::addr_of_mut!((*pointer.cast::<LfoBody>()).phase).write(0.0);
+            std::ptr::addr_of_mut!((*pointer.cast::<LfoBody>()).time).write(0.0);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `PY_AUTO_FACTORY_DECLARE( Vector4LFO, END )` factory: a fresh
+    /// oscillator, the reference's `END` argument list meaning no arguments.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 0) {
+            return type_error("Math.Vector4LFO() takes no arguments");
+        }
+        make()
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4LFO".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4LFO`: the four floats and
+    /// the wave name, the reference's `PY_RW_ATTRIBUTE_DECLARE` pairs.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4LFO")
+            .base(v4provider::base_addr())
+            .attribute("period", get_period, Some(set_period))
+            .attribute("amplitude", get_amplitude, Some(set_amplitude))
+            .attribute("phase", get_phase, Some(set_phase))
+            .attribute("time", get_time, Some(set_time))
+            .attribute("waveform", get_waveform, Some(set_waveform))
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    /// `TempPyVectorInit` for the oscillator: the type object, its dispatch
+    /// entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), lfo_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4LFO".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -4080,4 +4362,5 @@ pub fn register() {
     let _ = v4morph::register();
     let _ = v4translation::register();
     let _ = v4distance::register();
+    let _ = v4lfo::register();
 }

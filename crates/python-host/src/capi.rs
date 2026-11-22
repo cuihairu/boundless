@@ -158,6 +158,19 @@ pub unsafe fn py_long_check(obj: *mut PyObject) -> bool {
     unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyLong_Type)) == 1 }
 }
 
+/// `PyUnicode_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyUnicode_Type`). Subtype-aware, so `str` and its subclasses pass; the
+/// reference's enum converter (`script.hpp:830-869`) relies on the exact
+/// `PyUnicode_Check` shape to pick its error class.
+///
+/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
+pub unsafe fn py_unicode_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyUnicode_Type)) == 1 }
+}
+
 /// `PyBytes_Check`, the C API macro (`PyObject_TypeCheck` against
 /// `&PyBytes_Type`). A `bytes` type cannot be subclassed in the interpreter's
 /// own sense for our purposes, so an exact type match is the same test.
@@ -445,6 +458,7 @@ unsafe extern "C" {
     pub static mut PyBytes_Type: PyTypeObject;
     pub static mut PyFloat_Type: PyTypeObject;
     pub static mut PyLong_Type: PyTypeObject;
+    pub static mut PyUnicode_Type: PyTypeObject;
 }
 
 unsafe extern "C" {

@@ -574,6 +574,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4morph_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4translation_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4distance_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4lfo_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -3401,6 +3402,148 @@ __probe = '; '.join(_f) or 'ok'
                 text, "ok",
                 "math vector4distance behaviour mismatch: {text}"
             );
+        });
+    }
+
+    /// `Vector4LFO` reads like the reference: the four waves, the live
+    /// parameters, the `time` fold three of the waves write back on read
+    /// while `SINE` leaves it alone, the `almostZero` flat period, the
+    /// `waveform` enum converter's `ValueError`/`TypeError`, and the
+    /// float refusals -- with the reference's defaults.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4lfo_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+def close(a, b, tol=1e-5):
+    return abs(a - b) < tol
+
+ck(hasattr(Math, 'Vector4LFO'), 'Vector4LFO in module')
+l = Math.Vector4LFO()
+ck(type(l).__name__ == 'Vector4LFO', 'the lfo type')
+ck('Vector4Provider' in [c.__name__ for c in type(l).__mro__],
+   'the Vector4Provider base chain')
+
+# The reference's defaults: SINE, unit period and amplitude, zero phase and
+# time, so a fresh wave sits at the middle of its range.
+ck(l.waveform == 'SINE', 'the default waveform')
+ck(l.period == 1.0 and l.amplitude == 1.0, 'the unit period and amplitude')
+ck(l.phase == 0.0 and l.time == 0.0, 'the zero phase and time')
+v = l.value
+ck(close(v.x, 0.5) and v.x == v.y == v.z == v.w, 'the default value is 0.5')
+
+# SINE at a quarter and half cycle: t = time/period * 2pi.
+l.time = 0.25
+ck(close(l.value.x, 1.0), 'the sine peak')
+l.time = 0.5
+ck(close(l.value.x, 0.5), 'the sine mid is half')
+ck(l.time == 0.5, 'the sine leaves time alone')
+
+# SQUARE: positive half-cycle is the amplitude, otherwise zero, and the time
+# folds back into the period.
+l.waveform = 'SQUARE'
+l.time = 0.0
+ck(l.value.x == 0.0, 'the square trough')
+l.time = 0.6
+ck(l.value.x == 1.0, 'the square peak')
+l.time = 1.7
+# The fold is f32 `fmod`, so the folded value is not exactly 0.7.
+ck(l.value.x == 1.0 and close(l.time, 0.7), 'the square folds the time back')
+
+# TRIANGLE: fmod(t/period,1), mirrored around the half cycle.
+l.waveform = 'TRIANGLE'
+l.time = 0.25
+ck(l.value.x == 0.75, 'the triangle rise')
+l.time = 0.75
+ck(l.value.x == 0.75, 'the triangle fall')
+ck(l.time == 0.75, 'the triangle folds too')
+
+# SAWTOOTH: the phase fraction scaled by the amplitude, phase-shifted.
+l.waveform = 'SAWTOOTH'
+l.period = 1.0
+l.phase = 0.5
+l.amplitude = 10.0
+l.time = 0.25
+ck(l.value.x == 7.5, 'the sawtooth with a phase')
+ck(l.time == 0.25, 'the sawtooth folds too')
+
+# A negative amplitude inverts the wave.
+l.waveform = 'SQUARE'
+l.phase = 0.0
+l.amplitude = -1.0
+l.period = 1.0
+l.time = 0.6
+ck(l.value.x == -1.0, 'the negative amplitude inverts')
+
+# An almost-zero period flattens the wave and leaves the time alone.
+l.amplitude = 1.0
+l.period = 0.0
+l.time = 5.0
+v = l.value
+ck(v.x == 0.0 and l.time == 5.0, 'the flat wave at a zero period')
+l.period = 0.0001
+ck(l.value.x == 0.0, 'the flat wave inside almostZero')
+
+# The waveform round-trips through all four names.
+for name in ('SQUARE', 'TRIANGLE', 'SINE', 'SAWTOOTH'):
+    l.waveform = name
+    ck(l.waveform == name, 'waveform round-trip ' + name)
+
+# Refusals: the enum converter and the float attributes.
+ck(raises(ValueError, lambda: setattr(l, 'waveform', 'LOUD')),
+   'a bad wave name is a ValueError')
+ck(msg(ValueError, lambda: setattr(l, 'waveform', 'LOUD')) ==
+   'waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH',
+   'the ValueError message')
+ck(raises(ValueError, lambda: setattr(l, 'waveform', 'sine')),
+   'the enum is case-sensitive')
+ck(raises(TypeError, lambda: setattr(l, 'waveform', 5)),
+   'a non-string waveform is a TypeError')
+ck(raises(TypeError, lambda: setattr(l, 'waveform', None)),
+   'None is no waveform')
+ck(raises(TypeError, lambda: setattr(l, 'period', 'x')),
+   'period wants a float')
+ck(msg(TypeError, lambda: setattr(l, 'time', None)) == 'time must be set to a float',
+   'the float TypeError message')
+ck(raises(TypeError, lambda: l.__delattr__('waveform')),
+   'waveform cannot be deleted')
+ck(raises(TypeError, lambda: l.__delattr__('period')),
+   'period cannot be deleted')
+
+# The factory takes no arguments, and an int is a float for these attributes.
+ck(raises(TypeError, lambda: Math.Vector4LFO(1)),
+   'the factory takes no arguments')
+l.period = 1.0
+l.time = 2
+ck(l.time == 2.0, 'an int is accepted as a float')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4lfo behaviour mismatch: {text}");
         });
     }
 
