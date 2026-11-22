@@ -524,6 +524,13 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
+    /// BW-03-03-06: the original `test_script_math.cpp` cases, extracted into
+    /// the ordered `Step` table the regression replays against the ported
+    /// `Math` module. See `src/tests/math_regression.rs`.
+    mod math_regression {
+        include!("tests/math_regression.rs");
+    }
+
     /// One container state plus the view over it: the sequence scenarios
     /// build a proxy on it and park the view in `__main__`, the same way the
     /// engine parks a native object.
@@ -617,6 +624,7 @@ mod tests {
         "interpreter::tests::scenario_the_resmgr_module_serves_the_ported_surface",
         "interpreter::tests::scenario_the_resmgr_editor_tools_serve_the_ported_surface",
         "interpreter::tests::scenario_the_big_world_url_request_face_serves_the_ported_surface",
+        "interpreter::tests::scenario_the_original_math_regressions_run_against_the_port",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -6140,5 +6148,273 @@ mod tests {
         assert!(printed, "the failing callback's traceback is printed");
 
         interpreter.fini();
+    }
+
+    /// The `__main__` namespace's dictionary, as a borrowed reference. The
+    /// helpers below run everything in it, the way the original harness's
+    /// `runPython`/`evalExpr` pass `__main__`'s dict as both globals and
+    /// locals.
+    ///
+    /// SAFETY: the interpreter is up and this thread owns the GIL.
+    unsafe fn main_globals() -> *mut PyObject {
+        unsafe {
+            let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+            capi::PyModule_GetDict(main)
+        }
+    }
+
+    /// `PyErr_Fetch` + `PyErr_NormalizeException`, then the exception's
+    /// `tp_name` and its `str()` value. The exception state is left clean.
+    ///
+    /// SAFETY: a fresh exception must be pending, and the GIL held.
+    unsafe fn take_pending_exception() -> (String, String) {
+        unsafe {
+            let mut ptype: *mut PyObject = std::ptr::null_mut();
+            let mut pvalue: *mut PyObject = std::ptr::null_mut();
+            let mut ptrace: *mut PyObject = std::ptr::null_mut();
+            capi::PyErr_Fetch(&mut ptype, &mut pvalue, &mut ptrace);
+            capi::PyErr_NormalizeException(&mut ptype, &mut pvalue, &mut ptrace);
+            let type_name = if ptype.is_null() {
+                "(none)".to_owned()
+            } else {
+                capi::type_name(ptype as *mut capi::PyTypeObject)
+            };
+            let message = if pvalue.is_null() {
+                String::new()
+            } else {
+                capi::to_string(pvalue)
+            };
+            capi::dec_ref(ptype);
+            capi::dec_ref(pvalue);
+            capi::dec_ref(ptrace);
+            (type_name, message)
+        }
+    }
+
+    /// The pending exception rendered as `Type: message`, for eval failures.
+    ///
+    /// SAFETY: a fresh exception must be pending, and the GIL held.
+    unsafe fn take_pending_error() -> String {
+        unsafe {
+            let (type_name, message) = take_pending_exception();
+            if message.is_empty() {
+                type_name
+            } else {
+                format!("{type_name}: {message}")
+            }
+        }
+    }
+
+    /// `evalExpr` (`test_script_math.cpp`): `PyRun_String(expression,
+    /// Py_eval_input, globals, globals)` in `__main__`. Returns a new
+    /// reference, or the reported-and-consumed error on failure.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn eval_expr(expression: &str) -> Result<*mut PyObject, String> {
+        unsafe {
+            capi::clear_error();
+            let Ok(encoded) = CString::new(expression) else {
+                return Err(format!("'{expression}' contains a NUL"));
+            };
+            let globals = main_globals();
+            let value = capi::PyRun_String(encoded.as_ptr(), capi::Py_eval_input, globals, globals);
+            if value.is_null() {
+                Err(take_pending_error())
+            } else {
+                Ok(value)
+            }
+        }
+    }
+
+    /// `evalFloat`: the expression must be a number, and it is read back as
+    /// a double. A non-number is reported the way the C++ helper reports it.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn eval_float(expression: &str) -> Result<f64, String> {
+        unsafe {
+            let value = eval_expr(expression)?;
+            if !capi::py_float_check(value) && !capi::py_long_check(value) {
+                capi::dec_ref(value);
+                return Err(format!("'{expression}' is not a number"));
+            }
+            let number = capi::PyFloat_AsDouble(value);
+            capi::dec_ref(value);
+            Ok(number)
+        }
+    }
+
+    /// `evalString`: the expression must be a `str`, read back as UTF-8.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn eval_string(expression: &str) -> Result<String, String> {
+        unsafe {
+            let value = eval_expr(expression)?;
+            if !capi::py_str_check(value) {
+                capi::dec_ref(value);
+                return Err(format!("'{expression}' is not a string"));
+            }
+            let text = capi::to_string(value);
+            capi::dec_ref(value);
+            Ok(text)
+        }
+    }
+
+    /// `checkTrue`: the expression must evaluate truthy.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn check_true(expression: &str) -> Result<(), String> {
+        unsafe {
+            let value = eval_expr(expression)?;
+            let is_true = capi::PyObject_IsTrue(value);
+            capi::dec_ref(value);
+            if is_true < 0 {
+                return Err(take_pending_error());
+            }
+            if is_true != 1 {
+                return Err(format!("'{expression}' is not true"));
+            }
+            Ok(())
+        }
+    }
+
+    /// `PyRun_String(statement, Py_file_input, globals, globals)` in
+    /// `__main__`, with the error state cleared first. Returns a new
+    /// reference, or null leaving the exception pending.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn run_stmt_raw(statement: &str) -> Result<*mut PyObject, String> {
+        unsafe {
+            capi::clear_error();
+            let Ok(encoded) = CString::new(statement) else {
+                return Err(format!("'{statement}' contains a NUL"));
+            };
+            let globals = main_globals();
+            Ok(capi::PyRun_String(
+                encoded.as_ptr(),
+                capi::Py_file_input,
+                globals,
+                globals,
+            ))
+        }
+    }
+
+    /// `checkSucceeds`: the statement must run clean.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn check_succeeds(statement: &str) -> Result<(), String> {
+        unsafe {
+            let value = run_stmt_raw(statement)?;
+            if value.is_null() {
+                return Err(take_pending_error());
+            }
+            capi::dec_ref(value);
+            Ok(())
+        }
+    }
+
+    /// `checkRaises`: the statement must raise the named exception type, and
+    /// the comparison is on the `tp_name`, exactly as the C++ helper reads it.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn check_raises(statement: &str, expected: &str) -> Result<(), String> {
+        unsafe {
+            let value = run_stmt_raw(statement)?;
+            if !value.is_null() {
+                capi::dec_ref(value);
+                return Err(format!("'{statement}' did not raise {expected}"));
+            }
+            let (actual, _) = take_pending_exception();
+            if actual != expected {
+                return Err(format!(
+                    "'{statement}' raised {actual}, expected {expected}"
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    /// One original step, played against the port. `Run`/`Succeeds`/`Raises`
+    /// run the source as a statement block; the tick steps advance the port's
+    /// provider store the way the host's per-frame `ProviderStore::tick` did.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn run_original_math_step(step: &math_regression::Step) -> Result<(), String> {
+        unsafe {
+            use math_regression::Step;
+            match step {
+                Step::Run(source) => {
+                    let value = run_stmt_raw(source)?;
+                    if value.is_null() {
+                        return Err(take_pending_error());
+                    }
+                    capi::dec_ref(value);
+                    Ok(())
+                }
+                Step::Float(expression, expected, epsilon) => {
+                    let actual = eval_float(expression)?;
+                    if (expected - actual).abs() > *epsilon {
+                        return Err(format!(
+                            "'{expression}' == {actual}, expected {expected} within {epsilon}"
+                        ));
+                    }
+                    Ok(())
+                }
+                Step::Count(expression, expected) => {
+                    let actual = eval_float(expression)?;
+                    if actual != *expected as f64 {
+                        return Err(format!("'{expression}' == {actual}, expected {expected}"));
+                    }
+                    Ok(())
+                }
+                Step::Str(expression, expected) => {
+                    let actual = eval_string(expression)?;
+                    if actual != *expected {
+                        return Err(format!(
+                            "'{expression}' == {actual:?}, expected {expected:?}"
+                        ));
+                    }
+                    Ok(())
+                }
+                Step::True(expression) => check_true(expression),
+                Step::Raises(statement, exception) => check_raises(statement, exception),
+                Step::Succeeds(statement) => check_succeeds(statement),
+                Step::Tick(d_time) => {
+                    crate::math::tick(*d_time);
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// BW-03-03-06: the 22 Python-side cases of the original
+    /// `test_script_math.cpp` replayed in order against the ported `Math`
+    /// module. The C++-side case `Math_vectorReferenceAndReadOnly` is not in
+    /// the table; it is a documented delta of the task.
+    fn run_original_math_regressions() {
+        let mut failures: Vec<String> = Vec::new();
+        // SAFETY: the scenario owns the GIL for its whole body.
+        unsafe {
+            for case in math_regression::CASES {
+                for step in case.steps {
+                    if let Err(message) = run_original_math_step(step) {
+                        failures.push(format!("{}: {}", case.name, message));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} original Math step(s) diverged:\n  - {}",
+            failures.len(),
+            failures.join("\n  - "),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_original_math_regressions_run_against_the_port() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            run_original_math_regressions();
+        });
     }
 }

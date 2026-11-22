@@ -282,6 +282,14 @@ pub const METH_VARARGS: c_int = 0x0001;
 /// `kwargs` argument (see [`PyCFunctionWithKeywords`]).
 pub const METH_KEYWORDS: c_int = 0x0002;
 
+/// `Py_file_input` from `Include/pythonrun.h`: `PyRun_String` parses the
+/// source as a statement block.
+pub const Py_file_input: c_int = 257;
+
+/// `Py_eval_input` from `Include/pythonrun.h`: `PyRun_String` parses the
+/// source as an expression.
+pub const Py_eval_input: c_int = 258;
+
 /// `PyGetSetDef`, one attribute descriptor of a type.
 #[repr(C)]
 pub struct PyGetSetDef {
@@ -510,6 +518,12 @@ unsafe extern "C" {
     pub fn PyEval_SaveThread() -> *mut std::os::raw::c_void;
     pub fn PyThreadState_Swap(tstate: *mut std::os::raw::c_void) -> *mut std::os::raw::c_void;
     pub fn PyRun_SimpleString(string: *const c_char) -> c_int;
+    pub fn PyRun_String(
+        code: *const c_char,
+        start: c_int,
+        globals: *mut PyObject,
+        locals: *mut PyObject,
+    ) -> *mut PyObject;
     pub fn PySys_SetObject(name: *const c_char, value: *mut PyObject) -> c_int;
     pub fn PySys_GetObject(name: *const c_char) -> *mut PyObject;
     pub fn PyList_New(size: PySsize) -> *mut PyObject;
@@ -541,6 +555,11 @@ unsafe extern "C" {
     pub fn PyErr_Occurred() -> *mut PyObject;
     pub fn PyErr_PrintEx(skip: c_int);
     pub fn PyErr_Fetch(
+        type_: *mut *mut PyObject,
+        value: *mut *mut PyObject,
+        traceback: *mut *mut PyObject,
+    );
+    pub fn PyErr_NormalizeException(
         type_: *mut *mut PyObject,
         value: *mut *mut PyObject,
         traceback: *mut *mut PyObject,
