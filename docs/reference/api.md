@@ -193,7 +193,7 @@ No role consumes them yet: `contracts` is still commented out of the root
 ## `python-host`
 
 The CPython embedding layer ported from the reference `lib/pyscript/` and
-`lib/script/` (BW-03), six modules. It links no Python dependency: `capi`
+`lib/script/` (BW-03). It links no Python dependency: `capi`
 declares the interpreter ABI by hand.
 
 | Module | Items | Meaning |
@@ -204,13 +204,19 @@ declares the interpreter ABI by hand.
 | `output_writer` | `ScriptOutputHook`, `add_hook`/`remove_hook`, `set_log_sink`, `LogSink`, `handle_write` | `sys.stdout`/`sys.stderr` redirected into script logging |
 | `pyref` | `PyRef` | refcounted object bridge; not `Send`, valid only on the thread that holds the GIL |
 | `capi` | `PyObject`, `PyTypeObject`, `PySsize`, `py_none/py_true/py_false`, `is_finalized` | the hand-written CPython ABI surface |
+| `binding` | `TypeSpec`, `BindError` | attribute and method binding specs for native types |
+| `wrapper` | `WrapError`, `release(id)`, `reset()` | the native wrapper identity cache |
+| `sequence` | `SequenceState` | container proxy state shared with script |
+| `keepalive` | `PinError`, `unpin(id)`, `is_pinned(id)`, `pinned_count()` | cross-language keepalive pins |
+| `gil` | `has_context()`, `init_thread()` | GIL attach/detach and cross-thread callback guards |
+| `manifest` | `Scope`, `Kind`, `Status` | the public Python export manifest (BW-03-03-01) |
 
 ```bash
 cargo test -p python-host
 ```
 
-The public script modules, the entity-side object bridge and script entry
-points with reload land with the remaining BW-03 items.
+The public script modules and role script entry points land with the
+remaining BW-03 items (BW-03-03-02..06, BW-03-04).
 
 ## Running everything
 

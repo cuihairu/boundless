@@ -39,6 +39,7 @@ crates/
   entitydef/        # entity definition contracts
   python-host/      # embedded Python host
   server-runtime/   # process bootstrap, config, tick, timers
+  test-support/     # BW-18 shared fixtures, virtual time and layering checker
 docs/
   .vitepress/       # this site's configuration
   guide/            # installation, quick start, deployment
@@ -67,7 +68,9 @@ and, where a page describes a target that is not implemented yet, names the
 | Mercury message layer and RPC | Implemented (`BW-02-02`) | `crates/mercury/src/{interfaces,interface_table,interface_element,request_manager,reply_order}.rs` |
 | Mercury channel lifecycle and retransmission | Partial (`BW-02-03-01..03`: packet/bundle codec, channel registration, acks and send window); `BW-02-03-04..07` pending | `crates/mercury/src/{udp_channel,channel_map,unacked_packet,udp_bundle}.rs` |
 | bwmachined message contracts | Types only, no consumer yet | `crates/contracts/src/machined.rs` |
-| CPython host and object bridge | Implemented, minimal (**BW-03**) | `crates/python-host/src/{interpreter,pyref,output_writer}.rs` |
+| CPython host and object bridge | Implemented (**BW-03-01/02**); script modules and role APIs pending (**BW-03-03/04**) | `crates/python-host/src/` (`interpreter`, `binding`, `wrapper`, `gil`, …) |
+| Entity definition compilation and data streams | Implemented (**BW-04-01..04**) | `crates/entitydef/src/` |
+| Shared test framework and layering checker | Implemented (**BW-16-01**, **BW-18-01/02**) | `crates/test-support/src/{harness,clock,multiproc,layering}.rs` |
 | PostgreSQL persistence | Not implemented | `todo.md` BW-09-06 |
 | FantasyDemo examples | Not implemented | `todo.md` BW-14 |
 | Bots load testing | Not implemented | `todo.md` BW-17 |
