@@ -1921,7 +1921,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 提供校验、筛选、聚合和报表 CLI，覆盖在线/并发人数、会话时长、登录漏斗、空间热度及自定义事件。以固定数据集验收各指标的计数、时间窗口和导出结果。
 
-- [ ] **BW-26-02-01 提供校验与筛选 CLI**。**验收** 坏事件和有效筛选可复现。
+- [x] **BW-26-02-01 提供校验与筛选 CLI**。**验收** 坏事件和有效筛选可复现。证据：新增 `test-support/src/event_filter.rs`（+`pub mod event_filter`，event_contract 后=字母序）——**`validate(&[GameEvent])->(Vec<&GameEvent>, Vec<InvalidEvent>)`**（复用 BW-26-01-01 的 `verify`：合格的按输入序过、**不合格者逐个点名 `InvalidEvent{index,error}` 首个失败原因**）+ **`Filter`**（链式 `kind/source/since/until/field`，判据全设全须匹配、未设=全匹配；`matches()` + `select()->Vec<&GameEvent>` **保持输入序**）。验收由 3 测实证：**`bad_events_and_valid_filters_are_reproducible`（核心验收）**（同输入两次校验 → valid ID 序列与 `invalid` 向量相等；同筛选两次 select → ID 序列相等=**坏事件和有效筛选可复现**）+ `validation_names_each_bad_event_with_its_reason`（version "2"→`index 1/UnknownVersion`、去 to_space→`index 2/MissingField("to_space")`，合格 login:2/session:1 保序）+ `a_filter_selects_only_matching_events_in_order`（kind→movement:1、source→baseapp01=[login:1,session:1]、窗口 [1000,1000]→[login:1,custom:1]、field(name,purchase)→custom:1、空 Filter→全部 4）。foundation 149 全绿；test-support 320 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；fmt 净、clippy 净（0 发现于本席文件；edition 2024 let-链）。commit af168ec。
 - [ ] **BW-26-02-02 计算在线与并发**。**验收** 固定会话窗口结果正确。
 - [ ] **BW-26-02-03 计算会话时长**。**验收** 跨日及未结束会话规则有样本。
 - [ ] **BW-26-02-04 计算登录漏斗**。**验收** 重试不重复计数。
