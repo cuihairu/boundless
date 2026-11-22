@@ -439,7 +439,13 @@
   - 有意偏离：(a) 计数（`numBytesSent_`/`numDataUnitsSent_`）留在通道（BW-02-04-05），缓冲只持未发字节; (b) 写事件注册/注销（`registerWriteFileDescriptor`/`deregisterWriteFileDescriptor`）与延迟 shutdown 属通道与 dispatcher 接线。
   - 测试与覆盖：mercury **395 通过 / 0 失败**（本轮 +9，tcp_send_buffer 9/9）；workspace **1479 passed / 0 failed / 64 ignored**；llvm-cov TOTAL **14324 行 / 残 277 = 98.07%**（区域 98.55%、函数 99.29%）≥98% 门禁；tcp_send_buffer.rs **171 行 / 残 2 = 98.83%**。clippy scoped `-D warnings` 零告警；rustfmt `--check` 0 差异。
   - 压力：mercury `--test-threads=1` **100 轮 39500 通过 / 0 失败**。
-- [ ] **BW-02-04-03 接入原版启用的连接过滤**。**验收** 允许及拒绝分别匹配。
+- [x] **BW-02-04-03 接入原版启用的连接过滤**。**验收** 允许及拒绝分别匹配。
+  - 新增（11add96）：`crates/mercury/src/tcp_connection_header.rs`（`ServerOpening` 打开门禁 + `client_header_frame` + `CLIENT_HEADER`/`CLIENT_HEADER_SIZE`/`HeaderDecision`）、`lib.rs`（+1 模块）。参考 `TCPChannel::readHeader`/`HEADER_STATE_SERVER_WAIT_FOR_HEADER`/`doSend` 客户端头帧 tcp_channel.cpp:276-315,418-427。
+  - 语义：客户端首帧 = `[u16 CLIENT_HEADER_SIZE][CLIENT_HEADER]`（`TCP\r\n\r\n`，`CLIENT_HEADER_SIZE = sizeof-1 = 7`）；服务端开在 `HEADER_STATE_SERVER_WAIT_FOR_HEADER`，先对已到原始字节嗅探 `GET `（WebSocket 握手，前 4 字节即拒），否则等首个完整帧，帧体恰为 `CLIENT_HEADER` 才允许，其余断链；首个非 `NeedMore` 判定即终局（决策缓存，后续喂入回同一决策）；首帧之后的完整帧以 `take_leftover_frames` 归还通道（参考 `handleInput` 循环继续处理，本门禁只判首帧）。
+  - 验收夹具（允许/拒绝分别匹配）：允许——整帧、逐字节喂入、头帧+后随帧（leftover 归还）；拒绝——`GET ` 整段、`GET ` 分裂至第 4 字节、帧体错身、首帧短于头；辅助——`client_header_frame` 字节精确（`[07,00]`+`TCP\r\n\r\n`）、分裂头帧逐段喂入、终局决策稳定（accept/reject 后喂入不回 `NeedMore`）。
+  - 有意偏离：(a) 门禁只判首帧、其余帧以 leftover 归还（参考在同一 handleInput 循环内继续处理）; (b) HEADER_STATE 状态机接线与 WebSocket 拒绝后 destroy 属通道接线（BW-02-05-02 会话协商消费）。
+  - 测试与覆盖：mercury **406 通过 / 0 失败**（本轮 +11，tcp_connection_header 11/11）；workspace **1490 passed / 0 failed / 64 ignored**；llvm-cov TOTAL **14436 行 / 残 277 = 98.08%**（区域 98.56%、函数 99.30%）≥98% 门禁；tcp_connection_header.rs **112 行 / 残 0 = 100%**。clippy scoped `-D warnings` 零告警；rustfmt `--check` 0 差异。
+  - 压力：mercury `--test-threads=1` **100 轮 40600 通过 / 0 失败**。
 - [ ] **BW-02-04-04 实现超时和断链清理**。**验收** 挂起应答与队列状态吻合。
 - [ ] **BW-02-04-05 核查其余已启用传输方式**。**验收** 每种有混跑夹具或阻塞记录。
 
