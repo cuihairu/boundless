@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod backup_hash;
+pub mod base_backup;
 pub mod baseapp_continuation;
 pub mod baseapp_relogon;
 pub mod baseappmgr;
