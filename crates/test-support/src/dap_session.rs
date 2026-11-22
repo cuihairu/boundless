@@ -107,12 +107,22 @@ pub struct Stopped {
 }
 
 /// One debug session against one target.
+/// What disconnecting does to the target the session is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisconnectPolicy {
+    /// Leave the target running.
+    Detach,
+    /// Stop the target.
+    Terminate,
+}
+
 pub struct DapSession {
     config: Config,
     script: Vec<Step>,
     next: usize,
     breakpoints: Vec<(String, usize)>,
     stopped: Option<Stopped>,
+    target_running: bool,
 }
 
 impl DapSession {
@@ -125,6 +135,7 @@ impl DapSession {
             next: 0,
             breakpoints: Vec::new(),
             stopped: None,
+            target_running: true,
         }
     }
 
@@ -184,6 +195,20 @@ impl DapSession {
             .as_ref()
             .map(|stopped| stopped.variables.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Close the session. The target keeps running when the policy is
+    /// `Detach` and exits when it is `Terminate`; returns which way it went.
+    /// The stop report belongs to the session now closed and is dropped.
+    pub fn disconnect(&mut self, policy: DisconnectPolicy) -> bool {
+        self.stopped = None;
+        self.target_running = matches!(policy, DisconnectPolicy::Detach);
+        self.target_running
+    }
+
+    /// Whether the target process is still alive.
+    pub fn target_running(&self) -> bool {
+        self.target_running
     }
 }
 
@@ -389,5 +414,38 @@ mod tests {
         session.run();
         assert!(session.finished());
         assert!(session.stack().is_empty());
+    }
+
+    #[test]
+    fn a_detached_target_keeps_running() {
+        let mut session = DapSession::open(baseapp_config(Mode::Attach), baseapp_script());
+        session.set_breakpoint(FILE, 40);
+        session.run();
+        assert!(session.stopped().is_some());
+
+        // Detach: the editor lets go, the attached BaseApp keeps running.
+        assert!(session.disconnect(DisconnectPolicy::Detach));
+        assert!(session.target_running());
+        // The session is closed: its stop report is gone with it.
+        assert!(session.stopped().is_none());
+    }
+
+    #[test]
+    fn a_terminated_target_exits() {
+        let mut session = DapSession::open(baseapp_config(Mode::Attach), baseapp_script());
+        session.set_breakpoint(FILE, 40);
+        session.run();
+
+        // Terminate: the debug adapter stops the process it was attached to.
+        assert!(!session.disconnect(DisconnectPolicy::Terminate));
+        assert!(!session.target_running());
+    }
+
+    #[test]
+    fn a_session_stays_with_the_target_it_opened() {
+        let session = DapSession::open(baseapp_config(Mode::Attach), baseapp_script());
+        assert_eq!(session.config().role, "baseapp");
+        assert_eq!(session.config().program, "apps/baseapp");
+        assert!(session.target_running());
     }
 }
