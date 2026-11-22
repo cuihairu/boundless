@@ -44,6 +44,7 @@ pub mod layering;
 pub mod login_funnel;
 pub mod memory_snapshot;
 pub mod multiproc;
+pub mod platform_diagnostics;
 pub mod process_status;
 pub mod profile_link;
 pub mod protocol_fixtures;
