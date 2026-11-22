@@ -25,6 +25,7 @@ pub mod network_stats;
 pub mod network_utils;
 pub mod nub_exception;
 pub mod packet;
+pub mod packet_filter;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
 

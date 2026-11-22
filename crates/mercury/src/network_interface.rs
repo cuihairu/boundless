@@ -23,6 +23,7 @@ use crate::event_dispatcher::EventDispatcher;
 use crate::misc::{CHANNEL_ID_NULL, Reason, SeqNumAllocator};
 use crate::packet::Packet;
 use crate::packet::flags;
+use crate::packet_filter::PacketFilter;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::poller::EventPoller;
 use crate::request_manager::RequestManager;
@@ -95,6 +96,11 @@ pub struct NetworkInterface {
     /// `shouldUseChecksums_`: whether outbound packets carry a checksum
     /// footer (packet_sender.hpp). Off by default, as the reference's.
     should_use_checksums: Cell<bool>,
+    /// `pOffChannelFilter_` (network_interface.hpp:328): the filter given
+    /// first say over off-channel datagrams (`PacketReceiver::processPacket`,
+    /// packet_receiver.cpp:493). `None` until one is installed; the BaseApp
+    /// installs its `InitialConnectionFilter` here (BW-02-04-03).
+    off_channel_filter: RefCell<Option<Rc<dyn PacketFilter>>>,
 }
 
 impl NetworkInterface {
@@ -141,6 +147,7 @@ impl NetworkInterface {
             self_weak: RefCell::new(Weak::new()),
             seq_num_allocator: RefCell::new(SeqNumAllocator::new(1)),
             should_use_checksums: Cell::new(false),
+            off_channel_filter: RefCell::new(None),
         };
         let shared = Rc::new(interface);
         *shared.self_weak.borrow_mut() = Rc::downgrade(&shared);
@@ -325,6 +332,13 @@ impl NetworkInterface {
     /// the channel map takes them over (BW-02-03).
     pub fn set_packet_sink(&self, sink: Option<Rc<dyn PacketSink>>) {
         *self.sink.borrow_mut() = sink;
+    }
+
+    /// `pOffChannelFilter` (network_interface.hpp:135): install the filter
+    /// that gets first say over off-channel datagrams. The BaseApp wires
+    /// its `InitialConnectionFilter` here (baseapp.cpp:251).
+    pub fn set_off_channel_filter(&self, filter: Option<Rc<dyn PacketFilter>>) {
+        *self.off_channel_filter.borrow_mut() = filter;
     }
 
     /// `dispatcher().errorReporter()`, replaced by tests and by the
@@ -543,7 +557,8 @@ impl NetworkInterface {
 
     /// The `PacketReceiver::processPacket` routing target: on-channel
     /// packets with a live channel go to that channel's receive dispatch,
-    /// everything else to the sink (the interface table that dispatches
+    /// everything else to the interface's off-channel filter (when one is
+    /// installed) and then the sink (the interface table that dispatches
     /// messages is BW-02-02). A channel-less on-channel packet falls to
     /// the sink rather than the reference's `REASON_GENERAL_NETWORK`
     /// drop: the sink is the message-dispatch seam, and the channel map's
@@ -553,6 +568,14 @@ impl NetworkInterface {
             && let Some(channel) = self.find_channel(*addr, false)
         {
             return UdpChannel::process_packet(&channel, addr, packet);
+        }
+        // `networkInterface_.pOffChannelFilter()` (packet_receiver.cpp:493):
+        // the interface's off-channel filter gets first say over stray
+        // datagrams; with none installed they go straight to the sink.
+        if let Some(filter) = self.off_channel_filter.borrow().as_ref() {
+            return filter.recv(addr, packet, &|addr, packet| {
+                self.deliver_packet(addr, packet)
+            });
         }
         self.deliver_packet(addr, packet)
     }
@@ -987,6 +1010,52 @@ mod tests {
         );
         assert_eq!(sink.packets.borrow().len(), 1);
         assert_eq!(sink.packets.borrow()[0].0, addr);
+    }
+
+    /// An interface with the off-channel filter installed consults it for
+    /// stray datagrams: the admitted request reaches the sink, and a
+    /// mismatching packet is dropped with `REASON_GENERAL_NETWORK` before
+    /// it gets there. Without a filter the stray goes straight through
+    /// (initial_connection_filter.cpp:42-66, packet_receiver.cpp:493).
+    #[test]
+    fn the_off_channel_filter_gates_stray_datagrams() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::External);
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let filter = Rc::new(crate::packet_filter::InitialConnectionFilter::new(0));
+        interface.set_off_channel_filter(Some(filter));
+        let addr = Address::new(LOOPBACK, socket::htons(1));
+
+        // The admitted request goes through.
+        let mut allowed = crate::packet_filter::tests_support::base_app_login_packet(0);
+        assert_eq!(
+            interface.process_packet(&addr, &mut allowed),
+            Reason::Success
+        );
+        assert_eq!(sink.packets.borrow().len(), 1);
+
+        // A mismatching packet is dropped before the sink.
+        let mut denied = crate::packet_filter::tests_support::base_app_login_packet(5);
+        assert_eq!(
+            interface.process_packet(&addr, &mut denied),
+            Reason::GeneralNetwork
+        );
+        assert_eq!(
+            sink.packets.borrow().len(),
+            1,
+            "the denied packet is not delivered"
+        );
+
+        // With no filter installed, stray datagrams go straight to the
+        // sink as before.
+        interface.set_off_channel_filter(None);
+        let mut unfiltered = crate::packet_filter::tests_support::base_app_login_packet(5);
+        assert_eq!(
+            interface.process_packet(&addr, &mut unfiltered),
+            Reason::Success
+        );
+        assert_eq!(sink.packets.borrow().len(), 2);
     }
 
     /// A pinned-clock interface with no socket, for the channel-map
