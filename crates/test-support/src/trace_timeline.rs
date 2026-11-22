@@ -1,11 +1,14 @@
-//! BW-23-01-03: cross-role timeline correlation.
+//! BW-23-01-03 / BW-23-03-02: cross-role timeline correlation.
 //!
 //! Merges per-role `profiler::Snapshot`s into one timeline under a unified
 //! monotonic clock, so a logical request can be followed across the roles
 //! that touched it. Each snapshot already carries its own identity (role +
 //! pid); a per-role clock offset shifts process-local stamps onto the
 //! unified timebase, resolved from a `ClockAnchor` that reads both clocks at
-//! the same wall instant (the reference merges processes the same way).
+//! the same wall instant (the reference merges processes the same way). A
+//! merged timeline can also be viewed as one thread's slice: the thread
+//! indices present are listed, and the spans on a chosen thread are filtered
+//! out of the same capture.
 
 use foundation::profiler::Snapshot;
 
@@ -116,6 +119,24 @@ impl MergedTimeline {
         self.spans
             .iter()
             .filter(|s| s.request == request && s.top_level_request)
+            .collect()
+    }
+
+    /// The distinct thread indices the capture holds, ascending: the thread
+    /// list a viewer offers for filtering.
+    pub fn threads(&self) -> Vec<u32> {
+        std::collections::BTreeSet::from_iter(self.spans.iter().map(|span| span.thread))
+            .into_iter()
+            .collect()
+    }
+
+    /// The spans that ran on any of the given thread indices, in timeline
+    /// order. This is how one capture is viewed as a single thread's slice —
+    /// the thread lanes the reference's profiler display keeps separate.
+    pub fn filter_threads(&self, threads: &[u32]) -> Vec<&TimelineSpan> {
+        self.spans
+            .iter()
+            .filter(|span| threads.contains(&span.thread))
             .collect()
     }
 }
@@ -257,5 +278,53 @@ mod tests {
         assert_eq!(span.request, 0, "not in any request scope");
         assert!(!span.top_level_request);
         assert!(timeline.request_trace(42).is_empty());
+    }
+
+    #[test]
+    fn one_capture_filters_to_a_single_thread() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+        prof.set_identity("cellapp01", 100);
+
+        // Main-thread work first, so the main thread owns thread index 0.
+        {
+            let _main = prof.scoped("mainWork");
+            advance(&source, 10);
+        }
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _worker = prof.scoped("workerWork");
+                advance(&source, 7);
+            });
+        });
+
+        prof.tick();
+        let timeline = MergedTimeline::merge(&[RoleTrace {
+            snapshot: prof.snapshot(),
+            offset: 0,
+        }]);
+
+        // Both threads are in the one capture, and both are offered for
+        // filtering.
+        assert_eq!(timeline.spans().len(), 2);
+        assert_eq!(timeline.threads(), vec![0, 1]);
+
+        let main_only = timeline.filter_threads(&[0]);
+        assert_eq!(main_only.len(), 1);
+        assert_eq!(main_only[0].name, "mainWork");
+        assert_eq!(main_only[0].thread, 0);
+        assert_eq!(main_only[0].inclusive_cycles, 10);
+
+        let worker_only = timeline.filter_threads(&[1]);
+        assert_eq!(worker_only.len(), 1);
+        assert_eq!(worker_only[0].name, "workerWork");
+        assert_eq!(worker_only[0].thread, 1);
+        assert_eq!(worker_only[0].inclusive_cycles, 7);
+
+        // A thread that recorded nothing yields nothing, and every thread is
+        // covered by the filter that selects it.
+        assert!(timeline.filter_threads(&[9]).is_empty());
+        let all = timeline.filter_threads(&timeline.threads());
+        assert_eq!(all.len(), timeline.spans().len());
     }
 }
