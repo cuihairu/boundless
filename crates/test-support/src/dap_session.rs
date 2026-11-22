@@ -196,6 +196,26 @@ mod tests {
         }
     }
 
+    const CELLAPP_FILE: &str = "crates/server/src/cellapp.rs";
+
+    fn cellapp_script() -> Vec<Step> {
+        // The CellApp runs its space update twice a tick.
+        vec![
+            step(CELLAPP_FILE, 120, "space::CellApp::update"),
+            step(CELLAPP_FILE, 134, "space::CellApp::update"),
+        ]
+    }
+
+    fn cellapp_config(mode: Mode) -> Config {
+        Config {
+            adapter: Adapter::Rust,
+            mode,
+            role: "cellapp".to_string(),
+            program: "apps/cellapp".to_string(),
+            port: 12345,
+        }
+    }
+
     #[test]
     fn launching_the_python_adapter_hits_a_baseapp_breakpoint() {
         let mut session = DapSession::open(baseapp_config(Mode::Launch), baseapp_script());
@@ -232,5 +252,32 @@ mod tests {
         session.run();
         assert!(session.stopped().is_none());
         assert!(session.finished());
+    }
+
+    #[test]
+    fn launching_the_rust_adapter_hits_a_cellapp_breakpoint() {
+        let mut session = DapSession::open(cellapp_config(Mode::Launch), cellapp_script());
+        session.set_breakpoint(CELLAPP_FILE, 120);
+
+        // The Rust adapter starts the CellApp and runs it: the first update
+        // line stops, in the right file and function.
+        session.run();
+        let stopped = session.stopped().expect("the breakpoint hits");
+        assert_eq!((stopped.file.as_str(), stopped.line), (CELLAPP_FILE, 120));
+        assert_eq!(stopped.frames[0].function, "space::CellApp::update");
+        assert!(!session.finished());
+    }
+
+    #[test]
+    fn attaching_the_rust_adapter_hits_the_same_breakpoint() {
+        // The CellApp is already running; codelldb attaches to its debug port.
+        let mut session = DapSession::open(cellapp_config(Mode::Attach), cellapp_script());
+        assert_eq!(session.config().adapter, Adapter::Rust);
+        assert_eq!(session.config().port, 12345);
+
+        session.set_breakpoint(CELLAPP_FILE, 120);
+        session.run();
+        let stopped = session.stopped().expect("the breakpoint hits");
+        assert_eq!(stopped.line, 120);
     }
 }
