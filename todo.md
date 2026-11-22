@@ -139,7 +139,8 @@
 
 逐项核对 `lib/`、`server/`、`server/tools/`、`client/`、`tools/`、`common/`、`examples/` 和 FantasyDemo 的构建目标与用户功能。记录「原版路径、启用条件、功能编号、验证夹具、覆盖状态」。对第三方 SDK、发行物中的独有内容和缺失资源单独记录来源与验证缺口。每个已启用目标都要有可运行验收或可追踪的阻塞原因。
 
-- [ ] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。
+- [x] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。
+  - 证据：`crates/test-support/src/coverage.rs` + `src/bin/scan-coverage.rs` + `tests/coverage_cli.rs` + `cases/coverage.txt`。catalog：79 行 = BW-00-01-01 的 Make 构建清册，每行七列 `target/kind/source/enable/task/fixture/status` —— 原版目标（name+kind+source 三元组，source 为注册文件相对路径）与启用条件由参考自身门控机制推导，任务号/夹具/状态三列为建立的字段，暂记 `-`（STATUS_UNMAPPED），由 05-02…05-05 映射项填入。启用条件分派（四桶全覆盖）：`always`（69）——驱动无条件走 lib/server/third_party/tools；`user_shouldBuildExamples != 0`（2）——顶层 Makefile.rules `ifneq` 才把 `examples` 追加进 subdirs，命 cellapp_example+simple_python_client；`cellappmgr/Makefile present`（2）——server/Makefile.rules `LICENSE_SERVER` 通配滤除命 cellappmgr 及其 unit_test，checkout 带文件故满足；`MySQL development libraries present`（6）——组件自身 `ifneq ($(SYSTEM_HAS_MYSQL),0) … else … endif` 把注册包进 else（build/make/third_party_mysql.mak 探针 test_mysql.sh，注释注 0=true），命 db_storage_mysql/bwengine_mysql/sync_db/clear_auto_load/snapshot_helper/consolidate_dbs，判据=文件含 `MySQL development libraries not installed` 警告标记（全树唯一 6 文件）。完整性已核：树内恰 2 处条件 subdirs 改动、无第五种注册门控（usePyURLRequest/SYSTEM_HAS_PRLIMIT/useCustomBillingSystem 仅增源码或旗标，不构成启用条件）。drift 测试 `rescanning_reference_reproduces_catalog` 锁死扫描与提交一致；CLI 测试 `tests/coverage_cli.rs`（写入 catalog、四桶计数、拒绝非 checkout）。582 lib + 2 CLI 测试绿（另 2 个既有环境红=asset_fixtures/startup_baseline drift，系兄弟席脏外部 checkout，非本席）；fmt 净；新增文件 clippy 净（19 处预存警告不在本席）。commit f20c0c8。
 - [ ] **BW-00-05-02 映射引擎库和服务端目标**。**验收** 构建清册中的每项都有索引。
 - [ ] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。
 - [ ] **BW-00-05-04 映射公共代码、示例与 FantasyDemo**。**验收** 脚本及资源入口可追溯。
