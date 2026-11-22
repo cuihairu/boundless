@@ -18,6 +18,74 @@ pub const REPLY_ID_NONE: ReplyID = -1;
 /// over to 1 after. (See [`crate::request_manager`].)
 pub const REPLY_ID_MAX: ReplyID = 1_000_000;
 
+/// `SeqNum` (misc.hpp:25): a packet sequence number. The sequence space is
+/// the top 28 bits of the u32, so `SEQ_SIZE` is the wrap point.
+pub type SeqNum = u32;
+
+/// `SEQ_SIZE` (misc.hpp:26).
+pub const SEQ_SIZE: SeqNum = 0x1000_0000;
+
+/// `SEQ_MASK` (misc.hpp:27).
+pub const SEQ_MASK: SeqNum = SEQ_SIZE - 1;
+
+/// `SEQ_NULL` (misc.hpp:28): the sentinel "no sequence number".
+pub const SEQ_NULL: SeqNum = SEQ_SIZE;
+
+/// `seqMask` (misc.hpp:34): mask an integer into the sequence space.
+pub fn seq_mask(x: SeqNum) -> SeqNum {
+    x & SEQ_MASK
+}
+
+/// `seqLessThan` (misc.hpp:44): whether `a` comes "before" `b` in the ring.
+///
+/// The reference subtracts two `uint32`s, which wraps; an `a - b` on a Rust
+/// `u32` would panic on underflow in a debug build, so the port says the
+/// wrap explicitly.
+pub fn seq_less_than(a: SeqNum, b: SeqNum) -> bool {
+    seq_mask(a.wrapping_sub(b)) > SEQ_SIZE / 2
+}
+
+/// `ChannelID` (misc.hpp:96): the id of an indexed channel.
+pub type ChannelID = i32;
+
+/// `CHANNEL_ID_NULL` (misc.hpp:97): the sentinel "no channel id".
+pub const CHANNEL_ID_NULL: ChannelID = 0;
+
+/// `ChannelVersion` (misc.hpp:104): reuses the sequence number type.
+pub type ChannelVersion = SeqNum;
+
+/// `SeqNumAllocator` (misc.hpp:53): doles out sequence numbers for packets.
+///
+/// The reference keeps the "next" value public; this port exposes the read
+/// as [`next`](Self::next) instead of an implicit conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeqNumAllocator {
+    next_num: SeqNum,
+}
+
+impl SeqNumAllocator {
+    /// `SeqNumAllocator( firstSeqNum )`.
+    pub fn new(first_seq_num: SeqNum) -> Self {
+        Self {
+            next_num: first_seq_num,
+        }
+    }
+
+    /// `getNext`: return the current value and advance, wrapping in the
+    /// sequence space. The reference's `nextSeqNum_ + 1` is a `uint32`
+    /// addition, which wraps instead of overflowing.
+    pub fn get_next(&mut self) -> SeqNum {
+        let ret = self.next_num;
+        self.next_num = seq_mask(self.next_num.wrapping_add(1));
+        ret
+    }
+
+    /// The next sequence number that will be issued (`operator SeqNum`).
+    pub fn next(&self) -> SeqNum {
+        self.next_num
+    }
+}
+
 /// `Mercury::Reason`: reasons for Mercury errors, exceptions, and return
 /// codes. The reference numbers them downwards from 0 so that
 /// `-reason` indexes the string table; the port keeps the exact values
@@ -128,5 +196,37 @@ mod tests {
         for (reason, expected) in named {
             assert_eq!(reason.to_string(), expected, "{reason:?} names itself");
         }
+    }
+
+    /// The sequence space is the top 28 bits; `SEQ_NULL` sits just past the
+    /// wrap so it can never collide with an issued number.
+    #[test]
+    fn the_sequence_space_is_the_top_28_bits() {
+        assert_eq!(SEQ_SIZE, 0x1000_0000);
+        assert_eq!(SEQ_MASK, 0x0FFF_FFFF);
+        assert_eq!(SEQ_NULL, SEQ_SIZE);
+        assert_eq!(seq_mask(SEQ_SIZE + 5), 5);
+        assert_eq!(seq_mask(0x1234_5678), 0x0234_5678);
+    }
+
+    /// `seqLessThan` is a ring comparison: half the space behind is
+    /// "before", half ahead is "after", and the wrap point is the seam.
+    #[test]
+    fn sequence_numbers_compare_across_the_wrap() {
+        assert!(seq_less_than(5, 6));
+        assert!(!seq_less_than(6, 5));
+        assert!(!seq_less_than(5, 5));
+        // The seam: 0x0fffffff wraps to 0, so it is only 5 steps before 5
+        // (not after it), and 5 is far behind it the other way round.
+        assert!(!seq_less_than(5, SEQ_MASK));
+        assert!(seq_less_than(SEQ_MASK, 5));
+        assert!(seq_less_than(SEQ_MASK, 0), "wrap: 0x0fffffff < 0");
+        assert!(!seq_less_than(0, SEQ_MASK));
+        // An allocator hands out masked numbers in order across the wrap.
+        let mut alloc = SeqNumAllocator::new(SEQ_MASK);
+        assert_eq!(alloc.next(), SEQ_MASK, "next reads without advancing");
+        assert_eq!(alloc.get_next(), SEQ_MASK);
+        assert_eq!(alloc.get_next(), 0, "wraps through zero");
+        assert_eq!(alloc.get_next(), 1);
     }
 }

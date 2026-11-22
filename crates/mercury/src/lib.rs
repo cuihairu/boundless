@@ -24,6 +24,14 @@ pub mod packet_receiver;
 #[cfg(target_os = "linux")]
 pub mod request_manager;
 
+/// The bundle encode/decode codec (BW-02-03-01). Linux only: it registers
+/// request orders with the reply-correlation layer and carries the channel
+/// reference the off-channel codec already names.
+#[cfg(target_os = "linux")]
+pub mod udp_bundle;
+#[cfg(target_os = "linux")]
+pub mod udp_bundle_processor;
+
 /// The event poller (BW-02-01-02). Linux only, because the reference's
 /// `EPoller` backend is what `EventPoller::create()` picks under
 /// `HAS_EPOLL` and no other backend is ported yet.
