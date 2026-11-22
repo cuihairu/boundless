@@ -96,12 +96,38 @@
 //!   failed load's id is never reused);
 //! * a base that fails to build from an existing record fires the callback once
 //!   with `(None, dbID, false)` and writes the record back (`unCheckoutEntity`).
+//!
+//! # BW-07-02-02 处理 Cell 创建成功与失败
+//!
+//! `Base::createCellEntity` (`baseapp/base.cpp:3330`) requests the associated
+//! cell entity and the reply decides the outcome:
+//!
+//! * `prepareForCellCreate` (`base.cpp:3269`) validates the base (not
+//!   destroyed, no cell create or contact pending, no cell entity yet, the
+//!   type is on the cell) and sets `isCreateCellPending_` and
+//!   `isGetCellPending_`;
+//! * `CreateCellEntityHandler::handleMessage`
+//!   (`baseapp/create_cell_entity_handler.cpp:31`) reads the created entity
+//!   id; when it is this base's id the create succeeded, otherwise it failed;
+//! * `handleException` (a nub failure or timeout) fails the create;
+//! * `Base::cellCreationResult` (`base.cpp:3759`) clears
+//!   `isCreateCellPending_`; on failure it also clears `isGetCellPending_` and
+//!   calls the script `onCreateCellFailure`. A destroyed base, or a reply with
+//!   no create pending (the rare race after `setCurrentCell`), is ignored;
+//! * once the cell entity contacts the base, `setCurrentCell`-style handling
+//!   (`base.cpp:995`) records the cell address and space, clears
+//!   `isGetCellPending_`, consumes the cell data and calls the script
+//!   `onGetCell`.
+//!
+//! The recorded callbacks and the pending/address state are the acceptance:
+//! 回调及 Base 状态一致.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use crate::baseappmgr::Addr;
+use crate::cell_data::BaseAddr;
 
 /// `EntityID`.
 pub type EntityId = u32;
@@ -291,6 +317,20 @@ pub enum BaseCallback {
         /// The entity id.
         entity_id: EntityId,
     },
+    /// `onCreateCellFailure` was called.
+    OnCreateCellFailure {
+        /// The entity id.
+        entity_id: EntityId,
+    },
+    /// `onGetCell` was called with the cell contact.
+    OnGetCell {
+        /// The entity id.
+        entity_id: EntityId,
+        /// The space the cell entity is in.
+        space_id: u32,
+        /// The cell app address of the cell entity.
+        cell_addr: BaseAddr,
+    },
 }
 
 /// A created Base entity.
@@ -314,6 +354,16 @@ pub struct BaseEntity {
     pub base_props: HashMap<String, PropValue>,
     /// The cell data (defaults plus the cell properties).
     pub cell_props: HashMap<String, PropValue>,
+    /// `isCreateCellPending_`: a `createCellEntity` request is outstanding.
+    pub is_create_cell_pending: bool,
+    /// `isGetCellPending_`: waiting for the created cell entity to contact
+    /// the base (`onGetCell`).
+    pub is_get_cell_pending: bool,
+    /// `hasCellEntity()`: the cell app address of the associated cell
+    /// entity, `None` while there is none.
+    pub cell_entity_addr: Option<BaseAddr>,
+    /// `spaceID_`: the space the associated cell entity is in.
+    pub cell_space_id: u32,
     /// The callbacks recorded in order.
     pub callbacks: Vec<BaseCallback>,
 }
@@ -327,6 +377,35 @@ pub enum CreateError {
     InvalidDbId,
     /// The id pool had no id to hand out.
     NoId,
+}
+
+/// A `createCellEntity` request rejected by `checkAssociatedCellEntity` /
+/// `prepareForCellCreate` (`base.cpp:3718` and `base.cpp:3269`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellCreateError {
+    /// The base is destroyed.
+    Destroyed,
+    /// The base is already creating an associated cell entity.
+    AlreadyCreating,
+    /// The base is waiting for contact from its created cell entity.
+    WaitingForContact,
+    /// The base already has an associated cell entity.
+    AlreadyHasCell,
+    /// The type has no cell script (`canBeOnCell` is false).
+    NoCellScript,
+    /// The base is unknown.
+    UnknownBase,
+}
+
+/// The outcome of a `cellCreationResult` reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellCreationResult {
+    /// The create pending cleared; the cell entity will contact the base.
+    Created,
+    /// Both pendings cleared and `onCreateCellFailure` was recorded.
+    Failed,
+    /// Ignored: the base is destroyed or no create was pending.
+    Ignored,
 }
 
 /// The reference `LogOnStatus` values this load path answers with
@@ -674,6 +753,10 @@ impl EntityCreator {
             in_destroy: false,
             base_props: HashMap::new(),
             cell_props: HashMap::new(),
+            is_create_cell_pending: false,
+            is_get_cell_pending: false,
+            cell_entity_addr: None,
+            cell_space_id: 0,
             callbacks: Vec::new(),
         };
 
@@ -693,6 +776,97 @@ impl EntityCreator {
 
         self.bases.insert(id, entity.clone());
         Ok(entity)
+    }
+
+    /// `Base::prepareForCellCreate` (`base.cpp:3269`): validate the base is
+    /// eligible for an associated cell entity, then set the create and
+    /// contact pendings.
+    pub fn begin_cell_creation(&mut self, entity_id: EntityId) -> Result<(), CellCreateError> {
+        let entity = self
+            .bases
+            .get_mut(&entity_id)
+            .ok_or(CellCreateError::UnknownBase)?;
+        if entity.destroyed {
+            return Err(CellCreateError::Destroyed);
+        }
+        if entity.is_create_cell_pending {
+            return Err(CellCreateError::AlreadyCreating);
+        }
+        if entity.is_get_cell_pending {
+            return Err(CellCreateError::WaitingForContact);
+        }
+        if entity.cell_entity_addr.is_some() {
+            return Err(CellCreateError::AlreadyHasCell);
+        }
+        let ty = self
+            .types
+            .get(&entity.type_name)
+            .ok_or(CellCreateError::NoCellScript)?;
+        if !ty.can_be_on_cell {
+            return Err(CellCreateError::NoCellScript);
+        }
+        entity.is_create_cell_pending = true;
+        entity.is_get_cell_pending = true;
+        Ok(())
+    }
+
+    /// `Base::cellCreationResult` (`base.cpp:3759`): the outcome of the
+    /// create request reply. A destroyed base, or a reply with no create
+    /// pending (the rare race after `setCurrentCell`), is ignored. On
+    /// failure the contact pending is cleared and `onCreateCellFailure` is
+    /// recorded; on success the contact pending stays until the cell entity
+    /// contacts the base.
+    pub fn cell_creation_result(
+        &mut self,
+        entity_id: EntityId,
+        success: bool,
+    ) -> CellCreationResult {
+        let Some(entity) = self.bases.get_mut(&entity_id) else {
+            return CellCreationResult::Ignored;
+        };
+        if entity.destroyed || !entity.is_create_cell_pending {
+            return CellCreationResult::Ignored;
+        }
+        entity.is_create_cell_pending = false;
+        if success {
+            CellCreationResult::Created
+        } else {
+            entity.is_get_cell_pending = false;
+            entity
+                .callbacks
+                .push(BaseCallback::OnCreateCellFailure { entity_id });
+            CellCreationResult::Failed
+        }
+    }
+
+    /// The `setCurrentCell`-style contact (`base.cpp:995`, the `haveCell`
+    /// branch): the cell entity has been created and now contacts the base.
+    /// The cell address and space are recorded, the contact pending clears,
+    /// the cell data is consumed and `onGetCell` is recorded. Returns false
+    /// for an unknown or destroyed base.
+    pub fn cell_contact(
+        &mut self,
+        entity_id: EntityId,
+        space_id: u32,
+        cell_addr: BaseAddr,
+    ) -> bool {
+        let Some(entity) = self.bases.get_mut(&entity_id) else {
+            return false;
+        };
+        if entity.destroyed {
+            return false;
+        }
+        entity.cell_entity_addr = Some(cell_addr);
+        entity.cell_space_id = space_id;
+        entity.is_get_cell_pending = false;
+        entity.is_create_cell_pending = false;
+        entity.cell_props.clear();
+        entity.callbacks.push(BaseCallback::OnGetCell {
+            entity_id,
+            space_id,
+            cell_addr,
+        });
+        true
     }
 
     /// `createBaseFromDB`: validate the type and the database id, allocate an
@@ -869,6 +1043,10 @@ impl EntityCreator {
             in_destroy: false,
             base_props,
             cell_props,
+            is_create_cell_pending: false,
+            is_get_cell_pending: false,
+            cell_entity_addr: None,
+            cell_space_id: 0,
             callbacks: Vec::new(),
         };
         entity.callbacks.push(BaseCallback::Init {
@@ -1127,6 +1305,172 @@ mod tests {
 
         // The entity is registered.
         assert!(creator.bases().contains_key(&10));
+    }
+
+    /// The create-success flow: begin, the reply succeeds, then the cell
+    /// contacts the base. The pendings and callbacks mirror the reference.
+    #[test]
+    fn a_cell_create_success_ends_with_on_get_cell() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        // The request is eligible: both pendings go up.
+        creator.begin_cell_creation(base.id).unwrap();
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(entity.is_create_cell_pending);
+        assert!(entity.is_get_cell_pending);
+        assert_eq!(entity.cell_entity_addr, None);
+
+        // The cell replies with the base's id: the create succeeded. Only
+        // the create pending clears; the contact is still awaited.
+        let outcome = creator.cell_creation_result(base.id, base.id == 10);
+        assert_eq!(outcome, CellCreationResult::Created);
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(!entity.is_create_cell_pending);
+        assert!(entity.is_get_cell_pending);
+
+        // The cell entity contacts the base: the address and space land, the
+        // cell data is consumed and `onGetCell` fires.
+        let cell_addr = crate::cell_data::BaseAddr {
+            ip: 0x0a000002,
+            port: 30001,
+        };
+        assert!(creator.cell_contact(base.id, 7, cell_addr));
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(!entity.is_get_cell_pending);
+        assert_eq!(entity.cell_entity_addr, Some(cell_addr));
+        assert_eq!(entity.cell_space_id, 7);
+        assert!(entity.cell_props.is_empty());
+        assert_eq!(
+            entity.callbacks.last(),
+            Some(&BaseCallback::OnGetCell {
+                entity_id: base.id,
+                space_id: 7,
+                cell_addr,
+            })
+        );
+    }
+
+    /// The create-failure flow: the reply fails (a different entity id, or a
+    /// nub exception) clears both pendings and fires `onCreateCellFailure`.
+    #[test]
+    fn a_cell_create_failure_fires_on_create_cell_failure() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        creator.begin_cell_creation(base.id).unwrap();
+        // The handler compares the reply's entity id with the base's: a
+        // mismatch (or an exception) is a failure.
+        let outcome = creator.cell_creation_result(base.id, base.id == 99);
+        assert_eq!(outcome, CellCreationResult::Failed);
+
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(!entity.is_create_cell_pending);
+        assert!(!entity.is_get_cell_pending);
+        assert_eq!(entity.cell_entity_addr, None);
+        assert_eq!(
+            entity.callbacks.last(),
+            Some(&BaseCallback::OnCreateCellFailure { entity_id: base.id })
+        );
+    }
+
+    /// A reply for a base with no create pending is ignored — the rare race
+    /// the reference guards against — and never records a callback.
+    #[test]
+    fn a_reply_without_a_pending_create_is_ignored() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        // No `begin_cell_creation` call: the reply has nothing to land on.
+        assert_eq!(
+            creator.cell_creation_result(base.id, false),
+            CellCreationResult::Ignored
+        );
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(!entity.is_get_cell_pending);
+        assert!(
+            !entity
+                .callbacks
+                .iter()
+                .any(|c| matches!(c, BaseCallback::OnCreateCellFailure { .. }))
+        );
+    }
+
+    /// The eligibility checks: destroyed, duplicated create and contact
+    /// pending, an existing cell and a type without a cell script.
+    #[test]
+    fn ineligible_bases_are_rejected_before_any_pending() {
+        let mut creator = EntityCreator::new({
+            let mut pool = IdPool::new(5, 10, 50, 100);
+            pool.refill(&[10, 11, 12]);
+            pool
+        });
+        creator.add_type(account_type());
+
+        // An unknown base.
+        assert_eq!(
+            creator.begin_cell_creation(99),
+            Err(CellCreateError::UnknownBase)
+        );
+
+        // A type without a cell script cannot create a cell entity.
+        let mut no_cell = account_type();
+        no_cell.id = 3;
+        no_cell.name = "NoCell".to_string();
+        no_cell.can_be_on_cell = false;
+        creator.add_type(no_cell.clone());
+        let plain = creator
+            .create_base_locally("NoCell", CreateArgs::new())
+            .unwrap();
+        assert_eq!(
+            creator.begin_cell_creation(plain.id),
+            Err(CellCreateError::NoCellScript)
+        );
+        // Nothing pending was set by the failed request.
+        assert!(
+            !creator
+                .bases()
+                .get(&plain.id)
+                .unwrap()
+                .is_create_cell_pending
+        );
+
+        // A duplicated create (the pending already set) is rejected.
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+        creator.begin_cell_creation(base.id).unwrap();
+        assert_eq!(
+            creator.begin_cell_creation(base.id),
+            Err(CellCreateError::AlreadyCreating)
+        );
+
+        // The contact pending (the reply succeeded but no contact yet).
+        creator.cell_creation_result(base.id, true);
+        assert_eq!(
+            creator.begin_cell_creation(base.id),
+            Err(CellCreateError::WaitingForContact)
+        );
+
+        // After the contact, the base already has a cell entity.
+        let cell_addr = crate::cell_data::BaseAddr {
+            ip: 0x0a000002,
+            port: 30001,
+        };
+        creator.cell_contact(base.id, 7, cell_addr);
+        assert_eq!(
+            creator.begin_cell_creation(base.id),
+            Err(CellCreateError::AlreadyHasCell)
+        );
     }
 
     #[test]
