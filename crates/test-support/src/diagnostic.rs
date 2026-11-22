@@ -224,6 +224,79 @@ fn signed_delta(from: u64, to: u64) -> i64 {
     }
 }
 
+/// Escape a string for a JSON string literal.
+fn escape(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Export a snapshot's statistics as JSON text. The numbers are the same ones
+/// the interactive query returns, so a reader of the export reads what the
+/// console showed.
+pub fn export_snapshot_json(snapshot: &MemorySnapshot) -> String {
+    let mut out = String::new();
+    out.push_str("{\"target\":\"");
+    out.push_str(&escape(&snapshot.target));
+    out.push_str("\",\"collected_at\":");
+    out.push_str(&snapshot.collected_at.to_string());
+    out.push_str(",\"readings\":{");
+    let mut first = true;
+    for (name, value) in &snapshot.readings {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push('"');
+        out.push_str(&escape(name));
+        out.push_str("\":");
+        out.push_str(&value.to_string());
+    }
+    out.push_str("}}");
+    out
+}
+
+/// Export a snapshot comparison as JSON text, one entry per field, with the
+/// same before, after and delta the comparison reports.
+pub fn export_delta_json(delta: &SnapshotDelta) -> String {
+    let mut out = String::new();
+    out.push_str("{\"target\":\"");
+    out.push_str(&escape(&delta.target));
+    out.push_str("\",\"before_id\":\"");
+    out.push_str(&escape(&delta.before_id));
+    out.push_str("\",\"after_id\":\"");
+    out.push_str(&escape(&delta.after_id));
+    out.push_str("\",\"fields\":[");
+    let mut first = true;
+    for field in &delta.fields {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str("{\"field\":\"");
+        out.push_str(&escape(&field.field));
+        out.push_str("\",\"before\":");
+        out.push_str(&field.before.to_string());
+        out.push_str(",\"after\":");
+        out.push_str(&field.after.to_string());
+        out.push_str(",\"delta\":");
+        out.push_str(&field.delta.to_string());
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
 /// The diagnostic's target registry and its query surface.
 pub struct Diagnostic {
     targets: Vec<DiagnosticTarget>,
@@ -626,5 +699,71 @@ mod tests {
         granted.grant("cellapp01");
         let delta = diagnostic.compare(&granted, &before, &after).unwrap();
         assert_eq!(delta.fields[0].delta, 1_000_000);
+    }
+
+    #[test]
+    fn exporting_a_snapshot_carries_the_interactive_numbers() {
+        let mut diagnostic = Diagnostic::with_clock(|| 99);
+        diagnostic.add_process("cellapp01", 100).set_readings(
+            "cellapp01",
+            vec![("rss_bytes", 8_000_000), ("entities", 512)],
+        );
+        let mut auth = Authorization::new();
+        auth.grant("cellapp01");
+
+        let snapshot = diagnostic.snapshot(&auth, "cellapp01").unwrap();
+        let query = diagnostic.query(&auth, "cellapp01").unwrap();
+
+        // The export carries the same numbers the interactive query shows.
+        let json = export_snapshot_json(&snapshot);
+        assert_eq!(
+            json,
+            "{\"target\":\"cellapp01\",\"collected_at\":99,\
+             \"readings\":{\"rss_bytes\":8000000,\"entities\":512}}"
+        );
+        for (name, value) in &query.readings {
+            assert!(json.contains(&format!("\"{}\":{}", name, value)));
+        }
+    }
+
+    #[test]
+    fn exporting_a_delta_carries_its_field_deltas() {
+        let before = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 10,
+            readings: vec![("rss_bytes".to_string(), 8_000_000)],
+        };
+        let after = MemorySnapshot {
+            target: "cellapp01".to_string(),
+            collected_at: 20,
+            readings: vec![("rss_bytes".to_string(), 9_000_000)],
+        };
+        let delta = compare_snapshots(&before, &after);
+        let json = export_delta_json(&delta);
+        assert_eq!(
+            json,
+            format!(
+                "{{\"target\":\"cellapp01\",\"before_id\":\"{}\",\
+                 \"after_id\":\"{}\",\"fields\":[{{\"field\":\"rss_bytes\",\
+                 \"before\":8000000,\"after\":9000000,\"delta\":1000000}}]}}",
+                before.id(),
+                after.id()
+            )
+        );
+    }
+
+    #[test]
+    fn export_escapes_a_target_needing_it() {
+        let snapshot = MemorySnapshot {
+            target: "cell\"app\\01\n".to_string(),
+            collected_at: 1,
+            readings: vec![("rss_bytes".to_string(), 8_000_000)],
+        };
+        let json = export_snapshot_json(&snapshot);
+        assert_eq!(
+            json,
+            "{\"target\":\"cell\\\"app\\\\01\\n\",\"collected_at\":1,\
+             \"readings\":{\"rss_bytes\":8000000}}"
+        );
     }
 }
