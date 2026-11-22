@@ -175,6 +175,7 @@ main() {
             | ci/map-coverage.sh | ci/map-coverage.py \
             | ci/map-entry.sh | ci/map-entry.py | ci/coverage_scope.py \
             | ci/coverage-artifacts.sh | ci/coverage-artifacts.py \
+            | ci/coverage-reconcile.sh | ci/coverage-reconcile.py \
             | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 
