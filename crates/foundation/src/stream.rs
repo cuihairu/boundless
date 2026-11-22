@@ -31,6 +31,8 @@ pub enum StreamError {
     Truncated,
     /// The requested length exceeds what a packed int can carry.
     PackedIntTooLarge,
+    /// A compressed blob did not decode to the declared length.
+    CorruptData,
 }
 
 impl std::fmt::Display for StreamError {
@@ -38,6 +40,7 @@ impl std::fmt::Display for StreamError {
         match self {
             Self::Truncated => write!(f, "stream read would run past the end of the buffer"),
             Self::PackedIntTooLarge => write!(f, "packed int length exceeds 2^24 - 1"),
+            Self::CorruptData => write!(f, "compressed data did not decode to the declared length"),
         }
     }
 }
