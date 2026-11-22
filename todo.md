@@ -1865,7 +1865,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用可控分配和释放夹具验证差值、分配热点和回收趋势，配合长稳压测报告快照时间、采集开销和对象增长。
 
-- [ ] **BW-24-03-01 构造已知分配及释放夹具**。**验收** 差值可预测。
+- [x] **BW-24-03-01 构造已知分配及释放夹具**。**验收** 差值可预测。证据：新增 `test-support/src/growth.rs`（+`pub mod growth`，BW-24-03 增长排查夹具模块）——**`GrowthFixture`**（包 `LiveAllocationTracker`（BW-24-01-02）的可控分配释放夹具）+ **`hold(bytes) -> TrackedAllocation`**（持已知真实字节，guard 释放即回落）+ **`live_bytes/peak_bytes/total_allocated_bytes`**（活/高水/累计三读）+ **`predicted_live_after_holding(bytes)`**（现读+bytes）/ **`predicted_live_after_releasing(held)`**（现读−held 饱和至 0=**先预测后行动、读数恰落预测处**=差值可预测合约显式化）+ `tracker()` 供裸读。验收由 2 测实证：`a_known_allocation_and_release_makes_the_delta_predictable`（hold 1000 → 预测 baseline+1000=读数恰落；再 hold 500 → 加性预测 baseline+1500=读数恰落；release 1000 → 先预测 baseline+500 后释放=读数恰落；**高水保持 baseline+1500、累计 1500 只增不减**=释放不是回收高水；末释放 → 回 baseline、累计仍 1500=全程差值可预测）+ `releasing_more_than_held_floors_at_zero`（释放 400 后再预测释放 400 → 0=预测不越零）。中途修一处测试锚错：预测须**行动前**取（行动后取=从已变状态预测必错），重构为先 `predicted` 后动作再比对。foundation 149 全绿；test-support 244 全绿 + 1 环境性红（`startup_baseline::rescanning_reference_reproduces_catalog` 非本席：参考仓 cellapp 227349240 vs 基线 227330704 兄弟会话重建所致、本席动 growth/lib 两文件）；fmt 净、clippy 净（0 发现于本席文件）。commit 45bf6fb。
 - [ ] **BW-24-03-02 定位分配热点**。**验收** 采样能识别已知来源。
 - [ ] **BW-24-03-03 验证回收趋势**。**验收** 释放后活跃对象数回落。
 - [ ] **BW-24-03-04 接入 Bots 长稳采样**。**验收** 报告快照耗时、增长和采集开销。
