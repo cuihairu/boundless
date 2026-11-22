@@ -6,6 +6,7 @@
 //! by plain `cargo test` runs.
 
 pub mod allocation;
+pub mod asset_fixtures;
 pub mod case_registry;
 pub mod channel;
 pub mod client_login;
