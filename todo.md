@@ -429,7 +429,13 @@
   - 证据：**守卫**——消息类型非 `REPLY_MESSAGE_IDENTIFIER`、body 短于 4 字节、id 无匹配者均告警丢弃不派发；外部 nub 只接受频道地址的应答，错误来源应答告警后**请求保留挂起**，内部 nub 不设来源检查（参考注释：内部频道卸载后应答可来自不同地址）。
   - 证据：**生命周期**——无频道请求在 `!pChannel` 时挂 once-off 定时器（超时 `TimerExpired` 恰好一次并释放），频道请求不带定时器（超时归频道 BW-02-03）；`cancel_requests_for_channel` 只以 `ChannelLost` 失败该频道的请求，`cancel_requests_for_handler` 以指定 reason 失败该 handler 的全部请求；析构以 `ShuttingDown` 失败全部挂起。定时器闭包捕获 `Weak<RequestManager>` 断 Rc 环（管理器→请求→定时器→闭包→管理器）。
   - 测试与覆盖：mercury **167 通过 / 0 失败**（新增 16：13 request_manager + 2 nub_exception + 1 unpacked_message_header）；全 workspace **838 通过 / 0 失败 / 33 ignored**；`cargo clippy -p mercury --all-targets -- -D warnings` 零告警、`cargo fmt --check -p mercury` 0 差异。llvm-cov 行覆盖 request_manager.rs **99.60%**、nub_exception.rs **100.00%**、unpacked_message_header.rs **100.00%**（唯一未覆为 `fail_request` 的防御性未命中臂——请求被解析时其定时器必已取消，参考 `failRequest(Request&)` 恒持有存活请求，该臂不可达）。`ChannelRef` 新增 `addr()`，仅 packet_receiver 测试的 `FakeChannel` 与 request_manager 测试实现，无仓外实现者。
-- [ ] **BW-02-02-04 实现请求超时和取消**。**验收** 回调恰好一次并释放挂起状态。
+- [x] **BW-02-02-04 实现请求超时和取消**（ca1889e，机制随 03 的 2380a11 落地）。**验收** 回调恰好一次并释放挂起状态。
+  - 证据：**机制**——无频道请求（`!pChannel`）在 `add_reply_order` 挂 once-off 定时器，到点 `fail_request(id, TimerExpired)`；频道请求不带定时器（超时归频道 BW-02-03）；`cancel_requests_for_channel` 以 `ChannelLost` 失败该频道请求，`cancel_requests_for_handler` 以指定 reason 失败该 handler 的全部请求；析构以 `ShuttingDown` 失败全部挂起。
+  - 证据：**回调恰好一次**——六条新测试逐一手撕"恰好一次"：应答后 cancel 不再回调、超时后晚到应答不派发（走 unknown-id 守卫）、超时后 cancel 不再回调、二次 cancel 幂等（第二次找不到挂起）、应答/超时后析构无 shutdown 通知。`RequestManager::handle_message`/`fail_request` 均在派发**前**从 map 移除，故任何后续路径找不到该请求——幂等由构造保证而非靠标志位。
+  - 证据：**释放挂起状态**——应答解析后 once-off 定时器即取消（时钟越过超时点 `process_timers` 0 次触发）；请求出 map。参考 `finish()` 靠定时器 `cancel` 触发 `onRelease`→`delete this`（已触发则直接 delete），端口由 map 所有权 + `Drop` 取消等效。
+  - 证据：**参考对照**——`Request::handleTimeout`→`failRequest(*this, REASON_TIMER_EXPIRED)`；`failRequest` 先 `requestMap_.erase(replyID)` 再 `handleFailure`；`cancelRequestsFor` 迭代时**先移迭代器**再 fail（fail 改 map 会使迭代器失效），端口先收集 id 再逐个 fail 同序。
+  - 待接入：`cancelRequestsFor(Bundle&, reason)`→`bundle.cancelRequests` 属 Bundle（BW-02-03-01）；`NetworkInterface::finaliseRequestManager` 关停接线随 05 的注册/校验面。
+  - 测试与覆盖：mercury **173 通过 / 0 失败**（新增 6，均为 request_manager 生命周期）；全 workspace **844 通过 / 0 失败 / 33 ignored**；`cargo clippy -p mercury --all-targets -- -D warnings` 零告警、`cargo fmt --check -p mercury` 0 差异；llvm-cov request_manager.rs **99.68%** 行。
 - [ ] **BW-02-02-05 注册处理器与校验**。**验收** 未知消息与长度错误结果吻合。
 
 #### BW-02-03 可靠 UDP
