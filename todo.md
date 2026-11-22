@@ -94,7 +94,7 @@
 
 记录二进制哈希、编译选项、配置、Python 标准库和数据库版本。复跑上游单测入口并记录实际参编用例。获取单机集群、最小客户端、Windows 客户端及工具的可运行基准。
 
-- [ ] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。
+- [x] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。证据面 `docs/review/bw00-02-01-runtime-env.md`（`runtime_env_scan.py` 扫描 + `runtime_env_doc.py` 生成，源数据 `reference/bw00_02_01_runtime_env.json`）：参考仓提交 `916dc72a`（REVISION_NUMBER -1）；构建参数 platform el7 / config hybrid（无 `_hybrid` 后缀）/ `-std=c++23` / GCC Ubuntu 15.2.0；嵌入 CPython 3.13.16（静态，系统 python3 3.14.9 不入运行面）；DB：系统 libmysqlclient.so.24（mysql_config 8.4.13，备选 libmariadb3 11.8.6）+ 静态 SQLite 3.53.4 + mongo legacy 26compat 2.6.7；vcpkg 7 port 版本齐全（openssl 3.6.4 / curl 8.22.0 / jsoncpp 1.9.6 / zlib 1.3.2 / libpng 1.6.58 / sqlite3 3.53.4 / bzip2 1.0.8）；59 个安装树文件 47 行 sha256（46 ELF + remove_db 脚本）；链接形态 41 个纯静态 + 5 个 MySQL 动态派。commit 5aba807。
 - [ ] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
 - [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
 - [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
