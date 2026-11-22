@@ -185,6 +185,10 @@ pub type Setter =
 pub type NewFunction =
     unsafe extern "C" fn(*mut PyTypeObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
 
+/// `tp_dealloc` (`object.h`): the destruction entry, which must release the
+/// instance body and then hand the allocation back with `PyObject_Free`.
+pub type DeallocFunction = unsafe extern "C" fn(*mut PyObject);
+
 /// `binaryfunc`: the two-operand number-protocol handler (`nb_add`, ...).
 pub type BinaryFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
 
@@ -268,6 +272,8 @@ pub const Py_tp_new: c_int = 65;
 pub const Py_tp_repr: c_int = 66;
 /// `Py_tp_base` (`typeslots.h`): the heap type's base, a `PyTypeObject*`.
 pub const Py_tp_base: c_int = 48;
+/// `Py_tp_dealloc` (`typeslots.h`): the destruction entry.
+pub const Py_tp_dealloc: c_int = 52;
 /// `Py_TPFLAGS_BASETYPE` (`cpython/object.h`): the type may be subclassed.
 pub const Py_TPFLAGS_BASETYPE: c_uint = 1 << 10;
 /// `PyMappingMethods` (`cpython/object.h`): the mapping protocol table.
@@ -500,6 +506,12 @@ unsafe extern "C" {
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
+    /// `PyObject_Free` (`Include/obmalloc.h`): release an object allocated
+    /// by `PyType_GenericAlloc` for a type that is not GC-tracked. A
+    /// `tp_dealloc` handler calls this after releasing the instance body's
+    /// held references, the same free the reference's `PyObjectPlus`
+    /// destructor reaches.
+    pub fn PyObject_Free(ptr: *mut std::os::raw::c_void);
     pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
     pub fn PyObject_GenericGetAttr(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericSetAttr(

@@ -107,6 +107,10 @@ pub struct TypeSpec {
     richcompare: Option<capi::RichcmpFunction>,
     /// The construction entry; `None` is the reference's refusal.
     new_: Option<capi::NewFunction>,
+    /// The destruction entry; `None` lets CPython free the object directly.
+    /// A provider type that holds references to other providers wires its
+    /// own dealloc to release them before the free.
+    dealloc: Option<capi::DeallocFunction>,
     /// The address of a previously registered heap type this type derives
     /// from, wired as the `Py_tp_base` slot; `None` is the `object` root.
     base: Option<usize>,
@@ -127,6 +131,7 @@ impl TypeSpec {
             number: None,
             richcompare: None,
             new_: None,
+            dealloc: None,
             base: None,
             flags: 0,
             instance_size: 0,
@@ -240,6 +245,14 @@ impl TypeSpec {
     #[must_use]
     pub fn instance_size(mut self, bytes: usize) -> Self {
         self.instance_size = bytes;
+        self
+    }
+
+    /// The destruction entry, for a type whose body owns references the
+    /// interpreter's plain free would leak.
+    #[must_use]
+    pub fn dealloc(mut self, handler: capi::DeallocFunction) -> Self {
+        self.dealloc = Some(handler);
         self
     }
 
@@ -657,6 +670,15 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
             slot: capi::Py_tp_new,
             pfunc: spec.new_.unwrap_or(refuse_new) as *mut std::os::raw::c_void,
         },
+        // A destruction entry is emitted only when a type owns references
+        // its dealloc must release; otherwise CPython's own free runs and
+        // the body is plain memory.
+        capi::PyTypeSlot {
+            slot: capi::Py_tp_dealloc,
+            pfunc: spec.dealloc.map_or(std::ptr::null_mut(), |handler| {
+                handler as *mut std::os::raw::c_void
+            }),
+        },
         capi::PyTypeSlot {
             slot: capi::Py_tp_repr,
             pfunc: default_repr as *mut std::os::raw::c_void,
@@ -938,6 +960,21 @@ mod tests {
         let spec = TypeSpec::new("boundless.Demo").attribute("va\0lue", value_get, None);
         assert_eq!(create_type(&spec), Err(BindError::BadName));
         assert!(registry().types.is_empty());
+    }
+
+    /// A destruction entry builds into the spec without changing the
+    /// no-interpreter refusal: the dealloc slot is a create-time concern,
+    /// and the builder only carries the handler.
+    #[test]
+    fn a_dealloc_spec_is_still_refused_without_an_interpreter() {
+        let spec = TypeSpec::new("boundless.DeallocDemo").dealloc(stub_dealloc);
+        assert_eq!(create_type(&spec), Err(BindError::NoInterpreter));
+        assert!(registry().types.is_empty());
+    }
+
+    unsafe extern "C" fn stub_dealloc(_self_: *mut capi::PyObject) {
+        // The stub never runs without an interpreter; the refusal above
+        // means this line is for the handler's type alone.
     }
 
     /// The empty handle instantiates nothing, whatever the interpreter
