@@ -526,10 +526,18 @@ jobs:
         with:
           cache: true
 
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
       - name: Run the comparison
         run: |
           ci/fullstack-compare.sh
           ci/fullstack-compare.sh substitute
+          # The difference report (BW-00-04-06) reads the evidence pairs the
+          # comparison above wrote, so it must run after them.
+          ci/diff-report.sh
 
       - name: Bundle results
         if: always()
@@ -904,6 +912,7 @@ jobs:
           ci/runners.sh self-test
           ci/parity.sh self-test
           ci/fullstack-compare.sh self-test
+          ci/diff-report.sh self-test
           ci/sdk.sh self-test
           ci/load.sh self-test
           ci/fault.sh self-test

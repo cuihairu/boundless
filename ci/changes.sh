@@ -126,9 +126,11 @@ main() {
         tests/parity/* | ci/parity.sh) parity=1 ;;
         esac
         # The full-stack comparison runs the original and new producers on the
-        # same input, so it follows the captured fixtures and the lane.
+        # same input, so it follows the captured fixtures and the lane. The
+        # difference report reads that lane's evidence pairs, so it travels
+        # with them.
         case "$p" in
-        docs/review/fixtures/* | docs/review/reference/* | ci/fullstack-compare.sh) fullstack=1 ;;
+        docs/review/fixtures/* | docs/review/reference/* | ci/fullstack-compare.sh | ci/diff-report.sh | ci/diff_report.py) fullstack=1 ;;
         esac
         # The SDK and plugin cases gate on artifacts a host loads, so they
         # follow the SDK tree, the plugin crates and the lane.
