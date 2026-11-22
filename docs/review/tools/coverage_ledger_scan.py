@@ -106,6 +106,42 @@ TARGET_OVERRIDE = {
                    "为 rejected）"),
 }
 
+# Concrete gap source (来源 + 阻塞) for engine libs and server targets that
+# have no task yet. BW-00-05-02 requires every such row to carry a real index
+# entry, not the generic "unmapped" note. Keyed by dir.
+GAP_SOURCES = {
+    "lib/build": "构建期辅助库，无独立运行时验收面",
+    "lib/chunk": "空间块（chunk）加载；新版尚无对应 crate，空间数据面未启动",
+    "lib/chunk_loading": "空间块流式加载；新版尚无对应 crate，空间数据面未启动",
+    "lib/db_storage_mysql": "MySQL 存储后端实现基座；运行时路径由 "
+                            "dbapp_extensions/bwengine_mysql 承载（已映射）",
+    "lib/db_storage_xml": "XML 存储后端；无运行时证据（DB 证据为 MySQL 路径）",
+    "lib/delegate_interface": "内部接口基座，无独立验收面",
+    "lib/entitydef_script": "脚本侧实体定义绑定；脚本绑定面未建",
+    "lib/math": "数学基元；无对应 Rust crate",
+    "lib/memhook": "内存挂钩；仅客户端/嵌入面",
+    "lib/moo": "渲染管线；客户端渲染面未启动",
+    "lib/physics2": "2D 物理；无对应 crate",
+    "lib/scene": "场景管理；客户端/场景面未启动",
+    "lib/speedtree": "植被渲染；第三方渲染面未启动",
+    "lib/sqlite": "SQLite 封装；存储面未建",
+    "lib/terrain": "地形；客户端/空间面未启动",
+    "lib/unit_test_lib": "单测基座库；随 BW-00-02-02 单测基线（框架侧已覆盖）",
+    "lib/urlrequest": "URL 请求（curl）；无对应 crate",
+    "lib/waypoint": "寻路；无对应 crate",
+    "server/tools/bots": "bots 负载客户端；无对应实现",
+    "server/tools/bw_profile": "性能剖析（_bw_profile.so）；无对应实现",
+    "server/tools/clear_auto_load": "DB 自动加载清理；DB 管理面未建",
+    "server/tools/consolidate_dbs": "DB 合并；DB 管理面未建",
+    "server/tools/message_logger": "日志服务器（message_logger + _bwlog）；"
+                                  "无对应实现",
+    "server/tools/remove_db": "删除 DB 脚本；DB 管理面未建",
+    "server/tools/snapshot_helper": "DB 快照；DB 管理面未建",
+    "server/tools/sync_db": "DB 同步；DB 管理面未建",
+    "server/tools/transfer_db": "DB 迁移；DB 管理面未建",
+}
+GENERIC_GAP = "尚无对应实现与证据（未映射任务）"
+
 
 def coverage_for(dir, target):
     if target in TARGET_OVERRIDE:
@@ -118,7 +154,9 @@ def coverage_for(dir, target):
     for prefix, task, fixture, status, note in COVERAGE:
         if dir == prefix or dir.startswith(prefix + "/"):
             return task, fixture, status, note
-    return None, None, "gap", "尚无对应实现与证据（未映射任务）"
+    if dir in GAP_SOURCES:
+        return None, None, "gap", "缺口：" + GAP_SOURCES[dir]
+    return None, None, "gap", GENERIC_GAP
 
 
 def main():
@@ -162,6 +200,15 @@ def main():
             "note": note,
         })
 
+    # BW-00-05-02 scope: every engine lib (lib/*) and server target
+    # (server/*, server/tools/*) must carry a concrete index entry.
+    scope = [r for r in make_rows
+             if r["dir"].startswith("lib/") or r["dir"].startswith("server/")]
+    generic = [r for r in scope if r["note"] == GENERIC_GAP]
+    if generic:
+        print("WARN engine/server generic gap: "
+              + ", ".join(r["dir"] for r in generic))
+
     data = {
         "fields": ["target", "dir", "enable", "task", "fixture", "status"],
         "counts": {
@@ -171,6 +218,8 @@ def main():
             "covered": sum(1 for r in make_rows if r["status"] == "covered"),
             "partial": sum(1 for r in make_rows if r["status"] == "partial"),
             "gap": sum(1 for r in make_rows if r["status"] == "gap"),
+            "engine_server": len(scope),
+            "engine_server_indexed": len(scope) - len(generic),
         },
         "make": make_rows,
         "cmake": cmake_rows,
