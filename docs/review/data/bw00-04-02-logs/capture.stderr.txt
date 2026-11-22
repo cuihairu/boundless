@@ -1,0 +1,7 @@
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/bigworld/lib/pyscript/unit_test/res" (from command line).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from command line).
+ERROR: [ResMgr] BWResource::addPaths: Resource path does not exist: /tmp/../../../../../game/res/bigworld
+ERROR: Exception ignored on flushing sys.stdout:
+ERROR: AttributeError: 'PyOutputStream' object has no attribute 'flush'
+ERROR: Exception ignored in sys.unraisablehook: <built-in function unraisablehook>
+ERROR: AttributeError: 'PyOutputStream' object has no attribute 'flush'
