@@ -29,6 +29,7 @@ pub mod pyref;
 pub mod resmgr;
 pub mod sequence;
 pub mod timers;
+pub mod urlrequest;
 pub mod wrapper;
 
 pub use binding::BindError;

@@ -218,7 +218,7 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "fetchURL",
         Kind::Function,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "\"sO|OfsO\" keywords url, callback, headers=None, timeout=0, \
          method=None, postdata=None",
         "None",
@@ -234,7 +234,7 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "URLResponse",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Covered,
         "built by the engine; (contentType, body, responseCode)",
         "read-only attributes contentType, body, responseCode",
         "delivered to the callback; a failing callback is printed, not raised",
@@ -1619,11 +1619,12 @@ mod tests {
     }
 
     /// Ported rows are exactly what the interpreter carries today: the
-    /// BigWorld shell with its `component` attribute and the timer faces
+    /// BigWorld shell with its `component` attribute, the timer faces
     /// BW-03-03-03 delivered -- the client pair gated to the client role,
-    /// the server trio gated to the server roles -- plus the Math module
-    /// with every factory name; the Windows-only matrix animation is the
-    /// one row still pending.
+    /// the server trio gated to the server roles -- and the ungated
+    /// `fetchURL` BW-03-03-05 delivered, plus the Math module with every
+    /// factory name; the Windows-only matrix animation is the one row
+    /// still pending.
     #[test]
     fn only_the_delivered_surface_is_marked_ported() {
         let ported_modules: Vec<_> = entries()
@@ -1645,6 +1646,7 @@ mod tests {
                 "component",
                 "callback",
                 "cancelCallback",
+                "fetchURL",
                 "addTimer",
                 "delTimer",
                 "addFrequentTask",
@@ -1757,13 +1759,19 @@ mod tests {
             &mut carries_none,
         );
         // With no role carried, every gated row's absence is the contract
-        // and only the ungated `component` claim fails.
+        // and only the ungated `component` and `fetchURL` claims fail.
         assert_eq!(
             uncarried,
-            vec![Mismatch::ItemMissing {
-                module: "BigWorld",
-                item: "component"
-            }]
+            vec![
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "component"
+                },
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "fetchURL"
+                },
+            ]
         );
         assert_eq!(
             uncarried[0].render(),
@@ -1796,6 +1804,10 @@ mod tests {
                     module: "BigWorld",
                     item: "cancelCallback"
                 },
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "fetchURL"
+                },
                 Mismatch::ItemScopeLeak {
                     module: "BigWorld",
                     item: "addTimer"
@@ -1811,7 +1823,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            leak[3].render(),
+            leak[4].render(),
             "BigWorld.addTimer is live under a role that does not carry it"
         );
     }

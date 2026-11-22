@@ -220,6 +220,12 @@ pub unsafe fn refcount(obj: *mut PyObject) -> isize {
 /// `PyCFunction`: a builtin function object's implementation (`ml_meth`).
 pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
 
+/// `PyCFunctionWithKeywords`, the `ml_meth` signature of a
+/// `METH_VARARGS | METH_KEYWORDS` handler: the interpreter casts the stored
+/// `ml_meth` pointer and calls it with `(self, args, kwargs)`.
+pub type PyCFunctionWithKeywords =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+
 /// `PyCapsule_Destructor`, the `destructor` argument of `PyCapsule_New`.
 pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
 
@@ -271,6 +277,10 @@ pub type SsizeObjArgFunction = unsafe extern "C" fn(*mut PyObject, PySsize, *mut
 
 /// `METH_VARARGS` from `Include/methodobject.h`.
 pub const METH_VARARGS: c_int = 0x0001;
+
+/// `METH_KEYWORDS` from `Include/methodobject.h`: the handler takes a third
+/// `kwargs` argument (see [`PyCFunctionWithKeywords`]).
+pub const METH_KEYWORDS: c_int = 0x0002;
 
 /// `PyGetSetDef`, one attribute descriptor of a type.
 #[repr(C)]
@@ -539,6 +549,7 @@ unsafe extern "C" {
     pub fn PyUnicode_FromFormat(format: *const c_char, ...) -> *mut PyObject;
     pub fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) -> c_int;
     pub fn PyErr_SetString(exception: *mut PyObject, message: *const c_char);
+    pub fn PyErr_Format(exception: *mut PyObject, format: *const c_char, ...) -> *mut PyObject;
     pub fn PyThreadState_Get() -> *mut std::os::raw::c_void;
     pub fn PyGILState_Check() -> c_int;
     pub fn PyImport_AddModule(name: *const c_char) -> *mut PyObject;
@@ -564,6 +575,13 @@ unsafe extern "C" {
     pub fn PyBool_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyCFunction_New(def: *mut PyMethodDef, self_: *mut PyObject) -> *mut PyObject;
     pub fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
+    pub fn PyArg_ParseTupleAndKeywords(
+        args: *mut PyObject,
+        kwds: *mut PyObject,
+        format: *const c_char,
+        keywords: *mut *mut c_char,
+        ...
+    ) -> c_int;
     pub fn PyTuple_GetItem(tuple: *mut PyObject, index: PySsize) -> *mut PyObject;
     pub fn PyObject_Repr(obj: *mut PyObject) -> *mut PyObject;
     pub fn PyErr_Display(type_: *mut PyObject, value: *mut PyObject, traceback: *mut PyObject);
@@ -605,6 +623,9 @@ unsafe extern "C" {
     pub fn PySequence_Check(obj: *mut PyObject) -> c_int;
     pub fn PySequence_Size(obj: *mut PyObject) -> PySsize;
     pub fn PySequence_GetItem(obj: *mut PyObject, index: PySsize) -> *mut PyObject;
+    pub fn PyMapping_Check(obj: *mut PyObject) -> c_int;
+    pub fn PyMapping_Size(obj: *mut PyObject) -> PySsize;
+    pub fn PyMapping_Items(obj: *mut PyObject) -> *mut PyObject;
     pub fn PyTuple_Size(tuple: *mut PyObject) -> PySsize;
     pub fn PyTuple_New(size: PySsize) -> *mut PyObject;
     pub fn PyTuple_SetItem(tuple: *mut PyObject, index: PySsize, item: *mut PyObject) -> c_int;
