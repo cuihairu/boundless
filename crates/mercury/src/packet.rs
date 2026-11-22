@@ -116,7 +116,11 @@ impl Packet {
     /// `Packet::recvFromEndpoint` (`packet.cpp:175`): recv into the data
     /// array and set the length on success. The return value is the
     /// low-level `recvfrom` result, byte count or -1, untouched.
-    pub fn recv_from_endpoint(&mut self, ep: &crate::endpoint::Endpoint, addr: &mut crate::endpoint::Address) -> i32 {
+    pub fn recv_from_endpoint(
+        &mut self,
+        ep: &crate::endpoint::Endpoint,
+        addr: &mut crate::endpoint::Address,
+    ) -> i32 {
         let len = ep.recvfrom(self.data_mut(), Some(&mut addr.port), Some(&mut addr.ip));
         if len >= 0 {
             self.msg_end_offset = len as usize;
@@ -133,8 +137,8 @@ impl Default for Packet {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::flags as f;
+    use super::*;
 
     #[test]
     fn capacity_arithmetic_matches_reference() {
