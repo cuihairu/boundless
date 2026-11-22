@@ -10,10 +10,7 @@ use std::collections::BTreeMap;
 
 /// Group events into day batches by a day index function. Batches come back in
 /// day order, and each holds its day's events in arrival order.
-pub fn partition_by_day(
-    events: &[GameEvent],
-    day: impl Fn(u64) -> u64,
-) -> Vec<Vec<&GameEvent>> {
+pub fn partition_by_day(events: &[GameEvent], day: impl Fn(u64) -> u64) -> Vec<Vec<&GameEvent>> {
     let mut days: BTreeMap<u64, Vec<&GameEvent>> = BTreeMap::new();
     for event in events {
         days.entry(day(event.at)).or_default().push(event);

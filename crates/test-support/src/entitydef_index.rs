@@ -56,14 +56,14 @@ impl EntityDefIndex {
             .strip_suffix(".def")
             .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path))
             .to_string();
-        let (properties, fingerprint) = scan(content);
+        let scanned = scan(content);
         self.files.insert(
             path.to_string(),
             IndexedFile {
                 path: path.to_string(),
                 entity,
-                properties,
-                fingerprint,
+                properties: scanned.properties,
+                fingerprint: scanned.fingerprint,
             },
         );
         self.files.get(path).expect("entry just inserted")
@@ -102,20 +102,46 @@ impl EntityDefIndex {
     }
 }
 
+/// One scan's outcome: the declared properties, the content's fingerprint, and
+/// the places a diagnostic can point.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct Scan {
+    /// The properties declared in the root `<Properties>` block.
+    pub(crate) properties: Vec<IndexedProperty>,
+    /// A fingerprint of the scanned content.
+    pub(crate) fingerprint: u64,
+    /// The property left open at the content's end, when one was: its name
+    /// and the line it opened on.
+    pub(crate) unclosed_property: Option<(String, usize)>,
+    /// The line the root `<Properties>` opened on, when it was never closed.
+    pub(crate) unclosed_properties: Option<usize>,
+    /// The properties that never declare a `<Type>`, each as name and line.
+    pub(crate) missing_type: Vec<(String, usize)>,
+}
+
 /// Scan one file's content: the properties declared in its root
 /// `<Properties>` block, with their line spans, and the content's fingerprint.
-fn scan(content: &str) -> (Vec<IndexedProperty>, u64) {
+pub(crate) fn scan(content: &str) -> Scan {
     let mut properties = Vec::new();
     let mut depth: usize = 0;
+    let mut root_open: Option<usize> = None;
     let mut open: Option<(String, usize)> = None;
     let mut flags = String::new();
+    let mut has_type = false;
+    let mut missing_type: Vec<(String, usize)> = Vec::new();
 
     for (number, line) in content.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed == "<Properties>" {
+            if depth == 0 {
+                root_open = Some(number);
+            }
             depth += 1;
         } else if trimmed == "</Properties>" {
             depth = depth.saturating_sub(1);
+            if depth == 0 {
+                root_open = None;
+            }
         } else if trimmed.starts_with("</") {
             // Only the open property's own close ends it: a nested block's
             // closer (a FIXED_DICT field's `</x>`) is not this declaration.
@@ -123,6 +149,10 @@ fn scan(content: &str) -> (Vec<IndexedProperty>, u64) {
                 .as_ref()
                 .is_some_and(|(name, _)| trimmed == format!("</{name}>"));
             if closes_open && let Some((name, line)) = open.take() {
+                if !has_type {
+                    missing_type.push((name.clone(), line));
+                }
+                has_type = false;
                 properties.push(IndexedProperty {
                     name,
                     flags: std::mem::take(&mut flags),
@@ -139,6 +169,9 @@ fn scan(content: &str) -> (Vec<IndexedProperty>, u64) {
         {
             let name = trimmed[1..trimmed.len() - 1].to_string();
             open = Some((name, number));
+            has_type = false;
+        } else if depth == 1 && open.is_some() && trimmed.contains("<Type>") {
+            has_type = true;
         } else if depth == 1
             && open.is_some()
             && let Some(from) = trimmed.find("<Flags>").map(|from| from + 7)
@@ -148,7 +181,13 @@ fn scan(content: &str) -> (Vec<IndexedProperty>, u64) {
         }
     }
 
-    (properties, fingerprint(content.as_bytes()))
+    Scan {
+        properties,
+        fingerprint: fingerprint(content.as_bytes()),
+        unclosed_property: open,
+        unclosed_properties: root_open,
+        missing_type,
+    }
 }
 
 /// A dependency-free FNV-1a fingerprint of the content.
