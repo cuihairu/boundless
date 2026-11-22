@@ -17,9 +17,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use foundation::stream::BinaryStream;
+use foundation::stream::{BinaryStream, StreamError};
 
 use crate::cluster_shutdown::{CellAppMgrShutDown, ShutDownAction};
+use crate::shared_data::{
+    CellAppSharedDataOutcome, SHARED_DATA_TYPE_BASE_APP, SHARED_DATA_TYPE_CELL_APP,
+    SHARED_DATA_TYPE_GLOBAL, SharedDataMessage, read_shared_section,
+};
 use crate::shutdown::ShutDownStage;
 
 /// A Mercury address as `(ip, port)` with `ip` in network byte order.
@@ -2666,6 +2670,10 @@ pub struct CellAppMgr {
     pub last_cell_app_death: Option<Addr>,
     /// `pShutDownHandler_`: the cluster shutdown cascade (BW-05-06-03).
     pub shutdown: CellAppMgrShutDown,
+    /// `sharedCellAppData_`: the authoritative cell-data copy.
+    shared_cell_app_data: BTreeMap<String, String>,
+    /// `sharedGlobalData_`: the authoritative global-data copy.
+    shared_global_data: BTreeMap<String, String>,
     /// `avgCellAppOverloadStartTime_` in milliseconds, `0` when clear.
     avg_overload_start_ms: u64,
     /// `maxCellAppOverloadStartTime_` in milliseconds, `0` when clear.
@@ -2728,6 +2736,142 @@ impl CellAppMgr {
     /// `CellAppMgr::setDBAppAlpha`.
     pub fn set_db_app_alpha(&mut self, addr: Addr) {
         self.db_app_alpha = Some(addr);
+    }
+
+    /// `CellAppMgr::setSharedData` (`cellappmgr.cpp:1924`): store the
+    /// authoritative CELL_APP or GLOBAL copy and broadcast to every CellApp;
+    /// BASE_APP or GLOBAL data is also relayed to the BaseAppMgr (the
+    /// BaseAppMgr's authoritative copy is kept in step).
+    pub fn set_shared_data(
+        &mut self,
+        data_type: u8,
+        key: &str,
+        value: &str,
+        original_src: Addr,
+    ) -> CellAppSharedDataOutcome {
+        if data_type == SHARED_DATA_TYPE_CELL_APP || data_type == SHARED_DATA_TYPE_GLOBAL {
+            let map = if data_type == SHARED_DATA_TYPE_CELL_APP {
+                &mut self.shared_cell_app_data
+            } else {
+                &mut self.shared_global_data
+            };
+            map.insert(key.to_string(), value.to_string());
+        }
+
+        CellAppSharedDataOutcome {
+            cell_apps: self.broadcast_set(data_type, key, value, original_src),
+            base_app_mgr: self.relay(data_type).map(|_| SharedDataMessage::Set {
+                data_type,
+                key: key.to_string(),
+                value: value.to_string(),
+                original_src,
+            }),
+        }
+    }
+
+    /// `CellAppMgr::delSharedData` (`cellappmgr.cpp:1985`): erase the
+    /// authoritative CELL_APP or GLOBAL copy and broadcast the delete to
+    /// every CellApp; BASE_APP or GLOBAL data is also relayed to the
+    /// BaseAppMgr.
+    pub fn del_shared_data(
+        &mut self,
+        data_type: u8,
+        key: &str,
+        original_src: Addr,
+    ) -> CellAppSharedDataOutcome {
+        if data_type == SHARED_DATA_TYPE_CELL_APP || data_type == SHARED_DATA_TYPE_GLOBAL {
+            let map = if data_type == SHARED_DATA_TYPE_CELL_APP {
+                &mut self.shared_cell_app_data
+            } else {
+                &mut self.shared_global_data
+            };
+            map.remove(key);
+        }
+
+        CellAppSharedDataOutcome {
+            cell_apps: self.broadcast_del(data_type, key, original_src),
+            base_app_mgr: self.relay(data_type).map(|_| SharedDataMessage::Del {
+                data_type,
+                key: key.to_string(),
+                original_src,
+            }),
+        }
+    }
+
+    /// The authoritative CELL_APP shared data (`sharedCellAppData_`).
+    pub fn shared_cell_app_data(&self) -> &BTreeMap<String, String> {
+        &self.shared_cell_app_data
+    }
+
+    /// The authoritative GLOBAL shared data (`sharedGlobalData_`).
+    pub fn shared_global_data(&self) -> &BTreeMap<String, String> {
+        &self.shared_global_data
+    }
+
+    /// Restore the authoritative CELL_APP and GLOBAL maps from a recovery
+    /// stream (each a count then count key/value pairs), mirroring
+    /// `BaseAppMgr::recoverSharedDataFromStream`.
+    pub fn recover_shared_data_from_stream(
+        &mut self,
+        stream: &mut BinaryStream,
+    ) -> Result<(), StreamError> {
+        self.shared_cell_app_data = read_shared_section(stream)?;
+        self.shared_global_data = read_shared_section(stream)?;
+        Ok(())
+    }
+
+    /// The relay to the BaseAppMgr for data the BaseApps can see (BASE_APP or
+    /// GLOBAL): `Some(())` when a BaseApp is registered, `None` otherwise.
+    fn relay(&self, data_type: u8) -> Option<()> {
+        if data_type == SHARED_DATA_TYPE_BASE_APP || data_type == SHARED_DATA_TYPE_GLOBAL {
+            self.base_app_addr.map(|_| ())
+        } else {
+            None
+        }
+    }
+
+    fn broadcast_set(
+        &self,
+        data_type: u8,
+        key: &str,
+        value: &str,
+        original_src: Addr,
+    ) -> Vec<(Addr, SharedDataMessage)> {
+        self.apps
+            .iter()
+            .map(|app| {
+                (
+                    app.addr,
+                    SharedDataMessage::Set {
+                        data_type,
+                        key: key.to_string(),
+                        value: value.to_string(),
+                        original_src,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn broadcast_del(
+        &self,
+        data_type: u8,
+        key: &str,
+        original_src: Addr,
+    ) -> Vec<(Addr, SharedDataMessage)> {
+        self.apps
+            .iter()
+            .map(|app| {
+                (
+                    app.addr,
+                    SharedDataMessage::Del {
+                        data_type,
+                        key: key.to_string(),
+                        original_src,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// `CellAppMgr::startup`: the BaseAppMgr tells the manager to start. The
@@ -3899,5 +4043,106 @@ mod tests {
         mgr.outbox.clear();
         mgr.controlled_shut_down(ShutDownStage::Trigger, 100, 0);
         assert_eq!(mgr.outbox, vec![Outbound::TriggerControlledShutDown]);
+    }
+
+    // ------------------------------------------------------------------
+    // BW-07-03-04 传播 SharedData 更新和删除
+    // ------------------------------------------------------------------
+
+    /// A CELL_APP set is authoritative on the CellAppMgr, reaches every
+    /// CellApp, and is never relayed to the BaseAppMgr.
+    #[test]
+    fn a_cell_app_set_is_authoritative_and_stays_among_cell_apps() {
+        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5), ((0x7f000002, 3000), 0.5)]);
+        let src = (0x7f000001, 1);
+
+        let out = mgr.set_shared_data(SHARED_DATA_TYPE_CELL_APP, "c", "x", src);
+        assert_eq!(mgr.shared_cell_app_data().get("c"), Some(&"x".to_string()));
+        assert_eq!(out.cell_apps.len(), 2);
+        for (addr, message) in &out.cell_apps {
+            assert_eq!(
+                message,
+                &SharedDataMessage::Set {
+                    data_type: SHARED_DATA_TYPE_CELL_APP,
+                    key: "c".to_string(),
+                    value: "x".to_string(),
+                    original_src: src,
+                },
+                "every CellApp is notified at {addr:?}"
+            );
+        }
+        assert_eq!(out.base_app_mgr, None, "cell data stays among CellApps");
+    }
+
+    /// A GLOBAL set is authoritative on the CellAppMgr, reaches every CellApp,
+    /// and relays to the BaseAppMgr (so the BaseApps learn of it too).
+    #[test]
+    fn a_global_set_is_authoritative_and_relayed() {
+        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5)]);
+        let src = (0x7f000002, 9);
+
+        let out = mgr.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "v", src);
+        assert_eq!(mgr.shared_global_data().get("g"), Some(&"v".to_string()));
+        assert_eq!(out.cell_apps.len(), 1);
+        assert_eq!(
+            out.base_app_mgr,
+            Some(SharedDataMessage::Set {
+                data_type: SHARED_DATA_TYPE_GLOBAL,
+                key: "g".to_string(),
+                value: "v".to_string(),
+                original_src: src,
+            })
+        );
+    }
+
+    /// The relay to the BaseAppMgr is dropped once no BaseApp is registered.
+    #[test]
+    fn the_relay_is_dropped_without_a_base_app() {
+        let mut mgr = CellAppMgr::new();
+        mgr.set_db_app_alpha((0x7f000001, 200));
+        mgr.allow_new_cell_apps = true;
+        mgr.apps.add(app((0x7f000001, 3000), 1, 0.5));
+
+        let out = mgr.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "g", "v", (0, 0));
+        assert_eq!(out.base_app_mgr, None);
+    }
+
+    /// The delete path mirrors the set path on the CellAppMgr side.
+    #[test]
+    fn a_cell_app_delete_erases_and_broadcasts() {
+        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5)]);
+        let src = (0x7f000001, 1);
+        mgr.set_shared_data(SHARED_DATA_TYPE_CELL_APP, "c", "x", src);
+
+        let out = mgr.del_shared_data(SHARED_DATA_TYPE_CELL_APP, "c", src);
+        assert!(mgr.shared_cell_app_data().get("c").is_none());
+        assert_eq!(out.cell_apps.len(), 1);
+        assert_eq!(
+            out.cell_apps[0].1,
+            SharedDataMessage::Del {
+                data_type: SHARED_DATA_TYPE_CELL_APP,
+                key: "c".to_string(),
+                original_src: src,
+            }
+        );
+        assert_eq!(out.base_app_mgr, None);
+    }
+
+    /// `recoverSharedDataFromStream` restores both authoritative maps.
+    #[test]
+    fn recovery_restores_the_authoritative_maps() {
+        let mut stream = BinaryStream::new();
+        stream.write_u32(1);
+        stream.write_string("c").unwrap();
+        stream.write_string("x").unwrap();
+        stream.write_u32(1);
+        stream.write_string("g").unwrap();
+        stream.write_string("v").unwrap();
+
+        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5)]);
+        mgr.recover_shared_data_from_stream(&mut stream)
+            .expect("recover");
+        assert_eq!(mgr.shared_cell_app_data().get("c"), Some(&"x".to_string()));
+        assert_eq!(mgr.shared_global_data().get("g"), Some(&"v".to_string()));
     }
 }

@@ -18,6 +18,8 @@ use std::collections::BTreeMap;
 
 use crate::entity_creator::EntityMailBoxRef;
 use crate::services_map::ServicesMap;
+use crate::shared_data::{SharedDataMessage, SharedDataOutcome, read_shared_section};
+use foundation::stream::{BinaryStream, StreamError};
 
 /// `BaseAppMgrInterface::CreateEntityError::CREATE_ENTITY_ERROR_NO_BASEAPPS`.
 pub const CREATE_ENTITY_ERROR_NO_BASEAPPS: u8 = 1;
@@ -144,6 +146,12 @@ pub enum ToBaseApp {
         data_type: u8,
         key: String,
         value: String,
+        original_src: Addr,
+    },
+    /// `BaseAppIntInterface::delSharedData`.
+    DelSharedData {
+        data_type: u8,
+        key: String,
         original_src: Addr,
     },
     /// `BaseAppIntInterface::addGlobalBase`.
@@ -705,25 +713,125 @@ impl BaseAppScheduler {
         CreateEntityOutcome::CreateAt(client_addr)
     }
 
-    /// `BaseAppMgr::setSharedData`: store the authoritative copy and
-    /// broadcast to every BaseApp.
+    /// `BaseAppMgr::setSharedData` (`baseappmgr.cpp:2112`): store the
+    /// authoritative copy of BASE_APP or GLOBAL data and broadcast to every
+    /// BaseApp; a global request from a BaseApp (`GLOBAL_FROM_BASE_APP`) or a
+    /// cell-data change (`CELL_APP`) is forwarded to the CellAppMgr instead,
+    /// so the BaseApps are told only after the CellAppMgr relays it back.
     pub fn set_shared_data(
         &mut self,
         data_type: u8,
         key: &str,
         value: &str,
         original_src: Addr,
-    ) -> Vec<(Addr, ToBaseApp)> {
-        // `SHARED_DATA_TYPE_BASE_APP` is the manager's own authoritative
-        // copy; everything else is global data the manager mirrors.
-        if data_type == SHARED_DATA_TYPE_BASE_APP {
-            self.shared_base_app_data
-                .insert(key.to_string(), value.to_string());
-        } else {
-            self.shared_global_data
-                .insert(key.to_string(), value.to_string());
+    ) -> SharedDataOutcome {
+        match data_type {
+            SHARED_DATA_TYPE_BASE_APP => {
+                self.shared_base_app_data
+                    .insert(key.to_string(), value.to_string());
+                SharedDataOutcome {
+                    base_apps: self.broadcast_set(data_type, key, value, original_src),
+                    cell_app_mgr: None,
+                }
+            }
+            SHARED_DATA_TYPE_GLOBAL => {
+                // The CellAppMgr relay (or a direct global set): the manager
+                // mirrors and tells the BaseApps.
+                self.shared_global_data
+                    .insert(key.to_string(), value.to_string());
+                SharedDataOutcome {
+                    base_apps: self.broadcast_set(data_type, key, value, original_src),
+                    cell_app_mgr: None,
+                }
+            }
+            SHARED_DATA_TYPE_GLOBAL_FROM_BASE_APP => SharedDataOutcome {
+                // Forwarded to the CellAppMgr as global data; the BaseApps
+                // wait for the relay.
+                base_apps: Vec::new(),
+                cell_app_mgr: Some(SharedDataMessage::Set {
+                    data_type: SHARED_DATA_TYPE_GLOBAL,
+                    key: key.to_string(),
+                    value: value.to_string(),
+                    original_src,
+                }),
+            },
+            SHARED_DATA_TYPE_CELL_APP => SharedDataOutcome {
+                base_apps: Vec::new(),
+                cell_app_mgr: Some(SharedDataMessage::Set {
+                    data_type,
+                    key: key.to_string(),
+                    value: value.to_string(),
+                    original_src,
+                }),
+            },
+            _ => SharedDataOutcome::default(),
         }
+    }
 
+    /// `BaseAppMgr::delSharedData` (`baseappmgr.cpp:2183`): erase the
+    /// authoritative copy of BASE_APP or GLOBAL data and broadcast the delete
+    /// to every BaseApp; a global delete from a BaseApp or a cell-data delete
+    /// is forwarded to the CellAppMgr instead.
+    pub fn del_shared_data(
+        &mut self,
+        data_type: u8,
+        key: &str,
+        original_src: Addr,
+    ) -> SharedDataOutcome {
+        match data_type {
+            SHARED_DATA_TYPE_BASE_APP => {
+                self.shared_base_app_data.remove(key);
+                SharedDataOutcome {
+                    base_apps: self.broadcast_del(data_type, key, original_src),
+                    cell_app_mgr: None,
+                }
+            }
+            SHARED_DATA_TYPE_GLOBAL => {
+                self.shared_global_data.remove(key);
+                SharedDataOutcome {
+                    base_apps: self.broadcast_del(data_type, key, original_src),
+                    cell_app_mgr: None,
+                }
+            }
+            SHARED_DATA_TYPE_GLOBAL_FROM_BASE_APP => SharedDataOutcome {
+                base_apps: Vec::new(),
+                cell_app_mgr: Some(SharedDataMessage::Del {
+                    data_type: SHARED_DATA_TYPE_GLOBAL,
+                    key: key.to_string(),
+                    original_src,
+                }),
+            },
+            SHARED_DATA_TYPE_CELL_APP => SharedDataOutcome {
+                base_apps: Vec::new(),
+                cell_app_mgr: Some(SharedDataMessage::Del {
+                    data_type,
+                    key: key.to_string(),
+                    original_src,
+                }),
+            },
+            _ => SharedDataOutcome::default(),
+        }
+    }
+
+    /// `BaseAppMgr::recoverSharedDataFromStream` (`baseappmgr.cpp:1249`):
+    /// restore the authoritative BASE_APP and GLOBAL maps from the recovery
+    /// stream (each a count then count key/value pairs).
+    pub fn recover_shared_data_from_stream(
+        &mut self,
+        stream: &mut BinaryStream,
+    ) -> Result<(), StreamError> {
+        self.shared_base_app_data = read_shared_section(stream)?;
+        self.shared_global_data = read_shared_section(stream)?;
+        Ok(())
+    }
+
+    fn broadcast_set(
+        &self,
+        data_type: u8,
+        key: &str,
+        value: &str,
+        original_src: Addr,
+    ) -> Vec<(Addr, ToBaseApp)> {
         self.all_ready_addrs()
             .into_iter()
             .map(|addr| {
@@ -733,6 +841,27 @@ impl BaseAppScheduler {
                         data_type,
                         key: key.to_string(),
                         value: value.to_string(),
+                        original_src,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn broadcast_del(
+        &self,
+        data_type: u8,
+        key: &str,
+        original_src: Addr,
+    ) -> Vec<(Addr, ToBaseApp)> {
+        self.all_ready_addrs()
+            .into_iter()
+            .map(|addr| {
+                (
+                    addr,
+                    ToBaseApp::DelSharedData {
+                        data_type,
+                        key: key.to_string(),
                         original_src,
                     },
                 )
@@ -800,6 +929,16 @@ impl BaseAppScheduler {
     /// The registered service names (`ServicesMap::getServiceNames`).
     pub fn service_names(&self) -> Vec<String> {
         self.services.service_names()
+    }
+
+    /// The authoritative BASE_APP shared data (`sharedBaseAppData_`).
+    pub fn shared_base_app_data(&self) -> &BTreeMap<String, String> {
+        &self.shared_base_app_data
+    }
+
+    /// The mirrored GLOBAL shared data (`sharedGlobalData_`).
+    pub fn shared_global_data(&self) -> &BTreeMap<String, String> {
+        &self.shared_global_data
     }
 
     /// The fragments of one service (`ServicesMap::getFragmentsForService`).
@@ -1322,8 +1461,9 @@ mod tests {
         let addrs = add_base_apps(&mut scheduler, 2);
 
         let out = scheduler.set_shared_data(SHARED_DATA_TYPE_BASE_APP, "k", "v", (5, 1));
-        assert_eq!(out.len(), 2);
-        for (to, message) in &out {
+        assert_eq!(out.base_apps.len(), 2);
+        assert_eq!(out.cell_app_mgr, None);
+        for (to, message) in &out.base_apps {
             assert!(addrs.contains(to), "every app is notified");
             assert_eq!(
                 message,
@@ -1358,6 +1498,210 @@ mod tests {
                 original_src: (0, 0),
             }
         );
+    }
+
+    // ------------------------------------------------------------------
+    // BW-07-03-04 传播 SharedData 更新和删除
+    // ------------------------------------------------------------------
+
+    use crate::cellappmgr::{AddAppOutcome, CellAppMgr};
+    use crate::shared_data::SharedDataMessage;
+
+    /// A CellAppMgr with two ready CellApps and a registered BaseAppMgr.
+    fn cam_with_two_cell_apps() -> (CellAppMgr, Vec<Addr>) {
+        let mut cam = CellAppMgr::new();
+        cam.set_base_app((0x7f000001, 100));
+        cam.set_db_app_alpha((0x7f000001, 200));
+        cam.allow_new_cell_apps = true;
+        let addrs = [(0x7f000001, 3000), (0x7f000001, 4000)];
+        for (index, addr) in addrs.iter().enumerate() {
+            assert!(matches!(
+                cam.add_app(*addr, 1000 + index as u16, 0),
+                AddAppOutcome::Accepted { .. }
+            ));
+        }
+        (cam, addrs.to_vec())
+    }
+
+    /// A global set from a BaseApp crosses to the CellAppMgr, reaches every
+    /// CellApp, relays back to the BaseAppMgr and then reaches every BaseApp
+    /// — in that order (`baseappmgr.cpp:2146`, `cellappmgr.cpp:1965/1972`).
+    #[test]
+    fn global_set_flows_base_to_cell_and_back_in_order() {
+        let mut bam = ready_scheduler();
+        let base_apps = add_base_apps(&mut bam, 2);
+        let sender = base_apps[0];
+        let (mut cam, cell_apps) = cam_with_two_cell_apps();
+
+        // Event 1: the BaseAppMgr forwards the global set to the CellAppMgr;
+        // the BaseApps are not told yet.
+        let out = bam.set_shared_data(SHARED_DATA_TYPE_GLOBAL_FROM_BASE_APP, "k", "v", sender);
+        assert!(out.base_apps.is_empty(), "BaseApps wait for the relay");
+        let SharedDataMessage::Set {
+            data_type,
+            key,
+            value,
+            original_src,
+        } = out.cell_app_mgr.expect("forward")
+        else {
+            panic!("expected a forward");
+        };
+        assert_eq!(data_type, SHARED_DATA_TYPE_GLOBAL);
+        assert_eq!(key, "k");
+        assert_eq!(value, "v");
+        assert_eq!(original_src, sender);
+
+        // Event 2: the CellAppMgr stores the authoritative copy, broadcasts to
+        // every CellApp, and relays to the BaseAppMgr.
+        let cam_out = cam.set_shared_data(data_type, &key, &value, original_src);
+        assert_eq!(cam.shared_global_data().get("k"), Some(&"v".to_string()));
+        assert_eq!(cam_out.cell_apps.len(), 2);
+        for (addr, message) in &cam_out.cell_apps {
+            assert!(cell_apps.contains(addr), "every CellApp is notified");
+            assert_eq!(
+                message,
+                &SharedDataMessage::Set {
+                    data_type: SHARED_DATA_TYPE_GLOBAL,
+                    key: "k".to_string(),
+                    value: "v".to_string(),
+                    original_src: sender,
+                }
+            );
+        }
+        let relay = cam_out.base_app_mgr.expect("relay");
+        assert_eq!(
+            relay,
+            SharedDataMessage::Set {
+                data_type: SHARED_DATA_TYPE_GLOBAL,
+                key: "k".to_string(),
+                value: "v".to_string(),
+                original_src: sender,
+            }
+        );
+
+        // Event 3: the relay reaches the BaseAppMgr, which stores and
+        // broadcasts to every BaseApp.
+        let out = bam.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "k", "v", sender);
+        assert_eq!(bam.shared_global_data().get("k"), Some(&"v".to_string()));
+        assert_eq!(out.base_apps.len(), 2);
+        assert!(out.cell_app_mgr.is_none());
+        for (addr, message) in &out.base_apps {
+            assert!(base_apps.contains(addr), "every BaseApp is notified");
+            assert_eq!(
+                message,
+                &ToBaseApp::SetSharedData {
+                    data_type: SHARED_DATA_TYPE_GLOBAL,
+                    key: "k".to_string(),
+                    value: "v".to_string(),
+                    original_src: sender,
+                }
+            );
+        }
+    }
+
+    /// BASE_APP data is the BaseAppMgr's alone: it never reaches the
+    /// CellAppMgr or the CellApps.
+    #[test]
+    fn base_app_set_stays_on_base_apps() {
+        let mut bam = ready_scheduler();
+        let base_apps = add_base_apps(&mut bam, 1);
+        let (mut cam, _cell_apps) = cam_with_two_cell_apps();
+
+        let out = bam.set_shared_data(SHARED_DATA_TYPE_BASE_APP, "k", "v", base_apps[0]);
+        assert_eq!(out.base_apps.len(), 1);
+        assert_eq!(out.cell_app_mgr, None);
+
+        // The CellAppMgr sees nothing for BASE_APP data unless told; a CELL_APP
+        // set it does relay stays among the CellApps.
+        let cam_out = cam.set_shared_data(SHARED_DATA_TYPE_CELL_APP, "c", "x", (0x0a, 1));
+        assert_eq!(cam.shared_cell_app_data().get("c"), Some(&"x".to_string()));
+        assert_eq!(cam_out.cell_apps.len(), 2);
+        assert_eq!(cam_out.base_app_mgr, None, "cell data stays among CellApps");
+    }
+
+    /// The delete path mirrors the set path: a global delete crosses to the
+    /// CellAppMgr, reaches every CellApp, relays back and reaches every
+    /// BaseApp, and both authoritative copies are erased.
+    #[test]
+    fn del_shared_data_follows_the_same_order() {
+        let mut bam = ready_scheduler();
+        let base_apps = add_base_apps(&mut bam, 1);
+        let sender = base_apps[0];
+        let (mut cam, _cell_apps) = cam_with_two_cell_apps();
+        bam.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "k", "v", sender);
+        cam.set_shared_data(SHARED_DATA_TYPE_GLOBAL, "k", "v", sender);
+
+        // Event 1: forward the delete to the CellAppMgr.
+        let out = bam.del_shared_data(SHARED_DATA_TYPE_GLOBAL_FROM_BASE_APP, "k", sender);
+        assert!(out.base_apps.is_empty());
+        assert_eq!(
+            out.cell_app_mgr,
+            Some(SharedDataMessage::Del {
+                data_type: SHARED_DATA_TYPE_GLOBAL,
+                key: "k".to_string(),
+                original_src: sender,
+            })
+        );
+
+        // Event 2: the CellAppMgr erases, broadcasts the delete to every
+        // CellApp, and relays to the BaseAppMgr.
+        let cam_out = cam.del_shared_data(SHARED_DATA_TYPE_GLOBAL, "k", sender);
+        assert!(cam.shared_global_data().get("k").is_none());
+        assert_eq!(cam_out.cell_apps.len(), 2);
+        for (_, message) in &cam_out.cell_apps {
+            assert_eq!(
+                message,
+                &SharedDataMessage::Del {
+                    data_type: SHARED_DATA_TYPE_GLOBAL,
+                    key: "k".to_string(),
+                    original_src: sender,
+                }
+            );
+        }
+        assert_eq!(
+            cam_out.base_app_mgr,
+            Some(SharedDataMessage::Del {
+                data_type: SHARED_DATA_TYPE_GLOBAL,
+                key: "k".to_string(),
+                original_src: sender,
+            })
+        );
+
+        // Event 3: the relay erases the BaseAppMgr copy and broadcasts the
+        // delete to every BaseApp.
+        let out = bam.del_shared_data(SHARED_DATA_TYPE_GLOBAL, "k", sender);
+        assert!(bam.shared_global_data().get("k").is_none());
+        assert_eq!(out.base_apps.len(), 1);
+        assert_eq!(
+            out.base_apps[0].1,
+            ToBaseApp::DelSharedData {
+                data_type: SHARED_DATA_TYPE_GLOBAL,
+                key: "k".to_string(),
+                original_src: sender,
+            }
+        );
+    }
+
+    /// `recoverSharedDataFromStream` restores both authoritative maps from the
+    /// recovery stream (count, then count key/value pairs, per section).
+    #[test]
+    fn recovery_restores_the_authoritative_maps() {
+        let mut stream = BinaryStream::new();
+        stream.write_u32(2);
+        stream.write_string("a").unwrap();
+        stream.write_string("1").unwrap();
+        stream.write_string("b").unwrap();
+        stream.write_string("2").unwrap();
+        stream.write_u32(1);
+        stream.write_string("g").unwrap();
+        stream.write_string("9").unwrap();
+
+        let mut bam = ready_scheduler();
+        bam.recover_shared_data_from_stream(&mut stream)
+            .expect("recover");
+        assert_eq!(bam.shared_base_app_data().get("a"), Some(&"1".to_string()));
+        assert_eq!(bam.shared_base_app_data().get("b"), Some(&"2".to_string()));
+        assert_eq!(bam.shared_global_data().get("g"), Some(&"9".to_string()));
     }
 
     /// A global base is broadcast to every other app; a duplicate is
