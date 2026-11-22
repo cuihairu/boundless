@@ -13,6 +13,7 @@ pub mod endpoint;
 pub mod event_dispatcher;
 pub mod fragmented_bundle;
 pub mod frequent_tasks;
+pub mod initial_connection_filter;
 pub mod interface_element;
 pub mod interface_minder;
 pub mod interface_table;
@@ -25,6 +26,7 @@ pub mod network_stats;
 pub mod network_utils;
 pub mod nub_exception;
 pub mod packet;
+pub mod packet_filter;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
 pub mod packet_receiver_stats;

@@ -23,6 +23,7 @@ use crate::event_dispatcher::EventDispatcher;
 use crate::fragmented_bundle::{FragmentedBundle, FragmentedBundles};
 use crate::misc::{CHANNEL_ID_NULL, Reason, SEQ_NULL, SeqNumAllocator, seq_less_than};
 use crate::packet::{Packet, flags};
+use crate::packet_filter::PacketFilter;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::packet_receiver_stats::PacketReceiverStats;
 use crate::poller::EventPoller;
@@ -103,6 +104,10 @@ pub struct NetworkInterface {
     /// in the reference; the once-off receiver is BW-02-03-08, so the
     /// interface holds the map for now).
     fragmented_bundles: RefCell<FragmentedBundles>,
+    /// `pOffChannelFilter_`: the connection filter gating every datagram
+    /// that found no channel (BW-02-04-03). The reference's enabled
+    /// instance is the BaseApp's `InitialConnectionFilter`.
+    off_channel_filter: RefCell<Option<Rc<dyn PacketFilter>>>,
 }
 
 impl NetworkInterface {
@@ -151,6 +156,7 @@ impl NetworkInterface {
             should_use_checksums: Cell::new(false),
             receive_stats: RefCell::new(PacketReceiverStats::new()),
             fragmented_bundles: RefCell::new(FragmentedBundles::new()),
+            off_channel_filter: RefCell::new(None),
         };
         let shared = Rc::new(interface);
         *shared.self_weak.borrow_mut() = Rc::downgrade(&shared);
@@ -335,6 +341,17 @@ impl NetworkInterface {
     /// the channel map takes them over (BW-02-03).
     pub fn set_packet_sink(&self, sink: Option<Rc<dyn PacketSink>>) {
         *self.sink.borrow_mut() = sink;
+    }
+
+    /// `pOffChannelFilter()`: the installed connection filter, if any.
+    pub fn p_off_channel_filter(&self) -> Option<Rc<dyn PacketFilter>> {
+        self.off_channel_filter.borrow().clone()
+    }
+
+    /// `pOffChannelFilter( pFilter )` (network_interface.hpp:135): install
+    /// or clear the filter gating channel-less datagrams.
+    pub fn set_p_off_channel_filter(&self, filter: Option<Rc<dyn PacketFilter>>) {
+        *self.off_channel_filter.borrow_mut() = filter;
     }
 
     /// `dispatcher().errorReporter()`, replaced by tests and by the
@@ -555,7 +572,9 @@ impl NetworkInterface {
     /// entry point for a new datagram. Rate limiting and the dead-channel
     /// monitor arrive with BW-02-05-04; the channel filter
     /// (`pChannel->pFilter()`) has no ported filter to run, so a found
-    /// channel only updates its receive bookkeeping here.
+    /// channel only updates its receive bookkeeping here. A datagram that
+    /// finds no channel meets the interface's connection filter
+    /// (`pOffChannelFilter_`, :492) before the receive path.
     pub fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
         let create_anonymous = !self.is_external && packet.should_create_anonymous();
 
@@ -563,6 +582,11 @@ impl NetworkInterface {
             // We update received times for addressed channels here.
             // Indexed channels are done in process_filtered_packet.
             UdpChannel::on_packet_received(&channel, packet.total_size() as i32);
+        } else if let Some(filter) = self.p_off_channel_filter() {
+            // The interface's connection filter decides what a channel-less
+            // datagram is worth; the else-if is the reference's, so a
+            // found channel skips the filter even when it has none.
+            return filter.recv(self, addr, packet);
         }
 
         self.process_filtered_packet(addr, packet)
@@ -1355,6 +1379,7 @@ fn last_bind_errno() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::initial_connection_filter::InitialConnectionFilter;
     use crate::packet_receiver::tests_support::{RecordingReporter, RecordingSink};
 
     /// `127.0.0.1` as the repo stores it.
@@ -2438,5 +2463,154 @@ mod tests {
             !channel.borrow().has_acks(),
             "the owed acknowledgement went straight out"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // The connection filter (BW-02-04-03): the reference-enabled
+    // InitialConnectionFilter gates channel-less datagrams; the allow
+    // and the deny arms each match, and a found channel skips it.
+    // ------------------------------------------------------------------
+
+    /// The `baseAppLogin` message id the filter is built around.
+    const BASE_APP_LOGIN_ID: u8 = 0x0D;
+
+    /// A `baseAppLogin` request as it arrives off-channel: the flags
+    /// word, the message frame (a fixed-length message carries no length
+    /// prefix), then the request footer -- the reply id, the last
+    /// request's link slot, and the packet's firstRequestOffset, which is
+    /// the very back. 16 bytes in all: exactly the wire size the
+    /// reference's filter accepts.
+    fn login_wire(login_id: u8) -> Packet {
+        let mut body = vec![login_id];
+        body.extend_from_slice(&0u32.to_le_bytes()); // SessionKey key
+        body.push(1); // numAttempts
+        body.extend_from_slice(&0u32.to_le_bytes()); // ReplyID
+        body.extend_from_slice(&0u16.to_le_bytes()); // last request link
+        body.extend_from_slice(&(crate::packet::HEADER_SIZE as u16).to_le_bytes()); // firstRequestOffset
+        wire(flags::HAS_REQUESTS, &body)
+    }
+
+    /// A socketless external interface with the sink attached and the
+    /// connection filter enabled, as a BaseApp's external interface is.
+    fn filtered_interface(port: u16) -> (Rc<NetworkInterface>, Rc<RecordingSink>, Address) {
+        let (interface, _clock) = channel_interface(InterfaceType::External);
+        interface.set_verbose(true);
+        interface.set_p_off_channel_filter(Some(Rc::new(InitialConnectionFilter::new(
+            BASE_APP_LOGIN_ID,
+        ))));
+        let addr = Address::new(LOOPBACK, socket::htons(port));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+        (interface, sink, addr)
+    }
+
+    /// The one shape the filter admits: a `baseAppLogin` request reaches
+    /// the receive path and is dispatched, exactly what the base
+    /// `PacketFilter::recv` pass-through does for an allowed packet.
+    #[test]
+    fn a_base_app_login_request_passes_the_connection_filter() {
+        let (interface, sink, addr) = filtered_interface(9111);
+
+        let mut login = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(interface.process_packet(&addr, &mut login), Reason::Success);
+        let packets = sink.packets.borrow();
+        assert_eq!(packets.len(), 1, "the allowed request was dispatched");
+        // The sink sees the packet after the firstRequestOffset strip:
+        // flags, the message frame, and the request footer.
+        assert_eq!(packets[0].1.len(), 14);
+        assert_eq!(&packets[0].1[2..3], &[BASE_APP_LOGIN_ID]);
+    }
+
+    /// Every other shape is dropped with `REASON_GENERAL_NETWORK` before
+    /// the receive path runs: wrong flags, wrong size (either side), and
+    /// the wrong message id each deny.
+    #[test]
+    fn the_connection_filter_drops_everything_but_the_login() {
+        let (interface, sink, addr) = filtered_interface(9112);
+
+        // Wrong flags: the login shape plus any other bit is noise.
+        let mut flagged = login_wire(BASE_APP_LOGIN_ID);
+        flagged.set_flags(flags::HAS_REQUESTS | flags::HAS_ACKS);
+        assert_eq!(
+            interface.process_packet(&addr, &mut flagged),
+            Reason::GeneralNetwork
+        );
+
+        // Wrong size: one byte short and one byte long of the 16.
+        let mut short = login_wire(BASE_APP_LOGIN_ID);
+        short.shrink(1);
+        assert_eq!(
+            interface.process_packet(&addr, &mut short),
+            Reason::GeneralNetwork
+        );
+        let mut long = login_wire(BASE_APP_LOGIN_ID);
+        long.grow(1);
+        assert_eq!(
+            interface.process_packet(&addr, &mut long),
+            Reason::GeneralNetwork
+        );
+
+        // Wrong message id: a well-shaped request naming another message.
+        let mut other = login_wire(BASE_APP_LOGIN_ID + 1);
+        assert_eq!(
+            interface.process_packet(&addr, &mut other),
+            Reason::GeneralNetwork
+        );
+
+        assert!(
+            sink.packets.borrow().is_empty(),
+            "nothing the filter denied reached the dispatch"
+        );
+    }
+
+    /// The filter arm is the reference's else-if: a datagram that finds
+    /// its channel is not the filter's business, login-shaped or not.
+    #[test]
+    fn a_channelled_datagram_bypasses_the_connection_filter() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        interface.set_verbose(true);
+        let addr = Address::new(LOOPBACK, socket::htons(9113));
+        UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        interface.set_p_off_channel_filter(Some(Rc::new(InitialConnectionFilter::new(
+            BASE_APP_LOGIN_ID,
+        ))));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        // An on-channel datagram of no login shape whatsoever: the filter
+        // would deny it, but it never sees it.
+        let mut ordered = ordered_wire(0, 0x41);
+        assert_eq!(
+            interface.process_packet(&addr, &mut ordered),
+            Reason::Success
+        );
+        assert_eq!(sink.packets.borrow().len(), 1, "it went straight through");
+    }
+
+    /// The bare `PacketFilter` is the pass-through: with no override
+    /// installed, the same login request runs the base `recv`'s
+    /// `processFilteredPacket` by itself.
+    #[test]
+    fn an_installed_filter_without_an_override_passes_through() {
+        struct NoFilter;
+
+        impl crate::packet_filter::PacketFilter for NoFilter {}
+
+        let (interface, _clock) = channel_interface(InterfaceType::External);
+        interface.set_verbose(true);
+        interface.set_p_off_channel_filter(Some(Rc::new(NoFilter)));
+        let addr = Address::new(LOOPBACK, socket::htons(9114));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let mut login = login_wire(BASE_APP_LOGIN_ID);
+        assert_eq!(interface.process_packet(&addr, &mut login), Reason::Success);
+        assert_eq!(sink.packets.borrow().len(), 1);
     }
 }
