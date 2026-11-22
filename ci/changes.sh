@@ -172,6 +172,7 @@ main() {
             | ci/replace-role.sh | ci/replace-role.py \
             | ci/compat-report.sh | ci/compat-report.py \
             | ci/coverage-ledger.sh | ci/coverage-ledger.py \
+            | ci/map-coverage.sh | ci/map-coverage.py \
             | ci/reference-winbaseline.sh) refbase=1 ;;
         esac
 
