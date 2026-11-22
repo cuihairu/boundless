@@ -60,11 +60,7 @@ impl Vector2 {
     /// (`vector2.ipp` `length()`).
     pub fn length(&self) -> f32 {
         let l = self.length_squared();
-        if l <= 0.0 {
-            0.0
-        } else {
-            l.sqrt()
-        }
+        if l <= 0.0 { 0.0 } else { l.sqrt() }
     }
 
     /// Leaves the vector untouched when the length is almost zero
@@ -231,7 +227,9 @@ impl Vector3 {
         out.write_f32(self.x).write_f32(self.y).write_f32(self.z);
     }
 
-    pub fn from_stream_bytes(input: &mut crate::stream::BinaryStream) -> Result<Self, crate::stream::StreamError> {
+    pub fn from_stream_bytes(
+        input: &mut crate::stream::BinaryStream,
+    ) -> Result<Self, crate::stream::StreamError> {
         let x = input.read_f32()?;
         let y = input.read_f32()?;
         let z = input.read_f32()?;
@@ -317,7 +315,12 @@ impl Vector4 {
 impl std::ops::Add for Vector4 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z, self.w + rhs.w)
+        Self::new(
+            self.x + rhs.x,
+            self.y + rhs.y,
+            self.z + rhs.z,
+            self.w + rhs.w,
+        )
     }
 }
 
@@ -383,7 +386,10 @@ mod tests {
         let out = Vector3::ZERO.cross_product(&j, &i);
         assert_eq!(out, -Vector3::K);
         // Pinned scalar cross for Vector2.
-        assert_eq!(Vector2::new(1.0, 0.0).cross_product(&Vector2::new(0.0, 1.0)), 1.0);
+        assert_eq!(
+            Vector2::new(1.0, 0.0).cross_product(&Vector2::new(0.0, 1.0)),
+            1.0
+        );
     }
 
     #[test]
@@ -395,7 +401,11 @@ mod tests {
 
         let mut tiny = Vector3::new(1e-10, 0.0, 0.0);
         let len = tiny.normalise();
-        assert_eq!(tiny, Vector3::new(1e-10, 0.0, 0.0), "length below 1e-8 is left as-is");
+        assert_eq!(
+            tiny,
+            Vector3::new(1e-10, 0.0, 0.0),
+            "length below 1e-8 is left as-is"
+        );
         assert!((len - 1e-10).abs() < f32::EPSILON);
     }
 
@@ -464,10 +474,7 @@ mod tests {
         let mut s = crate::stream::BinaryStream::new();
         Vector3::new(-1.5, 2.0, 3.25).to_stream_bytes(&mut s);
         let mut expected = crate::stream::BinaryStream::new();
-        expected
-            .write_f32(-1.5)
-            .write_f32(2.0)
-            .write_f32(3.25);
+        expected.write_f32(-1.5).write_f32(2.0).write_f32(3.25);
         assert_eq!(s.as_bytes(), expected.as_bytes());
         assert_eq!(s.as_bytes().len(), VECTOR3_STREAM_SIZE);
         assert_eq!(s.as_bytes()[4], 0x00, "2.0f32 LE second byte");
@@ -565,9 +572,6 @@ mod tests {
             9.0,
             "distanceSquared uses lengthSquared of the delta"
         );
-        assert_eq!(
-            Vector3::ZERO.distance_squared(&Vector3::ZERO),
-            0.0
-        );
+        assert_eq!(Vector3::ZERO.distance_squared(&Vector3::ZERO), 0.0);
     }
 }

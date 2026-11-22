@@ -5,7 +5,7 @@
 //! transform as row vectors: `v' = v · M`. The default-constructed matrix is
 //! the *zero* matrix, not the identity.
 
-use super::vector::{clamp, Vector3, Vector4};
+use super::vector::{Vector3, Vector4, clamp};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
@@ -452,8 +452,14 @@ mod tests {
         // Rotating +J (0,1,0) by +90° about X moves it to +K (0,0,1): Y→Z.
         let mapped = rot.apply_vector(&Vector3::J);
         assert!(crate::math::almost_zero(mapped.x, 1e-6));
-        assert!(crate::math::almost_zero(mapped.y, 1e-6), "y component vanishes");
-        assert!(crate::math::almost_zero(mapped.z - 1.0, 1e-6), "z component becomes +1");
+        assert!(
+            crate::math::almost_zero(mapped.y, 1e-6),
+            "y component vanishes"
+        );
+        assert!(
+            crate::math::almost_zero(mapped.z - 1.0, 1e-6),
+            "z component becomes +1"
+        );
     }
 
     #[test]
@@ -533,8 +539,18 @@ mod tests {
         let mut m = Matrix::zero();
         m.set_rotate_ypr(yaw, pitch, roll);
         assert!((m.yaw() - yaw).abs() < 1e-5, "yaw {} vs {}", m.yaw(), yaw);
-        assert!((m.pitch() - pitch).abs() < 1e-5, "pitch {} vs {}", m.pitch(), pitch);
-        assert!((m.roll() - roll).abs() < 1e-4, "roll {} vs {}", m.roll(), roll);
+        assert!(
+            (m.pitch() - pitch).abs() < 1e-5,
+            "pitch {} vs {}",
+            m.pitch(),
+            pitch
+        );
+        assert!(
+            (m.roll() - roll).abs() < 1e-4,
+            "roll {} vs {}",
+            m.roll(),
+            roll
+        );
     }
 
     #[test]
@@ -709,7 +725,10 @@ mod tests {
     fn scale_sets_diagonal() {
         let mut m = Matrix::zero();
         m.set_scale(2.0, 3.0, 4.0);
-        assert_eq!(m.apply_vector(&Vector3::new(1.0, 1.0, 1.0)), Vector3::new(2.0, 3.0, 4.0));
+        assert_eq!(
+            m.apply_vector(&Vector3::new(1.0, 1.0, 1.0)),
+            Vector3::new(2.0, 3.0, 4.0)
+        );
         assert_eq!(m.m[3][3], 1.0);
     }
 
