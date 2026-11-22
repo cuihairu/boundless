@@ -268,6 +268,11 @@ impl Interpreter {
         // table is still intact -- before `binding::reset` drops the type
         // objects themselves.
         crate::resmgr::reset();
+        // The URL manager's held callbacks drop next: the `Manager` keeps
+        // one reference of each in-flight callable, and they must release
+        // while the interpreter is still up -- the `ScriptFini` job the
+        // reference registers (`manager.cpp:14-24`).
+        crate::urlrequest::fini();
         // The type registry's references go the same way: the static
         // `s_type_` objects outlive every script object, and the port holds
         // its registry references until here.
@@ -392,6 +397,13 @@ fn create_big_world_module(component: &str) {
         // the client callback pair or the server timer trio is linked, the
         // way `MF_SERVER` decides it at build time.
         crate::timers::install(module, component);
+        // `fetchURL` joins the same module unconditionally -- the
+        // reference's `PY_MODULE_FUNCTION_WITH_KEYWORDS` face
+        // (`py_urlrequest.cpp:318`). `URL::Manager::init` stays an app
+        // call (`client/connection_control.cpp:342`), so the host drives
+        // `crate::urlrequest::init` itself and the face refuses until it
+        // has: `PyURLRequest has not been initialised`.
+        crate::urlrequest::install(module);
     }
 }
 
@@ -604,6 +616,7 @@ mod tests {
         "interpreter::tests::scenario_the_v4_providers_exercise_their_surface",
         "interpreter::tests::scenario_the_resmgr_module_serves_the_ported_surface",
         "interpreter::tests::scenario_the_resmgr_editor_tools_serve_the_ported_surface",
+        "interpreter::tests::scenario_the_big_world_url_request_face_serves_the_ported_surface",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -5886,5 +5899,246 @@ mod tests {
 
         interpreter.fini();
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Drive `urlrequest::tick` until the script expression answers
+    /// `expected`, the host loop the reference's dispatcher ran, bounded so
+    /// a broken transport fails the test instead of hanging it.
+    fn wait_for_url(interpreter: &Interpreter, expression: &str, expected: &str) -> bool {
+        for _ in 0..600 {
+            // SAFETY: the scenario thread owns the GIL.
+            unsafe { crate::urlrequest::tick() };
+            // `probe` reads `__probe`, so the expression is what assigns it.
+            if probe(interpreter, &format!("__probe = {expression}")) == expected {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// `BigWorld.fetchURL` and the `PyURLResponse` the callback receives
+    /// (`common/py_urlrequest.cpp`): the module surface, the uninitialised
+    /// wall, then -- with the manager stood up -- the four argument walls, a
+    /// real loopback success, a real timeout, the read-only attributes, and
+    /// a failing callback that is printed rather than raised.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_big_world_url_request_face_serves_the_ported_surface() {
+        // A loopback server answering every connection with one fixed 200,
+        // and a silent one that accepts and never replies -- the timeout's
+        // counterpart.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the loopback server");
+        let port = server.local_addr().expect("a local address").port();
+        let _answering = std::thread::spawn(move || {
+            for stream in server.incoming() {
+                let mut stream = match stream {
+                    Ok(stream) => stream,
+                    Err(_) => break,
+                };
+                let mut buffer = [0; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut buffer);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
+                      Content-Length: 5\r\n\r\nhello",
+                );
+                // The stream drops here: the client's read ends at the
+                // close, the `Connection: close` the port sends.
+            }
+        });
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the silent server");
+        let silent_port = silent.local_addr().expect("a local address").port();
+        let _holding = std::thread::spawn(move || {
+            let (_socket, _) = silent.accept().expect("accept");
+            // The socket stays open and silent: the read never ends, so the
+            // client times out instead of erroring.
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+
+        // The transport-error line the reference prints through
+        // `SCRIPT_ERROR_MSG`; the sink captures it for the assertion.
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let log = log.clone();
+            output_writer::set_log_sink(move |line, _is_stderr| {
+                log.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(line.to_owned());
+            });
+        }
+
+        let interpreter =
+            Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
+
+        // The module surface: `fetchURL` on the module, the type is not.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 __probe = (hasattr(BigWorld, 'fetchURL'), hasattr(BigWorld, 'URLResponse'))",
+            ),
+            "(True, False)",
+        );
+
+        // The manager gate: before `URL::Manager::init` the face refuses
+        // (`py_urlrequest.cpp:166-169`).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', lambda response: None)\n\
+                 \x20   __probe = 'no error'\n\
+                 except EnvironmentError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "PyURLRequest has not been initialised",
+        );
+
+        // `Manager::init` stands the singleton up; a second one refuses
+        // (`manager.cpp:128-136`).
+        assert!(crate::urlrequest::init());
+        assert!(!crate::urlrequest::init());
+
+        // The argument walls, in the reference's order (`:196-307`).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', 'not callable')\n\
+                 \x20   __probe = 'no error'\n\
+                 except ValueError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "Callback is not callable",
+        );
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', len, headers=42)\n\
+                 \x20   __probe = 'no error'\n\
+                 except ValueError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "headers argument is not a sequence",
+        );
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', len, postdata=4.5)\n\
+                 \x20   __probe = 'no error'\n\
+                 except ValueError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "postData argument should be a dict or string",
+        );
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', len, method='HEAD')\n\
+                 \x20   __probe = 'no error'\n\
+                 except ValueError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "Invalid method HEAD. Should be 'GET', 'PUT', 'POST', 'DELETE' or 'PATCH''",
+        );
+
+        // The success path: one loopback exchange, the callback receives
+        // the response with the reference's three read-only fields.
+        probe(
+            &interpreter,
+            &format!(
+                "import BigWorld\n\
+                 results = []\n\
+                 def on_response(response):\n\
+                 \x20   results.append(response)\n\
+                 BigWorld.fetchURL('http://127.0.0.1:{port}/get', on_response, timeout=5)"
+            ),
+        );
+        assert!(
+            wait_for_url(&interpreter, "len(results)", "1"),
+            "the success callback ran"
+        );
+        assert_eq!(
+            probe(
+                &interpreter,
+                "response = results[0]\n\
+                 __probe = (response.contentType, response.body, \
+                 response.responseCode, type(response).__name__)",
+            ),
+            "('text/plain', 'hello', 200, 'PyURLResponse')",
+        );
+        // The read-only wall (`pyobject_plus.hpp:443-454`).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "try:\n\
+                 \x20   response.body = 'no'\n\
+                 \x20   __probe = 'no error'\n\
+                 except TypeError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "Sorry, the attribute body in PyURLResponse is read-only",
+        );
+
+        // The timeout path: the silent server never answers, so the
+        // callback receives a zero response and the engine logs the
+        // reference's sentence (`:110-113`).
+        probe(
+            &interpreter,
+            &format!(
+                "import BigWorld\n\
+                 timeouts = []\n\
+                 def on_timeout(response):\n\
+                 \x20   timeouts.append((response.contentType, response.body, \
+                 response.responseCode))\n\
+                 BigWorld.fetchURL('http://127.0.0.1:{silent_port}/hold', \
+                 on_timeout, timeout=1)"
+            ),
+        );
+        assert!(
+            wait_for_url(&interpreter, "len(timeouts)", "1"),
+            "the timeout callback ran"
+        );
+        assert_eq!(probe(&interpreter, "__probe = timeouts[0]"), "('', '', 0)");
+        let logged = log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|line| line.contains("Response::onDone: Timeout was reached"));
+        assert!(logged, "the transport error is logged");
+
+        // A failing callback is printed, not raised (`:125`).
+        probe(
+            &interpreter,
+            &format!(
+                "import BigWorld\n\
+                 flops = []\n\
+                 def boom(response):\n\
+                 \x20   flops.append('called')\n\
+                 \x20   raise RuntimeError('callback boom')\n\
+                 BigWorld.fetchURL('http://127.0.0.1:{port}/again', boom, timeout=5)"
+            ),
+        );
+        assert!(
+            wait_for_url(&interpreter, "len(flops)", "1"),
+            "the failing callback ran"
+        );
+        let printed = log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|line| line.contains("callback boom"));
+        assert!(printed, "the failing callback's traceback is printed");
+
+        interpreter.fini();
     }
 }
