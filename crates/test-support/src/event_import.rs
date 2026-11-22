@@ -164,4 +164,54 @@ mod tests {
         );
         assert_eq!(import.report("price"), "purchase: count=2 total=50");
     }
+
+    #[test]
+    fn resuming_after_a_failure_matches_a_one_shot_import() {
+        // Three batches, minted once so both import paths see the same events
+        // with the same ids.
+        let mut mint = EventRecorder::new();
+        let batch_one = vec![
+            mint.custom(
+                1_000,
+                "cellapp01",
+                "purchase",
+                &[("price", "100")],
+                &["price"],
+            ),
+            mint.custom(
+                1_100,
+                "cellapp01",
+                "purchase",
+                &[("price", "150")],
+                &["price"],
+            ),
+        ];
+        let batch_two = vec![mint.custom(1_200, "baseapp01", "join", &[("ms", "50")], &["ms"])];
+        let batch_three = vec![mint.custom(1_300, "cellapp01", "telemetry", &[], &[])];
+
+        // The one-shot path: every batch, one run.
+        let mut one_shot = Import::new();
+        one_shot.import(&batch_one);
+        one_shot.import(&batch_two);
+        one_shot.import(&batch_three);
+        let whole = one_shot.report("price");
+        let whole_ids: Vec<&str> = one_shot.in_order().iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(one_shot.count(), 4);
+
+        // The resumed path: the first batch lands, the job fails, then it
+        // resumes and imports the remaining batches — including a re-send of
+        // the batch that was in flight when the job died.
+        let mut resumed = Import::new();
+        resumed.import(&batch_one);
+        resumed.import(&batch_two);
+        resumed.import(&batch_two); // the in-flight re-send after the failure
+        resumed.import(&batch_three);
+
+        // The resumed import is the one-shot import: nothing missing, nothing
+        // twice, the same rows and the same report.
+        let resumed_ids: Vec<&str> = resumed.in_order().iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(resumed_ids, whole_ids);
+        assert_eq!(resumed.count(), one_shot.count());
+        assert_eq!(resumed.report("price"), whole);
+    }
 }
