@@ -169,6 +169,58 @@ impl RpcError {
     }
 }
 
+/// One movement input the client sends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovementInput {
+    /// The entity that moved.
+    pub entity: EntityId,
+    /// The x coordinate the input reports.
+    pub x: f64,
+    /// The y coordinate the input reports.
+    pub y: f64,
+    /// The z coordinate the input reports.
+    pub z: f64,
+    /// The tick the input was made at.
+    pub timestamp: u64,
+}
+
+impl MovementInput {
+    /// The input's length on the wire: one word per field, in field order.
+    pub const WIRE_SIZE: usize = 8 * 5;
+
+    /// Encode the input to wire bytes, one word per field in field order.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::WIRE_SIZE);
+        bytes.extend_from_slice(&self.entity.to_le_bytes());
+        bytes.extend_from_slice(&self.x.to_bits().to_le_bytes());
+        bytes.extend_from_slice(&self.y.to_bits().to_le_bytes());
+        bytes.extend_from_slice(&self.z.to_bits().to_le_bytes());
+        bytes.extend_from_slice(&self.timestamp.to_le_bytes());
+        bytes
+    }
+
+    /// Decode wire bytes back to the input they came from; `None` when the
+    /// buffer is too short.
+    pub fn decode(bytes: &[u8]) -> Option<MovementInput> {
+        if bytes.len() < Self::WIRE_SIZE {
+            return None;
+        }
+        let word = |offset: usize| -> Option<u64> {
+            bytes[offset..offset + 8]
+                .try_into()
+                .ok()
+                .map(u64::from_le_bytes)
+        };
+        Some(MovementInput {
+            entity: word(0)?,
+            x: f64::from_bits(word(8)?),
+            y: f64::from_bits(word(16)?),
+            z: f64::from_bits(word(24)?),
+            timestamp: word(32)?,
+        })
+    }
+}
+
 /// One SDK session against one server.
 pub struct SdkSession {
     flavor: ServerFlavor,
@@ -182,6 +234,8 @@ pub struct SdkSession {
     properties: std::collections::BTreeMap<(EntityId, String), String>,
     rpcs: std::collections::BTreeMap<u32, Rpc>,
     next_rpc_id: u32,
+    inputs: Vec<MovementInput>,
+    received: Vec<Vec<u8>>,
 }
 
 impl SdkSession {
@@ -199,6 +253,8 @@ impl SdkSession {
             properties: std::collections::BTreeMap::new(),
             rpcs: std::collections::BTreeMap::new(),
             next_rpc_id: 0,
+            inputs: Vec::new(),
+            received: Vec::new(),
         }
     }
 
@@ -414,6 +470,27 @@ impl SdkSession {
     /// the two can be compared.
     pub fn round_trip(&self, id: u32) -> Option<&Rpc> {
         self.rpcs.get(&id)
+    }
+
+    /// Send one movement input: it is encoded and the server receives the
+    /// same bytes, decoded back to the same input.
+    pub fn send_input(&mut self, input: MovementInput) {
+        self.received.push(input.encode());
+        self.inputs.push(input);
+    }
+
+    /// The movement inputs the client sent, in the order sent.
+    pub fn inputs(&self) -> &[MovementInput] {
+        &self.inputs
+    }
+
+    /// The movement inputs the server received, decoded from the wire, in
+    /// the order they crossed it.
+    pub fn server_received(&self) -> Vec<MovementInput> {
+        self.received
+            .iter()
+            .filter_map(|bytes| MovementInput::decode(bytes))
+            .collect()
     }
 }
 
@@ -788,5 +865,62 @@ mod tests {
         // Each call gets its own id, in the order sent.
         assert_ne!(first, second);
         assert_eq!((first, second), (0, 1));
+    }
+
+    fn input(entity: EntityId, x: f64, y: f64, z: f64, timestamp: u64) -> MovementInput {
+        MovementInput {
+            entity,
+            x,
+            y,
+            z,
+            timestamp,
+        }
+    }
+
+    #[test]
+    fn the_server_receives_the_input_the_client_sent() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        // One movement input crosses the wire; the server decodes the same
+        // input the client sent, every field intact.
+        session.send_input(input(1, 10.5, 0.0, -3.25, 1_001));
+        assert_eq!(
+            session.server_received(),
+            vec![input(1, 10.5, 0.0, -3.25, 1_001)]
+        );
+        assert_eq!(session.inputs(), &[input(1, 10.5, 0.0, -3.25, 1_001)]);
+    }
+
+    #[test]
+    fn inputs_cross_the_wire_in_the_order_sent() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        session.send_input(input(1, 1.0, 0.0, 0.0, 1));
+        session.send_input(input(1, 2.0, 0.0, 0.0, 2));
+        session.send_input(input(1, 3.0, 0.0, 0.0, 3));
+
+        // The server's view is the client's view, in the same order.
+        assert_eq!(session.server_received(), session.inputs().to_vec());
+        assert_eq!(session.server_received()[2].timestamp, 3);
+    }
+
+    #[test]
+    fn a_movement_input_round_trips_the_wire_bytes() {
+        let sent = input(7, 1.5, -2.5, 3.5, 42);
+
+        // Encoding then decoding returns the same input.
+        assert_eq!(MovementInput::decode(&sent.encode()), Some(sent));
+    }
+
+    #[test]
+    fn the_wire_encoding_is_five_words() {
+        let sent = input(1, 0.0, 0.0, 0.0, 0);
+        assert_eq!(sent.encode().len(), MovementInput::WIRE_SIZE);
+        assert_eq!(MovementInput::WIRE_SIZE, 40);
+    }
+
+    #[test]
+    fn a_short_wire_buffer_does_not_decode() {
+        assert_eq!(MovementInput::decode(&[0; 8]), None);
+        assert_eq!(MovementInput::decode(&[]), None);
     }
 }
