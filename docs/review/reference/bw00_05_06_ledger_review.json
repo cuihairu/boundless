@@ -1,0 +1,34 @@
+{
+ "all_ok": true,
+ "checks": [
+  {
+   "check": "components_1to1",
+   "detail": "tsv 79 \u884c / ledger 79 \u884c / \u53bb\u91cd\u540e tsv 79\u3001ledger 79",
+   "ok": true
+  },
+  {
+   "check": "in_build_agrees",
+   "detail": "tsv in_build 77 / ledger in_build 77",
+   "ok": true
+  },
+  {
+   "check": "enabled_have_evidence_or_gap",
+   "detail": "\u542f\u7528 77 / \u6709\u8bc1\u636e 44 / \u663e\u5f0f\u7f3a\u53e3 33 / \u672a\u7d22\u5f15 0",
+   "ok": true
+  },
+  {
+   "check": "cmake_indexed",
+   "detail": "cmake 11 \u7ec4 / \u672a\u7d22\u5f15 0",
+   "ok": true
+  }
+ ],
+ "counts": {
+  "cmake_groups": 11,
+  "components": 79,
+  "enabled": 77,
+  "enabled_explicit_gap": 33,
+  "enabled_unindexed": 0,
+  "enabled_with_evidence": 44,
+  "ledger_rows": 79
+ }
+}
