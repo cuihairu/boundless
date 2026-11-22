@@ -1898,7 +1898,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 验证未就绪、过载、心跳过期、节点掉线、部分查询失败和恢复，区分不可达、陈旧和零值。状态输出用于集群 smoke。
 
-- [ ] **BW-25-03-01 显示未就绪和过载**。**验收** 两个状态分别可见。
+- [x] **BW-25-03-01 显示未就绪和过载**。**验收** 两个状态分别可见。证据：新增 `test-support/src/fault_presentation.rs`（+`pub mod fault_presentation`，BW-25-03 故障呈现）——**`FaultView`**（借 `StatusCollector`（BW-25-01-01），`new`/`with_budget(load_budget)`/`report(role)->FaultReport`/`reports()` 全集群升序）派生每进程**两个独立条件**：**`FaultKind::NotReady`**（`!status.is_ready()`=从未宣告就绪）+ **`FaultKind::Overloaded`**（`reading("load")` 解析数值 **> 预算**（默认 100=负荷百分比））；`Fault{kind,value,observed_at}`（value=度量来源值（NotReady="no readiness announcement"/Overloaded=负荷数）、observed_at=读数时刻或 now）+ **`FaultReport`**：`shows(kind)`/`is_healthy()`/**`render()`**=smoke 行（`role: ok` / `role: not ready` / `role: not ready, overloaded`）。验收由 3 测实证：**`not_ready_and_overloaded_are_each_visible_on_their_own`（核心验收）**（cellapp01 未宣告就绪+load 60 → 仅 `NotReady`、`render()=="cellapp01: not ready"`；cellapp02 ready+load 140 → 仅 `Overloaded`、`render()=="cellapp02: overloaded"`=**两状态分别可见、互不隐含**）+ `a_process_can_show_both_conditions_with_their_own_values`（未就绪且 load 220 → 两 fault，次序 [NotReady,Overloaded]，value 各自、observed_at 各自=呈现不合并）+ `a_ready_process_within_its_budget_is_healthy`（ready+load 95 → `is_healthy()`、`render()=="baseapp01: ok"`、`reports()` 1 行；`with_budget(80)` 同负荷 → `Overloaded`=预算可调）。foundation 149 全绿；test-support 289 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；fmt 净、clippy 净（0 发现于本席文件）。commit 53cb8c0。
 - [ ] **BW-25-03-02 标识心跳过期**。**验收** 显示陈旧时间且与零值区分。
 - [ ] **BW-25-03-03 处理节点失联或部分查询失败**。**验收** 健康节点结果仍可读。
 - [ ] **BW-25-03-04 验证恢复**。**验收** 节点重新出现且状态更新。
