@@ -16,6 +16,7 @@ pub mod clock;
 pub mod cmake_targets;
 pub mod config_fixture;
 pub mod cpu_sampler;
+pub mod diagnostic;
 pub mod flamegraph;
 pub mod full_stack;
 pub mod harness;
