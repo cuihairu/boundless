@@ -587,4 +587,54 @@ mod tests {
         assert_eq!(s.read_f64(), Ok(2.75));
         assert!(s.at_end());
     }
+
+    /// The BW-01-02-02 acceptance: a packed int crosses the 1-byte form into
+    /// the 4-byte form at 255, and the boundary values pack to the reference's
+    /// exact bytes (`binary_stream.hpp` `writePackedInt`/`readPackedInt`):
+    /// 0..=254 are a single byte; 255..=2^24-1 are `0xFF` followed by the
+    /// three low bytes little-endian. A string's length prefix crosses the
+    /// same boundary.
+    #[test]
+    fn reproduces_the_reference_packed_int_bytes() {
+        let cases: [(u32, &[u8], usize); 8] = [
+            (0, &[0x00], 1),
+            (254, &[0xFE], 1),
+            // The crossover: 255 packs as `0xFF` then its three low bytes
+            // (0xFF, 0x00, 0x00), so the reader recovers 255.
+            (255, &[0xFF, 0xFF, 0x00, 0x00], 4),
+            (256, &[0xFF, 0x00, 0x01, 0x00], 4),
+            (0x010203, &[0xFF, 0x03, 0x02, 0x01], 4),
+            (0xFFFF, &[0xFF, 0xFF, 0xFF, 0x00], 4),
+            (0x0001_0000, &[0xFF, 0x00, 0x00, 0x01], 4),
+            (MAX_PACKED_INT, &[0xFF, 0xFF, 0xFF, 0xFF], 4),
+        ];
+        for (value, expected, size) in cases {
+            let mut s = BinaryStream::new();
+            s.write_packed_int(value).unwrap();
+            assert_eq!(s.as_bytes(), expected, "value {value}");
+            assert_eq!(packed_int_size(value), size, "value {value}");
+            assert_eq!(s.length(), size, "value {value}");
+            s.rewind();
+            assert_eq!(s.read_packed_int(), Ok(value), "value {value}");
+            assert!(s.at_end(), "value {value}");
+        }
+
+        // A string's packed length prefix crosses the same boundary: a 254-byte
+        // string carries a 1-byte prefix, a 255-byte string a 4-byte prefix.
+        let long254 = "x".repeat(254);
+        let mut s = BinaryStream::new();
+        s.write_string(&long254).unwrap();
+        assert_eq!(s.as_bytes()[..5], [0xFE, 0x78, 0x78, 0x78, 0x78]);
+        assert_eq!(s.length(), 1 + 254);
+        s.rewind();
+        assert_eq!(s.read_string().unwrap(), long254);
+
+        let long255 = "y".repeat(255);
+        let mut t = BinaryStream::new();
+        t.write_string(&long255).unwrap();
+        assert_eq!(t.as_bytes()[..5], [0xFF, 0xFF, 0x00, 0x00, 0x79]);
+        assert_eq!(t.length(), 4 + 255);
+        t.rewind();
+        assert_eq!(t.read_string().unwrap(), long255);
+    }
 }
