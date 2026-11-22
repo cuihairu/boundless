@@ -43,6 +43,7 @@ pub mod growth;
 pub mod harness;
 pub mod layering;
 pub mod login_funnel;
+pub mod make_targets;
 pub mod memory_snapshot;
 pub mod multiproc;
 pub mod platform_diagnostics;
