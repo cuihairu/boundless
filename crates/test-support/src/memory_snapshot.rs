@@ -269,3 +269,157 @@ Threads:\t9\n";
         assert_eq!(resident_bytes(u32::MAX), None);
     }
 }
+
+/// BW-24-01-02: the live allocation reading.
+///
+/// The tracker counts the bytes its fixture allocations hold and gives each
+/// one back on release, so the reading is the **live** value — it moves with
+/// every allocation and falls back when memory is returned, unlike a
+/// cumulative total that only ever grows. The reference instruments the real
+/// allocator for this (`memory_debug.cpp` registers every `allocate` and
+/// `deallocate`); the port has no allocator hook yet, so the diagnostic owns
+/// its allocations through [`TrackedAllocation`] guards and accounts exactly
+/// what it hands out.
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// One fixture allocation, live for as long as the guard is. Dropping it
+/// releases the bytes back to the tracker, so the reading cannot drift.
+pub struct TrackedAllocation<'tracker> {
+    tracker: &'tracker LiveAllocationTracker,
+    buffer: Vec<u8>,
+}
+
+impl TrackedAllocation<'_> {
+    /// The allocation's bytes.
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buffer
+    }
+
+    /// The allocation's bytes, mutable.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.buffer
+    }
+
+    /// How many bytes this allocation holds.
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Whether the allocation is empty.
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    /// Release the allocation now instead of at scope exit; the reading
+    /// falls back immediately.
+    pub fn release(self) {}
+}
+
+impl Drop for TrackedAllocation<'_> {
+    fn drop(&mut self) {
+        self.tracker
+            .live_bytes
+            .fetch_sub(self.buffer.len() as u64, Ordering::SeqCst);
+    }
+}
+
+/// The live-byte accounting for a snapshot's allocation reading.
+#[derive(Debug, Default)]
+pub struct LiveAllocationTracker {
+    live_bytes: AtomicU64,
+}
+
+impl LiveAllocationTracker {
+    /// A tracker with nothing live.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The bytes currently held by unreleased allocations.
+    pub fn live_bytes(&self) -> u64 {
+        self.live_bytes.load(Ordering::SeqCst)
+    }
+
+    /// Whether the reading is back in the test's allowed range: at most
+    /// `slack` bytes above the baseline (and never below it — the tracker
+    /// never under-counts).
+    pub fn is_within(&self, baseline: u64, slack: u64) -> bool {
+        let live = self.live_bytes();
+        live >= baseline && live <= baseline + slack
+    }
+
+    /// Allocate `bytes` and account them as live until the returned guard
+    /// is dropped or released. The bytes are real, so a fixture can write
+    /// through them while they are held.
+    pub fn allocate(&self, bytes: usize) -> TrackedAllocation<'_> {
+        self.live_bytes.fetch_add(bytes as u64, Ordering::SeqCst);
+        TrackedAllocation {
+            tracker: self,
+            buffer: vec![0_u8; bytes],
+        }
+    }
+}
+
+#[cfg(test)]
+mod live_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn a_fully_released_fixture_returns_to_the_allowed_range() {
+        let tracker = LiveAllocationTracker::new();
+        let baseline = tracker.live_bytes();
+
+        // The fixture allocates three entity-table-sized blocks.
+        let mut blocks = Vec::new();
+        for _ in 0..3 {
+            blocks.push(tracker.allocate(4096));
+        }
+        assert_eq!(tracker.live_bytes(), baseline + 3 * 4096);
+        assert!(
+            !tracker.is_within(baseline, 1024),
+            "still holding the fixture"
+        );
+
+        // Releasing every block returns the reading to the allowed range.
+        for block in blocks {
+            block.release();
+        }
+        assert_eq!(tracker.live_bytes(), baseline);
+        assert!(tracker.is_within(baseline, 1024), "back within the range");
+    }
+
+    #[test]
+    fn a_partial_release_keeps_only_the_still_live_bytes() {
+        let tracker = LiveAllocationTracker::new();
+        let first = tracker.allocate(4096);
+        let second = tracker.allocate(4096);
+        let _third = tracker.allocate(4096);
+        assert_eq!(tracker.live_bytes(), 3 * 4096);
+
+        // Two of the three stay live: the reading only loses the released
+        // one, it does not reset.
+        drop(second);
+        assert_eq!(tracker.live_bytes(), 2 * 4096);
+        drop(first);
+        assert_eq!(tracker.live_bytes(), 4096);
+    }
+
+    #[test]
+    fn a_guard_leaving_scope_releases_its_own_bytes() {
+        let tracker = LiveAllocationTracker::new();
+        let baseline = tracker.live_bytes();
+
+        {
+            let mut block = tracker.allocate(2048);
+            block.as_mut_slice().fill(0xA5);
+            assert_eq!(block.len(), 2048);
+            assert!(!block.is_empty());
+            assert_eq!(block.as_slice()[0], 0xA5, "the bytes are real");
+            assert_eq!(tracker.live_bytes(), baseline + 2048);
+        }
+
+        // The guard dropped at scope exit: the reading is back, with no
+        // explicit release call.
+        assert!(tracker.is_within(baseline, 0));
+    }
+}
