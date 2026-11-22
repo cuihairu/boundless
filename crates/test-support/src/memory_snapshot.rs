@@ -527,3 +527,162 @@ mod live_allocation_tests {
         assert_eq!(tracker.peak_bytes(), 8192);
     }
 }
+
+/// BW-24-01-04: the object counts.
+///
+/// A snapshot answers how many entities and how many cache objects the
+/// process holds, per name: entities by their type name and cache objects by
+/// their cache name. The counts are exact, so a scheduled load — spawns and
+/// despawns plus cache fills and drops — must reconcile to the arithmetic
+/// the diagnostic is checking against.
+use std::collections::BTreeMap;
+
+/// Entity and cache object counts, kept per name.
+#[derive(Debug, Default)]
+pub struct ObjectCounts {
+    entities: BTreeMap<String, u64>,
+    caches: BTreeMap<String, u64>,
+}
+
+impl ObjectCounts {
+    /// Counts with no entities and no cache objects.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// One more entity of the given type.
+    pub fn add_entity(&mut self, type_name: &str) {
+        *self.entities.entry(type_name.to_string()).or_insert(0) += 1;
+    }
+
+    /// One entity of the given type goes away. `false` when there was none to
+    /// remove — a count never underflows to negative.
+    pub fn remove_entity(&mut self, type_name: &str) -> bool {
+        remove_one(&mut self.entities, type_name)
+    }
+
+    /// One more cache object from the given cache.
+    pub fn add_cache(&mut self, name: &str) {
+        *self.caches.entry(name.to_string()).or_insert(0) += 1;
+    }
+
+    /// One cache object leaves the given cache. `false` when there was none.
+    pub fn remove_cache(&mut self, name: &str) -> bool {
+        remove_one(&mut self.caches, name)
+    }
+
+    /// How many entities of the given type.
+    pub fn entity_count(&self, type_name: &str) -> u64 {
+        self.entities.get(type_name).copied().unwrap_or(0)
+    }
+
+    /// How many entities of every type.
+    pub fn entity_total(&self) -> u64 {
+        self.entities.values().sum()
+    }
+
+    /// The entity type names, ascending.
+    pub fn entity_types(&self) -> Vec<&str> {
+        self.entities.keys().map(String::as_str).collect()
+    }
+
+    /// How many objects the given cache holds.
+    pub fn cache_count(&self, name: &str) -> u64 {
+        self.caches.get(name).copied().unwrap_or(0)
+    }
+
+    /// How many objects every cache holds.
+    pub fn cache_total(&self) -> u64 {
+        self.caches.values().sum()
+    }
+
+    /// The cache names, ascending.
+    pub fn cache_names(&self) -> Vec<&str> {
+        self.caches.keys().map(String::as_str).collect()
+    }
+}
+
+/// Decrement one count, returning whether anything was left to remove.
+fn remove_one(counts: &mut BTreeMap<String, u64>, name: &str) -> bool {
+    let Some(entry) = counts.get_mut(name) else {
+        return false;
+    };
+    if *entry == 0 {
+        return false;
+    }
+    *entry -= 1;
+    if *entry == 0 {
+        counts.remove(name);
+    }
+    true
+}
+
+#[cfg(test)]
+mod object_counts_tests {
+    use super::*;
+
+    #[test]
+    fn a_scheduled_load_reconciles_to_its_expected_counts() {
+        let mut counts = ObjectCounts::new();
+
+        // A scheduled load: spawns and cache fills.
+        for _ in 0..10 {
+            counts.add_entity("Avatar");
+        }
+        for _ in 0..3 {
+            counts.add_entity("Space");
+        }
+        for _ in 0..4 {
+            counts.add_cache("Waypoint");
+        }
+        counts.add_cache("Query");
+        assert_eq!(counts.entity_total(), 13);
+        assert_eq!(counts.cache_total(), 5);
+
+        // The scheduled despawns and drops.
+        assert!(counts.remove_entity("Avatar"));
+        assert!(counts.remove_entity("Avatar"));
+        assert!(counts.remove_entity("Space"));
+        for _ in 0..4 {
+            assert!(counts.remove_cache("Waypoint"));
+        }
+
+        // The counts match the arithmetic the load is checking against.
+        assert_eq!(counts.entity_count("Avatar"), 8);
+        assert_eq!(counts.entity_count("Space"), 2);
+        assert_eq!(counts.entity_count("Waypoint"), 0);
+        assert_eq!(counts.entity_total(), 10);
+        assert_eq!(counts.cache_count("Waypoint"), 0);
+        assert_eq!(counts.cache_count("Query"), 1);
+        assert_eq!(counts.cache_total(), 1);
+        // A fully emptied cache leaves no row behind.
+        assert_eq!(counts.cache_names(), vec!["Query"]);
+    }
+
+    #[test]
+    fn removing_more_than_present_is_rejected() {
+        let mut counts = ObjectCounts::new();
+        assert!(!counts.remove_entity("Avatar"), "nothing was there");
+        assert!(!counts.remove_cache("Query"));
+
+        counts.add_entity("Avatar");
+        assert!(counts.remove_entity("Avatar"));
+        assert_eq!(counts.entity_count("Avatar"), 0);
+        // A second removal cannot underflow the count.
+        assert!(!counts.remove_entity("Avatar"));
+        assert_eq!(counts.entity_count("Avatar"), 0);
+        assert_eq!(counts.entity_types(), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn names_come_out_ascending() {
+        let mut counts = ObjectCounts::new();
+        counts.add_entity("Zombie");
+        counts.add_entity("Avatar");
+        counts.add_entity("Npc");
+        counts.add_cache("Zone");
+        counts.add_cache("Item");
+        assert_eq!(counts.entity_types(), vec!["Avatar", "Npc", "Zombie"]);
+        assert_eq!(counts.cache_names(), vec!["Item", "Zone"]);
+    }
+}
