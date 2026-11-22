@@ -1912,7 +1912,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 为登录、会话、空间移动和业务自定义事件定义版本、事件 ID、时间与来源，提供 Python 上报接口和批量导出。验证重试去重、晚到数据、版本兼容及字段脱敏。
 
-- [ ] **BW-26-01-01 定义登录、会话与移动事件**。**验收** 版本、事件 ID 和来源可验证。
+- [x] **BW-26-01-01 定义登录、会话与移动事件**。**验收** 版本、事件 ID 和来源可验证。证据：新增 `test-support/src/event_contract.rs`（+`pub mod event_contract`，BW-26-01 事件契约与采集）——统一事件信封 **`GameEvent{version,id,kind,at,source,fields}`**：`EVENT_VERSION="1"` + **`EventKind`**（`Login`/`Session`/`Movement`，各带 `prefix()` 与 `required_fields()`：login=[account]、session=[session,player]、movement=[player,from_space,to_space]）+ **`EventRecorder`**（`login`/`session`/`movement` 快捷 + 通用 `event(kind,at,source,fields)`；**按 kind 分序铸 ID `{prefix}:{serial}`=login:1/login:2/session:1 每次发放唯一**）+ **`verify(&GameEvent)->Result<(),ContractError>`**（版本未知→`UnknownVersion`、ID 非本 kind 前缀或序号非数→`MalformedId`、source 空→`MissingSource`、缺必载字段→`MissingField(name)` 首个点名）+ `field(name)` 读载荷。验收由 4 测实证：**`login_session_and_movement_events_verify_under_the_contract`（核心验收）**（三类事件 `verify()==Ok`：version "1"、id 各自唯一、at/source 记名、载荷字段齐=**版本/事件 ID/来源可验证**）+ `each_emission_mints_its_own_id`（login:1→login:2→session:1 每发放唯一 ID）+ `a_tampered_version_id_or_source_fails_verification`（version "2"→UnknownVersion、"session:1"/"login:x"→MalformedId、source 空→MissingSource；原事件仍 Ok）+ `a_kind_must_carry_its_required_fields`（movement 去 to_space→`MissingField("to_space")`；通用 event 带齐字段 Ok）。foundation 149 全绿；test-support 305 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；fmt 净、clippy 净（0 发现于本席文件；`&to_string()` 临时借用→先绑定）。commit 94b3a22。
 - [ ] **BW-26-01-02 实现 Python 自定义事件上报**。**验收** 未知字段按契约处理。
 - [ ] **BW-26-01-03 实现批量导出与边界脱敏**。**验收** 样本敏感字段不泄露。
 - [ ] **BW-26-01-04 处理重复与晚到**。**验收** 固定乱序输入得到同一结果。
