@@ -1,6 +1,7 @@
 //! BW-01 process bootstrap, configuration and the game tick.
 
 pub mod app;
+pub mod backup_hash;
 pub mod baseapp_continuation;
 pub mod baseapp_relogon;
 pub mod baseappmgr;
