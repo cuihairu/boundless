@@ -11,6 +11,9 @@
 //! * a packed int is one byte for `0..=254`, otherwise `0xFF` followed by the
 //!   three low bytes little-endian, capped at `1 << 24`;
 //! * a container is a fixed 4-byte element count followed by its elements;
+//! * a possibly-null blob is either a length-prefixed blob or, when null or
+//!   empty, a zero length plus a one-byte flag telling them apart
+//!   (`blob_or_null.cpp`);
 //! * an over-long read sets the stream error and clamps the read cursor to the
 //!   end instead of aborting, so following reads fail the same way.
 
@@ -218,6 +221,26 @@ impl BinaryStream {
         Ok(self)
     }
 
+    /// A possibly-null blob (`lib/cstdmf/blob_or_null.cpp`). Present,
+    /// non-empty data goes out as a length-prefixed blob; a null or an empty
+    /// blob writes a zero length plus one flag byte marking which it was, so
+    /// the two cannot be confused on the way back.
+    pub fn write_blob_or_null(&mut self, blob: Option<&[u8]>) -> Result<&mut Self, StreamError> {
+        match blob {
+            Some(data) if !data.is_empty() => self.write_blob(data),
+            Some(_) => {
+                self.write_packed_int(0)?;
+                self.buf.push(1);
+                Ok(self)
+            }
+            None => {
+                self.write_packed_int(0)?;
+                self.buf.push(0);
+                Ok(self)
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Reading
     // ------------------------------------------------------------------
@@ -328,6 +351,22 @@ impl BinaryStream {
     pub fn read_blob(&mut self) -> Result<Vec<u8>, StreamError> {
         let len = self.read_packed_int()? as usize;
         Ok(self.take(len)?.to_vec())
+    }
+
+    /// The inverse of `write_blob_or_null`: `None` for a null blob, `Some`
+    /// for a present one (possibly empty).
+    pub fn read_blob_or_null(&mut self) -> Result<Option<Vec<u8>>, StreamError> {
+        let len = self.read_packed_int()? as usize;
+        if len > 0 {
+            Ok(Some(self.take(len)?.to_vec()))
+        } else {
+            let is_not_null = self.read_u8()?;
+            Ok(if is_not_null != 0 {
+                Some(Vec::new())
+            } else {
+                None
+            })
+        }
     }
 }
 
@@ -656,5 +695,91 @@ mod original_fixtures {
         assert_eq!(s.as_bytes(), decode_hex("04030201").as_slice());
         s.rewind();
         assert_eq!(s.read_count(), Ok(0x0102_0304));
+    }
+
+    // --- BW-01-02-03: strings and the memory-stream surface ------------------
+
+    #[test]
+    fn string_fixtures_match_original_bytes() {
+        let mut s = BinaryStream::new();
+        s.write_string("").unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("00").as_slice());
+
+        let mut s = BinaryStream::new();
+        s.write_string("abc").unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("03616263").as_slice());
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("abc".to_string()));
+
+        // Embedded NUL survives: the format is length-prefixed, never
+        // terminated, so the zero inside is payload like any other byte.
+        let mut s = BinaryStream::new();
+        s.write_string("a\0b").unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("03610062").as_slice());
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("a\0b".to_string()));
+
+        // A 255-byte string crosses the packed-int boundary into 4-byte form.
+        let long = "x".repeat(255);
+        let mut s = BinaryStream::new();
+        s.write_string(&long).unwrap();
+        assert_eq!(&s.as_bytes()[..4], decode_hex("ffff0000").as_slice());
+        assert_eq!(s.length(), 259);
+        s.rewind();
+        assert_eq!(s.read_string(), Ok(long));
+    }
+
+    #[test]
+    fn add_blob_writes_raw_bytes_without_prefix() {
+        let mut s = BinaryStream::new();
+        s.write_blob_raw(b"abc");
+        assert_eq!(s.as_bytes(), decode_hex("616263").as_slice());
+    }
+
+    /// `BlobOrNull` framing from `lib/cstdmf/blob_or_null.cpp`: present data
+    /// is a length-prefixed blob; null and empty each write a zero length
+    /// plus a one-byte flag telling them apart.
+    #[test]
+    fn blob_or_null_fixtures_match_original_framing() {
+        // null: packed 0 + flag 0
+        let mut s = BinaryStream::new();
+        s.write_blob_or_null(None).unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("0000").as_slice());
+        s.rewind();
+        assert_eq!(s.read_blob_or_null(), Ok(None));
+
+        // empty (non-null): packed 0 + flag 1
+        let mut s = BinaryStream::new();
+        s.write_blob_or_null(Some(&[])).unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("0001").as_slice());
+        s.rewind();
+        assert_eq!(s.read_blob_or_null(), Ok(Some(Vec::new())));
+
+        // data: packed length + bytes, no trailing flag
+        let mut s = BinaryStream::new();
+        s.write_blob_or_null(Some(b"data")).unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("0464617461").as_slice());
+        s.rewind();
+        assert_eq!(s.read_blob_or_null(), Ok(Some(b"data".to_vec())));
+    }
+
+    #[test]
+    fn remaining_length_after_partial_read_matches_original() {
+        // The original wrote three u32s and read one back: remaining 8.
+        let mut s = BinaryStream::new();
+        s.write_u32(1).write_u32(2).write_u32(3);
+        s.rewind();
+        assert_eq!(s.read_u32(), Ok(1));
+        assert_eq!(s.remaining(), 8);
+        assert!(!s.has_error());
+    }
+
+    #[test]
+    fn rewind_readback_returns_written_wire_bytes() {
+        let mut s = BinaryStream::new();
+        s.write_u16(0x0102).write_u16(0x0304);
+        s.rewind();
+        assert_eq!(s.as_bytes(), decode_hex("02010403").as_slice());
+        assert_eq!(s.unread_bytes(), decode_hex("02010403").as_slice());
     }
 }
