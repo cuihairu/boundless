@@ -135,6 +135,7 @@ pub struct SdkSession {
     reconnects: usize,
     entities: std::collections::BTreeMap<EntityId, LiveEntity>,
     dispatch: Vec<(EntityId, EntityEvent)>,
+    properties: std::collections::BTreeMap<(EntityId, String), String>,
 }
 
 impl SdkSession {
@@ -149,6 +150,7 @@ impl SdkSession {
             reconnects: 0,
             entities: std::collections::BTreeMap::new(),
             dispatch: Vec::new(),
+            properties: std::collections::BTreeMap::new(),
         }
     }
 
@@ -307,6 +309,23 @@ impl SdkSession {
         }
         self.dispatch_event(id, EntityEvent::Destroyed);
         Ok(())
+    }
+
+    /// Apply one property update to an entity, by its nested path — a flat
+    /// path (`hp`) or a nested one (`position.x`). The latest update for a
+    /// path wins.
+    pub fn sync_property(&mut self, id: EntityId, path: &str, value: &str) {
+        self.properties
+            .insert((id, path.to_string()), value.to_string());
+    }
+
+    /// The latest value of an entity's property at its nested path; `None`
+    /// when the path was never set. A nested update is read back by the same
+    /// path it was synced with.
+    pub fn property(&self, id: EntityId, path: &str) -> Option<&str> {
+        self.properties
+            .get(&(id, path.to_string()))
+            .map(String::as_str)
     }
 }
 
@@ -557,5 +576,61 @@ mod tests {
             session.lifecycle(2),
             vec![EntityEvent::Created, EntityEvent::Entered]
         );
+    }
+
+    #[test]
+    fn a_nested_property_update_is_readable() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        // A representative nested update, read back by its nested path.
+        session.sync_property(1, "position.x", "1.5");
+        session.sync_property(1, "position.y", "2.5");
+        assert_eq!(session.property(1, "position.x"), Some("1.5"));
+        assert_eq!(session.property(1, "position.y"), Some("2.5"));
+    }
+
+    #[test]
+    fn a_deeper_nested_property_resolves_together_with_a_flat_one() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+
+        session.sync_property(1, "hp", "100");
+        session.sync_property(1, "stats.attributes.strength", "10");
+        assert_eq!(session.property(1, "hp"), Some("100"));
+        assert_eq!(session.property(1, "stats.attributes.strength"), Some("10"));
+    }
+
+    #[test]
+    fn the_latest_update_wins() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        session.sync_property(1, "position.x", "1.0");
+        session.sync_property(1, "position.x", "2.0");
+
+        assert_eq!(session.property(1, "position.x"), Some("2.0"));
+    }
+
+    #[test]
+    fn an_unset_property_is_none() {
+        let session = SdkSession::new(ServerFlavor::New);
+        assert_eq!(session.property(1, "hp"), None);
+    }
+
+    #[test]
+    fn a_path_is_not_its_sibling() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        session.sync_property(1, "position.x", "1.5");
+
+        // A parent or a sibling path is not the one that was set.
+        assert_eq!(session.property(1, "position"), None);
+        assert_eq!(session.property(1, "position.y"), None);
+    }
+
+    #[test]
+    fn properties_are_per_entity() {
+        let mut session = SdkSession::new(ServerFlavor::New);
+        session.sync_property(1, "hp", "100");
+        session.sync_property(2, "hp", "50");
+
+        assert_eq!(session.property(1, "hp"), Some("100"));
+        assert_eq!(session.property(2, "hp"), Some("50"));
     }
 }
