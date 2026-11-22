@@ -1409,6 +1409,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 登记原版构建目标、功能编号、新 crate/模块及测试位置。编辑器和工具复用世界/资源/转换库。明确 Rust 原生扩展与 Python 扩展各自入口，验证加载和错误传播。
 
 - [ ] **BW-16-04-01 登记原版目标到新版目录**。**验收** 每个目标有模块与测试路径。（foundation/platform/mercury/resources/entitydef/python-host/python-module/asset-pipeline/server-runtime/apps-server 已随 7d031b1 合入，余角色 crate（cellapp/baseapp 等）与 editor/tools 未建，随 BW-03/BW-09/BW-11/BW-13 逐项解锁）
+  - 证据（部分，未勾）：`docs/review/bw16-04-01-target-map.md`（bcfbdcb）——**已合入面登记完整**：17 个库目标（`cstdmf`/`math`→foundation、`network`→mercury、`entitydef`/`entitydef_script`→entitydef、`pyscript`/`script`→python-host、`resmgr`→resources、`asset_pipeline`→asset-pipeline、`server`→server-runtime、`testing`/`unit_test_lib`→test-support、`db`×5→db）、8 个服务端角色（原版 8 个 app → `apps/server` 单二进制 8 角色，测 `apps/server/tests/role_lifecycle.rs`）、3 个扩展（→`python-module`+`python-host`，测 `python-module/tests/import.rs`）、4 个工具（`process_defs`→`entitydef/src/bin/`、`plugin_system`→`plugin-host`、`assetprocessor`/`batch_compiler`→`asset-pipeline`）。**未建面**（§2）逐目标记归属与解锁项：客户端（BW-11）、39 个客户端/渲染/工具库（含 `appmgr`/`memhook`/`urlrequest`）、5 个编辑器目标（BW-13）、3 个导出器（BW-13-02，宿主矩阵见 BW-15-06-02）、Bots（BW-12-04）、machined、日志/DB 工具（BW-09）。
+  - 卡点（验收未闭合）：§2 目标的「模块与测试路径」依赖对应席位立项（BW-09/11/12-04/13）；§1.2 角色**业务逻辑**（登录/AOI/实体）依赖服务端运行时（BW-06..10）。验收「每个目标有模块与测试路径」待 §2 全部立项后闭合。
 - [ ] **BW-16-04-02 统一编辑器和工具的资源入口**。**验收** 两类应用可加载同一产物。（依赖 editor/tools 应用未建，apps/ 现仅 server，随 BW-13 立项解锁）
 - [ ] **BW-16-04-03 定义 Rust 扩展入口**。**验收** 成功及错误能正确传播。（依赖 editor/tools 应用与扩展宿主未建，随 BW-13 立项解锁）
 - [x] **BW-16-04-04 定义 Python 扩展入口**。**验收** 导入失败可定位且状态可清理。（commit 0492aee）
