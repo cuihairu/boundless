@@ -364,6 +364,15 @@ impl Packet {
         self.is_piggyback
     }
 
+    /// A test hook marking this packet as recovered from a piggyback
+    /// block. The real write path only ever sets this through the bundle's
+    /// piggyback peel (BW-02-03-06), which the receive-window tests drive
+    /// by hand.
+    #[cfg(test)]
+    pub fn force_piggyback(&mut self) {
+        self.is_piggyback = true;
+    }
+
     /// `shouldCreateAnonymous()`: the first packet on a non-indexed
     /// channel asks its peer to create one.
     pub fn should_create_anonymous(&self) -> bool {
