@@ -1,4 +1,5 @@
-//! BW-07-03-02: the BaseAppMgr's service-fragment map.
+//! BW-07-03-02 / BW-07-03-03: the BaseAppMgr's service-fragment map and the
+//! dispatch of a service call.
 //!
 //! A ServiceApp hosts *service entities*; each one registers its mailbox as a
 //! *fragment* of a named service (`Base::registerServiceFragment`, `base.cpp:983`
@@ -23,11 +24,32 @@
 //! `fragments_for_service()` and `choose_fragment()` agree. The reference picks
 //! a fragment with `rand() % count` (`services_map.cpp`); this model takes the
 //! random draw as an argument so the choice is deterministic and testable.
+//!
+//! A service call is `BigWorld.services[serviceName].method(args)`
+//! (`PyServicesMap`, `lib/server/py_services_map.hpp`; each BaseApp and
+//! CellApp keeps its own map filled from the broadcasts, `baseapp.cpp:1342`
+//! puts it on the `BigWorld` module). The subscript chooses a fragment and
+//! hands back its mailbox; calling a method on that mailbox is an ordinary
+//! `MailboxMethodCall` to the fragment's entity
+//! (`EntityCreator::deliver_mailbox_call`). Every instance of a service runs
+//! the same type description, so the same call behaves the same whichever
+//! fragment is chosen — only the target entity differs.
 
-use crate::entity_creator::EntityMailBoxRef;
+use crate::entity_creator::{EntityMailBoxRef, PropValue};
+use crate::mailbox_call::MailboxMethodCall;
 
 /// A fragment's owner address (a `Mercury::Address`-shaped `(ip, port)` pair).
 pub type FragmentAddr = crate::baseappmgr::Addr;
+
+/// A dispatched service call (`BigWorld.services[name].method(...)`): the
+/// chosen fragment and the mailbox method call to deliver to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServiceDispatch {
+    /// The fragment the subscript picked (`chooseFragment`).
+    pub target: EntityMailBoxRef,
+    /// The method call to deliver to `target`.
+    pub call: MailboxMethodCall,
+}
 
 /// The BaseAppMgr's service-fragment map: a service name to the fragments of
 /// that service's entities, in insertion order.
@@ -121,6 +143,33 @@ impl ServicesMap {
             return None;
         }
         Some(fragments[draw % fragments.len()])
+    }
+
+    /// Dispatch a service call (`BigWorld.services[serviceName]` subscript,
+    /// `py_services_map.cpp:31`, then `PyEntityMailBox::callMethod`,
+    /// `mailbox_base.cpp:149`): choose a fragment by `rand() % count` and
+    /// build the mailbox method call to deliver to it. The call carries the
+    /// fragment's id as the target and the method's arguments; services are
+    /// not exposed cell methods, so no source entity id is written. `draw` is
+    /// the RNG value. Returns `None` when the service has no fragments (a
+    /// `KeyError` on the subscript).
+    pub fn dispatch_service_call(
+        &self,
+        service_name: &str,
+        draw: usize,
+        method_index: u32,
+        args: Vec<PropValue>,
+    ) -> Option<ServiceDispatch> {
+        let target = self.choose_fragment(service_name, draw)?;
+        Some(ServiceDispatch {
+            target,
+            call: MailboxMethodCall {
+                target_id: target.id,
+                method_index,
+                source_entity_id: None,
+                args,
+            },
+        })
     }
 
     /// The total number of fragments across all services.
@@ -328,5 +377,195 @@ mod tests {
         assert_eq!(got.type_id, 42);
         // The fragment's address is the ServiceApp the entity runs on.
         assert_eq!(got.addr, addr(1));
+    }
+
+    // ------------------------------------------------------------------
+    // BW-07-03-03 分发服务调用
+    // ------------------------------------------------------------------
+
+    use crate::entity_creator::{
+        BaseCallback, EntityCreator, EntityType, IdPool, MethodComponent, MethodDesc,
+    };
+
+    /// A service entity type with one base method `process(int, string)`.
+    fn service_type() -> EntityType {
+        EntityType {
+            id: 1,
+            name: "Service".to_string(),
+            can_be_on_base: true,
+            is_service: true,
+            is_proxy: false,
+            can_be_on_cell: false,
+            properties: vec![],
+            methods: vec![MethodDesc::new(
+                "process",
+                3,
+                MethodComponent::Base,
+                false,
+                vec![PropValue::Int(0), PropValue::Str(String::new())],
+                vec![],
+            )],
+        }
+    }
+
+    /// A creator holding two instances of the service entity, started the way
+    /// a ServiceApp starts them (`ServiceStarter::run`).
+    fn creator_with_two_services() -> EntityCreator {
+        let mut pool = IdPool::new(5, 10, 50, 100);
+        pool.refill(&[1, 2]);
+        let mut creator = EntityCreator::new(pool);
+        creator.add_type(service_type());
+        for _ in 0..2 {
+            creator.create_service("Service").expect("create");
+        }
+        creator
+    }
+
+    /// The service fragment map of the two instances, each on its own
+    /// ServiceApp address.
+    fn service_map(creator: &EntityCreator) -> ServicesMap {
+        let mut ids: Vec<u32> = creator.bases().keys().copied().collect();
+        ids.sort();
+        let mut map = ServicesMap::new();
+        for (index, id) in ids.iter().enumerate() {
+            map.add_fragment(
+                "A",
+                EntityMailBoxRef::init(*id, addr(index as u16 + 1), MailBoxComponent::Service, 1),
+            );
+        }
+        map
+    }
+
+    /// A service call goes to the instance the draw selects, carrying the
+    /// fragment's id and the method's arguments.
+    #[test]
+    fn a_service_call_targets_the_chosen_fragment() {
+        let creator = &creator_with_two_services();
+        let map = service_map(creator);
+        let args = vec![PropValue::Int(1)];
+
+        // `rand() % 2`: draw 0 the first fragment, draw 1 the second.
+        let first = map
+            .dispatch_service_call("A", 0, 3, args.clone())
+            .expect("dispatch");
+        let second = map
+            .dispatch_service_call("A", 1, 3, args.clone())
+            .expect("dispatch");
+
+        let fragments = map.fragments_for_service("A");
+        assert_eq!(first.target, fragments[0]);
+        assert_eq!(second.target, fragments[1]);
+        assert_ne!(first.target.id, second.target.id);
+        // The call targets the fragment and carries the arguments.
+        assert_eq!(first.call.target_id, first.target.id);
+        assert_eq!(first.call.source_entity_id, None); // not a cell method
+        assert_eq!(first.call.args, args);
+        assert_eq!(first.call.method_index, 3);
+    }
+
+    /// Every instance of the service runs the same type description, so the
+    /// same call behaves the same whichever fragment is chosen: the delivered
+    /// method and arguments match, only the target entity differs.
+    #[test]
+    fn a_service_call_behaves_the_same_on_every_instance() {
+        let mut creator = creator_with_two_services();
+        let map = service_map(&creator);
+        let args = vec![PropValue::Int(7), PropValue::Str("ping".to_string())];
+
+        // The service has two instances (fragments) to compare.
+        let fragments = map.fragments_for_service("A");
+        assert_eq!(fragments.len(), 2);
+        let ids: Vec<_> = fragments.iter().map(|f| f.id).collect();
+
+        // The same call dispatched to each instance the draws select.
+        for draw in 0..2 {
+            let dispatch = map
+                .dispatch_service_call("A", draw, 3, args.clone())
+                .expect("dispatch");
+            assert_eq!(
+                dispatch.target,
+                fragments[draw % fragments.len()],
+                "draw {draw} lands on a real instance"
+            );
+            creator
+                .deliver_mailbox_call(&dispatch.target, dispatch.call)
+                .expect("deliver");
+        }
+
+        // Each instance received the same method with the same arguments (the
+        // creation callbacks are filtered out).
+        let callbacks: Vec<_> = creator
+            .bases()
+            .values()
+            .flat_map(|base| base.callbacks.iter())
+            .filter(|callback| matches!(callback, BaseCallback::MethodCalled { .. }))
+            .collect();
+        assert_eq!(callbacks.len(), 2, "both instances got one call");
+        for callback in &callbacks {
+            let BaseCallback::MethodCalled {
+                entity_id,
+                method_name,
+                method_index,
+                source_entity_id,
+                args: got,
+            } = callback
+            else {
+                panic!("unexpected callback: {callback:?}");
+            };
+            assert!(
+                ids.contains(entity_id),
+                "the call landed on a service instance"
+            );
+            assert_eq!(method_name, "process");
+            assert_eq!(*method_index, 3);
+            assert_eq!(*source_entity_id, None);
+            assert_eq!(got, &args, "the instances behave the same");
+        }
+        // Each draw landed on its own instance.
+        let mut got_ids: Vec<_> = creator
+            .bases()
+            .values()
+            .flat_map(|base| {
+                base.callbacks.iter().filter_map(|cb| match cb {
+                    BaseCallback::MethodCalled { entity_id, .. } => Some(*entity_id),
+                    _ => None,
+                })
+            })
+            .collect();
+        got_ids.sort();
+        let mut want_ids = ids.clone();
+        want_ids.sort();
+        assert_eq!(got_ids, want_ids, "one call per instance");
+    }
+
+    /// A service call on a missing service is a `KeyError`: no fragment to
+    /// dispatch to.
+    #[test]
+    fn a_service_call_on_a_missing_service_is_a_key_error() {
+        let map = ServicesMap::new();
+        assert!(
+            map.dispatch_service_call("Missing", 0, 3, vec![PropValue::Int(1)])
+                .is_none()
+        );
+        // An empty service counts as missing too.
+        assert!(map.dispatch_service_call("A", 0, 3, vec![]).is_none());
+    }
+
+    /// The same draw on the same map always dispatches to the same instance.
+    #[test]
+    fn the_same_draw_dispatches_to_the_same_instance() {
+        let creator = &creator_with_two_services();
+        let map = service_map(creator);
+        let args = vec![PropValue::Int(3)];
+        for draw in 0..4 {
+            let one = map
+                .dispatch_service_call("A", draw, 3, args.clone())
+                .expect("dispatch");
+            let two = map
+                .dispatch_service_call("A", draw, 3, args.clone())
+                .expect("dispatch");
+            assert_eq!(one.target, two.target);
+            assert_eq!(one.call, two.call);
+        }
     }
 }

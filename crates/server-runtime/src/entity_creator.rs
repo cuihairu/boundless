@@ -867,6 +867,33 @@ impl EntityCreator {
         self.create_base(type_id, &type_name, is_proxy, base_args, cell_args)
     }
 
+    /// `ServiceStarter::run` → `EntityCreator::createBase`
+    /// (`service_starter.cpp:222`): a ServiceApp starts one instance of each
+    /// service entity type declared in the entity defs. Unlike a login
+    /// `createBaseLocally`, a service entity is created directly, so the
+    /// `is_service` check that guards logins does not apply here.
+    pub fn create_service(&mut self, type_name: &str) -> Result<BaseEntity, CreateError> {
+        let ty = self
+            .types
+            .get(type_name)
+            .ok_or_else(|| CreateError::InvalidType {
+                name: type_name.to_string(),
+            })?;
+        if !ty.is_service {
+            return Err(CreateError::InvalidType {
+                name: type_name.to_string(),
+            });
+        }
+        let (type_id, type_name, is_proxy) = (ty.id, ty.name.clone(), ty.is_proxy);
+        self.create_base(
+            type_id,
+            &type_name,
+            is_proxy,
+            HashMap::new(),
+            HashMap::new(),
+        )
+    }
+
     /// `createBase`: allocate an id, build the entity and initialise it.
     fn create_base(
         &mut self,
@@ -1615,6 +1642,61 @@ mod tests {
 
         // The entity is registered.
         assert!(creator.bases().contains_key(&10));
+    }
+
+    /// A service entity type, started on a ServiceApp.
+    fn service_type() -> EntityType {
+        EntityType {
+            id: 9,
+            name: "MailboxService".to_string(),
+            can_be_on_base: true,
+            is_service: true,
+            is_proxy: false,
+            can_be_on_cell: false,
+            properties: vec![],
+            methods: vec![],
+        }
+    }
+
+    /// `ServiceStarter::run` starts a service entity directly, bypassing the
+    /// `is_service` guard a login `createBaseLocally` applies.
+    #[test]
+    fn create_service_starts_a_service_entity() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(service_type());
+
+        let base = creator.create_service("MailboxService").expect("create");
+        assert_eq!(base.type_name, "MailboxService");
+        assert_eq!(base.type_id, 9);
+        assert_eq!(base.id, 10);
+        assert!(creator.bases().contains_key(&10));
+
+        // A login creation still refuses the service type.
+        let mut creator = creator_with_one_id(11);
+        creator.add_type(service_type());
+        assert_eq!(
+            creator.create_base_locally("MailboxService", CreateArgs::new()),
+            Err(CreateError::InvalidType {
+                name: "MailboxService".to_string(),
+            })
+        );
+        // A non-service type cannot be started as a service.
+        let mut creator = creator_with_one_id(12);
+        creator.add_type(account_type());
+        assert_eq!(
+            creator.create_service("Account"),
+            Err(CreateError::InvalidType {
+                name: "Account".to_string(),
+            })
+        );
+        // An unknown type is invalid either way.
+        let mut creator = creator_with_one_id(13);
+        assert_eq!(
+            creator.create_service("Missing"),
+            Err(CreateError::InvalidType {
+                name: "Missing".to_string(),
+            })
+        );
     }
 
     /// The create-success flow: begin, the reply succeeds, then the cell
