@@ -686,3 +686,148 @@ mod object_counts_tests {
         assert_eq!(counts.cache_names(), vec!["Item", "Zone"]);
     }
 }
+
+/// BW-24-01-05: the Python object census.
+///
+/// The diagnostic registers every live Python object it observes, keyed by
+/// the object's address — the same per-address live map the reference keeps
+/// for its Python allocations (`memory_debug.cpp` `LiveAllocationMap`), so a
+/// known object's whole lifetime is one register followed by one release:
+/// the count rises when it is created, falls when it is dropped, and nothing
+/// in between disturbs it. Each observation is a reference, so an object is
+/// counted once per address and stays counted while any reference holds it.
+use std::sync::{Mutex, MutexGuard};
+
+/// The live Python object census: each observed address with how many
+/// references the diagnostic holds to it.
+#[derive(Debug, Default)]
+pub struct PythonObjectTracker {
+    live: Mutex<BTreeMap<usize, u64>>,
+}
+
+/// One observed reference to a Python object, held until the lease is
+/// dropped. Dropping it releases the reference, so the object's lifetime
+/// closes when its last reference does.
+#[derive(Debug)]
+pub struct PyObjectLease<'tracker> {
+    tracker: &'tracker PythonObjectTracker,
+    address: usize,
+}
+
+impl PythonObjectTracker {
+    /// A census with nothing live.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The census, recovering from a panicked holder like the other
+    /// process-wide registries.
+    fn live_census(&self) -> MutexGuard<'_, BTreeMap<usize, u64>> {
+        self.live
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Observe a reference to the live Python object at `address`. The object
+    /// is counted while any reference is held, so a second reference to the
+    /// same object still counts it once.
+    pub fn observe(&self, address: usize) -> PyObjectLease<'_> {
+        *self.live_census().entry(address).or_insert(0) += 1;
+        PyObjectLease {
+            tracker: self,
+            address,
+        }
+    }
+
+    /// The number of distinct live Python objects.
+    pub fn live_count(&self) -> usize {
+        self.live_census().len()
+    }
+
+    /// Whether an object at `address` is currently counted.
+    pub fn is_live(&self, address: usize) -> bool {
+        self.live_census().contains_key(&address)
+    }
+}
+
+impl Drop for PyObjectLease<'_> {
+    fn drop(&mut self) {
+        let mut live = self.tracker.live_census();
+        let release = {
+            let references = live
+                .get_mut(&self.address)
+                .expect("a lease releases a reference it observed");
+            *references -= 1;
+            *references == 0
+        };
+        if release {
+            live.remove(&self.address);
+        }
+    }
+}
+
+#[cfg(test)]
+mod python_object_tests {
+    use super::*;
+
+    #[test]
+    fn a_known_objects_lifetime_is_observable() {
+        let tracker = PythonObjectTracker::new();
+        // A known object appears at a fixed address; its lifetime is the
+        // span between register and release.
+        let address = 0x1234_5678;
+        assert!(!tracker.is_live(address));
+        assert_eq!(tracker.live_count(), 0);
+
+        {
+            let _known = tracker.observe(address);
+            assert!(tracker.is_live(address));
+            assert_eq!(tracker.live_count(), 1);
+        }
+
+        // The object dropped: the census saw the end of its lifetime.
+        assert!(!tracker.is_live(address));
+        assert_eq!(tracker.live_count(), 0);
+    }
+
+    #[test]
+    fn several_objects_count_individually() {
+        let tracker = PythonObjectTracker::new();
+        let first = tracker.observe(0x1000);
+        let second = tracker.observe(0x2000);
+        let third = tracker.observe(0x3000);
+        assert_eq!(tracker.live_count(), 3);
+
+        // One object goes away; the other two stay observable.
+        drop(second);
+        assert_eq!(tracker.live_count(), 2);
+        assert!(tracker.is_live(0x1000));
+        assert!(!tracker.is_live(0x2000));
+        assert!(tracker.is_live(0x3000));
+
+        // The address can be observed again as a new object's lifetime.
+        drop(first);
+        drop(third);
+        assert_eq!(tracker.live_count(), 0);
+        let again = tracker.observe(0x2000);
+        assert!(tracker.is_live(0x2000));
+        drop(again);
+        assert_eq!(tracker.live_count(), 0);
+    }
+
+    #[test]
+    fn observing_the_same_object_twice_counts_it_once() {
+        let tracker = PythonObjectTracker::new();
+        let address = 0xABCD;
+        let first = tracker.observe(address);
+        let second = tracker.observe(address);
+        assert_eq!(tracker.live_count(), 1, "the object is one object");
+
+        // One lease ending does not end the object the other holds.
+        drop(first);
+        assert!(tracker.is_live(address));
+        assert_eq!(tracker.live_count(), 1);
+        drop(second);
+        assert!(!tracker.is_live(address));
+    }
+}
