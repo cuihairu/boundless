@@ -1945,7 +1945,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 为 EntityDef 与资源引用提供诊断、补全、定义跳转、引用查找和悬浮信息。复用 EntityDef 解析和工作区索引，验证修改、重命名、多根工作区及协议请求取消。
 
-- [ ] **BW-27-01-01 实现 EntityDef 增量索引**。**验收** 文件编辑和删除可刷新。
+- [x] **BW-27-01-01 实现 EntityDef 增量索引**。**验收** 文件编辑和删除可刷新。证据：新增 `test-support/src/entitydef_index.rs`（+`pub mod entitydef_index`，diagnostic 后=字母序）——**`EntityDefIndex`**（**`refresh(path,content)->&IndexedFile`** 一键入/编辑刷新：实体名=文件 stem、属性按 `<Properties>` 块扫描（名+Flags+行跨度 [line,end_line)）、**指纹 FNV-1a 检测未变内容**；**`remove(path)->bool`** 删除即丢条目；`count()`、`entities()` 路径序、`file_of(entity)`、`file(path)`）+ **`IndexedFile`**/**`IndexedProperty`**。**增量核心**：扫描器按行深度跟踪 `<Properties>`（根块 depth1 子标签=声明；**FIXED_DICT 内嵌 `<Properties>` 是类型结构非声明**、其子 `</x>` 与内层 `</Properties>` 均不误关外层声明）。验收由 5 测实证：**`editing_a_file_refreshes_its_entries`（核心验收，编辑）**（Avatar.def 含 name/hp → 编辑后含 name/hp/mood、name.Flags OTHER_CLIENTS→BASE、count 仍 1=**编辑可刷新**）+ **`deleting_a_file_drops_its_entries`（删除）**（删 Avatar → entities=[Npc]、count 1、file(Avatar) None、重删无-op=**删除可刷新**）+ `entity_names_come_from_the_file_stems`（Npc.def/Avatar.def → entities 路径序 [Avatar,Npc]、file_of 命中）+ `spans_and_fingerprints_track_the_content`（name 行 [2,7)、hp [7,11)；同内容重送指纹不变=可跳过、编辑变）+ `a_nested_properties_block_is_type_structure_not_a_declaration`（FIXED_DICT 内嵌 Properties 只计 pos 一项）。foundation 149 全绿；test-support 346 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；fmt 净、clippy 净（0 发现于本席文件；`</x>` 误关声明→按开放名匹配、`if` 可折叠→let-链）。commit 3c0e603。
 - [ ] **BW-27-01-02 提供诊断**。**验收** 坏定义定位到正确范围。
 - [ ] **BW-27-01-03 提供实体属性补全**。**验收** 字段上下文只返回同一实体允许的候选。
 - [ ] **BW-27-01-04 提供定义悬浮信息**。**验收** 悬浮在属性类型上显示正确的 EntityDef 类型及文档。
