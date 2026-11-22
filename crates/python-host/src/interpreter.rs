@@ -573,6 +573,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4animation_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4morph_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4translation_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4distance_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -3297,6 +3298,108 @@ __probe = '; '.join(_f) or 'ok'
             assert_eq!(
                 text, "ok",
                 "math vector4translation behaviour mismatch: {text}"
+            );
+        });
+    }
+
+    /// `Vector4Distance` reads like the reference: the distance between the
+    /// two `MatrixProvider` origins on every component, live against the
+    /// matrices, `a` read before `b`, with the reference's refusals.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4distance_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+# The factory takes two MatrixProviders; Matrices are providers.
+ck(hasattr(Math, 'Vector4Distance'), 'Vector4Distance in module')
+a = Math.Matrix()
+b = Math.Matrix()
+d = Math.Vector4Distance(a, b)
+ck(type(d).__name__ == 'Vector4Distance', 'the distance type')
+ck('Vector4Provider' in [c.__name__ for c in type(d).__mro__],
+   'the Vector4Provider base chain')
+ck(d.a is a and d.b is b, 'the slots are the matrices')
+
+# Two identity origins are the zero distance.
+v = d.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the identity distance is zero')
+
+# The output is the distance between the two origins, on every component.
+a.setTranslate((3.0, 0.0, 0.0))
+v = d.value
+ck(v.x == 3.0 and v.y == 3.0 and v.z == 3.0 and v.w == 3.0,
+   'the distance is the origin separation')
+b.setTranslate((0.0, 4.0, 0.0))
+v = d.value
+ck(abs(v.x - 5.0) < 1e-6, 'the 3-4-5 triangle distance')
+a.setTranslate((1.0, 2.0, 2.0))
+b.setIdentity()
+v = d.value
+ck(abs(v.x - 3.0) < 1e-6, 'the sqrt(1+4+4) distance')
+
+# The distance is symmetric in the two slots.
+a.setTranslate((3.0, 0.0, 0.0))
+b.setIdentity()
+v1 = d.value
+d.a, d.b = b, a
+v2 = d.value
+ck(v1.x == v2.x, 'swapping the slots keeps the distance')
+
+# Replacing one slot rewires that side.
+d.b = b
+other = Math.Matrix()
+other.setTranslate((0.0, 0.0, 6.0))
+d.a = other
+ck(d.a is other, 'the replacement sticks')
+v = d.value
+ck(abs(v.x - 6.0) < 1e-6, 'the new slot drives the distance')
+
+# None empties a slot; the reference would then trap on `output`, so the
+# port treats the empty slot as the zero origin.
+d.b = None
+ck(d.b is None, 'None empties the b slot')
+v = d.value
+ck(abs(v.x - 6.0) < 1e-6, 'an empty slot is the zero origin')
+
+# Refusals: non-providers, a Vector4Provider that is no MatrixProvider,
+# deletions, and factory argument errors.
+ck(raises(TypeError, lambda: setattr(d, 'a', 5)), 'a wants a MatrixProvider')
+ck(raises(TypeError, lambda: setattr(d, 'b', Math.Vector4Product())),
+   'a Vector4Provider is no MatrixProvider')
+ck(raises(TypeError, lambda: d.__delattr__('a')), 'a cannot be deleted')
+ck(raises(TypeError, lambda: d.__delattr__('b')), 'b cannot be deleted')
+ck(raises(TypeError, lambda: Math.Vector4Distance()), 'the factory wants two arguments')
+ck(raises(TypeError, lambda: Math.Vector4Distance(a)), 'the factory wants two arguments')
+ck(raises(TypeError, lambda: Math.Vector4Distance(a, b, b)),
+   'the factory takes two arguments')
+ck(raises(TypeError, lambda: Math.Vector4Distance(a, 5)),
+   'the second argument wants a provider')
+ck(raises(TypeError, lambda: Math.Vector4Distance(5, b)),
+   'the first argument wants a provider')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4distance behaviour mismatch: {text}"
             );
         });
     }

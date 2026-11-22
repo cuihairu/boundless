@@ -3910,6 +3910,159 @@ mod v4translation {
     }
 }
 
+/// The `Math.Vector4Distance` provider
+/// (`script_math.cpp:3972-4062`): the distance between the two
+/// `MatrixProvider` origins, on every component.
+///
+/// As with the translation, the reference's `output` dereferences both
+/// origins unconditionally (`:4058-4059`), so an empty slot would trap; the
+/// port treats an empty or non-provider slot as the zero origin, the origin
+/// of the reference's `Matrix ma;` default. The two slots are read in the
+/// reference's order, `a` then `b`, before the difference.
+mod v4distance {
+    use super::*;
+
+    /// The instance body beyond the `PyObject` header: the two held
+    /// `MatrixProvider`s, the layout of the reference's `Vector4Distance`.
+    #[repr(C)]
+    struct DistanceBody {
+        header: capi::PyObject,
+        a: *mut capi::PyObject,
+        b: *mut capi::PyObject,
+    }
+
+    const A: usize = std::mem::offset_of!(DistanceBody, a);
+    const B: usize = std::mem::offset_of!(DistanceBody, b);
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<DistanceBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Distance` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4Distance::output` (`script_math.cpp:4055-4062`).
+    fn distance_output(object: *mut capi::PyObject) -> [f32; 4] {
+        let origin_a = matrix::provider_matrix(unsafe { matrix::slot_read::<A>(object) })
+            .map(|m| m.apply_to_origin())
+            .unwrap_or(foundation::math::Vector3::new(0.0, 0.0, 0.0));
+        let origin_b = matrix::provider_matrix(unsafe { matrix::slot_read::<B>(object) })
+            .map(|m| m.apply_to_origin())
+            .unwrap_or(foundation::math::Vector3::new(0.0, 0.0, 0.0));
+        let distance = (origin_a - origin_b).length();
+        [distance, distance, distance, distance]
+    }
+
+    /// A fresh `Math.Vector4Distance` between the two providers; the caller
+    /// owns the returned reference, and the fields take over `a` and `b`,
+    /// the reference's constructor member initialisers.
+    fn make(a: *mut capi::PyObject, b: *mut capi::PyObject) -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `DistanceBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<DistanceBody>()).a).write(a);
+            std::ptr::addr_of_mut!((*pointer.cast::<DistanceBody>()).b).write(b);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `PY_AUTO_FACTORY_DECLARE( Vector4Distance,
+    /// ARG(MatrixProviderPtr, ARG(MatrixProviderPtr, END) ) )` factory: a
+    /// fresh distance between the two `MatrixProvider`s, arg 1 converted
+    /// before arg 2 as the reference's `PYAUTO_WRITE` order goes.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 2) {
+            return type_error("Math.Vector4Distance() expects 2 arguments of type MatrixProvider");
+        }
+        let a = arg(args, 0);
+        if !matrix::provider_check(a) {
+            // The reference takes a `None` here and traps on the first
+            // `output`, so the port refuses it with the converter's own error.
+            return type_error("() argument 1 must be set to a MatrixProvider or None");
+        }
+        let b = arg(args, 1);
+        if !matrix::provider_check(b) {
+            return type_error("() argument 2 must be set to a MatrixProvider or None");
+        }
+        // The fields own the references they are given.
+        unsafe {
+            capi::inc_ref(a);
+            capi::inc_ref(b);
+        }
+        make(a, b)
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4Distance".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4Distance` and its
+    /// destruction entry: the two held `MatrixProvider`s, the reference's
+    /// `PY_RW_ATTRIBUTE_DECLARE` converter pairs.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Distance")
+            .base(v4provider::base_addr())
+            .attribute_with(
+                "a",
+                matrix::slot_get::<A>,
+                Some(matrix::slot_set::<A>),
+                c"a".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .attribute_with(
+                "b",
+                matrix::slot_get::<B>,
+                Some(matrix::slot_set::<B>),
+                c"b".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    provider_dealloc!(dealloc, DistanceBody, a, b);
+
+    /// `TempPyVectorInit` for the distance: the type object, its dispatch
+    /// entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), distance_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4Distance".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -3926,4 +4079,5 @@ pub fn register() {
     let _ = v4animation::register();
     let _ = v4morph::register();
     let _ = v4translation::register();
+    let _ = v4distance::register();
 }
