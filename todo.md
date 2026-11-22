@@ -121,7 +121,7 @@
 
 建立二进制帧、Python 回调序列、资源产物、实体快照及数据库行的基准样本。支持原版全栈、新版全栈和替换单个组件三种模式。按兼容边界报告字段差异、超时及回调顺序差异。
 
-- [ ] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
+- [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。 证据：`crates/test-support/src/protocol_fixtures.rs` + `src/bin/scan-protocol-fixtures.rs` + `cases/protocol_fixtures.txt`（catalog：reference-commit 快照、4 接口=BaseAppIntInterface(internal,55)/BaseAppExtInterface(external,14)/CellAppInterface(internal,65)/BaseAppMgrInterface(internal,28)，共 162 条消息，每条记录 id=声明序号（`InterfaceMinder::add` 的 `id=elements_.size()`）、name、kind（声明宏）、length-style(fixed/variable)、length-param(0/2/4/sizeof(NAMEArgs)/sizeof(EntityID)+...)、frame（最小帧十六进制：fixed=[id]，variable=[id][长度字段])。ID 与帧从参考接口头按声明序现场重导，宏展开按 common_interface_macros.hpp/interface_macros.hpp 分类（含 `#if/#else` 取首分支、`#define` 连续体跳过）。消息序列已逐接口与头文件核对（baseapp_int 首消息 createBaseWithCellData id0）。blocker.protocol-capture 命名：无线上抓包（集群无法全启 BW-00-02-03、loginapp.pubkey 缺失 BW-00-02-04），记录帧为原版自身规范编码。drift 测试 `rescanning_reference_reproduces_catalog` 锁死扫描与提交一致（reference-commit 除外）。CLI 测试 `tests/protocol_fixtures_cli.rs`（写入 catalog/拒绝非 checkout）。185 测试全绿；fmt 净；新增文件 clippy 净（resources 预存债不在本席）。commit aa36536。
 - [ ] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
 - [ ] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
 - [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
