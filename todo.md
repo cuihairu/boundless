@@ -464,7 +464,14 @@
   - 证据：**参考对照**——`shouldDelete = !hasUnackedPackets() || hasRemoteFailed()`，超时须 `now-lastReceivedTime()>AGE_LIMIT` 且 `now-lastReliableSendTime()>AGE_LIMIT`；`RecentlyDeadChannels::add` 取消的是**首项**句柄而非 addr 自身（忠实移植该怪癖）；`Address` 作 map 键的序为 `(ip, port)` 不含 salt（basictypes.ipp:73）。
   - 接缝：发送窗口/ACK 队列/on-channel bundle（`has_unacked_packets`/`has_unsent_data`）为 BW-02-03-03/04；`RecentlyDeadChannels` 本移植于构造期建（参考延至 `attach`，BW-02-01-05）；`find_channel` 先查可设 ChannelFinder 缝再落注册表。
   - 测试与覆盖：mercury **209 通过 / 0 失败**（新增 15 条：channel_map 3、condemned_channels 4、recently_dead_channels 2、udp_channel 6，覆盖重复注册拒绝、get 收编不重复建、回收即刻/排空后、索引换旧、死址匿名清理、外部注销记死 60s）；`cargo fmt -p mercury --check` 0 差异、`cargo clippy -p mercury --all-targets` 零告警；gate `ci/check-rust.sh all --packages mercury` 四 lane 全 PASS 以 `[ci] no failed lane` 收尾。
-- [ ] **BW-02-03-03 实现 ACK 与序号窗口**。**验收** 序号回绕夹具通过。
+- [x] **BW-02-03-03 实现 ACK 与序号窗口**（5a55136）。**验收** 序号回绕夹具通过。
+  - 证据：**窗口面**——`SendWindow`（udp_channel.rs）自 circular_array.hpp 移植（二次幂掩码槽、`double_size` 带旧槽跨回绕搬移、`clear`/`count_used`），`UnackedPacket` 自 unacked_packet.hpp 携带 `pPacket_`/`lastSentAtOutSeq_`/`lastSentTime_`/`wasResent_`。
+  - 证据：**序号面**——`use_next_sequence_id`/`is_in_sent_window`/`send_window_usage`/`num_outstanding_packets`/`round_trip_time`/`highest_ack` 按 udp_channel.ipp:29 + udp_channel.hpp:237 + udp_channel.cpp:1705；`add_resend_timer` 按 udp_channel.cpp:830（满窗回流 `send_unacked`+`check_overflow_errors`，返回 false 即溢出）。
+  - 证据：**ACK 面**——`handle_ack`（含 RTT 均值、新 oldest 扫描、`small_out_seq_at` 排水循环、`highest_ack` 提升）按 udp_channel.cpp:977；`handle_cumulative_ack`（未来 ACK 拒收、`seqLessThan` 步进）按 :912；`validate_unreliable_seq_num` 按 :1778；`add_ack` 按 :1271。
+  - 证据：**封包面**——`write_flags`/`write_footer`（`FLAG_ON_CHANNEL`、indexed id/version、`FLAG_HAS_CUMULATIVE_ACK`+`inSeqAt_`、`FLAG_HAS_ACKS`+AckCount+seq 表、内部首可靠包 `FLAG_CREATE_CHANNEL`）按 udp_channel.cpp:1526/1593；`clear_state` 按 :250。
+  - 证据：**频道分支接入**——`udp_bundle.rs::prepare_packets` 增加 `Option<&UDPChannel>` 参，按 udp_bundle.cpp:398-615 落 `pChannel->writeFlags/writeFooter`、外部频道强制序号、可靠包走 `useNextSequenceID`+`addResendTimer`、溢出返回首包；off-channel 四调用点传 `None`。
+  - 证据：**测试与覆盖**——8 个新测（跨回绕窗口/单包 ACK 逐释放/溢出拒收/窗口尺寸按型/ACK 脚回读/不可靠序号校验/clear_state/窗口加倍），mercury 217 通过 / 0 失败；fmt clean；clippy 零警告；门禁 `[ci] no failed lane`。
+  - 接缝：重传扫描（`checkResendTimers`）、piggyback 与 `reliableOrders_`（BW-02-03-04）；接收窗/乱序（BW-02-03-05）；分片链（BW-02-03-06）；`send_unacked` 的物理 `sendPacket` 与 `numReliablePacketsSent_` 推进（BW-02-03-07）。
 - [ ] **BW-02-03-04 实现重传计时**。**验收** 单次可控丢包后仅交付一次。
 - [ ] **BW-02-03-05 实现乱序与重复过滤**。**验收** 按原版顺序派发。
 - [ ] **BW-02-03-06 实现分片重组**。**验收** 乱序片段可恢复且超时可回收。
