@@ -19,6 +19,7 @@ pub mod cpu_sampler;
 pub mod diagnostic;
 pub mod flamegraph;
 pub mod full_stack;
+pub mod growth;
 pub mod harness;
 pub mod layering;
 pub mod memory_snapshot;
