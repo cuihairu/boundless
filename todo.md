@@ -141,7 +141,7 @@
 
 - [x] **BW-00-05-01 建立覆盖台账字段**。**验收** 每行含原版目标、启用条件、任务号、夹具及状态。→ 证据 `docs/review/bw00-05-01-coverage-ledger.md`（台账 `reference/bw00_05_01_coverage_ledger.json`：Make 79 行=已覆盖 35/部分 9/缺口 35，CMake 11 组全缺口；`coverage_ledger_scan.py` 映射表 + `coverage_ledger_doc.py`），commit 853fc61。
 - [x] **BW-00-05-02 映射引擎库和服务端目标**。**验收** 构建清册中的每项都有索引。→ 证据 `docs/review/bw00-05-02-engine-server-index.md`（`lib`+`server` 72 行：已映射 44、缺口带来源 28、未索引 0；`coverage_index_doc.py`），commit b2de662。
-- [ ] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。
+- [x] **BW-00-05-03 映射客户端和工具目标**。**验收** 编辑器、导出器及离线工具均有索引。→ 证据 `docs/review/bw00-05-03-client-tools-index.md`（CMake 组逐产品索引 45 行：客户端 1、编辑器 5、导出器 10、离线工具 5、资产管线/转换器 16；Windows 面缺口 43、已映射 2；`client_tools_index.py`），commit 3ee70ca。
 - [ ] **BW-00-05-04 映射公共代码、示例与 FantasyDemo**。**验收** 脚本及资源入口可追溯。
 - [ ] **BW-00-05-05 核查发行物、SDK 和缺失资源**。**验收** 缺口有来源与阻塞原因。
 - [ ] **BW-00-05-06 复核台账完整性**。**验收** 每个启用目标有运行证据或显式缺口。
