@@ -139,13 +139,37 @@ impl InterfaceMinder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::Address;
     use crate::interface_element::{
         CALLBACK_LENGTH_MESSAGE, FIXED_LENGTH_MESSAGE, VARIABLE_LENGTH_MESSAGE,
     };
+    use crate::unpacked_message_header::UnpackedMessageHeader;
+    use foundation::stream::BinaryStream;
 
     struct NullHandler;
 
-    impl InputMessageHandler for NullHandler {}
+    impl InputMessageHandler for NullHandler {
+        fn handle_message(
+            &self,
+            _source: &Address,
+            _header: &mut UnpackedMessageHeader,
+            _data: &mut BinaryStream,
+        ) {
+        }
+    }
+
+    /// The null handler's delivery half is a no-op: registration only
+    /// needs the handler to exist, so both halves are exercised.
+    #[test]
+    fn the_null_handler_delivers_nothing() {
+        use crate::endpoint::NONE;
+
+        let handler = NullHandler;
+        let source = NONE;
+        let mut header = UnpackedMessageHeader::default();
+        let mut data = BinaryStream::new();
+        InputMessageHandler::handle_message(&handler, &source, &mut header, &mut data);
+    }
 
     fn login_minder() -> InterfaceMinder {
         let minder = InterfaceMinder::new("LoginInterface");

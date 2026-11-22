@@ -19,7 +19,7 @@ use crate::event_dispatcher::EventDispatcher;
 use crate::interface_element::InterfaceElement;
 use crate::interface_element::InterfaceElementWithStats;
 use crate::interfaces::InputMessageHandler;
-use crate::misc::MessageID;
+use crate::misc::{MessageID, Reason};
 
 /// The per-second statistics timer interval (`addTimer( 1000000, ... )`).
 const STATS_INTERVAL_MICROS: i64 = 1_000_000;
@@ -96,6 +96,45 @@ impl InterfaceTable {
         self.table.borrow()[msg_id as usize].element().handler()
     }
 
+    /// The `UDPBundleProcessor::dispatchMessages` resolution arm
+    /// (`udp_bundle_processor.cpp:71-98`): look up the element registered
+    /// for `msg_id` and validate that it can be delivered.
+    ///
+    /// Returns `Err(REASON_NONEXISTENT_ENTRY)` when no handler serves the
+    /// id -- the reference discards the bundle in that case -- and
+    /// `Err(REASON_CORRUPTED_PACKET)` when the element cannot size itself
+    /// for this handler (a callback reporting `INVALID_STREAM_SIZE`).
+    /// Otherwise `Ok` carries the element, with any callback length folded
+    /// into its style, and the handler to call.
+    ///
+    /// The caller unpacks the message with the returned element's header
+    /// and then delivers it to the returned handler, in the reference's
+    /// order.
+    pub fn resolve_message(
+        &self,
+        msg_id: MessageID,
+    ) -> Result<(InterfaceElement, Rc<dyn InputMessageHandler>), Reason> {
+        let element = self.element(msg_id);
+        let Some(handler) = element.handler() else {
+            eprintln!(
+                "InterfaceTable::resolveMessage: Discarding bundle after hitting unhandled message ID {msg_id}"
+            );
+            return Err(Reason::NonexistentEntry);
+        };
+
+        // The reference works on a copy (`InterfaceElement updatedIE = ie;`)
+        // so a callback sizing does not stick to the registered element.
+        let mut updated = element;
+        if !updated.update_length_details(&*handler) {
+            eprintln!(
+                "InterfaceTable::resolveMessage: Discarding bundle after failure to update length details for message ID {msg_id}"
+            );
+            return Err(Reason::CorruptedPacket);
+        }
+
+        Ok((updated, handler))
+    }
+
     /// `handleTimeout`: tick every entry's statistics once.
     pub fn handle_stats_timeout(&self) {
         for entry in self.table.borrow_mut().iter_mut() {
@@ -159,12 +198,57 @@ impl Drop for InterfaceTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface_element::{FIXED_LENGTH_MESSAGE, VARIABLE_LENGTH_MESSAGE};
+    use std::cell::Cell;
+
+    use crate::endpoint::{Address, NONE};
+    use crate::interface_element::{
+        CALLBACK_LENGTH_MESSAGE, FIXED_LENGTH_MESSAGE, INVALID_STREAM_SIZE,
+        REPLY_MESSAGE_IDENTIFIER, VARIABLE_LENGTH_MESSAGE,
+    };
     use crate::interface_minder::InterfaceMinder;
+    use crate::unpacked_message_header::UnpackedMessageHeader;
+    use foundation::stream::BinaryStream;
 
-    struct CountingHandler;
+    struct CountingHandler {
+        delivered: Rc<Cell<usize>>,
+    }
 
-    impl InputMessageHandler for CountingHandler {}
+    impl CountingHandler {
+        fn new() -> Rc<Self> {
+            Rc::new(Self {
+                delivered: Rc::new(Cell::new(0)),
+            })
+        }
+    }
+
+    impl InputMessageHandler for CountingHandler {
+        fn handle_message(
+            &self,
+            _source: &Address,
+            _header: &mut UnpackedMessageHeader,
+            _data: &mut BinaryStream,
+        ) {
+            self.delivered.set(self.delivered.get() + 1);
+        }
+    }
+
+    /// A callback handler answering a fixed stream size, or
+    /// `INVALID_STREAM_SIZE` to reject the bundle.
+    struct SizingHandler(i32);
+
+    impl InputMessageHandler for SizingHandler {
+        fn handle_message(
+            &self,
+            _source: &Address,
+            _header: &mut UnpackedMessageHeader,
+            _data: &mut BinaryStream,
+        ) {
+        }
+
+        fn get_message_stream_size(&self, _msg_id: MessageID) -> i32 {
+            self.0
+        }
+    }
 
     /// The table is the socket's registry: serving puts the element at its
     /// message id with the handler the caller chose, and `msgName` answers
@@ -178,7 +262,7 @@ mod tests {
         assert_eq!(table.msg_name(0), "");
 
         let element = InterfaceElement::new("shutdown", 3, FIXED_LENGTH_MESSAGE, 0, None);
-        table.serve(&element, Some(Rc::new(CountingHandler)));
+        table.serve(&element, Some(CountingHandler::new()));
 
         assert_eq!(table.msg_name(3), "shutdown");
         assert_eq!(table.element(3).length_style(), FIXED_LENGTH_MESSAGE);
@@ -291,5 +375,87 @@ mod tests {
         table.set_id(3);
         assert_eq!(table.name(), "CellAppInterface");
         assert_eq!(table.id(), 3);
+    }
+
+    /// An unserved message id resolves to `REASON_NONEXISTENT_ENTRY`: the
+    /// reference's dispatch loop discards the bundle after hitting an
+    /// unhandled message id (`udp_bundle_processor.cpp:72-85`).
+    #[test]
+    fn an_unserved_message_id_is_a_nonexistent_entry() {
+        let table = InterfaceTable::new();
+
+        assert!(matches!(
+            table.resolve_message(9),
+            Err(Reason::NonexistentEntry)
+        ));
+        // The reserved reply id starts unserved too.
+        assert!(matches!(
+            table.resolve_message(REPLY_MESSAGE_IDENTIFIER),
+            Err(Reason::NonexistentEntry)
+        ));
+    }
+
+    /// A callback handler answering `INVALID_STREAM_SIZE` resolves to
+    /// `REASON_CORRUPTED_PACKET`: the reference's loop fails
+    /// `updateLengthDetails` and discards the bundle
+    /// (`udp_bundle_processor.cpp:89-98`).
+    #[test]
+    fn a_callback_that_rejects_the_bundle_is_a_corrupted_packet() {
+        let table = InterfaceTable::new();
+        let element = InterfaceElement::new("callback", 7, CALLBACK_LENGTH_MESSAGE, 0, None);
+        table.serve(&element, Some(Rc::new(SizingHandler(INVALID_STREAM_SIZE))));
+
+        assert!(matches!(
+            table.resolve_message(7),
+            Err(Reason::CorruptedPacket)
+        ));
+    }
+
+    /// A served message resolves to its handler with the callback length
+    /// folded in, and delivering to the returned handler is the caller's
+    /// half of the reference's dispatch loop.
+    #[test]
+    fn a_served_message_resolves_and_delivers() {
+        let table = InterfaceTable::new();
+        let source = NONE;
+
+        // A callback handler answering 12 folds the element into a fixed
+        // 12-byte message, exactly as `updateLengthDetails` does in the
+        // reference loop's copy.
+        let element = InterfaceElement::new("callback", 7, CALLBACK_LENGTH_MESSAGE, 0, None);
+        table.serve(&element, Some(Rc::new(SizingHandler(12))));
+
+        let (updated, handler) = table.resolve_message(7).expect("served id resolves");
+        assert_eq!(updated.length_style(), FIXED_LENGTH_MESSAGE);
+        assert_eq!(updated.length_param(), 12);
+
+        // The registered element keeps its callback style: the fold only
+        // feeds this delivery, matching `InterfaceElement updatedIE = ie;`.
+        assert_eq!(table.element(7).length_style(), CALLBACK_LENGTH_MESSAGE);
+
+        let mut header = UnpackedMessageHeader {
+            identifier: 7,
+            length: 12,
+            ..Default::default()
+        };
+        let mut data = BinaryStream::new();
+        data.write_bytes(&[0; 12]);
+        handler.handle_message(&source, &mut header, &mut data);
+
+        // A fixed message resolves unchanged and delivers to its handler.
+        let counter = CountingHandler::new();
+        let element = InterfaceElement::new("shutdown", 3, FIXED_LENGTH_MESSAGE, 0, None);
+        table.serve(&element, Some(counter.clone()));
+        let (updated, handler) = table.resolve_message(3).expect("served id resolves");
+        assert_eq!(updated.length_style(), FIXED_LENGTH_MESSAGE);
+
+        let mut header = UnpackedMessageHeader {
+            identifier: 3,
+            length: 0,
+            ..Default::default()
+        };
+        let mut data = BinaryStream::new();
+        handler.handle_message(&source, &mut header, &mut data);
+        assert_eq!(counter.delivered.get(), 1);
     }
 }

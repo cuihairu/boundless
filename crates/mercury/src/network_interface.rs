@@ -1,15 +1,16 @@
 //! `lib/network/network_interface.cpp`: the UDP interface an app listens
 //! on. This item carries the listening-socket lifecycle
 //! (`recreateListeningSocket`/`closeSocket`), the interface's registered
-//! poller, and the routing seams the receiver draws on.
+//! poller, the child dispatcher, the interface table it serves with, and
+//! the routing seams the receiver draws on.
 //!
-//! Scope of BW-02-01-03: the interface owns an `EventPoller` as its
-//! dispatcher stand-in -- the full `EventDispatcher` (timers, tasks,
-//! attached children) is BW-02-01-05; `registerWithMachined` has no
-//! machined to talk to; the `MF_SERVER` buffer sizing is BW-02-01-04; the
-//! channel map, dead-channel bookkeeping and rate limiter arrive with
-//! BW-02-03 / BW-02-05-04; the interface table (message dispatch) is
-//! BW-02-02.
+//! The interface owns its child `EventDispatcher`, its `InterfaceTable`,
+//! and the `RequestManager` served as the reply element's handler
+//! (`network_interface.cpp:124-147`), and can finalise that manager on
+//! shutdown. Still not owned here: `registerWithMachined` has no machined
+//! to talk to; the `MF_SERVER` buffer sizing is BW-02-01-04; the channel
+//! map, dead-channel bookkeeping and rate limiter arrive with
+//! BW-02-03 / BW-02-05-04.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -17,10 +18,15 @@ use std::rc::Rc;
 use platform::socket;
 
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
+use crate::event_dispatcher::EventDispatcher;
+use crate::interface_element::InterfaceElement;
+use crate::interface_table::InterfaceTable;
+use crate::interfaces::InputMessageHandler;
 use crate::misc::Reason;
 use crate::packet::Packet;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::poller::EventPoller;
+use crate::request_manager::RequestManager;
 
 /// `Mercury::NetworkInterfaceType` (network_interface.hpp).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,13 +78,24 @@ pub struct NetworkInterface {
     reporter: RefCell<Option<Rc<dyn ErrorReporter>>>,
     /// `findChannel`, settable until the channel map lands (BW-02-03).
     channel_finder: RefCell<Option<Rc<ChannelFinder>>>,
+    /// `pRequestManager_`: correlates replies to the requests that asked
+    /// for them, and serves them as the handler for the reply message.
+    /// Declared before the dispatcher so its drop cancels the request
+    /// timers before the dispatcher's queue is inspected.
+    request_manager: RefCell<Option<Rc<RequestManager>>>,
+    /// `pInterfaceTable_`: the message-id registry this socket serves.
+    interface_table: Rc<InterfaceTable>,
+    /// `pDispatcher_`: the child dispatcher the request timeouts and the
+    /// reply element's handler are registered on.
+    dispatcher: Rc<EventDispatcher>,
 }
 
 impl NetworkInterface {
     /// The reference constructor (network_interface.cpp:95): make the
-    /// socket and receiver, then `recreateListeningSocket`. Attaching a
-    /// main dispatcher and serving the reply interface element belong to
-    /// their owners (BW-02-01-05 / BW-02-02).
+    /// dispatcher, interface table and request manager, the socket and
+    /// receiver, then `recreateListeningSocket` and serve the request
+    /// manager as the reply element's handler. Attaching a main
+    /// dispatcher belongs to BW-02-01-05's attach surface.
     ///
     /// Returns the interface and its receiver: the receiver is the handler
     /// registered on the interface's poller.
@@ -87,6 +104,15 @@ impl NetworkInterface {
         listening_port: u16,
         listening_interface: &str,
     ) -> (Rc<NetworkInterface>, Rc<PacketReceiver>) {
+        // The reference builds the child dispatcher, the interface table
+        // on it, and the request manager for the reply element
+        // (network_interface.cpp:124-146).
+        let dispatcher = Rc::new(EventDispatcher::new());
+        let interface_table = Rc::new(InterfaceTable::new());
+        let request_manager = Rc::new(RequestManager::new(
+            interface_type == InterfaceType::External,
+            Rc::clone(&dispatcher),
+        ));
         let interface = NetworkInterface {
             udp_socket: RefCell::new(Endpoint::new()),
             address: RefCell::new(NONE),
@@ -96,12 +122,56 @@ impl NetworkInterface {
             sink: RefCell::new(None),
             reporter: RefCell::new(None),
             channel_finder: RefCell::new(None),
+            request_manager: RefCell::new(Some(Rc::clone(&request_manager))),
+            interface_table,
+            dispatcher,
         };
         let receiver = PacketReceiver::new();
         interface.recreate_listening_socket(&receiver, listening_port, listening_interface);
+
+        // And put our request manager in as the reply handler
+        // (network_interface.cpp:147).
+        interface.interface_table.serve(
+            &InterfaceElement::reply(),
+            Some(Rc::clone(&request_manager) as Rc<dyn InputMessageHandler>),
+        );
+
         let shared = Rc::new(interface);
         receiver.attach_interface(&shared);
         (shared, receiver)
+    }
+
+    /// `interfaceTable()`.
+    pub fn interface_table(&self) -> &Rc<InterfaceTable> {
+        &self.interface_table
+    }
+
+    /// `requestManager()`: the request manager this interface serves
+    /// replies with. `None` once [`finalise_request_manager`](Self::finalise_request_manager)
+    /// has torn it down.
+    pub fn request_manager(&self) -> Option<Rc<RequestManager>> {
+        self.request_manager.borrow().clone()
+    }
+
+    /// `dispatcher()`.
+    pub fn dispatcher(&self) -> Rc<EventDispatcher> {
+        Rc::clone(&self.dispatcher)
+    }
+
+    /// `finaliseRequestManager` (network_interface.cpp:189): deregister the
+    /// reply element and destroy the request manager, so no
+    /// `ReplyMessageHandler` is cancelled while the server is in a bad
+    /// state (for example after the App has been destroyed). Dropping the
+    /// manager fails whatever is still pending.
+    pub fn finalise_request_manager(&self) {
+        self.interface_table.serve(&InterfaceElement::reply(), None);
+        *self.request_manager.borrow_mut() = None;
+    }
+
+    /// `prepareForShutdown` (network_interface.cpp:178): the reference also
+    /// prepares its main dispatcher, which the port does not hold yet.
+    pub fn prepare_for_shutdown(&self) {
+        self.finalise_request_manager();
     }
 
     /// `recreateListeningSocket` (network_interface.cpp:339): discard the
@@ -422,6 +492,42 @@ mod tests {
         interface_type: InterfaceType,
     ) -> (Rc<NetworkInterface>, Rc<PacketReceiver>) {
         NetworkInterface::new(interface_type, 0, "127.0.0.1")
+    }
+
+    /// BW-02-02-05: the constructor serves the request manager as the
+    /// reply element's handler (`network_interface.cpp:147`), and
+    /// `finaliseRequestManager` deregisters it and drops the manager.
+    #[test]
+    fn the_request_manager_is_served_as_the_reply_handler() {
+        use crate::interface_element::REPLY_MESSAGE_IDENTIFIER;
+
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+
+        assert!(
+            interface
+                .interface_table()
+                .handler(REPLY_MESSAGE_IDENTIFIER)
+                .is_some(),
+            "the reply element is served"
+        );
+        assert!(interface.request_manager().is_some());
+        // The child dispatcher is the one the request manager armed itself on.
+        assert_eq!(interface.dispatcher().num_timer_calls(), 0);
+
+        // The reference prepares its manager through `prepareForShutdown`.
+        interface.prepare_for_shutdown();
+
+        assert!(
+            interface
+                .interface_table()
+                .handler(REPLY_MESSAGE_IDENTIFIER)
+                .is_none(),
+            "finalising deregisters the reply handler"
+        );
+        assert!(interface.request_manager().is_none());
+
+        // A second call has nothing left to tear down, and is a no-op.
+        interface.finalise_request_manager();
     }
 
     /// The four arms of the spec resolution

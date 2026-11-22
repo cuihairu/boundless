@@ -416,6 +416,9 @@ const DEFAULT_WEIGHTING: f32 = 0.95;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::endpoint::{Address, NONE};
+    use crate::unpacked_message_header::UnpackedMessageHeader;
+    use foundation::stream::BinaryStream;
 
     /// A handler that reports a fixed or a variable stream size.
     struct SizingHandler {
@@ -423,6 +426,14 @@ mod tests {
     }
 
     impl InputMessageHandler for SizingHandler {
+        fn handle_message(
+            &self,
+            _source: &Address,
+            _header: &mut UnpackedMessageHeader,
+            _data: &mut BinaryStream,
+        ) {
+        }
+
         fn get_message_stream_size(&self, _msg_id: MessageID) -> i32 {
             self.stream_size
         }
@@ -478,6 +489,17 @@ mod tests {
         assert!(element.update_length_details(&SizingHandler { stream_size: 9 }));
         assert_eq!(element.length_style(), FIXED_LENGTH_MESSAGE, "untouched");
         assert_eq!(element.length_param(), 0);
+    }
+
+    /// The sizing stub's delivery half is a no-op: the element only needs
+    /// the sizing half, so both halves of the handler are exercised.
+    #[test]
+    fn a_sizing_handler_also_delivers() {
+        let handler = SizingHandler { stream_size: 9 };
+        let source = NONE;
+        let mut header = UnpackedMessageHeader::default();
+        let mut data = BinaryStream::new();
+        InputMessageHandler::handle_message(&handler, &source, &mut header, &mut data);
     }
 
     /// A callback answer sizes the message: negative means variable, with

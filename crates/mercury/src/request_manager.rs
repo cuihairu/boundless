@@ -30,7 +30,7 @@ use foundation::time_queue::{TimerHandle, TimerHandlerFn};
 use crate::endpoint::Address;
 use crate::event_dispatcher::EventDispatcher;
 use crate::interface_element::REPLY_MESSAGE_IDENTIFIER;
-use crate::interfaces::ReplyMessageHandler;
+use crate::interfaces::{InputMessageHandler, ReplyMessageHandler};
 use crate::misc::{REPLY_ID_MAX, Reason, ReplyID};
 use crate::network_interface::ChannelRef;
 use crate::nub_exception::NubException;
@@ -346,6 +346,26 @@ impl RequestManager {
     }
 }
 
+/// The request manager is the handler for the internal
+/// `REPLY_MESSAGE_IDENTIFIER` message: an interface serves it as the reply
+/// element (`network_interface.cpp`: `interfaceTable().serve(
+/// InterfaceElement::REPLY, pRequestManager_ )`), and the interface table
+/// delivers every reply message to [`handle_message`](Self::handle_message).
+///
+/// The sizing half is never consulted: the reply element is
+/// `VARIABLE_LENGTH_MESSAGE` with a 4-byte length header, so
+/// `updateLengthDetails` passes a non-callback element straight through.
+impl InputMessageHandler for RequestManager {
+    fn handle_message(
+        &self,
+        source: &Address,
+        header: &mut UnpackedMessageHeader,
+        data: &mut BinaryStream,
+    ) {
+        RequestManager::handle_message(self, source, header, data);
+    }
+}
+
 impl Drop for RequestManager {
     fn drop(&mut self) {
         if !self.request_map.borrow().is_empty() {
@@ -367,6 +387,8 @@ mod tests {
     use std::cell::Cell;
 
     use crate::endpoint::Address;
+    use crate::interface_element::InterfaceElement;
+    use crate::interface_table::InterfaceTable;
 
     /// A pinned clock: once-off request timeouts only fire when a test
     /// advances it and calls `process_timers`.
@@ -507,6 +529,46 @@ mod tests {
             microseconds: 1_000_000,
             p_reply_id: slot,
         }
+    }
+
+    /// The acceptance test for BW-02-02-05: the request manager is served
+    /// on the interface table as the reply element's handler, and the
+    /// table's dispatch arm validates and delivers a reply to it -- the
+    /// registration the reference wires in the `NetworkInterface`
+    /// constructor (`interfaceTable().serve( InterfaceElement::REPLY,
+    /// pRequestManager_ )`).
+    #[test]
+    fn serving_the_request_manager_on_the_table_delivers_replies() {
+        let (manager, _clock) = manager_at(false, 0);
+        let table = InterfaceTable::new();
+
+        table.serve(
+            &InterfaceElement::reply(),
+            Some(Rc::clone(&manager) as Rc<dyn InputMessageHandler>),
+        );
+
+        // The reply element is served, so its id resolves to a handler.
+        let (_, input_handler) = table
+            .resolve_message(REPLY_MESSAGE_IDENTIFIER)
+            .expect("reply served");
+
+        let handler = RecordingHandler::new();
+        let mut slot = [0u8; 4];
+        manager.add_reply_order(request_order(trait_ref(&handler), 42, &mut slot), None);
+        let reply_id = slot_reply_id(&slot);
+
+        let mut body = reply_body(reply_id, b"payload");
+        let mut header = reply_header(&body);
+        input_handler.handle_message(&source_a(), &mut header, &mut body);
+
+        assert_eq!(
+            handler.payloads.borrow().as_slice(),
+            &[(42, b"payload".to_vec())]
+        );
+        assert_eq!(
+            *handler.sources.borrow().first().expect("delivered"),
+            source_a()
+        );
     }
 
     /// The acceptance test for BW-02-02-03: interleaved requests each receive
