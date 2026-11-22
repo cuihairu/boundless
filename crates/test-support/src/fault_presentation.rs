@@ -14,8 +14,14 @@
 //! expected node that did not answer is marked unreachable, and the nodes
 //! that did answer keep their results readable. A node on record with no
 //! readings is not unreachable — its empty status is a readable zero value.
+//!
+//! Recovery is verified ([`RecoveryView`]) by joining the drill with the
+//! status: a node reappears when its drill reached recovery and it answers
+//! again, and its state updated when it recorded something after the fault —
+//! and a node that is back with a state that never moved is not verified.
 
 use crate::process_status::{ProcessStatus, StatusCollector};
+use crate::recovery::{RecoveryPhase, RecoveryTracker};
 
 /// One fault condition a process can be seen in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +286,68 @@ impl<'a> PartialQuery<'a> {
     }
 }
 
+/// The verification of one node's recovery after a fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryVerification {
+    /// The process verified.
+    pub role: String,
+    /// The node answers again, and its drill reached recovery.
+    pub reappeared: bool,
+    /// Readings were collected after the fault.
+    pub state_updated: bool,
+}
+
+impl RecoveryVerification {
+    /// Whether the node reappeared and its state moved: recovery verified.
+    pub fn is_verified(&self) -> bool {
+        self.reappeared && self.state_updated
+    }
+}
+
+/// Verifies a node's recovery by joining the recovery drill with the
+/// collected status. A node reappears when its drill reached recovery and it
+/// answers again; its state updated when it recorded something after the
+/// fault. The two are separate: a node can be back with a state that never
+/// moved, and that is not verified.
+pub struct RecoveryView<'a> {
+    status: &'a StatusCollector,
+    recovery: &'a RecoveryTracker,
+}
+
+impl<'a> RecoveryView<'a> {
+    /// A view joining the collected status with the recovery drill.
+    pub fn new(status: &'a StatusCollector, recovery: &'a RecoveryTracker) -> Self {
+        Self { status, recovery }
+    }
+
+    /// Verify a node's recovery since `faulted_at`: whether it reappeared,
+    /// and whether its state moved past the fault.
+    pub fn verify(&self, role: &str, faulted_at: u64) -> RecoveryVerification {
+        // A node only reappears if its drill really faulted: a drill that has
+        // never faulted is running, but it never went away.
+        let reappeared = self
+            .recovery
+            .timeline(role)
+            .iter()
+            .any(|event| event.phase == RecoveryPhase::Faulted)
+            && self.recovery.phase(role).is_some_and(|phase| {
+                phase == RecoveryPhase::Recovered || phase == RecoveryPhase::Running
+            })
+            && self.status.status(role).is_some();
+        let state_updated = self.status.status(role).is_some_and(|status| {
+            status
+                .readings
+                .iter()
+                .any(|reading| reading.collected_at > faulted_at)
+        });
+        RecoveryVerification {
+            role: role.to_string(),
+            reappeared,
+            state_updated,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +564,149 @@ mod tests {
         let status = StatusCollector::with_clock(|| 0);
         let query = PartialQuery::new(&status);
         assert!(query.query(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_recovered_node_reappears_with_its_state_updated() {
+        let now = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(100));
+        let mut status = {
+            let now = std::sync::Arc::clone(&now);
+            StatusCollector::with_clock(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        status.register("cellapp01", Some(100));
+        status.record("cellapp01", "ready", "true", "readiness announcement");
+        let mut recovery = {
+            let now = std::sync::Arc::clone(&now);
+            RecoveryTracker::with_clock(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        recovery.begin("cellapp01");
+        recovery
+            .transition("cellapp01", RecoveryPhase::Running)
+            .unwrap();
+
+        // The fault at 200: the drill marks it, and nothing new is collected.
+        now.store(200, std::sync::atomic::Ordering::SeqCst);
+        recovery
+            .transition("cellapp01", RecoveryPhase::Faulted)
+            .unwrap();
+
+        // Not yet recovered: the drill is at Faulted, and the state never
+        // moved past the fault.
+        let before = RecoveryView::new(&status, &recovery).verify("cellapp01", 200);
+        assert!(!before.reappeared);
+        assert!(!before.state_updated);
+        assert!(!before.is_verified());
+
+        // Recovery: the drill reaches Recovered, the node answers again, and
+        // its state moves — a readiness announcement and a beat after the
+        // fault.
+        now.store(300, std::sync::atomic::Ordering::SeqCst);
+        recovery
+            .transition("cellapp01", RecoveryPhase::Recovering)
+            .unwrap();
+        recovery
+            .transition("cellapp01", RecoveryPhase::Recovered)
+            .unwrap();
+        now.store(400, std::sync::atomic::Ordering::SeqCst);
+        status.record("cellapp01", "ready", "true", "readiness announcement");
+        status.beat("cellapp01");
+
+        // The node reappeared and its state updated: verified.
+        let after = RecoveryView::new(&status, &recovery).verify("cellapp01", 200);
+        assert!(after.reappeared);
+        assert!(after.state_updated);
+        assert!(after.is_verified());
+    }
+
+    #[test]
+    fn a_failed_recovery_is_not_verified_until_it_recovers() {
+        let now = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(100));
+        let mut status = {
+            let now = std::sync::Arc::clone(&now);
+            StatusCollector::with_clock(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        status.register("cellapp01", Some(100));
+        let mut recovery = {
+            let now = std::sync::Arc::clone(&now);
+            RecoveryTracker::with_clock(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        recovery.begin("cellapp01");
+        recovery
+            .transition("cellapp01", RecoveryPhase::Running)
+            .unwrap();
+        now.store(200, std::sync::atomic::Ordering::SeqCst);
+        recovery
+            .transition("cellapp01", RecoveryPhase::Faulted)
+            .unwrap();
+        now.store(300, std::sync::atomic::Ordering::SeqCst);
+        recovery
+            .transition("cellapp01", RecoveryPhase::Recovering)
+            .unwrap();
+
+        // The first recovery attempt fails: the node faults again, and a
+        // recovery that has not finished verifies nothing.
+        now.store(400, std::sync::atomic::Ordering::SeqCst);
+        recovery
+            .transition("cellapp01", RecoveryPhase::Faulted)
+            .unwrap();
+        assert!(
+            !RecoveryView::new(&status, &recovery)
+                .verify("cellapp01", 200)
+                .is_verified()
+        );
+
+        // The second attempt rejoins, and the state moves after the fault.
+        now.store(500, std::sync::atomic::Ordering::SeqCst);
+        recovery
+            .transition("cellapp01", RecoveryPhase::Recovering)
+            .unwrap();
+        recovery
+            .transition("cellapp01", RecoveryPhase::Recovered)
+            .unwrap();
+        now.store(600, std::sync::atomic::Ordering::SeqCst);
+        status.beat("cellapp01");
+        assert!(
+            RecoveryView::new(&status, &recovery)
+                .verify("cellapp01", 200)
+                .is_verified()
+        );
+    }
+
+    #[test]
+    fn a_node_back_with_a_state_that_never_moved_is_not_verified() {
+        let now = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(100));
+        let mut status = {
+            let now = std::sync::Arc::clone(&now);
+            StatusCollector::with_clock(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        status.register("cellapp01", Some(100));
+        status.record("cellapp01", "ready", "true", "readiness announcement");
+        let mut recovery = {
+            let now = std::sync::Arc::clone(&now);
+            RecoveryTracker::with_clock(move || now.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        recovery.begin("cellapp01");
+        recovery
+            .transition("cellapp01", RecoveryPhase::Running)
+            .unwrap();
+        now.store(200, std::sync::atomic::Ordering::SeqCst);
+        recovery
+            .transition("cellapp01", RecoveryPhase::Faulted)
+            .unwrap();
+
+        // The drill recovers, but nothing was collected after the fault: the
+        // node is back, yet its state never moved.
+        now.store(300, std::sync::atomic::Ordering::SeqCst);
+        recovery
+            .transition("cellapp01", RecoveryPhase::Recovering)
+            .unwrap();
+        recovery
+            .transition("cellapp01", RecoveryPhase::Recovered)
+            .unwrap();
+
+        let verified = RecoveryView::new(&status, &recovery).verify("cellapp01", 200);
+        assert!(verified.reappeared);
+        assert!(!verified.state_updated);
+        assert!(!verified.is_verified());
     }
 }
