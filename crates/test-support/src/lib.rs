@@ -19,6 +19,7 @@ pub mod config_fixture;
 pub mod cpu_sampler;
 pub mod cross_reference;
 pub mod diagnostic;
+pub mod fault_presentation;
 pub mod flamegraph;
 pub mod full_stack;
 pub mod growth;
