@@ -54,3 +54,9 @@ pub mod udp_bundle;
 pub mod udp_channel;
 pub mod unacked_packet;
 pub mod unpacked_message_header;
+
+/// The BW-02-04-05 mixed-run fixture: the TCP transport components running
+/// together (connection header, frame parsing, send path, disconnect
+/// cleanup).
+#[cfg(test)]
+mod tcp_transport_tests;
