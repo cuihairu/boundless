@@ -28,6 +28,26 @@
 //!   `ScriptEvents` object refuses (with a warning) and never replaces
 //!   (`script_events.cpp:104-143`); the port's registry is one module
 //!   static, so there is no second instance to warn about.
+//! - The reload entry points are planned, not ported (BW-03-04-03): the
+//!   reference reloads from the script side via `BigWorld.reloadScript` --
+//!   `fullReload` (default True) to also reparse entity defs,
+//!   `expectedDigest` (from `BigWorld.schemaDigest()`, empty = no
+//!   constraint) as the versioned-schema barrier, `dryRun` to probe in a
+//!   scratch interpreter without migrating -- registered per component:
+//!   `cell` (`server/cellapp/cellapp.cpp:3251-3259`) and `base`
+//!   (`server/baseapp/script_bigworld.cpp:1483-1587`). The client reloads
+//!   via CapsLock+F11 with no Python face (`cellapp.cpp:3211-3212`), and
+//!   DBApp has no reload face (it only runs `triggerOnInit()` at startup,
+//!   `server/dbapp/dbapp.cpp:335`). A reload fires `onInit(True)` through
+//!   `EntityType::init(true)` / `EntityType::reloadScript()` ->
+//!   `triggerOnInit(true)` (`baseapp/entity_type.cpp:309,374`,
+//!   `cellapp/entity_type.cpp:341,403`); the old-scripts recovery path
+//!   (`reloadScript(true)`) does not re-fire it. The port has none of the
+//!   scratch-subinterpreter swap (`Script::createInterpreter` /
+//!   `swapInterpreter` / `destroyInterpreter`), the `reloadScript` module
+//!   face, or the entity-def / UDO / mailbox / entity migrate chain
+//!   (`server/cellapp/reload_script_plan.hpp`); those are the BW-03-04-04 /
+//!   BW-03-04-05 follow-ons.
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_char, c_int};
