@@ -13,6 +13,7 @@ pub mod data_download;
 pub mod db_login;
 pub mod dbappmgr;
 pub mod dispatcher;
+pub mod entity_creator;
 pub mod entity_dispatch;
 pub mod headless_client;
 pub mod log_on_records;
