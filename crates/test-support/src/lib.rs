@@ -24,6 +24,7 @@ pub mod harness;
 pub mod layering;
 pub mod memory_snapshot;
 pub mod multiproc;
+pub mod process_status;
 pub mod protocol_fixtures;
 pub mod python_callbacks;
 pub mod python_profile;
