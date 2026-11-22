@@ -478,7 +478,12 @@
   - 证据：**验收核心**——单次可控丢包仅交付一次：规则频道发 0、1，只 ACK 1（新 ACK 越过旧包），`check_resend_timers` 重发 0 恰一次且二次扫描静默（重发后 `last_sent_at_out_seq` 已推到 `small_out_seq_at`，不再落在 `highest_ack` 之后）；不规则频道经 `debug_make_packets_old` 回拨时钟后两个陈旧包均重发、再扫描静默；规则频道只靠时间不重发；远端失败不重发。
   - 证据：**测试与覆盖**——4 个新测（新 ACK 越过重发恰一次/不规则非活动重发/规则忽略时间/远端失败不重发），mercury **221 通过 / 0 失败**；fmt clean；clippy 零警告（仅存量 workspace `python-host` 无关警告）；门禁 `ci/check-rust.sh all --packages mercury` 四 lane 全 PASS 以 `[ci] no failed lane` 收尾。
   - 接缝：piggyback 与 `reliableOrders_`（`resend` 的 on-bundle 半区，BW-02-03-07）；接收窗/乱序（BW-02-03-05）；分片链（BW-02-03-06）；`send_unacked` 的物理 `sendPacket` 与 `numReliablePacketsSent_` 推进（BW-02-03-07）。
-- [ ] **BW-02-03-05 实现乱序与重复过滤**。**验收** 按原版顺序派发。
+- [x] **BW-02-03-05 实现乱序与重复过滤**（ad32b87）。**验收** 按原版顺序派发。
+  - 证据：**接收窗面**——`CircularArray<T>`（udp_channel.rs）泛型化自 circular_array.hpp：`SendWindow`（`UnackedPacket`）与 `ReceiveWindow`（`Rc<RefCell<Packet>>`）共用；`double_size(start_index)` 修正为参考 `newWindow[startIndex+i] = (*this)[startIndex+i]` 的绝对位保留语义（原实现旋转槽位、非零 start 即破坏 slot=seq&mask 不变量，-03 测试未查槽内容故漏网）。
+  - 证据：**乱序面**——`add_to_receive_window`（udp_channel.cpp:1233）：seq 越界/来源错→CORRUPT；`should_auto_switch_to_src_addr`（仅 indexed，断言）按版本换址；非 piggyback 入 `acks_to_send`；超阈值即推（send 为 -07 缝）；`seq==inSeqAt_` 走 `inSeqAt_+1` 并链上连续缓冲包（`chain` 保原序）→NEXT_IN_WINDOW；`seq<inSeqAt_`→统计重复→DUPLICATE；`required>2*size` 或 `>max_window_size`→OUT_OF_RANGE；`required>size`→`double_size(inSeqAt_+1)`；空槽缓冲、满槽判重（CRITICAL_MSG 降级 eprintln）。`max_window_size=window_size+max_overflow_packets` 按 :433；`PacketReceiverStats`（packet_receiver.rs）落 `incDuplicatePackets` 切片（完整统计属 BW-02-01-05）。
+  - 证据：**验收核心**——按原版顺序派发：外部窗先收 2、400（400 触发加倍 256→512），再收 0、1；1 为 NEXT_IN_WINDOW 并链上 2（`chain_length()==2`），400 留窗等 3..399 不越队；重复包（已见 / 已缓冲）过滤为 DUPLICATE 且 `num_duplicate_packets_received` 计数；超窗包 OUT_OF_RANGE 不入窗；来源错 CORRUPT；`clear_state` 清空缓冲窗并归零 `inSeqAt_`。
+  - 证据：**测试与覆盖**——4 个新测（乱序链序/重复过滤/超窗拒收/来源错与 clear_state），mercury **225 通过 / 0 失败**；fmt clean；clippy 零警告（仅存量 workspace `python-host` 无关警告）；门禁 `ci/check-rust.sh all --packages mercury` 全 lane PASS 以 `[ci] no failed lane` 收尾。
+  - 接缝：接收端遍历 NEXT_IN_WINDOW 链入 bundle 与物理 `sendPacket`（BW-02-03-07）；分片链（BW-02-03-06）。
 - [ ] **BW-02-03-06 实现分片重组**。**验收** 乱序片段可恢复且超时可回收。
 - [ ] **BW-02-03-07 运行双向 UDP 混跑**。**验收** 两个方向可交换并正确统计重传。
 
