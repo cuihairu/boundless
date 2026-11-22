@@ -484,7 +484,12 @@
   - 证据：**验收核心**——按原版顺序派发：外部窗先收 2、400（400 触发加倍 256→512），再收 0、1；1 为 NEXT_IN_WINDOW 并链上 2（`chain_length()==2`），400 留窗等 3..399 不越队；重复包（已见 / 已缓冲）过滤为 DUPLICATE 且 `num_duplicate_packets_received` 计数；超窗包 OUT_OF_RANGE 不入窗；来源错 CORRUPT；`clear_state` 清空缓冲窗并归零 `inSeqAt_`。
   - 证据：**测试与覆盖**——4 个新测（乱序链序/重复过滤/超窗拒收/来源错与 clear_state），mercury **225 通过 / 0 失败**；fmt clean；clippy 零警告（仅存量 workspace `python-host` 无关警告）；门禁 `ci/check-rust.sh all --packages mercury` 全 lane PASS 以 `[ci] no failed lane` 收尾。
   - 接缝：接收端遍历 NEXT_IN_WINDOW 链入 bundle 与物理 `sendPacket`（BW-02-03-07）；分片链（BW-02-03-06）。
-- [ ] **BW-02-03-06 实现分片重组**。**验收** 乱序片段可恢复且超时可回收。
+- [x] **BW-02-03-06 实现分片重组**（0fbf451）。**验收** 乱序片段可恢复且超时可回收。
+  - 证据：**分片面**——新模块 `fragmented_bundle.rs`（fragmented_bundle.hpp/cpp）：构造 `last_fragment=frag_end()`、`remaining=frag_end-frag_begin`（首个已到故少一）、`touched=now`、`p_chain=首包`；`add_packet`（:26）按参考顺序逐分支：footer 不匹配→不可靠包丢弃返回 true / 可靠包 Mangled(CRITICAL) 返回 false；`touched` 仅在 footer 匹配后刷新（重复包也续命，与参考一致）；链扫描按包 seq 排序插入（`seq_less_than` 判后继、seq 相等判重丢弃），`remaining--` 收敛 `is_complete`；页脚语义为整包 seq 区间 `[fragBegin,fragEnd]`（packet.cpp:156 要求自身 seq 落区间内），`MAX_AGE=10` 秒 `is_old` 超时回收。
+  - 证据：**频道面**——`UDPChannel.p_fragments: RefCell<Option<Rc<RefCell<FragmentedBundle>>>>`（udp_channel.hpp:449 `FragmentedBundlePtr` 对应）+ `p_fragments()`/`set_p_fragments()`（:225-226）；`clear_state` 增 "Forgetting N unprocessed packet(s) in the fragment chain" 释放（udp_channel.cpp:301-310，警告受 `warn_on_discard` 门控、释放本身无条件）；模块文档 scope 更至 -06。
+  - 证据：**验收核心**——乱序可恢复：三片段 bundle 中段先到建链、末段次到、首段最后补缺，链序按原版 `[10,11,12]` 且 `is_complete`；超时可回收：恰 MAX_AGE 不老、超 1 秒即 `is_old` 且 `age()` 报秒，迟到片段刷新 `touched` 重计。
+  - 证据：**测试与覆盖**——5 个新测（乱序链序/重复片段丢弃/异 bundle footer 拒收/超时回收/clear_state 释放分片链），`Packet::fragment_for_test` 测试构建器共享于 packet.rs；mercury **230 通过 / 0 失败**；fmt clean；clippy 零警告（仅存量 workspace `python-host` 无关警告）；门禁 `ci/check-rust.sh all --packages mercury` 全 lane PASS 以 `[ci] no failed lane` 收尾。
+  - 接缝：接收端分派（packet_receiver.cpp:1285-1330——`seq!=fragBegin` 即 corrupt、首片段建 `FragmentedBundle` 挂频道或入 off-channel `fragmentedBundles` map、完成即派发）与 `addToStream`/`createFromStream` 流半区（BW-02-03-07 / 频道状态流项）。
 - [ ] **BW-02-03-07 运行双向 UDP 混跑**。**验收** 两个方向可交换并正确统计重传。
 
 #### BW-02-04 TCP 与外部传输
