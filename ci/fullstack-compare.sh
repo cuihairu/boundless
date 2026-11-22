@@ -4,6 +4,7 @@
 #
 # Usage:
 #   ci/fullstack-compare.sh            # every scenario
+#   ci/fullstack-compare.sh substitute  # single-component substitution (BW-00-04-05)
 #   ci/fullstack-compare.sh self-test  # prove a planted divergence is named
 #
 # The entity-definition scenario runs both halves live on the same committed
@@ -115,17 +116,14 @@ new_dump() { # $1 fixture res $2 out file
     "${CI_FULLSTACK_NEW_DRIVER:-$NEW_TOOL}" -r "$1" >"$2" 2>"$SANDBOX/new.log"
 }
 
-# One fixture: the original stack and the new stack over the same res tree.
-# The original binary aborts at interpreter teardown after the dump is written
-# (a registered reference-tooling artifact — see the evidence doc), so the exit
-# code is recorded but the evidence is judged by its bytes against the oracle.
-#
-# emit=0 is the self-test: the outcome goes only to the record file, so a
-# planted divergence is asserted without leaving a FAIL row in the shared
-# manifest that would keep the lane red after the self-test has already proven
-# the lane can bite. Returns 0 when the pair is byte-identical.
-run_entitydef_case() { # $1 fixture name $2 oracle stem $3 record file $4 emit
-    local name="$1" oracle_stem="$2" rec="$3" emit="${4:-1}"
+# Produce the two evidences for one fixture and judge them. Prints one result
+# line to stdout — `<status>\t<ref_sha>\t<new_sha>\t<oracle_sha>\t<ref_rc>\t<note>`
+# — and returns 0 when the pair is byte-identical. The original binary aborts
+# at interpreter teardown after the dump is written (a registered
+# reference-tooling artifact — see the evidence doc), so the exit code is
+# recorded but the evidence is judged by its bytes against the oracle.
+produce_entitydef_pair() { # $1 fixture name $2 oracle stem
+    local name="$1" oracle_stem="$2"
     local res="$FIXTURES_DIR/$name/res" oracle="$ORACLE_DIR/${oracle_stem}_entitydef.json"
     local ref_out="$CI_OUT/fullstack/ref/$name.json"
     local new_out="$CI_OUT/fullstack/new/$name.json"
@@ -138,15 +136,11 @@ run_entitydef_case() { # $1 fixture name $2 oracle stem $3 record file $4 emit
     new_rc=$?
 
     if [ ! -s "$ref_out" ]; then
-        printf '%s\tFAIL\tno reference evidence\trc=%s\t-\t-\n' "$name" "$ref_rc" >>"$rec"
-        [ "$emit" -eq 1 ] && ci_fail "fullstack-entitydef-$name" \
-            "the original stack produced no evidence (rc=$ref_rc)"
+        printf 'FAIL-no-reference\t-\t-\t-\t%s\t-\n' "$ref_rc"
         return 1
     fi
     if [ ! -s "$new_out" ]; then
-        printf '%s\tFAIL\tno new evidence\trc=%s\t-\t-\n' "$name" "$new_rc" >>"$rec"
-        [ "$emit" -eq 1 ] && ci_fail "fullstack-entitydef-$name" \
-            "the new process_defs produced no evidence (rc=$new_rc)"
+        printf 'FAIL-no-new\t-\t-\t-\t%s\t-\n' "$new_rc"
         return 1
     fi
 
@@ -161,27 +155,82 @@ run_entitydef_case() { # $1 fixture name $2 oracle stem $3 record file $4 emit
 
     if [ "$ref_sha" = "$ora_sha" ] && [ "$new_sha" = "$ora_sha" ]; then
         rc=0
-        printf '%s\tPASS\t%s\t%s\t%s\t%s\t%s\n' \
-            "$name" "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" "$(tsv_escape "$note")" >>"$rec"
-        [ "$emit" -eq 1 ] && ci_pass "fullstack-entitydef-$name" \
-            "original==new==oracle $ref_sha${note:+ ($note)}"
+        printf 'PASS\t%s\t%s\t%s\t%s\t%s\n' \
+            "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" "$(tsv_escape "$note")"
     elif [ "$new_sha" = "$ora_sha" ]; then
-        printf '%s\tFAIL\treference diverged\t%s\t%s\t%s\t%s\n' \
-            "$name" "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" >>"$rec"
-        [ "$emit" -eq 1 ] && ci_fail "fullstack-entitydef-$name" \
-            "the original stack diverged from its captured oracle (ref $ref_sha vs oracle $ora_sha)"
+        printf 'FAIL-reference-diverged\t%s\t%s\t%s\t%s\t%s\n' \
+            "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" ""
     elif [ "$ref_sha" = "$ora_sha" ]; then
-        printf '%s\tFAIL\tnew diverged\t%s\t%s\t%s\t%s\n' \
-            "$name" "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" >>"$rec"
-        [ "$emit" -eq 1 ] && ci_fail "fullstack-entitydef-$name" \
-            "the new process_defs diverged from the captured oracle (new $new_sha vs oracle $ora_sha)"
+        printf 'FAIL-new-diverged\t%s\t%s\t%s\t%s\t%s\n' \
+            "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" ""
     else
-        printf '%s\tFAIL\tboth diverged\t%s\t%s\t%s\t%s\n' \
-            "$name" "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" >>"$rec"
-        [ "$emit" -eq 1 ] && ci_fail "fullstack-entitydef-$name" \
-            "both halves diverged from the oracle and from each other (ref $ref_sha, new $new_sha, oracle $ora_sha)"
+        printf 'FAIL-both-diverged\t%s\t%s\t%s\t%s\t%s\n' \
+            "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" ""
     fi
     return "$rc"
+}
+
+# Write the produced result into a record and, when emitting, into the manifest.
+# emit=0 is the self-test: the outcome goes only to the record file, so a
+# planted divergence is asserted without leaving a FAIL row in the shared
+# manifest that would keep the lane red after the self-test has already proven
+# the lane can bite. role, when given, is the single-component substitution
+# record: the row carries the replaced role first and the message names it.
+emit_entitydef_result() { # $1 fixture $2 result $3 record $4 emit $5 prefix $6 role
+    local name="$1" result="$2" rec="$3" emit="${4:-1}" prefix="${5:-fullstack-entitydef}" role="${6:-}"
+    local status ref_sha new_sha ora_sha ref_rc note
+    IFS=$'\t' read -r status ref_sha new_sha ora_sha ref_rc note <<<"$result"
+    local lane="$prefix-$name" col="" say=""
+    if [ -n "$role" ]; then
+        col="$role"$'\t'
+        say="substituted role: $role; "
+    fi
+    case "$status" in
+    PASS)
+        printf '%s%s\tPASS\t%s\t%s\t%s\t%s\t%s\n' \
+            "$col" "$name" "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" "$note" >>"$rec"
+        [ "$emit" -eq 1 ] && ci_pass "$lane" "${say}original==new==oracle $ref_sha${note:+ ($note)}"
+        return 0
+        ;;
+    FAIL-no*reference*)
+        printf '%s%s\tFAIL\tno reference evidence\trc=%s\t-\t-\t-\n' "$col" "$name" "$ref_rc" >>"$rec"
+        [ "$emit" -eq 1 ] && ci_fail "$lane" "${say}the original stack produced no evidence (rc=$ref_rc)"
+        return 1
+        ;;
+    FAIL-no*new*)
+        printf '%s%s\tFAIL\tno new evidence\trc=%s\t-\t-\t-\n' "$col" "$name" "$ref_rc" >>"$rec"
+        [ "$emit" -eq 1 ] && ci_fail "$lane" "${say}the new process_defs produced no evidence (rc=$ref_rc)"
+        return 1
+        ;;
+    FAIL-reference-diverged)
+        printf '%s%s\tFAIL\treference diverged\t%s\t%s\t%s\t%s\t\n' \
+            "$col" "$name" "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" >>"$rec"
+        [ "$emit" -eq 1 ] && ci_fail "$lane" \
+            "${say}the original stack diverged from its captured oracle (ref $ref_sha vs oracle $ora_sha)"
+        return 1
+        ;;
+    FAIL-new-diverged)
+        printf '%s%s\tFAIL\tnew diverged\t%s\t%s\t%s\t%s\t\n' \
+            "$col" "$name" "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" >>"$rec"
+        [ "$emit" -eq 1 ] && ci_fail "$lane" \
+            "${say}the new process_defs diverged from the captured oracle (new $new_sha vs oracle $ora_sha)"
+        return 1
+        ;;
+    *)
+        printf '%s%s\tFAIL\tboth diverged\t%s\t%s\t%s\t%s\t\n' \
+            "$col" "$name" "$ref_sha" "$new_sha" "$ora_sha" "$ref_rc" >>"$rec"
+        [ "$emit" -eq 1 ] && ci_fail "$lane" \
+            "${say}both halves diverged from the oracle and from each other (ref $ref_sha, new $new_sha, oracle $ora_sha)"
+        return 1
+        ;;
+    esac
+}
+
+# One fixture: the original stack and the new stack over the same res tree.
+run_entitydef_case() { # $1 fixture name $2 oracle stem $3 record file $4 emit
+    local name="$1" oracle_stem="$2" rec="$3" emit="${4:-1}" result
+    result="$(produce_entitydef_pair "$name" "$oracle_stem")"
+    emit_entitydef_result "$name" "$result" "$rec" "$emit" "fullstack-entitydef"
 }
 
 run_entitydef() {
@@ -244,6 +293,70 @@ run_all() {
         "the python-host callback producer does not exist yet (crates/python-host has no ScriptEventList)"
 }
 
+# --- single-component substitution (BW-00-04-05) -----------------------------
+
+# One component swapped, the rest held constant. Every record row and report
+# line names the replaced role — the acceptance for BW-00-04-05. Only the
+# entity-definition checker has both halves today; the mercury wire and
+# python-host callback roles have reference evidence only and name their
+# missing new half rather than pretending a substitution ran.
+SUBSTITUTIONS="entitydef-checker"
+
+substitute_case() { # $1 role $2 fixture $3 oracle stem $4 record $5 emit
+    local result
+    result="$(produce_entitydef_pair "$2" "$3")"
+    emit_entitydef_result "$2" "$result" "$4" "$5" "substitution-$1" "$1"
+}
+
+run_substitution_role() { # $1 role
+    local role="$1" rec="$2"
+    case "$role" in
+    entitydef-checker)
+        local case name stem
+        for case in $ENTITYDEF_CASES; do
+            name="${case%%:*}"
+            stem="${case##*:}"
+            substitute_case "$role" "$name" "$stem" "$rec" 1
+        done
+        ;;
+    *)
+        ci_fail "substitution-$role" "unknown substitution role $role"
+        return 1
+        ;;
+    esac
+}
+
+run_substitutions() {
+    ci_step "single-component substitution: one role swapped, the rest constant"
+    mkdir -p "$CI_OUT/fullstack" "$CI_LOG_DIR"
+    local rec
+    rec="$(record_path substitution)"
+    printf 'role\tfixture\tresult\tref_sha256\tnew_sha256\toracle_sha256\tref_rc\tnote\n' >"$rec"
+
+    local missing_sub role
+    missing_sub="$(missing_substrates)"
+    if [ -n "$missing_sub" ]; then
+        ci_skip fullstack-substitution "$(tsv_escape "$missing_sub") — the original half needs the reference tree"
+        return 0
+    fi
+    if ! ensure_new_tool_built; then
+        ci_skip fullstack-substitution "the new process_defs could not be built here"
+        return 0
+    fi
+
+    for role in $SUBSTITUTIONS; do
+        run_substitution_role "$role" "$rec"
+    done
+
+    # The roles that cannot be substituted yet: name the missing new half.
+    ci_skip fullstack-substitution-mercury-wire \
+        "substitution of mercury-wire needs a new wire producer (crates/mercury has no runnable byte entry point)"
+    ci_skip fullstack-substitution-python-callbacks \
+        "substitution of python-callbacks needs a new callback producer (crates/python-host has no ScriptEventList)"
+
+    cat "$rec" >>"$CI_LOG_DIR/fullstack-substitution.log"
+}
+
 self_test() {
     local fails=0 missing_sub
     ci_step "self-test: a diverging new half is named, a clean pair passes"
@@ -297,6 +410,22 @@ EOF
         fails=$((fails + 1))
     fi
 
+    ci_step "self-test: the substitution report names the replaced role"
+    local srec="$SANDBOX/selftest-sub.tsv"
+    printf 'role\tfixture\tresult\tref_sha256\tnew_sha256\toracle_sha256\tref_rc\tnote\n' >"$srec"
+    # A planted wrong new half must fail the substitution AND the record must
+    # carry the replaced role in its first column — a report that omits the
+    # role would not satisfy BW-00-04-05's acceptance.
+    CI_FULLSTACK_NEW_DRIVER="$stub" substitute_case entitydef-checker "$name" "full" "$srec" 0
+    if grep -q "^entitydef-checker	$name	FAIL" "$srec"; then
+        ci_pass selftest-fullstack-substitution \
+            "the substitution record names the replaced role and rejects a wrong replacement"
+    else
+        ci_fail selftest-fullstack-substitution \
+            "the substitution record did not name the replaced role or the divergence passed"
+        fails=$((fails + 1))
+    fi
+
     if [ "$fails" -gt 0 ]; then
         ci_note "$fails self-test(s) did not behave"
         return 1
@@ -306,11 +435,19 @@ EOF
 }
 
 main() {
-    if [ "$MODE" = self-test ]; then
+    case "$MODE" in
+    self-test)
         self_test
         return $?
-    fi
-    run_all
+        ;;
+    substitute)
+        run_substitutions
+        return $?
+        ;;
+    *)
+        run_all
+        ;;
+    esac
 }
 
 main "$@"

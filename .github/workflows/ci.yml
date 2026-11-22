@@ -527,7 +527,9 @@ jobs:
           cache: true
 
       - name: Run the comparison
-        run: ci/fullstack-compare.sh
+        run: |
+          ci/fullstack-compare.sh
+          ci/fullstack-compare.sh substitute
 
       - name: Bundle results
         if: always()
