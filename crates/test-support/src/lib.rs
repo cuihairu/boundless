@@ -29,6 +29,7 @@ pub mod rng;
 pub mod runtime_env;
 pub mod standalone;
 pub mod startup_baseline;
+pub mod stats_report;
 pub mod third_party_deps;
 pub mod timer_scenarios;
 pub mod trace_json;
