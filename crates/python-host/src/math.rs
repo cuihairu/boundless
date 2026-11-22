@@ -5951,6 +5951,142 @@ mod matrixproduct {
     }
 }
 
+/// The `Math.MatrixInverse` provider (`script_math.cpp:915-1010`): the
+/// inverse of the held `MatrixProvider`, an unassigned source the identity.
+mod matrixinverse {
+    use super::*;
+    use foundation::math::Matrix;
+
+    /// The instance body beyond the `PyObject` header: the one held
+    /// `MatrixProvider`, the layout of the reference's `MatrixInverse`.
+    #[repr(C)]
+    struct InverseBody {
+        header: capi::PyObject,
+        source: *mut capi::PyObject,
+    }
+
+    const SOURCE: usize = std::mem::offset_of!(InverseBody, source);
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<InverseBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.MatrixInverse` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `MatrixInverse::matrix` (`script_math.cpp:1000-1010`): the source
+    /// inverted, an empty source the identity. The reference drops
+    /// `invert()`'s result, so a singular source keeps its own value.
+    fn inverse_matrix(object: *mut capi::PyObject) -> Matrix {
+        let source = unsafe { matrix::slot_read::<SOURCE>(object) };
+        if source.is_null() {
+            return Matrix::identity();
+        }
+        let mut m = matrix::provider_matrix(source).expect("a stored slot is a MatrixProvider");
+        let _ = m.invert();
+        m
+    }
+
+    /// A fresh `Math.MatrixInverse` over `source`; the caller owns the
+    /// returned reference, and the field takes over `source`, the reference's
+    /// `source_( s )` member initialiser.
+    fn make(source: *mut capi::PyObject) -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly an `InverseBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<InverseBody>()).source).write(source);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `PY_AUTO_FACTORY_DECLARE( MatrixInverse, ARG(MatrixProviderPtr,
+    /// END) )` factory: a fresh inverse over the one `MatrixProvider`, a
+    /// `None` the empty source the identity matrix answers.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error("Math.MatrixInverse() expects 1 argument of type MatrixProvider");
+        }
+        let source = arg(args, 0);
+        // `Script::setData( pObject, MatrixProviderPtr&, "() argument 1" )`
+        // (`script.hpp:577-631`): `None` empties the pointer, anything that
+        // is not a provider or `None` is refused with the converter's error.
+        let stored = if source == capi::py_none() {
+            std::ptr::null_mut()
+        } else if matrix::provider_check(source) {
+            // The field owns the reference it is given.
+            unsafe { capi::inc_ref(source) };
+            source
+        } else {
+            return type_error("() argument 1 must be set to a MatrixProvider or None");
+        };
+        make(stored)
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"MatrixInverse".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `MatrixInverse`: the one held
+    /// provider slot, the reference's
+    /// `PY_RW_ATTRIBUTE_DECLARE( source_, source )` converter pair.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.MatrixInverse")
+            .base(matrix::provider_addr())
+            .attribute_with(
+                "source",
+                matrix::slot_get::<SOURCE>,
+                Some(matrix::slot_set::<SOURCE>),
+                c"source".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    provider_dealloc!(dealloc, InverseBody, source);
+
+    /// `TempPyVectorInit` for the inverse: the type object, its `matrix()`
+    /// dispatch entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        matrix::register_matrix_output(type_addr(), inverse_matrix);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"MatrixInverse".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -5975,4 +6111,5 @@ pub fn register() {
     let _ = v4shader::register();
     let _ = v4register::register();
     let _ = matrixproduct::register();
+    let _ = matrixinverse::register();
 }

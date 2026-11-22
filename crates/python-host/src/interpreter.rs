@@ -580,6 +580,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4combiner_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4shader_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_matrixproduct_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_matrixinverse_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -4313,6 +4314,95 @@ __probe = '; '.join(_f) or 'ok'
 "#,
             );
             assert_eq!(text, "ok", "math matrixproduct behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Math.MatrixInverse` against the reference (`script_math.cpp:915-1010`):
+    /// the inverse of the held `MatrixProvider` slot, the identity for an
+    /// empty source, a singular source keeping its own value (the reference
+    /// drops `invert()`'s result), and the source slot read/write.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_matrixinverse_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+
+# Module surface and inheritance.
+ck(hasattr(Math, 'MatrixInverse'), 'MatrixInverse in module')
+mi = Math.MatrixInverse(None)
+ck(type(mi).__name__ == 'MatrixInverse', 'the inverse type')
+ck(isinstance(mi, Math.MatrixProvider), 'the inverse is a MatrixProvider')
+ck(mi.source is None, 'the source starts empty')
+m = Math.Matrix(mi)
+ck(m.get(0,0) == 1.0 and m.get(0,1) == 0.0, 'an empty source is the identity')
+
+# The source slot reads and writes the held object.
+src = Math.Matrix()
+src.setScale((2.0, 3.0, 4.0))
+mi.source = src
+ck(mi.source is src, 'the source slot keeps its object')
+m = Math.Matrix(mi)
+ck(abs(m.get(0,0) - 0.5) < 1e-6 and abs(m.get(1,1) - (1.0/3.0)) < 1e-6 and
+   abs(m.get(2,2) - 0.25) < 1e-6 and m.get(3,3) == 1.0, 'the inverse diagonal')
+
+# A translation inverts into the opposite translation.
+src.setIdentity()
+src.setTranslate((4.0, 5.0, 6.0))
+m = Math.Matrix(mi)
+ck(m.get(3,0) == -4.0 and m.get(3,1) == -5.0 and m.get(3,2) == -6.0,
+   'the inverse translation')
+
+# A singular source keeps its own value, no exception: the reference drops
+# the invert() result.
+zero = Math.Matrix()
+zero.setScale((0.0, 0.0, 0.0))
+mi2 = Math.MatrixInverse(zero)
+m = Math.Matrix(mi2)
+ck(m.get(0,0) == 0.0 and m.get(1,1) == 0.0 and m.get(2,2) == 0.0,
+   'a singular source keeps its own value')
+
+# The factory count errors and the provider refusal.
+ck(msg(TypeError, lambda: Math.MatrixInverse()) ==
+   'Math.MatrixInverse() expects 1 argument of type MatrixProvider',
+   'the missing source count error')
+ck(msg(TypeError, lambda: Math.MatrixInverse(src, src)) ==
+   'Math.MatrixInverse() expects 1 argument of type MatrixProvider',
+   'the extra source count error')
+ck(msg(TypeError, lambda: Math.MatrixInverse('x')) ==
+   '() argument 1 must be set to a MatrixProvider or None', 'the source refusal')
+ck(msg(TypeError, lambda: Math.MatrixInverse(1)) ==
+   '() argument 1 must be set to a MatrixProvider or None', 'the numeric refusal')
+
+# A snapshot does not follow the source; an emptied source is the identity.
+snap = Math.Matrix(mi)
+mi.source = None
+ck(snap.get(3,0) == -4.0, 'the snapshot does not follow the source')
+ck(Math.Matrix(mi).get(0,0) == 1.0, 'an emptied source answers the identity')
+
+# The attribute refusal leaves the slot alone.
+ck(msg(TypeError, lambda: setattr(mi, 'source', 1)) ==
+   'source must be set to a MatrixProvider or None', 'the source slot refusal')
+ck(mi.source is None, 'a refusal leaves the slot')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math matrixinverse behaviour mismatch: {text}");
         });
     }
 
