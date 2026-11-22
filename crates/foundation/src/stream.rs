@@ -536,6 +536,36 @@ mod tests {
     }
 
     #[test]
+    fn reference_wire_fixtures_packed_int() {
+        // Packed ints at the length-boundary values, byte-exact against the
+        // reference's own output. The reference `binary_stream.hpp`
+        // `writePackedInt` writes one byte below 0xFF, else the 0xFF marker
+        // followed by `BW_PACK3` (three low bytes, little-endian). The bytes
+        // below are what a generator linked to the reference cstdmf emits.
+        for (value, expected) in [
+            (0u32, &[0x00u8][..]),
+            (1, &[0x01]),
+            (2, &[0x02]),
+            (253, &[0xFD]),
+            (254, &[0xFE]),                   // one byte, just below the escape
+            (255, &[0xFF, 0xFF, 0x00, 0x00]), // escape: marker + PACK3(255)
+            (256, &[0xFF, 0x00, 0x01, 0x00]),
+            (1000, &[0xFF, 0xE8, 0x03, 0x00]),
+            (65535, &[0xFF, 0xFF, 0xFF, 0x00]),
+            (65536, &[0xFF, 0x00, 0x00, 0x01]),
+            (MAX_PACKED_INT, &[0xFF, 0xFF, 0xFF, 0xFF]), // 0xFFFFFF
+        ] {
+            let mut s = BinaryStream::new();
+            s.write_packed_int(value).unwrap();
+            assert_eq!(s.as_bytes(), expected, "write_packed_int({value})");
+            assert_eq!(s.as_bytes().len(), packed_int_size(value));
+            s.rewind();
+            assert_eq!(s.read_packed_int(), Ok(value), "read_packed_int({value})");
+            assert!(s.at_end());
+        }
+    }
+
+    #[test]
     fn packed_int_boundaries() {
         for value in [0u32, 1, 254, 255, 256, 1000, 65535, 65536, MAX_PACKED_INT] {
             let mut s = BinaryStream::new();
