@@ -490,7 +490,13 @@
   - 证据：**验收核心**——乱序可恢复：三片段 bundle 中段先到建链、末段次到、首段最后补缺，链序按原版 `[10,11,12]` 且 `is_complete`；超时可回收：恰 MAX_AGE 不老、超 1 秒即 `is_old` 且 `age()` 报秒，迟到片段刷新 `touched` 重计。
   - 证据：**测试与覆盖**——5 个新测（乱序链序/重复片段丢弃/异 bundle footer 拒收/超时回收/clear_state 释放分片链），`Packet::fragment_for_test` 测试构建器共享于 packet.rs；mercury **230 通过 / 0 失败**；fmt clean；clippy 零警告（仅存量 workspace `python-host` 无关警告）；门禁 `ci/check-rust.sh all --packages mercury` 全 lane PASS 以 `[ci] no failed lane` 收尾。
   - 接缝：接收端分派（packet_receiver.cpp:1285-1330——`seq!=fragBegin` 即 corrupt、首片段建 `FragmentedBundle` 挂频道或入 off-channel `fragmentedBundles` map、完成即派发）与 `addToStream`/`createFromStream` 流半区（BW-02-03-07 / 频道状态流项）。
-- [ ] **BW-02-03-07 运行双向 UDP 混跑**。**验收** 两个方向可交换并正确统计重传。
+- [x] **BW-02-03-07 运行双向 UDP 混跑**（b69a22a）。**验收** 两个方向可交换并正确统计重传。
+  - 证据：**发送面**——新模块 `packet_sender.rs`（packet_sender.cpp）：`send` 终态化+`prepare_packets`+逐包 `send_packet`；`send_packet` 统计重传（`num_bytes_resent`/`num_packets_resent`）与 off-channel 计数；`reschedule_send` 仅落 `dropNextSend` 确定性丢包杆（丢包参数统计/延迟臂为接缝）；`basic_send_with_retries`/`basic_send_single_try` 按 :246/:313 映射 errno（ECONNREFUSED→NoSuchPort、EAGAIN→ResourceUnavailable、ENOBUFS→TransmitQueueFull、EMSGSIZE→MessageTooLong）；`UDP_OVERHEAD=28` 计线上字节。
+  - 证据：**频道发送面**——`UDPChannel::send`（doSend 按 udp_channel.cpp:785）：远端失败/地址空即取消请求；`dropNextSend` 转发 sender；`num_data_units_sent`/`num_bytes_sent`/可靠包 `num_reliable_packets_sent`/关键包 `unacked_critical_seq` 推进；`send_unacked` 物理 `sendPacket(is_resend=true)` 并按 :1212 刷新 channel version/id 与 `last_sent_at_out_seq`/`was_resent`/`last_sent_time`/`last_reliable_resend_time`。
+  - 证据：**接收面**——`process_packet`/`process_filtered_packet`/`process_ordered_packet`（packet_receiver.rs）按 packet_receiver.cpp：piggyback 接缝→indexed id/version u32 条→累计 ACK→ACK 表→seq 条→可靠包 `add_to_receive_window`（NEXT_IN_WINDOW 才下链）→`process_ordered_packet`（first-request-offset、`strip_frag_info`、频道 `p_fragments`/off-channel `fragmented_bundles` map、完成派发 `dispatch_messages`）；once-off 可靠包外部接口拒收、内部回 ACK；接收后 `is_established && has_acks` 即空 bundle 自动回 ACK。
+  - 证据：**验收核心**——双向真实回环两接口（A、B 各绑 127.0.0.1 内核选端口）：A→B 首发包被 `dropNextSend` 丢弃（已入发送窗、`num_packets_resent==0`），`debug_make_packets_old`+`check_resend_timers` 非活动重发恰一次（频道与 sender 统计均 `num_packets_resent==1`），B 收重发包派发 `(1,3,[0x11,0x22,0x33])` 并自动回 ACK，A 收累计 ACK 释放发送窗（`!has_unacked_packets`）；B→A 同程（drop+重发+派发+回 ACK）对称成立。
+  - 证据：**测试与覆盖**——新测 `two_directions_exchange_and_resends_are_counted`（双向交换+双向丢包重发+ACK 排水）；修复 `UDPBundleProcessor` 迭代器：空包（仅页脚 ACK-only）链耗尽时 cursor 置空（参考 `for(cursor_=first;...)` 尾迭代置 NULL），避免 ACK-only 包被当消息解析；mercury **231 通过 / 0 失败**；fmt clean；clippy 零警告（仅存量 workspace `python-host` 无关警告）；门禁 `ci/check-rust.sh all --packages mercury` 全 lane PASS 以 `[ci] no failed lane` 收尾。
+  - 接缝：piggyback 与 `reliableOrders_`（-04）；once-off 发送器重传计时与 off-channel 序号分配（once-off sender 项）；丢包参数统计/延迟重排臂、channel 过滤与包监控（统计项 / 过滤项）。
 
 #### BW-02-04 TCP 与外部传输
 
