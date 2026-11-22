@@ -1,12 +1,12 @@
 //! `lib/network/udp_channel.cpp` -- the registration-and-lifecycle slice
 //! of `Mercury::UDPChannel` (BW-02-03-02) plus the send window and its acks
-//! (BW-02-03-03) and the timed resend scan (BW-02-03-04): construction
-//! registers a non-indexed channel with its interface, `condemn` hands it
-//! to the condemned list, `destroy` closes it for good,
-//! `addResendTimer`/`handleAck` keep the unacked ring honest across the
-//! `SEQ_SIZE` seam, and `checkResendTimers` pushes the stale ones back out.
-//! The receive-window filtering (BW-02-03-05) carries its fields from the
-//! reference constructor but stays inert until its task lands.
+//! (BW-02-03-03), the timed resend scan (BW-02-03-04) and the receive
+//! window (BW-02-03-05): construction registers a non-indexed channel with
+//! its interface, `condemn` hands it to the condemned list, `destroy`
+//! closes it for good, `addResendTimer`/`handleAck` keep the unacked ring
+//! honest across the `SEQ_SIZE` seam, `checkResendTimers` pushes the stale
+//! ones back out, and `addToReceiveWindow` filters reordered and duplicate
+//! packets into an in-order chain.
 //!
 //! The reference's `Channel` base (`channel.hpp`) is folded in: its state
 //! is the leading fields and its `destroy`/inactivity flow is the
@@ -73,6 +73,23 @@ fn window_size(traits: Traits, id: ChannelID) -> usize {
 /// goes, which is why [`UdpChannel::destroy`] deregisters eagerly where
 /// the reference deregisters from the destructor.
 pub type ChannelPtr = Rc<RefCell<UdpChannel>>;
+
+/// `AddToReceiveWindowResult` (udp_channel.hpp:161-167): what
+/// [`UdpChannel::add_to_receive_window`] did with a packet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddToReceiveWindowResult {
+    /// The packet was the next one the channel expected: it was delivered,
+    /// chaining the buffered packets it unblocked.
+    NextInWindow,
+    /// The packet was stored ahead of the expected sequence.
+    BufferedInWindow,
+    /// The packet was older than the expected sequence: a duplicate.
+    Duplicate,
+    /// The packet fell outside the window the channel will accept.
+    OutOfWindow,
+    /// The packet's sequence or source address did not match the channel.
+    Corrupt,
+}
 
 /// `Mercury::UDPChannel` (BW-02-03-02 slice).
 pub struct UdpChannel {
@@ -154,6 +171,13 @@ pub struct UdpChannel {
     is_remote_regular: bool,
     /// `numPacketsResent_`: resends the timer scan has pushed back out.
     num_packets_resent: u32,
+    /// `bufferedReceives_` (udp_channel.hpp:444): packets received ahead of
+    /// `in_seq_at`, held until the missing ones arrive. Addressed by seq;
+    /// the run of consecutive slots above `in_seq_at` chains into the
+    /// in-order packet when it finally arrives.
+    buffered_receives: CircularArray<Option<Rc<Packet>>>,
+    /// `numBufferedReceives_`.
+    num_buffered_receives: u32,
 
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
@@ -194,6 +218,8 @@ impl UdpChannel {
             creation_version: 0,
             window_size: size,
             unacked_packets: CircularArray::new(size),
+            buffered_receives: CircularArray::new(size),
+            num_buffered_receives: 0,
             small_out_seq_at: 0,
             large_out_seq_at: 0,
             oldest_unacked_seq: SEQ_NULL,
@@ -544,13 +570,22 @@ impl UdpChannel {
         self.has_seen_overflow_warning
     }
 
-    /// `getMaxOverflowPackets()` (udp_channel.hpp:423).
+    /// `getMaxOverflowPackets()` (udp_channel.hpp:423): external 1024,
+    /// internal 8192, indexed 4096. Index 1 (internal) is not reachable
+    /// through a `* 2` of the indexed flag, so the non-external branch
+    /// advances one from the external entry.
     fn get_max_overflow_packets(&self) -> usize {
         if self.is_external() {
             MAX_OVERFLOW_PACKETS[0]
         } else {
-            MAX_OVERFLOW_PACKETS[usize::from(self.is_indexed()) * 2]
+            MAX_OVERFLOW_PACKETS[usize::from(self.is_indexed()) + 1]
         }
+    }
+
+    /// `maxWindowSize()` (udp_channel.hpp:433): how far ahead of `inSeqAt_`
+    /// the receive window may accept a packet.
+    pub fn max_window_size(&self) -> usize {
+        self.window_size + self.get_max_overflow_packets()
     }
 
     /// `checkOverflowErrors()` (udp_channel.cpp:421) minus the
@@ -671,6 +706,117 @@ impl UdpChannel {
             unacked.set_last_sent_time(now);
         }
         this.last_reliable_resend_time = now;
+    }
+
+    /// `addToReceiveWindow( p, srcAddr, stats )` (udp_channel.cpp:1232):
+    /// filter a received packet against the receive window and say what
+    /// happened to it. The packet moves in; when it is the next one the
+    /// channel expected it comes back out as the head of a chain reaching
+    /// through every buffered packet it unblocked, in sequence order -- the
+    /// caller dispatches by walking [`Packet::chain_next`]. Everything else
+    /// consumes the packet: buffered packets are filed in
+    /// `buffered_receives`, duplicates and rejects are dropped.
+    ///
+    /// The reference's `shouldAutoSwitchToSrcAddr_` arm (switch address on
+    /// an acceptable version) is not modelled yet, so a packet from any
+    /// address but the channel's own is corrupt. The `acksToSend_.insert`
+    /// and unsent-ack push belong to the receive send path (BW-02-03-07),
+    /// and the `stats` counters arrive with the interface's receive path.
+    pub fn add_to_receive_window(
+        channel: &ChannelPtr,
+        packet: Rc<Packet>,
+        src_addr: Address,
+    ) -> (AddToReceiveWindowResult, Option<Rc<Packet>>) {
+        let seq = packet.seq();
+
+        // Make sure the sequence number is valid (udp_channel.cpp:1239).
+        if seq_mask(seq) != seq {
+            return (AddToReceiveWindowResult::Corrupt, None);
+        }
+
+        {
+            let this = channel.borrow();
+            if this.addr != src_addr {
+                // Got packet from wrong source address (udp_channel.cpp:1260).
+                return (AddToReceiveWindowResult::Corrupt, None);
+            }
+        }
+
+        let mut this = channel.borrow_mut();
+
+        // check the good case first (udp_channel.cpp:1302)
+        if seq == this.in_seq_at {
+            this.in_seq_at = seq_mask(this.in_seq_at.wrapping_add(1));
+
+            // Attach as many buffered packets as possible to this one. The
+            // reference keeps `pPrev` on the just-chained packet and links
+            // the next buffered packet behind it; the port's cursor is the
+            // same pointer, threaded through each link's `chain_next` slot.
+            let mut head = packet;
+            let mut tail: &mut Rc<Packet> = &mut head;
+            loop {
+                let idx = this.in_seq_at as usize;
+                let next = this.buffered_receives.get_mut(idx).take();
+                let Some(next) = next else {
+                    break;
+                };
+                this.num_buffered_receives -= 1;
+                this.in_seq_at = seq_mask(this.in_seq_at.wrapping_add(1));
+                let last = Rc::get_mut(tail).expect("chain: sole owner");
+                last.chain(next);
+                tail = last.chain_next_mut().unwrap();
+            }
+
+            return (AddToReceiveWindowResult::NextInWindow, Some(head));
+        }
+
+        // see if we've got this one before. We have if seq < inSeqAt_
+        // (udp_channel.cpp:1325).
+        if seq_less_than(seq, this.in_seq_at) {
+            return (AddToReceiveWindowResult::Duplicate, None);
+        }
+
+        // make sure it's in range (udp_channel.cpp:1341). Note that we
+        // store packets between [inSeqAt_ + 1, inSeqAt_ + size) -- this is
+        // why the bounds use > rather than >=.
+        let required_window_size = seq_mask(seq.wrapping_sub(this.in_seq_at));
+        if required_window_size as usize > 2 * this.buffered_receives.size()
+            || required_window_size as usize > this.max_window_size()
+        {
+            return (AddToReceiveWindowResult::OutOfWindow, None);
+        } else if required_window_size as usize > this.buffered_receives.size() {
+            // Copy buffered receives from the start of our buffered
+            // receives, the first starting at inSeqAt_ + 1.
+            let start = this.in_seq_at.wrapping_add(1) as usize;
+            this.buffered_receives.double_size(start);
+        }
+
+        // ok - we'll buffer this packet then.... (udp_channel.cpp:1381)
+        let slot = this.buffered_receives.get_mut(seq as usize);
+        if slot.is_some() {
+            // ... but only if we don't already have it. A different
+            // sequence in the slot is the reference's CRITICAL_MSG: logged,
+            // and the resident packet keeps the slot.
+            if slot.as_ref().unwrap().seq() == seq {
+                return (AddToReceiveWindowResult::Duplicate, None);
+            }
+            eprintln!(
+                "UDPChannel::addToReceiveWindow: Packet {} in {}'s buffered receive slot",
+                slot.as_ref().unwrap().seq(),
+                seq
+            );
+            return (AddToReceiveWindowResult::BufferedInWindow, None);
+        }
+
+        *slot = Some(packet);
+        this.num_buffered_receives += 1;
+
+        (AddToReceiveWindowResult::BufferedInWindow, None)
+    }
+
+    /// `numBufferedReceives_`.
+    pub fn num_buffered_receives(&self) -> u32 {
+        self.num_buffered_receives
     }
 
     /// `addResendTimer( seq, p, roBeg, roEnd )` (udp_channel.cpp:817):
@@ -1272,6 +1418,11 @@ mod tests {
             0.1,
             "internal channels assume a fast link"
         );
+        assert_eq!(
+            internal.borrow().max_window_size(),
+            INTERNAL_CHANNEL_SIZE + 8192,
+            "internal channels overflow against 8192 (getMaxOverflowPackets)"
+        );
 
         let external = UdpChannel::new(
             &interface,
@@ -1287,6 +1438,11 @@ mod tests {
             1.0,
             "external channels assume a second"
         );
+        assert_eq!(
+            external.borrow().max_window_size(),
+            EXTERNAL_CHANNEL_SIZE + 1024,
+            "external channels overflow against 1024"
+        );
 
         let indexed = UdpChannel::new(
             &interface,
@@ -1297,6 +1453,11 @@ mod tests {
         );
         assert_eq!(indexed.borrow().window_size(), INDEXED_CHANNEL_SIZE);
         assert_eq!(indexed.borrow().window_size(), 512);
+        assert_eq!(
+            indexed.borrow().max_window_size(),
+            INDEXED_CHANNEL_SIZE + 4096,
+            "indexed channels overflow against 4096"
+        );
         assert!(indexed.borrow().is_indexed());
         assert_eq!(indexed.borrow().c_str(), "udp:3.0.0.1:20/7");
 
@@ -2292,5 +2453,264 @@ mod tests {
             "seq 0 sits behind a newer ack"
         );
         assert_eq!(channel.borrow().last_reliable_resend_time(), 1_200_000);
+    }
+
+    /// A fresh packet carrying `seq`, owned by a single `Rc` -- the way the
+    /// receive dispatch hands one to the filter.
+    fn packet(seq: SeqNum) -> Rc<Packet> {
+        let mut packet = Packet::new();
+        packet.set_seq(seq);
+        Rc::new(packet)
+    }
+
+    /// Filter `seq` onto the channel the way the reference's receive dispatch
+    /// does: a fresh packet with that seq, from the channel's own address.
+    fn receive(
+        channel: &ChannelPtr,
+        seq: SeqNum,
+    ) -> (AddToReceiveWindowResult, Option<Rc<Packet>>) {
+        let own = channel.borrow().addr();
+        UdpChannel::add_to_receive_window(channel, packet(seq), own)
+    }
+
+    /// Walk a receive chain and collect the sequence numbers in dispatch
+    /// order. This is the acceptance check for "按原版顺序派发": whatever the
+    /// caller dispatches is the head, then each link in sequence order.
+    fn chain_seq(head: &Rc<Packet>) -> Vec<u32> {
+        let mut seen = vec![head.seq()];
+        let mut cursor = Rc::clone(head);
+        while let Some(next) = cursor.chain_next() {
+            seen.push(next.seq());
+            cursor = next;
+        }
+        seen
+    }
+
+    /// BW-02-03-05 acceptance: three packets arrive out of order ahead of
+    /// the one the channel expects, and the late arrival unblocks all three.
+    /// The caller gets back the missing packet as the head of a chain
+    /// reaching through every buffered successor, in sequence order.
+    #[test]
+    fn a_late_packet_unblocks_the_buffered_run_in_sequence_order() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d0),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        // Two packets land ahead of the expected seq 0: both are buffered,
+        // nothing is dispatched, and the window remembers them.
+        assert_eq!(
+            receive(&channel, 2).0,
+            AddToReceiveWindowResult::BufferedInWindow,
+            "seq 2 arrives ahead of inSeqAt 0"
+        );
+        assert_eq!(
+            receive(&channel, 3).0,
+            AddToReceiveWindowResult::BufferedInWindow
+        );
+        assert_eq!(channel.borrow().num_buffered_receives(), 2);
+        assert_eq!(
+            channel.borrow().in_seq_at,
+            0,
+            "a gap is not closed by a successor"
+        );
+
+        // Seq 0 is the packet the channel expects: it is dispatched, but the
+        // run stops at the still-missing seq 1.
+        let (result, head) = receive(&channel, 0);
+        assert_eq!(result, AddToReceiveWindowResult::NextInWindow);
+        let Some(head) = head else {
+            panic!("an in-order packet is the dispatch head");
+        };
+        assert_eq!(chain_seq(&head), vec![0], "seq 1 is still missing");
+        assert_eq!(channel.borrow().in_seq_at, 1);
+        assert_eq!(
+            channel.borrow().num_buffered_receives(),
+            2,
+            "buffering survives"
+        );
+
+        // Seq 1 closes the gap: it dispatches and the whole buffered run
+        // follows it in sequence order.
+        let (result, head) = receive(&channel, 1);
+        assert_eq!(result, AddToReceiveWindowResult::NextInWindow);
+        let Some(head) = head else {
+            panic!("an in-order packet is the dispatch head");
+        };
+        assert_eq!(
+            chain_seq(&head),
+            vec![1, 2, 3],
+            "the run dispatches in order"
+        );
+        assert_eq!(channel.borrow().in_seq_at, 4, "the run advanced the window");
+        assert_eq!(
+            channel.borrow().num_buffered_receives(),
+            0,
+            "the run drained the buffer"
+        );
+    }
+
+    /// A retransmit older than the window has moved past is a duplicate,
+    /// whether it has already been dispatched or is still buffered.
+    #[test]
+    fn a_retransmit_is_reported_as_a_duplicate() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d1),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        // Already-dispatched packets are duplicates once the window has
+        // passed them.
+        assert_eq!(
+            receive(&channel, 0).0,
+            AddToReceiveWindowResult::NextInWindow
+        );
+        assert_eq!(receive(&channel, 0).0, AddToReceiveWindowResult::Duplicate);
+
+        // A buffered packet that arrives twice is a duplicate on the second
+        // go, and the window keeps only the first.
+        assert_eq!(
+            receive(&channel, 2).0,
+            AddToReceiveWindowResult::BufferedInWindow
+        );
+        assert_eq!(receive(&channel, 2).0, AddToReceiveWindowResult::Duplicate);
+        assert_eq!(channel.borrow().num_buffered_receives(), 1);
+
+        // The resident packet is the one dispatched when the gap closes.
+        let (_, head) = receive(&channel, 1);
+        let Some(head) = head else {
+            panic!("seq 1 is the expected packet");
+        };
+        assert_eq!(chain_seq(&head), vec![1, 2]);
+    }
+
+    /// A sequence outside the masked range and a foreign source address are
+    /// corrupt: the reference logs an error and drops the packet.
+    #[test]
+    fn a_corrupt_packet_is_reported_corrupt() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d2),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        let own = channel.borrow().addr();
+
+        // SEQ_SIZE itself is outside the 28-bit range.
+        let mut wide = Packet::new();
+        wide.set_seq(0x1000_0000);
+        assert_eq!(
+            UdpChannel::add_to_receive_window(&channel, Rc::new(wide), own).0,
+            AddToReceiveWindowResult::Corrupt,
+            "a seq outside seqMask() cannot index the ring"
+        );
+
+        // A packet from another address goes to the channel that owns it.
+        assert_eq!(
+            UdpChannel::add_to_receive_window(&channel, packet(2), addr(0x0200_00d2)).0,
+            AddToReceiveWindowResult::Corrupt,
+            "the source address is part of the channel identity"
+        );
+
+        // Neither rejected packet touched the window.
+        assert_eq!(channel.borrow().in_seq_at, 0);
+        assert_eq!(channel.borrow().num_buffered_receives(), 0);
+    }
+
+    /// A packet further ahead than the window will grow to is out of window:
+    /// the receive buffer cannot reach it, and the reference drops it rather
+    /// than chase it.
+    #[test]
+    fn a_packet_beyond_the_window_is_out_of_window() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d3),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        let max = channel.borrow().max_window_size();
+        assert_eq!(max, EXTERNAL_CHANNEL_SIZE + 1024, "external ceiling");
+
+        assert_eq!(
+            receive(&channel, max as SeqNum).0,
+            AddToReceiveWindowResult::OutOfWindow,
+            "one past the ceiling is unreachable"
+        );
+        assert_eq!(
+            receive(&channel, 0).0,
+            AddToReceiveWindowResult::NextInWindow,
+            "the expected packet still lands"
+        );
+    }
+
+    /// The receive window grows to take a packet that is in range but past
+    /// the current ring size, carrying the buffered run forward.
+    #[test]
+    fn the_receive_window_grows_and_keeps_the_run() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d4),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        // 300 ahead is past the 256-slot ring but inside the ceiling, so the
+        // ring doubles rather than rejecting the packet.
+        assert_eq!(
+            receive(&channel, 300).0,
+            AddToReceiveWindowResult::BufferedInWindow
+        );
+        assert_eq!(channel.borrow().num_buffered_receives(), 1);
+        assert_eq!(
+            channel.borrow().buffered_receives.size(),
+            EXTERNAL_CHANNEL_SIZE * 2,
+            "the ring doubled to hold the packet"
+        );
+
+        // The doubled ring kept the slot: the resident packet is still
+        // there, so a retransmit of it is still a duplicate.
+        assert_eq!(
+            receive(&channel, 300).0,
+            AddToReceiveWindowResult::Duplicate
+        );
+
+        // Fill the gaps and the whole run comes back out in order.
+        for seq in 1..300 {
+            assert_eq!(
+                receive(&channel, seq).0,
+                AddToReceiveWindowResult::BufferedInWindow
+            );
+        }
+        let (_, head) = receive(&channel, 0);
+        let Some(head) = head else {
+            panic!("seq 0 is the expected packet");
+        };
+        let seen = chain_seq(&head);
+        assert_eq!(seen.len(), 301, "the run reached through the grown ring");
+        assert_eq!(seen[0], 0);
+        assert_eq!(seen[300], 300);
+        assert!(
+            seen.windows(2).all(|pair| pair[0] + 1 == pair[1]),
+            "the run dispatches in sequence order"
+        );
+        assert_eq!(channel.borrow().num_buffered_receives(), 0);
     }
 }

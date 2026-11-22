@@ -67,6 +67,8 @@ pub mod flags {
         | HAS_CUMULATIVE_ACK;
 }
 
+use std::rc::Rc;
+
 /// Message id 0xFF is reserved for replies (`Mercury::REPLY`).
 pub const REPLY_MESSAGE_ID: u8 = 0xFF;
 
@@ -102,6 +104,11 @@ pub struct Packet {
     /// `isPiggyback_`: this packet was recovered from a piggyback block,
     /// not received whole.
     is_piggyback: bool,
+    /// `pChain_`: the next packet in a receive-window chain, when this
+    /// packet arrived in order but consecutive successors were already
+    /// buffered ahead of it. [`Packet::chain`] links a run together; the
+    /// receive dispatch walks it in sequence order (udp_channel.cpp:1281).
+    chain_next: Option<Rc<Packet>>,
 }
 
 impl Packet {
@@ -120,6 +127,7 @@ impl Packet {
             frag_begin: crate::misc::SEQ_NULL,
             frag_end: crate::misc::SEQ_NULL,
             is_piggyback: false,
+            chain_next: None,
         }
     }
 
@@ -327,6 +335,28 @@ impl Packet {
     /// `seq()`.
     pub fn seq(&self) -> u32 {
         self.seq
+    }
+
+    /// `chainNext()` (packet.hpp): the next packet in the receive-window
+    /// chain, or `None` at the tail of a run.
+    pub fn chain_next(&self) -> Option<Rc<Packet>> {
+        self.chain_next.clone()
+    }
+
+    /// The write half of [`chain_next`](Self::chain_next), without cloning:
+    /// the receive-window chain walk re-borrows each link, which needs the
+    /// slot itself rather than a clone -- a clone would push a link's
+    /// refcount to two and break `Rc::get_mut`.
+    pub(crate) fn chain_next_mut(&mut self) -> Option<&mut Rc<Packet>> {
+        self.chain_next.as_mut()
+    }
+
+    /// `chain( Packet * )` (packet.hpp): link `next` behind this packet in
+    /// the receive-window chain, so one dispatch walks the run in sequence
+    /// order. The reference also folds the chained length into its message
+    /// size; the port keeps each packet whole, so only the link is needed.
+    pub fn chain(&mut self, next: Rc<Packet>) {
+        self.chain_next = Some(next);
     }
 
     /// The write half of `seq()`.
