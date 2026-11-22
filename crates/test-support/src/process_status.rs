@@ -141,6 +141,101 @@ impl StatusCollector {
     }
 }
 
+/// The cluster's known topology: how many players and entities of each type a
+/// role holds. It is the state the test set up, and the status collector
+/// samples it, so the collected counts always match it.
+#[derive(Debug, Default)]
+pub struct TopologyState {
+    players: u64,
+    entities: crate::memory_snapshot::ObjectCounts,
+}
+
+impl TopologyState {
+    /// A topology with no players and no entities.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The number of players on the role.
+    pub fn set_players(&mut self, players: u64) {
+        self.players = players;
+    }
+
+    /// `count` more entities of the given type.
+    pub fn add_entities(&mut self, type_name: &str, count: u64) {
+        for _ in 0..count {
+            self.entities.add_entity(type_name);
+        }
+    }
+
+    /// `count` entities of the given type go away.
+    pub fn remove_entities(&mut self, type_name: &str, count: u64) -> bool {
+        for _ in 0..count {
+            if !self.entities.remove_entity(type_name) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The players on the role.
+    pub fn players(&self) -> u64 {
+        self.players
+    }
+
+    /// The entities of the given type.
+    pub fn entity_count(&self, type_name: &str) -> u64 {
+        self.entities.entity_count(type_name)
+    }
+
+    /// The entities of every type.
+    pub fn entity_total(&self) -> u64 {
+        self.entities.entity_total()
+    }
+
+    /// The entity type names, ascending.
+    pub fn entity_types(&self) -> Vec<&str> {
+        self.entities.entity_types()
+    }
+}
+
+impl StatusCollector {
+    /// Sample a topology's known counts into a role's status: the players and
+    /// the entity total, plus one reading per entity type. Each sample
+    /// replaces the counts the previous one left, so the latest readings
+    /// always reflect the topology as it now stands.
+    pub fn record_counts(&mut self, role: &str, topology: &TopologyState) -> &mut Self {
+        // Drop the previous sample's count readings; the new sample stands in
+        // for the whole topology. Other readings (version, ready, heartbeat)
+        // are untouched.
+        if let Some(status) = self.processes.get_mut(role) {
+            status.readings.retain(|reading| {
+                reading.item != "players"
+                    && reading.item != "entities"
+                    && !reading.item.starts_with("entity.")
+            });
+        }
+        self.record(
+            role,
+            "players",
+            &topology.players().to_string(),
+            "topology state",
+        );
+        self.record(
+            role,
+            "entities",
+            &topology.entity_total().to_string(),
+            "topology state",
+        );
+        for type_name in topology.entity_types() {
+            let item = format!("entity.{type_name}");
+            let value = topology.entity_count(type_name).to_string();
+            self.record(role, &item, &value, "topology state");
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +316,77 @@ mod tests {
         collector.record("cellapp01", "ready", "true", "readiness announcement");
         assert!(collector.status("cellapp01").unwrap().is_ready());
         assert!(!collector.status("baseapp01").unwrap().is_ready());
+    }
+
+    #[test]
+    fn collected_counts_match_the_topology_state() {
+        let mut collector = StatusCollector::with_clock(|| 500);
+        collector.register("cellapp01", Some(100));
+
+        // The test topology: twelve players and three known entity types.
+        let mut topology = TopologyState::new();
+        topology.set_players(12);
+        topology.add_entities("Character", 5);
+        topology.add_entities("Avatar", 3);
+        topology.add_entities("Vehicle", 4);
+
+        collector.record_counts("cellapp01", &topology);
+        let status = collector.status("cellapp01").unwrap();
+
+        // The collected counts equal the topology's known numbers.
+        assert_eq!(status.reading("players").unwrap().value, "12");
+        assert_eq!(status.reading("entities").unwrap().value, "12");
+        assert_eq!(status.reading("entity.Character").unwrap().value, "5");
+        assert_eq!(status.reading("entity.Avatar").unwrap().value, "3");
+        assert_eq!(status.reading("entity.Vehicle").unwrap().value, "4");
+        // Every count names its source.
+        assert_eq!(status.reading("players").unwrap().source, "topology state");
+        assert_eq!(status.reading("entities").unwrap().source, "topology state");
+    }
+
+    #[test]
+    fn re_sampling_tracks_topology_changes() {
+        let mut collector = StatusCollector::with_clock(|| 600);
+        collector.register("cellapp01", Some(100));
+        let mut topology = TopologyState::new();
+        topology.set_players(4);
+        topology.add_entities("Character", 6);
+
+        collector.record_counts("cellapp01", &topology);
+        let status = collector.status("cellapp01").unwrap();
+        assert_eq!(status.reading("players").unwrap().value, "4");
+        assert_eq!(status.reading("entities").unwrap().value, "6");
+
+        // The load moves: two players leave, five entities despawn. The next
+        // sample reflects the topology as it now stands.
+        topology.set_players(2);
+        assert!(topology.remove_entities("Character", 5));
+        collector.record_counts("cellapp01", &topology);
+        let status = collector.status("cellapp01").unwrap();
+        assert_eq!(status.reading("players").unwrap().value, "2");
+        assert_eq!(status.reading("entities").unwrap().value, "1");
+        assert_eq!(status.reading("entity.Character").unwrap().value, "1");
+    }
+
+    #[test]
+    fn a_drained_topology_reads_zero() {
+        let mut collector = StatusCollector::with_clock(|| 700);
+        collector.register("cellapp01", Some(100));
+        let mut topology = TopologyState::new();
+        topology.add_entities("Character", 3);
+
+        collector.record_counts("cellapp01", &topology);
+        let status = collector.status("cellapp01").unwrap();
+        assert_eq!(status.reading("entities").unwrap().value, "3");
+
+        // Drain every entity: the total falls to zero and the type's row
+        // leaves the topology.
+        assert!(topology.remove_entities("Character", 3));
+        assert_eq!(topology.entity_total(), 0);
+        assert_eq!(topology.entity_types(), Vec::<&str>::new());
+        collector.record_counts("cellapp01", &topology);
+        let status = collector.status("cellapp01").unwrap();
+        assert_eq!(status.reading("entities").unwrap().value, "0");
+        assert_eq!(status.reading("entity.Character"), None);
     }
 }
