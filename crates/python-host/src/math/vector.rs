@@ -1463,6 +1463,17 @@ fn vector_spec(dim: usize) -> TypeSpec {
         },
     )
     .slot(
+        // `repr(v) == str(v) == "(x, y, z)"`: the reference wires both slots
+        // to the same `PyVector<V>::_pyStr`
+        // (`PY_TYPEOBJECT_SPECIALISE_REPR_AND_STR`, script_math.cpp:2520).
+        capi::Py_tp_repr,
+        match dim {
+            2 => vector2_str as *mut std::os::raw::c_void,
+            3 => vector3_str as *mut std::os::raw::c_void,
+            _ => vector4_str as *mut std::os::raw::c_void,
+        },
+    )
+    .slot(
         capi::Py_tp_richcompare,
         rich_compare as *mut std::os::raw::c_void,
     )
