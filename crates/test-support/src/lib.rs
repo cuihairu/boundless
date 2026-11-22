@@ -58,6 +58,7 @@ pub mod request_capture;
 pub mod rng;
 pub mod runtime_env;
 pub mod sdk_abi;
+pub mod sdk_header;
 pub mod sdk_session;
 pub mod session_duration;
 pub mod session_metrics;
