@@ -10,7 +10,9 @@
 //!
 //! A [`BoundedCapture`] adds the resource limits on top: a duration, after
 //! which nothing more is captured, and a buffer cap, past which the events
-//! are counted as lost instead of silently missing.
+//! are counted as lost instead of silently missing. On a cancel or a dropped
+//! connection the session is reclaimed per its [`CancelPolicy`]: free
+//! everything, or keep the most recent events for recovery.
 
 use std::cell::{Cell, RefCell};
 
@@ -134,6 +136,14 @@ impl<'a> CaptureSession<'a> {
         self.active.set(false);
         events
     }
+
+    /// Deactivate the session without draining: it becomes inert, and the
+    /// events still buffered in the profilers stay there for whoever starts
+    /// next. This is the teardown a reclaim path uses when it wants to free
+    /// the session's own resources rather than consume the events.
+    pub fn close(&self) {
+        self.active.set(false);
+    }
 }
 
 /// How long and how much a bounded session may capture. Either limit may be
@@ -182,6 +192,23 @@ pub enum StopReason {
     Expired,
     /// The buffer limit was reached: what came after was counted as lost.
     BufferFull,
+    /// The capture was cancelled.
+    Cancelled,
+    /// The capture's connection dropped.
+    Disconnected,
+}
+
+/// How a session is reclaimed when it is cancelled or disconnected: per the
+/// configuration, either free everything it captured or keep the most recent
+/// events for recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CancelPolicy {
+    /// Free everything captured; the whole buffer counts as lost.
+    #[default]
+    Discard,
+    /// Keep the most recent `usize` events for recovery; the rest count as
+    /// lost.
+    KeepRecent(usize),
 }
 
 /// What a bounded session captured: the events, what was lost, and why it
@@ -190,20 +217,22 @@ pub enum StopReason {
 pub struct CaptureReport {
     /// The events kept within the limits.
     pub events: Vec<CapturedEvent>,
-    /// The events dropped once the buffer filled, so losses are reported
-    /// rather than silently absent.
+    /// The events dropped — past the buffer limit, or freed by a reclaim —
+    /// so losses are reported rather than silently absent.
     pub dropped: usize,
     /// Why the session stopped.
     pub reason: StopReason,
 }
 
 /// A capture session bounded by a duration and a buffer. The caller drives
-/// it: `start`, run the load, `poll` as the clock moves, `stop`. The clock
-/// is read to see whether the duration limit is due.
+/// it: `start`, run the load, `poll` as the clock moves, `stop`, or reclaim
+/// it early with `cancel`/`disconnect`. The clock is read to see whether the
+/// duration limit is due.
 pub struct BoundedCapture<'a> {
     session: CaptureSession<'a>,
     limit: CaptureLimit,
     clock: Box<dyn Fn() -> u64>,
+    cancel_policy: CancelPolicy,
     started_at: Cell<u64>,
     buffer: RefCell<Vec<CapturedEvent>>,
     dropped: Cell<usize>,
@@ -221,6 +250,7 @@ impl<'a> BoundedCapture<'a> {
             session: CaptureSession::new(profilers),
             limit,
             clock: Box::new(clock),
+            cancel_policy: CancelPolicy::default(),
             started_at: Cell::new(0),
             buffer: RefCell::new(Vec::new()),
             dropped: Cell::new(0),
@@ -239,11 +269,18 @@ impl<'a> BoundedCapture<'a> {
             session: CaptureSession::with_filter(profilers, filter),
             limit,
             clock: Box::new(clock),
+            cancel_policy: CancelPolicy::default(),
             started_at: Cell::new(0),
             buffer: RefCell::new(Vec::new()),
             dropped: Cell::new(0),
             outcome: Cell::new(None),
         }
+    }
+
+    /// Set how the session is reclaimed when cancelled or disconnected.
+    pub fn with_cancel_policy(mut self, policy: CancelPolicy) -> Self {
+        self.cancel_policy = policy;
+        self
     }
 
     /// Start capturing: discard everything buffered so far, so the window —
@@ -293,6 +330,45 @@ impl<'a> BoundedCapture<'a> {
         };
         CaptureReport {
             events: self.buffer.take(),
+            dropped: self.dropped.get(),
+            reason,
+        }
+    }
+
+    /// Cancel the capture: stop capturing and reclaim the session's resources
+    /// per its configuration, reporting what was kept, lost, and why.
+    pub fn cancel(&self) -> CaptureReport {
+        self.reclaim(StopReason::Cancelled)
+    }
+
+    /// The capture's connection dropped: the same reclaim as `cancel`, reported
+    /// as a disconnect so a consumer can tell the two apart.
+    pub fn disconnect(&self) -> CaptureReport {
+        self.reclaim(StopReason::Disconnected)
+    }
+
+    /// Reclaim the session: deactivate it, then free its buffer per the
+    /// configured policy, counting what is freed as lost so nothing vanishes
+    /// unreported.
+    fn reclaim(&self, reason: StopReason) -> CaptureReport {
+        self.session.close();
+        self.outcome.set(Some(reason));
+        let (kept, freed) = {
+            let mut buffer = self.buffer.borrow_mut();
+            let total = buffer.len();
+            let keep = match self.cancel_policy {
+                CancelPolicy::Discard => 0,
+                CancelPolicy::KeepRecent(count) => count.min(total),
+            };
+            // The recent tail is kept for recovery; the older head is freed.
+            let kept = buffer.split_off(total - keep);
+            let freed = total - kept.len();
+            buffer.clear();
+            (kept, freed)
+        };
+        self.dropped.set(self.dropped.get() + freed);
+        CaptureReport {
+            events: kept,
             dropped: self.dropped.get(),
             reason,
         }
@@ -539,5 +615,98 @@ mod tests {
         assert_eq!(report.events.len(), 6, "3 sections x 2 events");
         assert_eq!(report.dropped, 0);
         assert_eq!(report.reason, StopReason::Explicit);
+    }
+
+    #[test]
+    fn a_cancelled_session_reclaims_per_configuration() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+        prof.set_identity("cellapp01", 100);
+
+        let clock = source.clone();
+        let session = BoundedCapture::with_clock(&[&prof], CaptureLimit::unbounded(), move || {
+            clock.load(Ordering::SeqCst)
+        })
+        .with_cancel_policy(CancelPolicy::KeepRecent(2));
+        session.start();
+
+        for name in ["first", "second", "third"] {
+            record_section(&source, &prof, name, 4);
+            session.poll();
+        }
+
+        let report = session.cancel();
+        assert_eq!(report.reason, StopReason::Cancelled);
+        assert_eq!(report.events.len(), 2, "only the recent tail is kept");
+        assert_eq!(
+            report.dropped, 4,
+            "the older events are freed, not lost quietly"
+        );
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| event.entry.name == "third"),
+            "the kept events are the most recent: {:?}",
+            report.events
+        );
+
+        // The reclaimed session is inert: later work never reappears.
+        record_section(&source, &prof, "fourth", 4);
+        session.poll();
+        assert_eq!(session.stop().events.len(), 0);
+    }
+
+    #[test]
+    fn a_discarded_session_frees_everything() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+        prof.set_identity("cellapp01", 100);
+
+        let clock = source.clone();
+        let session = BoundedCapture::with_clock(&[&prof], CaptureLimit::unbounded(), move || {
+            clock.load(Ordering::SeqCst)
+        });
+        session.start();
+
+        for name in ["first", "second", "third"] {
+            record_section(&source, &prof, name, 4);
+            session.poll();
+        }
+
+        let report = session.cancel();
+        assert_eq!(report.reason, StopReason::Cancelled);
+        assert!(report.events.is_empty(), "everything is freed");
+        assert_eq!(report.dropped, 6, "and everything freed is reported");
+    }
+
+    #[test]
+    fn a_disconnected_session_reclaims_like_cancel() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+        prof.set_identity("cellapp01", 100);
+
+        let clock = source.clone();
+        let session = BoundedCapture::with_clock(&[&prof], CaptureLimit::unbounded(), move || {
+            clock.load(Ordering::SeqCst)
+        })
+        .with_cancel_policy(CancelPolicy::KeepRecent(2));
+        session.start();
+
+        for name in ["first", "second"] {
+            record_section(&source, &prof, name, 4);
+            session.poll();
+        }
+
+        let report = session.disconnect();
+        assert_eq!(report.reason, StopReason::Disconnected);
+        assert_eq!(report.events.len(), 2);
+        assert_eq!(report.dropped, 2);
+        assert!(
+            report
+                .events
+                .iter()
+                .all(|event| event.entry.name == "second")
+        );
     }
 }
