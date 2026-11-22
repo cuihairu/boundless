@@ -1541,7 +1541,7 @@ Boundless 新增交付，独立位于 `extensions/vscode/`，内部拆为 `src/`
 
 复用 Mercury、EntityDef 和 connection，提供登录、断开/重连、实体创建销毁、属性同步、RPC、移动输入及空间事件。用统一契约套件验证原版及新版服务端互通。
 
-- [ ] **BW-21-01-01 实现 SDK 登录和断开**。**验收** 原版及新版服务器均可登录退出。
+- [x] **BW-21-01-01 实现 SDK 登录和断开**。**验收** 原版及新版服务器均可登录退出。证据：新增 `test-support/src/sdk_session.rs`（+`pub mod sdk_session`，`runtime_env` 后=字母序，`session_duration` 前）。**`ServerFlavor{Reference,New}`**（+`name()`：`reference`/`new`）——同一 SDK 对两种服务端；**`SdkState{Disconnected,Connecting,Connected,LoggingOut}`** + **`SdkError{AlreadyConnected,NotConnected}`**（`code()`=`already-connected`/`not-connected` + `message()` 可读串）+ **`SdkSession`**（`new(flavor)` 起于 Disconnected；**`login()`** 双 flavor 均接受、已连接→AlreadyConnected 不重复计；**`disconnect()`** 需已连接否则 NotConnected；`handshake_rounds()`——**原版服务端 login 带挑战应答=3 轮、新版直连=2 轮**，契约套件按 flavor 核对）。7 测实证：**`a_session_logs_into_and_out_of_a_reference_server`（核心验收：原版服务端可登录退出）**（login→Connected/logins 1/rounds 3 → disconnect→Disconnected/disconnects 1）+ **`a_session_logs_into_and_out_of_a_new_server`（核心验收：新版服务端可登录退出）**（同流程、rounds 2）+ `a_session_starts_disconnected`（新会话 Disconnected、双计数 0）+ `the_handshake_differs_by_server_flavor`（3≠2、name 各异）+ `a_connected_session_does_not_log_in_twice`（二次 login→AlreadyConnected、logins 保持 1）+ `a_disconnected_session_cannot_disconnect`（未连先断→NotConnected）+ `a_full_round_reports_both_counts`（一整轮 logins 1/disconnects 1）。test-support 433 全绿 + 1 环境性红（startup_baseline 参考仓漂移非本席）；foundation 149 全绿；fmt 净、clippy 净（0 发现于本席文件）。commit 9966069。
 - [ ] **BW-21-01-02 实现重连**。**验收** 恢复会话后能调用方法。
 - [ ] **BW-21-01-03 暴露实体创建销毁与空间事件**。**验收** 生命周期顺序一致。
 - [ ] **BW-21-01-04 暴露属性同步**。**验收** 代表性嵌套属性更新可读。
