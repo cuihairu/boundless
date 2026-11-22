@@ -80,6 +80,7 @@ pub mod timer_scenarios;
 pub mod tool_output;
 pub mod trace_json;
 pub mod trace_timeline;
+pub mod unit_tests;
 pub mod unity_sdk;
 pub mod unreal_sdk;
 pub mod wait_capture;
