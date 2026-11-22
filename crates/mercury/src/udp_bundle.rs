@@ -32,6 +32,7 @@ use crate::misc::{SEQ_NULL, SeqNum, SeqNumAllocator};
 use crate::packet::{HEADER_SIZE, Packet, flags};
 use crate::reply_order::ReplyOrder;
 use crate::request_manager::RequestManager;
+use crate::udp_channel::{ChannelPtr, UdpChannel};
 
 /// `DEFAULT_REQUEST_TIMEOUT` (`bundle.hpp`): requests on a channel never
 /// carry a non-default timeout, the reference warns and ignores it.
@@ -122,6 +123,14 @@ pub struct UdpBundle {
     msg_is_request: bool,
     /// `numReliableMessages_`.
     num_reliable_messages: u32,
+}
+
+/// The channel's bundle is swapped out and back while it sends, so it
+/// needs a placeholder to be swapped in.
+impl Default for UdpBundle {
+    fn default() -> Self {
+        UdpBundle::new(0)
+    }
 }
 
 impl UdpBundle {
@@ -478,14 +487,19 @@ impl UdpBundle {
     /// and on, as is the first overflow packet it returns.
     pub fn prepare_packets(
         &mut self,
+        channel: Option<&ChannelPtr>,
         seq_num_allocator: &mut SeqNumAllocator,
         should_use_checksums: bool,
-    ) {
+    ) -> Option<usize> {
         let (flag_reliable, flag_fragment, has_ack) = self.write_flags_terms();
         let ack = self.ack;
         let num_packets = self.packets.len();
         let mut first_seq = 0u32;
         let mut last_seq = 0u32;
+        // `pFirstOverflowPacket` (udp_bundle.cpp:preparePackets): the first
+        // packet the full send window made overflow. The wire loop sends
+        // everything before it.
+        let mut first_overflow: Option<usize> = None;
 
         for (index, packet) in self.packets.iter_mut().enumerate() {
             if should_use_checksums {
@@ -506,14 +520,23 @@ impl UdpBundle {
                 packet.enable_flags(flags::IS_FRAGMENT);
                 packet.reserve_footer(8);
             }
-            if has_ack {
+
+            // On a channel the channel writes its own flags (ON_CHANNEL,
+            // cumulative ack, acks, CREATE_CHANNEL) and reserves their
+            // footers; off-channel the bundle carries one ack.
+            if let Some(channel) = channel {
+                channel.borrow_mut().write_flags(packet);
+            } else if has_ack {
                 packet.enable_flags(flags::HAS_ACKS);
                 packet.reserve_footer(1 + 4);
             }
 
-            // Off-channel, the sequence footer follows from the flags:
-            // reliable or fragmented packets carry one.
-            if packet.has_flags(flags::IS_RELIABLE) || packet.has_flags(flags::IS_FRAGMENT) {
+            // External channels, and reliable or fragmented packets, carry
+            // a sequence footer.
+            if (channel.is_some_and(|c| c.borrow().is_external()))
+                || packet.has_flags(flags::IS_RELIABLE)
+                || packet.has_flags(flags::IS_FRAGMENT)
+            {
                 packet.reserve_footer(4);
                 packet.enable_flags(flags::HAS_SEQUENCE_NUMBER);
             }
@@ -530,15 +553,27 @@ impl UdpBundle {
                 checksum_at = Some(packet.msg_end_offset());
             }
 
-            if has_ack && packet.has_flags(flags::HAS_ACKS) {
+            if let Some(channel) = channel {
+                // The channel's acks and channel-version footers.
+                channel.borrow_mut().write_footer(packet);
+            } else if has_ack && packet.has_flags(flags::HAS_ACKS) {
                 // For once off reliable, we only ever have one ack.
                 packet.pack_footer_u8(1);
                 packet.pack_footer_u32(ack);
             }
 
-            // Off-channel sending always takes the nub's numbers.
+            // Add the sequence number: on a channel, reliable traffic uses
+            // the channel's numbers; everything else the nub's.
             if packet.has_flags(flags::HAS_SEQUENCE_NUMBER) {
-                let seq = seq_num_allocator.get_next();
+                let seq = if let Some(channel) = channel {
+                    if packet.has_flags(flags::IS_RELIABLE) {
+                        UdpChannel::use_next_sequence_id(channel)
+                    } else {
+                        seq_num_allocator.get_next()
+                    }
+                } else {
+                    seq_num_allocator.get_next()
+                };
                 packet.set_seq(seq);
                 packet.pack_footer_u32(seq);
 
@@ -570,7 +605,24 @@ impl UdpBundle {
             if let Some(at) = checksum_at {
                 packet.write_checksum(at);
             }
+
+            // File the reliable packet in the channel's send window. The
+            // unacked slot keeps a copy (the reference shares one
+            // refcounted packet; the port's bundle owns its copy and the
+            // slot owns another).
+            if packet.has_flags(flags::IS_RELIABLE)
+                && let Some(channel) = channel
+            {
+                let seq = packet.seq();
+                if !UdpChannel::add_resend_timer(channel, seq, Rc::new(packet.clone()), &[])
+                    && first_overflow.is_none()
+                {
+                    first_overflow = Some(index);
+                }
+            }
         }
+
+        first_overflow
     }
 
     /// `addAck( seq )`: the one ack an off-channel bundle carries.
@@ -622,6 +674,13 @@ impl UdpBundle {
     /// `numDataUnits`: packets in the chain (`chainLength`).
     pub fn num_data_units(&self) -> usize {
         self.packets.len()
+    }
+
+    /// The datagram bytes of the prepared packet at `index`: what
+    /// `NetworkInterface::send` hands to `sendto`. Valid after
+    /// [`prepare_packets`](Self::prepare_packets) has run.
+    pub fn packet_wire(&self, index: usize) -> &[u8] {
+        self.packets[index].wire()
     }
 
     /// `hasMultipleDataUnits`.
@@ -789,7 +848,7 @@ mod tests {
 
         // prepare without checksums leaves the datagram untouched.
         let mut allocator = SeqNumAllocator::new(1);
-        bundle.prepare_packets(&mut allocator, false);
+        bundle.prepare_packets(None, &mut allocator, false);
         assert_eq!(bundle.packet(0).data(), &[0, 0, 3, b'A', b'B', b'C', b'D']);
         assert_eq!(bundle.size(), 7);
     }
@@ -872,7 +931,7 @@ mod tests {
             "the frame starts at the flags word's end"
         );
 
-        bundle.prepare_packets(&mut SeqNumAllocator::new(1), false);
+        bundle.prepare_packets(None, &mut SeqNumAllocator::new(1), false);
         // The first request offset is packed as the footer.
         let packet = bundle.packet(0);
         assert_eq!(
@@ -966,7 +1025,7 @@ mod tests {
         assert!(!bundle.is_empty(), "a fragmented bundle is not empty");
 
         let mut allocator = SeqNumAllocator::new(1);
-        bundle.prepare_packets(&mut allocator, false);
+        bundle.prepare_packets(None, &mut allocator, false);
 
         let first_body_len = PACKET_MAX_SIZE - RESERVED_FOOTER_SIZE - HEADER_SIZE - 3;
         // Packet one: id, length, the first slice of the body.
@@ -1060,7 +1119,7 @@ mod tests {
         assert!(!bundle.is_empty(), "an acked bundle is not empty");
         assert_eq!(bundle.get_ack(), 9);
 
-        bundle.prepare_packets(&mut SeqNumAllocator::new(1), false);
+        bundle.prepare_packets(None, &mut SeqNumAllocator::new(1), false);
         assert!(
             bundle.has_data_footers(),
             "prepare put the flag on the packet"
@@ -1083,7 +1142,7 @@ mod tests {
         bundle.write_bytes(b"ABCD");
         bundle.finalise();
 
-        bundle.prepare_packets(&mut SeqNumAllocator::new(1), true);
+        bundle.prepare_packets(None, &mut SeqNumAllocator::new(1), true);
         let packet = bundle.packet(0);
         assert!(packet.has_flags(flags::HAS_CHECKSUM));
         assert_eq!(packet.total_size(), 7 + 4);
@@ -1106,7 +1165,7 @@ mod tests {
         let mut bundle = UdpBundle::new(0);
         bundle.finalise();
         assert!(bundle.is_empty());
-        bundle.prepare_packets(&mut SeqNumAllocator::new(1), false);
+        bundle.prepare_packets(None, &mut SeqNumAllocator::new(1), false);
         assert_eq!(bundle.size(), HEADER_SIZE);
 
         // `msgIsReliable_` on a footer-only bundle still counts.
@@ -1118,7 +1177,7 @@ mod tests {
             "the reliable hint owes a sequence number"
         );
 
-        hinted.prepare_packets(&mut SeqNumAllocator::new(1), false);
+        hinted.prepare_packets(None, &mut SeqNumAllocator::new(1), false);
         let packet = hinted.packet(0);
         assert_eq!(
             packet.flags(),
@@ -1142,7 +1201,7 @@ mod tests {
         bundle.finalise();
 
         assert_eq!(bundle.num_messages(), 1);
-        bundle.prepare_packets(&mut SeqNumAllocator::new(3), false);
+        bundle.prepare_packets(None, &mut SeqNumAllocator::new(3), false);
 
         let packet = bundle.packet(0);
         assert_eq!(
@@ -1301,7 +1360,7 @@ mod tests {
         bundle.write_bytes(b"done");
         bundle.finalise();
         bundle.add_reply_orders_to(&sender_manager, None);
-        bundle.prepare_packets(&mut SeqNumAllocator::new(1), true);
+        bundle.prepare_packets(None, &mut SeqNumAllocator::new(1), true);
 
         assert_eq!(bundle.num_data_units(), 1, "everything fits one datagram");
         let datagrams = bundle.num_data_units();

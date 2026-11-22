@@ -526,13 +526,15 @@ mod tests {
 
     /// Every queued datagram goes through the sink in one notification;
     /// the follow-up empty read is quiet (`EAGAIN` when not expecting a
-    /// packet is not reportable).
+    /// packet is not reportable). The datagrams are valid header-only
+    /// packets (zero flags, one body byte) so they clear the filtered
+    /// path's guards and reach the sink.
     #[test]
     fn every_queued_datagram_is_processed_in_one_notification() {
         let (interface, _receiver, sink, reporter) = listening_interface();
 
-        for index in 0..3 {
-            send_to(&interface, &[b'x' + index]);
+        for index in 0..3u8 {
+            send_to(&interface, &[0, 0, b'x' + index]);
         }
 
         assert!(
@@ -543,7 +545,7 @@ mod tests {
             let packets = sink.packets.borrow();
             assert_eq!(packets.len(), 3);
             for (index, (_, payload)) in packets.iter().enumerate() {
-                assert_eq!(payload, &[b'x' + index as u8]);
+                assert_eq!(payload, &[0, 0, b'x' + index as u8]);
             }
         }
 
@@ -748,7 +750,7 @@ mod tests {
         let (interface, receiver, sink, reporter) = listening_interface();
 
         for index in 0..3 {
-            send_to(&interface, &[b'y' + index]);
+            send_to(&interface, &[0, 0, b'y' + index]);
         }
 
         // Non-positive values disable the budget; one microsecond is
@@ -853,7 +855,7 @@ mod tests {
             reason: Reason::WindowOverflow,
         })));
 
-        let sender = send_to(&interface, b"reject me");
+        let sender = send_to(&interface, &[0, 0, b'r']);
         assert!(interface.poller().process_pending_events(0.05) >= 1);
 
         let reports = reporter.reports.borrow();
@@ -873,16 +875,16 @@ mod tests {
         let (a, _ra, sink_a, _reporter_a) = listening_interface();
         let (b, _rb, sink_b, _reporter_b) = listening_interface();
 
-        let sender = send_to(&a, b"for a");
+        let sender = send_to(&a, &[0, 0, b'a']);
         drop(sender);
-        send_to(&b, b"for b");
+        send_to(&b, &[0, 0, b'b']);
 
         // Poll only A: its socket saw its own datagram, never B's.
         assert!(a.poller().process_pending_events(0.05) >= 1);
         {
             let packets = sink_a.packets.borrow();
             assert_eq!(packets.len(), 1);
-            assert_eq!(packets[0].1, b"for a");
+            assert_eq!(packets[0].1, &[0, 0, b'a']);
         }
         assert!(sink_b.packets.borrow().is_empty());
 
@@ -891,7 +893,7 @@ mod tests {
         {
             let packets = sink_b.packets.borrow();
             assert_eq!(packets.len(), 1);
-            assert_eq!(packets[0].1, b"for b");
+            assert_eq!(packets[0].1, &[0, 0, b'b']);
         }
         assert_eq!(sink_a.packets.borrow().len(), 1);
     }

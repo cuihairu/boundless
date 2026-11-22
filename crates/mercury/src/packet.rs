@@ -79,6 +79,7 @@ pub const REPLY_MESSAGE_ID: u8 = 0xFF;
 /// claim. The request tracking fields hold the first request's body
 /// offset and the patch point of the last link written, exactly where the
 /// reference's `firstRequestOffset_`/`pLastRequestOffset_` sit.
+#[derive(Clone)]
 pub struct Packet {
     data: Box<[u8; PACKET_MAX_SIZE]>,
     msg_end_offset: usize,
@@ -95,6 +96,9 @@ pub struct Packet {
     channel_id: i32,
     /// `channelVersion_`.
     channel_version: u32,
+    /// `nAcks_`: how many of this packet's acks the channel is going to
+    /// write. Set by the channel's flag pass and read by its footer pass.
+    n_acks: u8,
     /// `fragBegin_`/`fragEnd_`: the fragment number range, when this
     /// packet is one tail of a multi-packet message.
     frag_begin: u32,
@@ -117,6 +121,7 @@ impl Packet {
             seq: crate::misc::SEQ_NULL,
             channel_id: crate::misc::CHANNEL_ID_NULL,
             channel_version: 0,
+            n_acks: 0,
             frag_begin: crate::misc::SEQ_NULL,
             frag_end: crate::misc::SEQ_NULL,
             is_piggyback: false,
@@ -339,6 +344,11 @@ impl Packet {
         self.channel_id
     }
 
+    /// The reference's writable `channelID()` overload.
+    pub fn set_channel_id(&mut self, channel_id: i32) {
+        self.channel_id = channel_id;
+    }
+
     /// `channelVersion()`.
     pub fn channel_version(&self) -> u32 {
         self.channel_version
@@ -347,6 +357,53 @@ impl Packet {
     /// The reference's writable `channelVersion()` overload.
     pub fn set_channel_version(&mut self, channel_version: u32) {
         self.channel_version = channel_version;
+    }
+
+    /// `updateChannelVersion( version, channelID )` (packet.cpp:388):
+    /// refresh the channel version footer when a resent packet rides out
+    /// again on a channel that has moved on. Off-indexed packets keep the
+    /// channel's version in memory only; an indexed one gets its footer
+    /// bytes rewritten in place, checksum and all.
+    pub fn update_channel_version(&mut self, version: u32, channel_id: i32) {
+        if self.channel_version == version {
+            return;
+        }
+        if !self.has_flags(flags::INDEXED_CHANNEL) {
+            return;
+        }
+
+        let has_checksum = self.has_flags(flags::HAS_CHECKSUM);
+
+        // `pCurr` walks back from the end of the datagram: the checksum,
+        // then the channel id, then the channel version.
+        let id_at = self
+            .total_size()
+            .wrapping_sub(if has_checksum { 4 } else { 0 })
+            .wrapping_sub(4);
+
+        debug_assert_eq!(
+            u32::from_le_bytes(self.data[id_at..id_at + 4].try_into().unwrap()),
+            channel_id as u32,
+            "the id footer agrees with the field"
+        );
+
+        let version_at = id_at.wrapping_sub(4);
+        self.channel_version = version;
+        self.data[version_at..version_at + 4].copy_from_slice(&version.to_le_bytes());
+
+        if has_checksum {
+            self.write_checksum(self.total_size().wrapping_sub(4));
+        }
+    }
+
+    /// `nAcks()`: how many acks the channel reserved on this packet.
+    pub fn n_acks(&self) -> u8 {
+        self.n_acks
+    }
+
+    /// The reference's writable `nAcks()` overload.
+    pub fn set_n_acks(&mut self, n_acks: u8) {
+        self.n_acks = n_acks;
     }
 
     /// `fragBegin()`.
@@ -394,7 +451,12 @@ impl Packet {
         self.frag_end = self.strip_footer_u32().expect("bounds checked above");
         self.frag_begin = self.strip_footer_u32().expect("bounds checked above");
 
-        let num_fragments = self.frag_end - self.frag_begin + 1;
+        // The reference's `fragEnd_ - fragBegin_ + 1` is unsigned u32
+        // arithmetic; when the end is before the begin it wraps, and on
+        // the signed read the wrapped value is negative, so the count
+        // check below rejects the packet. Ported as-is: malformed
+        // footers must fail the strip, not panic.
+        let num_fragments = self.frag_end.wrapping_sub(self.frag_begin).wrapping_add(1) as i32;
         if num_fragments < 2 {
             return false;
         }
@@ -427,10 +489,15 @@ impl Packet {
     }
 
     /// `validateChecksum()`: strip the trailing checksum footer, recompute
-    /// over the packet as it arrived, and answer whether it matches. The
+    /// over the packet as it arrived, and answer whether it matches. A
+    /// packet carrying no checksum footer validates outright. The
     /// packet is left as `validateChecksum` leaves it: stripped, with the
     /// field restored for the caller to skip over.
     pub fn validate_checksum(&mut self) -> bool {
+        if !self.has_flags(flags::HAS_CHECKSUM) {
+            return true;
+        }
+
         let stored = match self.strip_footer_u32() {
             Some(stored) => stored,
             None => return false,
@@ -473,6 +540,10 @@ impl Packet {
         &mut self,
         mut visitor: impl FnMut(&mut Packet) -> bool,
     ) -> bool {
+        if !self.has_flags(flags::HAS_PIGGYBACKS) {
+            return true;
+        }
+
         loop {
             let raw = match self.strip_footer_u16() {
                 Some(raw) => raw,
@@ -763,12 +834,24 @@ mod tests {
         let mut bare = Packet::new();
         bare.grow(HEADER_SIZE);
         assert!(
-            !bare.process_piggyback_packets(|_| true),
-            "there is no piggyback footer to peel"
+            bare.process_piggyback_packets(|_| true),
+            "a packet with no piggyback flag peels nothing"
         );
         assert!(
+            bare.validate_checksum(),
+            "a packet carrying no checksum footer validates"
+        );
+        // A piggyback flag with no room for its length still refuses.
+        bare.set_flags(f::HAS_PIGGYBACKS);
+        assert!(
+            !bare.process_piggyback_packets(|_| true),
+            "the promised piggyback length is missing"
+        );
+        // A checksum flag with no room for its footer still refuses.
+        bare.set_flags(f::HAS_CHECKSUM);
+        assert!(
             !bare.validate_checksum(),
-            "there is no checksum footer to validate"
+            "the promised checksum footer is missing"
         );
     }
 
@@ -965,12 +1048,14 @@ mod tests {
 
         // A visitor that says stop ends the peel with false.
         let mut stopped = Packet::new();
+        stopped.set_flags(f::HAS_PIGGYBACKS);
         stopped.grow(HEADER_SIZE + 4 + wire.len());
         stopped.buffer_mut()[HEADER_SIZE + 4..HEADER_SIZE + 4 + wire.len()].copy_from_slice(&wire);
         assert!(!stopped.process_piggyback_packets(|_inner| false));
 
         // A length reaching past the whole body is refused.
         let mut greedy = Packet::new();
+        greedy.set_flags(f::HAS_PIGGYBACKS);
         greedy.grow(HEADER_SIZE + 4);
         greedy.buffer_mut()[HEADER_SIZE..HEADER_SIZE + 2].copy_from_slice(&0x7FFFu16.to_le_bytes());
         assert!(!greedy.process_piggyback_packets(|_inner| true));
@@ -996,5 +1081,64 @@ mod tests {
         assert_eq!(fresh.frag_begin(), crate::misc::SEQ_NULL);
         assert_eq!(fresh.frag_end(), crate::misc::SEQ_NULL);
         assert!(!fresh.is_piggyback());
+    }
+
+    /// `updateChannelVersion`: an unchanged version and an unindexed
+    /// packet are both no-ops, an indexed one has its version footer
+    /// rewritten in place, and a checksummed one has its checksum
+    /// recomputed to match.
+    #[test]
+    fn an_indexed_footer_receives_the_new_channel_version() {
+        let mut same = Packet::new();
+        same.enable_flags(f::INDEXED_CHANNEL);
+        same.set_channel_id(3);
+        same.set_channel_version(5);
+        same.update_channel_version(5, 3);
+        assert_eq!(same.channel_version(), 5);
+
+        let mut unindexed = Packet::new();
+        unindexed.set_channel_version(5);
+        unindexed.update_channel_version(6, 3);
+        assert_eq!(unindexed.channel_version(), 5);
+
+        // An indexed, checksummed packet, laid out as the receive path
+        // sees it: body, then the version, then the id, then the checksum
+        // at the very end. `updateChannelVersion` walks back from the end
+        // and rewrites the version footer in place.
+        let mut indexed = Packet::new();
+        indexed.set_flags(f::INDEXED_CHANNEL | f::HAS_CHECKSUM);
+        indexed.set_channel_id(7);
+        indexed.set_channel_version(1);
+        indexed.grow(HEADER_SIZE + 12);
+        let version_at = HEADER_SIZE;
+        indexed.buffer_mut()[version_at..version_at + 4].copy_from_slice(&1u32.to_le_bytes());
+        indexed.buffer_mut()[version_at + 4..version_at + 8].copy_from_slice(&7u32.to_le_bytes());
+        indexed.write_checksum(indexed.total_size().wrapping_sub(4));
+        assert!(
+            indexed.validate_checksum(),
+            "the hand-built datagram is internally consistent"
+        );
+
+        indexed.update_channel_version(9, 7);
+        assert_eq!(indexed.channel_version(), 9);
+        assert!(
+            u32::from_le_bytes(
+                indexed.wire()[version_at..version_at + 4]
+                    .try_into()
+                    .unwrap()
+            ) == 9,
+            "the footer was rewritten in place"
+        );
+
+        // The datagram as it rides out, checksum and all, is the one a
+        // receiver sees. Validate it exactly once.
+        let wire: Vec<u8> = indexed.wire().to_vec();
+        let mut received = Packet::new();
+        received.grow(wire.len());
+        received.buffer_mut()[..wire.len()].copy_from_slice(&wire);
+        assert!(
+            received.validate_checksum(),
+            "the checksum was recomputed over the new version"
+        );
     }
 }
