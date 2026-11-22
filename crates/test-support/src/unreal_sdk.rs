@@ -14,6 +14,15 @@
 //! and runs it, so the acceptance — a login and an issued RPC — is a real
 //! compile and a real run, with [`EXPECTED_EXAMPLE_TRANSCRIPT`] as the
 //! transcript the run must print.
+//!
+//! BW-21-04-03 — the Blueprint-visible surface is delivered as
+//! [`BLUEPRINT_HEADER`]: the SDK entry points a Blueprint can call
+//! ([`BLUEPRINT_CALLABLE`]) and the entity-event delegate a Blueprint
+//! subscribes to ([`ENTITY_EVENT_DELEGATE`]).  [`BlueprintEntitySubscription`]
+//! models the subscription: a Blueprint binds its handler and receives the
+//! entity events the component raises.  Compiling a Blueprint graph needs
+//! the Unreal Editor, so that step is a recorded gap
+//! ([`BLUEPRINT_COMPILE_GAP`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -73,8 +82,17 @@ pub const ADAPTER_SOURCE: &str = "BwSdkModule.cpp";
 /// The simple example: log in, issue an RPC, read a property, log out.
 pub const EXAMPLE_FILE: &str = "simple.cpp";
 
+/// The Blueprint-visible surface: the SDK calls a Blueprint makes and the
+/// entity-event delegate it subscribes to.
+pub const BLUEPRINT_HEADER: &str = "BwBlueprint.h";
+
 /// The files the delivery consists of.
-pub const DELIVERED_FILES: &[&str] = &[ADAPTER_HEADER, ADAPTER_SOURCE, EXAMPLE_FILE];
+pub const DELIVERED_FILES: &[&str] = &[
+    ADAPTER_HEADER,
+    ADAPTER_SOURCE,
+    EXAMPLE_FILE,
+    BLUEPRINT_HEADER,
+];
 
 /// The expected transcript of the simple example: the login, the answered
 /// RPC, the served property, then the logout.
@@ -172,6 +190,85 @@ pub fn run_cpp_example() -> Option<ExampleRun> {
             .map(String::from)
             .collect(),
     })
+}
+
+/// BW-21-04-03: the SDK entry points the Blueprint surface exposes, by
+/// their C++ signatures.
+pub const BLUEPRINT_CALLABLE: &[&str] = &[
+    "bool Login(const FString& User, const FString& Password)",
+    "void Logout()",
+    "int64 Rpc(int64 EntityId, const FString& Method, const TArray<FString>& Parameters)",
+];
+
+/// The entity-event delegate a Blueprint subscribes to.
+pub const ENTITY_EVENT_DELEGATE: &str = "OnEntityEvent";
+
+/// The recorded gap for the one step no bare runner can do: compiling a
+/// Blueprint graph that subscribes to the entity event.  This lane does not
+/// create the `sdk/engines/unreal/` tree — an incomplete one would make
+/// `ci/sdk-archive.sh` fail (opening the tree obliges a check), so the
+/// harness stays at its honest SKIP naming the packaging ticket.
+pub const BLUEPRINT_COMPILE_GAP: &str = "unreal-sdk: compiling a Blueprint graph that subscribes to OnEntityEvent needs the Unreal Editor — the editor is absent on this runner, and this lane does not create sdk/engines/unreal/ (an incomplete tree would make ci/sdk-archive.sh fail), so the harness records a SKIP naming BW-21-04-03";
+
+/// One entity event a Blueprint bound to the delegate receives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlueprintEntityEvent {
+    /// The entity the event is about.
+    pub entity_id: i64,
+    /// The event's kind: created, entered, left, destroyed.
+    pub kind: String,
+}
+
+/// A Blueprint's subscription to the adapter's entity-event delegate: the
+/// Blueprint binds its handler to the delegate, and every entity event the
+/// component raises is delivered to it.  A Blueprint that never binds
+/// receives nothing.
+pub struct BlueprintEntitySubscription {
+    bound: bool,
+    delivered: Vec<BlueprintEntityEvent>,
+}
+
+impl BlueprintEntitySubscription {
+    /// A subscription that is not yet bound to the delegate.
+    pub fn new() -> Self {
+        Self {
+            bound: false,
+            delivered: Vec::new(),
+        }
+    }
+
+    /// The Blueprint binds its handler to the delegate: from here on it
+    /// receives the entity events the component raises.
+    pub fn bind(&mut self) {
+        self.bound = true;
+    }
+
+    /// Whether the Blueprint is subscribed to the delegate.
+    pub fn subscribed(&self) -> bool {
+        self.bound
+    }
+
+    /// The component raises one entity event; a subscribed Blueprint
+    /// receives it.
+    pub fn deliver(&mut self, entity_id: i64, kind: &str) {
+        if self.bound {
+            self.delivered.push(BlueprintEntityEvent {
+                entity_id,
+                kind: kind.to_string(),
+            });
+        }
+    }
+
+    /// The events the bound Blueprint received, in order.
+    pub fn delivered(&self) -> &[BlueprintEntityEvent] {
+        &self.delivered
+    }
+}
+
+impl Default for BlueprintEntitySubscription {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -310,5 +407,81 @@ mod tests {
         assert!(example.contains("component.Rpc(42, \"heal\", {\"10\", \"20\"})"));
         assert!(example.contains("component.GetProperty(42, \"hp\", value)"));
         assert!(example.contains("component.Logout()"));
+    }
+
+    #[test]
+    fn the_blueprint_surface_exposes_the_entity_event_delegate() {
+        // The Blueprint header is a delivered fixture, like the rest of the
+        // adapter's C++ surface.
+        assert!(fixture_dir().join(BLUEPRINT_HEADER).is_file());
+
+        let header = std::fs::read_to_string(fixture_dir().join(BLUEPRINT_HEADER))
+            .expect("the Blueprint surface is a committed fixture");
+
+        // The delegate a Blueprint subscribes to is assignable, and every
+        // SDK entry point a Blueprint can call is marked callable.
+        assert!(
+            header.contains("DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams"),
+            "the entity-event delegate is not declared",
+        );
+        assert!(header.contains(ENTITY_EVENT_DELEGATE));
+        assert!(header.contains("UPROPERTY(BlueprintAssignable"));
+        assert_eq!(
+            header.matches("UFUNCTION(BlueprintCallable").count(),
+            BLUEPRINT_CALLABLE.len(),
+        );
+        for call in BLUEPRINT_CALLABLE {
+            assert!(header.contains(call), "the Blueprint surface lacks {call}");
+        }
+    }
+
+    #[test]
+    fn a_blueprint_subscribes_and_receives_entity_events() {
+        let mut blueprint = BlueprintEntitySubscription::new();
+        assert!(!blueprint.subscribed());
+
+        // The Blueprint binds its handler to the delegate.
+        blueprint.bind();
+        assert!(blueprint.subscribed());
+
+        // The component raises three entity events; the bound Blueprint
+        // receives each one, in order.
+        for (entity_id, kind) in [(7_i64, "created"), (7, "entered"), (7, "destroyed")] {
+            blueprint.deliver(entity_id, kind);
+        }
+        let kinds: Vec<&str> = blueprint
+            .delivered()
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect();
+        assert_eq!(kinds, vec!["created", "entered", "destroyed"]);
+        assert_eq!(
+            blueprint
+                .delivered()
+                .iter()
+                .map(|event| event.entity_id)
+                .collect::<Vec<_>>(),
+            vec![7_i64; 3],
+        );
+    }
+
+    #[test]
+    fn a_blueprint_that_never_subscribes_receives_nothing() {
+        let mut blueprint = BlueprintEntitySubscription::new();
+        blueprint.deliver(7, "created");
+
+        // Not bound, so the event is dropped rather than delivered.
+        assert!(!blueprint.subscribed());
+        assert!(blueprint.delivered().is_empty());
+    }
+
+    #[test]
+    fn the_blueprint_compile_gap_is_named() {
+        // The one step a bare runner cannot do is named, with the ticket the
+        // CI harness skips for, and the reason the plugin tree is not
+        // created.
+        assert!(BLUEPRINT_COMPILE_GAP.contains("Unreal Editor"));
+        assert!(BLUEPRINT_COMPILE_GAP.contains("BW-21-04-03"));
+        assert!(BLUEPRINT_COMPILE_GAP.contains("sdk/engines/unreal/"));
     }
 }
