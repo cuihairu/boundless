@@ -152,10 +152,7 @@ impl BackgroundTaskList {
     fn pull(&self) -> Option<TaskPtr> {
         let mut list = self.list.lock().expect("bg task list");
         while list.is_empty() {
-            list = self
-                .available
-                .wait(list)
-                .expect("bg task list wait");
+            list = self.available.wait(list).expect("bg task list wait");
         }
         list.pop_front().expect("non-empty").1
     }
@@ -246,10 +243,7 @@ impl TaskManager {
     /// `addMainThreadTask`: appends under the foreground mutex; legal
     /// from any thread.
     pub fn add_main_thread_task(&self, task: TaskPtr) {
-        self.fg_task_list
-            .lock()
-            .expect("fg task list")
-            .push(task);
+        self.fg_task_list.lock().expect("fg task list").push(task);
     }
 
     /// `addDelayedBackgroundTask`: parked until the next `tick`, then
@@ -341,10 +335,13 @@ impl TaskManager {
         // The snapshot drops here -- "Smartpointers to tasks that have
         // finished get deleted here".
 
-        let delayed =
-            std::mem::take(&mut *self.delayed_bg_task_list.lock().expect("delayed list"));
-        self.bg_task_list
-            .push_list(delayed.into_iter().map(|(priority, task)| (priority, Some(task))).collect());
+        let delayed = std::mem::take(&mut *self.delayed_bg_task_list.lock().expect("delayed list"));
+        self.bg_task_list.push_list(
+            delayed
+                .into_iter()
+                .map(|(priority, task)| (priority, Some(task)))
+                .collect(),
+        );
     }
 
     /// `numBgTasksLeft`: background queue + active tasks.
@@ -355,7 +352,11 @@ impl TaskManager {
     /// `hasTasks`: background queue, active tasks or foreground list.
     pub fn has_tasks(&self) -> bool {
         !self.bg_task_list.is_empty()
-            || !self.active_bg_tasks.lock().expect("active bg tasks").is_empty()
+            || !self
+                .active_bg_tasks
+                .lock()
+                .expect("active bg tasks")
+                .is_empty()
             || !self.fg_task_list.lock().expect("fg task list").is_empty()
     }
 
@@ -972,12 +973,19 @@ mod tests {
         assert!(!mgr.has_tasks());
         assert_eq!(mgr.num_bg_tasks_left(), 0);
 
-        let pending = NamedTask::background("pending", Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicUsize::new(1)));
+        let pending = NamedTask::background(
+            "pending",
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(AtomicUsize::new(1)),
+        );
         mgr.add_background_task(pending);
         assert!(mgr.has_tasks());
         assert_eq!(mgr.num_bg_tasks_left(), 1);
 
-        mgr.add_main_thread_task(NamedTask::foreground("fg", Arc::new(Mutex::new(Vec::new()))));
+        mgr.add_main_thread_task(NamedTask::foreground(
+            "fg",
+            Arc::new(Mutex::new(Vec::new())),
+        ));
         assert!(mgr.has_tasks());
         assert_eq!(mgr.num_bg_tasks_left(), 1, "fg tasks do not count");
 
@@ -1017,8 +1025,7 @@ mod tests {
 
         let log: Log = Arc::new(Mutex::new(Vec::new()));
         assert_eq!(
-            NamedTask::background("labelled", log, Arc::new(AtomicUsize::new(1)))
-                .name(),
+            NamedTask::background("labelled", log, Arc::new(AtomicUsize::new(1))).name(),
             "labelled"
         );
 
@@ -1143,7 +1150,10 @@ mod tests {
 
         // Both background phases ran in queue order, then the
         // completion -- dispatched on this thread, exactly once.
-        assert_eq!(*log.lock().expect("log"), ["worker", "late-pending", "done"]);
+        assert_eq!(
+            *log.lock().expect("log"),
+            ["worker", "late-pending", "done"]
+        );
         assert_eq!(mgr.num_running_threads(), 0);
         assert_eq!(mgr.num_unstopped_threads(), 0);
         assert_eq!(mgr.num_bg_tasks_left(), 0);
@@ -1151,7 +1161,10 @@ mod tests {
 
         // Draining again changes nothing: the shutdown is repeatable.
         mgr.drain();
-        assert_eq!(*log.lock().expect("log"), ["worker", "late-pending", "done"]);
+        assert_eq!(
+            *log.lock().expect("log"),
+            ["worker", "late-pending", "done"]
+        );
         assert!(!mgr.has_tasks());
     }
 

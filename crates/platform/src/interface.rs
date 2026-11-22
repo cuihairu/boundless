@@ -61,11 +61,7 @@ impl IfReq {
 
     /// The name, read back the way the kernel laid it down.
     fn name(&self) -> String {
-        let end = self
-            .name
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(IFNAMSIZ);
+        let end = self.name.iter().position(|&c| c == 0).unwrap_or(IFNAMSIZ);
         let bytes: Vec<u8> = self.name[..end].iter().map(|&c| c as u8).collect();
         String::from_utf8_lossy(&bytes).into_owned()
     }
@@ -100,7 +96,9 @@ pub fn name_index() -> Vec<(u32, String)> {
         while !(*current).if_name.is_null() {
             result.push((
                 (*current).if_index,
-                CStr::from_ptr((*current).if_name).to_string_lossy().into_owned(),
+                CStr::from_ptr((*current).if_name)
+                    .to_string_lossy()
+                    .into_owned(),
             ));
             current = current.add(1);
         }
@@ -270,7 +268,10 @@ mod tests {
     #[test]
     fn the_kernel_layouts_are_pinned() {
         assert_eq!(std::mem::size_of::<IfReq>(), 40);
-        assert_eq!(std::mem::size_of::<IfConf>(), std::mem::size_of::<usize>() + 8);
+        assert_eq!(
+            std::mem::size_of::<IfConf>(),
+            std::mem::size_of::<usize>() + 8
+        );
     }
 
     /// Names longer than `IFNAMSIZ - 1` are clamped, the reference's

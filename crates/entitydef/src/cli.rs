@@ -62,16 +62,15 @@ pub struct CliOptions {
 /// one short" — a flag in the last position can carry no value, so it is left
 /// behind and the default survives.
 fn get_option(args: &mut Vec<String>, flags: &[&str], default: &str) -> String {
-    if args.len() >= 2 {
-        if let Some(position) = args[..args.len() - 1]
+    if args.len() >= 2
+        && let Some(position) = args[..args.len() - 1]
             .iter()
             .position(|arg| flags.contains(&arg.as_str()))
-        {
-            let value = args[position + 1].clone();
-            args.remove(position + 1);
-            args.remove(position);
-            return value;
-        }
+    {
+        let value = args[position + 1].clone();
+        args.remove(position + 1);
+        args.remove(position);
+        return value;
     }
     default.to_string()
 }

@@ -8,7 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+contracts = { workspace = true }
 foundation = { workspace = true }
 libc = { workspace = true }
-# platform = { workspace = true }  # re-add at BW-01-04 signals
+platform = { workspace = true }
 resources = { workspace = true }
+sha2 = { workspace = true }

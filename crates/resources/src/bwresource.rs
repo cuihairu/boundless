@@ -18,10 +18,10 @@ use std::cell::RefCell;
 use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
 
-use crate::data_section_cache::{DataSectionCache, DEFAULT_CACHE_SIZE};
+use crate::data_section_cache::{DEFAULT_CACHE_SIZE, DataSectionCache};
 use crate::datasection::{self, DataSection};
-use crate::file_system::{NativeFileSystem, ZipArchiveFs};
 use crate::file_system::FileSystem;
+use crate::file_system::{NativeFileSystem, ZipArchiveFs};
 use crate::multi_file_system::MultiFileSystem;
 use crate::zip::{FileInfo, FileType};
 
@@ -237,19 +237,15 @@ impl BwResource {
             remaining.push(arg.clone());
         }
 
-        if self.paths.is_empty() {
-            if let Some(res_path) = bw_res_path {
-                self.add_paths_with_source(
-                    res_path,
-                    "from BW_RES_PATH env variable",
-                    executable_dir,
-                );
-            }
+        if self.paths.is_empty()
+            && let Some(res_path) = bw_res_path
+        {
+            self.add_paths_with_source(res_path, "from BW_RES_PATH env variable", executable_dir);
         }
-        if self.paths.is_empty() {
-            if let Some(home) = home_of_uid(uid) {
-                self.add_paths_from_machined_conf(home.as_str(), executable_dir);
-            }
+        if self.paths.is_empty()
+            && let Some(home) = home_of_uid(uid)
+        {
+            self.add_paths_from_machined_conf(home.as_str(), executable_dir);
         }
 
         self.refresh_paths();
@@ -261,9 +257,7 @@ impl BwResource {
     /// first `;`, and reading stops once a line has added a path (the
     /// reference's `while (paths_.empty() && fgets)` gate).
     fn add_paths_from_machined_conf(&mut self, home_dir: &str, executable_dir: &str) {
-        let Ok(content) =
-            std::fs::read_to_string(format!("{}/.bwmachined.conf", home_dir))
-        else {
+        let Ok(content) = std::fs::read_to_string(format!("{}/.bwmachined.conf", home_dir)) else {
             return;
         };
         for line in content.lines() {
@@ -311,9 +305,7 @@ impl BwResource {
     pub fn add_paths(&mut self, path: &str) {
         for part in path.split(BW_RES_PATH_SEPARATOR) {
             let formatted = format_search_path(part);
-            if self.native_file_system.get_file_type(&formatted, None)
-                == FileType::NotFound
-            {
+            if self.native_file_system.get_file_type(&formatted, None) == FileType::NotFound {
                 continue;
             }
             self.paths.push(formatted);
@@ -329,27 +321,18 @@ impl BwResource {
     /// (`fs::canonicalize`); when canonicalisation fails the relative form
     /// survives, and either way a part that does not exist is reported and
     /// dropped instead of pushed.
-    pub fn add_paths_with_source(
-        &mut self,
-        path: &str,
-        _source: &str,
-        executable_dir: &str,
-    ) {
+    pub fn add_paths_with_source(&mut self, path: &str, _source: &str, executable_dir: &str) {
         for part in path.split(BW_RES_PATH_SEPARATOR) {
             let mut formatted = format_search_path(part);
             // Relative res paths resolve against the executable directory.
-            if !formatted.is_empty()
-                && !formatted.starts_with('/')
-                && !formatted.starts_with('\\')
+            if !formatted.is_empty() && !formatted.starts_with('/') && !formatted.starts_with('\\')
             {
                 let anchored = format!("{}/{}", executable_dir, formatted);
                 if let Ok(abs) = std::fs::canonicalize(&anchored) {
                     formatted = abs.to_string_lossy().into_owned();
                 }
             }
-            if self.native_file_system.get_file_type(&formatted, None)
-                == FileType::NotFound
-            {
+            if self.native_file_system.get_file_type(&formatted, None) == FileType::NotFound {
                 continue;
             }
             self.paths.push(formatted);
@@ -402,29 +385,24 @@ impl BwResource {
         for path in &paths {
             let base = self.native_file_system.get_file_type(path, None);
             let pak_path = format!("{}/res.zip", path);
-            if get_extension(path) == "zip"
-                && (base == FileType::Archive || base == FileType::File)
+            if get_extension(path) == "zip" && (base == FileType::Archive || base == FileType::File)
             {
-                if let Some(data) = self.native_file_system.read_file(path) {
-                    if let Some(zip) = ZipArchiveFs::open(data) {
-                        self.file_system
-                            .add_base_file_system(Box::new(zip), -1);
-                        continue;
-                    }
+                if let Some(data) = self.native_file_system.read_file(path)
+                    && let Some(zip) = ZipArchiveFs::open(data)
+                {
+                    self.file_system.add_base_file_system(Box::new(zip), -1);
+                    continue;
                 }
                 // Invalid archives are dropped like the reference's
                 // "not a valid zip file" critical.
                 continue;
             }
-            if self.native_file_system.get_file_type(&pak_path, None)
-                == FileType::File
-            {
-                if let Some(data) = self.native_file_system.read_file(&pak_path) {
-                    if let Some(zip) = ZipArchiveFs::open(data) {
-                        self.file_system
-                            .add_base_file_system(Box::new(zip), -1);
-                        continue;
-                    }
+            if self.native_file_system.get_file_type(&pak_path, None) == FileType::File {
+                if let Some(data) = self.native_file_system.read_file(&pak_path)
+                    && let Some(zip) = ZipArchiveFs::open(data)
+                {
+                    self.file_system.add_base_file_system(Box::new(zip), -1);
+                    continue;
                 }
                 continue;
             }
@@ -559,7 +537,13 @@ impl BwResource {
         // skipping the first character so leading roots are not remade.
         let mut offset = 0;
         while let Some(pos) = n_path[offset + 1..].find('/').map(|p| p + offset + 1) {
-            eprintln!("ensure mkdir {:?} pos={} offset={} -> {}", &n_path[..pos], pos, offset, self.file_system.make_directory(&n_path[..pos]));
+            eprintln!(
+                "ensure mkdir {:?} pos={} offset={} -> {}",
+                &n_path[..pos],
+                pos,
+                offset,
+                self.file_system.make_directory(&n_path[..pos])
+            );
             offset = pos;
         }
         true
@@ -569,7 +553,9 @@ impl BwResource {
     /// not a plain file.
     pub fn modified_time(&self, file_or_resource: &str) -> u64 {
         let mut info = FileInfo::default();
-        if self.file_system.get_file_type(file_or_resource, Some(&mut info))
+        if self
+            .file_system
+            .get_file_type(file_or_resource, Some(&mut info))
             == FileType::File
         {
             return info.modified as u64;
@@ -662,16 +648,17 @@ impl BwResource {
     /// before their parents. The census half of the reference (`del` from
     /// `DataSectionCensus`) is a later task.
     pub fn purge(&self, path: &str, recursive: bool) {
-        if recursive && self.get_file_type(path, None) == FileType::Directory {
-            if let Some(entries) = self.file_system.read_directory(path) {
-                for entry in entries {
-                    let child = if path.is_empty() {
-                        entry
-                    } else {
-                        format!("{}/{}", path, entry)
-                    };
-                    self.purge(&child, true);
-                }
+        if recursive
+            && self.get_file_type(path, None) == FileType::Directory
+            && let Some(entries) = self.file_system.read_directory(path)
+        {
+            for entry in entries {
+                let child = if path.is_empty() {
+                    entry
+                } else {
+                    format!("{}/{}", path, entry)
+                };
+                self.purge(&child, true);
             }
         }
         self.section_cache.borrow_mut().remove(path);
@@ -700,22 +687,16 @@ impl BwResource {
         if !self.file_system.write_file(resource_id, bytes.as_bytes()) {
             return false;
         }
-        self.section_cache.borrow_mut().add(
-            resource_id,
-            bytes.len(),
-            Arc::new(section.clone()),
-        );
+        self.section_cache
+            .borrow_mut()
+            .add(resource_id, bytes.len(), Arc::new(section.clone()));
         true
     }
 
     /// `XMLSection::saveIfExists`: like [`BwResource::save_section`], but
     /// the write lands in the first root that already holds the path, and
     /// a path no root holds fails without touching the cache.
-    pub fn save_section_if_exists(
-        &self,
-        resource_id: &str,
-        section: &mut DataSection,
-    ) -> bool {
+    pub fn save_section_if_exists(&self, resource_id: &str, section: &mut DataSection) -> bool {
         let bytes = section.write_to_string();
         if !self
             .file_system
@@ -723,11 +704,9 @@ impl BwResource {
         {
             return false;
         }
-        self.section_cache.borrow_mut().add(
-            resource_id,
-            bytes.len(),
-            Arc::new(section.clone()),
-        );
+        self.section_cache
+            .borrow_mut()
+            .add(resource_id, bytes.len(), Arc::new(section.clone()));
         true
     }
 
@@ -777,11 +756,7 @@ fn atoi_or_zero(raw: &str) -> usize {
         .next()
         .unwrap_or("");
     let value: usize = digits.parse().unwrap_or(0);
-    if negative {
-        0
-    } else {
-        value
-    }
+    if negative { 0 } else { value }
 }
 
 /// `BWUtil::executableDirectory`: the directory of the running image,
@@ -789,10 +764,7 @@ fn atoi_or_zero(raw: &str) -> usize {
 fn executable_directory() -> String {
     std::env::current_exe()
         .ok()
-        .and_then(|path| {
-            path.parent()
-                .map(|dir| dir.to_string_lossy().into_owned())
-        })
+        .and_then(|path| path.parent().map(|dir| dir.to_string_lossy().into_owned()))
         .unwrap_or_default()
 }
 
@@ -819,9 +791,7 @@ fn passwd_home(uid: u32) -> Option<String> {
     let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
     for line in passwd.lines() {
         let fields: Vec<&str> = line.split(':').collect();
-        if fields.len() >= 6
-            && fields[2].parse::<u32>() == Ok(uid)
-        {
+        if fields.len() >= 6 && fields[2].parse::<u32>() == Ok(uid) {
             return Some(fields[5].to_string());
         }
     }
@@ -838,9 +808,7 @@ fn machined_conf_res_path(line: &str) -> Option<String> {
         return None;
     }
     let tail = tail.trim_start();
-    let end = tail
-        .find(|c: char| c.is_whitespace())
-        .unwrap_or(tail.len());
+    let end = tail.find(|c: char| c.is_whitespace()).unwrap_or(tail.len());
     if end == 0 {
         return None;
     }
@@ -908,7 +876,10 @@ mod tests {
         assert_eq!(remove_extension(".hidden"), "");
         assert_eq!(remove_extension("a.b/c"), "a.b/c");
         assert_eq!(remove_extension("model.model"), "model");
-        assert_eq!(change_extension("model.model", ".primitives"), "model.primitives");
+        assert_eq!(
+            change_extension("model.model", ".primitives"),
+            "model.primitives"
+        );
         assert_eq!(change_extension("plain", ".txt"), "plain.txt");
     }
 
@@ -985,7 +956,7 @@ mod tests {
         write(&b, "/f.txt", b"b");
 
         let mut resource = BwResource::new();
-        resource.add_paths(&format!("{}:{}:{}:", a, b, format!("{}/gone", a)));
+        resource.add_paths(&format!("{}:{}:{}/gone:", a, b, a));
         assert_eq!(resource.get_path_num(), 2);
         // Like the reference, the multiplexer is only (re)built once a
         // refresh runs -- init calls postAddPaths at the very end.
@@ -1008,8 +979,7 @@ mod tests {
         write(&dir, "/plain.txt", b"plain");
 
         // A res.zip package: the directory root is NOT added, only the zip.
-        let mut builder =
-            crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
+        let mut builder = crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
         builder.update_file("packed.txt", Some(b"packed".to_vec()));
         let bytes = builder.create_zip();
         fs::write(format!("{}/res.zip", dir), &bytes).unwrap();
@@ -1075,7 +1045,9 @@ mod tests {
         assert!(resource.get_path_num() >= 1);
         assert!(!BwResource::default().is_valid());
         assert_eq!(
-            BwResource::default().native_file_system().get_file_type("", None),
+            BwResource::default()
+                .native_file_system()
+                .get_file_type("", None),
             FileType::NotFound
         );
 
@@ -1213,7 +1185,9 @@ mod tests {
 
         assert!(resource.ensure_path_exists("level1/level2/level3/"));
         assert_eq!(
-            resource.file_system().get_file_type("level1/level2/level3", None),
+            resource
+                .file_system()
+                .get_file_type("level1/level2/level3", None),
             FileType::Directory
         );
         // A file-style path loses its tail before creating; and because the
@@ -1221,7 +1195,9 @@ mod tests {
         // last directory of a slash-less path is skipped (reference quirk).
         assert!(resource.ensure_path_exists("level1/level2/deeper/file.bin"));
         assert_eq!(
-            resource.file_system().get_file_type("level1/level2/deeper", None),
+            resource
+                .file_system()
+                .get_file_type("level1/level2/deeper", None),
             FileType::NotFound
         );
         assert!(!resource.ensure_path_exists(""));
@@ -1253,17 +1229,25 @@ mod tests {
     #[test]
     fn open_section_serves_cache_hits_and_counts_them() {
         let a = temp_root("cache_hits");
-        write(&a, "/etc/chars/server.xml", b"<server><value>old</value></server>");
+        write(
+            &a,
+            "/etc/chars/server.xml",
+            b"<server><value>old</value></server>",
+        );
 
         let resource = BwResource::init_paths(&[&a]);
         // First open: a miss that loads from disk and caches the section.
-        let first = resource.open_section("etc/chars/server.xml", false).unwrap();
+        let first = resource
+            .open_section("etc/chars/server.xml", false)
+            .unwrap();
         assert_eq!(first.section_name(), "server.xml");
         assert_eq!(first.find_child("value").unwrap().as_string(), "old");
         assert_eq!(resource.section_cache_stats(), (0, 1, first_size()));
 
         // Second open: the same Arc comes straight out of the LRU.
-        let second = resource.open_section("etc/chars/server.xml", false).unwrap();
+        let second = resource
+            .open_section("etc/chars/server.xml", false)
+            .unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(resource.section_cache_stats(), (1, 1, first_size()));
 
@@ -1284,10 +1268,7 @@ mod tests {
         write(&a, "/game.xml", b"<game><speed>2</speed></game>");
         let still_stale = resource.open_section("game.xml", false).unwrap();
         assert!(Arc::ptr_eq(&stale, &still_stale));
-        assert_eq!(
-            still_stale.find_child("speed").unwrap().as_string(),
-            "1"
-        );
+        assert_eq!(still_stale.find_child("speed").unwrap().as_string(), "1");
 
         // purge drops exactly this path; the next open re-reads the file.
         resource.purge("game.xml", false);
@@ -1322,7 +1303,9 @@ mod tests {
         write(&a, "/scripts/deep/leaf.xml", b"<l><c>2</c></l>");
         resource.purge("scripts", true);
         let inner = resource.open_section("scripts/inner.xml", false).unwrap();
-        let leaf = resource.open_section("scripts/deep/leaf.xml", false).unwrap();
+        let leaf = resource
+            .open_section("scripts/deep/leaf.xml", false)
+            .unwrap();
         assert_eq!(inner.find_child("b").unwrap().as_string(), "2");
         assert_eq!(leaf.find_child("c").unwrap().as_string(), "2");
         // root.xml was never purged: it still serves the cached copy.
@@ -1384,12 +1367,12 @@ mod tests {
         // Missing paths return nothing unless makeNewSection asks for an
         // empty dotted section, which then lives in the cache.
         assert_eq!(resource.open_section("settings/missing.xml", false), None);
-        let created =
-            resource.open_section("settings/missing.xml", true).unwrap();
+        let created = resource.open_section("settings/missing.xml", true).unwrap();
         assert_eq!(created.section_name(), "missing.xml");
         assert_eq!(created.count_children(), 0);
-        let again =
-            resource.open_section("settings/missing.xml", false).unwrap();
+        let again = resource
+            .open_section("settings/missing.xml", false)
+            .unwrap();
         assert!(Arc::ptr_eq(&created, &again));
         // Undotted tags would create directories (DirSection, later task).
         assert_eq!(resource.open_section("settings/plaindir", true), None);
@@ -1416,8 +1399,7 @@ mod tests {
 
     /// Serialised size of `<server><value>old</value></server>`.
     fn first_size() -> usize {
-        let mut section =
-            DataSection::new("server.xml");
+        let mut section = DataSection::new("server.xml");
         let value = section.add_child("value");
         value.set_string("old");
         section.write_to_string().len()
@@ -1572,11 +1554,9 @@ mod tests {
         // Same command twice: the same configuration paths, in the same
         // order -- the acceptance determinism.
         let mut one = BwResource::new();
-        let (ok_one, rem_one) =
-            one.init_from_sources(&args, &a, 1000, &no_home, None);
+        let (ok_one, rem_one) = one.init_from_sources(&args, &a, 1000, &no_home, None);
         let mut two = BwResource::new();
-        let (ok_two, rem_two) =
-            two.init_from_sources(&args, &a, 1000, &no_home, None);
+        let (ok_two, rem_two) = two.init_from_sources(&args, &a, 1000, &no_home, None);
 
         assert!(ok_one && ok_two);
         assert_eq!(one.get_path_num(), 2);
@@ -1623,21 +1603,14 @@ mod tests {
             None,
         );
         assert!(!ok);
-        assert_eq!(
-            remaining,
-            vec!["prog".to_string(), "--res".to_string()]
-        );
+        assert_eq!(remaining, vec!["prog".to_string(), "--res".to_string()]);
         assert_eq!(resource.get_path_num(), 0);
 
         // -uid consumes its value and rewires the conf lookup: only uid
         // 1001 finds the fixture home, so the surviving res path must have
         // come through that branch.
         fs::create_dir(format!("{}/uid1001", a)).unwrap();
-        fs::write(
-            format!("{}/uid1001/.bwmachined.conf", a),
-            "machined;res1\n",
-        )
-        .unwrap();
+        fs::write(format!("{}/uid1001/.bwmachined.conf", a), "machined;res1\n").unwrap();
         let mut resource = BwResource::new();
         let home_of_uid = |uid: u32| {
             if uid == 1001 {
@@ -1686,13 +1659,8 @@ mod tests {
 
         // Command-line paths silence the env variable entirely.
         let mut resource = BwResource::new();
-        let (ok, _) = resource.init_from_sources(
-            &[],
-            &a,
-            1000,
-            &no_home,
-            Some(&format!("{}/res1", a)),
-        );
+        let (ok, _) =
+            resource.init_from_sources(&[], &a, 1000, &no_home, Some(&format!("{}/res1", a)));
         assert!(ok);
         assert_eq!(resource.get_path(0), format!("{}/res1", a));
 
@@ -1740,10 +1708,7 @@ mod tests {
         );
         assert!(!ok);
         assert_eq!(resource.get_path_num(), 0);
-        assert_eq!(
-            remaining,
-            vec!["prog".to_string(), "x".to_string()]
-        );
+        assert_eq!(remaining, vec!["prog".to_string(), "x".to_string()]);
 
         fs::remove_dir_all(&a).unwrap();
         fs::remove_dir_all(&home).unwrap();
@@ -1856,4 +1821,3 @@ mod tests {
         assert_eq!(passwd_home(u32::MAX - 1), None);
     }
 }
-

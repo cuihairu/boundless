@@ -25,6 +25,9 @@ libc = "0.2"
 # Definition digest (BW-04-01-05): the reference `MD5::Digest::quote()` is
 # 32 nibbles of uppercase hex, which is this crate's digest bytes upper-cased.
 md-5 = "0.10"
+# Login challenge (BW-06-01-02): the cuckoo-cycle proof-of-work derives its
+# SipHash key from SHA-256 of the challenge key.
+sha2 = "0.10"
 
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
@@ -32,7 +35,7 @@ foundation = { path = "crates/foundation" }
 platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
 # mercury = { path = "crates/mercury" }  # re-add at BW-02
-# contracts = { path = "crates/contracts" }  # re-add when a role runtime consumes it
+contracts = { path = "crates/contracts" }
 # entitydef = { path = "crates/entitydef" }  # re-add at BW-02+
 python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }

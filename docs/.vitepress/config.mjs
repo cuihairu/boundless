@@ -118,6 +118,12 @@ const operationsSidebar = [
     ]
   },
   {
+    text: "Failure",
+    items: [
+      { text: "Failure matrix", link: "/operations/failure-matrix" }
+    ]
+  },
+  {
     text: "Release",
     items: [
       { text: "Testing and release", link: "/operations/testing-and-release" }
@@ -160,6 +166,8 @@ export default {
   ],
   themeConfig: {
     siteTitle,
+    // 用户 2026-11-21 提供：Boundless ring logo（docs/public/logo.svg）
+    logo: "/logo.svg",
     search: {
       // Pure client-side local search index; no external search service.
       provider: "local"

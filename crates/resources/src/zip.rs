@@ -526,9 +526,10 @@ impl ZipFileSystem {
             if name_start + entry.filename_length as usize > dir_block.len() {
                 return false;
             }
-            local_file.filename =
-                String::from_utf8_lossy(&dir_block[name_start..name_start + entry.filename_length as usize])
-                    .into_owned();
+            local_file.filename = String::from_utf8_lossy(
+                &dir_block[name_start..name_start + entry.filename_length as usize],
+            )
+            .into_owned();
             clean_slashes(&mut local_file.filename);
             dir_offset_in_block += entry.filename_length as usize;
             dir_offset_in_block += entry.extra_field_length as usize;
@@ -553,7 +554,8 @@ impl ZipFileSystem {
             let (dir_component, file_component) = split_dir(&filename);
             match self.dir_map.get_mut(&dir_component) {
                 None => {
-                    self.dir_map.insert(dir_component.clone(), DirPair::default());
+                    self.dir_map
+                        .insert(dir_component.clone(), DirPair::default());
                     let pair = self.dir_map.get_mut(&dir_component).unwrap();
                     pair.first.push(file_component.clone());
                     pair.second.push(decoded_component(&file_component));
@@ -657,10 +659,10 @@ impl ZipFileSystem {
         // Already loaded rows sniff their in-memory (compressed) bytes.
         if let Some(data) = &file.data {
             if file.entry.compression_method == METHOD_DEFLATE {
-                if let Some(magic) = inflate_prefix(data, 4) {
-                    if magic == ZIP_HEADER_MAGIC {
-                        ft = FileType::Archive;
-                    }
+                if let Some(magic) = inflate_prefix(data, 4)
+                    && magic == ZIP_HEADER_MAGIC
+                {
+                    ft = FileType::Archive;
                 }
             } else if zip_test(data) {
                 ft = FileType::Archive;
@@ -787,9 +789,7 @@ impl ZipFileSystem {
     pub fn file_count(&self, dir_path: &str) -> usize {
         let mut path2 = dir_path.to_string();
         self.resolve_path(&mut path2, false);
-        self.dir_map
-            .get(&path2)
-            .map_or(0, |pair| pair.first.len())
+        self.dir_map.get(&path2).map_or(0, |pair| pair.first.len())
     }
 
     /// `fileName`: the decoded name at `index` within `dir_path`.
@@ -855,7 +855,7 @@ impl ZipFileSystem {
         let mut real_name = name.to_string();
         clean_slashes(&mut real_name);
 
-        match self.file_map.get(&name.to_string()).copied() {
+        match self.file_map.get(name).copied() {
             None => {
                 // A decoded duplicate gets an encoded row name.
                 if self.duplicates.contains_key(name) {
@@ -915,7 +915,8 @@ impl ZipFileSystem {
         let (dir_component, file_component) = split_dir(&real_name);
         match self.dir_map.get_mut(&dir_component) {
             None => {
-                self.dir_map.insert(dir_component.clone(), DirPair::default());
+                self.dir_map
+                    .insert(dir_component.clone(), DirPair::default());
                 let pair = self.dir_map.get_mut(&dir_component).unwrap();
                 pair.first.push(file_component.clone());
                 pair.second.push(decoded_component(&file_component));
@@ -1120,13 +1121,10 @@ fn compress_data(data: &[u8]) -> Option<Vec<u8>> {
     let mut encoder =
         flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
     std::io::Write::write_all(&mut encoder, data).ok()?;
-    encoder.finish().ok().and_then(|out| {
-        if out.len() <= data.len() + 1 {
-            Some(out)
-        } else {
-            None
-        }
-    })
+    encoder
+        .finish()
+        .ok()
+        .filter(|out| out.len() <= data.len() + 1)
 }
 
 /// Raw inflate of exactly `expected` bytes, requiring the stream to end
@@ -1174,11 +1172,7 @@ fn dos_timestamp(unix: i64) -> (u16, u16) {
 
     let year = if y <= 1980 { 0 } else { y - 1980 };
     let date = (d as u16) + ((m as u16) << 5) + ((year as u16) << 9);
-    let (hour, min, sec) = (
-        secs / 3600,
-        (secs % 3600) / 60,
-        secs % 60,
-    );
+    let (hour, min, sec) = (secs / 3600, (secs % 3600) / 60, secs % 60);
     let time = ((sec >> 1) as u16) + ((min as u16) << 5) + ((hour as u16) << 11);
     (date, time)
 }
@@ -1485,7 +1479,10 @@ mod tests {
 
         // Timestamps surface through get_file_type.
         let mut info = FileInfo::default();
-        assert_eq!(fs.get_file_type("dir/nested.bin", Some(&mut info)), FileType::File);
+        assert_eq!(
+            fs.get_file_type("dir/nested.bin", Some(&mut info)),
+            FileType::File
+        );
         assert_eq!(info.size, 64);
         let stamp = (0x5821u32) << 16 | 0x6c38;
         assert_eq!(info.created, stamp);
@@ -1562,8 +1559,7 @@ mod tests {
         // compressed_size overrunning the archive fails the read.
         let mut bad = build_raw_zip(&[RawEntry::stored("a.txt", b"xyz")]);
         let dir_offset = u32_le(&bad, bad.len() - DIR_FOOTER_SIZE + 16) as usize;
-        bad[dir_offset + 18..dir_offset + 22]
-            .copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+        bad[dir_offset + 18..dir_offset + 22].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
         let fs = ZipFileSystem::open("", bad).unwrap();
         assert!(fs.read_file("a.txt").is_none());
     }
@@ -1614,10 +1610,8 @@ mod tests {
         // fixture for a row the public API cannot produce (updateFile stores
         // anything zip-magic-headed verbatim).
         let ghost_data = {
-            let mut encoder = flate2::write::DeflateEncoder::new(
-                Vec::new(),
-                flate2::Compression::default(),
-            );
+            let mut encoder =
+                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
             encoder.write_all(&inner).unwrap();
             encoder.finish().unwrap()
         };
@@ -1648,7 +1642,10 @@ mod tests {
         // Directories short-circuit before any sniffing or info fill.
         assert_eq!(fs.get_file_type_ex("dir", None), FileType::Directory);
         let mut info = FileInfo::default();
-        assert_eq!(fs.get_file_type_ex("plain.txt", Some(&mut info)), FileType::File);
+        assert_eq!(
+            fs.get_file_type_ex("plain.txt", Some(&mut info)),
+            FileType::File
+        );
         assert_eq!(info.size, 1);
         let stamp = 0u32;
         assert_eq!(info.modified, stamp);
@@ -1657,8 +1654,7 @@ mod tests {
         assert_eq!(fs.get_file_type_ex("empty.bin", None), FileType::File);
         let mut bad = build_raw_zip(&[RawEntry::stored("a.txt", b"xyz")]);
         let dir_offset = u32_le(&bad, bad.len() - DIR_FOOTER_SIZE + 16) as usize;
-        bad[dir_offset + 20..dir_offset + 24]
-            .copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+        bad[dir_offset + 20..dir_offset + 24].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
         let fs = ZipFileSystem::open("", bad).unwrap();
         assert_eq!(fs.get_file_type_ex("a.txt", None), FileType::File);
 
@@ -1666,8 +1662,7 @@ mod tests {
         // falls back to zeros and the read then overruns.
         let mut bad = build_raw_zip(&[RawEntry::stored("a.txt", b"xyz")]);
         let dir_offset = u32_le(&bad, bad.len() - DIR_FOOTER_SIZE + 16) as usize;
-        bad[dir_offset + 42..dir_offset + 46]
-            .copy_from_slice(&0x7fff_fff0i32.to_le_bytes());
+        bad[dir_offset + 42..dir_offset + 46].copy_from_slice(&0x7fff_fff0i32.to_le_bytes());
         let fs = ZipFileSystem::open("", bad).unwrap();
         assert!(fs.read_file("a.txt").is_none());
     }
@@ -1678,10 +1673,8 @@ mod tests {
         // sniffs as a plain file.
         let mut fs = open_fixture(&[RawEntry::stored("keeper.txt", b"k")]);
         let tiny = {
-            let mut encoder = flate2::write::DeflateEncoder::new(
-                Vec::new(),
-                flate2::Compression::default(),
-            );
+            let mut encoder =
+                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
             encoder.write_all(b"a").unwrap();
             encoder.finish().unwrap()
         };
@@ -1696,7 +1689,8 @@ mod tests {
             ..Default::default()
         });
         let index = fs.central_directory.len() - 1;
-        fs.file_map.insert("tiny.bin".to_string(), (index as u32, 0));
+        fs.file_map
+            .insert("tiny.bin".to_string(), (index as u32, 0));
         assert_eq!(fs.get_file_type_ex("tiny.bin", None), FileType::File);
     }
 
@@ -1736,7 +1730,10 @@ mod tests {
         // Loaded bytes win over the recorded entry size.
         assert_eq!(fs.file_size("", 0), 4);
         let (central, _) = fs.file_map["kept.txt"];
-        assert_eq!(fs.central_directory[central as usize].uncompressed_size(), 4);
+        assert_eq!(
+            fs.central_directory[central as usize].uncompressed_size(),
+            4
+        );
         assert_eq!(
             fs.central_directory[central as usize].compressed_size(),
             4,
@@ -1972,7 +1969,14 @@ mod tests {
 
         let dir_offset = want.len() as u32;
         for (name, data, off, date, time, size) in [
-            ("a.bin", payload.as_slice(), 0u32, 0x5821u16, 0x6c38u16, 64u32),
+            (
+                "a.bin",
+                payload.as_slice(),
+                0u32,
+                0x5821u16,
+                0x6c38u16,
+                64u32,
+            ),
             ("d/b.txt", b"hey".as_slice(), 30 + 5 + 64, 0x4d21, 0x0000, 3),
         ] {
             want.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
@@ -2015,7 +2019,9 @@ mod tests {
         let mut fs = ZipFileSystem::open("", empty_zip()).unwrap();
         fs.update_file("old.txt", Some(b"payload payload payload".to_vec()));
         let (central, _) = fs.file_map["old.txt"];
-        let method = fs.central_directory[central as usize].header.compression_method;
+        let method = fs.central_directory[central as usize]
+            .header
+            .compression_method;
         fs.update_file("new.txt", Some(b"other".to_vec()));
         fs.update_file("old.txt", Some(b"replacement".to_vec())); // renames old to "old.txt 1"
 
@@ -2025,7 +2031,11 @@ mod tests {
         // The local header keeps the original stamp: updateHeader never
         // re-walked the compress block.
         assert_eq!(renamed.header.uncompressed_size, 23);
-        assert_eq!(renamed.uncompressed_size(), 0, "entry fills at writeDirEntry");
+        assert_eq!(
+            renamed.uncompressed_size(),
+            0,
+            "entry fills at writeDirEntry"
+        );
         let bytes = fs.create_zip();
         let fs = ZipFileSystem::open("", bytes).unwrap();
         assert_eq!(
@@ -2111,11 +2121,10 @@ mod tests {
         folder.entry.local_header_offset = -1;
         assert!(folder.is_folder());
         assert_eq!(folder.disk_name(), "dir/");
-        assert_eq!(folder.size_on_disk(), 30 + 8 + 0 + 46);
+        assert_eq!(folder.size_on_disk(), (30 + 8) + 46);
         assert!(!folder.is_valid());
         folder.clear();
         assert!(folder.filename.is_empty());
         assert!(!folder.is_valid());
     }
 }
-

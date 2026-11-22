@@ -197,9 +197,24 @@ impl ServerAppConfig {
     /// without a default suffix.
     fn print_all(&mut self) {
         let mut lines = Vec::new();
-        push_line(&mut lines, "gameUpdateHertz", &self.update_hertz.to_string(), "10");
-        push_line(&mut lines, "personality", &self.personality, DEFAULT_PERSONALITY_NAME);
-        push_line(&mut lines, "serverMode", &self.server_mode, DEFAULT_SERVER_MODE);
+        push_line(
+            &mut lines,
+            "gameUpdateHertz",
+            &self.update_hertz.to_string(),
+            "10",
+        );
+        push_line(
+            &mut lines,
+            "personality",
+            &self.personality,
+            DEFAULT_PERSONALITY_NAME,
+        );
+        push_line(
+            &mut lines,
+            "serverMode",
+            &self.server_mode,
+            DEFAULT_SERVER_MODE,
+        );
         push_line(
             &mut lines,
             "production",
@@ -244,7 +259,6 @@ impl ServerAppConfig {
         );
         self.print_lines = lines;
     }
-
 }
 
 /// One `%-34s = %s` line, with `(default: %s)` when the value differs
@@ -259,12 +273,7 @@ fn push_line(lines: &mut Vec<String>, name: &str, value: &str, default: &str) {
 
 // The `ServerAppOptionIniterT<TYPE>::init` flavours: `update` from the
 // chain (recording a miss for the per-option warning), default otherwise.
-fn read_option_string(
-    config: &BwConfig,
-    path: &str,
-    value: &mut String,
-    unread: &mut Vec<String>,
-) {
+fn read_option_string(config: &BwConfig, path: &str, value: &mut String, unread: &mut Vec<String>) {
     let mut updated = value.clone();
     if config.update_string(path, &mut updated) {
         *value = updated;
@@ -414,10 +423,7 @@ pub fn base_on_signalled(sig_num: i32) {
 /// The base `ServerApp::run` body: `mainDispatcher_.processUntilBreak()`,
 /// then `onRunComplete()`, then success. Role apps that do not override
 /// `run` inherit exactly this.
-pub fn base_run(
-    app: &mut dyn ServerApp,
-    dispatcher: &mut crate::dispatcher::Dispatcher,
-) -> bool {
+pub fn base_run(app: &mut dyn ServerApp, dispatcher: &mut crate::dispatcher::Dispatcher) -> bool {
     dispatcher.process_until_break();
     app.on_run_complete();
     true
@@ -425,9 +431,7 @@ pub fn base_run(
 
 /// The anonymous-namespace `ServerAppSignalHandler`: forwards every
 /// dispatched signal into `app.on_signalled`.
-pub fn app_signal_handler(
-    app: &Rc<RefCell<dyn ServerApp>>,
-) -> Rc<RefCell<dyn SignalHandler>> {
+pub fn app_signal_handler(app: &Rc<RefCell<dyn ServerApp>>) -> Rc<RefCell<dyn SignalHandler>> {
     let app = Rc::clone(app);
     Rc::new(RefCell::new(SignalHandlerFn(move |sig_num| {
         app.borrow_mut().on_signalled(sig_num);
@@ -468,11 +472,7 @@ pub fn run_app(app: &mut dyn ServerApp, args: &[String]) -> bool {
 /// `doBWMainT` without the Mercury wiring (dispatcher/interface arrive
 /// with BW-02): config options first -- their failure is the **-1**
 /// return -- then the app lifecycle, whose bool maps to 0/1.
-pub fn do_bw_main_t(
-    app: &mut dyn ServerApp,
-    config: &BwConfig,
-    args: &[String],
-) -> i32 {
+pub fn do_bw_main_t(app: &mut dyn ServerApp, config: &BwConfig, args: &[String]) -> i32 {
     let mut app_config = ServerAppConfig::new();
     if !app_config.init(config) {
         eprintln!(
@@ -709,13 +709,13 @@ mod tests {
         assert!(lines.iter().any(|l| l.starts_with("  personality")
             && l.contains("MyPersonality")
             && l.contains("(default: BWPersonality)")));
-        assert!(lines.iter().any(|l| l.starts_with("  gameUpdateHertz")
-            && l.contains("(default: 10)")));
-        // Only the five options absent from the fixture warn.
-        assert_eq!(
-            app_config.unread_options,
-            ["serverMode"]
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("  gameUpdateHertz") && l.contains("(default: 10)"))
         );
+        // Only the five options absent from the fixture warn.
+        assert_eq!(app_config.unread_options, ["serverMode"]);
     }
 
     /// `Default` mirrors `new`.
@@ -750,7 +750,7 @@ mod tests {
             ran: Cell::new(false),
         };
         assert_eq!(ServerApp::app_name(&app), "bareapp");
-        assert_eq!(run_app(&mut app, &[]), true);
+        assert!(run_app(&mut app, &[]));
         assert!(app.ran.get());
 
         // The base shutDown: the INFO line only; the override breaks the
@@ -816,9 +816,8 @@ mod tests {
 
     use crate::dispatcher::{Dispatcher, FrequentTaskFn};
     use crate::signals::{
-        disposition_of, kernel_pending_signals, pending_signals,
-        signal_number_to_string, Blocker, HandlerId, Set, SignalDispatchTask,
-        SignalProcessor,
+        Blocker, HandlerId, Set, SignalDispatchTask, SignalProcessor, disposition_of,
+        kernel_pending_signals, pending_signals, signal_number_to_string,
     };
 
     /// A role-app skeleton: owns its dispatcher (the `mainDispatcher_`
@@ -852,18 +851,16 @@ mod tests {
 
             let log = Rc::clone(&self.log);
             let break_flag = self.dispatcher.break_flag();
-            self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                FrequentTaskFn(
+            self.dispatcher
+                .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                     move || {
                         log.borrow_mut().push("control event".to_string());
-                        log.borrow_mut().push(
-                            "ServerApp::shutDown: shutting down".to_string(),
-                        );
+                        log.borrow_mut()
+                            .push("ServerApp::shutDown: shutting down".to_string());
                         break_flag.set(true);
                     },
                     "control event",
-                ),
-            )));
+                ))));
             true
         }
 
@@ -912,10 +909,7 @@ mod tests {
         let break_flag = app.dispatcher.break_flag();
         ServerApp::shut_down(&mut app);
         assert!(break_flag.get());
-        assert_eq!(
-            *log.borrow(),
-            ["ServerApp::shutDown: shutting down"]
-        );
+        assert_eq!(*log.borrow(), ["ServerApp::shutDown: shutting down"]);
     }
 
     /// The base `onSignalled` SIGINT arm: reset the disposition to
@@ -932,7 +926,7 @@ mod tests {
         let _blocker = Blocker::new(&blocked);
 
         base_on_signalled(libc::SIGINT);
-        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL);
         assert!(
             kernel_pending_signals() & (1 << libc::SIGINT) != 0,
             "the re-raised SIGINT waits blocked"
@@ -966,10 +960,7 @@ mod tests {
         base_on_signalled(libc::SIGTERM);
         base_on_signalled(libc::SIGUSR2);
         assert_eq!(kernel_pending_signals(), before);
-        assert_eq!(
-            disposition_of(libc::SIGTERM),
-            libc::SIG_DFL as usize
-        );
+        assert_eq!(disposition_of(libc::SIGTERM), libc::SIG_DFL);
 
         // The trait default routes straight into the base arm.
         struct BareSignalApp;
@@ -1026,14 +1017,13 @@ mod tests {
                 let log = Rc::clone(&self.log);
                 let break_flag = self.dispatcher.break_flag();
                 let handler = Rc::new(RefCell::new(SignalHandlerFn(move |sig| {
-                    log.borrow_mut().push(format!(
-                        "onSignalled {}",
-                        signal_number_to_string(sig)
-                    ));
+                    log.borrow_mut()
+                        .push(format!("onSignalled {}", signal_number_to_string(sig)));
                     break_flag.set(true);
                 })));
-                let id =
-                    processor.borrow_mut().add_signal_handler(libc::SIGTERM, handler);
+                let id = processor
+                    .borrow_mut()
+                    .add_signal_handler(libc::SIGTERM, handler);
 
                 self.dispatcher
                     .add_frequent_task(SignalDispatchTask::new_task(&processor));
@@ -1042,8 +1032,8 @@ mod tests {
                 // SIGTERM raised mid-processing, exactly when a real
                 // stop request lands).
                 let raised = Cell::new(false);
-                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                    FrequentTaskFn(
+                self.dispatcher
+                    .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                         move || {
                             if !raised.get() {
                                 raised.set(true);
@@ -1053,8 +1043,7 @@ mod tests {
                             }
                         },
                         "stop signal",
-                    ),
-                )));
+                    ))));
 
                 self._processor = Some(processor);
                 self._handler_id = Some(id);
@@ -1081,10 +1070,7 @@ mod tests {
         // the next pass drains it into the handler and the app exits its
         // loop cleanly.
         assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
-        assert_eq!(
-            *log.borrow(),
-            ["init", "onSignalled SIGTERM"]
-        );
+        assert_eq!(*log.borrow(), ["init", "onSignalled SIGTERM"]);
         assert_eq!(pending_signals(), 0, "the drain empties the set");
     }
 
@@ -1115,10 +1101,9 @@ mod tests {
                 true
             }
             fn on_signalled(&mut self, sig_num: i32) {
-                self.log.borrow_mut().push(format!(
-                    "onSignalled {}",
-                    signal_number_to_string(sig_num)
-                ));
+                self.log
+                    .borrow_mut()
+                    .push(format!("onSignalled {}", signal_number_to_string(sig_num)));
                 base_on_signalled(sig_num);
             }
         }
@@ -1145,11 +1130,7 @@ mod tests {
         let mut unblock = Set::empty();
         unblock.set(libc::SIGINT);
         unsafe {
-            libc::pthread_sigmask(
-                libc::SIG_UNBLOCK,
-                unblock.raw(),
-                std::ptr::null_mut(),
-            );
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, unblock.raw(), std::ptr::null_mut());
         }
 
         // The raise must be unblocked so the C handler marks the pending
@@ -1165,7 +1146,7 @@ mod tests {
         processor.dispatch();
 
         assert_eq!(*log.borrow(), ["onSignalled SIGINT"]);
-        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL);
         assert!(
             kernel_pending_signals() & (1 << libc::SIGINT) != 0,
             "the routed re-raise parks blocked"
@@ -1194,7 +1175,7 @@ mod tests {
 
     // ---- BW-01-04-05: staged shutdown and the baseline exit order ----
 
-    use crate::shutdown::{shut_down_stage_to_string, ShutDownStage, ShutdownState, TaskManager};
+    use crate::shutdown::{ShutDownStage, ShutdownState, TaskManager, shut_down_stage_to_string};
 
     /// The base `ServerApp::run` body: `processUntilBreak` unwinds on the
     /// breaker, `onRunComplete` runs, success returns.
@@ -1234,7 +1215,7 @@ mod tests {
             "breaker",
         ))));
 
-        assert_eq!(base_run(&mut app, &mut dispatcher), true);
+        assert!(base_run(&mut app, &mut dispatcher));
         assert!(app.completed.get());
     }
 
@@ -1267,9 +1248,11 @@ mod tests {
         fn init(&mut self, _args: &[String]) -> bool {
             self.log.borrow_mut().push("init".to_string());
             let break_flag = self.dispatcher.break_flag();
-            self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                FrequentTaskFn(move || break_flag.set(true), "breaker"),
-            )));
+            self.dispatcher
+                .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
+                    move || break_flag.set(true),
+                    "breaker",
+                ))));
             self.init_ok
         }
 
@@ -1289,9 +1272,7 @@ mod tests {
         }
 
         fn prepare_for_shutdown(&mut self) {
-            self.log
-                .borrow_mut()
-                .push("prepareForShutdown".to_string());
+            self.log.borrow_mut().push("prepareForShutdown".to_string());
         }
     }
 
@@ -1306,13 +1287,7 @@ mod tests {
         assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_SUCCESS);
         assert_eq!(
             *log.borrow(),
-            [
-                "init",
-                "run",
-                "onRunComplete",
-                "fini",
-                "prepareForShutdown",
-            ]
+            ["init", "run", "onRunComplete", "fini", "prepareForShutdown",]
         );
     }
 
@@ -1339,13 +1314,7 @@ mod tests {
         assert_eq!(do_bw_main_t(&mut app, &config, &[]), EXIT_FAILURE);
         assert_eq!(
             *log.borrow(),
-            [
-                "init",
-                "run",
-                "onRunComplete",
-                "fini",
-                "prepareForShutdown",
-            ]
+            ["init", "run", "onRunComplete", "fini", "prepareForShutdown",]
         );
     }
 
@@ -1400,8 +1369,8 @@ mod tests {
                 let log = Rc::clone(&self.log);
                 let tasks = Rc::clone(&self.tasks);
                 let queued = Cell::new(false);
-                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                    FrequentTaskFn(
+                self.dispatcher
+                    .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                         move || {
                             if queued.get() {
                                 return;
@@ -1417,25 +1386,23 @@ mod tests {
                                 .add_background_task(task as Rc<RefCell<dyn BackgroundTask>>);
                         },
                         "queue work",
-                    ),
-                )));
+                    ))));
 
                 // The game-tick stand-in: drain completions every pass.
                 let tasks = Rc::clone(&self.tasks);
-                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                    FrequentTaskFn(
+                self.dispatcher
+                    .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                         move || tasks.borrow_mut().tick(),
                         "tick",
-                    ),
-                )));
+                    ))));
 
                 // "late work" (pass 2, after the tick): one more
                 // background task, still pending when the loop breaks.
                 let log = Rc::clone(&self.log);
                 let tasks = Rc::clone(&self.tasks);
                 let passes = Cell::new(0);
-                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                    FrequentTaskFn(
+                self.dispatcher
+                    .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                         move || {
                             passes.set(passes.get() + 1);
                             if passes.get() < 2 {
@@ -1452,14 +1419,13 @@ mod tests {
                                 .add_background_task(task as Rc<RefCell<dyn BackgroundTask>>);
                         },
                         "late work",
-                    ),
-                )));
+                    ))));
 
                 // Break at the end of pass 2.
                 let break_flag = self.dispatcher.break_flag();
                 let passes = Cell::new(0);
-                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                    FrequentTaskFn(
+                self.dispatcher
+                    .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                         move || {
                             passes.set(passes.get() + 1);
                             if passes.get() >= 2 {
@@ -1467,8 +1433,7 @@ mod tests {
                             }
                         },
                         "breaker",
-                    ),
-                )));
+                    ))));
                 true
             }
 
@@ -1485,9 +1450,7 @@ mod tests {
             }
 
             fn prepare_for_shutdown(&mut self) {
-                self.log
-                    .borrow_mut()
-                    .push("prepareForShutdown".to_string());
+                self.log.borrow_mut().push("prepareForShutdown".to_string());
             }
         }
 
@@ -1547,11 +1510,11 @@ mod tests {
             *log.borrow(),
             [
                 "init",
-                "bg work",       // pass 1: inline background phase
-                "bg cleanup",    // pass 2: tick drains the completion
-                "late bg work",  // pass 2: queued after the last tick
+                "bg work",      // pass 1: inline background phase
+                "bg cleanup",   // pass 2: tick drains the completion
+                "late bg work", // pass 2: queued after the last tick
                 "fini",
-                "late cleanup",  // stopAll's final tick, inside fini
+                "late cleanup", // stopAll's final tick, inside fini
                 "prepareForShutdown",
             ]
         );
@@ -1615,8 +1578,8 @@ mod tests {
 
                 // Pass 1: submit the work that is still running when the
                 // shutdown starts.
-                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                    FrequentTaskFn(
+                self.dispatcher
+                    .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                         move || {
                             if queued.get() {
                                 return;
@@ -1628,23 +1591,19 @@ mod tests {
                                 log: Arc::clone(&log),
                                 me: std::sync::Mutex::new(None),
                             });
-                            *task
-                                .me
-                                .lock()
-                                .expect("me") = Some(Arc::clone(&task) as TaskPtr);
+                            *task.me.lock().expect("me") = Some(Arc::clone(&task) as TaskPtr);
                             assert_eq!(task.name(), "bg work");
                             tasks.add_background_task(task as TaskPtr);
                         },
                         "queue work",
-                    ),
-                )));
+                    ))));
 
                 // Pass 2: queue one more, then break.
                 let log = Arc::clone(&self.log);
                 let tasks = Arc::clone(&self.tasks);
                 let break_flag = self.dispatcher.break_flag();
-                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                    FrequentTaskFn(
+                self.dispatcher
+                    .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                         move || {
                             passes.set(passes.get() + 1);
                             if passes.get() < 2 {
@@ -1656,16 +1615,12 @@ mod tests {
                                 log: Arc::clone(&log),
                                 me: std::sync::Mutex::new(None),
                             });
-                            *task
-                                .me
-                                .lock()
-                                .expect("me") = Some(Arc::clone(&task) as TaskPtr);
+                            *task.me.lock().expect("me") = Some(Arc::clone(&task) as TaskPtr);
                             tasks.add_background_task(task as TaskPtr);
                             break_flag.set(true);
                         },
                         "queue late work",
-                    ),
-                )));
+                    ))));
                 true
             }
 
@@ -1765,29 +1720,22 @@ mod tests {
                 let log = Rc::clone(&self.log);
                 let state = Rc::clone(&self.state);
                 let break_flag = self.dispatcher.break_flag();
-                self.dispatcher.add_frequent_task(Rc::new(RefCell::new(
-                    FrequentTaskFn(
+                self.dispatcher
+                    .add_frequent_task(Rc::new(RefCell::new(FrequentTaskFn(
                         move || {
                             log.borrow_mut().push(format!(
                                 "controlledShutDown {}",
-                                shut_down_stage_to_string(
-                                    ShutDownStage::Inform as i32
-                                )
+                                shut_down_stage_to_string(ShutDownStage::Inform as i32)
                             ));
                             state
                                 .borrow_mut()
-                                .handle_controlled_shut_down(
-                                    ShutDownStage::Inform,
-                                    120,
-                                );
-                            log.borrow_mut().push(
-                                "ServerApp::shutDown: shutting down".to_string(),
-                            );
+                                .handle_controlled_shut_down(ShutDownStage::Inform, 120);
+                            log.borrow_mut()
+                                .push("ServerApp::shutDown: shutting down".to_string());
                             break_flag.set(true);
                         },
                         "control event",
-                    ),
-                )));
+                    ))));
                 true
             }
 

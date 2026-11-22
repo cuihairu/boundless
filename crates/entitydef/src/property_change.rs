@@ -683,7 +683,7 @@ mod tests {
         change.change.set_root_index(6);
         let mut stream = BinaryStream::new();
         change
-            .add_to_internal_stream(&field, &PropertyValue::Uint(7), &mut stream)
+            .add_to_internal_stream(field, &PropertyValue::Uint(7), &mut stream)
             .unwrap();
         assert_eq!(stream.as_bytes(), &[2, 0, 0, 0, 0, 0, 7]);
     }
@@ -708,7 +708,7 @@ mod tests {
         change.change.add_to_path(4, 10);
         let mut stream = BinaryStream::new();
         change
-            .add_to_internal_stream(&field, &PropertyValue::Uint(7), &mut stream)
+            .add_to_internal_stream(field, &PropertyValue::Uint(7), &mut stream)
             .unwrap();
         assert_eq!(stream.as_bytes(), &[2, 1, 4, 0, 0, 0, 0, 0, 0, 0, 7]);
     }
@@ -727,7 +727,7 @@ mod tests {
         let mut stream = BinaryStream::new();
         change
             .add_to_internal_stream(
-                &element,
+                element,
                 &[PropertyValue::Uint(9), PropertyValue::Uint(8)],
                 &mut stream,
             )
@@ -754,7 +754,7 @@ mod tests {
         let mut stream = BinaryStream::new();
         change
             .add_to_internal_stream(
-                &element,
+                element,
                 &[PropertyValue::FixedDict(Some(vec![
                     ("ammo".to_string(), PropertyValue::Uint(7)),
                     ("label".to_string(), PropertyValue::String("x".into())),
@@ -777,7 +777,7 @@ mod tests {
         let change = SlicePropertyChange::new(1, 2, 10);
         let mut stream = BinaryStream::new();
         change
-            .add_to_internal_stream(&element, &[PropertyValue::Uint(5)], &mut stream)
+            .add_to_internal_stream(element, &[PropertyValue::Uint(5)], &mut stream)
             .unwrap();
         assert_eq!(stream.as_bytes(), &[1, 5]);
     }
@@ -794,7 +794,7 @@ mod tests {
         change.change.set_root_index(6);
         let mut stream = BinaryStream::new();
         change
-            .add_to_internal_stream(&field, &PropertyValue::String("xy".into()), &mut stream)
+            .add_to_internal_stream(field, &PropertyValue::String("xy".into()), &mut stream)
             .unwrap();
         assert_eq!(stream.as_bytes(), &[2, 0, 1, 0, 0, 0, 2, b'x', b'y']);
     }
@@ -968,7 +968,7 @@ mod tests {
         let mut stream = BinaryStream::new();
         change
             .add_to_internal_stream(
-                &fixed
+                fixed
                     .field_type(0)
                     .and_then(|array| array.element_type())
                     .expect("element"),
@@ -1004,7 +1004,7 @@ mod tests {
         let mut stream = BinaryStream::new();
         change
             .add_to_internal_stream(
-                &slots
+                slots
                     .field_type(0)
                     .and_then(|array| array.element_type())
                     .expect("element"),

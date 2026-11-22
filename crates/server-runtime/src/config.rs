@@ -15,7 +15,7 @@
 //!   section, overriding everything (`writeString` creates the path);
 //! - with no config sections at all, command-line processing fails.
 
-use resources::bwresource::{current_uid, BwResource};
+use resources::bwresource::{BwResource, current_uid};
 use resources::datasection::DataSection;
 use std::sync::Arc;
 
@@ -75,8 +75,7 @@ impl BwConfig {
             resource.purge(&filename, false);
             match resource.open_section(&filename, false) {
                 Some(section) => {
-                    self.sections
-                        .push((Arc::clone(&section), filename.clone()));
+                    self.sections.push((Arc::clone(&section), filename.clone()));
                     filename = section.read_string("parentFile", "");
                 }
                 None if is_user_filename && !resource.file_exists(&filename) => {
@@ -109,11 +108,7 @@ impl BwConfig {
     /// `BWConfig::init(argc, argv)`: run the chain (unless already done --
     /// the reference's `g_inited` guard) and apply the command line.
     /// Returns `processCommandLine`'s verdict.
-    pub fn init_from_args(
-        &mut self,
-        resource: &BwResource,
-        args: &[String],
-    ) -> bool {
+    pub fn init_from_args(&mut self, resource: &BwResource, args: &[String]) -> bool {
         let username = passwd_name(current_uid());
         self.init_from_sources_with_args(resource, username.as_deref(), args)
     }
@@ -146,11 +141,7 @@ impl BwConfig {
     /// a mutated clone of the front section and re-adds it to the resource
     /// cache (`BwResource::readd_section`) to reproduce the shared-object
     /// coherence the C++ tree gets for free.
-    pub fn process_command_line(
-        &mut self,
-        resource: &BwResource,
-        args: &[String],
-    ) -> bool {
+    pub fn process_command_line(&mut self, resource: &BwResource, args: &[String]) -> bool {
         if self.sections.is_empty() {
             eprintln!("No configuration section.");
             return false;
@@ -463,10 +454,10 @@ mod tests {
         assert_eq!(config.get_int("shared/limit", -1), 10);
         // Missing everywhere: the default survives.
         assert_eq!(config.get_string("app/host", "fallback"), "fallback");
-        assert_eq!(config.get_bool("app/host", true), true);
+        assert!(config.get_bool("app/host", true));
         assert_eq!(config.get_uint("nope", 7), 7);
         // Typed conversions come from the winning section's `as`.
-        assert_eq!(config.get_bool("hasDebugConfig", false), true);
+        assert!(config.get_bool("hasDebugConfig", false));
         assert_eq!(config.get_section("app/name").unwrap().as_string(), "child");
         assert!(config.get_section("missing").is_none());
     }
@@ -584,7 +575,10 @@ mod tests {
         );
         // ...while the parent file stays untouched on disk.
         let parent = resource.open_section("server/bw.xml", false).unwrap();
-        assert_eq!(parent.open_section("app/name").unwrap().as_string(), "parent");
+        assert_eq!(
+            parent.open_section("app/name").unwrap().as_string(),
+            "parent"
+        );
     }
 
     /// A trailing `+key` with no value argument is ignored, like the
@@ -633,14 +627,7 @@ mod tests {
         assert_eq!(hits[0].1, "server/bw_user.xml");
         assert_eq!(hits[1].1, "server/bw.xml");
         assert_eq!(hits[0].0.as_string(), "");
-        assert_eq!(
-            hits[0]
-                .0
-                .open_section("name")
-                .unwrap()
-                .as_string(),
-            "child"
-        );
+        assert_eq!(hits[0].0.open_section("name").unwrap().as_string(), "child");
 
         // A name only the parent defines resolves once, from the parent.
         hits = config.search_sections("shared");
@@ -753,7 +740,7 @@ mod tests {
 
         let mut flag = true;
         assert!(!config.update_bool("ghost", &mut flag));
-        assert_eq!(flag, true);
+        assert!(flag);
 
         assert!(config.update_bool("hasDebugConfig", &mut flag));
     }
@@ -780,19 +767,13 @@ mod tests {
     fn already_inited_chain_is_kept_on_a_second_call() {
         let (resource, _keep) = chained_resource("inited");
         let mut config = BwConfig::new();
-        assert!(
-            config
-                .init_from_sources_with_args(&resource, Some("user"), &[])
-        );
+        assert!(config.init_from_sources_with_args(&resource, Some("user"), &[]));
         assert_eq!(config.sections.len(), 2);
 
         // Second call: the chain is NOT rebuilt -- the front section keeps
         // its command-line mutations from the first round.
         let again: Vec<String> = ["+app/name".to_string(), "again".to_string()].to_vec();
-        assert!(
-            config
-                .init_from_sources_with_args(&resource, Some("ghost"), &again)
-        );
+        assert!(config.init_from_sources_with_args(&resource, Some("ghost"), &again));
         assert_eq!(config.sections.len(), 2);
         assert_eq!(config.sections[0].1, "server/bw_user.xml");
         assert_eq!(config.get_string("app/name", ""), "again");

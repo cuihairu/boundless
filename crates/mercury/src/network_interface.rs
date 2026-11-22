@@ -20,6 +20,7 @@ use crate::channel_map::ChannelMap;
 use crate::condemned_channels::CondemnedChannels;
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
 use crate::event_dispatcher::EventDispatcher;
+use crate::irregular_channels::IrregularChannels;
 use crate::misc::{CHANNEL_ID_NULL, Reason};
 use crate::packet::Packet;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
@@ -76,6 +77,9 @@ pub struct NetworkInterface {
     channels: RefCell<ChannelMap>,
     /// The condemned channels waiting to be deleted.
     condemned: RefCell<CondemnedChannels>,
+    /// `pIrregularChannels_` (BW-02-03-04): the shared resend timer for
+    /// the channels that do not send regularly.
+    irregular: RefCell<IrregularChannels>,
     /// `pRequestManager_`.
     request_manager: RefCell<Option<Rc<RequestManager>>>,
     /// Where `processPacket` hands datagrams until channels exist.
@@ -126,6 +130,7 @@ impl NetworkInterface {
             dispatcher,
             channels: RefCell::new(ChannelMap::new()),
             condemned: RefCell::new(CondemnedChannels::new()),
+            irregular: RefCell::new(IrregularChannels::new()),
             request_manager: RefCell::new(None),
             sink: RefCell::new(None),
             reporter: RefCell::new(None),
@@ -515,6 +520,52 @@ impl NetworkInterface {
     #[cfg(test)]
     pub fn condemned_clear_for_test(&self) {
         self.condemned.borrow_mut().clear();
+    }
+
+    // -- Irregular channels (BW-02-03-04) ---------------------------------
+
+    /// `pNetworkInterface_->irregularChannels().addIfNecessary( *this )`,
+    /// as the channel's `isLocalRegular` setter and send path reach it.
+    pub fn add_irregular_channel_if_necessary(&self, channel: &ChannelPtr) {
+        self.irregular.borrow_mut().add_if_necessary(
+            channel,
+            &self.dispatcher,
+            &self.self_weak.borrow(),
+        );
+    }
+
+    /// `pNetworkInterface_->irregularChannels().delIfNecessary( *this )`,
+    /// as `clearState` and `switchInterface` reach it.
+    pub fn del_irregular_channel_if_necessary(&self, channel: &ChannelPtr) {
+        self.irregular.borrow_mut().del_if_necessary(channel);
+    }
+
+    /// `setIrregularChannelsResendPeriod( seconds )`
+    /// (network_interface.cpp:718): set the shared resend-check period;
+    /// zero or less stops the monitoring.
+    pub fn set_irregular_channels_resend_period(&self, seconds: f32) {
+        self.irregular
+            .borrow_mut()
+            .set_period(seconds, &self.dispatcher, &self.self_weak.borrow());
+    }
+
+    /// `IrregularChannels::handleTimeout`: the shared timer's verdict --
+    /// every member gets its resend check.
+    pub fn check_irregular_channels(&self) {
+        self.irregular.borrow_mut().check();
+    }
+
+    /// Test access to the irregular collection.
+    #[cfg(test)]
+    pub fn irregular_channels(&self) -> &RefCell<IrregularChannels> {
+        &self.irregular
+    }
+
+    /// Drop everything irregular without destroying, for tests that must
+    /// leave no resend timer behind.
+    #[cfg(test)]
+    pub fn irregular_clear_for_test(&self) {
+        self.irregular.borrow_mut().clear();
     }
 
     /// `dispatcher().errorReporter()`: the registered reporter, or the
