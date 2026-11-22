@@ -8,4 +8,4 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# foundation = { workspace = true }  # re-add with first consumer
+foundation = { workspace = true }

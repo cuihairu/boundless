@@ -111,6 +111,29 @@ pub unsafe fn py_traceback_check(obj: *mut PyObject) -> bool {
     unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTraceBack_Type)) == 1 }
 }
 
+/// `PyTuple_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyTuple_Type`). The type is concrete, so this is an exact type match;
+/// the math operand conversions only ever receive the exact type.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_tuple_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTuple_Type)) }
+}
+
+/// `PyList_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyList_Type`), exact match as for `py_tuple_check`.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_list_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyList_Type)) }
+}
+
 /// `PyObjectPlus::refCount()` (`pyobject_plus.hpp:1100`) and the cstdmf
 /// `hasZeroReferenceCount` specialisation that reads `ob_refcnt` directly
 /// (`pyobject_pointer.hpp:40`): the reference inspects the count for its own
@@ -122,6 +145,14 @@ pub unsafe fn refcount(obj: *mut PyObject) -> isize {
         return 0;
     }
     unsafe { std::ptr::addr_of!((*obj).ob_refcnt).read() }
+}
+
+/// `Py_NotImplemented` (`Include/object.h`): the singleton a protocol
+/// handler returns to defer to the other operand. The C macro is
+/// `(&_Py_NotImplementedStruct)`; the helper spells the same address.
+pub fn not_implemented() -> *mut PyObject {
+    // SAFETY: the static is the process-global NotImplemented singleton.
+    std::ptr::addr_of_mut!(_Py_NotImplementedStruct)
 }
 
 /// `PyCFunction`: a builtin function object's implementation (`ml_meth`).
@@ -141,6 +172,20 @@ pub type Setter =
 /// `tp_new`: the construction entry a type may refuse.
 pub type NewFunction =
     unsafe extern "C" fn(*mut PyTypeObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+
+/// `binaryfunc`: the two-operand number-protocol handler (`nb_add`, ...).
+pub type BinaryFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+
+/// `unaryfunc`: the one-operand number-protocol handler (`nb_negative`, ...).
+pub type UnaryFunction = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+
+/// `inquiry`: the flag-style number-protocol handler (`nb_bool`).
+pub type Inquiry = unsafe extern "C" fn(*mut PyObject) -> c_int;
+
+/// `richcmpfunc`: the comparison handler of `tp_richcompare`; `op` is one of
+/// the `Py_*` ordering constants.
+pub type RichcmpFunction =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject;
 
 /// `reprfunc`.
 pub type ReprFunction = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
@@ -234,6 +279,43 @@ pub const Py_sq_length: c_int = 45;
 pub const Py_sq_item: c_int = 44;
 /// `Py_sq_ass_item` (`typeslots.h`).
 pub const Py_sq_ass_item: c_int = 39;
+/// `Py_nb_add` (`typeslots.h`): the `nb_add` slot of `PyNumberMethods`.
+pub const Py_nb_add: c_int = 7;
+/// `Py_nb_bool` (`typeslots.h`): `nb_bool` (`PyNumberMethods`).
+pub const Py_nb_bool: c_int = 9;
+/// `Py_nb_inplace_add` (`typeslots.h`).
+pub const Py_nb_inplace_add: c_int = 14;
+/// `Py_nb_inplace_multiply` (`typeslots.h`).
+pub const Py_nb_inplace_multiply: c_int = 18;
+/// `Py_nb_inplace_subtract` (`typeslots.h`).
+pub const Py_nb_inplace_subtract: c_int = 23;
+/// `Py_nb_inplace_true_divide` (`typeslots.h`).
+pub const Py_nb_inplace_true_divide: c_int = 24;
+/// `Py_nb_multiply` (`typeslots.h`).
+pub const Py_nb_multiply: c_int = 29;
+/// `Py_nb_negative` (`typeslots.h`).
+pub const Py_nb_negative: c_int = 30;
+/// `Py_nb_positive` (`typeslots.h`).
+pub const Py_nb_positive: c_int = 32;
+/// `Py_nb_subtract` (`typeslots.h`).
+pub const Py_nb_subtract: c_int = 36;
+/// `Py_nb_true_divide` (`typeslots.h`).
+pub const Py_nb_true_divide: c_int = 37;
+/// `Py_tp_richcompare` (`typeslots.h`): the comparison slot.
+pub const Py_tp_richcompare: c_int = 67;
+
+/// `Py_LT` (`Include/object.h`): the rich-compare operator code for `<`.
+pub const Py_LT: c_int = 0;
+/// `Py_LE`, the rich-compare operator code for `<=`.
+pub const Py_LE: c_int = 1;
+/// `Py_EQ`, the rich-compare operator code for `==`.
+pub const Py_EQ: c_int = 2;
+/// `Py_NE`, the rich-compare operator code for `!=`.
+pub const Py_NE: c_int = 3;
+/// `Py_GT`, the rich-compare operator code for `>`.
+pub const Py_GT: c_int = 4;
+/// `Py_GE`, the rich-compare operator code for `>=`.
+pub const Py_GE: c_int = 5;
 
 /// `PyMethodDef`, the descriptor a `PyCFunction` is created from.
 #[repr(C)]
@@ -306,11 +388,14 @@ unsafe extern "C" {
     pub static mut _Py_NoneStruct: PyObject;
     pub static mut _Py_TrueStruct: PyObject;
     pub static mut _Py_FalseStruct: PyObject;
+    pub static mut _Py_NotImplementedStruct: PyObject;
     pub static mut Py_FrozenFlag: c_int;
     pub static mut Py_NoSiteFlag: c_int;
     pub static mut Py_IgnoreEnvironmentFlag: c_int;
     pub static mut PyModule_Type: PyTypeObject;
     pub static mut PyTraceBack_Type: PyTypeObject;
+    pub static mut PyTuple_Type: PyTypeObject;
+    pub static mut PyList_Type: PyTypeObject;
 }
 
 unsafe extern "C" {
@@ -393,6 +478,7 @@ unsafe extern "C" {
     pub fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int;
     pub static mut PyExc_TypeError: *mut PyObject;
     pub static mut PyExc_IndexError: *mut PyObject;
+    pub static mut PyExc_ValueError: *mut PyObject;
     pub fn PyIndex_Check(obj: *mut PyObject) -> c_int;
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
@@ -406,6 +492,18 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyLong_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyLong_AsLong(obj: *mut PyObject) -> std::os::raw::c_long;
+
+    // The number-protocol building blocks, the ones the math types need:
+    // every reference arithmetic handler converts its operands through
+    // `PyFloat_AsDouble` and builds its results with `PyFloat_FromDouble`.
+    pub fn PyFloat_FromDouble(value: f64) -> *mut PyObject;
+    pub fn PyFloat_AsDouble(obj: *mut PyObject) -> f64;
+    pub fn PyTuple_Size(tuple: *mut PyObject) -> PySsize;
+    pub fn PyTuple_New(size: PySsize) -> *mut PyObject;
+    pub fn PyTuple_SetItem(tuple: *mut PyObject, index: PySsize, item: *mut PyObject) -> c_int;
+    pub fn PyList_AsTuple(list: *mut PyObject) -> *mut PyObject;
+    pub fn PySequence_Size(obj: *mut PyObject) -> PySsize;
+    pub fn PySequence_GetItem(obj: *mut PyObject, index: PySsize) -> *mut PyObject;
 }
 
 #[cfg(test)]

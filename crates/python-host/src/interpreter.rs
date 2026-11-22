@@ -32,6 +32,7 @@ use super::gil;
 use super::import_paths::ImportPaths;
 use super::init_time_job;
 use super::keepalive;
+use super::math;
 use super::output_writer;
 use super::wrapper;
 
@@ -145,6 +146,9 @@ impl Interpreter {
             // does the same; through `init`'s own guard a second call is
             // unreachable.
             let _ = init_time_job::run_init_time_jobs();
+            // `TempPyVectorInit` (`script_math.cpp:3060`), rung zero of the
+            // same init pass: the `Math` module and its vector widths.
+            math::register();
         }
         if error.is_none() && !disable_garbage() {
             error = Some(InitError::GarbageCollectionUnavailable);
@@ -562,6 +566,7 @@ mod tests {
         "interpreter::tests::scenario_finishing_the_script_system_leaves_no_callback_behind",
         "interpreter::tests::scenario_init_runs_the_init_time_jobs",
         "interpreter::tests::scenario_init_run_fini",
+        "interpreter::tests::scenario_the_math_vectors_behave_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -2438,11 +2443,143 @@ mod tests {
         Interpreter.fini();
     }
 
+    /// `TempPyVectorInit` (`script_math.cpp:3060-3065`) puts the three
+    /// vector widths on `Math`; the number protocol, the rich compare and
+    /// the sequence slots behave as the reference's `PyVector` does. The
+    /// check list mirrors the reference lines one by one, so the acceptance
+    /// is that the live object and the C++ semantics agree.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vectors_behave_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+ck(hasattr(Math, 'Vector2') and hasattr(Math, 'Vector3') and hasattr(Math, 'Vector4'),
+   'math classes')
+
+ck(Math.Vector3(1,2,3).x == 1.0 and Math.Vector3(1,2,3).y == 2.0 and
+   Math.Vector3(1,2,3).z == 3.0, 'ctor floats')
+ck(tuple(Math.Vector3((5,6,7))) == (5.0,6.0,7.0), 'ctor tuple')
+ck(tuple(Math.Vector3(3)) == (3.0,3.0,3.0), 'ctor splat')
+ck(tuple(Math.Vector3()) == (0.0,0.0,0.0), 'ctor zero')
+ck(not hasattr(Math.Vector2(1,2), 'z'), 'Vector2 has no z')
+ck(not hasattr(Math.Vector3(1,2,3), 'w'), 'Vector3 has no w')
+ck(Math.Vector4(1,2,3,4).w == 4.0, 'Vector4 w')
+ck(not hasattr(Math.Vector2(1,2), 'yaw'), 'Vector2 has no yaw')
+ck(Math.Vector3(1,2,3).yaw == Math.Vector3(1,2,3).yaw, 'Vector3 yaw')
+
+ck(tuple(Math.Vector3(1,2,3) + Math.Vector3(4,5,6)) == (5.0,7.0,9.0), 'add')
+ck(tuple(Math.Vector3(5,7,9) - Math.Vector3(4,5,6)) == (1.0,2.0,3.0), 'sub')
+ck(tuple(Math.Vector3(1,0,0) * Math.Vector3(0,1,0)) == (0.0,0.0,1.0), 'cross')
+ck(tuple(Math.Vector3(2,4,8) * 2) == (4.0,8.0,16.0), 'scale right')
+ck(tuple(2 * Math.Vector3(1,2,3)) == (2.0,4.0,6.0), 'scale left')
+ck(tuple(Math.Vector3(6,9,12) / 3) == (2.0,3.0,4.0), 'divide')
+ck(tuple(-Math.Vector3(1,-2,3)) == (-1.0,2.0,-3.0), 'negative')
+ck(tuple(+Math.Vector3(1,-2,3)) == (1.0,-2.0,3.0), 'positive')
+ck(not Math.Vector3(0,0,0) and bool(Math.Vector3(0,0,1)), 'bool')
+
+ck(Math.Vector3(3,4,0).length == 5.0, 'length')
+ck(Math.Vector3(1,2,3).lengthSquared == 14.0, 'lengthSquared')
+ck(len(Math.Vector3(1,2,3)) == 3, 'len')
+ck(Math.Vector4(1,1,1,1).lengthSquared == 4.0, 'Vector4 lengthSquared')
+
+ck(Math.Vector3(1,2,3).dot(Math.Vector3(4,5,6)) == 32.0, 'dot')
+ck(Math.Vector3(1,2,3).dot((4,5,6)) == 32.0, 'dot tuple')
+ck(Math.Vector2(1,2).cross2D(Math.Vector2(3,4)) == -2.0, 'cross2D v2')
+ck(Math.Vector3(1,2,3).cross2D(Math.Vector3(4,5,6)) == -6.0, 'cross2D v3')
+
+ck(Math.Vector3(1,2,3)[0] == 1.0 and Math.Vector3(1,2,3)[-1] == 3.0, 'index')
+ck(Math.Vector3(1,2,3) == Math.Vector3(1,2,3), 'eq')
+ck(Math.Vector3(1,2,3) != (1,2,3), 'eq tuple defers')
+ck(Math.Vector3(1,2,3) < Math.Vector3(1,3,0), 'lt lexicographic')
+ck(Math.Vector3(1,2,3) <= Math.Vector3(1,2,3), 'le')
+
+ck(Math.Vector3(0,0,0).distTo(Math.Vector3(3,4,0)) == 5.0, 'distTo')
+ck(Math.Vector3(0,0,0).distSqrTo(Math.Vector3(3,4,0)) == 25.0, 'distSqrTo')
+ck(Math.Vector3(0,0,0).flatDistTo(Math.Vector3(3,4,0)) == 3.0, 'flatDistTo')
+ck(Math.Vector3(0,0,0).flatDistSqrTo(Math.Vector3(3,4,0)) == 9.0, 'flatDistSqrTo')
+ck(raises(TypeError, lambda: Math.Vector2(1,2).flatDistTo(Math.Vector2(3,4))),
+   'flatDistTo refused on Vector2')
+ck(raises(TypeError, lambda: Math.Vector4(1,2,3,4).cross2D(Math.Vector4(1,1,1,1))),
+   'cross2D refused on Vector4')
+
+n = Math.Vector3(3,0,0)
+n.normalise()
+ck(tuple(n) == (1.0,0.0,0.0), 'normalise')
+w = Math.Vector3(0,0,0)
+w.setPitchYaw(0, 0)
+ck(tuple(w) == (0.0,0.0,1.0) and w.yaw == 0.0 and w.pitch == 0.0, 'setPitchYaw')
+
+s = Math.Vector3(1,2,3)
+s.set(4,5,6)
+ck(tuple(s) == (4.0,5.0,6.0), 'set floats')
+s.set(9)
+ck(tuple(s) == (9.0,9.0,9.0), 'set splat')
+s.set((1,2,3))
+ck(tuple(s) == (1.0,2.0,3.0), 'set tuple')
+s.set([7,8,9])
+ck(tuple(s) == (7.0,8.0,9.0), 'set list')
+
+a = Math.Vector3(1,1,1)
+a += Math.Vector3(1,2,3)
+ck(tuple(a) == (2.0,3.0,4.0), 'iadd')
+b = Math.Vector3(2,2,2)
+b *= 3
+ck(tuple(b) == (6.0,6.0,6.0), 'imul')
+c = Math.Vector3(4,6,8)
+c /= 2
+ck(tuple(c) == (2.0,3.0,4.0), 'itruediv')
+d = Math.Vector3(4,6,8)
+d -= Math.Vector3(1,2,3)
+ck(tuple(d) == (3.0,4.0,5.0), 'isub')
+e = Math.Vector3(1,0,0)
+e *= Math.Vector3(0,1,0)
+ck(tuple(e) == (0.0,0.0,1.0), 'cross inplace')
+
+ck(not Math.Vector3(1,2,3).isReadOnly, 'not read only')
+ck(not Math.Vector3(1,2,3).isReference, 'not a reference')
+
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3) + 5), 'add float defers')
+ck(raises(TypeError, lambda: 5 + Math.Vector3(1,2,3)), 'add float left defers')
+ck(raises(TypeError, lambda: 2 / Math.Vector3(2,2,2)), 'true divide right defers')
+ck(raises(TypeError, lambda: Math.Vector2(1,2) * Math.Vector2(3,4)),
+   'Vector2 times Vector2 defers')
+ck(raises(TypeError, lambda: Math.Vector4(1,2,3,4) * Math.Vector4(1,1,1,1)),
+   'Vector4 times Vector4 defers')
+ck(raises(IndexError, lambda: Math.Vector3(1,2,3)[5]), 'index out of range')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).set('abc')), 'set non sequence')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).distTo(5)), 'distTo no splat')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).distTo([1,2,3])), 'distTo no list')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector behaviour mismatch: {text}");
+        });
+    }
+
     /// The export manifest agrees with the live interpreter: the surface it
     /// marks ported imports and resolves, and its scoping records read true
     /// against the modules that exist today -- `BigWorld.component` is
-    /// present, the client-only `BigWorld.callback` is not, and `Math` is
-    /// absent entirely because the port has not delivered it yet.
+    /// present, the client-only `BigWorld.callback` is not, and `Math`
+    /// imports because the vector widths are ported, while the module row
+    /// stays pending until `Matrix`, `Plane` and the `*Provider` factories
+    /// land.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_the_manifest_matches_the_interpreter() {
@@ -2469,11 +2606,12 @@ mod tests {
             }
             // SAFETY: the interpreter is up and this thread owns the GIL.
             let math = unsafe { capi::PyImport_ImportModule(c"Math".as_ptr()) };
-            // The port has not delivered Math: the module is absent, exactly
-            // what its pending row records.
-            assert!(math.is_null(), "Math is still pending");
-            // SAFETY: a failed import leaves an exception set; clear it.
-            unsafe { capi::clear_error() };
+            // The vector widths are ported, so the module imports; the row
+            // stays pending until Matrix, Plane and the providers land, and
+            // `audit` skips a pending module, so the inventory still holds.
+            assert!(!math.is_null(), "Math imports with the vector widths");
+            // SAFETY: the reference the import handed back is dropped here.
+            unsafe { capi::dec_ref(math) };
         });
     }
 }

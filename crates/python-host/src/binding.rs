@@ -66,6 +66,27 @@ struct SequenceHandlers {
     ass_item: capi::SsizeObjArgFunction,
 }
 
+/// The number-protocol handlers of a value type, the `PyNumberMethods`
+/// table of the reference's `PyVector_tp_as_number`
+/// (`script_math.cpp:2338-2396`). Every field is optional: an absent field
+/// is an empty slot, which is exactly what the reference's zeroed
+/// designated-initialiser rows are. The inplace forms mutate `self` and
+/// return it; `bool_` is `nb_bool`.
+#[derive(Clone, Copy, Default)]
+struct NumberHandlers {
+    add: Option<capi::BinaryFunction>,
+    subtract: Option<capi::BinaryFunction>,
+    multiply: Option<capi::BinaryFunction>,
+    true_divide: Option<capi::BinaryFunction>,
+    negative: Option<capi::UnaryFunction>,
+    positive: Option<capi::UnaryFunction>,
+    bool_: Option<capi::Inquiry>,
+    inplace_add: Option<capi::BinaryFunction>,
+    inplace_subtract: Option<capi::BinaryFunction>,
+    inplace_multiply: Option<capi::BinaryFunction>,
+    inplace_true_divide: Option<capi::BinaryFunction>,
+}
+
 /// The description of one native type, the builder-side stand-in for the
 /// reference's `PY_TYPEOBJECT` macro body.
 ///
@@ -80,6 +101,12 @@ pub struct TypeSpec {
     methods: Vec<Method>,
     /// Sequence handlers, or a bare wrapper when absent.
     sequence: Option<SequenceHandlers>,
+    /// Number-protocol handlers, or a bare wrapper when absent.
+    number: Option<NumberHandlers>,
+    /// The comparison handler, or `None` for the default identity compare.
+    richcompare: Option<capi::RichcmpFunction>,
+    /// The construction entry; `None` is the reference's refusal.
+    new_: Option<capi::NewFunction>,
     /// Extra bytes of instance body the allocated objects carry.
     instance_size: usize,
 }
@@ -92,6 +119,9 @@ impl TypeSpec {
             attributes: Vec::new(),
             methods: Vec::new(),
             sequence: None,
+            number: None,
+            richcompare: None,
+            new_: None,
             instance_size: 0,
         }
     }
@@ -140,6 +170,61 @@ impl TypeSpec {
             item,
             ass_item,
         });
+        self
+    }
+
+    /// Turn the type into a value type: the handlers fill the
+    /// `nb_add`/`nb_subtract`/`nb_multiply`/`nb_true_divide`/`nb_negative`/
+    /// `nb_positive`/`nb_bool` slots and their `nb_inplace_*` partners, the
+    /// reference's `PyNumberMethods` (an absent field is an empty slot).
+    /// The eleven parameters mirror the eleven `PyNumberMethods` slots the
+    /// reference wires, so the count is the shape, not an API smell.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn number(
+        mut self,
+        add: Option<capi::BinaryFunction>,
+        subtract: Option<capi::BinaryFunction>,
+        multiply: Option<capi::BinaryFunction>,
+        true_divide: Option<capi::BinaryFunction>,
+        negative: Option<capi::UnaryFunction>,
+        positive: Option<capi::UnaryFunction>,
+        bool_: Option<capi::Inquiry>,
+        inplace_add: Option<capi::BinaryFunction>,
+        inplace_subtract: Option<capi::BinaryFunction>,
+        inplace_multiply: Option<capi::BinaryFunction>,
+        inplace_true_divide: Option<capi::BinaryFunction>,
+    ) -> Self {
+        self.number = Some(NumberHandlers {
+            add,
+            subtract,
+            multiply,
+            true_divide,
+            negative,
+            positive,
+            bool_,
+            inplace_add,
+            inplace_subtract,
+            inplace_multiply,
+            inplace_true_divide,
+        });
+        self
+    }
+
+    /// The comparison handler `tp_richcompare`; `None` keeps the default
+    /// identity compare.
+    #[must_use]
+    pub fn richcompare(mut self, handler: Option<capi::RichcmpFunction>) -> Self {
+        self.richcompare = handler;
+        self
+    }
+
+    /// A construction entry of the reference's `_pyNew` shape: the engine
+    /// builds the object and the script calls the type directly. Without it
+    /// `tp_new` is the reference's refusal.
+    #[must_use]
+    pub fn with_new(mut self, handler: capi::NewFunction) -> Self {
+        self.new_ = Some(handler);
         self
     }
 
@@ -546,7 +631,7 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
             },
             capi::PyTypeSlot {
                 slot: capi::Py_tp_new,
-                pfunc: refuse_new as *mut std::os::raw::c_void,
+                pfunc: spec.new_.unwrap_or(refuse_new) as *mut std::os::raw::c_void,
             },
             capi::PyTypeSlot {
                 slot: capi::Py_tp_repr,
@@ -597,6 +682,111 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
                 } else {
                     std::ptr::null_mut()
                 },
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_tp_richcompare,
+                pfunc: spec.richcompare.map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_add,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.add)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_subtract,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.subtract)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_multiply,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.multiply)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_true_divide,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.true_divide)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_negative,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.negative)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_positive,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.positive)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_bool,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.bool_)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_inplace_add,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.inplace_add)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_inplace_subtract,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.inplace_subtract)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_inplace_multiply,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.inplace_multiply)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
+            },
+            capi::PyTypeSlot {
+                slot: capi::Py_nb_inplace_true_divide,
+                pfunc: spec
+                    .number
+                    .and_then(|number| number.inplace_true_divide)
+                    .map_or(std::ptr::null_mut(), |handler| {
+                        handler as *mut std::os::raw::c_void
+                    }),
             },
             capi::PyTypeSlot {
                 slot: capi::Py_tp_methods,

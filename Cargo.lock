@@ -178,6 +178,9 @@ dependencies = [
 [[package]]
 name = "python-host"
 version = "0.1.0"
+dependencies = [
+ "foundation",
+]
 
 [[package]]
 name = "python-module"
