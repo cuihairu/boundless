@@ -1369,18 +1369,18 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 实现各角色的模块注册和部署搜索路径，保留 `BigWorld` 等公开导入名称及原版资源定位。用 Demo 原样导入测试检验构建目录和安装目录。
 
-- [ ] **BW-16-03-01 布置按角色加载的 Python 模块**。**验收** 角色之间公开 API 正确隔离。（依赖 python/ 模块目录与 python-host crate 未建，随 BW-03 立项解锁）
-- [ ] **BW-16-03-02 实现原版导入名称和路径**。**验收** Demo 无需改导入。（依赖 python/ 模块目录与 python-host crate 未建，随 BW-03 立项解锁）
-- [ ] **BW-16-03-03 复测构建目录及安装目录**。**验收** 两种启动均找到同一资源。（依赖 python/ 模块目录与安装脚本未建，随 BW-03 立项解锁）
+- [ ] **BW-16-03-01 布置按角色加载的 Python 模块**。**验收** 角色之间公开 API 正确隔离。（python-host crate 已随 7d031b1 合入且 BW-03-01 全勾，余 python/ 模块目录未建，随 BW-03-03/04 交付解锁）
+- [ ] **BW-16-03-02 实现原版导入名称和路径**。**验收** Demo 无需改导入。（python-host crate 已随 7d031b1 合入且 BW-03-01-02 已勾，余 python/ 模块目录未建，随 BW-03-03/04 交付解锁）
+- [ ] **BW-16-03-03 复测构建目录及安装目录**。**验收** 两种启动均找到同一资源。（python-host crate 已随 7d031b1 合入，余 python/ 模块目录与安装脚本未建，随 BW-03/BW-14 交付解锁）
 
 #### BW-16-04 源码映射与扩展接口
 
 登记原版构建目标、功能编号、新 crate/模块及测试位置。编辑器和工具复用世界/资源/转换库。明确 Rust 原生扩展与 Python 扩展各自入口，验证加载和错误传播。
 
-- [ ] **BW-16-04-01 登记原版目标到新版目录**。**验收** 每个目标有模块与测试路径。（依赖各角色 crate 与目标树未建，随 BW-03/BW-09/BW-11/BW-13 逐项解锁）
+- [ ] **BW-16-04-01 登记原版目标到新版目录**。**验收** 每个目标有模块与测试路径。（foundation/platform/mercury/resources/entitydef/python-host/python-module/asset-pipeline/server-runtime/apps-server 已随 7d031b1 合入，余角色 crate（cellapp/baseapp 等）与 editor/tools 未建，随 BW-03/BW-09/BW-11/BW-13 逐项解锁）
 - [ ] **BW-16-04-02 统一编辑器和工具的资源入口**。**验收** 两类应用可加载同一产物。（依赖 editor/tools 应用未建，apps/ 现仅 server，随 BW-13 立项解锁）
 - [ ] **BW-16-04-03 定义 Rust 扩展入口**。**验收** 成功及错误能正确传播。（依赖 editor/tools 应用与扩展宿主未建，随 BW-13 立项解锁）
-- [ ] **BW-16-04-04 定义 Python 扩展入口**。**验收** 导入失败可定位且状态可清理。（依赖 python-host crate 与 python/ 模块未建，随 BW-03 立项解锁）
+- [ ] **BW-16-04-04 定义 Python 扩展入口**。**验收** 导入失败可定位且状态可清理。（python-host crate 已随 7d031b1 合入，其 interpreter 已有 `BwSiteImportFailed` 定位臂与回滚臂，余 python/ 模块未建，随 BW-03-03/04 交付解锁）
 
 ### BW-17 Bots 压测
 
