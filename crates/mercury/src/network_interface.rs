@@ -590,11 +590,14 @@ impl NetworkInterface {
     ///
     /// `PacketReceiver::processPacket` (packet_receiver.cpp:445): the
     /// entry point for a new datagram. Rate limiting and the dead-channel
-    /// monitor arrive with BW-02-05-04; the channel filter
-    /// (`pChannel->pFilter()`) has no ported filter to run, so a found
-    /// channel only updates its receive bookkeeping here. A datagram that
-    /// finds no channel meets the interface's connection filter
-    /// (`pOffChannelFilter_`, :492) before the receive path.
+    /// monitor arrive with BW-02-05-04. A found channel first-passes the
+    /// datagram through its own packet filter
+    /// (`pChannel->pFilter() && !pChannel->hasRemoteFailed()`,
+    /// packet_receiver.cpp:471-474) -- the filter's verdict is the
+    /// result, and the base `PacketFilter::recv` is the pass-through to
+    /// the receive path below. A datagram that finds no channel meets the
+    /// interface's connection filter (`pOffChannelFilter_`, :492) before
+    /// the receive path.
     pub fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
         let create_anonymous = !self.is_external && packet.should_create_anonymous();
 
@@ -602,6 +605,15 @@ impl NetworkInterface {
             // We update received times for addressed channels here.
             // Indexed channels are done in process_filtered_packet.
             UdpChannel::on_packet_received(&channel, packet.total_size() as i32);
+            let (p_filter, remote_failed) = {
+                let channel = channel.borrow();
+                (channel.p_filter(), channel.has_remote_failed())
+            };
+            // The channel's own filter first-passes the datagram; a
+            // failed remote skips it, matching packet_receiver.cpp:471-474.
+            if let (Some(filter), false) = (p_filter, remote_failed) {
+                return filter.recv(self, addr, packet);
+            }
         } else if let Some(filter) = self.p_off_channel_filter() {
             // The interface's connection filter decides what a channel-less
             // datagram is worth; the else-if is the reference's, so a
@@ -2611,6 +2623,123 @@ mod tests {
             Reason::Success
         );
         assert_eq!(sink.packets.borrow().len(), 1, "it went straight through");
+    }
+
+    /// A packet filter that denies every datagram with its own reason, so
+    /// whichever filter spoke is recognisable by the reason that came back.
+    struct DenyingFilter(Reason);
+
+    impl crate::packet_filter::PacketFilter for DenyingFilter {
+        fn recv(
+            &self,
+            _interface: &NetworkInterface,
+            _addr: &Address,
+            _packet: &mut Packet,
+        ) -> Reason {
+            self.0
+        }
+    }
+
+    /// A channel's own packet filter first-passes the datagram found for
+    /// it (packet_receiver.cpp:471-474): the filter's verdict is the
+    /// receive path's result, and the datagram never reaches the
+    /// validation guards or the dispatch.
+    #[test]
+    fn a_channel_filter_decides_a_found_channel() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        interface.set_verbose(true);
+        let addr = Address::new(LOOPBACK, socket::htons(9115));
+        let channel = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_p_filter(&channel, Some(Rc::new(DenyingFilter(Reason::NoSuchPort))));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let mut ordered = ordered_wire(0, 0x41);
+        assert_eq!(
+            interface.process_packet(&addr, &mut ordered),
+            Reason::NoSuchPort,
+            "the channel's filter spoke"
+        );
+        assert!(
+            sink.packets.borrow().is_empty(),
+            "nothing a channel filter denied reached the dispatch"
+        );
+    }
+
+    /// The channel's filter is skipped once its remote has failed
+    /// (`pChannel->pFilter() && !pChannel->hasRemoteFailed()`), and the
+    /// datagram runs the validation and the dispatch as usual.
+    #[test]
+    fn a_failed_channel_skips_its_filter() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        interface.set_verbose(true);
+        let addr = Address::new(LOOPBACK, socket::htons(9116));
+        let channel = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_p_filter(&channel, Some(Rc::new(DenyingFilter(Reason::NoSuchPort))));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let handle = interface
+            .find_channel_ref(&addr)
+            .expect("the channel is registered");
+        handle.set_remote_failed();
+
+        let mut ordered = ordered_wire(0, 0x41);
+        assert_eq!(
+            interface.process_packet(&addr, &mut ordered),
+            Reason::GeneralNetwork,
+            "the filter was skipped, and the failed-remote guard in the \
+             receive path dropped the packet instead (packet_receiver.cpp:700)"
+        );
+        assert!(
+            sink.packets.borrow().is_empty(),
+            "a failed channel's packet is dropped in the receive path"
+        );
+    }
+
+    /// The channel filter sits before the interface's connection filter:
+    /// a datagram that finds its channel never meets `pOffChannelFilter_`,
+    /// the reference's else-if.
+    #[test]
+    fn a_channel_filter_sits_before_the_off_channel_filter() {
+        let (interface, _clock) = channel_interface(InterfaceType::Internal);
+        interface.set_verbose(true);
+        let addr = Address::new(LOOPBACK, socket::htons(9117));
+        let channel = UdpChannel::new(
+            &interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_p_filter(&channel, Some(Rc::new(DenyingFilter(Reason::NoSuchPort))));
+        interface.set_p_off_channel_filter(Some(Rc::new(InitialConnectionFilter::new(
+            BASE_APP_LOGIN_ID,
+        ))));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        // A datagram the connection filter would deny: the channel's
+        // filter speaks first, so its reason is what comes back.
+        let mut ordered = ordered_wire(0, 0x41);
+        assert_eq!(
+            interface.process_packet(&addr, &mut ordered),
+            Reason::NoSuchPort,
+            "the channel's filter spoke before the connection filter could"
+        );
+        assert!(sink.packets.borrow().is_empty());
     }
 
     /// The bare `PacketFilter` is the pass-through: with no override

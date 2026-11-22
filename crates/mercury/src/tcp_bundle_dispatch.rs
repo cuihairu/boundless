@@ -28,6 +28,7 @@ use foundation::stream::BinaryStream;
 use crate::endpoint::Address;
 use crate::interface_element::REPLY_MESSAGE_IDENTIFIER;
 use crate::interface_table::InterfaceTable;
+use crate::message_filter::MessageFilter;
 use crate::misc::{Reason, ReplyID};
 use crate::unpacked_message_header::{NO_REPLY, UnpackedMessageHeader};
 
@@ -59,10 +60,21 @@ const SPECIAL_LENGTH_SIZE: usize = 4;
 /// packed in the complete TCP frame and deliver each to the handler its
 /// id is served with.
 ///
+/// `p_message_filter` is the dispatching channel's message filter, the
+/// `channel.pMessageFilter()` the reference fetches before its loop
+/// (tcp_bundle_processor.cpp:63): a channel with one takes the delivery
+/// through it instead of the handler, and the filter delivers by calling
+/// the handler itself (:178-185).
+///
 /// The reference returns the reason it stopped on (`REASON_SUCCESS` when
 /// every message was delivered); the rest of a frame after an error is
 /// never delivered.
-pub fn dispatch_messages(table: &InterfaceTable, source: &Address, frame: &mut [u8]) -> Reason {
+pub fn dispatch_messages(
+    table: &InterfaceTable,
+    source: &Address,
+    frame: &mut [u8],
+    p_message_filter: Option<&dyn MessageFilter>,
+) -> Reason {
     if frame.len() < FLAGS_SIZE {
         return Reason::CorruptedPacket;
     }
@@ -203,7 +215,16 @@ pub fn dispatch_messages(table: &InterfaceTable, source: &Address, frame: &mut [
 
         let mut stream = BinaryStream::new();
         stream.write_bytes(&frame[msg_beg..msg_beg + length.max(0) as usize]);
-        handler.handle_message(source, &mut header, &mut stream);
+
+        // The channel's message filter first-passes the delivery when it
+        // has one, and delivers by calling the handler itself
+        // (tcp_bundle_processor.cpp:178-185).
+        match p_message_filter {
+            Some(filter) => {
+                filter.filter_message(source, &mut header, &mut stream, handler.as_ref())
+            }
+            None => handler.handle_message(source, &mut header, &mut stream),
+        }
 
         table.record_received(msg_id, length.max(0) as u32);
 
@@ -250,6 +271,7 @@ mod tests {
         VARIABLE_LENGTH_MESSAGE,
     };
     use crate::interfaces::InputMessageHandler;
+    use crate::message_filter::MessageFilter;
     use crate::misc::MessageID;
     use crate::unpacked_message_header::UnpackedMessageHeader;
     use std::cell::RefCell;
@@ -304,6 +326,49 @@ mod tests {
         f
     }
 
+    /// A `MessageFilter` that records each message it intercepts and then
+    /// delivers it through the handler itself
+    /// (tcp_bundle_processor.cpp:178-185).
+    #[derive(Default)]
+    struct FilteringRecorder {
+        intercepted: RefCell<Vec<(u8, Vec<u8>)>>,
+    }
+
+    impl FilteringRecorder {
+        fn notes(&self) -> Vec<(u8, Vec<u8>)> {
+            self.intercepted.borrow().clone()
+        }
+    }
+
+    impl MessageFilter for FilteringRecorder {
+        fn filter_message(
+            &self,
+            src_addr: &Address,
+            header: &mut UnpackedMessageHeader,
+            data: &mut BinaryStream,
+            handler: &dyn InputMessageHandler,
+        ) {
+            self.intercepted
+                .borrow_mut()
+                .push((header.identifier(), data.unread_bytes().to_vec()));
+            handler.handle_message(src_addr, header, data);
+        }
+    }
+
+    /// A filter that swallows its message: no forward, no delivery.
+    struct SwallowingFilter;
+
+    impl MessageFilter for SwallowingFilter {
+        fn filter_message(
+            &self,
+            _src_addr: &Address,
+            _header: &mut UnpackedMessageHeader,
+            _data: &mut BinaryStream,
+            _handler: &dyn InputMessageHandler,
+        ) {
+        }
+    }
+
     /// A frame with no flags word at all is corrupted.
     #[test]
     fn a_frame_with_no_flags_word_is_corrupted() {
@@ -311,7 +376,7 @@ mod tests {
         let table = table_with(0x01, 4, &recorder);
         let mut frame = vec![];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
     }
@@ -323,7 +388,7 @@ mod tests {
         let table = table_with(0x01, 4, &recorder);
         let mut frame = vec![0x02];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
     }
@@ -335,12 +400,60 @@ mod tests {
         let table = table_with(0x07, 4, &recorder);
         let mut frame = plain_frame(0x07, &[0xAA, 0xBB, 0xCC, 0xDD]);
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::Success
         );
         assert_eq!(
             recorder.delivered.borrow().clone(),
             vec![(0x07, vec![0xAA, 0xBB, 0xCC, 0xDD])]
+        );
+    }
+
+    /// A channel's message filter takes the delivery instead of the
+    /// handler, and it delivers by calling the handler itself
+    /// (tcp_bundle_processor.cpp:178-185).
+    #[test]
+    fn a_message_filter_takes_the_delivery() {
+        let recorder = Rc::new(Recorder::default());
+        let table = table_with(0x07, 4, &recorder);
+        let filter = FilteringRecorder::default();
+        let mut frame = plain_frame(0x07, &[0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, Some(&filter)),
+            Reason::Success
+        );
+        assert_eq!(
+            filter.notes(),
+            vec![(0x07, vec![0xAA, 0xBB, 0xCC, 0xDD])],
+            "the filter saw the message"
+        );
+        assert_eq!(
+            recorder.delivered.borrow().clone(),
+            vec![(0x07, vec![0xAA, 0xBB, 0xCC, 0xDD])],
+            "the filter forwarded it"
+        );
+    }
+
+    /// A filter that does not forward its message swallows it: the
+    /// handler is never called, and the untouched body is reported and
+    /// consumed like any other handler that leaves bytes.
+    #[test]
+    fn a_filter_that_does_not_forward_swallows_the_message() {
+        let recorder = Rc::new(Recorder::default());
+        let table = table_with(0x07, 4, &recorder);
+        let mut frame = plain_frame(0x07, &[0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(
+            dispatch_messages(
+                &table,
+                &Address::new(1, 2),
+                &mut frame,
+                Some(&SwallowingFilter)
+            ),
+            Reason::Success
+        );
+        assert!(
+            recorder.delivered.borrow().is_empty(),
+            "a filter that does not forward drops the message"
         );
     }
 
@@ -353,7 +466,7 @@ mod tests {
         // first request at offset 5 (flags + slot), body 2 bytes.
         let mut frame = request_frame(0x09, &[0x01, 0x02], 5);
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::Success
         );
         let (id, body) = &recorder.delivered.borrow().clone()[0];
@@ -368,7 +481,7 @@ mod tests {
         let table = table_with(0x03, 1, &recorder);
         let mut frame = vec![0u8, 0x03, 0x01, 0x03, 0x02];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::Success
         );
         assert_eq!(
@@ -385,7 +498,7 @@ mod tests {
         let table = table_with(0x03, 1, &recorder);
         let mut frame = vec![0u8, 0x03, 0x01, 0x2F, 0x02];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::NonexistentEntry
         );
         assert_eq!(
@@ -406,7 +519,7 @@ mod tests {
         let link_at = 1 + 4 + 1 + 4; // flags + slot + id + reply id
         frame[link_at..link_at + 4].copy_from_slice(&999u32.to_le_bytes());
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
         assert_eq!(recorder.delivered.borrow().len(), 0);
@@ -426,7 +539,7 @@ mod tests {
         // [flags][id][len:1][body]
         let mut frame = vec![0u8, 0x05, 0x02, 0x11, 0x22];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::Success
         );
         assert_eq!(
@@ -470,7 +583,7 @@ mod tests {
         // Only the flags byte, no slot.
         let mut frame = vec![FLAG_HAS_REQUESTS];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
     }
@@ -483,7 +596,7 @@ mod tests {
         let mut frame = vec![FLAG_HAS_REQUESTS];
         frame.extend_from_slice(&999u32.to_le_bytes());
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
     }
@@ -503,7 +616,7 @@ mod tests {
         );
         let mut frame = vec![0u8, 0x06];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
     }
@@ -521,7 +634,7 @@ mod tests {
         // [flags][id][one byte of a two-byte length field]
         let mut frame = vec![0u8, 0x05, 0x02];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
     }
@@ -550,7 +663,7 @@ mod tests {
         assert_eq!(frame[2], 0xff, "the length field is marked for the form");
 
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::Success
         );
         assert_eq!(
@@ -571,7 +684,7 @@ mod tests {
         frame.push(0x09);
         frame.extend_from_slice(&0x12345678u32.to_le_bytes());
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
     }
@@ -591,7 +704,7 @@ mod tests {
         frame.extend_from_slice(&10u16.to_le_bytes());
         frame.extend_from_slice(b"ab");
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::CorruptedPacket
         );
     }
@@ -605,7 +718,7 @@ mod tests {
         // A reply body the handler does not consume.
         let mut frame = vec![0u8, REPLY_MESSAGE_IDENTIFIER, 0xAA, 0xBB];
         assert_eq!(
-            dispatch_messages(&table, &Address::new(1, 2), &mut frame),
+            dispatch_messages(&table, &Address::new(1, 2), &mut frame, None),
             Reason::Success,
             "the leftover bytes are reported, not fatal"
         );

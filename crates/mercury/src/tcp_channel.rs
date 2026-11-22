@@ -36,6 +36,7 @@ use std::rc::Rc;
 use std::rc::Weak;
 
 use crate::endpoint::Address;
+use crate::message_filter::MessageFilter;
 use crate::misc::Reason;
 use crate::network_interface::NetworkInterface;
 use crate::tcp_bundle_dispatch;
@@ -113,6 +114,9 @@ pub struct TcpChannel {
     /// Whether a stream filter still owes its own shutdown (the
     /// `pStreamFilter_->didFinishShuttingDown()` gate of `shutDown`).
     filter_owes_shutdown: bool,
+    /// `pMessageFilter_` (channel.hpp): the message filter that
+    /// first-passes this channel's deliveries, if any.
+    p_message_filter: Option<Rc<dyn MessageFilter>>,
     /// The keepalive count `startInactivityDetection` was given
     /// (`TCP_KEEPCNT`), recorded since the port has no socket to set
     /// `SO_KEEPALIVE`/`TCP_KEEPIDLE`/`TCP_KEEPINTVL` on.
@@ -147,6 +151,7 @@ impl TcpChannel {
             interface: Rc::downgrade(interface),
             remote,
             filter_owes_shutdown: false,
+            p_message_filter: None,
             keepalive_check_period: None,
             shut_down_sent: false,
             inactivity_timed_out: Cell::new(false),
@@ -208,6 +213,18 @@ impl TcpChannel {
     /// filter (the `didFinishShuttingDown` gate).
     pub fn set_filter_owes_shutdown(&mut self, owes: bool) {
         self.filter_owes_shutdown = owes;
+    }
+
+    /// `pMessageFilter()` (channel.hpp): a new reference to the channel's
+    /// message filter, or `None`.
+    pub fn p_message_filter(&self) -> Option<Rc<dyn MessageFilter>> {
+        self.p_message_filter.clone()
+    }
+
+    /// `pMessageFilter( pMessageFilter )` setter (channel.hpp): hand the
+    /// channel a message filter to first-pass its deliveries.
+    pub fn set_p_message_filter(&mut self, p_message_filter: Option<Rc<dyn MessageFilter>>) {
+        self.p_message_filter = p_message_filter;
     }
 
     /// `sendBufferedData`'s tail (tcp_channel.cpp:850-854): drive the
@@ -297,7 +314,16 @@ impl TcpChannel {
             return;
         };
         let mut frame = frame.to_vec();
-        let reason = tcp_bundle_dispatch::dispatch_messages(&table, &self.remote, &mut frame);
+        // `channel.pMessageFilter()` (tcp_bundle_processor.cpp:63): the
+        // channel's own message filter first-passes the frame's
+        // deliveries.
+        let message_filter = self.p_message_filter();
+        let reason = tcp_bundle_dispatch::dispatch_messages(
+            &table,
+            &self.remote,
+            &mut frame,
+            message_filter.as_deref(),
+        );
         if reason != Reason::Success {
             eprintln!(
                 "TCPChannel( {} )::processReceivedFrame: Error while dispatching messages: {}",
@@ -408,6 +434,7 @@ impl TcpChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message_filter::MessageFilter;
     use crate::tcp_send::SendAttempt;
     use crate::tcp_send::TcpSender;
 
@@ -843,6 +870,43 @@ mod tests {
         wire
     }
 
+    /// A `MessageFilter` that records each message it intercepts and then
+    /// delivers it through the handler itself
+    /// (tcp_bundle_processor.cpp:178-185).
+    #[derive(Default)]
+    struct ChannelFilter {
+        seen: std::cell::RefCell<Vec<(u8, Vec<u8>)>>,
+    }
+
+    impl MessageFilter for ChannelFilter {
+        fn filter_message(
+            &self,
+            src_addr: &Address,
+            header: &mut UnpackedMessageHeader,
+            data: &mut BinaryStream,
+            handler: &dyn InputMessageHandler,
+        ) {
+            self.seen
+                .borrow_mut()
+                .push((header.identifier(), data.unread_bytes().to_vec()));
+            handler.handle_message(src_addr, header, data);
+        }
+    }
+
+    /// A filter that swallows its message: no forward, no delivery.
+    struct SwallowChannelFilter;
+
+    impl MessageFilter for SwallowChannelFilter {
+        fn filter_message(
+            &self,
+            _src_addr: &Address,
+            _header: &mut UnpackedMessageHeader,
+            _data: &mut BinaryStream,
+            _handler: &dyn InputMessageHandler,
+        ) {
+        }
+    }
+
     /// The WebSockets sniff: a server expecting raw TCP drops a first
     /// frame that begins with the HTTP handshake a WebSockets client sends
     /// (tcp_channel.cpp:194-223).
@@ -892,6 +956,54 @@ mod tests {
         );
     }
 
+    /// A channel's message filter first-passes the frames it dispatches:
+    /// the filter sees the message and delivers it through the handler
+    /// itself (tcp_bundle_processor.cpp:178-185).
+    #[test]
+    fn a_channels_message_filter_takes_the_delivery() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+        let filter = Rc::new(ChannelFilter::default());
+        channel.set_p_message_filter(Some(Rc::clone(&filter) as Rc<dyn MessageFilter>));
+
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&client_header_wire());
+        wire.extend_from_slice(&small_bundle_wire(0x07, b"ABCD"));
+        channel.on_data(&wire);
+
+        assert_eq!(
+            filter.seen.borrow().clone(),
+            vec![(0x07, b"ABCD".to_vec())],
+            "the filter saw the message"
+        );
+        assert_eq!(
+            recorder.delivered(),
+            vec![(0x07, b"ABCD".to_vec())],
+            "the filter forwarded it"
+        );
+    }
+
+    /// A filter that does not forward swallows the frame's message: the
+    /// handler is never called.
+    #[test]
+    fn a_channels_message_filter_can_swallow_the_delivery() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+        channel.set_p_message_filter(Some(Rc::new(SwallowChannelFilter) as Rc<dyn MessageFilter>));
+
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&client_header_wire());
+        wire.extend_from_slice(&small_bundle_wire(0x07, b"ABCD"));
+        channel.on_data(&wire);
+
+        assert!(
+            recorder.delivered().is_empty(),
+            "a filter that does not forward drops the message"
+        );
+    }
+
     /// The acceptance: one table serves a TCP frame and a UDP bundle the
     /// same way -- two transports, one message table, both walks delivering.
     #[test]
@@ -923,14 +1035,25 @@ mod tests {
         // The TCP frame, through the TCP walk: `[flags][id][body]`.
         let mut tcp_frame = vec![0u8, 0x07, 0xAA, 0xBB, 0xCC, 0xDD];
         assert_eq!(
-            tcp_bundle_dispatch::dispatch_messages(&table, &Address::new(1, 2), &mut tcp_frame),
+            tcp_bundle_dispatch::dispatch_messages(
+                &table,
+                &Address::new(1, 2),
+                &mut tcp_frame,
+                None,
+            ),
             Reason::Success
         );
 
         // The UDP bundle, through the UDP walk: a body with no footer.
         let mut udp_body = vec![0x08, 0x11, 0x22, 0x33, 0x44];
         assert_eq!(
-            bundle_dispatch::dispatch_messages(&table, &Address::new(1, 2), &mut udp_body, None),
+            bundle_dispatch::dispatch_messages(
+                &table,
+                &Address::new(1, 2),
+                &mut udp_body,
+                None,
+                None,
+            ),
             Reason::Success
         );
 

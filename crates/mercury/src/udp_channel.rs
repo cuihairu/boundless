@@ -21,11 +21,13 @@ use crate::channel_listener::ChannelListener;
 use crate::circular_array::CircularArray;
 use crate::endpoint::{Address, NONE};
 use crate::fragmented_bundle::FragmentedBundle;
+use crate::message_filter::MessageFilter;
 use crate::misc::{
     CHANNEL_ID_NULL, ChannelID, ChannelVersion, SEQ_NULL, SeqNum, seq_less_than, seq_mask,
 };
 use crate::network_interface::{ChannelRef, NetworkInterface};
 use crate::packet::{Packet, flags};
+use crate::packet_filter::PacketFilter;
 use crate::packet_receiver_stats::PacketReceiverStats;
 use crate::reply_order::ReplyOrder;
 use crate::udp_bundle::UdpBundle;
@@ -135,6 +137,9 @@ pub struct UdpChannel {
     last_received_time: u64,
     /// `pListener_`.
     listener: Option<Rc<dyn ChannelListener>>,
+    /// `pMessageFilter_` (channel.hpp): the message filter that
+    /// first-passes this channel's deliveries, if any.
+    p_message_filter: Option<Rc<dyn MessageFilter>>,
     /// `numDataUnitsSent_`.
     num_data_units_sent: u32,
     /// `numDataUnitsReceived_`.
@@ -149,6 +154,9 @@ pub struct UdpChannel {
     traits: Traits,
     /// `id_`: the indexed-channel id, or `CHANNEL_ID_NULL`.
     id: ChannelID,
+    /// `pFilter_` (udp_channel.hpp:381): the per-channel packet filter,
+    /// if any. `None` on indexed channels -- the constructor's critical.
+    p_filter: Option<Rc<dyn PacketFilter>>,
     /// `version_`.
     version: ChannelVersion,
     /// `creationVersion_`.
@@ -240,8 +248,10 @@ impl UdpChannel {
     /// `UDPChannel( networkInterface, addr, traits, minInactivityResendDelay, id )`
     /// (udp_channel.cpp:82): initialise the window fields from the traits
     /// and id, open the bundle, and register non-indexed channels through
-    /// [`set_address`](Self::set_address_fn). The `pFilter && id_` critical
-    /// is unrepresentable until filters land (BW-02-05).
+    /// [`set_address`](Self::set_address_fn). The reference's `pFilter_`
+    /// constructor argument has no port equivalent here: the port installs
+    /// filters after construction, and the `pFilter_ && id_` critical
+    /// lives on [`set_p_filter`](Self::set_p_filter).
     pub fn new(
         interface: &Rc<NetworkInterface>,
         addr: Address,
@@ -260,12 +270,14 @@ impl UdpChannel {
             inactivity_exception_period: 0,
             last_received_time: 0,
             listener: None,
+            p_message_filter: None,
             num_data_units_sent: 0,
             num_data_units_received: 0,
             num_bytes_sent: 0,
             num_bytes_received: 0,
             traits,
             id,
+            p_filter: None,
             version: 0,
             creation_version: 0,
             window_size: size,
@@ -1441,6 +1453,50 @@ impl UdpChannel {
         self.listener = listener;
     }
 
+    /// `pMessageFilter()` (channel.hpp): a new reference to the channel's
+    /// message filter, or `None`.
+    pub fn p_message_filter(&self) -> Option<Rc<dyn MessageFilter>> {
+        self.p_message_filter.clone()
+    }
+
+    /// `pMessageFilter( pMessageFilter )` setter (channel.hpp): hand the
+    /// channel a message filter to first-pass its deliveries.
+    pub fn set_p_message_filter(&mut self, p_message_filter: Option<Rc<dyn MessageFilter>>) {
+        self.p_message_filter = p_message_filter;
+    }
+
+    /// `pFilter()` (udp_channel.hpp:139): a new reference to the
+    /// channel's packet filter, or `None`.
+    pub fn p_filter(&self) -> Option<Rc<dyn PacketFilter>> {
+        self.p_filter.clone()
+    }
+
+    /// The reference's `pFilter( pFilter )` setter (udp_channel.hpp:140)
+    /// with the constructor's `pFilter_ && id_` critical folded in
+    /// (udp_channel.cpp:128-133): the port installs filters after
+    /// construction, so the indexed-channel check lives here. The
+    /// filter's `maxSpareSize` reaches the next bundle the channel
+    /// builds, as `newBundle` does for the reference (udp_channel.cpp:1525-1531).
+    pub fn set_p_filter(channel: &ChannelPtr, p_filter: Option<Rc<dyn PacketFilter>>) {
+        let mut channel = channel.borrow_mut();
+        if p_filter.is_some() && channel.id != CHANNEL_ID_NULL {
+            panic!(
+                "UDPChannel::UDPChannel: PacketFilters are not supported on indexed channels (id:{})",
+                channel.id
+            );
+        }
+        channel
+            .bundle
+            .set_spare_size(p_filter.as_ref().map_or(0, |f| f.max_spare_size() as u8));
+        channel.p_filter = p_filter;
+    }
+
+    /// The spare size the channel's bundle reserves, the filter's
+    /// `maxSpareSize` or zero.
+    pub fn spare_size(&self) -> u8 {
+        self.bundle.spare_size()
+    }
+
     /// `numDataUnitsSent()`.
     pub fn num_data_units_sent(&self) -> u32 {
         self.num_data_units_sent
@@ -1811,6 +1867,25 @@ mod tests {
         Address::new(ip, platform::socket::htons(20))
     }
 
+    /// The bare packet filter: pass-through `recv`, no spare.
+    struct NoPacketFilter;
+
+    impl crate::packet_filter::PacketFilter for NoPacketFilter {}
+
+    /// The bare message filter: drops every message.
+    struct NoMessageFilter;
+
+    impl crate::message_filter::MessageFilter for NoMessageFilter {
+        fn filter_message(
+            &self,
+            _src_addr: &Address,
+            _header: &mut crate::unpacked_message_header::UnpackedMessageHeader,
+            _data: &mut foundation::stream::BinaryStream,
+            _handler: &dyn crate::interfaces::InputMessageHandler,
+        ) {
+        }
+    }
+
     /// The window sizes the traits and id pick (udp_channel.cpp:27-29).
     #[test]
     fn window_sizes_follow_the_traits_and_id() {
@@ -1867,6 +1942,82 @@ mod tests {
             "the default delay is a second"
         );
         assert_eq!(indexed.borrow().unreliable_in_seq_at(), SEQ_NULL);
+    }
+
+    /// The reference's constructor critical for a packet filter on an
+    /// indexed channel (udp_channel.cpp:128-133) lands on the setter in
+    /// the port, which installs filters after construction.
+    #[test]
+    #[should_panic(expected = "PacketFilters are not supported on indexed channels")]
+    fn an_indexed_channel_rejects_a_packet_filter() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let indexed = UdpChannel::new(
+            &interface,
+            addr(0x0100_0004),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            7,
+        );
+        UdpChannel::set_p_filter(&indexed, Some(Rc::new(NoPacketFilter)));
+    }
+
+    /// A packet filter installs on a non-indexed channel, and its
+    /// `maxSpareSize` reaches the bundle the reference's `newBundle`
+    /// builds with (udp_channel.cpp:1529-1531).
+    #[test]
+    fn a_packet_filter_installs_and_reports_its_spare_size() {
+        struct FilterWithSpare;
+
+        impl crate::packet_filter::PacketFilter for FilterWithSpare {
+            fn max_spare_size(&self) -> usize {
+                7
+            }
+        }
+
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_0005),
+            Traits::External,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        assert!(channel.borrow().p_filter().is_none());
+        UdpChannel::set_p_filter(&channel, Some(Rc::new(FilterWithSpare)));
+        assert!(channel.borrow().p_filter().is_some());
+        assert_eq!(
+            channel.borrow().spare_size(),
+            7,
+            "the bundle keeps the filter's spare size"
+        );
+
+        // Clearing the filter returns the bundle to no spare.
+        UdpChannel::set_p_filter(&channel, None);
+        assert_eq!(channel.borrow().spare_size(), 0);
+    }
+
+    /// A message filter installs and reads back on a channel, the
+    /// reference's `Channel::pMessageFilter` (channel.hpp).
+    #[test]
+    fn a_message_filter_installs_and_reads_back() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_0006),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        assert!(channel.borrow().p_message_filter().is_none());
+        channel
+            .borrow_mut()
+            .set_p_message_filter(Some(Rc::new(NoMessageFilter)));
+        assert!(channel.borrow().p_message_filter().is_some());
     }
 
     /// Construction registers a non-indexed channel; `Address::NONE`

@@ -174,6 +174,19 @@ impl UdpBundle {
         *self = Self::new(self.extra_size);
     }
 
+    /// The spare size the bundle reserves at its packets' tails, the
+    /// channel's filter's `maxSpareSize` or zero.
+    pub fn spare_size(&self) -> u8 {
+        self.extra_size
+    }
+
+    /// Re-reserve the packets' tail room, as installing a channel filter
+    /// does for the reference's next `newBundle` (udp_channel.cpp:1525-1531).
+    /// Takes effect on the next [`clear`](Self::clear).
+    pub fn set_spare_size(&mut self, spare_size: u8) {
+        self.extra_size = spare_size;
+    }
+
     // -- packet chain -----------------------------------------------------
 
     /// `startPacket`: open the current packet for writing -- flags clear,
@@ -1409,7 +1422,7 @@ mod tests {
 
             let end = packet.msg_end_offset();
             let body = &mut packet.buffer_mut()[HEADER_SIZE..end];
-            let reason = dispatch_messages(&table, &source, body, first_request);
+            let reason = dispatch_messages(&table, &source, body, first_request, None);
             assert_eq!(reason, Reason::Success, "datagram {index} dispatched clean");
         }
 

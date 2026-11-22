@@ -26,9 +26,8 @@
 //! condition into `offset >= body.len()`.
 //!
 //! Left with the channel layer of BW-02-03: the packet chain and its
-//! `nextPacket`, early (`isEarly`) dispatch, the per-channel
-//! `MessageFilter`, the break-loop hook a dying channel pulls
-//! (`header.pBreakLoop`), the fragment reassembly, the
+//! `nextPacket`, early (`isEarly`) dispatch, the break-loop hook a dying
+//! channel pulls (`header.pBreakLoop`), the fragment reassembly, the
 //! `ProcessSocketStatsHelper`, and the table's `onBundleStarted`/
 //! `onBundleFinished` hooks, whose handler takes a `Channel *`.
 
@@ -37,6 +36,7 @@ use foundation::stream::BinaryStream;
 use crate::endpoint::Address;
 use crate::interface_element::{InterfaceElement, REPLY_MESSAGE_IDENTIFIER};
 use crate::interface_table::InterfaceTable;
+use crate::message_filter::MessageFilter;
 use crate::message_framing::{NEXT_REQUEST_OFFSET_SIZE, REPLY_ID_SIZE, SPECIAL_LENGTH_SIZE};
 use crate::misc::{Reason, ReplyID};
 use crate::unpacked_message_header::{NO_REPLY, UnpackedMessageHeader};
@@ -58,6 +58,12 @@ struct Unpacked {
 /// [`None`] when the packet carried no request footer; the request links
 /// each message carries chain the rest, in the same wire terms.
 ///
+/// `p_message_filter` is the dispatching channel's message filter, the
+/// `pMessageFilter` the reference fetches before its loop
+/// (udp_bundle_processor.cpp:59-60): a channel with one takes the
+/// delivery through it instead of the handler, and the filter delivers
+/// by calling the handler itself (:161-170).
+///
 /// The reference returns the reason it stopped on (`REASON_SUCCESS` when
 /// every message was delivered); the rest of a bundle after an error is
 /// never delivered.
@@ -66,6 +72,7 @@ pub fn dispatch_messages(
     source: &Address,
     body: &mut [u8],
     first_request_offset: Option<usize>,
+    p_message_filter: Option<&dyn MessageFilter>,
 ) -> Reason {
     let msg_end = body.len();
     let mut offset = 0usize;
@@ -133,7 +140,15 @@ pub fn dispatch_messages(
             &body[unpacked.data_offset..unpacked.data_offset + unpacked.header.length() as usize],
         );
 
-        handler.handle_message(source, &mut unpacked.header, &mut stream);
+        // The channel's message filter first-passes the delivery when it
+        // has one, and delivers by calling the handler itself
+        // (udp_bundle_processor.cpp:161-170).
+        match p_message_filter {
+            Some(filter) => {
+                filter.filter_message(source, &mut unpacked.header, &mut stream, handler.as_ref())
+            }
+            None => handler.handle_message(source, &mut unpacked.header, &mut stream),
+        }
 
         // `ie.stopProfile( header.length )` records the delivery against
         // the element (the reference does it under `ENABLE_WATCHERS`).
@@ -322,6 +337,7 @@ mod tests {
         CALLBACK_LENGTH_MESSAGE, FIXED_LENGTH_MESSAGE, INVALID_STREAM_SIZE, VARIABLE_LENGTH_MESSAGE,
     };
     use crate::interfaces::{InputMessageHandler, ReplyMessageHandler};
+    use crate::message_filter::MessageFilter;
     use crate::misc::{MessageID, REPLY_ID_NONE};
     use crate::nub_exception::NubException;
     use crate::reply_order::ReplyOrder;
@@ -513,6 +529,49 @@ mod tests {
         Address::new(0x7f000001, 2000)
     }
 
+    /// A `MessageFilter` that records each message it intercepts and then
+    /// delivers it through the handler itself, the reference's
+    /// `filterMessage( ..., pHandler )` idiom.
+    #[derive(Default)]
+    struct RecordingFilter {
+        seen: RefCell<Vec<(MessageID, Vec<u8>)>>,
+    }
+
+    impl RecordingFilter {
+        fn notes(&self) -> Vec<(MessageID, Vec<u8>)> {
+            self.seen.borrow().clone()
+        }
+    }
+
+    impl MessageFilter for RecordingFilter {
+        fn filter_message(
+            &self,
+            src_addr: &Address,
+            header: &mut UnpackedMessageHeader,
+            data: &mut BinaryStream,
+            handler: &dyn InputMessageHandler,
+        ) {
+            self.seen
+                .borrow_mut()
+                .push((header.identifier(), data.unread_bytes().to_vec()));
+            handler.handle_message(src_addr, header, data);
+        }
+    }
+
+    /// A filter that swallows its message: no forward, no delivery.
+    struct SwallowingFilter;
+
+    impl MessageFilter for SwallowingFilter {
+        fn filter_message(
+            &self,
+            _src_addr: &Address,
+            _header: &mut UnpackedMessageHeader,
+            _data: &mut BinaryStream,
+            _handler: &dyn InputMessageHandler,
+        ) {
+        }
+    }
+
     // ------------------------------------------------------------------
     // Tests
     // ------------------------------------------------------------------
@@ -531,7 +590,7 @@ mod tests {
         fill_variable(&mut body, &variable(9, 2), b"rogue");
         fill_variable(&mut body, &element, b"good");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::NonexistentEntry);
         assert!(
@@ -550,9 +609,52 @@ mod tests {
         let mut body = Vec::new();
         fill_variable(&mut body, &variable(5, 2), b"body");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::NonexistentEntry);
+    }
+
+    /// A channel's message filter takes the delivery instead of the
+    /// handler, and it delivers by calling the handler itself
+    /// (udp_bundle_processor.cpp:161-170).
+    #[test]
+    fn a_message_filter_takes_the_delivery() {
+        let table = InterfaceTable::new();
+        let recorder = Rc::new(Recorder::default());
+        let element = variable(5, 2);
+        table.serve(&element, Some(handler_of(&recorder)));
+        let filter = RecordingFilter::default();
+
+        let mut body = Vec::new();
+        fill_variable(&mut body, &element, b"body");
+
+        let reason = dispatch_messages(&table, &source(), &mut body, None, Some(&filter));
+
+        assert_eq!(reason, Reason::Success);
+        assert_eq!(filter.notes().len(), 1, "the filter saw the message");
+        assert_eq!(recorder.notes().len(), 1, "the filter forwarded it");
+        assert_eq!(recorder.notes()[0].2, b"body");
+    }
+
+    /// A filter that does not forward its message swallows it: the
+    /// handler is never called, and the untouched body is reported and
+    /// consumed like any other handler that leaves bytes.
+    #[test]
+    fn a_filter_that_does_not_forward_swallows_the_message() {
+        let table = InterfaceTable::new();
+        let recorder = Rc::new(Recorder::default());
+        table.serve(&variable(5, 2), Some(handler_of(&recorder)));
+
+        let mut body = Vec::new();
+        fill_variable(&mut body, &variable(5, 2), b"body");
+
+        let reason = dispatch_messages(&table, &source(), &mut body, None, Some(&SwallowingFilter));
+
+        assert_eq!(reason, Reason::Success);
+        assert!(
+            recorder.notes().is_empty(),
+            "a filter that does not forward drops the message"
+        );
     }
 
     /// A callback message whose handler declares the bundle invalid stops
@@ -577,7 +679,7 @@ mod tests {
         body.extend_from_slice(&[6, 1, 2, 3]);
         fill_variable(&mut body, &plain, b"tail");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(later.notes().is_empty(), "nothing after the failure");
@@ -605,7 +707,7 @@ mod tests {
         body.extend_from_slice(&[3, 0, 0]); // three-byte length field
         body.extend_from_slice(b"abc");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
         assert_eq!(reason, Reason::Success);
         assert_eq!(sized.notes(), vec![(6, REPLY_ID_NONE, b"abc".to_vec())]);
 
@@ -624,7 +726,7 @@ mod tests {
         body.push(6);
         body.extend_from_slice(b"abcd"); // a fixed message writes no field
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
         assert_eq!(reason, Reason::Success);
         assert_eq!(sized.notes(), vec![(6, REPLY_ID_NONE, b"abcd".to_vec())]);
     }
@@ -641,7 +743,7 @@ mod tests {
         body.push(5);
         body.push(3); // one byte of a two-byte length field, then nothing
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(got.notes().is_empty());
@@ -659,7 +761,7 @@ mod tests {
         body.push(5);
         body.extend_from_slice(&0x8000_0000u32.to_le_bytes());
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(got.notes().is_empty());
@@ -683,6 +785,7 @@ mod tests {
             &source(),
             &mut body,
             Some(crate::packet::HEADER_SIZE),
+            None,
         );
 
         assert_eq!(reason, Reason::CorruptedPacket);
@@ -707,6 +810,7 @@ mod tests {
             &source(),
             &mut body,
             Some(crate::packet::HEADER_SIZE),
+            None,
         );
 
         assert_eq!(reason, Reason::CorruptedPacket);
@@ -726,7 +830,7 @@ mod tests {
         body.extend_from_slice(&10u16.to_le_bytes());
         body.extend_from_slice(b"ab"); // claims ten, carries two
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(got.notes().is_empty());
@@ -748,7 +852,7 @@ mod tests {
         fill_fixed(&mut body, &first_element, b"ABCD");
         fill_variable(&mut body, &second_element, b"hello");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::Success);
         assert_eq!(first.notes(), vec![(3, REPLY_ID_NONE, b"ABCD".to_vec())]);
@@ -772,6 +876,7 @@ mod tests {
             &source(),
             &mut body,
             Some(crate::packet::HEADER_SIZE),
+            None,
         );
 
         assert_eq!(reason, Reason::Success);
@@ -794,7 +899,7 @@ mod tests {
         let second = fill_request(&mut body, &element, 202, b"two");
         let start = chain(&[first, second], &mut body);
 
-        let reason = dispatch_messages(&table, &source(), &mut body, start);
+        let reason = dispatch_messages(&table, &source(), &mut body, start, None);
 
         assert_eq!(reason, Reason::Success);
         assert_eq!(
@@ -854,6 +959,7 @@ mod tests {
             &source(),
             &mut body,
             Some(crate::packet::HEADER_SIZE),
+            None,
         );
 
         assert_eq!(reason, Reason::Success);
@@ -878,7 +984,7 @@ mod tests {
         fill_fixed(&mut body, &first_element, b"ABCD");
         fill_variable(&mut body, &second_element, b"xyz");
 
-        dispatch_messages(&table, &source(), &mut body, None);
+        dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(table.element_stats(3).num_messages_received(), 1);
         assert_eq!(table.element_stats(3).num_bytes_received(), 4);
@@ -902,7 +1008,7 @@ mod tests {
         fill_variable(&mut body, &variable(4, 2), b"waste");
         fill_variable(&mut body, &element, b"next");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::Success);
         assert_eq!(got.notes(), vec![(5, REPLY_ID_NONE, b"next".to_vec())]);
@@ -915,7 +1021,7 @@ mod tests {
         let got = Rc::new(Recorder::default());
         table.serve(&variable(5, 2), Some(handler_of(&got)));
 
-        let reason = dispatch_messages(&table, &source(), &mut Vec::new(), None);
+        let reason = dispatch_messages(&table, &source(), &mut Vec::new(), None, None);
 
         assert_eq!(reason, Reason::Success);
         assert!(got.notes().is_empty());
@@ -945,7 +1051,7 @@ mod tests {
             .unwrap();
         assert_eq!(body[1], 0xff, "the length field is marked for the form");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::Success);
         let (id, reply, bytes) = got.notes().remove(0);
