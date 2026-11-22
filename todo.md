@@ -1133,7 +1133,8 @@
 
 复用已跟踪的 Account、Avatar、Guard、Space、ClientOnly、实体定义和 server 配置。比对登录、创建角色、进入场景、移动、AOI、NPC、退出后重登。登记生成资源和完整资源包的来源、版本及可验证路径。
 
-- [ ] **BW-14-01-01 加载原版实体定义与配置**。**验收** 五类示例定义摘要吻合。
+- [x] **BW-14-01-01 加载原版实体定义与配置**。**验收** 五类示例定义摘要吻合。（commit 845831f）
+  - 证据：`crates/entitydef/tests/bwentity_load.rs::fantasydemo_loads_the_five_sample_definitions`（845831f）+ 新夹具 `docs/review/fixtures/fantasydemo_def/res/`（20 文件，与参考 `programming/fantasydemo/res/scripts/` **字节一致**：5 个 .def + `entities.xml`/`alias.xml`/`db.xml` + base/cell/client 脚本）——`EntityDescriptionMapFactory` 走 `scripts/entities.xml` 载入，**五类**（Account=0/Avatar=1/Guard=2/Space=3/ClientOnly=4）逐类断言摘要吻合参考 `process_defs` 捕获（`docs/review/reference/fantasydemo_entitydef.json`）：name/index/canBeOn*/isPersistent/client_index + 逐属性 name/type/persistent/identifier + base/cell/client 方法数与名（Account: 2 属性 base-only 无 cell、Avatar: 4 属性 1 exposed base 方法 2 client 方法、Guard/Space: 无方法、ClientOnly: client-only 2 属性）；全树 digest 亦吻合。**行覆盖 99.34%**（`cargo llvm-cov -p entitydef`，门禁 ≥98%）。夹具即后续 01-02..05 复用的「已跟踪」实体定义。
 - [ ] **BW-14-01-02 运行账号登录及角色创建**。**验收** 回调与持久化状态吻合。
 - [ ] **BW-14-01-03 运行入场、移动和 AOI**。**验收** 同一轨迹的观察事件可比。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
