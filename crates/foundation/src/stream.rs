@@ -612,4 +612,49 @@ mod original_fixtures {
         assert_eq!(s.read_bool(), Ok(true));
         assert_eq!(s.read_bool(), Ok(false));
     }
+
+    // --- BW-01-02-02: variable-length integers and length prefixes -----------
+
+    /// Every boundary value the original packed, with the exact bytes it
+    /// produced. `>= 255` becomes `0xFF` plus the three low bytes little-endian
+    /// (`BW_PACK3`); everything else is a single byte.
+    #[test]
+    fn packed_int_matches_original_bytes() {
+        let cases: &[(u32, &str)] = &[
+            (0, "00"),
+            (1, "01"),
+            (127, "7f"),
+            (128, "80"),
+            (253, "fd"),
+            (254, "fe"),
+            (255, "ffff0000"),
+            (256, "ff000100"),
+            (1023, "ffff0300"),
+            (65534, "fffeff00"),
+            (65535, "ffffff00"),
+            (65536, "ff000001"),
+            (1_000_000, "ff40420f"),
+            (16_777_214, "fffeffff"),
+            (16_777_215, "ffffffff"),
+        ];
+        for &(value, hex) in cases {
+            let mut s = BinaryStream::new();
+            s.write_packed_int(value).unwrap();
+            assert_eq!(s.as_bytes(), decode_hex(hex).as_slice(), "value {value}");
+            assert_eq!(packed_int_size(value), if value < 0xff { 1 } else { 4 });
+            s.rewind();
+            assert_eq!(s.read_packed_int(), Ok(value), "value {value}");
+        }
+    }
+
+    /// `write_count` is a plain u32 element count, exactly as the original
+    /// writes a container's element count (`operator<<` for `BW::vector`).
+    #[test]
+    fn count_is_plain_u32_like_original_vector_writes() {
+        let mut s = BinaryStream::new();
+        s.write_count(0x0102_0304);
+        assert_eq!(s.as_bytes(), decode_hex("04030201").as_slice());
+        s.rewind();
+        assert_eq!(s.read_count(), Ok(0x0102_0304));
+    }
 }
