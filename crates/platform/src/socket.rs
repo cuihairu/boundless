@@ -32,6 +32,22 @@ pub const SO_RCVTIMEO: i32 = libc::SO_RCVTIMEO;
 pub const SO_SNDTIMEO: i32 = libc::SO_SNDTIMEO;
 /// `SO_KEEPALIVE`.
 pub const SO_KEEPALIVE: i32 = libc::SO_KEEPALIVE;
+/// `IPPROTO_TCP`, the level of the keepalive options.
+pub const IPPROTO_TCP: i32 = libc::IPPROTO_TCP;
+/// `TCP_KEEPIDLE` (`startInactivityDetection`, tcp_channel.cpp:657): the
+/// seconds of idle before the first keepalive probe. Linux/Android only:
+/// the BSDs spell this `TCP_KEEPALIVE`, and the reference's `__unix__`
+/// arm is really this linux shape.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub const TCP_KEEPIDLE: i32 = libc::TCP_KEEPIDLE;
+/// `TCP_KEEPINTVL`, the seconds between probes.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub const TCP_KEEPINTVL: i32 = libc::TCP_KEEPINTVL;
+/// `TCP_KEEPCNT`, the probes before the kernel drops the connection.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub const TCP_KEEPCNT: i32 = libc::TCP_KEEPCNT;
+/// `SHUT_WR`, the `shutdown` mode `doShutDown` uses on unix.
+pub const SHUT_WR: i32 = libc::SHUT_WR;
 /// `SO_SNDBUF`.
 pub const SO_SNDBUF: i32 = libc::SO_SNDBUF;
 /// `SO_RCVBUF`.
@@ -209,6 +225,12 @@ pub fn remote_address(fd: RawFd) -> Option<(u16, u32)> {
 /// kernel result with `fd` already consumed.
 pub fn close(fd: RawFd) -> i32 {
     unsafe { libc::close(fd) }
+}
+
+/// `::shutdown` (`doShutDown`, tcp_channel.cpp:623): stop the given half
+/// of the connection, so the peer sees EOF once it has read what was sent.
+pub fn shutdown(fd: RawFd, how: i32) -> i32 {
+    unsafe { libc::shutdown(fd, how) }
 }
 
 /// `getrlimit(RLIMIT_NOFILE)`. The limit itself is one past the highest
