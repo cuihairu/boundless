@@ -21,6 +21,7 @@ use crate::condemned_channels::CondemnedChannels;
 use crate::endpoint::{Address, Endpoint, INADDR_ANY, NO_SOCKET, NONE};
 use crate::event_dispatcher::EventDispatcher;
 use crate::fragmented_bundle::{FragmentedBundle, FragmentedBundles};
+use crate::interface_table::InterfaceTable;
 use crate::misc::{CHANNEL_ID_NULL, Reason, SEQ_NULL, SeqNumAllocator, seq_less_than};
 use crate::packet::{Packet, flags};
 use crate::packet_filter::PacketFilter;
@@ -83,6 +84,10 @@ pub struct NetworkInterface {
     condemned: RefCell<CondemnedChannels>,
     /// `pRequestManager_`.
     request_manager: RefCell<Option<Rc<RequestManager>>>,
+    /// `pInterfaceTable_` (network_interface.hpp:326): the message table
+    /// the receive paths dispatch through. `interfaceTable()`, like the
+    /// reference, is the channel's way to reach the served handlers.
+    interface_table: RefCell<Option<Rc<InterfaceTable>>>,
     /// Where `processPacket` hands datagrams until channels exist.
     sink: RefCell<Option<Rc<dyn PacketSink>>>,
     /// `dispatcher().errorReporter()`, defaulting to the logging reporter.
@@ -148,6 +153,7 @@ impl NetworkInterface {
             channels: RefCell::new(ChannelMap::new()),
             condemned: RefCell::new(CondemnedChannels::new()),
             request_manager: RefCell::new(None),
+            interface_table: RefCell::new(None),
             sink: RefCell::new(None),
             reporter: RefCell::new(None),
             channel_finder: RefCell::new(None),
@@ -440,6 +446,20 @@ impl NetworkInterface {
     /// deaths and failures report to.
     pub fn set_request_manager(&self, manager: Option<Rc<RequestManager>>) {
         *self.request_manager.borrow_mut() = manager;
+    }
+
+    /// `setInterfaceTable`'s seam: the message table the receive paths
+    /// dispatch through. Nothing is wired until the owner (the baseapp
+    /// side of the port) hands one over.
+    pub fn set_interface_table(&self, table: Option<Rc<InterfaceTable>>) {
+        *self.interface_table.borrow_mut() = table;
+    }
+
+    /// `interfaceTable()` (network_interface.hpp): the table the receive
+    /// paths walk. The TCP channel reaches the served handlers through
+    /// it, the same way the reference's `TCPBundleProcessor` does.
+    pub fn interface_table(&self) -> Option<Rc<InterfaceTable>> {
+        self.interface_table.borrow().clone()
     }
 
     /// `onChannelGone` (network_interface.hpp): a channel has died -- any

@@ -36,7 +36,9 @@ use std::rc::Rc;
 use std::rc::Weak;
 
 use crate::endpoint::Address;
+use crate::misc::Reason;
 use crate::network_interface::NetworkInterface;
+use crate::tcp_bundle_dispatch;
 use crate::tcp_frame::TcpFrameParser;
 use crate::tcp_send::{FlushResult, TcpSendBuffer};
 
@@ -50,6 +52,11 @@ pub const CLIENT_HEADER_SIZE: usize = CLIENT_HEADER.len();
 /// The width of a small frame's length prefix (`sizeof( uint16 )`), the
 /// header frame's `frameHeaderLength_` in `readHeader`.
 const SMALL_FRAME_HEADER_SIZE: usize = 2;
+
+/// `HTTP_HEADER_START` (tcp_channel.cpp:202): the beginning of the HTTP
+/// handshake line a WebSockets client would send instead of the header
+/// frame. A server expecting raw TCP drops the connection on it.
+const HTTP_HEADER_START: &[u8] = b"GET ";
 
 /// `headerState_` (tcp_channel.hpp:123).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +123,11 @@ pub struct TcpChannel {
     /// `onChannelInactivityTimeout` was called -- the reference's
     /// `CRITICAL_MSG`, which the port records instead of aborting.
     inactivity_timed_out: Cell<bool>,
+    /// The server-side bytes held for the WebSockets sniff
+    /// (tcp_channel.cpp:194-223): the sniff must see a first frame's head
+    /// before the parser frames it, so until it resolves, the raw bytes
+    /// sit here rather than in the parser.
+    pending_header: Vec<u8>,
 }
 
 impl TcpChannel {
@@ -138,6 +150,7 @@ impl TcpChannel {
             keepalive_check_period: None,
             shut_down_sent: false,
             inactivity_timed_out: Cell::new(false),
+            pending_header: Vec::new(),
         }
     }
 
@@ -222,6 +235,75 @@ impl TcpChannel {
     pub fn on_read(&mut self, read: ReadOutcome) {
         if let ReadOutcome::Disconnected = read {
             self.handle_peer_disconnect();
+        }
+    }
+
+    /// `handleInput`'s data arm (tcp_channel.cpp:190-263): a server's
+    /// first bytes go through the WebSockets sniff first, then whatever
+    /// bytes resolve it are framed and dispatched.
+    pub fn on_data(&mut self, bytes: &[u8]) {
+        if self.header_state == HeaderState::ServerWaitForHeader {
+            self.pending_header.extend_from_slice(bytes);
+            if self.pending_header.len() < HTTP_HEADER_START.len() {
+                // `pFrameData_->remainingLength() < HTTP_HEADER_START_SIZE`:
+                // wait for more data.
+                return;
+            }
+            if &self.pending_header[..HTTP_HEADER_START.len()] == HTTP_HEADER_START {
+                // It definitely doesn't match the first header frame, so we
+                // can assume it was a WebSockets frame and drop the
+                // connection here (tcp_channel.cpp:215-223).
+                self.destroy();
+                return;
+            }
+            // The sniff is passed; the held bytes are a header frame (or a
+            // header frame plus real bundles), so they frame and dispatch.
+            let wire = std::mem::take(&mut self.pending_header);
+            self.feed_and_dispatch(&wire);
+        } else {
+            self.feed_and_dispatch(bytes);
+        }
+    }
+
+    /// The framing loop of `handleInput` (tcp_channel.cpp:247-260): frame
+    /// whatever bytes are in hand, then hand each complete frame to the
+    /// header gate or the bundle dispatch.
+    fn feed_and_dispatch(&mut self, bytes: &[u8]) {
+        let frames = self.parser.feed(bytes);
+        for frame in frames {
+            if self.header_state == HeaderState::ServerWaitForHeader {
+                // The first frame is the header frame. `readHeader` destroys
+                // the channel on a mismatch, so a rejected frame stops the
+                // loop.
+                if self.read_header(&frame) == HeaderVerdict::Rejected {
+                    self.destroy();
+                    return;
+                }
+            } else {
+                self.process_received_frame(&frame);
+            }
+        }
+    }
+
+    /// `processReceivedFrame` (tcp_channel.cpp:360-378): a complete frame
+    /// is one bundle; the interface's message table dispatches it. Nothing
+    /// is wired yet when the interface has no table, in which case there
+    /// is nothing served and nothing to do.
+    pub fn process_received_frame(&mut self, frame: &[u8]) {
+        let Some(interface) = self.interface.upgrade() else {
+            return;
+        };
+        let Some(table) = interface.interface_table() else {
+            return;
+        };
+        let mut frame = frame.to_vec();
+        let reason = tcp_bundle_dispatch::dispatch_messages(&table, &self.remote, &mut frame);
+        if reason != Reason::Success {
+            eprintln!(
+                "TCPChannel( {} )::processReceivedFrame: Error while dispatching messages: {}",
+                self.remote.c_str(),
+                reason.to_string()
+            );
         }
     }
 
@@ -539,7 +621,10 @@ mod tests {
     // -- the acceptance: pending replies and queue state match -----------
 
     use crate::event_dispatcher::EventDispatcher;
-    use crate::interface_element::REPLY_MESSAGE_IDENTIFIER;
+    use crate::interface_element::{
+        FIXED_LENGTH_MESSAGE, InterfaceElement, REPLY_MESSAGE_IDENTIFIER,
+    };
+    use crate::interface_table::InterfaceTable;
     use crate::interfaces::{InputMessageHandler, ReplyMessageHandler};
     use crate::misc::{Reason, ReplyID};
     use crate::network_interface::InterfaceType;
@@ -689,5 +774,246 @@ mod tests {
         assert!(channel.is_destroyed());
         assert_eq!(handler.failures(), vec![(Reason::ChannelLost, 1)]);
         assert_eq!(manager.num_pending(), 0);
+    }
+
+    // -- the receive path: sniff, header gate, dispatch --------------------
+
+    /// A handler that records each `( id, body )` it was handed.
+    #[derive(Clone, Default)]
+    struct MsgRecorder {
+        delivered: std::cell::RefCell<Vec<(u8, Vec<u8>)>>,
+    }
+
+    impl InputMessageHandler for MsgRecorder {
+        fn handle_message(
+            &self,
+            _source: &Address,
+            header: &mut UnpackedMessageHeader,
+            data: &mut BinaryStream,
+        ) {
+            self.delivered
+                .borrow_mut()
+                .push((header.identifier(), data.unread_bytes().to_vec()));
+        }
+    }
+
+    impl MsgRecorder {
+        fn delivered(&self) -> Vec<(u8, Vec<u8>)> {
+            self.delivered.borrow().clone()
+        }
+    }
+
+    /// An interface whose message table serves `id` to `recorder`, wired
+    /// the way an owner hands its receive path a table.
+    fn interface_with_table(
+        id: u8,
+        length: i32,
+        recorder: &Rc<MsgRecorder>,
+    ) -> (Rc<NetworkInterface>, Rc<InterfaceTable>) {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let cell = Rc::clone(&clock);
+        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || cell.get())));
+        let interface = NetworkInterface::new_with_dispatcher(InterfaceType::Internal, dispatcher);
+        let table = Rc::new(InterfaceTable::new());
+        let ie = InterfaceElement::new("msg", id, FIXED_LENGTH_MESSAGE, length, None);
+        table.serve(
+            &ie,
+            Some(Rc::clone(recorder) as Rc<dyn InputMessageHandler>),
+        );
+        interface.set_interface_table(Some(Rc::clone(&table)));
+        (interface, table)
+    }
+
+    /// The wire bytes a client sends as its first frame: a small length
+    /// prefix over `CLIENT_HEADER`.
+    fn client_header_wire() -> Vec<u8> {
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&(CLIENT_HEADER_SIZE as u16).to_le_bytes());
+        wire.extend_from_slice(CLIENT_HEADER);
+        wire
+    }
+
+    /// A real bundle frame: a small length prefix over `[flags][id][body]`.
+    fn small_bundle_wire(id: u8, body: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0u8, id];
+        frame.extend_from_slice(body);
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&(frame.len() as u16).to_le_bytes());
+        wire.extend_from_slice(&frame);
+        wire
+    }
+
+    /// The WebSockets sniff: a server expecting raw TCP drops a first
+    /// frame that begins with the HTTP handshake a WebSockets client sends
+    /// (tcp_channel.cpp:194-223).
+    #[test]
+    fn the_websockets_sniff_drops_a_get_request() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+
+        channel.on_data(b"GET / HTTP/1.1\r\nHost: game\r\n\r\n");
+        assert!(channel.is_destroyed(), "the handshake is dropped");
+        assert!(recorder.delivered().is_empty(), "nothing was framed");
+    }
+
+    /// A split WebSockets handshake still trips the sniff once four bytes
+    /// are in hand, and waits for more until then.
+    #[test]
+    fn the_websockets_sniff_waits_then_drops_a_split_request() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+
+        channel.on_data(b"GET");
+        assert!(!channel.is_destroyed(), "fewer than four bytes wait");
+        channel.on_data(b" / HTTP/1.1\r\n");
+        assert!(channel.is_destroyed(), "four bytes are enough to sniff");
+    }
+
+    /// The server's first real exchange: the header frame passes the gate
+    /// and the bundle behind it dispatches through the interface's table.
+    #[test]
+    fn a_server_channel_dispatches_a_bundle_after_the_header() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&client_header_wire());
+        wire.extend_from_slice(&small_bundle_wire(0x07, b"ABCD"));
+        channel.on_data(&wire);
+
+        assert_eq!(channel.header_state(), HeaderState::None);
+        assert_eq!(
+            recorder.delivered(),
+            vec![(0x07, b"ABCD".to_vec())],
+            "the frame behind the header frame dispatched"
+        );
+    }
+
+    /// The acceptance: one table serves a TCP frame and a UDP bundle the
+    /// same way -- two transports, one message table, both walks delivering.
+    #[test]
+    fn one_table_serves_both_a_tcp_frame_and_a_udp_bundle() {
+        use crate::bundle_dispatch;
+
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let cell = Rc::clone(&clock);
+        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || cell.get())));
+        let interface = NetworkInterface::new_with_dispatcher(InterfaceType::Internal, dispatcher);
+        let tcp_recorder = Rc::new(MsgRecorder::default());
+        let udp_recorder = Rc::new(MsgRecorder::default());
+
+        // The table serves two ids, so the two transports' messages are
+        // told apart in the delivered logs.
+        let table = Rc::new(InterfaceTable::new());
+        let tcp_ie = InterfaceElement::new("tcp", 0x07, FIXED_LENGTH_MESSAGE, 4, None);
+        table.serve(
+            &tcp_ie,
+            Some(Rc::clone(&tcp_recorder) as Rc<dyn InputMessageHandler>),
+        );
+        let udp_ie = InterfaceElement::new("udp", 0x08, FIXED_LENGTH_MESSAGE, 4, None);
+        table.serve(
+            &udp_ie,
+            Some(Rc::clone(&udp_recorder) as Rc<dyn InputMessageHandler>),
+        );
+        interface.set_interface_table(Some(Rc::clone(&table)));
+
+        // The TCP frame, through the TCP walk: `[flags][id][body]`.
+        let mut tcp_frame = vec![0u8, 0x07, 0xAA, 0xBB, 0xCC, 0xDD];
+        assert_eq!(
+            tcp_bundle_dispatch::dispatch_messages(&table, &Address::new(1, 2), &mut tcp_frame),
+            Reason::Success
+        );
+
+        // The UDP bundle, through the UDP walk: a body with no footer.
+        let mut udp_body = vec![0x08, 0x11, 0x22, 0x33, 0x44];
+        assert_eq!(
+            bundle_dispatch::dispatch_messages(&table, &Address::new(1, 2), &mut udp_body, None),
+            Reason::Success
+        );
+
+        assert_eq!(
+            tcp_recorder.delivered(),
+            vec![(0x07, vec![0xAA, 0xBB, 0xCC, 0xDD])]
+        );
+        assert_eq!(
+            udp_recorder.delivered(),
+            vec![(0x08, vec![0x11, 0x22, 0x33, 0x44])]
+        );
+    }
+
+    /// A client channel (no header gate to pass) dispatches a bundle the
+    /// moment its bytes frame -- the else arm of `on_data`.
+    #[test]
+    fn a_client_channel_dispatches_its_frames_directly() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
+
+        channel.on_data(&small_bundle_wire(0x07, b"WXYZ"));
+        assert_eq!(recorder.delivered(), vec![(0x07, b"WXYZ".to_vec())]);
+    }
+
+    /// The header gate inside the framing loop rejects a first frame that
+    /// is not the header -- and a frame that is not a WebSockets handshake
+    /// reaches it, since the sniff only tripped on `GET `.
+    #[test]
+    fn a_non_header_first_frame_is_destroyed_in_the_framing_loop() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+
+        // A small frame whose payload is not the header and does not begin
+        // with "GET ", so the sniff passes and `readHeader` rejects it.
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&4u16.to_le_bytes());
+        wire.extend_from_slice(b"ABCD");
+        channel.on_data(&wire);
+
+        assert!(channel.is_destroyed(), "the mismatched header is fatal");
+        assert!(recorder.delivered().is_empty());
+    }
+
+    /// With no message table wired, a finished frame has nothing to serve
+    /// and nothing to do -- the channel's dispatch is a no-op.
+    #[test]
+    fn a_frame_with_no_table_is_not_delivered() {
+        let interface = interface();
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
+        channel.process_received_frame(&[0u8, 0x07, 0xAA, 0xBB]);
+        assert!(!channel.is_destroyed(), "no table is not an error");
+    }
+
+    /// A channel whose interface is gone cannot reach a table either; the
+    /// weak pointer simply does not upgrade.
+    #[test]
+    fn a_frame_with_a_dropped_interface_is_not_delivered() {
+        let interface = interface();
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
+        drop(interface);
+        channel.process_received_frame(&[0u8, 0x07, 0xAA, 0xBB]);
+        assert!(!channel.is_destroyed());
+    }
+
+    /// A frame the walk stops on (here an unhandled id) is reported by
+    /// the channel and the rest of the frame stays undelivered.
+    #[test]
+    fn a_dispatch_failure_is_reported_and_stops_the_frame() {
+        let recorder = Rc::new(MsgRecorder::default());
+        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
+        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
+
+        // id 0x2F is served by nobody, so the walk stops before the message
+        // after it would have been delivered.
+        let mut frame = vec![0u8, 0x2F, 0x01];
+        frame.extend_from_slice(&[0x07, 0xAA, 0xBB, 0xCC, 0xDD]);
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&(frame.len() as u16).to_le_bytes());
+        wire.extend_from_slice(&frame);
+        channel.on_data(&wire);
+
+        assert!(recorder.delivered().is_empty(), "nothing past the bad id");
     }
 }

@@ -40,6 +40,7 @@ pub mod poller;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;
+pub mod tcp_bundle_dispatch;
 #[cfg(target_os = "linux")]
 pub mod tcp_channel;
 pub mod tcp_frame;
