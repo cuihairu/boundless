@@ -27,6 +27,7 @@ pub mod math;
 pub mod output_writer;
 pub mod pyref;
 pub mod resmgr;
+pub mod script_events;
 pub mod sequence;
 pub mod timers;
 pub mod urlrequest;

@@ -240,26 +240,36 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "delivered to the callback; a failing callback is printed, not raised",
         "common/py_urlrequest.cpp:26-59 (call :115-119, print :125)",
     ),
-    // Listeners: server only, the other side of the callback coin.
+    // Listeners: server only, the other side of the callback coin. The
+    // auto argument parse is `ARG( BW::string, ARG( PyObjectPtr, OPTARG(
+    // int, 0, END ) ) )` for add and `ARG( BW::string, ARG( PyObjectPtr,
+    // END ) )` for remove, so the "sO|i" / "sO" parse the port uses.
     item(
         "addEventListener",
         Kind::Function,
         Scope::Server,
-        Status::Pending,
-        "listener callable",
-        "int (non-zero on success)",
-        "TypeError from the auto argument parse",
-        "lib/pyscript/script_events.cpp:311",
+        Status::Ported,
+        "\"sO|i\" (str eventName, callable callback, int level = 0)",
+        "None",
+        "TypeError \"Argument is not callable\"; \
+         SystemError \"ScriptEvents not initialised\"; \
+         ValueError \"Invalid event type '%s'\"",
+        "lib/pyscript/script_events.cpp:281-327 (parse :306-308, \
+         callable :298-301, not-initialised :302-305, invalid :313-318)",
     ),
     item(
         "removeEventListener",
         Kind::Function,
         Scope::Server,
-        Status::Pending,
-        "listener callable",
-        "int (non-zero on success)",
-        "TypeError from the auto argument parse",
-        "lib/pyscript/script_events.cpp:350",
+        Status::Ported,
+        "\"sO\" (str eventName, callable callback)",
+        "None",
+        "TypeError \"Argument is not callable\"; \
+         SystemError \"ScriptEvents not initialised\"; \
+         ValueError \"Invalid event type '%s'\" (raised for an unknown \
+         listener too -- the reference's one sentence)",
+        "lib/pyscript/script_events.cpp:330-356 (parse :345-347, \
+         callable :343-346, not-initialised :347-350, invalid :352-356)",
     ),
     // Watchers. The ENABLE_WATCHERS shapes are the real ones; the second
     // registration block is runtime no-ops when the watcher system is off.
@@ -1601,30 +1611,20 @@ mod tests {
         assert_eq!(big_world.scope, Scope::Both);
     }
 
-    /// The per-role visible surface (BW-03-04-01) pinned as the strings the
-    /// scenarios compare live `dir(BigWorld)` against: the server builds
-    /// carry the timer trio and the mode marker, the client and the editor
-    /// carry the callback pair, and an unknown or empty name carries only
-    /// the shared faces.
+    /// The per-role visible surface (BW-03-04-01/02) pinned as the strings
+    /// the scenarios compare live `dir(BigWorld)` against: the server
+    /// builds carry the listener pair, the timer trio and the mode marker,
+    /// the client and the editor carry the callback pair, and an unknown or
+    /// empty name carries only the shared faces.
     #[test]
     fn the_role_visible_surface_is_pinned() {
+        let server = "addEventListener, addFrequentTask, addTimer, component, \
+                      delTimer, fetchURL, removeEventListener, serverMode";
         for (component, expected) in [
-            (
-                "base",
-                "addFrequentTask, addTimer, component, delTimer, fetchURL, serverMode",
-            ),
-            (
-                "cell",
-                "addFrequentTask, addTimer, component, delTimer, fetchURL, serverMode",
-            ),
-            (
-                "database",
-                "addFrequentTask, addTimer, component, delTimer, fetchURL, serverMode",
-            ),
-            (
-                "bot",
-                "addFrequentTask, addTimer, component, delTimer, fetchURL, serverMode",
-            ),
+            ("base", server),
+            ("cell", server),
+            ("database", server),
+            ("bot", server),
             ("client", "callback, cancelCallback, component, fetchURL"),
             ("editor", "callback, cancelCallback, component, fetchURL"),
             ("watcher", "component, fetchURL"),
@@ -1726,6 +1726,8 @@ mod tests {
                 "callback",
                 "cancelCallback",
                 "fetchURL",
+                "addEventListener",
+                "removeEventListener",
                 "addTimer",
                 "delTimer",
                 "addFrequentTask",

@@ -258,6 +258,11 @@ impl Interpreter {
         // (`script.cpp:686`), so every callback record and time queue
         // entry releases while every teardown table is still intact.
         crate::timers::reset();
+        // The event registry clears the same way: `ScriptApp::~ScriptApp`
+        // runs `scriptEvents_.clear()` before `Script::fini`
+        // (`script_app.cpp:50-55`), so every held listener releases while
+        // the interpreter is still up.
+        crate::script_events::reset();
         // The Math module's providers release their held references next:
         // the teardown table must stay intact for the deallocs that release
         // fires, so the reset sits before `binding::reset`, which drops the
@@ -416,6 +421,12 @@ fn create_big_world_module(component: &str) {
                 capi::PyObject_SetAttrString(module, c"serverMode".as_ptr(), mode);
                 capi::dec_ref(mode);
             }
+            // The script event registry stands up with the module the way
+            // `ScriptApp`'s constructor creates the `onInit`/`onFini`
+            // event types (`script_app.cpp:44-49`) before the app runs:
+            // the standard types exist and the module carries the
+            // `addEventListener` / `removeEventListener` faces.
+            crate::script_events::install(module);
         }
     }
 }
@@ -637,6 +648,10 @@ mod tests {
         "interpreter::tests::scenario_the_editor_component_sees_the_client_surface",
         "interpreter::tests::scenario_an_unknown_component_sees_only_the_shared_surface",
         "interpreter::tests::scenario_an_empty_component_sees_only_the_shared_surface",
+        "interpreter::tests::scenario_the_script_events_fire_in_level_order_with_the_reference_arguments",
+        "interpreter::tests::scenario_a_raising_listener_fails_the_trigger_and_contributes_none",
+        "interpreter::tests::scenario_the_big_world_module_functions_route_the_event_registry",
+        "interpreter::tests::scenario_the_personality_attributes_join_the_event_registry",
         "interpreter::tests::scenario_the_math_module_serves_the_ported_surface",
         "interpreter::tests::scenario_the_vector_types_exercise_their_surface",
         "interpreter::tests::scenario_the_matrix_and_plane_types_exercise_their_surface",
@@ -3069,6 +3084,285 @@ mod tests {
         interpreter_scenario(&InitConfig::default(), |interpreter| {
             assert_role_visible_surface(interpreter, "")
         });
+    }
+
+    /// The startup events the reference's `ScriptApp` owns
+    /// (`script_app.cpp:44-49`, `triggerOnInit` `:289-295`, `fini` `:81-89`):
+    /// the `onInit` / `onFini` listeners fire in level order, stable for
+    /// equal levels, `onInit` carries one boolean (`False` on a plain start,
+    /// `True` on a reload), `onFini` carries none, and `removeEventListener`
+    /// detaches the first listener matching by identity -- its second call
+    /// and an unknown event type both raise the reference's
+    /// `"Invalid event type '%s'"` sentence.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_script_events_fire_in_level_order_with_the_reference_arguments() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         log = []\n\
+                         def cb_a(*args): log.append(('a', args))\n\
+                         def cb_b(*args): log.append(('b', args))\n\
+                         def cb_c(*args): log.append(('c', args))\n\
+                         def cb_d(*args): log.append(('d', args))\n\
+                         def cb_f(*args): log.append(('f', args))\n\
+                         BigWorld.addEventListener('onInit', cb_a, -1)\n\
+                         BigWorld.addEventListener('onInit', cb_b, 0)\n\
+                         BigWorld.addEventListener('onInit', cb_c, 0)\n\
+                         BigWorld.addEventListener('onInit', cb_d, 10)\n\
+                         BigWorld.addEventListener('onFini', cb_f)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                // A plain start: one boolean `False`, level order with the
+                // equal-level pair keeping its insertion order.
+                assert!(crate::script_events::trigger_on_init(false));
+                assert_eq!(
+                    probe(interpreter, "__probe = log"),
+                    "[('a', (False,)), ('b', (False,)), ('c', (False,)), ('d', (False,))]",
+                );
+                // A reload: the same order, the flag flips to `True`.
+                assert!(crate::script_events::trigger_on_init(true));
+                assert_eq!(
+                    probe(interpreter, "__probe = log[4:]"),
+                    "[('a', (True,)), ('b', (True,)), ('c', (True,)), ('d', (True,))]",
+                );
+                // Fini: no arguments at all.
+                assert!(crate::script_events::trigger_on_fini());
+                assert_eq!(probe(interpreter, "__probe = log[8:]"), "[('f', ())]");
+                // Removing detaches the first pointer-identity match, so the
+                // equal-level pair keeps just `c`.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "BigWorld.removeEventListener('onInit', cb_b)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                assert!(crate::script_events::trigger_on_init(false));
+                assert_eq!(
+                    probe(interpreter, "__probe = log[9:]"),
+                    "[('a', (False,)), ('c', (False,)), ('d', (False,))]",
+                );
+                // The reference raises the same sentence for a listener that
+                // was never registered and for an unknown event type
+                // (`script_events.cpp:352-356`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "try:\n\
+                         \x20   BigWorld.removeEventListener('onInit', cb_b)\n\
+                         \x20   __probe = 'no-error'\n\
+                         except ValueError as e:\n\
+                         \x20   __probe = str(e)",
+                    ),
+                    "Invalid event type 'onInit'",
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "try:\n\
+                         \x20   BigWorld.addEventListener('nope', cb_a)\n\
+                         \x20   __probe = 'no-error'\n\
+                         except ValueError as e:\n\
+                         \x20   __probe = str(e)",
+                    ),
+                    "Invalid event type 'nope'",
+                );
+            },
+        );
+    }
+
+    /// A listener that raises fails its trigger (`is_okay` drops to false),
+    /// contributes `None` to the results list, and is printed and cleared the
+    /// way `Script::ask` does (`script.cpp:1185-1204`), so the walk carries
+    /// on to the later listeners and a subsequent trigger runs clean.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_raising_listener_fails_the_trigger_and_contributes_none() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         log = []\n\
+                         def cb_one(*args):\n\
+                         \x20   log.append('one')\n\
+                         \x20   return 'one'\n\
+                         def cb_boom(*args):\n\
+                         \x20   log.append('boom')\n\
+                         \x20   raise RuntimeError('exploded')\n\
+                         def cb_three(*args):\n\
+                         \x20   log.append('three')\n\
+                         \x20   return 'three'\n\
+                         BigWorld.addEventListener('onInit', cb_one, 0)\n\
+                         BigWorld.addEventListener('onInit', cb_boom, 0)\n\
+                         BigWorld.addEventListener('onInit', cb_three, 0)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                let (ok, results) = unsafe {
+                    // The event carries no arguments the listeners use.
+                    let args = capi::PyTuple_New(0);
+                    crate::script_events::trigger_event("onInit", args)
+                };
+                assert!(!ok, "a raising listener fails the trigger");
+                assert_eq!(results.len(), 3);
+                // The walk reaches every listener: the raising one is in the
+                // middle, so the third still fires.
+                assert_eq!(
+                    probe(interpreter, "__probe = log"),
+                    "['one', 'boom', 'three']",
+                );
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                assert_eq!(unsafe { capi::to_string(results[0].as_ptr()) }, "one");
+                assert_eq!(results[1].as_ptr(), capi::py_none());
+                assert_eq!(unsafe { capi::to_string(results[2].as_ptr()) }, "three");
+                // The exception was printed and cleared, so the interpreter
+                // state is clean: once the raising listener is gone the next
+                // trigger runs clean.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "BigWorld.removeEventListener('onInit', cb_boom)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                assert!(crate::script_events::trigger_on_init(false));
+            },
+        );
+    }
+
+    /// The module functions route through the registry the reference's
+    /// `BigWorld.addEventListener` / `removeEventListener` do: a non-callable
+    /// raises `TypeError` before the registry is consulted, a registered
+    /// listener fires on the next trigger, and the removal drops it again.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_big_world_module_functions_route_the_event_registry() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         try:\n\
+                         \x20   BigWorld.addEventListener('onInit', 42)\n\
+                         \x20   __probe = 'no-error'\n\
+                         except TypeError as e:\n\
+                         \x20   __probe = str(e)",
+                    ),
+                    "Argument is not callable",
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "try:\n\
+                         \x20   BigWorld.removeEventListener('onInit', 42)\n\
+                         \x20   __probe = 'no-error'\n\
+                         except TypeError as e:\n\
+                         \x20   __probe = str(e)",
+                    ),
+                    "Argument is not callable",
+                );
+                // A callable registers and fires on the next trigger; the
+                // removal drops it again.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "log = []\n\
+                         def cb(*args):\n\
+                         \x20   log.append('fired')\n\
+                         __added = BigWorld.addEventListener('onInit', cb)\n\
+                         __probe = (__added is None, len(log))",
+                    ),
+                    "(True, 0)",
+                );
+                assert!(crate::script_events::trigger_on_init(false));
+                assert_eq!(probe(interpreter, "__probe = log"), "['fired']");
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "BigWorld.removeEventListener('onInit', cb)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                assert!(crate::script_events::trigger_on_init(false));
+                assert_eq!(probe(interpreter, "__probe = log"), "['fired']");
+            },
+        );
+    }
+
+    /// `initFromPersonality` (`script_events.cpp:248-268`) folds the
+    /// personality module's same-named attributes in as level-0 listeners: a
+    /// personality with an `onInit` fires it on the next startup trigger, a
+    /// missing `onFini` attribute is cleared and skipped, and the personality
+    /// listener joins the level-0 band after the module-registered one, in
+    /// registration order.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_personality_attributes_join_the_event_registry() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         log = []\n\
+                         class Personality:\n\
+                         \x20   pass\n\
+                         personality = Personality()\n\
+                         def personality_on_init(flag): log.append(('p', flag))\n\
+                         personality.onInit = personality_on_init\n\
+                         def cb(*args): log.append(('m', args))\n\
+                         BigWorld.addEventListener('onInit', cb, 0)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                let personality = unsafe {
+                    let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                    let attribute = capi::PyObject_GetAttrString(main, c"personality".as_ptr());
+                    PyRef::from_owned(attribute).expect("the personality module")
+                };
+                // SAFETY: the personality module is live and this thread owns
+                // the GIL.
+                unsafe { crate::script_events::init_from_personality(personality.as_ptr()) };
+                assert!(crate::script_events::trigger_on_init(false));
+                // The personality's level-0 listener joined the module's
+                // level-0 one, in registration order.
+                assert_eq!(
+                    probe(interpreter, "__probe = log"),
+                    "[('m', (False,)), ('p', False)]",
+                );
+            },
+        );
     }
 
     /// The Math module serves the ported surface: the delivered factory
