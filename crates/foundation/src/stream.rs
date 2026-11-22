@@ -703,6 +703,56 @@ mod tests {
     }
 
     #[test]
+    fn truncation_and_bounds_report_like_the_reference() {
+        // BW-01-02-05: the reference `memory_stream.ipp` `MemoryIStream::retrieve`
+        // clamps the read cursor to the end, sets `error_`, and hands back a
+        // static `errBuf` (requests <= `BS_BUFF_MAX_SIZE` = 2048) or NULL
+        // (larger). The port reports the same kind of failure for both sizes —
+        // `Truncated`, error set, cursor clamped to the end, later reads fail —
+        // and surfaces it as `Err` rather than a garbage buffer.
+
+        // Over-read of a fixed width: clamped, error, subsequent reads fail.
+        let mut s = BinaryStream::new();
+        s.write_u32(7);
+        s.rewind();
+        assert_eq!(s.read_u64(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert!(s.at_end());
+        assert_eq!(s.read_u8(), Err(StreamError::Truncated));
+
+        // Both sides of the 2048 errBuf boundary are the same kind of error
+        // (the reference sets `error_` for each, only the return pointer differs).
+        for n in [STREAM_ERROR_BUFFER_MAX, STREAM_ERROR_BUFFER_MAX + 1] {
+            let mut s = BinaryStream::new();
+            s.write_bytes(&[0u8; 8]);
+            s.rewind();
+            assert_eq!(
+                s.read_blob_raw(n).unwrap_err(),
+                StreamError::Truncated,
+                "n={n}"
+            );
+            assert!(s.has_error(), "n={n}");
+        }
+
+        // A string whose length prefix exceeds the remaining bytes fails the
+        // same way (the reference `operator>>` `retrieve` path).
+        let mut s = BinaryStream::new();
+        s.write_string("hi").unwrap();
+        s.rewind();
+        assert_eq!(s.read_u8(), Ok(2)); // consume the length prefix
+        assert_eq!(s.read_string(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+
+        // A packed length past the reference's 2^24 cap is its own kind: the
+        // reference `writePackedInt` `MF_ASSERT`s, the port reports an error.
+        let mut s = BinaryStream::new();
+        assert_eq!(
+            s.write_packed_int(MAX_PACKED_INT + 1).unwrap_err(),
+            StreamError::PackedIntTooLarge
+        );
+    }
+
+    #[test]
     fn peek_does_not_consume() {
         let mut s = BinaryStream::new();
         s.write_u8(41);
