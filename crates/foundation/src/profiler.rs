@@ -85,6 +85,10 @@ pub struct ProfileEntry {
     pub value: i32,
     /// The frame number current when the event was recorded.
     pub frame: u32,
+    /// The request id this section belongs to (0 = no request). A request
+    /// tags the section that handles a logical request, so spans with the
+    /// same id can be followed across roles on a merged timeline.
+    pub request: u32,
 }
 
 /// A node in the processed hierarchy — the `DisplayEntry` analog.
@@ -110,6 +114,38 @@ pub struct DisplayNode {
     pub is_idle: bool,
     /// The thread the section ran on.
     pub thread: u32,
+    /// The frame (tick) current when the section opened.
+    pub frame: u32,
+    /// The nearest enclosing request id (0 = outside any request scope).
+    /// A section opened inside `scoped_request` inherits its id.
+    pub request: u32,
+}
+
+/// Which process recorded a snapshot: the role name plus its pid. A profiler
+/// that never gets a label reports `role: ""` and `pid: 0`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProfilerIdentity {
+    /// The role name (e.g. `cellapp01`, `baseapp`).
+    pub role: String,
+    /// The pid of the recording process.
+    pub pid: u32,
+}
+
+/// One logical request's spans as a snapshot saw them: how often it was
+/// handled, on which ticks and threads, and for how long. The request id is
+/// the handle a merged cross-role timeline follows the request across with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestSpan {
+    /// The request id the spans were tagged with.
+    pub request: u32,
+    /// Number of outermost spans opened for this request.
+    pub calls: u32,
+    /// Summed inclusive cycles of the outermost spans.
+    pub inclusive_cycles: u64,
+    /// Distinct threads that handled it, sorted.
+    pub threads: Vec<u32>,
+    /// Ticks (frames) it was handled in, sorted.
+    pub frames: Vec<u32>,
 }
 
 /// One aggregated per-name statistic — the `SortedEntry` analog.
@@ -143,6 +179,8 @@ pub struct CounterStat {
 /// The result of a snapshot: the per-thread hierarchy plus counter aggregates.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
+    /// Which role/process recorded this snapshot.
+    pub identity: ProfilerIdentity,
     /// Root node indices, ordered by thread then start stamp.
     pub roots: Vec<usize>,
     /// All nodes in the arena (indexed by the ids used in `roots`/links).
@@ -151,6 +189,8 @@ pub struct Snapshot {
     pub stats: Vec<NameStat>,
     /// Per-name counter statistics, sorted by name.
     pub counters: Vec<CounterStat>,
+    /// Request spans, grouped by request id (sorted by id).
+    pub requests: Vec<RequestSpan>,
 }
 
 struct Inner {
@@ -164,6 +204,8 @@ struct Inner {
     clock: Box<dyn Fn() -> u64 + Send + Sync>,
     /// The current frame number.
     frame: u32,
+    /// Which role/process this profiler records for.
+    identity: ProfilerIdentity,
     /// The processed node arena, accumulating across ticks.
     nodes: Vec<DisplayNode>,
     /// Per-thread open-node stacks (indices into `nodes`).
@@ -197,6 +239,7 @@ impl Profiler {
                 next_thread: 1,
                 clock: Box::new(clock),
                 frame: 0,
+                identity: ProfilerIdentity::default(),
                 nodes: Vec::new(),
                 stacks: HashMap::new(),
                 tails: HashMap::new(),
@@ -205,8 +248,31 @@ impl Profiler {
         }
     }
 
+    /// Label this profiler as the recording for `role` with process id `pid`,
+    /// so its snapshots join a cross-role timeline. Roles usually call this
+    /// once at startup, before any section opens.
+    pub fn set_identity(&self, role: &str, pid: u32) {
+        let mut inner = self.inner.lock().expect("profiler lock");
+        inner.identity = ProfilerIdentity {
+            role: role.to_string(),
+            pid,
+        };
+    }
+
     /// Record a raw event — the reference's `addEntry`.
     pub fn add_entry(&self, name: &str, kind: EventKind, value: i32, category: Category) {
+        self.add_entry_request(name, kind, value, category, 0)
+    }
+
+    /// Record a raw event tagged with a request id.
+    pub fn add_entry_request(
+        &self,
+        name: &str,
+        kind: EventKind,
+        value: i32,
+        category: Category,
+        request: u32,
+    ) {
         let mut inner = self.inner.lock().expect("profiler lock");
         let thread = thread_index(&mut inner);
         let entry = ProfileEntry {
@@ -217,6 +283,7 @@ impl Profiler {
             thread,
             value,
             frame: inner.frame,
+            request,
         };
         inner.entries.push(entry);
     }
@@ -238,6 +305,7 @@ impl Profiler {
         ScopedProfiler {
             profiler: self,
             name: name.to_string(),
+            request: 0,
         }
     }
 
@@ -247,6 +315,19 @@ impl Profiler {
         ScopedProfiler {
             profiler: self,
             name: name.to_string(),
+            request: 0,
+        }
+    }
+
+    /// Open a scoped section belonging to a logical request. Every role that
+    /// touches the same request opens its handler under the same request id,
+    /// which is the handle a cross-role timeline follows the request with.
+    pub fn scoped_request(&self, request: u32, name: &str) -> ScopedProfiler<'_> {
+        self.add_entry_request(name, EventKind::Start, 0, Category::Cpp, request);
+        ScopedProfiler {
+            profiler: self,
+            name: name.to_string(),
+            request,
         }
     }
 
@@ -269,11 +350,14 @@ impl Profiler {
         let stats = aggregate_stats(&inner.nodes);
         let mut counters: Vec<CounterStat> = inner.counters.values().cloned().collect();
         counters.sort_by(|a, b| a.name.cmp(&b.name));
+        let requests = aggregate_requests(&inner.nodes);
         Snapshot {
+            identity: inner.identity.clone(),
             roots,
             nodes: inner.nodes.clone(),
             stats,
             counters,
+            requests,
         }
     }
 }
@@ -284,17 +368,20 @@ impl Default for Profiler {
     }
 }
 
-/// The RAII guard returned by `Profiler::scoped`/`scoped_idle`. Dropping it
-/// closes the section, exactly like the reference's `ScopedProfiler`.
+/// The RAII guard returned by `Profiler::scoped`/`scoped_request`/
+/// `scoped_idle`. Dropping it closes the section, exactly like the
+/// reference's `ScopedProfiler`; the request id the section opened with is
+/// carried so the matching `End` closes the same scope.
 pub struct ScopedProfiler<'a> {
     profiler: &'a Profiler,
     name: String,
+    request: u32,
 }
 
 impl Drop for ScopedProfiler<'_> {
     fn drop(&mut self) {
         self.profiler
-            .add_entry(&self.name, EventKind::End, 0, Category::Cpp);
+            .add_entry_request(&self.name, EventKind::End, 0, Category::Cpp, self.request);
     }
 }
 
@@ -362,6 +449,13 @@ fn process_entries(inner: &mut Inner) {
                 let node_idx = inner.nodes.len();
                 let parent = stack.last().copied();
                 let is_idle = entry.kind == EventKind::StartIdle;
+                // A section inherits the nearest enclosing request; its own tag
+                // wins, which makes request scopes nest.
+                let request = if entry.request != 0 {
+                    entry.request
+                } else {
+                    parent.map_or(0, |p| inner.nodes[p].request)
+                };
                 inner.nodes.push(DisplayNode {
                     name: entry.name.clone(),
                     parent,
@@ -373,6 +467,8 @@ fn process_entries(inner: &mut Inner) {
                     inclusive_idle_cycles: 0,
                     is_idle,
                     thread,
+                    frame: entry.frame,
+                    request,
                 });
                 if let Some(p) = parent {
                     inner.nodes[p].children.push(node_idx);
@@ -438,6 +534,48 @@ fn process_entries(inner: &mut Inner) {
             }
         }
     }
+}
+
+/// Aggregate the outermost spans per request id by walking the processed
+/// nodes: only the nodes that open the request's scope count, so a request
+/// that nests sections doesn't double count its children.
+fn aggregate_requests(nodes: &[DisplayNode]) -> Vec<RequestSpan> {
+    let mut spans: HashMap<u32, RequestSpan> = HashMap::new();
+    for node in nodes {
+        if node.request == 0 {
+            continue;
+        }
+        // Top-level span: no parent, or the parent belongs to another request.
+        let top_level = match node.parent {
+            None => true,
+            Some(p) => nodes[p].request != node.request,
+        };
+        if !top_level {
+            continue;
+        }
+        let span = spans.entry(node.request).or_insert_with(|| RequestSpan {
+            request: node.request,
+            calls: 0,
+            inclusive_cycles: 0,
+            threads: Vec::new(),
+            frames: Vec::new(),
+        });
+        span.calls += 1;
+        span.inclusive_cycles += node.inclusive_cycles;
+        if !span.threads.contains(&node.thread) {
+            span.threads.push(node.thread);
+        }
+        if !span.frames.contains(&node.frame) {
+            span.frames.push(node.frame);
+        }
+    }
+    let mut spans: Vec<RequestSpan> = spans.into_values().collect();
+    for span in &mut spans {
+        span.threads.sort_unstable();
+        span.frames.sort_unstable();
+    }
+    spans.sort_by_key(|s| s.request);
+    spans
 }
 
 /// Aggregate per-name call totals by walking the processed nodes.
@@ -660,5 +798,83 @@ mod tests {
             "{}",
             real.inclusive_cycles
         );
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_profiler_identity() {
+        let prof = Profiler::with_clock(|| 0);
+        prof.set_identity("cellapp01", 4242);
+
+        let snap = prof.snapshot();
+        assert_eq!(
+            snap.identity,
+            ProfilerIdentity {
+                role: "cellapp01".to_string(),
+                pid: 4242,
+            }
+        );
+    }
+
+    #[test]
+    fn unlabelled_profilers_report_the_default_identity() {
+        let snap = Profiler::with_clock(|| 0).snapshot();
+        assert_eq!(snap.identity, ProfilerIdentity::default());
+    }
+
+    #[test]
+    fn request_spans_group_by_their_request_id_and_record_the_tick() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+
+        // Two handlers for request 7 on tick 0, and one more on a later tick.
+        for _ in 0..2 {
+            let _s = prof.scoped_request(7, "handleRequest");
+            advance(&source, 4);
+        }
+        prof.tick();
+        advance(&source, 2);
+        {
+            let _s = prof.scoped_request(7, "handleRequest");
+            advance(&source, 6);
+        }
+        prof.tick();
+
+        let snap = prof.snapshot();
+        assert_eq!(
+            snap.requests,
+            vec![RequestSpan {
+                request: 7,
+                calls: 3,
+                inclusive_cycles: 14,
+                threads: vec![0],
+                frames: vec![0, 1],
+            }]
+        );
+    }
+
+    #[test]
+    fn untagged_sections_nested_in_a_request_span_inherit_its_id() {
+        let source = pinned();
+        let prof = profiler_with(&source);
+
+        {
+            let _outer = prof.scoped_request(9, "handleRequest");
+            // An untagged section inside the request inherits its id.
+            let _inner = prof.scoped("resolveEntity");
+            advance(&source, 10);
+        }
+        prof.tick();
+
+        let snap = prof.snapshot();
+        let inner = snap
+            .nodes
+            .iter()
+            .find(|n| n.name == "resolveEntity")
+            .unwrap();
+        assert_eq!(inner.request, 9, "inner section belongs to the request");
+        // Only the tagged span is the request's span; the inherited section is
+        // not a second request span.
+        assert_eq!(snap.requests.len(), 1);
+        assert_eq!(snap.requests[0].calls, 1);
     }
 }

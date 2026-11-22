@@ -21,3 +21,7 @@ libc = { workspace = true }
 # python-host: the embedded interpreter a profiled script runs in, reached
 # through `Interpreter::run_simple_string` (BW-23-01-02).
 python-host = { workspace = true }
+# foundation: the profiler snapshots a cross-role timeline merges, and the
+# clock anchors that shift process-local stamps onto the unified timebase
+# (BW-23-01-03).
+foundation = { workspace = true }

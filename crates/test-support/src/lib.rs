@@ -27,5 +27,6 @@ pub mod standalone;
 pub mod startup_baseline;
 pub mod third_party_deps;
 pub mod timer_scenarios;
+pub mod trace_timeline;
 pub mod windows_baseline;
 pub mod workspace;
