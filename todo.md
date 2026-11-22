@@ -392,7 +392,8 @@
 
 移植 TCPBundle/TCPChannel、帧边界、读写缓冲、连接过滤及在构建中启用的传输方式。对照短读写、背压、超时和断链。
 
-- [ ] **BW-02-04-01 实现 TCPBundle 帧解析**。**验收** 短读与合并读取两类夹具通过。
+- [x] **BW-02-04-01 实现 TCPBundle 帧解析**（`b3ce240`）。**验收** 短读与合并读取两类夹具通过。
+  - 证据：新增 tcp_frame.rs（TcpFrameParser）逐行对照 tcp_channel.cpp:190-263 的 handleInput 帧化循环、readSmallFrameLength(:321)/readLargeFrameLength(:345) 与 cleanUpAfterFrameReceive(:384)。帧格式：small `[len:2][payload]`（len!=0xFFFF）、large `[0xFFFF:2][len:4][payload]`（doSend tcp_channel.cpp:429 大于等于 UINT16_MAX 时走逃逸形）；状态对 `frameLength_`/`frameHeaderLength_` 三态（0/0 未见小前缀、0/6 逃逸已读等大长度、非零/2或6 已知长度待补载荷）照搬，长度字段按引用 operator<<(uint16/uint32) 在 x86-64 落主机字节序读小端（与本 crate 其余整数字段一致，见 bw00-04-01-protocol-fixtures.md 注）。补齐一帧后 leftover 前移为下一帧开头（cleanUpAfterFrameReceive 的 transfer 语义，端口按 read 游标一次 feed 一压）；`numDataUnitsReceived_`/`numBytesReceived_ += frameHeaderLength_ + frameLength_` 计数随行。验收测试两类夹具：短读——`a_frame_split_byte_for_byte_arrives_whole`（逐字节喂 10 字节帧，末字节出帧）、`a_split_prefix_and_a_split_large_length_both_wait`（前缀劈半、逃逸+大长度劈半）、`a_large_frame_survives_every_split`（逃逸/长度/载荷三处全劈）；合并读取——`several_frames_in_one_read_come_back_in_order`（一读三帧按序出）、`trailing_partial_data_waits_on_the_next_read`（两整帧+第三帧头同读，残头入状态、下次补齐）。忠实怪癖照搬并测试钉死：小长度 0 不出空帧——readSmallFrameLength 置 frameLength_=0/frameHeaderLength_=2 后同一循环的下一分支改读大长度（tcp_channel.cpp:236-244），`a_zero_small_length_is_read_as_a_waiting_large_length` 断言其停等与字节计数（该路径 frameHeaderLength_ 停在 2，cleanUp 只计 2+7）；真 bundle 至少含 flags 字节，doSend 不会发 0 长帧。有意留白（随通道层）：headerState_/CLIENT_HEADER 连接头帧与 WebSockets 嗅探（tcp_channel.cpp:194-315）、pStreamFilter_ 读取通道(:172-183)、maxSegmentSize() 的缓冲上限、processReceivedFrame 的派发(:360-378)。mercury 327 测试全绿（+8），clippy -D warnings 0，rustfmt 本批 2 文件（tcp_frame.rs 新建+lib.rs 挂模块）；llvm-cov tcp_frame.rs 98.45% 行、mercury 全 crate 98.29% 行（≥98%）。
 - [ ] **BW-02-04-02 实现短写和待发送缓冲**。**验收** 背压下按序发出完整帧。
 - [ ] **BW-02-04-03 接入原版启用的连接过滤**。**验收** 允许及拒绝分别匹配。
 - [ ] **BW-02-04-04 实现超时和断链清理**。**验收** 挂起应答与队列状态吻合。
