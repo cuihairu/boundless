@@ -74,7 +74,7 @@ pub(crate) fn strerror(errno: i32) -> String {
 /// one-second timer belong to the EventDispatcher (BW-02-01-05); the
 /// channel-related tallies (`numDuplicatePackets_` etc.) stay on the
 /// channel they belong to (BW-02-03-05).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ReceiverStats {
     /// `numCorruptedPacketsReceived_` (packet_receiver.cpp:521).
     pub num_corrupted_packets_received: u32,
@@ -412,11 +412,17 @@ impl PacketReceiver {
 
     // -- receive dispatch (BW-02-03-07) -----------------------------------
 
+    /// The receive counters: the port's slice of `stats_`.
+    pub fn stats(&self) -> ReceiverStats {
+        self.stats.borrow().clone()
+    }
+
     /// `processPacket` (packet_receiver.cpp:445): the entry point for new
-    /// packets. The rate limiter (BW-02-05-04), the channel filters
-    /// (BW-02-05-01) and the recently-dead check are later items; with
-    /// none of them here this finds the channel, stamps its receive time,
-    /// and hands the packet to the header walk.
+    /// packets, running the filter chain in the reference's fixed order:
+    /// a channel's own filter first, then the recently-dead check, then
+    /// the interface's off-channel filter, and the header walk last. The
+    /// rate limiter (BW-02-05-04) comes before all of these in the
+    /// reference and is still to come.
     pub fn route_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
         let Some(interface) = self.interface.borrow().upgrade() else {
             return Reason::Success;
@@ -430,12 +436,37 @@ impl PacketReceiver {
             !interface.is_external() && packet.should_create_anonymous(),
         );
 
-        // We update received times for addressed channels here.  Indexed
-        // channels are done in processFilteredPacket().
         if let Some(channel) = &channel {
+            // We update received times for addressed channels here.
+            // Indexed channels are done in processFilteredPacket().
             UdpChannel::on_packet_received(channel, packet.total_size() as i32);
+
+            // The channel's filter decides what happens to its packet
+            // (packet_receiver.cpp:464-473); a channel whose remote has
+            // failed falls through to the header walk instead.
+            let remote_failed = channel.borrow().has_remote_failed();
+            if !remote_failed && let Some(filter) = UdpChannel::p_filter(channel) {
+                return filter.recv(self, &interface, addr, packet, Some(Rc::clone(channel)));
+            }
+        }
+        // If we're monitoring recent channel deaths, check now if this
+        // packet should be dropped (packet_receiver.cpp:474-487).
+        else if interface.is_external() && interface.is_dead(addr) {
+            if interface.is_verbose() {
+                eprintln!(
+                    "PacketReceiver::processPacket( {} ): Ignoring incoming packet on recently dead channel",
+                    addr.c_str()
+                );
+            }
+            return Reason::Success;
+        }
+        // Use the network interface's default filter to filter out
+        // off-channel malicious/noise packets (packet_receiver.cpp:488-492).
+        else if let Some(off_channel) = interface.p_off_channel_filter() {
+            return off_channel.recv(self, &interface, addr, packet, None);
         }
 
+        // Parse raw.
         self.process_filtered_packet(&interface, addr, packet, channel)
     }
 
@@ -449,8 +480,9 @@ impl PacketReceiver {
     /// every received packet takes. This has to be very robust, if we
     /// intend to use this transport over the big bad internet -- we
     /// basically have to assume it'll be complete garbage. `channel` is
-    /// the one `route_packet` found, if any.
-    fn process_filtered_packet(
+    /// the one `route_packet` found, if any; a `PacketFilter`'s base
+    /// `recv` (packet_filter.cpp:44) hands the packet here.
+    pub(crate) fn process_filtered_packet(
         &self,
         interface: &Rc<NetworkInterface>,
         addr: &Address,
@@ -2140,5 +2172,294 @@ mod tests {
             receiver.route_packet(&addr, &mut wire_packet(0, b"x")),
             Reason::Success
         );
+    }
+
+    // ------------------------------------------------------------------
+    // The filter chain (processPacket, BW-02-05-01)
+    // ------------------------------------------------------------------
+
+    use crate::packet_filter::PacketFilter;
+    use crate::packet_sender::PacketSender;
+    use crate::udp_channel::Traits as ChannelTraits;
+
+    /// A filter that records whether it was consulted and then either
+    /// hands the packet on or stops it, and claims a spare room out of
+    /// every packet.
+    struct RecordingFilter {
+        recv_calls: SoloCell<u32>,
+        send_calls: SoloCell<u32>,
+        /// The reason `recv` returns when it does not pass through.
+        reject: Option<Reason>,
+        /// `maxSpareSize`.
+        spare: SoloCell<usize>,
+    }
+
+    impl RecordingFilter {
+        fn passthrough() -> Rc<Self> {
+            Self::with_spare(0)
+        }
+
+        fn rejecting(reason: Reason) -> Rc<Self> {
+            Rc::new(RecordingFilter {
+                recv_calls: SoloCell::new(0),
+                send_calls: SoloCell::new(0),
+                reject: Some(reason),
+                spare: SoloCell::new(0),
+            })
+        }
+
+        fn with_spare(spare: usize) -> Rc<Self> {
+            Rc::new(RecordingFilter {
+                recv_calls: SoloCell::new(0),
+                send_calls: SoloCell::new(0),
+                reject: None,
+                spare: SoloCell::new(spare),
+            })
+        }
+    }
+
+    impl PacketFilter for RecordingFilter {
+        fn recv(
+            &self,
+            receiver: &PacketReceiver,
+            interface: &Rc<NetworkInterface>,
+            addr: &Address,
+            packet: &mut Packet,
+            channel: Option<ChannelPtr>,
+        ) -> Reason {
+            self.recv_calls.set(self.recv_calls.get() + 1);
+            match self.reject {
+                Some(reason) => reason,
+                None => receiver.process_filtered_packet(interface, addr, packet, channel),
+            }
+        }
+
+        fn send(&self, sender: &mut PacketSender, addr: &Address, packet: &Rc<Packet>) -> Reason {
+            self.send_calls.set(self.send_calls.get() + 1);
+            sender.basic_send_with_retries(addr, packet)
+        }
+
+        fn max_spare_size(&self) -> usize {
+            self.spare.get()
+        }
+    }
+
+    fn external_channel(interface: &Rc<NetworkInterface>, addr: Address) -> ChannelPtr {
+        UdpChannel::new(
+            interface,
+            addr,
+            ChannelTraits::External,
+            crate::udp_channel::DEFAULT_INACTIVITY_RESEND_DELAY,
+            crate::misc::CHANNEL_ID_NULL,
+        )
+    }
+
+    /// A channel's filter is consulted first; a packet it hands on still
+    /// takes the header walk and its refusals (packet_receiver.cpp:464-473).
+    #[test]
+    fn a_channel_filter_is_consulted_before_the_walk() {
+        let (interface, receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let channel = external_channel(&interface, addr);
+        let filter = RecordingFilter::passthrough();
+        UdpChannel::set_p_filter(&channel, Some(filter.clone() as Rc<dyn PacketFilter>));
+
+        let reason = receiver.route_packet(&addr, &mut wire_packet(flags::ON_CHANNEL, b"x"));
+        assert_eq!(reason, Reason::CorruptedPacket, "the walk still refuses it");
+        assert_eq!(filter.recv_calls.get(), 1, "the filter saw it first");
+    }
+
+    /// A filter that stops the packet wins; the walk never runs, so the
+    /// corrupted counter does not move.
+    #[test]
+    fn a_rejecting_channel_filter_stops_the_walk() {
+        let (interface, receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let channel = external_channel(&interface, addr);
+        let filter = RecordingFilter::rejecting(Reason::GeneralNetwork);
+        UdpChannel::set_p_filter(&channel, Some(filter.clone() as Rc<dyn PacketFilter>));
+
+        let reason = receiver.route_packet(&addr, &mut wire_packet(flags::ON_CHANNEL, b"x"));
+        assert_eq!(reason, Reason::GeneralNetwork);
+        assert_eq!(filter.recv_calls.get(), 1);
+        assert_eq!(
+            receiver.stats().num_corrupted_packets_received,
+            0,
+            "the walk did not run"
+        );
+    }
+
+    /// A channel whose remote has failed skips its filter: the reference
+    /// guards `pFilter() && !hasRemoteFailed()` (packet_receiver.cpp:465).
+    #[test]
+    fn a_remote_failed_channel_skips_its_filter() {
+        let (interface, receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let channel = external_channel(&interface, addr);
+        let filter = RecordingFilter::passthrough();
+        UdpChannel::set_p_filter(&channel, Some(filter.clone() as Rc<dyn PacketFilter>));
+        UdpChannel::set_remote_failed(&channel);
+
+        let reason = receiver.route_packet(&addr, &mut wire_packet(flags::ON_CHANNEL, b"x"));
+        assert_eq!(
+            reason,
+            Reason::GeneralNetwork,
+            "the walk refuses the failed link"
+        );
+        assert_eq!(
+            filter.recv_calls.get(),
+            0,
+            "the failed channel's filter is skipped"
+        );
+    }
+
+    /// A found channel that has no filter falls straight through to the
+    /// header walk; the off-channel filter is not consulted
+    /// (packet_receiver.cpp:488's `else if` binds to "no channel").
+    #[test]
+    fn a_channel_without_a_filter_skips_the_off_channel_filter() {
+        let (interface, receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        external_channel(&interface, addr);
+        let off = RecordingFilter::passthrough();
+        interface.set_p_off_channel_filter(Some(off.clone() as Rc<dyn PacketFilter>));
+
+        let reason = receiver.route_packet(&addr, &mut wire_packet(flags::ON_CHANNEL, b"x"));
+        assert_eq!(reason, Reason::CorruptedPacket);
+        assert_eq!(off.recv_calls.get(), 0, "a found channel stays on-channel");
+    }
+
+    /// An off-channel packet on an external interface goes to the
+    /// interface's default filter.
+    #[test]
+    fn an_off_channel_packet_goes_to_the_off_channel_filter() {
+        let (interface, receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let off = RecordingFilter::rejecting(Reason::GeneralNetwork);
+        interface.set_p_off_channel_filter(Some(off.clone() as Rc<dyn PacketFilter>));
+
+        let reason = receiver.route_packet(&addr, &mut wire_packet(0, b"x"));
+        assert_eq!(reason, Reason::GeneralNetwork);
+        assert_eq!(off.recv_calls.get(), 1, "the off-channel filter saw it");
+    }
+
+    /// A straggler from a recently dead external channel is dropped before
+    /// any filter sees it (packet_receiver.cpp:474-487).
+    #[test]
+    fn a_dead_external_address_is_dropped_before_any_filter() {
+        let (interface, receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let channel = external_channel(&interface, addr);
+        interface.deregister_channel(&channel);
+        assert!(interface.is_dead(&addr));
+
+        let off = RecordingFilter::passthrough();
+        interface.set_p_off_channel_filter(Some(off.clone() as Rc<dyn PacketFilter>));
+        let reason = receiver.route_packet(&addr, &mut wire_packet(0, b"x"));
+        assert_eq!(reason, Reason::Success, "the straggler is dropped");
+        assert_eq!(
+            off.recv_calls.get(),
+            0,
+            "no filter sees the dead channel's packet"
+        );
+    }
+
+    /// Only external channels are remembered when deregistered: an
+    /// internal interface has no recently-dead set (network_interface.cpp:165-170).
+    #[test]
+    fn deregister_marks_only_external_channels_dead() {
+        let (interface, _receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let channel = external_channel(&interface, addr);
+        assert!(!interface.is_dead(&addr));
+        interface.deregister_channel(&channel);
+        assert!(
+            interface.is_dead(&addr),
+            "an external channel is remembered"
+        );
+
+        let (internal, _receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
+        let iaddr = Address::new(LOOPBACK, socket::htons(10));
+        let internal_channel = UdpChannel::new(
+            &internal,
+            iaddr,
+            ChannelTraits::Internal,
+            crate::udp_channel::DEFAULT_INACTIVITY_RESEND_DELAY,
+            crate::misc::CHANNEL_ID_NULL,
+        );
+        internal.deregister_channel(&internal_channel);
+        assert!(
+            !internal.is_dead(&iaddr),
+            "an internal channel is not remembered"
+        );
+    }
+
+    /// A channel's filter claims its spare room out of the channel's
+    /// bundle (`newBundle`, udp_channel.cpp:1526-1531): the room is
+    /// reserved as a packet opens, so the next bundle cycle after the
+    /// filter is attached carries it.
+    #[test]
+    fn a_filter_spare_room_is_reserved_in_the_bundle() {
+        let (interface, _receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let channel = external_channel(&interface, addr);
+        assert_eq!(channel.borrow().bundle().packet(0).extra_filter_size(), 0);
+
+        let filter = RecordingFilter::with_spare(5);
+        UdpChannel::set_p_filter(&channel, Some(filter.clone() as Rc<dyn PacketFilter>));
+        channel.borrow_mut().clear_bundle();
+        assert_eq!(
+            channel.borrow().bundle().packet(0).extra_filter_size(),
+            5,
+            "the filter's spare room is reserved"
+        );
+    }
+
+    /// The send path consults the channel's filter before the socket
+    /// (packet_sender.cpp:245-255).
+    #[test]
+    fn the_send_path_consults_the_channel_filter() {
+        let (interface, _receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let channel = external_channel(&interface, addr);
+        let filter = RecordingFilter::passthrough();
+        UdpChannel::set_p_filter(&channel, Some(filter.clone() as Rc<dyn PacketFilter>));
+
+        let mut packet = Packet::new();
+        packet.grow(HEADER_SIZE);
+        interface.send_packet(&addr, &Rc::new(packet), Some(&channel), false);
+        assert_eq!(
+            filter.send_calls.get(),
+            1,
+            "the filter saw the outbound packet"
+        );
+    }
+
+    /// The trait's defaults are the transport: a filter with no overrides
+    /// sends through the retrying socket write and receives through the
+    /// header walk, and claims no spare room (packet_filter.cpp:34-49).
+    #[test]
+    fn the_default_filter_hands_everything_to_the_transport() {
+        struct DefaultFilter;
+        impl PacketFilter for DefaultFilter {}
+
+        let (interface, receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let channel = external_channel(&interface, addr);
+        UdpChannel::set_p_filter(
+            &channel,
+            Some(Rc::new(DefaultFilter) as Rc<dyn PacketFilter>),
+        );
+        assert_eq!(DefaultFilter.max_spare_size(), 0, "the base claims no room");
+
+        // In: the walk still runs and refuses the packet.
+        let reason = receiver.route_packet(&addr, &mut wire_packet(flags::ON_CHANNEL, b"x"));
+        assert_eq!(reason, Reason::CorruptedPacket);
+
+        // Out: the retrying socket write runs and the packet leaves.
+        let mut packet = Packet::new();
+        packet.grow(HEADER_SIZE);
+        interface.send_packet(&addr, &Rc::new(packet), Some(&channel), false);
+        assert_eq!(interface.sending_stats().num_packets_sent, 1);
     }
 }

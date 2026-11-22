@@ -27,6 +27,12 @@ pub mod network_stats;
 pub mod network_utils;
 pub mod nub_exception;
 pub mod packet;
+
+/// The per-channel packet filter (BW-02-05-01). Linux only, because its
+/// base methods call into the socket read and write paths.
+#[cfg(target_os = "linux")]
+pub mod packet_filter;
+
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
 
@@ -45,6 +51,12 @@ pub mod reliable_order;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;
+
+/// An external interface's recently-dead channel addresses (BW-02-05-01).
+/// Linux only, because the expiry timers arm on the EventDispatcher.
+#[cfg(target_os = "linux")]
+pub mod recently_dead_channels;
+
 pub mod tcp_bundle;
 pub mod tcp_channel_lifecycle;
 pub mod tcp_connection_header;

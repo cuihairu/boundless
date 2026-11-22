@@ -214,6 +214,14 @@ impl UdpBundle {
         self.external_channel = external_channel;
     }
 
+    /// `UDPBundle( spareSize )`'s argument (udp_bundle.hpp:45), read from
+    /// the channel's filter (`newBundle`, udp_channel.cpp:1526-1531). The
+    /// room applies from the next packet on, because a packet only
+    /// reserves it as it opens.
+    pub fn set_spare_size(&mut self, spare_size: u8) {
+        self.extra_size = spare_size;
+    }
+
     /// `isOnExternalChannel()`: whether the bundle's channel sends
     /// outside the process, the gate the reliable-order recording runs
     /// under.

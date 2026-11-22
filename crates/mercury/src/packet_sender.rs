@@ -18,7 +18,7 @@ use crate::misc::{Reason, SeqNumAllocator};
 use crate::network_interface::NetworkInterface;
 use crate::packet::{Packet, flags};
 use crate::udp_bundle::UdpBundle;
-use crate::udp_channel::ChannelPtr;
+use crate::udp_channel::{ChannelPtr, UdpChannel};
 use platform::socket;
 
 /// `UDP_OVERHEAD` (basictypes.hpp): the 8 UDP + 20 IP header bytes a
@@ -348,19 +348,30 @@ impl PacketSender {
     }
 
     /// `PacketSender::sendRescheduledPacket` (packet_sender.cpp:241): the
-    /// filters are BW-02-05; until then the packet goes straight out.
+    /// channel's filter gets the packet first; off-channel packets (and
+    /// channels without a filter) go straight out.
     pub(crate) fn send_rescheduled_packet(
         &mut self,
         addr: &Address,
         packet: &Rc<Packet>,
-        _channel: Option<&ChannelPtr>,
+        channel: Option<&ChannelPtr>,
     ) {
-        self.basic_send_with_retries(addr, packet);
+        let filter = channel.and_then(UdpChannel::p_filter);
+        if let Some(filter) = filter {
+            filter.send(self, addr, packet);
+        } else {
+            self.basic_send_with_retries(addr, packet);
+        }
     }
 
     /// `PacketSender::basicSendWithRetries` (packet_sender.cpp:274):
-    /// transient queue errors wait a moment and retry.
-    fn basic_send_with_retries(&mut self, addr: &Address, packet: &Rc<Packet>) -> Reason {
+    /// transient queue errors wait a moment and retry. The base
+    /// `PacketFilter::send` (packet_filter.cpp:34) sends through here.
+    pub(crate) fn basic_send_with_retries(
+        &mut self,
+        addr: &Address,
+        packet: &Rc<Packet>,
+    ) -> Reason {
         let mut retries = 0;
         let mut reason = Reason::Success;
 

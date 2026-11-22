@@ -25,9 +25,11 @@ use crate::interfaces::InputMessageHandler;
 use crate::irregular_channels::IrregularChannels;
 use crate::misc::{CHANNEL_ID_NULL, Reason};
 use crate::packet::Packet;
+use crate::packet_filter::PacketFilter;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::packet_sender::{PacketSender, SendingStats};
 use crate::poller::EventPoller;
+use crate::recently_dead_channels::RecentlyDeadChannels;
 use crate::request_manager::RequestManager;
 use crate::udp_bundle::UdpBundle;
 use crate::udp_channel::{
@@ -101,6 +103,15 @@ pub struct NetworkInterface {
     /// `pPacketSender_` (network_interface.cpp:110): the socket write path
     /// (BW-02-03-06), created once this interface's own `Rc` exists.
     packet_sender: RefCell<PacketSender>,
+    /// `pOffChannelFilter_` (network_interface.hpp:328, BW-02-05-01): the
+    /// filter off-channel packets are handed to before the header walk.
+    off_channel_filter: RefCell<Option<Rc<dyn PacketFilter>>>,
+    /// `pRecentlyDeadChannels_` (network_interface.hpp:307, BW-02-05-01):
+    /// external interfaces remember recently deregistered channel
+    /// addresses, so their stragglers are dropped rather than read raw.
+    /// `None` on an internal interface, like the reference's unset
+    /// `pRecentlyDeadChannels_` on one (network_interface.cpp:165-170).
+    recently_dead: RefCell<Option<Rc<RecentlyDeadChannels>>>,
 }
 
 impl NetworkInterface {
@@ -131,6 +142,13 @@ impl NetworkInterface {
         interface_type: InterfaceType,
         dispatcher: Rc<EventDispatcher>,
     ) -> Rc<NetworkInterface> {
+        // `setMainDispatcher` creates the recently-dead set only for
+        // external interfaces (network_interface.cpp:165-170); the port
+        // has no main-dispatcher attach step (BW-02-01-05), so the
+        // interface's own dispatcher is the one the timers arm on.
+        let recently_dead = (interface_type == InterfaceType::External)
+            .then(|| RecentlyDeadChannels::new(Rc::clone(&dispatcher)));
+
         let interface = NetworkInterface {
             udp_socket: RefCell::new(Endpoint::new()),
             address: RefCell::new(NONE),
@@ -148,6 +166,8 @@ impl NetworkInterface {
             channel_finder: RefCell::new(None),
             self_weak: RefCell::new(Weak::new()),
             packet_sender: RefCell::new(PacketSender::new(Weak::new())),
+            off_channel_filter: RefCell::new(None),
+            recently_dead: RefCell::new(recently_dead),
         };
         let shared = Rc::new(interface);
         *shared.self_weak.borrow_mut() = Rc::downgrade(&shared);
@@ -416,11 +436,40 @@ impl NetworkInterface {
         self.channels.borrow_mut().add(channel)
     }
 
-    /// `deregisterChannel` (network_interface.cpp:662): drop the
-    /// channel's address. Recently-dead bookkeeping for external
-    /// channels is BW-02-05.
+    /// `deregisterChannel` (network_interface.cpp:662): drop the channel's
+    /// address. A recently deregistered external channel is remembered for
+    /// a while, so its leftover packets are dropped instead of being read
+    /// raw (network_interface.cpp:499-501).
     pub fn deregister_channel(&self, channel: &ChannelPtr) -> bool {
+        let (is_external, addr) = {
+            let channel = channel.borrow();
+            (channel.is_external(), channel.addr())
+        };
+        if is_external && let Some(recently_dead) = self.recently_dead.borrow().clone() {
+            RecentlyDeadChannels::add(&recently_dead, addr);
+        }
         self.channels.borrow_mut().remove(channel)
+    }
+
+    /// `pOffChannelFilter()` (network_interface.hpp:134): the filter
+    /// off-channel packets are handed to.
+    pub fn p_off_channel_filter(&self) -> Option<Rc<dyn PacketFilter>> {
+        self.off_channel_filter.borrow().clone()
+    }
+
+    /// `pOffChannelFilter( pFilter )` (network_interface.hpp:135).
+    pub fn set_p_off_channel_filter(&self, filter: Option<Rc<dyn PacketFilter>>) {
+        *self.off_channel_filter.borrow_mut() = filter;
+    }
+
+    /// `isDead( addr )` (network_interface.cpp:531): whether the address
+    /// is in the recently-dead set; always false without the set, exactly
+    /// the reference's null `pRecentlyDeadChannels_`.
+    pub fn is_dead(&self, addr: &Address) -> bool {
+        self.recently_dead
+            .borrow()
+            .as_ref()
+            .is_some_and(|recently_dead| recently_dead.is_dead(addr))
     }
 
     /// `setRequestManager`'s seam: the reply bookkeeping the channel

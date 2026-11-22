@@ -28,6 +28,7 @@ use crate::misc::{
 };
 use crate::network_interface::{ChannelRef, NetworkInterface};
 use crate::packet::{Packet, flags};
+use crate::packet_filter::PacketFilter;
 use crate::reliable_order::ReliableOrder;
 use crate::udp_bundle::UdpBundle;
 use crate::unacked_packet::UnackedPacket;
@@ -206,6 +207,10 @@ pub struct UdpChannel {
     /// `wantsFirstPacket_`: a re-addressed established channel refuses
     /// traffic until a `FLAG_CREATE_CHANNEL` packet arrives.
     wants_first_packet: bool,
+    /// `pFilter_` (udp_channel.hpp:381, BW-02-05-01): this channel's
+    /// packet filter, consulted before the header walk on the way in and
+    /// before the socket on the way out.
+    p_filter: Option<Rc<dyn PacketFilter>>,
 
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
@@ -216,8 +221,11 @@ impl UdpChannel {
     /// `UDPChannel( networkInterface, addr, traits, minInactivityResendDelay, id )`
     /// (udp_channel.cpp:82): initialise the window fields from the traits
     /// and id, open the bundle, and register non-indexed channels through
-    /// [`set_address`](Self::set_address_fn). The `pFilter && id_` critical
-    /// is unrepresentable until filters land (BW-02-05).
+    /// [`set_address`](Self::set_address_fn). The constructor takes no
+    /// filter, so the reference's `pFilter_ && id_ != CHANNEL_ID_NULL`
+    /// critical (udp_channel.cpp:129-133) stays unrepresentable here; a
+    /// filter is attached later with [`set_p_filter`](Self::set_p_filter),
+    /// which like the reference's setter does not check indexed-ness.
     pub fn new(
         interface: &Rc<NetworkInterface>,
         addr: Address,
@@ -277,6 +285,7 @@ impl UdpChannel {
             num_duplicate_packets: 0,
             fragments: None,
             wants_first_packet: false,
+            p_filter: None,
             network_interface: Rc::downgrade(interface),
         }));
 
@@ -503,6 +512,26 @@ impl UdpChannel {
             "ChannelInactivity",
         );
         channel.borrow_mut().inactivity_timer = timer;
+    }
+
+    /// `pFilter()` (udp_channel.hpp:139): this channel's packet filter,
+    /// consulted before the header walk and before the socket.
+    pub fn p_filter(channel: &ChannelPtr) -> Option<Rc<dyn PacketFilter>> {
+        channel.borrow().p_filter.clone()
+    }
+
+    /// `pFilter( pFilter )` (udp_channel.hpp:140): install the filter and
+    /// capture the spare room it wants out of every packet
+    /// (`newBundle`, udp_channel.cpp:1526-1531). The reference reads the
+    /// spare only when the channel's bundle is first created, which here
+    /// happens at construction -- before a filter can be attached -- so
+    /// the capture runs at attach instead; a channel attaches its filter
+    /// before it sends, so the value matches.
+    pub fn set_p_filter(channel: &ChannelPtr, filter: Option<Rc<dyn PacketFilter>>) {
+        let spare = filter.as_ref().map_or(0, |filter| filter.max_spare_size());
+        let mut this = channel.borrow_mut();
+        this.p_filter = filter;
+        this.bundle.set_spare_size(spare as u8);
     }
 
     /// `UDPChannel::setRemoteFailed()` (udp_channel.cpp:1792): the far end
@@ -1602,8 +1631,9 @@ impl UdpChannel {
         &mut self.bundle
     }
 
-    /// `clearBundle()` (channel.cpp:299): reuse the bundle or make one,
-    /// primers being BW-02-05.
+    /// `clearBundle()` (channel.cpp:299): reuse the bundle or make one.
+    /// The bundle keeps the spare room its filter claimed at attach
+    /// ([`set_p_filter`](Self::set_p_filter)); primers are BW-02-05.
     pub fn clear_bundle(&mut self) {
         self.bundle.clear();
     }
