@@ -288,6 +288,80 @@ fn none_ref() -> *mut capi::PyObject {
     }
 }
 
+/// One `Math.Vector3` argument, `Script::setData(obj, Vector3)`: the
+/// same-width vector or a tuple of three floats.
+fn parse_vec3(item: *mut capi::PyObject) -> Option<foundation::math::Vector3> {
+    let data = unsafe { as_vector::<3>(item, vector3::type_addr()) };
+    data.map(|d| foundation::math::Vector3::new(d[0], d[1], d[2]))
+}
+
+/// One `Math.Vector4` argument, `Script::setData(obj, Vector4)`.
+fn parse_vec4(item: *mut capi::PyObject) -> Option<foundation::math::Vector4> {
+    let data = unsafe { as_vector::<4>(item, vector4::type_addr()) };
+    data.map(|d| foundation::math::Vector4::new(d[0], d[1], d[2], d[3]))
+}
+
+/// One unsigned integer argument, the reference's `uint` parameters.
+fn parse_uint(item: *mut capi::PyObject) -> Option<usize> {
+    if item.is_null() {
+        return None;
+    }
+    // SAFETY: the conversion reads the borrowed object; a failure leaves
+    // a pending error which is cleared here.
+    unsafe {
+        let value = capi::PyLong_AsLong(item);
+        if !capi::PyErr_Occurred().is_null() {
+            capi::PyErr_Clear();
+            return None;
+        }
+        Some(value as usize)
+    }
+}
+
+/// A float angle in the reference's `[-100, 100]` range
+/// (`script_math.hpp:68-74`); `Err` carries the raised `TypeError`.
+fn parse_angle(item: *mut capi::PyObject) -> Result<f32, *mut capi::PyObject> {
+    let Some(value) = (unsafe { as_float(item) }) else {
+        return Err(type_error("must be real number"));
+    };
+    if !(-100.0..=100.0).contains(&value) {
+        return Err(type_error("must be a valid angle"));
+    }
+    Ok(value)
+}
+
+fn type_error(message: &str) -> *mut capi::PyObject {
+    // SAFETY: raising only sets the error; the interpreter is up because
+    // the handler that got here is a C API callback.
+    unsafe {
+        let message = std::ffi::CString::new(message).expect("a message has no embedded NUL");
+        capi::PyErr_SetString(capi::PyExc_TypeError, message.as_ptr());
+    }
+    std::ptr::null_mut()
+}
+
+fn value_error(message: &str) -> *mut capi::PyObject {
+    // SAFETY: as `type_error`.
+    unsafe {
+        let message = std::ffi::CString::new(message).expect("a message has no embedded NUL");
+        capi::PyErr_SetString(capi::PyExc_ValueError, message.as_ptr());
+    }
+    std::ptr::null_mut()
+}
+
+/// The number of arguments the reference `PyArg_ParseTuple` would accept
+/// for a handler's format; an unexpected count raises the same
+/// `TypeError` family the format parser raises.
+fn want_args(args: *mut capi::PyObject, count: usize) -> bool {
+    // SAFETY: the count read is on the borrowed arguments tuple.
+    unsafe { capi::PyTuple_Size(args) == count as capi::PySsize }
+}
+
+fn arg(args: *mut capi::PyObject, index: usize) -> *mut capi::PyObject {
+    // SAFETY: the caller has already checked the tuple length.
+    unsafe { capi::PyTuple_GetItem(args, index as capi::PySsize) }
+}
+
 /// `PyBool_FromLong`.
 fn bool_ref(flag: bool) -> *mut capi::PyObject {
     // SAFETY: as `not_implemented`.
@@ -1513,7 +1587,7 @@ vector_type!(vector4, 4, "Math.Vector4", no_cross);
 /// [`provider_matrix`], the same dispatch the reference's vtable performs.
 mod matrix {
     use super::*;
-    use foundation::math::{Matrix, Vector3, Vector4};
+    use foundation::math::Matrix;
 
     /// The instance body beyond the `PyObject` header: the 16 f32s of the
     /// matrix inline, the layout of the reference's `PyMatrix` (which embeds
@@ -1607,80 +1681,6 @@ mod matrix {
             return None;
         }
         matrix_read(object)
-    }
-
-    /// One `Math.Vector3` argument, `Script::setData(obj, Vector3)`: the
-    /// same-width vector or a tuple of three floats.
-    fn parse_vec3(item: *mut capi::PyObject) -> Option<Vector3> {
-        let data = unsafe { as_vector::<3>(item, super::vector3::type_addr()) };
-        data.map(|d| Vector3::new(d[0], d[1], d[2]))
-    }
-
-    /// One `Math.Vector4` argument, `Script::setData(obj, Vector4)`.
-    fn parse_vec4(item: *mut capi::PyObject) -> Option<Vector4> {
-        let data = unsafe { as_vector::<4>(item, super::vector4::type_addr()) };
-        data.map(|d| Vector4::new(d[0], d[1], d[2], d[3]))
-    }
-
-    /// One unsigned integer argument, the reference's `uint` parameters.
-    fn parse_uint(item: *mut capi::PyObject) -> Option<usize> {
-        if item.is_null() {
-            return None;
-        }
-        // SAFETY: the conversion reads the borrowed object; a failure leaves
-        // a pending error which is cleared here.
-        unsafe {
-            let value = capi::PyLong_AsLong(item);
-            if !capi::PyErr_Occurred().is_null() {
-                capi::PyErr_Clear();
-                return None;
-            }
-            Some(value as usize)
-        }
-    }
-
-    /// A float angle in the reference's `[-100, 100]` range
-    /// (`script_math.hpp:68-74`); `Err` carries the raised `TypeError`.
-    fn parse_angle(item: *mut capi::PyObject) -> Result<f32, *mut capi::PyObject> {
-        let Some(value) = (unsafe { as_float(item) }) else {
-            return Err(type_error("must be real number"));
-        };
-        if !(-100.0..=100.0).contains(&value) {
-            return Err(type_error("must be a valid angle"));
-        }
-        Ok(value)
-    }
-
-    fn type_error(message: &str) -> *mut capi::PyObject {
-        // SAFETY: raising only sets the error; the interpreter is up because
-        // the handler that got here is a C API callback.
-        unsafe {
-            let message = std::ffi::CString::new(message).expect("a message has no embedded NUL");
-            capi::PyErr_SetString(capi::PyExc_TypeError, message.as_ptr());
-        }
-        std::ptr::null_mut()
-    }
-
-    fn value_error(message: &str) -> *mut capi::PyObject {
-        // SAFETY: as `type_error`.
-        unsafe {
-            let message = std::ffi::CString::new(message).expect("a message has no embedded NUL");
-            capi::PyErr_SetString(capi::PyExc_ValueError, message.as_ptr());
-        }
-        std::ptr::null_mut()
-    }
-
-    /// The number of arguments the reference `PyArg_ParseTuple` would accept
-    /// for a handler's format; an unexpected count raises the same
-    /// `TypeError` family the format parser raises.
-    fn want_args(args: *mut capi::PyObject, count: usize) -> bool {
-        // SAFETY: the count read is on the borrowed arguments tuple.
-        unsafe { capi::PyTuple_Size(args) == count as capi::PySsize }
-    }
-
-    fn arg(args: *mut capi::PyObject, index: usize) -> *mut capi::PyObject {
-        // SAFETY: the caller has already checked the tuple length.
-        unsafe { capi::PyTuple_GetItem(args, index as capi::PySsize) }
     }
 
     // -- the method handlers, one per `PY_AUTO_METHOD_DECLARE` in
@@ -2313,13 +2313,183 @@ mod matrix {
     }
 }
 
+/// The `Math.Plane` type (`script_math.cpp:5227-5292`): `PyPlane` is a
+/// `PyObjectPlus` carrying a `PlaneEq`, exposing only `init` and
+/// `intersectRay` the way the reference's `PY_BEGIN_METHODS` table does.
+mod plane {
+    use super::*;
+    use foundation::math::PlaneEq;
+
+    /// The instance body beyond the `PyObject` header: the plane equation
+    /// inline, the layout of the reference's `PyPlane` (which embeds a
+    /// `PlaneEq`).
+    #[repr(C)]
+    struct PlaneBody {
+        header: capi::PyObject,
+        plane: PlaneEq,
+    }
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<PlaneBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Plane` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    fn plane_read(object: *mut capi::PyObject) -> Option<PlaneEq> {
+        if object.is_null() {
+            return None;
+        }
+        // SAFETY: the type check gates the body read to `PlaneBody`.
+        unsafe {
+            if capi::Py_TYPE(object) as usize != type_addr() {
+                return None;
+            }
+            Some(std::ptr::addr_of!((*object.cast::<PlaneBody>()).plane).read())
+        }
+    }
+
+    fn plane_write(object: *mut capi::PyObject, plane: &PlaneEq) -> bool {
+        if object.is_null() {
+            return false;
+        }
+        // SAFETY: the type check gates the body write to `PlaneBody`.
+        unsafe {
+            if capi::Py_TYPE(object) as usize != type_addr() {
+                return false;
+            }
+            std::ptr::addr_of_mut!((*object.cast::<PlaneBody>()).plane).write(*plane);
+        }
+        true
+    }
+
+    /// A fresh `Math.Plane` carrying `plane`; the caller owns the reference.
+    fn make(plane: &PlaneEq) -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `PlaneBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<PlaneBody>()).plane).write(*plane);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// `PyPlane::py_init` (`script_math.cpp`): the plane through the three
+    /// points, the reference's `ARG(Vector3, ARG(Vector3, ARG(Vector3, END)))`.
+    unsafe extern "C" fn init(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 3) {
+            return type_error("Plane.init expects 3 Vector3 arguments");
+        }
+        let Some(p0) = parse_vec3(arg(args, 0)) else {
+            return type_error("Plane.init expects 3 Vector3 arguments");
+        };
+        let Some(p1) = parse_vec3(arg(args, 1)) else {
+            return type_error("Plane.init expects 3 Vector3 arguments");
+        };
+        let Some(p2) = parse_vec3(arg(args, 2)) else {
+            return type_error("Plane.init expects 3 Vector3 arguments");
+        };
+        let Some(mut plane) = plane_read(self_) else {
+            return type_error("Plane.init on a non-Plane");
+        };
+        plane.init(&p0, &p1, &p2);
+        plane_write(self_, &plane);
+        none_ref()
+    }
+
+    /// `PyPlane::py_intersectRay` (`script_math.cpp`): the hit point of a ray
+    /// from `src` along `dst`.
+    unsafe extern "C" fn intersect_ray(
+        self_: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 2) {
+            return type_error("Plane.intersectRay expects 2 Vector3 arguments");
+        }
+        let Some(source) = parse_vec3(arg(args, 0)) else {
+            return type_error("Plane.intersectRay expects 2 Vector3 arguments");
+        };
+        let Some(dir) = parse_vec3(arg(args, 1)) else {
+            return type_error("Plane.intersectRay expects 2 Vector3 arguments");
+        };
+        let Some(plane) = plane_read(self_) else {
+            return type_error("Plane.intersectRay on a non-Plane");
+        };
+        let hit = plane.intersect_ray(&source, &dir);
+        super::vector3::make([hit.x, hit.y, hit.z])
+    }
+
+    /// `PyPlane::pyNew` (`script_math.cpp`): the factory ignores its
+    /// arguments, the reference's `PY_FACTORY_NAMED( PyPlane, "Plane", Math )`.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        _args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        make(&PlaneEq::default())
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Plane".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_METHODS` table of `PyPlane` (`script_math.cpp:...`).
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Plane")
+            .method("init", init)
+            .method("intersectRay", intersect_ray)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    /// `TempPyVectorInit` for the plane: the type object and its factory into
+    /// the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Plane".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
-/// module with the three vector widths, the `MatrixProvider` base and the
-/// `Matrix` type. A type that cannot be created reports and leaves the rest
-/// registered, the shape of the reference's fire-and-forget init-time job.
+/// module with the three vector widths, the `MatrixProvider` base, the
+/// `Matrix` and `Plane` types. A type that cannot be created reports and
+/// leaves the rest registered, the shape of the reference's fire-and-forget
+/// init-time job.
 pub fn register() {
     let _ = vector2::register();
     let _ = vector3::register();
     let _ = vector4::register();
     let _ = matrix::register();
+    let _ = plane::register();
 }

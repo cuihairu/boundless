@@ -2746,6 +2746,91 @@ __probe = '; '.join(_f) or 'ok'
         });
     }
 
+    /// The `Math.Plane` factory and its two-method table behave as the
+    /// reference's `PyPlane` does: a bare `PyObjectPlus` value type whose
+    /// constructor ignores arguments, `init` solving the plane through three
+    /// points and `intersectRay` hitting it.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_plane_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+# Module surface: the factory, not the type, is the module entry.
+ck(hasattr(Math, 'Plane'), 'Plane factory in module')
+ck(callable(Math.Plane), 'Math.Plane callable')
+
+# Construction: the factory ignores its arguments entirely.
+p = Math.Plane()
+ck(p is not None, 'Plane constructs')
+ck(type(p).__name__ == 'Math.Plane', 'the Math.Plane type')
+p2 = Math.Plane(1, 2, 3)
+ck(type(p2).__name__ == 'Math.Plane', 'factory ignores args')
+ck(not isinstance(p, Math.MatrixProvider), 'Plane is not a MatrixProvider')
+ck(not hasattr(p, 'translation'), 'no matrix attributes')
+
+# init: the plane through three points on z == 0, returns None.
+r = p.init(Math.Vector3(0.0, 0.0, 0.0), Math.Vector3(1.0, 0.0, 0.0),
+           Math.Vector3(0.0, 1.0, 0.0))
+ck(r is None, 'init returns None')
+
+# intersectRay: straight down onto z == 0 lands on the origin.
+hit = p.intersectRay(Math.Vector3(0.0, 0.0, 2.0), Math.Vector3(0.0, 0.0, -1.0))
+ck(isinstance(hit, Math.Vector3), 'intersectRay returns a Vector3')
+ck(abs(hit.x) < 1e-6 and abs(hit.y) < 1e-6 and abs(hit.z) < 1e-6,
+   'ray hits the origin')
+
+# A slanted hit: from (1, 1, 4) along -z at speed 2 still lands at z == 0.
+off = p.intersectRay(Math.Vector3(1.0, 1.0, 4.0), Math.Vector3(0.0, 0.0, -2.0))
+ck(abs(off.x - 1.0) < 1e-6 and abs(off.y - 1.0) < 1e-6 and abs(off.z) < 1e-6,
+   'slanted ray parameter scales the direction')
+
+# A parallel ray: the reference reports a miss by returning the source.
+par = p.intersectRay(Math.Vector3(3.0, 4.0, 5.0), Math.Vector3(1.0, 0.0, 0.0))
+ck(abs(par.x - 3.0) < 1e-6 and abs(par.y - 4.0) < 1e-6 and abs(par.z - 5.0) < 1e-6,
+   'parallel ray returns the source')
+
+# A raised plane: init through z == 2 points, the ray from z == 4 lands on 2.
+q = Math.Plane()
+q.init(Math.Vector3(0.0, 0.0, 2.0), Math.Vector3(1.0, 0.0, 2.0),
+       Math.Vector3(0.0, 1.0, 2.0))
+up = q.intersectRay(Math.Vector3(0.0, 0.0, 4.0), Math.Vector3(0.0, 0.0, -1.0))
+ck(abs(up.z - 2.0) < 1e-6, 'raised plane hit')
+
+# Argument errors: the auto argument parse raises TypeError.
+ck(raises(TypeError, lambda: p.init(Math.Vector3(0.0, 0.0, 0.0))),
+   'init wants three points')
+ck(raises(TypeError, lambda: p.init(1, 2, 3)),
+   'init rejects non-vectors')
+ck(raises(TypeError, lambda: p.init(1.0, 2.0, 3.0, 4.0)),
+   'init rejects floats')
+ck(raises(TypeError, lambda: p.intersectRay(Math.Vector3(0.0, 0.0, 2.0))),
+   'intersectRay wants two vectors')
+ck(raises(TypeError, lambda: p.intersectRay(1, 2)),
+   'intersectRay rejects non-vectors')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math plane behaviour mismatch: {text}");
+        });
+    }
+
     /// The export manifest agrees with the live interpreter: the surface it
     /// marks ported imports and resolves, and its scoping records read true
     /// against the modules that exist today -- `BigWorld.component` is
