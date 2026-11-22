@@ -424,7 +424,14 @@
 
 移植 TCPBundle/TCPChannel、帧边界、读写缓冲、连接过滤及在构建中启用的传输方式。对照短读写、背压、超时和断链。
 
-- [ ] **BW-02-04-01 实现 TCPBundle 帧解析**。**验收** 短读与合并读取两类夹具通过。
+- [x] **BW-02-04-01 实现 TCPBundle 帧解析**。**验收** 短读与合并读取两类夹具通过。
+  - 新增（1165423）：`crates/mercury/src/tcp_bundle.rs`（~1700 行，`TcpBundle` 写侧 + `TcpFrameAssembler` 帧长分帧 + `dispatch_messages` 处理器行走）、`lib.rs`（+1 模块）。
+  - 写侧（`TCPBundle::doFinalise`/`startRequest`/`startReply` 移植）：flags 字节（`FLAG_HAS_REQUESTS`）、四字节首个请求 offset（首次请求把保留头拉入 wire 并置位）、消息 `[id][长度字段宽 1/2/3 LE 或宽 4 LE][全 0xff 转义 + 追加 u32 实长][payload]`、请求 8 字节前导（reply id 占位 0x12345678 + 下一 offset 0xFFFFFFFF，链式：后一请求覆盖前一请求的 next-offset 槽）、应答消息（`REPLY_MESSAGE_IDENTIFIER` + u32 长 + reply id）、`size`/`numDataUnits`/`freeBytesInLastDataUnit`/`clear`、`frame_encode`（`[u16 帧长 | 0xffff+u32][帧]`，`>=0xffff` 转义）。
+  - 读侧（`TCPChannel::handleInput` 帧长分帧移植）：`readSmallFrameLength`/`readLargeFrameLength`，短读暂存、整帧按序返回、跨读边界残字节续帧；`dispatch_messages` 行走（`flags & ~FLAG_MASK`、首 offset 越界、`updateLengthDetails`、`tcp_expand_length` 各宽度与转义解码、请求前导截断、链 next-offset 越界、payload 短于声明、未服务 id 停走、遗留字节告警）。
+  - 验收夹具：短读（逐字节喂入至最后一字节成帧）、合并读取（一读多帧按序 + 跨读边界续帧）、转义帧长跨读；`test_tcp_bundle.cpp` 9 个布局夹具 + 处理器行走（帧往返、请求链、应答消息、各宽度、转义）。
+  - 有意偏离：(a) MSS 以数值传入（参考读活动 socket）; (b) offset 数值代参考 `ReplyIDOrOffset` 指针 hack; (c) 转义 u32 追加式（`compressLength` 的 standalone `-1` 形态）; (d) 请求 8 字节前导（`sizeof(ReplyID)+sizeof(Offset)`，UDP 端口的 6 字节前导不复用）; (e) 连接头/WebSocket 嗅探随 BW-02-05-02; (f) 越界判定 `as i32` 复刻参考 `static_cast<int>`，0xFFFFFFFF 链尾哨兵（-1）放行。
+  - 测试与覆盖：mercury **386 通过 / 0 失败**（本轮 +37，tcp_bundle 37/37）；workspace **1470 passed / 0 failed / 64 ignored**；llvm-cov TOTAL **14150 行 / 残 275 = 98.06%**（区域 98.53%、函数 99.27%）≥98% 门禁；tcp_bundle.rs **956 行 / 残 20 = 97.91%**。clippy scoped `-D warnings` 零告警；rustfmt `--check` 0 差异。
+  - 压力：mercury `--test-threads=1` **100 轮 38600 通过 / 0 失败**。
 - [ ] **BW-02-04-02 实现短写和待发送缓冲**。**验收** 背压下按序发出完整帧。
 - [ ] **BW-02-04-03 接入原版启用的连接过滤**。**验收** 允许及拒绝分别匹配。
 - [ ] **BW-02-04-04 实现超时和断链清理**。**验收** 挂起应答与队列状态吻合。
