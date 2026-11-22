@@ -31,8 +31,10 @@ target the ledger does not enumerate).
 
 import json
 import os
-import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from coverage_scope import parse_scopes, tickets_for_dir, scope_dir, expand_braces  # noqa: E402
 
 ROOTS = ("lib", "server", "client", "tools", "common", "examples")
 
@@ -68,61 +70,7 @@ PORT_CRATE = {
     "reviver": ("apps/server", "boundless-server runs the reviver role (KNOWN_ROLES)"),
 }
 
-HEADING_RE = re.compile(r"^#{3,4}\s+(BW-[0-9]+(?:-[0-9]+)*)")
-SCOPE_RE = re.compile(r"^源码")
-TOKEN_RE = re.compile(r"`([^`]+)`")
-BRACE_RE = re.compile(r"\{([^{}]*)\}")
 UNIT_TEST_SUFFIX = "_unit_test"
-
-
-def expand_braces(text):
-    """`lib/{a,b}/` -> [lib/a, lib/b] (one level; the scopes never nest)."""
-    m = BRACE_RE.search(text)
-    if not m:
-        return [text]
-    out = []
-    for alt in m.group(1).split(","):
-        out.extend(expand_braces(text[:m.start()] + alt + text[m.end():]))
-    return out
-
-
-def scope_dir(token):
-    """A scope token normalized to a static source directory, or None.
-
-    A bare root is a scope (`tools/` -> tools, `examples/` -> examples); file
-    names and glob tails drop to their directory (`lib/server/bwservice.hpp`
-    -> lib/server, `server/dbapp/*login*` -> server/dbapp); tokens outside the
-    six source roots (links, bare file names, ../ paths) are not scopes.
-    """
-    t = token.strip().rstrip("/")
-    if t.split("/", 1)[0] not in ROOTS:
-        return None
-    last = t.rsplit("/", 1)[1] if "/" in t else ""
-    if last and ("." in last or "*" in last):
-        t = t.rsplit("/", 1)[0]
-    return t or None
-
-
-def parse_scopes(todo_path):
-    """{ticket: [source dir, ...]} from each heading's 源码 line."""
-    scopes = {}
-    if not os.path.isfile(todo_path):
-        return None
-    ticket = None
-    with open(todo_path, encoding="utf-8") as f:
-        for raw in f:
-            m = HEADING_RE.match(raw)
-            if m:
-                ticket = m.group(1)
-                continue
-            if ticket and SCOPE_RE.match(raw):
-                for tok in TOKEN_RE.findall(raw):
-                    for one in expand_braces(tok):
-                        d = scope_dir(one)
-                        if d and d not in scopes.setdefault(ticket, []):
-                            scopes[ticket].append(d)
-                ticket = None  # one scope line per heading
-    return scopes
 
 
 def port_members(port_root):
@@ -162,9 +110,11 @@ def map_rows(rows, tasks, scopes, members):
             base = name[: -len(UNIT_TEST_SUFFIX)]
             index, how = PORT_CRATE[base]
             how = "the port crate's test suite covers the reference unit tests (%s)" % how
-        tickets = sorted(t for t, dirs in scopes.items()
-                         if any(d == directory or directory.startswith(d + "/")
-                                for d in dirs))
+        tickets = tickets_for_dir(directory, scopes)
+        if not how:
+            how = ("no port counterpart yet; the ticket's source scope covers it"
+                   if tickets
+                   else "no port counterpart; no BW-xx source scope covers it")
         out.append({
             "original_path": path,
             "kind": r["kind"],
@@ -172,7 +122,7 @@ def map_rows(rows, tasks, scopes, members):
             "index": index if index else "none yet",
             "ticket": ",".join(tickets) if tickets else "none",
             "mapped": bool(index),
-            "how": how if how else "no port counterpart; no BW-xx source scope covers it",
+            "how": how,
         })
     return out
 

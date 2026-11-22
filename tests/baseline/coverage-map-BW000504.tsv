@@ -1,0 +1,3 @@
+original_path	kind	index	ticket	how
+cellapp_extension (examples/cellapp_extension)	library	none yet	BW-14	no port counterpart yet; the ticket's source scope covers it
+simple_python_client (examples/client_integration/python/simple)	executable	none yet	BW-14	no port counterpart yet; the ticket's source scope covers it

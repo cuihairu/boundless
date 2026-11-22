@@ -567,6 +567,11 @@ jobs:
       - name: Map the client and tool targets
         run: CI_MAP_TASKS=BW-00-05-03 ci/map-coverage.sh
 
+      - name: Map the common code and FantasyDemo entries
+        run: |
+          CI_MAP_TASKS=BW-00-05-04 ci/map-coverage.sh
+          ci/map-entry.sh
+
       - name: Record the reference windows baseline
         run: ci/reference-winbaseline.sh
 
@@ -963,6 +968,7 @@ jobs:
           ci/compat-report.sh self-test
           ci/coverage-ledger.sh self-test
           ci/map-coverage.sh self-test
+          ci/map-entry.sh self-test
           ci/reference-winbaseline.sh self-test
           ci/archive-results.sh self-test
 

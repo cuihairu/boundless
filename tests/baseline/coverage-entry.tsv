@@ -1,0 +1,27 @@
+entry	kind	source	index	how
+common/closest_chunk_item.hpp	code	common/closest_chunk_item.hpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/closest_triangle.hpp	code	common/closest_triangle.hpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/pch.hpp	code	common/pch.hpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/py_chunk.cpp	code	common/py_chunk.cpp	BW-03,BW-10	the common code compiles into other targets; the tickets' scopes name it
+common/py_network.cpp	code	common/py_network.cpp	BW-02,BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/py_network.hpp	code	common/py_network.hpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/py_physics2.cpp	code	common/py_physics2.cpp	BW-03,BW-10	the common code compiles into other targets; the tickets' scopes name it
+common/py_physics2.hpp	code	common/py_physics2.hpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/py_server_lib.cpp	code	common/py_server_lib.cpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/py_terrain.cpp	code	common/py_terrain.cpp	BW-03,BW-10	the common code compiles into other targets; the tickets' scopes name it
+common/py_timer.cpp	code	common/py_timer.cpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/py_timer.hpp	code	common/py_timer.hpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/py_urlrequest.cpp	code	common/py_urlrequest.cpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/simple_client_entity.cpp	code	common/simple_client_entity.cpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/simple_client_entity.hpp	code	common/simple_client_entity.hpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+common/space_data_types.hpp	code	common/space_data_types.hpp	BW-03	the common code compiles into other targets; the tickets' scopes name it
+res/scripts	script	fantasydemo/res/scripts	BW-14	the FantasyDemo tree; BW-14's scope names it
+res/scripts/base	script	fantasydemo/res/scripts/base	BW-14	the FantasyDemo tree; BW-14's scope names it
+res/scripts/cell	script	fantasydemo/res/scripts/cell	BW-14	the FantasyDemo tree; BW-14's scope names it
+res/scripts/client	script	fantasydemo/res/scripts/client	BW-14	the FantasyDemo tree; BW-14's scope names it
+res/scripts/db.xml	script	fantasydemo/res/scripts/db.xml	BW-14	the FantasyDemo tree; BW-14's scope names it
+res/scripts/entities.xml	script	fantasydemo/res/scripts/entities.xml	BW-14	the FantasyDemo tree; BW-14's scope names it
+res/scripts/entity_defs	script	fantasydemo/res/scripts/entity_defs	BW-14	the FantasyDemo tree; BW-14's scope names it
+res/server	resource	fantasydemo/res/server	BW-14	the FantasyDemo tree; BW-14's scope names it
+res/server/bw.xml	resource	fantasydemo/res/server/bw.xml	BW-14	the FantasyDemo tree; BW-14's scope names it
+web	resource	fantasydemo/web	BW-14	the FantasyDemo tree; BW-14's scope names it

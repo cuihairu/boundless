@@ -10,7 +10,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "model_unit_test (lib/model/unit_test)",
@@ -19,7 +19,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "model_unit_test (lib/model/unit_test)",
@@ -28,7 +28,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "terrain (lib/terrain)",
@@ -37,7 +37,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "terrain_unit_test (lib/terrain/unit_test)",
@@ -46,7 +46,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "terrain_unit_test (lib/terrain/unit_test)",
@@ -55,7 +55,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "waypoint_generator (lib/waypoint_generator)",
@@ -64,7 +64,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "scaleform (lib/scaleform)",
@@ -73,7 +73,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "sqlite (lib/sqlite)",
@@ -82,7 +82,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "sqlite (lib/sqlite)",
@@ -91,7 +91,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "sqlite (lib/sqlite)",
@@ -100,7 +100,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "romp (lib/romp)",
@@ -109,7 +109,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "ual (lib/ual)",
@@ -118,7 +118,7 @@
       "index": "none yet",
       "ticket": "BW-13",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "gizmo (lib/gizmo)",
@@ -127,7 +127,7 @@
       "index": "none yet",
       "ticket": "BW-13",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "guimanager (lib/guimanager)",
@@ -136,7 +136,7 @@
       "index": "none yet",
       "ticket": "BW-13",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "asset_pipeline (lib/asset_pipeline)",
@@ -145,7 +145,7 @@
       "index": "none yet",
       "ticket": "BW-13",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "controls (lib/controls)",
@@ -154,7 +154,7 @@
       "index": "none yet",
       "ticket": "BW-13",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "network (lib/network)",
@@ -190,7 +190,7 @@
       "index": "none yet",
       "ticket": "BW-13",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "appmgr (lib/appmgr)",
@@ -199,7 +199,7 @@
       "index": "none yet",
       "ticket": "BW-07",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "pyscript (lib/pyscript)",
@@ -235,7 +235,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "duplo_unit_test (lib/duplo/unit_test)",
@@ -244,7 +244,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "duplo_unit_test (lib/duplo/unit_test)",
@@ -253,7 +253,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "physics2 (lib/physics2)",
@@ -262,7 +262,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "physics2_unit_test (lib/physics2/unit_test)",
@@ -271,7 +271,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "physics2_unit_test (lib/physics2/unit_test)",
@@ -280,7 +280,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "db_storage_xml (lib/db_storage_xml)",
@@ -289,7 +289,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "particle (lib/particle)",
@@ -298,7 +298,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "particle_unit_test (lib/particle/unit_test)",
@@ -307,7 +307,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "particle_unit_test (lib/particle/unit_test)",
@@ -316,7 +316,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "moo (lib/moo)",
@@ -325,7 +325,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "moo_unit_test (lib/moo/unit_test)",
@@ -334,7 +334,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "moo_unit_test (lib/moo/unit_test)",
@@ -343,7 +343,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "unit_test_lib (lib/unit_test_lib)",
@@ -352,7 +352,7 @@
       "index": "none yet",
       "ticket": "BW-12",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "unit_test_lib_unit_test (lib/unit_test_lib/unit_test)",
@@ -361,7 +361,7 @@
       "index": "none yet",
       "ticket": "BW-12",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "unit_test_lib_unit_test (lib/unit_test_lib/unit_test)",
@@ -370,7 +370,7 @@
       "index": "none yet",
       "ticket": "BW-12",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "connection_model (lib/connection_model)",
@@ -379,7 +379,7 @@
       "index": "none yet",
       "ticket": "BW-06",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "chunk_loading (lib/chunk_loading)",
@@ -388,7 +388,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "cstdmf (lib/cstdmf)",
@@ -433,7 +433,7 @@
       "index": "none yet",
       "ticket": "BW-01",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "speedtree (lib/speedtree)",
@@ -442,7 +442,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "script (lib/script)",
@@ -478,7 +478,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "compiled_space (lib/compiled_space)",
@@ -487,7 +487,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "compiled_space_writers (lib/compiled_space/binary_writers)",
@@ -496,7 +496,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "compiled_space_unit_test (lib/compiled_space/unit_test)",
@@ -505,7 +505,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "compiled_space_unit_test (lib/compiled_space/unit_test)",
@@ -514,7 +514,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "waypoint (lib/waypoint)",
@@ -523,7 +523,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "resmgr (lib/resmgr)",
@@ -568,7 +568,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "space (lib/space)",
@@ -577,7 +577,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "space_unit_test (lib/space/unit_test)",
@@ -586,7 +586,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "space_unit_test (lib/space/unit_test)",
@@ -595,7 +595,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "chunk (lib/chunk)",
@@ -604,7 +604,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "math (lib/math)",
@@ -667,7 +667,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "navigation_recast (lib/navigation_recast)",
@@ -676,7 +676,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "visual_manipulator (lib/visual_manipulator)",
@@ -685,7 +685,7 @@
       "index": "none yet",
       "ticket": "BW-13",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "build (lib/build)",
@@ -694,7 +694,7 @@
       "index": "none yet",
       "ticket": "BW-01",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "db_storage_mysql (lib/db_storage_mysql)",
@@ -703,7 +703,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "urlrequest (lib/urlrequest)",
@@ -721,7 +721,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "connection (lib/connection)",
@@ -730,7 +730,7 @@
       "index": "none yet",
       "ticket": "BW-02,BW-06",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "camera (lib/camera)",
@@ -739,7 +739,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "post_processing (lib/post_processing)",
@@ -748,7 +748,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "db_storage (lib/db_storage)",
@@ -757,7 +757,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "db (lib/db)",
@@ -766,7 +766,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "db_unit_test (lib/db/unit_test)",
@@ -775,7 +775,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "db_unit_test (lib/db/unit_test)",
@@ -784,7 +784,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "web_render (lib/web_render)",
@@ -793,7 +793,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "delegate_interface (lib/delegate_interface)",
@@ -802,7 +802,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "ashes (lib/ashes)",
@@ -811,7 +811,7 @@
       "index": "none yet",
       "ticket": "BW-11",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "server (lib/server)",
@@ -847,7 +847,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "scene (lib/scene)",
@@ -856,7 +856,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "scene_unit_test (lib/scene/unit_test)",
@@ -865,7 +865,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "scene_unit_test (lib/scene/unit_test)",
@@ -874,7 +874,7 @@
       "index": "none yet",
       "ticket": "BW-10",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "entitydef (lib/entitydef)",
@@ -991,7 +991,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "bwengine_mysql (server/dbapp_extensions/bwengine_mysql)",
@@ -1000,7 +1000,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "baseapp (server/baseapp)",
@@ -1117,7 +1117,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "clear_auto_load (server/tools/clear_auto_load)",
@@ -1126,7 +1126,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "bwmachined (server/tools/bwmachined)",
@@ -1135,7 +1135,7 @@
       "index": "none yet",
       "ticket": "BW-05",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "snapshot_helper (server/tools/snapshot_helper)",
@@ -1144,7 +1144,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "bots (server/tools/bots)",
@@ -1153,7 +1153,7 @@
       "index": "none yet",
       "ticket": "BW-12",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "_bw_profile (server/tools/bw_profile)",
@@ -1162,7 +1162,7 @@
       "index": "none yet",
       "ticket": "BW-12",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "transfer_db (server/tools/transfer_db)",
@@ -1171,7 +1171,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "consolidate_dbs (server/tools/consolidate_dbs)",
@@ -1180,7 +1180,7 @@
       "index": "none yet",
       "ticket": "BW-09",
       "mapped": false,
-      "how": "no port counterpart; no BW-xx source scope covers it"
+      "how": "no port counterpart yet; the ticket's source scope covers it"
     },
     {
       "original_path": "baseappmgr (server/baseappmgr)",

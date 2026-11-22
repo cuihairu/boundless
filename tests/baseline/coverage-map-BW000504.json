@@ -1,0 +1,38 @@
+{
+  "tasks": [
+    "BW-00-05-04"
+  ],
+  "rows": [
+    {
+      "original_path": "cellapp_extension (examples/cellapp_extension)",
+      "kind": "library",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-14",
+      "mapped": false,
+      "how": "no port counterpart yet; the ticket's source scope covers it"
+    },
+    {
+      "original_path": "simple_python_client (examples/client_integration/python/simple)",
+      "kind": "executable",
+      "enable_condition": "always",
+      "index": "none yet",
+      "ticket": "BW-14",
+      "mapped": false,
+      "how": "no port counterpart yet; the ticket's source scope covers it"
+    }
+  ],
+  "count": 2,
+  "to_crate": 0,
+  "to_ticket": 2,
+  "bare": 0,
+  "schema": [
+    "original_path",
+    "kind",
+    "enable_condition",
+    "index",
+    "ticket",
+    "mapped",
+    "how"
+  ]
+}
