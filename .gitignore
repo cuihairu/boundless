@@ -31,3 +31,7 @@ ci-results/
 
 # Python bytecode from the review tooling
 __pycache__/
+
+# Python packaging artifacts (pip build of python/)
+python/build/
+*.egg-info/
