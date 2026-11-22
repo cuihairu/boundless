@@ -1410,7 +1410,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [ ] **BW-16-04-01 登记原版目标到新版目录**。**验收** 每个目标有模块与测试路径。（foundation/platform/mercury/resources/entitydef/python-host/python-module/asset-pipeline/server-runtime/apps-server 已随 7d031b1 合入，余角色 crate（cellapp/baseapp 等）与 editor/tools 未建，随 BW-03/BW-09/BW-11/BW-13 逐项解锁）
 - [ ] **BW-16-04-02 统一编辑器和工具的资源入口**。**验收** 两类应用可加载同一产物。（依赖 editor/tools 应用未建，apps/ 现仅 server，随 BW-13 立项解锁）
 - [ ] **BW-16-04-03 定义 Rust 扩展入口**。**验收** 成功及错误能正确传播。（依赖 editor/tools 应用与扩展宿主未建，随 BW-13 立项解锁）
-- [ ] **BW-16-04-04 定义 Python 扩展入口**。**验收** 导入失败可定位且状态可清理。（python-host crate 已随 7d031b1 合入，其 interpreter 已有 `BwSiteImportFailed` 定位臂与回滚臂，余 python/ 模块未建，随 BW-03-03/04 交付解锁）
+- [x] **BW-16-04-04 定义 Python 扩展入口**。**验收** 导入失败可定位且状态可清理。（commit 0492aee）
+  - 证据：`crates/python-host/src/interpreter.rs` 的 `Interpreter::init` 末段 `import_bw_site()`（:176，`ScriptModule::import("bw_site")` 同源，参考 `script.cpp:617`），失败经 `InitError::BwSiteImportFailed`（:70，对齐参考 `"Script::init: Unable to import bw_site"`）定位并回滚（`INITIALIZED=false` + `Py_Finalize`，:177-182）。两臂 `#[ignore]` 场景独立进程实测均绿：`scenario_missing_bw_site_fails_init`（无 res 树 → `Err(BwSiteImportFailed)` 且 `!is_initialized()`）、`scenario_bw_site_is_imported_at_the_tail_of_init`（res 树带 `scripts/common/bw_site.py` → 末段导入，`sys.bw_site_imported` 为 `True`）；父测试 `every_scenario_exits_cleanly` 逐场景 out-of-process 驱动全绿。记录：`docs/review/bw16-04-04-python-extension-entry.md`。python/ 模块**内容**（逐类/逐函数迁移）仍属 BW-03-03/04，入口已就绪随其挂接。
 
 ### BW-17 Bots 压测
 
