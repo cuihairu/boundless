@@ -407,6 +407,23 @@ fn bool_ref(flag: bool) -> *mut capi::PyObject {
     }
 }
 
+/// The attribute name a getset handler serves, carried in the reference's
+/// `PyGetSetDef.closure`; the `%s` of its error text. Shared by the
+/// `Vector4Provider` and `MatrixProvider` slot families.
+fn attribute_name(closure: *mut std::os::raw::c_void) -> String {
+    if closure.is_null() {
+        return "value".to_owned();
+    }
+    // SAFETY: the closure is the C string that lives for the type's
+    // lifetime; an attribute name is ASCII.
+    unsafe {
+        std::ffi::CStr::from_ptr(closure.cast::<c_char>())
+            .to_str()
+            .unwrap_or("value")
+            .to_owned()
+    }
+}
+
 // --- The arithmetic core: element-wise f32, the reference's accumulation
 // --- order (statement order, no widening).
 
@@ -1692,8 +1709,10 @@ mod matrix {
     }
 
     /// `MatrixProvider::Check` (`script_math.cpp:785`): any object whose type
-    /// is `MatrixProvider` or one of its subclasses.
-    fn provider_check(object: *mut capi::PyObject) -> bool {
+    /// is `MatrixProvider` or one of its subclasses. The `MatrixProvider`
+    /// slot family and the derived providers call it, so it leaves the
+    /// module.
+    pub(super) fn provider_check(object: *mut capi::PyObject) -> bool {
         let provider = provider_addr();
         if object.is_null() || provider == 0 {
             return false;
@@ -1707,11 +1726,121 @@ mod matrix {
     /// The matrix a `MatrixProvider` yields. The dispatch is the reference's
     /// virtual `matrix()`: today `PyMatrix` is the only concrete provider, so
     /// the single arm reads the embedded body; the provider classes add arms.
-    fn provider_matrix(object: *mut capi::PyObject) -> Option<Matrix> {
+    pub(super) fn provider_matrix(object: *mut capi::PyObject) -> Option<Matrix> {
         if !provider_check(object) {
             return None;
         }
         matrix_read(object)
+    }
+
+    // -- the `MatrixProvider` slot family, shared by the providers that hold
+    //    one (`Vector4Translation`, `Vector4Distance`, the matrix products) --
+
+    /// The stored provider of a slot, by byte offset from the object start.
+    ///
+    /// # Safety
+    ///
+    /// `self_` is a borrowed instance of the slot's owner type, and `FIELD`
+    /// is that body's offset of the slot.
+    pub(super) unsafe fn slot_read<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        unsafe {
+            std::ptr::addr_of!(*self_.cast::<u8>().add(FIELD).cast::<*mut capi::PyObject>()).read()
+        }
+    }
+
+    /// Store `value` in the slot. The caller releases the previous occupant
+    /// first, the reference's `SmartPointer` assignment half.
+    ///
+    /// # Safety
+    ///
+    /// As [`slot_read`].
+    pub(super) unsafe fn slot_write<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+    ) {
+        unsafe {
+            std::ptr::addr_of_mut!(*self_.cast::<u8>().add(FIELD).cast::<*mut capi::PyObject>())
+                .write(value)
+        }
+    }
+
+    /// `Script::getData( MatrixProviderPtr )` (`script.hpp:604-608`) on a
+    /// held slot: the stored provider, or `None` for an empty slot.
+    ///
+    /// # Safety
+    ///
+    /// `self_` is a borrowed instance of the slot's owner type.
+    pub(super) unsafe extern "C" fn slot_get<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        _closure: *mut std::os::raw::c_void,
+    ) -> *mut capi::PyObject {
+        let stored = unsafe { slot_read::<FIELD>(self_) };
+        let object = if stored.is_null() {
+            capi::py_none()
+        } else {
+            stored
+        };
+        // SAFETY: the slot's occupant is a borrowed reference the read does
+        // not consume; the caller gets its own.
+        unsafe {
+            capi::inc_ref(object);
+        }
+        object
+    }
+
+    /// `Script::setData( pObject, MatrixProviderPtr&, varName )`
+    /// (`script.hpp:577-631`): a `MatrixProvider`, or `None` to empty the
+    /// slot; the field owns the reference the way the reference's
+    /// `SmartPointer` does, the previous occupant released before the new
+    /// one is stored, and a self-assignment a no-op. A null assignment is
+    /// refused, the reference's `coerce`-then-`Check` path.
+    ///
+    /// # Safety
+    ///
+    /// As [`slot_get`].
+    pub(super) unsafe extern "C" fn slot_set<const FIELD: usize>(
+        self_: *mut capi::PyObject,
+        value: *mut capi::PyObject,
+        closure: *mut std::os::raw::c_void,
+    ) -> c_int {
+        if value.is_null() {
+            type_error(&format!(
+                "{} must be set to a MatrixProvider or None",
+                attribute_name(closure)
+            ));
+            return -1;
+        }
+        if value == capi::py_none() {
+            // `pCoerced == Py_None`: the slot is emptied.
+            let old = unsafe { slot_read::<FIELD>(self_) };
+            if !old.is_null() {
+                unsafe { capi::dec_ref(old) };
+            }
+            unsafe { slot_write::<FIELD>(self_, std::ptr::null_mut()) };
+            return 0;
+        }
+        if !provider_check(value) {
+            type_error(&format!(
+                "{} must be set to a MatrixProvider or None",
+                attribute_name(closure)
+            ));
+            return -1;
+        }
+        let old = unsafe { slot_read::<FIELD>(self_) };
+        if old != value {
+            if !old.is_null() {
+                unsafe { capi::dec_ref(old) };
+            }
+            // The slot takes over its own reference, the assignment's
+            // `SmartPointer` incref half.
+            unsafe {
+                capi::inc_ref(value);
+                slot_write::<FIELD>(self_, value);
+            }
+        }
+        0
     }
 
     // -- the method handlers, one per `PY_AUTO_METHOD_DECLARE` in
@@ -2842,22 +2971,6 @@ mod v4provider {
         0
     }
 
-    /// The attribute name the handler family serves, carried in the
-    /// reference's `PyGetSetDef.closure`; the `%s` of its error text.
-    fn attribute_name(closure: *mut std::os::raw::c_void) -> String {
-        if closure.is_null() {
-            return "value".to_owned();
-        }
-        // SAFETY: the closure is the C string that lives for the type's
-        // lifetime; an attribute name is ASCII.
-        unsafe {
-            std::ffi::CStr::from_ptr(closure.cast::<c_char>())
-                .to_str()
-                .unwrap_or("value")
-                .to_owned()
-        }
-    }
-
     // -- the specs and registration ---------------------------------------
 
     /// `Math.Vector4Provider`'s spec: the abstract base. It is not named in
@@ -3658,6 +3771,145 @@ mod v4morph {
     }
 }
 
+/// The `Math.Vector4Translation` provider
+/// (`script_math.cpp:3889-3966`): the translation part of a
+/// `MatrixProvider`, a subclass of `Vector4Provider`.
+///
+/// The reference's `output` dereferences its `source_` unconditionally
+/// (`:3962`), so a translation with an empty slot would trap; the port yields
+/// the zero translation the reference's `v.set( tr.x, tr.y, tr.z, 1.f )`
+/// writes for a zero origin, a defined value for the reference's undefined
+/// case. The factory's converter likewise refuses a `None` slot the
+/// reference would take and then trap on.
+mod v4translation {
+    use super::*;
+
+    /// The instance body beyond the `PyObject` header: the one held
+    /// `MatrixProvider`, the layout of the reference's `Vector4Translation`.
+    #[repr(C)]
+    struct TranslationBody {
+        header: capi::PyObject,
+        source: *mut capi::PyObject,
+    }
+
+    const SOURCE: usize = std::mem::offset_of!(TranslationBody, source);
+
+    const INSTANCE_SIZE: usize =
+        std::mem::size_of::<TranslationBody>() - std::mem::size_of::<capi::PyObject>();
+
+    /// The one `Math.Vector4Translation` type object, by address.
+    static TYPE_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+    fn type_addr() -> usize {
+        TYPE_ADDR.load(Ordering::SeqCst)
+    }
+
+    /// `Vector4Translation::output` (`script_math.cpp:3960-3966`).
+    fn translation_output(object: *mut capi::PyObject) -> [f32; 4] {
+        let Some(matrix) = matrix::provider_matrix(unsafe { matrix::slot_read::<SOURCE>(object) })
+        else {
+            return [0.0, 0.0, 0.0, 1.0];
+        };
+        let origin = matrix.apply_to_origin();
+        [origin.x, origin.y, origin.z, 1.0]
+    }
+
+    /// A fresh `Math.Vector4Translation` over `source`; the caller owns the
+    /// returned reference, and the field takes over `source`, the reference's
+    /// `source_( s )` member initialiser.
+    fn make(source: *mut capi::PyObject) -> *mut capi::PyObject {
+        let Ok(type_object) = binding::create_type(&spec()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(instance) = (unsafe { binding::instantiate(&type_object) }) else {
+            return std::ptr::null_mut();
+        };
+        let pointer = instance.as_ptr();
+        // SAFETY: the allocated body is exactly a `TranslationBody`.
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer.cast::<TranslationBody>()).source).write(source);
+        }
+        std::mem::forget(instance);
+        pointer
+    }
+
+    /// The `PY_AUTO_FACTORY_DECLARE( Vector4Translation,
+    /// ARG(MatrixProviderPtr, END) )` factory: a fresh translation over the
+    /// one `MatrixProvider`.
+    unsafe extern "C" fn factory(
+        _module: *mut capi::PyObject,
+        args: *mut capi::PyObject,
+    ) -> *mut capi::PyObject {
+        if !want_args(args, 1) {
+            return type_error(
+                "Math.Vector4Translation() expects 1 argument of type MatrixProvider",
+            );
+        }
+        let source = arg(args, 0);
+        if !matrix::provider_check(source) {
+            // `Script::setData( pObject, MatrixProviderPtr&, "() argument
+            // 1" )` (`script.hpp:610-631`): the reference takes a `None` here
+            // and traps on the first `output`, so the port refuses it with
+            // the converter's own error.
+            return type_error("() argument 1 must be set to a MatrixProvider or None");
+        }
+        // The field owns the reference it is given.
+        unsafe { capi::inc_ref(source) };
+        make(source)
+    }
+
+    /// The factory descriptor for `PyCFunction_New`; leaked for the type's
+    /// lifetime, the reference's static method table.
+    fn factory_def() -> *mut capi::PyMethodDef {
+        Box::leak(Box::new(capi::PyMethodDef {
+            ml_name: c"Vector4Translation".as_ptr() as *const c_char,
+            ml_meth: Some(factory),
+            ml_flags: capi::METH_VARARGS,
+            ml_doc: std::ptr::null(),
+        }))
+    }
+
+    /// The `PY_BEGIN_ATTRIBUTES` table of `Vector4Translation` and its
+    /// destruction entry: the one held `MatrixProvider`, the reference's
+    /// `PY_RW_ATTRIBUTE_DECLARE( source_, source )` converter pair.
+    fn spec() -> binding::TypeSpec {
+        binding::TypeSpec::new("Math.Vector4Translation")
+            .base(v4provider::base_addr())
+            .attribute_with(
+                "source",
+                matrix::slot_get::<SOURCE>,
+                Some(matrix::slot_set::<SOURCE>),
+                c"source".as_ptr() as *mut std::os::raw::c_void,
+            )
+            .dealloc(dealloc)
+            .instance_size(INSTANCE_SIZE)
+    }
+
+    provider_dealloc!(dealloc, TranslationBody, source);
+
+    /// `TempPyVectorInit` for the translation: the type object, its dispatch
+    /// entry, and the factory into the `Math` module dictionary.
+    pub(super) fn register() -> Result<PyRef, binding::BindError> {
+        let type_object = binding::create_type(&spec())?;
+        TYPE_ADDR.store(type_object.as_ptr() as usize, Ordering::SeqCst);
+        v4provider::register_output(type_addr(), translation_output);
+
+        // SAFETY: `register` runs from interpreter init; the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            if !module.is_null() {
+                let dict = capi::PyModule_GetDict(module);
+                let factory = capi::PyCFunction_New(factory_def(), std::ptr::null_mut());
+                if !factory.is_null() {
+                    capi::PyDict_SetItemString(dict, c"Vector4Translation".as_ptr(), factory);
+                    capi::dec_ref(factory);
+                }
+            }
+        }
+        Ok(type_object)
+    }
+}
+
 /// `TempPyVectorInit::init` (`script_math.cpp:3060-3065`): the `Math`
 /// module with the three vector widths, the `MatrixProvider` base, the
 /// `Matrix` and `Plane` types. A type that cannot be created reports and
@@ -3673,4 +3925,5 @@ pub fn register() {
     let _ = v4product::register();
     let _ = v4animation::register();
     let _ = v4morph::register();
+    let _ = v4translation::register();
 }

@@ -572,6 +572,7 @@ mod tests {
         "interpreter::tests::scenario_the_math_vector4providers_behave_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4animation_behaves_like_the_reference",
         "interpreter::tests::scenario_the_math_vector4morph_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4translation_behaves_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -3208,6 +3209,95 @@ __probe = '; '.join(_f) or 'ok'
 "#,
             );
             assert_eq!(text, "ok", "math vector4morph behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Vector4Translation` reads like the reference: the translation part of
+    /// a `MatrixProvider` as a `Vector4` with a constant `w`, live against
+    /// the source matrix, with the reference's converter refusals.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4translation_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+# The factory takes one MatrixProvider; a Matrix is one.
+ck(hasattr(Math, 'Vector4Translation'), 'Vector4Translation in module')
+src = Math.Matrix()
+t = Math.Vector4Translation(src)
+ck(type(t).__name__ == 'Vector4Translation', 'the translation type')
+ck('Vector4Provider' in [c.__name__ for c in type(t).__mro__],
+   'the Vector4Provider base chain')
+ck('MatrixProvider' in [c.__name__ for c in type(t.source).__mro__],
+   'the source is a provider')
+ck(t.source is src, 'the source is the matrix itself')
+
+# The output is the translation row, the reference's `applyToOrigin`.
+v = t.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 1.0,
+   'the identity translation is zero with w=1')
+src.setTranslate((10.0, 20.0, 30.0))
+v = t.value
+ck(v.x == 10.0 and v.y == 20.0 and v.z == 30.0 and v.w == 1.0,
+   'the value tracks the matrix')
+
+# Replacing the source rewires the output.
+other = Math.Matrix()
+other.setTranslate((5.0, 0.0, 0.0))
+t.source = other
+v = t.value
+ck(v.x == 5.0 and v.y == 0.0, 'the new source drives the value')
+ck(t.source is other, 'the replacement sticks')
+src.setTranslate((99.0, 0.0, 0.0))
+ck(t.value.x == 5.0, 'the old matrix no longer drives it')
+
+# None empties the slot; the reference would then trap on `output`, so the
+# port defines the zero translation instead.
+t.source = None
+ck(t.source is None, 'None empties the slot')
+v = t.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 1.0,
+   'an empty source is the zero translation')
+
+# Refusals: a non-provider, a Vector4Provider that is no MatrixProvider, a
+# deletion, and factory argument errors.
+ck(raises(TypeError, lambda: setattr(t, 'source', 5)),
+   'source wants a MatrixProvider')
+ck(raises(TypeError, lambda: setattr(t, 'source', Math.Vector4Product())),
+   'a Vector4Provider is no MatrixProvider')
+ck(raises(TypeError, lambda: t.__delattr__('source')),
+   'source cannot be deleted')
+ck(raises(TypeError, lambda: Math.Vector4Translation()),
+   'the factory wants one argument')
+ck(raises(TypeError, lambda: Math.Vector4Translation(src, src)),
+   'the factory takes one argument')
+ck(raises(TypeError, lambda: Math.Vector4Translation(None)),
+   'the factory refuses None')
+ck(raises(TypeError, lambda: Math.Vector4Translation(5)),
+   'the factory wants a provider')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4translation behaviour mismatch: {text}"
+            );
         });
     }
 
