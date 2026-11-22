@@ -1240,7 +1240,8 @@
 维护渲染后端和 DCC/插件支持表。三端验证等价的客户端与编辑工作流，宿主专属插件在可用宿主测试，并用导出文件检验其他平台消费能力。
 
 - [ ] **BW-15-06-01 维护图形后端列表**。**验收** 每个平台记录能力及依赖。
-- [ ] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。
+- [x] **BW-15-06-02 维护 DCC 宿主矩阵**。**验收** 逐插件记录可用宿主。（commit ff504c9）
+  - 证据：`docs/review/bw15-06-02-dcc-host-matrix.md`——三插件两宿主：visualexporter/animationexporter → Autodesk 3ds Max（`MFXExport : SceneExport`（mfxexp.hpp:154），`.dle`，Max 库级导出 `LibDescription@1..LibVersion@4`（visualexporter.def/animationexporter.def，expmain.cpp:124-155），Max **2009–2013** 逐版本目标 max2009_exporter…max2013_exporter）；mayavisualexporter → Autodesk Maya（`MLL_EXPORT initializePlugin/uninitializePlugin`（visualmain.cpp:38/131），`.mll`，随分发 visualfileexporterscript.mel，Maya **2009–2014** 逐版本目标）。启用条件=`BW_CMAKE_TARGET=exporters`（`BWConfiguration_exporters.cmake` `EXPORTER_PROJECTS`：默认 Max/Maya 2010-13 + Max 2010-12，win32 追加 2009 组，win64 追加 maya2014，非 vc9 追加 max2013；`BW_EXPORTER`+`_SECURE_SCL=1`）；输出 `game/tools/exporter/3dsmax<ver>{,x64}/`、`maya<ver>{,x64}/`。缺口：`third_party/` 无 `3dsmax/`、`maya/` SDK 目录（外部依赖），插件二进制无法从本树构建——宿主实测（BW-15-06-03/04）需外部 DCC SDK 与宿主安装。
 - [ ] **BW-15-06-03 验收三端客户端与编辑流程**。**验收** 同一地图有可比证据。
 - [ ] **BW-15-06-04 验证外部导出的跨端读取**。**验收** 各适用消费者可打开。
 
