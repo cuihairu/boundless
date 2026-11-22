@@ -434,6 +434,25 @@ pub enum BaseCallback {
         /// The delivered arguments.
         args: Vec<PropValue>,
     },
+    /// A cell method call was forwarded to the associated cell entity
+    /// (`Base::callCellMethod`, `base.cpp:1391`). The cell address is the
+    /// base's tracked `Real` location, which after a migration is the new
+    /// cellapp.
+    CellMethodCalled {
+        /// The entity id.
+        entity_id: EntityId,
+        /// The cell mailbox address the call was routed to.
+        cell_addr: BaseAddr,
+        /// The method name.
+        method_name: String,
+        /// The method's internal index.
+        method_index: u32,
+        /// The source entity id for an exposed CELL method, `None` for
+        /// `NULL_ENTITY_ID`.
+        source_entity_id: Option<EntityId>,
+        /// The forwarded arguments.
+        args: Vec<PropValue>,
+    },
 }
 
 /// A created Base entity.
@@ -509,6 +528,19 @@ pub enum CellCreationResult {
     Failed,
     /// Ignored: the base is destroyed or no create was pending.
     Ignored,
+}
+
+/// The failure of a cell mailbox migration (`Base::currentCell`,
+/// `base.cpp:1071`: the associated cell entity moved to a new cellapp).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellMigrateError {
+    /// The base is unknown (a destroyed base is removed and is unknown).
+    UnknownBase,
+    /// The base has no associated cell entity to move.
+    NoCell,
+    /// The migration address is `NONE`: a cell is being lost, which is the
+    /// `cell_lost` path, not a migration.
+    LostCell,
 }
 
 /// The reference `LogOnStatus` values this load path answers with
@@ -1010,11 +1042,15 @@ impl EntityCreator {
     ///
     /// A base-addressed mailbox (`BASE`, `SERVICE` or `BASE_VIA_CELL`) is
     /// resolved against the tracked bases; the method must live on the base
-    /// component and the arguments must match the method's schema. A
-    /// cell- or client-addressed mailbox is outside the base-side model and
-    /// is rejected. The call is recorded as a [`BaseCallback::MethodCalled`]
-    /// and the resolved description returned so the caller can build the
-    /// reply ([`MethodReply`](crate::mailbox_call::MethodReply)).
+    /// component. A cell-addressed mailbox (`CELL` or `CELL_VIA_BASE`) is
+    /// forwarded to the associated cell entity at the base's tracked cell
+    /// address (`Base::callCellMethod`, `base.cpp:1391`); the method must
+    /// live on the cell component and the base must have a cell. A
+    /// client-addressed mailbox is outside the base-side model and is
+    /// rejected. The call is recorded as a [`BaseCallback::MethodCalled`] (or
+    /// [`BaseCallback::CellMethodCalled`]) and the resolved description
+    /// returned so the caller can build the reply
+    /// ([`MethodReply`](crate::mailbox_call::MethodReply)).
     pub fn deliver_mailbox_call(
         &mut self,
         mailbox: &EntityMailBoxRef,
@@ -1024,8 +1060,12 @@ impl EntityCreator {
             mailbox.component,
             MailBoxComponent::Base | MailBoxComponent::Service | MailBoxComponent::BaseViaCell
         );
-        if !is_base_target {
-            return Err(MailboxCallError::CellTarget);
+        let is_cell_target = matches!(
+            mailbox.component,
+            MailBoxComponent::Cell | MailBoxComponent::CellViaBase
+        );
+        if !is_base_target && !is_cell_target {
+            return Err(MailboxCallError::ClientTarget);
         }
         let base = self
             .bases
@@ -1038,7 +1078,12 @@ impl EntityCreator {
         let method = ty
             .method(call.method_index)
             .ok_or(MailboxCallError::UnknownMethod)?;
-        if method.component != MethodComponent::Base {
+        let expected = if is_cell_target {
+            MethodComponent::Cell
+        } else {
+            MethodComponent::Base
+        };
+        if method.component != expected {
             return Err(MailboxCallError::WrongComponent);
         }
         if call.args.len() != method.arg_kinds.len() {
@@ -1054,18 +1099,82 @@ impl EntityCreator {
         }
         let resolved = method.clone();
         let method_name = method.name.clone();
-        self.bases
-            .get_mut(&call.target_id)
-            .expect("base still present")
-            .callbacks
-            .push(BaseCallback::MethodCalled {
-                entity_id: call.target_id,
-                method_name,
-                method_index: call.method_index,
-                source_entity_id: call.source_entity_id,
-                args: call.args,
-            });
+        let entity_id = call.target_id;
+        let source_entity_id = call.source_entity_id;
+        let args = call.args;
+        if is_cell_target {
+            let cell_addr = base.cell_entity_addr.ok_or(MailboxCallError::NoCell)?;
+            self.bases
+                .get_mut(&entity_id)
+                .expect("base still present")
+                .callbacks
+                .push(BaseCallback::CellMethodCalled {
+                    entity_id,
+                    cell_addr,
+                    method_name,
+                    method_index: call.method_index,
+                    source_entity_id,
+                    args,
+                });
+        } else {
+            self.bases
+                .get_mut(&entity_id)
+                .expect("base still present")
+                .callbacks
+                .push(BaseCallback::MethodCalled {
+                    entity_id,
+                    method_name,
+                    method_index: call.method_index,
+                    source_entity_id,
+                    args,
+                });
+        }
         Ok(resolved)
+    }
+
+    /// `Base::currentCell` (`base.cpp:1071`): the associated cell entity
+    /// migrated to a new cellapp (a cell offload). The tracked cell mailbox
+    /// address is switched to the new `Real`'s app and the space updated.
+    ///
+    /// The `hadCell == haveCell` branch of `setCurrentCell`
+    /// (`base.cpp:977-1004`): the cell presence is unchanged, so no script
+    /// callback is recorded — the mailbox simply points at the new app, so
+    /// later calls reach the new `Real`. A `NONE` address is the `cell_lost`
+    /// path, not a migration.
+    pub fn update_cell_address(
+        &mut self,
+        entity_id: EntityId,
+        space_id: u32,
+        new_addr: BaseAddr,
+    ) -> Result<(), CellMigrateError> {
+        if new_addr.ip == 0 {
+            return Err(CellMigrateError::LostCell);
+        }
+        let entity = self
+            .bases
+            .get_mut(&entity_id)
+            .ok_or(CellMigrateError::UnknownBase)?;
+        if entity.cell_entity_addr.is_none() {
+            return Err(CellMigrateError::NoCell);
+        }
+        entity.cell_entity_addr = Some(new_addr);
+        entity.cell_space_id = space_id;
+        Ok(())
+    }
+
+    /// The cell mailbox ref for the base's associated cell entity
+    /// (`Base::cellEntityMailBox`, `base.cpp:2915`): component `CELL`, the
+    /// tracked cell address and the base's id and type. `None` while the
+    /// base has no cell.
+    pub fn cell_mailbox(&self, entity_id: EntityId) -> Option<EntityMailBoxRef> {
+        let base = self.bases.get(&entity_id)?;
+        let cell_addr = base.cell_entity_addr?;
+        Some(EntityMailBoxRef {
+            id: base.id,
+            addr: (cell_addr.ip, cell_addr.port),
+            component: MailBoxComponent::Cell,
+            type_id: base.type_id,
+        })
     }
 
     /// `createBaseFromDB`: validate the type and the database id, allocate an
@@ -2408,14 +2517,24 @@ mod tests {
         let mut ty = account_type();
         ty.id = 5;
         ty.name = "Player".to_string();
-        ty.methods = vec![MethodDesc::new(
-            "rename",
-            7,
-            MethodComponent::Base,
-            false,
-            vec![PropValue::Str(String::new()), PropValue::Int(0)],
-            vec![PropValue::Int(0)],
-        )];
+        ty.methods = vec![
+            MethodDesc::new(
+                "rename",
+                7,
+                MethodComponent::Base,
+                false,
+                vec![PropValue::Str(String::new()), PropValue::Int(0)],
+                vec![PropValue::Int(0)],
+            ),
+            MethodDesc::new(
+                "moveTo",
+                9,
+                MethodComponent::Cell,
+                false,
+                vec![PropValue::Vec3([0.0; 3]), PropValue::Float(0.0)],
+                vec![],
+            ),
+        ];
         ty
     }
 
@@ -2430,8 +2549,34 @@ mod tests {
         (creator, base.id)
     }
 
+    fn creator_with_rename_and_cell() -> (EntityCreator, EntityId) {
+        let (mut creator, id) = creator_with_rename();
+        assert!(creator.cell_contact(
+            id,
+            1,
+            BaseAddr {
+                ip: 0x0a000001,
+                port: 40001
+            }
+        ));
+        (creator, id)
+    }
+
     fn base_mailbox(id: EntityId) -> EntityMailBoxRef {
         EntityMailBoxRef::init(id, (0x7f000001, 20000), MailBoxComponent::Base, 5)
+    }
+
+    fn cell_via_base_mailbox(id: EntityId) -> EntityMailBoxRef {
+        EntityMailBoxRef::init(id, (0x7f000001, 20000), MailBoxComponent::CellViaBase, 5)
+    }
+
+    fn move_to_call(id: EntityId) -> MailboxMethodCall {
+        MailboxMethodCall {
+            target_id: id,
+            method_index: 9,
+            source_entity_id: None,
+            args: vec![PropValue::Vec3([1.0, 2.0, 3.0]), PropValue::Float(0.5)],
+        }
     }
 
     #[test]
@@ -2499,20 +2644,186 @@ mod tests {
     }
 
     #[test]
-    fn a_cell_addressed_mailbox_is_out_of_the_model() {
-        let (mut creator, id) = creator_with_rename();
-        let mailbox = EntityMailBoxRef::init(id, (0x7f000001, 20001), MailBoxComponent::Cell, 5);
+    fn a_cell_via_base_call_routes_to_the_tracked_cell() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        let method = creator
+            .deliver_mailbox_call(&cell_via_base_mailbox(id), move_to_call(id))
+            .expect("deliver");
+        assert_eq!(method.name, "moveTo");
+        let callbacks = &creator.bases()[&id].callbacks;
         assert_eq!(
-            creator.deliver_mailbox_call(
-                &mailbox,
-                MailboxMethodCall {
-                    target_id: id,
-                    method_index: 7,
-                    source_entity_id: None,
-                    args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+            callbacks.last(),
+            Some(&BaseCallback::CellMethodCalled {
+                entity_id: id,
+                cell_addr: BaseAddr {
+                    ip: 0x0a000001,
+                    port: 40001
                 },
+                method_name: "moveTo".to_string(),
+                method_index: 9,
+                source_entity_id: None,
+                args: vec![PropValue::Vec3([1.0, 2.0, 3.0]), PropValue::Float(0.5)],
+            })
+        );
+    }
+
+    #[test]
+    fn a_cell_call_after_migration_reaches_the_new_real() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        // The cell entity offloads to a new cellapp: the tracked address
+        // switches, so a later call arrives at the new Real's role.
+        creator
+            .update_cell_address(
+                id,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002,
+                },
+            )
+            .expect("migrate");
+        let mailbox = creator.cell_mailbox(id).expect("cell mailbox");
+        assert_eq!(mailbox.component, MailBoxComponent::Cell);
+        assert_eq!(mailbox.addr, (0x0a000002, 40002));
+        creator
+            .deliver_mailbox_call(&cell_via_base_mailbox(id), move_to_call(id))
+            .expect("deliver");
+        let callbacks = &creator.bases()[&id].callbacks;
+        assert_eq!(
+            callbacks.last(),
+            Some(&BaseCallback::CellMethodCalled {
+                entity_id: id,
+                cell_addr: BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002
+                },
+                method_name: "moveTo".to_string(),
+                method_index: 9,
+                source_entity_id: None,
+                args: vec![PropValue::Vec3([1.0, 2.0, 3.0]), PropValue::Float(0.5)],
+            })
+        );
+    }
+
+    #[test]
+    fn a_cell_call_without_a_cell_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(&cell_via_base_mailbox(id), move_to_call(id)),
+            Err(MailboxCallError::NoCell)
+        );
+    }
+
+    #[test]
+    fn a_client_addressed_mailbox_is_out_of_the_model() {
+        let (mut creator, id) = creator_with_rename();
+        let mailbox = EntityMailBoxRef::init(id, (0x7f000001, 20000), MailBoxComponent::Client, 5);
+        assert_eq!(
+            creator.deliver_mailbox_call(&mailbox, move_to_call(id)),
+            Err(MailboxCallError::ClientTarget)
+        );
+    }
+
+    #[test]
+    fn a_migrated_cell_updates_the_mailbox_address_without_callbacks() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        creator
+            .update_cell_address(
+                id,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002,
+                },
+            )
+            .expect("migrate");
+        let base = &creator.bases()[&id];
+        assert_eq!(
+            base.cell_entity_addr,
+            Some(BaseAddr {
+                ip: 0x0a000002,
+                port: 40002
+            })
+        );
+        assert_eq!(base.cell_space_id, 2);
+        // A pure move: the cell presence never changed, so no lose/get or
+        // destroy notifications.
+        assert_eq!(
+            base.callbacks,
+            vec![
+                BaseCallback::Init {
+                    entity_id: id,
+                    type_name: "Player".to_string()
+                },
+                BaseCallback::Initialised { entity_id: id },
+                BaseCallback::OnGetCell {
+                    entity_id: id,
+                    space_id: 1,
+                    cell_addr: BaseAddr {
+                        ip: 0x0a000001,
+                        port: 40001
+                    }
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_migration_without_a_cell_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.update_cell_address(
+                id,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002
+                }
             ),
-            Err(MailboxCallError::CellTarget)
+            Err(CellMigrateError::NoCell)
+        );
+    }
+
+    #[test]
+    fn a_migration_with_a_none_address_is_a_loss() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        assert_eq!(
+            creator.update_cell_address(id, 2, BaseAddr { ip: 0, port: 0 }),
+            Err(CellMigrateError::LostCell)
+        );
+    }
+
+    #[test]
+    fn a_destroyed_base_cannot_migrate() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        creator.destroy_base(id, false, false, false);
+        // The base is removed on destroy, so the migration is unknown.
+        assert_eq!(
+            creator.update_cell_address(
+                id,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002
+                }
+            ),
+            Err(CellMigrateError::UnknownBase)
+        );
+    }
+
+    #[test]
+    fn an_unknown_base_cannot_migrate() {
+        let (mut creator, _id) = creator_with_rename();
+        assert_eq!(
+            creator.update_cell_address(
+                99,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002
+                }
+            ),
+            Err(CellMigrateError::UnknownBase)
         );
     }
 

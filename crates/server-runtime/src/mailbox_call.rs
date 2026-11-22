@@ -29,8 +29,12 @@
 //! This module is the payload codec over `foundation::stream::BinaryStream`
 //! plus the delivery half: `EntityCreator::deliver_mailbox_call` resolves
 //! the target in the entity creator, resolves the method on the target's
-//! type, checks the arguments and records the call. Script execution is out
-//! of the model's scope; the reply a method would send is built by
+//! type, checks the arguments and records the call. A cell-addressed call
+//! (`CELL` or `CELL_VIA_BASE`) is forwarded to the base's tracked cell
+//! mailbox address (`Base::callCellMethod`, `base.cpp:1391`), which after a
+//! migration (`update_cell_address`) is the new `Real`'s cellapp — so the
+//! call arrives where the entity now lives. Script execution is out of the
+//! model's scope; the reply a method would send is built by
 //! `MethodReply` from the resolved description's return-value kinds. Byte
 //! fidelity to the Mercury framing itself is a separate transport concern
 //! (the `mercury` crate).
@@ -46,9 +50,12 @@ pub enum MailboxCallError {
     UnknownBase,
     /// The target's type has no method with that internal index.
     UnknownMethod,
-    /// The mailbox addresses a cell or client entity, which lives outside
-    /// the base-side model this crate tracks.
-    CellTarget,
+    /// A cell-addressed call with no tracked cell entity: the base has no
+    /// `Real` to forward to (`BWNoSuchCellEntityError`).
+    NoCell,
+    /// The mailbox addresses a client entity, which lives outside the
+    /// base-side model this crate tracks.
+    ClientTarget,
     /// The resolved method lives on a different component than the mailbox
     /// addresses.
     WrongComponent,
