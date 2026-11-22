@@ -552,6 +552,9 @@ jobs:
       - name: Record the original and new full-stack comparison
         run: ci/compare-fullstack.sh
 
+      - name: Record the single-component replacement run
+        run: ci/replace-role.sh
+
       - name: Record the reference windows baseline
         run: ci/reference-winbaseline.sh
 
@@ -944,6 +947,7 @@ jobs:
           ci/reference-callback.sh self-test
           ci/reference-fixtures.sh self-test
           ci/compare-fullstack.sh self-test
+          ci/replace-role.sh self-test
           ci/reference-winbaseline.sh self-test
           ci/archive-results.sh self-test
 

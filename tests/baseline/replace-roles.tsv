@@ -1,0 +1,9 @@
+role	reference_binary	reference_present	port_entry	gate	gate_reason
+baseapp	game/bin/server/el7/server/baseapp	yes	boundless-server baseapp	closed	the port role validates the role name only — no network, no login path (Mercury joins at BW-02)
+baseappmgr	game/bin/server/el7/server/baseappmgr	yes	boundless-server baseappmgr	closed	the port role validates the role name only — no network, no login path (Mercury joins at BW-02)
+cellapp	game/bin/server/el7/server/cellapp	yes	boundless-server cellapp	closed	the port role validates the role name only — no network, no login path (Mercury joins at BW-02)
+cellappmgr	game/bin/server/el7/server/cellappmgr	yes	boundless-server cellappmgr	closed	the port role validates the role name only — no network, no login path (Mercury joins at BW-02)
+dbapp	game/bin/server/el7/server/dbapp	yes	boundless-server dbapp	closed	the port role validates the role name only — no network, no login path (Mercury joins at BW-02)
+dbappmgr	game/bin/server/el7/server/dbappmgr	yes	boundless-server dbappmgr	closed	the port role validates the role name only — no network, no login path (Mercury joins at BW-02)
+loginapp	game/bin/server/el7/server/loginapp	yes	boundless-server loginapp	closed	the port role validates the role name only — no network, no login path (Mercury joins at BW-02)
+reviver	game/bin/server/el7/server/reviver	yes	boundless-server reviver	closed	the port role validates the role name only — no network, no login path (Mercury joins at BW-02)
