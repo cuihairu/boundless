@@ -24,6 +24,7 @@ pub mod entitydef_definition;
 pub mod entitydef_diagnostics;
 pub mod entitydef_hover;
 pub mod entitydef_index;
+pub mod entitydef_references;
 pub mod event_aggregate;
 pub mod event_contract;
 pub mod event_filter;
