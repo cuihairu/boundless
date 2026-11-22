@@ -238,7 +238,11 @@
 
 复现 BinaryStream、定长和变长整数、字符串、内存流、压缩流及读越界报告。以原版生成的样本双向读写。
 
-- [ ] **BW-01-02-01 实现定长整数和浮点读写**。**验收** 原版夹具逐字节往返。
+- [x] **BW-01-02-01 实现定长整数和浮点读写**（commit f4204a9）。**验收** 原版夹具逐字节往返。
+  - 夹具：参考侧 `lib/cstdmf/binary_stream.ipp` 经 `bw_netbyte/netshort/netlong/netlonglong` + `BW_HTON*`（LE 恒等）写定宽整数、float/double 走 `bw_netlong n; n.f=x; out<<n` / `bw_netlonglong` 联合（原始 IEEE 位型）——与端口 `stream.rs` 的 `write_*`（LE、`to_le_bytes`、`f32/f64` 经 `to_bits`）语义一致。
+  - 原版字节：**编译** `lib/cstdmf/binary_stream.hpp`+`memory_stream.hpp`（链 `build/el7/lib/libcstdmf.a`）的夹具生成器实跑，逐基元与拼接流均与端口逐字节吻合——`u8 0xAB→ab`、`i8 -7→f9`、`u16 0x1234→34 12`、`i16 -1234→2e fb`、`u32 0x01020304→04 03 02 01`、`i32 -1→ff×4`、`u64 0x0102…0708→08…01`、`i64 -1→ff×8`、`f32 -1.5→00 00 c0 bf`、`f64 -2.75→00 00 00 00 00 00 06 c0`、NaN/±inf/次正规保位型、`all_primitives` 43 字节拼接逐字节相同——**acceptance 达成**。
+  - 结果：`cargo test -p foundation --lib` **137/137 绿**（stream 20/20，含三夹具测试）；`cargo clippy -p foundation --lib -D warnings` 绿（`python-host` 未用工作区依赖警告系既有工作区清单级，非本项）；`rustfmt` 本文件绿。
+  - 证据：crates/foundation/src/stream.rs 新增 `reference_wire_fixtures_fixed_width`（边界/哨兵逐字节钉死）、`reference_wire_fixtures_floats_special`（NaN/±inf/次正规位型不规范化）、`reference_wire_fixtures_roundtrip_each_width`（43 字节参考拼接逐字节 + 逐值往返）。
 - [ ] **BW-01-02-02 实现变长整数与长度前缀**。**验收** 跨长度边界值逐字节吻合。
 - [ ] **BW-01-02-03 实现字符串与内存流**。**验收** 空值、嵌入零和剩余长度吻合。
 - [ ] **BW-01-02-04 实现压缩流**。**验收** 双方可解码同一夹具。
