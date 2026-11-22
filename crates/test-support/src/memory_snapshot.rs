@@ -1,13 +1,20 @@
-//! BW-24-01-01: memory snapshot — per-process RSS.
+//! BW-24-01: memory snapshot.
 //!
-//! The reference reports a process's resident set from whatever the platform
-//! offers (`memory_debug.cpp` `ProcessMemoryInfo` is Windows-only; the Linux
-//! and macOS diagnostics read their own sources), and each platform reports
-//! in its own native unit. A snapshot must compare processes against each
-//! other, so every reading is unified into bytes here before it leaves this
-//! module: Linux `/proc/<pid>/status` reports kB, macOS
-//! `mach_task_basic_info` and Windows `GetProcessMemoryInfo` report bytes,
-//! and a page-based source would be scaled by the page size.
+//! A snapshot answers what the diagnostic's memory interface is asked for:
+//! each process's resident set, the allocator's live allocation and
+//! high-water readings, the entity and cache object counts, the Python object
+//! census, and the metric table recording each reading's source, cost and
+//! live-or-cumulative kind (BW-24-01-01..06).
+//!
+//! The resident-set reading (BW-24-01-01) is the one the platforms differ
+//! on: the reference reports it from whatever the platform offers
+//! (`memory_debug.cpp` `ProcessMemoryInfo` is Windows-only; the Linux and
+//! macOS diagnostics read their own sources), and each reports in its own
+//! native unit. A snapshot must compare processes against each other, so
+//! every reading is unified into bytes before it leaves this module: Linux
+//! `/proc/<pid>/status` reports kB, macOS `mach_task_basic_info` and Windows
+//! `GetProcessMemoryInfo` report bytes, and a page-based source would be
+//! scaled by the page size.
 
 /// The unit a platform natively reports a resident-set reading in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,6 +339,7 @@ impl Drop for TrackedAllocation<'_> {
 pub struct LiveAllocationTracker {
     live_bytes: AtomicU64,
     peak_bytes: AtomicU64,
+    total_allocated: AtomicU64,
 }
 
 impl LiveAllocationTracker {
@@ -343,6 +351,13 @@ impl LiveAllocationTracker {
     /// The bytes currently held by unreleased allocations.
     pub fn live_bytes(&self) -> u64 {
         self.live_bytes.load(Ordering::SeqCst)
+    }
+
+    /// The bytes allocated since the tracker began, cumulatively: it only
+    /// ever grows, so it is the cumulative (累计) reading the live one is
+    /// distinguished from.
+    pub fn total_allocated_bytes(&self) -> u64 {
+        self.total_allocated.load(Ordering::SeqCst)
     }
 
     /// The round's high-water mark: the highest live reading seen since the
@@ -372,6 +387,7 @@ impl LiveAllocationTracker {
     pub fn allocate(&self, bytes: usize) -> TrackedAllocation<'_> {
         let added = bytes as u64;
         let live_before = self.live_bytes.fetch_add(added, Ordering::SeqCst);
+        self.total_allocated.fetch_add(added, Ordering::SeqCst);
         // Only allocations raise the mark: the live reading moves up here and
         // comes back down on release, and the mark ratchets.
         self.raise_peak(live_before + added);
@@ -829,5 +845,234 @@ mod python_object_tests {
         assert_eq!(tracker.live_count(), 1);
         drop(second);
         assert!(!tracker.is_live(address));
+    }
+}
+
+// BW-24-01-06: the metric registry.
+//
+// A snapshot's metrics are not interchangeable: each comes from a source
+// (the platform call or counter that produced it), costs something to
+// collect, and is either a **live** (实时) reading — a gauge that moves up
+// and down, like the resident set or the bytes held right now — or a
+// **cumulative** (累计) total that only ever grows, like the bytes
+// allocated since the run began. The registry records that per metric, so a
+// consumer can tell a live value from a cumulative one and know what each
+// reading cost.
+
+/// Whether a reading is live (实时) or cumulative (累计).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricKind {
+    /// A gauge: moves up and down with the thing it measures.
+    Live,
+    /// A total: only ever grows.
+    Cumulative,
+}
+
+/// One metric the snapshot reports: its source (口径), its collection cost
+/// in basic operations, and whether the reading is live or cumulative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricDescriptor {
+    /// The metric's name in the snapshot.
+    pub name: &'static str,
+    /// Where the reading comes from: the platform call or counter.
+    pub source: &'static str,
+    /// The collection cost, in basic operations (file reads, syscalls,
+    /// atomic updates).
+    pub cost: u64,
+    /// Whether the reading is live or cumulative.
+    pub kind: MetricKind,
+}
+
+/// The snapshot's metric table, in the order the metrics were defined.
+#[derive(Debug, Default)]
+pub struct MetricRegistry {
+    metrics: Vec<MetricDescriptor>,
+}
+
+impl MetricRegistry {
+    /// An empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a metric to the table.
+    pub fn define(
+        &mut self,
+        name: &'static str,
+        source: &'static str,
+        cost: u64,
+        kind: MetricKind,
+    ) -> &mut Self {
+        self.metrics.push(MetricDescriptor {
+            name,
+            source,
+            cost,
+            kind,
+        });
+        self
+    }
+
+    /// The metrics, in definition order.
+    pub fn metrics(&self) -> &[MetricDescriptor] {
+        &self.metrics
+    }
+
+    /// The reading's kind for a metric name.
+    pub fn kind(&self, name: &str) -> Option<MetricKind> {
+        self.metrics
+            .iter()
+            .find(|metric| metric.name == name)
+            .map(|metric| metric.kind)
+    }
+
+    /// The live (实时) metrics.
+    pub fn live_metrics(&self) -> Vec<&MetricDescriptor> {
+        self.metrics
+            .iter()
+            .filter(|metric| metric.kind == MetricKind::Live)
+            .collect()
+    }
+
+    /// The cumulative (累计) metrics.
+    pub fn cumulative_metrics(&self) -> Vec<&MetricDescriptor> {
+        self.metrics
+            .iter()
+            .filter(|metric| metric.kind == MetricKind::Cumulative)
+            .collect()
+    }
+}
+
+/// The table a memory snapshot reports: each reading, its platform source
+/// (口径), its collection cost, and whether it is live or cumulative.
+pub fn snapshot_metrics() -> MetricRegistry {
+    let mut registry = MetricRegistry::new();
+    // The resident set is one platform read; the source is the platform's.
+    registry.define("process_rss", rss_source(), 1, MetricKind::Live);
+    // Live and peak allocations move with the allocator; the total is the
+    // cumulative counterpart.
+    registry.define(
+        "live_allocations",
+        "tracked allocation counter",
+        2,
+        MetricKind::Live,
+    );
+    registry.define(
+        "allocation_high_water",
+        "ratcheting peak counter",
+        1,
+        MetricKind::Live,
+    );
+    registry.define(
+        "total_allocated",
+        "cumulative allocation counter",
+        1,
+        MetricKind::Cumulative,
+    );
+    registry.define("entities", "per-type entity counter", 1, MetricKind::Live);
+    registry.define(
+        "cache_objects",
+        "per-cache object counter",
+        1,
+        MetricKind::Live,
+    );
+    registry.define(
+        "python_objects",
+        "per-address live census",
+        1,
+        MetricKind::Live,
+    );
+    registry
+}
+
+/// The platform source the resident-set reading comes from (口径).
+fn rss_source() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "/proc/<pid>/status VmRSS"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "mach_task_basic_info resident_size"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "GetProcessMemoryInfo WorkingSetSize"
+    }
+}
+
+#[cfg(test)]
+mod metric_registry_tests {
+    use super::*;
+
+    #[test]
+    fn live_and_cumulative_metrics_are_distinguishable() {
+        let registry = snapshot_metrics();
+        assert_eq!(
+            registry.kind("total_allocated"),
+            Some(MetricKind::Cumulative)
+        );
+        assert_eq!(registry.kind("live_allocations"), Some(MetricKind::Live));
+        assert_eq!(registry.kind("process_rss"), Some(MetricKind::Live));
+        assert_eq!(registry.kind("no_such_metric"), None);
+
+        // The two kinds partition the table: every metric is one or the
+        // other, and the cumulative set is the cumulative one only.
+        let live = registry.live_metrics();
+        let cumulative = registry.cumulative_metrics();
+        assert_eq!(live.len() + cumulative.len(), registry.metrics().len());
+        assert!(live.iter().all(|m| m.kind == MetricKind::Live));
+        assert!(cumulative.iter().all(|m| m.kind == MetricKind::Cumulative));
+        assert_eq!(
+            cumulative.iter().map(|m| m.name).collect::<Vec<_>>(),
+            vec!["total_allocated"]
+        );
+    }
+
+    #[test]
+    fn the_snapshot_table_records_sources_and_costs() {
+        let registry = snapshot_metrics();
+        assert!(!registry.metrics().is_empty());
+        for metric in registry.metrics() {
+            assert!(!metric.source.is_empty(), "{} has a source", metric.name);
+            assert!(
+                metric.cost >= 1,
+                "{} costs something to collect",
+                metric.name
+            );
+        }
+        // The resident-set source names the platform call behind it.
+        let rss = registry
+            .metrics()
+            .iter()
+            .find(|m| m.name == "process_rss")
+            .expect("process_rss is in the table");
+        assert!(
+            rss.source.contains("VmRSS")
+                || rss.source.contains("resident_size")
+                || rss.source.contains("WorkingSetSize")
+        );
+    }
+
+    #[test]
+    fn the_cumulative_total_only_grows() {
+        let tracker = LiveAllocationTracker::new();
+        {
+            let one = tracker.allocate(4096);
+            assert_eq!(tracker.live_bytes(), 4096);
+            assert_eq!(tracker.total_allocated_bytes(), 4096);
+            drop(one);
+        }
+        // The live reading fell back; the cumulative total kept the bytes.
+        assert_eq!(tracker.live_bytes(), 0);
+        assert_eq!(tracker.total_allocated_bytes(), 4096);
+
+        // Another round only adds to the cumulative total.
+        {
+            let _two = tracker.allocate(2048);
+            assert_eq!(tracker.live_bytes(), 2048);
+            assert_eq!(tracker.total_allocated_bytes(), 4096 + 2048);
+        }
+        assert_eq!(tracker.live_bytes(), 0);
+        assert_eq!(tracker.total_allocated_bytes(), 4096 + 2048);
     }
 }
