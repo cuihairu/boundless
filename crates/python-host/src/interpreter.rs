@@ -661,6 +661,9 @@ mod tests {
         "interpreter::tests::scenario_the_resmgr_editor_tools_serve_the_ported_surface",
         "interpreter::tests::scenario_the_big_world_url_request_face_serves_the_ported_surface",
         "interpreter::tests::scenario_the_original_math_regressions_run_against_the_port",
+        "interpreter::tests::scenario_replacing_a_script_class_updates_existing_instances",
+        "interpreter::tests::scenario_swapping_in_a_module_window_keeps_sys_and_main",
+        "interpreter::tests::scenario_migrate_reports_the_hook_success_and_failure",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -787,6 +790,18 @@ mod tests {
             capi::dec_ref(text);
             rendered
         }
+    }
+
+    /// A borrowed reference to the object `__main__` names `name`, NULL if it
+    /// names nothing: the reload scenarios park their instances and classes
+    /// there so the host can reach them.
+    fn main_object(name: &str) -> *mut capi::PyObject {
+        // SAFETY: the interpreter is up and this thread owns the GIL.
+        let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+        let dictionary = unsafe { capi::PyModule_GetDict(main) };
+        let key = std::ffi::CString::new(name).expect("a name with no NUL");
+        // SAFETY: `dictionary` is the module dict and `key` is NUL-terminated.
+        unsafe { capi::PyDict_GetItemString(dictionary, key.as_ptr()) }
     }
 
     /// A fresh list parked in `__main__` under `__handle`, as a borrowed handle
@@ -6851,6 +6866,193 @@ mod tests {
     fn scenario_the_original_math_regressions_run_against_the_port() {
         interpreter_scenario(&InitConfig::default(), |_interpreter| {
             run_original_math_regressions();
+        });
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_replacing_a_script_class_updates_existing_instances() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            probe(
+                interpreter,
+                "class Old:\n    def greet(self): return 'old'\n\
+                 a = Old()\n\
+                 class New:\n    def greet(self): return 'new'\n    def extra(self): return 41\n\
+                 NewCls = New\n\
+                 class Slotted:\n    __slots__ = ('x',)\n\
+                 s = Slotted()\n\
+                 class Plain:\n    def greet(self): return 'plain'\n\
+                 PlainCls = Plain\n\
+                 __probe = 'ok'",
+            );
+            // SAFETY: the interpreter is up and the parked objects are live.
+            let (old_instance, new_class) = unsafe { (main_object("a"), main_object("NewCls")) };
+            // `Entity::swapScriptClass` (`entity.ipp:364-368`): the old
+            // instance's `__class__` moves to the reloaded class, so the
+            // instance answers with the new class's methods.
+            assert!(unsafe { crate::reload::swap_script_class(old_instance, new_class) });
+            assert_eq!(probe(interpreter, "__probe = a.greet()"), "new");
+            assert_eq!(probe(interpreter, "__probe = a.extra()"), "41");
+            assert_eq!(probe(interpreter, "__probe = type(a).__name__"), "New");
+            // CPython's `__class__` assignment is all-or-nothing: a layout
+            // mismatch (slots against a plain object) is rejected, leaving
+            // the attribute untouched -- the rollback `Entity::migrate`
+            // relies on (`entity.cpp:4300-4306`).
+            let (slotted, plain) = unsafe { (main_object("s"), main_object("PlainCls")) };
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(slotted, plain) },
+                (false, false)
+            );
+            assert_eq!(probe(interpreter, "__probe = type(s).__name__"), "Slotted");
+        });
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_swapping_in_a_module_window_keeps_sys_and_main() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string("import sys"));
+            // The reloaded window is the live one plus a module only the
+            // window names, the way the scratch interpreter's `sys.modules`
+            // holds modules the live one has not seen.
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let (modules, window, fresh) = unsafe {
+                (
+                    capi::PySys_GetObject(c"modules".as_ptr()),
+                    capi::PyDict_Copy(capi::PySys_GetObject(c"modules".as_ptr())),
+                    capi::PyModule_New(c"fresh_module".as_ptr()),
+                )
+            };
+            assert!(!modules.is_null());
+            assert!(!window.is_null());
+            assert!(!fresh.is_null());
+            unsafe {
+                assert_eq!(
+                    capi::PyObject_SetAttrString(fresh, c"READY".as_ptr(), capi::py_true()),
+                    0
+                );
+                assert_eq!(
+                    capi::PyDict_SetItemString(window, c"fresh_module".as_ptr(), fresh),
+                    0
+                );
+            }
+            // `EntityType::swapInModules` (`entity_type.ipp:74-112`): the
+            // live window is refilled from the reloaded one, `sys` is
+            // restored so its stdout/stderr redirection survives, and
+            // `BigWorld` is re-exposed on `__main__`.
+            unsafe { crate::reload::swap_in_modules(modules, window) };
+            // The host's own references go; the window the swap installed
+            // holds its own.
+            unsafe {
+                capi::dec_ref(fresh);
+                capi::dec_ref(window);
+            }
+            assert_eq!(
+                probe(interpreter, "__probe = __import__('fresh_module').READY"),
+                "True"
+            );
+            assert_eq!(
+                probe(interpreter, "__probe = __import__('sys') is sys"),
+                "True"
+            );
+            // `__main__` started without a `BigWorld` name, so the re-add is
+            // the only way the reloaded window can expose it.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "__probe = hasattr(__import__('__main__'), 'BigWorld')"
+                ),
+                "True"
+            );
+            // A window that names no `BigWorld` has nothing to re-expose: the
+            // port skips the expose rather than handing `PyModule_AddObject`
+            // a NULL value, so the window simply loses the name while the
+            // exposure the earlier swap put on `__main__` stays.
+            let bare = unsafe { capi::PyDict_Copy(modules) };
+            assert!(!bare.is_null());
+            assert_eq!(
+                unsafe { capi::PyDict_DelItemString(bare, c"BigWorld".as_ptr()) },
+                0
+            );
+            unsafe { crate::reload::swap_in_modules(modules, bare) };
+            unsafe { capi::dec_ref(bare) };
+            assert_eq!(
+                probe(interpreter, "__probe = 'BigWorld' in sys.modules"),
+                "False"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "__probe = hasattr(__import__('__main__'), 'BigWorld')"
+                ),
+                "True"
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_migrate_reports_the_hook_success_and_failure() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            probe(
+                interpreter,
+                "class Plain: pass\n\
+                 p1 = Plain()\n\
+                 p2 = Plain()\n\
+                 p3 = Plain()\n\
+                 p4 = Plain()\n\
+                 class NoHook:\n    def marker(self): return 'nh'\n\
+                 nh = NoHook\n\
+                 class CleanHook:\n    def onMigrate(self, other):\n        self.seen = other\n    def marker(self): return 'ch'\n\
+                 ch = CleanHook\n\
+                 class RaiseHook:\n    def onMigrate(self, other):\n        raise RuntimeError('hook boom')\n\
+                 rh = RaiseHook\n\
+                 class IntHook:\n    onMigrate = 7\n\
+                 ih = IntHook\n\
+                 __probe = 'ok'",
+            );
+            // SAFETY: the interpreter is up and the parked objects are live.
+            let (p1, p2, p3, p4) = unsafe {
+                (
+                    main_object("p1"),
+                    main_object("p2"),
+                    main_object("p3"),
+                    main_object("p4"),
+                )
+            };
+            let (nh, ch, rh, ih) = unsafe {
+                (
+                    main_object("nh"),
+                    main_object("ch"),
+                    main_object("rh"),
+                    main_object("ih"),
+                )
+            };
+            // A missing hook is the allowed-to-be-null success: the swap
+            // lands and nothing raises (`entity.cpp:4327-4334`).
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(p1, nh) },
+                (true, false)
+            );
+            assert_eq!(probe(interpreter, "__probe = p1.marker()"), "nh");
+            // A clean hook runs with the entity as its argument.
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(p2, ch) },
+                (true, false)
+            );
+            assert_eq!(probe(interpreter, "__probe = p2.seen is p2"), "True");
+            assert_eq!(probe(interpreter, "__probe = p2.marker()"), "ch");
+            // A raising hook is a migration failure the reference still counts
+            // as a successful migrate (`entity.cpp:4338-4341`).
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(p3, rh) },
+                (true, true)
+            );
+            // A non-callable hook fails the same way (`script.cpp:1188-1191`).
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(p4, ih) },
+                (true, true)
+            );
         });
     }
 }

@@ -539,6 +539,9 @@ unsafe extern "C" {
         key: *const c_char,
         value: *mut PyObject,
     ) -> c_int;
+    pub fn PyDict_DelItemString(dict: *mut PyObject, key: *const c_char) -> c_int;
+    pub fn PyDict_Clear(dict: *mut PyObject);
+    pub fn PyDict_Update(dict: *mut PyObject, other: *mut PyObject) -> c_int;
     pub fn PyDict_Next(
         dict: *mut PyObject,
         position: *mut PySsize,
@@ -550,6 +553,7 @@ unsafe extern "C" {
     pub fn Py_TYPE(obj: *mut PyObject) -> *mut PyTypeObject;
     pub fn PyType_IsSubtype(derived: *mut PyTypeObject, base: *mut PyTypeObject) -> c_int;
     pub fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObject;
+    pub fn PyModule_New(name: *const c_char) -> *mut PyObject;
     pub fn PyImport_GetModuleDict() -> *mut PyObject;
     pub fn PyErr_Clear();
     pub fn PyErr_Occurred() -> *mut PyObject;
