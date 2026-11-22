@@ -86,6 +86,75 @@ pub struct QueryResult {
     pub readings: Vec<(String, u64)>,
 }
 
+/// A point-in-time capture of a target's memory statistics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySnapshot {
+    /// Which target was snapshotted.
+    pub target: String,
+    /// When the snapshot was taken.
+    pub collected_at: u64,
+    /// The captured statistics, field name then value.
+    pub readings: Vec<(String, u64)>,
+}
+
+impl MemorySnapshot {
+    /// The snapshot's stable identity: a hex digest of its content, so the
+    /// same readings collected at the same time always yield the same id. Two
+    /// snapshots with identical ids are interchangeable; a changed reading
+    /// changes the id.
+    pub fn id(&self) -> String {
+        let mut hasher = FnvHasher::new();
+        hasher.write_str(&self.target);
+        hasher.write_u64(self.collected_at);
+        for (name, value) in &self.readings {
+            hasher.write_str(name);
+            hasher.write_u64(*value);
+        }
+        hasher.finish_hex()
+    }
+
+    /// A reading by field name, when the snapshot carries it.
+    pub fn reading(&self, field: &str) -> Option<u64> {
+        self.readings
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, value)| *value)
+    }
+}
+
+/// A 64-bit FNV-1a over the snapshot's canonical byte stream, hex-encoded: a
+/// deterministic digest with no allocation in the hot loop.
+struct FnvHasher {
+    state: u64,
+}
+
+impl FnvHasher {
+    fn new() -> Self {
+        Self {
+            state: 0xcbf29ce484222325,
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        let bytes = value.to_le_bytes();
+        for byte in bytes {
+            self.state ^= byte as u64;
+            self.state = self.state.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    fn write_str(&mut self, value: &str) {
+        for byte in value.as_bytes() {
+            self.state ^= *byte as u64;
+            self.state = self.state.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    fn finish_hex(&self) -> String {
+        format!("{:016x}", self.state)
+    }
+}
+
 /// The diagnostic's target registry and its query surface.
 pub struct Diagnostic {
     targets: Vec<DiagnosticTarget>,
@@ -172,14 +241,7 @@ impl Diagnostic {
         authorization: &Authorization,
         target: &str,
     ) -> Result<QueryResult, QueryError> {
-        if !authorization.is_granted(target) {
-            return Err(QueryError::AccessDenied);
-        }
-        let found = self
-            .targets
-            .iter()
-            .find(|registered| registered.name == target)
-            .ok_or(QueryError::UnknownTarget)?;
+        let found = self.authorized_target(authorization, target)?;
         let readings = self.readings.get(target).cloned().unwrap_or_default();
         Ok(QueryResult {
             target: found.name.clone(),
@@ -188,6 +250,40 @@ impl Diagnostic {
             collected_at: (self.clock)(),
             readings,
         })
+    }
+
+    /// Capture a memory snapshot of a target, carrying its statistics and when
+    /// they were collected. The snapshot's [`MemorySnapshot::id`] is stable:
+    /// the same content always yields the same id.
+    pub fn snapshot(
+        &self,
+        authorization: &Authorization,
+        target: &str,
+    ) -> Result<MemorySnapshot, QueryError> {
+        let found = self.authorized_target(authorization, target)?;
+        let readings = self.readings.get(target).cloned().unwrap_or_default();
+        Ok(MemorySnapshot {
+            target: found.name.clone(),
+            collected_at: (self.clock)(),
+            readings,
+        })
+    }
+
+    /// The access boundary shared by every read: an unauthorized target is
+    /// refused before anything is looked at, so the interface stays read-only
+    /// for callers outside the grant.
+    fn authorized_target<'a>(
+        &'a self,
+        authorization: &Authorization,
+        target: &str,
+    ) -> Result<&'a DiagnosticTarget, QueryError> {
+        if !authorization.is_granted(target) {
+            return Err(QueryError::AccessDenied);
+        }
+        self.targets
+            .iter()
+            .find(|registered| registered.name == target)
+            .ok_or(QueryError::UnknownTarget)
     }
 }
 
@@ -306,5 +402,55 @@ mod tests {
         assert_eq!(result.pid, None);
         assert_eq!(result.collected_at, 7);
         assert!(result.readings.is_empty());
+    }
+
+    #[test]
+    fn snapshotting_a_target_returns_a_stable_id() {
+        let mut diagnostic = Diagnostic::with_clock(|| 99);
+        diagnostic.add_process("cellapp01", 100).set_readings(
+            "cellapp01",
+            vec![("rss_bytes", 8_000_000), ("entities", 512)],
+        );
+        let mut auth = Authorization::new();
+        auth.grant("cellapp01");
+
+        let snapshot = diagnostic.snapshot(&auth, "cellapp01").unwrap();
+        assert_eq!(snapshot.target, "cellapp01");
+        assert_eq!(snapshot.collected_at, 99);
+        assert_eq!(snapshot.reading("rss_bytes"), Some(8_000_000));
+        assert_eq!(snapshot.reading("entities"), Some(512));
+        assert_eq!(snapshot.reading("missing"), None);
+
+        // The id is stable: the same content yields the same id, and it is a
+        // compact hex digest.
+        let again = diagnostic.snapshot(&auth, "cellapp01").unwrap();
+        assert_eq!(snapshot.id(), again.id());
+        assert_eq!(snapshot.id().len(), 16);
+        assert!(snapshot.id().chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn a_changed_reading_changes_the_snapshot_id() {
+        let mut diagnostic = Diagnostic::with_clock(|| 5);
+        diagnostic
+            .add_process("cellapp01", 100)
+            .set_readings("cellapp01", vec![("rss_bytes", 8_000_000)]);
+        let mut auth = Authorization::new();
+        auth.grant("cellapp01");
+
+        let first = diagnostic.snapshot(&auth, "cellapp01").unwrap();
+        diagnostic.set_readings("cellapp01", vec![("rss_bytes", 9_000_000)]);
+        let second = diagnostic.snapshot(&auth, "cellapp01").unwrap();
+        assert_ne!(first.id(), second.id());
+    }
+
+    #[test]
+    fn an_unauthorized_snapshot_is_refused() {
+        let diagnostic = diagnostic();
+        let auth = Authorization::new();
+        assert_eq!(
+            diagnostic.snapshot(&auth, "cellapp01"),
+            Err(QueryError::AccessDenied)
+        );
     }
 }
