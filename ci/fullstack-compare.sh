@@ -458,5 +458,11 @@ ci_finalize
 FINAL_RC=$?
 set -e
 
-[ "$LANE_RC" -ne 0 ] && exit "$LANE_RC"
-[ "$FINAL_RC" -ne 0 ] && exit "$FINAL_RC"
+# An `[ x ] && exit` tail returns the failed test's status (1) when x is zero,
+# so a healthy lane would exit 1 and fail the job. Branch instead.
+if [ "$LANE_RC" -ne 0 ]; then
+    exit "$LANE_RC"
+fi
+if [ "$FINAL_RC" -ne 0 ]; then
+    exit "$FINAL_RC"
+fi
