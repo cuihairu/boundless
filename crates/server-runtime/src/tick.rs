@@ -471,13 +471,14 @@ mod tests {
     use std::cell::Cell;
 
     type Log = Rc<RefCell<Vec<String>>>;
+    type Behavior = Box<dyn FnMut(&mut Updatables)>;
 
     /// A tagged updatable; optionally runs a behaviour before recording
     /// the visit.
     struct Tagged {
         tag: &'static str,
         log: Log,
-        behavior: Option<Box<dyn FnMut(&mut Updatables)>>,
+        behavior: Option<Behavior>,
     }
 
     impl Tagged {
@@ -489,11 +490,7 @@ mod tests {
             }))
         }
 
-        fn behaving(
-            tag: &'static str,
-            log: &Log,
-            behavior: Box<dyn FnMut(&mut Updatables)>,
-        ) -> Rc<RefCell<Self>> {
+        fn behaving(tag: &'static str, log: &Log, behavior: Behavior) -> Rc<RefCell<Self>> {
             Rc::new(RefCell::new(Self {
                 tag,
                 log: Rc::clone(log),
