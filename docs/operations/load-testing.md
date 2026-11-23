@@ -4,10 +4,11 @@ Load testing is driven by headless bot clients against a real server topology.
 The reference entry point is `server/tools/bots/`; its behavioural parity is
 BW-12-04 and its scenario work is BW-17.
 
-::: warning No bots exist in the working tree
-There is no `apps/bots/`, no `tests/load/` and no bot code anywhere in this
-repository — a search for bot/stress/load crates returns nothing but `todo.md`.
-This page specifies the target so the scenario files can be written before the
+::: warning No bot runner exists in the working tree
+There is no `apps/bots/` and no bot runtime code anywhere in this repository — a
+search for the bot runner returns nothing but `todo.md`. The scenario input
+layer (`crates/load` + `tests/load/scenarios/`) is in place (BW-17-02-01); this
+page specifies the target so the scenario files can be written before the
 runner exists.
 :::
 

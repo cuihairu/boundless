@@ -1916,7 +1916,8 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 在 `tests/load/scenarios/` 保存固定种子、账号池、并发量、爬升速率、预热及持续时间。覆盖登录洪峰、稳态移动、密集 AOI、跨 Cell、断线重连和长稳运行，记录负载生成端的资源使用。
 
-- [ ] **BW-17-02-01 定义场景输入**。**验收** 固定种子、账号池和并发配置可加载。
+- [x] **BW-17-02-01 定义场景输入**。**验收** 固定种子、账号池和并发配置可加载。（commit f7642cb）
+  - 证据：`crates/load`（f7642cb，新域库，层登记 LAYER_DOMAIN）——`Scenario{ name, fixed_seed, account_pool, concurrency, ramp_rate, warmup, duration }` + `Scenario::load_xml`（经 `resources::datasection::parse`，参考 Bots 配置同款 DataSection 风格）；`AccountPool::{Generated(prefix/count/password), Explicit(accounts/password)}`，`mode` 缺省 generated、`password` 缺省 `""`（对齐 `bots_config` 默认）；`ScenarioError{path,message}` 限定路径可定位（`accountPool/count`、`seed`…）。`tests/load/scenarios/` 六场景（登录洪峰/稳态移动/密集 AOI/跨 Cell/断线重连/长稳）+ 夹具遍历测试 `every_saved_scenario_loads` 逐个加载；16 单测 + 1 遍历全绿，行覆盖 98.58%（门禁 ≥98%），workspace 全绿、`workspace_rules_hold` 绿。详见 `docs/review/bw17-02-01-scenario-input.md`。
 - [ ] **BW-17-02-02 实现爬升、预热和持续时间**。**验收** 执行器输出各阶段时间。
 - [ ] **BW-17-02-03 实现登录洪峰场景**。**验收** 可重复发送指定速率。
 - [ ] **BW-17-02-04 实现稳态移动场景**。**验收** 固定种子生成相同轨迹。
