@@ -1242,7 +1242,7 @@
   - 证据：`crates/db/src/{lib,error,record,storage}.rs`（adbbea8）——契约对齐原版 `lib/db_storage/idatabase.hpp` `class IDatabase`：`EntityKey { type_id, db_id }`（`entity_key.hpp`，`dbID==0` 为按名解析腿，留给 BW-09-01-04 的 `getDatabaseIDFromName`）；`EntityStorage` trait 的 `get_entity` 返回 `Ok(None)`=原版 `isOK=false` 的"行缺失"而非失败；`load_entity` = `get_entity()?.ok_or(NotFound)`，即 DBApp 的 get/load 语义。内存后端 `MemoryStorage`（`insert`/`len`/`is_empty`）先承载验收用例，后续 `put_entity`（09-01-02）复用其 `insert`。**验收**：存在 DBID 返回记录、缺失 DBID→`NotFound`、同 DBID 异 type→`NotFound`、`PENDING_DATABASE_ID` 可存但非真实键（`entity_key.hpp` `PENDING_DATABASE_ID`），4 测全绿。另修复 main CI 红根因：工作区声明 `crates/db` 成员但目录从未入 git（`cargo metadata --locked` ENOENT，Toolchain pin and lockfile job 连续红）——本提交把 crate 目录纳入版本库，干净 HEAD 复跑 `ci/toolchain-check.sh --offline` PASS（members=13）、离线 workspace 构建通过、`cargo test --workspace` 0 失败。
 - [x] **BW-09-01-02 实现 write**。**验收** 创建与更新可从独立连接复读。(84bacc5)
 - [x] **BW-09-01-03 实现 delete**。**验收** 删除后的查询和重复删除结果匹配。(21a6321)
-- [ ] **BW-09-01-04 实现 lookup**。**验收** 按名称或类型返回对应记录。
+- [x] **BW-09-01-04 实现 lookup**。**验收** 按名称或类型返回对应记录。(26181e0)
 - [ ] **BW-09-01-05 分配 DBID 并维护在线状态**。**验收** 并发登录无重复占用。
 - [ ] **BW-09-01-06 对照重试回调**。**验收** 响应次数和错误与原版一致。
 
