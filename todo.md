@@ -1197,7 +1197,9 @@
 - [x] **BW-08-03-01 移植 RangeList 与触发边界**。**验收** 半径临界进入和离开事件吻合。
     - (commit 7ba5828, lane/bw08-witness) crates/server-runtime/src/range_list.rs：逐面移植 server/cellapp/{range_list_node,range_trigger,cell_range_list,entity_range_list_node,range_list_appeal_trigger} 参照（shuffleX/Z 双链穿行、RangeTrigger 上下界、insert 光标走、setRange 收缩、EntityRangeListNode::remove 传 z=FLT_MAX、appeal 大实体交叉、AoITrigger/AppealTrigger 标志面）；事件以 RangeEvent 日志外显。
     - 验收证据：21 项 range_list 测试——上界含端/下界开区间（x=r 恰界 enter、x=r+ε leave、x=-r 排除）、x/z 双轴穿越序列、对角单事件、共位零半径无假事件、setRange 收缩/扩张、remove/trigger_remove；cargo test -p server-runtime 653 passed，workspace 81 binaries exit 0，llvm-cov 行覆盖 98.13%（模块）、layering 9 passed。
-- [ ] **BW-08-03-02 管理 Witness 与 EntityCache**。**验收** 首次观察和重复进入结果一致。
+- [x] **BW-08-03-02 管理 Witness 与 EntityCache**。**验收** 首次观察和重复进入结果一致。
+    - (commit b161849, lane/bw08-witness) crates/server-runtime/src/witness.rs：逐面移植 entity_cache.{hpp,cpp,ipp}（10 个客户态标志位、NOT_UPDATABLE/CLIENT_STATE 掩码、reuse 的历史底重入判据、resetClientState 的 6 项复位）与 witness.cpp 管理面（AoITrigger::triggerEnter/Leave 跳过自身实体与 isManualAoI 类型、addToAoI 的销毁/不上客户端/已缓存活态/缓存已消失重入/全新实体四分支、removeFromAoI 的手动-触发双持有者计数、addToSeen 取队首优先级、deleteFromAoI 交换出队、~Witness 无收缩摘除）；RangeList 新增 drain_events_for 按触发器分流，令一个观察者的事件不再被别的观察者消费。
+    - 验收证据：18 项 witness 测试 + 22 项 range_list 测试——首次观察与重复进入的缓存快照（标志位/优先级/事件号/细节等级/id 别名/易变号/优先级增量）逐字段一致且仅占一个队槽、重复 add 幂等、手动与触发双持有者（先清手动不出队）、非上客户端与已销毁忽略、isManualAoI 类型不入触发但可显式加入、历史截断后重入置 refresh、创建时 appeal 覆盖的大实体先入队再入 insert 事件、无收缩销毁不发逐实体离开；cargo test -p server-runtime 669 passed，workspace 81 binaries exit 0，llvm-cov 生产行覆盖 99.26%（witness.rs，模块含测试 99.64%）、clippy 对 witness.rs/range_list.rs 零告警、layering 9 passed。
 - [ ] **BW-08-03-03 按带宽与优先级选择更新**。**验收** 固定负载下发送序列吻合。
 - [ ] **BW-08-03-04 同步位置与属性**。**验收** 自身和其他观察者收到各自投影。
 - [ ] **BW-08-03-05 复测多个观察者**。**验收** 互不污染缓存和预算。
