@@ -1,0 +1,11 @@
+[package]
+name = "message_logger"
+description = "BW-12-02 log ingestion protocol, component registration, fields and queries (lib/network/logger_message_forwarder, server/tools/message_logger)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+regex.workspace = true

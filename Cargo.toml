@@ -16,6 +16,8 @@ members = [
     "crates/asset-pipeline",
     "crates/python-module",
     "crates/plugin-host",
+    "crates/watcher",
+    "crates/message_logger",
     "crates/client",
     "crates/load",
     "apps/server",
