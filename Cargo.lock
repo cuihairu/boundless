@@ -1308,6 +1308,7 @@ name = "server-runtime"
 version = "0.1.0"
 dependencies = [
  "contracts",
+ "flate2",
  "foundation",
  "libc",
  "mercury",
