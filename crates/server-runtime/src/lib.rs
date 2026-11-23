@@ -40,6 +40,7 @@ pub mod machined;
 pub mod mailbox_call;
 pub mod movement;
 pub mod offload;
+pub mod offload_role;
 pub mod offloaded_backup;
 pub mod passenger_teleport;
 pub mod pending_logins;
