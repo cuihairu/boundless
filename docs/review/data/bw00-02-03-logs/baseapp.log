@@ -1,0 +1,14 @@
+WARNING: [ResMgr] The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/fantasydemo/res" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from BW_RES_PATH env variable).
+INFO: [Config] BWConfig::init: Adding server/bw.xml
+ERROR: [Network] MachineGuardMessage::sendAndRecv: timed out!
+ERROR: [Network] MachineDaemon::queryForInternalInterface: Failed to send interface discovery message to bwmachined.
+WARNING: bwMainT: Unable to determine internal interface via BWMachineD query.
+INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface
+ERROR: [Network] MachineGuardMessage::sendAndRecv: timed out!
+ERROR: [Network] MachineDaemon::queryForInternalInterface: Failed to send interface discovery message to bwmachined.
+INFO: [Network] NetworkInterface::recreateListeningSocket: bound to all interfaces with default route interface on ens18 ( 192.168.5.188:51158 )
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:51158
+INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...

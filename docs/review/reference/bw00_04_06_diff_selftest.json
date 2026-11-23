@@ -1,0 +1,78 @@
+{
+ "all_ok": true,
+ "baseline": "docs/review/reference/bw00_04_02_callback_fixtures.json",
+ "cases": [
+  {
+   "counts": {
+    "field": 1,
+    "ordering": 0,
+    "timeout": 0
+   },
+   "injected": "field",
+   "ok": true,
+   "report": {
+    "field": [
+     {
+      "key": "Proxy::addCreateBasePlayerToChannelBundle",
+      "new": "Creating player on client (edited)",
+      "new_order": 5,
+      "ref": "Creating player on client",
+      "ref_order": 5
+     }
+    ],
+    "ignored": [],
+    "ordering": [],
+    "timeout": []
+   }
+  },
+  {
+   "counts": {
+    "field": 0,
+    "ordering": 0,
+    "timeout": 1
+   },
+   "injected": "timeout",
+   "ok": true,
+   "report": {
+    "field": [],
+    "ignored": [],
+    "ordering": [],
+    "timeout": [
+     {
+      "key": "ClientAvatar.__init__",
+      "new": true,
+      "new_order": 11,
+      "ref": false,
+      "ref_order": 11
+     }
+    ]
+   }
+  },
+  {
+   "counts": {
+    "field": 0,
+    "ordering": 2,
+    "timeout": 0
+   },
+   "injected": "ordering",
+   "ok": true,
+   "report": {
+    "field": [],
+    "ignored": [],
+    "ordering": [
+     {
+      "key": "Proxy::addCreateBasePlayerToChannelBundle",
+      "new": 3,
+      "ref": 4
+     },
+     {
+      "key": "Proxy::enableEntities",
+      "new": 4,
+      "ref": 3
+     }
+    ],
+    "timeout": []
+   }
+  }
+ ]
+}

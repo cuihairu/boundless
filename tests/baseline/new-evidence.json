@@ -1,0 +1,39 @@
+{
+  "login_wire": {
+    "payload_bytes": "00 00 09 02",
+    "messages": {
+      "login": {
+        "length_style": "VARIABLE_LENGTH_MESSAGE",
+        "length_param": 2,
+        "id": 0
+      },
+      "probe": {
+        "length_style": "FIXED_LENGTH_MESSAGE",
+        "length_param": 0,
+        "id": 1
+      },
+      "challengeResponse": {
+        "length_style": "VARIABLE_LENGTH_MESSAGE",
+        "length_param": 2,
+        "id": 2
+      }
+    }
+  },
+  "callback": {
+    "status": "not implemented",
+    "note": "the Mercury full stack and the Python callback surface arrive with BW-02"
+  },
+  "db_state": {
+    "status": "no consumer",
+    "note": "no db.xml billing/seed consumer in the port yet"
+  },
+  "entity_defs": {
+    "status": "groundwork",
+    "note": "the type-id registry assigns load-order ids; property/method tables arrive with BW-04-02"
+  },
+  "launch": {
+    "gate": "closed",
+    "reason": "the server runtime validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+  },
+  "source": "crates/{mercury,entitydef,server-runtime}"
+}

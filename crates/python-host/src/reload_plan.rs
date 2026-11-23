@@ -222,7 +222,7 @@ pub fn digest_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
             (None, None) => return true,
             (None, Some(_)) | (Some(_), None) => return false,
             (Some(expected_char), Some(actual_char)) => {
-                if expected_char.to_ascii_lowercase() != actual_char.to_ascii_lowercase() {
+                if !expected_char.eq_ignore_ascii_case(actual_char) {
                     return false;
                 }
             }

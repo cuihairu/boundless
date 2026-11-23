@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" width="320" height="320" role="img" aria-label="Boundless ring logo">
+  <title>Boundless ring</title>
+  <g fill="none" stroke-linecap="round">
+    <circle cx="160" cy="160" r="28" stroke="#E6F1FB" stroke-width="2"/>
+    <circle cx="160" cy="160" r="56" stroke="#5DCAA5" stroke-width="4.5" stroke-dasharray="58 30"/>
+    <circle cx="160" cy="160" r="84" stroke="#5DCAA5" stroke-width="3" stroke-dasharray="42 24" opacity="0.65"/>
+    <circle cx="160" cy="160" r="112" stroke="#5DCAA5" stroke-width="2" stroke-dasharray="23 27" opacity="0.35"/>
+  </g>
+  <circle cx="160" cy="160" r="10" fill="#5DCAA5"/>
+</svg>

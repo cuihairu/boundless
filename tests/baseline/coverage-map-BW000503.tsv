@@ -1,0 +1,33 @@
+original_path	kind	index	ticket	how
+bwclient (client)	executable	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+texformat_converter (tools/asset_pipeline/converters/texformat_converter)	asset pipeline dll	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+texture_converter (tools/asset_pipeline/converters/texture_converter)	asset pipeline dll	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+bsp_converter (tools/asset_pipeline/converters/bsp_converter)	asset pipeline dll	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+primitive_processor (tools/asset_pipeline/converters/primitive_processor)	asset pipeline dll	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+visual_processor (tools/asset_pipeline/converters/visual_processor)	asset pipeline dll	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+space_converter (tools/asset_pipeline/converters/space_converter)	asset pipeline dll	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+hierarchical_config_converter (tools/asset_pipeline/converters/hierarchical_config_converter)	asset pipeline dll	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+effect_converter (tools/asset_pipeline/converters/effect_converter)	asset pipeline dll	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+dependency (tools/asset_pipeline/dependency)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+dependency_unit_test (tools/asset_pipeline/dependency/unit_test)	executable	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+dependency_unit_test (tools/asset_pipeline/dependency/unit_test)	tool test	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+compiler (tools/asset_pipeline/compiler)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+test_compiler (tools/asset_pipeline/compiler/test_compiler)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+test_converter (tools/asset_pipeline/compiler/test_converter)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+compiler_unit_test (tools/asset_pipeline/compiler/unit_test)	executable	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+compiler_unit_test (tools/asset_pipeline/compiler/unit_test)	tool test	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+discovery (tools/asset_pipeline/discovery)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+conversion (tools/asset_pipeline/conversion)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+particle_editor (tools/particle_editor)	tool	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+modeleditor (tools/modeleditor)	tool	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+worldeditor (tools/worldeditor)	tool	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+jit_compiler (tools/jit_compiler)	asset pipeline exe	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+modeleditor_core (tools/modeleditor_core)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+offline_processor (tools/offline_processor)	tool	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+assetprocessor (tools/assetprocessor)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+bwlauncher (tools/bwlauncher)	executable	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+tools_common (tools/common)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+batch_compiler (tools/batch_compiler)	asset pipeline exe	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+navgen (tools/navgen)	executable	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+process_defs (tools/process_defs)	executable	none yet	BW-04,BW-13	no port counterpart yet; the ticket's source scope covers it
+res_packer (tools/res_packer)	executable	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it

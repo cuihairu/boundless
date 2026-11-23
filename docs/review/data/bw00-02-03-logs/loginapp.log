@@ -1,0 +1,118 @@
+WARNING: [ResMgr] The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/fantasydemo/res" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from BW_RES_PATH env variable).
+INFO: [Config] BWConfig::init: Adding server/bw.xml
+INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface
+WARNING: [Network] NetworkInterface::recreateListeningSocket: No address received from machined so binding to all interfaces.
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:43539
+INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Total # loggers on network: 0
+ERROR: [CStdMF] DirectoryWatcher::addChild: tried to replace existing watcher filterThreshold
+INFO: [Config] ---- LoginApp   Version: 14.4.1. Config: hybrid. Built: 23:11:34 Nov 21 2026. UID: 1000. User: cui. PID: 4107404 ----
+INFO: [Config] Server coding: Intel(R) Core(TM) i9-10880H CPU @ 2.30GHz x14 with 48207128kB RAM
+INFO: [Config] Resource path (1 of 2): /home/cui/workspaces/BigWorld/programming/fantasydemo/res
+INFO: [Config] Resource path (2 of 2): /home/cui/workspaces/BigWorld/game/res/bigworld
+WARNING: [Config] ServerAppConfig::init: loginApp/shouldShutDownIfPortUsed not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: loginApp/verboseExternalInterface not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginApp/maxExternalSocketProcessingTime not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: loginApp/maxLoginDelay not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: loginApp/privateKey not read from bw.xml chain. Using default (server/loginapp.privkey)
+WARNING: [Config] ServerAppConfig::init: loginApp/allowLogin not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginApp/allowProbe not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginApp/logProbes not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: loginApp/registerExternalInterface not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginApp/allowUnencryptedLogins not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginApp/maxRepliesOnFailPerSecond not read from bw.xml chain. Using default (100)
+WARNING: [Config] ServerAppConfig::init: loginApp/verboseLoginFailures not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginApp/loginRateLimit not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: loginApp/rateLimitDuration not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: loginApp/ipAddressRateLimit not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: loginApp/ipAddressPortRateLimit not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: loginApp/maxUsernameLength not read from bw.xml chain. Using default (256)
+WARNING: [Config] ServerAppConfig::init: loginApp/maxPasswordLength not read from bw.xml chain. Using default (256)
+WARNING: [Config] ServerAppConfig::init: loginApp/maxLoginMessageSize not read from bw.xml chain. Using default (1472)
+WARNING: [Config] ServerAppConfig::init: loginApp/shouldOffsetExternalPortByUID not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginApp/passwordlessLoginsOnly not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginApp/ipBanListCleanupInterval not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: numStartupRetries not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: loginApp/challengeType not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: externalLatencyMin not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: externalLatencyMax not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: externalLossRatio not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: externalInterface not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: tcpServerBacklog not read from bw.xml chain. Using default (511)
+WARNING: [Config] ServerAppConfig::init: networkAddressTranslation/localNetMask not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: networkAddressTranslation/externalAddress not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: gameUpdateHertz not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: serverMode not read from bw.xml chain. Using default (standalone)
+WARNING: [Config] ServerAppConfig::init: production not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: timeSyncPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: useDefaultSpace not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxOpenFileDescriptors not read from bw.xml chain. Using default (-1)
+WARNING: [Config] ServerAppConfig::init: channelTimeoutPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: allowInteractiveDebugging not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxSharedDataValueSize not read from bw.xml chain. Using default (10240)
+WARNING: [Config] ServerAppConfig::init: maxMgrRegisterStagger not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: numStartupRetries not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/enabled not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/threshold not read from bw.xml chain. Using default (1.5)
+WARNING: [Config] ServerAppConfig::init: profilerJsonDumpDirectory not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: profilerMaxThreads not read from bw.xml chain. Using default (96)
+INFO: [Config] Configuration options (from server/bw.xml):
+INFO: [Config]   loginApp/shouldShutDownIfPortUsed  = true
+INFO: [Config]   loginApp/verboseExternalInterface  = false
+INFO: [Config]   loginApp/maxExternalSocketProcessingTime = 1
+INFO: [Config]   loginApp/maxLoginDelay             = 10
+INFO: [Config]   loginApp/privateKey                = server/loginapp.privkey
+INFO: [Config]   loginApp/allowLogin                = false
+INFO: [Config]   loginApp/allowProbe                = false
+INFO: [Config]   loginApp/logProbes                 = true
+INFO: [Config]   loginApp/registerExternalInterface = false
+INFO: [Config]   loginApp/allowUnencryptedLogins    = false
+INFO: [Config]   loginApp/maxRepliesOnFailPerSecond = 100
+INFO: [Config]   loginApp/verboseLoginFailures      = false
+INFO: [Config]   loginApp/loginRateLimit            = 0
+INFO: [Config]   loginApp/rateLimitDuration         = 0
+INFO: [Config]   loginApp/ipAddressRateLimit        = 0
+INFO: [Config]   loginApp/ipAddressPortRateLimit    = 0
+INFO: [Config]   loginApp/maxUsernameLength         = 256
+INFO: [Config]   loginApp/maxPasswordLength         = 256
+INFO: [Config]   loginApp/maxLoginMessageSize       = 1472
+INFO: [Config]   loginApp/shouldOffsetExternalPortByUID = false
+INFO: [Config]   loginApp/passwordlessLoginsOnly    = false
+INFO: [Config]   loginApp/ipBanListCleanupInterval  = 10
+INFO: [Config]   numStartupRetries                  = 60
+INFO: [Config]   loginApp/challengeType             = 
+INFO: [Config]   externalLatencyMin                 = 0
+INFO: [Config]   externalLatencyMax                 = 0
+INFO: [Config]   externalLossRatio                  = 0
+INFO: [Config]   externalInterface                  = 
+INFO: [Config]   tcpServerBacklog                   = 511
+INFO: [Config]   networkAddressTranslation/localNetMask = 
+INFO: [Config]   networkAddressTranslation/externalAddress = 
+INFO: [Config]   gameUpdateHertz                    = 10
+INFO: [Config]   personality                        = fantasydemo (default: BWPersonality)
+INFO: [Config]   serverMode                         = standalone
+INFO: [Config]   production                         = true
+INFO: [Config]   timeSyncPeriod                     = 60
+INFO: [Config]   useDefaultSpace                    = false
+INFO: [Config]   maxOpenFileDescriptors             = -1
+INFO: [Config]   channelTimeoutPeriod               = 60
+INFO: [Config]   allowInteractiveDebugging          = false
+INFO: [Config]   maxSharedDataValueSize             = 10240
+INFO: [Config]   maxMgrRegisterStagger              = 0
+INFO: [Config]   numStartupRetries                  = 60
+INFO: [Config]   hitchDetection/enabled             = false
+INFO: [Config]   hitchDetection/threshold           = 1.5
+INFO: [Config]   profilerJsonDumpDirectory          = 
+INFO: [Config]   profilerMaxThreads                 = 96
+TRACE: [CStdMF] ProfilerSystem: 12mb memory used.
+INFO: [Network] NetworkInterface::recreateListeningSocket: bound to all interfaces with default route interface on ens18 ( 192.168.5.188:20013 )
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:20013
+INFO: [Network] TCPServer::initWithPort: Listening on 192.168.5.188:20013
+INFO: [Server] ServerApp::init: Run from bwmachined = false
+INFO: [Network] Server protocol version: 2.9.0
+ERROR: LoginApp::initLogOnParamsEncoder: Couldn't load private key from non-existent file server/loginapp.privkey
+ERROR: [Server] Failed to initialise LoginApp
+INFO: LoginApp has shut down.

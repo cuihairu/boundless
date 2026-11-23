@@ -1,0 +1,72 @@
+{
+  "substitution": "one role replaced, the rest held constant",
+  "gate": "closed",
+  "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)",
+  "roles": [
+    {
+      "role": "baseapp",
+      "reference_binary": "game/bin/server/el7/server/baseapp",
+      "reference_present": true,
+      "port_entry": "boundless-server baseapp",
+      "gate": "closed",
+      "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+    },
+    {
+      "role": "baseappmgr",
+      "reference_binary": "game/bin/server/el7/server/baseappmgr",
+      "reference_present": true,
+      "port_entry": "boundless-server baseappmgr",
+      "gate": "closed",
+      "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+    },
+    {
+      "role": "cellapp",
+      "reference_binary": "game/bin/server/el7/server/cellapp",
+      "reference_present": true,
+      "port_entry": "boundless-server cellapp",
+      "gate": "closed",
+      "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+    },
+    {
+      "role": "cellappmgr",
+      "reference_binary": "game/bin/server/el7/server/cellappmgr",
+      "reference_present": true,
+      "port_entry": "boundless-server cellappmgr",
+      "gate": "closed",
+      "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+    },
+    {
+      "role": "dbapp",
+      "reference_binary": "game/bin/server/el7/server/dbapp",
+      "reference_present": true,
+      "port_entry": "boundless-server dbapp",
+      "gate": "closed",
+      "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+    },
+    {
+      "role": "dbappmgr",
+      "reference_binary": "game/bin/server/el7/server/dbappmgr",
+      "reference_present": true,
+      "port_entry": "boundless-server dbappmgr",
+      "gate": "closed",
+      "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+    },
+    {
+      "role": "loginapp",
+      "reference_binary": "game/bin/server/el7/server/loginapp",
+      "reference_present": true,
+      "port_entry": "boundless-server loginapp",
+      "gate": "closed",
+      "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+    },
+    {
+      "role": "reviver",
+      "reference_binary": "game/bin/server/el7/server/reviver",
+      "reference_present": true,
+      "port_entry": "boundless-server reviver",
+      "gate": "closed",
+      "gate_reason": "the port role validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+    }
+  ],
+  "source": "crates/server-runtime/src/app.rs + game/bin/server/el7/server"
+}

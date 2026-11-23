@@ -1,0 +1,6 @@
+  personality = fantasydemo
+  baseApp
+    archivePeriod = 0
+  billingSystem
+    shouldAcceptUnknownUsers = true
+    entityTypeForUnknownUsers = Avatar

@@ -1,0 +1,213 @@
+{
+  "name": "boundless-vscode",
+  "displayName": "Boundless",
+  "description": "Entity definition language support, cluster tasks and documentation access for Boundless workspaces.",
+  "version": "0.0.1",
+  "license": "LGPL-3.0-or-later",
+  "publisher": "boundless",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/scripts/entities.xml",
+    "onLanguage:entities",
+    "onCommand:boundless.showWorkspaceInfo"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "boundless.showWorkspaceInfo",
+        "title": "Boundless: Show Workspace Configuration",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.startCluster",
+        "title": "Boundless: Start Local Cluster",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.stopCluster",
+        "title": "Boundless: Stop Local Cluster",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.showClusterStatus",
+        "title": "Boundless: Show Cluster Status",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.showClusterLogs",
+        "title": "Boundless: Show Role Log",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.runTests",
+        "title": "Boundless: Run Tests",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.runBots",
+        "title": "Boundless: Run Bots",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.setupPythonDebug",
+        "title": "Boundless: Set Up Python Debug Configurations",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.setupRustDebug",
+        "title": "Boundless: Set Up Rust Launch Configurations",
+        "category": "Boundless"
+      },
+      {
+        "command": "boundless.setupDocsMcp",
+        "title": "Boundless: Set Up Documentation MCP Server",
+        "category": "Boundless"
+      }
+    ],
+    "languages": [
+      {
+        "id": "entities",
+        "aliases": [
+          "EntityDef",
+          "entities"
+        ],
+        "extensions": [
+          ".def"
+        ],
+        "filenames": [
+          "entities.xml",
+          "alias.xml",
+          "services.xml",
+          "capabilities.xml",
+          "user_data_objects.xml"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "entities",
+        "scopeName": "source.entities",
+        "path": "./syntaxes/entities.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "entities",
+        "path": "./snippets/entities.json"
+      }
+    ],
+    "configuration": {
+      "title": "Boundless",
+      "properties": {
+        "boundless.cluster.binary": {
+          "type": "string",
+          "default": "target/debug/boundless-server",
+          "description": "Role binary to launch, relative to the workspace folder holding the resource root (target/debug/boundless-server after cargo build)."
+        },
+        "boundless.cluster.roles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "baseapp",
+              "baseappmgr",
+              "cellapp",
+              "cellappmgr",
+              "dbapp",
+              "dbappmgr",
+              "editor"
+            ]
+          },
+          "default": [
+            "baseapp",
+            "cellapp"
+          ],
+          "description": "Roles to start with the local cluster, in the reference server's role names."
+        },
+        "boundless.cluster.testsCommand": {
+          "type": "string",
+          "default": "cargo test",
+          "description": "Command the Run Tests job executes in the workspace folder."
+        },
+        "boundless.cluster.botsCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Command the Run Bots job executes in the workspace folder. Empty disables the job."
+        },
+        "boundless.cluster.launchRoles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "baseapp",
+            "cellapp"
+          ],
+          "description": "Roles that get a Python attach configuration in launch.json."
+        },
+        "boundless.docs.server": {
+          "type": "string",
+          "default": "integrations/mcp/docs/target/release/boundless-docs-mcp",
+          "description": "boundless-docs-mcp to serve the documentation with, relative to the workspace folder (cargo build --release in integrations/mcp/docs), or an absolute path."
+        },
+        "boundless.docs.root": {
+          "type": "string",
+          "default": "${workspaceFolder}",
+          "description": "The git repository the documentation is read from, as passed to the server's --root."
+        },
+        "boundless.docs.version": {
+          "type": "string",
+          "default": "HEAD",
+          "description": "Git ref label or commit the queries answer for; HEAD answers for the checked-out version of the workspace."
+        },
+        "boundless.docs.prefix": {
+          "type": "string",
+          "default": "docs",
+          "description": "The documentation directory inside the repository."
+        },
+        "boundless.docs.langs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "zh"
+          ],
+          "description": "Locale directories inside the documentation root."
+        },
+        "boundless.docs.url": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the rendered documentation site, so the source links open there; empty keeps them repository-relative."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "check": "tsc -p . --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "pnpm run build && vsce package --no-dependencies",
+    "verify": "pnpm run build && node tools/verify/navigation.cjs && node tools/verify/diagnostics.cjs && node tools/verify/cluster.cjs && node tools/verify/docsMcp.cjs && node tools/verify/vsix.cjs && node tools/verify/host.cjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "@types/vscode": "1.85.0",
+    "@vscode/vsce": "3.2.1",
+    "typescript": "5.7.3",
+    "vitest": "5.1.1",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^8.0.0"
+  }
+}

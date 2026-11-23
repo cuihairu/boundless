@@ -1,0 +1,8 @@
+testEntity0 smoothed load = 0.000000, raw = 0.000000
+testEntity1 smoothed load = 0.068890, raw = 0.070000
+testEntity2 smoothed load = 0.137780, raw = 0.140000
+testEntity3 smoothed load = 0.000000, raw = 0.000000
+testEntity4 smoothed load = 0.137780, raw = 0.140000
+5 tests run
+There were no test failures.
+Test time: 0.0397 seconds.

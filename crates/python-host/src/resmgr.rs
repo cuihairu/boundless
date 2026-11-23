@@ -1271,8 +1271,7 @@ unsafe extern "C" fn get_as_string(
     self_: *mut capi::PyObject,
     _closure: *mut c_void,
 ) -> *mut capi::PyObject {
-    let answer = with_section_read!(self_, |section| string_object(section.as_string()));
-    answer
+    with_section_read!(self_, |section| string_object(section.as_string()))
 }
 
 /// `asWideString` getter: the codec is a plain UTF-8 round trip
@@ -1285,8 +1284,7 @@ unsafe extern "C" fn get_as_wide_string(
     self_: *mut capi::PyObject,
     _closure: *mut c_void,
 ) -> *mut capi::PyObject {
-    let answer = with_section_read!(self_, |section| string_object(section.as_string()));
-    answer
+    with_section_read!(self_, |section| string_object(section.as_string()))
 }
 
 /// `asInt` getter.
@@ -1298,8 +1296,7 @@ unsafe extern "C" fn get_as_int(
     self_: *mut capi::PyObject,
     _closure: *mut c_void,
 ) -> *mut capi::PyObject {
-    let answer = with_section_read!(self_, |section| int_object(section.as_int(0) as i64));
-    answer
+    with_section_read!(self_, |section| int_object(section.as_int(0) as i64))
 }
 
 /// `asInt64` getter.
@@ -1311,8 +1308,7 @@ unsafe extern "C" fn get_as_int64(
     self_: *mut capi::PyObject,
     _closure: *mut c_void,
 ) -> *mut capi::PyObject {
-    let answer = with_section_read!(self_, |section| int_object(section.as_int64(0)));
-    answer
+    with_section_read!(self_, |section| int_object(section.as_int64(0)))
 }
 
 /// `asFloat` getter.
@@ -1324,8 +1320,7 @@ unsafe extern "C" fn get_as_float(
     self_: *mut capi::PyObject,
     _closure: *mut c_void,
 ) -> *mut capi::PyObject {
-    let answer = with_section_read!(self_, |section| float_object(section.as_float(0.0) as f64));
-    answer
+    with_section_read!(self_, |section| float_object(section.as_float(0.0) as f64))
 }
 
 /// `asBool` getter: the `asBool(false)` of the reference.
@@ -1471,12 +1466,12 @@ unsafe extern "C" fn set_as_vector4(
 /// the default's -- then column 3 is forced to `0,0,0,1`.
 fn matrix_from_section(section: &DataSection, default: MatrixValue) -> MatrixValue {
     let mut value = default;
-    for row in 0..4 {
-        let fallback = Vector3::new(value.m[row][0], value.m[row][1], value.m[row][2]);
+    for (row, cells) in value.m.iter_mut().enumerate() {
+        let fallback = Vector3::new(cells[0], cells[1], cells[2]);
         let parsed = section.read_vector3(&format!("row{row}"), fallback);
-        value.m[row][0] = parsed.x;
-        value.m[row][1] = parsed.y;
-        value.m[row][2] = parsed.z;
+        cells[0] = parsed.x;
+        cells[1] = parsed.y;
+        cells[2] = parsed.z;
     }
     value.m[0][3] = 0.0;
     value.m[1][3] = 0.0;
@@ -1519,13 +1514,9 @@ unsafe extern "C" fn set_as_matrix(
         return -1;
     };
     with_section_write!(self_, |section| {
-        for row in 0..4 {
+        for (row, cells) in matrix.m.iter().enumerate() {
             if let Some(child) = section.open_or_make_section(&format!("row{row}")) {
-                child.set_vector3(Vector3::new(
-                    matrix.m[row][0],
-                    matrix.m[row][1],
-                    matrix.m[row][2],
-                ));
+                child.set_vector3(Vector3::new(cells[0], cells[1], cells[2]));
             }
         }
     });
@@ -1955,37 +1946,37 @@ unsafe fn read_values(
     let (root, base) = unsafe { section_parts(self_) };
     let tree = root.borrow();
     let mut answers: Vec<*mut capi::PyObject> = Vec::new();
-    if let Some(node) = walk_read(&tree.data, &base) {
-        if let Some((parent, leaf)) = split_tag_read(node, &path) {
-            for index in 0..parent.count_children() {
-                let Some(child) = parent.open_child(index) else {
-                    continue;
-                };
-                if child.section_name() != leaf {
-                    continue;
-                }
-                answers.push(match kind {
-                    ReadKind::Str | ReadKind::WStr => string_object(child.as_string()),
-                    ReadKind::Int => int_object(child.as_int(0) as i64),
-                    ReadKind::Float => float_object(child.as_float(0.0) as f64),
-                    ReadKind::Vec2 => {
-                        let v = child.as_vector2(Vector2::ZERO);
-                        // SAFETY: the caller owns the GIL.
-                        unsafe { own_raw(vector_object([v.x, v.y, 0.0, 0.0], 2)) }
-                    }
-                    ReadKind::Vec3 => {
-                        let v = child.as_vector3(Vector3::ZERO);
-                        // SAFETY: the caller owns the GIL.
-                        unsafe { own_raw(vector_object([v.x, v.y, v.z, 0.0], 3)) }
-                    }
-                    ReadKind::Vec4 => {
-                        let v = child.as_vector4(Vector4::ZERO);
-                        // SAFETY: the caller owns the GIL.
-                        unsafe { own_raw(vector_object([v.x, v.y, v.z, v.w], 4)) }
-                    }
-                    _ => unreachable!("read*s carry string, int, float and vector kinds"),
-                });
+    if let Some(node) = walk_read(&tree.data, &base)
+        && let Some((parent, leaf)) = split_tag_read(node, &path)
+    {
+        for index in 0..parent.count_children() {
+            let Some(child) = parent.open_child(index) else {
+                continue;
+            };
+            if child.section_name() != leaf {
+                continue;
             }
+            answers.push(match kind {
+                ReadKind::Str | ReadKind::WStr => string_object(child.as_string()),
+                ReadKind::Int => int_object(child.as_int(0) as i64),
+                ReadKind::Float => float_object(child.as_float(0.0) as f64),
+                ReadKind::Vec2 => {
+                    let v = child.as_vector2(Vector2::ZERO);
+                    // SAFETY: the caller owns the GIL.
+                    unsafe { own_raw(vector_object([v.x, v.y, 0.0, 0.0], 2)) }
+                }
+                ReadKind::Vec3 => {
+                    let v = child.as_vector3(Vector3::ZERO);
+                    // SAFETY: the caller owns the GIL.
+                    unsafe { own_raw(vector_object([v.x, v.y, v.z, 0.0], 3)) }
+                }
+                ReadKind::Vec4 => {
+                    let v = child.as_vector4(Vector4::ZERO);
+                    // SAFETY: the caller owns the GIL.
+                    unsafe { own_raw(vector_object([v.x, v.y, v.z, v.w], 4)) }
+                }
+                _ => unreachable!("read*s carry string, int, float and vector kinds"),
+            });
         }
     }
     let tuple = unsafe { capi::PyTuple_New(answers.len() as capi::PySsize) };
@@ -2160,13 +2151,9 @@ unsafe fn apply_write(target: &mut DataSection, value: *mut capi::PyObject, kind
         WriteKind::Matrix => {
             // SAFETY: the wall above guaranteed a provider or matrix.
             let matrix = unsafe { matrix_of(value) }.expect("the wall parsed");
-            for row in 0..4 {
+            for (row, cells) in matrix.m.iter().enumerate() {
                 if let Some(child) = target.open_or_make_section(&format!("row{row}")) {
-                    child.set_vector3(Vector3::new(
-                        matrix.m[row][0],
-                        matrix.m[row][1],
-                        matrix.m[row][2],
-                    ));
+                    child.set_vector3(Vector3::new(cells[0], cells[1], cells[2]));
                 }
             }
         }
@@ -2206,11 +2193,11 @@ unsafe fn write_value(
     }
     let (root, base) = unsafe { section_parts(self_) };
     let mut tree = root.borrow_mut();
-    if let Some(node) = walk_mut(&mut tree.data, &base) {
-        if let Some(target) = node.open_or_make_section(&path) {
-            // SAFETY: the wall above accepted the value.
-            unsafe { apply_write(target, value, kind) };
-        }
+    if let Some(node) = walk_mut(&mut tree.data, &base)
+        && let Some(target) = node.open_or_make_section(&path)
+    {
+        // SAFETY: the wall above accepted the value.
+        unsafe { apply_write(target, value, kind) };
     }
     drop(tree);
     // The answer is the subscript of the path: the freshly written child,
@@ -2312,14 +2299,14 @@ unsafe fn write_values(
     }
     let (root, base) = unsafe { section_parts(self_) };
     let mut tree = root.borrow_mut();
-    if let Some(node) = walk_mut(&mut tree.data, &base) {
-        if let Some((parent, leaf)) = split_tag_path(node, &path, true) {
-            for item in &items {
-                let child = parent.add_child(&leaf);
-                // SAFETY: the wall above accepted every item; the value
-                // carries the shape and each child write re-parses it.
-                unsafe { apply_write(child, *item, kind) };
-            }
+    if let Some(node) = walk_mut(&mut tree.data, &base)
+        && let Some((parent, leaf)) = split_tag_path(node, &path, true)
+    {
+        for item in &items {
+            let child = parent.add_child(&leaf);
+            // SAFETY: the wall above accepted every item; the value
+            // carries the shape and each child write re-parses it.
+            unsafe { apply_write(child, *item, kind) };
         }
     }
     drop(tree);
@@ -2490,7 +2477,7 @@ unsafe extern "C" fn method_clean_name(
     let (root, path) = unsafe { section_parts(self_) };
     let mut tree = root.borrow_mut();
     let changed =
-        walk_mut(&mut tree.data, &path).map_or(false, |section| section.sanitise_section_name());
+        walk_mut(&mut tree.data, &path).is_some_and(|section| section.sanitise_section_name());
     drop(tree);
     boolean_object(changed)
 }
@@ -2948,21 +2935,21 @@ unsafe fn struct_chain_lookup(
         let values = unsafe { (*body_).values.as_ref() };
         if let Some(values) = values {
             let tree = values.root.borrow();
-            if let Some(node) = indexed_node(&tree.data, &values.indices) {
-                if let Some(section) = node.open_section(key) {
-                    // SAFETY: the interpreter is up and the caller owns
-                    // the GIL.
-                    let answer = unsafe { guess_python_from_section(section) };
-                    drop(tree);
-                    return Some(answer);
-                }
+            if let Some(node) = indexed_node(&tree.data, &values.indices)
+                && let Some(section) = node.open_section(key)
+            {
+                // SAFETY: the interpreter is up and the caller owns
+                // the GIL.
+                let answer = unsafe { guess_python_from_section(section) };
+                drop(tree);
+                return Some(answer);
             }
         }
         // SAFETY: the parent handle is a live instance or absent.
         let parent = unsafe { (*body_).parent.as_ref() };
-        match parent {
-            Some(parent) => current = parent.as_ptr(),
-            None => return None,
+        {
+            let parent = parent?;
+            current = parent.as_ptr()
         }
     }
 }
@@ -3531,11 +3518,11 @@ unsafe extern "C" fn new_resource_table(
         "ResourceTable has been deprecated and is planned for removal in \
          the next BigWorld release.\nUse DataSection support instead."
     );
-    if let Some(update_fn) = update_fn {
-        if unsafe { capi::PyCallable_Check(update_fn) } == 0 {
-            raise_type_error("ResourceTable() second arg must be callable");
-            return std::ptr::null_mut();
-        }
+    if let Some(update_fn) = update_fn
+        && unsafe { capi::PyCallable_Check(update_fn) } == 0
+    {
+        raise_type_error("ResourceTable() second arg must be callable");
+        return std::ptr::null_mut();
     }
     let mut store_state = store()
         .lock()

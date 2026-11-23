@@ -6,7 +6,7 @@
 //! `Quaternion::from_matrix`.
 
 use super::matrix::Matrix;
-use super::vector::{clamp, Vector3, Vector4};
+use super::vector::{Vector3, Vector4, clamp};
 
 /// Default epsilon for the reference `almostEqual` equality.
 pub const QUATERNION_ALMOST_EQUAL_EPSILON: f32 = 0.0004;
@@ -61,7 +61,7 @@ impl Quaternion {
         self.x = -self.x / d;
         self.y = -self.y / d;
         self.z = -self.z / d;
-        self.w = self.w / d;
+        self.w /= d;
     }
 
     /// Conjugate (no division), commonly used for unit quaternions.
@@ -252,14 +252,8 @@ mod tests {
     fn multiply_order_applies_q1_then_q2() {
         // q1 = 90° yaw; q2 = 90° pitch. Applying q1 then q2 gives a
         // distinguishable orientation from the reverse order.
-        let q1 = Quaternion::from_angle_axis(
-            std::f32::consts::FRAC_PI_2,
-            &Vector3::J,
-        );
-        let q2 = Quaternion::from_angle_axis(
-            std::f32::consts::FRAC_PI_2,
-            &Vector3::I,
-        );
+        let q1 = Quaternion::from_angle_axis(std::f32::consts::FRAC_PI_2, &Vector3::J);
+        let q2 = Quaternion::from_angle_axis(std::f32::consts::FRAC_PI_2, &Vector3::I);
 
         let q12 = Quaternion::multiply(&q1, &q2);
         let q21 = Quaternion::multiply(&q2, &q1);

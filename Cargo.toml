@@ -7,8 +7,16 @@ members = [
     "crates/mercury",
     "crates/contracts",
     "crates/entitydef",
+    "crates/chunk",
+    "crates/db",
     "crates/python-host",
+    "crates/python-module",
     "crates/server-runtime",
+    "crates/test-support",
+    "crates/asset-pipeline",
+    "crates/python-module",
+    "crates/plugin-host",
+    "crates/client",
     "apps/server",
 ]
 
@@ -21,17 +29,32 @@ repository = "https://github.com/cuihairu/boundless"
 [workspace.dependencies]
 # External dependencies.
 libc = "0.2"
+# Definition digest (BW-04-01-05): the reference `MD5::Digest::quote()` is
+# 32 nibbles of uppercase hex, which is this crate's digest bytes upper-cased.
+md-5 = "0.10"
+# Asset rules / directory dependency patterns (the reference uses RE2).
+regex = "1"
+sha2 = "0.10"
+# Blowfish ECB for the session encryption (BW-02-05-02): the reference uses
+# OpenSSL's `BF_set_key`/`BF_ecb_encrypt`; this crate is the standard Blowfish
+# (wire-tested against Eric Young's published vectors in the unit tests).
+blowfish = "0.9"
 
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
-# platform = { path = "crates/platform" }  # re-add with first consumer
+platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
-# mercury = { path = "crates/mercury" }  # re-add at BW-02
-# contracts = { path = "crates/contracts" }  # re-add when a role runtime consumes it
-# entitydef = { path = "crates/entitydef" }  # re-add at BW-02+
+mercury = { path = "crates/mercury" }
+contracts = { path = "crates/contracts" }
+entitydef = { path = "crates/entitydef" }
+# chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
+# client = { path = "crates/client" }  # re-add with first consumer
+# test-support = { path = "crates/test-support" }  # re-add with first consumer
+asset-pipeline = { path = "crates/asset-pipeline" }
+# plugin-host = { path = "crates/plugin-host" }  # re-add with first consumer
 
 [profile.release]
 opt-level = 3

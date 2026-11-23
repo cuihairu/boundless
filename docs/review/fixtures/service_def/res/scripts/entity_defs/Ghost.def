@@ -1,0 +1,37 @@
+<root>
+	<Properties>
+		<hp>
+			<Type>	INT32	</Type>
+			<Flags>	BASE	</Flags>
+			<Default>	10	</Default>
+		</hp>
+		<label>
+			<Type>	STRING	</Type>
+			<Flags>	BASE_AND_CLIENT	</Flags>
+		</label>
+		<weight>
+			<Type>	FLOAT	</Type>
+			<Flags>	CELL_PRIVATE	</Flags>
+		</weight>
+	</Properties>
+
+	<BaseMethods>
+		<damage>
+			<Args>	<amount>	INT32	</amount>	</Args>
+			<Exposed/>
+		</damage>
+		<retire/>
+	</BaseMethods>
+
+	<CellMethods>
+		<explode>
+			<Args>	<radius>	FLOAT	</radius>	</Args>
+		</explode>
+	</CellMethods>
+
+	<ClientMethods>
+		<blink>
+			<Args>	<count>	INT32	</count>	</Args>
+		</blink>
+	</ClientMethods>
+</root>

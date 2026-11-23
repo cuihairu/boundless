@@ -1,0 +1,13 @@
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/bigworld/lib/entitydef/unit_test/res" (from command line).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from command line).
+ERROR: [ResMgr] BWResource::addPaths: Resource path does not exist: /tmp/../../../../../game/res/bigworld
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/fantasydemo/res"
+WARNING: MF_ASSERT_DEV FAILED: long(value) == longValue
+/home/cui/workspaces/BigWorld/programming/bigworld/lib/entitydef/data_types/integer_data_type.cpp(127)
+WARNING: Development assertions may indicate failures caused by incorrect engine usage.
+In production mode, they do not cause the application to exit.
+Please investigate potential misuses of the engine at the time of the failure.
+ERROR: Exception ignored on flushing sys.stdout:
+ERROR: AttributeError: 'PyOutputStream' object has no attribute 'flush'
+ERROR: Exception ignored in sys.unraisablehook: <built-in function unraisablehook>
+ERROR: AttributeError: 'PyOutputStream' object has no attribute 'flush'

@@ -36,7 +36,7 @@ use crate::pyref::PyRef;
 use super::matrix::{MatrixValue, coerce_matrix_provider};
 use super::vector::{parse_vector_like, vector_object};
 use super::{
-    arg_count_error, arg_count_error_between, body, check_type, coerce_float, coerce_uint,
+    arg_count_error, arg_count_error_between, body, check_type, coerce_float, coerce_u8,
     float_object, own_raw, raise_type_error, raise_value_error, register_teardown_fn,
     remember_type, takes_no_arguments, type_address, with_dealloc,
 };
@@ -709,6 +709,29 @@ impl BasicBody {
 // The `value` getter of the static provider (`script_math.cpp:3253-3261`
 // through the base `pyGet_value`).
 value_getter!(get_basic_value);
+
+/// The `value` setter of the static provider: the reference declares the
+/// `Vector4Basic` member read-write (`script_math.hpp:492`'s
+/// `PY_RW_ATTRIBUTE_DECLARE( value_, value )`), so a coerced `Vector4`
+/// lands in `value_` and `output` answers it on the way out. The read-only
+/// sentence is not the reference behaviour -- the `.cpp` `PY_ATTRIBUTE`
+/// table wires a setter the `_DECLARE` in the header defines.
+///
+/// # Safety
+///
+/// A C setter call; the interpreter holds the GIL.
+unsafe extern "C" fn set_basic_value(
+    object: *mut capi::PyObject,
+    value: *mut capi::PyObject,
+    _closure: *mut std::os::raw::c_void,
+) -> c_int {
+    let Some(values) = (unsafe { parse_vector_like(value, 4, "value") }) else {
+        return -1;
+    };
+    // SAFETY: the caller guarantees the instance shape.
+    unsafe { (*body::<BasicBody>(object)).values = values };
+    0
+}
 
 /// Build a `Vector4Basic` over a component set: the `coerce` step's
 /// private construction.
@@ -1899,7 +1922,7 @@ unsafe extern "C" fn method_get_register(
     }
     // SAFETY: the count check above bounds the index.
     let item = unsafe { capi::PyTuple_GetItem(args, 0) };
-    let Some(index) = (unsafe { coerce_uint(item, "() argument 1") }) else {
+    let Some(index) = (unsafe { coerce_u8(item, "() argument 1") }) else {
         return std::ptr::null_mut();
     };
     if index > 62 {
@@ -1907,7 +1930,7 @@ unsafe extern "C" fn method_get_register(
         return std::ptr::null_mut();
     }
     // SAFETY: the interpreter is up and the index is in range.
-    own_raw(unsafe { get_register(index as u8) })
+    own_raw(unsafe { get_register(index) })
 }
 
 // -----------------------------------------------------------------------------
@@ -1988,16 +2011,30 @@ impl ShaderBody {
     /// `Vector4Shader::output` (`script_math.cpp:5119-5224`): evaluate
     /// each unique input once into the user registers, then run every
     /// instruction over the shared file; the answer is always cell zero.
+    ///
+    /// The unique inputs are evaluated *before* the file lock is taken: an
+    /// input may itself be a shader (the `uniqueInputs_` of the reference
+    /// holds any provider), whose `output` takes the same lock -- a nested
+    /// `lock()` on the same thread would self-deadlock. The reference runs
+    /// the whole pass with no lock at all, so evaluating the inputs first
+    /// and writing the file after is the same sequence of file writes, in
+    /// the same order.
     fn output(&self, out: &mut [f32; 4]) {
+        let mut evaluated: Vec<Option<[f32; 4]>> = Vec::with_capacity(self.unique_inputs.len());
+        for slot in &self.unique_inputs {
+            let value = slot
+                .as_ref()
+                // SAFETY: the held reference guarantees a provider of this
+                // module.
+                .map(|handle| unsafe { provider_output(handle.as_ptr()) });
+            evaluated.push(value);
+        }
         let mut file = registers()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for (offset, slot) in self.unique_inputs.iter().enumerate() {
-            if let Some(handle) = slot {
-                // SAFETY: the held reference guarantees a provider of this
-                // module.
-                file[BASE_USER_REGISTER as usize + offset] =
-                    unsafe { provider_output(handle.as_ptr()) };
+        for (offset, value) in evaluated.into_iter().enumerate() {
+            if let Some(value) = value {
+                file[BASE_USER_REGISTER as usize + offset] = value;
             }
         }
         for instruction in &self.instructions {
@@ -2088,7 +2125,7 @@ unsafe extern "C" fn method_shader_add_op(
     let opcode = unsafe { capi::PyTuple_GetItem(args, 0) };
     let out_reg = unsafe { capi::PyTuple_GetItem(args, 1) };
     let reg1 = unsafe { capi::PyTuple_GetItem(args, 2) };
-    let Some(opcode) = (unsafe { coerce_uint(opcode, "() argument 1") }) else {
+    let Some(opcode) = (unsafe { coerce_u8(opcode, "() argument 1") }) else {
         return std::ptr::null_mut();
     };
     let Some(out) = (unsafe { coerce_v4_provider(out_reg, "() argument 2") }) else {
@@ -2109,7 +2146,7 @@ unsafe extern "C" fn method_shader_add_op(
     };
     // SAFETY: the caller guarantees the instance shape.
     unsafe {
-        (*body::<ShaderBody>(object)).add_op(opcode as u8, &out, &reg1, &reg2);
+        (*body::<ShaderBody>(object)).add_op(opcode, &out, &reg1, &reg2);
     }
     capi::py_none()
 }
@@ -2235,7 +2272,12 @@ impl MatrixInverseBody {
         // SAFETY: the held reference guarantees a provider.
         let matrix = unsafe { super::matrix::matrix_of(handle.as_ptr()) }
             .expect("a matrix provider answers its matrix");
-        m.invert_from(&matrix);
+        // The reference writes the source into the out argument *before*
+        // inverting it in place (`source_->matrix( m ); m.invert();`), so a
+        // singular source keeps its own value and the homogeneous corner
+        // survives the 3x3 cofactor pass, which leaves it untouched.
+        *m = matrix;
+        m.invert();
     }
 }
 
@@ -2432,13 +2474,14 @@ pub(super) fn reset() {
 // Section: the type descriptions
 // -----------------------------------------------------------------------------
 
-/// The `Vector4Basic` description: `value` only -- the reference declares
-/// no `pySet_value` (`script_math.cpp:3244-3253`), so the attribute is
-/// read-only.
+/// The `Vector4Basic` description: `value` only, the one member the
+/// reference declares read-write (`script_math.hpp:492`, the
+/// `PY_RW_ATTRIBUTE_DECLARE( value_, value )` the `.cpp` attribute table
+/// wires at `script_math.cpp:3244-3253`).
 fn basic_spec() -> TypeSpec {
     TypeSpec::new(BASIC)
         .instance_size(std::mem::size_of::<BasicBody>())
-        .attribute("value", get_basic_value, None)
+        .attribute("value", get_basic_value, Some(set_basic_value))
 }
 
 /// The `Vector4Product` description.

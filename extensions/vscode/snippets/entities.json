@@ -1,0 +1,176 @@
+{
+  "Entity definition skeleton": {
+    "prefix": "bw-entity",
+    "body": [
+      "<root>",
+      "\t<Properties>",
+      "\t\t<${1:playerName}>",
+      "\t\t\t<Type>${2:STRING}</Type>",
+      "\t\t\t<Flags>${3:BASE_AND_CLIENT}</Flags>",
+      "\t\t\t<Persistent>true</Persistent>",
+      "\t\t</${1:playerName}>",
+      "\t</Properties>",
+      "",
+      "\t<BaseMethods>",
+      "\t\t<${4:onRegisterPlayer}>",
+      "\t\t\t<Arg>${5:OBJECT_ID}</Arg>",
+      "\t\t</${4:onRegisterPlayer}>",
+      "\t</BaseMethods>",
+      "",
+      "\t<CellMethods>",
+      "\t\t<${6:onEnterSpace}>",
+      "\t\t\t<Exposed>${7:ALL_CLIENTS}</Exposed>",
+      "\t\t</${6:onEnterSpace}>",
+      "\t</CellMethods>",
+      "",
+      "\t<ClientMethods>",
+      "\t\t<${8:chatMessage}>",
+      "\t\t\t<Arg>${9:UNICODE_STRING}</Arg>",
+      "\t\t</${8:chatMessage}>",
+      "\t</ClientMethods>",
+      "</root>"
+    ],
+    "description": "Full entity definition with one property and one method per component."
+  },
+  "Service definition skeleton": {
+    "prefix": "bw-service",
+    "body": [
+      "<root>",
+      "\t<Methods>",
+      "\t\t<${1:registerService}>",
+      "\t\t\t<Arg>${2:OBJECT_ID}</Arg>",
+      "\t\t</${1:registerService}>",
+      "\t</Methods>",
+      "</root>"
+    ],
+    "description": "Service definition. Services read <Methods> instead of <BaseMethods>."
+  },
+  "Entity property": {
+    "prefix": "bw-prop",
+    "body": [
+      "<${1:playerName}>",
+      "\t<Type>${2:STRING}</Type>",
+      "\t<Flags>${3:BASE_AND_CLIENT}</Flags>",
+      "\t<Persistent>true</Persistent>",
+      "</${1:playerName}>"
+    ],
+    "description": "Property element inside <Properties>. The Flags value must be one of the EntityDataFlags spellings."
+  },
+  "Indexed identifier property": {
+    "prefix": "bw-prop-persistent",
+    "body": [
+      "<${1:playerName}>",
+      "\t<Type>${2:STRING}</Type>",
+      "\t<Flags>${3:BASE}</Flags>",
+      "\t<Persistent>true</Persistent>",
+      "\t<Identifier>true</Identifier>",
+      "\t<Indexed>true</Indexed>",
+      "\t<Unique>true</Unique>",
+      "</${1:playerName}>"
+    ],
+    "description": "Property that the database indexes. <Identifier> and <Indexed> require <Persistent>."
+  },
+  "Array property": {
+    "prefix": "bw-prop-array",
+    "body": [
+      "<${1:team}>",
+      "\t<Type>ARRAY <of>${2:OBJECT_ID}</of></Type>",
+      "\t<Flags>${3:CELL_PRIVATE}</Flags>",
+      "</${1:team}>"
+    ],
+    "description": "ARRAY property. The element type goes in the <of> child of <Type>."
+  },
+  "User type property": {
+    "prefix": "bw-prop-user-type",
+    "body": [
+      "<${1:profile}>",
+      "\t<Type>USER_TYPE <implementedBy>${2:TestDataType.instance}</implementedBy></Type>",
+      "\t<Flags>${3:BASE}</Flags>",
+      "</${1:profile}>"
+    ],
+    "description": "USER_TYPE property. <implementedBy> must name a dotted Python path."
+  },
+  "Base method": {
+    "prefix": "bw-base-method",
+    "body": [
+      "<${1:onRegisterPlayer}>",
+      "\t<Args>",
+      "\t\t<${2:entityID}>${3:OBJECT_ID}</${2:entityID}>",
+      "\t</Args>",
+      "</${1:onRegisterPlayer}>"
+    ],
+    "description": "Method inside <BaseMethods>. Named arguments live under <Args>."
+  },
+  "Cell method": {
+    "prefix": "bw-cell-method",
+    "body": [
+      "<${1:onEnterSpace}>",
+      "\t<Exposed>${2:ALL_CLIENTS}</Exposed>",
+      "</${1:onEnterSpace}>"
+    ],
+    "description": "Method inside <CellMethods>. <Exposed> accepts ALL_CLIENTS or OWN_CLIENT."
+  },
+  "Client method": {
+    "prefix": "bw-client-method",
+    "body": [
+      "<${1:chatMessage}>",
+      "\t<Arg>${2:UNICODE_STRING}</Arg>",
+      "</${1:chatMessage}>"
+    ],
+    "description": "Method inside <ClientMethods>. Client methods must not carry <Exposed>."
+  },
+  "Service method": {
+    "prefix": "bw-service-method",
+    "body": [
+      "<${1:registerService}>",
+      "\t<Args>",
+      "\t\t<${2:serviceID}>${3:OBJECT_ID}</${2:serviceID}>",
+      "\t</Args>",
+      "</${1:registerService}>"
+    ],
+    "description": "Method inside the <Methods> section of a service."
+  },
+  "Method argument": {
+    "prefix": "bw-method-arg",
+    "body": ["\t<Arg>${1:OBJECT_ID}</Arg>"],
+    "description": "Legacy single argument inside a method element."
+  },
+  "Volatile block": {
+    "prefix": "bw-volatile",
+    "body": [
+      "<Volatile>",
+      "\t<position>${1:20}</position>",
+      "\t<yaw>${2:10}</yaw>",
+      "\t<pitch>${3:5}</pitch>",
+      "</Volatile>"
+    ],
+    "description": "Volatile priorities. yaw, pitch and roll must descend, and -1 means always."
+  },
+  "Distribution block": {
+    "prefix": "bw-distribution",
+    "body": [
+      "<Distribution>",
+      "\t<Cell>true</Cell>",
+      "\t<Base>true</Base>",
+      "\t<Client>true</Client>",
+      "</Distribution>"
+    ],
+    "description": "Overrides the script-probe decision for each component."
+  },
+  "LoD levels": {
+    "prefix": "bw-lod",
+    "body": [
+      "<LoDLevels>",
+      "\t<level><label>${1:near}</label>100</level>",
+      "\t<level><label>${2:mid}</label>1000</level>",
+      "\t<level><label>${3:far}</label>10000</level>",
+      "</LoDLevels>"
+    ],
+    "description": "Detail levels. At most six levels; <DetailLevel> values must name one of these labels."
+  },
+  "Alias entry": {
+    "prefix": "bw-alias",
+    "body": ["<${1:OBJECT_ID}>\t\t\t${2:INT32}\t\t</${1:OBJECT_ID}>"],
+    "description": "Type alias inside alias.xml. The first definition of a name wins."
+  }
+}

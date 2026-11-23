@@ -1,0 +1,22 @@
+cstdmf dir=lib/cstdmf rc=0 secs=10 passlike=0 faillike=0
+db dir=lib/db rc=0 secs=0 passlike=0 faillike=0
+entitydef dir=lib/entitydef rc=0 secs=0 passlike=0 faillike=0
+math dir=lib/math rc=0 secs=0 passlike=0 faillike=0
+network dir=lib/network rc=0 secs=274 passlike=0 faillike=0 note=单跑通过 600s 上限内未完系并发抢占
+physics2 dir=lib/physics2 rc=0 secs=0 passlike=0 faillike=0
+pyscript dir=lib/pyscript rc=0 secs=2 passlike=0 faillike=0
+resmgr dir=lib/resmgr rc=0 secs=25 passlike=0 faillike=0
+scene dir=lib/scene rc=0 secs=1 passlike=0 faillike=0
+script dir=lib/script rc=0 secs=0 passlike=0 faillike=0
+server dir=lib/server rc=0 secs=0 passlike=0 faillike=0
+terrain dir=lib/terrain rc=0 secs=1 passlike=0 faillike=0
+unit_test_lib dir=lib/unit_test_lib rc=0 secs=15 passlike=0 faillike=0
+baseapp dir=server/baseapp rc=0 secs=13 passlike=0 faillike=0
+baseappmgr dir=server/baseappmgr rc=0 secs=0 passlike=0 faillike=0
+cellapp dir=server/cellapp rc=0 secs=0 passlike=0 faillike=0
+cellappmgr dir=server/cellappmgr rc=0 secs=0 passlike=0 faillike=0
+dbapp dir=server/dbapp rc=0 secs=0 passlike=0 faillike=0
+dbappmgr dir=server/dbappmgr rc=0 secs=0 passlike=0 faillike=0
+loginapp dir=server/loginapp rc=0 secs=0 passlike=0 faillike=0
+reviver dir=server/reviver rc=0 secs=1 passlike=0 faillike=0
+DONE

@@ -1,0 +1,168 @@
+item	value	source
+reference-commit	ea5833dece37	git rev-parse HEAD
+runner.os	linux	std::env::consts::OS
+runner.wine	wine-10.0 (Ubuntu 10.0~repack-12ubuntu1)	wine --version
+windows-binary-dirs	game/bin/client (absent), game/bin/tools (absent)	game/bin (checkout layout)
+target.1.name	client	programming/bigworld (target name)
+target.1.source-dir	programming/bigworld/client	reference source tree
+target.1.windows-dir	game/bin/client	game/bin
+target.1.linux-binary	ABSENT	game/bin/server/el7/tools
+target.1.result	GAP	re-test outcome
+target.1.gap	no Windows binary built in the checkout (game/bin/client absent); source present, cannot re-test on this Linux runner	runner limitation
+target.2.name	Makefile	programming/bigworld (target name)
+target.2.source-dir	programming/bigworld/tools/Makefile	reference source tree
+target.2.windows-dir	game/bin/tools	game/bin
+target.2.linux-binary	ABSENT	game/bin/server/el7/tools
+target.2.result	GAP	re-test outcome
+target.2.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.3.name	Makefile.rules	programming/bigworld (target name)
+target.3.source-dir	programming/bigworld/tools/Makefile.rules	reference source tree
+target.3.windows-dir	game/bin/tools	game/bin
+target.3.linux-binary	ABSENT	game/bin/server/el7/tools
+target.3.result	GAP	re-test outcome
+target.3.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.4.name	animationexporter	programming/bigworld (target name)
+target.4.source-dir	programming/bigworld/tools/animationexporter	reference source tree
+target.4.windows-dir	game/bin/tools	game/bin
+target.4.linux-binary	ABSENT	game/bin/server/el7/tools
+target.4.result	GAP	re-test outcome
+target.4.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.5.name	asset_pipeline	programming/bigworld (target name)
+target.5.source-dir	programming/bigworld/tools/asset_pipeline	reference source tree
+target.5.windows-dir	game/bin/tools	game/bin
+target.5.linux-binary	ABSENT	game/bin/server/el7/tools
+target.5.result	GAP	re-test outcome
+target.5.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.6.name	assetprocessor	programming/bigworld (target name)
+target.6.source-dir	programming/bigworld/tools/assetprocessor	reference source tree
+target.6.windows-dir	game/bin/tools	game/bin
+target.6.linux-binary	ABSENT	game/bin/server/el7/tools
+target.6.result	GAP	re-test outcome
+target.6.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.7.name	batch_compiler	programming/bigworld (target name)
+target.7.source-dir	programming/bigworld/tools/batch_compiler	reference source tree
+target.7.windows-dir	game/bin/tools	game/bin
+target.7.linux-binary	ABSENT	game/bin/server/el7/tools
+target.7.result	GAP	re-test outcome
+target.7.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.8.name	bw_lsp	programming/bigworld (target name)
+target.8.source-dir	programming/bigworld/tools/bw_lsp	reference source tree
+target.8.windows-dir	game/bin/tools	game/bin
+target.8.linux-binary	ABSENT	game/bin/server/el7/tools
+target.8.result	GAP	re-test outcome
+target.8.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.9.name	bw_world_machine_import	programming/bigworld (target name)
+target.9.source-dir	programming/bigworld/tools/bw_world_machine_import	reference source tree
+target.9.windows-dir	game/bin/tools	game/bin
+target.9.linux-binary	ABSENT	game/bin/server/el7/tools
+target.9.result	GAP	re-test outcome
+target.9.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.10.name	bwlauncher	programming/bigworld (target name)
+target.10.source-dir	programming/bigworld/tools/bwlauncher	reference source tree
+target.10.windows-dir	game/bin/tools	game/bin
+target.10.linux-binary	ABSENT	game/bin/server/el7/tools
+target.10.result	GAP	re-test outcome
+target.10.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.11.name	editor_shared	programming/bigworld (target name)
+target.11.source-dir	programming/bigworld/tools/editor_shared	reference source tree
+target.11.windows-dir	game/bin/tools	game/bin
+target.11.linux-binary	ABSENT	game/bin/server/el7/tools
+target.11.result	GAP	re-test outcome
+target.11.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.12.name	exporter_common	programming/bigworld (target name)
+target.12.source-dir	programming/bigworld/tools/exporter_common	reference source tree
+target.12.windows-dir	game/bin/tools	game/bin
+target.12.linux-binary	ABSENT	game/bin/server/el7/tools
+target.12.result	GAP	re-test outcome
+target.12.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.13.name	jit_compiler	programming/bigworld (target name)
+target.13.source-dir	programming/bigworld/tools/jit_compiler	reference source tree
+target.13.windows-dir	game/bin/tools	game/bin
+target.13.linux-binary	ABSENT	game/bin/server/el7/tools
+target.13.result	GAP	re-test outcome
+target.13.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.14.name	mayavisualexporter	programming/bigworld (target name)
+target.14.source-dir	programming/bigworld/tools/mayavisualexporter	reference source tree
+target.14.windows-dir	game/bin/tools	game/bin
+target.14.linux-binary	ABSENT	game/bin/server/el7/tools
+target.14.result	GAP	re-test outcome
+target.14.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.15.name	modeleditor	programming/bigworld (target name)
+target.15.source-dir	programming/bigworld/tools/modeleditor	reference source tree
+target.15.windows-dir	game/bin/tools	game/bin
+target.15.linux-binary	ABSENT	game/bin/server/el7/tools
+target.15.result	GAP	re-test outcome
+target.15.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.16.name	modeleditor_core	programming/bigworld (target name)
+target.16.source-dir	programming/bigworld/tools/modeleditor_core	reference source tree
+target.16.windows-dir	game/bin/tools	game/bin
+target.16.linux-binary	ABSENT	game/bin/server/el7/tools
+target.16.result	GAP	re-test outcome
+target.16.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.17.name	navgen	programming/bigworld (target name)
+target.17.source-dir	programming/bigworld/tools/navgen	reference source tree
+target.17.windows-dir	game/bin/tools	game/bin
+target.17.linux-binary	ABSENT	game/bin/server/el7/tools
+target.17.result	GAP	re-test outcome
+target.17.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.18.name	offline_processor	programming/bigworld (target name)
+target.18.source-dir	programming/bigworld/tools/offline_processor	reference source tree
+target.18.windows-dir	game/bin/tools	game/bin
+target.18.linux-binary	ABSENT	game/bin/server/el7/tools
+target.18.result	GAP	re-test outcome
+target.18.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.19.name	particle_editor	programming/bigworld (target name)
+target.19.source-dir	programming/bigworld/tools/particle_editor	reference source tree
+target.19.windows-dir	game/bin/tools	game/bin
+target.19.linux-binary	ABSENT	game/bin/server/el7/tools
+target.19.result	GAP	re-test outcome
+target.19.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.20.name	plugin_system	programming/bigworld (target name)
+target.20.source-dir	programming/bigworld/tools/plugin_system	reference source tree
+target.20.windows-dir	game/bin/tools	game/bin
+target.20.linux-binary	ABSENT	game/bin/server/el7/tools
+target.20.result	GAP	re-test outcome
+target.20.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.21.name	process_defs	programming/bigworld (target name)
+target.21.source-dir	programming/bigworld/tools/process_defs	reference source tree
+target.21.windows-dir	game/bin/tools	game/bin
+target.21.linux-binary	game/bin/server/el7/tools/process_defs	game/bin/server/el7/tools
+target.21.result	GAP	re-test outcome
+target.21.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.22.name	res_packer	programming/bigworld (target name)
+target.22.source-dir	programming/bigworld/tools/res_packer	reference source tree
+target.22.windows-dir	game/bin/tools	game/bin
+target.22.linux-binary	game/bin/server/el7/tools/res_packer	game/bin/server/el7/tools
+target.22.result	GAP	re-test outcome
+target.22.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.23.name	resourcechecker	programming/bigworld (target name)
+target.23.source-dir	programming/bigworld/tools/resourcechecker	reference source tree
+target.23.windows-dir	game/bin/tools	game/bin
+target.23.linux-binary	ABSENT	game/bin/server/el7/tools
+target.23.result	GAP	re-test outcome
+target.23.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.24.name	visual_studio	programming/bigworld (target name)
+target.24.source-dir	programming/bigworld/tools/visual_studio	reference source tree
+target.24.windows-dir	game/bin/tools	game/bin
+target.24.linux-binary	ABSENT	game/bin/server/el7/tools
+target.24.result	GAP	re-test outcome
+target.24.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.25.name	visualexporter	programming/bigworld (target name)
+target.25.source-dir	programming/bigworld/tools/visualexporter	reference source tree
+target.25.windows-dir	game/bin/tools	game/bin
+target.25.linux-binary	ABSENT	game/bin/server/el7/tools
+target.25.result	GAP	re-test outcome
+target.25.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.26.name	worldeditor	programming/bigworld (target name)
+target.26.source-dir	programming/bigworld/tools/worldeditor	reference source tree
+target.26.windows-dir	game/bin/tools	game/bin
+target.26.linux-binary	ABSENT	game/bin/server/el7/tools
+target.26.result	GAP	re-test outcome
+target.26.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+target.27.name	worldeditor_ui	programming/bigworld (target name)
+target.27.source-dir	programming/bigworld/tools/worldeditor_ui	reference source tree
+target.27.windows-dir	game/bin/tools	game/bin
+target.27.linux-binary	ABSENT	game/bin/server/el7/tools
+target.27.result	GAP	re-test outcome
+target.27.gap	no Windows binary built in the checkout (game/bin/tools absent); source present, cannot re-test on this Linux runner	runner limitation
+blocker.windows-baseline	windows-baseline: the checkout is server/source-only — game/bin/client and game/bin/tools are absent, so no Windows binary is built and every Windows target records a gap; wine-10.0 is available to execute Windows binaries but there is nothing to run, and the GUI editors would additionally need a display	runner limitation

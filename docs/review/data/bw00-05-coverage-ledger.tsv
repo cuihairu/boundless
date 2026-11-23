@@ -1,0 +1,175 @@
+target	type	dir	origin	enable	task	fixture	status	note
+cellapp_example	shared_library	bigworld/examples/cellapp_extension	make	usePython	BW-14-02	-	pending	-
+simple_python_client	binary	bigworld/examples/client_integration/python/simple	make	useOpenSSL,usePython	BW-14-02	-	pending	-
+build	library	bigworld/lib/build	make	usePython	BW-01	-	pending	-
+chunk	library	bigworld/lib/chunk	make	usePython	BW-10-01	-	pending	-
+chunk_loading	library	bigworld/lib/chunk_loading	make	-	BW-10-01	-	pending	-
+connection	library	bigworld/lib/connection	make	useOpenSSL	BW-02	-	pending	-
+connection_model	library	bigworld/lib/connection_model	make	useOpenSSL	BW-06-04	-	pending	-
+cstdmf	library	bigworld/lib/cstdmf	make	-	BW-01-01-01,BW-01-01-02,BW-01-01-03,BW-01-05-02,BW-01-05-03,BW-01-05-04,BW-01-05-05	crates/foundation/src/ids.rs,crates/foundation/src/time.rs,crates/foundation/src/time_queue.rs,crates/server-runtime/src/task_manager.rs	partial	allocator/basictypes/memhook 面待映射;ID/时间戳/TimeQueue/TaskManager 已移植
+cstdmf	unit_test	bigworld/lib/cstdmf/unit_test	make	-	BW-00-02-02	docs/review/data/bw00-02-02-original-unit-test-results.txt	covered	451 测试 0 失败(00-02-02 复跑)
+db	library	bigworld/lib/db	make	usePython	BW-09-01	-	pending	-
+db	unit_test	bigworld/lib/db/unit_test	make	-	BW-09-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+db_storage	library	bigworld/lib/db_storage	make	usePython	BW-09-03	-	pending	-
+db_storage_mysql	library	bigworld/lib/db_storage_mysql	make	useMySQL,usePython	BW-09-02	-	pending	-
+db_storage_xml	library	bigworld/lib/db_storage_xml	make	usePython	BW-09-03	-	pending	-
+delegate_interface	library	bigworld/lib/delegate_interface	make	-	BW-10	-	pending	-
+entitydef	library	bigworld/lib/entitydef	make	usePython	BW-04-01	-	pending	-
+entitydef	unit_test	bigworld/lib/entitydef/unit_test	make	useOpenSSL,usePython	BW-00-02-02	docs/review/data/bw00-02-02-original-unit-test-results.txt	covered	380 测试 0 失败(00-02-02 复跑)
+entitydef_script	library	bigworld/lib/entitydef_script	make	usePython	BW-04-01	-	pending	-
+math	library	bigworld/lib/math	make	-	BW-01-01-04,BW-01-01-05	crates/foundation/src/math	covered	-
+math	unit_test	bigworld/lib/math/unit_test	make	-	BW-01-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+memhook	library	bigworld/lib/memhook	make	-	BW-01	-	pending	-
+moo	library	bigworld/lib/moo	make	usePNG	BW-11	-	pending	-
+network	library	bigworld/lib/network	make	useOpenSSL	BW-02	-	pending	-
+network	unit_test	bigworld/lib/network/unit_test	make	useOpenSSL	BW-02	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+physics2	library	bigworld/lib/physics2	make	-	BW-10-03	-	pending	-
+physics2	unit_test	bigworld/lib/physics2/unit_test	make	-	BW-10-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+pyscript	library	bigworld/lib/pyscript	make	usePython	BW-03	-	pending	-
+pyscript	unit_test	bigworld/lib/pyscript/unit_test	make	usePython	BW-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+resmgr	library	bigworld/lib/resmgr	make	-	BW-01-03-01,BW-01-03-02,BW-01-03-03,BW-01-03-04,BW-01-03-05,BW-01-03-06,BW-01-04-01	crates/resources/src/datasection.rs,crates/resources/src/bwresource.rs,crates/resources/src/multi_file_system.rs	partial	DataSection/ZIP/搜索路径/缓存/保存已覆盖;access_monitor/auto_config/bdiff 面待映射
+resmgr	unit_test	bigworld/lib/resmgr/unit_test	make	-	BW-00-02-02	docs/review/data/bw00-02-02-original-unit-test-results.txt	covered	88 测试 0 失败(00-02-02 复跑)
+scene	library	bigworld/lib/scene	make	-	BW-10-02	-	pending	-
+scene	unit_test	bigworld/lib/scene/unit_test	make	-	BW-10-02	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+script	library	bigworld/lib/script	make	usePython	BW-03	-	pending	-
+script	unit_test	bigworld/lib/script/unit_test	make	usePython	BW-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+server	library	bigworld/lib/server	make	usePython	BW-01-04-02,BW-01-04-03,BW-01-04-04,BW-01-04-05,BW-01-05-01	crates/server-runtime/src/config.rs,crates/server-runtime/src/server_app.rs,crates/server-runtime/src/signals.rs,crates/server-runtime/src/shutdown.rs,crates/server-runtime/src/tick.rs	partial	BWConfig/ServerApp/退出码/信号/关服/Updatables 已覆盖;time_keeper/bwservice 余量待 BW-02/BW-04
+server	unit_test	bigworld/lib/server/unit_test	make	-	BW-01-04	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+speedtree	library	bigworld/lib/speedtree	make	-	BW-11	-	pending	-
+sqlite	library	bigworld/lib/sqlite	make	useSQLite	BW-09-03	-	pending	-
+terrain	library	bigworld/lib/terrain	make	-	BW-10-03	-	pending	-
+terrain	unit_test	bigworld/lib/terrain/unit_test	make	usePNG	BW-10-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+unit_test_lib	library	bigworld/lib/unit_test_lib	make	-	BW-00-02-02	docs/review/data/bw00-02-02-original-unit-test-results.txt	partial	单测宿主库;经 BW-00-02-02 复跑 3 个可执行间接验证
+unit_test_lib	unit_test	bigworld/lib/unit_test_lib/unit_test	make	-	BW-18	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+urlrequest	library	bigworld/lib/urlrequest	make	useCurl	BW-02-04	-	pending	-
+waypoint	library	bigworld/lib/waypoint	make	usePython	BW-10-04	-	pending	-
+baseapp	binary	bigworld/server/baseapp	make	useCurl,useOpenSSL,usePyURLRequest,usePython,useSQLite	BW-00-02-03	docs/review/data/bw00-02-03-baseapp-blocked.log	blocked	缺 server/bigworld.key(商业许可密钥,全仓无、不可重建)
+baseapp	unit_test	bigworld/server/baseapp/unit_test	make	useOpenSSL,useSQLite	BW-07-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+baseappmgr	binary	bigworld/server/baseappmgr	make	-	BW-00-02-03	docs/review/data/bw00-02-03-baseappmgr-start.log	partial	达 Version 14.4.1 并持续运行(管理器层基线)
+baseappmgr	unit_test	bigworld/server/baseappmgr/unit_test	make	-	BW-05-03	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+cellapp	binary	bigworld/server/cellapp	make	useCurl,useOpenSSL,usePyURLRequest,usePython	BW-00-02-03	docs/review/data/bw00-02-03-baseapp-blocked.log	blocked	缺 server/bigworld.key(商业许可密钥)
+cellapp	unit_test	bigworld/server/cellapp/unit_test	make	usePython	BW-08-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+cellappmgr	binary	bigworld/server/cellappmgr	make	-	BW-00-02-03	docs/review/data/bw00-02-03-cellappmgr-start.log	partial	达 Version 14.4.1 并持续运行(管理器层基线)
+cellappmgr	unit_test	bigworld/server/cellappmgr/unit_test	make	-	BW-05-04	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+dbapp	binary	bigworld/server/dbapp	make	usePyURLRequest	BW-00-02-03	docs/review/data/bw00-02-03-baseapp-blocked.log	blocked	缺 server/bigworld.key;另缺 twisted 模块(site-packages 未入路径)
+dbapp	unit_test	bigworld/server/dbapp/unit_test	make	-	BW-09-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+bwengine_mysql	shared_library	bigworld/server/dbapp_extensions/bwengine_mysql	make	useMySQL,usePython	BW-09-04	-	pending	-
+bwengine_xml	shared_library	bigworld/server/dbapp_extensions/bwengine_xml	make	usePython	BW-09-04	-	pending	-
+dbappmgr	binary	bigworld/server/dbappmgr	make	-	BW-00-02-03	docs/review/data/bw00-02-03-dbappmgr-start.log	partial	达 Version 14.4.1 并持续运行(管理器层基线)
+dbappmgr	unit_test	bigworld/server/dbappmgr/unit_test	make	-	BW-05-05	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+loginapp	binary	bigworld/server/loginapp	make	useOpenSSL	BW-00-02-03	docs/review/data/bw00-02-03-loginapp-blocked.log	blocked	缺 server/loginapp.privkey(RSA 私钥缺失)
+loginapp	unit_test	bigworld/server/loginapp/unit_test	make	-	BW-06-01	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+reviver	binary	bigworld/server/reviver	make	-	BW-05-02	-	pending	-
+reviver	unit_test	bigworld/server/reviver/unit_test	make	-	BW-05-02	-	pending	原版单测声明未构建(BW-00-02-02:21 个目标仅 3 个有可执行)
+bots	binary	bigworld/server/tools/bots	make	useOpenSSL,usePython	BW-12-04	-	pending	-
+_bw_profile	shared_library	bigworld/server/tools/bw_profile	make	usePython	BW-12-03	-	pending	-
+bwmachined2	binary	bigworld/server/tools/bwmachined	make	-	BW-00-02-03	docs/review/data/bw00-02-03-baseappmgr-start.log	partial	bwmachined2 -f 启动成功(00-02-03)
+clear_auto_load	binary	bigworld/server/tools/clear_auto_load	make	useMySQL,useOpenSSL,usePython	BW-09-05	-	pending	-
+consolidate_dbs	binary	bigworld/server/tools/consolidate_dbs	make	useMySQL,useOpenSSL,usePython,useSQLite	BW-09-05	-	pending	-
+remove_db	oneoff	bigworld/server/tools/remove_db	make	-	BW-09-05	-	pending	-
+snapshot_helper	binary	bigworld/server/tools/snapshot_helper	make	useMySQL	BW-09-05	-	pending	-
+sync_db	binary	bigworld/server/tools/sync_db	make	useMySQL,useOpenSSL,usePython	BW-09-05	-	pending	-
+transfer_db	binary	bigworld/server/tools/transfer_db	make	useSQLite	BW-09-05	-	pending	-
+CppUnitLite2	library	bigworld/third_party/CppUnitLite2/src	make	-	n/a	-	excluded	BW-00-01-04 决策: 不复现该 C++ 目标,由 Rust 测试框架替代
+png	library	bigworld/third_party/png	make	-	n/a	-	excluded	BW-00-01-04 决策: 由 image crate 替代
+zip	library	bigworld/third_party/zip	make	-	n/a	-	excluded	BW-00-01-04 决策: zlib→flate2;zip 读写面经 BW-01-03-03 覆盖
+process_defs	binary	bigworld/tools/process_defs	make	useOpenSSL,usePython	BW-04-04	-	pending	-
+res_packer	binary	bigworld/tools/res_packer	make	usePython	BW-13-02	-	pending	-
+serviceapp	copy_of_binary	bigworld/server/baseapp	make	-	BW-00-02-03	docs/review/data/bw00-02-03-baseapp-blocked.log	blocked	baseapp 二进制副本,随 baseapp 阻塞
+message_logger	binary	bigworld/server/tools/message_logger	make	useMongoDB	BW-12-02	-	pending	-
+_bwlog	shared_library	bigworld/server/tools/message_logger	make	useMongoDB,usePython	BW-12-02	-	pending	-
+bwclient	exe	client	cmake	WIN32	BW-11-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+emptyvoip	shared_library	lib/emptyvoip	cmake	WIN32	BW-11-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+ashes	library	lib/ashes	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+camera	library	lib/camera	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+chunk_scene_adapter	library	lib/chunk_scene_adapter	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+compiled_space	library	lib/compiled_space	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+space	library	lib/space	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+duplo	library	lib/duplo	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+input	library	lib/input	cmake	WIN32	BW-11-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+model	library	lib/model	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+particle	library	lib/particle	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+post_processing	library	lib/post_processing	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+romp	library	lib/romp	cmake	WIN32	BW-11-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+web_render	library	lib/web_render	cmake	WIN32	BW-11-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+open_automate	library	lib/open_automate	cmake	WIN32	BW-11-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+fmodsound	library	lib/fmodsound	cmake	WIN32,BW_FMOD_SUPPORT	BW-11-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+scaleform	library	lib/scaleform	cmake	WIN32,BW_SCALEFORM_SUPPORT	BW-11-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+asset_pipeline	library	lib/asset_pipeline	cmake	WIN32	BW-13-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+worldeditor	exe	tools/worldeditor	cmake	WIN32	BW-13-03	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+modeleditor	exe	tools/modeleditor	cmake	WIN32	BW-13-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+particle_editor	exe	tools/particle_editor	cmake	WIN32	BW-13-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+offline_processor	exe	tools/offline_processor	cmake	WIN32	BW-13-02	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+batch_compiler	exe	tools/batch_compiler	cmake	WIN32	BW-13-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+jit_compiler	exe	tools/jit_compiler	cmake	WIN32	BW-13-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+bsp_converter	exe	tools/asset_pipeline/converters/bsp_converter	cmake	WIN32	BW-13-01-06	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+effect_converter	exe	tools/asset_pipeline/converters/effect_converter	cmake	WIN32	BW-13-01-06	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+texformat_converter	exe	tools/asset_pipeline/converters/texformat_converter	cmake	WIN32	BW-13-01-06	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+texture_converter	exe	tools/asset_pipeline/converters/texture_converter	cmake	WIN32	BW-13-01-06	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+hierarchical_config_converter	exe	tools/asset_pipeline/converters/hierarchical_config_converter	cmake	WIN32	BW-13-01-06	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+space_converter	exe	tools/asset_pipeline/converters/space_converter	cmake	WIN32	BW-13-01-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+visual_processor	exe	tools/asset_pipeline/converters/visual_processor	cmake	WIN32	BW-13-01-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+primitive_processor	exe	tools/asset_pipeline/converters/primitive_processor	cmake	WIN32	BW-13-01-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+compiler	library	tools/asset_pipeline/compiler	cmake	WIN32	BW-13-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+conversion	library	tools/asset_pipeline/conversion	cmake	WIN32	BW-13-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+dependency	library	tools/asset_pipeline/dependency	cmake	WIN32	BW-13-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+discovery	library	tools/asset_pipeline/discovery	cmake	WIN32	BW-13-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+compiled_space_writers	library	lib/compiled_space/binary_writers	cmake	WIN32	BW-13-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+appmgr	library	lib/appmgr	cmake	WIN32	BW-07	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+guimanager	library	lib/guimanager	cmake	WIN32	BW-13-03	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+guitabs	library	lib/guitabs	cmake	WIN32	BW-13-03	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+controls	library	lib/controls	cmake	WIN32	BW-13-03	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+gizmo	library	lib/gizmo	cmake	WIN32	BW-13-03	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+ual	library	lib/ual	cmake	WIN32	BW-13-03	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+tools_common	library	tools/common	cmake	WIN32	BW-13-03	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+editor_shared	library	tools/editor_shared	cmake	WIN32	BW-13-03	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+modeleditor_core	library	tools/modeleditor_core	cmake	WIN32	BW-13-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+navigation_recast	library	lib/navigation_recast	cmake	WIN32	BW-10-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+waypoint_generator	library	lib/waypoint_generator	cmake	WIN32	BW-10-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+test_compiler	library	tools/asset_pipeline/compiler/test_compiler	cmake	WIN32	BW-13-02	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+test_converter	library	tools/asset_pipeline/compiler/test_converter	cmake	WIN32	BW-13-02	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+compiler_unit_test	unit_test	tools/asset_pipeline/compiler/unit_test	cmake	WIN32	BW-13-02	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+dependency_unit_test	unit_test	tools/asset_pipeline/dependency/unit_test	cmake	WIN32	BW-13-02	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+animationexporter_max	plugin	tools/animationexporter	cmake	WIN32	BW-13-05-02	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03) 版本变体: max2009/2010/2011/2012/2013(win32 加 2009,非 vc9 加 2013)
+mayavisualexporter_maya	plugin	tools/mayavisualexporter	cmake	WIN32	BW-13-05-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03) 版本变体: maya2009/2010/2011/2012/2013/2014(win64 加 2014)
+visualexporter_max	plugin	tools/visualexporter	cmake	WIN32	BW-13-05-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03) 版本变体: max2009/2010/2011/2012/2013(win32 加 2009,非 vc9 加 2013)
+assetprocessor	dll	tools/assetprocessor	cmake	WIN32	BW-13-02-01	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+bwentity	dll	lib/bwentity	cmake	WIN32	BW-04-04	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+navgen	exe	tools/navgen	cmake	WIN32	BW-10-05	-	blocked	CMake-only,Windows-only(BW-00-01-02);Linux 无原生 CMake 路径,验收待 Windows 真机(BW-00-02-05/BW-15-03)
+py_chunk.cpp	source	bigworld/common/py_chunk.cpp	resource	-	BW-10-01	-	pending	-
+py_network.cpp	source	bigworld/common/py_network.cpp	resource	-	BW-02	-	pending	-
+py_physics2.cpp	source	bigworld/common/py_physics2.cpp	resource	-	BW-10-03	-	pending	-
+py_terrain.cpp	source	bigworld/common/py_terrain.cpp	resource	-	BW-10-03	-	pending	-
+py_server_lib.cpp	source	bigworld/common/py_server_lib.cpp	resource	-	BW-03-03	-	pending	-
+py_timer.cpp	source	bigworld/common/py_timer.cpp	resource	-	BW-03-03	-	pending	-
+py_urlrequest.cpp	source	bigworld/common/py_urlrequest.cpp	resource	-	BW-02-04	-	pending	-
+simple_client_entity.cpp	source	bigworld/common/simple_client_entity.cpp	resource	-	BW-14-02	-	pending	-
+space_data_types.hpp	source	bigworld/common/space_data_types.hpp	resource	-	BW-10-01	-	pending	-
+client_integration_cpp	script	bigworld/examples/client_integration/c_plus_plus	resource	-	BW-14-02	-	pending	C++ 客户端集成样例;android/ios 子目录
+fantasydemo_res	datadir	programming/fantasydemo/res	resource	-	BW-14-01	-	pending	Demo 资源树(server 配置+entities/defs/base/cell/client 脚本,占位由 generate-fantasydemo-assets.py 生成)
+fantasydemo_web_php	script	programming/fantasydemo/web/php	resource	-	BW-14-03	-	pending	PHP Web 集成(Authenticator/BigWorld.php 等)
+fantasydemo_kbengine	legacy	programming/fantasydemo/.kbengine	resource	-	BW-29	-	pending	KBEngine 时代遗留(debug.json/stubs),随 BW-29 差异复核
+generate-fantasydemo-assets.py	script	bigworld/scripts/generate-fantasydemo-assets.py	resource	-	BW-14-01	-	pending	参考树脚本;Boundless 侧尚未移植(仓内无 scripts/),生成 res 占位树
+makeServer.py	script	bigworld/build/bw_internal/scripts/makeServer.py	release	-	BW-14-04	-	pending	参考发行脚本(服务端打包);Boundless 等价面=ci/package.sh 夜间打包(BW-22-04-01),逐脚本复用未定
+build_common.py	script	bigworld/build/bw_internal/scripts/build_common.py	release	-	BW-14-04	-	pending	参考发行脚本(共用构建逻辑);Boundless 等价面=ci/package.sh(BW-22-04-01),复用未定
+makeRPM.py	script	bigworld/build/bw_internal/scripts/makeRPM.py	release	-	BW-14-04	-	blocked	调 make rpm,但 rpm/everything 目标在参考树无定义(01-03 缺口)
+makeSolutions.py	script	bigworld/build/bw_internal/scripts/makeSolutions.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05);硬编码 C:\Python27\python.exe 陈旧残留(01-03)
+cmake_all_windows.py	script	bigworld/build/bw_internal/scripts/cmake_all_windows.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winArchiveBuild.bat	script	bigworld/build/bw_internal/scripts/winArchiveBuild.bat	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winMakeClient.py	script	bigworld/build/bw_internal/scripts/winMakeClient.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winCMakeClient.py	script	bigworld/build/bw_internal/scripts/winCMakeClient.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winCMakeShaders.py	script	bigworld/build/bw_internal/scripts/winCMakeShaders.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winCMakeUnitTests.py	script	bigworld/build/bw_internal/scripts/winCMakeUnitTests.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+winMakeUnitTests.py	script	bigworld/build/bw_internal/scripts/winMakeUnitTests.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+perforce_synchronizer.py	script	bigworld/build/bw_internal/scripts/perforce_synchronizer.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+project_manager.py	script	bigworld/build/bw_internal/scripts/project_manager.py	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+package-daily.sh	script	scripts/package-daily.sh	release	-	BW-14-04	.github/workflows/package-daily.yml	covered	参考滚动发布脚本;Boundless 等价=package-daily.yml+ci/package.sh(BW-22-04-01,无 tag/无 release)
+package-daily-windows.ps1	script	scripts/package-daily-windows.ps1	release	-	BW-14-04	-	blocked	Windows-only;验收待 Windows 真机(BW-15-03/BW-00-02-05)
+make_rpm_target	gap	build/make/Makefile	gap	-	BW-14-04	-	blocked	01-03: makeRPM.py 调 make rpm,但 rpm/everything 目标在当前参考树无定义(全树 grep '^rpm:' 仅 third_party/curl)
+bigworld_key	gap	server/bigworld.key	gap	-	BW-00-02-03	-	blocked	BigWorld 商业许可密钥,全仓无、不可重建;挡 baseapp/cellapp/dbapp 启动
+loginapp_privkey	gap	server/loginapp.privkey	gap	-	BW-00-02-05	-	blocked	RSA 私钥缺失,loginapp 初始化即败;与 00-02-05 外部条件同源
+twisted_module	gap	server	gap	-	BW-00-02-03	-	blocked	twisted 模块未入 PYTHONPATH(site-packages 缺失),dbapp 启动败;待 Python 迁移台账落地后复核
+fantasydemo_art	gap	programming/fantasydemo	gap	-	BW-14-01	-	blocked	仓库无美术资源(mesh/model/visual/space/texture/UI),仅 .wpr+web/php+占位 res(由 generate-fantasydemo-assets.py 生成);来源=生成脚本 docstring
+openautomate_sdk	gap	third_party/openautomate	gap	-	BW-11-05	-	blocked	NVIDIA 专有 SDK,00-01-04 决策"不用",功能替代缺口
+windows_runner	gap	-	gap	-	BW-00-02-05	-	blocked	Windows 真机/runner 缺失,挡 58 个 CMake-only 目标验收 + bwclient 基线 + Windows 发行脚本
+sdk_package	gap	-	gap	-	BW-14-02	-	blocked	Boundless 尚无 SDK 打包面;原版 SDK=bwentity DLL+entitydef 定义+examples 样例

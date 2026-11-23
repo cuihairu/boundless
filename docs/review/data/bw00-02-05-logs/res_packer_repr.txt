@@ -1,0 +1,2 @@
+WARNING: The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+ImageFile: /home/cui/workspaces/bw11-client/crates/client/res/crab.bmp

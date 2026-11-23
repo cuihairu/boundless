@@ -1,0 +1,198 @@
+{
+  "rows": [
+    {
+      "entry": "common/closest_chunk_item.hpp",
+      "kind": "code",
+      "source": "common/closest_chunk_item.hpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/closest_triangle.hpp",
+      "kind": "code",
+      "source": "common/closest_triangle.hpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/pch.hpp",
+      "kind": "code",
+      "source": "common/pch.hpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_chunk.cpp",
+      "kind": "code",
+      "source": "common/py_chunk.cpp",
+      "index": "BW-03,BW-10",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_network.cpp",
+      "kind": "code",
+      "source": "common/py_network.cpp",
+      "index": "BW-02,BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_network.hpp",
+      "kind": "code",
+      "source": "common/py_network.hpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_physics2.cpp",
+      "kind": "code",
+      "source": "common/py_physics2.cpp",
+      "index": "BW-03,BW-10",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_physics2.hpp",
+      "kind": "code",
+      "source": "common/py_physics2.hpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_server_lib.cpp",
+      "kind": "code",
+      "source": "common/py_server_lib.cpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_terrain.cpp",
+      "kind": "code",
+      "source": "common/py_terrain.cpp",
+      "index": "BW-03,BW-10",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_timer.cpp",
+      "kind": "code",
+      "source": "common/py_timer.cpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_timer.hpp",
+      "kind": "code",
+      "source": "common/py_timer.hpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/py_urlrequest.cpp",
+      "kind": "code",
+      "source": "common/py_urlrequest.cpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/simple_client_entity.cpp",
+      "kind": "code",
+      "source": "common/simple_client_entity.cpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/simple_client_entity.hpp",
+      "kind": "code",
+      "source": "common/simple_client_entity.hpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "common/space_data_types.hpp",
+      "kind": "code",
+      "source": "common/space_data_types.hpp",
+      "index": "BW-03",
+      "how": "the common code compiles into other targets; the tickets' scopes name it"
+    },
+    {
+      "entry": "res/scripts",
+      "kind": "script",
+      "source": "fantasydemo/res/scripts",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "res/scripts/base",
+      "kind": "script",
+      "source": "fantasydemo/res/scripts/base",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "res/scripts/cell",
+      "kind": "script",
+      "source": "fantasydemo/res/scripts/cell",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "res/scripts/client",
+      "kind": "script",
+      "source": "fantasydemo/res/scripts/client",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "res/scripts/db.xml",
+      "kind": "script",
+      "source": "fantasydemo/res/scripts/db.xml",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "res/scripts/entities.xml",
+      "kind": "script",
+      "source": "fantasydemo/res/scripts/entities.xml",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "res/scripts/entity_defs",
+      "kind": "script",
+      "source": "fantasydemo/res/scripts/entity_defs",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "res/server",
+      "kind": "resource",
+      "source": "fantasydemo/res/server",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "res/server/bw.xml",
+      "kind": "resource",
+      "source": "fantasydemo/res/server/bw.xml",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    },
+    {
+      "entry": "web",
+      "kind": "resource",
+      "source": "fantasydemo/web",
+      "index": "BW-14",
+      "how": "the FantasyDemo tree; BW-14's scope names it"
+    }
+  ],
+  "count": 26,
+  "code": 16,
+  "script": 7,
+  "resource": 3,
+  "notes": [],
+  "schema": [
+    "entry",
+    "kind",
+    "source",
+    "index",
+    "how"
+  ]
+}

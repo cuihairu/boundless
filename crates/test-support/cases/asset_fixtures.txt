@@ -1,0 +1,264 @@
+item	value	source
+reference-commit	ee43578b2036	git rev-parse HEAD
+gen.generator	programming/bigworld/scripts/generate-fantasydemo-assets.py	reference source tree
+gen.bytes	12787	reference source tree
+gen.sha256	625dc3f5dd5d8c29d920d51d85e637ea78865d224fba187472f52abe1f7c35d8	reference source tree
+tree.fantasydemo.root	programming/fantasydemo/res	reference source tree
+tree.fantasydemo.generated	yes	generator comment / git history
+tree.fantasydemo.generator	programming/bigworld/scripts/generate-fantasydemo-assets.py	generator anchor
+tree.fantasydemo.files	21	reference source tree
+tree.fantasydemo.bytes	8478	reference source tree
+tree.fantasydemo.digest	3c52a9dc180ba01d9642910939e4980626efb9ccf4c09bd51406149755c09fca	sha256 of sorted relpath/bytes list
+tree.fantasydemo.entities	Account,Avatar,Guard,Space,ClientOnly	scripts/entities.xml
+tree.fantasydemo.db-logons	1	scripts/db.xml
+tree.fantasydemo.db-rowtypes	Account,Avatar	scripts/db.xml
+file.fantasydemo.1.kind	entity	path classification
+file.fantasydemo.1.input	programming/fantasydemo/res/scripts/base/Account.py	reference source tree
+file.fantasydemo.1.bytes	318	reference source tree
+file.fantasydemo.1.sha256	c7e7274ef9fcd19308e46a29f17423a788cf69dba92787dcf3503dc8eb7663ad	reference source tree
+file.fantasydemo.2.kind	entity	path classification
+file.fantasydemo.2.input	programming/fantasydemo/res/scripts/base/Avatar.py	reference source tree
+file.fantasydemo.2.bytes	344	reference source tree
+file.fantasydemo.2.sha256	cae415fd4e1b700c2389608ddc99b5713590b094e0e2d3e925411e5ce9272dc4	reference source tree
+file.fantasydemo.3.kind	entity	path classification
+file.fantasydemo.3.input	programming/fantasydemo/res/scripts/base/Guard.py	reference source tree
+file.fantasydemo.3.bytes	357	reference source tree
+file.fantasydemo.3.sha256	07fa23fb45e2166b979c4d1bccccde545aa0a939a09c51abb51cadacd96726a1	reference source tree
+file.fantasydemo.4.kind	entity	path classification
+file.fantasydemo.4.input	programming/fantasydemo/res/scripts/base/Space.py	reference source tree
+file.fantasydemo.4.bytes	442	reference source tree
+file.fantasydemo.4.sha256	b709642261300f459469f66372537b23f2a024e65d3eb6f6fff67736291e644a	reference source tree
+file.fantasydemo.5.kind	entity	path classification
+file.fantasydemo.5.input	programming/fantasydemo/res/scripts/cell/Avatar.py	reference source tree
+file.fantasydemo.5.bytes	456	reference source tree
+file.fantasydemo.5.sha256	802545730b857a1c09af7baf279aacb63742f57fe1cf5d9af67aa5d4ec2b4be6	reference source tree
+file.fantasydemo.6.kind	entity	path classification
+file.fantasydemo.6.input	programming/fantasydemo/res/scripts/cell/Guard.py	reference source tree
+file.fantasydemo.6.bytes	225	reference source tree
+file.fantasydemo.6.sha256	f7dc4ac4b9bf43db2017c4a23e77ca67a20c07a09c085359619e525c44150b1e	reference source tree
+file.fantasydemo.7.kind	entity	path classification
+file.fantasydemo.7.input	programming/fantasydemo/res/scripts/cell/Space.py	reference source tree
+file.fantasydemo.7.bytes	201	reference source tree
+file.fantasydemo.7.sha256	13b84b83e65196fbf8466e5354c4f3d8a50e6c2bc004d57f134d0451ea405346	reference source tree
+file.fantasydemo.8.kind	entity	path classification
+file.fantasydemo.8.input	programming/fantasydemo/res/scripts/client/Account.py	reference source tree
+file.fantasydemo.8.bytes	187	reference source tree
+file.fantasydemo.8.sha256	6ce97cd13fa7a6151134c5e80398f87a1fd85ad4b3c2fd316c1de4b5d8e3f4d6	reference source tree
+file.fantasydemo.9.kind	entity	path classification
+file.fantasydemo.9.input	programming/fantasydemo/res/scripts/client/Avatar.py	reference source tree
+file.fantasydemo.9.bytes	219	reference source tree
+file.fantasydemo.9.sha256	7ecbf8d329eadcef4c40d0b2a6b8b9351c1f7607e494f2c5e0a55e99d327ee53	reference source tree
+file.fantasydemo.10.kind	entity	path classification
+file.fantasydemo.10.input	programming/fantasydemo/res/scripts/client/ClientOnly.py	reference source tree
+file.fantasydemo.10.bytes	189	reference source tree
+file.fantasydemo.10.sha256	9385e61899326e16d081c625fa2c1868d47d80741a03cfa8b89a16b4a6c8d90b	reference source tree
+file.fantasydemo.11.kind	entity	path classification
+file.fantasydemo.11.input	programming/fantasydemo/res/scripts/client/Guard.py	reference source tree
+file.fantasydemo.11.bytes	150	reference source tree
+file.fantasydemo.11.sha256	4740f71c2ca16b7cc1a000780462f4e8e961b40e5f08dc107193ce72e121cdc9	reference source tree
+file.fantasydemo.12.kind	entity	path classification
+file.fantasydemo.12.input	programming/fantasydemo/res/scripts/client/Space.py	reference source tree
+file.fantasydemo.12.bytes	150	reference source tree
+file.fantasydemo.12.sha256	66005d8bff2d9b4eb2eafe0ac3825a6a2dfa0735c5767b4b34f9e3df5488da4b	reference source tree
+file.fantasydemo.13.kind	database	path classification
+file.fantasydemo.13.input	programming/fantasydemo/res/scripts/db.xml	reference source tree
+file.fantasydemo.13.bytes	761	reference source tree
+file.fantasydemo.13.sha256	412252c6fb8066c81922d0d4de011d70416442b853d6f016476fae800428d140	reference source tree
+file.fantasydemo.14.kind	entity	path classification
+file.fantasydemo.14.input	programming/fantasydemo/res/scripts/entities.xml	reference source tree
+file.fantasydemo.14.bytes	250	reference source tree
+file.fantasydemo.14.sha256	b2e348d5313173d15cb2c7f419b8ac0ff48c5949b2f40e7d979ead3e26371951	reference source tree
+file.fantasydemo.15.kind	entity	path classification
+file.fantasydemo.15.input	programming/fantasydemo/res/scripts/entity_defs/Account.def	reference source tree
+file.fantasydemo.15.bytes	709	reference source tree
+file.fantasydemo.15.sha256	975fd92c8d6d86509cb8943b19fe6890aa7ce54cdfb80280303ad08e802898bc	reference source tree
+entity.fantasydemo.Account.def	programming/fantasydemo/res/scripts/entity_defs/Account.def	reference source tree
+entity.fantasydemo.Account.properties	2	entity_defs/.def
+entity.fantasydemo.Account.clientmethods	1	entity_defs/.def
+entity.fantasydemo.Account.cellmethods	0	entity_defs/.def
+entity.fantasydemo.Account.basemethods	0	entity_defs/.def
+entity.fantasydemo.Account.exposed	0	entity_defs/.def
+file.fantasydemo.16.kind	entity	path classification
+file.fantasydemo.16.input	programming/fantasydemo/res/scripts/entity_defs/Avatar.def	reference source tree
+file.fantasydemo.16.bytes	1029	reference source tree
+file.fantasydemo.16.sha256	e35472f0279ff43da1c9bbcb057bf3cb0a16f43d803a81c70031da69b1fa50fa	reference source tree
+entity.fantasydemo.Avatar.def	programming/fantasydemo/res/scripts/entity_defs/Avatar.def	reference source tree
+entity.fantasydemo.Avatar.properties	4	entity_defs/.def
+entity.fantasydemo.Avatar.clientmethods	2	entity_defs/.def
+entity.fantasydemo.Avatar.cellmethods	0	entity_defs/.def
+entity.fantasydemo.Avatar.basemethods	1	entity_defs/.def
+entity.fantasydemo.Avatar.exposed	1	entity_defs/.def
+file.fantasydemo.17.kind	entity	path classification
+file.fantasydemo.17.input	programming/fantasydemo/res/scripts/entity_defs/ClientOnly.def	reference source tree
+file.fantasydemo.17.bytes	613	reference source tree
+file.fantasydemo.17.sha256	b218f560026247648c575181f5f4913b3377f0161746ba5aca5f3044ae65f615	reference source tree
+entity.fantasydemo.ClientOnly.def	programming/fantasydemo/res/scripts/entity_defs/ClientOnly.def	reference source tree
+entity.fantasydemo.ClientOnly.properties	2	entity_defs/.def
+entity.fantasydemo.ClientOnly.clientmethods	1	entity_defs/.def
+entity.fantasydemo.ClientOnly.cellmethods	0	entity_defs/.def
+entity.fantasydemo.ClientOnly.basemethods	0	entity_defs/.def
+entity.fantasydemo.ClientOnly.exposed	0	entity_defs/.def
+file.fantasydemo.18.kind	entity	path classification
+file.fantasydemo.18.input	programming/fantasydemo/res/scripts/entity_defs/Guard.def	reference source tree
+file.fantasydemo.18.bytes	474	reference source tree
+file.fantasydemo.18.sha256	4810bb14b2a95669caaa3013923d8c53dc21132830b0eecc09e6bd7d67fe04ac	reference source tree
+entity.fantasydemo.Guard.def	programming/fantasydemo/res/scripts/entity_defs/Guard.def	reference source tree
+entity.fantasydemo.Guard.properties	1	entity_defs/.def
+entity.fantasydemo.Guard.clientmethods	0	entity_defs/.def
+entity.fantasydemo.Guard.cellmethods	0	entity_defs/.def
+entity.fantasydemo.Guard.basemethods	0	entity_defs/.def
+entity.fantasydemo.Guard.exposed	0	entity_defs/.def
+file.fantasydemo.19.kind	entity	path classification
+file.fantasydemo.19.input	programming/fantasydemo/res/scripts/entity_defs/Space.def	reference source tree
+file.fantasydemo.19.bytes	286	reference source tree
+file.fantasydemo.19.sha256	1521697d8afae0e12a48f2e49ebdcf1e489952b2ee05d221a9b209af87735800	reference source tree
+entity.fantasydemo.Space.def	programming/fantasydemo/res/scripts/entity_defs/Space.def	reference source tree
+entity.fantasydemo.Space.properties	0	entity_defs/.def
+entity.fantasydemo.Space.clientmethods	0	entity_defs/.def
+entity.fantasydemo.Space.cellmethods	0	entity_defs/.def
+entity.fantasydemo.Space.basemethods	0	entity_defs/.def
+entity.fantasydemo.Space.exposed	0	entity_defs/.def
+file.fantasydemo.20.kind	entity	path classification
+file.fantasydemo.20.input	programming/fantasydemo/res/scripts/entity_defs/alias.xml	reference source tree
+file.fantasydemo.20.bytes	394	reference source tree
+file.fantasydemo.20.sha256	e3ebeb7557bd772b5160c866b9e480ce06484edc1c9d4c134f95c8bf9b032cc7	reference source tree
+file.fantasydemo.21.kind	resource	path classification
+file.fantasydemo.21.input	programming/fantasydemo/res/server/bw.xml	reference source tree
+file.fantasydemo.21.bytes	724	reference source tree
+file.fantasydemo.21.sha256	212eecded7bb5e648f5709e29584fa9ca940bbb02b2a81ea8b557387da8a4d79	reference source tree
+tree.client-integration-example.root	programming/bigworld/examples/client_integration/python/simple/res	reference source tree
+tree.client-integration-example.generated	no	generator comment / git history
+tree.client-integration-example.generator	-	generator anchor
+tree.client-integration-example.files	24	reference source tree
+tree.client-integration-example.bytes	18360	reference source tree
+tree.client-integration-example.digest	eb63bd6f71e1b9715c98d57e588b91497a34a08df9726e9773f3ad07c6f96f50	sha256 of sorted relpath/bytes list
+tree.client-integration-example.entities	Guard,ClientAvatar,Account,Space,ClientOnly	scripts/entities.xml
+tree.client-integration-example.db-logons	1	scripts/db.xml
+tree.client-integration-example.db-rowtypes	Account,ClientAvatar	scripts/db.xml
+file.client-integration-example.1.kind	entity	path classification
+file.client-integration-example.1.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/base/Account.py	reference source tree
+file.client-integration-example.1.bytes	2912	reference source tree
+file.client-integration-example.1.sha256	ee97a7cd98ab863aefe7dfa0d6dbb2b61d6ad5a954df44c385aa8e6c37e498f8	reference source tree
+file.client-integration-example.2.kind	entity	path classification
+file.client-integration-example.2.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/base/ClientAvatar.py	reference source tree
+file.client-integration-example.2.bytes	1237	reference source tree
+file.client-integration-example.2.sha256	5230f31f62b08fa4b6bf2ee28a8a6b7baad3f383d27c5f81400a0f533b600940	reference source tree
+file.client-integration-example.3.kind	entity	path classification
+file.client-integration-example.3.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/base/Guard.py	reference source tree
+file.client-integration-example.3.bytes	522	reference source tree
+file.client-integration-example.3.sha256	7490827ea55b55be136d26f42bb1be6ac2881fe53677d460a1caefbafdcd0bcf	reference source tree
+file.client-integration-example.4.kind	entity	path classification
+file.client-integration-example.4.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/base/Space.py	reference source tree
+file.client-integration-example.4.bytes	411	reference source tree
+file.client-integration-example.4.sha256	e3aba0f2aa9834a84d083c19a73acb47780c622c6da967d6594caa2fae9036c8	reference source tree
+file.client-integration-example.5.kind	entity	path classification
+file.client-integration-example.5.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/base/egclient4.py	reference source tree
+file.client-integration-example.5.bytes	259	reference source tree
+file.client-integration-example.5.sha256	23ed25ce223ceca10fa8b44478b14f1ced851b395affd81f8cdb32f590372862	reference source tree
+file.client-integration-example.6.kind	entity	path classification
+file.client-integration-example.6.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/cell/ClientAvatar.py	reference source tree
+file.client-integration-example.6.bytes	1273	reference source tree
+file.client-integration-example.6.sha256	b5ab12887761bba14fc94aec1e86766686716f5af9ebc137f902567a074c7113	reference source tree
+file.client-integration-example.7.kind	entity	path classification
+file.client-integration-example.7.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/cell/Guard.py	reference source tree
+file.client-integration-example.7.bytes	164	reference source tree
+file.client-integration-example.7.sha256	58902c474a0ba4920e1fbf4138a4fcfc2ad2a344a4a694326c89b501629852ca	reference source tree
+file.client-integration-example.8.kind	entity	path classification
+file.client-integration-example.8.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/cell/Space.py	reference source tree
+file.client-integration-example.8.bytes	134	reference source tree
+file.client-integration-example.8.sha256	caf981c714fb6fa2e46ac456ef226e442d290f43086995258e197776a1d9dd08	reference source tree
+file.client-integration-example.9.kind	entity	path classification
+file.client-integration-example.9.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/cell/egclient4.py	reference source tree
+file.client-integration-example.9.bytes	122	reference source tree
+file.client-integration-example.9.sha256	a332344031c0eea25b71374634626a6ff552709b244d3dedd1b2a66dcad7385d	reference source tree
+file.client-integration-example.10.kind	entity	path classification
+file.client-integration-example.10.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/client/Account.py	reference source tree
+file.client-integration-example.10.bytes	778	reference source tree
+file.client-integration-example.10.sha256	66e1bb26b2b58e3a37b04c17c77df904194efa5509b4c7067cdd9acc271a1a2c	reference source tree
+file.client-integration-example.11.kind	entity	path classification
+file.client-integration-example.11.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/client/ClientAvatar.py	reference source tree
+file.client-integration-example.11.bytes	1507	reference source tree
+file.client-integration-example.11.sha256	7fdcadd5b327b58ed1622702df5fd32ca7dd4c3bb873069bf894dbf9cc4d6a02	reference source tree
+file.client-integration-example.12.kind	entity	path classification
+file.client-integration-example.12.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/client/ClientOnly.py	reference source tree
+file.client-integration-example.12.bytes	648	reference source tree
+file.client-integration-example.12.sha256	60d26595afb5f39ab2c69f1d1be7bae1d139e9cd45ee4409bbd4e9e17c665b54	reference source tree
+file.client-integration-example.13.kind	entity	path classification
+file.client-integration-example.13.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/client/Guard.py	reference source tree
+file.client-integration-example.13.bytes	201	reference source tree
+file.client-integration-example.13.sha256	3715d06bd67d4ef11b90486702df8ccb43643b013cea31bf3dbe4d279d66347a	reference source tree
+file.client-integration-example.14.kind	entity	path classification
+file.client-integration-example.14.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/client/Space.py	reference source tree
+file.client-integration-example.14.bytes	54	reference source tree
+file.client-integration-example.14.sha256	49a74738cae6589ea1d46768702cc6825a0d26808b295f2c8972b2ebe9642b70	reference source tree
+file.client-integration-example.15.kind	entity	path classification
+file.client-integration-example.15.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/common/TestDataType.py	reference source tree
+file.client-integration-example.15.bytes	2827	reference source tree
+file.client-integration-example.15.sha256	205c65ee681ad5d992d20266f6112ff1099a821144cb39524c7fa93ca6365aa8	reference source tree
+file.client-integration-example.16.kind	database	path classification
+file.client-integration-example.16.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/db.xml	reference source tree
+file.client-integration-example.16.bytes	1069	reference source tree
+file.client-integration-example.16.sha256	68bebf275113a44411d59a0e371e490dabbc1c46013a8ec26e36c549b5110557	reference source tree
+file.client-integration-example.17.kind	entity	path classification
+file.client-integration-example.17.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/entities.xml	reference source tree
+file.client-integration-example.17.bytes	160	reference source tree
+file.client-integration-example.17.sha256	17a4de53bf4bc3b218fe168782e7d3f6bc745f484c4eafc802fd0958a9c647a0	reference source tree
+file.client-integration-example.18.kind	entity	path classification
+file.client-integration-example.18.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Account.def	reference source tree
+file.client-integration-example.18.bytes	537	reference source tree
+file.client-integration-example.18.sha256	5158a0b45a71f44a77e593860f2b7b5ed01ac1c0205fa17eedff50d1bcdb0dae	reference source tree
+entity.client-integration-example.Account.def	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Account.def	reference source tree
+entity.client-integration-example.Account.properties	2	entity_defs/.def
+entity.client-integration-example.Account.clientmethods	1	entity_defs/.def
+entity.client-integration-example.Account.cellmethods	0	entity_defs/.def
+entity.client-integration-example.Account.basemethods	0	entity_defs/.def
+entity.client-integration-example.Account.exposed	0	entity_defs/.def
+file.client-integration-example.19.kind	entity	path classification
+file.client-integration-example.19.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/ClientAvatar.def	reference source tree
+file.client-integration-example.19.bytes	1530	reference source tree
+file.client-integration-example.19.sha256	d038aad9c3474a41decd9d4d38f716753292e2001fe700c10fd7da3c6f4d2493	reference source tree
+entity.client-integration-example.ClientAvatar.def	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/ClientAvatar.def	reference source tree
+entity.client-integration-example.ClientAvatar.properties	9	entity_defs/.def
+entity.client-integration-example.ClientAvatar.clientmethods	2	entity_defs/.def
+entity.client-integration-example.ClientAvatar.cellmethods	0	entity_defs/.def
+entity.client-integration-example.ClientAvatar.basemethods	1	entity_defs/.def
+entity.client-integration-example.ClientAvatar.exposed	1	entity_defs/.def
+file.client-integration-example.20.kind	entity	path classification
+file.client-integration-example.20.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/ClientOnly.def	reference source tree
+file.client-integration-example.20.bytes	706	reference source tree
+file.client-integration-example.20.sha256	e38e6189cd4249c36ca7bc7c4138aa496f1a8517924992d06f139c17391107a7	reference source tree
+entity.client-integration-example.ClientOnly.def	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/ClientOnly.def	reference source tree
+entity.client-integration-example.ClientOnly.properties	4	entity_defs/.def
+entity.client-integration-example.ClientOnly.clientmethods	1	entity_defs/.def
+entity.client-integration-example.ClientOnly.cellmethods	0	entity_defs/.def
+entity.client-integration-example.ClientOnly.basemethods	0	entity_defs/.def
+entity.client-integration-example.ClientOnly.exposed	0	entity_defs/.def
+file.client-integration-example.21.kind	entity	path classification
+file.client-integration-example.21.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Guard.def	reference source tree
+file.client-integration-example.21.bytes	216	reference source tree
+file.client-integration-example.21.sha256	72963aaf90473a88c98dce3c3da4869e40bcdc400dd7eb38bd49f8aefccbb0c5	reference source tree
+entity.client-integration-example.Guard.def	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Guard.def	reference source tree
+entity.client-integration-example.Guard.properties	0	entity_defs/.def
+entity.client-integration-example.Guard.clientmethods	0	entity_defs/.def
+entity.client-integration-example.Guard.cellmethods	0	entity_defs/.def
+entity.client-integration-example.Guard.basemethods	0	entity_defs/.def
+entity.client-integration-example.Guard.exposed	0	entity_defs/.def
+file.client-integration-example.22.kind	entity	path classification
+file.client-integration-example.22.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Space.def	reference source tree
+file.client-integration-example.22.bytes	144	reference source tree
+file.client-integration-example.22.sha256	8dc0224eaf00fa1126788366f6b52dde02e2bcf1f9350cdea16a47f60f52dbf5	reference source tree
+entity.client-integration-example.Space.def	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/Space.def	reference source tree
+entity.client-integration-example.Space.properties	0	entity_defs/.def
+entity.client-integration-example.Space.clientmethods	0	entity_defs/.def
+entity.client-integration-example.Space.cellmethods	0	entity_defs/.def
+entity.client-integration-example.Space.basemethods	0	entity_defs/.def
+entity.client-integration-example.Space.exposed	0	entity_defs/.def
+file.client-integration-example.23.kind	entity	path classification
+file.client-integration-example.23.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/entity_defs/alias.xml	reference source tree
+file.client-integration-example.23.bytes	404	reference source tree
+file.client-integration-example.23.sha256	776bcaf4710b7e804a4e599738dd53373f0a5c9398a1318fa9ff4df7eab9c843	reference source tree
+file.client-integration-example.24.kind	resource	path classification
+file.client-integration-example.24.input	programming/bigworld/examples/client_integration/python/simple/res/server/bw.xml	reference source tree
+file.client-integration-example.24.bytes	545	reference source tree
+file.client-integration-example.24.sha256	b2764784ce55a739457720b8492ee82d8ea152b115d338599e5d6036fd98fbdb	reference source tree
+blocker.live-asset-capture	live-asset-capture: no live server or database capture is recorded — the full cluster cannot start on this machine (bwmachined and the full server configuration are absent, BW-00-02-03) and loginapp.pubkey is absent repo-wide (BW-00-02-04), so no asset tree is loaded or database seeded that could be captured; the recorded fixtures are the reference's own committed tracked asset trees, each pinned to its input path and content digest, and the fantasydemo tree is further pinned to the committed generator that reproduces it byte-for-byte	runner limitation

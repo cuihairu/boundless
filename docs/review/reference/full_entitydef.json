@@ -1,0 +1,528 @@
+{
+ "constants": {
+  "digest": "6FA9B4C32162519E4A50B9C98136791B",
+  "maxClientServerPropertyCount": 4,
+  "maxExposedBaseMethodCount": 1,
+  "maxExposedCellMethodCount": 1,
+  "maxExposedClientMethodCount": 1
+ },
+ "entityTypes": [
+  {
+   "allProperties": [
+    {
+     "clientServerFullIndex": 2,
+     "index": 0,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": true,
+     "isOwnClientData": false,
+     "isPersistent": true,
+     "isUnique": false,
+     "name": "name",
+     "streamSize": -1,
+     "type": "STRING"
+    },
+    {
+     "clientServerFullIndex": -1,
+     "index": 1,
+     "isBaseData": true,
+     "isCellData": false,
+     "isClientServerData": false,
+     "isConst": true,
+     "isGhostedData": false,
+     "isIdentifier": true,
+     "isIndexed": true,
+     "isOtherClientData": false,
+     "isOwnClientData": false,
+     "isPersistent": true,
+     "isUnique": true,
+     "name": "dbid",
+     "streamSize": 4,
+     "type": "INT32"
+    },
+    {
+     "clientServerFullIndex": 3,
+     "index": 2,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": true,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "mood",
+     "streamSize": -1,
+     "type": "STRING"
+    },
+    {
+     "clientServerFullIndex": 1,
+     "index": 3,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": false,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "pos",
+     "streamSize": 8,
+     "type": "FIXED_DICT props x:(FLOAT32), y:(FLOAT32)"
+    },
+    {
+     "clientServerFullIndex": -1,
+     "index": 4,
+     "isBaseData": true,
+     "isCellData": false,
+     "isClientServerData": false,
+     "isConst": false,
+     "isGhostedData": false,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": false,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "friends",
+     "streamSize": -1,
+     "type": "ARRAY of (STRING)"
+    },
+    {
+     "clientServerFullIndex": 0,
+     "index": 5,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": false,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "hp",
+     "streamSize": 4,
+     "type": "INT32"
+    },
+    {
+     "clientServerFullIndex": -1,
+     "index": 6,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": false,
+     "isConst": true,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": false,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "visible",
+     "streamSize": 1,
+     "type": "UINT8"
+    }
+   ],
+   "baseMethods": [
+    {
+     "args": [
+      [
+       "task",
+       "STRING"
+      ],
+      [
+       "urgent",
+       "UINT8"
+      ]
+     ],
+     "exposedIndex": 0,
+     "internalIndex": 0,
+     "isExposed": true,
+     "name": "order",
+     "streamSize": -1
+    },
+    {
+     "args": [],
+     "exposedIndex": -1,
+     "internalIndex": 1,
+     "isExposed": false,
+     "name": "save",
+     "streamSize": 0
+    }
+   ],
+   "baseToClientProperties": [],
+   "canBeOnBase": true,
+   "canBeOnCell": true,
+   "canBeOnClient": true,
+   "cellMethods": [
+    {
+     "args": [
+      [
+       "x",
+       "FLOAT32"
+      ],
+      [
+       "y",
+       "FLOAT32"
+      ]
+     ],
+     "exposedIndex": -1,
+     "internalIndex": 0,
+     "isExposed": false,
+     "name": "teleport",
+     "streamSize": 8
+    }
+   ],
+   "cellToClientProperties": [
+    {
+     "clientServerFullIndex": 2,
+     "index": 0,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": true,
+     "isOwnClientData": false,
+     "isPersistent": true,
+     "isUnique": false,
+     "name": "name",
+     "streamSize": -1,
+     "type": "STRING"
+    },
+    {
+     "clientServerFullIndex": 3,
+     "index": 2,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": true,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "mood",
+     "streamSize": -1,
+     "type": "STRING"
+    },
+    {
+     "clientServerFullIndex": 1,
+     "index": 3,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": false,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "pos",
+     "streamSize": 8,
+     "type": "FIXED_DICT props x:(FLOAT32), y:(FLOAT32)"
+    },
+    {
+     "clientServerFullIndex": 0,
+     "index": 5,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": false,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "hp",
+     "streamSize": 4,
+     "type": "INT32"
+    }
+   ],
+   "clientIndex": 0,
+   "clientMethods": [
+    {
+     "args": [
+      [
+       "stamp",
+       "INT32"
+      ]
+     ],
+     "exposedIndex": 0,
+     "internalIndex": 0,
+     "isExposed": true,
+     "name": "ping",
+     "streamSize": 4
+    }
+   ],
+   "clientProperties": [
+    {
+     "clientServerFullIndex": 2,
+     "index": 0,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": true,
+     "isOwnClientData": false,
+     "isPersistent": true,
+     "isUnique": false,
+     "name": "name",
+     "streamSize": -1,
+     "type": "STRING"
+    },
+    {
+     "clientServerFullIndex": 3,
+     "index": 2,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": true,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "mood",
+     "streamSize": -1,
+     "type": "STRING"
+    },
+    {
+     "clientServerFullIndex": 1,
+     "index": 3,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": false,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "pos",
+     "streamSize": 8,
+     "type": "FIXED_DICT props x:(FLOAT32), y:(FLOAT32)"
+    },
+    {
+     "clientServerFullIndex": 0,
+     "index": 5,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": true,
+     "isConst": true,
+     "isGhostedData": false,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": true,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "hp",
+     "streamSize": 4,
+     "type": "INT32"
+    }
+   ],
+   "hasBaseScript": true,
+   "hasCellScript": true,
+   "hasClientScript": true,
+   "index": 0,
+   "isPersistent": true,
+   "isService": false,
+   "name": "Avatar"
+  },
+  {
+   "allProperties": [
+    {
+     "clientServerFullIndex": -1,
+     "index": 0,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": false,
+     "isConst": false,
+     "isGhostedData": true,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": false,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "color",
+     "streamSize": 3,
+     "type": "FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)"
+    },
+    {
+     "clientServerFullIndex": -1,
+     "index": 1,
+     "isBaseData": false,
+     "isCellData": true,
+     "isClientServerData": false,
+     "isConst": true,
+     "isGhostedData": false,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": false,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "pulses",
+     "streamSize": 4,
+     "type": "INT32"
+    }
+   ],
+   "baseMethods": [],
+   "baseToClientProperties": [],
+   "canBeOnBase": true,
+   "canBeOnCell": true,
+   "canBeOnClient": false,
+   "cellMethods": [
+    {
+     "args": [
+      [
+       "times",
+       "UINT8"
+      ]
+     ],
+     "exposedIndex": 0,
+     "internalIndex": 0,
+     "isExposed": true,
+     "name": "flash",
+     "streamSize": 5
+    }
+   ],
+   "cellToClientProperties": [],
+   "clientIndex": 65535,
+   "clientMethods": [],
+   "clientProperties": [],
+   "hasBaseScript": true,
+   "hasCellScript": true,
+   "hasClientScript": false,
+   "index": 2,
+   "isPersistent": true,
+   "isService": false,
+   "name": "Beacon"
+  },
+  {
+   "allProperties": [
+    {
+     "clientServerFullIndex": -1,
+     "index": 0,
+     "isBaseData": true,
+     "isCellData": false,
+     "isClientServerData": false,
+     "isConst": true,
+     "isGhostedData": false,
+     "isIdentifier": true,
+     "isIndexed": true,
+     "isOtherClientData": false,
+     "isOwnClientData": false,
+     "isPersistent": true,
+     "isUnique": true,
+     "name": "serial",
+     "streamSize": 4,
+     "type": "UINT32"
+    },
+    {
+     "clientServerFullIndex": -1,
+     "index": 1,
+     "isBaseData": true,
+     "isCellData": false,
+     "isClientServerData": false,
+     "isConst": true,
+     "isGhostedData": false,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": false,
+     "isPersistent": true,
+     "isUnique": false,
+     "name": "reading",
+     "streamSize": 8,
+     "type": "FLOAT64"
+    },
+    {
+     "clientServerFullIndex": -1,
+     "index": 2,
+     "isBaseData": true,
+     "isCellData": false,
+     "isClientServerData": false,
+     "isConst": false,
+     "isGhostedData": false,
+     "isIdentifier": false,
+     "isIndexed": false,
+     "isOtherClientData": false,
+     "isOwnClientData": false,
+     "isPersistent": false,
+     "isUnique": false,
+     "name": "samples",
+     "streamSize": -1,
+     "type": "ARRAY of (UINT8)"
+    }
+   ],
+   "baseMethods": [
+    {
+     "args": [
+      [
+       "gain",
+       "FLOAT64"
+      ]
+     ],
+     "exposedIndex": -1,
+     "internalIndex": 0,
+     "isExposed": false,
+     "name": "calibrate",
+     "returnValues": [
+      [
+       "offset",
+       "FLOAT64"
+      ]
+     ],
+     "streamSize": 8
+    }
+   ],
+   "baseToClientProperties": [],
+   "canBeOnBase": true,
+   "canBeOnCell": false,
+   "canBeOnClient": false,
+   "cellMethods": [],
+   "cellToClientProperties": [],
+   "clientIndex": 65535,
+   "clientMethods": [],
+   "clientProperties": [],
+   "hasBaseScript": true,
+   "hasCellScript": false,
+   "hasClientScript": false,
+   "index": 1,
+   "isPersistent": true,
+   "isService": false,
+   "name": "Sensor"
+  }
+ ]
+}

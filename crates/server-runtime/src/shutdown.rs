@@ -114,11 +114,7 @@ impl ShutdownState {
     /// and `Trigger` are ignored (the `default: break` arm). Per-role
     /// behaviour -- acks, script events, the CellApp rejection of
     /// `SHUTDOWN_PERFORM` -- joins with the role apps.
-    pub fn handle_controlled_shut_down(
-        &mut self,
-        stage: ShutDownStage,
-        shut_down_time: GameTime,
-    ) {
+    pub fn handle_controlled_shut_down(&mut self, stage: ShutDownStage, shut_down_time: GameTime) {
         match stage {
             ShutDownStage::Request | ShutDownStage::Perform => {
                 self.stage = stage;
@@ -481,7 +477,10 @@ mod tests {
         let mut mgr = TaskManager::new();
 
         let task = CompleteOnMainThread::new("bg work", &log);
-        task.borrow_mut().self_rc.borrow_mut().replace(Rc::clone(&task));
+        task.borrow_mut()
+            .self_rc
+            .borrow_mut()
+            .replace(Rc::clone(&task));
 
         mgr.add_background_task(Rc::clone(&task) as Rc<RefCell<dyn BackgroundTask>>);
 
@@ -537,12 +536,10 @@ mod tests {
             push(&self.log, "ran");
             if !self.chained {
                 self.chained = true;
-                mgr.add_main_thread_task(Rc::new(RefCell::new(
-                    ChainedCompletionTask {
-                        log: Rc::clone(&self.log),
-                        chained: true,
-                    },
-                )));
+                mgr.add_main_thread_task(Rc::new(RefCell::new(ChainedCompletionTask {
+                    log: Rc::clone(&self.log),
+                    chained: true,
+                })));
             }
         }
 
@@ -560,7 +557,10 @@ mod tests {
         let mut mgr = TaskManager::new();
 
         let task = CompleteOnMainThread::new("bg work", &log);
-        task.borrow_mut().self_rc.borrow_mut().replace(Rc::clone(&task));
+        task.borrow_mut()
+            .self_rc
+            .borrow_mut()
+            .replace(Rc::clone(&task));
         mgr.add_background_task(Rc::clone(&task) as Rc<RefCell<dyn BackgroundTask>>);
 
         // The loop ends without another tick; the shutdown pipeline's

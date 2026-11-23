@@ -15,7 +15,7 @@
 //!   section, overriding everything (`writeString` creates the path);
 //! - with no config sections at all, command-line processing fails.
 
-use resources::bwresource::{current_uid, BwResource};
+use resources::bwresource::{BwResource, current_uid};
 use resources::datasection::DataSection;
 use std::sync::Arc;
 
@@ -75,8 +75,7 @@ impl BwConfig {
             resource.purge(&filename, false);
             match resource.open_section(&filename, false) {
                 Some(section) => {
-                    self.sections
-                        .push((Arc::clone(&section), filename.clone()));
+                    self.sections.push((Arc::clone(&section), filename.clone()));
                     filename = section.read_string("parentFile", "");
                 }
                 None if is_user_filename && !resource.file_exists(&filename) => {
@@ -109,11 +108,7 @@ impl BwConfig {
     /// `BWConfig::init(argc, argv)`: run the chain (unless already done --
     /// the reference's `g_inited` guard) and apply the command line.
     /// Returns `processCommandLine`'s verdict.
-    pub fn init_from_args(
-        &mut self,
-        resource: &BwResource,
-        args: &[String],
-    ) -> bool {
+    pub fn init_from_args(&mut self, resource: &BwResource, args: &[String]) -> bool {
         let username = passwd_name(current_uid());
         self.init_from_sources_with_args(resource, username.as_deref(), args)
     }
@@ -146,11 +141,7 @@ impl BwConfig {
     /// a mutated clone of the front section and re-adds it to the resource
     /// cache (`BwResource::readd_section`) to reproduce the shared-object
     /// coherence the C++ tree gets for free.
-    pub fn process_command_line(
-        &mut self,
-        resource: &BwResource,
-        args: &[String],
-    ) -> bool {
+    pub fn process_command_line(&mut self, resource: &BwResource, args: &[String]) -> bool {
         if self.sections.is_empty() {
             eprintln!("No configuration section.");
             return false;
@@ -312,6 +303,16 @@ impl BwConfig {
         out
     }
 
+    /// The chain filenames, most-derived first. The reference keeps this in
+    /// the private `g_sections` pair list; exposing it is test-facing (the
+    /// BW-18 fixtures assert which files a known state resolved).
+    pub fn section_names(&self) -> Vec<&str> {
+        self.sections
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect()
+    }
+
     /// `BWConfig::getChildrenNames`: the child names of `parent_path` from
     /// every chain entry that has one, concatenated in chain order.
     pub fn get_children_names(&self, parent_path: &str) -> Vec<String> {
@@ -423,6 +424,20 @@ mod tests {
         assert!(!config.is_bad(&resource));
     }
 
+    /// `section_names`: the same chain as filenames, most-derived first,
+    /// for fixtures that assert which files a known state resolved.
+    #[test]
+    fn section_names_lists_the_chain_front_to_back() {
+        let (resource, _keep) = chained_resource("names");
+        let mut config = BwConfig::new();
+        config.init_from_sources(&resource, Some("user"));
+
+        assert_eq!(
+            config.section_names(),
+            ["server/bw_user.xml", "server/bw.xml"]
+        );
+    }
+
     /// Acceptance: values of the chained configs resolve like the
     /// reference -- the child hides the parent key by key, and the parent
     /// fills in everything the child leaves unset.
@@ -439,10 +454,10 @@ mod tests {
         assert_eq!(config.get_int("shared/limit", -1), 10);
         // Missing everywhere: the default survives.
         assert_eq!(config.get_string("app/host", "fallback"), "fallback");
-        assert_eq!(config.get_bool("app/host", true), true);
+        assert!(config.get_bool("app/host", true));
         assert_eq!(config.get_uint("nope", 7), 7);
         // Typed conversions come from the winning section's `as`.
-        assert_eq!(config.get_bool("hasDebugConfig", false), true);
+        assert!(config.get_bool("hasDebugConfig", false));
         assert_eq!(config.get_section("app/name").unwrap().as_string(), "child");
         assert!(config.get_section("missing").is_none());
     }
@@ -560,7 +575,10 @@ mod tests {
         );
         // ...while the parent file stays untouched on disk.
         let parent = resource.open_section("server/bw.xml", false).unwrap();
-        assert_eq!(parent.open_section("app/name").unwrap().as_string(), "parent");
+        assert_eq!(
+            parent.open_section("app/name").unwrap().as_string(),
+            "parent"
+        );
     }
 
     /// A trailing `+key` with no value argument is ignored, like the
@@ -609,14 +627,7 @@ mod tests {
         assert_eq!(hits[0].1, "server/bw_user.xml");
         assert_eq!(hits[1].1, "server/bw.xml");
         assert_eq!(hits[0].0.as_string(), "");
-        assert_eq!(
-            hits[0]
-                .0
-                .open_section("name")
-                .unwrap()
-                .as_string(),
-            "child"
-        );
+        assert_eq!(hits[0].0.open_section("name").unwrap().as_string(), "child");
 
         // A name only the parent defines resolves once, from the parent.
         hits = config.search_sections("shared");
@@ -729,7 +740,7 @@ mod tests {
 
         let mut flag = true;
         assert!(!config.update_bool("ghost", &mut flag));
-        assert_eq!(flag, true);
+        assert!(flag);
 
         assert!(config.update_bool("hasDebugConfig", &mut flag));
     }
@@ -756,19 +767,13 @@ mod tests {
     fn already_inited_chain_is_kept_on_a_second_call() {
         let (resource, _keep) = chained_resource("inited");
         let mut config = BwConfig::new();
-        assert!(
-            config
-                .init_from_sources_with_args(&resource, Some("user"), &[])
-        );
+        assert!(config.init_from_sources_with_args(&resource, Some("user"), &[]));
         assert_eq!(config.sections.len(), 2);
 
         // Second call: the chain is NOT rebuilt -- the front section keeps
         // its command-line mutations from the first round.
         let again: Vec<String> = ["+app/name".to_string(), "again".to_string()].to_vec();
-        assert!(
-            config
-                .init_from_sources_with_args(&resource, Some("ghost"), &again)
-        );
+        assert!(config.init_from_sources_with_args(&resource, Some("ghost"), &again));
         assert_eq!(config.sections.len(), 2);
         assert_eq!(config.sections[0].1, "server/bw_user.xml");
         assert_eq!(config.get_string("app/name", ""), "again");
@@ -817,5 +822,74 @@ mod tests {
         // Either way the chain resolves and the final values hold.
         assert_eq!(config.get_int("app/port", 0), 5000);
         assert!(personalised || config.sections.len() == 1);
+    }
+
+    /// BW-00-03-04: two environments sharing one machine and one resource
+    /// root stay separate. The personalised `server/bw_<username>.xml`
+    /// filename scopes the chain per environment, so each environment
+    /// reads its own file; a command-line write-through updates the
+    /// writing environment's front section only, the shared resource
+    /// cache is keyed by the per-environment filename, and nothing on
+    /// disk is overwritten.
+    #[test]
+    fn two_environments_on_one_machine_do_not_overwrite() {
+        let root = temp_root("envsplit");
+        // One shared base both environments inherit, plus one personalised
+        // file per environment with a distinct app/name.
+        write(
+            &format!("{root}/server/bw.xml"),
+            "<root>\n\t<shared><limit>10</limit></shared>\n</root>\n",
+        );
+        let alice_xml = "<root>\n\t<parentFile>server/bw.xml</parentFile>\n\t<app><name>alice</name></app>\n</root>\n";
+        let bob_xml = "<root>\n\t<parentFile>server/bw.xml</parentFile>\n\t<app><name>bob</name></app>\n</root>\n";
+        write(&format!("{root}/server/bw_alice.xml"), alice_xml);
+        write(&format!("{root}/server/bw_bob.xml"), bob_xml);
+        let resource = BwResource::init_paths(&[&root]);
+
+        // Environment A resolves alice's chain, environment B bob's --
+        // same resource root, different front files.
+        let mut alice = BwConfig::new();
+        alice.init_from_sources(&resource, Some("alice"));
+        assert_eq!(alice.section_names()[0], "server/bw_alice.xml");
+        assert_eq!(alice.get_string("app/name", ""), "alice");
+
+        let mut bob = BwConfig::new();
+        bob.init_from_sources(&resource, Some("bob"));
+        assert_eq!(bob.section_names()[0], "server/bw_bob.xml");
+        assert_eq!(bob.get_string("app/name", ""), "bob");
+
+        // Alice writes a value through the command line: it lands in her
+        // front section, and bob's view through the same shared resource
+        // is unaffected.
+        let args = vec![
+            "arg0".to_string(),
+            "+app/name".to_string(),
+            "alice-updated".to_string(),
+        ];
+        assert!(alice.init_from_sources_with_args(&resource, Some("alice"), &args));
+        assert_eq!(alice.get_string("app/name", ""), "alice-updated");
+        assert_eq!(bob.get_string("app/name", ""), "bob");
+
+        // A fresh environment B re-resolves from the same root and still
+        // sees its own value -- alice's write did not leak.
+        let mut bob_again = BwConfig::new();
+        bob_again.init_from_sources(&resource, Some("bob"));
+        assert_eq!(bob_again.get_string("app/name", ""), "bob");
+
+        // And nothing on disk was overwritten: the write-through is
+        // cache-scoped to the writing environment's filename, and the
+        // shared base and the other environment's file keep their bytes.
+        assert_eq!(
+            fs::read_to_string(format!("{root}/server/bw_alice.xml")).unwrap(),
+            alice_xml
+        );
+        assert_eq!(
+            fs::read_to_string(format!("{root}/server/bw_bob.xml")).unwrap(),
+            bob_xml
+        );
+        assert_eq!(
+            fs::read_to_string(format!("{root}/server/bw.xml")).unwrap(),
+            "<root>\n\t<shared><limit>10</limit></shared>\n</root>\n"
+        );
     }
 }

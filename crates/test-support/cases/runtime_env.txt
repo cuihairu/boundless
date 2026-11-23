@@ -1,0 +1,9 @@
+item	value	source
+reference-commit	b4a2eb183407	git rev-parse HEAD
+engine-version	14.4.1	lib/cstdmf/bwversion.hpp
+bundled-python	3.13	build/make/third_party_python.mak
+db-backend	MySQL	lib/db_storage_mysql
+db-schema-version	DBAPP_VERSION_LOGON_MAPPING_2	lib/db_storage_mysql/versions.hpp
+cxx-standard	-std=c++23	build/make/platform_el7.mak
+build-configs	Hybrid,Debug,Hybrid64,Debug64,SingleThreaded,SystemPython	build/make/common_footer_config.mak (MF_CONFIG variants)
+prebuilt-server-binaries	none (source-only checkout)	src/server + src/tools/res_packer

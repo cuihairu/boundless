@@ -1,0 +1,22 @@
+  _BigWorldInfo
+    LogOnMapping
+      item
+        logOnName = FantasyAccount
+        password = a
+        type = Account
+        entityID = 2
+    AutoLoadedEntities = 
+    AutoLoadedSpaceData = 
+  Account
+    playerName = FantasyAccount
+    character = FantasyHero
+    databaseID = 2
+  Avatar
+    playerName = FantasyHero
+    prop1 = 1
+    prop2 = 2
+    prop3 = 3
+    position = 0.0 0.0 0.0
+    direction = 0.0 0.0 0.0
+    spaceID = 1
+    databaseID = 1

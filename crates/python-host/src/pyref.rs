@@ -39,6 +39,10 @@ use super::capi::{self, PyObject};
 /// Not `Send`: the reference is only valid while the owning thread holds the
 /// GIL, the same bracket the reference enforces with
 /// `Script::acquireLock`/`Script::releaseLock`.
+///
+/// The `owned` flag rides beside the pointer: the borrowed form (a handle
+/// that does not own a reference count) is the same pointer with the flag
+/// clear, so a `PyRef` that owns nothing never decrements on drop.
 #[derive(Debug)]
 pub struct PyRef {
     ptr: *mut PyObject,

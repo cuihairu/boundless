@@ -1,0 +1,180 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "entities",
+  "scopeName": "source.entities",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#cdata" },
+    { "include": "#implemented-by" },
+    { "include": "#type-value" },
+    { "include": "#flags-value" },
+    { "include": "#boolean-value" },
+    { "include": "#tag-close" },
+    { "include": "#tag-open" },
+    { "include": "#plain-text" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.block.xml",
+      "begin": "<!--",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.comment.begin.xml" }
+      },
+      "end": "-->",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.comment.end.xml" }
+      }
+    },
+    "cdata": {
+      "name": "string.unquoted.cdata.xml",
+      "begin": "<!\\[CDATA\\[",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.xml" }
+      },
+      "end": "]]>",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.xml" }
+      }
+    },
+    "comment-or-plain": {
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#plain-text" }
+      ]
+    },
+    "implemented-by": {
+      "begin": "(<)(implementedBy)\\b(>)?",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "end": "(</)(implementedBy)(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.end.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "match": "[^<>\\s]+", "name": "variable.other.implemented-by" }
+      ]
+    },
+    "type-value": {
+      "begin": "(<)(Type|Arg|of|Return)\\b(>)?",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "end": "(</)(Type|Arg|of|Return)(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.end.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#implemented-by" },
+        { "include": "#data-type" },
+        { "include": "#plain-text" }
+      ]
+    },
+    "flags-value": {
+      "begin": "(<)(Flags|Exposed|ReplayExposureLevel)\\b(>)?",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "end": "(</)(Flags|Exposed|ReplayExposureLevel)(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.end.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        {
+          "match": "[^<>\\s]+",
+          "name": "support.constant.entity-flag"
+        }
+      ]
+    },
+    "boolean-value": {
+      "begin": "(<)(Persistent|Identifier|Indexed|Unique|Editable|SendLatestOnly|Base|Cell|Client)\\b(>)?",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "end": "(</)(Persistent|Identifier|Indexed|Unique|Editable|SendLatestOnly|Base|Cell|Client)(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.end.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#boolean" },
+        { "include": "#plain-text" }
+      ]
+    },
+    "tag-open": {
+      "begin": "(<)([A-Za-z_][A-Za-z0-9_.:-]*)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "end": "(>)",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        {
+          "begin": "([A-Za-z_][A-Za-z0-9_.:-]*)(\\s*=)",
+          "beginCaptures": {
+            "1": { "name": "entity.attribute-name" },
+            "2": { "name": "punctuation.separator.key-value.xml" }
+          },
+          "end": "(\"[^\"]*\"|'[^']*')",
+          "endCaptures": {
+            "0": { "name": "string.quoted.attribute.xml" }
+          }
+        },
+        { "match": "/(?!->)", "name": "punctuation.definition.tag.self-closing.xml" }
+      ]
+    },
+    "tag-close": {
+      "begin": "(</)([A-Za-z_][A-Za-z0-9_.:-]*)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.xml" },
+        "2": { "name": "entity.tag.section" },
+        "3": { "name": "punctuation.definition.tag.end.xml" }
+      },
+      "end": "(>)",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.tag.end.xml" }
+      }
+    },
+    "plain-text": {
+      "patterns": [
+        { "include": "#boolean" },
+        {
+          "match": "[+-]?\\d+(\\.\\d+)?",
+          "name": "constant.numeric"
+        }
+      ]
+    },
+    "boolean": {
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.boolean"
+    },
+    "data-type": {
+      "match": "\\b(INT8|INT16|INT32|INT64|UINT8|UINT16|UINT32|UINT64|FLOAT32|FLOAT64|FLOAT|STRING|UNICODE_STRING|BLOB|UDO_REF|VECTOR2|VECTOR3|VECTOR4|PYTHON|MAILBOX|ARRAY|TUPLE|FIXED_DICT|CLASS|USER_TYPE)\\b",
+      "name": "support.type.entity-type"
+    }
+  }
+}

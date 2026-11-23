@@ -1,0 +1,188 @@
+{
+ "counts": {
+  "covered": 6,
+  "files": 4871,
+  "gap": 11,
+  "kinds": {
+   "FantasyDemo \u5b9e\u4f53\u5b9a\u4e49": 1,
+   "FantasyDemo \u5b9e\u4f53\u811a\u672c": 3,
+   "FantasyDemo \u914d\u7f6e": 3,
+   "FantasyDemo \u9879\u76ee": 1,
+   "\u516c\u5171\u4ee3\u7801": 5,
+   "\u793a\u4f8b": 4
+  },
+  "rows": 17
+ },
+ "rows": [
+  {
+   "dir": "game/res/bigworld/scripts/common/bw_site.py",
+   "entry": "bw_site.py",
+   "files": 1,
+   "fixture": "bw00-04-02-python-callback-fixtures",
+   "kind": "\u516c\u5171\u4ee3\u7801",
+   "note": "\u5d4c\u5165 Python \u5bbf\u4e3b site \u94a9\u5b50\uff08\u89e3\u91ca\u5668\u542f\u52a8\u9762\uff09",
+   "status": "covered",
+   "task": "BW-00-03-03"
+  },
+  {
+   "dir": "game/res/bigworld/scripts/common/Lib",
+   "entry": "Lib",
+   "files": 2325,
+   "fixture": "bw00-04-02-python-callback-fixtures",
+   "kind": "\u516c\u5171\u4ee3\u7801",
+   "note": "Python \u6807\u51c6\u5e93 stage\uff08\u5d4c\u5165 sys.path\uff09",
+   "status": "covered",
+   "task": "BW-00-03-03"
+  },
+  {
+   "dir": "game/res/bigworld/scripts/common/site-packages",
+   "entry": "site-packages",
+   "files": 670,
+   "fixture": "bw00-04-02-python-callback-fixtures",
+   "kind": "\u516c\u5171\u4ee3\u7801",
+   "note": "site-packages stage",
+   "status": "covered",
+   "task": "BW-00-03-03"
+  },
+  {
+   "dir": "game/res/bigworld/scripts/server_common/lib-dynload-el7",
+   "entry": "lib-dynload-el7",
+   "files": 59,
+   "fixture": "bw00-04-02-python-callback-fixtures",
+   "kind": "\u516c\u5171\u4ee3\u7801",
+   "note": "\u52a8\u6001\u6269\u5c55\u6a21\u5757 stage",
+   "status": "covered",
+   "task": "BW-00-03-03"
+  },
+  {
+   "dir": "game/res/bigworld/scripts/server_common/site-packages",
+   "entry": "site-packages",
+   "files": 1224,
+   "fixture": "bw00-04-02-python-callback-fixtures",
+   "kind": "\u516c\u5171\u4ee3\u7801",
+   "note": "site-packages stage",
+   "status": "covered",
+   "task": "BW-00-03-03"
+  },
+  {
+   "dir": "programming/fantasydemo/res/scripts/base",
+   "entry": "base",
+   "files": 4,
+   "fixture": "\u2014",
+   "kind": "FantasyDemo \u5b9e\u4f53\u811a\u672c",
+   "note": "\u72ec\u7acb\u6e38\u620f\u8d44\u4ea7\uff1b\u672c\u673a\u8bc1\u636e\u5747\u53d6\u81ea simple_python_client \u793a\u4f8b\uff08BW-00-02-04/BW-00-04-03\uff09\uff0cFantasyDemo \u672a\u88ab\u4efb\u4f55\u8bc1\u636e\u7ec3\u4e60",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/fantasydemo/res/scripts/cell",
+   "entry": "cell",
+   "files": 3,
+   "fixture": "\u2014",
+   "kind": "FantasyDemo \u5b9e\u4f53\u811a\u672c",
+   "note": "\u72ec\u7acb\u6e38\u620f\u8d44\u4ea7\uff1b\u672c\u673a\u8bc1\u636e\u5747\u53d6\u81ea simple_python_client \u793a\u4f8b\uff08BW-00-02-04/BW-00-04-03\uff09\uff0cFantasyDemo \u672a\u88ab\u4efb\u4f55\u8bc1\u636e\u7ec3\u4e60",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/fantasydemo/res/scripts/client",
+   "entry": "client",
+   "files": 5,
+   "fixture": "\u2014",
+   "kind": "FantasyDemo \u5b9e\u4f53\u811a\u672c",
+   "note": "\u72ec\u7acb\u6e38\u620f\u8d44\u4ea7\uff1b\u672c\u673a\u8bc1\u636e\u5747\u53d6\u81ea simple_python_client \u793a\u4f8b\uff08BW-00-02-04/BW-00-04-03\uff09\uff0cFantasyDemo \u672a\u88ab\u4efb\u4f55\u8bc1\u636e\u7ec3\u4e60",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/fantasydemo/res/scripts/entity_defs",
+   "entry": "entity_defs",
+   "files": 6,
+   "fixture": "\u2014",
+   "kind": "FantasyDemo \u5b9e\u4f53\u5b9a\u4e49",
+   "note": "\u72ec\u7acb\u6e38\u620f\u8d44\u4ea7\uff08Avatar.def \u7b49\uff09\uff1b\u672a\u88ab\u4efb\u4f55\u8bc1\u636e\u7ec3\u4e60",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/fantasydemo/res/scripts/db.xml",
+   "entry": "db.xml",
+   "files": 1,
+   "fixture": "\u2014",
+   "kind": "FantasyDemo \u914d\u7f6e",
+   "note": "\u72ec\u7acb\u6e38\u620f\u8d44\u4ea7\uff1b\u672a\u88ab\u4efb\u4f55\u8bc1\u636e\u7ec3\u4e60",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/fantasydemo/res/scripts/entities.xml",
+   "entry": "entities.xml",
+   "files": 1,
+   "fixture": "\u2014",
+   "kind": "FantasyDemo \u914d\u7f6e",
+   "note": "\u72ec\u7acb\u6e38\u620f\u8d44\u4ea7\uff1b\u672a\u88ab\u4efb\u4f55\u8bc1\u636e\u7ec3\u4e60",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/fantasydemo/res/server",
+   "entry": "server",
+   "files": 1,
+   "fixture": "\u2014",
+   "kind": "FantasyDemo \u914d\u7f6e",
+   "note": "\u72ec\u7acb\u6e38\u620f\u8d44\u4ea7\uff1b\u672a\u88ab\u4efb\u4f55\u8bc1\u636e\u7ec3\u4e60",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/fantasydemo/fantasydemo.wpr",
+   "entry": "fantasydemo.wpr",
+   "files": 1,
+   "fixture": "\u2014",
+   "kind": "FantasyDemo \u9879\u76ee",
+   "note": "\u5de5\u4f5c\u533a\u9879\u76ee\u6587\u4ef6\uff1b\u65e0\u5bf9\u5e94\u7f16\u8f91\u5668\uff08Windows \u9762\uff09",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/bigworld/examples/client_integration/python/simple",
+   "entry": "simple",
+   "files": 43,
+   "fixture": "bw00-02-04-client-login",
+   "kind": "\u793a\u4f8b",
+   "note": "\u767b\u5f55\u9a71\u52a8\u4e0e\u5b9e\u4f53\u811a\u672c",
+   "status": "covered",
+   "task": "BW-00-02-04"
+  },
+  {
+   "dir": "programming/bigworld/examples/client_integration/c_plus_plus/android",
+   "entry": "android",
+   "files": 21,
+   "fixture": "\u2014",
+   "kind": "\u793a\u4f8b",
+   "note": "\u5ba2\u6237\u7aef C++ \u793a\u4f8b\uff08Android\uff09\uff1b\u65e0\u5bf9\u5e94\u5b9e\u73b0",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/bigworld/examples/client_integration/c_plus_plus/ios",
+   "entry": "ios",
+   "files": 489,
+   "fixture": "\u2014",
+   "kind": "\u793a\u4f8b",
+   "note": "\u5ba2\u6237\u7aef C++ \u793a\u4f8b\uff08iOS\uff09\uff1b\u65e0\u5bf9\u5e94\u5b9e\u73b0",
+   "status": "gap",
+   "task": "\u672a\u6620\u5c04"
+  },
+  {
+   "dir": "programming/bigworld/examples/cellapp_extension",
+   "entry": "cellapp_extension",
+   "files": 17,
+   "fixture": "bw00-01-build-targets",
+   "kind": "\u793a\u4f8b",
+   "note": "cellapp \u6269\u5c55\u793a\u4f8b\uff1b\u53c2\u8003\u4fa7\u5df2\u76d8\u70b9\uff0c\u65e0\u8fd0\u884c\u65f6\u7ec3\u4e60\u8bc1\u636e",
+   "status": "gap",
+   "task": "BW-00-01-01"
+  }
+ ]
+}

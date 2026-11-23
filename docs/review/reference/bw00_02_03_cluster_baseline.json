@@ -1,0 +1,488 @@
+{
+ "apps": [
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2 -f -p /tmp/bwmachined.pid",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/bwmachined2.log",
+   "log_size": 0,
+   "log_tail": [],
+   "name": "bwmachined2",
+   "pid": 2854199,
+   "ports": [
+    [
+     "udp",
+     "127.0.0.1:20018"
+    ],
+    [
+     "udp",
+     "192.168.5.188:20018"
+    ],
+    [
+     "udp",
+     "255.255.255.255:20018"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13307666",
+   "steady_line": null
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/dbappmgr",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/dbappmgr.log",
+   "log_size": 5576,
+   "log_tail": [
+    "DEBUG: [Network] IFindInterfaceHandler::onProcessStatsMessage: Found interface CellAppMgrInterface at 192.168.5.188:52644\n",
+    "DEBUG: [Network] IFindInterfaceHandler::onProcessStatsMessage: Found interface BaseAppMgrInterface at 192.168.5.188:37660\n",
+    "INFO: [Server] ReviverSubject::init: msTimeout_ = 200\n",
+    "INFO: [Server] ---- DBAppMgr is running ----\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:38457\n",
+    "INFO: [Network] UDPChannel::get: Claimed anonymous channel to udp:192.168.5.188:38457\n",
+    "DEBUG: [Config] DBAppMgr::addDBApp:\n",
+    "\tAllocated id   = 1\n",
+    "\tDBApps in use  = 1\n",
+    "\tAddress        = 192.168.5.188:38457\n",
+    "\tAlpha          = true\n",
+    "DEBUG: DBAppMgr::sendDBAppHashUpdate: Directing DBApp-Alpha 1 (192.168.5.188:38457) to perform reset of game server state\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:55303\n",
+    "DEBUG: DBAppMgr::serverHasStarted: true\n"
+   ],
+   "name": "dbappmgr",
+   "pid": 2854667,
+   "ports": [
+    [
+     "tcp",
+     "192.168.5.188:43083"
+    ],
+    [
+     "udp",
+     "192.168.5.188:43083"
+    ],
+    [
+     "udp",
+     "192.168.5.188:60778"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13307873",
+   "steady_line": "INFO: [Server] ---- DBAppMgr is running ----"
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/cellappmgr",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/cellappmgr.log",
+   "log_size": 12834,
+   "log_tail": [
+    "INFO: [Network] CellAppMgr::handleBaseAppMgrBirth: 192.168.5.188:37660\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:57152\n",
+    "INFO: [ProcessIP] CellAppMgr::addApp: Not adding CellApp at 192.168.5.188:57152 because we don't have a BaseApp yet\n",
+    "INFO: [ProcessIP] CellAppMgr::addApp: Not adding CellApp at 192.168.5.188:57152 because we don't have a BaseApp yet\n",
+    "INFO: [ProcessIP] CellAppMgr::addApp: Not adding CellApp at 192.168.5.188:57152 because we don't have a BaseApp yet\n",
+    "INFO: [ProcessIP] CellAppMgr::addApp: Not adding CellApp at 192.168.5.188:57152 because we don't have a BaseApp yet\n",
+    "INFO: CellAppMgr is ready to start.\n",
+    "INFO: [ProcessIP] CellAppMgr::addApp: 1 192.168.5.188:57152\n",
+    "INFO: [Network] UDPChannel::get: Claimed anonymous channel to udp:192.168.5.188:57152\n",
+    "INFO: [ProcessIP] CellApp::CellApp: addr = 192.168.5.188:57152\n",
+    "INFO: Restore from database: gametime=256.4, numSpaces = 0\n",
+    "INFO: CellAppMgr is starting\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:39253\n",
+    "INFO: Space::addCell: Space 2. CellApp 1 (192.168.5.188:57152)\n"
+   ],
+   "name": "cellappmgr",
+   "pid": 2854671,
+   "ports": [
+    [
+     "tcp",
+     "0.0.0.0:38345"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:37761"
+    ],
+    [
+     "udp",
+     "192.168.5.188:37761"
+    ],
+    [
+     "udp",
+     "192.168.5.188:52644"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13307873",
+   "steady_line": "INFO: [Server] ---- CellAppMgr is running ----"
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseappmgr",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/baseappmgr.log",
+   "log_size": 9005,
+   "log_tail": [
+    "\tService App\t\t= false\n",
+    "DEBUG: [ProcessIP] BaseAppMgr::finishedInit: now have 2 base apps and 0 service apps ready\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:50379\n",
+    "INFO: [Network] UDPChannel::get: Claimed anonymous channel to udp:192.168.5.188:50379\n",
+    "TRACE: [ProcessIP] BaseAppMgr::finishedInit: 192.168.5.188:50379\n",
+    "DEBUG: [Config] ManagedAppSubSet::addApp:\n",
+    "\tAllocated id\t\t= 1\n",
+    "\tServiceApps\tin use\t= 1\n",
+    "\tInternal address\t= 192.168.5.188:50379\n",
+    "\tExternal address\t= 192.168.5.188:37101\n",
+    "\tService App\t\t= true\n",
+    "DEBUG: [ProcessIP] BaseAppMgr::finishedInit: now have 2 base apps and 1 service apps ready\n",
+    "INFO: BaseAppMgr is starting\n",
+    "INFO: BaseAppMgr::registerBaseGlobally: Registered base '\\x80\\x02X\\x0C\\x00\\x00\\x00DefaultSpaceq\\x00.' -> mailbox { entity=1, addr=192.168.5.188:39253 } from 192.168.5.188:39253\n"
+   ],
+   "name": "baseappmgr",
+   "pid": 2854673,
+   "ports": [
+    [
+     "tcp",
+     "192.168.5.188:50901"
+    ],
+    [
+     "udp",
+     "192.168.5.188:37660"
+    ],
+    [
+     "udp",
+     "192.168.5.188:50901"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13307873",
+   "steady_line": "INFO: [Server] ---- BaseAppMgr is running ----"
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/dbapp",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/dbapp.log",
+   "log_size": 11361,
+   "log_tail": [
+    "INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1\n",
+    "INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1\n",
+    "INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1\n",
+    "INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:50379\n",
+    "INFO: DBApp::getIDs: fetching 2400 id's for 192.168.5.188:50379\n",
+    "INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 1/1\n",
+    "DEBUG: DBApp::initScriptAppReady\n",
+    "DEBUG: DBApp::initSendSpaceData\n",
+    "INFO: [DBEngine] MySqlDatabase::getSpacesData: numSpaces = 0\n",
+    "DEBUG: DBApp::initEntityAutoLoadingAsync\n",
+    "DEBUG: DBApp::initNotifyServerStartup: didAutoLoad = false\n",
+    "DEBUG: DBApp::onInitCompleted\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:52644\n"
+   ],
+   "name": "dbapp",
+   "pid": 2855002,
+   "ports": [
+    [
+     "tcp",
+     "192.168.5.188:52039"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:57493"
+    ],
+    [
+     "udp",
+     "192.168.5.188:38457"
+    ],
+    [
+     "udp",
+     "192.168.5.188:57493"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13308194",
+   "steady_line": "INFO: [Server] ---- DBApp is running ----"
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/cellapp",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/cellapp.log",
+   "log_size": 15890,
+   "log_tail": [
+    "INFO: IDClient::handleMessage: Received from 192.168.5.188:38457\n",
+    "INFO: IDClient::retrieveIDsFromStream: Received 2400 from 2401 to 4800\n",
+    "INFO: IDClient::handleMessage: Number of ids increased from 0 to 2400\n",
+    "INFO: [Config] \tCellApp ID            = 1\n",
+    "INFO: [Config] \tstarting time         = 0.0\n",
+    "INFO: Python server is running on port 50001\n",
+    "INFO: CellApp::finishInit: CellAppMgr acknowledged our existence.\n",
+    "INFO: CellApp::setGameTime: gametime = 256.4\n",
+    "TRACE: CellApp::setDBAppAlpha: 192.168.5.188:38457\n",
+    "INFO: CellApp is starting\n",
+    "INFO: Staggering time by -0.000 seconds\n",
+    "INFO: CellApp::addCell: Space = 2\n",
+    "WARNING: Profile initReal/timeWarningLevel exceeded (Space 1 of size 39 bytes took 0.000043 seconds)\n",
+    "INFO: Cell::createEntityInternal: New Space      (1)\n"
+   ],
+   "name": "cellapp",
+   "pid": 2855345,
+   "ports": [
+    [
+     "tcp",
+     "0.0.0.0:39023"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:46015"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:50001"
+    ],
+    [
+     "udp",
+     "192.168.5.188:46015"
+    ],
+    [
+     "udp",
+     "192.168.5.188:57152"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13308501",
+   "steady_line": "INFO: [Server] ---- CellApp is running ----"
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseapp",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/baseapp.log",
+   "log_size": 14395,
+   "log_tail": [
+    "DEBUG: BaseApp::updateDBAppHash: new DBApp Alpha: 192.168.5.188:38457\n",
+    "INFO: IDClient::handleMessage: Received from 192.168.5.188:38457\n",
+    "INFO: IDClient::retrieveIDsFromStream: Received 2400 from 1 to 2400\n",
+    "INFO: IDClient::handleMessage: Number of ids increased from 0 to 2400\n",
+    "INFO: Python server is running on port 40001\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:43112\n",
+    "INFO: BackedUpBaseApps::startAppBackup: Starting backup on 192.168.5.188:43112 hash(id)%1 = index 0\n",
+    "INFO: BaseApp::ready: Starting game time from 2564\n",
+    "INFO: Base::Base(1): Space\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:52644\n",
+    "INFO: Base::py_registerGlobally: Registering global base 1 with key 'DefaultSpace'\n",
+    "INFO: Starting time = 256.4\n",
+    "INFO: BackedUpBaseApps::startAppBackup: Using backup on 192.168.5.188:43112 hash(id)%1 = index 0\n",
+    "INFO: BackupSender::tick: New backup is ready.\n"
+   ],
+   "name": "baseapp",
+   "pid": 2855879,
+   "ports": [
+    [
+     "tcp",
+     "192.168.5.188:40001"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:54301"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:57477"
+    ],
+    [
+     "udp",
+     "0.0.0.0:57477"
+    ],
+    [
+     "udp",
+     "192.168.5.188:39253"
+    ],
+    [
+     "udp",
+     "192.168.5.188:54301"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13308808",
+   "steady_line": "INFO: [Server] ---- BaseApp is running ----"
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/loginapp",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/loginapp.log",
+   "log_size": 10786,
+   "log_tail": [
+    "INFO: [Network] TCPServer::initWithPort: Listening on 192.168.5.188:20013\n",
+    "INFO: [Server] ServerApp::init: Run from bwmachined = false\n",
+    "INFO: [Network] Server protocol version: 2.9.0\n",
+    "INFO: [Network] Local subnet: \n",
+    "INFO: [Network] NAT external addr: \n",
+    "INFO: [Server] ReviverSubject::init: msTimeout_ = 200\n",
+    "INFO: [ProcessIP] External address = 192.168.5.188:20013\n",
+    "INFO: [ProcessIP] Internal address = 192.168.5.188:55303\n",
+    "DEBUG: [Network] IFindInterfaceHandler::onProcessStatsMessage: Found interface DBAppMgrInterface at 192.168.5.188:60778\n",
+    "INFO: CuckooCycleLoginChallengeFactory::configure: Easiness: 50.000\n",
+    "INFO: DelayLoginChallengeFactory::configure: Duration 1.000s\n",
+    "INFO: [Server] ---- LoginApp is running ----\n",
+    "DEBUG: LoginApp::finishInit: id 1 (DBApp Alpha: 192.168.5.188:38457)\n",
+    "INFO: LoginApp::notifyDBAppAlpha: 192.168.5.188:38457\n"
+   ],
+   "name": "loginapp",
+   "pid": 2856519,
+   "ports": [
+    [
+     "tcp",
+     "192.168.5.188:20013"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:49171"
+    ],
+    [
+     "udp",
+     "0.0.0.0:20013"
+    ],
+    [
+     "udp",
+     "192.168.5.188:49171"
+    ],
+    [
+     "udp",
+     "192.168.5.188:55303"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13309419",
+   "steady_line": "INFO: [Server] ---- LoginApp is running ----"
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/serviceapp",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/serviceapp.log",
+   "log_size": 14032,
+   "log_tail": [
+    "INFO: [DataDescription] \tClientAvatar: client top-level property count = 5. Efficient to 97 (limit is 256)\n",
+    "INFO: [DataDescription] \tClientAvatar: client method count = 2. Efficient to 99 (limit is 25344)\n",
+    "INFO: [DataDescription] \tClientAvatar: base method count = 1. Efficient to 121 (limit is 30976)\n",
+    "INFO: [DataDescription] \tGuard: cell method count = 0. Efficient to 122 (limit is 31232)\n",
+    "INFO: [DataDescription] \n",
+    "INFO: [Config] Found 0 service fragments in [Services] section in /etc/bwmachined.confINFO: [Server] ---- ServiceApp is running ----\n",
+    "DEBUG: BaseApp::updateDBAppHash: new DBApp Alpha: 192.168.5.188:38457\n",
+    "INFO: IDClient::handleMessage: Received from 192.168.5.188:38457\n",
+    "INFO: IDClient::retrieveIDsFromStream: Received 2400 from 7201 to 9600\n",
+    "INFO: IDClient::handleMessage: Number of ids increased from 0 to 2400\n",
+    "INFO: Python server is running on port 60001\n",
+    "INFO: BaseApp::ready: Starting game time from 2564\n",
+    "INFO: Starting time = 256.4\n",
+    "INFO: BackupSender::tick: New backup is ready.\n"
+   ],
+   "name": "serviceapp",
+   "pid": 2857019,
+   "ports": [
+    [
+     "tcp",
+     "192.168.5.188:37101"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:54005"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:60001"
+    ],
+    [
+     "udp",
+     "0.0.0.0:37101"
+    ],
+    [
+     "udp",
+     "192.168.5.188:50379"
+    ],
+    [
+     "udp",
+     "192.168.5.188:54005"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13309728",
+   "steady_line": "INFO: [Config] Found 0 service fragments in [Services] section in /etc/bwmachined.confINFO: [Server] ---- ServiceApp is running ----"
+  },
+  {
+   "cmdline": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseapp",
+   "cwd": "/home/cui/workspaces/BigWorld",
+   "log_file": "/tmp/cluster-smoke/baseapp2.log",
+   "log_size": 14214,
+   "log_tail": [
+    "INFO: [DataDescription] \tGuard: cell method count = 0. Efficient to 122 (limit is 31232)\n",
+    "INFO: [DataDescription] \n",
+    "INFO: [Server] ---- BaseApp is running ----\n",
+    "DEBUG: BaseApp::updateDBAppHash: new DBApp Alpha: 192.168.5.188:38457\n",
+    "INFO: IDClient::handleMessage: Received from 192.168.5.188:38457\n",
+    "INFO: IDClient::retrieveIDsFromStream: Received 2400 from 4801 to 7200\n",
+    "INFO: IDClient::handleMessage: Number of ids increased from 0 to 2400\n",
+    "INFO: Python server is running on port 40002\n",
+    "INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:39253\n",
+    "INFO: BackedUpBaseApps::startAppBackup: Starting backup on 192.168.5.188:39253 hash(id)%1 = index 0\n",
+    "INFO: BaseApp::ready: Starting game time from 2564\n",
+    "INFO: Starting time = 256.4\n",
+    "INFO: BackupSender::tick: New backup is ready.\n",
+    "INFO: BackedUpBaseApps::startAppBackup: Using backup on 192.168.5.188:39253 hash(id)%1 = index 0\n"
+   ],
+   "name": "baseapp(2)",
+   "pid": 2856191,
+   "ports": [
+    [
+     "tcp",
+     "192.168.5.188:38103"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:40002"
+    ],
+    [
+     "tcp",
+     "192.168.5.188:40535"
+    ],
+    [
+     "udp",
+     "0.0.0.0:38103"
+    ],
+    [
+     "udp",
+     "192.168.5.188:40535"
+    ],
+    [
+     "udp",
+     "192.168.5.188:43112"
+    ]
+   ],
+   "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+   "started_ticks": "13309118",
+   "steady_line": "INFO: [Server] ---- BaseApp is running ----"
+  }
+ ],
+ "captured_at": "2026-11-23 01:18:25 +0800",
+ "config": {
+  "db": {
+   "host": "127.0.0.1",
+   "name": "bigworld",
+   "pass": "bigworld",
+   "user": "bigworld"
+  },
+  "res_path": "\"$EX_RES:$REPO_ROOT/game/res/bigworld:$SMOKE_RES\"",
+  "resources_xml": "/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res/resources.xml",
+  "resources_xml_sha256": "c853583cbd2c58375b892a9f66610ba35258d8a25ce7406187ee09a36e02a0ed",
+  "server_config_effective": "/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res/server/bw_cui.xml",
+  "server_config_effective_sha256": "d39deb1f59b60de3ab46a96bf61c6753dd3e84023f78126758f2d4c2f9e40c68",
+  "server_config_overlay": "/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res/server/bw_deep.xml",
+  "server_config_overlay_sha256": "d39deb1f59b60de3ab46a96bf61c6753dd3e84023f78126758f2d4c2f9e40c68"
+ },
+ "log_dir": "/tmp/cluster-smoke",
+ "server_apps": [
+  "dbappmgr",
+  "cellappmgr",
+  "baseappmgr",
+  "dbapp",
+  "cellapp",
+  "baseapp",
+  "loginapp",
+  "serviceapp"
+ ],
+ "smoke_script": "/home/cui/workspaces/BigWorld/scripts/cluster-smoke/deep-chain.sh",
+ "source_commit": "916dc72a"
+}

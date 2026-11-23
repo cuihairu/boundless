@@ -1,0 +1,20 @@
+; The Godot adapter's GDExtension descriptor (BW-21-05-01).
+;
+; Godot loads this file from the project to find the entry symbol and the
+; native library for the running OS and build configuration.  The library
+; paths are inside the project's res:// tree, so a clean project copies the
+; descriptor and its libraries and loads the extension.
+
+[configuration]
+
+entry_symbol = "godot_sdk_entry"
+compatibility_minimum = "4.3"
+
+[libraries]
+
+linux.debug.x86_64 = "res://native/linux_debug/libboundless_sdk.so"
+linux.release.x86_64 = "res://native/linux_release/libboundless_sdk.so"
+windows.debug.x86_64 = "res://native/windows_debug/boundless_sdk.dll"
+windows.release.x86_64 = "res://native/windows_release/boundless_sdk.dll"
+macos.debug.universal = "res://native/macos_debug/libboundless_sdk.dylib"
+macos.release.universal = "res://native/macos_release/libboundless_sdk.dylib"

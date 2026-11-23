@@ -106,9 +106,7 @@ impl MultiFileSystem {
             return None;
         }
 
-        self.dir_cache
-            .borrow_mut()
-            .insert(cache_key, dir.clone());
+        self.dir_cache.borrow_mut().insert(cache_key, dir.clone());
         Some(dir)
     }
 
@@ -172,9 +170,7 @@ impl MultiFileSystem {
     /// `write_file`. Marks the parent directory modified.
     pub fn write_file_if_exists(&self, path: &str, data: &[u8]) -> bool {
         for base in &self.base_file_systems {
-            if base.get_file_type(path, None) == FileType::File
-                && base.write_file(path, data)
-            {
+            if base.get_file_type(path, None) == FileType::File && base.write_file(path, data) {
                 self.add_modified_directory(&crate::bwresource::get_file_path(path));
                 return true;
             }
@@ -212,11 +208,11 @@ impl MultiFileSystem {
     pub fn resolve_to_absolute_path(&self, path: &mut String) -> FileType {
         for base in &self.base_file_systems {
             let ft = base.get_file_type(path, None);
-            if ft != FileType::NotFound {
-                if let Some(full_path) = base.get_absolute_path(path) {
-                    *path = full_path;
-                    return ft;
-                }
+            if ft != FileType::NotFound
+                && let Some(full_path) = base.get_absolute_path(path)
+            {
+                *path = full_path;
+                return ft;
             }
         }
         FileType::NotFound
@@ -357,7 +353,10 @@ mod tests {
         mfs.add_base_file_system(native(&b), -1);
 
         let mut info = FileInfo::default();
-        assert_eq!(mfs.get_file_type_ex("pack.bin", Some(&mut info)), FileType::Archive);
+        assert_eq!(
+            mfs.get_file_type_ex("pack.bin", Some(&mut info)),
+            FileType::Archive
+        );
         assert_eq!(info.size, 4);
 
         fs::remove_dir_all(&a).unwrap();
@@ -418,7 +417,11 @@ mod tests {
         // Prime the caches.
         let before = mfs.read_directory("").unwrap();
         assert!(before.contains(&"top.txt".to_string()));
-        assert!(mfs.read_directory("sub").unwrap().contains(&"inner.txt".to_string()));
+        assert!(
+            mfs.read_directory("sub")
+                .unwrap()
+                .contains(&"inner.txt".to_string())
+        );
 
         // dirname("top.txt") is "." on POSIX, so the *dot* slot is marked and
         // the root listing cache ("") is not invalidated by the flush.
@@ -431,9 +434,17 @@ mod tests {
 
         // A sub-directory write marks "sub", which the flush does invalidate.
         assert!(mfs.write_file("sub/new.txt", b"n"));
-        assert!(!mfs.read_directory("sub").unwrap().contains(&"new.txt".to_string()));
+        assert!(
+            !mfs.read_directory("sub")
+                .unwrap()
+                .contains(&"new.txt".to_string())
+        );
         mfs.flush_modification_monitor();
-        assert!(mfs.read_directory("sub").unwrap().contains(&"new.txt".to_string()));
+        assert!(
+            mfs.read_directory("sub")
+                .unwrap()
+                .contains(&"new.txt".to_string())
+        );
 
         fs::remove_dir_all(&a).unwrap();
     }
@@ -466,8 +477,7 @@ mod tests {
 
         let mut mfs = MultiFileSystem::new();
         // An archive first: it contains nothing and resolves no absolute path.
-        let mut builder =
-            crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
+        let mut builder = crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
         builder.update_file("elsewhere.txt", Some(b"x".to_vec()));
         let bytes = builder.create_zip();
         mfs.add_base_file_system(
@@ -502,8 +512,7 @@ mod tests {
 
         let mut mfs = MultiFileSystem::new();
         // A zip base accepts writes in memory, so it shadows b for mutations.
-        let mut builder =
-            crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
+        let mut builder = crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
         builder.update_file("live.txt", Some(b"zip".to_vec()));
         let bytes = builder.create_zip();
         mfs.add_base_file_system(
@@ -514,17 +523,13 @@ mod tests {
 
         // The zip refuses mkdirs, so the request falls to the native base.
         assert!(mfs.make_directory("fresh"));
-        assert_eq!(
-            mfs.get_file_type("fresh", None),
-            FileType::Directory
-        );
+        assert_eq!(mfs.get_file_type("fresh", None), FileType::Directory);
         // Writes land in the zip image, not on disk b -- and stay gated
         // until a createZip flush, so reads fall through to nothing here.
         assert!(mfs.write_file("live.txt", b"zip2"));
         assert_eq!(mfs.read_file("live.txt"), None);
         assert_eq!(
-            fs::read(format!("{}/live.txt", b))
-                .map_err(|e| e.kind()),
+            fs::read(format!("{}/live.txt", b)).map_err(|e| e.kind()),
             Err(std::io::ErrorKind::NotFound)
         );
 
@@ -534,10 +539,7 @@ mod tests {
 
         write(&b, "/disk.txt", b"disk");
         assert!(mfs.move_file_or_directory("disk.txt", "disk2.txt"));
-        assert_eq!(
-            mfs.get_file_type("disk2.txt", None),
-            FileType::File
-        );
+        assert_eq!(mfs.get_file_type("disk2.txt", None), FileType::File);
 
         fs::remove_dir_all(&a).unwrap();
         fs::remove_dir_all(&b).unwrap();
@@ -553,10 +555,7 @@ mod tests {
         mfs.add_base_file_system(native(&a), -1);
         mfs.add_base_file_system(native(&b), -1);
 
-        assert_eq!(
-            mfs.get_file_type_ex("ghost.txt", None),
-            FileType::NotFound
-        );
+        assert_eq!(mfs.get_file_type_ex("ghost.txt", None), FileType::NotFound);
         assert!(!mfs.write_file("no/dir/ghost.txt", b"g"));
         assert!(!mfs.erase_file_or_directory("ghost.txt"));
         assert!(!mfs.move_file_or_directory("ghost.txt", "moved.txt"));
@@ -564,10 +563,7 @@ mod tests {
         // An exhausted Default multiplexer answers nothing and echoes
         // absolute joins back.
         let empty = MultiFileSystem::default();
-        assert_eq!(
-            empty.get_file_type("x", None),
-            FileType::NotFound
-        );
+        assert_eq!(empty.get_file_type("x", None), FileType::NotFound);
         assert_eq!(empty.get_absolute_path("x"), "x");
 
         fs::remove_dir_all(&a).unwrap();
@@ -581,8 +577,7 @@ mod tests {
 
         // The zip holds the file, but archives resolve no absolute path, so
         // resolution falls through to the native base behind it.
-        let mut builder =
-            crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
+        let mut builder = crate::zip::ZipFileSystem::open("", crate::zip::empty_archive()).unwrap();
         builder.update_file("leaf.txt", Some(b"zipped".to_vec()));
         let bytes = builder.create_zip();
 

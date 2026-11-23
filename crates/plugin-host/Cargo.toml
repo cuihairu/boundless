@@ -1,0 +1,13 @@
+[package]
+name = "plugin-host"
+description = "BW-13-06-03 dynamic plugin loader (tools/plugin_system)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# DynamicLibrary (dlopen/dlsym) is the load primitive the host opens plugins
+# through; the crate reads it without modifying the frozen platform crate.
+platform = { workspace = true }

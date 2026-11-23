@@ -1,0 +1,12 @@
+kind	name	description	source
+request	1	logOnTo(server, user, password): the client initiates the logon, sending the server name, username and password	programming/bigworld/examples/client_integration/python/simple/main.cpp
+request	2	send the login message to LoginApp (uint32 version, bool encrypted, LogOnParams)	programming/bigworld/lib/connection/login_interface.hpp
+request	3	if a challenge is issued, send challengeResponse	programming/bigworld/lib/connection/login_interface.hpp
+request	4	LoginApp replies with a LoginReplyRecord (BaseApp address and session key); the client connects to the BaseApp	programming/bigworld/lib/connection/login_handler.hpp
+callback	1	onLoginAppLoginChallengeIssued(challenge): the server issued a login challenge	programming/bigworld/lib/connection/login_handler.hpp
+callback	2	onLoginChallengeCompleted(): the challenge was completed	programming/bigworld/lib/connection/login_handler.hpp
+callback	3	onLoginAppLoginSuccess(replyRecord, serverMessage): LoginApp accepted the logon	programming/bigworld/lib/connection/login_handler.hpp
+callback	4	onBaseAppLoginSuccess(channel, sessionKey): the BaseApp accepted the client	programming/bigworld/lib/connection/login_handler.hpp
+callback	5	onLoggedOn() on success; onLogOnFailure(status, message) on failure; onLoggedOff() on logout	programming/bigworld/examples/client_integration/python/simple/main.cpp
+blocker	loginapp-pubkey	the client init requires loginapp.pubkey to encrypt client/server communication; it is absent from the repository, so the real run fails at init (Failed to initialise LoginApp public key)	programming/bigworld/examples/client_integration/python/simple/main.cpp (init)
+blocker	cluster-start	per BW-00-02-03 the standalone cluster cannot fully start here (bwmachined absent, development_defaults.xml absent, no database), so there is no LoginApp to log into even if the client initializes	server/startup_baseline (BW-00-02-03)

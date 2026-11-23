@@ -1,0 +1,64 @@
+<hut_shell.visual>
+	<!-- Hand-crafted shell visual for the inside chunk 00000000i.chunk: six
+	     boundary planes of the -10..10 shell box. The reference reads these
+	     from the shell model's .visual (chunk.cpp:814-839); see
+	     docs/review/bw10-01-chunk-load.md. The +z portal is written with the
+	     wrong winding on purpose: the parser must reverse it in place. -->
+	<boundary>
+		<normal>1 0 0</normal>
+		<d>10</d>
+		<portal>
+			<chunk>00000000o</chunk>
+			<uAxis>0 1 0</uAxis>
+			<point>-10 -10 0</point>
+			<point>10 -10 0</point>
+			<point>10 10 0</point>
+			<point>-10 10 0</point>
+		</portal>
+	</boundary>
+	<boundary>
+		<normal>-1 0 0</normal>
+		<d>10</d>
+	</boundary>
+	<boundary>
+		<normal>0 0 1</normal>
+		<d>10</d>
+		<portal>
+			<internal>true</internal>
+			<chunk>00000001i</chunk>
+			<uAxis>1 0 0</uAxis>
+			<point>-10 10 0</point>
+			<point>10 10 0</point>
+			<point>10 -10 0</point>
+			<point>-10 -10 0</point>
+		</portal>
+	</boundary>
+	<boundary>
+		<normal>0 0 -1</normal>
+		<d>10</d>
+	</boundary>
+	<boundary>
+		<normal>0 1 0</normal>
+		<d>10</d>
+		<portal>
+			<chunk>earth</chunk>
+			<uAxis>0 0 1</uAxis>
+			<point>-10 -10 0</point>
+			<point>10 -10 0</point>
+			<point>10 10 0</point>
+			<point>-10 10 0</point>
+		</portal>
+	</boundary>
+	<boundary>
+		<normal>0 -1 0</normal>
+		<d>10</d>
+		<portal>
+			<chunk>heaven</chunk>
+			<uAxis>1 0 0</uAxis>
+			<point>-10 -10 0</point>
+			<point>10 -10 0</point>
+			<point>10 10 0</point>
+			<point>-10 10 0</point>
+		</portal>
+	</boundary>
+</hut_shell.visual>

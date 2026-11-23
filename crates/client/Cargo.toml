@@ -1,0 +1,33 @@
+[package]
+name = "client"
+description = "BW-11 client application: window, presentation mode and device lifecycle"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The shared math primitives (matrix/quaternion/vector, the reference
+# `lib/math` scalar path) and the DataSection tree (the reference
+# `resmgr/xml_section.cpp`), both used by the model/skeletal-animation
+# port (BW-11-04-01).
+foundation = { workspace = true }
+resources = { workspace = true }
+# Replay tick-data decompression (`CompressionIStream`/`ZipIStream` zlib
+# `uncompress`, `lib/connection/compression_stream.cpp`). rust_backend keeps it
+# pure Rust (miniz_oxide), so the workspace gate needs no system zlib.
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+
+[features]
+# The real window/event-loop binding (winit). Default-off keeps the workspace
+# gate lean: the server path never needs a window, and CI runners may lack the
+# X11/wayland build headers winit needs. The pure window-mode and device
+# lifecycle modules compile and test without it. Build the client with
+# `--features winit-backend` (or `--all-features`).
+default = []
+winit-backend = ["dep:winit"]
+
+[dependencies.winit]
+version = "0.30"
+optional = true

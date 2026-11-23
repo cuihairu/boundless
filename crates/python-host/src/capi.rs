@@ -550,7 +550,6 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyUnicode_CompareWithASCIIString(unicode: *mut PyObject, ascii: *const c_char) -> c_int;
     pub fn PyUnicode_AsUTF8AndSize(unicode: *mut PyObject, size: *mut PySsize) -> *mut c_char;
-    pub fn Py_TYPE(obj: *mut PyObject) -> *mut PyTypeObject;
     pub fn PyType_IsSubtype(derived: *mut PyTypeObject, base: *mut PyTypeObject) -> c_int;
     pub fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObject;
     pub fn PyModule_New(name: *const c_char) -> *mut PyObject;
@@ -640,6 +639,7 @@ unsafe extern "C" {
     pub fn PyLong_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyLong_FromUnsignedLong(value: std::os::raw::c_ulong) -> *mut PyObject;
     pub fn PyLong_AsLong(obj: *mut PyObject) -> std::os::raw::c_long;
+    pub fn PyLong_AsLongLong(obj: *mut PyObject) -> i64;
     pub fn PyFloat_AsDouble(obj: *mut PyObject) -> f64;
     pub fn PyFloat_FromDouble(value: f64) -> *mut PyObject;
     pub fn PySequence_Fast(obj: *mut PyObject, message: *const c_char) -> *mut PyObject;
@@ -660,6 +660,14 @@ unsafe extern "C" {
         length: *mut PySsize,
     ) -> c_int;
     pub fn PyObject_Free(pointer: *mut std::os::raw::c_void);
+}
+
+/// The CPython `Py_TYPE` macro: the type pointer lives in the object header's
+/// `ob_type` field, so it reads directly instead of linking against a
+/// `libpython` export (3.12 ships it as a static inline, not a symbol).
+#[inline]
+pub unsafe fn Py_TYPE(obj: *mut PyObject) -> *mut PyTypeObject {
+    unsafe { (*obj).ob_type }
 }
 
 #[cfg(test)]

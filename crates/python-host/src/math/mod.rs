@@ -320,6 +320,50 @@ pub(super) unsafe fn coerce_uint(object: *mut capi::PyObject, var_name: &str) ->
     None
 }
 
+/// `Script::setData(PyObject*, uint8&)`, the `INT_ACCESSOR( uint8, long )`
+/// expansion of `script.hpp:200-224` on Linux: `setData` of the signed
+/// 64-bit form first (`script.cpp:1673-1691` over `:1693-1734`), then the
+/// widening comparison that only the accessor performs. A negative int is
+/// converted, not refused: `uint8( -1 )` is `255`, which differs from the
+/// signed `value`, so the reference answers `Integer is out of range`.
+/// Anything that is neither an in-range `int` nor a `float` is the
+/// `setData(int64&)` tail message, `must be set to a long`.
+///
+/// # Safety
+///
+/// `object` must be a borrowed object the interpreter handed out, or null.
+pub(super) unsafe fn coerce_u8(object: *mut capi::PyObject, var_name: &str) -> Option<u8> {
+    let value = if unsafe { capi::py_long_check(object) } {
+        // SAFETY: the check above guarantees an int object.
+        let converted = unsafe { capi::PyLong_AsLongLong(object) };
+        if unsafe { capi::PyErr_Occurred() }.is_null() {
+            Some(converted)
+        } else {
+            // The value does not fit an `i64`, so `PyErr_Occurred` is set:
+            // the reference clears it and reports the ordinary failure
+            // (`script.cpp:1700-1723`).
+            unsafe { capi::clear_error() };
+            None
+        }
+    } else if unsafe { capi::py_float_check(object) } {
+        // SAFETY: the check above guarantees a float object.
+        Some(unsafe { capi::PyFloat_AsDouble(object) } as i64)
+    } else {
+        raise_type_error(&format!("{var_name} must be set to a long"));
+        return None;
+    };
+    let Some(value) = value else {
+        raise_type_error(&format!("{var_name} must be set to a long"));
+        return None;
+    };
+    let converted = value as u8;
+    if (converted as i64) != value {
+        raise_type_error("Integer is out of range");
+        return None;
+    }
+    Some(converted)
+}
+
 /// `Script::getData(const float&)` (`script.cpp:2302-2305`): a fresh float
 /// object the caller owns.
 pub(super) fn float_object(value: f64) -> *mut capi::PyObject {

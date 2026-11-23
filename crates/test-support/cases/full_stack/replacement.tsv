@@ -1,0 +1,10 @@
+replaced-role	cellapp
+role	side	status	detail
+baseapp	original	blocked	original-full-stack: binary present in game/bin/server/el7/server, but a full start needs a provisioned res tree, BW_RES_PATH, server/bw.xml and a database schema; none is configured here, so the row records the blocker instead of a start [size 194591088 bytes]
+baseappmgr	original	blocked	original-full-stack: binary present in game/bin/server/el7/server, but a full start needs a provisioned res tree, BW_RES_PATH, server/bw.xml and a database schema; none is configured here, so the row records the blocker instead of a start [size 80618104 bytes]
+cellapp	new	ran	[cellapp] starting (boundless minimal entry)
+cellappmgr	original	blocked	original-full-stack: binary present in game/bin/server/el7/server, but a full start needs a provisioned res tree, BW_RES_PATH, server/bw.xml and a database schema; none is configured here, so the row records the blocker instead of a start [size 84264928 bytes]
+dbapp	original	blocked	original-full-stack: binary present in game/bin/server/el7/server, but a full start needs a provisioned res tree, BW_RES_PATH, server/bw.xml and a database schema; none is configured here, so the row records the blocker instead of a start [size 163334760 bytes]
+dbappmgr	original	blocked	original-full-stack: binary present in game/bin/server/el7/server, but a full start needs a provisioned res tree, BW_RES_PATH, server/bw.xml and a database schema; none is configured here, so the row records the blocker instead of a start [size 74951672 bytes]
+loginapp	original	blocked	original-full-stack: binary present in game/bin/server/el7/server, but a full start needs a provisioned res tree, BW_RES_PATH, server/bw.xml and a database schema; none is configured here, so the row records the blocker instead of a start [size 88546120 bytes]
+reviver	original	blocked	original-full-stack: binary present in game/bin/server/el7/server, but a full start needs a provisioned res tree, BW_RES_PATH, server/bw.xml and a database schema; none is configured here, so the row records the blocker instead of a start [size 74571312 bytes]

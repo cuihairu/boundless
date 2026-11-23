@@ -8,5 +8,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# foundation = { workspace = true }  # re-add with first consumer
-# platform = { workspace = true }  # re-add at BW-02-01 sockets
+foundation = { workspace = true }
+platform = { workspace = true }

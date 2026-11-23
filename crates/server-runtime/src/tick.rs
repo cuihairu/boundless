@@ -466,11 +466,7 @@ fn stamps_to_seconds(stamps: u64, stamps_per_second: u64) -> f64 {
 /// epoch (the reference reads the CPU stamp counter). Shared with the
 /// dispatcher's `realClock` default.
 pub fn stamp_now() -> u64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = *EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_nanos() as u64
+    foundation::time::stamp_now()
 }
 
 #[cfg(test)]

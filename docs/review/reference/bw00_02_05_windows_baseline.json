@@ -1,0 +1,256 @@
+{
+ "artifacts_found": {
+  "dll": [
+   "fixwork/programming/bigworld/third_party/nvtt/cuda_redist/cudart32_42_9.dll",
+   "fixwork/programming/bigworld/third_party/nvtt/cuda_redist/cudart64_42_9.dll",
+   "fixwork/programming/bigworld/third_party/nvtt/gnuwin32/bin/jpeg62.dll",
+   "fixwork/programming/bigworld/third_party/nvtt/gnuwin32/bin/libpng12.dll",
+   "fixwork/programming/bigworld/third_party/nvtt/gnuwin32/bin/libtiff3.dll",
+   "fixwork/programming/bigworld/third_party/nvtt/gnuwin32/bin/zlib1.dll",
+   "fixwork/programming/bigworld/third_party/openautomate/debug/oainfo_plugin.dll",
+   "fixwork/programming/bigworld/third_party/openautomate/debug/oaremote_plugin.dll",
+   "fixwork/programming/bigworld/third_party/openautomate/oaman/msvcm80.dll",
+   "fixwork/programming/bigworld/third_party/openautomate/oaman/msvcp80.dll",
+   "fixwork/programming/bigworld/third_party/openautomate/oaman/msvcr80.dll",
+   "fixwork/programming/bigworld/third_party/openautomate/oaman/oaremote_plugin.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin/libeay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin/libeay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin/ssleay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin/ssleay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin64/libeay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin64/libeay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin64/ssleay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin64/ssleay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2012/bin64/libeay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2012/bin64/libeay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2012/bin64/ssleay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2012/bin64/ssleay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/libeay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/libeay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/ssleay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/ssleay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/libeay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/libeay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/ssleay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/ssleay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin/libeay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin/libeay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin/ssleay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin/ssleay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin64/libeay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin64/libeay32MDd.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin64/ssleay32MD.dll",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin64/ssleay32MDd.dll"
+  ],
+  "exe": [
+   "fixwork/programming/bigworld/third_party/cmake-win32-x86/bin/cmake-gui.exe",
+   "fixwork/programming/bigworld/third_party/cmake-win32-x86/bin/cmake.exe",
+   "fixwork/programming/bigworld/third_party/cmake-win32-x86/bin/cmcldeps.exe",
+   "fixwork/programming/bigworld/third_party/cmake-win32-x86/bin/cpack.exe",
+   "fixwork/programming/bigworld/third_party/cmake-win32-x86/bin/ctest.exe",
+   "fixwork/programming/bigworld/third_party/openautomate/debug/oaremote.exe",
+   "fixwork/programming/bigworld/third_party/openautomate/debug/oatest.exe",
+   "fixwork/programming/bigworld/third_party/openautomate/oaman/app4.exe",
+   "fixwork/programming/bigworld/third_party/openautomate/oaman/oaman.exe",
+   "fixwork/programming/bigworld/third_party/openautomate/oaman/oatest.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin/opensslMD.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin/opensslMDd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin/opensslMT.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin/opensslMTd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin64/opensslMD.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin64/opensslMDd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin64/opensslMT.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2010/bin64/opensslMTd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2012/bin64/opensslMD.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2012/bin64/opensslMDd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2012/bin64/opensslMT.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/opensslMD.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/opensslMDd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/opensslMT.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/opensslMTd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/opensslMD.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/opensslMDd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/opensslMT.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/opensslMTd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin/opensslMD.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin/opensslMDd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin/opensslMT.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin/opensslMTd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin64/opensslMD.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin64/opensslMDd.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin64/opensslMT.exe",
+   "fixwork/programming/bigworld/third_party/openssl-vs2015/bin64/opensslMTd.exe",
+   "fixwork/programming/bigworld/third_party/putty/pageant.exe",
+   "fixwork/programming/bigworld/third_party/putty/plink.exe",
+   "fixwork/programming/bigworld/third_party/putty/puttygen.exe"
+  ],
+  "pdb": [
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc10/nvtt_debug_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc10/nvtt_debug_nocuda_x64.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc10/nvtt_release_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc10/nvtt_release_nocuda_x64.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc11/nvtt_debug_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc11/nvtt_debug_nocuda_x64.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc11/nvtt_release_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc11/nvtt_release_nocuda_x64.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc12/nvtt_debug_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc12/nvtt_debug_nocuda_x64.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc12/nvtt_release_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc12/nvtt_release_nocuda_x64.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc8/nvtt_debug_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc8/nvtt_release_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc9/nvtt_debug_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc9/nvtt_debug_nocuda_x64.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc9/nvtt_release_nocuda_win32.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/lib/vc9/nvtt_release_nocuda_x64.pdb",
+   "fixwork/programming/bigworld/third_party/nvtt/project/vc9/nvtt/vc90.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/libeay32MD.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/libeay32MDd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/opensslMD.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/opensslMDd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/opensslMT.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/opensslMTd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/ssleay32MD.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin/ssleay32MDd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/libeay32MD.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/libeay32MDd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/opensslMD.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/opensslMDd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/opensslMT.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/opensslMTd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/ssleay32MD.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/bin64/ssleay32MDd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/lib64/appMD.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/lib64/appMDd.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/lib64/appMT.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/lib64/libMT.pdb",
+   "fixwork/programming/bigworld/third_party/openssl-vs2013/lib64/libMTd.pdb"
+  ]
+ },
+ "captured_at": "2026-11-23 01:54:54 +0800",
+ "game_bin_dirs": {
+  "server": true,
+  "win32": false,
+  "win64": false
+ },
+ "host_tools": {
+  "cl.exe": false,
+  "msbuild.exe": false,
+  "powershell.exe": false,
+  "where.exe": false,
+  "wine": true,
+  "wine64": true
+ },
+ "package_script": {
+  "build_dir": "build/win_root_build",
+  "exists": true,
+  "layout": "flat (no subdirectories)",
+  "path": "/home/cui/workspaces/BigWorld/scripts/package-daily-windows.ps1",
+  "zip": "bigworld-windows-server-$ver.zip"
+ },
+ "source_commit": "f3f53898",
+ "targets": [
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 26,
+   "result": "gap",
+   "target": "assetprocessor"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": true,
+   "linux_projects": 17,
+   "result": "gap",
+   "target": "bwentity"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": true,
+   "linux_projects": 58,
+   "result": "gap",
+   "target": "client"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 0,
+   "result": "gap",
+   "target": "client_blob"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 33,
+   "result": "gap",
+   "target": "exporters"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 0,
+   "result": "gap",
+   "target": "exporters_blob"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 31,
+   "result": "gap",
+   "target": "extras"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 30,
+   "result": "gap",
+   "target": "navgen"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 77,
+   "result": "gap",
+   "target": "server"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 70,
+   "result": "gap",
+   "target": "tools"
+  },
+  {
+   "artifacts": [],
+   "consumer_release": false,
+   "linux_projects": 0,
+   "result": "gap",
+   "target": "tools_blob"
+  }
+ ],
+ "windows_workflow": {
+  "build_dir": "build/win_root_build",
+  "builds_hybrid_all_targets": true,
+  "exists": true,
+  "jobs": [
+   {
+    "job": "msvc-compile",
+    "runner": "${{ vars.CI_RUNNER || 'windows-latest' }}"
+   },
+   {
+    "job": "root-configure-probe",
+    "runner": "${{ vars.CI_RUNNER || 'windows-latest' }}"
+   },
+   {
+    "job": "root-build-probe",
+    "runner": "${{ vars.CI_RUNNER || 'windows-latest' }}"
+   }
+  ],
+  "library_matrix_targets": [
+   "cstdmf_test",
+   "cellapp_extension"
+  ],
+  "path": "/home/cui/workspaces/BigWorld/.github/workflows/ci-windows.yml",
+  "runner": "${{ vars.CI_RUNNER || 'windows-latest' }}"
+ }
+}

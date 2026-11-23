@@ -87,9 +87,9 @@ impl EventList {
         self.listeners.insert(
             position,
             Listener {
-                // SAFETY: `function` is a live object the caller owns a
-                // reference to.
-                function: unsafe { PyRef::borrowed(function).clone() },
+                // `function` is a live object the caller owns a reference
+                // to.
+                function: PyRef::borrowed(function).clone(),
                 level,
             },
         );
@@ -186,11 +186,13 @@ pub unsafe fn install(module: *mut capi::PyObject) {
     );
     // SAFETY: the module is live and the table is a terminated static array
     // of `PyMethodDef`.
-    let added = capi::PyModule_AddFunctions(module, methods.as_ptr());
+    let added = unsafe { capi::PyModule_AddFunctions(module, methods.as_ptr()) };
     if added != 0 {
         // The reference logs through `ScriptErrorPrint` and moves on.
-        capi::PyErr_PrintEx(0);
-        capi::clear_error();
+        unsafe {
+            capi::PyErr_PrintEx(0);
+            capi::clear_error();
+        }
     }
 }
 
@@ -225,23 +227,31 @@ pub unsafe fn trigger_event(name: &str, args: *mut capi::PyObject) -> (bool, Vec
         // `ScriptEventList::Element::call` (`script_events.cpp:26-39`)
         // INCREFs the function and the arguments before `Script::ask`,
         // which DECREFs both on the way out.
-        capi::inc_ref(function);
-        capi::inc_ref(args);
-        let result = capi::PyObject_CallObject(function, args);
-        capi::dec_ref(function);
-        capi::dec_ref(args);
+        unsafe {
+            capi::inc_ref(function);
+            capi::inc_ref(args);
+        }
+        let result = unsafe { capi::PyObject_CallObject(function, args) };
+        unsafe {
+            capi::dec_ref(function);
+            capi::dec_ref(args);
+        }
         if result.is_null() {
             // `Script::ask` prints the traceback and clears the
             // exception (`script.cpp:1185-1204`).
             is_okay = false;
-            capi::PyErr_PrintEx(0);
+            unsafe {
+                capi::PyErr_PrintEx(0);
+            }
             results.push(PyRef::borrowed(capi::py_none()).clone());
         } else {
             results.push(PyRef::from_owned(result).expect("a live result"));
         }
     }
     // The reference's `pArgsHolder` releases the caller's reference.
-    capi::dec_ref(args);
+    unsafe {
+        capi::dec_ref(args);
+    }
     (is_okay, results)
 }
 
@@ -253,7 +263,9 @@ pub unsafe fn trigger_event(name: &str, args: *mut capi::PyObject) -> (bool, Vec
 /// The interpreter must be up, the caller must own the GIL, and `args`
 /// must be a tuple the caller owns one reference to.
 pub unsafe fn trigger_two_events(first: &str, second: &str, args: *mut capi::PyObject) -> bool {
-    capi::inc_ref(args);
+    unsafe {
+        capi::inc_ref(args);
+    }
     let first_ok = unsafe { trigger_event(first, args) }.0;
     // The second call steals the caller's original reference.
     let second_ok = unsafe { trigger_event(second, args) }.0;
@@ -288,7 +300,9 @@ pub unsafe fn init_from_personality(personality: *mut capi::PyObject) {
         if attribute.is_null() {
             // The reference clears a missing attribute and moves on
             // (`ScriptErrorClear`).
-            capi::clear_error();
+            unsafe {
+                capi::clear_error();
+            }
             continue;
         }
         // SAFETY: `attribute` is a live object this call owns.
@@ -318,7 +332,7 @@ pub fn trigger_on_init(is_reload: bool) -> bool {
         }
         // SAFETY: the tuple is fresh and the item is a new reference.
         capi::PyTuple_SetItem(args, 0, flag);
-        let (ok, _results) = unsafe { trigger_event("onInit", args) };
+        let (ok, _results) = trigger_event("onInit", args);
         ok
     }
 }
@@ -332,7 +346,7 @@ pub fn trigger_on_fini() -> bool {
         if args.is_null() {
             return false;
         }
-        let (ok, _results) = unsafe { trigger_event("onFini", args) };
+        let (ok, _results) = trigger_event("onFini", args);
         ok
     }
 }

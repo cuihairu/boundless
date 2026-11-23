@@ -1,0 +1,24 @@
+{
+  "input": {
+    "login": {
+      "logOnName": "FantasyAccount",
+      "password": "a",
+      "type": "Account",
+      "entityID": 2
+    },
+    "protocol_version": {
+      "bytes": "00 00 09 02",
+      "declared": "2.9.0.0"
+    },
+    "entity_defs": [
+      "Account",
+      "Avatar",
+      "ClientOnly",
+      "Guard",
+      "Space"
+    ]
+  },
+  "reference_root": "/home/cui/workspaces/boundless4",
+  "reference_commit": "a5270be8a3432b81c4f2cf75fe40e353c879946f",
+  "source": "frozen fixtures + the port's own source"
+}

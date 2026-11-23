@@ -1,0 +1,128 @@
+{
+ "callbacks": [
+  {
+   "args": "BaseApp@192.168.5.188:51079 over UDP (# requests: 10, retry interval:1.0s, timeout interval: 8.0s)",
+   "ignorable": [
+    "address"
+   ],
+   "name": "LoginHandler::onLoginAppLoginSuccess",
+   "order": 1,
+   "raw": "DEBUG: LoginHandler::onLoginAppLoginSuccess: BaseApp@192.168.5.188:51079 over UDP (# requests: 10, retry interval:1.0s, timeout interval: 8.0s)",
+   "site": "client"
+  },
+  {
+   "args": "Got reply from BaseApp channel udp:192.168.5.188:51079",
+   "ignorable": [],
+   "name": "LoginHandler::onBaseAppLoginSuccess",
+   "order": 2,
+   "raw": "DEBUG: LoginHandler::onBaseAppLoginSuccess: Got reply from BaseApp channel udp:192.168.5.188:51079",
+   "site": "client"
+  },
+  {
+   "args": "4805 attached from 192.168.5.188:55283. Attempt 1",
+   "ignorable": [
+    "entity_id",
+    "source_port"
+   ],
+   "name": "LoginHandler::login",
+   "order": 3,
+   "raw": "INFO: LoginHandler::login: 4805 attached from 192.168.5.188:55283. Attempt 1",
+   "site": "baseapp"
+  },
+  {
+   "args": "4805",
+   "ignorable": [
+    "entity_id"
+   ],
+   "name": "Proxy::enableEntities",
+   "order": 4,
+   "raw": "DEBUG: Proxy::enableEntities(4805)",
+   "site": "baseapp"
+  },
+  {
+   "args": "Creating player on client",
+   "ignorable": [],
+   "name": "Proxy::addCreateBasePlayerToChannelBundle",
+   "order": 5,
+   "raw": "DEBUG: Proxy::addCreateBasePlayerToChannelBundle(4805): Creating player on client",
+   "site": "baseapp"
+  },
+  {
+   "args": "4805",
+   "ignorable": [
+    "entity_id"
+   ],
+   "name": "ClientAvatar.onEntitiesEnabled",
+   "order": 6,
+   "raw": "INFO: ClientAvatar.onEntitiesEnabled: 4805",
+   "site": "baseapp"
+  },
+  {
+   "args": "Client id 4805 has disconnected (Requested by client)",
+   "ignorable": [
+    "entity_id"
+   ],
+   "name": "Proxy::onClientDeath",
+   "order": 7,
+   "raw": "TRACE: Proxy::onClientDeath: Client id 4805 has disconnected (Requested by client)",
+   "site": "baseapp"
+  },
+  {
+   "args": "Removing proxy id 4805 addr udp:192.168.5.188:55283",
+   "ignorable": [
+    "entity_id",
+    "source_port"
+   ],
+   "name": "BaseApp::removeProxy",
+   "order": 8,
+   "raw": "TRACE: BaseApp::removeProxy: Removing proxy id 4805 addr udp:192.168.5.188:55283",
+   "site": "baseapp"
+  },
+  {
+   "args": "4805",
+   "ignorable": [
+    "entity_id"
+   ],
+   "name": "ClientAvatar.onClientDeath",
+   "order": 9,
+   "raw": "INFO: ClientAvatar.onClientDeath: 4805",
+   "site": "baseapp"
+  },
+  {
+   "args": "ClientAvatar",
+   "ignorable": [],
+   "name": "Base::~Base",
+   "order": 10,
+   "raw": "INFO: Base::~Base(4805): ClientAvatar",
+   "site": "baseapp"
+  },
+  {
+   "args": "{}",
+   "ignorable": [],
+   "name": "ClientAvatar.__init__",
+   "order": 11,
+   "raw": "INFO: ClientAvatar.__init__: {}",
+   "site": "cellapp"
+  },
+  {
+   "args": "ClientAvatar 4805 has been destroyed.",
+   "ignorable": [
+    "entity_id"
+   ],
+   "name": "Cell::entityDestroyed",
+   "order": 12,
+   "raw": "INFO: Cell::entityDestroyed: ClientAvatar 4805 has been destroyed.",
+   "site": "cellapp"
+  }
+ ],
+ "captured_at": "2026-11-23 01:46:38 +0800",
+ "client_source_port": "192.168.5.188:55283",
+ "ignorable_fields": [
+  "entity_id",
+  "source_port",
+  "address"
+ ],
+ "login_command": "/home/cui/workspaces/BigWorld/game/bin/server/el7/examples/simple_python_client -server 127.0.0.1 -user MyAccount -password a -autoDisconnect",
+ "proxy_id": "4805",
+ "source_commit": "f3f53898"
+}

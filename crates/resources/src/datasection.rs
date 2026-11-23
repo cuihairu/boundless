@@ -520,6 +520,19 @@ impl DataSection {
         self.children.get_mut(index)
     }
 
+    /// `XMLSection::isAttribute( isAttr )`: mark a section as an attribute
+    /// node (serialised on its own line inside its parent, before element
+    /// children). Needed by the asset pipeline's dependency serialisation.
+    pub fn set_attribute(&mut self, is_attribute: bool) {
+        self.is_attribute = is_attribute;
+    }
+
+    /// `XMLSection::delChildren()`: remove every child (attributes included).
+    /// The asset pipeline calls this before re-serialising a dependency list.
+    pub fn del_children(&mut self) {
+        self.children.clear();
+    }
+
     pub fn is_attribute(&self) -> bool {
         self.is_attribute
     }
@@ -2222,7 +2235,7 @@ mod tests {
         let mut target = parse_doc("<target>old</target>");
         target.add_child("kept");
         let mut source = parse_doc("<source>new text</source>");
-        let mut marked = source.open_or_make_section("extra").expect("made");
+        let marked = source.open_or_make_section("extra").expect("made");
         marked.set_is_attribute(true);
         let source = source;
         let snapshot = source.clone();
@@ -2243,7 +2256,7 @@ mod tests {
         assert!(!child.set_is_attribute(true));
         assert!(!child.is_attribute());
         // A childless value node takes the flag either way.
-        let mut made = doc.open_or_make_section("flag").expect("made");
+        let made = doc.open_or_make_section("flag").expect("made");
         assert!(made.set_is_attribute(true));
         assert!(made.is_attribute());
         assert!(made.set_is_attribute(false));

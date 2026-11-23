@@ -65,13 +65,13 @@ pub fn encode(data: &[u8]) -> String {
 pub fn decode_strict(data: &str) -> Option<Vec<u8>> {
     let bytes = data.as_bytes();
     let len = bytes.len();
-    if len % 4 != 0 {
+    if !len.is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(len / 4 * 3);
     // The length check makes every chunk a full quad, so the reference's
     // per-index walk collapses to direct quad iteration.
-    for quad in bytes.chunks_exact(4) {
+    for quad in bytes.as_chunks::<4>().0 {
         let c0 = decode_value(quad[0])?;
         let c1 = decode_value(quad[1])?;
         out.push((c0 << 2) | ((c1 >> 4) & 0x3));
@@ -155,7 +155,10 @@ mod tests {
     #[test]
     fn strict_decode_roundtrips_encode() {
         for raw in ["", "f", "fo", "foo", "foob", "fooba", "foobar", "a&b<c>"] {
-            assert_eq!(decode_strict(&encode(raw.as_bytes())).unwrap(), raw.as_bytes());
+            assert_eq!(
+                decode_strict(&encode(raw.as_bytes())).unwrap(),
+                raw.as_bytes()
+            );
         }
     }
 

@@ -1,0 +1,28 @@
+[package]
+name = "test-support"
+description = "BW-18 shared fixtures, virtual time, multiprocess harness and fault injection"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The layering checker (BW-16) only needs the filesystem and the shell out to
+# cargo, so it stays dependency free.  Fixtures added under BW-18 re-add the
+# internal crates here, one line each with a reason.
+# resources + server-runtime: the config fixture loads a real bw.xml chain
+# through BwResource and BwConfig (BW-18-01-03).
+resources = { workspace = true }
+server-runtime = { workspace = true }
+# libc: kill(2) against a role's process group when tearing the process
+# tree down (BW-18-02-05).
+libc = { workspace = true }
+platform = { workspace = true }
+# python-host: the embedded interpreter a profiled script runs in, reached
+# through `Interpreter::run_simple_string` (BW-23-01-02).
+python-host = { workspace = true }
+# foundation: the profiler snapshots a cross-role timeline merges, and the
+# clock anchors that shift process-local stamps onto the unified timebase
+# (BW-23-01-03).
+foundation = { workspace = true }

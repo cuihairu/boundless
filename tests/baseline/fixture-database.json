@@ -1,0 +1,59 @@
+{
+  "face": "reference database seed",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "a5270be8a3432b81c4f2cf75fe40e353c879946f",
+  "generator": "programming/bigworld/scripts/generate-fantasydemo-assets.py",
+  "generator_sha256": "625dc3f5dd5d8c29d920d51d85e637ea78865d224fba187472f52abe1f7c35d8",
+  "sets": [
+    {
+      "set": "fantasydemo",
+      "path": "programming/fantasydemo/res/scripts/db.xml",
+      "sha256": "412252c6fb8066c81922d0d4de011d70416442b853d6f016476fae800428d140",
+      "logon_mapping": [
+        {
+          "logOnName": "FantasyAccount",
+          "password": "a",
+          "type": "Account",
+          "entityID": "2"
+        }
+      ],
+      "tables": {
+        "Account": {
+          "playerName": "FantasyAccount",
+          "character": "FantasyHero",
+          "databaseID": "2"
+        },
+        "Avatar": {
+          "playerName": "FantasyHero",
+          "prop1": "1",
+          "prop2": "2",
+          "prop3": "3",
+          "position": "0.0 0.0 0.0",
+          "direction": "0.0 0.0 0.0",
+          "spaceID": "1",
+          "databaseID": "1"
+        }
+      }
+    },
+    {
+      "set": "client_integration",
+      "path": "programming/bigworld/examples/client_integration/python/simple/res/scripts/db.xml",
+      "sha256": "68bebf275113a44411d59a0e371e490dabbc1c46013a8ec26e36c549b5110557",
+      "logon_mapping": [
+        {
+          "logOnName": "MyAccount",
+          "password": "a",
+          "type": "Account",
+          "entityID": "2"
+        }
+      ],
+      "tables": {
+        "Account": {
+          "character": "MyCharacter",
+          "playerName": "MyAccount",
+          "databaseID": "2"
+        }
+      }
+    }
+  ]
+}

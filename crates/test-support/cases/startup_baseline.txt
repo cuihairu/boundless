@@ -1,0 +1,54 @@
+item	value	source
+reference-commit	ee43578b2036	git rev-parse HEAD
+topology.1.role	baseapp	programming/bigworld/server
+topology.1.source-dir	programming/bigworld/server/baseapp	programming/bigworld/server
+topology.1.binary	game/bin/server/el7/server/baseapp	game/bin/server/el7/server
+topology.1.bytes	194526008	game/bin/server/el7/server (size)
+topology.2.role	baseappmgr	programming/bigworld/server
+topology.2.source-dir	programming/bigworld/server/baseappmgr	programming/bigworld/server
+topology.2.binary	game/bin/server/el7/server/baseappmgr	game/bin/server/el7/server
+topology.2.bytes	80704008	game/bin/server/el7/server (size)
+topology.3.role	cellapp	programming/bigworld/server
+topology.3.source-dir	programming/bigworld/server/cellapp	programming/bigworld/server
+topology.3.binary	game/bin/server/el7/server/cellapp	game/bin/server/el7/server
+topology.3.bytes	227588416	game/bin/server/el7/server (size)
+topology.4.role	cellappmgr	programming/bigworld/server
+topology.4.source-dir	programming/bigworld/server/cellappmgr	programming/bigworld/server
+topology.4.binary	game/bin/server/el7/server/cellappmgr	game/bin/server/el7/server
+topology.4.bytes	84351320	game/bin/server/el7/server (size)
+topology.5.role	dbapp	programming/bigworld/server
+topology.5.source-dir	programming/bigworld/server/dbapp	programming/bigworld/server
+topology.5.binary	game/bin/server/el7/server/dbapp	game/bin/server/el7/server
+topology.5.bytes	163472232	game/bin/server/el7/server (size)
+topology.6.role	dbappmgr	programming/bigworld/server
+topology.6.source-dir	programming/bigworld/server/dbappmgr	programming/bigworld/server
+topology.6.binary	game/bin/server/el7/server/dbappmgr	game/bin/server/el7/server
+topology.6.bytes	75032728	game/bin/server/el7/server (size)
+topology.7.role	loginapp	programming/bigworld/server
+topology.7.source-dir	programming/bigworld/server/loginapp	programming/bigworld/server
+topology.7.binary	game/bin/server/el7/server/loginapp	game/bin/server/el7/server
+topology.7.bytes	88630448	game/bin/server/el7/server (size)
+topology.8.role	reviver	programming/bigworld/server
+topology.8.source-dir	programming/bigworld/server/reviver	programming/bigworld/server
+topology.8.binary	game/bin/server/el7/server/reviver	game/bin/server/el7/server
+topology.8.bytes	74656096	game/bin/server/el7/server (size)
+config.res-path	programming/fantasydemo/res	command line (--res)
+config.bw-xml	programming/fantasydemo/res/server/bw.xml	BWConfig::init (Adding server/bw.xml)
+config.personality	fantasydemo	programming/fantasydemo/res/server/bw.xml
+config.baseApp.archivePeriod	0	programming/fantasydemo/res/server/bw.xml
+config.billingSystem.shouldAcceptUnknownUsers	true	programming/fantasydemo/res/server/bw.xml
+config.billingSystem.entityTypeForUnknownUsers	Avatar	programming/fantasydemo/res/server/bw.xml
+config.development-defaults-xml	ABSENT (not in repository)	programming/bigworld/res/server/development_defaults.xml
+log.1	INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/fantasydemo/res" (from command line).	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.2	INFO: [Config] BWConfig::init: Adding server/bw.xml	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.3	ERROR: [Network] MachineGuardMessage::sendAndRecv: timed out!	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.4	ERROR: [Network] MachineDaemon::queryForInternalInterface: Failed to send interface discovery message to bwmachined.	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.5	WARNING: bwMainT: Unable to determine internal interface via BWMachineD query.	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.6	INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.7	ERROR: [Network] MachineGuardMessage::sendAndRecv: timed out!	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.8	ERROR: [Network] MachineDaemon::queryForInternalInterface: Failed to send interface discovery message to bwmachined.	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.9	INFO: [Network] NetworkInterface::recreateListeningSocket: bound to all interfaces with default route interface on ens18 ( 192.168.5.188:35682 )	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.10	INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:35682	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.11	INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+log.12	TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...	baseapp --res programming/fantasydemo/res (bounded 9s startup attempt)
+blocker.standalone-start	standalone-start: the captured baseapp run shows the cluster config chain loads (res path + server/bw.xml), then interface discovery times out because bwmachined is not running, so baseapp falls back to the default-route interface and continues on config defaults; a full clean start needs bwmachined running, the full server/development_defaults.xml (absent from this repository) and a provisioned database schema — none is configured here, so this is the recorded startup baseline, not a completed start	startup-attempt observation

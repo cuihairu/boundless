@@ -1,0 +1,42 @@
+event int-arg
+  arg (42,)
+  direction cpp->python
+  order a b c
+  args 42 42 42
+  results 'A-return' None 42
+
+event str-arg
+  arg ('hello',)
+  direction cpp->python
+  order a b c
+  args 'hello' 'hello' 'hello'
+  results 'A-return' None 'hello'
+
+event tuple-arg
+  arg ((1, 2, 3),)
+  direction cpp->python
+  order a b c
+  args (1, 2, 3) (1, 2, 3) (1, 2, 3)
+  results 'A-return' None (1, 2, 3)
+
+event dict-arg
+  arg ({'k': 7},)
+  direction cpp->python
+  order a b c
+  args {'k': 7} {'k': 7} {'k': 7}
+  results 'A-return' None {'k': 7}
+
+event none-arg
+  arg (None,)
+  direction cpp->python
+  order a b c
+  args None None None
+  results 'A-return' None None
+
+event timestamp-arg-IGNORABLE
+  arg ({'ts': <float>},)
+  direction cpp->python
+  order a b c
+  args {'ts': 0.123456789} {'ts': 0.123456789} {'ts': 0.123456789}
+  results 'A-return' None {'ts': 0.123456789}
+

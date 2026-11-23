@@ -1,0 +1,199 @@
+target	type	dir	enable_condition	feature_id	fixture	status
+BUILD_SERVER	EXE	.	BW_IS_REMOTE_ONLY; WIN32; MSVC9; MSVC10; MSVC11; MSVC12; BW_IS_REMOTE_ONLY	-	-	not-enabled
+bwclient	EXE	client	client	-	-	not-enabled
+CppUnitLite2	LIB	cmake/samples/cstdmf	not-in-config	-	-	not-enabled
+cstdmf	LIB	cmake/samples/cstdmf	not-in-config	-	-	not-enabled
+cstdmf_test	EXE	cmake/samples/cstdmf	not-in-config	-	-	not-enabled
+nedalloc	LIB	cmake/samples/cstdmf	not-in-config	-	-	not-enabled
+unit_test_lib	LIB	cmake/samples/cstdmf	not-in-config	-	-	not-enabled
+CppUnitLite2	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+bw_lsp	EXE	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+bw_lsp_core	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+bw_lsp_test	EXE	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+chunk	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+connection	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+cstdmf	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+entitydef	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+entitydef_test	EXE	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+math	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+moo	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+network	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+physics2	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+pyscript	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+resmgr	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+scene	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+script	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+terrain	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+unit_test_lib	LIB	cmake/samples/entitydef	not-in-config	-	-	not-enabled
+CppUnitLite2	LIB	cmake/samples/network	not-in-config	-	-	not-enabled
+connection	LIB	cmake/samples/network	not-in-config	-	-	not-enabled
+cstdmf	LIB	cmake/samples/network	not-in-config	-	-	not-enabled
+math	LIB	cmake/samples/network	not-in-config	-	-	not-enabled
+network	LIB	cmake/samples/network	not-in-config	-	-	not-enabled
+network_test	EXE	cmake/samples/network	not-in-config	-	-	not-enabled
+resmgr	LIB	cmake/samples/network	not-in-config	-	-	not-enabled
+unit_test_lib	LIB	cmake/samples/network	not-in-config	-	-	not-enabled
+BWPython::Python	LIB	cmake/samples/python	not-in-config	-	-	not-enabled
+CppUnitLite2	LIB	cmake/samples/resmgr	not-in-config	-	-	not-enabled
+cstdmf	LIB	cmake/samples/resmgr	not-in-config	-	-	not-enabled
+math	LIB	cmake/samples/resmgr	not-in-config	-	-	not-enabled
+resmgr	LIB	cmake/samples/resmgr	not-in-config	-	-	not-enabled
+resmgr_test	EXE	cmake/samples/resmgr	not-in-config	-	-	not-enabled
+unit_test_lib	LIB	cmake/samples/resmgr	not-in-config	-	-	not-enabled
+common	-	common	compiled into other targets (no own target)	BW-03-03	crates/python-host tests (py_* bindings) | remaining shared code not ported	partial
+cellapp_extension	LIB	examples/cellapp_extension	server	BW-19	gap: example extensions not ported	gap
+simple_python_client	EXE	examples/client_integration/python/simple	extras	BW-14	docs/review/bw00-02-04-minimal-client-login.md | example script integration not ported	partial
+fantasydemo	RES	fantasydemo	game content (res/scripts/web)	BW-14	gap: demo scripts and resources not ported	gap
+baseapp	DIST	game/bin/server/el7/server	shipped binary	BW-07	crates/server-runtime tests (BW-01-04) | no shipped binary; app logic not implemented	partial
+baseappmgr	DIST	game/bin/server/el7/server	shipped binary	BW-05	crates/server-runtime tests (BW-01-04) | no shipped binary; app logic not implemented	partial
+bots	DIST	game/bin/server/el7/server	shipped binary	BW-17	gap: bots load-generator not ported	gap
+cellapp	DIST	game/bin/server/el7/server	shipped binary	BW-08	crates/server-runtime tests (BW-01-04) | no shipped binary; app logic not implemented	partial
+cellappmgr	DIST	game/bin/server/el7/server	shipped binary	BW-05	crates/server-runtime tests (BW-01-04) | no shipped binary; app logic not implemented	partial
+dbapp	DIST	game/bin/server/el7/server	shipped binary	BW-09	crates/server-runtime tests (BW-01-04) | no shipped binary; app logic not implemented	partial
+dbappmgr	DIST	game/bin/server/el7/server	shipped binary	BW-05	crates/server-runtime tests (BW-01-04) | no shipped binary; app logic not implemented	partial
+loginapp	DIST	game/bin/server/el7/server	shipped binary	BW-06	crates/server-runtime tests (BW-01-04) | no shipped binary; app logic not implemented	partial
+reviver	DIST	game/bin/server/el7/server	shipped binary	BW-05	crates/server-runtime tests (BW-01-04) | no shipped binary; app logic not implemented	partial
+serviceapp	DIST	game/bin/server/el7/server	shipped binary	BW-07	gap: service app not ported	gap
+bwmachined2	DIST	game/bin/server/el7/tools	shipped binary	BW-05	gap: bwmachined daemon not ported	gap
+message_logger	DIST	game/bin/server/el7/tools	shipped binary	BW-12	gap: message logger not ported	gap
+process_defs	DIST	game/bin/server/el7/tools	shipped binary	BW-00-04	docs/review/fixtures/full_def + oracles (target/debug/process_defs)	covered
+res_packer	DIST	game/bin/server/el7/tools	shipped binary	BW-13	gap: res packer not ported	gap
+appmgr	LIB	lib/appmgr	tools	-	-	not-enabled
+ashes	LIB	lib/ashes	assetprocessor; client; navgen; tools	BW-11	gap: engine library not ported	gap
+asset_pipeline	LIB	lib/asset_pipeline	client; navgen; tools	BW-13	gap: engine library not ported	gap
+build	LIB	lib/build	server	BW-00-03	gap: build tooling not ported	gap
+bwentity	LIB	lib/bwentity	bwentity	BW-13	gap: engine library not ported	gap
+bwentity_unit_test	EXE	lib/bwentity/unit_test	not-in-config	-	-	not-enabled
+camera	LIB	lib/camera	client	-	-	not-enabled
+chunk	LIB	lib/chunk	assetprocessor; client; extras; navgen; server; tools	BW-10	gap: engine library not ported	gap
+chunk_loading	LIB	lib/chunk_loading	server	BW-10	gap: engine library not ported	gap
+chunk_scene_adapter	LIB	lib/chunk_scene_adapter	client; navgen; tools	BW-10	gap: engine library not ported	gap
+compiled_space	LIB	lib/compiled_space	client	-	-	not-enabled
+compiled_space_writers	LIB	lib/compiled_space/binary_writers	tools	-	-	not-enabled
+compiled_space_unit_test	EXE	lib/compiled_space/unit_test	not-in-config	-	-	not-enabled
+connection	LIB	lib/connection	bwentity; client; extras; server	BW-11	gap: engine library not ported	gap
+connection_model	LIB	lib/connection_model	bwentity; client; extras; server	BW-11	gap: engine library not ported	gap
+controls	LIB	lib/controls	tools	-	-	not-enabled
+cstdmf	LIB	lib/cstdmf	assetprocessor; bwentity; client; extras; navgen; server; tools	BW-01-01	crates/foundation tests	covered
+cstdmf_unit_test	EXE	lib/cstdmf/unit_test	server	BW-01-01	crates/foundation tests	covered
+db	LIB	lib/db	server	BW-09	gap: entity database layer not ported	gap
+db_unit_test	EXE	lib/db/unit_test	server	BW-09	gap: entity database layer not ported	gap
+db_storage	LIB	lib/db_storage	server	BW-09	gap: database storage abstraction not ported	gap
+db_storage_mysql	LIB	lib/db_storage_mysql	server	BW-09	gap: MySQL storage backend not ported	gap
+db_storage_xml	LIB	lib/db_storage_xml	server	BW-09	gap: XML storage backend not ported	gap
+delegate_interface	LIB	lib/delegate_interface	server	BW-11	gap: engine library not ported	gap
+duplo	LIB	lib/duplo	assetprocessor; client; extras; navgen; tools	BW-11	gap: engine library not ported	gap
+duplo_unit_test	EXE	lib/duplo/unit_test	not-in-config	-	-	not-enabled
+emptyvoip	LIB	lib/emptyvoip	client	-	-	not-enabled
+entitydef	LIB	lib/entitydef	assetprocessor; bwentity; client; extras; navgen; server; tools	BW-04-01	docs/review/fixtures/full_def	covered
+entitydef_unit_test	EXE	lib/entitydef/unit_test	server	BW-04-01	crates/entitydef tests	covered
+entitydef_script	LIB	lib/entitydef_script	server	BW-03-02	crates/python-host tests	covered
+fmodsound	LIB	lib/fmodsound	assetprocessor; client; extras; navgen; tools	BW-11	gap: engine library not ported	gap
+gizmo	LIB	lib/gizmo	tools	-	-	not-enabled
+guimanager	LIB	lib/guimanager	tools	-	-	not-enabled
+guitabs	LIB	lib/guitabs	tools	-	-	not-enabled
+input	LIB	lib/input	assetprocessor; client; extras; navgen; tools	BW-11	gap: engine library not ported	gap
+math	LIB	lib/math	assetprocessor; bwentity; client; extras; navgen; server; tools	BW-01-01-04	crates/foundation math tests	covered
+math_unit_test	EXE	lib/math/unit_test	server	BW-01-01-04	crates/foundation math tests	covered
+memhook	LIB	lib/memhook	client; extras; server; tools	BW-00-05	gap: engine library not ported	gap
+model	LIB	lib/model	assetprocessor; client; extras; navgen; tools	BW-11	gap: engine library not ported	gap
+model_unit_test	EXE	lib/model/unit_test	not-in-config	-	-	not-enabled
+moo	LIB	lib/moo	assetprocessor; client; extras; navgen; server; tools	BW-11	gap: engine library not ported	gap
+moo_unit_test	EXE	lib/moo/unit_test	not-in-config	-	-	not-enabled
+navigation_recast	LIB	lib/navigation_recast	tools	-	-	not-enabled
+network	LIB	lib/network	assetprocessor; bwentity; client; extras; navgen; server; tools	BW-02-01	crates/mercury tests	covered
+network_unit_test	EXE	lib/network/unit_test	server	BW-02-01	crates/mercury tests	covered
+open_automate	LIB	lib/open_automate	client	-	-	not-enabled
+particle	LIB	lib/particle	assetprocessor; client; extras; navgen; tools	BW-11	gap: engine library not ported	gap
+particle_unit_test	EXE	lib/particle/unit_test	not-in-config	-	-	not-enabled
+physics2	LIB	lib/physics2	assetprocessor; client; extras; navgen; server; tools	BW-11	gap: engine library not ported	gap
+physics2_unit_test	EXE	lib/physics2/unit_test	server	BW-11	gap: engine library not ported	gap
+post_processing	LIB	lib/post_processing	client; tools	-	-	not-enabled
+pyscript	LIB	lib/pyscript	assetprocessor; bwentity; client; extras; navgen; server; tools	BW-03-01	crates/python-host tests	covered
+pyscript_unit_test	EXE	lib/pyscript/unit_test	server	BW-03-01	crates/python-host tests	covered
+resmgr	LIB	lib/resmgr	assetprocessor; bwentity; client; extras; navgen; server; tools	BW-01-03	crates/resources tests	covered
+resmgr_unit_test	EXE	lib/resmgr/unit_test	server	BW-01-03	crates/resources tests	covered
+romp	LIB	lib/romp	assetprocessor; client; extras; navgen; tools	BW-11	gap: engine library not ported	gap
+scaleform	LIB	lib/scaleform	client	-	-	not-enabled
+scene	LIB	lib/scene	assetprocessor; client; extras; navgen; server; tools	BW-10	gap: engine library not ported	gap
+scene_unit_test	EXE	lib/scene/unit_test	server	BW-10	gap: engine library not ported	gap
+script	LIB	lib/script	assetprocessor; bwentity; client; extras; navgen; server; tools	BW-03-03	crates/python-host tests	covered
+script_unit_test	EXE	lib/script/unit_test	server	BW-03-03	crates/python-host tests	covered
+server	LIB	lib/server	server	BW-01-04	crates/server-runtime tests	covered
+server_unit_test	EXE	lib/server/unit_test	server	BW-01-04	crates/server-runtime tests	covered
+space	LIB	lib/space	assetprocessor; client; extras; navgen; tools	BW-10	gap: engine library not ported	gap
+space_unit_test	EXE	lib/space/unit_test	not-in-config	-	-	not-enabled
+speedtree	LIB	lib/speedtree	assetprocessor; client; extras; navgen; server; tools	BW-11	gap: engine library not ported	gap
+sqlite	LIB	lib/sqlite	server	BW-01-03-03	crates/resources tests	covered
+terrain	LIB	lib/terrain	assetprocessor; client; extras; navgen; server; tools	BW-10	gap: engine library not ported	gap
+terrain_unit_test	EXE	lib/terrain/unit_test	server	BW-10	gap: engine library not ported	gap
+ual	LIB	lib/ual	tools	-	-	not-enabled
+unit_test_lib	LIB	lib/unit_test_lib	server	BW-00-05	gap: engine library not ported	gap
+unit_test_lib_unit_test	EXE	lib/unit_test_lib/unit_test	server	BW-00-05	gap: engine library not ported	gap
+urlrequest	LIB	lib/urlrequest	client; server	BW-11	gap: engine library not ported	gap
+visual_manipulator	LIB	lib/visual_manipulator	not-in-config	-	-	not-enabled
+waypoint	LIB	lib/waypoint	client; server	BW-10	gap: engine library not ported	gap
+waypoint_generator	LIB	lib/waypoint_generator	navgen; tools	BW-10	gap: engine library not ported	gap
+web_render	LIB	lib/web_render	client	-	-	not-enabled
+baseapp	EXE	server/baseapp	server	BW-07	crates/server-runtime tests (BW-01-04) | baseapp entity/message logic not implemented	partial
+baseapp_unit_test	EXE	server/baseapp/unit_test	server	BW-07	crates/server-runtime tests (BW-01-04) | baseapp entity/message logic not implemented	partial
+baseappmgr	EXE	server/baseappmgr	server	BW-05	crates/server-runtime tests (BW-01-04) | baseappmgr manager logic not implemented	partial
+baseappmgr_unit_test	EXE	server/baseappmgr/unit_test	server	BW-05	crates/server-runtime tests (BW-01-04) | baseappmgr manager logic not implemented	partial
+cellapp	EXE	server/cellapp	server	BW-08	crates/server-runtime tests (BW-01-04) | cellapp entity/message logic not implemented	partial
+cellapp_unit_test	EXE	server/cellapp/unit_test	server	BW-08	crates/server-runtime tests (BW-01-04) | cellapp entity/message logic not implemented	partial
+cellappmgr	EXE	server/cellappmgr	server	BW-05	crates/server-runtime tests (BW-01-04) | cellappmgr manager logic not implemented	partial
+cellappmgr_unit_test	EXE	server/cellappmgr/unit_test	server	BW-05	crates/server-runtime tests (BW-01-04) | cellappmgr manager logic not implemented	partial
+dbapp	EXE	server/dbapp	server	BW-09	crates/server-runtime tests (BW-01-04) | dbapp database logic not implemented	partial
+dbapp_unit_test	EXE	server/dbapp/unit_test	server	BW-09	crates/server-runtime tests (BW-01-04) | dbapp database logic not implemented	partial
+bwengine_mysql	LIB	server/dbapp_extensions/bwengine_mysql	server	BW-09	gap: MySQL engine binding not ported	gap
+bwengine_xml	LIB	server/dbapp_extensions/bwengine_xml	server	BW-09	gap: XML engine binding not ported	gap
+dbappmgr	EXE	server/dbappmgr	server	BW-05	crates/server-runtime tests (BW-01-04) | dbappmgr manager logic not implemented	partial
+dbappmgr_unit_test	EXE	server/dbappmgr/unit_test	server	BW-05	crates/server-runtime tests (BW-01-04) | dbappmgr manager logic not implemented	partial
+loginapp	EXE	server/loginapp	server	BW-06	crates/server-runtime tests (BW-01-04) | loginapp login logic not implemented	partial
+loginapp_unit_test	EXE	server/loginapp/unit_test	server	BW-06	crates/server-runtime tests (BW-01-04) | loginapp login logic not implemented	partial
+reviver	EXE	server/reviver	server	BW-05	crates/server-runtime tests (BW-01-04) | reviver process-watchdog logic not implemented	partial
+reviver_unit_test	EXE	server/reviver/unit_test	server	BW-05	crates/server-runtime tests (BW-01-04) | reviver process-watchdog logic not implemented	partial
+bots	EXE	server/tools/bots	server	BW-17	gap: bots load-generator not ported	gap
+_bw_profile	LIB	server/tools/bw_profile	server	BW-12	gap: bw_profile not ported	gap
+bwmachined	EXE	server/tools/bwmachined	server	BW-05	gap: bwmachined daemon not ported	gap
+clear_auto_load	EXE	server/tools/clear_auto_load	server	BW-09	gap: clear_auto_load not ported	gap
+consolidate_dbs	EXE	server/tools/consolidate_dbs	server	BW-09	gap: consolidate_dbs not ported	gap
+snapshot_helper	EXE	server/tools/snapshot_helper	server	BW-09	gap: snapshot_helper not ported	gap
+sync_db	EXE	server/tools/sync_db	server	BW-09	gap: sync_db not ported	gap
+transfer_db	EXE	server/tools/transfer_db	server	BW-09	gap: transfer_db not ported	gap
+FortranCInterface	EXE	third_party/cmake-win32-x86/share/cmake-3.23/Modules/FortranCInterface	not-in-config	-	-	not-enabled
+myfort	LIB	third_party/cmake-win32-x86/share/cmake-3.23/Modules/FortranCInterface	not-in-config	-	-	not-enabled
+symbols	LIB	third_party/cmake-win32-x86/share/cmake-3.23/Modules/FortranCInterface	not-in-config	-	-	not-enabled
+VerifyFortran	LIB	third_party/cmake-win32-x86/share/cmake-3.23/Modules/FortranCInterface/Verify	not-in-config	-	-	not-enabled
+VerifyFortranC	EXE	third_party/cmake-win32-x86/share/cmake-3.23/Modules/FortranCInterface/Verify	not-in-config	-	-	not-enabled
+FortranLib	LIB	third_party/cmake-win32-x86/share/cmake-3.23/Modules/IntelVSImplicitPath	not-in-config	-	-	not-enabled
+${LIB_NAME}	LIB	third_party/curl/lib	not-in-config	-	-	not-enabled
+${EXE_NAME}	EXE	third_party/curl/src	not-in-config	-	-	not-enabled
+${PNG_LIB_NAME_STATIC}	LIB	third_party/png	not-in-config	-	-	not-enabled
+${PNG_LIB_NAME}	LIB	third_party/png	not-in-config	-	-	not-enabled
+pngstest	EXE	third_party/png	not-in-config	-	-	not-enabled
+pngtest	EXE	third_party/png	not-in-config	-	-	not-enabled
+pngvalid	EXE	third_party/png	not-in-config	-	-	not-enabled
+libpython	LIB	third_party/python	bwentity; client; extras; navgen; server; tools	-	-	not-enabled
+zip	LIB	third_party/zip	assetprocessor; bwentity; client; extras; navgen; server; tools	-	-	not-enabled
+compiler	LIB	tools/asset_pipeline/compiler	tools	-	-	not-enabled
+test_compiler	LIB	tools/asset_pipeline/compiler/test_compiler	not-in-config	-	-	not-enabled
+test_converter	LIB	tools/asset_pipeline/compiler/test_converter	not-in-config	-	-	not-enabled
+compiler_unit_test	EXE	tools/asset_pipeline/compiler/unit_test	not-in-config	-	-	not-enabled
+conversion	LIB	tools/asset_pipeline/conversion	tools	-	-	not-enabled
+dependency	LIB	tools/asset_pipeline/dependency	tools	-	-	not-enabled
+dependency_unit_test	EXE	tools/asset_pipeline/dependency/unit_test	not-in-config	-	-	not-enabled
+discovery	LIB	tools/asset_pipeline/discovery	tools	-	-	not-enabled
+assetprocessor	LIB	tools/assetprocessor	assetprocessor	BW-13	gap: Windows editor/export tools; not enabled on the Linux server build	gap
+batch_compiler	ASSET_EXE	tools/batch_compiler	tools	-	-	not-enabled
+bwlauncher	EXE	tools/bwlauncher	not-in-config	-	-	not-enabled
+tools_common	LIB	tools/common	tools	-	-	not-enabled
+jit_compiler	ASSET_EXE	tools/jit_compiler	tools	-	-	not-enabled
+modeleditor	TOOL_EXE	tools/modeleditor	tools	-	-	not-enabled
+modeleditor_core	LIB	tools/modeleditor_core	tools	-	-	not-enabled
+navgen	EXE	tools/navgen	navgen	BW-10	gap: Windows editor/export tools; not enabled on the Linux server build	gap
+offline_processor	TOOL_EXE	tools/offline_processor	tools	-	-	not-enabled
+particle_editor	TOOL_EXE	tools/particle_editor	tools	-	-	not-enabled
+process_defs	EXE	tools/process_defs	extras	BW-00-04	docs/review/fixtures/full_def + oracles	covered
+res_packer	EXE	tools/res_packer	extras	BW-13	gap: Windows editor/export tools; not enabled on the Linux server build	gap
+worldeditor	TOOL_EXE	tools/worldeditor	tools	-	-	not-enabled

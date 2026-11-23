@@ -1,0 +1,14 @@
+[package]
+name = "chunk"
+description = "BW-10-01 chunk identifiers, boundaries, portals and streaming bind"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation = { workspace = true }
+# Chunk files are XML DataSections on a resource search path (BW-01-03), so the
+# section reader is needed here.
+resources = { workspace = true }

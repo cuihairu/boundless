@@ -1,0 +1,141 @@
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/fantasydemo/res" (from command line).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from command line).
+INFO: [Config] BWConfig::init: Adding server/bw.xml
+INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface
+WARNING: [Network] NetworkInterface::recreateListeningSocket: No address received from machined so binding to all interfaces.
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:48297
+INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Total # loggers on network: 0
+ERROR: [CStdMF] DirectoryWatcher::addChild: tried to replace existing watcher filterThreshold
+INFO: [Config] ---- CellAppMgr Version: 14.4.1. Config: hybrid. Built: 23:11:22 Nov 21 2026. UID: 1000. User: cui. PID: 695572 ----
+INFO: [Config] Server coding: Intel(R) Core(TM) i9-10880H CPU @ 2.30GHz x14 with 48207128kB RAM
+INFO: [Config] Resource path (1 of 2): /home/cui/workspaces/BigWorld/programming/fantasydemo/res
+INFO: [Config] Resource path (2 of 2): /home/cui/workspaces/BigWorld/game/res/bigworld
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/cellAppLoad/lowerBound not read from bw.xml chain. Using default (0.02)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/cellAppLoad/safetyBound not read from bw.xml chain. Using default (0.85)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/cellAppLoad/safetyRatio not read from bw.xml chain. Using default (1.1)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/cellAppLoad/warningLevel not read from bw.xml chain. Using default (0.75)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/maxLoadingCells not read from bw.xml chain. Using default (4)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/minLoadingArea not read from bw.xml chain. Using default (1e+06)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/cellAppTimeout not read from bw.xml chain. Using default (3)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/archivePeriod not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/shouldArchiveSpaceData not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/estimatedInitialCellLoad not read from bw.xml chain. Using default (0.1)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/loadBalancePeriod not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/metaLoadBalanceScheme not read from bw.xml chain. Using default (2)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/metaLoadBalancePeriod not read from bw.xml chain. Using default (3)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/metaLoadBalanceTolerance not read from bw.xml chain. Using default (0.05)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/shouldShowMetaLoadBalanceDebug not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: shuttingDownDelay not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/shouldLimitBalanceToChunks not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/loadSmoothingBias not read from bw.xml chain. Using default (0.05)
+WARNING: [Config] ServerAppConfig::init: cellAppMgr/shouldMetaLoadBalance not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: cellApp/ghostDistance not read from bw.xml chain. Using default (500)
+WARNING: [Config] ServerAppConfig::init: loginConditions/cellApp/avgLoad not read from bw.xml chain. Using default (0.85)
+WARNING: [Config] ServerAppConfig::init: loginConditions/overloadTolerancePeriod not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: loginConditions/cellApp/maxLoad not read from bw.xml chain. Using default (0.9)
+WARNING: [Config] ServerAppConfig::init: loginConditions/overloadTolerancePeriod not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: balance/maxCPUOffload not read from bw.xml chain. Using default (0.02)
+WARNING: [Config] ServerAppConfig::init: balance/numCPUOffloadLevels not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: balance/aggressionDecrease not read from bw.xml chain. Using default (0.5)
+WARNING: [Config] ServerAppConfig::init: balance/aggressionIncreasePeriod not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: balance/maxAggressionIncreasePeriod not read from bw.xml chain. Using default (40)
+WARNING: [Config] ServerAppConfig::init: balance/maxAggression not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: balance/demo/enable not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: balance/demo/numEntitiesPerCell not read from bw.xml chain. Using default (100)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnBadState not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnBaseAppDeath not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnCellAppDeath not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnServiceAppDeath not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: shutDownServerOnServiceDeath not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: isBadStateWithNoServiceApps not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: gameUpdateHertz not read from bw.xml chain. Using default (10)
+WARNING: [Config] ServerAppConfig::init: serverMode not read from bw.xml chain. Using default (standalone)
+WARNING: [Config] ServerAppConfig::init: production not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: timeSyncPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: useDefaultSpace not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxOpenFileDescriptors not read from bw.xml chain. Using default (-1)
+WARNING: [Config] ServerAppConfig::init: channelTimeoutPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: allowInteractiveDebugging not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxSharedDataValueSize not read from bw.xml chain. Using default (10240)
+WARNING: [Config] ServerAppConfig::init: maxMgrRegisterStagger not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: numStartupRetries not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/enabled not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/threshold not read from bw.xml chain. Using default (1.5)
+WARNING: [Config] ServerAppConfig::init: profilerJsonDumpDirectory not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: profilerMaxThreads not read from bw.xml chain. Using default (96)
+INFO: [Config] Configuration options (from server/bw.xml):
+INFO: [Config]   cellAppMgr/cellAppLoad/lowerBound  = 0.02
+INFO: [Config]   cellAppMgr/cellAppLoad/safetyBound = 0.85
+INFO: [Config]   cellAppMgr/cellAppLoad/safetyRatio = 1.1
+INFO: [Config]   cellAppMgr/cellAppLoad/warningLevel = 0.75
+INFO: [Config]   cellAppMgr/maxLoadingCells         = 4
+INFO: [Config]   cellAppMgr/minLoadingArea          = 1e+06
+INFO: [Config]   cellAppMgr/cellAppTimeout          = 3
+INFO: [Config]   cellAppMgr/archivePeriod           = 0
+INFO: [Config]   cellAppMgr/shouldArchiveSpaceData  = true
+INFO: [Config]   cellAppMgr/estimatedInitialCellLoad = 0.1
+INFO: [Config]   cellAppMgr/loadBalancePeriod       = 1
+INFO: [Config]   cellAppMgr/metaLoadBalanceScheme   = 2
+INFO: [Config]   cellAppMgr/metaLoadBalancePeriod   = 3
+INFO: [Config]   cellAppMgr/metaLoadBalanceTolerance = 0.05
+INFO: [Config]   cellAppMgr/shouldShowMetaLoadBalanceDebug = false
+INFO: [Config]   shuttingDownDelay                  = 1
+INFO: [Config]   cellAppMgr/shouldLimitBalanceToChunks = true
+INFO: [Config]   cellAppMgr/loadSmoothingBias       = 0.05
+INFO: [Config]   cellAppMgr/shouldMetaLoadBalance   = true
+INFO: [Config]   cellApp/ghostDistance              = 500
+INFO: [Config]   loginConditions/cellApp/avgLoad    = 0.85
+INFO: [Config]   loginConditions/overloadTolerancePeriod = 5
+INFO: [Config]   loginConditions/cellApp/maxLoad    = 0.9
+INFO: [Config]   loginConditions/overloadTolerancePeriod = 5
+INFO: [Config]   balance/maxCPUOffload              = 0.02
+INFO: [Config]   balance/numCPUOffloadLevels        = 5
+INFO: [Config]   balance/aggressionDecrease         = 0.5
+INFO: [Config]   balance/aggressionIncreasePeriod   = 10
+INFO: [Config]   balance/maxAggressionIncreasePeriod = 40
+INFO: [Config]   balance/maxAggression              = 1
+INFO: [Config]   balance/demo/enable                = false
+INFO: [Config]   balance/demo/numEntitiesPerCell    = 100
+INFO: [Config]   shutDownServerOnBadState           = true
+INFO: [Config]   shutDownServerOnBaseAppDeath       = false
+INFO: [Config]   shutDownServerOnCellAppDeath       = false
+INFO: [Config]   shutDownServerOnServiceAppDeath    = false
+INFO: [Config]   shutDownServerOnServiceDeath       = false
+INFO: [Config]   isBadStateWithNoServiceApps        = false
+INFO: [Config]   gameUpdateHertz                    = 10
+INFO: [Config]   personality                        = fantasydemo (default: BWPersonality)
+INFO: [Config]   serverMode                         = standalone
+INFO: [Config]   production                         = true
+INFO: [Config]   timeSyncPeriod                     = 60
+INFO: [Config]   useDefaultSpace                    = false
+INFO: [Config]   maxOpenFileDescriptors             = -1
+INFO: [Config]   channelTimeoutPeriod               = 60
+INFO: [Config]   allowInteractiveDebugging          = false
+INFO: [Config]   maxSharedDataValueSize             = 10240
+INFO: [Config]   maxMgrRegisterStagger              = 0
+INFO: [Config]   numStartupRetries                  = 60
+INFO: [Config]   hitchDetection/enabled             = false
+INFO: [Config]   hitchDetection/threshold           = 1.5
+INFO: [Config]   profilerJsonDumpDirectory          = 
+INFO: [Config]   profilerMaxThreads                 = 96
+TRACE: [CStdMF] ProfilerSystem: 12mb memory used.
+ERROR: CellAppComparer::init: Failed to open cellAppMgr/metaLoadBalancePriority
+INFO: [Server] ServerApp::init: Run from bwmachined = true
+INFO: [Server] ReviverSubject::init: msTimeout_ = 200
+INFO: [ProcessIP] Internal address = 192.168.5.188:48297
+INFO: [Config] Is Recovery = False
+INFO: [Network] MachineDaemon::findInterface: Failed to find DBAppMgrInterface for UID 1000 on attempt 1.
+INFO: CellAppMgr::init: DBAppMgr not ready yet.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 1.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 2.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 3.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 4.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 5.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 6.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 7.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 8.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 9.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 10.
+INFO: [Network] MachineDaemon::findInterface: Failed to find BaseAppMgrInterface for UID 1000 on attempt 11.

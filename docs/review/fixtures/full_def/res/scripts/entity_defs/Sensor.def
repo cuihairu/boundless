@@ -1,0 +1,29 @@
+<root>
+	<Properties>
+		<serial>
+			<Type>	REGISTRY	</Type>
+			<Flags>	BASE	</Flags>
+			<Identifier>	true	</Identifier>
+			<Persistent>	true	</Persistent>
+		</serial>
+		<reading>
+			<Type>	FLOAT64	</Type>
+			<Persistent>	true	</Persistent>
+			<Flags>	BASE	</Flags>
+			<Default>	0.0	</Default>
+		</reading>
+		<samples>
+			<Type>	ARRAY	<of>	UINT8	</of>	</Type>
+			<Flags>	BASE	</Flags>
+		</samples>
+	</Properties>
+
+	<BaseMethods>
+		<calibrate>
+			<Args>	<gain>	FLOAT64	</gain>	</Args>
+			<ReturnValues>
+				<offset>	FLOAT64	</offset>
+			</ReturnValues>
+		</calibrate>
+	</BaseMethods>
+</root>

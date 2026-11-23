@@ -1,0 +1,7 @@
+<Services>
+	<Cleaner>
+		<activeOnServerModes>	dedicated|hosted	</activeOnServerModes>
+	</Cleaner>
+
+	<Repairman/>
+</Services>
