@@ -21,6 +21,7 @@
 //! and [`foundation`] for the id vocabulary.
 
 pub mod accounts;
+pub mod dry_run;
 pub mod json;
 pub mod schema;
 pub mod schema_init;
