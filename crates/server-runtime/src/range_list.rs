@@ -1204,6 +1204,24 @@ impl RangeList {
         std::mem::take(&mut self.events)
     }
 
+    /// Drain the events belonging to one trigger, leaving every other
+    /// trigger's events queued. The reference dispatches each crossing
+    /// straight to its own trigger's handler, so one witness never consumes
+    /// another's enter/leave callbacks.
+    pub fn drain_events_for(&mut self, trigger: TriggerId) -> Vec<RangeEvent> {
+        let mut mine = Vec::new();
+        let mut rest = Vec::new();
+        for event in std::mem::take(&mut self.events) {
+            if event.trigger == trigger {
+                mine.push(event);
+            } else {
+                rest.push(event);
+            }
+        }
+        self.events = rest;
+        mine
+    }
+
     /// `RangeList::isSorted` (`cell_range_list.cpp:51-118`): both axis lists
     /// ascend by coordinate with the order tie-break.
     pub fn is_sorted(&self) -> bool {
@@ -1843,5 +1861,22 @@ mod tests {
         assert!(list.is_sorted());
         assert_eq!(list.entity_count(), 0);
         assert_eq!(list.trigger_count(), 0);
+    }
+    #[test]
+    fn drain_events_for_keeps_other_triggers_queued() {
+        let mut list = RangeList::new();
+        let a = list.add_entity(1, v(0.0, 0.0));
+        let b = list.add_entity(2, v(15.0, 0.0));
+        let ta = list.add_aoi_trigger(a, 10.0);
+        let tb = list.add_aoi_trigger(b, 10.0);
+        list.trigger_insert(ta);
+        list.trigger_insert(tb);
+        list.drain_events();
+
+        // a walks toward b: b enters a's widened AoI and a enters b's AoI.
+        list.move_entity(a, v(12.0, 0.0));
+        assert_eq!(entities(&list.drain_events_for(ta)), vec![2]);
+        assert_eq!(entities(&list.drain_events_for(tb)), vec![1]);
+        assert!(list.drain_events().is_empty());
     }
 }
