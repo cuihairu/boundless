@@ -212,10 +212,10 @@ impl MachinedDaemon {
             }
             _ => {
                 let reply = mg::answer_query(&self.snapshot, &message);
-                if let mg::MachineGuardMessage::Unknown(unknown) = &reply {
-                    if unknown.header.flags & mg::flags::MESSAGE_NOT_UNDERSTOOD != 0 {
-                        return None;
-                    }
+                if let mg::MachineGuardMessage::Unknown(unknown) = &reply
+                    && unknown.header.flags & mg::flags::MESSAGE_NOT_UNDERSTOOD != 0
+                {
+                    return None;
                 }
                 Some(reply)
             }

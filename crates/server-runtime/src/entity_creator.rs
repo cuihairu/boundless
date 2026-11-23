@@ -96,12 +96,50 @@
 //!   failed load's id is never reused);
 //! * a base that fails to build from an existing record fires the callback once
 //!   with `(None, dbID, false)` and writes the record back (`unCheckoutEntity`).
+//!
+//! # BW-07-02-02 处理 Cell 创建成功与失败
+//!
+//! `Base::createCellEntity` (`baseapp/base.cpp:3330`) requests the associated
+//! cell entity and the reply decides the outcome:
+//!
+//! * `prepareForCellCreate` (`base.cpp:3269`) validates the base (not
+//!   destroyed, no cell create or contact pending, no cell entity yet, the
+//!   type is on the cell) and sets `isCreateCellPending_` and
+//!   `isGetCellPending_`;
+//! * `CreateCellEntityHandler::handleMessage`
+//!   (`baseapp/create_cell_entity_handler.cpp:31`) reads the created entity
+//!   id; when it is this base's id the create succeeded, otherwise it failed;
+//! * `handleException` (a nub failure or timeout) fails the create;
+//! * `Base::cellCreationResult` (`base.cpp:3759`) clears
+//!   `isCreateCellPending_`; on failure it also clears `isGetCellPending_` and
+//!   calls the script `onCreateCellFailure`. A destroyed base, or a reply with
+//!   no create pending (the rare race after `setCurrentCell`), is ignored;
+//! * once the cell entity contacts the base, `setCurrentCell`-style handling
+//!   (`base.cpp:995`) records the cell address and space, clears
+//!   `isGetCellPending_`, consumes the cell data and calls the script
+//!   `onGetCell`.
+//!
+//! The recorded callbacks and the pending/address state are the acceptance:
+//! 回调及 Base 状态一致.
+//!
+//! # BW-07-02-03 处理 Cell 丢失通知
+//!
+//! `Base::setCurrentCell( spaceID, NONE )` (`base.cpp:954`, the `!haveCell`
+//! branch) retires the old cell reference: the cell mailbox address becomes
+//! `NONE` and the space is updated unconditionally, and when the base had a
+//! cell (`hadCell != haveCell`) the contact pending clears, the cell backup
+//! data drops (`cellBackupData_.clear()` — the backup model itself is
+//! BW-07-04), a proxy base is told `cellEntityDestroyed` first, and the
+//! script `onLoseCell` is called. A base with no cell has no transition and
+//! records nothing. The acceptance: Base 清退旧 Cell 引用.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use crate::baseappmgr::Addr;
+use crate::cell_data::BaseAddr;
+use crate::mailbox_call::{MailboxCallError, MailboxMethodCall, value_matches};
 
 /// `EntityID`.
 pub type EntityId = u32;
@@ -163,6 +201,62 @@ impl PropDesc {
     }
 }
 
+/// `MethodDescription::Component` (`method_description.hpp:60`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MethodComponent {
+    /// `CLIENT`: a method the server calls on the owning client.
+    Client,
+    /// `CELL`: a method on the cell entity.
+    Cell,
+    /// `BASE`: a method on the base entity.
+    Base,
+}
+
+/// One method of an entity type (`MethodDescription`-lite): the wire index
+/// plus the argument and return-value type witnesses, which is what the
+/// mailbox codec needs to stream and parse a call and its reply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodDesc {
+    /// The method name.
+    pub name: String,
+    /// `MethodDescription::internalIndex()`: the index a call carries.
+    pub internal_index: u32,
+    /// `MethodDescription::component()`: where the method lives.
+    pub component: MethodComponent,
+    /// `MethodDescription::isExposed()`: a client-exposed method.
+    pub exposed: bool,
+    /// One type witness per argument, in stream order.
+    pub arg_kinds: Vec<PropValue>,
+    /// One type witness per return value, in stream order.
+    pub return_kinds: Vec<PropValue>,
+}
+
+impl MethodDesc {
+    /// Build a method description.
+    pub fn new(
+        name: &str,
+        internal_index: u32,
+        component: MethodComponent,
+        exposed: bool,
+        arg_kinds: Vec<PropValue>,
+        return_kinds: Vec<PropValue>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            internal_index,
+            component,
+            exposed,
+            arg_kinds,
+            return_kinds,
+        }
+    }
+
+    /// `MethodDescription::hasReturnValues()`.
+    pub fn has_return_values(&self) -> bool {
+        !self.return_kinds.is_empty()
+    }
+}
+
 /// An entity type (`EntityType`-lite).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EntityType {
@@ -180,12 +274,22 @@ pub struct EntityType {
     pub can_be_on_cell: bool,
     /// The properties.
     pub properties: Vec<PropDesc>,
+    /// The methods (`MethodDescription`s), in definition order.
+    pub methods: Vec<MethodDesc>,
 }
 
 impl EntityType {
     /// Find a property by name.
     pub fn property(&self, name: &str) -> Option<&PropDesc> {
         self.properties.iter().find(|p| p.name == name)
+    }
+
+    /// Find a method by its wire index (`MethodDescription` lookup by
+    /// `internalIndex`).
+    pub fn method(&self, internal_index: u32) -> Option<&MethodDesc> {
+        self.methods
+            .iter()
+            .find(|m| m.internal_index == internal_index)
     }
 }
 
@@ -291,6 +395,64 @@ pub enum BaseCallback {
         /// The entity id.
         entity_id: EntityId,
     },
+    /// `onCreateCellFailure` was called.
+    OnCreateCellFailure {
+        /// The entity id.
+        entity_id: EntityId,
+    },
+    /// `onGetCell` was called with the cell contact.
+    OnGetCell {
+        /// The entity id.
+        entity_id: EntityId,
+        /// The space the cell entity is in.
+        space_id: u32,
+        /// The cell app address of the cell entity.
+        cell_addr: BaseAddr,
+    },
+    /// `Proxy::cellEntityDestroyed` was called (a proxy base losing its cell).
+    CellEntityDestroyed {
+        /// The entity id.
+        entity_id: EntityId,
+    },
+    /// `onLoseCell` was called.
+    OnLoseCell {
+        /// The entity id.
+        entity_id: EntityId,
+    },
+    /// A mailbox method call was delivered to the base
+    /// (`ServerEntityMailBox::callMethod` reaching its target).
+    MethodCalled {
+        /// The entity id.
+        entity_id: EntityId,
+        /// The method name.
+        method_name: String,
+        /// The method's internal index.
+        method_index: u32,
+        /// The source entity id for an exposed CELL method, `None` for
+        /// `NULL_ENTITY_ID`.
+        source_entity_id: Option<EntityId>,
+        /// The delivered arguments.
+        args: Vec<PropValue>,
+    },
+    /// A cell method call was forwarded to the associated cell entity
+    /// (`Base::callCellMethod`, `base.cpp:1391`). The cell address is the
+    /// base's tracked `Real` location, which after a migration is the new
+    /// cellapp.
+    CellMethodCalled {
+        /// The entity id.
+        entity_id: EntityId,
+        /// The cell mailbox address the call was routed to.
+        cell_addr: BaseAddr,
+        /// The method name.
+        method_name: String,
+        /// The method's internal index.
+        method_index: u32,
+        /// The source entity id for an exposed CELL method, `None` for
+        /// `NULL_ENTITY_ID`.
+        source_entity_id: Option<EntityId>,
+        /// The forwarded arguments.
+        args: Vec<PropValue>,
+    },
 }
 
 /// A created Base entity.
@@ -314,6 +476,16 @@ pub struct BaseEntity {
     pub base_props: HashMap<String, PropValue>,
     /// The cell data (defaults plus the cell properties).
     pub cell_props: HashMap<String, PropValue>,
+    /// `isCreateCellPending_`: a `createCellEntity` request is outstanding.
+    pub is_create_cell_pending: bool,
+    /// `isGetCellPending_`: waiting for the created cell entity to contact
+    /// the base (`onGetCell`).
+    pub is_get_cell_pending: bool,
+    /// `hasCellEntity()`: the cell app address of the associated cell
+    /// entity, `None` while there is none.
+    pub cell_entity_addr: Option<BaseAddr>,
+    /// `spaceID_`: the space the associated cell entity is in.
+    pub cell_space_id: u32,
     /// The callbacks recorded in order.
     pub callbacks: Vec<BaseCallback>,
 }
@@ -327,6 +499,48 @@ pub enum CreateError {
     InvalidDbId,
     /// The id pool had no id to hand out.
     NoId,
+}
+
+/// A `createCellEntity` request rejected by `checkAssociatedCellEntity` /
+/// `prepareForCellCreate` (`base.cpp:3718` and `base.cpp:3269`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellCreateError {
+    /// The base is destroyed.
+    Destroyed,
+    /// The base is already creating an associated cell entity.
+    AlreadyCreating,
+    /// The base is waiting for contact from its created cell entity.
+    WaitingForContact,
+    /// The base already has an associated cell entity.
+    AlreadyHasCell,
+    /// The type has no cell script (`canBeOnCell` is false).
+    NoCellScript,
+    /// The base is unknown.
+    UnknownBase,
+}
+
+/// The outcome of a `cellCreationResult` reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellCreationResult {
+    /// The create pending cleared; the cell entity will contact the base.
+    Created,
+    /// Both pendings cleared and `onCreateCellFailure` was recorded.
+    Failed,
+    /// Ignored: the base is destroyed or no create was pending.
+    Ignored,
+}
+
+/// The failure of a cell mailbox migration (`Base::currentCell`,
+/// `base.cpp:1071`: the associated cell entity moved to a new cellapp).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellMigrateError {
+    /// The base is unknown (a destroyed base is removed and is unknown).
+    UnknownBase,
+    /// The base has no associated cell entity to move.
+    NoCell,
+    /// The migration address is `NONE`: a cell is being lost, which is the
+    /// `cell_lost` path, not a migration.
+    LostCell,
 }
 
 /// The reference `LogOnStatus` values this load path answers with
@@ -653,6 +867,33 @@ impl EntityCreator {
         self.create_base(type_id, &type_name, is_proxy, base_args, cell_args)
     }
 
+    /// `ServiceStarter::run` → `EntityCreator::createBase`
+    /// (`service_starter.cpp:222`): a ServiceApp starts one instance of each
+    /// service entity type declared in the entity defs. Unlike a login
+    /// `createBaseLocally`, a service entity is created directly, so the
+    /// `is_service` check that guards logins does not apply here.
+    pub fn create_service(&mut self, type_name: &str) -> Result<BaseEntity, CreateError> {
+        let ty = self
+            .types
+            .get(type_name)
+            .ok_or_else(|| CreateError::InvalidType {
+                name: type_name.to_string(),
+            })?;
+        if !ty.is_service {
+            return Err(CreateError::InvalidType {
+                name: type_name.to_string(),
+            });
+        }
+        let (type_id, type_name, is_proxy) = (ty.id, ty.name.clone(), ty.is_proxy);
+        self.create_base(
+            type_id,
+            &type_name,
+            is_proxy,
+            HashMap::new(),
+            HashMap::new(),
+        )
+    }
+
     /// `createBase`: allocate an id, build the entity and initialise it.
     fn create_base(
         &mut self,
@@ -674,6 +915,10 @@ impl EntityCreator {
             in_destroy: false,
             base_props: HashMap::new(),
             cell_props: HashMap::new(),
+            is_create_cell_pending: false,
+            is_get_cell_pending: false,
+            cell_entity_addr: None,
+            cell_space_id: 0,
             callbacks: Vec::new(),
         };
 
@@ -693,6 +938,270 @@ impl EntityCreator {
 
         self.bases.insert(id, entity.clone());
         Ok(entity)
+    }
+
+    /// `Base::prepareForCellCreate` (`base.cpp:3269`): validate the base is
+    /// eligible for an associated cell entity, then set the create and
+    /// contact pendings.
+    pub fn begin_cell_creation(&mut self, entity_id: EntityId) -> Result<(), CellCreateError> {
+        let entity = self
+            .bases
+            .get_mut(&entity_id)
+            .ok_or(CellCreateError::UnknownBase)?;
+        if entity.destroyed {
+            return Err(CellCreateError::Destroyed);
+        }
+        if entity.is_create_cell_pending {
+            return Err(CellCreateError::AlreadyCreating);
+        }
+        if entity.is_get_cell_pending {
+            return Err(CellCreateError::WaitingForContact);
+        }
+        if entity.cell_entity_addr.is_some() {
+            return Err(CellCreateError::AlreadyHasCell);
+        }
+        let ty = self
+            .types
+            .get(&entity.type_name)
+            .ok_or(CellCreateError::NoCellScript)?;
+        if !ty.can_be_on_cell {
+            return Err(CellCreateError::NoCellScript);
+        }
+        entity.is_create_cell_pending = true;
+        entity.is_get_cell_pending = true;
+        Ok(())
+    }
+
+    /// `Base::cellCreationResult` (`base.cpp:3759`): the outcome of the
+    /// create request reply. A destroyed base, or a reply with no create
+    /// pending (the rare race after `setCurrentCell`), is ignored. On
+    /// failure the contact pending is cleared and `onCreateCellFailure` is
+    /// recorded; on success the contact pending stays until the cell entity
+    /// contacts the base.
+    pub fn cell_creation_result(
+        &mut self,
+        entity_id: EntityId,
+        success: bool,
+    ) -> CellCreationResult {
+        let Some(entity) = self.bases.get_mut(&entity_id) else {
+            return CellCreationResult::Ignored;
+        };
+        if entity.destroyed || !entity.is_create_cell_pending {
+            return CellCreationResult::Ignored;
+        }
+        entity.is_create_cell_pending = false;
+        if success {
+            CellCreationResult::Created
+        } else {
+            entity.is_get_cell_pending = false;
+            entity
+                .callbacks
+                .push(BaseCallback::OnCreateCellFailure { entity_id });
+            CellCreationResult::Failed
+        }
+    }
+
+    /// The `setCurrentCell`-style contact (`base.cpp:995`, the `haveCell`
+    /// branch): the cell entity has been created and now contacts the base.
+    /// The cell address and space are recorded, the contact pending clears,
+    /// the cell data is consumed and `onGetCell` is recorded. Returns false
+    /// for an unknown or destroyed base.
+    pub fn cell_contact(
+        &mut self,
+        entity_id: EntityId,
+        space_id: u32,
+        cell_addr: BaseAddr,
+    ) -> bool {
+        let Some(entity) = self.bases.get_mut(&entity_id) else {
+            return false;
+        };
+        if entity.destroyed {
+            return false;
+        }
+        entity.cell_entity_addr = Some(cell_addr);
+        entity.cell_space_id = space_id;
+        entity.is_get_cell_pending = false;
+        entity.is_create_cell_pending = false;
+        entity.cell_props.clear();
+        entity.callbacks.push(BaseCallback::OnGetCell {
+            entity_id,
+            space_id,
+            cell_addr,
+        });
+        true
+    }
+
+    /// `Base::setCurrentCell( spaceID, NONE )` (`base.cpp:954`, the
+    /// `!haveCell` branch): the cell entity is gone. The old cell reference
+    /// is cleared and the space updated; when the base had a cell the contact
+    /// pending clears, a proxy base is told its cell entity was destroyed and
+    /// `onLoseCell` is recorded. Returns false for an unknown or destroyed
+    /// base.
+    pub fn cell_lost(&mut self, entity_id: EntityId, space_id: u32) -> bool {
+        let Some(entity) = self.bases.get_mut(&entity_id) else {
+            return false;
+        };
+        if entity.destroyed {
+            return false;
+        }
+        let had_cell = entity.cell_entity_addr.is_some();
+        // The mailbox address and the space are set unconditionally.
+        entity.cell_entity_addr = None;
+        entity.cell_space_id = space_id;
+        if !had_cell {
+            // No transition: the base had no cell and has none now.
+            return true;
+        }
+        entity.is_get_cell_pending = false;
+        if entity.is_proxy {
+            entity
+                .callbacks
+                .push(BaseCallback::CellEntityDestroyed { entity_id });
+        }
+        entity
+            .callbacks
+            .push(BaseCallback::OnLoseCell { entity_id });
+        true
+    }
+
+    /// `ServerEntityMailBox::callMethod` reaching its target: deliver a
+    /// decoded [`MailboxMethodCall`] to the base the mailbox addresses.
+    ///
+    /// A base-addressed mailbox (`BASE`, `SERVICE` or `BASE_VIA_CELL`) is
+    /// resolved against the tracked bases; the method must live on the base
+    /// component. A cell-addressed mailbox (`CELL` or `CELL_VIA_BASE`) is
+    /// forwarded to the associated cell entity at the base's tracked cell
+    /// address (`Base::callCellMethod`, `base.cpp:1391`); the method must
+    /// live on the cell component and the base must have a cell. A
+    /// client-addressed mailbox is outside the base-side model and is
+    /// rejected. The call is recorded as a [`BaseCallback::MethodCalled`] (or
+    /// [`BaseCallback::CellMethodCalled`]) and the resolved description
+    /// returned so the caller can build the reply
+    /// ([`MethodReply`](crate::mailbox_call::MethodReply)).
+    pub fn deliver_mailbox_call(
+        &mut self,
+        mailbox: &EntityMailBoxRef,
+        call: MailboxMethodCall,
+    ) -> Result<MethodDesc, MailboxCallError> {
+        let is_base_target = matches!(
+            mailbox.component,
+            MailBoxComponent::Base | MailBoxComponent::Service | MailBoxComponent::BaseViaCell
+        );
+        let is_cell_target = matches!(
+            mailbox.component,
+            MailBoxComponent::Cell | MailBoxComponent::CellViaBase
+        );
+        if !is_base_target && !is_cell_target {
+            return Err(MailboxCallError::ClientTarget);
+        }
+        let base = self
+            .bases
+            .get(&call.target_id)
+            .ok_or(MailboxCallError::UnknownBase)?;
+        let ty = self
+            .types
+            .get(&base.type_name)
+            .ok_or(MailboxCallError::UnknownBase)?;
+        let method = ty
+            .method(call.method_index)
+            .ok_or(MailboxCallError::UnknownMethod)?;
+        let expected = if is_cell_target {
+            MethodComponent::Cell
+        } else {
+            MethodComponent::Base
+        };
+        if method.component != expected {
+            return Err(MailboxCallError::WrongComponent);
+        }
+        if call.args.len() != method.arg_kinds.len() {
+            return Err(MailboxCallError::BadArgs {
+                expected: method.arg_kinds.len(),
+                got: call.args.len(),
+            });
+        }
+        for (index, (value, kind)) in call.args.iter().zip(&method.arg_kinds).enumerate() {
+            if !value_matches(value, kind) {
+                return Err(MailboxCallError::BadArgKind { index });
+            }
+        }
+        let resolved = method.clone();
+        let method_name = method.name.clone();
+        let entity_id = call.target_id;
+        let source_entity_id = call.source_entity_id;
+        let args = call.args;
+        if is_cell_target {
+            let cell_addr = base.cell_entity_addr.ok_or(MailboxCallError::NoCell)?;
+            self.bases
+                .get_mut(&entity_id)
+                .expect("base still present")
+                .callbacks
+                .push(BaseCallback::CellMethodCalled {
+                    entity_id,
+                    cell_addr,
+                    method_name,
+                    method_index: call.method_index,
+                    source_entity_id,
+                    args,
+                });
+        } else {
+            self.bases
+                .get_mut(&entity_id)
+                .expect("base still present")
+                .callbacks
+                .push(BaseCallback::MethodCalled {
+                    entity_id,
+                    method_name,
+                    method_index: call.method_index,
+                    source_entity_id,
+                    args,
+                });
+        }
+        Ok(resolved)
+    }
+
+    /// `Base::currentCell` (`base.cpp:1071`): the associated cell entity
+    /// migrated to a new cellapp (a cell offload). The tracked cell mailbox
+    /// address is switched to the new `Real`'s app and the space updated.
+    ///
+    /// The `hadCell == haveCell` branch of `setCurrentCell`
+    /// (`base.cpp:977-1004`): the cell presence is unchanged, so no script
+    /// callback is recorded — the mailbox simply points at the new app, so
+    /// later calls reach the new `Real`. A `NONE` address is the `cell_lost`
+    /// path, not a migration.
+    pub fn update_cell_address(
+        &mut self,
+        entity_id: EntityId,
+        space_id: u32,
+        new_addr: BaseAddr,
+    ) -> Result<(), CellMigrateError> {
+        if new_addr.ip == 0 {
+            return Err(CellMigrateError::LostCell);
+        }
+        let entity = self
+            .bases
+            .get_mut(&entity_id)
+            .ok_or(CellMigrateError::UnknownBase)?;
+        if entity.cell_entity_addr.is_none() {
+            return Err(CellMigrateError::NoCell);
+        }
+        entity.cell_entity_addr = Some(new_addr);
+        entity.cell_space_id = space_id;
+        Ok(())
+    }
+
+    /// The cell mailbox ref for the base's associated cell entity
+    /// (`Base::cellEntityMailBox`, `base.cpp:2915`): component `CELL`, the
+    /// tracked cell address and the base's id and type. `None` while the
+    /// base has no cell.
+    pub fn cell_mailbox(&self, entity_id: EntityId) -> Option<EntityMailBoxRef> {
+        let base = self.bases.get(&entity_id)?;
+        let cell_addr = base.cell_entity_addr?;
+        Some(EntityMailBoxRef {
+            id: base.id,
+            addr: (cell_addr.ip, cell_addr.port),
+            component: MailBoxComponent::Cell,
+            type_id: base.type_id,
+        })
     }
 
     /// `createBaseFromDB`: validate the type and the database id, allocate an
@@ -869,6 +1378,10 @@ impl EntityCreator {
             in_destroy: false,
             base_props,
             cell_props,
+            is_create_cell_pending: false,
+            is_get_cell_pending: false,
+            cell_entity_addr: None,
+            cell_space_id: 0,
             callbacks: Vec::new(),
         };
         entity.callbacks.push(BaseCallback::Init {
@@ -1046,6 +1559,7 @@ fn read_packed_int(reader: &mut PersistenceReader<'_>) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mailbox_call::{MailboxCallError, MailboxMethodCall};
 
     fn account_type() -> EntityType {
         EntityType {
@@ -1068,6 +1582,7 @@ mod tests {
                 PropDesc::new("pos", false, true, false, true, PropValue::Vec3([0.0; 3])),
                 PropDesc::new("health", true, true, false, true, PropValue::Int(100)),
             ],
+            methods: vec![],
         }
     }
 
@@ -1129,6 +1644,341 @@ mod tests {
         assert!(creator.bases().contains_key(&10));
     }
 
+    /// A service entity type, started on a ServiceApp.
+    fn service_type() -> EntityType {
+        EntityType {
+            id: 9,
+            name: "MailboxService".to_string(),
+            can_be_on_base: true,
+            is_service: true,
+            is_proxy: false,
+            can_be_on_cell: false,
+            properties: vec![],
+            methods: vec![],
+        }
+    }
+
+    /// `ServiceStarter::run` starts a service entity directly, bypassing the
+    /// `is_service` guard a login `createBaseLocally` applies.
+    #[test]
+    fn create_service_starts_a_service_entity() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(service_type());
+
+        let base = creator.create_service("MailboxService").expect("create");
+        assert_eq!(base.type_name, "MailboxService");
+        assert_eq!(base.type_id, 9);
+        assert_eq!(base.id, 10);
+        assert!(creator.bases().contains_key(&10));
+
+        // A login creation still refuses the service type.
+        let mut creator = creator_with_one_id(11);
+        creator.add_type(service_type());
+        assert_eq!(
+            creator.create_base_locally("MailboxService", CreateArgs::new()),
+            Err(CreateError::InvalidType {
+                name: "MailboxService".to_string(),
+            })
+        );
+        // A non-service type cannot be started as a service.
+        let mut creator = creator_with_one_id(12);
+        creator.add_type(account_type());
+        assert_eq!(
+            creator.create_service("Account"),
+            Err(CreateError::InvalidType {
+                name: "Account".to_string(),
+            })
+        );
+        // An unknown type is invalid either way.
+        let mut creator = creator_with_one_id(13);
+        assert_eq!(
+            creator.create_service("Missing"),
+            Err(CreateError::InvalidType {
+                name: "Missing".to_string(),
+            })
+        );
+    }
+
+    /// The create-success flow: begin, the reply succeeds, then the cell
+    /// contacts the base. The pendings and callbacks mirror the reference.
+    #[test]
+    fn a_cell_create_success_ends_with_on_get_cell() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        // The request is eligible: both pendings go up.
+        creator.begin_cell_creation(base.id).unwrap();
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(entity.is_create_cell_pending);
+        assert!(entity.is_get_cell_pending);
+        assert_eq!(entity.cell_entity_addr, None);
+
+        // The cell replies with the base's id: the create succeeded. Only
+        // the create pending clears; the contact is still awaited.
+        let outcome = creator.cell_creation_result(base.id, base.id == 10);
+        assert_eq!(outcome, CellCreationResult::Created);
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(!entity.is_create_cell_pending);
+        assert!(entity.is_get_cell_pending);
+
+        // The cell entity contacts the base: the address and space land, the
+        // cell data is consumed and `onGetCell` fires.
+        let cell_addr = crate::cell_data::BaseAddr {
+            ip: 0x0a000002,
+            port: 30001,
+        };
+        assert!(creator.cell_contact(base.id, 7, cell_addr));
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(!entity.is_get_cell_pending);
+        assert_eq!(entity.cell_entity_addr, Some(cell_addr));
+        assert_eq!(entity.cell_space_id, 7);
+        assert!(entity.cell_props.is_empty());
+        assert_eq!(
+            entity.callbacks.last(),
+            Some(&BaseCallback::OnGetCell {
+                entity_id: base.id,
+                space_id: 7,
+                cell_addr,
+            })
+        );
+    }
+
+    /// The create-failure flow: the reply fails (a different entity id, or a
+    /// nub exception) clears both pendings and fires `onCreateCellFailure`.
+    #[test]
+    fn a_cell_create_failure_fires_on_create_cell_failure() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        creator.begin_cell_creation(base.id).unwrap();
+        // The handler compares the reply's entity id with the base's: a
+        // mismatch (or an exception) is a failure.
+        let outcome = creator.cell_creation_result(base.id, base.id == 99);
+        assert_eq!(outcome, CellCreationResult::Failed);
+
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(!entity.is_create_cell_pending);
+        assert!(!entity.is_get_cell_pending);
+        assert_eq!(entity.cell_entity_addr, None);
+        assert_eq!(
+            entity.callbacks.last(),
+            Some(&BaseCallback::OnCreateCellFailure { entity_id: base.id })
+        );
+    }
+
+    /// A reply for a base with no create pending is ignored — the rare race
+    /// the reference guards against — and never records a callback.
+    #[test]
+    fn a_reply_without_a_pending_create_is_ignored() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        // No `begin_cell_creation` call: the reply has nothing to land on.
+        assert_eq!(
+            creator.cell_creation_result(base.id, false),
+            CellCreationResult::Ignored
+        );
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert!(!entity.is_get_cell_pending);
+        assert!(
+            !entity
+                .callbacks
+                .iter()
+                .any(|c| matches!(c, BaseCallback::OnCreateCellFailure { .. }))
+        );
+    }
+
+    /// The eligibility checks: destroyed, duplicated create and contact
+    /// pending, an existing cell and a type without a cell script.
+    #[test]
+    fn ineligible_bases_are_rejected_before_any_pending() {
+        let mut creator = EntityCreator::new({
+            let mut pool = IdPool::new(5, 10, 50, 100);
+            pool.refill(&[10, 11, 12]);
+            pool
+        });
+        creator.add_type(account_type());
+
+        // An unknown base.
+        assert_eq!(
+            creator.begin_cell_creation(99),
+            Err(CellCreateError::UnknownBase)
+        );
+
+        // A type without a cell script cannot create a cell entity.
+        let mut no_cell = account_type();
+        no_cell.id = 3;
+        no_cell.name = "NoCell".to_string();
+        no_cell.can_be_on_cell = false;
+        creator.add_type(no_cell.clone());
+        let plain = creator
+            .create_base_locally("NoCell", CreateArgs::new())
+            .unwrap();
+        assert_eq!(
+            creator.begin_cell_creation(plain.id),
+            Err(CellCreateError::NoCellScript)
+        );
+        // Nothing pending was set by the failed request.
+        assert!(
+            !creator
+                .bases()
+                .get(&plain.id)
+                .unwrap()
+                .is_create_cell_pending
+        );
+
+        // A duplicated create (the pending already set) is rejected.
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+        creator.begin_cell_creation(base.id).unwrap();
+        assert_eq!(
+            creator.begin_cell_creation(base.id),
+            Err(CellCreateError::AlreadyCreating)
+        );
+
+        // The contact pending (the reply succeeded but no contact yet).
+        creator.cell_creation_result(base.id, true);
+        assert_eq!(
+            creator.begin_cell_creation(base.id),
+            Err(CellCreateError::WaitingForContact)
+        );
+
+        // After the contact, the base already has a cell entity.
+        let cell_addr = crate::cell_data::BaseAddr {
+            ip: 0x0a000002,
+            port: 30001,
+        };
+        creator.cell_contact(base.id, 7, cell_addr);
+        assert_eq!(
+            creator.begin_cell_creation(base.id),
+            Err(CellCreateError::AlreadyHasCell)
+        );
+    }
+
+    /// A base that has a cell and then loses it clears the cell reference and
+    /// records `onLoseCell` (a non-proxy base gets no proxy notification).
+    #[test]
+    fn losing_a_cell_clears_the_reference_and_fires_on_lose_cell() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+        creator.begin_cell_creation(base.id).unwrap();
+        creator.cell_creation_result(base.id, true);
+        let cell_addr = crate::cell_data::BaseAddr {
+            ip: 0x0a000002,
+            port: 30001,
+        };
+        creator.cell_contact(base.id, 7, cell_addr);
+
+        assert!(creator.cell_lost(base.id, 7));
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert_eq!(entity.cell_entity_addr, None);
+        assert_eq!(entity.cell_space_id, 7);
+        assert!(!entity.is_get_cell_pending);
+        // No proxy notification for a non-proxy base.
+        assert!(
+            !entity
+                .callbacks
+                .iter()
+                .any(|c| matches!(c, BaseCallback::CellEntityDestroyed { .. }))
+        );
+        assert_eq!(
+            entity.callbacks.last(),
+            Some(&BaseCallback::OnLoseCell { entity_id: base.id })
+        );
+    }
+
+    /// A proxy base losing its cell is told `cellEntityDestroyed` before
+    /// `onLoseCell`, in the reference order.
+    #[test]
+    fn a_proxy_base_is_told_its_cell_was_destroyed_first() {
+        let mut creator = creator_with_one_id(10);
+        let mut proxy_type = account_type();
+        proxy_type.is_proxy = true;
+        creator.add_type(proxy_type);
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+        assert!(base.is_proxy);
+        creator.begin_cell_creation(base.id).unwrap();
+        creator.cell_creation_result(base.id, true);
+        creator.cell_contact(
+            base.id,
+            7,
+            crate::cell_data::BaseAddr {
+                ip: 0x0a000002,
+                port: 30001,
+            },
+        );
+
+        creator.cell_lost(base.id, 7);
+        let entity = creator.bases().get(&base.id).unwrap();
+        let tail: Vec<&BaseCallback> = entity
+            .callbacks
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    BaseCallback::CellEntityDestroyed { .. } | BaseCallback::OnLoseCell { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                &BaseCallback::CellEntityDestroyed { entity_id: base.id },
+                &BaseCallback::OnLoseCell { entity_id: base.id }
+            ]
+        );
+    }
+
+    /// A base with no cell has no transition: the loss is applied but records
+    /// no callback.
+    #[test]
+    fn a_base_without_a_cell_has_no_loss_transition() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        assert!(creator.cell_lost(base.id, 1));
+        let entity = creator.bases().get(&base.id).unwrap();
+        assert_eq!(entity.cell_entity_addr, None);
+        assert!(
+            !entity
+                .callbacks
+                .iter()
+                .any(|c| matches!(c, BaseCallback::OnLoseCell { .. }))
+        );
+    }
+
+    /// An unknown or destroyed base cannot lose a cell.
+    #[test]
+    fn a_destroyed_or_unknown_base_cannot_lose_a_cell() {
+        let mut creator = creator_with_one_id(10);
+        creator.add_type(account_type());
+        let base = creator
+            .create_base_locally("Account", CreateArgs::new())
+            .unwrap();
+
+        assert!(!creator.cell_lost(99, 1));
+        creator.destroy_base(base.id, false, false, false);
+        assert!(!creator.cell_lost(base.id, 1));
+    }
+
     #[test]
     fn an_unprovided_property_gets_its_initial_value() {
         let mut creator = EntityCreator::new({
@@ -1162,6 +2012,7 @@ mod tests {
             is_proxy: false,
             can_be_on_cell: true,
             properties: vec![],
+            methods: vec![],
         });
         creator.add_type(EntityType {
             id: 3,
@@ -1171,6 +2022,7 @@ mod tests {
             is_proxy: false,
             can_be_on_cell: true,
             properties: vec![],
+            methods: vec![],
         });
         assert_eq!(
             creator.create_base_locally("Service", CreateArgs::new()),
@@ -1238,6 +2090,7 @@ mod tests {
                 PropDesc::new("pos", false, true, false, true, PropValue::Vec3([0.0; 3])),
                 PropDesc::new("health", true, true, false, true, PropValue::Int(100)),
             ],
+            methods: vec![],
         }
     }
 
@@ -1424,6 +2277,7 @@ mod tests {
             is_proxy: false,
             can_be_on_cell: true,
             properties: vec![],
+            methods: vec![],
         });
         assert_eq!(
             creator.create_base_from_db("Nope", 5),
@@ -1737,5 +2591,386 @@ mod tests {
         assert_eq!(creator.uncheckouts()[0].db_id, 42);
         // The callback fired exactly once.
         assert_eq!(creator.on_load_reply(request, LoadReply::Exception), None);
+    }
+
+    /// A type with a base method `rename(string, int) -> int` for the
+    /// mailbox delivery tests.
+    fn rename_type() -> EntityType {
+        let mut ty = account_type();
+        ty.id = 5;
+        ty.name = "Player".to_string();
+        ty.methods = vec![
+            MethodDesc::new(
+                "rename",
+                7,
+                MethodComponent::Base,
+                false,
+                vec![PropValue::Str(String::new()), PropValue::Int(0)],
+                vec![PropValue::Int(0)],
+            ),
+            MethodDesc::new(
+                "moveTo",
+                9,
+                MethodComponent::Cell,
+                false,
+                vec![PropValue::Vec3([0.0; 3]), PropValue::Float(0.0)],
+                vec![],
+            ),
+        ];
+        ty
+    }
+
+    fn creator_with_rename() -> (EntityCreator, EntityId) {
+        let mut pool = IdPool::new(5, 10, 50, 100);
+        pool.refill(&[20]);
+        let mut creator = EntityCreator::new(pool);
+        creator.add_type(rename_type());
+        let base = creator
+            .create_base_locally("Player", Default::default())
+            .expect("create");
+        (creator, base.id)
+    }
+
+    fn creator_with_rename_and_cell() -> (EntityCreator, EntityId) {
+        let (mut creator, id) = creator_with_rename();
+        assert!(creator.cell_contact(
+            id,
+            1,
+            BaseAddr {
+                ip: 0x0a000001,
+                port: 40001
+            }
+        ));
+        (creator, id)
+    }
+
+    fn base_mailbox(id: EntityId) -> EntityMailBoxRef {
+        EntityMailBoxRef::init(id, (0x7f000001, 20000), MailBoxComponent::Base, 5)
+    }
+
+    fn cell_via_base_mailbox(id: EntityId) -> EntityMailBoxRef {
+        EntityMailBoxRef::init(id, (0x7f000001, 20000), MailBoxComponent::CellViaBase, 5)
+    }
+
+    fn move_to_call(id: EntityId) -> MailboxMethodCall {
+        MailboxMethodCall {
+            target_id: id,
+            method_index: 9,
+            source_entity_id: None,
+            args: vec![PropValue::Vec3([1.0, 2.0, 3.0]), PropValue::Float(0.5)],
+        }
+    }
+
+    #[test]
+    fn a_mailbox_call_is_delivered_to_its_target_base() {
+        let (mut creator, id) = creator_with_rename();
+        let method = creator
+            .deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+                },
+            )
+            .expect("deliver");
+        assert_eq!(method.name, "rename");
+        assert_eq!(method.internal_index, 7);
+        assert_eq!(method.return_kinds, vec![PropValue::Int(0)]);
+        let callbacks = &creator.bases()[&id].callbacks;
+        assert_eq!(
+            callbacks.last(),
+            Some(&BaseCallback::MethodCalled {
+                entity_id: id,
+                method_name: "rename".to_string(),
+                method_index: 7,
+                source_entity_id: None,
+                args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_target_base_is_rejected() {
+        let (mut creator, _id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &base_mailbox(99),
+                MailboxMethodCall {
+                    target_id: 99,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+                },
+            ),
+            Err(MailboxCallError::UnknownBase)
+        );
+    }
+
+    #[test]
+    fn an_unknown_method_index_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 99,
+                    source_entity_id: None,
+                    args: vec![],
+                },
+            ),
+            Err(MailboxCallError::UnknownMethod)
+        );
+    }
+
+    #[test]
+    fn a_cell_via_base_call_routes_to_the_tracked_cell() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        let method = creator
+            .deliver_mailbox_call(&cell_via_base_mailbox(id), move_to_call(id))
+            .expect("deliver");
+        assert_eq!(method.name, "moveTo");
+        let callbacks = &creator.bases()[&id].callbacks;
+        assert_eq!(
+            callbacks.last(),
+            Some(&BaseCallback::CellMethodCalled {
+                entity_id: id,
+                cell_addr: BaseAddr {
+                    ip: 0x0a000001,
+                    port: 40001
+                },
+                method_name: "moveTo".to_string(),
+                method_index: 9,
+                source_entity_id: None,
+                args: vec![PropValue::Vec3([1.0, 2.0, 3.0]), PropValue::Float(0.5)],
+            })
+        );
+    }
+
+    #[test]
+    fn a_cell_call_after_migration_reaches_the_new_real() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        // The cell entity offloads to a new cellapp: the tracked address
+        // switches, so a later call arrives at the new Real's role.
+        creator
+            .update_cell_address(
+                id,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002,
+                },
+            )
+            .expect("migrate");
+        let mailbox = creator.cell_mailbox(id).expect("cell mailbox");
+        assert_eq!(mailbox.component, MailBoxComponent::Cell);
+        assert_eq!(mailbox.addr, (0x0a000002, 40002));
+        creator
+            .deliver_mailbox_call(&cell_via_base_mailbox(id), move_to_call(id))
+            .expect("deliver");
+        let callbacks = &creator.bases()[&id].callbacks;
+        assert_eq!(
+            callbacks.last(),
+            Some(&BaseCallback::CellMethodCalled {
+                entity_id: id,
+                cell_addr: BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002
+                },
+                method_name: "moveTo".to_string(),
+                method_index: 9,
+                source_entity_id: None,
+                args: vec![PropValue::Vec3([1.0, 2.0, 3.0]), PropValue::Float(0.5)],
+            })
+        );
+    }
+
+    #[test]
+    fn a_cell_call_without_a_cell_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(&cell_via_base_mailbox(id), move_to_call(id)),
+            Err(MailboxCallError::NoCell)
+        );
+    }
+
+    #[test]
+    fn a_client_addressed_mailbox_is_out_of_the_model() {
+        let (mut creator, id) = creator_with_rename();
+        let mailbox = EntityMailBoxRef::init(id, (0x7f000001, 20000), MailBoxComponent::Client, 5);
+        assert_eq!(
+            creator.deliver_mailbox_call(&mailbox, move_to_call(id)),
+            Err(MailboxCallError::ClientTarget)
+        );
+    }
+
+    #[test]
+    fn a_migrated_cell_updates_the_mailbox_address_without_callbacks() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        creator
+            .update_cell_address(
+                id,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002,
+                },
+            )
+            .expect("migrate");
+        let base = &creator.bases()[&id];
+        assert_eq!(
+            base.cell_entity_addr,
+            Some(BaseAddr {
+                ip: 0x0a000002,
+                port: 40002
+            })
+        );
+        assert_eq!(base.cell_space_id, 2);
+        // A pure move: the cell presence never changed, so no lose/get or
+        // destroy notifications.
+        assert_eq!(
+            base.callbacks,
+            vec![
+                BaseCallback::Init {
+                    entity_id: id,
+                    type_name: "Player".to_string()
+                },
+                BaseCallback::Initialised { entity_id: id },
+                BaseCallback::OnGetCell {
+                    entity_id: id,
+                    space_id: 1,
+                    cell_addr: BaseAddr {
+                        ip: 0x0a000001,
+                        port: 40001
+                    }
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_migration_without_a_cell_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.update_cell_address(
+                id,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002
+                }
+            ),
+            Err(CellMigrateError::NoCell)
+        );
+    }
+
+    #[test]
+    fn a_migration_with_a_none_address_is_a_loss() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        assert_eq!(
+            creator.update_cell_address(id, 2, BaseAddr { ip: 0, port: 0 }),
+            Err(CellMigrateError::LostCell)
+        );
+    }
+
+    #[test]
+    fn a_destroyed_base_cannot_migrate() {
+        let (mut creator, id) = creator_with_rename_and_cell();
+        creator.destroy_base(id, false, false, false);
+        // The base is removed on destroy, so the migration is unknown.
+        assert_eq!(
+            creator.update_cell_address(
+                id,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002
+                }
+            ),
+            Err(CellMigrateError::UnknownBase)
+        );
+    }
+
+    #[test]
+    fn an_unknown_base_cannot_migrate() {
+        let (mut creator, _id) = creator_with_rename();
+        assert_eq!(
+            creator.update_cell_address(
+                99,
+                2,
+                BaseAddr {
+                    ip: 0x0a000002,
+                    port: 40002
+                }
+            ),
+            Err(CellMigrateError::UnknownBase)
+        );
+    }
+
+    #[test]
+    fn a_wrong_argument_count_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string())],
+                },
+            ),
+            Err(MailboxCallError::BadArgs {
+                expected: 2,
+                got: 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_wrong_argument_type_is_rejected() {
+        let (mut creator, id) = creator_with_rename();
+        assert_eq!(
+            creator.deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![
+                        PropValue::Str("bob".to_string()),
+                        PropValue::Str("bad".to_string())
+                    ],
+                },
+            ),
+            Err(MailboxCallError::BadArgKind { index: 1 })
+        );
+    }
+
+    #[test]
+    fn a_delivered_call_builds_a_matching_reply() {
+        let (mut creator, id) = creator_with_rename();
+        let method = creator
+            .deliver_mailbox_call(
+                &base_mailbox(id),
+                MailboxMethodCall {
+                    target_id: id,
+                    method_index: 7,
+                    source_entity_id: None,
+                    args: vec![PropValue::Str("bob".to_string()), PropValue::Int(3)],
+                },
+            )
+            .expect("deliver");
+        // The reply a method would send: status 0 then its return value.
+        let reply = crate::mailbox_call::MethodReply::success(&method, vec![PropValue::Int(9)])
+            .expect("reply");
+        let mut stream = foundation::stream::BinaryStream::new();
+        reply.write_to(&mut stream, &method).expect("write");
+        let parsed =
+            crate::mailbox_call::MethodReply::read_from(&mut stream, &method).expect("read");
+        assert_eq!(parsed.status, 0);
+        assert_eq!(parsed.values, vec![PropValue::Int(9)]);
     }
 }

@@ -32,6 +32,7 @@ mod epoll {
     /// an error the caller has to act on.
     pub const ENOENT: i32 = libc::ENOENT;
 
+<<<<<<< HEAD
     /// `epoll_create1(0)`. `EPoller(expectedSize)` passes a size to the
     /// obsolete `epoll_create`; the size is advisory on modern kernels, and
     /// `epoll_create1` is the spelling that accepts no size. `-1` when the
@@ -49,6 +50,50 @@ mod epoll {
         let mut event = libc::epoll_event {
             events,
             u64: fd as u64,
+=======
+/// `epoll_create1(0)`. `EPoller(expectedSize)` passes a size to the
+/// obsolete `epoll_create`; the size is advisory on modern kernels, and
+/// `epoll_create1` is the spelling that accepts no size. `-1` when the
+/// kernel refuses.
+pub fn create(expected_size: i32) -> RawFd {
+    let _ = expected_size;
+    let fd = unsafe { libc::epoll_create1(0) };
+    if fd < 0 { -1 } else { fd }
+}
+
+/// `epoll_ctl(op, fd)`: the single entry point behind the four
+/// `doRegisterFor{Read,Write}` / `doDeregisterFor{Read,Write}` hooks,
+/// which the reference folds into one `doRegister` with flags.
+pub fn ctl(epfd: RawFd, op: i32, fd: RawFd, events: u32) -> i32 {
+    let mut event = libc::epoll_event {
+        events,
+        u64: fd as u64,
+    };
+    unsafe { libc::epoll_ctl(epfd, op, fd, &mut event) }
+}
+
+/// One entry `epoll_wait` reported: the event bits and the descriptor
+/// epoll tagged onto the entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PollEvent {
+    pub events: u32,
+    pub fd: RawFd,
+}
+
+/// `epoll_wait(epfd, events, max, timeout_ms)`. The count, or `-1` on
+/// error. Fills `events` in place and leaves the rest untouched.
+pub fn wait(epfd: RawFd, events: &mut [PollEvent], timeout_ms: i32) -> i32 {
+    let mut raw: [libc::epoll_event; 10] = unsafe { std::mem::zeroed() };
+    let count = events.len().min(raw.len());
+    let result = unsafe { libc::epoll_wait(epfd, raw.as_mut_ptr(), count as i32, timeout_ms) };
+    if result <= 0 {
+        return result;
+    }
+    for (slot, event) in events.iter_mut().zip(raw.iter().take(result as usize)) {
+        *slot = PollEvent {
+            events: event.events,
+            fd: event.u64 as RawFd,
+>>>>>>> origin/lane/bw19-docs
         };
         unsafe { libc::epoll_ctl(epfd, op, fd, &mut event) }
     }
@@ -214,6 +259,7 @@ mod kqueue {
     fn delete_one(kqfd: RawFd, fd: RawFd, filter: i16) -> i32 {
         one_change(kqfd, &change(fd, filter, libc::EV_DELETE))
     }
+<<<<<<< HEAD
 
     /// Register (`CTL_ADD`/`CTL_MOD`) or deregister (`CTL_DEL`) a
     /// descriptor's read/write interest: the single entry point behind the
@@ -379,3 +425,6 @@ mod kqueue {
 pub use epoll::*;
 #[cfg(target_os = "macos")]
 pub use kqueue::*;
+=======
+}
+>>>>>>> origin/lane/bw19-docs

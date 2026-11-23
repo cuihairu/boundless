@@ -6,9 +6,10 @@
 #   ci/check-python.sh                 # whole tree
 #   ci/check-python.sh self-test       # prove the lanes bite
 #
-# The repo carries no Python yet: BW-18 puts the suite in tests/python/, the
-# scripting API lands under scripts/. Until one of those trees exists the
-# lanes SKIP and say which path will turn them on.
+# The repo's Python: the installable module under python/ (BW-00-03-03), the
+# suite under tests/python/ (BW-18), and the scripting API under scripts/ when
+# it lands. Until a scan root carries a tracked .py file the lanes SKIP and
+# say which path will turn them on.
 #
 # A red lane names the module: compileall and pytest both report file and
 # line, and the manifest keeps the first offenders instead of the dump.

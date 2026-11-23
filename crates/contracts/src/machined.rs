@@ -2088,7 +2088,7 @@ pub fn answer_query(
                 .registry
                 .find(query)
                 .map(|entry| entry.process.clone())
-                .unwrap_or_else(ProcessMessage::default);
+                .unwrap_or_default();
             let mut reply = process;
             reply.header = Header {
                 message: message_id::PROCESS,

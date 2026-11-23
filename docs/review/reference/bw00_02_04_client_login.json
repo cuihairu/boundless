@@ -1,0 +1,125 @@
+{
+ "captured_at": "2026-11-23 01:46:38 +0800",
+ "client_events": [
+  {
+   "kind": "request",
+   "line": "DEBUG: LoginHandler::start: LoginApp@127.0.0.1:20013 over UDP (# requests: 10, retry interval: 1.0s, timeout interval: 8.0s)",
+   "msg": "LoginApp@127.0.0.1:20013 over UDP (# requests: 10, retry interval: 1.0s, timeout interval: 8.0s)"
+  },
+  {
+   "kind": "request",
+   "line": "TRACE: LoginHandler::sendNextRequest: From 192.168.5.188:55283, attempt #1 / 10 to LoginApp 127.0.0.1:20013",
+   "msg": "From 192.168.5.188:55283, attempt #1 / 10 to LoginApp 127.0.0.1:20013"
+  },
+  {
+   "kind": "reply",
+   "line": "TRACE: LoginRequest::handleMessage: Attempt #1: Received reply from 127.0.0.1:20013 (after 0.1s)",
+   "msg": "Attempt #1: Received reply from 127.0.0.1:20013 (after 0.1s)"
+  },
+  {
+   "kind": "callback",
+   "line": "DEBUG: LoginHandler::onLoginAppLoginSuccess: BaseApp@192.168.5.188:51079 over UDP (# requests: 10, retry interval:1.0s, timeout interval: 8.0s)",
+   "msg": "BaseApp@192.168.5.188:51079 over UDP (# requests: 10, retry interval:1.0s, timeout interval: 8.0s)"
+  },
+  {
+   "kind": "request",
+   "line": "TRACE: LoginHandler::sendNextRequest: From 192.168.5.188:55283, attempt #1 / 10 to BaseApp 192.168.5.188:51079",
+   "msg": "From 192.168.5.188:55283, attempt #1 / 10 to BaseApp 192.168.5.188:51079"
+  },
+  {
+   "kind": "reply",
+   "line": "TRACE: LoginRequest::handleMessage: Attempt #1: Received reply from 192.168.5.188:51079 (after 0.1s)",
+   "msg": "Attempt #1: Received reply from 192.168.5.188:51079 (after 0.1s)"
+  },
+  {
+   "kind": "callback",
+   "line": "DEBUG: LoginHandler::onBaseAppLoginSuccess: Got reply from BaseApp channel udp:192.168.5.188:51079",
+   "msg": "Got reply from BaseApp channel udp:192.168.5.188:51079"
+  },
+  {
+   "kind": "callback",
+   "line": "DEBUG: [Connection] ServerConnection::logOn: status==LOGGED_ON",
+   "msg": "status==LOGGED_ON"
+  },
+  {
+   "kind": "callback",
+   "line": "DEBUG: [Connection] ServerConnection::logOn: from: 192.168.5.188:55283",
+   "msg": "from: 192.168.5.188:55283"
+  },
+  {
+   "kind": "callback",
+   "line": "DEBUG: [Connection] ServerConnection::logOn: to:   192.168.5.188:51079",
+   "msg": "to:   192.168.5.188:51079"
+  },
+  {
+   "kind": "callback",
+   "line": "DEBUG: [Connection] ServerConnection::enableEntities: Enabling entities",
+   "msg": "Enabling entities"
+  },
+  {
+   "kind": "callback",
+   "line": "Connected to 192.168.5.188:51079",
+   "msg": "192.168.5.188:51079"
+  }
+ ],
+ "client_source_port": "192.168.5.188:55283",
+ "command": "/home/cui/workspaces/BigWorld/game/bin/server/el7/examples/simple_python_client -server 127.0.0.1 -user MyAccount -password a -autoDisconnect",
+ "log_dir": "/tmp/cluster-smoke",
+ "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+ "returncode": 0,
+ "seconds": 2.226,
+ "server_callbacks": {
+  "baseapp": [
+   "INFO: LoginHandler::login: 4805 attached from 192.168.5.188:55283. Attempt 1",
+   "DEBUG: Proxy::enableEntities(4805)",
+   "DEBUG: Proxy::addCreateBasePlayerToChannelBundle(4805): Creating player on client",
+   "INFO: ClientAvatar.onEntitiesEnabled: 4805",
+   "ERROR: [Network] Exception occurred: 'REASON_NO_SUCH_PORT' on '192.168.5.188:55283'",
+   "TRACE: Proxy::onClientDeath: Client id 4805 has disconnected (Requested by client)",
+   "TRACE: BaseApp::removeProxy: Removing proxy id 4805 addr udp:192.168.5.188:55283",
+   "INFO: ClientAvatar.onClientDeath: 4805",
+   "ERROR: [Network] Exception occurred: 'REASON_NO_SUCH_PORT' on '192.168.5.188:55283'",
+   "INFO: Base::~Base(4805): ClientAvatar"
+  ],
+  "cellapp": [
+   "INFO: ClientAvatar.__init__: {}",
+   "INFO: Cell::entityDestroyed: ClientAvatar 4805 has been destroyed."
+  ],
+  "proxy_id": "4805"
+ },
+ "server_events": [
+  {
+   "line": "INFO: LoginApp::login: Attempt from 127.0.0.1:55283",
+   "server": "loginapp"
+  },
+  {
+   "line": "INFO: LoginApp::login: Logging in user 'MyAccount' (127.0.0.1:55283)",
+   "server": "loginapp"
+  },
+  {
+   "line": "WARNING: LoginHandler::updateStatistics: Addresses are different (due to NAT?). Was 127.0.0.1:55283. Now 192.168.5.188:55283",
+   "server": "baseapp(2)"
+  },
+  {
+   "line": "TRACE: BaseApp: Adding proxy 4805 at udp:192.168.5.188:55283",
+   "server": "baseapp(2)"
+  },
+  {
+   "line": "INFO: LoginHandler::login: 4805 attached from 192.168.5.188:55283. Attempt 1",
+   "server": "baseapp(2)"
+  },
+  {
+   "line": "ERROR: [Network] Exception occurred: 'REASON_NO_SUCH_PORT' on '192.168.5.188:55283'",
+   "server": "baseapp(2)"
+  },
+  {
+   "line": "TRACE: BaseApp::removeProxy: Removing proxy id 4805 addr udp:192.168.5.188:55283",
+   "server": "baseapp(2)"
+  },
+  {
+   "line": "ERROR: [Network] Exception occurred: 'REASON_NO_SUCH_PORT' on '192.168.5.188:55283'",
+   "server": "baseapp(2)"
+  }
+ ],
+ "source_commit": "f3f53898"
+}

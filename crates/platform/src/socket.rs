@@ -419,6 +419,16 @@ pub fn read_error_queue(fd: RawFd) -> Option<QueuedError> {
         let _ = fd;
         None
     }
+<<<<<<< HEAD
+=======
+
+    let cursor = find_recv_error(&header)?;
+    parse_queued_error(
+        unsafe { libc::CMSG_DATA(cursor) as *const u8 },
+        &header,
+        &offender,
+    )
+>>>>>>> origin/lane/bw19-docs
 }
 
 /// Walk `header`'s control messages for the `IP_RECVERR` one. Kept apart
@@ -803,7 +813,10 @@ mod tests {
     /// Lay one control message into `control` at the kernel's alignment and
     /// return where the next one starts. `data` must already look like the
     /// kernel lays it out.
+<<<<<<< HEAD
     #[cfg(target_os = "linux")]
+=======
+>>>>>>> origin/lane/bw19-docs
     fn put_control_message(
         control: &mut [u8],
         from: usize,

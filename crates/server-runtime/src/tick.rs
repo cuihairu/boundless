@@ -472,15 +472,25 @@ mod tests {
 
     type Log = Rc<RefCell<Vec<String>>>;
 
+<<<<<<< HEAD
     /// One optional visit behaviour.
     type Behavior = Option<Box<dyn FnMut(&mut Updatables)>>;
+=======
+    /// An updatable's optional pre-visit behaviour (boxed to erase the
+    /// closure's type; see `Tagged::behaving`).
+    type TaggedBehavior = Box<dyn FnMut(&mut Updatables)>;
+>>>>>>> origin/lane/bw19-docs
 
     /// A tagged updatable; optionally runs a behaviour before recording
     /// the visit.
     struct Tagged {
         tag: &'static str,
         log: Log,
+<<<<<<< HEAD
         behavior: Behavior,
+=======
+        behavior: Option<TaggedBehavior>,
+>>>>>>> origin/lane/bw19-docs
     }
 
     impl Tagged {
@@ -492,11 +502,7 @@ mod tests {
             }))
         }
 
-        fn behaving(
-            tag: &'static str,
-            log: &Log,
-            behavior: Box<dyn FnMut(&mut Updatables)>,
-        ) -> Rc<RefCell<Self>> {
+        fn behaving(tag: &'static str, log: &Log, behavior: TaggedBehavior) -> Rc<RefCell<Self>> {
             Rc::new(RefCell::new(Self {
                 tag,
                 log: Rc::clone(log),

@@ -319,9 +319,15 @@ impl PackedSection {
     pub fn as_matrix34(&self, default: Matrix) -> Matrix {
         let mut m = default;
         if self.own_type == SectionType::FLOAT && self.own_len == 4 * 12 {
+<<<<<<< HEAD
             for (i, row) in m.m.iter_mut().enumerate().take(4) {
                 for (j, cell) in row.iter_mut().enumerate().take(3) {
                     *cell = f32_le(&self.own_data, (i * 3 + j) * 4);
+=======
+            for (i, row) in m.m.iter_mut().enumerate() {
+                for (j, val) in row.iter_mut().enumerate().take(3) {
+                    *val = f32_le(&self.own_data, (i * 3 + j) * 4);
+>>>>>>> origin/lane/bw19-docs
                 }
             }
         } else {

@@ -380,8 +380,8 @@ mod tests {
         let expired = pending.tick(NOW + PENDING_LOGINS_TIMEOUT * HERTZ);
         // The address is classified as internal, so it is not the first
         // external login, but it is the first login overall.
-        assert_eq!(expired[0].is_first_login, true);
-        assert_eq!(expired[0].is_first_external_login, false);
+        assert!(expired[0].is_first_login);
+        assert!(!expired[0].is_first_external_login);
     }
 
     #[test]

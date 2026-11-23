@@ -181,6 +181,7 @@ pub struct Blocker {
 
 impl Blocker {
     pub fn new(signals: &Set) -> Self {
+<<<<<<< HEAD
         let mut old_signals = platform::signals::empty_set();
         let result = platform::signals::block_mask(
             platform::signals::SIG_SETMASK,
@@ -188,15 +189,30 @@ impl Blocker {
             &mut old_signals,
         );
         assert_eq!(result, 0, "pthread_sigmask failed");
+=======
+        let mut old_signals: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe {
+            let result = libc::pthread_sigmask(libc::SIG_SETMASK, signals.raw(), &mut old_signals);
+            assert_eq!(result, 0, "pthread_sigmask failed");
+        }
+>>>>>>> origin/lane/bw19-docs
         Self { old_signals }
     }
 }
 
 impl Drop for Blocker {
     fn drop(&mut self) {
+<<<<<<< HEAD
         let result =
             platform::signals::restore_mask(platform::signals::SIG_SETMASK, &self.old_signals);
         assert_eq!(result, 0, "pthread_sigmask restore failed");
+=======
+        unsafe {
+            let result =
+                libc::pthread_sigmask(libc::SIG_SETMASK, &self.old_signals, std::ptr::null_mut());
+            assert_eq!(result, 0, "pthread_sigmask restore failed");
+        }
+>>>>>>> origin/lane/bw19-docs
     }
 }
 
@@ -225,13 +241,17 @@ pub fn disposition_of(sig_num: i32) -> usize {
     platform::signals::current_disposition(sig_num)
 }
 
+/// A registered `(signal, id, handler)` slot, in registration order (the
+/// reference's multimap keeps insertion order within a signal).
+type SignalHandlerEntry = (i32, HandlerId, Rc<RefCell<dyn SignalHandler>>);
+
 /// `SignalProcessor`: registration + the dispatch drain. The global
 /// signal/quit-handler state is shared exactly like the reference's
 /// singleton; instances manage the main-thread registration table.
 pub struct SignalProcessor {
     /// `(signal, id, handler)` in registration order (the reference's
     /// multimap keeps insertion order within a signal).
-    handlers: Vec<(i32, HandlerId, Rc<RefCell<dyn SignalHandler>>)>,
+    handlers: Vec<SignalHandlerEntry>,
     /// Whether this instance installed the `SIGQUIT` slot.
     quit_installed: bool,
 }
@@ -414,11 +434,17 @@ impl SignalProcessor {
     /// `EINTR`), then dispatch it. Only `TableSynchroniser::run` uses
     /// this in the reference.
     pub fn wait_for_signals(&mut self, set: &Set) -> i32 {
+<<<<<<< HEAD
         // `EINTR` is the only interruption worth retrying: a signal
         // outside `set` reached the thread while it waited.
         let mut sig_num = platform::signals::wait(set.raw());
         while sig_num == -platform::signals::EINTR {
             sig_num = platform::signals::wait(set.raw());
+=======
+        let mut sig_num = unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
+        while sig_num < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            sig_num = unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
+>>>>>>> origin/lane/bw19-docs
         }
         if sig_num >= 0 {
             self.dispatch_signal(sig_num);
@@ -567,8 +593,15 @@ mod tests {
             PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << platform::signals::SIGUSR1),
             0
         );
+<<<<<<< HEAD
         platform::signals::raise(platform::signals::SIGUSR1);
         assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << platform::signals::SIGUSR1) != 0);
+=======
+        unsafe {
+            libc::raise(libc::SIGUSR1);
+        }
+        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR1) != 0);
+>>>>>>> origin/lane/bw19-docs
         assert_eq!(counter.load(Ordering::SeqCst), 0, "not yet dispatched");
 
         processor.dispatch();
@@ -587,11 +620,16 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 2);
         assert_eq!(counter_b.load(Ordering::SeqCst), 1);
 
+<<<<<<< HEAD
         processor.set_default_signal_handler(platform::signals::SIGUSR1);
         assert_eq!(
             disposition_of(platform::signals::SIGUSR1),
             platform::signals::SIG_DFL as usize
         );
+=======
+        processor.set_default_signal_handler(libc::SIGUSR1);
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
+>>>>>>> origin/lane/bw19-docs
     }
 
     /// `Blocker`: a blocked raise never reaches the C handler; the
@@ -619,7 +657,11 @@ mod tests {
 
         // The mask is restored: the kernel delivers now, the C handler
         // marks the bit, dispatch runs the app-side handler.
+<<<<<<< HEAD
         assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << platform::signals::SIGUSR2) != 0);
+=======
+        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR2) != 0);
+>>>>>>> origin/lane/bw19-docs
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
 
@@ -695,6 +737,7 @@ mod tests {
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
         assert_eq!(counter_b.load(Ordering::SeqCst), 2);
+<<<<<<< HEAD
         assert_ne!(
             disposition_of(platform::signals::SIGUSR1),
             platform::signals::SIG_DFL as usize
@@ -707,6 +750,14 @@ mod tests {
             platform::signals::SIG_DFL as usize
         );
         assert!(!processor.clear_signal_handler(platform::signals::SIGUSR1, id_b));
+=======
+        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
+
+        // Last handler out: back to SIG_DFL; a stale removal is a no-op.
+        assert!(processor.clear_signal_handler(libc::SIGUSR1, id_b));
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
+        assert!(!processor.clear_signal_handler(libc::SIGUSR1, id_b));
+>>>>>>> origin/lane/bw19-docs
     }
 
     /// `clear_handler_everywhere` removes one handler from all signals
@@ -732,6 +783,7 @@ mod tests {
 
         processor.clear_handler_everywhere(id_a);
         // SIGUSR2 lost its last handler -> SIG_DFL; SIGUSR1 still has one.
+<<<<<<< HEAD
         assert_eq!(
             disposition_of(platform::signals::SIGUSR2),
             platform::signals::SIG_DFL as usize
@@ -740,6 +792,10 @@ mod tests {
             disposition_of(platform::signals::SIGUSR1),
             platform::signals::SIG_DFL as usize
         );
+=======
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL);
+        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
+>>>>>>> origin/lane/bw19-docs
 
         // The removed handler gets no more deliveries: raising SIGUSR1
         // (whose remaining handler is the kept one) leaves `counter`
@@ -764,11 +820,16 @@ mod tests {
             processor.add_signal_handler(platform::signals::SIGUSR2, counting_handler(counter));
         }
 
+<<<<<<< HEAD
         processor.ignore_signal(platform::signals::SIGUSR2);
         assert_eq!(
             disposition_of(platform::signals::SIGUSR2),
             platform::signals::SIG_IGN as usize
         );
+=======
+        processor.ignore_signal(libc::SIGUSR2);
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_IGN);
+>>>>>>> origin/lane/bw19-docs
         // The pending bitset is shared process state that a sibling test may
         // have dirtied, so assert the ignored raise added nothing rather
         // than that the world was quiet.
@@ -782,11 +843,16 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
         // Restore for the rest of the suite.
+<<<<<<< HEAD
         processor.set_default_signal_handler(platform::signals::SIGUSR2);
         assert_eq!(
             disposition_of(platform::signals::SIGUSR2),
             platform::signals::SIG_DFL as usize
         );
+=======
+        processor.set_default_signal_handler(libc::SIGUSR2);
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL);
+>>>>>>> origin/lane/bw19-docs
     }
 
     /// `Drop` resets every handled signal to the default disposition.
@@ -799,6 +865,7 @@ mod tests {
                 platform::signals::SIGUSR1,
                 counting_handler(Arc::new(AtomicUsize::new(0))),
             );
+<<<<<<< HEAD
             assert_ne!(
                 disposition_of(platform::signals::SIGUSR1),
                 platform::signals::SIG_DFL as usize
@@ -808,6 +875,11 @@ mod tests {
             disposition_of(platform::signals::SIGUSR1),
             platform::signals::SIG_DFL as usize
         );
+=======
+            assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
+        }
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
+>>>>>>> origin/lane/bw19-docs
     }
 
     /// `waitForSignals`: sigwaitinfo consumes a signal that arrived
@@ -905,8 +977,13 @@ mod tests {
         // or wipe this bit mid-assert.
         let _guard = disposition_guard();
         let processor = SignalProcessor::default();
+<<<<<<< HEAD
         processor.handle_signal(platform::signals::SIGTERM);
         assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << platform::signals::SIGTERM) != 0);
+=======
+        processor.handle_signal(libc::SIGTERM);
+        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGTERM) != 0);
+>>>>>>> origin/lane/bw19-docs
         PENDING_SIGNALS.store(0, Ordering::Relaxed);
     }
 }

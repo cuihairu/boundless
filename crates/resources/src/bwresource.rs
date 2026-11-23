@@ -1936,6 +1936,7 @@ mod tests {
         assert!(passwd_home(0).is_some());
         assert_eq!(passwd_home(u32::MAX - 1), None);
     }
+<<<<<<< HEAD
 
     /// `dissolveFilename`: strips the first matching search-path prefix.
     #[test]
@@ -1965,4 +1966,6 @@ mod tests {
             "/elsewhere/file.txt"
         );
     }
+=======
+>>>>>>> origin/lane/bw19-docs
 }

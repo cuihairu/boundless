@@ -32,7 +32,13 @@ ci-results/
 # Python bytecode from the review tooling
 __pycache__/
 
+<<<<<<< HEAD
 # Packaging output from pip/pyproject builds of python/ (BW-00-03-03)
 *.egg-info/
 python/build/
 python/dist/
+=======
+# Python packaging artifacts (pip build of python/)
+python/build/
+*.egg-info/
+>>>>>>> origin/lane/bw19-docs

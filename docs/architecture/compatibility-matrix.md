@@ -65,11 +65,15 @@ recovery](/operations/database) for the target procedure.
 
 The wire contract the SDKs will build against is already present: Mercury
 packet framing in `crates/mercury/src/packet.rs` (1472-byte payload cap, 2-byte
-header, 27-byte worst-case footer, flag layout), the UDP endpoint and dispatch
-layer from BW-02-01 (`endpoint`, `poller`, `network_interface`,
-`packet_receiver`), and the entity type id space in
-`crates/entitydef/src/entities.rs` (`FIRST_ENTITY_TYPE_ID = 0`,
-`INVALID_ENTITY_TYPE_ID = 0xFFFF`, ids assigned in load order).
+header, 27-byte worst-case footer, flag layout), the message preamble and
+length encoding in `crates/mercury/src/message_framing.rs`, the bundle and
+channel footers in `crates/mercury/src/udp_bundle.rs`, the UDP endpoint and
+dispatch layer from BW-02-01 (`endpoint`, `poller`, `network_interface`,
+`packet_receiver`), the interface table and request/reply plumbing from
+BW-02-02, and the entity type id space in
+`crates/entitydef/src/entity_description.rs` (`EntityTypeID = u16`,
+`INVALID_ENTITY_TYPE_ID = 0xFFFF`, ids stamped in load order from `0` by
+`EntityDescriptionMap`).
 
 ## Cross-version rules
 

@@ -56,9 +56,10 @@ entity type (`Account`, `Avatar`, `ClientOnly`, `Guard`, `Space`) together with
 
 Entity type ids are assigned in load order, starting at `0`, with `0xFFFF` as
 the "no type" sentinel. That is exactly what
-`crates/entitydef/src/entities.rs` already implements
-(`FIRST_ENTITY_TYPE_ID = 0`, `INVALID_ENTITY_TYPE_ID = 0xFFFF`), so the loader
-that will read these `.def` files has its id space fixed.
+`crates/entitydef/src/entity_description.rs` already implements
+(`EntityTypeID = u16`, `INVALID_ENTITY_TYPE_ID = 0xFFFF`, ids stamped in
+load order by `EntityDescriptionMap`), so the loader that will read these
+`.def` files has its id space fixed.
 
 ## Layout
 

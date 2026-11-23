@@ -112,6 +112,12 @@ const operationsSidebar = [
     ]
   },
   {
+    text: "Environment",
+    items: [
+      { text: "Environment layout", link: "/operations/environment-layout" }
+    ]
+  },
+  {
     text: "Failure",
     items: [
       { text: "Failure matrix", link: "/operations/failure-matrix" }

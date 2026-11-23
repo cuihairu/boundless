@@ -6,7 +6,6 @@
     "dev": "vitepress dev",
     "build": "vitepress build",
     "preview": "vitepress preview",
-    "check:links": "python3 scripts/check-docs-links.py .",
     "check:links": "python3 scripts/check-docs-links.py ."
   },
   "devDependencies": {

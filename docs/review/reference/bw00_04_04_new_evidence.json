@@ -1,0 +1,95 @@
+{
+ "binary": "/home/cui/workspaces/boundless5/target/debug/boundless-server",
+ "captured_at": "2026-11-23 03:00:26 +0800",
+ "input": {
+  "config": "server/bw.xml",
+  "log_dir": "/tmp/cluster-smoke",
+  "reference_bin_dir": "/home/cui/workspaces/BigWorld/game/bin/server/el7/server",
+  "res_path": "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res:/home/cui/workspaces/BigWorld/game/res/bigworld:/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res",
+  "roles": [
+   "dbappmgr",
+   "cellappmgr",
+   "baseappmgr",
+   "dbapp",
+   "cellapp",
+   "baseapp",
+   "loginapp",
+   "serviceapp"
+  ]
+ },
+ "roles": [
+  {
+   "accepted": true,
+   "output": "[baseapp] starting (boundless minimal entry)",
+   "rc": 0,
+   "role": "baseapp",
+   "stderr": "[baseapp] starting (boundless minimal entry)",
+   "stdout": "",
+   "timed_out": false
+  },
+  {
+   "accepted": true,
+   "output": "[baseappmgr] starting (boundless minimal entry)",
+   "rc": 0,
+   "role": "baseappmgr",
+   "stderr": "[baseappmgr] starting (boundless minimal entry)",
+   "stdout": "",
+   "timed_out": false
+  },
+  {
+   "accepted": true,
+   "output": "[cellapp] starting (boundless minimal entry)",
+   "rc": 0,
+   "role": "cellapp",
+   "stderr": "[cellapp] starting (boundless minimal entry)",
+   "stdout": "",
+   "timed_out": false
+  },
+  {
+   "accepted": true,
+   "output": "[cellappmgr] starting (boundless minimal entry)",
+   "rc": 0,
+   "role": "cellappmgr",
+   "stderr": "[cellappmgr] starting (boundless minimal entry)",
+   "stdout": "",
+   "timed_out": false
+  },
+  {
+   "accepted": true,
+   "output": "[dbapp] starting (boundless minimal entry)",
+   "rc": 0,
+   "role": "dbapp",
+   "stderr": "[dbapp] starting (boundless minimal entry)",
+   "stdout": "",
+   "timed_out": false
+  },
+  {
+   "accepted": true,
+   "output": "[dbappmgr] starting (boundless minimal entry)",
+   "rc": 0,
+   "role": "dbappmgr",
+   "stderr": "[dbappmgr] starting (boundless minimal entry)",
+   "stdout": "",
+   "timed_out": false
+  },
+  {
+   "accepted": true,
+   "output": "[loginapp] starting (boundless minimal entry)",
+   "rc": 0,
+   "role": "loginapp",
+   "stderr": "[loginapp] starting (boundless minimal entry)",
+   "stdout": "",
+   "timed_out": false
+  },
+  {
+   "accepted": false,
+   "output": "boundless-server: unknown server role 'serviceapp' (expected one of: baseapp, baseappmgr, cellapp, cellappmgr, dbapp, dbappmgr, loginapp, reviver)",
+   "rc": 1,
+   "role": "serviceapp",
+   "stderr": "boundless-server: unknown server role 'serviceapp' (expected one of: baseapp, baseappmgr, cellapp, cellappmgr, dbapp, dbappmgr, loginapp, reviver)",
+   "stdout": "",
+   "timed_out": false
+  }
+ ],
+ "source_commit": "09666ef"
+}

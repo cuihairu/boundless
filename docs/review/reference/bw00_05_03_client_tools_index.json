@@ -1,0 +1,473 @@
+{
+ "counts": {
+  "covered": 2,
+  "gap": 43,
+  "group_notes": 4,
+  "kinds": {
+   "\u5ba2\u6237\u7aef": 1,
+   "\u5bfc\u51fa\u5668": 10,
+   "\u5de5\u5177\u57fa\u5ea7": 1,
+   "\u793a\u4f8b": 1,
+   "\u79bb\u7ebf\u5de5\u5177": 5,
+   "\u7ec4\uff08\u65e0\u72ec\u7acb\u4ea7\u7269\uff09": 4,
+   "\u7f16\u8f91\u5668": 5,
+   "\u8d44\u4ea7\u7ba1\u7ebf": 8,
+   "\u8d44\u4ea7\u8f6c\u6362\u5668": 8,
+   "\u8d44\u6e90\u6253\u5305": 1,
+   "\u8fd0\u884c\u65f6\u73af\u5883": 1
+  },
+  "products": 41
+ },
+ "rows": [
+  {
+   "dir": "tools/assetprocessor",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "assetprocessor",
+   "kind": "\u79bb\u7ebf\u5de5\u5177",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "assetprocessor",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "client",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "client",
+   "kind": "\u5ba2\u6237\u7aef",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "bwclient",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/animationexporter/max2010_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "animationexporter_max2010",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/animationexporter/max2011_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "animationexporter_max2011",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/animationexporter/max2012_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "animationexporter_max2012",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/mayavisualexporter/maya2010_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "mayavisualexporter_maya2010",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/mayavisualexporter/maya2011_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "mayavisualexporter_maya2011",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/mayavisualexporter/maya2012_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "mayavisualexporter_maya2012",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/mayavisualexporter/maya2013_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "mayavisualexporter_maya2013",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/visualexporter/max2010_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "visualexporter_max2010",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/visualexporter/max2011_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "visualexporter_max2011",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/visualexporter/max2012_exporter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters",
+   "kind": "\u5bfc\u51fa\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "visualexporter_max2012",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "examples/client_integration/python/simple",
+   "fixture": "bw00-02-04-client-login",
+   "group": "extras",
+   "kind": "\u793a\u4f8b",
+   "note": "\u793a\u4f8b\u767b\u5f55\u9a71\u52a8\u4e0e\u5b9e\u4f53\u811a\u672c\uff08\u8de8 BW-00-05-04 \u793a\u4f8b\u7d22\u5f15\uff09",
+   "status": "covered",
+   "target": "simple_python_client",
+   "task": "BW-00-02-04"
+  },
+  {
+   "dir": "tools/process_defs",
+   "fixture": "bw00-02-01-runtime-env",
+   "group": "extras",
+   "kind": "\u8fd0\u884c\u65f6\u73af\u5883",
+   "note": "\u8fd0\u884c\u65f6\u73af\u5883\u4e0e\u8fdb\u7a0b\u5b9a\u4e49\uff08Make \u4fa7\u5df2\u6620\u5c04\uff09",
+   "status": "covered",
+   "target": "process_defs",
+   "task": "BW-00-02-01"
+  },
+  {
+   "dir": "tools/res_packer",
+   "fixture": "bw00-01-build-targets",
+   "group": "extras",
+   "kind": "\u8d44\u6e90\u6253\u5305",
+   "note": "\u8d44\u6e90\u6253\u5305\u5de5\u5177\uff1b\u65e0\u5bf9\u5e94\u5b9e\u73b0\u4e0e\u8bc1\u636e",
+   "status": "gap",
+   "target": "res_packer",
+   "task": "BW-00-01-01"
+  },
+  {
+   "dir": "tools/navgen",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "navgen",
+   "kind": "\u79bb\u7ebf\u5de5\u5177",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "navgen",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/compiler",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u7ba1\u7ebf",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "compiler",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/conversion",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u7ba1\u7ebf",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "conversion",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/dependency",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u7ba1\u7ebf",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "dependency",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/discovery",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u7ba1\u7ebf",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "discovery",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/common",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u5de5\u5177\u57fa\u5ea7",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "tools_common",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/editor_shared",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u7f16\u8f91\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "editor_shared",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/modeleditor_core",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u7f16\u8f91\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "modeleditor_core",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/compiler/test_compiler",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u7ba1\u7ebf",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "test_compiler",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/compiler/test_converter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u7ba1\u7ebf",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "test_converter",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/worldeditor",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u7f16\u8f91\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "worldeditor",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/modeleditor",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u7f16\u8f91\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "modeleditor",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/particle_editor",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u7f16\u8f91\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "particle_editor",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/offline_processor",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u79bb\u7ebf\u5de5\u5177",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "offline_processor",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/batch_compiler",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u79bb\u7ebf\u5de5\u5177",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "batch_compiler",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/jit_compiler",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u79bb\u7ebf\u5de5\u5177",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "jit_compiler",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/converters/bsp_converter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u8f6c\u6362\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "bsp_converter",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/converters/effect_converter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u8f6c\u6362\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "effect_converter",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/converters/texformat_converter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u8f6c\u6362\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "texformat_converter",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/converters/texture_converter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u8f6c\u6362\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "texture_converter",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/converters/hierarchical_config_converter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u8f6c\u6362\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "hierarchical_config_converter",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/converters/space_converter",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u8f6c\u6362\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "space_converter",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/converters/visual_processor",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u8f6c\u6362\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "visual_processor",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/converters/primitive_processor",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u8f6c\u6362\u5668",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "primitive_processor",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/compiler/unit_test",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u7ba1\u7ebf",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "compiler_unit_test",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "tools/asset_pipeline/dependency/unit_test",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools",
+   "kind": "\u8d44\u4ea7\u7ba1\u7ebf",
+   "note": "Windows \u6784\u5efa\u9762\uff1b\u672c Linux \u4e3b\u673a\u65e0\u4ea7\u7269\u4e0e MSVC \u5de5\u5177\u94fe\uff0c\u7531 windows-latest CI \u627f\u8f7d\uff08BW-00-02-05 \u590d\u6d4b\uff09",
+   "status": "gap",
+   "target": "dependency_unit_test",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "build/cmake/BWConfiguration_bwentity.cmake",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "bwentity",
+   "kind": "\u7ec4\uff08\u65e0\u72ec\u7acb\u4ea7\u7269\uff09",
+   "note": "\u7ec4\u5185\u4ec5\u5e93\u4f9d\u8d56\uff08cstdmf\u3001math\u3001connection\u3001connection_model\u3001entitydef\u3001network\uff09\uff0c\u65e0\u72ec\u7acb\u4ea7\u7269\uff1b\u672c\u7ec4\u7d22\u5f15\u968f\u5176\u627f\u8f7d\u9762",
+   "status": "gap",
+   "target": "bwentity",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "build/cmake/BWConfiguration_client.cmake",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "client_blob",
+   "kind": "\u7ec4\uff08\u65e0\u72ec\u7acb\u4ea7\u7269\uff09",
+   "note": "\u6253\u5305 blob \u53d8\u4f53\uff08BW_BLOB_CONFIG=ON \u540e INCLUDE \u57fa\u5ea7\u914d\u7f6e\uff0c\u672c\u8eab\u4e0d\u767b\u8bb0\u9879\u76ee\uff09\uff0c\u968f\u57fa\u5ea7\u7ec4\u7d22\u5f15",
+   "status": "gap",
+   "target": "client_blob",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "build/cmake/BWConfiguration_exporters.cmake",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "exporters_blob",
+   "kind": "\u7ec4\uff08\u65e0\u72ec\u7acb\u4ea7\u7269\uff09",
+   "note": "\u6253\u5305 blob \u53d8\u4f53\uff08BW_BLOB_CONFIG=ON \u540e INCLUDE \u57fa\u5ea7\u914d\u7f6e\uff0c\u672c\u8eab\u4e0d\u767b\u8bb0\u9879\u76ee\uff09\uff0c\u968f\u57fa\u5ea7\u7ec4\u7d22\u5f15",
+   "status": "gap",
+   "target": "exporters_blob",
+   "task": "BW-00-02-05"
+  },
+  {
+   "dir": "build/cmake/BWConfiguration_tools.cmake",
+   "fixture": "bw00-02-05-windows-baseline",
+   "group": "tools_blob",
+   "kind": "\u7ec4\uff08\u65e0\u72ec\u7acb\u4ea7\u7269\uff09",
+   "note": "\u6253\u5305 blob \u53d8\u4f53\uff08BW_BLOB_CONFIG=ON \u540e INCLUDE \u57fa\u5ea7\u914d\u7f6e\uff0c\u672c\u8eab\u4e0d\u767b\u8bb0\u9879\u76ee\uff09\uff0c\u968f\u57fa\u5ea7\u7ec4\u7d22\u5f15",
+   "status": "gap",
+   "target": "tools_blob",
+   "task": "BW-00-02-05"
+  }
+ ]
+}
