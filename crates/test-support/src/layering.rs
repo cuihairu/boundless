@@ -43,7 +43,7 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         "contracts" | "entitydef" | "mercury" | "python-host" | "resources" | "db"
         | "asset-pipeline" | "plugin-host" | "chunk" => Some(LAYER_DOMAIN),
         "server-runtime" => Some(LAYER_ROLE_RUNTIME),
-        "boundless-server" | "test-support" => Some(LAYER_APPLICATION),
+        "boundless-server" | "client" | "test-support" => Some(LAYER_APPLICATION),
         _ => None,
     }
 }
