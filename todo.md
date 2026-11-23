@@ -1335,7 +1335,8 @@
 
 覆盖 compiled space 读取、渲染/查询对象注册、静态和动态场景、委托接口及实体空间映射。比对由原版转换器产出的资源读入结果。
 
-- [ ] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。
+- [x] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。
+  - 证据：参照路径勘误（巡检单所写 kbengine 树本机不存在，全部取自 `/home/cui/workspaces/BigWorld/programming/bigworld/lib/`）。新建 `crates/compiled-space`（binary_format/string_table/asset_list/settings 四面）：BWTB 容器 24B 头+24B 段表（reader 从不读 headerSize_）、Stream 读协议（裸 u32 / typeSize 前缀 / ExternalArray 前缀+count+数据，seek 钳长、EOF 处 readRaw(0) 成功）、BWST 验证链（回绕 offset+length≤size、尾 NUL、Σ(length+1)==stringDataSize、stringDataSize 读取失败按 0）、BWAL 8B Entry（无 pack：u8 type+3 填充垃圾+u32 index）、BWCS 24B AABB。**样本非手造**：原版 space_converter 无法在 Linux 跑（CMake FATAL_ERROR，BW-00-01-02 已证），改为直编原版 binary_writers 五个 .cpp（g++ -DCODE_INLINE，链参照树 Linux 构建 libcstdmf/libmath/libresmgr+lz）以原版 StringTableWriter/AssetListWriter/SettingsWriter 产真样本 space.bin 340B（md5 05d7aa28…，夹具+生成器归档 docs/review/fixtures/compiled_space/）；集成测试逐字段核对（头 fileSize=0——writer 从不写、3 段 BWST@96/184 BWAL@280/32 BWCS@312/28 载荷邻接、4 串偏移 0/34/71/105、3 资产含重复去重与 padding 垃圾容忍、AABB 精确 f32）。原版怪癖按处引用保留：findAndOpenSection 版本消息实参颠倒（expected 打印 found）、AssetList::read 读坏数组仍返回 true、StringTable 静默失败臂无消息、openSection 越界段 NULL 缓冲登记为有意分歧（返回 None 使 failed-to-map 分支可达）。lib 49+集成 4 全绿，llvm-cov 行覆盖 918/918=100.00%；clippy -D warnings 0、fmt 0 漂移。顺带清 unit-graph 暴露的 server-runtime/test-support lint 债（commit `2322c85`）。详见 docs/review/bw10-02-compiled-space.md。commit `f81eb20`。
 - [ ] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。
 - [ ] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。
 - [ ] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。
