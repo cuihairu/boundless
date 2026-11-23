@@ -26,6 +26,7 @@ pub mod json;
 pub mod schema;
 pub mod schema_init;
 pub mod store;
+pub mod upgrade;
 
 pub use accounts::{AccountRow, account_table_ddl};
 pub use schema::{ColumnKind, EntitySchema, column_name, entity_table_name, quote_ident};

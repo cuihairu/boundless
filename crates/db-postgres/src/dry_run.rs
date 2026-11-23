@@ -15,7 +15,6 @@
 use db::DbError;
 use postgres::Client;
 
-use crate::schema::quote_ident;
 use crate::schema_init;
 
 /// `MySqlDryRunWrapper::isReadOnlyStatement`: a statement the dry run
@@ -56,14 +55,12 @@ pub fn dry_run_lines(statements: &[String]) -> Vec<String> {
 pub fn plan_missing_schema(client: &mut Client) -> Result<Vec<String>, DbError> {
     let mut missing = Vec::new();
     let table_present = |client: &mut Client, table: &str| -> Result<bool, DbError> {
-        let sql = format!(
-            "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' \
-             AND tablename = $1)"
-        );
+        let sql = "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' \
+             AND tablename = $1)";
         // pg_tables carries the unquoted name.
         let name = table.trim_matches('"');
         let row = client
-            .query_one(sql.as_str(), &[&name])
+            .query_one(sql, &[&name])
             .map_err(crate::store::map_db_error)?;
         Ok(row.get(0))
     };
