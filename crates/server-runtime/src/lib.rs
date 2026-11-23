@@ -39,6 +39,7 @@ pub mod login_request;
 pub mod loginapp;
 pub mod machined;
 pub mod mailbox_call;
+pub mod message_redirect;
 pub mod movement;
 pub mod offload;
 pub mod offload_role;
