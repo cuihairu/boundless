@@ -665,6 +665,51 @@ mod tests {
         );
     }
 
+    /// BW-16-02-02: the server build must not load the graphics backend.
+    /// `crates/client/src/render/` is the new-tree graphics backend (the
+    /// software framebuffer; `winit-backend` is the optional windowing
+    /// face). A server-side crate (`boundless-server`, `server-runtime`)
+    /// may not reach `client` through *any* internal dependency edge,
+    /// direct or transitive. The layering direction forbids a direct edge
+    /// already; this test pins the reachable set so a transitively
+    /// introduced graphics dependency (e.g. a domain lib pulling client)
+    /// is caught here rather than only at the next direction check.
+    #[test]
+    fn server_build_loads_no_graphics_backend() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifests = scan_workspace(&root);
+        let by_name: BTreeMap<&str, &Manifest> = manifests
+            .iter()
+            .filter_map(|m| m.name.as_deref().map(|n| (n, m)))
+            .collect();
+
+        for start in ["boundless-server", "server-runtime"] {
+            // BFS over internal (workspace-member) dependencies only.
+            let mut seen = BTreeSet::new();
+            let mut queue = vec![start];
+            let mut head = 0;
+            while head < queue.len() {
+                let crate_name = queue[head];
+                head += 1;
+                if !seen.insert(crate_name) {
+                    continue;
+                }
+                if let Some(manifest) = by_name.get(crate_name) {
+                    for (dep, _line) in &manifest.deps {
+                        if by_name.contains_key(dep.as_str()) {
+                            queue.push(dep.as_str());
+                        }
+                    }
+                }
+            }
+            assert!(
+                !seen.contains("client"),
+                "{start} reaches the graphics backend 'client' through the \
+                 dependency set: {seen:?}"
+            );
+        }
+    }
+
     #[test]
     fn workspace_rules_hold() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
