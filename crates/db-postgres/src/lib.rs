@@ -23,8 +23,10 @@
 pub mod accounts;
 pub mod json;
 pub mod schema;
+pub mod schema_init;
 pub mod store;
 
 pub use accounts::{AccountRow, account_table_ddl};
 pub use schema::{ColumnKind, EntitySchema, column_name, entity_table_name, quote_ident};
+pub use schema_init::{CURRENT_VERSION, OLDEST_SUPPORTED_VERSION};
 pub use store::PostgresStorage;
