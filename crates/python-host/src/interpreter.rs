@@ -234,13 +234,17 @@ impl Interpreter {
         // last item here". A double drain only logs in the reference; the
         // port ignores the error and finalises regardless.
         let _ = init_time_job::run_fini_time_jobs();
+        // The gil queue's callback posts, drained before the collect loop so
+        // a posted-but-never-run callback is not a dangling one for
+        // `Py_Finalize` to find.
+        gil::clear();
         // `Script::clearTimers` (`py_callback.cpp:81-91`): the reference reaches it
         // from the app's shutdown, ahead of `Script::fini`; the port places it here,
         // behind the fini-time jobs, so a job that posts a callback is not the one
-        // that leaves a callback behind for `Py_Finalize` to find. Nothing survives
-        // the drain to the collect loop, which is what keeps a posted-but-never-run
-        // callback from being a dangling one.
-        gil::clear();
+        // that leaves a callback behind for `Py_Finalize` to find. The timer
+        // records hold script references, so they go while the allocator lives.
+        super::timers::clear();
+        super::timers::set_total_game_time(0.0);
         // The native registries die before the script system finalises --
         // `CellApp::shutDown` deletes its entities before `Script::fini` --
         // so every native wrapper `Py_DecRef`s here, allocator still alive.
@@ -364,6 +368,9 @@ fn create_big_world_module(component: &str) {
         // reference leaves the attribute unset and moves on.
         capi::PyObject_SetAttrString(module, c"component".as_ptr(), value);
         capi::dec_ref(value);
+        // The timer pair, the reference's `PY_MODULE_FUNCTION` links into the
+        // same module (`lib/pyscript/py_callback.cpp:288,:333`).
+        super::timers::register(module);
     }
 }
 
@@ -481,6 +488,7 @@ mod tests {
     use crate::manifest;
     use crate::pyref::PyRef;
     use crate::sequence;
+    use crate::timers;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -568,6 +576,20 @@ mod tests {
         "interpreter::tests::scenario_init_run_fini",
         "interpreter::tests::scenario_the_math_vectors_behave_like_the_reference",
         "interpreter::tests::scenario_the_math_matrix_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_plane_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4providers_behave_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4animation_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4morph_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4translation_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4distance_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4lfo_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4adaptor_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4swizzle_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4combiner_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_vector4shader_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_matrixproduct_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_math_matrixinverse_behaves_like_the_reference",
+        "interpreter::tests::scenario_the_bigworld_timers_behave_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
     ];
 
@@ -2567,6 +2589,98 @@ ck(raises(TypeError, lambda: Math.Vector3(1,2,3).set('abc')), 'set non sequence'
 ck(raises(TypeError, lambda: Math.Vector3(1,2,3).distTo(5)), 'distTo no splat')
 ck(raises(TypeError, lambda: Math.Vector3(1,2,3).distTo([1,2,3])), 'distTo no list')
 
+# Item assignment (`py_sq_ass_item`, `:1738`): the indexed write and its
+# out-of-range / non-float refusals.
+ix = Math.Vector3(1,2,3)
+ix[0] = 5.0
+ck(tuple(ix) == (5.0,2.0,3.0), 'index assign')
+ck(raises(IndexError, lambda: ix.__setitem__(5, 1.0)), 'index assign out of range')
+ck(raises(TypeError, lambda: ix.__setitem__(0, 'a')), 'index assign non float')
+# A negative index is normalised through `sq_length` to the last component.
+ix.__setitem__(-1, 9.0)
+ck(ix.z == 9.0, 'index assign negative wraps to the last component')
+
+# `py_scale` (`:1860`): a scaled copy, never a mutation, with the
+# argument-table refusals.
+ck(tuple(Math.Vector3(1,2,3).scale(2)) == (2.0,4.0,6.0), 'scale')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).scale()), 'scale no args')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).scale('a')), 'scale non float')
+
+# `py_tuple`/`py_list` (`:1938`/`:1950`) and their no-argument rules.
+ck(Math.Vector3(1,2,3).tuple() == (1.0,2.0,3.0), 'tuple method')
+ck(Math.Vector3(1,2,3).list() == [1.0,2.0,3.0], 'list method')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).tuple(1)), 'tuple takes no arguments')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).list(1)), 'list takes no arguments')
+
+# The component attribute writes (`pySet_x` and friends, `:2285`).
+cw = Math.Vector3(1,2,3)
+cw.x = 4.0
+cw.y = 5.0
+cw.z = 6.0
+ck(tuple(cw) == (4.0,5.0,6.0), 'attribute write')
+c4 = Math.Vector4(1,2,3,4)
+c4.w = 9.0
+ck(c4.w == 9.0, 'Vector4 w write')
+ck(raises(TypeError, lambda: setattr(Math.Vector3(1,2,3), 'x', 'a')),
+   'attribute write non float')
+
+# Rich compare `>=` (`:2500`), and the deferred binary arms the reference
+# answers with `Py_NotImplemented`.
+ck(Math.Vector3(1,2,3) >= Math.Vector3(1,2,3), 'ge')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3) - 5), 'sub float defers')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3) / 'a'), 'divide non number defers')
+
+# In-place with a refused operand falls back to the binary arm and raises.
+def iadd_bad():
+    z = Math.Vector3(1,2,3)
+    z += 5
+def isub_bad():
+    z = Math.Vector3(1,2,3)
+    z -= 5
+def imul_bad():
+    z = Math.Vector3(1,2,3)
+    z *= 'a'
+def idiv_bad():
+    z = Math.Vector3(1,2,3)
+    z /= 'a'
+ck(raises(TypeError, iadd_bad), 'iadd float defers')
+ck(raises(TypeError, isub_bad), 'isub float defers')
+ck(raises(TypeError, imul_bad), 'imul non number defers')
+ck(raises(TypeError, idiv_bad), 'idiv non number defers')
+
+# Argument-table refusals of the remaining method faces.
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).dot('abc')), 'dot non sequence')
+ck(raises(TypeError, lambda: Math.Vector2(1,2).cross2D('abc')), 'cross2D non sequence')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).normalise(1)),
+   'normalise takes no arguments')
+
+# The distance family: the whole-tuple form works, a single float is no
+# splat, and each width raises its own message.
+ck(Math.Vector3(0,0,0).distTo(3,4,0) == 5.0, 'distTo three floats')
+ck(raises(TypeError, lambda: Math.Vector2(1,2).distTo('abc')), 'Vector2 distTo message')
+ck(raises(TypeError, lambda: Math.Vector4(1,2,3,4).distTo('abc')), 'Vector4 distTo message')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).distSqrTo(5)), 'distSqrTo no splat')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).flatDistTo(5)), 'flatDistTo no splat')
+ck(raises(TypeError, lambda: Math.Vector2(1,2).flatDistSqrTo(Math.Vector2(3,4))),
+   'flatDistSqrTo refused on Vector2')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).flatDistSqrTo(5)),
+   'flatDistSqrTo no splat')
+
+# `py_setPitchYaw` (`:2139`): only `Vector3`, exactly two floats.
+ck(raises(TypeError, lambda: Math.Vector2(1,2).setPitchYaw(0.0, 0.0)),
+   'setPitchYaw refused on Vector2')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).setPitchYaw(0.0)),
+   'setPitchYaw needs two arguments')
+ck(raises(TypeError, lambda: Math.Vector3(1,2,3).setPitchYaw('a', 0.0)),
+   'setPitchYaw expects floats')
+
+# In-place on a width without a cross defers, the reference falling back to
+# the binary arm.
+def imul_cross_bad():
+    z = Math.Vector2(1, 2)
+    z *= Math.Vector2(3, 4)
+ck(raises(TypeError, imul_cross_bad), 'imul cross refused on Vector2')
+
 __probe = '; '.join(_f) or 'ok'
 "#,
             );
@@ -2739,6 +2853,103 @@ ck(tuple(restored.translation) == (4.0, 5.0, 6.0), 'setstate roundtrip')
 ck(raises(ValueError, lambda: Math.Matrix().__setstate__(b'bad')),
    'setstate bad state rejected')
 
+# Argument-table and provider-refusal arms.
+ck(raises(TypeError, lambda: Math.Matrix().set()), 'set no args')
+ck(raises(TypeError, lambda: Math.Matrix().set(5)), 'set non provider')
+ck(raises(TypeError, lambda: Math.Matrix(1, 2)), 'factory extra args')
+
+# setZero / setIdentity and their no-argument rules.
+z = Math.Matrix()
+z.setZero()
+ck(z.get(0,0) == 0.0 and z.get(3,3) == 0.0, 'setZero')
+ck(raises(TypeError, lambda: Math.Matrix().setZero(1)), 'setZero takes no arguments')
+ck(raises(TypeError, lambda: Math.Matrix().setIdentity(1)), 'setIdentity takes no arguments')
+
+# setScale / setTranslate argument errors.
+ck(raises(TypeError, lambda: Math.Matrix().setScale()), 'setScale no args')
+ck(raises(TypeError, lambda: Math.Matrix().setScale('abc')), 'setScale non vector')
+ck(raises(TypeError, lambda: Math.Matrix().setTranslate()), 'setTranslate no args')
+ck(raises(TypeError, lambda: Math.Matrix().setTranslate('abc')), 'setTranslate non vector')
+
+# Rotate X and Z (Y is covered above), plus the angle-validation arms.
+rx = Math.Matrix()
+rx.setRotateX(0.0)
+ck(rx.get(1,1) == 1.0, 'rotateX')
+rz = Math.Matrix()
+rz.setRotateZ(0.0)
+ck(rz.get(0,0) == 1.0, 'rotateZ')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateX()), 'setRotateX no args')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateX('a')), 'setRotateX non real')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateY()), 'setRotateY no args')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateZ()), 'setRotateZ no args')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateZ('a')), 'setRotateZ non real')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateYPR()), 'setRotateYPR no args')
+ck(raises(TypeError, lambda: Math.Matrix().setRotateYPR('abc')), 'setRotateYPR non vector')
+
+# pre/postMultiply refusal arms.
+ck(raises(TypeError, lambda: Math.Matrix().preMultiply()), 'preMultiply no args')
+ck(raises(TypeError, lambda: Math.Matrix().preMultiply(5)), 'preMultiply non provider')
+ck(raises(TypeError, lambda: Math.Matrix().postMultiply()), 'postMultiply no args')
+ck(raises(TypeError, lambda: Math.Matrix().postMultiply(5)), 'postMultiply non provider')
+
+# invert's no-argument rule.
+ck(raises(TypeError, lambda: Math.Matrix().invert(1)), 'invert takes no arguments')
+
+# lookAt argument errors.
+ck(raises(TypeError, lambda: Math.Matrix().lookAt()), 'lookAt no args')
+ck(raises(TypeError, lambda: Math.Matrix().lookAt('a',
+   Math.Vector3(0.0, 0.0, 1.0), Math.Vector3(0.0, 1.0, 0.0))), 'lookAt bad position')
+ck(raises(TypeError, lambda: Math.Matrix().lookAt(
+   Math.Vector3(10.0, 0.0, 0.0), 'a', Math.Vector3(0.0, 1.0, 0.0))),
+   'lookAt bad direction')
+ck(raises(TypeError, lambda: Math.Matrix().lookAt(
+   Math.Vector3(10.0, 0.0, 0.0), Math.Vector3(0.0, 0.0, 1.0), 'a')),
+   'lookAt bad up')
+
+# setElement / get argument errors, and the integer overflow arm.
+ck(raises(TypeError, lambda: Math.Matrix().setElement()), 'setElement no args')
+ck(raises(TypeError, lambda: Math.Matrix().setElement('a', 0, 1.0)),
+   'setElement bad column')
+ck(raises(TypeError, lambda: Math.Matrix().setElement(0, 'a', 1.0)), 'setElement bad row')
+ck(raises(TypeError, lambda: Math.Matrix().setElement(0, 0, 'a')), 'setElement bad value')
+ck(raises(TypeError, lambda: Math.Matrix().setElement(2**100, 0, 1.0)),
+   'setElement overflow column')
+ck(raises(TypeError, lambda: Math.Matrix().get()), 'get no args')
+ck(raises(TypeError, lambda: Math.Matrix().get('a', 0)), 'get bad column')
+ck(raises(TypeError, lambda: Math.Matrix().get(0, 'a')), 'get bad row')
+
+# apply* argument errors.
+ck(raises(TypeError, lambda: Math.Matrix().applyPoint()), 'applyPoint no args')
+ck(raises(TypeError, lambda: Math.Matrix().applyPoint('a')), 'applyPoint bad vector')
+ck(raises(TypeError, lambda: Math.Matrix().applyV4Point()), 'applyV4Point no args')
+ck(raises(TypeError, lambda: Math.Matrix().applyV4Point('a')), 'applyV4Point bad vector')
+ck(raises(TypeError, lambda: Math.Matrix().applyVector()), 'applyVector no args')
+ck(raises(TypeError, lambda: Math.Matrix().applyVector('a')), 'applyVector bad vector')
+ck(raises(TypeError, lambda: Math.Matrix().applyToAxis()), 'applyToAxis no args')
+ck(raises(TypeError, lambda: Math.Matrix().applyToAxis('a')), 'applyToAxis bad axis')
+ck(raises(TypeError, lambda: Math.Matrix().applyToOrigin(1)),
+   'applyToOrigin takes no arguments')
+
+# Projection argument errors.
+ck(raises(TypeError, lambda: Math.Matrix().orthogonalProjection()), 'ortho no args')
+ck(raises(TypeError, lambda: Math.Matrix().orthogonalProjection('a', 1, 2, 3)),
+   'ortho bad float')
+ck(raises(TypeError, lambda: Math.Matrix().perspectiveProjection()), 'persp no args')
+ck(raises(TypeError, lambda: Math.Matrix().perspectiveProjection('a', 1, 2, 3)),
+   'persp bad float')
+
+# roll extraction and the translation attribute write.
+ck(abs(e.roll) < 1e-5, 'roll roundtrip')
+tx = Math.Matrix()
+tx.translation = Math.Vector3(1.0, 2.0, 3.0)
+ck(tuple(tx.translation) == (1.0, 2.0, 3.0), 'translation attribute write')
+ck(raises(TypeError, lambda: setattr(Math.Matrix(), 'translation', 5)),
+   'translation non vector')
+
+# Pickle state argument rules.
+ck(raises(TypeError, lambda: Math.Matrix().__getstate__(1)), 'getstate no args')
+ck(raises(TypeError, lambda: Math.Matrix().__setstate__()), 'setstate no args')
+
 __probe = '; '.join(_f) or 'ok'
 "#,
             );
@@ -2778,9 +2989,9 @@ ck(callable(Math.Plane), 'Math.Plane callable')
 # Construction: the factory ignores its arguments entirely.
 p = Math.Plane()
 ck(p is not None, 'Plane constructs')
-ck(type(p).__name__ == 'Math.Plane', 'the Math.Plane type')
+ck(type(p).__name__ == 'Plane', 'the Math.Plane type')
 p2 = Math.Plane(1, 2, 3)
-ck(type(p2).__name__ == 'Math.Plane', 'factory ignores args')
+ck(type(p2).__name__ == 'Plane', 'factory ignores args')
 ck(not isinstance(p, Math.MatrixProvider), 'Plane is not a MatrixProvider')
 ck(not hasattr(p, 'translation'), 'no matrix attributes')
 
@@ -2823,6 +3034,13 @@ ck(raises(TypeError, lambda: p.intersectRay(Math.Vector3(0.0, 0.0, 2.0))),
    'intersectRay wants two vectors')
 ck(raises(TypeError, lambda: p.intersectRay(1, 2)),
    'intersectRay rejects non-vectors')
+ck(raises(TypeError, lambda: p.init(Math.Vector3(0.0, 0.0, 0.0), 1, 2)),
+   'init rejects a non-vector second point')
+ck(raises(TypeError, lambda: p.init(Math.Vector3(0.0, 0.0, 0.0),
+                                    Math.Vector3(1.0, 0.0, 0.0), 1)),
+   'init rejects a non-vector third point')
+ck(raises(TypeError, lambda: p.intersectRay(Math.Vector3(0.0, 0.0, 2.0), 1)),
+   'intersectRay rejects a non-vector direction')
 
 __probe = '; '.join(_f) or 'ok'
 "#,
@@ -2831,13 +3049,1953 @@ __probe = '; '.join(_f) or 'ok'
         });
     }
 
+    /// The `Math.Vector4Provider` base, `Math.Vector4Basic` and
+    /// `Math.Vector4Product` behave as the reference's provider family does:
+    /// `coerce` wraps a `Vector4` or a tuple of four floats into a
+    /// `Vector4Basic`, the held sources feed the read-only `value`, and
+    /// `Vector4Product` multiplies them componentwise in the reference's
+    /// `a`-then-`b` order.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4providers_behave_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+# Module surface: the concrete providers carry a factory, the base and the
+# basic value type do not, the reference's PY_TYPEOBJECT with no PY_FACTORY.
+ck(hasattr(Math, 'Vector4Product'), 'Vector4Product factory in module')
+ck(not hasattr(Math, 'Vector4Provider'), 'no Vector4Provider factory')
+ck(not hasattr(Math, 'Vector4Basic'), 'no Vector4Basic factory')
+
+p = Math.Vector4Product()
+ck(p is not None, 'Vector4Product constructs')
+ck(type(p).__name__ == 'Vector4Product', 'the Vector4Product type')
+ck(raises(TypeError, lambda: Math.Vector4Product(1)), 'factory takes no arguments')
+
+# Both sources unset: the reference provides the zero vector.
+zero = p.value
+ck(isinstance(zero, Math.Vector4), 'value is a Vector4')
+ck(zero.x == 0.0 and zero.y == 0.0 and zero.z == 0.0 and zero.w == 0.0,
+   'unset product is the zero vector')
+
+# The slots start empty, and read back as None.
+ck(p.a is None, 'a starts None')
+ck(p.b is None, 'b starts None')
+
+# Coercion: a tuple of four floats and a Vector4 both become a Vector4Basic.
+p.a = (1.0, 2.0, 3.0, 4.0)
+ck(type(p.a).__name__ == 'Vector4Basic', 'a tuple coerces to a Vector4Basic')
+ck(p.a.value.x == 1.0 and p.a.value.w == 4.0, 'the coerced value')
+ck(raises(TypeError, lambda: setattr(p.a, 'value', 5)),
+   'the basic value refuses a non-vector4')
+p.a = p.a
+ck(p.a.value.x == 1.0, 'a self assignment keeps the slot')
+p.b = Math.Vector4(2.0, 2.0, 2.0, 2.0)
+ck(type(p.b).__name__ == 'Vector4Basic', 'a Vector4 coerces to a Vector4Basic')
+
+# The componentwise product, the reference's parallelMultiply.
+prod = p.value
+ck(prod.x == 2.0 and prod.y == 4.0 and prod.z == 6.0 and prod.w == 8.0,
+   'componentwise product')
+
+# Replacing a set slot: the reference releases the old source and holds the
+# new one, the SmartPointer assignment's decref-and-incref.
+p.a = (9.0, 9.0, 9.0, 9.0)
+ck(p.a.value.x == 9.0, 'the slot replaced')
+ck(p.value.x == 18.0, 'the replacement feeds the product')
+
+# One source unset: the reference provides that source's value.
+p2 = Math.Vector4Product()
+p2.b = (3.0, 4.0, 5.0, 6.0)
+only = p2.value
+ck(only.x == 3.0 and only.y == 4.0 and only.z == 5.0 and only.w == 6.0,
+   'the lone source provides')
+
+# Nested providers: the sources themselves are providers, and their own
+# outputs are read on the way down.
+inner = Math.Vector4Product()
+inner.a = (2.0, 2.0, 2.0, 2.0)
+inner.b = (3.0, 3.0, 3.0, 3.0)
+outer = Math.Vector4Product()
+outer.a = inner
+outer.b = (1.0, 1.0, 1.0, 1.0)
+ck(outer.value.x == 6.0 and outer.value.w == 6.0, 'nested providers compose')
+
+# The Vector4Basic value is read-write, and a change reaches the product.
+p.a.value = (5.0, 5.0, 5.0, 5.0)
+ck(p.value.x == 10.0, 'a Vector4Basic value change reaches the product')
+ck(raises(TypeError, lambda: setattr(p.a, 'value', 'nope')),
+   'a Vector4Basic value wants a Vector4')
+
+# Self-assignment keeps the reference count straight and leaves the value.
+held = p.a
+self_assigned = p.a
+ck(self_assigned is held, 'reading a slot returns the same object')
+p.a = held
+ck(p.a is held, 'self-assignment is a no-op')
+ck(p.value.x == 10.0, 'the self-assignment kept the value')
+
+# None clears the slot, the reference's SmartPointer to empty.
+p.a = None
+ck(p.a is None, 'None clears a slot')
+ck(p.value.x == 2.0, 'the cleared slot leaves the other source')
+
+# Assignment that is neither a Vector4 nor a provider is refused.
+ck(raises(TypeError, lambda: p.__setattr__('b', 5)), 'a slot wants a provider or None')
+
+# Deletion is refused too: the reference cannot coerce a null assignment.
+ck(raises(TypeError, lambda: p.__delattr__('b')), 'deleting a slot refuses')
+ck(p.b.value.x == 2.0, 'the refused deletion kept the slot')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4 provider behaviour mismatch: {text}"
+            );
+        });
+    }
+
+    /// `Math.Vector4Animation` behaves as the reference's keyframed provider
+    /// does: the `(float, Vector4Provider)` keyframe list drives the `time`
+    /// lerp between the two surrounding keyframes, holding the first before
+    /// the cycle reaches it and the last afterwards, and a failed keyframe
+    /// assignment leaves the stored list intact.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4animation_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def close(a, b):
+    return abs(a - b) < 1e-4
+
+# The factory constructs, and takes no arguments.
+a = Math.Vector4Animation()
+ck(a is not None, 'Vector4Animation constructs')
+ck(type(a).__name__ == 'Vector4Animation', 'the Vector4Animation type')
+ck(raises(TypeError, lambda: Math.Vector4Animation(1)),
+   'factory takes no arguments')
+
+# The constructor defaults, the reference's `time_( 0.f )`,
+# `duration_( 1.f )` and an empty keyframe list.
+ck(a.time == 0.0, 'the default time')
+ck(a.duration == 1.0, 'the default duration')
+ck(a.keyframes == [], 'the default keyframe list')
+
+# An empty animation provides the zero vector.
+zero = a.value
+ck(zero.x == 0.0 and zero.y == 0.0 and zero.z == 0.0 and zero.w == 0.0,
+   'empty animation is the zero vector')
+
+# The keyframes accept a list of (float, provider) tuples; a provider slot
+# takes a tuple of four floats as a Vector4Basic, as the docstring does.
+b = Math.Vector4Animation()
+b.keyframes = [(0.0, (10.0, 0.0, 0.0, 0.0)), (1.0, (0.0, 10.0, 0.0, 0.0))]
+b.duration = 1.0
+ck(len(b.keyframes) == 2, 'the keyframes read back')
+ck(b.keyframes[0][0] == 0.0 and b.keyframes[1][0] == 1.0, 'the keyframe times')
+ck(type(b.keyframes[0][1]).__name__ == 'Vector4Basic', 'a tuple coerces')
+ck(b.keyframes[0][1].value.x == 10.0, 'the coerced keyframe value')
+ck(b.keyframes[0][1] is b.keyframes[0][1], 'reading keeps the same provider')
+
+# A tuple is a sequence too, the reference's PySequence_Check.
+c = Math.Vector4Animation()
+c.keyframes = ((0.0, (1.0, 0.0, 0.0, 0.0)), (2.0, (0.0, 1.0, 0.0, 0.0)))
+ck(len(c.keyframes) == 2, 'a tuple assigns')
+
+# Before the first keyframe the reference holds its value.
+b.time = 0.0
+v = b.value
+ck(v.x == 10.0 and v.y == 0.0, 'before the first keyframe')
+
+# Midway the reference lerps, XPVec4Lerp.
+b.time = 0.5
+v = b.value
+ck(v.x == 5.0 and v.y == 5.0, 'the midpoint lerp')
+
+# At the last keyframe the lerp reaches exactly 1.
+b.time = 1.0
+v = b.value
+ck(v.x == 0.0 and v.y == 10.0, 'at the last keyframe')
+
+# After the last keyframe the reference holds its value.
+b.time = 2.0
+v = b.value
+ck(v.x == 0.0 and v.y == 10.0, 'after the last keyframe')
+
+# The read-write time accepts a float and an int, and refuses other types.
+b.time = 2
+ck(b.time == 2.0, 'an int sets the time')
+ck(raises(TypeError, lambda: setattr(b, 'time', 'x')), 'time wants a float')
+ck(raises(TypeError, lambda: setattr(b, 'duration', None)), 'duration wants a float')
+
+# A provider slot is a provider: an animation can key off another, the
+# reference's Vector4Provider::coerce handing the provider through. At
+# nested time 0.25 the lerp mixes b's current output -- still held after
+# its last keyframe at time 2 -- with the blue keyframe.
+nested = Math.Vector4Animation()
+nested.keyframes = [(0.0, b), (1.0, (0.0, 0.0, 10.0, 0.0))]
+nested.time = 0.25
+v = nested.value
+ck(v.y == 7.5 and v.z == 2.5, 'a provider keyframe feeds the lerp')
+
+# Out-of-order keyframes: the reference walks the list once, so a keyframe
+# at a time before the previous one snaps rather than lerping.
+d = Math.Vector4Animation()
+d.keyframes = [(0.5, (10.0, 0.0, 0.0, 0.0)), (0.1, (0.0, 10.0, 0.0, 0.0)),
+               (1.0, (0.0, 0.0, 10.0, 0.0)), (0.1, (0.0, 0.0, 0.0, 10.0))]
+d.time = 0.05
+ck(d.value.x == 10.0, 'before the first out-of-order keyframe')
+d.time = 0.6
+v = d.value
+ck(close(v.y, 10.0 * 4.0 / 9.0) and close(v.z, 10.0 * 5.0 / 9.0),
+   'the out-of-order neighbours lerp')
+
+# A non-sequence is refused with the reference's message.
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', 5)),
+   'keyframes wants a sequence')
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', 'x')),
+   'a string keyframe item refuses')
+
+# A malformed keyframe is refused, and the failed assignment leaves the
+# stored list intact -- the reference's cancel.
+b.time = 0.5
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [(0.0, (1.0, 2.0, 3.0, 4.0)), (1.0, 5)])),
+   'a keyframe wants a float and a provider')
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [(0.0,)])),
+   'a keyframe wants two items')
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [(0.0, (1.0, 2.0, 3.0, 4.0), 9)])),
+   'a keyframe wants exactly two items')
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [(0.0, None)])),
+   'a keyframe provider cannot be None')
+ck(b.value.y == 5.0, 'the refused assignment kept the keyframes')
+
+# A bad time inside a keyframe refuses too.
+ck(raises(TypeError, lambda: setattr(b, 'keyframes', [('x', (1.0, 2.0, 3.0, 4.0))])),
+   'a keyframe time wants a float')
+
+# The keyframe list can be replaced wholesale by a provider-carrying one.
+b.keyframes = [(0.0, (0.0, 0.0, 0.0, 0.0)), (1.0, (10.0, 10.0, 10.0, 10.0))]
+b.time = 0.5
+ck(b.value.x == 5.0, 'a replacement list feeds the lerp')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4animation behaviour mismatch: {text}"
+            );
+        });
+    }
+
+    /// `Math.Vector4Morph` behaves as the reference's morpher does: the
+    /// value lerps from the snapshot taken when the target moved, the
+    /// duration keeps the fraction through the cycle, and the timer clamps
+    /// into it.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4morph_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def close(a, b):
+    return abs(a - b) < 1e-6
+
+# The factory takes an optional Vector4, the zero vector default.
+m = Math.Vector4Morph()
+ck(type(m).__name__ == 'Vector4Morph', 'the Vector4Morph type')
+ck(m.target.x == 0.0, 'the default target')
+ck(m.duration == 1.0, 'the default duration')
+ck(m.time == 0.0, 'the default time')
+ck(m.value.x == 0.0, 'the default morph is zero')
+
+m2 = Math.Vector4Morph((1.0, 2.0, 3.0, 4.0))
+ck(m2.value.x == 1.0 and m2.value.w == 4.0, 'the factory value morphs')
+m2 = Math.Vector4Morph(Math.Vector4(1.0, 2.0, 3.0, 4.0))
+ck(m2.value.y == 2.0, 'a Vector4 argument works too')
+
+# A new target snapshots the current output and restarts the timer.
+m2.target = (4.0, 5.0, 6.0, 7.0)
+ck(m2.value.x == 1.0, 'the snapshot holds before the timer moves')
+m2.time = m2.duration
+v = m2.value
+ck(v.x == 4.0 and v.w == 7.0, 'the timer at the duration reaches the target')
+
+# Midway the morph is the lerp, `(t*target) + ((1-t)*old)`.
+m3 = Math.Vector4Morph((0.0, 0.0, 0.0, 0.0))
+m3.target = (10.0, 20.0, 30.0, 40.0)
+m3.time = 0.5
+v = m3.value
+ck(v.x == 5.0 and v.y == 10.0 and v.z == 15.0 and v.w == 20.0,
+   'the midpoint morph')
+
+# The timer clamps into the cycle, `Math::clamp( 0.0001f, t, duration )`.
+m3.time = 99.0
+ck(m3.time == 1.0, 'the time clamps to the duration')
+v = m3.value
+ck(v.x == 10.0, 'past the cycle the target holds')
+m3.time = -5.0
+ck(close(m3.time, 0.0001), 'the time clamps to the minimum')
+
+# The duration keeps the fraction through the cycle.
+m4 = Math.Vector4Morph((0.0, 0.0, 0.0, 0.0))
+m4.target = (10.0, 0.0, 0.0, 0.0)
+m4.time = 0.5
+ck(m4.value.x == 5.0, 'halfway over a one-second cycle')
+m4.duration = 2.0
+ck(m4.duration == 2.0, 'the duration is set')
+ck(m4.time == 1.0, 'the fraction through the cycle is kept')
+ck(m4.value.x == 5.0, 'the value does not change with the duration')
+
+# The duration has a minimum, `std::max( 0.0001f, d )`.
+m4.duration = 0.0
+ck(close(m4.duration, 0.0001), 'the duration clamps to its minimum')
+ck(m4.value.x == 10.0, 'the minimum cycle is at the target')
+
+# A snapshot partway through, the docstring's `time = duration` pattern.
+m5 = Math.Vector4Morph((0.0, 0.0, 0.0, 0.0))
+m5.target = (10.0, 10.0, 10.0, 10.0)
+m5.time = 0.25
+ck(m5.value.x == 2.5, 'a quarter through the cycle')
+m5.target = (20.0, 20.0, 20.0, 20.0)
+ck(m5.value.x == 2.5, 'a new target snapshots the current output')
+ck(m5.time == 0.0, 'a new target restarts the timer')
+m5.time = 1.0
+ck(m5.value.x == 20.0, 'the restarted morph reaches its target')
+
+# Conversion refusals, the reference's converter messages.
+ck(raises(TypeError, lambda: setattr(m5, 'target', 5)),
+   'target wants a Vector4')
+ck(raises(TypeError, lambda: setattr(m5, 'target', (1.0, 2.0))),
+   'target wants four floats')
+ck(raises(TypeError, lambda: setattr(m5, 'duration', 'x')),
+   'duration wants a float')
+ck(raises(TypeError, lambda: setattr(m5, 'time', None)), 'time wants a float')
+ck(raises(TypeError, lambda: Math.Vector4Morph((1.0, 2.0))),
+   'the factory wants a Vector4')
+ck(raises(TypeError, lambda: Math.Vector4Morph((1.0, 2.0, 3.0, 4.0), 9)),
+   'the factory takes at most one argument')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4morph behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Vector4Translation` reads like the reference: the translation part of
+    /// a `MatrixProvider` as a `Vector4` with a constant `w`, live against
+    /// the source matrix, with the reference's converter refusals.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4translation_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+# The factory takes one MatrixProvider; a Matrix is one.
+ck(hasattr(Math, 'Vector4Translation'), 'Vector4Translation in module')
+src = Math.Matrix()
+t = Math.Vector4Translation(src)
+ck(type(t).__name__ == 'Vector4Translation', 'the translation type')
+ck('Vector4Provider' in [c.__name__ for c in type(t).__mro__],
+   'the Vector4Provider base chain')
+ck('MatrixProvider' in [c.__name__ for c in type(t.source).__mro__],
+   'the source is a provider')
+ck(t.source is src, 'the source is the matrix itself')
+
+# The output is the translation row, the reference's `applyToOrigin`.
+v = t.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 1.0,
+   'the identity translation is zero with w=1')
+src.setTranslate((10.0, 20.0, 30.0))
+v = t.value
+ck(v.x == 10.0 and v.y == 20.0 and v.z == 30.0 and v.w == 1.0,
+   'the value tracks the matrix')
+
+# Replacing the source rewires the output.
+other = Math.Matrix()
+other.setTranslate((5.0, 0.0, 0.0))
+t.source = other
+v = t.value
+ck(v.x == 5.0 and v.y == 0.0, 'the new source drives the value')
+ck(t.source is other, 'the replacement sticks')
+src.setTranslate((99.0, 0.0, 0.0))
+ck(t.value.x == 5.0, 'the old matrix no longer drives it')
+
+# None empties the slot; the reference would then trap on `output`, so the
+# port defines the zero translation instead.
+t.source = None
+ck(t.source is None, 'None empties the slot')
+v = t.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 1.0,
+   'an empty source is the zero translation')
+
+# Refusals: a non-provider, a Vector4Provider that is no MatrixProvider, a
+# deletion, and factory argument errors.
+ck(raises(TypeError, lambda: setattr(t, 'source', 5)),
+   'source wants a MatrixProvider')
+ck(raises(TypeError, lambda: setattr(t, 'source', Math.Vector4Product())),
+   'a Vector4Provider is no MatrixProvider')
+ck(raises(TypeError, lambda: t.__delattr__('source')),
+   'source cannot be deleted')
+ck(raises(TypeError, lambda: Math.Vector4Translation()),
+   'the factory wants one argument')
+ck(raises(TypeError, lambda: Math.Vector4Translation(src, src)),
+   'the factory takes one argument')
+ck(raises(TypeError, lambda: Math.Vector4Translation(None)),
+   'the factory refuses None')
+ck(raises(TypeError, lambda: Math.Vector4Translation(5)),
+   'the factory wants a provider')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4translation behaviour mismatch: {text}"
+            );
+        });
+    }
+
+    /// `Vector4Distance` reads like the reference: the distance between the
+    /// two `MatrixProvider` origins on every component, live against the
+    /// matrices, `a` read before `b`, with the reference's refusals.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4distance_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+# The factory takes two MatrixProviders; Matrices are providers.
+ck(hasattr(Math, 'Vector4Distance'), 'Vector4Distance in module')
+a = Math.Matrix()
+b = Math.Matrix()
+d = Math.Vector4Distance(a, b)
+ck(type(d).__name__ == 'Vector4Distance', 'the distance type')
+ck('Vector4Provider' in [c.__name__ for c in type(d).__mro__],
+   'the Vector4Provider base chain')
+ck(d.a is a and d.b is b, 'the slots are the matrices')
+
+# Two identity origins are the zero distance.
+v = d.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the identity distance is zero')
+
+# The output is the distance between the two origins, on every component.
+a.setTranslate((3.0, 0.0, 0.0))
+v = d.value
+ck(v.x == 3.0 and v.y == 3.0 and v.z == 3.0 and v.w == 3.0,
+   'the distance is the origin separation')
+b.setTranslate((0.0, 4.0, 0.0))
+v = d.value
+ck(abs(v.x - 5.0) < 1e-6, 'the 3-4-5 triangle distance')
+a.setTranslate((1.0, 2.0, 2.0))
+b.setIdentity()
+v = d.value
+ck(abs(v.x - 3.0) < 1e-6, 'the sqrt(1+4+4) distance')
+
+# The distance is symmetric in the two slots.
+a.setTranslate((3.0, 0.0, 0.0))
+b.setIdentity()
+v1 = d.value
+d.a, d.b = b, a
+v2 = d.value
+ck(v1.x == v2.x, 'swapping the slots keeps the distance')
+
+# Replacing one slot rewires that side.
+d.b = b
+other = Math.Matrix()
+other.setTranslate((0.0, 0.0, 6.0))
+d.a = other
+ck(d.a is other, 'the replacement sticks')
+v = d.value
+ck(abs(v.x - 6.0) < 1e-6, 'the new slot drives the distance')
+
+# None empties a slot; the reference would then trap on `output`, so the
+# port treats the empty slot as the zero origin.
+d.b = None
+ck(d.b is None, 'None empties the b slot')
+v = d.value
+ck(abs(v.x - 6.0) < 1e-6, 'an empty slot is the zero origin')
+
+# Refusals: non-providers, a Vector4Provider that is no MatrixProvider,
+# deletions, and factory argument errors.
+ck(raises(TypeError, lambda: setattr(d, 'a', 5)), 'a wants a MatrixProvider')
+ck(raises(TypeError, lambda: setattr(d, 'b', Math.Vector4Product())),
+   'a Vector4Provider is no MatrixProvider')
+ck(raises(TypeError, lambda: d.__delattr__('a')), 'a cannot be deleted')
+ck(raises(TypeError, lambda: d.__delattr__('b')), 'b cannot be deleted')
+ck(raises(TypeError, lambda: Math.Vector4Distance()), 'the factory wants two arguments')
+ck(raises(TypeError, lambda: Math.Vector4Distance(a)), 'the factory wants two arguments')
+ck(raises(TypeError, lambda: Math.Vector4Distance(a, b, b)),
+   'the factory takes two arguments')
+ck(raises(TypeError, lambda: Math.Vector4Distance(a, 5)),
+   'the second argument wants a provider')
+ck(raises(TypeError, lambda: Math.Vector4Distance(5, b)),
+   'the first argument wants a provider')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4distance behaviour mismatch: {text}"
+            );
+        });
+    }
+
+    /// `Vector4LFO` reads like the reference: the four waves, the live
+    /// parameters, the `time` fold three of the waves write back on read
+    /// while `SINE` leaves it alone, the `almostZero` flat period, the
+    /// `waveform` enum converter's `ValueError`/`TypeError`, and the
+    /// float refusals -- with the reference's defaults.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4lfo_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+def close(a, b, tol=1e-5):
+    return abs(a - b) < tol
+
+ck(hasattr(Math, 'Vector4LFO'), 'Vector4LFO in module')
+l = Math.Vector4LFO()
+ck(type(l).__name__ == 'Vector4LFO', 'the lfo type')
+ck('Vector4Provider' in [c.__name__ for c in type(l).__mro__],
+   'the Vector4Provider base chain')
+
+# The reference's defaults: SINE, unit period and amplitude, zero phase and
+# time, so a fresh wave sits at the middle of its range.
+ck(l.waveform == 'SINE', 'the default waveform')
+ck(l.period == 1.0 and l.amplitude == 1.0, 'the unit period and amplitude')
+ck(l.phase == 0.0 and l.time == 0.0, 'the zero phase and time')
+v = l.value
+ck(close(v.x, 0.5) and v.x == v.y == v.z == v.w, 'the default value is 0.5')
+
+# SINE at a quarter and half cycle: t = time/period * 2pi.
+l.time = 0.25
+ck(close(l.value.x, 1.0), 'the sine peak')
+l.time = 0.5
+ck(close(l.value.x, 0.5), 'the sine mid is half')
+ck(l.time == 0.5, 'the sine leaves time alone')
+
+# SQUARE: positive half-cycle is the amplitude, otherwise zero, and the time
+# folds back into the period.
+l.waveform = 'SQUARE'
+l.time = 0.0
+ck(l.value.x == 0.0, 'the square trough')
+l.time = 0.6
+ck(l.value.x == 1.0, 'the square peak')
+l.time = 1.7
+# The fold is f32 `fmod`, so the folded value is not exactly 0.7.
+ck(l.value.x == 1.0 and close(l.time, 0.7), 'the square folds the time back')
+
+# TRIANGLE: fmod(t/period,1), mirrored around the half cycle.
+l.waveform = 'TRIANGLE'
+l.time = 0.25
+ck(l.value.x == 0.75, 'the triangle rise')
+l.time = 0.75
+ck(l.value.x == 0.75, 'the triangle fall')
+ck(l.time == 0.75, 'the triangle folds too')
+
+# SAWTOOTH: the phase fraction scaled by the amplitude, phase-shifted.
+l.waveform = 'SAWTOOTH'
+l.period = 1.0
+l.phase = 0.5
+l.amplitude = 10.0
+l.time = 0.25
+ck(l.value.x == 7.5, 'the sawtooth with a phase')
+ck(l.time == 0.25, 'the sawtooth folds too')
+
+# A negative amplitude inverts the wave.
+l.waveform = 'SQUARE'
+l.phase = 0.0
+l.amplitude = -1.0
+l.period = 1.0
+l.time = 0.6
+ck(l.value.x == -1.0, 'the negative amplitude inverts')
+
+# An almost-zero period flattens the wave and leaves the time alone.
+l.amplitude = 1.0
+l.period = 0.0
+l.time = 5.0
+v = l.value
+ck(v.x == 0.0 and l.time == 5.0, 'the flat wave at a zero period')
+l.period = 0.0001
+ck(l.value.x == 0.0, 'the flat wave inside almostZero')
+
+# The waveform round-trips through all four names.
+for name in ('SQUARE', 'TRIANGLE', 'SINE', 'SAWTOOTH'):
+    l.waveform = name
+    ck(l.waveform == name, 'waveform round-trip ' + name)
+
+# Refusals: the enum converter and the float attributes.
+ck(raises(ValueError, lambda: setattr(l, 'waveform', 'LOUD')),
+   'a bad wave name is a ValueError')
+ck(msg(ValueError, lambda: setattr(l, 'waveform', 'LOUD')) ==
+   'waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH',
+   'the ValueError message')
+ck(raises(ValueError, lambda: setattr(l, 'waveform', 'sine')),
+   'the enum is case-sensitive')
+ck(raises(TypeError, lambda: setattr(l, 'waveform', 5)),
+   'a non-string waveform is a TypeError')
+ck(raises(TypeError, lambda: setattr(l, 'waveform', None)),
+   'None is no waveform')
+ck(raises(TypeError, lambda: setattr(l, 'period', 'x')),
+   'period wants a float')
+ck(raises(TypeError, lambda: setattr(l, 'period', 2**100)),
+   'an overflowing int is no float')
+ck(msg(TypeError, lambda: setattr(l, 'time', None)) == 'time must be set to a float',
+   'the float TypeError message')
+ck(raises(TypeError, lambda: l.__delattr__('waveform')),
+   'waveform cannot be deleted')
+ck(raises(TypeError, lambda: l.__delattr__('period')),
+   'period cannot be deleted')
+
+# The factory takes no arguments, and an int is a float for these attributes.
+ck(raises(TypeError, lambda: Math.Vector4LFO(1)),
+   'the factory takes no arguments')
+l.period = 1.0
+l.time = 2
+ck(l.time == 2.0, 'an int is accepted as a float')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4lfo behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Vector4MatrixAdaptor` reads like the reference: a `MatrixProvider`
+    /// over a `Vector4Provider`, with the seven styles reading their own
+    /// components, the position provider as the translation, the empty
+    /// source the untouched out argument, and the reference's converter
+    /// refusals on the slots and the style.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4adaptor_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+def close(a, b, tol=1e-5):
+    return abs(a - b) < tol
+
+ck(hasattr(Math, 'Vector4MatrixAdaptor'), 'Vector4MatrixAdaptor in module')
+a = Math.Vector4MatrixAdaptor()
+ck(type(a).__name__ == 'Vector4MatrixAdaptor', 'the adaptor type')
+ck('MatrixProvider' in [c.__name__ for c in type(a).__mro__],
+   'the MatrixProvider base chain')
+ck('Vector4Provider' not in [c.__name__ for c in type(a).__mro__],
+   'the adaptor is no Vector4Provider')
+
+# The reference's defaults: the XY_SCALE style and two empty slots.
+ck(a.style == 'XY_SCALE', 'the default style')
+ck(a.source is None and a.position is None, 'the empty provider slots')
+ck(raises(TypeError, lambda: Math.Vector4MatrixAdaptor(1)),
+   'the factory takes no arguments')
+
+# An empty source leaves the reference's out argument untouched, the zero
+# matrix its callers default it to.
+m = Math.Matrix(a)
+ck(m.get(0,0) == 0.0 and m.get(3,3) == 0.0, 'no source is the zero matrix')
+
+# The slot assignment coerces a Vector4 into a fresh basic.
+a.source = Math.Vector4(2.0, 3.0, 4.0, 5.0)
+ck(type(a.source).__name__ == 'Vector4Basic', 'a Vector4 coerces to a basic')
+ck(a.source.value.x == 2.0 and a.source.value.w == 5.0, 'the coerced value')
+
+# XY_SCALE: x and y scale, z stays one, the translation row lands.
+m = Math.Matrix(a)
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 1.0,
+   'the XY_SCALE diagonal')
+ck(m.get(3,3) == 1.0, 'the translation row is set')
+
+# A provider source is stored as itself, and tracks it live.
+lfo = Math.Vector4LFO()
+lfo.waveform = 'SQUARE'
+lfo.amplitude = 7.0
+lfo.time = 0.75
+a.source = lfo
+ck(a.source is lfo, 'a provider source is stored as itself')
+m = Math.Matrix(a)
+ck(m.get(1,1) == 7.0, 'the source tracks the provider')
+
+# XYZ_SCALE scales all three axes, and the position provider translates.
+a.source = Math.Vector4(2.0, 3.0, 4.0, 5.0)
+a.style = 'XYZ_SCALE'
+a.position = Math.Vector4(10.0, 20.0, 30.0, 1.0)
+m = Math.Matrix(a)
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 4.0,
+   'the XYZ_SCALE diagonal')
+ck(tuple(m.translation) == (10.0, 20.0, 30.0), 'the position translates')
+ck(m.get(0,0) == 2.0, 'the translation keeps the linear part')
+
+# The rotation styles read their own component only. `get(col, row)` reads
+# m[col][row] (`script_math.hpp:209`), and setRotateX/Y/Z write m[1][2]=sin,
+# m[2][1]=-sin etc. (`matrix.cpp:414-445`).
+a.position = None
+a.source = Math.Vector4(1.5707963, 0.0, 0.0, 0.0)
+a.style = 'X_ROTATE'
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 1.0) and close(m.get(1,2), 1.0) and
+   close(m.get(2,1), -1.0) and close(m.get(1,1), 0.0),
+   'the X rotation reads x')
+a.source = Math.Vector4(0.0, 1.5707963, 0.0, 0.0)
+a.style = 'Y_ROTATE'
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 0.0) and close(m.get(1,1), 1.0) and
+   close(m.get(0,2), -1.0) and close(m.get(2,0), 1.0),
+   'the Y rotation reads y')
+a.source = Math.Vector4(0.0, 0.0, 1.5707963, 0.0)
+a.style = 'Z_ROTATE'
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 0.0) and close(m.get(1,0), -1.0) and
+   close(m.get(0,1), 1.0) and close(m.get(2,2), 1.0),
+   'the Z rotation reads z')
+
+# LOOKAT: the view basis of the direction, inverted back to a world matrix
+# (`script_math.cpp:4461-4469`). For the +z direction the view basis is the
+# identity. The (1,1,0) direction flips up to (0,0,1) because the default
+# (0,1,0) is nearly parallel, and the world basis is m = (lookAt)^-1:
+# row0 (-s, s, 0), row1 (0, 0, 1), row2 (s, s, 0), s = 1/sqrt(2).
+a.source = Math.Vector4(0.0, 0.0, 1.0, 0.0)
+a.style = 'LOOKAT'
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 1.0) and close(m.get(1,1), 1.0) and
+   close(m.get(2,2), 1.0) and tuple(m.translation) == (0.0, 0.0, 0.0),
+   'the +z look-at is the identity world')
+a.source = Math.Vector4(1.0, 1.0, 0.0, 0.0)
+m = Math.Matrix(a)
+ck(close(m.get(0,0), -0.70710678) and close(m.get(0,1), 0.70710678) and
+   close(m.get(1,2), 1.0) and close(m.get(2,0), 0.70710678) and
+   close(m.get(0,2), 0.0),
+   'the look-at direction basis is inverted')
+
+# LOOKAT with a position is the world matrix at that point.
+a.source = Math.Vector4(0.0, 0.0, 1.0, 0.0)
+a.position = Math.Vector4(10.0, 0.0, 0.0, 0.0)
+m = Math.Matrix(a)
+ck(close(m.get(0,0), 1.0) and tuple(m.translation) == (10.0, 0.0, 0.0),
+   'the look-at position translates')
+
+# LOOKAT_SCALEZ scales the direction row by the four-component length.
+a.source = Math.Vector4(2.0, 0.0, 0.0, 0.0)
+a.style = 'LOOKAT_SCALEZ'
+a.position = None
+m = Math.Matrix(a)
+ck(close(m.get(2,0), 2.0) and close(m.get(0,2), -1.0) and
+   close(m.get(1,1), 1.0) and close(m.get(2,2), 0.0) and
+   m.get(3,3) == 1.0,
+   'the scaled look-at')
+
+# LOOKAT_SCALEZ with a direction nearly parallel to the default up flips
+# the up to (0,0,1) too; the four-component length of (1,1,0,0) is sqrt(2),
+# which scales the z row from (-s, -s) to (-1, -1).
+a.source = Math.Vector4(1.0, 1.0, 0.0, 0.0)
+m = Math.Matrix(a)
+ck(close(m.get(0,0), -0.70710678) and close(m.get(1,2), 1.0) and
+   close(m.get(2,0), 1.0) and close(m.get(2,1), 1.0) and
+   close(m.get(0,2), 0.0),
+   'the scaled look-at flips a parallel up')
+
+# The style round-trips through all seven names.
+for name in ('XYZ_SCALE', 'XY_SCALE', 'X_ROTATE', 'Y_ROTATE', 'Z_ROTATE',
+             'LOOKAT', 'LOOKAT_SCALEZ'):
+    a.style = name
+    ck(a.style == name, 'style round-trip ' + name)
+
+# Refusals: the enum converter, the provider slots, and the deletions.
+ck(raises(ValueError, lambda: setattr(a, 'style', 'LOUD')),
+   'a bad style name is a ValueError')
+ck(msg(ValueError, lambda: setattr(a, 'style', 'LOUD')) ==
+   'style must be set to one of XYZ_SCALE, XY_SCALE, X_ROTATE, Y_ROTATE, '
+   'Z_ROTATE, LOOKAT, or LOOKAT_SCALEZ',
+   'the ValueError message')
+ck(raises(ValueError, lambda: setattr(a, 'style', 'xy_scale')),
+   'the enum is case-sensitive')
+ck(raises(TypeError, lambda: setattr(a, 'style', 5)),
+   'a non-string style is a TypeError')
+ck(raises(TypeError, lambda: setattr(a, 'source', 5)), 'source wants a provider')
+ck(msg(TypeError, lambda: setattr(a, 'position', 'x')) ==
+   'position must be set to a Vector4Provider or None',
+   'the slot TypeError message')
+ck(raises(TypeError, lambda: setattr(a, 'source', Math.Matrix())),
+   'a MatrixProvider is no Vector4Provider')
+ck(raises(TypeError, lambda: a.__delattr__('source')), 'source cannot be deleted')
+ck(raises(TypeError, lambda: a.__delattr__('style')), 'style cannot be deleted')
+
+# None empties the slots again, back to the zero matrix.
+a.source = None
+ck(a.source is None, 'None empties the source')
+m = Math.Matrix(a)
+ck(m.get(0,0) == 0.0 and m.get(3,3) == 0.0, 'the emptied source is zero again')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4adaptor behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Math.Vector4Swizzle` against the reference (`script_math.cpp:4511-4641`):
+    /// four `Vector4Provider` slots, each contributing its own `x` component
+    /// to the matching output component; an empty slot leaves the caller's
+    /// zero behind.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4swizzle_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+
+ck(hasattr(Math, 'Vector4Swizzle'), 'Vector4Swizzle in module')
+s = Math.Vector4Swizzle()
+ck(type(s).__name__ == 'Vector4Swizzle', 'the swizzle type')
+ck('Vector4Provider' in [c.__name__ for c in type(s).__mro__],
+   'the Vector4Provider base chain')
+
+# The reference's defaults: all four slots empty, and an all-empty swizzle
+# is the caller's zero vector.
+ck(s.x is None and s.y is None and s.z is None and s.w is None,
+   'the empty slots')
+v = s.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the all-empty value is zero')
+ck(raises(TypeError, lambda: Math.Vector4Swizzle(1)),
+   'the factory takes no arguments')
+
+# Each slot reads its provider's x component only.
+s.x = Math.Vector4(1.0, 2.0, 3.0, 4.0)
+v = s.value
+ck(v.x == 1.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the x slot reads x only')
+ck(type(s.x).__name__ == 'Vector4Basic', 'a Vector4 coerces to a basic')
+s.y = Math.Vector4(5.0, 6.0, 7.0, 8.0)
+s.z = Math.Vector4(9.0, 10.0, 11.0, 12.0)
+s.w = Math.Vector4(13.0, 14.0, 15.0, 16.0)
+v = s.value
+ck(v.x == 1.0 and v.y == 5.0 and v.z == 9.0 and v.w == 13.0,
+   'the four slots combine')
+
+# A provider slot is stored as itself and tracks it live: the SINE LFO at
+# amplitude 7 reads (sin(2*pi*t/period)*0.5+0.5)*7, 7.0 at t=0.25 and 0.0
+# at t=0.75.
+lfo = Math.Vector4LFO()
+lfo.amplitude = 7.0
+lfo.time = 0.25
+s.y = lfo
+ck(s.y is lfo, 'a provider slot is stored as itself')
+v = s.value
+ck(abs(v.y - 7.0) < 1e-4, 'the slot tracks the provider')
+lfo.time = 0.75
+v = s.value
+ck(abs(v.y - 0.0) < 1e-4, 'the slot follows the provider live')
+
+# None empties the slot again, and the component falls back to zero.
+s.x = None
+ck(s.x is None, 'None empties the slot')
+v = s.value
+ck(v.x == 0.0 and abs(v.y - 0.0) < 1e-4, 'the emptied component is zero')
+
+# Refusals: the converter, the deletions, and the non-provider.
+ck(raises(TypeError, lambda: setattr(s, 'z', 5)), 'z wants a provider')
+ck(msg(TypeError, lambda: setattr(s, 'w', 'x')) ==
+   'w must be set to a Vector4Provider or None',
+   'the slot TypeError message')
+ck(raises(TypeError, lambda: setattr(s, 'x', Math.Matrix())),
+   'a MatrixProvider is no Vector4Provider')
+ck(raises(TypeError, lambda: s.__delattr__('x')), 'x cannot be deleted')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4swizzle behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Math.Vector4Combiner` against the reference (`script_math.cpp:4643-4811`):
+    /// two `Vector4Provider` slots combined componentwise by one of seven
+    /// named functions, `ADD` the default, and an empty slot a zero output.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4combiner_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+def close(a, b, tol=1e-6):
+    return abs(a - b) < tol
+
+ck(hasattr(Math, 'Vector4Combiner'), 'Vector4Combiner in module')
+c = Math.Vector4Combiner()
+ck(type(c).__name__ == 'Vector4Combiner', 'the combiner type')
+ck('Vector4Provider' in [x.__name__ for x in type(c).__mro__],
+   'the Vector4Provider base chain')
+
+# The reference's defaults: the ADD function and two empty slots, and either
+# empty slot leaves the caller's zero vector.
+ck(c.fn == 'ADD', 'the default function')
+ck(c.a is None and c.b is None, 'the empty slots')
+v = c.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'an empty slot is zero')
+ck(raises(TypeError, lambda: Math.Vector4Combiner(1)),
+   'the factory takes no arguments')
+
+c.a = Math.Vector4(2.0, 3.0, 4.0, 5.0)
+c.b = Math.Vector4(4.0, 6.0, 8.0, 10.0)
+ck(type(c.a).__name__ == 'Vector4Basic', 'a Vector4 coerces to a basic')
+c.a = c.a
+ck(c.a.value.x == 2.0, 'a slot self assignment keeps the provider')
+
+# ADD is the default.
+v = c.value
+ck(v.x == 6.0 and v.y == 9.0 and v.z == 12.0 and v.w == 15.0,
+   'the ADD function')
+c.fn = 'MULTIPLY'
+v = c.value
+ck(v.x == 8.0 and v.y == 18.0 and v.z == 32.0 and v.w == 50.0,
+   'the MULTIPLY function')
+c.fn = 'DIVIDE'
+v = c.value
+ck(close(v.x, 0.5) and close(v.y, 0.5) and close(v.z, 0.5) and
+   close(v.w, 0.5),
+   'the DIVIDE function')
+c.fn = 'SUBTRACT'
+v = c.value
+ck(v.x == -2.0 and v.y == -3.0 and v.z == -4.0 and v.w == -5.0,
+   'the SUBTRACT function')
+c.fn = 'DOT'
+v = c.value
+ck(v.x == 108.0 and v.y == 108.0 and v.z == 108.0 and v.w == 108.0,
+   'the DOT function spreads the dot')
+c.fn = 'MIN'
+v = c.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0,
+   'the MIN function')
+c.fn = 'MAX'
+v = c.value
+ck(v.x == 4.0 and v.y == 6.0 and v.z == 8.0 and v.w == 10.0,
+   'the MAX function')
+
+# A combiner is itself a provider, so a nested combiner feeds the slot.
+inner = Math.Vector4Combiner()
+inner.a = Math.Vector4(2.0, 2.0, 2.0, 2.0)
+inner.b = Math.Vector4(3.0, 3.0, 3.0, 3.0)
+ck(inner.value.x == 5.0, 'a combiner is a provider')
+c.fn = 'ADD'
+c.a = inner
+v = c.value
+ck(v.x == 9.0 and v.y == 11.0 and v.z == 13.0 and v.w == 15.0,
+   'a nested combiner feeds the slot')
+
+# The function round-trips through all seven names.
+for name in ('MULTIPLY', 'DIVIDE', 'ADD', 'SUBTRACT', 'DOT', 'MIN', 'MAX'):
+    c.fn = name
+    ck(c.fn == name, 'fn round-trip ' + name)
+
+# Refusals: the enum converter, the provider slots, and the deletions.
+ck(raises(ValueError, lambda: setattr(c, 'fn', 'LOUD')),
+   'a bad function name is a ValueError')
+ck(msg(ValueError, lambda: setattr(c, 'fn', 'LOUD')) ==
+   'fn must be set to one of MULTIPLY, DIVIDE, ADD, SUBTRACT, DOT, MIN, or MAX',
+   'the ValueError message')
+ck(raises(ValueError, lambda: setattr(c, 'fn', 'add')),
+   'the enum is case-sensitive')
+ck(raises(TypeError, lambda: setattr(c, 'fn', 5)),
+   'a non-string function is a TypeError')
+ck(raises(TypeError, lambda: setattr(c, 'a', 5)), 'a wants a provider')
+ck(msg(TypeError, lambda: setattr(c, 'b', 'x')) ==
+   'b must be set to a Vector4Provider or None',
+   'the slot TypeError message')
+ck(raises(TypeError, lambda: setattr(c, 'a', Math.Matrix())),
+   'a MatrixProvider is no Vector4Provider')
+ck(raises(TypeError, lambda: c.__delattr__('a')), 'a cannot be deleted')
+
+# None empties a slot again, back to the zero output.
+c.b = None
+ck(c.b is None, 'None empties the slot')
+v = c.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the emptied slot is zero')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(
+                text, "ok",
+                "math vector4combiner behaviour mismatch: {text}"
+            );
+        });
+    }
+
+    /// `Math.Vector4Shader` against the reference (`script_math.cpp:4826-5320`):
+    /// the thirteen opcodes run into a register file every shader shares --
+    /// `Math.getRegister`'s sixty-three temporaries and one user register per
+    /// unique input, `r_[0]` the output, nothing reset between passes.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_vector4shader_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+def close(a, b, tol=1e-6):
+    return abs(a - b) < tol
+
+ck(hasattr(Math, 'Vector4Shader'), 'Vector4Shader in module')
+ck(hasattr(Math, 'getRegister'), 'getRegister in module')
+
+# The temporary registers: one provider per number, all created on the first
+# call, the same object for the same number.
+r0 = Math.getRegister(0)
+r1 = Math.getRegister(1)
+r2 = Math.getRegister(2)
+r3 = Math.getRegister(3)
+r4 = Math.getRegister(4)
+r5 = Math.getRegister(5)
+r6 = Math.getRegister(6)
+r7 = Math.getRegister(7)
+r8 = Math.getRegister(8)
+r9 = Math.getRegister(9)
+r10 = Math.getRegister(10)
+r11 = Math.getRegister(11)
+r12 = Math.getRegister(12)
+r13 = Math.getRegister(13)
+r14 = Math.getRegister(14)
+ck(type(r0).__name__ == 'Vector4Register', 'the register type')
+ck('Vector4Provider' in [x.__name__ for x in type(r0).__mro__],
+   'the Vector4Provider base chain')
+ck(Math.getRegister(0) is r0, 'the same register for the same number')
+ck(type(Math.getRegister(62)).__name__ == 'Vector4Register',
+   'the last temporary register')
+
+# A fresh shader reads the file's r_[0], still the zero default.
+empty = Math.Vector4Shader()
+ck(type(empty).__name__ == 'Vector4Shader', 'the shader type')
+ck('Vector4Provider' in [x.__name__ for x in type(empty).__mro__],
+   'the Vector4Provider base chain')
+v = empty.value
+ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'an empty shader is zero')
+ck(raises(TypeError, lambda: Math.Vector4Shader(1)),
+   'the factory takes no arguments')
+
+# The opcodes in enum order against r_[1] = (2,3,4,5) and r_[6] = (4,6,8,10).
+src = Math.Vector4(2.0, 3.0, 4.0, 5.0)
+src2 = Math.Vector4(4.0, 6.0, 8.0, 10.0)
+src3 = Math.Vector4(5.0, 0.0, 0.0, 0.0)
+sh = Math.Vector4Shader()
+sh.addOp(0, r1, src)          # MOVE r1 = src
+sh.addOp(0, r6, src2)         # MOVE r6 = src2
+sh.addOp(0, r0, r1)           # MOVE r0 = r1
+sh.addOp(1, r2, r1)           # RECIPROCAL
+sh.addOp(2, r3, r1)           # BIAS
+sh.addOp(3, r4, r1)           # COMPLEMENT
+sh.addOp(4, r5, r1, r6)       # MULTIPLY
+sh.addOp(5, r7, r1, r6)       # DIVIDE
+sh.addOp(6, r8, r1, r6)       # ADD
+sh.addOp(7, r9, r1, r6)       # SUBTRACT
+sh.addOp(8, r10, r1, r6)      # DOT
+sh.addOp(9, r11, r1, r6)      # MIN
+sh.addOp(10, r12, r1, r6)     # MAX
+sh.addOp(11, r13, src3, r6)   # SGE
+sh.addOp(12, r14, src3, r6)   # SLT
+out = sh.value
+ck(out.x == 2.0 and out.y == 3.0 and out.z == 4.0 and out.w == 5.0,
+   'the final output is r_[0]')
+v = r1.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0, 'MOVE')
+v = r6.value
+ck(v.x == 4.0 and v.y == 6.0 and v.z == 8.0 and v.w == 10.0, 'the second MOVE')
+v = r2.value
+ck(close(v.x, 0.5) and close(v.y, 1.0 / 3.0) and close(v.z, 0.25) and
+   close(v.w, 0.2), 'RECIPROCAL')
+v = r3.value
+ck(v.x == 1.5 and v.y == 2.5 and v.z == 3.5 and v.w == 4.5, 'BIAS')
+v = r4.value
+ck(v.x == -1.0 and v.y == -2.0 and v.z == -3.0 and v.w == -4.0, 'COMPLEMENT')
+v = r5.value
+ck(v.x == 8.0 and v.y == 18.0 and v.z == 32.0 and v.w == 50.0, 'MULTIPLY')
+v = r7.value
+ck(close(v.x, 0.5) and close(v.y, 0.5) and close(v.z, 0.5) and close(v.w, 0.5),
+   'DIVIDE')
+v = r8.value
+ck(v.x == 6.0 and v.y == 9.0 and v.z == 12.0 and v.w == 15.0, 'ADD')
+v = r9.value
+ck(v.x == -2.0 and v.y == -3.0 and v.z == -4.0 and v.w == -5.0, 'SUBTRACT')
+v = r10.value
+ck(v.x == 108.0 and v.y == 108.0 and v.z == 108.0 and v.w == 108.0,
+   'DOT spreads the product sum')
+v = r11.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0, 'MIN')
+v = r12.value
+ck(v.x == 4.0 and v.y == 6.0 and v.z == 8.0 and v.w == 10.0, 'MAX')
+v = r13.value
+ck(v.x == 1.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'SGE compares i0.x down the lanes')
+v = r14.value
+ck(v.x == 0.0 and v.y == 1.0 and v.z == 1.0 and v.w == 1.0,
+   'SLT compares i0.x down the lanes')
+
+# Nothing clears the file between passes: a fresh shader reads whatever
+# r_[0] held after the last output, and a register reads it live.
+later = Math.Vector4Shader()
+v = later.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0,
+   'the register file persists across shaders')
+ck(r0.value.x == 2.0, 'the register reads the file live')
+ck(raises(AttributeError,
+          lambda: setattr(r1, 'value', Math.Vector4(0.0, 0.0, 0.0, 0.0))),
+   'the register value is read-only')
+
+# Refusals that append nothing: the argument counts, the uint8 conversion,
+# the provider slots.
+ck(msg(TypeError, lambda: sh.addOp(0, r0)) ==
+   'addOp() expects between 3 and 4 arguments of types uint8, '
+   'Vector4Provider, Vector4Provider, Vector4Provider',
+   'the two-argument count error')
+ck(raises(TypeError, lambda: sh.addOp(0, r0, src, src2, src3)),
+   'the five-argument count error')
+ck(msg(TypeError, lambda: sh.addOp('x', r0, src)) ==
+   '() argument 1 must be set to a long', 'the opcode TypeError')
+ck(msg(TypeError, lambda: sh.addOp(300, r0, src)) ==
+   'Integer is out of range', 'the opcode range error')
+ck(msg(TypeError, lambda: Math.getRegister(63)) ==
+   'argument 1 is greater than maximum value', 'the register maximum')
+ck(type(Math.getRegister(6.9)).__name__ == 'Vector4Register',
+   'the float register number truncates')
+ck(msg(TypeError, lambda: Math.getRegister(10 ** 20)) ==
+   '() argument 1 must be set to a long', 'the register overflow error')
+ck(msg(TypeError, lambda: Math.getRegister(300)) ==
+   'Integer is out of range', 'the register range error')
+ck(msg(TypeError, lambda: Math.getRegister(-1)) ==
+   'Integer is out of range', 'the negative register')
+ck(msg(TypeError, lambda: Math.getRegister('x')) ==
+   '() argument 1 must be set to a long', 'the register TypeError')
+ck(msg(TypeError, lambda: Math.getRegister()) ==
+   'getRegister() expects 1 argument of type uint8', 'the register count error')
+ck(raises(TypeError, lambda: Math.getRegister(1, 2)),
+   'the register two-argument count error')
+ck(msg(TypeError, lambda: sh.addOp(0, 'no', src)) ==
+   '() argument 2 must be set to a Vector4Provider or None',
+   'the output slot TypeError')
+ck(msg(TypeError, lambda: sh.addOp(0, r0, 'no')) ==
+   '() argument 3 must be set to a Vector4Provider or None',
+   'the first input TypeError')
+ck(msg(TypeError, lambda: sh.addOp(0, r0, src, 'no')) ==
+   '() argument 4 must be set to a Vector4Provider or None',
+   'the second input TypeError')
+v = sh.value
+ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0,
+   'the refusals left the program alone')
+
+# An output that is not a temporary register is reported, the instruction
+# still appended -- writing the unused register, so r_[0] stays.
+sh_refused = Math.Vector4Shader()
+sh_refused.addOp(0, src, r0)
+ck(sh_refused.value.x == 2.0, 'a refused output register keeps the file value')
+
+# None is the empty provider, not a refusal: the instruction is appended
+# with the unused register on its empty side, on a shader of its own.
+sh_none = Math.Vector4Shader()
+sh_none.addOp(0, r2, src, None)
+sh_none.value
+ck(close(r2.value.x, 2.0) and close(r2.value.y, 3.0),
+   'the None input keeps the instruction whole')
+
+# A provider passed twice answers one user register, the reference's
+# pointer-identity lookup of `uniqueInputs_`.
+inner = Math.Vector4Shader()
+sh_same = Math.Vector4Shader()
+sh_same.addOp(6, r2, inner, inner)   # ADD r2 = inner + inner
+sh_same.value
+ck(close(r2.value.x, 4.0) and close(r2.value.y, 6.0) and
+   close(r2.value.z, 8.0) and close(r2.value.w, 10.0),
+   'the same provider answers one user register')
+
+# An opcode outside the thirteen leaves its register alone: the reference's
+# switch has no default arm.
+sh_bad = Math.Vector4Shader()
+sh_bad.addOp(13, r2, src)
+sh_bad.value
+ck(r2.value.x == 4.0, 'an unknown opcode leaves the register')
+
+# Sixty-four unique inputs fill the user registers; the sixty-fifth is
+# refused and answers the unused register. Register one keeps its own input,
+# and the last MOVE of the sixty-four leaves (63,0,0,0) in r_[0].
+sh_full = Math.Vector4Shader()
+inputs = [Math.Vector4(float(i), 0.0, 0.0, 0.0) for i in range(65)]
+for i in range(64):
+    sh_full.addOp(0, Math.getRegister(i % 63), inputs[i])
+sh_full.addOp(0, Math.getRegister(62), inputs[64])
+v = sh_full.value
+ck(v.x == 63.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the sixty-fifth unique input is refused')
+v = r1.value
+ck(v.x == 1.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
+   'the sixty-four inputs got user registers')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math vector4shader behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Math.MatrixProduct` against the reference (`script_math.cpp:810-908`):
+    /// the `a x b` product over the two held `MatrixProvider` slots, the
+    /// identity for an unassigned side, and the reference's non-volatile copy
+    /// (a `Math.Matrix` snapshot does not follow later slot writes).
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_matrixproduct_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+
+# Module surface and inheritance.
+ck(hasattr(Math, 'MatrixProduct'), 'MatrixProduct in module')
+mp = Math.MatrixProduct()
+ck(type(mp).__name__ == 'MatrixProduct', 'the product type')
+ck(isinstance(mp, Math.MatrixProvider), 'the product is a MatrixProvider')
+ck(mp.a is None and mp.b is None, 'the slots start empty')
+ck(msg(TypeError, lambda: Math.MatrixProduct(1)) ==
+   'Math.MatrixProduct() takes no arguments', 'the factory count error')
+
+# Both slots empty: the identity, the reference's `m = identity` half.
+m = Math.Matrix(mp)
+ck(m.get(0,0) == 1.0 and m.get(1,1) == 1.0 and m.get(2,2) == 1.0 and
+   m.get(3,3) == 1.0 and m.get(0,1) == 0.0, 'both empty is the identity')
+
+# 'a' alone: no post-multiplication, the reference's `if (b_)` half.
+a = Math.Matrix()
+a.setScale((2.0, 3.0, 4.0))
+mp.a = a
+ck(mp.a is a, 'the a slot keeps its object')
+m = Math.Matrix(mp)
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 4.0 and
+   m.get(3,3) == 1.0, 'a alone')
+
+# 'b' alone: a's half skipped, b read into the out argument.
+mp.b = Math.Matrix()
+mp.a = None
+m = Math.Matrix(mp)
+ck(m.get(0,0) == 1.0 and m.get(1,1) == 1.0 and m.get(0,1) == 0.0,
+   'b alone')
+
+# Both: 'a x b', b post-multiplied onto a.
+b = Math.Matrix()
+b.setTranslate((1.0, 0.0, 0.0))
+mp.a = a
+mp.b = b
+m = Math.Matrix(mp)
+ck(m.get(0,0) == 2.0 and m.get(1,1) == 3.0 and m.get(2,2) == 4.0 and
+   m.get(3,0) == 1.0 and m.get(3,1) == 0.0 and m.get(3,2) == 0.0 and
+   m.get(3,3) == 1.0, 'the product of a and b')
+
+# The order is not commutative: the translation column scales with a.
+c = Math.Matrix()
+c.setTranslate((1.0, 0.0, 0.0))
+mp.a = c
+mp.b = a
+m = Math.Matrix(mp)
+ck(m.get(3,0) == 2.0 and m.get(0,0) == 2.0, 'swapping a and b changes the result')
+
+# A copy is a snapshot, the reference's documented non-volatile behaviour.
+snap = Math.Matrix(mp)
+ck(snap.get(0,0) == 2.0 and snap.get(3,0) == 2.0, 'the snapshot took the product')
+mp.b = None
+ck(snap.get(0,0) == 2.0, 'the snapshot does not follow the slots')
+live = Math.Matrix(mp)
+ck(live.get(0,0) == 1.0 and live.get(3,0) == 1.0, 'the live product is a alone')
+
+# The slot refusals, and that a refusal leaves the slots alone.
+ck(msg(TypeError, lambda: setattr(mp, 'a', Math.Vector3(1.0, 2.0, 3.0))) ==
+   'a must be set to a MatrixProvider or None', 'the a slot refusal')
+ck(msg(TypeError, lambda: setattr(mp, 'b', 1)) ==
+   'b must be set to a MatrixProvider or None', 'the b slot refusal')
+ck(mp.a is c and mp.b is None, 'a refusal leaves the slots alone')
+
+# Emptying an already empty slot and assigning a slot to itself are both
+# no-ops, the reference's `SmartPointer` not touching a null old occupant
+# and not dropping the shared reference it already holds.
+mp.b = None
+ck(mp.b is None, 'emptying an empty slot')
+mp.a = mp.a
+ck(mp.a is c, 'a self assignment keeps the slot')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math matrixproduct behaviour mismatch: {text}");
+        });
+    }
+
+    /// `Math.MatrixInverse` against the reference (`script_math.cpp:915-1010`):
+    /// the inverse of the held `MatrixProvider` slot, the identity for an
+    /// empty source, a singular source keeping its own value (the reference
+    /// drops `invert()`'s result), and the source slot read/write.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_matrixinverse_behaves_like_the_reference() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let text = probe(
+                interpreter,
+                r#"
+import Math
+_f = []
+def ck(c, m):
+    if not c:
+        _f.append(m)
+def msg(exc, fn):
+    try:
+        fn()
+    except exc as e:
+        return str(e)
+    except Exception:
+        return 'no'
+    return 'no'
+
+# Module surface and inheritance.
+ck(hasattr(Math, 'MatrixInverse'), 'MatrixInverse in module')
+mi = Math.MatrixInverse(None)
+ck(type(mi).__name__ == 'MatrixInverse', 'the inverse type')
+ck(isinstance(mi, Math.MatrixProvider), 'the inverse is a MatrixProvider')
+ck(mi.source is None, 'the source starts empty')
+m = Math.Matrix(mi)
+ck(m.get(0,0) == 1.0 and m.get(0,1) == 0.0, 'an empty source is the identity')
+
+# The source slot reads and writes the held object.
+src = Math.Matrix()
+src.setScale((2.0, 3.0, 4.0))
+mi.source = src
+ck(mi.source is src, 'the source slot keeps its object')
+m = Math.Matrix(mi)
+ck(abs(m.get(0,0) - 0.5) < 1e-6 and abs(m.get(1,1) - (1.0/3.0)) < 1e-6 and
+   abs(m.get(2,2) - 0.25) < 1e-6 and m.get(3,3) == 1.0, 'the inverse diagonal')
+
+# A translation inverts into the opposite translation.
+src.setIdentity()
+src.setTranslate((4.0, 5.0, 6.0))
+m = Math.Matrix(mi)
+ck(m.get(3,0) == -4.0 and m.get(3,1) == -5.0 and m.get(3,2) == -6.0,
+   'the inverse translation')
+
+# A singular source keeps its own value, no exception: the reference drops
+# the invert() result.
+zero = Math.Matrix()
+zero.setScale((0.0, 0.0, 0.0))
+mi2 = Math.MatrixInverse(zero)
+m = Math.Matrix(mi2)
+ck(m.get(0,0) == 0.0 and m.get(1,1) == 0.0 and m.get(2,2) == 0.0,
+   'a singular source keeps its own value')
+
+# The factory count errors and the provider refusal.
+ck(msg(TypeError, lambda: Math.MatrixInverse()) ==
+   'Math.MatrixInverse() expects 1 argument of type MatrixProvider',
+   'the missing source count error')
+ck(msg(TypeError, lambda: Math.MatrixInverse(src, src)) ==
+   'Math.MatrixInverse() expects 1 argument of type MatrixProvider',
+   'the extra source count error')
+ck(msg(TypeError, lambda: Math.MatrixInverse('x')) ==
+   '() argument 1 must be set to a MatrixProvider or None', 'the source refusal')
+ck(msg(TypeError, lambda: Math.MatrixInverse(1)) ==
+   '() argument 1 must be set to a MatrixProvider or None', 'the numeric refusal')
+
+# A snapshot does not follow the source; an emptied source is the identity.
+snap = Math.Matrix(mi)
+mi.source = None
+ck(snap.get(3,0) == -4.0, 'the snapshot does not follow the source')
+ck(Math.Matrix(mi).get(0,0) == 1.0, 'an emptied source answers the identity')
+
+# The attribute refusal leaves the slot alone.
+ck(msg(TypeError, lambda: setattr(mi, 'source', 1)) ==
+   'source must be set to a MatrixProvider or None', 'the source slot refusal')
+ck(mi.source is None, 'a refusal leaves the slot')
+
+__probe = '; '.join(_f) or 'ok'
+"#,
+            );
+            assert_eq!(text, "ok", "math matrixinverse behaviour mismatch: {text}");
+        });
+    }
+
+    /// `BigWorld.callback` and `BigWorld.cancelCallback` behave as the
+    /// reference's client timer pair does (`lib/pyscript/py_callback.cpp`,
+    /// the `#ifndef MF_SERVER` file): a registration returns a positive
+    /// `int` handle that increases with every registration, a pending
+    /// callback fires once at its deadline and not again, cancelling a
+    /// pending callback keeps it from firing while cancelling a missing,
+    /// invalid or already-fired handle is a quiet `None` no-op,
+    /// re-registering a fired function issues a fresh higher handle, a
+    /// negative delay clamps to zero, equal deadlines fire in registration
+    /// order, a zero-delay timer registered during its own tick waits one
+    /// frame, a callback cannot cancel the record running it (it still
+    /// leaves and the tick keeps going), a callback that raises is logged
+    /// with the reference's composed message without stopping the tick, and
+    /// the two argument-parsing errors carry the reference's strings.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_bigworld_timers_behave_like_the_reference() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let lines = lines.clone();
+            output_writer::set_log_sink(move |line, is_stderr| {
+                lines.lock().unwrap().push((line.to_owned(), is_stderr));
+            });
+        }
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            let read = |source: &str| probe(interpreter, source);
+            let mut faults: Vec<String> = Vec::new();
+            macro_rules! ck {
+                ($cond:expr, $($arg:tt)*) => {
+                    if !($cond) {
+                        faults.push(format!($($arg)*));
+                    }
+                };
+            }
+
+            // The fixture: a log of every firing, the error capture, and the
+            // callback targets.
+            read(
+                r#"
+import BigWorld
+log = []
+def make(name):
+    def f():
+        log.append(name)
+    return f
+a = make('a'); b = make('b'); c = make('c'); d = make('d')
+after_self = make('after_self'); after_boom = make('after_boom')
+then = make('then')
+def boom():
+    raise ValueError('boom message')
+"#,
+            );
+            // A positive int handle that climbs per registration, and `None`
+            // from cancelling `b` before it ever fires.
+            let r = read(
+                "h1 = BigWorld.callback(10.0, a)\n\
+                 h2 = BigWorld.callback(10.0, b)\n\
+                 h3 = BigWorld.callback(10.0, c)\n\
+                 __probe = repr((type(h1).__name__, h1 > 0, h2 > h1, h3 > h2,\n\
+                                 BigWorld.cancelCallback(h2) is None))",
+            );
+            ck!(r == "('int', True, True, True, True)", "handles: {r}");
+
+            // Nothing due at 5; a and c fire at 10, once each.
+            timers::set_total_game_time(5.0);
+            timers::tick(5.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "[]", "nothing due at 5: {r}");
+            timers::set_total_game_time(10.0);
+            timers::tick(10.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "['a', 'c']", "a and c fire, cancelled b does not: {r}");
+            timers::set_total_game_time(20.0);
+            timers::tick(20.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "['a', 'c']", "one-shot: nothing fires again: {r}");
+
+            // Cancelling an invalid, unknown or already-fired handle is a
+            // quiet no-op.
+            let r = read(
+                "__probe = repr((BigWorld.cancelCallback(0) is None,\n\
+                                 BigWorld.cancelCallback(999999) is None,\n\
+                                 BigWorld.cancelCallback(h1) is None))",
+            );
+            ck!(r == "(True, True, True)", "quiet cancels: {r}");
+
+            // Re-registration: a fresh, higher handle for the same function
+            // that fires again (game time 20 + 5 = 25).
+            let h3n: i64 = read("__probe = h3").parse().expect("h3 is an int handle");
+            let r = read("h4 = BigWorld.callback(5.0, b)\n__probe = h4");
+            let h4n: i64 = r.parse().expect("h4 is an int handle");
+            ck!(
+                h4n > h3n,
+                "re-registration raises the handle: {h3n} -> {h4n}"
+            );
+            timers::set_total_game_time(24.0);
+            timers::tick(24.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "['a', 'c']", "re-registered b not due at 24: {r}");
+            timers::set_total_game_time(25.0);
+            timers::tick(25.0);
+            let r = read("__probe = repr(log)");
+            ck!(r == "['a', 'c', 'b']", "re-registered b fires at 25: {r}");
+
+            // A zero-delay timer registered during its own tick waits one
+            // frame: `reenter` fires at 30, the `d` it registers (deadline
+            // 30) is not reached until the next tick.
+            let r = read(
+                "def reenter():\n\
+                 \x20   log.append('r')\n\
+                 \x20   BigWorld.callback(0.0, d)\n\
+                 h5 = BigWorld.callback(0.0, reenter)\n\
+                 __probe = h5",
+            );
+            let h5n: i64 = r.parse().expect("h5 is an int handle");
+            ck!(
+                h5n > h4n,
+                "re-entrant registration raises the handle: {h4n} -> {h5n}"
+            );
+            timers::set_total_game_time(30.0);
+            timers::tick(30.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r']",
+                "reenter fires, its zero-delay child waits a frame: {r}"
+            );
+            timers::tick(30.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd']",
+                "the child fires next tick: {r}"
+            );
+
+            // A callback cannot cancel the record running it: the cancel is
+            // a no-op, the record still leaves, and the tick keeps going to
+            // the next due callback.
+            read(
+                "def self_cancel():\n\
+                 \x20   log.append('s')\n\
+                 \x20   BigWorld.cancelCallback(mine)\n\
+                 mine = BigWorld.callback(0.0, self_cancel)\n\
+                 BigWorld.callback(0.0, after_self)\n\
+                 __probe = 0",
+            );
+            timers::tick(30.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self']",
+                "self-cancel is a no-op and the tick continues: {r}"
+            );
+
+            // Cancelling a later pending callback keeps it from firing; a
+            // sibling with a later deadline still does (deadlines 35 and 40).
+            read(
+                "h_never = BigWorld.callback(5.0, make('never'))\n\
+                 BigWorld.callback(10.0, then)\n\
+                 __probe = 0",
+            );
+            let r = read("__probe = repr(BigWorld.cancelCallback(h_never) is None)");
+            ck!(
+                r == "True",
+                "cancelling the later callback returns None: {r}"
+            );
+            timers::set_total_game_time(40.0);
+            timers::tick(40.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then']",
+                "cancelled never does not fire, then does: {r}"
+            );
+
+            // A negative delay clamps to zero: due at the current game time
+            // (40), it fires on the next tick.
+            read("BigWorld.callback(-5.0, make('neg'))\n__probe = 0");
+            timers::set_total_game_time(50.0);
+            timers::tick(50.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg']",
+                "a negative delay clamps to zero and fires: {r}"
+            );
+
+            // Equal deadlines keep registration order.
+            read(
+                "seq = []\n\
+                 def make_seq(name):\n\
+                 \x20   def f():\n\
+                 \x20       seq.append(name)\n\
+                 \x20   return f\n\
+                 BigWorld.callback(0.0, make_seq('p'))\n\
+                 BigWorld.callback(0.0, make_seq('q'))\n\
+                 BigWorld.callback(0.0, make_seq('w'))\n\
+                 __probe = 0",
+            );
+            timers::set_total_game_time(60.0);
+            timers::tick(60.0);
+            let r = read("__probe = repr(seq)");
+            ck!(
+                r == "['p', 'q', 'w']",
+                "equal deadlines fire in registration order: {r}"
+            );
+
+            // The argument-parsing errors carry the reference's messages.
+            let r = read(
+                "def cap(exc, fn):\n\
+                 \x20   try:\n\
+                 \x20       fn()\n\
+                 \x20   except exc as e:\n\
+                 \x20       return str(e)\n\
+                 \x20   except Exception:\n\
+                 \x20       return 'unexpected'\n\
+                 \x20   return 'no error'\n\
+                 __probe = repr((cap(TypeError, lambda: BigWorld.callback(5.0)),\n\
+                 \x20               cap(TypeError, lambda: BigWorld.callback(5.0, 42)),\n\
+                 \x20               cap(TypeError, lambda: BigWorld.cancelCallback('x'))))",
+            );
+            ck!(
+                r == "('BigWorld.callback: Argument parsing error.', \
+                      'BigWorld.callback: Argument parsing error.', \
+                      'py_cancelCallback: Argument parsing error.')",
+                "argument errors: {r}"
+            );
+
+            // A callback that raises is logged with the reference's composed
+            // message -- `str(value) + " (" + str(type) + ")"` behind the
+            // prefix -- and the tick continues to the next due callback.
+            read("BigWorld.callback(0.0, boom)\nBigWorld.callback(0.0, after_boom)\n__probe = 0");
+            timers::set_total_game_time(70.0);
+            timers::tick(70.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg', \
+                      'after_boom']",
+                "the tick continues past a raising callback: {r}"
+            );
+            {
+                let captured = lines.lock().unwrap();
+                let logged = captured
+                    .iter()
+                    .filter(|(_, stderr)| *stderr)
+                    .map(|(line, _)| line.clone())
+                    .collect::<Vec<_>>();
+                ck!(
+                    logged
+                        .iter()
+                        .any(|line| line
+                            == "BigWorld Callback:  boom message (<class 'ValueError'>)"),
+                    "the raising callback is logged: {logged:?}"
+                );
+            }
+
+            // A malformed record is `Script::ask`'s generic contract, not a
+            // timer-path shape: `BigWorld.callback` validates the callable and
+            // always passes an empty tuple, so these records are only
+            // reachable through the port's `add` (the `Script::addTimer`
+            // surface). Each fires the reference's TypeError, is logged, and
+            // the tick keeps going to the next record.
+            read(
+                "def vec(a, b):\n\
+                 \x20   log.append('vec')\n\
+                 \x20   return a + b\n\
+                 __probe = 0",
+            );
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            unsafe {
+                // A non-callable function with an empty argument tuple.
+                let non_callable =
+                    PyRef::from_owned(capi::PyLong_FromLong(5)).expect("an int object");
+                let empty = PyRef::from_owned(capi::PyTuple_New(0)).expect("an empty tuple");
+                timers::add(non_callable, empty, "Script: ", 0.0);
+
+                // A record whose function and arguments are both null.
+                timers::add(PyRef::empty(), PyRef::empty(), "Script: ", 0.0);
+
+                // A callable with a two-element argument tuple: the general
+                // `call_object` walk, not the empty-tuple fast path.
+                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                let dictionary = capi::PyModule_GetDict(main);
+                let vec_fn = capi::PyDict_GetItemString(dictionary, c"vec".as_ptr());
+                capi::inc_ref(vec_fn);
+                let vec_fn = PyRef::from_owned(vec_fn).expect("the vec function");
+                let pair = capi::PyTuple_New(2);
+                assert_eq!(capi::PyTuple_SetItem(pair, 0, capi::PyLong_FromLong(1)), 0);
+                assert_eq!(capi::PyTuple_SetItem(pair, 1, capi::PyLong_FromLong(2)), 0);
+                let pair = PyRef::from_owned(pair).expect("a pair tuple");
+                timers::add(vec_fn, pair, "Script: ", 0.0);
+            }
+            timers::set_total_game_time(90.0);
+            timers::tick(90.0);
+            let r = read("__probe = repr(log)");
+            ck!(
+                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg', \
+                      'after_boom', 'vec']",
+                "the malformed records leave the tick running to vec: {r}"
+            );
+            {
+                let captured = lines.lock().unwrap();
+                let logged = captured
+                    .iter()
+                    .filter(|(_, stderr)| *stderr)
+                    .map(|(line, _)| line.clone())
+                    .collect::<Vec<_>>();
+                ck!(
+                    logged.iter().any(|line| line
+                        == "Script:  Script call attempted on a non-callable object or  pArgs is not a tuple. (<class 'TypeError'>)"),
+                    "the non-callable record is logged: {logged:?}"
+                );
+                ck!(
+                    logged.iter().any(|line| line
+                        == "Script:  Script call attempted with a NULL function or argument pointers. (<class 'TypeError'>)"),
+                    "the null record is logged: {logged:?}"
+                );
+            }
+
+            // `Script::ask`'s first guard (`if (PyErr_Occurred())
+            // PyErr_Print()`): an exception already pending when the tick
+            // starts is printed before the call, and the record still runs.
+            // `BigWorld.callback` cannot leave one pending (every failed
+            // callback is printed and cleared), so the pending error is set
+            // the way a host-side caller would leave it.
+            read("def quiet():\n\x20   log.append('quiet')\n__probe = 0");
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            unsafe {
+                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                let dictionary = capi::PyModule_GetDict(main);
+                let quiet = capi::PyDict_GetItemString(dictionary, c"quiet".as_ptr());
+                capi::inc_ref(quiet);
+                let quiet = PyRef::from_owned(quiet).expect("the quiet function");
+                let empty = PyRef::from_owned(capi::PyTuple_New(0)).expect("an empty tuple");
+                timers::add(quiet, empty, "Script: ", 0.0);
+                capi::PyErr_SetString(capi::PyExc_TypeError, c"pending before the tick".as_ptr());
+            }
+            timers::set_total_game_time(100.0);
+            timers::tick(100.0);
+            let r = read("__probe = repr(log[-1])");
+            ck!(
+                r == "'quiet'",
+                "the record ran behind the pending error: {r}"
+            );
+            {
+                let captured = lines.lock().unwrap();
+                let logged = captured
+                    .iter()
+                    .filter(|(_, stderr)| *stderr)
+                    .map(|(line, _)| line.clone())
+                    .collect::<Vec<_>>();
+                ck!(
+                    logged
+                        .iter()
+                        .any(|line| line.contains("pending before the tick")),
+                    "the pending error is printed before the call: {logged:?}"
+                );
+            }
+
+            assert!(
+                faults.is_empty(),
+                "timer behaviour mismatch:\n  {}",
+                faults.join("\n  ")
+            );
+        });
+    }
+
     /// The export manifest agrees with the live interpreter: the surface it
     /// marks ported imports and resolves, and its scoping records read true
-    /// against the modules that exist today -- `BigWorld.component` is
-    /// present, the client-only `BigWorld.callback` is not, and `Math`
-    /// imports because the vector widths are ported, while the module row
-    /// stays pending until `Matrix`, `Plane` and the `*Provider` factories
-    /// land.
+    /// against the modules that exist today -- `BigWorld.component` and the
+    /// client-only timer pair `BigWorld.callback`/`cancelCallback` are
+    /// present and callable, and the `Math` module and every delivered row
+    /// it carries are ported, the Client-scope `MatrixAnimation` row still
+    /// pending.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_the_manifest_matches_the_interpreter() {
@@ -2855,10 +5013,20 @@ __probe = '; '.join(_f) or 'ok'
             // SAFETY: both results are owned references from the calls above.
             unsafe {
                 capi::dec_ref(component);
-                // `callback` is client-only surface: its absence is the
-                // scoping fact the manifest pins for BW-03-03-03.
-                let callback = capi::PyObject_GetAttrString(big_world, c"callback".as_ptr());
-                assert!(callback.is_null(), "BigWorld.callback is not here");
+                // The timer pair is the BW-03-03-03 deliverable, and it is
+                // client-only surface: its presence is the fact the manifest
+                // pins for this lane.
+                for name in [c"callback", c"cancelCallback"] {
+                    // SAFETY: `name` is a NUL-terminated C string and the
+                    // module is live.
+                    let function = capi::PyObject_GetAttrString(big_world, name.as_ptr());
+                    assert!(
+                        !function.is_null() && capi::is_callable(function),
+                        "BigWorld.{} is present and callable",
+                        name.to_str().unwrap_or("<non-utf8>")
+                    );
+                    capi::dec_ref(function);
+                }
                 capi::clear_error();
                 capi::dec_ref(big_world);
             }

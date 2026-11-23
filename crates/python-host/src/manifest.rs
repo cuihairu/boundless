@@ -195,7 +195,7 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "callback",
         Kind::Function,
         Scope::Client,
-        Status::Pending,
+        Status::Ported,
         "\"dO\" (float time, callable function)",
         "int callback handle",
         "TypeError \"BigWorld.callback: Argument parsing error.\"; \
@@ -206,7 +206,7 @@ static BIG_WORLD_ITEMS: &[Item] = &[
         "cancelCallback",
         Kind::Function,
         Scope::Client,
-        Status::Pending,
+        Status::Ported,
         "\"i\" (int handle)",
         "None",
         "TypeError \"py_cancelCallback: Argument parsing error.\"",
@@ -549,7 +549,7 @@ static MATH_ITEMS: &[Item] = &[
         "getRegister",
         Kind::Function,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "uint8 register index, up to MAX_TEMP_REGISTERS-1 = 62",
         "a Vector4Provider over the register",
         "TypeError \"() argument 1 is greater than maximum value\"",
@@ -559,7 +559,7 @@ static MATH_ITEMS: &[Item] = &[
         "Matrix",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "|O optional MatrixProvider",
         "21 methods, 7 attributes; ValueError \"Matrix could not be inverted\"",
         "TypeError \"Math.Matrix(): Expected an optional MatrixProvider\"",
@@ -569,7 +569,7 @@ static MATH_ITEMS: &[Item] = &[
         "Plane",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "constructor ignores args; init(p0, p1, p2)",
         "intersectRay(src, dst)",
         "TypeError from the auto argument parse",
@@ -579,7 +579,7 @@ static MATH_ITEMS: &[Item] = &[
         "MatrixProduct",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "read-write attributes a, b",
         "TypeError from the auto argument parse",
@@ -589,7 +589,7 @@ static MATH_ITEMS: &[Item] = &[
         "MatrixInverse",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "one MatrixProvider",
         "read-write attribute source",
         "TypeError from the auto argument parse",
@@ -609,7 +609,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector2",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "floats, one float, or a tuple",
         "set, scale, dot, normalise, tuple, list, distTo, distSqrTo, \
          __getstate__, __setstate__; x, y, length, lengthSquared",
@@ -622,7 +622,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector3",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "floats, one float, or a tuple",
         "as Vector2 plus cross2D, flatDistTo, flatDistSqrTo, setPitchYaw, \
          yaw, pitch, z",
@@ -633,7 +633,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "floats, one float, or a tuple",
         "as Vector3 plus w",
         "as Vector2",
@@ -643,7 +643,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4Product",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "read-write attributes a, b",
         "TypeError from the auto argument parse",
@@ -653,7 +653,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4Animation",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "keyframes, time, duration",
         "TypeError on a bad keyframe",
@@ -663,7 +663,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4Morph",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "optional Vector4",
         "target, duration, time",
         "TypeError from the auto argument parse",
@@ -673,7 +673,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4Translation",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "one MatrixProvider",
         "source",
         "TypeError from the auto argument parse",
@@ -683,7 +683,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4Distance",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "two MatrixProviders",
         "a, b",
         "TypeError from the auto argument parse",
@@ -693,7 +693,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4LFO",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "period, amplitude, phase, time, waveform (SQUARE/TRIANGLE/SINE/SAWTOOTH)",
         "ValueError or TypeError, picked by the enum setter",
@@ -703,7 +703,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4MatrixAdaptor",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "source, position, style (XYZ_SCALE ... LOOKAT_SCALEZ)",
         "ValueError or TypeError, picked by the enum setter",
@@ -713,7 +713,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4Swizzle",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "x, y, z, w",
         "TypeError from the auto argument parse",
@@ -723,7 +723,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4Combiner",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "fn (MULTIPLY...), a, b",
         "ValueError or TypeError, picked by the enum setter",
@@ -733,7 +733,7 @@ static MATH_ITEMS: &[Item] = &[
         "Vector4Shader",
         Kind::Class,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "addOp(opcode, outReg, param1[, param2]), opcodes 0-12",
         "TypeError \"() argument 1 is greater than maximum value\"",
@@ -974,7 +974,7 @@ static ENTRIES: &[Entry] = &[
     Entry {
         module: "Math",
         scope: Scope::Both,
-        status: Status::Pending,
+        status: Status::Ported,
         reference: "lib/pyscript/script_math.cpp:3060 (TempPyVectorInit), lib/pyscript/py_factory_method_link.cpp:40-41",
         note: "the reference documents Math.MatrixProvider (:78), \
                Math.Vector4Provider (:3110), Math.Vector4Basic (:3206-3207) \
@@ -1482,7 +1482,8 @@ mod tests {
     }
 
     /// Ported rows are exactly what the interpreter carries today: the
-    /// BigWorld shell and its `component` attribute, nothing else.
+    /// BigWorld shell and its `component` attribute, plus the Math module's
+    /// delivered surface (the Client-scope `MatrixAnimation` stays pending).
     #[test]
     fn only_the_delivered_surface_is_marked_ported() {
         let ported_modules: Vec<_> = entries()
@@ -1490,7 +1491,7 @@ mod tests {
             .filter(|entry| entry.status == Status::Ported)
             .map(|entry| entry.module)
             .collect();
-        assert_eq!(ported_modules, vec!["BigWorld"]);
+        assert_eq!(ported_modules, vec!["BigWorld", "Math"]);
         let ported_items: Vec<_> = find("BigWorld")
             .unwrap()
             .items
@@ -1498,7 +1499,40 @@ mod tests {
             .filter(|item| item.status == Status::Ported)
             .map(|item| item.name)
             .collect();
-        assert_eq!(ported_items, vec!["component"]);
+        assert_eq!(
+            ported_items,
+            vec!["component", "callback", "cancelCallback"]
+        );
+        let math_items: Vec<_> = find("Math")
+            .unwrap()
+            .items
+            .iter()
+            .filter(|item| item.status == Status::Ported)
+            .map(|item| item.name)
+            .collect();
+        assert_eq!(
+            math_items,
+            vec![
+                "getRegister",
+                "Matrix",
+                "Plane",
+                "MatrixProduct",
+                "MatrixInverse",
+                "Vector2",
+                "Vector3",
+                "Vector4",
+                "Vector4Product",
+                "Vector4Animation",
+                "Vector4Morph",
+                "Vector4Translation",
+                "Vector4Distance",
+                "Vector4LFO",
+                "Vector4MatrixAdaptor",
+                "Vector4Swizzle",
+                "Vector4Combiner",
+                "Vector4Shader",
+            ]
+        );
     }
 
     /// Rendering a row spells the scope and the status the way the
@@ -1566,10 +1600,20 @@ mod tests {
         );
         assert_eq!(
             uncarried,
-            vec![Mismatch::ItemMissing {
-                module: "BigWorld",
-                item: "component"
-            }]
+            vec![
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "component"
+                },
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "callback"
+                },
+                Mismatch::ItemMissing {
+                    module: "BigWorld",
+                    item: "cancelCallback"
+                },
+            ]
         );
         assert_eq!(
             uncarried[0].render(),

@@ -123,6 +123,19 @@ pub unsafe fn py_tuple_check(obj: *mut PyObject) -> bool {
     unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTuple_Type)) }
 }
 
+/// `PyCallable_Check`, the C API macro (`cpython/abstract.h`: the object has
+/// `__call__`). The macro is `PyObject_CheckMethod(obj) ||
+/// PyObject_HasAttr(obj, "_call_")`; the attribute test is the portable half,
+/// the same choice the port's other macro ports make.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn is_callable(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyObject_HasAttrString(obj, c"__call__".as_ptr()) == 1 }
+}
+
 /// `PyList_Check`, the C API macro (`PyObject_TypeCheck` against
 /// `&PyList_Type`), exact match as for `py_tuple_check`.
 ///
@@ -132,6 +145,43 @@ pub unsafe fn py_list_check(obj: *mut PyObject) -> bool {
         return false;
     }
     unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyList_Type)) }
+}
+
+/// `PyFloat_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyFloat_Type`). Subtype-aware, so a float subclass passes; the
+/// reference's float converter relies on that.
+///
+/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
+pub unsafe fn py_float_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyFloat_Type)) == 1 }
+}
+
+/// `PyLong_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyLong_Type`). Subtype-aware, so `bool` -- a subclass of `int` -- passes,
+/// exactly as the reference's float converter accepts a truth value.
+///
+/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
+pub unsafe fn py_long_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyLong_Type)) == 1 }
+}
+
+/// `PyUnicode_Check`, the C API macro (`PyObject_TypeCheck` against
+/// `&PyUnicode_Type`). Subtype-aware, so `str` and its subclasses pass; the
+/// reference's enum converter (`script.hpp:830-869`) relies on the exact
+/// `PyUnicode_Check` shape to pick its error class.
+///
+/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
+pub unsafe fn py_unicode_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyUnicode_Type)) == 1 }
 }
 
 /// `PyBytes_Check`, the C API macro (`PyObject_TypeCheck` against
@@ -184,6 +234,10 @@ pub type Setter =
 /// `tp_new`: the construction entry a type may refuse.
 pub type NewFunction =
     unsafe extern "C" fn(*mut PyTypeObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+
+/// `tp_dealloc` (`object.h`): the destruction entry, which must release the
+/// instance body and then hand the allocation back with `PyObject_Free`.
+pub type DeallocFunction = unsafe extern "C" fn(*mut PyObject);
 
 /// `binaryfunc`: the two-operand number-protocol handler (`nb_add`, ...).
 pub type BinaryFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
@@ -268,6 +322,8 @@ pub const Py_tp_new: c_int = 65;
 pub const Py_tp_repr: c_int = 66;
 /// `Py_tp_base` (`typeslots.h`): the heap type's base, a `PyTypeObject*`.
 pub const Py_tp_base: c_int = 48;
+/// `Py_tp_dealloc` (`typeslots.h`): the destruction entry.
+pub const Py_tp_dealloc: c_int = 52;
 /// `Py_TPFLAGS_BASETYPE` (`cpython/object.h`): the type may be subclassed.
 pub const Py_TPFLAGS_BASETYPE: c_uint = 1 << 10;
 /// `PyMappingMethods` (`cpython/object.h`): the mapping protocol table.
@@ -413,6 +469,9 @@ unsafe extern "C" {
     pub static mut PyTuple_Type: PyTypeObject;
     pub static mut PyList_Type: PyTypeObject;
     pub static mut PyBytes_Type: PyTypeObject;
+    pub static mut PyFloat_Type: PyTypeObject;
+    pub static mut PyLong_Type: PyTypeObject;
+    pub static mut PyUnicode_Type: PyTypeObject;
 }
 
 unsafe extern "C" {
@@ -477,6 +536,14 @@ unsafe extern "C" {
         value: *mut PyObject,
     ) -> c_int;
     pub fn PyObject_CallNoArgs(func: *mut PyObject) -> *mut PyObject;
+    /// `PyObject_Vectorcall` (`cpython/object.h`): the 3.13 vectorcall form
+    /// `PyObject_CallObject` expands to, for a tuple of arguments.
+    pub fn PyObject_Vectorcall(
+        callable: *mut PyObject,
+        args: *const *mut PyObject,
+        nargs: PySsize,
+        kwnames: *mut PyObject,
+    ) -> *mut PyObject;
     pub fn PyCFunction_New(def: *mut PyMethodDef, self_: *mut PyObject) -> *mut PyObject;
     pub fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
     pub fn PyTuple_GetItem(tuple: *mut PyObject, index: PySsize) -> *mut PyObject;
@@ -500,6 +567,12 @@ unsafe extern "C" {
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
+    /// `PyObject_Free` (`Include/obmalloc.h`): release an object allocated
+    /// by `PyType_GenericAlloc` for a type that is not GC-tracked. A
+    /// `tp_dealloc` handler calls this after releasing the instance body's
+    /// held references, the same free the reference's `PyObjectPlus`
+    /// destructor reaches.
+    pub fn PyObject_Free(ptr: *mut std::os::raw::c_void);
     pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
     pub fn PyObject_GenericGetAttr(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericSetAttr(
@@ -528,6 +601,7 @@ unsafe extern "C" {
     pub fn PyList_AsTuple(list: *mut PyObject) -> *mut PyObject;
     pub fn PySequence_Size(obj: *mut PyObject) -> PySsize;
     pub fn PySequence_GetItem(obj: *mut PyObject, index: PySsize) -> *mut PyObject;
+    pub fn PySequence_Check(obj: *mut PyObject) -> c_int;
 }
 
 #[cfg(test)]
