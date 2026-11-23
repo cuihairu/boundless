@@ -1290,7 +1290,8 @@
 
 作为 Boundless 新增的 DBApp 主存储后端，与 MySQL、XML 共用存储接口，通过配置选择。实现实体/账号字段映射、DBID 分配、索引与约束、事务、并发锁和连接恢复。复用存储契约测试，覆盖创建、装载、更新、删除、账号重登、auto-load 和二级库归档合并。以原版 MySQL 路径的实体状态、错误语义与回调结果作为行为基准。
 
-- [ ] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
+- [x] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
+  - 证据：`crates/db/src/config.rs` + `crates/server-runtime/src/dbapp.rs`（0ea3eaf）——后端选择对齐原版 `lib/db/db_config.cpp` 的 `<dbMgr><db><type>` 字符串选项（默认 `xml`，本端口引擎名 `xml`/`mysql`/`postgresql`）；`StorageBackend::from_config_name` 对未知名走 `DbError::UnknownBackend`，Display 文本即 `server/dbapp/dbapp.cpp` 的 "Failed to create database of type: %s"；`DbApp::init_from_type_name("postgresql")` 启动后 `engine_report()` == `"Database engine = postgresql"`（`dbapp.cpp:427` `DBENGINE_INFO_MSG("Database engine = %s\n")` 逐字对齐）。`<db/postgresql>` 子节 `PostgresConnection{host,port=5432,database,username,password}` 供后续连接使用。**验收**：3 测覆盖默认 xml / postgresql 报告行 / 未知名失败；db+server-runtime 646 测绿，新文件 llvm-cov 行覆盖 100%（config.rs 76/76、dbapp.rs 32/32、error.rs 21/21）。
 - [ ] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。
 - [ ] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。
 - [ ] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。
