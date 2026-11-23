@@ -1311,7 +1311,8 @@
 
 - [x] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。
   - 证据：`crates/db-postgres/src/schema_init.rs`（e71ccdc）——`plan()` 逐句移植 `sync_db/mysql_synchronise.cpp createSpecialBigWorldTables`：11 张固定表 `bigworldInfo/bigworldEntityTypes/bigworldLogOns/bigworldLogOnMapping/bigworldNewID/bigworldUsedIDs/bigworldGameTime/bigworldSpaces/bigworldSpaceData/bigworldSecondaryDatabases/bigworldEntityDefsChecksum` + 2 个索引，全部 `CREATE TABLE IF NOT EXISTS`（幂等）；类型宽度按 PG 无无符号口径换算（INT UNSIGNED→BIGINT、INT→INTEGER、SMALLINT UNSIGNED→INTEGER、BOOL→BOOLEAN DEFAULT FALSE、CHAR(255)→VARCHAR(255)、VARBINARY/BLOB→BYTEA、AUTO_INCREMENT→BIGSERIAL）；主键逐一对齐（`PRIMARY KEY(typeID, databaseID)`、logOnName 主键、bigworldSpaces id UNIQUE）。版本种子走 `getBigWorldDBVersion`（table_inspector.cpp:300-315）语义：空表插 `DBAPP_CURRENT_VERSION=9`（versions.hpp），`WHERE NOT EXISTS` 守卫。`apply()` 顺序执行 plan。**验收**：`tests/schema_init.rs` 对本地 PG18 真跑——空库 0 表→apply 后 11 表全在、版本读回 9、实体表可建可写可读（DBApp 启动口径）、二次 apply 不变（版本行仍 1）；2 测绿，schema_init.rs llvm-cov 行 182/182 100%；工作区 3039 测绿。
-- [ ] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。
+- [x] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。
+  - 证据：`crates/db-postgres/src/dry_run.rs`（022bee4）——读语句判据逐条对齐 `sync_db/mysql_dry_run_wrapper.cpp isReadOnlyStatement`（SELECT/SHOW/EXPLAIN 可执行，带 `FOR UPDATE`/`LOCK IN SHARE MODE` 的 SELECT 不算读），报告行格式沿用 `DRYRUN:\t%s;`。`plan_missing_schema` 只读巡检（pg_tables/pg_indexes/版本行，全走 SELECT）产出缺失清单：空库报全量 14 句（11 表+2 索引+版本种子），已初始化库报空；种子条件含"表不存在"（plan 应用后表即在，种子随后有效）。**验收**：`tests/dry_run.rs` 对本地 PG18 真跑——空库 dry-run 后 pg_tables 计数仍 0、版本表仍不存在（库未变），报告 14 行 `DRYRUN:` 前缀，把报告的语句 apply 即达目标态（11 表、版本 9）；部分初始化库只报缺口（10 表+2 索引+种子），补齐后再次巡检为空；3 测绿，dry_run.rs llvm-cov 行 99/99 100%；工作区 3045 测绿。
 - [ ] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。
 - [ ] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。
 - [ ] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。
