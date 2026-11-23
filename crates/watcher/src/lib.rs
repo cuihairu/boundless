@@ -49,6 +49,21 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+pub mod forwarding;
+pub mod path_request;
+pub mod stream;
+
+pub use forwarding::{
+    ComponentTarget, ForwardingCollector, ForwardingTransport, ForwardingWatcher,
+};
+pub use path_request::{WatcherPathRequestV1, WatcherPathRequestV2};
+pub use stream::{
+    MODE_CALLABLE, MODE_DIRECTORY, MODE_INVALID, MODE_READ_ONLY, MODE_READ_WRITE, MemoryIStream,
+    MemoryOStream, StreamValue, TYPE_TUPLE, TYPE_UNKNOWN, WRITES_TOGGLE_PATH,
+    calculate_packed_int_size, mode_byte, set_writes_enabled, stream_to_value, value_to_stream,
+    writes_enabled,
+};
+
 /// `WATCHER_SEPARATOR` (`watcher.hpp:67`): the path component separator.
 pub const SEPARATOR: char = '/';
 
@@ -136,6 +151,23 @@ pub trait Watcher {
         None
     }
 
+    /// `Watcher::getAsStream` (`watcher.cpp:160-198` shape): write the
+    /// protocol 2 form of the value at `path` onto the request's result
+    /// stream and report back through `setResult`. `false` when the path
+    /// does not resolve. Only the tree's leaves and directories answer.
+    fn get_as_stream(&self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        let _ = (path, request);
+        false
+    }
+
+    /// `Watcher::setFromStream` (`watcher.cpp:224-243` shape): decode the
+    /// request's value stream into the leaf at `path`, then answer on the
+    /// request's result stream. `false` leaves everything untouched.
+    fn set_from_stream(&mut self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        let _ = (path, request);
+        false
+    }
+
     /// The watcher's comment (`watcher.hpp:956`, `comment_`).
     fn comment(&self) -> &str;
 
@@ -156,6 +188,18 @@ pub trait WatcherValue: 'static {
     fn from_cpp_string(value: &str) -> Option<Self>
     where
         Self: Sized;
+    /// The `watcherValueToStream` overload (`watcher.hpp:962-1040`) the
+    /// reference binds for this leaf's type: the numeric types carry typed
+    /// payloads, every other type falls to the generic STRING template.
+    fn to_stream_value(&self) -> StreamValue;
+    /// `watcherStreamToValue`'s final step (`watcher.hpp:160-678`): accept
+    /// the decoded payload of the matching wire type -- including the
+    /// same-family width upcasts the reference performs -- or re-parse a
+    /// STRING one through the protocol 1 rules. `None` on every other
+    /// shape, the port of the reference's type/width rejections.
+    fn from_stream_value(value: StreamValue) -> Option<Self>
+    where
+        Self: Sized;
 }
 
 impl WatcherValue for i32 {
@@ -167,6 +211,21 @@ impl WatcherValue for i32 {
     }
     fn from_cpp_string(value: &str) -> Option<Self> {
         parse_istream_int(value).and_then(|v| i32::try_from(v).ok())
+    }
+    fn to_stream_value(&self) -> StreamValue {
+        // `watcherValueToStream(const int &)` (`watcher.hpp:982-989`).
+        StreamValue::Int(*self)
+    }
+    /// `watcherStreamToValueType(int32 &)` (`watcher.hpp:313-348`): a four
+    /// byte INT decodes straight in, an eight byte INT downcasts, a STRING
+    /// re-parses through the protocol 1 rules.
+    fn from_stream_value(value: StreamValue) -> Option<Self> {
+        match value {
+            StreamValue::Int(v) => Some(v),
+            StreamValue::Int64(v) => Some(v as i32),
+            StreamValue::Str(s) => Self::from_cpp_string(&s),
+            _ => None,
+        }
     }
 }
 
@@ -182,6 +241,20 @@ impl WatcherValue for u32 {
         // ("num_get" semantics): "-5" becomes 4294967291.
         parse_istream_int(value).map(|v| (v.rem_euclid(1 << 32)) as u32)
     }
+    fn to_stream_value(&self) -> StreamValue {
+        // `watcherValueToStream(const unsigned int &)` (`watcher.hpp:992-999`).
+        StreamValue::Uint(*self)
+    }
+    /// `watcherStreamToValueType(uint32 &)` (`watcher.hpp:448-468`): only a
+    /// four byte UINT decodes; every other wire shape fails into the string
+    /// fallback and there fails again.
+    fn from_stream_value(value: StreamValue) -> Option<Self> {
+        match value {
+            StreamValue::Uint(v) => Some(v),
+            StreamValue::Str(s) => Self::from_cpp_string(&s),
+            _ => None,
+        }
+    }
 }
 
 impl WatcherValue for i64 {
@@ -194,6 +267,21 @@ impl WatcherValue for i64 {
     fn from_cpp_string(value: &str) -> Option<Self> {
         parse_istream_int(value)
     }
+    fn to_stream_value(&self) -> StreamValue {
+        // `watcherValueToStream(const int64 value)` (`watcher.hpp:1033-1040`):
+        // INT with an eight byte payload.
+        StreamValue::Int64(*self)
+    }
+    /// `watcherStreamToValueType(int64 &)` (`watcher.hpp:352-383`): an
+    /// eight byte INT decodes straight in, a four byte INT upcasts.
+    fn from_stream_value(value: StreamValue) -> Option<Self> {
+        match value {
+            StreamValue::Int64(v) => Some(v),
+            StreamValue::Int(v) => Some(i64::from(v)),
+            StreamValue::Str(s) => Self::from_cpp_string(&s),
+            _ => None,
+        }
+    }
 }
 
 impl WatcherValue for u64 {
@@ -205,6 +293,23 @@ impl WatcherValue for u64 {
     }
     fn from_cpp_string(value: &str) -> Option<Self> {
         parse_istream_int(value).map(|v| (v as i128).rem_euclid(1i128 << 64) as u64)
+    }
+    fn to_stream_value(&self) -> StreamValue {
+        // The reference has no `const uint64 &` encode overload, so a
+        // `DataWatcher<uint64>` falls to the generic STRING template
+        // (`watcher.hpp:962-969`) and travels as its rendered text.
+        StreamValue::Str(self.to_cpp_string())
+    }
+    /// `watcherStreamToValueType(uint64 &)` (`watcher.hpp:472-499`): an
+    /// eight byte UINT decodes. The reference's four byte upcast path falls
+    /// through to a second eight byte read and so fails in practice; the
+    /// port fails it the same way.
+    fn from_stream_value(value: StreamValue) -> Option<Self> {
+        match value {
+            StreamValue::Uint64(v) => Some(v),
+            StreamValue::Str(s) => Self::from_cpp_string(&s),
+            _ => None,
+        }
     }
 }
 
@@ -220,6 +325,21 @@ impl WatcherValue for f32 {
     fn from_cpp_string(value: &str) -> Option<Self> {
         parse_istream_double(value).map(|v| v as f32)
     }
+    fn to_stream_value(&self) -> StreamValue {
+        // `watcherValueToStream(const float &)` (`watcher.hpp:1002-1009`).
+        StreamValue::Float32(*self)
+    }
+    /// `watcherStreamToValueType(float &)` (`watcher.hpp:529-560`): FLOAT
+    /// width four decodes straight in, width eight downcasts from the
+    /// double.
+    fn from_stream_value(value: StreamValue) -> Option<Self> {
+        match value {
+            StreamValue::Float32(v) => Some(v),
+            StreamValue::Float64(v) => Some(v as f32),
+            StreamValue::Str(s) => Self::from_cpp_string(&s),
+            _ => None,
+        }
+    }
 }
 
 impl WatcherValue for f64 {
@@ -231,6 +351,20 @@ impl WatcherValue for f64 {
     }
     fn from_cpp_string(value: &str) -> Option<Self> {
         parse_istream_double(value)
+    }
+    fn to_stream_value(&self) -> StreamValue {
+        // `watcherValueToStream(const double &)` (`watcher.hpp:1012-1019`).
+        StreamValue::Float64(*self)
+    }
+    /// `watcherStreamToValueType(double &)` (`watcher.hpp:565-596`): FLOAT
+    /// width eight decodes straight in, width four upcasts from the float.
+    fn from_stream_value(value: StreamValue) -> Option<Self> {
+        match value {
+            StreamValue::Float64(v) => Some(v),
+            StreamValue::Float32(v) => Some(f64::from(v)),
+            StreamValue::Str(s) => Self::from_cpp_string(&s),
+            _ => None,
+        }
     }
 }
 
@@ -258,6 +392,20 @@ impl WatcherValue for bool {
             parse_istream_int(value).map(|v| v != 0)
         }
     }
+    fn to_stream_value(&self) -> StreamValue {
+        // `watcherValueToStream(const bool &)` (`watcher.hpp:1022-1029`).
+        StreamValue::Bool(*self)
+    }
+    /// `watcherStreamToValueType(bool &)` (`watcher.hpp:268-288`): a one
+    /// byte BOOL decodes; every other wire shape fails into the string
+    /// fallback.
+    fn from_stream_value(value: StreamValue) -> Option<Self> {
+        match value {
+            StreamValue::Bool(v) => Some(v),
+            StreamValue::Str(s) => Self::from_cpp_string(&s),
+            _ => None,
+        }
+    }
 }
 
 impl WatcherValue for String {
@@ -271,6 +419,18 @@ impl WatcherValue for String {
     fn from_cpp_string(value: &str) -> Option<Self> {
         // `watcherStringToValue(BW::string &)` copies unconditionally.
         Some(value.to_string())
+    }
+    fn to_stream_value(&self) -> StreamValue {
+        // The generic STRING template (`watcher.hpp:962-969`).
+        StreamValue::Str(self.clone())
+    }
+    /// `watcherStreamToValueType(BW::string &)` (`watcher.hpp:647-657`):
+    /// only a STRING payload decodes; scalars are not stringified.
+    fn from_stream_value(value: StreamValue) -> Option<Self> {
+        match value {
+            StreamValue::Str(s) => Some(s),
+            _ => None,
+        }
     }
 }
 
@@ -497,6 +657,55 @@ impl<T: WatcherValue> Watcher for DataWatcher<T> {
         false
     }
 
+    /// `DataWatcher::getAsStream` (`watcher.hpp:2630-2654`): stream the
+    /// typed value in the leaf's own access mode; `__doc__` streams the
+    /// comment read-only.
+    fn get_as_stream(&self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        if path.is_empty() {
+            let mode = self.access;
+            let stream_value = self.value.borrow().to_stream_value();
+            value_to_stream(request.result_mut(), &stream_value, mode_byte(mode));
+            request.set_result_value(&self.comment, mode);
+            true
+        } else if path == "__doc__" {
+            let mode = Mode::ReadOnly;
+            value_to_stream(
+                request.result_mut(),
+                &StreamValue::Str(self.comment.clone()),
+                mode_byte(mode),
+            );
+            request.set_result_value(&self.comment, mode);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `DataWatcher::setFromStream` (`watcher.hpp:2657-2681`): decode the
+    /// request's payload into the leaf, then always stream the leaf back in
+    /// READ_WRITE -- a failed decode echoes the old value and still answers,
+    /// with `false` as the status (`watcher.hpp:2673-2677`).
+    fn set_from_stream(&mut self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        let mut status = false;
+        if path.is_empty() && self.access == Mode::ReadWrite {
+            if let Some(data) = request.value_data() {
+                let mut input = MemoryIStream::new(data);
+                if let Some(parsed) = stream_to_value::<T>(&mut input) {
+                    *self.value.borrow_mut() = parsed;
+                    status = true;
+                }
+            }
+
+            // push the result into the reply stream, assuming mode RW
+            // because we have already set
+            let mode = Mode::ReadWrite;
+            let stream_value = self.value.borrow().to_stream_value();
+            value_to_stream(request.result_mut(), &stream_value, mode_byte(mode));
+            request.set_result_value(&self.comment, mode);
+        }
+        status
+    }
+
     fn comment(&self) -> &str {
         &self.comment
     }
@@ -597,6 +806,46 @@ impl CallableWatcher {
     pub fn is_expose_path(path: &str) -> bool {
         path == "__expose__"
     }
+
+    /// `CallableWatcher::startResultStream` (`watcher.cpp:687-713`): open
+    /// the reply as the tuple `(stdio output, returnValue)` -- a TUPLE
+    /// header in READ_ONLY, the packed total size, the element count, then
+    /// the output string. The caller streams the return value right after
+    /// and closes with [`Self::end_result_stream`].
+    fn start_result_stream(
+        &self,
+        request: &mut WatcherPathRequestV2,
+        output: &str,
+        return_value_size: usize,
+    ) {
+        let result = request.result_mut();
+
+        // Callable watchers always return a tuple of:
+        // ( stdio output string, returnValue )
+        const TUPLE_ITEM_COUNT: i32 = 2;
+
+        result.write_u8(TYPE_TUPLE);
+        result.write_u8(MODE_READ_ONLY);
+
+        let mut result_size = calculate_packed_int_size(TUPLE_ITEM_COUNT);
+        result_size += tuple_element_stream_size(output.len());
+        result_size += tuple_element_stream_size(return_value_size);
+
+        result.write_packed_int(result_size as i32);
+        result.write_packed_int(TUPLE_ITEM_COUNT);
+
+        value_to_stream(
+            result,
+            &StreamValue::Str(output.to_string()),
+            MODE_READ_ONLY,
+        );
+    }
+
+    /// `CallableWatcher::endResultStream` (`watcher.cpp:722-726`): answer
+    /// the request once the return value is on the stream.
+    fn end_result_stream(&self, request: &mut WatcherPathRequestV2) {
+        request.set_result_value(&self.comment, Mode::ReadOnly);
+    }
 }
 
 impl Watcher for CallableWatcher {
@@ -624,6 +873,90 @@ impl Watcher for CallableWatcher {
         false
     }
 
+    /// `CallableWatcher::getAsStream` (`watcher.cpp:756-837`): the marker
+    /// string on the empty path, the comment on `__doc__`, the packed
+    /// argument-descriptor blob on `__args__`, and the expose hint as an
+    /// INT on `__expose__`.
+    fn get_as_stream(&self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        if path.is_empty() {
+            let mode = Mode::Callable;
+            value_to_stream(
+                request.result_mut(),
+                &StreamValue::Str("Callable function".to_string()),
+                mode_byte(mode),
+            );
+            request.set_result_value(&self.comment, mode);
+            return true;
+        }
+        if path == "__doc__" {
+            // <watcher>/__doc__ handling.
+            let mode = Mode::ReadOnly;
+            value_to_stream(
+                request.result_mut(),
+                &StreamValue::Str(self.comment.clone()),
+                mode_byte(mode),
+            );
+            request.set_result_value(&self.comment, mode);
+            return true;
+        }
+        if Self::is_args_path(path) {
+            // <watcher>/__args__ handling (`watcher.cpp:776-826`).
+            let mode = Mode::Callable;
+            let result = request.result_mut();
+
+            result.write_u8(stream::TYPE_TUPLE);
+            result.write_u8(mode_byte(mode));
+
+            // In order to make decoding of the stream re-useable, we throw
+            // the size of the next segment (ie: the count and the tuple
+            // types) on before the count of the number of tuple elements.
+            let mut tmp_result = MemoryOStream::new();
+
+            // Add the number of arguments for the function.
+            tmp_result.write_string_length(self.arg_list.len() as i32);
+
+            // Now for each argument add the name / type.
+            for arg in &self.arg_list {
+                tmp_result.write_u8(TYPE_TUPLE);
+                tmp_result.write_u8(MODE_READ_ONLY);
+
+                // The contents of the argument element tuple.
+                let mut arg_stream = MemoryOStream::new();
+                arg_stream.write_string_length(2); // Arg name + type
+                value_to_stream(
+                    &mut arg_stream,
+                    &StreamValue::Str(arg.description.clone()),
+                    MODE_READ_ONLY,
+                );
+                value_to_stream(
+                    &mut arg_stream,
+                    &StreamValue::DataType(arg.data_type),
+                    MODE_READ_ONLY,
+                );
+
+                tmp_result.write_string_length(arg_stream.size() as i32);
+                tmp_result.add_blob(arg_stream.data());
+            }
+
+            // Prefix the entire argument description with the desc size.
+            result.write_string_length(tmp_result.size() as i32);
+            result.add_blob(tmp_result.data());
+            request.set_result_value(&self.comment, mode);
+            return true;
+        }
+        if Self::is_expose_path(path) {
+            let mode = Mode::ReadOnly;
+            value_to_stream(
+                request.result_mut(),
+                &StreamValue::Int(self.expose_hint as i32),
+                mode_byte(mode),
+            );
+            request.set_result_value(&self.comment, mode);
+            return true;
+        }
+        false
+    }
+
     fn comment(&self) -> &str {
         &self.comment
     }
@@ -631,6 +964,14 @@ impl Watcher for CallableWatcher {
     fn set_comment(&mut self, comment: String) {
         self.comment = comment;
     }
+}
+
+/// `CallableWatcher::tupleElementStreamSize` (`watcher.hpp:2905-2912`): the
+/// wire size of one tuple element -- the type/mode byte pair, the packed
+/// payload length and the payload itself.
+fn tuple_element_stream_size(payload_size: usize) -> usize {
+    const TYPE_OVERHEAD: usize = 2;
+    TYPE_OVERHEAD + calculate_packed_int_size(payload_size as i32) + payload_size
 }
 
 /// `NoArgFuncCallableWatcher::Function` (`watcher.hpp:2949-2950`): fills
@@ -683,6 +1024,76 @@ impl Watcher for NoArgFuncCallableWatcher {
 
     fn set_from_string(&mut self, path: &str, value: &str) -> bool {
         self.callable.set_from_string(path, value)
+    }
+
+    fn get_as_stream(&self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        self.callable.get_as_stream(path, request)
+    }
+
+    /// `NoArgCallableWatcher::setFromStream` (`watcher.cpp:857-943`): drain
+    /// the (possibly empty) argument tuple off the request's payload, run
+    /// the function, and answer with the `(output, value)` result tuple.
+    fn set_from_stream(&mut self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        if !path.is_empty() || !request.has_value_stream() {
+            // ERROR_MSG: function watcher called with bad path or stream.
+            return false;
+        }
+
+        {
+            let data = request.value_data().expect("checked value stream");
+            let mut input = MemoryIStream::new(data);
+            let type_byte = input.read_u8();
+
+            if type_byte == TYPE_TUPLE {
+                /* int size = */
+                let _size = input.read_packed_int();
+                let parameter_count = input.read_packed_int();
+                if input.error() {
+                    // ERROR_MSG: called with insufficient data.
+                    return false;
+                }
+                // A non-zero count only draws a warning: this callable takes
+                // no arguments (`watcher.cpp:889-894`).
+                let _ = parameter_count;
+            } else if type_byte == stream::TYPE_STRING {
+                // Backwards compatibility -- PyCommon before 2.6 sent ""
+                // instead of an empty tuple for retiring apps.
+                match stream::stream_to_value_type(&mut input, type_byte) {
+                    Some(StreamValue::Str(string_param)) => {
+                        // A non-empty string only draws a warning
+                        // (`watcher.cpp:908-914`).
+                        let _ = string_param;
+                    }
+                    _ => {
+                        // ERROR_MSG: called with insufficient data.
+                        return false;
+                    }
+                }
+            } else {
+                // WARNING: non-tuple data as the argument list; the
+                // reference continues to the call (`watcher.cpp:916-922`).
+            }
+
+            input.finish();
+        }
+
+        match self.on_call() {
+            Some((output, value)) => {
+                self.callable
+                    .start_result_stream(request, &output, value.len());
+                value_to_stream(
+                    request.result_mut(),
+                    &StreamValue::Str(value),
+                    MODE_READ_ONLY,
+                );
+                self.callable.end_result_stream(request);
+                true
+            }
+            None => {
+                // WARNING: function call failed.
+                false
+            }
+        }
     }
 
     fn comment(&self) -> &str {
@@ -759,6 +1170,49 @@ impl Watcher for DirectoryWatcher {
                 .watcher
                 .borrow_mut()
                 .set_from_string(tail(path), value),
+            None => false,
+        }
+    }
+
+    /// `DirectoryWatcher::getAsStream` (`watcher.cpp:160-195`): the empty
+    /// path streams "<DIR>" and then the children through the request's
+    /// directory visit; `__doc__` streams the comment read-only; anything
+    /// else descends.
+    fn get_as_stream(&self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        if path.is_empty() {
+            let mode = Mode::Directory;
+            value_to_stream(
+                request.result_mut(),
+                &StreamValue::Str("<DIR>".to_string()),
+                mode_byte(mode),
+            );
+            request.set_result_directory(&self.comment, self);
+            return true;
+        }
+        if path == "__doc__" {
+            let mode = Mode::ReadOnly;
+            value_to_stream(
+                request.result_mut(),
+                &StreamValue::Str(self.comment.clone()),
+                mode_byte(mode),
+            );
+            request.set_result_value(&self.comment, mode);
+            return true;
+        }
+        match self.find_child(path) {
+            Some(found) => found.watcher.borrow().get_as_stream(tail(path), request),
+            None => false,
+        }
+    }
+
+    /// `DirectoryWatcher::setFromStream` (`watcher.cpp:224-239`): descend
+    /// only; a directory itself takes no value.
+    fn set_from_stream(&mut self, path: &str, request: &mut WatcherPathRequestV2) -> bool {
+        match self.find_child(path) {
+            Some(found) => found
+                .watcher
+                .borrow_mut()
+                .set_from_stream(tail(path), request),
             None => false,
         }
     }
@@ -947,6 +1401,7 @@ pub fn set_watcher_string(path: &str, value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream::{MODE_CALLABLE, TYPE_BOOL, TYPE_FLOAT, TYPE_INT, TYPE_STRING, TYPE_UINT};
 
     /// A read-write i32 leaf at "game/rounds" answers its value and mode.
     #[test]
@@ -1673,5 +2128,307 @@ mod tests {
         assert_eq!(desc, "run the thing");
         assert_eq!(mode, Mode::Callable);
         assert!(!set_watcher_string("tools/do_thing", "1"));
+    }
+
+    /// The string payload of a stream set carrying `text` in READ_WRITE.
+    fn stream_string_payload(text: &str) -> Vec<u8> {
+        let mut payload = MemoryOStream::new();
+        value_to_stream(
+            &mut payload,
+            &StreamValue::Str(text.to_string()),
+            MODE_READ_WRITE,
+        );
+        payload.data().to_vec()
+    }
+
+    /// A leaf of every supported type round-trips through stream sets:
+    /// typed payloads apply, strings re-parse through protocol 1, widths
+    /// up- and down-cast, and wrong types leave the value untouched.
+    #[test]
+    fn every_leaf_type_round_trips_through_stream_sets() {
+        fini();
+        let typed = |path: &str, payload: Vec<u8>| {
+            let mut request = WatcherPathRequestV2::new(path);
+            request.set_sequence_number(1);
+            request.set_packet_data(payload);
+            assert!(request.set_watcher_value());
+        };
+
+        // uint32: typed UINT, then a protocol 1 string.
+        let value = Rc::new(RefCell::new(1u32));
+        add_watcher_value("u32", &value, Mode::ReadWrite, "");
+        typed("u32", vec![TYPE_UINT, MODE_READ_WRITE, 4, 9, 0, 0, 0]);
+        assert_eq!(*value.borrow(), 9);
+        typed("u32", stream_string_payload("44"));
+        assert_eq!(*value.borrow(), 44);
+        // A wrong type fails the decode and echoes the old value.
+        typed("u32", vec![TYPE_INT, MODE_READ_WRITE, 4, 0, 0, 0, 0]);
+        assert_eq!(*value.borrow(), 44);
+
+        // int32 accepts a downcast INT64.
+        let value = Rc::new(RefCell::new(0i32));
+        add_watcher_value("i32", &value, Mode::ReadWrite, "");
+        typed(
+            "i32",
+            vec![TYPE_INT, MODE_READ_WRITE, 8, 7, 0, 0, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(*value.borrow(), 7);
+
+        // int64 accepts an upcast INT and a string.
+        let value = Rc::new(RefCell::new(0i64));
+        add_watcher_value("i64", &value, Mode::ReadWrite, "");
+        typed("i64", vec![TYPE_INT, MODE_READ_WRITE, 4, 5, 0, 0, 0]);
+        assert_eq!(*value.borrow(), 5);
+        typed(
+            "i64",
+            vec![TYPE_INT, MODE_READ_WRITE, 8, 77, 0, 0, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(*value.borrow(), 77);
+        typed("i64", stream_string_payload("-3"));
+        assert_eq!(*value.borrow(), -3);
+        // A wrong type fails the decode and leaves the value.
+        typed("i64", vec![TYPE_BOOL, MODE_READ_WRITE, 1, 1]);
+        assert_eq!(*value.borrow(), -3);
+
+        // uint64 travels as a string and reads UINT64 or strings.
+        let value = Rc::new(RefCell::new(0u64));
+        add_watcher_value("u64", &value, Mode::ReadWrite, "");
+        typed(
+            "u64",
+            vec![TYPE_UINT, MODE_READ_WRITE, 8, 99, 0, 0, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(*value.borrow(), 99);
+        typed("u64", stream_string_payload("11"));
+        assert_eq!(*value.borrow(), 11);
+        // Its get echo is the rendered string (no UINT64 encode overload).
+        let mut request = WatcherPathRequestV2::new("u64");
+        request.set_sequence_number(2);
+        request.fetch_watcher_value();
+        typed(
+            "u64",
+            vec![TYPE_FLOAT, MODE_READ_WRITE, 4, 0, 0, 0xc0, 0x3f],
+        );
+        assert_eq!(*value.borrow(), 11);
+        let mut input = MemoryIStream::new(request.data());
+        let _seq = input.read_u32();
+        assert_eq!(input.read_u8(), TYPE_STRING);
+
+        // float32 takes FLOAT width four and a downcast width eight.
+        let value = Rc::new(RefCell::new(0.0f32));
+        add_watcher_value("f32", &value, Mode::ReadWrite, "");
+        typed(
+            "f32",
+            vec![TYPE_FLOAT, MODE_READ_WRITE, 4, 0, 0, 0xc0, 0x3f],
+        );
+        assert_eq!(*value.borrow(), 1.5);
+        typed(
+            "f32",
+            vec![TYPE_FLOAT, MODE_READ_WRITE, 8, 0, 0, 0, 0, 0, 0, 4, 0x40],
+        );
+        assert!((*value.borrow() - 2.5).abs() < 1e-6);
+        typed("f32", stream_string_payload("0.25"));
+        assert_eq!(*value.borrow(), 0.25);
+        // A wrong type fails the decode and leaves the value.
+        typed("f32", vec![TYPE_INT, MODE_READ_WRITE, 4, 1, 0, 0, 0]);
+        assert_eq!(*value.borrow(), 0.25);
+
+        // float64 takes FLOAT width eight and an upcast width four.
+        let value = Rc::new(RefCell::new(0.0f64));
+        add_watcher_value("f64", &value, Mode::ReadWrite, "");
+        typed(
+            "f64",
+            vec![TYPE_FLOAT, MODE_READ_WRITE, 8, 0, 0, 0, 0, 0, 0, 4, 0x40],
+        );
+        assert_eq!(*value.borrow(), 2.5);
+        typed(
+            "f64",
+            vec![TYPE_FLOAT, MODE_READ_WRITE, 4, 0, 0, 0xc0, 0x3f],
+        );
+        assert_eq!(*value.borrow(), 1.5);
+        typed("f64", stream_string_payload("0.5"));
+        assert_eq!(*value.borrow(), 0.5);
+        // A wrong type fails the decode and leaves the value.
+        typed("f64", vec![TYPE_UINT, MODE_READ_WRITE, 4, 1, 0, 0, 0]);
+        assert_eq!(*value.borrow(), 0.5);
+
+        // bool takes a one byte BOOL and protocol 1 words.
+        let value = Rc::new(RefCell::new(false));
+        add_watcher_value("b", &value, Mode::ReadWrite, "");
+        typed("b", vec![TYPE_BOOL, MODE_READ_WRITE, 1, 1]);
+        assert!(*value.borrow());
+        typed("b", stream_string_payload("false"));
+        assert!(!*value.borrow());
+        // A wrong type fails the decode and leaves the value.
+        typed("b", vec![TYPE_INT, MODE_READ_WRITE, 4, 1, 0, 0, 0]);
+        assert!(!*value.borrow());
+
+        // A string leaf takes strings.
+        let value = Rc::new(RefCell::new(String::from("")));
+        add_watcher_value("s", &value, Mode::ReadWrite, "");
+        typed("s", stream_string_payload("hey"));
+        assert_eq!(value.borrow().as_str(), "hey");
+        // A wrong type fails the decode and leaves the value.
+        typed("s", vec![TYPE_INT, MODE_READ_WRITE, 4, 1, 0, 0, 0]);
+        assert_eq!(value.borrow().as_str(), "hey");
+
+        // A set with no payload at all still answers, echoing the leaf.
+        let mut request = WatcherPathRequestV2::new("s");
+        request.set_sequence_number(3);
+        assert!(request.set_watcher_value());
+        let mut expected = MemoryOStream::new();
+        expected.write_u32(3);
+        value_to_stream(
+            &mut expected,
+            &StreamValue::Str("hey".to_string()),
+            MODE_READ_WRITE,
+        );
+        assert_eq!(request.data(), expected.data());
+    }
+
+    /// The callable answers itself as "Callable function" in CALLABLE,
+    /// its comment on `__doc__`, and nothing on unknown pseudo paths.
+    #[test]
+    fn callable_self_and_doc_answer() {
+        fini();
+        let cb = CallableWatcher::new(ExposeHint::LocalOnly);
+        add_watcher("cb", Rc::new(RefCell::new(cb)));
+        let mounted = get_watcher("cb").unwrap();
+        mounted.borrow_mut().set_comment("help".to_string());
+        assert_eq!(mounted.borrow().comment(), "help");
+
+        let mut request = WatcherPathRequestV2::new("cb");
+        request.set_sequence_number(1);
+        request.fetch_watcher_value();
+        let mut expected = MemoryOStream::new();
+        expected.write_u32(1);
+        value_to_stream(
+            &mut expected,
+            &StreamValue::Str("Callable function".to_string()),
+            MODE_CALLABLE,
+        );
+        assert_eq!(request.data(), expected.data());
+
+        let mut request = WatcherPathRequestV2::new("cb/__doc__");
+        request.set_sequence_number(2);
+        request.fetch_watcher_value();
+        let mut expected = MemoryOStream::new();
+        expected.write_u32(2);
+        value_to_stream(
+            &mut expected,
+            &StreamValue::Str("help".to_string()),
+            MODE_READ_ONLY,
+        );
+        assert_eq!(request.data(), expected.data());
+
+        let mut request = WatcherPathRequestV2::new("cb/__nope__");
+        request.set_sequence_number(3);
+        request.fetch_watcher_value();
+        assert_eq!(
+            request.data(),
+            &[3, 0, 0, 0, TYPE_UNKNOWN, MODE_READ_ONLY, 0]
+        );
+    }
+
+    /// Malformed call arguments: wrong paths, missing payloads, short
+    /// tuples, unparseable strings, and the non-tuple warning path that
+    /// the reference still calls through.
+    #[test]
+    fn no_arg_call_rejects_malformed_arguments() {
+        fini();
+        let cb = NoArgFuncCallableWatcher::new(
+            Box::new(|output: &mut String, value: &mut String| {
+                output.push_str("ran");
+                value.push('1');
+                true
+            }),
+            ExposeHint::LocalOnly,
+        );
+        add_watcher("cb", Rc::new(RefCell::new(cb)));
+
+        // A payload-less set hits the same guard.
+        let mut request = WatcherPathRequestV2::new("cb");
+        request.set_sequence_number(1);
+        assert!(request.set_watcher_value());
+        assert_eq!(
+            request.data(),
+            &[1, 0, 0, 0, TYPE_UNKNOWN, MODE_READ_ONLY, 0, 0]
+        );
+
+        // A set through a child path is refused.
+        let mut request = WatcherPathRequestV2::new("cb/deeper");
+        request.set_sequence_number(2);
+        request.set_packet_data(vec![TYPE_TUPLE, MODE_READ_ONLY, 1, 0]);
+        assert!(request.set_watcher_value());
+        assert_eq!(
+            request.data(),
+            &[2, 0, 0, 0, TYPE_UNKNOWN, MODE_READ_ONLY, 0, 0]
+        );
+
+        // A tuple type byte with nothing behind it -- the size read is
+        // the first packed int after the type (`watcher.cpp:877-895`).
+        let mut request = WatcherPathRequestV2::new("cb");
+        request.set_sequence_number(3);
+        request.set_packet_data(vec![TYPE_TUPLE]);
+        assert!(request.set_watcher_value());
+        assert_eq!(
+            request.data(),
+            &[3, 0, 0, 0, TYPE_UNKNOWN, MODE_READ_ONLY, 0, 0]
+        );
+
+        // A string element whose length outruns the stream -- the
+        // packed marker form makes the read error out.
+        let mut request = WatcherPathRequestV2::new("cb");
+        request.set_sequence_number(4);
+        request.set_packet_data(vec![TYPE_STRING, 0xff, 0xff, 0x00, 0x00]);
+        assert!(request.set_watcher_value());
+        assert_eq!(
+            request.data(),
+            &[4, 0, 0, 0, TYPE_UNKNOWN, MODE_READ_ONLY, 0, 0]
+        );
+
+        // The callable's own get answers through the delegation.
+        let mut request = WatcherPathRequestV2::new("cb");
+        request.set_sequence_number(6);
+        request.fetch_watcher_value();
+        let mut expected = MemoryOStream::new();
+        expected.write_u32(6);
+        value_to_stream(
+            &mut expected,
+            &StreamValue::Str("Callable function".to_string()),
+            MODE_CALLABLE,
+        );
+        assert_eq!(request.data(), expected.data());
+
+        // Any other type is drained with a warning and the call runs.
+        let mut request = WatcherPathRequestV2::new("cb");
+        request.set_sequence_number(5);
+        request.set_packet_data(vec![TYPE_INT, MODE_READ_ONLY, 4, 1, 0, 0, 0]);
+        assert!(request.set_watcher_value());
+        let mut input = MemoryIStream::new(request.data());
+        let _seq = input.read_u32();
+        assert_eq!(input.read_u8(), TYPE_TUPLE);
+        assert_eq!(input.read_u8(), MODE_READ_ONLY);
+    }
+
+    /// A directory answers its own comment on `__doc__`.
+    #[test]
+    fn a_directory_answers_doc_with_its_own_comment() {
+        fini();
+        let directory = DirectoryWatcher::new();
+        let watcher: Rc<RefCell<dyn Watcher>> = Rc::new(RefCell::new(directory));
+        watcher.borrow_mut().set_comment("dir help".to_string());
+        add_watcher("d", watcher);
+
+        let mut request = WatcherPathRequestV2::new("d/__doc__");
+        request.set_sequence_number(1);
+        request.fetch_watcher_value();
+        let mut expected = MemoryOStream::new();
+        expected.write_u32(1);
+        value_to_stream(
+            &mut expected,
+            &StreamValue::Str("dir help".to_string()),
+            MODE_READ_ONLY,
+        );
+        assert_eq!(request.data(), expected.data());
     }
 }
