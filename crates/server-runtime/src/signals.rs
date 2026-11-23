@@ -101,8 +101,7 @@ pub fn kernel_pending_signals() -> u32 {
 /// The single `SIGQUIT` handler slot: a thin pointer to a concrete box
 /// wrapping the callback, read straight from signal context (the
 /// reference stores the handler pointer the same way).
-static SIGQUIT_HANDLER: AtomicPtr<QuitSlot> =
-    AtomicPtr::new(std::ptr::null_mut());
+static SIGQUIT_HANDLER: AtomicPtr<QuitSlot> = AtomicPtr::new(std::ptr::null_mut());
 
 type QuitCallback = dyn Fn(i32) + Send + Sync;
 type ArcQuitHandler = Arc<QuitCallback>;
@@ -227,11 +226,7 @@ impl Blocker {
     pub fn new(signals: &Set) -> Self {
         let mut old_signals: libc::sigset_t = unsafe { std::mem::zeroed() };
         unsafe {
-            let result = libc::pthread_sigmask(
-                libc::SIG_SETMASK,
-                signals.raw(),
-                &mut old_signals,
-            );
+            let result = libc::pthread_sigmask(libc::SIG_SETMASK, signals.raw(), &mut old_signals);
             assert_eq!(result, 0, "pthread_sigmask failed");
         }
         Self { old_signals }
@@ -241,11 +236,8 @@ impl Blocker {
 impl Drop for Blocker {
     fn drop(&mut self) {
         unsafe {
-            let result = libc::pthread_sigmask(
-                libc::SIG_SETMASK,
-                &self.old_signals,
-                std::ptr::null_mut(),
-            );
+            let result =
+                libc::pthread_sigmask(libc::SIG_SETMASK, &self.old_signals, std::ptr::null_mut());
             assert_eq!(result, 0, "pthread_sigmask restore failed");
         }
     }
@@ -481,13 +473,9 @@ impl SignalProcessor {
     /// (retrying on `EINTR`), then dispatch it. Only
     /// `TableSynchroniser::run` uses this in the reference.
     pub fn wait_for_signals(&mut self, set: &Set) -> i32 {
-        let mut sig_num =
-            unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
-        while sig_num < 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
-        {
-            sig_num =
-                unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
+        let mut sig_num = unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
+        while sig_num < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            sig_num = unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
         }
         if sig_num >= 0 {
             self.dispatch_signal(sig_num);
@@ -500,8 +488,7 @@ impl Drop for SignalProcessor {
     /// The destructor: reset every signal it still handles to the default
     /// disposition.
     fn drop(&mut self) {
-        let signals: Vec<i32> =
-            self.handlers.iter().map(|(sig, _, _)| *sig).collect();
+        let signals: Vec<i32> = self.handlers.iter().map(|(sig, _, _)| *sig).collect();
         for sig_num in signals {
             unsafe {
                 libc::signal(sig_num, libc::SIG_DFL);
@@ -621,9 +608,7 @@ mod tests {
         unsafe {
             libc::raise(libc::SIGUSR1);
         }
-        assert!(
-            PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR1) != 0
-        );
+        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR1) != 0);
         assert_eq!(counter.load(Ordering::SeqCst), 0, "not yet dispatched");
 
         processor.dispatch();
@@ -669,18 +654,13 @@ mod tests {
                 libc::raise(libc::SIGUSR2);
             }
             // Blocked at delivery: no handler, no pending bit.
-            assert_eq!(
-                PENDING_SIGNALS.load(Ordering::Relaxed),
-                pending_before
-            );
+            assert_eq!(PENDING_SIGNALS.load(Ordering::Relaxed), pending_before);
             assert_eq!(counter.load(Ordering::SeqCst), 0);
         }
 
         // The mask is restored: the kernel delivers now, the C handler
         // marks the bit, dispatch runs the app-side handler.
-        assert!(
-            PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR2) != 0
-        );
+        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR2) != 0);
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
 
@@ -962,9 +942,7 @@ mod tests {
         let _guard = disposition_guard();
         let processor = SignalProcessor::default();
         processor.handle_signal(libc::SIGTERM);
-        assert!(
-            PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGTERM) != 0
-        );
+        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGTERM) != 0);
         PENDING_SIGNALS.store(0, Ordering::Relaxed);
     }
 }

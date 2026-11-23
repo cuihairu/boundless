@@ -750,7 +750,7 @@ mod tests {
             ran: Cell::new(false),
         };
         assert_eq!(ServerApp::app_name(&app), "bareapp");
-        assert!(run_app(&mut app, &[]));
+        assert_eq!(run_app(&mut app, &[]), true);
         assert!(app.ran.get());
 
         // The base shutDown: the INFO line only; the override breaks the
@@ -819,33 +819,6 @@ mod tests {
         Blocker, HandlerId, Set, SignalDispatchTask, SignalProcessor, disposition_of,
         kernel_pending_signals, pending_signals, signal_number_to_string,
     };
-
-    /// Consume a signal the test just parked kernel-pending. Linux polls
-    /// with `sigtimedwait` (zero timeout); the BSD family has no
-    /// `sigtimedwait` in libc, but the signal is guaranteed pending at
-    /// this point, so `sigwait` returns immediately with the same result.
-    fn consume_pending_signal(sig_num: i32) {
-        let mut wait_set = Set::empty();
-        wait_set.set(sig_num);
-        #[cfg(target_os = "linux")]
-        unsafe {
-            let mut info: libc::siginfo_t = std::mem::zeroed();
-            let timeout = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            assert_eq!(
-                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
-                sig_num
-            );
-        }
-        #[cfg(not(target_os = "linux"))]
-        unsafe {
-            let mut received: libc::c_int = 0;
-            assert_eq!(libc::sigwait(wait_set.raw(), &mut received), 0);
-            assert_eq!(received, sig_num);
-        }
-    }
 
     /// A role-app skeleton: owns its dispatcher (the `mainDispatcher_`
     /// member) and registers a control-event handler as a frequent task
@@ -953,7 +926,7 @@ mod tests {
         let _blocker = Blocker::new(&blocked);
 
         base_on_signalled(libc::SIGINT);
-        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
         assert!(
             kernel_pending_signals() & (1 << libc::SIGINT) != 0,
             "the re-raised SIGINT waits blocked"
@@ -962,7 +935,19 @@ mod tests {
         // Consume the pending signal so unblocking is safe (the
         // reference lets the default action kill the process; the test
         // must survive).
-        consume_pending_signal(libc::SIGINT);
+        let mut wait_set = Set::empty();
+        wait_set.set(libc::SIGINT);
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
+                libc::SIGINT
+            );
+        }
     }
 
     /// The default `on_signalled` (and the base arm for non-SIGINT
@@ -975,7 +960,7 @@ mod tests {
         base_on_signalled(libc::SIGTERM);
         base_on_signalled(libc::SIGUSR2);
         assert_eq!(kernel_pending_signals(), before);
-        assert_eq!(disposition_of(libc::SIGTERM), libc::SIG_DFL);
+        assert_eq!(disposition_of(libc::SIGTERM), libc::SIG_DFL as usize);
 
         // The trait default routes straight into the base arm.
         struct BareSignalApp;
@@ -1161,14 +1146,26 @@ mod tests {
         processor.dispatch();
 
         assert_eq!(*log.borrow(), ["onSignalled SIGINT"]);
-        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
         assert!(
             kernel_pending_signals() & (1 << libc::SIGINT) != 0,
             "the routed re-raise parks blocked"
         );
 
         // Consume the parked signal while still blocked.
-        consume_pending_signal(libc::SIGINT);
+        let mut wait_set = Set::empty();
+        wait_set.set(libc::SIGINT);
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
+                libc::SIGINT
+            );
+        }
         drop(blocker);
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
@@ -1218,7 +1215,7 @@ mod tests {
             "breaker",
         ))));
 
-        assert!(base_run(&mut app, &mut dispatcher));
+        assert_eq!(base_run(&mut app, &mut dispatcher), true);
         assert!(app.completed.get());
     }
 
