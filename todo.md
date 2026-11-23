@@ -1508,7 +1508,7 @@
 
 移植日志接入协议、组件注册、字段和查询接口、文件日志数据库及条件启用的 MongoDB 后端。用相同事件比较分段、轮转和查询结果。
 
-- [ ] **BW-12-02-01 接入日志协议与组件注册**。**验收** 原版组件能提交固定事件。
+- [x] **BW-12-02-01 接入日志协议与组件注册**。**验收** 原版组件能提交固定事件。`6241b46` 新建 crates/message_logger 落地接入协议两端：线形=扩展消息 `[i32 messageID][payload]`（107 日志/108 注册/109 出生/110 死亡/111 appID；forwarder 写入的 `(int)MESSAGE_LOGGER_MSG` 即传输层 message 字段，watcher_nub.cpp:430-440 只剥 4 字节）；ComponentMessage（version u8+BW::string loggerID+uid u16+pid u32+name string，read 侧 <7 版本 u8 ID→十进制串且 version 升至 10 的兼容臂）；MessageHeader（comp prio+msg prio+source+category；parseAndSend 从不赋 compPriority——C++ 未初始化，移植钉 0 保可复现；v≤7 两元素旧头且 DEPRECATED_SCRIPT(8)→INFO+SCRIPT 源互换，log_storage.cpp:86-95）；format_string.rs 逐状态机移植 bsd_snprintf handleFormatString（onString/onToken 回调，`%lz`/`%Lt` 非法忠实复刻：l/L 修饰吃掉下一字符）；forwarding_handler.rs 参数编解码（WidthType=short 2 字节、d: short 2/int32 4/int64 8（v7 起）、u/o/x 同宽、float 恒 8 字节 double、s 打包长串、p 8 字节、c 1 字节、*(本版解析器不产生)）；registry.rs 工具侧：地址键组件表（Mercury 点分最高字节优先）、handleRegisterRequest 全流耗尽校验、shouldConnect 过滤序（版本界 [7,10]→uid→loggerID（Tools 豁免）→allow→deny）+handleLogMessage 按组件版本选新旧头+按 token 解码参数+尾部元数据字节保留；验收测试原版字节形状信封注册+固定事件提交逐字段吻合；56 测试，llvm-cov 行覆盖 99.11%（1456 行缺 13，余为解析器不可达转换臂）。
 - [ ] **BW-12-02-02 实现日志字段和查询**。**验收** 筛选与排序吻合。
 - [ ] **BW-12-02-03 实现文件日志和分段轮转**。**验收** 读入原版样本且输出对照。
 - [ ] **BW-12-02-04 接入条件 MongoDB 后端**。**验收** 启用构建通过写查夹具。
