@@ -26,17 +26,20 @@
 //! condition into `offset >= body.len()`.
 //!
 //! Left with the channel layer of BW-02-03: the packet chain and its
-//! `nextPacket`, early (`isEarly`) dispatch, the per-channel
-//! `MessageFilter`, the break-loop hook a dying channel pulls
-//! (`header.pBreakLoop`), the fragment reassembly, the
+//! `nextPacket`, early (`isEarly`) dispatch, the break-loop hook a dying
+//! channel pulls (`header.pBreakLoop`), the fragment reassembly, the
 //! `ProcessSocketStatsHelper`, and the table's `onBundleStarted`/
-//! `onBundleFinished` hooks, whose handler takes a `Channel *`.
+//! `onBundleFinished` hooks, whose handler takes a `Channel *`. The
+//! per-channel `MessageFilter` consult seam is present
+//! ([`dispatch_messages_filtered`]); the channel receive path hands its
+//! filter through when that integration lands.
 
 use foundation::stream::BinaryStream;
 
 use crate::endpoint::Address;
 use crate::interface_element::{InterfaceElement, REPLY_MESSAGE_IDENTIFIER};
 use crate::interface_table::InterfaceTable;
+use crate::message_filter::MessageFilter;
 use crate::message_framing::{NEXT_REQUEST_OFFSET_SIZE, REPLY_ID_SIZE, SPECIAL_LENGTH_SIZE};
 use crate::misc::{Reason, ReplyID};
 use crate::unpacked_message_header::{NO_REPLY, UnpackedMessageHeader};
@@ -49,23 +52,44 @@ struct Unpacked {
     data_length: usize,
 }
 
+/// `dispatchMessages( interfaceTable, addr, ... )` with no message filter
+/// fitted: the walk the channel's plain `pMessageFilter() == NULL` arm
+/// takes.
+pub fn dispatch_messages(
+    table: &InterfaceTable,
+    source: &Address,
+    body: &mut [u8],
+    first_request_offset: Option<usize>,
+) -> Reason {
+    dispatch_messages_filtered(table, source, body, first_request_offset, None)
+}
+
 /// `dispatchMessages( interfaceTable, addr, ... )`: walk the messages
 /// packed in `body` and deliver each to the handler its id is served
-/// with.
+/// with, or through the channel's message filter when one is fitted.
 ///
 /// `first_request_offset` is the packet's first-request footer value --
 /// the packet-absolute offset of the bundle's first request -- or
 /// [`None`] when the packet carried no request footer; the request links
 /// each message carries chain the rest, in the same wire terms.
 ///
+/// `message_filter` is the channel's `pMessageFilter()`: the reference
+/// consults it once per bundle and hands the handler the filter does not
+/// decide to defer. This is the `if (!pMessageFilter)` /
+/// `pMessageFilter->filterMessage(...)` arm of
+/// `UDPBundleProcessor::dispatchMessages` (udp_bundle_processor.cpp:171);
+/// the channel layer passes its own filter here, and the baseapp's
+/// `RateLimitMessageFilter` installs one per client channel.
+///
 /// The reference returns the reason it stopped on (`REASON_SUCCESS` when
 /// every message was delivered); the rest of a bundle after an error is
 /// never delivered.
-pub fn dispatch_messages(
+pub fn dispatch_messages_filtered(
     table: &InterfaceTable,
     source: &Address,
     body: &mut [u8],
     first_request_offset: Option<usize>,
+    message_filter: Option<&dyn MessageFilter>,
 ) -> Reason {
     let msg_end = body.len();
     let mut offset = 0usize;
@@ -133,7 +157,14 @@ pub fn dispatch_messages(
             &body[unpacked.data_offset..unpacked.data_offset + unpacked.header.length() as usize],
         );
 
-        handler.handle_message(source, &mut unpacked.header, &mut stream);
+        match message_filter {
+            // or pass to our channel's message filter if it has one
+            Some(filter) => {
+                filter.filter_message(source, &mut unpacked.header, &mut stream, &handler)
+            }
+            // and call the handler
+            None => handler.handle_message(source, &mut unpacked.header, &mut stream),
+        }
 
         // `ie.stopProfile( header.length )` records the delivery against
         // the element (the reference does it under `ENABLE_WATCHERS`).
@@ -952,5 +983,72 @@ mod tests {
         assert_eq!((id, reply), (5, REPLY_ID_NONE));
         assert_eq!(bytes.len(), 255, "the handler sees the declared length");
         assert_eq!(bytes, payload, "the displaced head is put back");
+    }
+
+    /// The channel's message filter seam (BW-02-05-04): a bundle walked
+    /// through a dispatch fitted with a rate limiter delivers only what the
+    /// per-tick budget allows, buffers the rest, and a later tick replays
+    /// the deferred messages to the same handler -- the reference's
+    /// `pMessageFilter->filterMessage(...)` arm of `dispatchMessages`.
+    #[test]
+    fn a_bundle_walked_through_a_rate_limiter_defers_what_the_budget_rejects() {
+        use crate::rate_limit_config::RateLimitConfig;
+        use crate::rate_limit_message_filter::RateLimitMessageFilter;
+
+        let table = InterfaceTable::new();
+        let got = Rc::new(Recorder::default());
+        let element = fixed(3, 2);
+        table.serve(&element, Some(handler_of(&got)));
+
+        // Two messages per tick: the `<=` boundary lets three through
+        // straight away, and the fourth defers.
+        let config = RateLimitConfig::from_per_second(
+            0,
+            2,
+            0,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+            1,
+        );
+        let filter = RateLimitMessageFilter::new(source(), config);
+
+        let mut body = Vec::new();
+        fill_fixed(&mut body, &element, b"AA");
+        fill_fixed(&mut body, &element, b"BB");
+        fill_fixed(&mut body, &element, b"CC");
+        fill_fixed(&mut body, &element, b"DD");
+
+        let reason = dispatch_messages_filtered(&table, &source(), &mut body, None, Some(&filter));
+
+        assert_eq!(reason, Reason::Success);
+        assert_eq!(
+            got.notes(),
+            vec![
+                (3, REPLY_ID_NONE, b"AA".to_vec()),
+                (3, REPLY_ID_NONE, b"BB".to_vec()),
+                (3, REPLY_ID_NONE, b"CC".to_vec()),
+            ],
+            "the walk delivers through the filter's budget"
+        );
+        assert_eq!(filter.num_buffered(), 1, "the over-limit message defers");
+
+        // The spent tick replays nothing; the fresh one delivers the
+        // deferred message to the handler it was deferred with.
+        filter.tick();
+        filter.tick();
+        assert_eq!(
+            got.notes(),
+            vec![
+                (3, REPLY_ID_NONE, b"AA".to_vec()),
+                (3, REPLY_ID_NONE, b"BB".to_vec()),
+                (3, REPLY_ID_NONE, b"CC".to_vec()),
+                (3, REPLY_ID_NONE, b"DD".to_vec()),
+            ],
+            "the deferred message replays to its handler"
+        );
+        assert_eq!(filter.num_buffered(), 0);
     }
 }

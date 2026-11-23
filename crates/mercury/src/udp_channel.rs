@@ -23,6 +23,7 @@ use crate::channel_listener::ChannelListener;
 use crate::circular_array::CircularArray;
 use crate::endpoint::{Address, NONE};
 use crate::fragmented_bundle::{FragmentedBundle, FragmentedBundlePtr};
+use crate::message_filter::MessageFilter;
 use crate::misc::{
     CHANNEL_ID_NULL, ChannelID, ChannelVersion, Reason, SEQ_NULL, SeqNum, seq_less_than, seq_mask,
 };
@@ -205,6 +206,12 @@ pub struct UdpChannel {
     /// pointer shares the filter the same way.
     p_filter: Option<Rc<dyn PacketFilter>>,
 
+    /// `pMessageFilter_` (channel.hpp:288): the channel's message filter.
+    /// `Proxy::attachToClient` (proxy.cpp:584) fits the baseapp's
+    /// `RateLimitMessageFilter` on a client channel with this accessor;
+    /// the dispatch walk consults it instead of the handler.
+    message_filter: Option<Rc<dyn MessageFilter>>,
+
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
     network_interface: Weak<NetworkInterface>,
@@ -253,6 +260,7 @@ impl UdpChannel {
             should_auto_switch_to_src_addr: false,
             num_reliable_packets_sent: 0,
             p_filter: None,
+            message_filter: None,
             small_out_seq_at: 0,
             large_out_seq_at: 0,
             oldest_unacked_seq: SEQ_NULL,
@@ -1645,6 +1653,20 @@ impl UdpChannel {
         self.set_p_filter(cipher.map(|cipher| {
             crate::encryption_filter::EncryptionFilter::create(cipher) as Rc<dyn PacketFilter>
         }));
+    }
+
+    /// `pMessageFilter()` (channel.hpp:171): the channel's message filter,
+    /// if one is fitted.
+    pub fn message_filter(&self) -> Option<Rc<dyn MessageFilter>> {
+        self.message_filter.clone()
+    }
+
+    /// `pMessageFilter( MessageFilter * )` (channel.hpp:161).
+    /// `Proxy::attachToClient` (proxy.cpp:584) fits the baseapp's
+    /// `RateLimitMessageFilter` here, so every message the client sends is
+    /// rate limited against its configured per-tick budgets.
+    pub fn set_message_filter(&mut self, filter: Option<Rc<dyn MessageFilter>>) {
+        self.message_filter = filter;
     }
 
     /// `bundle()`: the channel's own bundle.
@@ -3535,6 +3557,21 @@ mod tests {
         }
     }
 
+    /// A message filter double: the channel only has to hold it and hand
+    /// it out.
+    struct TestMessageFilter;
+
+    impl MessageFilter for TestMessageFilter {
+        fn filter_message(
+            &self,
+            _src_addr: &Address,
+            _header: &mut crate::unpacked_message_header::UnpackedMessageHeader,
+            _data: &mut foundation::stream::BinaryStream,
+            _handler: &Rc<dyn crate::interfaces::InputMessageHandler>,
+        ) {
+        }
+    }
+
     /// A filter that claims spare room.
     struct SpareFilter {
         spare: usize,
@@ -3584,6 +3621,45 @@ mod tests {
             indexed.borrow_mut().set_p_filter(Some(Rc::new(TestFilter)));
         }));
         assert!(fitted.is_err(), "filters are refused on indexed channels");
+    }
+
+    /// `pMessageFilter` (channel.hpp:161/171): the message filter a
+    /// channel carries. `Proxy::attachToClient` (proxy.cpp:584) fits the
+    /// baseapp's `RateLimitMessageFilter` here, and the dispatch walk
+    /// consults it instead of the handler. Unlike the packet filter, a
+    /// message filter carries no indexed-channel guard -- the reference's
+    /// `pFilter` critical does not apply to it.
+    #[test]
+    fn a_channel_carries_its_message_filter() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d5),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        assert!(channel.borrow().message_filter().is_none());
+        channel
+            .borrow_mut()
+            .set_message_filter(Some(Rc::new(TestMessageFilter)));
+        assert!(channel.borrow().message_filter().is_some());
+        channel.borrow_mut().set_message_filter(None);
+        assert!(channel.borrow().message_filter().is_none());
+
+        let indexed = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d6),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            2,
+        );
+        indexed
+            .borrow_mut()
+            .set_message_filter(Some(Rc::new(TestMessageFilter)));
+        assert!(indexed.borrow().message_filter().is_some());
     }
 
     /// `setEncryption` (udp_channel.cpp:675): the agreed session cipher
