@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 foundation = { workspace = true }
 entitydef = { workspace = true }
+resources = { workspace = true }
