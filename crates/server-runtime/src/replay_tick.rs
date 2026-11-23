@@ -357,6 +357,9 @@ pub struct ReplayTickWriter {
     is_finalising: bool,
     /// The queued chunk bytes, standing in for the background file writer.
     chunks: Vec<Vec<u8>>,
+    /// The `queueWrite` user data of each queued chunk: the last tick the
+    /// chunk carries (`replay_data_file_writer.cpp:411`).
+    chunk_user_data: Vec<u32>,
     /// Cell data bytes dropped for ticks already written
     /// (`replay_data_file_writer.cpp:200`).
     dropped_bytes: u64,
@@ -383,6 +386,7 @@ impl ReplayTickWriter {
             last_signature: primed_with,
             is_finalising: false,
             chunks: Vec::new(),
+            chunk_user_data: Vec::new(),
             dropped_bytes: 0,
         }
     }
@@ -390,6 +394,44 @@ impl ReplayTickWriter {
     /// The queued chunk bytes.
     pub fn chunks(&self) -> &[Vec<u8>] {
         &self.chunks
+    }
+
+    /// Take the queued chunk bytes with their `queueWrite` user data, in the
+    /// order they were produced. The file writer hands these to the background
+    /// file writer as they are signed (`replay_data_file_writer.cpp:411`).
+    pub fn take_chunks(&mut self) -> Vec<(Vec<u8>, u32)> {
+        let chunks = std::mem::take(&mut self.chunks);
+        let user_data = std::mem::take(&mut self.chunk_user_data);
+        chunks.into_iter().zip(user_data).collect()
+    }
+
+    /// `currentTick_`.
+    pub fn current_tick(&self) -> u32 {
+        self.current_tick
+    }
+
+    /// `numTicksToSign_`.
+    pub fn num_ticks_to_sign(&self) -> u32 {
+        self.num_ticks_to_sign
+    }
+
+    /// `compressionType_`.
+    pub fn compression(&self) -> CompressionType {
+        self.compression
+    }
+
+    /// `lastSignature_`: the signature the next chunk chains off.
+    pub fn last_signature(&self) -> &[u8] {
+        &self.last_signature
+    }
+
+    /// `onBackgroundFileWritingComplete`'s drain test
+    /// (`replay_data_file_writer.cpp:492`): the earliest buffered tick is
+    /// still inside the tick range being written out.
+    pub fn has_more_tick_data_to_write(&self) -> bool {
+        self.buffered
+            .first_key_value()
+            .is_some_and(|(first, _)| *first < self.current_tick)
     }
 
     /// `numTicksWritten_` (`replay_data_file_writer.hpp`).
@@ -509,6 +551,8 @@ impl ReplayTickWriter {
             self.chunks.push(out);
 
             self.last_tick_pending_write = next_tick_to_write + num_ticks_to_sign - 1;
+            // The chunk's user data is the last tick it carries (`:411`).
+            self.chunk_user_data.push(self.last_tick_pending_write);
             next_tick_to_write = self.last_tick_pending_write + 1;
         }
     }
