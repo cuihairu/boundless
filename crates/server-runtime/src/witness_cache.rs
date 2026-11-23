@@ -20,9 +20,26 @@
 //! cache entry with `onEnteredAoI` fired in both, `isAlwaysDetailed` back at
 //! the type default, and the priority scheme unchanged — while a repeated
 //! entry that never left is a no-op.
+//!
+//! BW-08-03-03 adds `Witness::update` (`witness.cpp:1088`): the entities are
+//! walked in priority order (the queue front, `witness.cpp:1140`) and sent
+//! until the packet budget is spent. Each sent entity accumulates a
+//! distance-based priority delta (`updatePriority`, `entity_cache.ipp`), with
+//! `AoIUpdateScheme::apply` (`aoi_update_schemes.hpp:40`) turning the squared
+//! distance into that delta — closer entities stay near the front and are sent
+//! more often. `maxPriority` (`witness.cpp:1135`) caps how much priority the
+//! loop walks in one tick, so far entities are never sent every tick; when the
+//! whole queue is sent, every priority resets to 0 (`witness.cpp:1300`).
+//!
+//! The BW-08-03-03 acceptance, "固定负载下发送序列吻合", is that with a fixed set
+//! of entities at fixed distances and a fixed budget, the update selects the
+//! same sequence every time — closest first, bounded by the budget, capped by
+//! `maxPriority`, and reset when fully drained.
 
 use std::collections::BTreeMap;
 
+/// The ground-plane position used for distance and priority.
+pub use crate::range_list::Position;
 /// `EntityID`, shared with the real entity.
 pub use crate::real_entity::EntityId;
 
@@ -329,6 +346,61 @@ pub enum RemoveOutcome {
     NotFound,
 }
 
+/// `witnessUpdateMaxPriorityDelta` (`cellapp_config.cpp:87`): the cap on how
+/// much priority the update loop walks in one tick.
+pub const MAX_PRIORITY_DELTA: f64 = 5.0;
+
+/// `AoIUpdateScheme` (`aoi_update_schemes.hpp:40`): the priority delta for a
+/// given distance. With the defaults `minDelta = 1` and `maxDelta = 101`
+/// (`cellapp_config.cpp:88`) over `max_radius`, an entity at `distance` gains
+/// `distance * (maxDelta / minDelta - 1) / max_radius + 1` per update.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AoIUpdateScheme {
+    /// `minDelta`: the delta for an entity at distance 0.
+    pub min_delta: f64,
+    /// `maxDelta`: the delta for an entity at `max_radius`.
+    pub max_delta: f64,
+    /// `max_radius`: the AoI radius the scheme is normalised over.
+    pub max_radius: f64,
+}
+
+impl AoIUpdateScheme {
+    /// The default scheme (`AoIUpdateSchemes::init`, `aoi_update_schemes.cpp`):
+    /// `minDelta = 1`, `maxDelta = 101`.
+    pub fn default_scheme(max_radius: f64) -> Self {
+        AoIUpdateScheme {
+            min_delta: 1.0,
+            max_delta: 101.0,
+            max_radius,
+        }
+    }
+
+    /// `AoIUpdateScheme::apply` (`aoi_update_schemes.hpp:40`): the priority
+    /// delta for an entity `distance_squared` away from the witness.
+    pub fn priority_delta(&self, distance_squared: f64) -> f64 {
+        let distance = distance_squared.sqrt();
+        let distance_weighting = (self.max_delta / self.min_delta - 1.0) / self.max_radius;
+        (distance * distance_weighting + 1.0) * self.min_delta
+    }
+}
+
+/// The result of one [`Witness::update`]: what was sent, and the deficit.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UpdateResult {
+    /// The entities sent a normal update, in priority order.
+    pub sent_updates: Vec<EntityId>,
+    /// The entities sent an `enterAoI` (`handleEnterPending`).
+    pub sent_enters: Vec<EntityId>,
+    /// The caches dropped because their entity left (`deleteFromSeen`).
+    pub deleted: Vec<EntityId>,
+    /// `bandwidthDeficit_` (`witness.cpp:1244`).
+    pub bandwidth_deficit: usize,
+}
+
+/// The number of bytes one normal update costs in the model (a minimal
+/// position update).
+const UPDATE_BYTES: usize = 4;
+
 /// `Witness` (`witness.cpp`): the AoI of a real entity — the map of observed
 /// entities, the priority queue, and the id alias pool.
 #[derive(Debug, Default)]
@@ -548,6 +620,104 @@ impl Witness {
         self.aoi_map.remove(&entity);
         self.entity_queue.retain(|&e| e != entity);
     }
+
+    /// `Witness::update` (`witness.cpp:1088`): pick the updates to send this
+    /// tick. Entities are walked in priority order (the queue front, `witness.cpp:1140`)
+    /// and sent until the packet budget is spent; each sent entity accumulates a
+    /// distance-based priority delta (`updatePriority`), so closer entities stay
+    /// near the front and are sent more often. `maxPriority`
+    /// (`witness.cpp:1135`) caps how much priority the loop walks, so far
+    /// entities are never updated at every tick. When the whole queue is sent,
+    /// every priority resets to 0 (`witness.cpp:1300`).
+    pub fn update(
+        &mut self,
+        origin: Position,
+        budget_bytes: usize,
+        scheme: &AoIUpdateScheme,
+        positions: &BTreeMap<EntityId, Position>,
+    ) -> UpdateResult {
+        self.sort_queue();
+        let front = self
+            .entity_queue
+            .first()
+            .map_or(0.0, |&e| self.cache_priority(e));
+        let max_priority = front + MAX_PRIORITY_DELTA;
+
+        // Walk the queue front-first; the snapshot keeps the selection
+        // deterministic for a fixed load.
+        let mut order: Vec<EntityId> = self.entity_queue.clone();
+        order.sort_by(|a, b| {
+            self.cache_priority(*a)
+                .partial_cmp(&self.cache_priority(*b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut result = UpdateResult::default();
+        let mut bytes_used = 0usize;
+        let mut all_sent = true;
+
+        for &entity in &order {
+            // The loop condition (`witness.cpp:1141`): stop before sending when
+            // the packet has no space left.
+            if bytes_used >= budget_bytes {
+                all_sent = false;
+                break;
+            }
+            let Some(cache) = self.cache_mut(entity) else {
+                continue;
+            };
+            if cache.is_gone() {
+                // `deleteFromSeen`: drop the gone cache from the queue.
+                result.deleted.push(entity);
+                continue;
+            }
+            if cache.is_enter_pending() {
+                // `handleEnterPending`: send `enterAoI`, then it is created
+                // later. The enter does not count as a normal update.
+                cache.clear_enter_pending();
+                result.sent_enters.push(entity);
+                continue;
+            }
+            if !cache.is_updatable() {
+                // `CREATE_PENDING`, `WITHHELD` and `REFRESH` are the create and
+                // refresh state changes, not the normal update sequence.
+                continue;
+            }
+            if cache.priority() >= max_priority {
+                all_sent = false;
+                break;
+            }
+
+            // `sendQueueElement` + `updatePriority` (`witness.cpp:1043`).
+            let distance_squared = positions
+                .get(&entity)
+                .map(|pos| distance_squared(origin, *pos))
+                .unwrap_or(0.0);
+            let delta = scheme.priority_delta(distance_squared);
+            cache.set_priority(cache.priority() + delta);
+            result.sent_updates.push(entity);
+            bytes_used += UPDATE_BYTES;
+        }
+
+        // `witness.cpp:1300`: if the whole queue was sent, reset every
+        // priority so the next tick starts from an even order.
+        if all_sent {
+            for cache in self.aoi_map.values_mut() {
+                cache.set_priority(0.0);
+            }
+        }
+
+        result.bandwidth_deficit = bytes_used.saturating_sub(budget_bytes);
+        result
+    }
+}
+
+/// `getLoDPriority` (`entity_cache.ipp`): the squared ground-plane distance
+/// from `origin` to `pos`.
+fn distance_squared(origin: Position, pos: Position) -> f64 {
+    let dx = pos.x - origin.x;
+    let dz = pos.z - origin.z;
+    dx * dx + dz * dz
 }
 
 #[cfg(test)]
@@ -694,5 +864,113 @@ mod tests {
         assert!(w.cache(2).is_none());
         assert_eq!(w.len(), 1);
         assert!(!w.entity_queue().contains(&2));
+    }
+
+    /// A fixed load of updatable entities at fixed distances, with a budget
+    /// for all of them.
+    fn fixed_load() -> (Witness, BTreeMap<EntityId, Position>) {
+        let mut w = Witness::new(1, 50.0, 500.0);
+        let positions = BTreeMap::from([
+            (2, Position::new(10.0, 0.0)),
+            (3, Position::new(20.0, 0.0)),
+            (4, Position::new(30.0, 0.0)),
+        ]);
+        for &entity in &[2u32, 3, 4] {
+            w.add_to_aoi(entity, false);
+            // The enter was already sent: the entity is updatable.
+            w.cache_mut(entity).unwrap().clear_enter_pending();
+        }
+        (w, positions)
+    }
+
+    /// The acceptance: under a fixed load the update sends the entities in
+    /// priority order — closest first — and accumulates a distance-based
+    /// priority on each one sent.
+    #[test]
+    fn updates_are_selected_closest_first_and_priorities_accumulate() {
+        let (mut w, positions) = fixed_load();
+        let scheme = AoIUpdateScheme::default_scheme(500.0);
+
+        let result = w.update(Position::ZERO, 2 * UPDATE_BYTES, &scheme, &positions);
+
+        assert_eq!(result.sent_updates, vec![2, 3], "closest first");
+        assert!(result.sent_enters.is_empty());
+        assert!(result.deleted.is_empty());
+        assert_eq!(result.bandwidth_deficit, 0);
+        // Priorities diverge by distance: closer = smaller delta = lower
+        // priority, so they stay near the front.
+        let p2 = w.cache(2).unwrap().priority();
+        let p3 = w.cache(3).unwrap().priority();
+        let p4 = w.cache(4).unwrap().priority();
+        assert!(p2 < p3, "closer entities have lower priority");
+        assert!(p2 > 0.0, "priorities accumulated");
+        assert_eq!(p4, 0.0, "the unsent entity stays at zero");
+    }
+
+    /// The budget bounds the sequence: only the closest fit.
+    #[test]
+    fn the_budget_bounds_the_send_sequence() {
+        let (mut w, positions) = fixed_load();
+        let scheme = AoIUpdateScheme::default_scheme(500.0);
+
+        let result = w.update(Position::ZERO, UPDATE_BYTES, &scheme, &positions);
+
+        assert_eq!(result.sent_updates, vec![2], "only the closest");
+        assert_eq!(result.bandwidth_deficit, 0);
+    }
+
+    /// When the whole queue is sent, every priority resets to 0 so the next
+    /// tick starts from an even order (`witness.cpp:1300`).
+    #[test]
+    fn sending_everything_resets_all_priorities() {
+        let (mut w, positions) = fixed_load();
+        let scheme = AoIUpdateScheme::default_scheme(500.0);
+
+        // A full-budget update sends everything and resets all priorities.
+        let result = w.update(Position::ZERO, 3 * UPDATE_BYTES, &scheme, &positions);
+
+        assert_eq!(result.sent_updates, vec![2, 3, 4]);
+        assert_eq!(w.cache(2).unwrap().priority(), 0.0);
+        assert_eq!(w.cache(3).unwrap().priority(), 0.0);
+        assert_eq!(w.cache(4).unwrap().priority(), 0.0);
+    }
+
+    /// A far entity whose priority has grown past `maxPriority` is capped out
+    /// (`witness.cpp:1135`): it is not sent every tick, even when the budget
+    /// still has room.
+    #[test]
+    fn a_far_entity_is_capped_out_by_max_priority() {
+        let mut w = Witness::new(1, 50.0, 500.0);
+        let positions = BTreeMap::from([
+            (2, Position::new(10.0, 0.0)),
+            (3, Position::new(400.0, 0.0)),
+            (4, Position::new(20.0, 0.0)),
+        ]);
+        for &entity in &[2u32, 3, 4] {
+            w.add_to_aoi(entity, false);
+            w.cache_mut(entity).unwrap().clear_enter_pending();
+        }
+        let scheme = AoIUpdateScheme::default_scheme(500.0);
+
+        // A partial update: the near entities get small deltas, the far one a
+        // large one.
+        let result = w.update(Position::ZERO, 2 * UPDATE_BYTES, &scheme, &positions);
+        assert_eq!(result.sent_updates, vec![2, 3]);
+        let far_priority = w.cache(3).unwrap().priority();
+        assert!(far_priority > w.cache(2).unwrap().priority());
+
+        // Now the far entity exceeds front + MAX_PRIORITY_DELTA and is capped
+        // out even with an ample budget.
+        let result = w.update(Position::ZERO, 3 * UPDATE_BYTES, &scheme, &positions);
+        assert_eq!(
+            result.sent_updates,
+            vec![4, 2],
+            "the far entity is capped out"
+        );
+        assert_eq!(
+            w.cache(3).unwrap().priority(),
+            far_priority,
+            "the far entity was not updated"
+        );
     }
 }
