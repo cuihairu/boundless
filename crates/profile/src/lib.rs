@@ -31,6 +31,11 @@
 //! [`ScopedProfile`] guard of the `SCOPED_PROFILE` macros
 //! (`profile.hpp:288-341`).
 //!
+//! The entry-frame collector — the [`profiler::Profiler`] the
+//! `_bw_profile` module drives and its `g_profiler` singleton
+//! (`cstdmf/profiler.hpp`/`.cpp`, `server/tools/bw_profile`) — is the
+//! start/stop interface of BW-12-03-02.
+//!
 //! Layering: a domain library (layer 2) over [`watcher`]'s path tree and
 //! [`foundation`]'s clock vocabulary, consumed by the role runtimes and
 //! the BW-23 acquisition layer.
@@ -38,11 +43,16 @@
 pub mod nice_time;
 pub mod profile_group;
 pub mod profile_val;
+pub mod profiler;
 pub mod resetter;
 
 pub use nice_time::nice_time;
 pub use profile_group::{ProfileGroup, SummaryWatcher};
 pub use profile_val::{Field, FieldWatcher, ProfileVal, ProfileValHandle, ScopedProfile};
+pub use profiler::{
+    EventCategory, EventType, JsonDumpState, MAXIMUM_NUMBER_OF_THREADS, ProfileEntry, Profiler,
+    ScopedProfiler, g_profiler, mount_enabled_watcher, our_thread_id,
+};
 pub use resetter::ProfileGroupResetter;
 
 use std::cell::Cell;

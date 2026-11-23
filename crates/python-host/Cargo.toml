@@ -12,3 +12,6 @@ repository.workspace = true
 # the search path behind the `ResMgr` module functions.
 foundation = { workspace = true }
 resources = { workspace = true }
+# The `_bw_profile` module face drives the profiler's global
+# (`cstdmf/profiler`, BW-12-03-02).
+profile = { path = "../profile" }
