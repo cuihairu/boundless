@@ -1036,7 +1036,12 @@
 
 复现路径树、类型信息、读/写/调用、远程请求、转发和统计字段。比较原版监控工具的查询、返回值、权限和错误。
 
-- [ ] **BW-12-01-01 构建 Watcher 路径树及类型**。**验收** 同路径的值与类型匹配。
+- [x] **BW-12-01-01 构建 Watcher 路径树及类型**（c05fc60）。**验收** 同路径的值与类型匹配。
+  - 证据：模型落点——`WatcherDataType` 八值（watcher.hpp:40-49，STRING=5 协议值带判别往返测试）、`Watcher::Mode`（watcher.hpp:719-727）、`DataWatcher` 构造器模式收敛（非 RO/RW 一律 RO，watcher.hpp:2574-2577）、`watcherValueToStream` 类型映射（watcher.hpp:962-1030：int/int64→INT、unsigned→UINT、float/double→FLOAT、bool→BOOL、其余→STRING、WatcherDataType 本身→TYPE）与 `watcherValueToString`（watcher.hpp:680-710）落 `crates/server-runtime/src/watcher/path_tree.rs`；树本体 `DirectoryWatcher`（watcher.cpp:297-536）→ `WatcherTree`/`WatcherNode`（目录=sorted BTreeMap 子表，值叶=型+模式+值），路径工具 `partition_path`（watcher.cpp:574-596）/`tail`（watcher.cpp:522-536）。
+  - 证据：路径树语义逐条钉死——`addChild` 空路径与重复标签拒绝（watcher.cpp:302-335）、多段路径**先建中间目录再递归**故被拒尾巴留下空目录（watcher.cpp:346-376，quirk 保持）、叶不可再挂子（基类 `Watcher::addChild` 返 false，watcher.hpp:900-911）、`getChild`/`removeChild` 的 `compareLength != 0` 门使**空首段不可解析/不可删**（watcher.cpp:443,393-403：前导斜杠建出空标签目录却查不到，测试 `refused_tails_leave_the_intermediate_directory_behind` 双向钉死）、子按标签排序（`SORTED_WATCHERS`，watcher.cpp:323-329）。
+  - 证据：验收（原版结果对照）——`the_same_path_reports_the_same_value_and_type`：Int/Uint/Float/Bool/String/Type 六型同路径 get 后 data_type 与值逐一匹配，深路径 `cells/count` 完整解析、父目录类型 UNKNOWN；原版套件逐条对应移植：`partition_path`（test_watcher.cpp:18-35）、`tail`（:37-43）、`addAndGetChild`（:78-96，含重复/空路径拒绝）、`addNestedPath`（:98-113，`sub/value/deeper` 拒绝）、`removeChild`（:116-140，空壳目录残留）、`getAsString`（:142-166，`<DIR>`+WT_DIRECTORY、"value/sub" 不可过叶）、`visitChildren` 排序断言（:222-238）。
+  - 证据：值渲染——`cpp_float_string` 复刻 `ostream <<` 默认（precision 6 + %g：指数在 -4..5 用定点、否则科学计数两位带符号指数、尾零裁剪），`float_strings_match_ostream_defaults` 钉死 0.1+0.2→`0.3`、1e6→`1e+06`、1e-5→`1e-05`、123456.789→`123457`、-0.0→`-0`；bool→`true`/`false`、目录→`<DIR>`。
+  - 测试与覆盖：server-runtime **144 通过 / 0 失败**；`cargo clippy -p server-runtime --all-targets` 本轮文件 0 警告；rustfmt 本轮文件 0 diff；llvm-cov 0.9.1：path_tree.rs **100.0%** 行（≥98% 门）；layering 8 通过。
 - [ ] **BW-12-01-02 移植 get/set**。**验收** 读写结果和拒绝状态吻合。
 - [ ] **BW-12-01-03 移植 callable Watcher**。**验收** 参数和返回值匹配。
 - [ ] **BW-12-01-04 实现远端查询与转发**。**验收** 多节点同一路径正确路由。
