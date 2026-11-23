@@ -1,0 +1,339 @@
+item	value	source
+reference-commit	aadb7622deea	git rev-parse HEAD
+cb.1.type	Base	documented owning type
+cb.1.name	onDestroy	programming/bigworld/server/baseapp/base.cpp
+cb.1.component	base	@components{...}
+cb.1.sequence	1	source-file order
+cb.1.params	-	@param fields
+cb.1.ignorable	yes	If present / not present marker
+cb.1.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.2.type	Base	documented owning type
+cb.2.name	onOnload	programming/bigworld/server/baseapp/base.cpp
+cb.2.component	base	@components{...}
+cb.2.sequence	2	source-file order
+cb.2.params	-	@param fields
+cb.2.ignorable	yes	If present / not present marker
+cb.2.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.3.type	Base	documented owning type
+cb.3.name	onRestore	programming/bigworld/server/baseapp/base.cpp
+cb.3.component	base	@components{...}
+cb.3.sequence	3	source-file order
+cb.3.params	-	@param fields
+cb.3.ignorable	yes	If present / not present marker
+cb.3.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.4.type	Base	documented owning type
+cb.4.name	onGetCell	programming/bigworld/server/baseapp/base.cpp
+cb.4.component	base	@components{...}
+cb.4.sequence	4	source-file order
+cb.4.params	-	@param fields
+cb.4.ignorable	yes	If present / not present marker
+cb.4.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.5.type	Base	documented owning type
+cb.5.name	onLoseCell	programming/bigworld/server/baseapp/base.cpp
+cb.5.component	base	@components{...}
+cb.5.sequence	5	source-file order
+cb.5.params	-	@param fields
+cb.5.ignorable	yes	If present / not present marker
+cb.5.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.6.type	Base	documented owning type
+cb.6.name	onCreateCellFailure	programming/bigworld/server/baseapp/base.cpp
+cb.6.component	base	@components{...}
+cb.6.sequence	6	source-file order
+cb.6.params	-	@param fields
+cb.6.ignorable	yes	If present / not present marker
+cb.6.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.7.type	Base	documented owning type
+cb.7.name	onWindowOverflow	programming/bigworld/server/baseapp/base.cpp
+cb.7.component	base	@components{...}
+cb.7.sequence	7	source-file order
+cb.7.params	-	@param fields
+cb.7.ignorable	yes	If present / not present marker
+cb.7.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.8.type	Base	documented owning type
+cb.8.name	onWriteToDB	programming/bigworld/server/baseapp/base.cpp
+cb.8.component	base	@components{...}
+cb.8.sequence	8	source-file order
+cb.8.params	cellData	@param fields
+cb.8.ignorable	yes	If present / not present marker
+cb.8.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.9.type	Base	documented owning type
+cb.9.name	onPreArchive	programming/bigworld/server/baseapp/base.cpp
+cb.9.component	base	@components{...}
+cb.9.sequence	9	source-file order
+cb.9.params	-	@param fields
+cb.9.ignorable	yes	If present / not present marker
+cb.9.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.10.type	Base	documented owning type
+cb.10.name	onMigrate	programming/bigworld/server/baseapp/base.cpp
+cb.10.component	base	@components{...}
+cb.10.sequence	10	source-file order
+cb.10.params	oldBase	@param fields
+cb.10.ignorable	yes	If present / not present marker
+cb.10.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.11.type	Base	documented owning type
+cb.11.name	onMigratedAll	programming/bigworld/server/baseapp/base.cpp
+cb.11.component	base	@components{...}
+cb.11.sequence	11	source-file order
+cb.11.params	-	@param fields
+cb.11.ignorable	yes	If present / not present marker
+cb.11.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.12.type	Base	documented owning type
+cb.12.name	onTimer	programming/bigworld/server/baseapp/base.cpp
+cb.12.component	base	@components{...}
+cb.12.sequence	12	source-file order
+cb.12.params	timerHandle,userData	@param fields
+cb.12.ignorable	no	If present / not present marker
+cb.12.source	programming/bigworld/server/baseapp/base.cpp	reference source tree
+cb.13.type	Proxy	documented owning type
+cb.13.name	onLogOnAttempt	programming/bigworld/server/baseapp/proxy.cpp
+cb.13.component	base	@components{...}
+cb.13.sequence	1	source-file order
+cb.13.params	ip,port,logOnData	@param fields
+cb.13.ignorable	yes	If present / not present marker
+cb.13.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.14.type	Proxy	documented owning type
+cb.14.name	clientDead	programming/bigworld/server/baseapp/proxy.cpp
+cb.14.component	base	@components{...}
+cb.14.sequence	2	source-file order
+cb.14.params	-	@param fields
+cb.14.ignorable	no	If present / not present marker
+cb.14.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.15.type	Proxy	documented owning type
+cb.15.name	onClientDeath	programming/bigworld/server/baseapp/proxy.cpp
+cb.15.component	base	@components{...}
+cb.15.sequence	3	source-file order
+cb.15.params	-	@param fields
+cb.15.ignorable	yes	If present / not present marker
+cb.15.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.16.type	Proxy	documented owning type
+cb.16.name	onEntitiesEnabled	programming/bigworld/server/baseapp/proxy.cpp
+cb.16.component	base	@components{...}
+cb.16.sequence	4	source-file order
+cb.16.params	-	@param fields
+cb.16.ignorable	yes	If present / not present marker
+cb.16.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.17.type	Proxy	documented owning type
+cb.17.name	onClientGetCell	programming/bigworld/server/baseapp/proxy.cpp
+cb.17.component	base	@components{...}
+cb.17.sequence	5	source-file order
+cb.17.params	-	@param fields
+cb.17.ignorable	yes	If present / not present marker
+cb.17.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.18.type	Proxy	documented owning type
+cb.18.name	onLatencyTrigger	programming/bigworld/server/baseapp/proxy.cpp
+cb.18.component	base	@components{...}
+cb.18.sequence	6	source-file order
+cb.18.params	latency,goneAboveThis	@param fields
+cb.18.ignorable	no	If present / not present marker
+cb.18.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.19.type	Proxy	documented owning type
+cb.19.name	onStreamComplete	programming/bigworld/server/baseapp/proxy.cpp
+cb.19.component	base	@components{...}
+cb.19.sequence	7	source-file order
+cb.19.params	id,success	@param fields
+cb.19.ignorable	yes	If present / not present marker
+cb.19.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.20.type	Proxy	documented owning type
+cb.20.name	onGiveClientToFailure	programming/bigworld/server/baseapp/proxy.cpp
+cb.20.component	base	@components{...}
+cb.20.sequence	8	source-file order
+cb.20.params	-	@param fields
+cb.20.ignorable	yes	If present / not present marker
+cb.20.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.21.type	Proxy	documented owning type
+cb.21.name	onGiveClientToSuccess	programming/bigworld/server/baseapp/proxy.cpp
+cb.21.component	base	@components{...}
+cb.21.sequence	9	source-file order
+cb.21.params	-	@param fields
+cb.21.ignorable	yes	If present / not present marker
+cb.21.source	programming/bigworld/server/baseapp/proxy.cpp	reference source tree
+cb.22.type	Entity	documented owning type
+cb.22.name	onDestroy	programming/bigworld/server/cellapp/entity.cpp
+cb.22.component	cell	@components{...}
+cb.22.sequence	1	source-file order
+cb.22.params	-	@param fields
+cb.22.ignorable	yes	If present / not present marker
+cb.22.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.23.type	Entity	documented owning type
+cb.23.name	onRestore	programming/bigworld/server/cellapp/entity.cpp
+cb.23.component	cell	@components{...}
+cb.23.sequence	2	source-file order
+cb.23.params	-	@param fields
+cb.23.ignorable	yes	If present / not present marker
+cb.23.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.24.type	Entity	documented owning type
+cb.24.name	onGhostCreated	programming/bigworld/server/cellapp/entity.cpp
+cb.24.component	cell	@components{...}
+cb.24.sequence	3	source-file order
+cb.24.params	-	@param fields
+cb.24.ignorable	yes	If present / not present marker
+cb.24.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.25.type	Entity	documented owning type
+cb.25.name	onGhostDestroyed	programming/bigworld/server/cellapp/entity.cpp
+cb.25.component	cell	@components{...}
+cb.25.sequence	4	source-file order
+cb.25.params	-	@param fields
+cb.25.ignorable	yes	If present / not present marker
+cb.25.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.26.type	Entity	documented owning type
+cb.26.name	onMigrate	programming/bigworld/server/cellapp/entity.cpp
+cb.26.component	cell	@components{...}
+cb.26.sequence	5	source-file order
+cb.26.params	oldEntity	@param fields
+cb.26.ignorable	yes	If present / not present marker
+cb.26.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.27.type	Entity	documented owning type
+cb.27.name	onMigratedAll	programming/bigworld/server/cellapp/entity.cpp
+cb.27.component	cell	@components{...}
+cb.27.sequence	6	source-file order
+cb.27.params	-	@param fields
+cb.27.ignorable	yes	If present / not present marker
+cb.27.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.28.type	Entity	documented owning type
+cb.28.name	onWindowOverflow	programming/bigworld/server/cellapp/entity.cpp
+cb.28.component	cell	@components{...}
+cb.28.sequence	7	source-file order
+cb.28.params	-	@param fields
+cb.28.ignorable	yes	If present / not present marker
+cb.28.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.29.type	Entity	documented owning type
+cb.29.name	onWriteToDB	programming/bigworld/server/cellapp/entity.cpp
+cb.29.component	cell	@components{...}
+cb.29.sequence	8	source-file order
+cb.29.params	-	@param fields
+cb.29.ignorable	yes	If present / not present marker
+cb.29.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.30.type	Entity	documented owning type
+cb.30.name	onNoise	programming/bigworld/server/cellapp/entity.cpp
+cb.30.component	cell	@components{...}
+cb.30.sequence	9	source-file order
+cb.30.params	entity,propRange,distance,event,info	@param fields
+cb.30.ignorable	no	If present / not present marker
+cb.30.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.31.type	Entity	documented owning type
+cb.31.name	onSpaceGone	programming/bigworld/server/cellapp/entity.cpp
+cb.31.component	cell	@components{...}
+cb.31.sequence	10	source-file order
+cb.31.params	-	@param fields
+cb.31.ignorable	no	If present / not present marker
+cb.31.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.32.type	Entity	documented owning type
+cb.32.name	onGetWitness	programming/bigworld/server/cellapp/entity.cpp
+cb.32.component	cell	@components{...}
+cb.32.sequence	11	source-file order
+cb.32.params	-	@param fields
+cb.32.ignorable	no	If present / not present marker
+cb.32.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.33.type	Entity	documented owning type
+cb.33.name	onLoseWitness	programming/bigworld/server/cellapp/entity.cpp
+cb.33.component	cell	@components{...}
+cb.33.sequence	12	source-file order
+cb.33.params	-	@param fields
+cb.33.ignorable	no	If present / not present marker
+cb.33.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.34.type	Entity	documented owning type
+cb.34.name	onWitnessed	programming/bigworld/server/cellapp/entity.cpp
+cb.34.component	cell	@components{...}
+cb.34.sequence	13	source-file order
+cb.34.params	isWitnessed	@param fields
+cb.34.ignorable	no	If present / not present marker
+cb.34.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.35.type	Entity	documented owning type
+cb.35.name	onLoseControlledBy	programming/bigworld/server/cellapp/entity.cpp
+cb.35.component	cell	@components{...}
+cb.35.sequence	14	source-file order
+cb.35.params	id	@param fields
+cb.35.ignorable	no	If present / not present marker
+cb.35.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.36.type	Entity	documented owning type
+cb.36.name	onEnteringCell	programming/bigworld/server/cellapp/entity.cpp
+cb.36.component	cell	@components{...}
+cb.36.sequence	15	source-file order
+cb.36.params	-	@param fields
+cb.36.ignorable	no	If present / not present marker
+cb.36.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.37.type	Entity	documented owning type
+cb.37.name	onEnteredCell	programming/bigworld/server/cellapp/entity.cpp
+cb.37.component	cell	@components{...}
+cb.37.sequence	16	source-file order
+cb.37.params	-	@param fields
+cb.37.ignorable	no	If present / not present marker
+cb.37.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.38.type	Entity	documented owning type
+cb.38.name	onLeavingCell	programming/bigworld/server/cellapp/entity.cpp
+cb.38.component	cell	@components{...}
+cb.38.sequence	17	source-file order
+cb.38.params	-	@param fields
+cb.38.ignorable	no	If present / not present marker
+cb.38.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.39.type	Entity	documented owning type
+cb.39.name	onLeftCell	programming/bigworld/server/cellapp/entity.cpp
+cb.39.component	cell	@components{...}
+cb.39.sequence	18	source-file order
+cb.39.params	-	@param fields
+cb.39.ignorable	no	If present / not present marker
+cb.39.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.40.type	Entity	documented owning type
+cb.40.name	onTeleport	programming/bigworld/server/cellapp/entity.cpp
+cb.40.component	cell	@components{...}
+cb.40.sequence	19	source-file order
+cb.40.params	-	@param fields
+cb.40.ignorable	no	If present / not present marker
+cb.40.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.41.type	Entity	documented owning type
+cb.41.name	onTeleportSuccess	programming/bigworld/server/cellapp/entity.cpp
+cb.41.component	cell	@components{...}
+cb.41.sequence	20	source-file order
+cb.41.params	nearbyEntity	@param fields
+cb.41.ignorable	no	If present / not present marker
+cb.41.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.42.type	Entity	documented owning type
+cb.42.name	onTeleportFailure	programming/bigworld/server/cellapp/entity.cpp
+cb.42.component	cell	@components{...}
+cb.42.sequence	21	source-file order
+cb.42.params	-	@param fields
+cb.42.ignorable	no	If present / not present marker
+cb.42.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.43.type	Entity	documented owning type
+cb.43.name	onEnteredAoI	programming/bigworld/server/cellapp/entity.cpp
+cb.43.component	cell	@components{...}
+cb.43.sequence	22	source-file order
+cb.43.params	entity	@param fields
+cb.43.ignorable	no	If present / not present marker
+cb.43.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.44.type	Entity	documented owning type
+cb.44.name	onLeftAoI	programming/bigworld/server/cellapp/entity.cpp
+cb.44.component	cell	@components{...}
+cb.44.sequence	23	source-file order
+cb.44.params	entity	@param fields
+cb.44.ignorable	no	If present / not present marker
+cb.44.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.45.type	Entity	documented owning type
+cb.45.name	onLeftAoIID	programming/bigworld/server/cellapp/entity.cpp
+cb.45.component	cell	@components{...}
+cb.45.sequence	24	source-file order
+cb.45.params	entityID	@param fields
+cb.45.ignorable	no	If present / not present marker
+cb.45.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.46.type	Entity	documented owning type
+cb.46.name	__init__	programming/bigworld/server/cellapp/entity.cpp
+cb.46.component	cell	@components{...}
+cb.46.sequence	25	source-file order
+cb.46.params	nearbyEntity	@param fields
+cb.46.ignorable	no	If present / not present marker
+cb.46.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.47.type	Entity	documented owning type
+cb.47.name	onPassengerAlightAttempt	programming/bigworld/server/cellapp/entity.cpp
+cb.47.component	cell	@components{...}
+cb.47.sequence	26	source-file order
+cb.47.params	-	@param fields
+cb.47.ignorable	yes	If present / not present marker
+cb.47.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+cb.48.type	Entity	documented owning type
+cb.48.name	onPassengerBoardAttempt	programming/bigworld/server/cellapp/entity.cpp
+cb.48.component	cell	@components{...}
+cb.48.sequence	27	source-file order
+cb.48.params	-	@param fields
+cb.48.ignorable	yes	If present / not present marker
+cb.48.source	programming/bigworld/server/cellapp/entity.cpp	reference source tree
+blocker.python-callback-capture	python-callback-capture: no live callback capture is recorded — the full cluster cannot start on this machine (bwmachined and the full server configuration are absent, BW-00-02-03) and loginapp.pubkey is absent repo-wide (BW-00-02-04), so no entity script callback fires that could be captured; the recorded callbacks are the reference's own documented callback contract (name, parameters, optionality) read from its source, in the order it documents them	runner limitation

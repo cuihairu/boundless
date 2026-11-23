@@ -15,6 +15,13 @@ repository.workspace = true
 # through BwResource and BwConfig (BW-18-01-03).
 resources = { workspace = true }
 server-runtime = { workspace = true }
-# platform: kill(2) against a role's process group when tearing the process
-# tree down (BW-18-02-05); the syscall lands in platform (BW-16-02-01).
-platform = { workspace = true }
+# libc: kill(2) against a role's process group when tearing the process
+# tree down (BW-18-02-05).
+libc = { workspace = true }
+# python-host: the embedded interpreter a profiled script runs in, reached
+# through `Interpreter::run_simple_string` (BW-23-01-02).
+python-host = { workspace = true }
+# foundation: the profiler snapshots a cross-role timeline merges, and the
+# clock anchors that shift process-local stamps onto the unified timebase
+# (BW-23-01-03).
+foundation = { workspace = true }

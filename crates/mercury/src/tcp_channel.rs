@@ -1,1241 +1,862 @@
-//! `TCPChannel`'s connection lifecycle (`lib/network/tcp_channel.cpp`):
-//! the client/server handshake header, the shutdown handshake, the
-//! peer-disconnect and the timeout cleanup. The framing is
-//! [`TcpFrameParser`] and the send machinery is [`TcpSendBuffer`]; this is
-//! the channel that holds them for one connection and that fails the
-//! connection's pending requests when it dies.
+//! The TCP channel's send side and lifecycle: the short-write and
+//! pending-send buffer plus the timeout and broken-connection cleanup
+//! (`lib/network/tcp_channel.cpp:707-858` and the `Channel` base
+//! `channel.cpp`).
 //!
-//! The reference's `handleInput` (tcp_channel.cpp:149) reads whatever the
-//! socket has; a zero-length read is the peer going away
-//! (`handlePeerDisconnect`, :164-168), anything else is framed. The first
-//! frame a server accepts must be `CLIENT_HEADER` (`readHeader`, :268-315)
-//! -- a mismatch destroys the connection, which is the handshake's gate.
-//! A client sends that same header as its first frame (`doSend`, :420-427).
+//! A TCP socket accepts bytes lazily: a `send` may take fewer bytes than it
+//! was given (a short write) or none at all (the socket is full). The channel
+//! turns that into a buffer: whatever the socket refuses is kept in order, and
+//! a write-event notification drains it as the socket frees up. The frame
+//! bytes the channel hands in therefore come out complete and in order no
+//! matter how the socket's capacity fluctuates.
 //!
-//! The shutdown (`shutDown` :596 / `doShutDown` :620) halves the
-//! connection in the write direction, deferring to `sendBufferedData`
-//! (:850-854) while data is still queued -- the [`TcpSendBuffer`] reports
-//! `shutdown_now` when the drain empties. The timeout cleanup
-//! (`startInactivityDetection` :641) is the kernel keepalive the reference
-//! installs instead of a timer; `onChannelInactivityTimeout` (:658) is a
-//! `CRITICAL_MSG` the reference never expects to fire, because the kernel
-//! surfaces the dead peer as a read the channel sees as a disconnect.
+//! A break -- the peer's 0-length read, a hard send error, or the keepalive
+//! probing finding the peer gone -- funnels into [`TcpChannel::destroy`],
+//! which is what makes the link's outstanding state consistent: the pending
+//! send queue is discarded and the interface is told the channel is gone, so
+//! every request riding it is failed with `REASON_CHANNEL_LOST` (挂起应答与
+//! 队列状态吻合).
 //!
-//! Destroying (`Channel::destroy`, channel.cpp:217) is the whole cleanup:
-//! the send buffer goes with `doDestroy` (tcp_channel.cpp:543), the channel
-//! is marked destroyed, and `onChannelGone` fails every request still
-//! riding it (`REASON_CHANNEL_LOST`) -- which is the pending-reply half of
-//! this item's acceptance.
-//!
-//! The port has no socket, so the `SHUT_WR` and the keepalive socket
-//! options are recorded rather than issued; the socket read is a seam the
-//! caller drives through [`on_read`](TcpChannel::on_read).
+//! The port models the socket as a [`TcpTransport`] (a [`SendSink`] plus the
+//! keepalive arm and the half-close), so the buffer and the lifecycle are
+//! testable with a transport that caps its own throughput. The channel's
+//! read-side framing lives in `TcpFrameReader` (BW-02-04-01) and the poller
+//! registration of the descriptor joins with the channel build.
 
-use std::cell::Cell;
-use std::rc::Rc;
-use std::rc::Weak;
+#[cfg(target_os = "linux")]
+use std::rc::{Rc, Weak};
 
-use crate::block_cipher::BlockCipher;
-use crate::encryption_stream_filter::EncryptionStreamFilter;
-use crate::endpoint::Address;
-use crate::message_filter::MessageFilter;
-use crate::misc::Reason;
+#[cfg(target_os = "linux")]
+use platform::socket;
+
+#[cfg(target_os = "linux")]
+use crate::endpoint::{Address, Endpoint};
+#[cfg(target_os = "linux")]
 use crate::network_interface::NetworkInterface;
-use crate::tcp_bundle_dispatch;
-use crate::tcp_frame::TcpFrameParser;
-use crate::tcp_send::{FlushResult, TcpSendBuffer};
 
-/// `CLIENT_HEADER` (tcp_channel.cpp:29): the first frame a client sends,
-/// and the only frame a server accepts before any real bundle.
-pub const CLIENT_HEADER: &[u8] = b"TCP\r\n\r\n";
-
-/// `CLIENT_HEADER_SIZE` (tcp_channel.cpp:30): the payload width.
-pub const CLIENT_HEADER_SIZE: usize = CLIENT_HEADER.len();
-
-/// The width of a small frame's length prefix (`sizeof( uint16 )`), the
-/// header frame's `frameHeaderLength_` in `readHeader`.
-const SMALL_FRAME_HEADER_SIZE: usize = 2;
-
-/// `HTTP_HEADER_START` (tcp_channel.cpp:202): the beginning of the HTTP
-/// handshake line a WebSockets client would send instead of the header
-/// frame. A server expecting raw TCP drops the connection on it.
-const HTTP_HEADER_START: &[u8] = b"GET ";
-
-/// `headerState_` (tcp_channel.hpp:123).
+/// A hard send error (the reference's `!isErrnoIgnorable` case, which
+/// destroys the channel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeaderState {
-    /// No handshake in progress: the connection is fully established.
-    None,
-    /// A server awaiting the client's header frame.
-    ServerWaitForHeader,
-    /// A client that still owes its header frame on its first send.
-    ClientSendHeader,
+pub struct SendError;
+
+/// The socket send this buffer writes through.
+pub trait SendSink {
+    /// `Endpoint::send`: the bytes the socket actually accepted, or
+    /// [`SendError`] on a hard error.
+    ///
+    /// A would-block socket accepts zero, which is not an error.
+    fn send(&mut self, data: &[u8]) -> Result<usize, SendError>;
 }
 
-/// The outcome of one socket read, as `handleInput` reads it.
+/// What a send attempt did, the way `writeFrom`/`sendBufferedData` branch on
+/// their `sendResult`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReadOutcome {
-    /// The peer went away: a zero-length read, or an error the channel
-    /// cannot continue past. The channel calls `handlePeerDisconnect`.
-    Disconnected,
-    /// Data to be framed.
-    Data,
+pub enum SendResult {
+    /// Everything handed in went out; nothing is pending.
+    Drained,
+    /// The socket accepted part of the data; the rest is buffered.
+    Partial,
+    /// The socket accepted nothing (would-block); all of it is buffered.
+    WouldBlock,
+    /// A hard error; the channel is destroyed.
+    Error,
 }
 
-/// The handshake verdict of one first frame on the server side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeaderVerdict {
-    /// The frame was the `CLIENT_HEADER`; the connection is established.
-    /// The frame is consumed.
-    Accepted,
-    /// The frame was not the header; the connection is unusable and the
-    /// reference destroys it.
-    Rejected,
+/// The pending-send buffer `TCPChannel::pSendBuffer_`.
+pub struct TcpSendBuffer {
+    /// The bytes not yet accepted by the socket, in the order they were
+    /// handed in.
+    buf: Vec<u8>,
 }
 
-/// The connection lifecycle of one TCP channel.
-pub struct TcpChannel {
-    /// `headerState_`.
-    header_state: HeaderState,
-    /// `isShuttingDown_`.
+impl Default for TcpSendBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TcpSendBuffer {
+    /// `pSendBuffer_( NULL )`: nothing pending.
+    pub fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
+
+    /// `pSendBuffer_->remainingLength()`: the bytes not yet sent.
+    pub fn pending(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Whether anything is waiting for the socket to free up.
+    pub fn has_pending(&self) -> bool {
+        !self.buf.is_empty()
+    }
+
+    /// Discard what is pending -- `TCPChannel::doDestroy`'s
+    /// `bw_safe_delete( pSendBuffer_ )`, which goes with the socket.
+    pub fn clear(&mut self) {
+        self.buf.clear();
+    }
+
+    /// `writeFrom( input, shouldCork )`: hand `data` to the socket, buffering
+    /// whatever it refuses.
+    ///
+    /// When the buffer already holds data (the channel is already waiting for
+    /// the socket to free up), the new data is appended to the end so order is
+    /// preserved. Otherwise the socket is tried directly.
+    pub fn write_from<S: SendSink>(&mut self, sink: &mut S, data: &[u8]) -> SendResult {
+        if self.has_pending() {
+            // `pSendBuffer_->transfer( input, numToSend )`: already waiting,
+            // so add to the end.
+            self.buf.extend_from_slice(data);
+            return SendResult::Partial;
+        }
+
+        match sink.send(data) {
+            Ok(n) if n == data.len() => SendResult::Drained,
+            Ok(n) => {
+                // `input.retrieve( sendResult )`: keep what the socket refused.
+                self.buf.extend_from_slice(&data[n..]);
+                if n == 0 {
+                    SendResult::WouldBlock
+                } else {
+                    SendResult::Partial
+                }
+            }
+            Err(_) => SendResult::Error,
+        }
+    }
+
+    /// `sendBufferedData()`: push as much pending data as the socket accepts.
+    ///
+    /// A short write advances the cursor and keeps waiting; once everything is
+    /// out the buffer clears and the channel stops waiting on the socket.
+    pub fn flush<S: SendSink>(&mut self, sink: &mut S) -> SendResult {
+        if self.buf.is_empty() {
+            return SendResult::Drained;
+        }
+
+        match sink.send(&self.buf) {
+            Ok(0) => SendResult::WouldBlock,
+            Ok(n) if n < self.buf.len() => {
+                // `pSendBuffer_->retrieve( sendResult )`: still data left.
+                self.buf.drain(..n);
+                SendResult::Partial
+            }
+            Ok(_) => {
+                self.buf.clear();
+                SendResult::Drained
+            }
+            Err(_) => SendResult::Error,
+        }
+    }
+}
+
+/// The socket a TCP channel talks through: the send sink, plus the two
+/// transport-level arms the channel's lifecycle drives -- the keepalive
+/// arm (`TCPChannel::startInactivityDetection`) and the half-close
+/// (`TCPChannel::doShutDown`). The real socket is `Endpoint`; the tests
+/// use a transport that records the arms.
+pub trait TcpTransport: SendSink {
+    /// `TCPChannel::startInactivityDetection( period, checkPeriod )`:
+    /// arm kernel keepalive -- `SO_KEEPALIVE` then, on Unix,
+    /// `TCP_KEEPIDLE=1`, `TCP_KEEPINTVL=1`, `TCP_KEEPCNT=checkPeriod`.
+    /// The OS probes a silent peer and, finding it gone, fails the
+    /// socket, which the channel's input path reads as a disconnect and
+    /// destroys the channel. That convergence is the TCP timeout: the
+    /// reference arms no channel timer (its
+    /// `onChannelInactivityTimeout` is a "should not have been called"
+    /// critical), and the `period` argument is ignored, so the port does
+    /// the same.
+    fn arm_inactivity_detection(&mut self, check_period: f32);
+
+    /// `TCPChannel::doShutDown`: half-close the sending side
+    /// (`shutdown( SHUT_WR )`). The peer's read then sees EOF and the
+    /// peer closes in turn, and the resulting 0-length read arrives at
+    /// [`TcpChannel::handle_peer_disconnect`].
+    fn shutdown_write(&mut self);
+}
+
+/// `TCPChannel` (lib/network/tcp_channel.cpp): the send buffer plus the
+/// lifecycle -- the half-close flow and the cleanup a break triggers.
+///
+/// The read-side framing is `TcpFrameReader` (BW-02-04-01) and the
+/// descriptor's poller registration and destruction join with the channel
+/// build; this slice carries the state the break cleanup has to leave
+/// consistent.
+#[cfg(target_os = "linux")]
+pub struct TcpChannel<T: TcpTransport> {
+    /// `pEndpoint_`: the accepted socket.
+    transport: T,
+    /// `addr_`: the peer's address, the key the interface and the request
+    /// manager recognise the channel by.
+    addr: Address,
+    /// `pNetworkInterface_`, held weakly so a channel can report its own
+    /// death without keeping the interface alive.
+    network_interface: Weak<NetworkInterface>,
+    /// `pSendBuffer_`.
+    send_buffer: TcpSendBuffer,
+    /// `isShuttingDown_`: the channel was asked to close and is waiting
+    /// for its queue to drain.
     is_shutting_down: bool,
     /// `isDestroyed_`.
     is_destroyed: bool,
-    /// `pSendBuffer_`: present only while data is queued behind a busy
-    /// socket. `doDestroy` deletes it; dropping the channel does too.
-    send_buffer: Option<TcpSendBuffer>,
-    /// The receive framing state (`pFrameData_` + `frameLength_` +
-    /// `frameHeaderLength_`).
-    parser: TcpFrameParser,
-    /// `pNetworkInterface_`, weak so a channel cannot keep its interface
-    /// alive, and the `onChannelGone` target of `destroy`.
-    interface: Weak<NetworkInterface>,
-    /// `pEndpoint_->getRemoteAddress()`, the key the pending requests ride
-    /// on and that `onChannelGone` cancels by.
-    remote: Address,
-    /// Whether a stream filter still owes its own shutdown (the
-    /// `pStreamFilter_->didFinishShuttingDown()` gate of `shutDown`).
-    filter_owes_shutdown: bool,
-    /// `pMessageFilter_` (channel.hpp): the message filter that
-    /// first-passes this channel's deliveries, if any.
-    p_message_filter: Option<Rc<dyn MessageFilter>>,
-    /// The keepalive count `startInactivityDetection` was given
-    /// (`TCP_KEEPCNT`), recorded since the port has no socket to set
-    /// `SO_KEEPALIVE`/`TCP_KEEPIDLE`/`TCP_KEEPINTVL` on.
-    keepalive_check_period: Option<f32>,
-    /// `shutDown` has half-closed the write direction (`SHUT_WR`), issued
-    /// by `doShutDown`. Recorded, not sent.
-    shut_down_sent: bool,
-    /// `onChannelInactivityTimeout` was called -- the reference's
-    /// `CRITICAL_MSG`, which the port records instead of aborting.
-    inactivity_timed_out: Cell<bool>,
-    /// The server-side bytes held for the WebSockets sniff
-    /// (tcp_channel.cpp:194-223): the sniff must see a first frame's head
-    /// before the parser frames it, so until it resolves, the raw bytes
-    /// sit here rather than in the parser.
-    pending_header: Vec<u8>,
-    /// `pStreamFilter_` (tcp_channel.cpp:579): the session encryption the
-    /// stream passes through, installed by `setEncryption`. `on_data` hands
-    /// every incoming byte to its `read_into` first, so the framing loop only
-    /// ever sees plaintext.
-    p_encryption: Option<EncryptionStreamFilter>,
 }
 
-impl TcpChannel {
-    /// `TCPChannel( networkInterface, endpoint, isServer )`: the header
-    /// state follows the side, nothing is buffered, nothing is destroyed.
-    pub fn new(interface: &Rc<NetworkInterface>, remote: Address, is_server: bool) -> Self {
-        Self {
-            header_state: if is_server {
-                HeaderState::ServerWaitForHeader
-            } else {
-                HeaderState::ClientSendHeader
-            },
+#[cfg(target_os = "linux")]
+impl<T: TcpTransport> TcpChannel<T> {
+    /// `TCPChannel( pEndpoint, pInterface, ... )`: a channel on the
+    /// accepted `transport`, talking to `addr` through `interface`.
+    pub fn new(transport: T, addr: Address, interface: &Rc<NetworkInterface>) -> Self {
+        TcpChannel {
+            transport,
+            addr,
+            network_interface: Rc::downgrade(interface),
+            send_buffer: TcpSendBuffer::new(),
             is_shutting_down: false,
             is_destroyed: false,
-            send_buffer: None,
-            parser: TcpFrameParser::new(),
-            interface: Rc::downgrade(interface),
-            remote,
-            filter_owes_shutdown: false,
-            p_message_filter: None,
-            keepalive_check_period: None,
-            shut_down_sent: false,
-            inactivity_timed_out: Cell::new(false),
-            pending_header: Vec::new(),
-            p_encryption: None,
         }
     }
 
-    /// `TCPChannel::setEncryption` (tcp_channel.cpp:578-590): wrap the
-    /// channel's stream in an `EncryptionStreamFilter`, or drop the
-    /// encryption for a `None` key. The reference stacks the filter on the
-    /// channel stream adaptor; the port has no stream object, so the codec
-    /// hangs off the channel and `on_data` drives it.
-    pub fn set_encryption(&mut self, cipher: Option<Rc<dyn BlockCipher>>) {
-        self.p_encryption = cipher.map(EncryptionStreamFilter::new);
+    /// `addr()`.
+    pub fn addr(&self) -> Address {
+        self.addr
     }
 
-    // -- handshake --------------------------------------------------------
-
-    /// `doSend`'s client arm (tcp_channel.cpp:420-427): the header frame a
-    /// client owes -- a small frame carrying `CLIENT_HEADER`. The header is
-    /// sent once; afterwards the state is `None`.
-    pub fn client_header_frame(&mut self) -> Vec<u8> {
-        debug_assert_eq!(self.header_state, HeaderState::ClientSendHeader);
-        let mut frame = Vec::with_capacity(SMALL_FRAME_HEADER_SIZE + CLIENT_HEADER_SIZE);
-        frame.extend_from_slice(&(CLIENT_HEADER_SIZE as u16).to_le_bytes());
-        frame.extend_from_slice(CLIENT_HEADER);
-        self.header_state = HeaderState::None;
-        frame
-    }
-
-    /// `readHeader` (tcp_channel.cpp:268-315): the server's verdict on its
-    /// first frame. The frame must be exactly the header; the parser has
-    /// already counted it, so the channel only consumes it and flips the
-    /// state, exactly as `readHeader` does after the `memcmp`.
-    pub fn read_header(&mut self, frame: &[u8]) -> HeaderVerdict {
-        debug_assert_eq!(self.header_state, HeaderState::ServerWaitForHeader);
-        if frame != CLIENT_HEADER {
-            return HeaderVerdict::Rejected;
-        }
-        self.header_state = HeaderState::None;
-        HeaderVerdict::Accepted
-    }
-
-    // -- shutdown ---------------------------------------------------------
-
-    /// `shutDown` (tcp_channel.cpp:596): half-close the write direction. A
-    /// stream filter that still owes its own shutdown holds the channel
-    /// back; otherwise the shutdown proceeds now, or when the pending send
-    /// buffer empties.
-    pub fn shut_down(&mut self) {
-        if self.filter_owes_shutdown {
-            return;
-        }
-        self.is_shutting_down = true;
-        if self.send_buffer.is_none() {
-            self.do_shut_down();
-        }
-    }
-
-    /// `doShutDown` (tcp_channel.cpp:620): `SHUT_WR` -- half the
-    /// connection. Recorded; the peer's subsequent zero-length read is the
-    /// other half, handled as a disconnect.
-    pub fn do_shut_down(&mut self) {
-        self.shut_down_sent = true;
-    }
-
-    /// Whether a stream filter still owes its own shutdown, settable by a
-    /// filter (the `didFinishShuttingDown` gate).
-    pub fn set_filter_owes_shutdown(&mut self, owes: bool) {
-        self.filter_owes_shutdown = owes;
-    }
-
-    /// `pMessageFilter()` (channel.hpp): a new reference to the channel's
-    /// message filter, or `None`.
-    pub fn p_message_filter(&self) -> Option<Rc<dyn MessageFilter>> {
-        self.p_message_filter.clone()
-    }
-
-    /// `pMessageFilter( pMessageFilter )` setter (channel.hpp): hand the
-    /// channel a message filter to first-pass its deliveries.
-    pub fn set_p_message_filter(&mut self, p_message_filter: Option<Rc<dyn MessageFilter>>) {
-        self.p_message_filter = p_message_filter;
-    }
-
-    /// `sendBufferedData`'s tail (tcp_channel.cpp:850-854): drive the
-    /// pending send buffer. When the drain empties, the buffer is dropped
-    /// (the write registration is gone) and a shutdown that was waiting on
-    /// it proceeds.
-    pub fn flush_send_buffer(&mut self) -> Option<FlushResult> {
-        let buffer = self.send_buffer.as_mut()?;
-        let result = buffer.flush();
-        if matches!(result, FlushResult::Drained { .. }) {
-            self.send_buffer = None;
-            if self.is_shutting_down {
-                self.do_shut_down();
-            }
-        }
-        Some(result)
-    }
-
-    // -- disconnect and cleanup ------------------------------------------
-
-    /// `handleInput`'s read (tcp_channel.cpp:149-168): a zero-length read
-    /// is the peer disconnecting; the data path is the framing loop, which
-    /// the transport wiring (04-05) owns. The socket read is a seam, so
-    /// the caller hands the outcome in.
-    pub fn on_read(&mut self, read: ReadOutcome) {
-        if let ReadOutcome::Disconnected = read {
-            self.handle_peer_disconnect();
-        }
-    }
-
-    /// `handleInput`'s data arm (tcp_channel.cpp:190-263): a server's
-    /// first bytes go through the WebSockets sniff first, then whatever
-    /// bytes resolve it are framed and dispatched.
-    pub fn on_data(&mut self, bytes: &[u8]) {
-        // The stream filter sits between the transport and the framing: the
-        // channel decrypts what `on_data` brings, and the framing loop only
-        // ever sees plaintext (tcp_channel.cpp:166-180).
-        let decrypted;
-        let data: &[u8] = match &mut self.p_encryption {
-            Some(filter) => {
-                decrypted = filter.read_into(bytes);
-                if decrypted.is_empty() {
-                    // Incomplete encrypted block; wait for more bytes.
-                    return;
-                }
-                &decrypted
-            }
-            None => bytes,
-        };
-
-        if self.header_state == HeaderState::ServerWaitForHeader {
-            self.pending_header.extend_from_slice(data);
-            if self.pending_header.len() < HTTP_HEADER_START.len() {
-                // `pFrameData_->remainingLength() < HTTP_HEADER_START_SIZE`:
-                // wait for more data.
-                return;
-            }
-            if &self.pending_header[..HTTP_HEADER_START.len()] == HTTP_HEADER_START {
-                // It definitely doesn't match the first header frame, so we
-                // can assume it was a WebSockets frame and drop the
-                // connection here (tcp_channel.cpp:215-223).
-                self.destroy();
-                return;
-            }
-            // The sniff is passed; the held bytes are a header frame (or a
-            // header frame plus real bundles), so they frame and dispatch.
-            let wire = std::mem::take(&mut self.pending_header);
-            self.feed_and_dispatch(&wire);
-        } else {
-            self.feed_and_dispatch(data);
-        }
-    }
-
-    /// The framing loop of `handleInput` (tcp_channel.cpp:247-260): frame
-    /// whatever bytes are in hand, then hand each complete frame to the
-    /// header gate or the bundle dispatch.
-    fn feed_and_dispatch(&mut self, bytes: &[u8]) {
-        let frames = self.parser.feed(bytes);
-        for frame in frames {
-            if self.header_state == HeaderState::ServerWaitForHeader {
-                // The first frame is the header frame. `readHeader` destroys
-                // the channel on a mismatch, so a rejected frame stops the
-                // loop.
-                if self.read_header(&frame) == HeaderVerdict::Rejected {
-                    self.destroy();
-                    return;
-                }
-            } else {
-                self.process_received_frame(&frame);
-            }
-        }
-    }
-
-    /// `processReceivedFrame` (tcp_channel.cpp:360-378): a complete frame
-    /// is one bundle; the interface's message table dispatches it. Nothing
-    /// is wired yet when the interface has no table, in which case there
-    /// is nothing served and nothing to do.
-    pub fn process_received_frame(&mut self, frame: &[u8]) {
-        let Some(interface) = self.interface.upgrade() else {
-            return;
-        };
-        let Some(table) = interface.interface_table() else {
-            return;
-        };
-        let mut frame = frame.to_vec();
-        // `channel.pMessageFilter()` (tcp_bundle_processor.cpp:63): the
-        // channel's own message filter first-passes the frame's
-        // deliveries.
-        let message_filter = self.p_message_filter();
-        let reason = tcp_bundle_dispatch::dispatch_messages(
-            &table,
-            &self.remote,
-            &mut frame,
-            message_filter.as_deref(),
-        );
-        if reason != Reason::Success {
-            eprintln!(
-                "TCPChannel( {} )::processReceivedFrame: Error while dispatching messages: {}",
-                self.remote.c_str(),
-                reason.to_string()
-            );
-        }
-    }
-
-    /// `handleInput`'s zero-length read (tcp_channel.cpp:164-168): the
-    /// peer went away.
-    pub fn handle_peer_disconnect(&mut self) {
-        self.destroy();
-    }
-
-    /// `Channel::destroy` (channel.cpp:217): cancel the inactivity timer,
-    /// tear down the socket half (`doDestroy`), mark destroyed, then tell
-    /// the interface -- `onChannelGone` fails every request still riding
-    /// this channel, which is the cleanup this item accepts.
-    pub fn destroy(&mut self) {
-        if self.is_destroyed {
-            return;
-        }
-        // `doDestroy` (tcp_channel.cpp:543): deregister the fds, delete
-        // the send buffer, close the endpoint. The buffer is the only
-        // state here; it drops with the assignment.
-        self.send_buffer = None;
-        self.is_destroyed = true;
-        if let Some(interface) = self.interface.upgrade() {
-            interface.on_channel_gone(&self.remote);
-        }
-    }
-
-    /// `handlePeerDisconnect`'s bookkeeping, minus the trace: the channel
-    /// was destroyed by `handle_peer_disconnect`. Kept for the two traces
-    /// the reference prints ("Shutdown cleanly" vs "Disconnected by
-    /// peer"), so a test can tell the arms apart.
-    pub fn was_shutting_down(&self) -> bool {
-        self.is_shutting_down
-    }
-
-    // -- timeout ----------------------------------------------------------
-
-    /// `startInactivityDetection` (tcp_channel.cpp:641): the kernel
-    /// keepalive the reference installs instead of an inactivity timer --
-    /// `SO_KEEPALIVE`, `TCP_KEEPIDLE=1`, `TCP_KEEPINTVL=1`,
-    /// `TCP_KEEPCNT=checkPeriod`. Recorded, since the port has no socket.
-    pub fn start_inactivity_detection(&mut self, check_period: f32) {
-        self.keepalive_check_period = Some(check_period);
-    }
-
-    /// `onChannelInactivityTimeout` (tcp_channel.cpp:658): the reference's
-    /// `CRITICAL_MSG` -- the kernel, not this, detects the dead peer, so
-    /// the channel must never be called. Recorded instead of aborting.
-    pub fn on_channel_inactivity_timeout(&self) {
-        self.inactivity_timed_out.set(true);
-    }
-
-    // -- state ------------------------------------------------------------
-
-    /// `headerState_`.
-    pub fn header_state(&self) -> HeaderState {
-        self.header_state
-    }
-
-    /// `isShuttingDown_`.
-    pub fn is_shutting_down(&self) -> bool {
-        self.is_shutting_down
-    }
-
-    /// `isDestroyed_`.
+    /// `isDestroyed()`.
     pub fn is_destroyed(&self) -> bool {
         self.is_destroyed
     }
 
-    /// `shutDown` has reached `doShutDown` (`SHUT_WR` sent).
-    pub fn shut_down_sent(&self) -> bool {
-        self.shut_down_sent
+    /// `isConnected()` (tcp_channel.hpp:53): a channel that is neither
+    /// shutting down nor destroyed can still be used.
+    pub fn is_connected(&self) -> bool {
+        !self.is_shutting_down && !self.is_destroyed
     }
 
-    /// The keepalive count `startInactivityDetection` was given.
-    pub fn keepalive_check_period(&self) -> Option<f32> {
-        self.keepalive_check_period
+    /// `pSendBuffer_->remainingLength()`.
+    pub fn pending(&self) -> usize {
+        self.send_buffer.pending()
     }
 
-    /// `onChannelInactivityTimeout` was called.
-    pub fn inactivity_timed_out(&self) -> bool {
-        self.inactivity_timed_out.get()
+    /// Whether the queue is holding bytes the socket has not accepted.
+    pub fn has_pending(&self) -> bool {
+        self.send_buffer.has_pending()
     }
 
-    /// The receive framing state, mutable, for the `handleInput` framing
-    /// loop -- the 04-05 wiring consumes complete frames through it.
-    pub fn parser_mut(&mut self) -> &mut TcpFrameParser {
-        &mut self.parser
+    /// `pEndpoint_`, as the test harnesses reach it: the fake transport's
+    /// recordings are read back through the channel. The channel build's
+    /// socket wiring taps the real socket the same way.
+    #[cfg(test)]
+    pub(crate) fn transport_mut(&mut self) -> &mut T {
+        &mut self.transport
     }
 
-    /// `pSendBuffer_`: the queued bytes, if any.
-    pub fn send_buffer(&self) -> Option<&TcpSendBuffer> {
-        self.send_buffer.as_ref()
+    /// `startInactivityDetection( period, checkPeriod )`: arm the kernel
+    /// keepalive; the reference passes `period` through unused.
+    pub fn start_inactivity_detection(&mut self, period: f32, check_period: f32) {
+        self.transport.arm_inactivity_detection(check_period);
+        let _ = period;
     }
 
-    /// Install the send buffer the socket seam was built over.
-    pub fn set_send_buffer(&mut self, buffer: TcpSendBuffer) {
-        self.send_buffer = Some(buffer);
+    /// `writeFrom( input, shouldCork )`: hand a frame to the socket,
+    /// buffering what it refuses. A hard send error destroys the channel
+    /// (`writeFrom`'s "Write error, destroying" arm).
+    pub fn write_from(&mut self, data: &[u8]) -> SendResult {
+        let result = self.send_buffer.write_from(&mut self.transport, data);
+        if result == SendResult::Error {
+            self.destroy();
+        }
+        result
+    }
+
+    /// `sendBufferedData()`: push as much of the queue as the socket
+    /// accepts. A hard error destroys the channel; once the queue drains
+    /// a shut-down that was waiting on it half-closes.
+    pub fn send_buffered_data(&mut self) -> SendResult {
+        let result = self.send_buffer.flush(&mut self.transport);
+        if result == SendResult::Error {
+            self.destroy();
+        } else if result == SendResult::Drained && self.is_shutting_down {
+            // All remaining data sent; the shut-down that was waiting on
+            // the sends half-closes now.
+            self.do_shut_down();
+        }
+        result
+    }
+
+    /// `shutDown()`: ask the channel to close. With nothing pending the
+    /// half-close happens now; otherwise it waits for the queue to drain
+    /// (`sendBufferedData` picks it up).
+    pub fn shut_down(&mut self) {
+        self.is_shutting_down = true;
+        if !self.send_buffer.has_pending() {
+            self.do_shut_down();
+        }
+    }
+
+    /// `doShutDown()`: `shutdown( SHUT_WR )`. The peer reads EOF, closes
+    /// in turn, and the 0-length read reaches `handle_peer_disconnect`.
+    fn do_shut_down(&mut self) {
+        self.transport.shutdown_write();
+    }
+
+    /// `handlePeerDisconnect()`: the peer's 0-length read. The channel is
+    /// gone either way -- a clean shut-down or a break -- and destroys
+    /// itself.
+    pub fn handle_peer_disconnect(&mut self) {
+        if self.is_shutting_down {
+            // TRACE_MSG "Shutdown cleanly".
+        } else {
+            // TRACE_MSG "Disconnected by peer".
+        }
+        self.destroy();
+    }
+
+    /// `Channel::destroy()` (channel.cpp:319): close the channel for
+    /// good. Idempotent. The pending queue is discarded (the reference's
+    /// `doDestroy` deletes the send buffer) and the interface is told the
+    /// channel is gone, which fails every request riding it with
+    /// `REASON_CHANNEL_LOST`.
+    pub fn destroy(&mut self) {
+        if self.is_destroyed {
+            // IF_NOT_MF_ASSERT_DEV( !isDestroyed_ ): the dev warning is
+            // the caller's to notice; the port stays quiet.
+            return;
+        }
+        self.is_destroyed = true;
+        self.send_buffer.clear();
+        let addr = self.addr;
+        if let Some(interface) = self.network_interface.upgrade() {
+            interface.on_channel_gone(&addr);
+        }
+    }
+}
+
+/// The real socket as a [`SendSink`]: `Endpoint::send`'s byte count, or a
+/// would-block socket accepting nothing (the reference's
+/// `isErrnoIgnorable` arm) instead of a hard error.
+#[cfg(target_os = "linux")]
+impl SendSink for Endpoint {
+    fn send(&mut self, data: &[u8]) -> Result<usize, SendError> {
+        let sent = Endpoint::send(self, data);
+        if sent >= 0 {
+            return Ok(sent as usize);
+        }
+        // A would-block send (EAGAIN) accepts nothing, not an error.
+        if std::io::Error::last_os_error().raw_os_error() == Some(socket::EAGAIN) {
+            return Ok(0);
+        }
+        Err(SendError)
+    }
+}
+
+/// The real socket as a [`TcpTransport`]: the kernel keepalive arm and
+/// the half-close, exactly as `TCPChannel` drives them.
+#[cfg(target_os = "linux")]
+impl TcpTransport for Endpoint {
+    fn arm_inactivity_detection(&mut self, check_period: f32) {
+        self.set_keepalive(true);
+        let fd = self.fileno();
+        socket::set_int_option(fd, socket::IPPROTO_TCP, socket::TCP_KEEPIDLE, 1);
+        socket::set_int_option(fd, socket::IPPROTO_TCP, socket::TCP_KEEPINTVL, 1);
+        socket::set_int_option(
+            fd,
+            socket::IPPROTO_TCP,
+            socket::TCP_KEEPCNT,
+            check_period as i32,
+        );
+    }
+
+    fn shutdown_write(&mut self) {
+        socket::shutdown(self.fileno(), socket::SHUT_WR);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message_filter::MessageFilter;
-    use crate::tcp_send::SendAttempt;
-    use crate::tcp_send::TcpSender;
 
-    /// A sender that blocks the first write and takes everything after,
-    /// so a channel can be given a non-empty send buffer, and so the
-    /// buffer drains once the socket catches up.
-    struct BlockThenSend {
-        blocked: bool,
+    /// A socket that accepts at most `cap` bytes per call and records every
+    /// accepted byte, in order.
+    struct Backpressured {
+        cap: usize,
+        sent: Vec<u8>,
+        fail: bool,
     }
 
-    impl BlockThenSend {
-        fn new() -> Self {
-            Self { blocked: true }
+    impl Backpressured {
+        fn new(cap: usize) -> Self {
+            Self {
+                cap,
+                sent: Vec::new(),
+                fail: false,
+            }
+        }
+
+        fn sent(&self) -> &[u8] {
+            &self.sent
         }
     }
 
-    impl TcpSender for BlockThenSend {
-        fn send(&mut self, data: &[u8]) -> SendAttempt {
-            if self.blocked {
-                self.blocked = false;
-                SendAttempt::WouldBlock
-            } else {
-                SendAttempt::Sent(data.len())
+    impl SendSink for Backpressured {
+        fn send(&mut self, data: &[u8]) -> Result<usize, SendError> {
+            if self.fail {
+                return Err(SendError);
+            }
+            let n = data.len().min(self.cap);
+            self.sent.extend_from_slice(&data[..n]);
+            Ok(n)
+        }
+    }
+
+    /// Frame one bundle the way `TCPChannel::doSend` does: the 16-bit length
+    /// header then the body.
+    fn framed(body: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        frame.extend_from_slice(body);
+        frame
+    }
+
+    /// The acceptance fixture: under backpressure (a socket that takes one
+    /// byte at a time), complete frames written back to back come out in
+    /// order, whole, and the buffer drains.
+    #[test]
+    fn a_backpressured_socket_sends_complete_frames_in_order() {
+        let mut sink = Backpressured::new(1);
+        let mut buffer = TcpSendBuffer::new();
+
+        let first = framed(b"first");
+        let second = framed(b"second");
+
+        // Each write is mostly refused; the buffer carries the remainder.
+        assert_eq!(buffer.write_from(&mut sink, &first), SendResult::Partial);
+        assert_eq!(buffer.write_from(&mut sink, &second), SendResult::Partial);
+        assert!(buffer.has_pending());
+        assert!(buffer.pending() > 0);
+
+        // Drain until the socket takes everything.
+        let mut steps = 0;
+        loop {
+            match buffer.flush(&mut sink) {
+                SendResult::Drained => break,
+                SendResult::WouldBlock | SendResult::Partial => steps += 1,
+                SendResult::Error => panic!("the socket did not error"),
+            }
+            assert!(steps < 10_000, "the drain must terminate");
+        }
+
+        // Both frames came out whole, in order, and nothing is pending.
+        let mut expected = first;
+        expected.extend_from_slice(&second);
+        assert_eq!(sink.sent(), &expected[..]);
+        assert_eq!(buffer.pending(), 0);
+        assert!(!buffer.has_pending());
+    }
+
+    /// A frame larger than the socket's capacity is still delivered whole:
+    /// the bytes come out in order, so the receiving frame reader reassembles
+    /// them into the one frame.
+    #[test]
+    fn a_large_frame_is_delivered_whole_under_backpressure() {
+        let mut sink = Backpressured::new(3);
+        let mut buffer = TcpSendBuffer::new();
+
+        let body: Vec<u8> = (0..300).map(|i| i as u8).collect();
+        let frame = framed(&body);
+
+        assert_eq!(buffer.write_from(&mut sink, &frame), SendResult::Partial);
+        while buffer.flush(&mut sink) != SendResult::Drained {}
+
+        assert_eq!(sink.sent(), &frame[..]);
+        assert_eq!(buffer.pending(), 0);
+    }
+
+    /// A write that is fully accepted does not buffer anything.
+    #[test]
+    fn a_fully_accepted_write_drains_immediately() {
+        let mut sink = Backpressured::new(1024);
+        let mut buffer = TcpSendBuffer::new();
+
+        let frame = framed(b"whole");
+        assert_eq!(buffer.write_from(&mut sink, &frame), SendResult::Drained);
+        assert_eq!(buffer.pending(), 0);
+        assert_eq!(sink.sent(), &frame[..]);
+    }
+
+    /// A would-block socket (accepts nothing) buffers everything and reports
+    /// it, then drains once it frees up.
+    #[test]
+    fn a_would_block_socket_buffers_everything_then_drains() {
+        let mut sink = Backpressured::new(0);
+        let mut buffer = TcpSendBuffer::new();
+
+        let frame = framed(b"held");
+        assert_eq!(buffer.write_from(&mut sink, &frame), SendResult::WouldBlock);
+        assert_eq!(buffer.pending(), frame.len());
+
+        sink.cap = 1024;
+        assert_eq!(buffer.flush(&mut sink), SendResult::Drained);
+        assert_eq!(sink.sent(), &frame[..]);
+        assert_eq!(buffer.pending(), 0);
+    }
+
+    /// A hard socket error is reported, and the channel is destroyed.
+    #[test]
+    fn a_hard_socket_error_is_reported() {
+        let mut sink = Backpressured::new(1024);
+        sink.fail = true;
+        let mut buffer = TcpSendBuffer::new();
+
+        assert_eq!(buffer.write_from(&mut sink, b"boom"), SendResult::Error);
+    }
+
+    /// A write while data is already pending appends to the end, preserving
+    /// the order of the frames.
+    #[test]
+    fn a_write_while_pending_appends_in_order() {
+        let mut sink = Backpressured::new(2);
+        let mut buffer = TcpSendBuffer::new();
+
+        let first = framed(b"aa");
+        let second = framed(b"bb");
+        let third = framed(b"cc");
+
+        // The socket takes a little of the first; the rest pends.
+        buffer.write_from(&mut sink, &first);
+        // The next two writes append, not reorder.
+        assert_eq!(buffer.write_from(&mut sink, &second), SendResult::Partial);
+        assert_eq!(buffer.write_from(&mut sink, &third), SendResult::Partial);
+
+        while buffer.flush(&mut sink) != SendResult::Drained {}
+
+        let mut expected = first;
+        expected.extend_from_slice(&second);
+        expected.extend_from_slice(&third);
+        assert_eq!(sink.sent(), &expected[..]);
+    }
+
+    /// Flushing an empty buffer is a no-op drain.
+    #[test]
+    fn flushing_an_empty_buffer_is_a_no_op() {
+        let mut sink = Backpressured::new(1024);
+        let mut buffer = TcpSendBuffer::new();
+
+        assert_eq!(buffer.flush(&mut sink), SendResult::Drained);
+        assert_eq!(buffer.pending(), 0);
+    }
+}
+
+/// The channel lifecycle tests: the break cleanup of BW-02-04-04.
+///
+/// Linux only, because the channel reports its death through
+/// `NetworkInterface`, whose construction needs the dispatcher.
+#[cfg(all(test, target_os = "linux"))]
+mod channel_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use foundation::stream::BinaryStream;
+    use platform::socket;
+
+    use super::{SendError, SendResult, SendSink, TcpChannel, TcpTransport};
+    use crate::endpoint::{Address, Endpoint, INADDR_ANY};
+    use crate::event_dispatcher::EventDispatcher;
+    use crate::interfaces::ReplyMessageHandler;
+    use crate::misc::Reason;
+    use crate::network_interface::{InterfaceType, NetworkInterface};
+    use crate::nub_exception::NubException;
+    use crate::reply_order::ReplyOrder;
+    use crate::request_manager::{DEFAULT_REQUEST_TIMEOUT, RequestManager};
+    use crate::unpacked_message_header::UnpackedMessageHeader;
+
+    /// `htonl( inet_addr( "127.0.0.1" ) )`: the loopback the real-pair
+    /// fixture connects to.
+    const LOOPBACK: u32 = 0x0100_007f;
+
+    /// A socket that accepts at most `cap` bytes per call and records
+    /// everything, including the two transport arms the channel drives.
+    struct Recording {
+        cap: usize,
+        sent: Vec<u8>,
+        fail: bool,
+        armed: Option<f32>,
+        half_closed: usize,
+    }
+
+    impl Recording {
+        fn new(cap: usize) -> Self {
+            Recording {
+                cap,
+                sent: Vec::new(),
+                fail: false,
+                armed: None,
+                half_closed: 0,
             }
         }
     }
 
-    /// A socketless interface, for the `onChannelGone` coupling.
-    fn interface() -> Rc<NetworkInterface> {
-        use crate::event_dispatcher::EventDispatcher;
-        let clock = Rc::new(Cell::new(1_000_000u64));
-        let cell = Rc::clone(&clock);
-        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || cell.get())));
-        NetworkInterface::new_with_dispatcher(
-            crate::network_interface::InterfaceType::Internal,
-            dispatcher,
-        )
+    impl SendSink for Recording {
+        fn send(&mut self, data: &[u8]) -> Result<usize, SendError> {
+            if self.fail {
+                return Err(SendError);
+            }
+            let n = data.len().min(self.cap);
+            self.sent.extend_from_slice(&data[..n]);
+            Ok(n)
+        }
     }
 
-    /// The header frame a client sends and a server accepts.
-    #[test]
-    fn the_client_header_frame_is_a_small_frame_carrying_the_header() {
-        let channel = &mut TcpChannel::new(&interface(), Address::new(1, 2), false);
-        let frame = channel.client_header_frame();
-        assert_eq!(frame, b"\x07\x00TCP\r\n\r\n", "len prefix then header");
-        assert_eq!(channel.header_state(), HeaderState::None);
+    impl TcpTransport for Recording {
+        fn arm_inactivity_detection(&mut self, check_period: f32) {
+            self.armed = Some(check_period);
+        }
+
+        fn shutdown_write(&mut self) {
+            self.half_closed += 1;
+        }
     }
 
-    /// The server accepts exactly the header and rejects anything else.
-    #[test]
-    fn the_server_accepts_the_header_and_rejects_others() {
-        let mut server = TcpChannel::new(&interface(), Address::new(1, 2), true);
-        assert_eq!(server.header_state(), HeaderState::ServerWaitForHeader);
-        assert_eq!(server.read_header(CLIENT_HEADER), HeaderVerdict::Accepted);
-        assert_eq!(server.header_state(), HeaderState::None);
+    /// A reply handler that records the failures it is told, so a test
+    /// can see the reason a pending request was failed with.
+    struct Failures(RefCell<Vec<Reason>>);
 
-        let mut other = TcpChannel::new(&interface(), Address::new(1, 2), true);
-        assert_eq!(other.read_header(b"GET /"), HeaderVerdict::Rejected);
-        assert_eq!(
-            other.header_state(),
-            HeaderState::ServerWaitForHeader,
-            "the state only moves on acceptance"
-        );
-    }
-
-    /// End to end: the frame the client sends is the one the server
-    /// accepts, through the channel's own receive state -- the parser
-    /// hands the gate the frame `readHeader` reads off it.
-    #[test]
-    fn the_client_header_frame_passes_the_server_gate() {
-        let mut client = TcpChannel::new(&interface(), Address::new(1, 2), false);
-        let frame = client.client_header_frame();
-
-        let mut server = TcpChannel::new(&interface(), Address::new(3, 4), true);
-        let frames = server.parser_mut().feed(&frame);
-        assert_eq!(
-            frames,
-            vec![CLIENT_HEADER.to_vec()],
-            "one frame, and it is the header"
-        );
-        assert_eq!(server.read_header(&frames[0]), HeaderVerdict::Accepted);
-        assert_eq!(
-            server.header_state(),
-            HeaderState::None,
-            "the connection is established"
-        );
-    }
-
-    /// A shutdown with nothing pending half-closes immediately.
-    #[test]
-    fn a_shutdown_with_nothing_pending_half_closes_now() {
-        let mut channel = TcpChannel::new(&interface(), Address::new(1, 2), false);
-        channel.shut_down();
-        assert!(channel.is_shutting_down());
-        assert!(channel.shut_down_sent(), "the SHUT_WR went out");
-    }
-
-    /// A shutdown while a send buffer is queued waits for the drain. The
-    /// reference's gate is the channel's own `isShuttingDown_`, not the
-    /// buffer's: `sendBufferedData` deletes the emptied buffer and, `IF(
-    /// isShuttingDown_ )`, calls `doShutDown` -- tcp_channel.cpp:842-854.
-    #[test]
-    fn a_shutdown_waits_for_the_pending_send_buffer() {
-        let mut channel = TcpChannel::new(&interface(), Address::new(1, 2), false);
-        let mut buffer = TcpSendBuffer::new(Box::new(BlockThenSend::new()));
-        // A busy socket queues the frame, so the buffer is non-empty.
-        buffer.write(b"queued frame");
-        channel.set_send_buffer(buffer);
-
-        channel.shut_down();
-        assert!(channel.is_shutting_down());
-        assert!(!channel.shut_down_sent(), "the drain still owns the data");
-
-        // The socket catches up: the drain empties, the buffer is deleted,
-        // and the shutdown that was waiting on it proceeds.
-        assert!(
-            matches!(
-                channel.flush_send_buffer().expect("a buffer was queued"),
-                FlushResult::Drained { .. }
-            ),
-            "the queued frame went out"
-        );
-        assert!(channel.shut_down_sent(), "the deferred doShutDown ran");
-        assert!(channel.send_buffer().is_none(), "the drain deleted it");
-    }
-
-    /// A stream filter that still owes its shutdown holds the channel
-    /// back, exactly as `shutDown` returns early.
-    #[test]
-    fn a_stream_filter_owing_shutdown_holds_the_channel() {
-        let mut channel = TcpChannel::new(&interface(), Address::new(1, 2), false);
-        channel.set_filter_owes_shutdown(true);
-        channel.shut_down();
-        assert!(!channel.is_shutting_down(), "the gate held it");
-        assert!(!channel.shut_down_sent());
-
-        channel.set_filter_owes_shutdown(false);
-        channel.shut_down();
-        assert!(channel.is_shutting_down());
-        assert!(channel.shut_down_sent());
-    }
-
-    /// A peer disconnect destroys the channel: the send buffer is gone,
-    /// the channel is marked destroyed, and the interface is told so the
-    /// pending requests on it fail.
-    #[test]
-    fn a_peer_disconnect_tears_down_the_channel() {
-        let interface = interface();
-        let remote = Address::new(1, 2);
-        let mut channel = TcpChannel::new(&interface, remote, true);
-        let mut buffer = TcpSendBuffer::new(Box::new(BlockThenSend::new()));
-        buffer.write(b"in flight");
-        channel.set_send_buffer(buffer);
-
-        assert!(!channel.is_destroyed());
-        channel.handle_peer_disconnect();
-        assert!(channel.is_destroyed());
-        assert!(
-            channel.send_buffer().is_none(),
-            "the in-flight data is gone"
-        );
-        assert!(
-            !channel.was_shutting_down(),
-            "the reference traces 'Disconnected by peer'"
-        );
-    }
-
-    /// `on_read`'s arms: a zero-length read is the peer going away and
-    /// destroys the channel, plain data is framed -- the framing loop's
-    /// job, not a fatal one -- and leaves the channel alone.
-    #[test]
-    fn a_zero_length_read_disconnects_and_data_does_not() {
-        let interface = interface();
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
-        channel.on_read(ReadOutcome::Data);
-        assert!(!channel.is_destroyed(), "data is framed, not fatal");
-
-        channel.on_read(ReadOutcome::Disconnected);
-        assert!(channel.is_destroyed(), "a zero-length read is the peer");
-    }
-
-    /// Destroy is idempotent, as the reference's
-    /// `IF_NOT_MF_ASSERT_DEV( !isDestroyed_ )` allows a re-call to be a
-    /// no-op.
-    #[test]
-    fn destroy_is_idempotent() {
-        let interface = interface();
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
-        channel.destroy();
-        assert!(channel.is_destroyed());
-        channel.destroy();
-        assert!(channel.is_destroyed());
-    }
-
-    /// The timeout setup records the kernel keepalive parameters and never
-    /// lets the channel's own inactivity handler fire, since the kernel
-    /// surfaces the dead peer as a disconnect instead.
-    #[test]
-    fn the_timeout_setup_is_the_kernel_keepalive() {
-        let mut channel = TcpChannel::new(&interface(), Address::new(1, 2), false);
-        assert_eq!(channel.keepalive_check_period(), None);
-        channel.start_inactivity_detection(2.5);
-        assert_eq!(channel.keepalive_check_period(), Some(2.5));
-        channel.on_channel_inactivity_timeout();
-        assert!(
-            channel.inactivity_timed_out(),
-            "the never-expected CRITICAL_MSG is recorded"
-        );
-    }
-
-    // -- the acceptance: pending replies and queue state match -----------
-
-    use crate::event_dispatcher::EventDispatcher;
-    use crate::interface_element::{
-        FIXED_LENGTH_MESSAGE, InterfaceElement, REPLY_MESSAGE_IDENTIFIER,
-    };
-    use crate::interface_table::InterfaceTable;
-    use crate::interfaces::{InputMessageHandler, ReplyMessageHandler};
-    use crate::misc::{Reason, ReplyID};
-    use crate::network_interface::InterfaceType;
-    use crate::reply_order::ReplyOrder;
-    use crate::request_manager::{DEFAULT_REQUEST_TIMEOUT, RequestManager};
-    use crate::unpacked_message_header::UnpackedMessageHeader;
-    use foundation::stream::BinaryStream;
-    use std::cell::Cell;
-
-    /// A reply handler that records what it got, so a test can tell two
-    /// channels' requests apart.
-    #[derive(Clone, Default)]
-    struct Recorder {
-        /// `( arg, payload )` of each reply delivered.
-        delivered: std::cell::RefCell<Vec<(usize, Vec<u8>)>>,
-        /// `( reason, arg )` of each failure reported.
-        failures: std::cell::RefCell<Vec<(Reason, usize)>>,
-    }
-
-    impl ReplyMessageHandler for Recorder {
+    impl ReplyMessageHandler for Failures {
         fn handle_message(
             &self,
             _source: &Address,
             _header: &UnpackedMessageHeader,
-            data: &mut BinaryStream,
-            arg: usize,
+            _data: &mut BinaryStream,
+            _arg: usize,
         ) {
-            let payload = data.unread_bytes().to_vec();
-            self.delivered.borrow_mut().push((arg, payload));
         }
 
-        fn handle_exception(&self, exception: &crate::nub_exception::NubException, arg: usize) {
-            self.failures.borrow_mut().push((exception.reason(), arg));
+        fn handle_exception(&self, exception: &NubException, _arg: usize) {
+            self.0.borrow_mut().push(exception.reason());
         }
     }
 
-    impl Recorder {
-        fn delivered(&self) -> Vec<(usize, Vec<u8>)> {
-            self.delivered.borrow().clone()
-        }
-
-        fn failures(&self) -> Vec<(Reason, usize)> {
-            self.failures.borrow().clone()
-        }
+    /// A pinned-clock interface with no socket, the same shape the
+    /// interface tests use.
+    fn channel_interface() -> Rc<NetworkInterface> {
+        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(|| 1_000_000u64)));
+        NetworkInterface::new_with_dispatcher(InterfaceType::Internal, dispatcher)
     }
 
-    /// An interface whose request manager is registered, on a pinned
-    /// clock, so a disconnect can be watched through the queues.
-    fn interface_with_manager(next_id: ReplyID) -> (Rc<NetworkInterface>, Rc<RequestManager>) {
-        let clock = Rc::new(Cell::new(1_000_000u64));
-        let cell = Rc::clone(&clock);
-        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || cell.get())));
-        let interface =
-            NetworkInterface::new_with_dispatcher(InterfaceType::Internal, Rc::clone(&dispatcher));
-        let manager = Rc::new(RequestManager::with_next_reply_id(
-            false, next_id, dispatcher,
-        ));
-        interface.set_request_manager(Some(Rc::clone(&manager)));
-        (interface, manager)
-    }
-
-    /// One pending request riding `channel`, answered to `handler`.
-    fn pending(
+    /// One pending request riding `channel`, so a break has something to
+    /// cancel.
+    fn pending_on_channel(
         manager: &RequestManager,
-        handler: &Rc<Recorder>,
-        arg: usize,
-        channel: Option<Address>,
-    ) -> ReplyID {
+        handler: &Rc<Failures>,
+        channel: Address,
+    ) -> crate::misc::ReplyID {
         let order = ReplyOrder::new(
             Rc::clone(handler) as Rc<dyn ReplyMessageHandler>,
-            arg,
+            0,
             DEFAULT_REQUEST_TIMEOUT,
-            2,
+            0,
         );
-        let mut frame = vec![0u8; 12];
+        let mut frame = vec![0u8; 8];
         manager
-            .add_reply_order(&order, channel, &mut frame)
+            .add_reply_order(&order, Some(channel), &mut frame)
             .unwrap()
     }
 
-    /// Deliver a reply for `id` through the manager's receive path, to
-    /// prove the request is still in the queue.
-    fn reply(manager: &RequestManager, id: ReplyID, payload: &[u8], source: &Address) {
-        let mut data = BinaryStream::new();
-        data.write_i32(id);
-        data.write_bytes(payload);
-        let mut header = UnpackedMessageHeader::new(REPLY_MESSAGE_IDENTIFIER);
-        header.set_length((std::mem::size_of::<ReplyID>() + payload.len()) as i32);
-        InputMessageHandler::handle_message(manager, source, &mut header, &mut data);
+    /// Frame one bundle the way `TCPChannel::doSend` does.
+    fn framed(body: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        frame.extend_from_slice(body);
+        frame
     }
 
-    /// The acceptance: a peer disconnect fails exactly the channel's
-    /// pending replies, in `REASON_CHANNEL_LOST`, and leaves the rest of
-    /// the queue and the in-flight send bytes in their reference state.
+    /// The acceptance: the peer goes away with a frame still queued, and
+    /// the channel's death leaves the two halves consistent -- every
+    /// request riding it is failed with `REASON_CHANNEL_LOST` and the
+    /// queue it was holding is gone.
     #[test]
-    fn a_disconnect_fails_the_channels_replies_and_leaves_the_rest() {
-        let (interface, manager) = interface_with_manager(10);
-        let remote = Address::new(1, 2);
-        let other = Address::new(3, 4);
-        let handler = Rc::new(Recorder::default());
-        let gone = pending(&manager, &handler, 1, Some(remote));
-        let kept = pending(&manager, &handler, 2, Some(other));
-        assert_eq!(manager.num_pending(), 2);
+    fn a_break_cancels_pending_replies_and_discards_the_queue() {
+        let interface = channel_interface();
+        let manager = Rc::new(RequestManager::new(false, interface.dispatcher()));
+        interface.set_request_manager(Some(manager.clone()));
 
-        let mut channel = TcpChannel::new(&interface, remote, true);
-        let mut buffer = TcpSendBuffer::new(Box::new(BlockThenSend::new()));
-        buffer.write(b"in flight");
-        channel.set_send_buffer(buffer);
+        let handler = Rc::new(Failures(RefCell::new(Vec::new())));
+        let addr = Address::new(LOOPBACK, 7001);
+        pending_on_channel(&manager, &handler, addr);
+        assert_eq!(manager.num_pending(), 1);
 
+        // A full socket: the whole frame pends.
+        let mut channel = TcpChannel::new(Recording::new(0), addr, &interface);
+        let frame = framed(b"still queued");
+        assert_eq!(
+            channel.write_from(&frame),
+            SendResult::WouldBlock,
+            "the full socket accepts nothing"
+        );
+        assert!(channel.has_pending());
+        assert!(channel.is_connected());
+
+        // The peer's 0-length read arrives.
         channel.handle_peer_disconnect();
 
-        // The channel's queue state: destroyed, buffer torn down, and its
-        // request failed with the channel-lost reason.
-        assert!(channel.is_destroyed());
-        assert!(channel.send_buffer().is_none(), "in-flight bytes deleted");
         assert_eq!(
-            handler.failures(),
-            vec![(Reason::ChannelLost, 1)],
-            "only the channel's request failed, and by channel loss"
+            manager.num_pending(),
+            0,
+            "the pending reply is cancelled with the channel"
         );
-        assert_eq!(manager.num_pending(), 1, "the other request survives");
+        assert_eq!(
+            *handler.0.borrow(),
+            vec![Reason::ChannelLost],
+            "the request is told the channel was lost"
+        );
+        assert_eq!(channel.pending(), 0, "the discarded queue holds nothing");
+        assert!(!channel.has_pending());
+        assert!(channel.is_destroyed());
+        assert!(!channel.is_connected());
 
-        // The survivor is still answerable: its queue entry is intact.
-        reply(&manager, kept, b"still here", &other);
-        assert_eq!(handler.delivered(), vec![(2, b"still here".to_vec())]);
-        assert_eq!(manager.num_pending(), 0);
-
-        // And the failed id is gone: a late reply for it is dropped.
-        reply(&manager, gone, b"late", &remote);
-        assert_eq!(handler.delivered().len(), 1);
-    }
-
-    /// The handshake gate destroys as well: a server whose first frame is
-    /// not the header tears the channel down through the same cleanup.
-    #[test]
-    fn a_rejected_header_destroys_the_channel_and_fails_its_requests() {
-        let (interface, manager) = interface_with_manager(10);
-        let remote = Address::new(1, 2);
-        let handler = Rc::new(Recorder::default());
-        pending(&manager, &handler, 1, Some(remote));
-
-        let mut channel = TcpChannel::new(&interface, remote, true);
-        assert_eq!(channel.read_header(b"GET /"), HeaderVerdict::Rejected);
-        // `handleInput`'s arm after the failed `readHeader`.
+        // Destroy is idempotent; the second call reports nothing new.
         channel.destroy();
-
-        assert!(channel.is_destroyed());
-        assert_eq!(handler.failures(), vec![(Reason::ChannelLost, 1)]);
         assert_eq!(manager.num_pending(), 0);
     }
 
-    // -- the receive path: sniff, header gate, dispatch --------------------
-
-    /// A handler that records each `( id, body )` it was handed.
-    #[derive(Clone, Default)]
-    struct MsgRecorder {
-        delivered: std::cell::RefCell<Vec<(u8, Vec<u8>)>>,
-    }
-
-    impl InputMessageHandler for MsgRecorder {
-        fn handle_message(
-            &self,
-            _source: &Address,
-            header: &mut UnpackedMessageHeader,
-            data: &mut BinaryStream,
-        ) {
-            self.delivered
-                .borrow_mut()
-                .push((header.identifier(), data.unread_bytes().to_vec()));
-        }
-    }
-
-    impl MsgRecorder {
-        fn delivered(&self) -> Vec<(u8, Vec<u8>)> {
-            self.delivered.borrow().clone()
-        }
-    }
-
-    /// An interface whose message table serves `id` to `recorder`, wired
-    /// the way an owner hands its receive path a table.
-    fn interface_with_table(
-        id: u8,
-        length: i32,
-        recorder: &Rc<MsgRecorder>,
-    ) -> (Rc<NetworkInterface>, Rc<InterfaceTable>) {
-        let clock = Rc::new(Cell::new(1_000_000u64));
-        let cell = Rc::clone(&clock);
-        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || cell.get())));
-        let interface = NetworkInterface::new_with_dispatcher(InterfaceType::Internal, dispatcher);
-        let table = Rc::new(InterfaceTable::new());
-        let ie = InterfaceElement::new("msg", id, FIXED_LENGTH_MESSAGE, length, None);
-        table.serve(
-            &ie,
-            Some(Rc::clone(recorder) as Rc<dyn InputMessageHandler>),
-        );
-        interface.set_interface_table(Some(Rc::clone(&table)));
-        (interface, table)
-    }
-
-    /// The wire bytes a client sends as its first frame: a small length
-    /// prefix over `CLIENT_HEADER`.
-    fn client_header_wire() -> Vec<u8> {
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&(CLIENT_HEADER_SIZE as u16).to_le_bytes());
-        wire.extend_from_slice(CLIENT_HEADER);
-        wire
-    }
-
-    /// A real bundle frame: a small length prefix over `[flags][id][body]`.
-    fn small_bundle_wire(id: u8, body: &[u8]) -> Vec<u8> {
-        let mut frame = vec![0u8, id];
-        frame.extend_from_slice(body);
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&(frame.len() as u16).to_le_bytes());
-        wire.extend_from_slice(&frame);
-        wire
-    }
-
-    /// A `MessageFilter` that records each message it intercepts and then
-    /// delivers it through the handler itself
-    /// (tcp_bundle_processor.cpp:178-185).
-    #[derive(Default)]
-    struct ChannelFilter {
-        seen: std::cell::RefCell<Vec<(u8, Vec<u8>)>>,
-    }
-
-    impl MessageFilter for ChannelFilter {
-        fn filter_message(
-            &self,
-            src_addr: &Address,
-            header: &mut UnpackedMessageHeader,
-            data: &mut BinaryStream,
-            handler: &dyn InputMessageHandler,
-        ) {
-            self.seen
-                .borrow_mut()
-                .push((header.identifier(), data.unread_bytes().to_vec()));
-            handler.handle_message(src_addr, header, data);
-        }
-    }
-
-    /// A filter that swallows its message: no forward, no delivery.
-    struct SwallowChannelFilter;
-
-    impl MessageFilter for SwallowChannelFilter {
-        fn filter_message(
-            &self,
-            _src_addr: &Address,
-            _header: &mut UnpackedMessageHeader,
-            _data: &mut BinaryStream,
-            _handler: &dyn InputMessageHandler,
-        ) {
-        }
-    }
-
-    /// The WebSockets sniff: a server expecting raw TCP drops a first
-    /// frame that begins with the HTTP handshake a WebSockets client sends
-    /// (tcp_channel.cpp:194-223).
+    /// A hard send error on `writeFrom`'s arm destroys the channel and
+    /// the cleanup runs there too.
     #[test]
-    fn the_websockets_sniff_drops_a_get_request() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+    fn a_hard_send_error_destroys_the_channel() {
+        let interface = channel_interface();
+        let manager = Rc::new(RequestManager::new(false, interface.dispatcher()));
+        interface.set_request_manager(Some(manager.clone()));
 
-        channel.on_data(b"GET / HTTP/1.1\r\nHost: game\r\n\r\n");
-        assert!(channel.is_destroyed(), "the handshake is dropped");
-        assert!(recorder.delivered().is_empty(), "nothing was framed");
+        let handler = Rc::new(Failures(RefCell::new(Vec::new())));
+        let addr = Address::new(LOOPBACK, 7002);
+        pending_on_channel(&manager, &handler, addr);
+
+        let mut transport = Recording::new(1024);
+        transport.fail = true;
+        let mut channel = TcpChannel::new(transport, addr, &interface);
+
+        assert_eq!(channel.write_from(b"boom"), SendResult::Error);
+        assert!(channel.is_destroyed());
+        assert_eq!(manager.num_pending(), 0);
+        assert_eq!(*handler.0.borrow(), vec![Reason::ChannelLost]);
+        assert_eq!(channel.pending(), 0);
     }
 
-    /// A split WebSockets handshake still trips the sniff once four bytes
-    /// are in hand, and waits for more until then.
+    /// A hard send error on `sendBufferedData`'s arm destroys the channel
+    /// as well -- the drain can find the break the write missed.
     #[test]
-    fn the_websockets_sniff_waits_then_drops_a_split_request() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+    fn a_flush_hard_error_destroys_the_channel() {
+        let interface = channel_interface();
+        let addr = Address::new(LOOPBACK, 7003);
+        let mut channel = TcpChannel::new(Recording::new(0), addr, &interface);
 
-        channel.on_data(b"GET");
-        assert!(!channel.is_destroyed(), "fewer than four bytes wait");
-        channel.on_data(b" / HTTP/1.1\r\n");
-        assert!(channel.is_destroyed(), "four bytes are enough to sniff");
+        assert_eq!(channel.write_from(b"held"), SendResult::WouldBlock);
+        assert!(channel.has_pending());
+
+        // The socket goes bad while the queue waits on it.
+        channel.transport_mut().fail = true;
+        assert_eq!(channel.send_buffered_data(), SendResult::Error);
+        assert!(channel.is_destroyed());
+        assert!(!channel.has_pending());
     }
 
-    /// The server's first real exchange: the header frame passes the gate
-    /// and the bundle behind it dispatches through the interface's table.
+    /// `shutDown` with a full queue waits for the drain, and the drain's
+    /// last send is followed by exactly one half-close; the channel dies
+    /// cleanly when the peer's EOF answers it.
     #[test]
-    fn a_server_channel_dispatches_a_bundle_after_the_header() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
+    fn shut_down_half_closes_once_the_queue_drains() {
+        let interface = channel_interface();
+        let addr = Address::new(LOOPBACK, 7004);
+        let mut channel = TcpChannel::new(Recording::new(1), addr, &interface);
 
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&client_header_wire());
-        wire.extend_from_slice(&small_bundle_wire(0x07, b"ABCD"));
-        channel.on_data(&wire);
+        let frame = framed(b"queued");
+        assert_eq!(channel.write_from(&frame), SendResult::Partial);
 
-        assert_eq!(channel.header_state(), HeaderState::None);
+        // The queue is holding bytes, so the half-close waits.
+        channel.shut_down();
+        assert!(!channel.is_connected(), "shutting down, not connected");
+        assert!(!channel.is_destroyed());
         assert_eq!(
-            recorder.delivered(),
-            vec![(0x07, b"ABCD".to_vec())],
-            "the frame behind the header frame dispatched"
+            channel.transport_mut().half_closed,
+            0,
+            "the half-close waits on the queue"
         );
+
+        // Drain; the last send is followed by exactly one half-close.
+        while channel.send_buffered_data() != SendResult::Drained {}
+        assert_eq!(channel.transport_mut().half_closed, 1);
+        assert_eq!(channel.pending(), 0);
+        assert!(!channel.is_destroyed(), "the EOF has not arrived yet");
+
+        // The peer answers the half-close with its own EOF; the channel
+        // reads it as a clean disconnect.
+        channel.handle_peer_disconnect();
+        assert!(channel.is_destroyed());
     }
 
-    /// A channel's message filter first-passes the frames it dispatches:
-    /// the filter sees the message and delivers it through the handler
-    /// itself (tcp_bundle_processor.cpp:178-185).
+    /// `shutDown` with nothing queued half-closes at once.
     #[test]
-    fn a_channels_message_filter_takes_the_delivery() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
-        let filter = Rc::new(ChannelFilter::default());
-        channel.set_p_message_filter(Some(Rc::clone(&filter) as Rc<dyn MessageFilter>));
+    fn shut_down_with_an_empty_queue_half_closes_at_once() {
+        let interface = channel_interface();
+        let addr = Address::new(LOOPBACK, 7005);
+        let mut channel = TcpChannel::new(Recording::new(1024), addr, &interface);
 
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&client_header_wire());
-        wire.extend_from_slice(&small_bundle_wire(0x07, b"ABCD"));
-        channel.on_data(&wire);
-
-        assert_eq!(
-            filter.seen.borrow().clone(),
-            vec![(0x07, b"ABCD".to_vec())],
-            "the filter saw the message"
-        );
-        assert_eq!(
-            recorder.delivered(),
-            vec![(0x07, b"ABCD".to_vec())],
-            "the filter forwarded it"
-        );
-    }
-
-    /// A filter that does not forward swallows the frame's message: the
-    /// handler is never called.
-    #[test]
-    fn a_channels_message_filter_can_swallow_the_delivery() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
-        channel.set_p_message_filter(Some(Rc::new(SwallowChannelFilter) as Rc<dyn MessageFilter>));
-
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&client_header_wire());
-        wire.extend_from_slice(&small_bundle_wire(0x07, b"ABCD"));
-        channel.on_data(&wire);
-
-        assert!(
-            recorder.delivered().is_empty(),
-            "a filter that does not forward drops the message"
-        );
-    }
-
-    /// The acceptance: one table serves a TCP frame and a UDP bundle the
-    /// same way -- two transports, one message table, both walks delivering.
-    #[test]
-    fn one_table_serves_both_a_tcp_frame_and_a_udp_bundle() {
-        use crate::bundle_dispatch;
-
-        let clock = Rc::new(Cell::new(1_000_000u64));
-        let cell = Rc::clone(&clock);
-        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || cell.get())));
-        let interface = NetworkInterface::new_with_dispatcher(InterfaceType::Internal, dispatcher);
-        let tcp_recorder = Rc::new(MsgRecorder::default());
-        let udp_recorder = Rc::new(MsgRecorder::default());
-
-        // The table serves two ids, so the two transports' messages are
-        // told apart in the delivered logs.
-        let table = Rc::new(InterfaceTable::new());
-        let tcp_ie = InterfaceElement::new("tcp", 0x07, FIXED_LENGTH_MESSAGE, 4, None);
-        table.serve(
-            &tcp_ie,
-            Some(Rc::clone(&tcp_recorder) as Rc<dyn InputMessageHandler>),
-        );
-        let udp_ie = InterfaceElement::new("udp", 0x08, FIXED_LENGTH_MESSAGE, 4, None);
-        table.serve(
-            &udp_ie,
-            Some(Rc::clone(&udp_recorder) as Rc<dyn InputMessageHandler>),
-        );
-        interface.set_interface_table(Some(Rc::clone(&table)));
-
-        // The TCP frame, through the TCP walk: `[flags][id][body]`.
-        let mut tcp_frame = vec![0u8, 0x07, 0xAA, 0xBB, 0xCC, 0xDD];
-        assert_eq!(
-            tcp_bundle_dispatch::dispatch_messages(
-                &table,
-                &Address::new(1, 2),
-                &mut tcp_frame,
-                None,
-            ),
-            Reason::Success
-        );
-
-        // The UDP bundle, through the UDP walk: a body with no footer.
-        let mut udp_body = vec![0x08, 0x11, 0x22, 0x33, 0x44];
-        assert_eq!(
-            bundle_dispatch::dispatch_messages(
-                &table,
-                &Address::new(1, 2),
-                &mut udp_body,
-                None,
-                None,
-            ),
-            Reason::Success
-        );
-
-        assert_eq!(
-            tcp_recorder.delivered(),
-            vec![(0x07, vec![0xAA, 0xBB, 0xCC, 0xDD])]
-        );
-        assert_eq!(
-            udp_recorder.delivered(),
-            vec![(0x08, vec![0x11, 0x22, 0x33, 0x44])]
-        );
-    }
-
-    /// A client channel (no header gate to pass) dispatches a bundle the
-    /// moment its bytes frame -- the else arm of `on_data`.
-    #[test]
-    fn a_client_channel_dispatches_its_frames_directly() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
-
-        channel.on_data(&small_bundle_wire(0x07, b"WXYZ"));
-        assert_eq!(recorder.delivered(), vec![(0x07, b"WXYZ".to_vec())]);
-    }
-
-    /// The header gate inside the framing loop rejects a first frame that
-    /// is not the header -- and a frame that is not a WebSockets handshake
-    /// reaches it, since the sniff only tripped on `GET `.
-    #[test]
-    fn a_non_header_first_frame_is_destroyed_in_the_framing_loop() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
-
-        // A small frame whose payload is not the header and does not begin
-        // with "GET ", so the sniff passes and `readHeader` rejects it.
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&4u16.to_le_bytes());
-        wire.extend_from_slice(b"ABCD");
-        channel.on_data(&wire);
-
-        assert!(channel.is_destroyed(), "the mismatched header is fatal");
-        assert!(recorder.delivered().is_empty());
-    }
-
-    /// With no message table wired, a finished frame has nothing to serve
-    /// and nothing to do -- the channel's dispatch is a no-op.
-    #[test]
-    fn a_frame_with_no_table_is_not_delivered() {
-        let interface = interface();
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
-        channel.process_received_frame(&[0u8, 0x07, 0xAA, 0xBB]);
-        assert!(!channel.is_destroyed(), "no table is not an error");
-    }
-
-    /// A channel whose interface is gone cannot reach a table either; the
-    /// weak pointer simply does not upgrade.
-    #[test]
-    fn a_frame_with_a_dropped_interface_is_not_delivered() {
-        let interface = interface();
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
-        drop(interface);
-        channel.process_received_frame(&[0u8, 0x07, 0xAA, 0xBB]);
+        channel.shut_down();
+        assert_eq!(channel.transport_mut().half_closed, 1);
+        assert!(!channel.is_connected());
         assert!(!channel.is_destroyed());
     }
 
-    /// A frame the walk stops on (here an unhandled id) is reported by
-    /// the channel and the rest of the frame stays undelivered.
+    /// `startInactivityDetection` arms the transport and passes only the
+    /// check period through, the way the reference's TCP arm does.
     #[test]
-    fn a_dispatch_failure_is_reported_and_stops_the_frame() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), false);
+    fn start_inactivity_detection_arms_the_transport() {
+        let interface = channel_interface();
+        let addr = Address::new(LOOPBACK, 7006);
+        let mut channel = TcpChannel::new(Recording::new(1024), addr, &interface);
 
-        // id 0x2F is served by nobody, so the walk stops before the message
-        // after it would have been delivered.
-        let mut frame = vec![0u8, 0x2F, 0x01];
-        frame.extend_from_slice(&[0x07, 0xAA, 0xBB, 0xCC, 0xDD]);
-        let mut wire = Vec::new();
-        wire.extend_from_slice(&(frame.len() as u16).to_le_bytes());
-        wire.extend_from_slice(&frame);
-        channel.on_data(&wire);
-
-        assert!(recorder.delivered().is_empty(), "nothing past the bad id");
+        channel.start_inactivity_detection(60.0, 5.0);
+        assert_eq!(channel.transport_mut().armed, Some(5.0));
     }
 
-    /// The session cipher both halves share, derived from the negotiated
-    /// key the app layer passes `setEncryption`.
-    fn session_cipher() -> Rc<dyn BlockCipher> {
-        crate::symmetric_block_cipher::SymmetricBlockCipher::create(b"abcdefghijklmnopqrstuvwxyz")
-            .expect("the reference accepts 4..=56 byte keys")
-    }
-
-    /// `setEncryption` wraps the channel stream (tcp_channel.cpp:578-590):
-    /// a peer's encrypted header frame and bundle decrypt into exactly the
-    /// message the bare bytes dispatch.
+    /// The real transport: on a live TCP pair the keepalive arm lands on
+    /// the socket, a send goes through `SendSink`, and the half-close
+    /// reads as EOF at the peer.
     #[test]
-    fn set_encryption_decrypts_the_receive_stream() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
-        channel.set_encryption(Some(session_cipher()));
+    fn the_endpoint_transport_arms_keepalive_and_half_closes() {
+        let mut listener = Endpoint::new();
+        listener.socket(socket::SOCK_STREAM);
+        assert_eq!(listener.set_reuseaddr(true), 0);
+        assert_eq!(listener.bind(0, INADDR_ANY), 0);
+        let port = listener.local().port;
+        assert_eq!(listener.listen(5), 0);
 
-        // `doSend` encrypts one frame at a time (tcp_channel.cpp:446), so
-        // each frame's tail is padded on its own; the receiver reads the
-        // concatenated ciphertext as one block stream.
-        let mut peer = EncryptionStreamFilter::new(session_cipher());
-        let mut wire = peer.write_from(&client_header_wire());
-        wire.extend_from_slice(&peer.write_from(&small_bundle_wire(0x07, b"ABCD")));
+        let mut client = Endpoint::new();
+        client.socket(socket::SOCK_STREAM);
+        assert_eq!(client.connect(port, LOOPBACK), 0);
+        let mut conn = listener
+            .accept(None, None)
+            .expect("the loopback pair connects");
 
-        channel.on_data(&wire);
-
-        assert_eq!(channel.header_state(), HeaderState::None);
+        // The keepalive arm: SO_KEEPALIVE on and the probe count set.
+        conn.arm_inactivity_detection(1.0);
         assert_eq!(
-            recorder.delivered(),
-            vec![(0x07, b"ABCD".to_vec())],
-            "the encrypted stream dispatched the message"
-        );
-    }
-
-    /// An incomplete encrypted block is held back: nothing frames or
-    /// dispatches until the block completes (tcp_channel.cpp:166-180).
-    #[test]
-    fn an_incomplete_encrypted_block_waits_for_more_bytes() {
-        let recorder = Rc::new(MsgRecorder::default());
-        let (interface, _table) = interface_with_table(0x07, 4, &recorder);
-        let mut channel = TcpChannel::new(&interface, Address::new(1, 2), true);
-        channel.set_encryption(Some(session_cipher()));
-
-        let mut peer = EncryptionStreamFilter::new(session_cipher());
-        let wire = peer.write_from(&client_header_wire());
-        assert_eq!(wire.len(), 16, "the header frame pads to two blocks");
-
-        channel.on_data(&wire[..7]);
-        assert!(
-            recorder.delivered().is_empty(),
-            "a partial block frames nothing"
+            socket::get_bool_option(conn.fileno(), socket::SOL_SOCKET, socket::SO_KEEPALIVE),
+            Some(true)
         );
         assert_eq!(
-            channel.header_state(),
-            HeaderState::ServerWaitForHeader,
-            "the gate still waits for the header"
+            socket::get_int_option(conn.fileno(), socket::IPPROTO_TCP, socket::TCP_KEEPCNT),
+            Some(1)
         );
 
-        channel.on_data(&wire[7..]);
-        assert_eq!(
-            channel.header_state(),
-            HeaderState::None,
-            "the header arrived"
-        );
+        // The sink sends; the peer receives.
+        assert_eq!(SendSink::send(&mut conn, b"hi"), Ok(2));
+        let mut buf = [0u8; 2];
+        assert_eq!(client.recv(&mut buf), 2);
+        assert_eq!(&buf, b"hi");
+
+        // The half-close: the peer's read hits EOF.
+        conn.shutdown_write();
+        assert_eq!(client.recv(&mut buf), 0);
     }
 }

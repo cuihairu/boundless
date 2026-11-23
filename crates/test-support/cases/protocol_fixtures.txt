@@ -1,0 +1,991 @@
+item	value	source
+reference-commit	9fef8043f655	git rev-parse HEAD
+interface.1.name	BaseAppIntInterface	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+interface.1.direction	internal	server-to-server (internal nub) or client-to-server (external)
+interface.1.source	programming/bigworld/server/baseapp/baseapp_int_interface.hpp	reference source tree
+interface.1.messages	55	declaration order
+msg.1.1.id	0	declaration index (InterfaceMinder::add)
+msg.1.1.name	createBaseWithCellData	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.1.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.1.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.1.length-param	2	macro expansion
+msg.1.1.frame	000000	canonical minimal frame (hex)
+msg.1.2.id	1	declaration index (InterfaceMinder::add)
+msg.1.2.name	createBaseFromDB	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.2.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.2.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.2.length-param	2	macro expansion
+msg.1.2.frame	010000	canonical minimal frame (hex)
+msg.1.3.id	2	declaration index (InterfaceMinder::add)
+msg.1.3.name	createBaseFromTemplate	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.3.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.3.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.3.length-param	2	macro expansion
+msg.1.3.frame	020000	canonical minimal frame (hex)
+msg.1.4.id	3	declaration index (InterfaceMinder::add)
+msg.1.4.name	logOnAttempt	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.4.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.4.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.4.length-param	2	macro expansion
+msg.1.4.frame	030000	canonical minimal frame (hex)
+msg.1.5.id	4	declaration index (InterfaceMinder::add)
+msg.1.5.name	addGlobalBase	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.5.kind	BW_STREAM_MSG	declaring macro
+msg.1.5.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.5.length-param	2	macro expansion
+msg.1.5.frame	040000	canonical minimal frame (hex)
+msg.1.6.id	5	declaration index (InterfaceMinder::add)
+msg.1.6.name	delGlobalBase	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.6.kind	BW_STREAM_MSG	declaring macro
+msg.1.6.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.6.length-param	2	macro expansion
+msg.1.6.frame	050000	canonical minimal frame (hex)
+msg.1.7.id	6	declaration index (InterfaceMinder::add)
+msg.1.7.name	addServiceFragment	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.7.kind	BW_STREAM_MSG	declaring macro
+msg.1.7.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.7.length-param	2	macro expansion
+msg.1.7.frame	060000	canonical minimal frame (hex)
+msg.1.8.id	7	declaration index (InterfaceMinder::add)
+msg.1.8.name	delServiceFragment	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.8.kind	BW_STREAM_MSG	declaring macro
+msg.1.8.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.8.length-param	2	macro expansion
+msg.1.8.frame	070000	canonical minimal frame (hex)
+msg.1.9.id	8	declaration index (InterfaceMinder::add)
+msg.1.9.name	handleCellAppMgrBirth	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.9.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.1.9.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.9.length-param	sizeof(handleCellAppMgrBirthArgs)	macro expansion
+msg.1.9.frame	08	canonical minimal frame (hex)
+msg.1.10.id	9	declaration index (InterfaceMinder::add)
+msg.1.10.name	handleBaseAppMgrBirth	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.10.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.1.10.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.10.length-param	sizeof(handleBaseAppMgrBirthArgs)	macro expansion
+msg.1.10.frame	09	canonical minimal frame (hex)
+msg.1.11.id	10	declaration index (InterfaceMinder::add)
+msg.1.11.name	handleCellAppDeath	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.11.kind	BW_STREAM_MSG	declaring macro
+msg.1.11.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.11.length-param	2	macro expansion
+msg.1.11.frame	0a0000	canonical minimal frame (hex)
+msg.1.12.id	11	declaration index (InterfaceMinder::add)
+msg.1.12.name	startup	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.12.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.1.12.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.12.length-param	sizeof(startupArgs)	macro expansion
+msg.1.12.frame	0b	canonical minimal frame (hex)
+msg.1.13.id	12	declaration index (InterfaceMinder::add)
+msg.1.13.name	shutDown	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.13.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.1.13.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.13.length-param	sizeof(shutDownArgs)	macro expansion
+msg.1.13.frame	0c	canonical minimal frame (hex)
+msg.1.14.id	13	declaration index (InterfaceMinder::add)
+msg.1.14.name	controlledShutDown	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.14.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.14.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.14.length-param	2	macro expansion
+msg.1.14.frame	0d0000	canonical minimal frame (hex)
+msg.1.15.id	14	declaration index (InterfaceMinder::add)
+msg.1.15.name	startOffloading	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.15.kind	BW_STREAM_MSG	declaring macro
+msg.1.15.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.15.length-param	2	macro expansion
+msg.1.15.frame	0e0000	canonical minimal frame (hex)
+msg.1.16.id	15	declaration index (InterfaceMinder::add)
+msg.1.16.name	setCreateBaseInfo	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.16.kind	BW_STREAM_MSG	declaring macro
+msg.1.16.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.16.length-param	2	macro expansion
+msg.1.16.frame	0f0000	canonical minimal frame (hex)
+msg.1.17.id	16	declaration index (InterfaceMinder::add)
+msg.1.17.name	startBaseEntitiesBackup	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.17.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.1.17.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.17.length-param	sizeof(startBaseEntitiesBackupArgs)	macro expansion
+msg.1.17.frame	10	canonical minimal frame (hex)
+msg.1.18.id	17	declaration index (InterfaceMinder::add)
+msg.1.18.name	stopBaseEntitiesBackup	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.18.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.1.18.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.18.length-param	sizeof(stopBaseEntitiesBackupArgs)	macro expansion
+msg.1.18.frame	11	canonical minimal frame (hex)
+msg.1.19.id	18	declaration index (InterfaceMinder::add)
+msg.1.19.name	backupBaseEntity	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.19.kind	BW_BIG_STREAM_MSG_EX	declaring macro
+msg.1.19.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.19.length-param	4	macro expansion
+msg.1.19.frame	1200000000	canonical minimal frame (hex)
+msg.1.20.id	19	declaration index (InterfaceMinder::add)
+msg.1.20.name	ackOffloadBackup	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.20.kind	BW_STREAM_MSG	declaring macro
+msg.1.20.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.20.length-param	2	macro expansion
+msg.1.20.frame	130000	canonical minimal frame (hex)
+msg.1.21.id	20	declaration index (InterfaceMinder::add)
+msg.1.21.name	stopBaseEntityBackup	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.21.kind	BW_BEGIN_STRUCT_MSG_EX	declaring macro
+msg.1.21.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.21.length-param	sizeof(stopBaseEntityBackupArgs)	macro expansion
+msg.1.21.frame	14	canonical minimal frame (hex)
+msg.1.22.id	21	declaration index (InterfaceMinder::add)
+msg.1.22.name	handleBaseAppBirth	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.22.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.22.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.22.length-param	2	macro expansion
+msg.1.22.frame	150000	canonical minimal frame (hex)
+msg.1.23.id	22	declaration index (InterfaceMinder::add)
+msg.1.23.name	handleBaseAppDeath	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.23.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.23.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.23.length-param	2	macro expansion
+msg.1.23.frame	160000	canonical minimal frame (hex)
+msg.1.24.id	23	declaration index (InterfaceMinder::add)
+msg.1.24.name	setBackupBaseApps	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.24.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.24.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.24.length-param	2	macro expansion
+msg.1.24.frame	170000	canonical minimal frame (hex)
+msg.1.25.id	24	declaration index (InterfaceMinder::add)
+msg.1.25.name	updateDBAppHash	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.25.kind	BW_STREAM_MSG	declaring macro
+msg.1.25.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.25.length-param	2	macro expansion
+msg.1.25.frame	180000	canonical minimal frame (hex)
+msg.1.26.id	25	declaration index (InterfaceMinder::add)
+msg.1.26.name	setSharedData	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.26.kind	BW_STREAM_MSG	declaring macro
+msg.1.26.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.26.length-param	2	macro expansion
+msg.1.26.frame	190000	canonical minimal frame (hex)
+msg.1.27.id	26	declaration index (InterfaceMinder::add)
+msg.1.27.name	delSharedData	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.27.kind	BW_STREAM_MSG	declaring macro
+msg.1.27.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.27.length-param	2	macro expansion
+msg.1.27.frame	1a0000	canonical minimal frame (hex)
+msg.1.28.id	27	declaration index (InterfaceMinder::add)
+msg.1.28.name	setClient	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.28.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.1.28.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.28.length-param	sizeof(setClientArgs)	macro expansion
+msg.1.28.frame	1b	canonical minimal frame (hex)
+msg.1.29.id	28	declaration index (InterfaceMinder::add)
+msg.1.29.name	currentCell	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.29.kind	MF_BEGIN_BASE_STRUCT_MSG_EX	declaring macro
+msg.1.29.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.29.length-param	sizeof(currentCellArgs)	macro expansion
+msg.1.29.frame	1c	canonical minimal frame (hex)
+msg.1.30.id	29	declaration index (InterfaceMinder::add)
+msg.1.30.name	teleportOther	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.30.kind	MF_BEGIN_BASE_STRUCT_MSG_EX	declaring macro
+msg.1.30.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.30.length-param	sizeof(teleportOtherArgs)	macro expansion
+msg.1.30.frame	1d	canonical minimal frame (hex)
+msg.1.31.id	30	declaration index (InterfaceMinder::add)
+msg.1.31.name	emergencySetCurrentCell	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.31.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.31.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.31.length-param	2	macro expansion
+msg.1.31.frame	1e0000	canonical minimal frame (hex)
+msg.1.32.id	31	declaration index (InterfaceMinder::add)
+msg.1.32.name	forwardedBaseMessage	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.32.kind	BW_STREAM_MSG	declaring macro
+msg.1.32.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.32.length-param	2	macro expansion
+msg.1.32.frame	1f0000	canonical minimal frame (hex)
+msg.1.33.id	32	declaration index (InterfaceMinder::add)
+msg.1.33.name	sendToClient	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.33.kind	MF_EMPTY_PROXY_MSG	declaring macro
+msg.1.33.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.33.length-param	0	macro expansion
+msg.1.33.frame	20	canonical minimal frame (hex)
+msg.1.34.id	33	declaration index (InterfaceMinder::add)
+msg.1.34.name	createCellPlayer	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.34.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.34.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.34.length-param	2	macro expansion
+msg.1.34.frame	210000	canonical minimal frame (hex)
+msg.1.35.id	34	declaration index (InterfaceMinder::add)
+msg.1.35.name	spaceData	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.35.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.35.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.35.length-param	2	macro expansion
+msg.1.35.frame	220000	canonical minimal frame (hex)
+msg.1.36.id	35	declaration index (InterfaceMinder::add)
+msg.1.36.name	enterAoI	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.36.kind	MF_BEGIN_PROXY_MSG	declaring macro
+msg.1.36.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.36.length-param	sizeof(enterAoIArgs)	macro expansion
+msg.1.36.frame	23	canonical minimal frame (hex)
+msg.1.37.id	36	declaration index (InterfaceMinder::add)
+msg.1.37.name	enterAoIOnVehicle	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.37.kind	MF_BEGIN_PROXY_MSG	declaring macro
+msg.1.37.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.37.length-param	sizeof(enterAoIOnVehicleArgs)	macro expansion
+msg.1.37.frame	24	canonical minimal frame (hex)
+msg.1.38.id	37	declaration index (InterfaceMinder::add)
+msg.1.38.name	leaveAoI	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.38.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.38.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.38.length-param	2	macro expansion
+msg.1.38.frame	250000	canonical minimal frame (hex)
+msg.1.39.id	38	declaration index (InterfaceMinder::add)
+msg.1.39.name	createEntity	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.39.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.39.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.39.length-param	2	macro expansion
+msg.1.39.frame	260000	canonical minimal frame (hex)
+msg.1.40.id	39	declaration index (InterfaceMinder::add)
+msg.1.40.name	createEntityDetailed	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.40.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.40.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.40.length-param	2	macro expansion
+msg.1.40.frame	270000	canonical minimal frame (hex)
+msg.1.41.id	40	declaration index (InterfaceMinder::add)
+msg.1.41.name	updateEntity	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.41.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.41.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.41.length-param	2	macro expansion
+msg.1.41.frame	280000	canonical minimal frame (hex)
+msg.1.42.id	41	declaration index (InterfaceMinder::add)
+msg.1.42.name	makeNextMessageReliable	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.42.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.1.42.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.42.length-param	sizeof(makeNextMessageReliableArgs)	macro expansion
+msg.1.42.frame	29	canonical minimal frame (hex)
+msg.1.43.id	42	declaration index (InterfaceMinder::add)
+msg.1.43.name	modWard	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.43.kind	MF_BEGIN_PROXY_MSG	declaring macro
+msg.1.43.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.43.length-param	sizeof(modWardArgs)	macro expansion
+msg.1.43.frame	2a	canonical minimal frame (hex)
+msg.1.44.id	43	declaration index (InterfaceMinder::add)
+msg.1.44.name	callClientMethod	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.44.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.44.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.44.length-param	2	macro expansion
+msg.1.44.frame	2b0000	canonical minimal frame (hex)
+msg.1.45.id	44	declaration index (InterfaceMinder::add)
+msg.1.45.name	acceptClient	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.45.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.45.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.45.length-param	2	macro expansion
+msg.1.45.frame	2c0000	canonical minimal frame (hex)
+msg.1.46.id	45	declaration index (InterfaceMinder::add)
+msg.1.46.name	backupCellEntity	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.46.kind	MF_BASE_STREAM_MSG	declaring macro
+msg.1.46.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.46.length-param	2	macro expansion
+msg.1.46.frame	2d0000	canonical minimal frame (hex)
+msg.1.47.id	46	declaration index (InterfaceMinder::add)
+msg.1.47.name	writeToDB	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.47.kind	MF_BASE_STREAM_MSG	declaring macro
+msg.1.47.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.47.length-param	2	macro expansion
+msg.1.47.frame	2e0000	canonical minimal frame (hex)
+msg.1.48.id	47	declaration index (InterfaceMinder::add)
+msg.1.48.name	cellEntityLost	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.48.kind	MF_BASE_STREAM_MSG_EX	declaring macro
+msg.1.48.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.48.length-param	2	macro expansion
+msg.1.48.frame	2f0000	canonical minimal frame (hex)
+msg.1.49.id	48	declaration index (InterfaceMinder::add)
+msg.1.49.name	startKeepAlive	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.49.kind	MF_BEGIN_BASE_STRUCT_MSG_EX	declaring macro
+msg.1.49.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.49.length-param	sizeof(startKeepAliveArgs)	macro expansion
+msg.1.49.frame	30	canonical minimal frame (hex)
+msg.1.50.id	49	declaration index (InterfaceMinder::add)
+msg.1.50.name	callBaseMethod	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.50.kind	MF_BASE_STREAM_MSG_EX	declaring macro
+msg.1.50.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.50.length-param	2	macro expansion
+msg.1.50.frame	310000	canonical minimal frame (hex)
+msg.1.51.id	50	declaration index (InterfaceMinder::add)
+msg.1.51.name	callCellMethod	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.51.kind	MF_BASE_STREAM_MSG_EX	declaring macro
+msg.1.51.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.51.length-param	2	macro expansion
+msg.1.51.frame	320000	canonical minimal frame (hex)
+msg.1.52.id	51	declaration index (InterfaceMinder::add)
+msg.1.52.name	getCellAddr	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.52.kind	MF_BASE_STREAM_MSG_EX	declaring macro
+msg.1.52.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.52.length-param	2	macro expansion
+msg.1.52.frame	330000	canonical minimal frame (hex)
+msg.1.53.id	52	declaration index (InterfaceMinder::add)
+msg.1.53.name	sendMessageToClient	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.53.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.53.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.53.length-param	2	macro expansion
+msg.1.53.frame	340000	canonical minimal frame (hex)
+msg.1.54.id	53	declaration index (InterfaceMinder::add)
+msg.1.54.name	sendMessageToClientUnreliable	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.54.kind	MF_VARLEN_PROXY_MSG	declaring macro
+msg.1.54.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.54.length-param	2	macro expansion
+msg.1.54.frame	350000	canonical minimal frame (hex)
+msg.1.55.id	54	declaration index (InterfaceMinder::add)
+msg.1.55.name	callWatcher	programming/bigworld/server/baseapp/baseapp_int_interface.hpp
+msg.1.55.kind	BW_STREAM_MSG_EX	declaring macro
+msg.1.55.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.1.55.length-param	2	macro expansion
+msg.1.55.frame	360000	canonical minimal frame (hex)
+interface.2.name	BaseAppExtInterface	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+interface.2.direction	external	server-to-server (internal nub) or client-to-server (external)
+interface.2.source	programming/bigworld/lib/connection/baseapp_ext_interface.hpp	reference source tree
+interface.2.messages	14	declaration order
+msg.2.1.id	0	declaration index (InterfaceMinder::add)
+msg.2.1.name	baseAppLogin	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.1.kind	BW_BEGIN_STRUCT_MSG_EX	declaring macro
+msg.2.1.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.1.length-param	sizeof(baseAppLoginArgs)	macro expansion
+msg.2.1.frame	00	canonical minimal frame (hex)
+msg.2.2.id	1	declaration index (InterfaceMinder::add)
+msg.2.2.name	authenticate	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.2.kind	BW_BEGIN_STRUCT_MSG_EX	declaring macro
+msg.2.2.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.2.length-param	sizeof(authenticateArgs)	macro expansion
+msg.2.2.frame	01	canonical minimal frame (hex)
+msg.2.3.id	2	declaration index (InterfaceMinder::add)
+msg.2.3.name	avatarUpdateImplicit	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.3.kind	MF_BEGIN_BLOCKABLE_PROXY_MSG	declaring macro
+msg.2.3.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.3.length-param	sizeof(avatarUpdateImplicitArgs)	macro expansion
+msg.2.3.frame	02	canonical minimal frame (hex)
+msg.2.4.id	3	declaration index (InterfaceMinder::add)
+msg.2.4.name	avatarUpdateExplicit	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.4.kind	MF_BEGIN_BLOCKABLE_PROXY_MSG	declaring macro
+msg.2.4.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.4.length-param	sizeof(avatarUpdateExplicitArgs)	macro expansion
+msg.2.4.frame	03	canonical minimal frame (hex)
+msg.2.5.id	4	declaration index (InterfaceMinder::add)
+msg.2.5.name	avatarUpdateWardImplicit	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.5.kind	MF_BEGIN_BLOCKABLE_PROXY_MSG	declaring macro
+msg.2.5.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.5.length-param	sizeof(avatarUpdateWardImplicitArgs)	macro expansion
+msg.2.5.frame	04	canonical minimal frame (hex)
+msg.2.6.id	5	declaration index (InterfaceMinder::add)
+msg.2.6.name	avatarUpdateWardExplicit	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.6.kind	MF_BEGIN_BLOCKABLE_PROXY_MSG	declaring macro
+msg.2.6.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.6.length-param	sizeof(avatarUpdateWardExplicitArgs)	macro expansion
+msg.2.6.frame	05	canonical minimal frame (hex)
+msg.2.7.id	6	declaration index (InterfaceMinder::add)
+msg.2.7.name	ackPhysicsCorrection	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.7.kind	MF_EMPTY_BLOCKABLE_PROXY_MSG	declaring macro
+msg.2.7.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.7.length-param	0	macro expansion
+msg.2.7.frame	06	canonical minimal frame (hex)
+msg.2.8.id	7	declaration index (InterfaceMinder::add)
+msg.2.8.name	ackWardPhysicsCorrection	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.8.kind	MF_BEGIN_BLOCKABLE_PROXY_MSG	declaring macro
+msg.2.8.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.8.length-param	sizeof(ackWardPhysicsCorrectionArgs)	macro expansion
+msg.2.8.frame	07	canonical minimal frame (hex)
+msg.2.9.id	8	declaration index (InterfaceMinder::add)
+msg.2.9.name	requestEntityUpdate	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.9.kind	MF_VARLEN_BLOCKABLE_PROXY_MSG	declaring macro
+msg.2.9.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.9.length-param	2	macro expansion
+msg.2.9.frame	080000	canonical minimal frame (hex)
+msg.2.10.id	9	declaration index (InterfaceMinder::add)
+msg.2.10.name	enableEntities	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.10.kind	MF_EMPTY_BLOCKABLE_PROXY_MSG	declaring macro
+msg.2.10.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.10.length-param	0	macro expansion
+msg.2.10.frame	09	canonical minimal frame (hex)
+msg.2.11.id	10	declaration index (InterfaceMinder::add)
+msg.2.11.name	restoreClientAck	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.11.kind	MF_BEGIN_UNBLOCKABLE_PROXY_MSG	declaring macro
+msg.2.11.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.11.length-param	sizeof(restoreClientAckArgs)	macro expansion
+msg.2.11.frame	0a	canonical minimal frame (hex)
+msg.2.12.id	11	declaration index (InterfaceMinder::add)
+msg.2.12.name	disconnectClient	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.12.kind	MF_BEGIN_UNBLOCKABLE_PROXY_MSG	declaring macro
+msg.2.12.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.12.length-param	sizeof(disconnectClientArgs)	macro expansion
+msg.2.12.frame	0b	canonical minimal frame (hex)
+msg.2.13.id	12	declaration index (InterfaceMinder::add)
+msg.2.13.name	cellEntityMethod	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.13.kind	MF_METHOD_RANGE_MSG	declaring macro
+msg.2.13.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.13.length-param	2	macro expansion
+msg.2.13.frame	0c0000	canonical minimal frame (hex)
+msg.2.14.id	13	declaration index (InterfaceMinder::add)
+msg.2.14.name	baseEntityMethod	programming/bigworld/lib/connection/baseapp_ext_interface.hpp
+msg.2.14.kind	MF_METHOD_RANGE_MSG	declaring macro
+msg.2.14.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.2.14.length-param	2	macro expansion
+msg.2.14.frame	0d0000	canonical minimal frame (hex)
+interface.3.name	CellAppInterface	programming/bigworld/server/cellapp/cellapp_interface.hpp
+interface.3.direction	internal	server-to-server (internal nub) or client-to-server (external)
+interface.3.source	programming/bigworld/server/cellapp/cellapp_interface.hpp	reference source tree
+interface.3.messages	65	declaration order
+msg.3.1.id	0	declaration index (InterfaceMinder::add)
+msg.3.1.name	addCell	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.1.kind	BW_STREAM_MSG_EX	declaring macro
+msg.3.1.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.1.length-param	2	macro expansion
+msg.3.1.frame	000000	canonical minimal frame (hex)
+msg.3.2.id	1	declaration index (InterfaceMinder::add)
+msg.3.2.name	startup	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.2.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.2.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.2.length-param	sizeof(startupArgs)	macro expansion
+msg.3.2.frame	01	canonical minimal frame (hex)
+msg.3.3.id	2	declaration index (InterfaceMinder::add)
+msg.3.3.name	setGameTime	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.3.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.3.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.3.length-param	sizeof(setGameTimeArgs)	macro expansion
+msg.3.3.frame	02	canonical minimal frame (hex)
+msg.3.4.id	3	declaration index (InterfaceMinder::add)
+msg.3.4.name	handleCellAppMgrBirth	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.4.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.4.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.4.length-param	sizeof(handleCellAppMgrBirthArgs)	macro expansion
+msg.3.4.frame	03	canonical minimal frame (hex)
+msg.3.5.id	4	declaration index (InterfaceMinder::add)
+msg.3.5.name	handleCellAppDeath	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.5.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.5.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.5.length-param	sizeof(handleCellAppDeathArgs)	macro expansion
+msg.3.5.frame	04	canonical minimal frame (hex)
+msg.3.6.id	5	declaration index (InterfaceMinder::add)
+msg.3.6.name	handleBaseAppDeath	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.6.kind	BW_STREAM_MSG	declaring macro
+msg.3.6.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.6.length-param	2	macro expansion
+msg.3.6.frame	050000	canonical minimal frame (hex)
+msg.3.7.id	6	declaration index (InterfaceMinder::add)
+msg.3.7.name	shutDown	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.7.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.7.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.7.length-param	sizeof(shutDownArgs)	macro expansion
+msg.3.7.frame	06	canonical minimal frame (hex)
+msg.3.8.id	7	declaration index (InterfaceMinder::add)
+msg.3.8.name	controlledShutDown	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.8.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.8.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.8.length-param	sizeof(controlledShutDownArgs)	macro expansion
+msg.3.8.frame	07	canonical minimal frame (hex)
+msg.3.9.id	8	declaration index (InterfaceMinder::add)
+msg.3.9.name	sendEntityPositions	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.9.kind	MERCURY_HANDLED_VARIABLE_MESSAGE	declaring macro
+msg.3.9.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.9.length-param	2	macro expansion
+msg.3.9.frame	080000	canonical minimal frame (hex)
+msg.3.10.id	9	declaration index (InterfaceMinder::add)
+msg.3.10.name	setSharedData	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.10.kind	BW_STREAM_MSG	declaring macro
+msg.3.10.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.10.length-param	2	macro expansion
+msg.3.10.frame	090000	canonical minimal frame (hex)
+msg.3.11.id	10	declaration index (InterfaceMinder::add)
+msg.3.11.name	delSharedData	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.11.kind	BW_STREAM_MSG	declaring macro
+msg.3.11.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.11.length-param	2	macro expansion
+msg.3.11.frame	0a0000	canonical minimal frame (hex)
+msg.3.12.id	11	declaration index (InterfaceMinder::add)
+msg.3.12.name	addServiceFragment	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.12.kind	BW_STREAM_MSG	declaring macro
+msg.3.12.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.12.length-param	2	macro expansion
+msg.3.12.frame	0b0000	canonical minimal frame (hex)
+msg.3.13.id	12	declaration index (InterfaceMinder::add)
+msg.3.13.name	delServiceFragment	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.13.kind	BW_STREAM_MSG	declaring macro
+msg.3.13.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.13.length-param	2	macro expansion
+msg.3.13.frame	0c0000	canonical minimal frame (hex)
+msg.3.14.id	13	declaration index (InterfaceMinder::add)
+msg.3.14.name	setBaseApp	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.14.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.14.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.14.length-param	sizeof(setBaseAppArgs)	macro expansion
+msg.3.14.frame	0d	canonical minimal frame (hex)
+msg.3.15.id	14	declaration index (InterfaceMinder::add)
+msg.3.15.name	setDBAppAlpha	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.15.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.15.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.15.length-param	sizeof(setDBAppAlphaArgs)	macro expansion
+msg.3.15.frame	0e	canonical minimal frame (hex)
+msg.3.16.id	15	declaration index (InterfaceMinder::add)
+msg.3.16.name	onloadTeleportedEntity	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.16.kind	BW_STREAM_MSG_EX	declaring macro
+msg.3.16.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.16.length-param	2	macro expansion
+msg.3.16.frame	0f0000	canonical minimal frame (hex)
+msg.3.17.id	16	declaration index (InterfaceMinder::add)
+msg.3.17.name	cellAppMgrInfo	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.17.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.3.17.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.17.length-param	sizeof(cellAppMgrInfoArgs)	macro expansion
+msg.3.17.frame	10	canonical minimal frame (hex)
+msg.3.18.id	17	declaration index (InterfaceMinder::add)
+msg.3.18.name	onRemoteTickComplete	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.18.kind	BW_BEGIN_STRUCT_MSG_EX	declaring macro
+msg.3.18.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.18.length-param	sizeof(onRemoteTickCompleteArgs)	macro expansion
+msg.3.18.frame	11	canonical minimal frame (hex)
+msg.3.19.id	18	declaration index (InterfaceMinder::add)
+msg.3.19.name	createGhost	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.19.kind	BW_STREAM_MSG_EX	declaring macro
+msg.3.19.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.19.length-param	2	macro expansion
+msg.3.19.frame	120000	canonical minimal frame (hex)
+msg.3.20.id	19	declaration index (InterfaceMinder::add)
+msg.3.20.name	spaceData	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.20.kind	BW_STREAM_MSG	declaring macro
+msg.3.20.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.20.length-param	2	macro expansion
+msg.3.20.frame	130000	canonical minimal frame (hex)
+msg.3.21.id	20	declaration index (InterfaceMinder::add)
+msg.3.21.name	allSpaceData	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.21.kind	BW_STREAM_MSG	declaring macro
+msg.3.21.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.21.length-param	2	macro expansion
+msg.3.21.frame	140000	canonical minimal frame (hex)
+msg.3.22.id	21	declaration index (InterfaceMinder::add)
+msg.3.22.name	updateGeometry	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.22.kind	BW_STREAM_MSG	declaring macro
+msg.3.22.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.22.length-param	2	macro expansion
+msg.3.22.frame	150000	canonical minimal frame (hex)
+msg.3.23.id	22	declaration index (InterfaceMinder::add)
+msg.3.23.name	spaceGeometryLoaded	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.23.kind	BW_STREAM_MSG	declaring macro
+msg.3.23.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.23.length-param	2	macro expansion
+msg.3.23.frame	160000	canonical minimal frame (hex)
+msg.3.24.id	23	declaration index (InterfaceMinder::add)
+msg.3.24.name	shutDownSpace	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.24.kind	BW_STREAM_MSG	declaring macro
+msg.3.24.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.24.length-param	2	macro expansion
+msg.3.24.frame	170000	canonical minimal frame (hex)
+msg.3.25.id	24	declaration index (InterfaceMinder::add)
+msg.3.25.name	createEntity	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.25.kind	MF_BUFFERED_STREAM_MESSAGE_EX	declaring macro
+msg.3.25.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.25.length-param	2	macro expansion
+msg.3.25.frame	180000	canonical minimal frame (hex)
+msg.3.26.id	25	declaration index (InterfaceMinder::add)
+msg.3.26.name	createEntityNearEntity	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.26.kind	MF_CREATE_ENTITY_MSG	declaring macro
+msg.3.26.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.26.length-param	2	macro expansion
+msg.3.26.frame	190000	canonical minimal frame (hex)
+msg.3.27.id	26	declaration index (InterfaceMinder::add)
+msg.3.27.name	shouldOffload	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.27.kind	BW_STREAM_MSG	declaring macro
+msg.3.27.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.27.length-param	2	macro expansion
+msg.3.27.frame	1a0000	canonical minimal frame (hex)
+msg.3.28.id	27	declaration index (InterfaceMinder::add)
+msg.3.28.name	retireCell	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.28.kind	BW_STREAM_MSG	declaring macro
+msg.3.28.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.28.length-param	2	macro expansion
+msg.3.28.frame	1b0000	canonical minimal frame (hex)
+msg.3.29.id	28	declaration index (InterfaceMinder::add)
+msg.3.29.name	removeCell	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.29.kind	BW_STREAM_MSG	declaring macro
+msg.3.29.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.29.length-param	2	macro expansion
+msg.3.29.frame	1c0000	canonical minimal frame (hex)
+msg.3.30.id	29	declaration index (InterfaceMinder::add)
+msg.3.30.name	notifyOfCellRemoval	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.30.kind	BW_STREAM_MSG	declaring macro
+msg.3.30.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.30.length-param	2	macro expansion
+msg.3.30.frame	1d0000	canonical minimal frame (hex)
+msg.3.31.id	30	declaration index (InterfaceMinder::add)
+msg.3.31.name	ackCellRemoval	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.31.kind	BW_STREAM_MSG_EX	declaring macro
+msg.3.31.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.31.length-param	2	macro expansion
+msg.3.31.frame	1e0000	canonical minimal frame (hex)
+msg.3.32.id	31	declaration index (InterfaceMinder::add)
+msg.3.32.name	avatarUpdateImplicit	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.32.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.32.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.32.length-param	sizeof(EntityID)+sizeof(avatarUpdateImplicitArgs)	macro expansion
+msg.3.32.frame	1f	canonical minimal frame (hex)
+msg.3.33.id	32	declaration index (InterfaceMinder::add)
+msg.3.33.name	avatarUpdateExplicit	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.33.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.33.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.33.length-param	sizeof(EntityID)+sizeof(avatarUpdateExplicitArgs)	macro expansion
+msg.3.33.frame	20	canonical minimal frame (hex)
+msg.3.34.id	33	declaration index (InterfaceMinder::add)
+msg.3.34.name	ackPhysicsCorrection	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.34.kind	MF_EMPTY_ENTITY_MSG	declaring macro
+msg.3.34.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.34.length-param	sizeof(EntityID)	macro expansion
+msg.3.34.frame	21	canonical minimal frame (hex)
+msg.3.35.id	34	declaration index (InterfaceMinder::add)
+msg.3.35.name	enableWitness	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.35.kind	MF_VARLEN_ENTITY_REQUEST	declaring macro
+msg.3.35.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.35.length-param	2	macro expansion
+msg.3.35.frame	220000	canonical minimal frame (hex)
+msg.3.36.id	35	declaration index (InterfaceMinder::add)
+msg.3.36.name	witnessCapacity	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.36.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.36.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.36.length-param	sizeof(EntityID)+sizeof(witnessCapacityArgs)	macro expansion
+msg.3.36.frame	23	canonical minimal frame (hex)
+msg.3.37.id	36	declaration index (InterfaceMinder::add)
+msg.3.37.name	requestEntityUpdate	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.37.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.37.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.37.length-param	2	macro expansion
+msg.3.37.frame	240000	canonical minimal frame (hex)
+msg.3.38.id	37	declaration index (InterfaceMinder::add)
+msg.3.38.name	witnessed	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.38.kind	MF_EMPTY_ENTITY_MSG	declaring macro
+msg.3.38.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.38.length-param	sizeof(EntityID)	macro expansion
+msg.3.38.frame	25	canonical minimal frame (hex)
+msg.3.39.id	38	declaration index (InterfaceMinder::add)
+msg.3.39.name	writeToDBRequest	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.39.kind	MF_VARLEN_ENTITY_REQUEST	declaring macro
+msg.3.39.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.39.length-param	2	macro expansion
+msg.3.39.frame	260000	canonical minimal frame (hex)
+msg.3.40.id	39	declaration index (InterfaceMinder::add)
+msg.3.40.name	destroyEntity	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.40.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.40.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.40.length-param	sizeof(EntityID)+sizeof(destroyEntityArgs)	macro expansion
+msg.3.40.frame	27	canonical minimal frame (hex)
+msg.3.41.id	40	declaration index (InterfaceMinder::add)
+msg.3.41.name	onload	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.41.kind	MF_RAW_VARLEN_ENTITY_MSG	declaring macro
+msg.3.41.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.41.length-param	2	macro expansion
+msg.3.41.frame	280000	canonical minimal frame (hex)
+msg.3.42.id	41	declaration index (InterfaceMinder::add)
+msg.3.42.name	ghostPositionUpdate	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.42.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.42.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.42.length-param	sizeof(EntityID)+sizeof(ghostPositionUpdateArgs)	macro expansion
+msg.3.42.frame	29	canonical minimal frame (hex)
+msg.3.43.id	42	declaration index (InterfaceMinder::add)
+msg.3.43.name	ghostHistoryEvent	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.43.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.43.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.43.length-param	2	macro expansion
+msg.3.43.frame	2a0000	canonical minimal frame (hex)
+msg.3.44.id	43	declaration index (InterfaceMinder::add)
+msg.3.44.name	ghostSetReal	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.44.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.44.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.44.length-param	sizeof(EntityID)+sizeof(ghostSetRealArgs)	macro expansion
+msg.3.44.frame	2b	canonical minimal frame (hex)
+msg.3.45.id	44	declaration index (InterfaceMinder::add)
+msg.3.45.name	ghostSetNextReal	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.45.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.45.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.45.length-param	sizeof(EntityID)+sizeof(ghostSetNextRealArgs)	macro expansion
+msg.3.45.frame	2c	canonical minimal frame (hex)
+msg.3.46.id	45	declaration index (InterfaceMinder::add)
+msg.3.46.name	delGhost	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.46.kind	MF_EMPTY_ENTITY_MSG	declaring macro
+msg.3.46.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.46.length-param	sizeof(EntityID)	macro expansion
+msg.3.46.frame	2d	canonical minimal frame (hex)
+msg.3.47.id	46	declaration index (InterfaceMinder::add)
+msg.3.47.name	ghostVolatileInfo	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.47.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.47.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.47.length-param	sizeof(EntityID)+sizeof(ghostVolatileInfoArgs)	macro expansion
+msg.3.47.frame	2e	canonical minimal frame (hex)
+msg.3.48.id	47	declaration index (InterfaceMinder::add)
+msg.3.48.name	ghostControllerCreate	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.48.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.48.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.48.length-param	2	macro expansion
+msg.3.48.frame	2f0000	canonical minimal frame (hex)
+msg.3.49.id	48	declaration index (InterfaceMinder::add)
+msg.3.49.name	ghostControllerDelete	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.49.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.49.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.49.length-param	2	macro expansion
+msg.3.49.frame	300000	canonical minimal frame (hex)
+msg.3.50.id	49	declaration index (InterfaceMinder::add)
+msg.3.50.name	ghostControllerUpdate	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.50.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.50.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.50.length-param	2	macro expansion
+msg.3.50.frame	310000	canonical minimal frame (hex)
+msg.3.51.id	50	declaration index (InterfaceMinder::add)
+msg.3.51.name	ghostedDataUpdate	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.51.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.51.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.51.length-param	2	macro expansion
+msg.3.51.frame	320000	canonical minimal frame (hex)
+msg.3.52.id	51	declaration index (InterfaceMinder::add)
+msg.3.52.name	checkGhostWitnessed	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.52.kind	MF_EMPTY_ENTITY_MSG	declaring macro
+msg.3.52.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.52.length-param	sizeof(EntityID)	macro expansion
+msg.3.52.frame	33	canonical minimal frame (hex)
+msg.3.53.id	52	declaration index (InterfaceMinder::add)
+msg.3.53.name	aoiUpdateSchemeChange	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.53.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.53.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.53.length-param	sizeof(EntityID)+sizeof(aoiUpdateSchemeChangeArgs)	macro expansion
+msg.3.53.frame	34	canonical minimal frame (hex)
+msg.3.54.id	53	declaration index (InterfaceMinder::add)
+msg.3.54.name	runScriptMethod	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.54.kind	MF_RAW_VARLEN_ENTITY_MSG	declaring macro
+msg.3.54.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.54.length-param	2	macro expansion
+msg.3.54.frame	350000	canonical minimal frame (hex)
+msg.3.55.id	54	declaration index (InterfaceMinder::add)
+msg.3.55.name	callBaseMethod	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.55.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.55.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.55.length-param	2	macro expansion
+msg.3.55.frame	360000	canonical minimal frame (hex)
+msg.3.56.id	55	declaration index (InterfaceMinder::add)
+msg.3.56.name	callClientMethod	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.56.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.56.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.56.length-param	2	macro expansion
+msg.3.56.frame	370000	canonical minimal frame (hex)
+msg.3.57.id	56	declaration index (InterfaceMinder::add)
+msg.3.57.name	recordClientMethod	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.57.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.57.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.57.length-param	2	macro expansion
+msg.3.57.frame	380000	canonical minimal frame (hex)
+msg.3.58.id	57	declaration index (InterfaceMinder::add)
+msg.3.58.name	recordClientProperties	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.58.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.58.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.58.length-param	2	macro expansion
+msg.3.58.frame	390000	canonical minimal frame (hex)
+msg.3.59.id	58	declaration index (InterfaceMinder::add)
+msg.3.59.name	delControlledBy	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.59.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.59.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.59.length-param	sizeof(EntityID)+sizeof(delControlledByArgs)	macro expansion
+msg.3.59.frame	3a	canonical minimal frame (hex)
+msg.3.60.id	59	declaration index (InterfaceMinder::add)
+msg.3.60.name	forwardedBaseEntityPacket	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.60.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.60.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.60.length-param	2	macro expansion
+msg.3.60.frame	3b0000	canonical minimal frame (hex)
+msg.3.61.id	60	declaration index (InterfaceMinder::add)
+msg.3.61.name	onBaseOffloaded	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.61.kind	MF_BEGIN_ENTITY_MSG_WITH_FAILURE	declaring macro
+msg.3.61.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.61.length-param	sizeof(EntityID)+sizeof(onBaseOffloadedArgs)	macro expansion
+msg.3.61.frame	3c	canonical minimal frame (hex)
+msg.3.62.id	61	declaration index (InterfaceMinder::add)
+msg.3.62.name	onBaseOffloadedForGhost	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.62.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.62.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.62.length-param	sizeof(EntityID)+sizeof(onBaseOffloadedForGhostArgs)	macro expansion
+msg.3.62.frame	3d	canonical minimal frame (hex)
+msg.3.63.id	62	declaration index (InterfaceMinder::add)
+msg.3.63.name	teleport	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.63.kind	MF_BEGIN_ENTITY_MSG	declaring macro
+msg.3.63.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.63.length-param	sizeof(EntityID)+sizeof(teleportArgs)	macro expansion
+msg.3.63.frame	3e	canonical minimal frame (hex)
+msg.3.64.id	63	declaration index (InterfaceMinder::add)
+msg.3.64.name	runExposedMethod	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.64.kind	MF_VARLEN_ENTITY_MSG	declaring macro
+msg.3.64.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.64.length-param	2	macro expansion
+msg.3.64.frame	3f0000	canonical minimal frame (hex)
+msg.3.65.id	64	declaration index (InterfaceMinder::add)
+msg.3.65.name	callWatcher	programming/bigworld/server/cellapp/cellapp_interface.hpp
+msg.3.65.kind	BW_STREAM_MSG_EX	declaring macro
+msg.3.65.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.3.65.length-param	2	macro expansion
+msg.3.65.frame	400000	canonical minimal frame (hex)
+interface.4.name	BaseAppMgrInterface	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+interface.4.direction	internal	server-to-server (internal nub) or client-to-server (external)
+interface.4.source	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp	reference source tree
+interface.4.messages	28	declaration order
+msg.4.1.id	0	declaration index (InterfaceMinder::add)
+msg.4.1.name	createEntity	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.1.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.1.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.1.length-param	2	macro expansion
+msg.4.1.frame	000000	canonical minimal frame (hex)
+msg.4.2.id	1	declaration index (InterfaceMinder::add)
+msg.4.2.name	add	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.2.kind	BW_BEGIN_STRUCT_MSG_EX	declaring macro
+msg.4.2.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.2.length-param	sizeof(addArgs)	macro expansion
+msg.4.2.frame	01	canonical minimal frame (hex)
+msg.4.3.id	2	declaration index (InterfaceMinder::add)
+msg.4.3.name	recoverBaseApp	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.3.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.3.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.3.length-param	2	macro expansion
+msg.4.3.frame	020000	canonical minimal frame (hex)
+msg.4.4.id	3	declaration index (InterfaceMinder::add)
+msg.4.4.name	del	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.4.kind	BW_BEGIN_STRUCT_MSG_EX	declaring macro
+msg.4.4.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.4.length-param	sizeof(delArgs)	macro expansion
+msg.4.4.frame	03	canonical minimal frame (hex)
+msg.4.5.id	4	declaration index (InterfaceMinder::add)
+msg.4.5.name	informOfLoad	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.5.kind	BW_BEGIN_STRUCT_MSG_EX	declaring macro
+msg.4.5.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.5.length-param	sizeof(informOfLoadArgs)	macro expansion
+msg.4.5.frame	04	canonical minimal frame (hex)
+msg.4.6.id	5	declaration index (InterfaceMinder::add)
+msg.4.6.name	shutDown	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.6.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.4.6.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.6.length-param	sizeof(shutDownArgs)	macro expansion
+msg.4.6.frame	05	canonical minimal frame (hex)
+msg.4.7.id	6	declaration index (InterfaceMinder::add)
+msg.4.7.name	controlledShutDown	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.7.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.4.7.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.7.length-param	sizeof(controlledShutDownArgs)	macro expansion
+msg.4.7.frame	06	canonical minimal frame (hex)
+msg.4.8.id	7	declaration index (InterfaceMinder::add)
+msg.4.8.name	handleBaseAppDeath	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.8.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.4.8.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.8.length-param	sizeof(handleBaseAppDeathArgs)	macro expansion
+msg.4.8.frame	07	canonical minimal frame (hex)
+msg.4.9.id	8	declaration index (InterfaceMinder::add)
+msg.4.9.name	handleCellAppMgrBirth	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.9.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.4.9.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.9.length-param	sizeof(handleCellAppMgrBirthArgs)	macro expansion
+msg.4.9.frame	08	canonical minimal frame (hex)
+msg.4.10.id	9	declaration index (InterfaceMinder::add)
+msg.4.10.name	handleBaseAppMgrBirth	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.10.kind	BW_BEGIN_STRUCT_MSG	declaring macro
+msg.4.10.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.10.length-param	sizeof(handleBaseAppMgrBirthArgs)	macro expansion
+msg.4.10.frame	09	canonical minimal frame (hex)
+msg.4.11.id	10	declaration index (InterfaceMinder::add)
+msg.4.11.name	handleCellAppDeath	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.11.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.11.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.11.length-param	2	macro expansion
+msg.4.11.frame	0a0000	canonical minimal frame (hex)
+msg.4.12.id	11	declaration index (InterfaceMinder::add)
+msg.4.12.name	registerBaseGlobally	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.12.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.12.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.12.length-param	2	macro expansion
+msg.4.12.frame	0b0000	canonical minimal frame (hex)
+msg.4.13.id	12	declaration index (InterfaceMinder::add)
+msg.4.13.name	deregisterBaseGlobally	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.13.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.13.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.13.length-param	2	macro expansion
+msg.4.13.frame	0c0000	canonical minimal frame (hex)
+msg.4.14.id	13	declaration index (InterfaceMinder::add)
+msg.4.14.name	registerServiceFragment	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.14.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.14.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.14.length-param	2	macro expansion
+msg.4.14.frame	0d0000	canonical minimal frame (hex)
+msg.4.15.id	14	declaration index (InterfaceMinder::add)
+msg.4.15.name	deregisterServiceFragment	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.15.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.15.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.15.length-param	2	macro expansion
+msg.4.15.frame	0e0000	canonical minimal frame (hex)
+msg.4.16.id	15	declaration index (InterfaceMinder::add)
+msg.4.16.name	requestHasStarted	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.16.kind	BW_EMPTY_MSG_EX	declaring macro
+msg.4.16.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.16.length-param	0	macro expansion
+msg.4.16.frame	0f	canonical minimal frame (hex)
+msg.4.17.id	16	declaration index (InterfaceMinder::add)
+msg.4.17.name	updateDBAppHash	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.17.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.17.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.17.length-param	2	macro expansion
+msg.4.17.frame	100000	canonical minimal frame (hex)
+msg.4.18.id	17	declaration index (InterfaceMinder::add)
+msg.4.18.name	initData	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.18.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.18.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.18.length-param	2	macro expansion
+msg.4.18.frame	110000	canonical minimal frame (hex)
+msg.4.19.id	18	declaration index (InterfaceMinder::add)
+msg.4.19.name	startup	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.19.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.19.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.19.length-param	2	macro expansion
+msg.4.19.frame	120000	canonical minimal frame (hex)
+msg.4.20.id	19	declaration index (InterfaceMinder::add)
+msg.4.20.name	checkStatus	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.20.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.20.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.20.length-param	2	macro expansion
+msg.4.20.frame	130000	canonical minimal frame (hex)
+msg.4.21.id	20	declaration index (InterfaceMinder::add)
+msg.4.21.name	spaceDataRestore	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.21.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.21.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.21.length-param	2	macro expansion
+msg.4.21.frame	140000	canonical minimal frame (hex)
+msg.4.22.id	21	declaration index (InterfaceMinder::add)
+msg.4.22.name	setSharedData	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.22.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.22.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.22.length-param	2	macro expansion
+msg.4.22.frame	150000	canonical minimal frame (hex)
+msg.4.23.id	22	declaration index (InterfaceMinder::add)
+msg.4.23.name	delSharedData	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.23.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.23.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.23.length-param	2	macro expansion
+msg.4.23.frame	160000	canonical minimal frame (hex)
+msg.4.24.id	23	declaration index (InterfaceMinder::add)
+msg.4.24.name	useNewBackupHash	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.24.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.24.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.24.length-param	2	macro expansion
+msg.4.24.frame	170000	canonical minimal frame (hex)
+msg.4.25.id	24	declaration index (InterfaceMinder::add)
+msg.4.25.name	informOfArchiveComplete	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.25.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.25.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.25.length-param	2	macro expansion
+msg.4.25.frame	180000	canonical minimal frame (hex)
+msg.4.26.id	25	declaration index (InterfaceMinder::add)
+msg.4.26.name	retireApp	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.26.kind	BW_EMPTY_MSG	declaring macro
+msg.4.26.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.26.length-param	0	macro expansion
+msg.4.26.frame	19	canonical minimal frame (hex)
+msg.4.27.id	26	declaration index (InterfaceMinder::add)
+msg.4.27.name	finishedInit	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.27.kind	BW_EMPTY_MSG_EX	declaring macro
+msg.4.27.length-style	fixed	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.27.length-param	0	macro expansion
+msg.4.27.frame	1a	canonical minimal frame (hex)
+msg.4.28.id	27	declaration index (InterfaceMinder::add)
+msg.4.28.name	requestBackupHashChain	programming/bigworld/server/baseappmgr/baseappmgr_interface.hpp
+msg.4.28.kind	BW_STREAM_MSG_EX	declaring macro
+msg.4.28.length-style	variable	FIXED_LENGTH_MESSAGE / VARIABLE_LENGTH_MESSAGE
+msg.4.28.length-param	2	macro expansion
+msg.4.28.frame	1b0000	canonical minimal frame (hex)
+blocker.protocol-capture	protocol-capture: no live over-the-wire capture is recorded — the full cluster cannot start on this machine (bwmachined and the full server configuration are absent, BW-00-02-03) and loginapp.pubkey is absent repo-wide (BW-00-02-04), so no original process emits a frame that could be captured; the recorded bytes are the reference's own canonical message encodings (message id byte plus length field) from its interface tables and framing rules, which identify every frame carrying that message	runner limitation

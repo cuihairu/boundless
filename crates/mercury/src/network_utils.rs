@@ -110,7 +110,10 @@ mod tests {
     fn the_wanted_sizes_are_computed_once() {
         assert_eq!(
             buffer_sizes(),
-            (get_max_buffer_size(true), get_max_buffer_size(false))
+            (
+                get_max_buffer_size(true),
+                get_max_buffer_size(false)
+            )
         );
     }
 }

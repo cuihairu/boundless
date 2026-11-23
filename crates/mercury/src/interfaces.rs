@@ -86,7 +86,7 @@ pub trait ReplyMessageHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::misc::{REPLY_ID_NONE, Reason};
+    use crate::misc::{Reason, REPLY_ID_NONE};
 
     struct NeverOverrides;
 

@@ -1,0 +1,20 @@
+artifact	kind	path	purpose	deliverables	version
+build_common.py	python-script	build/bw_internal/scripts/build_common.py	Special run procedure using the subprocess (better with command spaces)	-	-
+cmake_all_windows.py	python-script	build/bw_internal/scripts/cmake_all_windows.py	Setup the defaults, then tweak if it is a nightly (ie: full) build	unit-tests	-
+makeRPM.py	python-script	build/bw_internal/scripts/makeRPM.py	-	rpm	-
+makeServer.py	python-script	build/bw_internal/scripts/makeServer.py	Scripts from the 'common' build script directory imported in build_common	unit-tests,res_packer,server-build	-
+makeSolutions.py	python-script	build/bw_internal/scripts/makeSolutions.py	add a destination to cmake_file.py	cmake-solution	-
+perforce_synchronizer.py	python-script	build/bw_internal/scripts/perforce_synchronizer.py	The fastest way to revert changed files is to delete and recover them,	-	-
+project_manager.py	python-script	build/bw_internal/scripts/project_manager.py	This class handles iterating over a set of Visual Studio build configurations	-	-
+runsrcsrv.bat	batch	build/bw_internal/scripts/runsrcsrv.bat	-	-	-
+winArchiveBuild.bat	batch	build/bw_internal/scripts/winArchiveBuild.bat	-	windows-archive	-
+winCMakeClient.py	python-script	build/bw_internal/scripts/winCMakeClient.py	Edit these for the builds you want ###	cmake-solution	-
+winCMakeShaders.py	python-script	build/bw_internal/scripts/winCMakeShaders.py	NB: Force this execution to use the system version of Python.	-	-
+winCMakeUnitTests.py	python-script	build/bw_internal/scripts/winCMakeUnitTests.py	Clean all unit tests	unit-tests	-
+winMakeClient.py	python-script	build/bw_internal/scripts/winMakeClient.py	The '@@' is used to substitute the /clean or /build as required	-	-
+winMakeUnitTests.py	python-script	build/bw_internal/scripts/winMakeUnitTests.py	-	unit-tests	-
+engine-version	version	lib/cstdmf/bwversion.hpp	engine version 14.4.1; copyright (c) 1999 - 2014, BigWorld Pty. Ltd. All Rights Reserved	-	14.4.1
+bundled-python	version	build/make/third_party_python.mak	bundled CPython version	-	3.13
+platform-tags	platform-tags	build/make/platform_info.py	Linux distribution to RPM/archive platform tag	-	CentOS 5:el5,CentOS 5.4:el5,CentOS 6:el6,CentOS 7:el7,RHEL 5:el5,RHEL 6.4:el6,RHEL 7:el7,Fedora 18:fedora18
+rpm	make-target	bigworld/src/server (out-of-tree)	make rpm builds the server RPM (Indie with BIGWORLD_INDIE=1)	rpm	14.4.1
+server-build	make-target	bigworld/src/server + bigworld/src/tools/res_packer (out-of-tree)	make builds server binaries and res_packer per MF_CONFIG	server-build,res_packer	-

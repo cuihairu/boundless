@@ -9,31 +9,20 @@
 //! - `SIGQUIT` is special: its single handler runs *immediately* from the
 //!   signal context (the machined watchdog path -- the app may be about
 //!   to die), a second registration asserts;
-//! - `SIGRTMIN..=SIGRTMAX` render as the literal `"SIGRTxxx"` (Linux
-//!   only: macOS has no real-time signal range to render);
+//! - `SIGRTMIN..=SIGRTMAX` render as the literal `"SIGRTxxx"`;
 //! - removing the last handler of a signal reverts its disposition to
 //!   `SIG_DFL`, and dropping the processor resets every signal it still
 //!   handles;
 //! - `dispatch()` blocks all signals for its duration (the `Blocker`).
 //!
 //! Deviations: the pending set is an `AtomicU32` over signals 1..=31
-//! (`SIGMAX` is `SIGSYS` on Linux, `SIGUSR2` on macOS -- both are the
-//! highest standard signal) instead of a `sigset_t` -- same async-safe
+//! (`SIGMAX == SIGSYS`) instead of a `sigset_t` -- same async-safe
 //! mutation contract, real-time signals are simply not tracked (nothing
 //! in the server apps registers one). The `SIGQUIT` immediate slot takes
 //! a `Send + Sync` callback instead of re-entering the shared handler
 //! through a `RefCell` (the reference dereferences the handler pointer
 //! straight from signal context; its own contract is "must not block or
 //! allocate", which the callback keeps).
-//!
-//! Portability: the wait is `sigwaitinfo` on Linux and `sigwait` on
-//! macOS (the libc crate exposes only the latter for the BSD family;
-//! both wrap the same POSIX wait and both can be interrupted by
-//! `EINTR`). The reference `SIGNAL_NAMES` table is Linux-numbered, so
-//! macOS keeps its own table (signal numbers differ: `SIGUSR1`/`SIGUSR2`
-//! are 30/31 and there is a `SIGEMT`/`SIGINFO` but no `SIGSTKFLT`/
-//! `SIGPWR`). The quit signals the server uses -- `SIGTERM`, `SIGINT`,
-//! `SIGQUIT` -- carry the same numbers on both platforms.
 
 use std::cell::RefCell;
 use std::ptr;
@@ -41,10 +30,47 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// `SIGMIN`/`SIGMAX`/`SIGNAL_NAMES` re-exported from the syscall landing
-/// point (BW-16-02-01): the reference tables are platform-numbered and
-/// live with the calls now.
-pub use platform::signals::{SIGMAX, SIGMIN, SIGNAL_NAMES};
+/// `SIGMIN`.
+pub const SIGMIN: i32 = 1;
+
+/// `SIGMAX` (= `SIGSYS` on POSIX).
+pub const SIGMAX: i32 = libc::SIGSYS;
+
+/// The `SIGNAL_NAMES` table, `SIGMIN..=SIGMAX` (index 0 unused).
+pub const SIGNAL_NAMES: [&str; 32] = [
+    "",
+    "SIGHUP",
+    "SIGINT",
+    "SIGQUIT",
+    "SIGILL",
+    "SIGTRAP",
+    "SIGABRT",
+    "SIGBUS",
+    "SIGFPE",
+    "SIGKILL",
+    "SIGUSR1",
+    "SIGSEGV",
+    "SIGUSR2",
+    "SIGPIPE",
+    "SIGALRM",
+    "SIGTERM",
+    "SIGSTKFLT",
+    "SIGCHLD",
+    "SIGCONT",
+    "SIGSTOP",
+    "SIGTSTP",
+    "SIGTTIN",
+    "SIGTTOU",
+    "SIGURG",
+    "SIGXCPU",
+    "SIGXFSZ",
+    "SIGVTALRM",
+    "SIGPROF",
+    "SIGWINCH",
+    "SIGIO",
+    "SIGPWR",
+    "SIGSYS",
+];
 
 /// The pending set: bit `sig` set means signal `sig` arrived and has not
 /// been dispatched yet. Mutation from the signal context is the only
@@ -59,20 +85,24 @@ pub fn pending_signals() -> u32 {
 /// The process-wide kernel pending mask (`sigpending`): signals raised
 /// while blocked wait here until delivery.
 pub fn kernel_pending_signals() -> u32 {
-    let set = platform::signals::pending_set();
-    let mut mask = 0u32;
-    for sig_num in SIGMIN..=SIGMAX {
-        if platform::signals::set_member(&set, sig_num) {
-            mask |= 1 << sig_num;
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigpending(&mut set);
+        let mut mask = 0u32;
+        for sig_num in SIGMIN..=SIGMAX {
+            if libc::sigismember(&set, sig_num) == 1 {
+                mask |= 1 << sig_num;
+            }
         }
+        mask
     }
-    mask
 }
 
 /// The single `SIGQUIT` handler slot: a thin pointer to a concrete box
 /// wrapping the callback, read straight from signal context (the
 /// reference stores the handler pointer the same way).
-static SIGQUIT_HANDLER: AtomicPtr<QuitSlot> = AtomicPtr::new(std::ptr::null_mut());
+static SIGQUIT_HANDLER: AtomicPtr<QuitSlot> =
+    AtomicPtr::new(std::ptr::null_mut());
 
 type QuitCallback = dyn Fn(i32) + Send + Sync;
 type ArcQuitHandler = Arc<QuitCallback>;
@@ -122,53 +152,67 @@ pub fn disposition_guard() -> std::sync::MutexGuard<'static, ()> {
 /// `Signal::Set` over a `sigset_t` (`EMPTY`/`FULL` initialisers and the
 /// `isClear_` dodge for the non-standard `sigisemptyset`).
 pub struct Set {
-    raw: platform::signals::SigSet,
+    raw: libc::sigset_t,
     is_clear: bool,
 }
 
 impl Set {
     /// `Set(EMPTY)`.
     pub fn empty() -> Self {
+        let mut raw: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut raw);
+        }
         Self {
-            raw: platform::signals::empty_set(),
+            raw,
             is_clear: true,
         }
     }
 
     /// `Set(FULL)`.
     pub fn full() -> Self {
+        let mut raw: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::sigfillset(&mut raw);
+        }
         Self {
-            raw: platform::signals::full_set(),
+            raw,
             is_clear: false,
         }
     }
 
     pub fn clear(&mut self, signal: i32) {
-        platform::signals::set_del(&mut self.raw, signal);
+        unsafe {
+            libc::sigdelset(&mut self.raw, signal);
+        }
         self.is_clear = self.is_clear();
     }
 
     pub fn set(&mut self, signal: i32) {
-        platform::signals::set_add(&mut self.raw, signal);
+        unsafe {
+            libc::sigaddset(&mut self.raw, signal);
+        }
         self.is_clear = false;
     }
 
     pub fn clear_all(&mut self) {
-        platform::signals::set_clear(&mut self.raw);
+        unsafe {
+            libc::sigemptyset(&mut self.raw);
+        }
         self.is_clear = true;
     }
 
     /// `isClear`. The reference leans on the "dodgy" `sigisemptyset`
     /// feature; libc does not expose it, so the scan spells it out.
     pub fn is_clear(&self) -> bool {
-        (SIGMIN..=SIGMAX).all(|sig_num| !self.is_set(sig_num))
+        (SIGMIN..=SIGMAX).all(|sig_num| self.is_set(sig_num) == false)
     }
 
     pub fn is_set(&self, signal: i32) -> bool {
-        platform::signals::set_member(&self.raw, signal)
+        unsafe { libc::sigismember(&self.raw, signal) == 1 }
     }
 
-    pub fn raw(&self) -> &platform::signals::SigSet {
+    pub fn raw(&self) -> &libc::sigset_t {
         &self.raw
     }
 }
@@ -176,43 +220,34 @@ impl Set {
 /// `Signal::Blocker`: blocks `signals` for its lifetime (per-thread
 /// `pthread_sigmask`, POSIX-only like the reference).
 pub struct Blocker {
-    old_signals: platform::signals::SigSet,
+    old_signals: libc::sigset_t,
 }
 
 impl Blocker {
     pub fn new(signals: &Set) -> Self {
-<<<<<<< HEAD
-        let mut old_signals = platform::signals::empty_set();
-        let result = platform::signals::block_mask(
-            platform::signals::SIG_SETMASK,
-            signals.raw(),
-            &mut old_signals,
-        );
-        assert_eq!(result, 0, "pthread_sigmask failed");
-=======
         let mut old_signals: libc::sigset_t = unsafe { std::mem::zeroed() };
         unsafe {
-            let result = libc::pthread_sigmask(libc::SIG_SETMASK, signals.raw(), &mut old_signals);
+            let result = libc::pthread_sigmask(
+                libc::SIG_SETMASK,
+                signals.raw(),
+                &mut old_signals,
+            );
             assert_eq!(result, 0, "pthread_sigmask failed");
         }
->>>>>>> origin/lane/bw19-docs
         Self { old_signals }
     }
 }
 
 impl Drop for Blocker {
     fn drop(&mut self) {
-<<<<<<< HEAD
-        let result =
-            platform::signals::restore_mask(platform::signals::SIG_SETMASK, &self.old_signals);
-        assert_eq!(result, 0, "pthread_sigmask restore failed");
-=======
         unsafe {
-            let result =
-                libc::pthread_sigmask(libc::SIG_SETMASK, &self.old_signals, std::ptr::null_mut());
+            let result = libc::pthread_sigmask(
+                libc::SIG_SETMASK,
+                &self.old_signals,
+                std::ptr::null_mut(),
+            );
             assert_eq!(result, 0, "pthread_sigmask restore failed");
         }
->>>>>>> origin/lane/bw19-docs
     }
 }
 
@@ -223,7 +258,7 @@ extern "C" fn c_signal_handler(sig_num: i32) {
         PENDING_SIGNALS.fetch_or(1 << sig_num, Ordering::Relaxed);
     }
 
-    if sig_num == platform::signals::SIGQUIT {
+    if sig_num == libc::SIGQUIT {
         let slot = SIGQUIT_HANDLER.load(Ordering::Relaxed);
         if !slot.is_null() {
             // The reference dereferences the stored handler pointer
@@ -238,12 +273,12 @@ extern "C" fn c_signal_handler(sig_num: i32) {
 /// The current sigaction disposition of `sig_num` (tests observe
 /// `SIG_DFL`/`SIG_IGN`/handler through it).
 pub fn disposition_of(sig_num: i32) -> usize {
-    platform::signals::current_disposition(sig_num)
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(sig_num, std::ptr::null(), &mut old);
+        old.sa_sigaction
+    }
 }
-
-/// A registered `(signal, id, handler)` slot, in registration order (the
-/// reference's multimap keeps insertion order within a signal).
-type SignalHandlerEntry = (i32, HandlerId, Rc<RefCell<dyn SignalHandler>>);
 
 /// `SignalProcessor`: registration + the dispatch drain. The global
 /// signal/quit-handler state is shared exactly like the reference's
@@ -251,7 +286,7 @@ type SignalHandlerEntry = (i32, HandlerId, Rc<RefCell<dyn SignalHandler>>);
 pub struct SignalProcessor {
     /// `(signal, id, handler)` in registration order (the reference's
     /// multimap keeps insertion order within a signal).
-    handlers: Vec<SignalHandlerEntry>,
+    handlers: Vec<(i32, HandlerId, Rc<RefCell<dyn SignalHandler>>)>,
     /// Whether this instance installed the `SIGQUIT` slot.
     quit_installed: bool,
 }
@@ -276,13 +311,17 @@ impl SignalProcessor {
     /// `ignoreSignal`: clear handlers and set `SIG_IGN`.
     pub fn ignore_signal(&mut self, sig_num: i32) {
         self.clear_signal_handlers(sig_num);
-        platform::signals::ignore(sig_num);
+        unsafe {
+            libc::signal(sig_num, libc::SIG_IGN);
+        }
     }
 
     /// `setDefaultSignalHandler`: clear handlers and set `SIG_DFL`.
     pub fn set_default_signal_handler(&mut self, sig_num: i32) {
         self.clear_signal_handlers(sig_num);
-        platform::signals::default(sig_num);
+        unsafe {
+            libc::signal(sig_num, libc::SIG_DFL);
+        }
     }
 
     /// `addSignalHandler`: register under `sig_num` and enable detection
@@ -296,7 +335,7 @@ impl SignalProcessor {
         handler: Rc<RefCell<dyn SignalHandler>>,
     ) -> HandlerId {
         assert!(
-            sig_num != platform::signals::SIGQUIT,
+            sig_num != libc::SIGQUIT,
             "SIGQUIT takes the single immediate handler"
         );
         let id = HandlerId(Rc::as_ptr(&handler) as *const () as usize);
@@ -319,19 +358,25 @@ impl SignalProcessor {
             Ordering::Relaxed,
         );
         self.quit_installed = true;
-        self.enable_detect_signal(platform::signals::SIGQUIT);
+        self.enable_detect_signal(libc::SIGQUIT);
     }
 
     /// `enableDetectSignal`: sigaction with a full signal mask (all
     /// signals blocked while the handler runs); `SA_SIGINFO` is not
     /// supported (the reference strips it with an error).
     fn enable_detect_signal(&self, sig_num: i32) {
-        platform::signals::install_action(sig_num, c_signal_handler as *const () as usize);
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = c_signal_handler as *const () as usize;
+            libc::sigfillset(&mut action.sa_mask);
+            action.sa_flags = 0;
+            libc::sigaction(sig_num, &action, std::ptr::null_mut());
+        }
     }
 
     /// `clearSignalHandlers(sigNum)`: drop every handler of the signal.
     pub fn clear_signal_handlers(&mut self, sig_num: i32) {
-        if sig_num == platform::signals::SIGQUIT {
+        if sig_num == libc::SIGQUIT {
             self.clear_quit_handler();
         }
         self.handlers.retain(|(sig, _, _)| *sig != sig_num);
@@ -341,7 +386,7 @@ impl SignalProcessor {
     /// signal; the last removal reverts the disposition to `SIG_DFL`.
     /// Returns whether anything was removed.
     pub fn clear_signal_handler(&mut self, sig_num: i32, id: HandlerId) -> bool {
-        if sig_num == platform::signals::SIGQUIT {
+        if sig_num == libc::SIGQUIT {
             let had = self.quit_installed;
             self.clear_quit_handler();
             return had;
@@ -384,7 +429,9 @@ impl SignalProcessor {
             self.quit_installed = false;
             // The reference destructor resets every signal it handled,
             // SIGQUIT included.
-            platform::signals::default(platform::signals::SIGQUIT);
+            unsafe {
+                libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            }
         }
     }
 
@@ -430,21 +477,17 @@ impl SignalProcessor {
         }
     }
 
-    /// `waitForSignals`: wait until one of `set` arrives (retrying on
-    /// `EINTR`), then dispatch it. Only `TableSynchroniser::run` uses
-    /// this in the reference.
+    /// `waitForSignals`: `sigwaitinfo` until one of `set` arrives
+    /// (retrying on `EINTR`), then dispatch it. Only
+    /// `TableSynchroniser::run` uses this in the reference.
     pub fn wait_for_signals(&mut self, set: &Set) -> i32 {
-<<<<<<< HEAD
-        // `EINTR` is the only interruption worth retrying: a signal
-        // outside `set` reached the thread while it waited.
-        let mut sig_num = platform::signals::wait(set.raw());
-        while sig_num == -platform::signals::EINTR {
-            sig_num = platform::signals::wait(set.raw());
-=======
-        let mut sig_num = unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
-        while sig_num < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-            sig_num = unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
->>>>>>> origin/lane/bw19-docs
+        let mut sig_num =
+            unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
+        while sig_num < 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+        {
+            sig_num =
+                unsafe { libc::sigwaitinfo(set.raw(), std::ptr::null_mut()) };
         }
         if sig_num >= 0 {
             self.dispatch_signal(sig_num);
@@ -457,9 +500,12 @@ impl Drop for SignalProcessor {
     /// The destructor: reset every signal it still handles to the default
     /// disposition.
     fn drop(&mut self) {
-        let signals: Vec<i32> = self.handlers.iter().map(|(sig, _, _)| *sig).collect();
+        let signals: Vec<i32> =
+            self.handlers.iter().map(|(sig, _, _)| *sig).collect();
         for sig_num in signals {
-            platform::signals::default(sig_num);
+            unsafe {
+                libc::signal(sig_num, libc::SIG_DFL);
+            }
         }
         self.clear_quit_handler();
     }
@@ -467,9 +513,13 @@ impl Drop for SignalProcessor {
 
 /// `SignalProcessor::signalNumberToString`.
 pub fn signal_number_to_string(sig_num: i32) -> &'static str {
-    // The real-time range and the platform-numbered table live with the
-    // calls now (BW-16-02-01); the name lookup asserts out of range.
-    platform::signals::signal_name(sig_num).expect("signal number out of range")
+    // SIGRTMIN/SIGRTMAX are function calls into glibc.
+    let (sig_rtmin, sig_rtmax) = (libc::SIGRTMIN(), libc::SIGRTMAX());
+    if (sig_rtmin..=sig_rtmax).contains(&sig_num) {
+        return "SIGRTxxx";
+    }
+    assert!((SIGMIN..=SIGMAX).contains(&sig_num) && sig_num != 0);
+    SIGNAL_NAMES[sig_num as usize]
 }
 
 /// The `SignalProcessor`-as-`FrequentTask` binding: the reference
@@ -510,45 +560,20 @@ mod tests {
         })))
     }
 
-    /// `signalNumberToString`: the fixed table and the out-of-range
-    /// rejection. The quit signals carry the same numbers on every
-    /// platform, so those names are checked everywhere; the real-time
-    /// range and the `SIGMAX` sentinel are Linux-specific.
+    /// `signalNumberToString`: the fixed table, the real-time range and
+    /// the out-of-range rejection.
     #[test]
     fn signal_names_cover_the_reference_table() {
         let _guard = disposition_guard();
-        assert_eq!(signal_number_to_string(platform::signals::SIGINT), "SIGINT");
-        assert_eq!(
-            signal_number_to_string(platform::signals::SIGTERM),
-            "SIGTERM"
-        );
-        assert_eq!(
-            signal_number_to_string(platform::signals::SIGQUIT),
-            "SIGQUIT"
-        );
-        assert_eq!(
-            signal_number_to_string(platform::signals::SIGUSR1),
-            "SIGUSR1"
-        );
-        assert_eq!(signal_number_to_string(platform::signals::SIGSYS), "SIGSYS");
-        #[cfg(target_os = "linux")]
-        {
-            let (sig_rtmin, sig_rtmax) = platform::signals::realtime_range().unwrap();
-            assert_eq!(signal_number_to_string(sig_rtmin), "SIGRTxxx");
-            assert_eq!(signal_number_to_string(sig_rtmax), "SIGRTxxx");
-            assert_eq!(SIGMAX, platform::signals::SIGSYS);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            // The macOS table numbers SIGEMT/SIGINFO and reaches the
-            // highest signal at SIGUSR2.
-            assert_eq!(signal_number_to_string(platform::signals::SIGEMT), "SIGEMT");
-            assert_eq!(
-                signal_number_to_string(platform::signals::SIGINFO),
-                "SIGINFO"
-            );
-            assert_eq!(SIGMAX, platform::signals::SIGUSR2);
-        }
+        assert_eq!(signal_number_to_string(libc::SIGINT), "SIGINT");
+        assert_eq!(signal_number_to_string(libc::SIGTERM), "SIGTERM");
+        assert_eq!(signal_number_to_string(libc::SIGQUIT), "SIGQUIT");
+        assert_eq!(signal_number_to_string(libc::SIGUSR1), "SIGUSR1");
+        assert_eq!(signal_number_to_string(libc::SIGSYS), "SIGSYS");
+        let (sig_rtmin, sig_rtmax) = (libc::SIGRTMIN(), libc::SIGRTMAX());
+        assert_eq!(signal_number_to_string(sig_rtmin), "SIGRTxxx");
+        assert_eq!(signal_number_to_string(sig_rtmax), "SIGRTxxx");
+        assert_eq!(SIGMAX, libc::SIGSYS);
     }
 
     /// `Signal::Set`: EMPTY/FULL initialisers, per-signal set/clear,
@@ -557,24 +582,24 @@ mod tests {
     fn set_mirrors_the_sigset_t_wrapper() {
         let mut set = Set::empty();
         assert!(set.is_clear());
-        assert!(!set.is_set(platform::signals::SIGUSR1));
+        assert!(!set.is_set(libc::SIGUSR1));
 
-        set.set(platform::signals::SIGUSR1);
-        set.set(platform::signals::SIGUSR2);
+        set.set(libc::SIGUSR1);
+        set.set(libc::SIGUSR2);
         assert!(!set.is_clear());
-        assert!(set.is_set(platform::signals::SIGUSR1));
-        assert!(set.is_set(platform::signals::SIGUSR2));
-        assert!(!set.is_set(platform::signals::SIGTERM));
+        assert!(set.is_set(libc::SIGUSR1));
+        assert!(set.is_set(libc::SIGUSR2));
+        assert!(!set.is_set(libc::SIGTERM));
 
-        set.clear(platform::signals::SIGUSR1);
-        assert!(!set.is_set(platform::signals::SIGUSR1));
-        assert!(set.is_set(platform::signals::SIGUSR2));
+        set.clear(libc::SIGUSR1);
+        assert!(!set.is_set(libc::SIGUSR1));
+        assert!(set.is_set(libc::SIGUSR2));
         assert!(!set.is_clear());
 
         set.clear_all();
         assert!(set.is_clear());
 
-        assert!(Set::full().is_set(platform::signals::SIGTERM));
+        assert!(Set::full().is_set(libc::SIGTERM));
     }
 
     /// The full async chain: raise marks the pending bit immediately
@@ -586,22 +611,19 @@ mod tests {
         let mut processor = SignalProcessor::new();
         {
             let counter = Arc::clone(&counter);
-            processor.add_signal_handler(platform::signals::SIGUSR1, counting_handler(counter));
+            processor.add_signal_handler(libc::SIGUSR1, counting_handler(counter));
         }
 
         assert_eq!(
-            PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << platform::signals::SIGUSR1),
+            PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR1),
             0
         );
-<<<<<<< HEAD
-        platform::signals::raise(platform::signals::SIGUSR1);
-        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << platform::signals::SIGUSR1) != 0);
-=======
         unsafe {
             libc::raise(libc::SIGUSR1);
         }
-        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR1) != 0);
->>>>>>> origin/lane/bw19-docs
+        assert!(
+            PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR1) != 0
+        );
         assert_eq!(counter.load(Ordering::SeqCst), 0, "not yet dispatched");
 
         processor.dispatch();
@@ -613,23 +635,17 @@ mod tests {
         let counter_b = Arc::new(AtomicUsize::new(0));
         {
             let counter_b = Arc::clone(&counter_b);
-            processor.add_signal_handler(platform::signals::SIGUSR1, counting_handler(counter_b));
+            processor.add_signal_handler(libc::SIGUSR1, counting_handler(counter_b));
         }
-        platform::signals::raise(platform::signals::SIGUSR1);
+        unsafe {
+            libc::raise(libc::SIGUSR1);
+        }
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 2);
         assert_eq!(counter_b.load(Ordering::SeqCst), 1);
 
-<<<<<<< HEAD
-        processor.set_default_signal_handler(platform::signals::SIGUSR1);
-        assert_eq!(
-            disposition_of(platform::signals::SIGUSR1),
-            platform::signals::SIG_DFL as usize
-        );
-=======
         processor.set_default_signal_handler(libc::SIGUSR1);
-        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
->>>>>>> origin/lane/bw19-docs
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
     }
 
     /// `Blocker`: a blocked raise never reaches the C handler; the
@@ -641,31 +657,34 @@ mod tests {
         let mut processor = SignalProcessor::new();
         {
             let counter = Arc::clone(&counter);
-            processor.add_signal_handler(platform::signals::SIGUSR2, counting_handler(counter));
+            processor.add_signal_handler(libc::SIGUSR2, counting_handler(counter));
         }
 
         let mut blocked = Set::empty();
-        blocked.set(platform::signals::SIGUSR2);
+        blocked.set(libc::SIGUSR2);
         let pending_before = PENDING_SIGNALS.load(Ordering::Relaxed);
         {
             let _blocker = Blocker::new(&blocked);
-            platform::signals::raise(platform::signals::SIGUSR2);
+            unsafe {
+                libc::raise(libc::SIGUSR2);
+            }
             // Blocked at delivery: no handler, no pending bit.
-            assert_eq!(PENDING_SIGNALS.load(Ordering::Relaxed), pending_before);
+            assert_eq!(
+                PENDING_SIGNALS.load(Ordering::Relaxed),
+                pending_before
+            );
             assert_eq!(counter.load(Ordering::SeqCst), 0);
         }
 
         // The mask is restored: the kernel delivers now, the C handler
         // marks the bit, dispatch runs the app-side handler.
-<<<<<<< HEAD
-        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << platform::signals::SIGUSR2) != 0);
-=======
-        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR2) != 0);
->>>>>>> origin/lane/bw19-docs
+        assert!(
+            PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGUSR2) != 0
+        );
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
 
-        processor.set_default_signal_handler(platform::signals::SIGUSR2);
+        processor.set_default_signal_handler(libc::SIGUSR2);
     }
 
     /// `SIGQUIT`'s single immediate handler fires in signal context; a
@@ -693,7 +712,9 @@ mod tests {
             }));
         }
 
-        platform::signals::raise(platform::signals::SIGQUIT);
+        unsafe {
+            libc::raise(libc::SIGQUIT);
+        }
         // Immediate: no dispatch needed, and the pending bit is set for
         // the regular drain too (nobody regular ever registers for it).
         assert_eq!(fired.load(Ordering::SeqCst), 1);
@@ -705,9 +726,9 @@ mod tests {
         // `clearSignalHandler( SIGQUIT, ... )` drops the slot; a second
         // call finds nothing; the bulk `clearSignalHandlers` path is a
         // no-op on the empty slot.
-        assert!(processor.clear_signal_handler(platform::signals::SIGQUIT, HandlerId(0)));
-        assert!(!processor.clear_signal_handler(platform::signals::SIGQUIT, HandlerId(0)));
-        processor.clear_signal_handlers(platform::signals::SIGQUIT);
+        assert!(processor.clear_signal_handler(libc::SIGQUIT, HandlerId(0)));
+        assert!(!processor.clear_signal_handler(libc::SIGQUIT, HandlerId(0)));
+        processor.clear_signal_handlers(libc::SIGQUIT);
     }
 
     /// Handler bookkeeping: removing one of several keeps the rest; the
@@ -719,45 +740,34 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let id_a = {
             let counter = Arc::clone(&counter);
-            processor.add_signal_handler(platform::signals::SIGUSR1, counting_handler(counter))
+            processor.add_signal_handler(libc::SIGUSR1, counting_handler(counter))
         };
         let counter_b = Arc::new(AtomicUsize::new(0));
         let id_b = {
             let counter_b = Arc::clone(&counter_b);
-            processor.add_signal_handler(platform::signals::SIGUSR1, counting_handler(counter_b))
+            processor.add_signal_handler(libc::SIGUSR1, counting_handler(counter_b))
         };
 
-        platform::signals::raise(platform::signals::SIGUSR1);
+        unsafe {
+            libc::raise(libc::SIGUSR1);
+        }
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
         assert_eq!(counter_b.load(Ordering::SeqCst), 1);
 
-        assert!(processor.clear_signal_handler(platform::signals::SIGUSR1, id_a));
-        platform::signals::raise(platform::signals::SIGUSR1);
+        assert!(processor.clear_signal_handler(libc::SIGUSR1, id_a));
+        unsafe {
+            libc::raise(libc::SIGUSR1);
+        }
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
         assert_eq!(counter_b.load(Ordering::SeqCst), 2);
-<<<<<<< HEAD
-        assert_ne!(
-            disposition_of(platform::signals::SIGUSR1),
-            platform::signals::SIG_DFL as usize
-        );
-
-        // Last handler out: back to SIG_DFL; a stale removal is a no-op.
-        assert!(processor.clear_signal_handler(platform::signals::SIGUSR1, id_b));
-        assert_eq!(
-            disposition_of(platform::signals::SIGUSR1),
-            platform::signals::SIG_DFL as usize
-        );
-        assert!(!processor.clear_signal_handler(platform::signals::SIGUSR1, id_b));
-=======
-        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
+        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
 
         // Last handler out: back to SIG_DFL; a stale removal is a no-op.
         assert!(processor.clear_signal_handler(libc::SIGUSR1, id_b));
-        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
         assert!(!processor.clear_signal_handler(libc::SIGUSR1, id_b));
->>>>>>> origin/lane/bw19-docs
     }
 
     /// `clear_handler_everywhere` removes one handler from all signals
@@ -772,40 +782,31 @@ mod tests {
         // One handler Rc under two signals: one identity.
         let counter = Arc::new(AtomicUsize::new(0));
         let shared = counting_handler(Arc::clone(&counter));
-        let id_a = processor.add_signal_handler(platform::signals::SIGUSR1, Rc::clone(&shared));
-        let id_b = processor.add_signal_handler(platform::signals::SIGUSR2, Rc::clone(&shared));
+        let id_a = processor.add_signal_handler(libc::SIGUSR1, Rc::clone(&shared));
+        let id_b = processor.add_signal_handler(libc::SIGUSR2, Rc::clone(&shared));
         assert_eq!(id_a, id_b);
 
         // An independent handler keeps SIGUSR1 alive after `shared`
         // leaves it.
         let other = counting_handler(Arc::new(AtomicUsize::new(0)));
-        let _keep = processor.add_signal_handler(platform::signals::SIGUSR1, other);
+        let _keep = processor.add_signal_handler(libc::SIGUSR1, other);
 
         processor.clear_handler_everywhere(id_a);
         // SIGUSR2 lost its last handler -> SIG_DFL; SIGUSR1 still has one.
-<<<<<<< HEAD
-        assert_eq!(
-            disposition_of(platform::signals::SIGUSR2),
-            platform::signals::SIG_DFL as usize
-        );
-        assert_ne!(
-            disposition_of(platform::signals::SIGUSR1),
-            platform::signals::SIG_DFL as usize
-        );
-=======
-        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL);
-        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
->>>>>>> origin/lane/bw19-docs
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL as usize);
+        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
 
         // The removed handler gets no more deliveries: raising SIGUSR1
         // (whose remaining handler is the kept one) leaves `counter`
         // untouched. SIGUSR2 has no handler any more -- raising it would
         // be the default action -- so it is not raised.
-        platform::signals::raise(platform::signals::SIGUSR1);
+        unsafe {
+            libc::raise(libc::SIGUSR1);
+        }
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
-        processor.set_default_signal_handler(platform::signals::SIGUSR1);
+        processor.set_default_signal_handler(libc::SIGUSR1);
     }
 
     /// `ignoreSignal` sets SIG_IGN and drops the handlers; the raised
@@ -817,24 +818,18 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         {
             let counter = Arc::clone(&counter);
-            processor.add_signal_handler(platform::signals::SIGUSR2, counting_handler(counter));
+            processor.add_signal_handler(libc::SIGUSR2, counting_handler(counter));
         }
 
-<<<<<<< HEAD
-        processor.ignore_signal(platform::signals::SIGUSR2);
-        assert_eq!(
-            disposition_of(platform::signals::SIGUSR2),
-            platform::signals::SIG_IGN as usize
-        );
-=======
         processor.ignore_signal(libc::SIGUSR2);
-        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_IGN);
->>>>>>> origin/lane/bw19-docs
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_IGN as usize);
         // The pending bitset is shared process state that a sibling test may
         // have dirtied, so assert the ignored raise added nothing rather
         // than that the world was quiet.
         let before = PENDING_SIGNALS.load(Ordering::Relaxed);
-        platform::signals::raise(platform::signals::SIGUSR2);
+        unsafe {
+            libc::raise(libc::SIGUSR2);
+        }
         assert_eq!(
             PENDING_SIGNALS.load(Ordering::Relaxed),
             before,
@@ -843,16 +838,8 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 0);
 
         // Restore for the rest of the suite.
-<<<<<<< HEAD
-        processor.set_default_signal_handler(platform::signals::SIGUSR2);
-        assert_eq!(
-            disposition_of(platform::signals::SIGUSR2),
-            platform::signals::SIG_DFL as usize
-        );
-=======
         processor.set_default_signal_handler(libc::SIGUSR2);
-        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL);
->>>>>>> origin/lane/bw19-docs
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL as usize);
     }
 
     /// `Drop` resets every handled signal to the default disposition.
@@ -862,24 +849,12 @@ mod tests {
         {
             let mut processor = SignalProcessor::new();
             let _id = processor.add_signal_handler(
-                platform::signals::SIGUSR1,
+                libc::SIGUSR1,
                 counting_handler(Arc::new(AtomicUsize::new(0))),
             );
-<<<<<<< HEAD
-            assert_ne!(
-                disposition_of(platform::signals::SIGUSR1),
-                platform::signals::SIG_DFL as usize
-            );
+            assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
         }
-        assert_eq!(
-            disposition_of(platform::signals::SIGUSR1),
-            platform::signals::SIG_DFL as usize
-        );
-=======
-            assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
-        }
-        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
->>>>>>> origin/lane/bw19-docs
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
     }
 
     /// `waitForSignals`: sigwaitinfo consumes a signal that arrived
@@ -894,27 +869,31 @@ mod tests {
         let _guard = disposition_guard();
 
         let mut set = Set::empty();
-        set.set(platform::signals::SIGUSR1);
+        set.set(libc::SIGUSR1);
 
         // Block first (the sigwait contract), then raise: the arrival
         // parks on this thread and only sigwaitinfo can consume it.
-        let mut old_mask = platform::signals::empty_set();
-        platform::signals::block_mask(platform::signals::SIG_BLOCK, set.raw(), &mut old_mask);
-        platform::signals::raise(platform::signals::SIGUSR1);
-        assert!(
-            kernel_pending_signals() & (1 << platform::signals::SIGUSR1) != 0,
-            "the blocked raise parks"
-        );
+        let mut old_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_BLOCK, set.raw(), &mut old_mask);
+            libc::raise(libc::SIGUSR1);
+            assert!(
+                kernel_pending_signals() & (1 << libc::SIGUSR1) != 0,
+                "the blocked raise parks"
+            );
+        }
 
         let mut processor = SignalProcessor::new();
-        assert_eq!(processor.wait_for_signals(&set), platform::signals::SIGUSR1);
+        assert_eq!(processor.wait_for_signals(&set), libc::SIGUSR1);
         assert!(
-            kernel_pending_signals() & (1 << platform::signals::SIGUSR1) == 0,
+            kernel_pending_signals() & (1 << libc::SIGUSR1) == 0,
             "sigwait consumed the arrival"
         );
 
         // Restore this thread's mask for the rest of the suite.
-        platform::signals::restore_mask(platform::signals::SIG_SETMASK, &old_mask);
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &old_mask, std::ptr::null_mut());
+        }
     }
 
     /// `waitForSignals` retries on `EINTR`: a caught signal delivered
@@ -933,29 +912,32 @@ mod tests {
         let mut processor = SignalProcessor::new();
         {
             let counter = Arc::clone(&counter);
-            processor.add_signal_handler(platform::signals::SIGUSR2, counting_handler(counter));
+            processor.add_signal_handler(libc::SIGUSR2, counting_handler(counter));
         }
 
         let mut wait_set = Set::empty();
-        wait_set.set(platform::signals::SIGUSR1);
-        let mut old_mask = platform::signals::empty_set();
-        platform::signals::block_mask(platform::signals::SIG_BLOCK, wait_set.raw(), &mut old_mask);
+        wait_set.set(libc::SIGUSR1);
+        let mut old_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_BLOCK, wait_set.raw(), &mut old_mask);
+        }
 
         // All deliveries are thread-directed at THIS thread, so no
         // parallel test thread can be hit and nothing is left to chance.
-        let main_thread = platform::signals::thread_self();
+        let main_thread = unsafe { libc::pthread_self() };
         let interrupter = thread::spawn(move || {
             thread::sleep(Duration::from_millis(50));
-            platform::signals::thread_kill(main_thread, platform::signals::SIGUSR2);
+            unsafe {
+                libc::pthread_kill(main_thread, libc::SIGUSR2);
+            }
             thread::sleep(Duration::from_millis(50));
             // Blocked on the waiter thread: parks there for sigwait.
-            platform::signals::thread_kill(main_thread, platform::signals::SIGUSR1);
+            unsafe {
+                libc::pthread_kill(main_thread, libc::SIGUSR1);
+            }
         });
 
-        assert_eq!(
-            processor.wait_for_signals(&wait_set),
-            platform::signals::SIGUSR1
-        );
+        assert_eq!(processor.wait_for_signals(&wait_set), libc::SIGUSR1);
         interrupter.join().unwrap();
 
         // The interrupting delivery ran the SIGUSR2 handler (its pending
@@ -965,8 +947,10 @@ mod tests {
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
 
-        platform::signals::restore_mask(platform::signals::SIG_SETMASK, &old_mask);
-        processor.set_default_signal_handler(platform::signals::SIGUSR2);
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &old_mask, std::ptr::null_mut());
+        }
+        processor.set_default_signal_handler(libc::SIGUSR2);
     }
 
     /// `handle_signal` (the in-process half) marks the bit without any
@@ -977,13 +961,10 @@ mod tests {
         // or wipe this bit mid-assert.
         let _guard = disposition_guard();
         let processor = SignalProcessor::default();
-<<<<<<< HEAD
-        processor.handle_signal(platform::signals::SIGTERM);
-        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << platform::signals::SIGTERM) != 0);
-=======
         processor.handle_signal(libc::SIGTERM);
-        assert!(PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGTERM) != 0);
->>>>>>> origin/lane/bw19-docs
+        assert!(
+            PENDING_SIGNALS.load(Ordering::Relaxed) & (1 << libc::SIGTERM) != 0
+        );
         PENDING_SIGNALS.store(0, Ordering::Relaxed);
     }
 }

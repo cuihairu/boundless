@@ -100,21 +100,21 @@ impl Updatables {
         // Error checking only: a handle that is set must either point at
         // this very object ("Already added.") or the object is in an
         // invalid state (the reference CRITICAL_MSG aborts).
-        if let Some(&handle) = self.handles.get(&key)
-            && handle != -1
-        {
-            let pointing_at_self = handle >= 0
-                && (handle as usize) < self.objects.len()
-                && self.objects[handle as usize]
-                    .as_ref()
-                    .map(|slot| Self::key(slot) == key)
-                    .unwrap_or(false);
-            if pointing_at_self {
-                eprintln!("Updatables::add: Already added.");
-            } else {
-                panic!("Updatables::add: Updatable object in invalid state.");
+        if let Some(&handle) = self.handles.get(&key) {
+            if handle != -1 {
+                let pointing_at_self = handle >= 0
+                    && (handle as usize) < self.objects.len()
+                    && self.objects[handle as usize]
+                        .as_ref()
+                        .map(|slot| Self::key(slot) == key)
+                        .unwrap_or(false);
+                if pointing_at_self {
+                    eprintln!("Updatables::add: Already added.");
+                } else {
+                    panic!("Updatables::add: Updatable object in invalid state.");
+                }
+                return false;
             }
-            return false;
         }
 
         // "Initially, the Updatable is placed at the end of the vector,
@@ -216,7 +216,8 @@ impl Updatables {
                         // then consider it to be the front of the next
                         // level."
                         self.level_size[level] -= 1;
-                        self.objects[hole as usize] = self.objects[level_back as usize].clone();
+                        self.objects[hole as usize] =
+                            self.objects[level_back as usize].clone();
                         if let Some(moved) = &self.objects[hole as usize] {
                             let moved_key = Self::key(moved);
                             self.handles.insert(moved_key, hole);
@@ -340,8 +341,7 @@ impl Updatables {
                     == *self.level_size.last().unwrap(),
                 "MF_ASSERT: size - deletedObjects_ == levelSize_.back()"
             );
-            self.objects
-                .truncate(*self.level_size.last().unwrap() as usize);
+            self.objects.truncate(*self.level_size.last().unwrap() as usize);
         }
 
         self.deleted_objects = 0;
@@ -403,7 +403,11 @@ impl TickState {
     /// collection of objects that regularly have their update method
     /// called. Objects that are registered with a lower level are
     /// updated before those with a higher level."
-    pub fn register_for_update(&mut self, object: Rc<RefCell<dyn Updatable>>, level: i32) -> bool {
+    pub fn register_for_update(
+        &mut self,
+        object: Rc<RefCell<dyn Updatable>>,
+        level: i32,
+    ) -> bool {
         self.updatables.add(object, level)
     }
 
@@ -472,25 +476,12 @@ mod tests {
 
     type Log = Rc<RefCell<Vec<String>>>;
 
-<<<<<<< HEAD
-    /// One optional visit behaviour.
-    type Behavior = Option<Box<dyn FnMut(&mut Updatables)>>;
-=======
-    /// An updatable's optional pre-visit behaviour (boxed to erase the
-    /// closure's type; see `Tagged::behaving`).
-    type TaggedBehavior = Box<dyn FnMut(&mut Updatables)>;
->>>>>>> origin/lane/bw19-docs
-
     /// A tagged updatable; optionally runs a behaviour before recording
     /// the visit.
     struct Tagged {
         tag: &'static str,
         log: Log,
-<<<<<<< HEAD
-        behavior: Behavior,
-=======
-        behavior: Option<TaggedBehavior>,
->>>>>>> origin/lane/bw19-docs
+        behavior: Option<Box<dyn FnMut(&mut Updatables)>>,
     }
 
     impl Tagged {
@@ -502,7 +493,11 @@ mod tests {
             }))
         }
 
-        fn behaving(tag: &'static str, log: &Log, behavior: TaggedBehavior) -> Rc<RefCell<Self>> {
+        fn behaving(
+            tag: &'static str,
+            log: &Log,
+            behavior: Box<dyn FnMut(&mut Updatables)>,
+        ) -> Rc<RefCell<Self>> {
             Rc::new(RefCell::new(Self {
                 tag,
                 log: Rc::clone(log),
@@ -692,7 +687,10 @@ mod tests {
             Box::new(move |updatables| {
                 if !added_for_closure.get() {
                     added_for_closure.set(true);
-                    updatables.add(boxed(Tagged::simple("newcomer", &log_for_newcomer)), 1);
+                    updatables.add(
+                        boxed(Tagged::simple("newcomer", &log_for_newcomer)),
+                        1,
+                    );
                 }
             }),
         );
@@ -764,7 +762,8 @@ mod tests {
         // non-decreasing in the index.
         for i in 0..NUM_TO_TEST {
             let level = i % NUM_LEVELS;
-            let tag: &'static str = Box::leak(format!("{}", i % NUM_LEVELS).into_boxed_str());
+            let tag: &'static str =
+                Box::leak(format!("{}", i % NUM_LEVELS).into_boxed_str());
             updatables.add(boxed(Tagged::simple(tag, &log)), level as i32);
         }
         assert_eq!(updatables.size(), NUM_TO_TEST);
@@ -840,9 +839,11 @@ mod tests {
         for i in 0..NUM_TO_TEST {
             let level = i % NUM_LEVELS;
             let should_remove = Rc::clone(&should_remove);
-            let self_cell: Rc<RefCell<Option<Rc<RefCell<Tagged>>>>> = Rc::new(RefCell::new(None));
+            let self_cell: Rc<RefCell<Option<Rc<RefCell<Tagged>>>>> =
+                Rc::new(RefCell::new(None));
             let cell_for_closure = Rc::clone(&self_cell);
-            let tag: &'static str = Box::leak(format!("d{i}").into_boxed_str());
+            let tag: &'static str =
+                Box::leak(format!("d{i}").into_boxed_str());
             let object = Tagged::behaving(
                 tag,
                 &log,
@@ -850,8 +851,9 @@ mod tests {
                     let should = should_remove.get();
                     should_remove.set(!should);
                     if should {
-                        let tagged: Rc<RefCell<Tagged>> =
-                            Rc::clone(cell_for_closure.borrow().as_ref().unwrap());
+                        let tagged: Rc<RefCell<Tagged>> = Rc::clone(
+                            cell_for_closure.borrow().as_ref().unwrap(),
+                        );
                         let me: Rc<RefCell<dyn Updatable>> = tagged;
                         assert!(updatables.remove(&me));
                     }
@@ -910,7 +912,9 @@ mod tests {
         fn on_tick_period(&mut self, tick_period: f64, update_hertz: i32) {
             assert_eq!(update_hertz, 10, "the configured hertz travels");
             self.log.borrow_mut().push("tick-period".to_string());
-            self.periods.borrow_mut().push(format!("{tick_period}"));
+            self.periods
+                .borrow_mut()
+                .push(format!("{tick_period}"));
             // The base warning arm runs on the captured period too.
             base_on_tick_period(tick_period, update_hertz);
         }
@@ -951,17 +955,16 @@ mod tests {
         assert!(app.run());
 
         let clock = Rc::new(Cell::new(0u64));
-        let mut state = TickState::with_clock(
-            10,
-            Box::new({
-                let clock = Rc::clone(&clock);
-                move || clock.get()
-            }),
-        );
+        let mut state = TickState::with_clock(10, Box::new({
+            let clock = Rc::clone(&clock);
+            move || clock.get()
+        }));
 
         // Updatables across two levels: level order inside the pass.
         let upd_log = Rc::clone(&log);
-        let make = |tag: &'static str| Tagged::simple(tag, &upd_log);
+        let make = |tag: &'static str| {
+            Tagged::simple(tag, &upd_log)
+        };
         state.register_for_update(boxed(make("upd-l0-a")), 0);
         state.register_for_update(boxed(make("upd-l1")), 1);
         state.register_for_update(boxed(make("upd-l0-b")), 0);
@@ -1089,10 +1092,7 @@ mod tests {
         assert!(state.deregister_for_update(&boxed(b)));
 
         state.advance_time(&mut app);
-        assert_eq!(
-            *log.borrow(),
-            ["end-of-tick", "start-of-tick", "a", "processing-complete"]
-        );
+        assert_eq!(*log.borrow(), ["end-of-tick", "start-of-tick", "a", "processing-complete"]);
     }
 
     /// `deregisterForUpdate` outside a pass compacts the level: the

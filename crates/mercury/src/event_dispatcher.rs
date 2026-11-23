@@ -47,7 +47,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use foundation::time_queue::{TimeQueue64, TimerHandle, TimerHandler};
+use foundation::time_queue::{TimerHandle, TimerHandler, TimeQueue64};
 
 use crate::frequent_tasks::{FrequentTask, FrequentTaskFn, FrequentTasks};
 use crate::poller::{EventPoller, InputNotificationHandler};
@@ -63,9 +63,10 @@ pub fn real_clock() -> u64 {
     platform::clock::monotonic_now_micros().micros()
 }
 
-/// `stampsPerSecond()`: microsecond stamps across the whole dispatcher. The
-/// channels read it for their `roundTripTime_` and resend delays.
-pub const STAMPS_PER_SECOND: u64 = 1_000_000;
+/// `stampsPerSecond()`: microsecond stamps across the whole dispatcher.
+/// `pub(crate)` so [`crate::fragmented_bundle`] can express `MAX_AGE` in
+/// the same unit without a second constant.
+pub(crate) const STAMPS_PER_SECOND: u64 = 1_000_000;
 
 /// `stampsPerSecondD()`.
 const STAMPS_PER_SECOND_D: f64 = STAMPS_PER_SECOND as f64;
@@ -168,7 +169,9 @@ impl Drop for EventDispatcher {
     /// (`event_dispatcher.cpp:91-113`).
     fn drop(&mut self) {
         if self.coupling_to_parent.borrow().is_some() {
-            eprintln!("EventDispatcher::~EventDispatcher: Still coupled to parent dispatcher");
+            eprintln!(
+                "EventDispatcher::~EventDispatcher: Still coupled to parent dispatcher"
+            );
         }
 
         if !self.time_queue.is_empty() {
@@ -273,8 +276,7 @@ impl EventDispatcher {
     /// the dispatcher clock and accumulate `numTimerCalls_`.
     pub fn process_timers(&self) -> usize {
         let num_fired = self.time_queue.process((self.clock)());
-        self.num_timer_calls
-            .set(self.num_timer_calls.get() + num_fired);
+        self.num_timer_calls.set(self.num_timer_calls.get() + num_fired);
         num_fired
     }
 
@@ -504,7 +506,9 @@ impl EventDispatcher {
     /// even on a broken pass.
     pub fn process_stats(&self) {
         // gather statistics if we haven't for a while
-        if (self.clock)().saturating_sub(self.last_statistics_gathered.get()) >= STAMPS_PER_SECOND {
+        if (self.clock)().saturating_sub(self.last_statistics_gathered.get())
+            >= STAMPS_PER_SECOND
+        {
             self.old_spare_time.set(self.tot_spare_time.get());
             self.tot_spare_time
                 .set(self.acc_spare_time.get() + self.poller.spare_time());
@@ -527,10 +531,7 @@ impl EventDispatcher {
     /// `proportionalSpareTime` (`event_dispatcher.cpp:319`): the last
     /// statistics period's idle time, in seconds.
     pub fn proportional_spare_time(&self) -> f64 {
-        (self
-            .tot_spare_time
-            .get()
-            .wrapping_sub(self.old_spare_time.get()) as f64)
+        (self.tot_spare_time.get().wrapping_sub(self.old_spare_time.get()) as f64)
             / STAMPS_PER_SECOND_D
     }
 
@@ -678,7 +679,9 @@ impl EventDispatcher {
             self.process_once(/* shouldIdle */ false);
 
             // Wait 100ms
-            std::thread::sleep(std::time::Duration::from_millis(SHUTDOWN_SLEEP_MILLIS));
+            std::thread::sleep(std::time::Duration::from_millis(
+                SHUTDOWN_SLEEP_MILLIS,
+            ));
         }
     }
 }
@@ -744,10 +747,9 @@ mod tests {
         }
 
         fn queue_event(&self, fd: i32) {
-            self.ready.borrow_mut().push(PollEvent {
-                events: epoll::EPOLLIN,
-                fd,
-            });
+            self.ready
+                .borrow_mut()
+                .push(PollEvent { events: epoll::EPOLLIN, fd });
         }
 
         fn wait_count(&self) -> usize {
@@ -813,11 +815,11 @@ mod tests {
             let mut port = 0u16;
             let mut ip = 0u32;
             let mut buffer = [0u8; 64];
-            while self
-                .endpoint
-                .borrow_mut()
-                .recvfrom(&mut buffer, Some(&mut port), Some(&mut ip))
-                > 0
+            while self.endpoint.borrow_mut().recvfrom(
+                &mut buffer,
+                Some(&mut port),
+                Some(&mut ip),
+            ) > 0
             {}
             0
         }
@@ -954,7 +956,10 @@ mod tests {
 
         // The second pass runs clean: timers and network fire.
         assert_eq!(dispatcher.process_once(false), 1);
-        assert_eq!(*log.borrow(), ["frequent", "frequent", "timer", "network"]);
+        assert_eq!(
+            *log.borrow(),
+            ["frequent", "frequent", "timer", "network"]
+        );
         assert_eq!(dispatcher.num_timer_calls(), 1);
     }
 
@@ -988,12 +993,7 @@ mod tests {
         assert_eq!(dispatcher.calculate_wait(), 0.1);
 
         // A timer 50ms out: the poller wait shrinks to it (shouldIdle).
-        dispatcher.add_timer(
-            50_000,
-            logging_timer(&Rc::new(RefCell::new(Vec::new())), "t"),
-            0,
-            "t",
-        );
+        dispatcher.add_timer(50_000, logging_timer(&Rc::new(RefCell::new(Vec::new())), "t"), 0, "t");
         assert_eq!(dispatcher.process_once(true), 0);
         assert_eq!(backend.waits.borrow().last().copied(), Some(50));
 
@@ -1001,12 +1001,7 @@ mod tests {
         let clock = PinnedClock::at(0);
         let backend = FakeBackend::new();
         let dispatcher = test_dispatcher(&clock, backend.clone());
-        dispatcher.add_timer(
-            10_000_000,
-            logging_timer(&Rc::new(RefCell::new(Vec::new())), "t"),
-            0,
-            "t",
-        );
+        dispatcher.add_timer(10_000_000, logging_timer(&Rc::new(RefCell::new(Vec::new())), "t"), 0, "t");
         assert_eq!(dispatcher.process_once(true), 0);
         assert_eq!(backend.waits.borrow().last().copied(), Some(100));
     }
@@ -1020,12 +1015,7 @@ mod tests {
         let child_backend = FakeBackend::new();
         let child = test_dispatcher(&clock, child_backend);
 
-        child.add_timer(
-            30_000,
-            logging_timer(&Rc::new(RefCell::new(Vec::new())), "t"),
-            0,
-            "t",
-        );
+        child.add_timer(30_000, logging_timer(&Rc::new(RefCell::new(Vec::new())), "t"), 0, "t");
         parent.attach(&child);
 
         assert_eq!(parent.calculate_wait(), 0.03);
@@ -1395,11 +1385,8 @@ mod tests {
         let dispatcher = test_dispatcher(&clock, backend);
 
         let asks = Rc::new(AtomicUsize::new(0));
-        dispatcher.register_file_descriptor(
-            37,
-            Rc::new(ReluctantHandler(Rc::clone(&asks))),
-            "reluctant",
-        );
+        dispatcher
+            .register_file_descriptor(37, Rc::new(ReluctantHandler(Rc::clone(&asks))), "reluctant");
 
         let passes = Rc::new(Cell::new(0));
         let passes_for_closure = Rc::clone(&passes);
@@ -1500,10 +1487,7 @@ mod tests {
         );
 
         // The coupling task's profiler name.
-        assert_eq!(
-            DispatcherCoupling::new(&parent).name(),
-            "DispatcherCoupling"
-        );
+        assert_eq!(DispatcherCoupling::new(&parent).name(), "DispatcherCoupling");
 
         parent.attach(&child);
         drop(child); // its destructor warns about the still-live coupling
@@ -1532,11 +1516,7 @@ mod tests {
         let sibling = test_dispatcher(&clock, FakeBackend::new());
         parent.attach(&sibling);
         parent.detach(&sibling);
-        assert!(
-            !parent
-                .poller()
-                .is_registered(sibling.poller().file_descriptor(), true)
-        );
+        assert!(!parent.poller().is_registered(sibling.poller().file_descriptor(), true));
     }
 
     /// `maxWait` and `now` accessors, and `default()` builds on the real

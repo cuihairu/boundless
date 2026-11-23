@@ -1,0 +1,9 @@
+role	side	status	detail
+baseapp	new	ran	[baseapp] starting (boundless minimal entry)
+baseappmgr	new	ran	[baseappmgr] starting (boundless minimal entry)
+cellapp	new	ran	[cellapp] starting (boundless minimal entry)
+cellappmgr	new	ran	[cellappmgr] starting (boundless minimal entry)
+dbapp	new	ran	[dbapp] starting (boundless minimal entry)
+dbappmgr	new	ran	[dbappmgr] starting (boundless minimal entry)
+loginapp	new	ran	[loginapp] starting (boundless minimal entry)
+reviver	new	ran	[reviver] starting (boundless minimal entry)

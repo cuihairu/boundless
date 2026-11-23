@@ -102,7 +102,8 @@ const operationsSidebar = [
   {
     text: "Data",
     items: [
-      { text: "Database migration and recovery", link: "/operations/database" }
+      { text: "Database migration and recovery", link: "/operations/database" },
+      { text: "Analytics: event contract and metrics", link: "/operations/analytics" }
     ]
   },
   {

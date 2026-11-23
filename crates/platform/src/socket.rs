@@ -32,21 +32,19 @@ pub const SO_RCVTIMEO: i32 = libc::SO_RCVTIMEO;
 pub const SO_SNDTIMEO: i32 = libc::SO_SNDTIMEO;
 /// `SO_KEEPALIVE`.
 pub const SO_KEEPALIVE: i32 = libc::SO_KEEPALIVE;
-/// `IPPROTO_TCP`, the level of the keepalive options.
+/// `IPPROTO_TCP`, the option level of the keepalive interval knobs.
 pub const IPPROTO_TCP: i32 = libc::IPPROTO_TCP;
-/// `TCP_KEEPIDLE` (`startInactivityDetection`, tcp_channel.cpp:657): the
-/// seconds of idle before the first keepalive probe. Linux/Android only:
-/// the BSDs spell this `TCP_KEEPALIVE`, and the reference's `__unix__`
-/// arm is really this linux shape.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+/// `TCP_KEEPIDLE`, the idle seconds before the first keepalive probe.
+/// Linux only: macOS spells the same knob `TCP_KEEPALIVE`.
+#[cfg(target_os = "linux")]
 pub const TCP_KEEPIDLE: i32 = libc::TCP_KEEPIDLE;
-/// `TCP_KEEPINTVL`, the seconds between probes.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+/// `TCP_KEEPINTVL`, the seconds between keepalive probes.
+#[cfg(target_os = "linux")]
 pub const TCP_KEEPINTVL: i32 = libc::TCP_KEEPINTVL;
-/// `TCP_KEEPCNT`, the probes before the kernel drops the connection.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+/// `TCP_KEEPCNT`, the probes before the socket is declared dead.
+#[cfg(target_os = "linux")]
 pub const TCP_KEEPCNT: i32 = libc::TCP_KEEPCNT;
-/// `SHUT_WR`, the `shutdown` mode `doShutDown` uses on unix.
+/// `SHUT_WR`, the `shutdown` mode of `TCPChannel::doShutDown`'s half-close.
 pub const SHUT_WR: i32 = libc::SHUT_WR;
 /// `SO_SNDBUF`.
 pub const SO_SNDBUF: i32 = libc::SO_SNDBUF;
@@ -55,21 +53,13 @@ pub const SO_RCVBUF: i32 = libc::SO_RCVBUF;
 /// `O_NONBLOCK`, the flag value `setnonblocking` writes.
 pub const O_NONBLOCK: i32 = libc::O_NONBLOCK;
 /// `FIONREAD`, the ioctl that reports the readable byte count.
-/// `libc::Ioctl` is a Linux-only alias; the BSDs spell the request type
-/// as `c_ulong` directly.
-#[cfg(target_os = "linux")]
 pub const FIONREAD: libc::Ioctl = libc::FIONREAD;
-#[cfg(not(target_os = "linux"))]
-pub const FIONREAD: libc::c_ulong = libc::FIONREAD;
 /// `MSG_NOSIGNAL`, set on every `sendto` on Linux so an undeliverable
 /// packet does not raise SIGPIPE.
 pub const MSG_NOSIGNAL: i32 = libc::MSG_NOSIGNAL;
-/// `IP_RECVERR`, enables the per-socket error queue. Linux only: the
-/// error queue is an IP-layer facility the BSDs do not implement.
-#[cfg(target_os = "linux")]
+/// `IP_RECVERR`, enables the per-socket error queue.
 pub const IP_RECVERR: i32 = libc::IP_RECVERR;
 /// `MSG_ERRQUEUE`, reads from that queue.
-#[cfg(target_os = "linux")]
 pub const MSG_ERRQUEUE: i32 = libc::MSG_ERRQUEUE;
 /// `ECONNREFUSED`, the error an ICMP "port unreachable" turns into.
 pub const ECONNREFUSED: i32 = libc::ECONNREFUSED;
@@ -79,15 +69,6 @@ pub const EAGAIN: i32 = libc::EAGAIN;
 pub const EHOSTUNREACH: i32 = libc::EHOSTUNREACH;
 /// `EMSGSIZE`, the datagram exceeded the path or interface MTU.
 pub const EMSGSIZE: i32 = libc::EMSGSIZE;
-/// `ENOBUFS`, the socket's transmit queue could not take the datagram.
-pub const ENOBUFS: i32 = libc::ENOBUFS;
-/// `EWOULDBLOCK`, `EAGAIN` under another name (equal on the platforms the
-/// reference builds for).
-pub const EWOULDBLOCK: i32 = libc::EWOULDBLOCK;
-/// `EINPROGRESS`, a non-blocking connect still running.
-pub const EINPROGRESS: i32 = libc::EINPROGRESS;
-/// `EINTR`, a signal interrupted the call.
-pub const EINTR: i32 = libc::EINTR;
 
 /// `htons`: host order to network order.
 pub fn htons(value: u16) -> u16 {
@@ -150,7 +131,8 @@ pub fn listen(fd: RawFd, backlog: i32) -> i32 {
 pub fn accept_address(fd: RawFd) -> (RawFd, u16, u32) {
     let mut sin = sockaddr_in(0, 0);
     let mut len = std::mem::size_of::<libc::sockaddr_in>() as u32;
-    let result = unsafe { libc::accept(fd, &mut sin as *mut _ as *mut _, &mut len) as RawFd };
+    let result =
+        unsafe { libc::accept(fd, &mut sin as *mut _ as *mut _, &mut len) as RawFd };
     (result, sin.sin_port, sin.sin_addr.s_addr)
 }
 
@@ -171,7 +153,9 @@ pub fn sendto(fd: RawFd, data: &[u8], port: u16, ip: u32) -> i32 {
 
 /// `::send`.
 pub fn send(fd: RawFd, data: &[u8]) -> i32 {
-    unsafe { libc::send(fd, data.as_ptr() as *const _, data.len(), 0) as i32 }
+    unsafe {
+        libc::send(fd, data.as_ptr() as *const _, data.len(), 0) as i32
+    }
 }
 
 /// `::recvfrom`, returning the byte count with the source port and
@@ -197,11 +181,17 @@ pub fn recv(fd: RawFd, buf: &mut [u8]) -> i32 {
     unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0) as i32 }
 }
 
+/// `::shutdown` -- the `TCPChannel::doShutDown` half-close.
+pub fn shutdown(fd: RawFd, how: i32) -> i32 {
+    unsafe { libc::shutdown(fd, how) as i32 }
+}
+
 /// `::getsockname`.
 pub fn local_address(fd: RawFd) -> Option<(u16, u32)> {
     let mut sin = sockaddr_in(0, 0);
     let mut len = std::mem::size_of::<libc::sockaddr_in>() as u32;
-    let result = unsafe { libc::getsockname(fd, &mut sin as *mut _ as *mut _, &mut len) };
+    let result =
+        unsafe { libc::getsockname(fd, &mut sin as *mut _ as *mut _, &mut len) };
     if result == 0 {
         Some((sin.sin_port, sin.sin_addr.s_addr))
     } else {
@@ -227,20 +217,11 @@ pub fn close(fd: RawFd) -> i32 {
     unsafe { libc::close(fd) }
 }
 
-/// `::shutdown` (`doShutDown`, tcp_channel.cpp:623): stop the given half
-/// of the connection, so the peer sees EOF once it has read what was sent.
-pub fn shutdown(fd: RawFd, how: i32) -> i32 {
-    unsafe { libc::shutdown(fd, how) }
-}
-
 /// `getrlimit(RLIMIT_NOFILE)`. The limit itself is one past the highest
 /// number the kernel will ever hand out, so it stays dead forever -- a
 /// closed descriptor's number does not, because the next `open` reuses it.
 pub fn descriptor_limit() -> RawFd {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
     limit.rlim_cur as RawFd
 }
@@ -286,7 +267,11 @@ pub fn set_nonblocking(fd: RawFd, nonblocking: bool) -> i32 {
 pub fn bytes_available(fd: RawFd) -> i32 {
     let mut bytes: i32 = 0;
     let result = unsafe { libc::ioctl(fd, FIONREAD, &mut bytes) };
-    if result != 0 { -1 } else { bytes }
+    if result != 0 {
+        -1
+    } else {
+        bytes
+    }
 }
 
 /// `::setsockopt` for a boolean option, mirroring the reference's
@@ -294,7 +279,15 @@ pub fn bytes_available(fd: RawFd) -> i32 {
 pub fn set_bool_option(fd: RawFd, level: i32, optname: i32, value: bool) -> i32 {
     let value = if value { 1 } else { 0 };
     let len = std::mem::size_of::<i32>() as u32;
-    unsafe { libc::setsockopt(fd, level, optname, &value as *const i32 as *const _, len) }
+    unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            optname,
+            &value as *const i32 as *const _,
+            len,
+        )
+    }
 }
 
 /// `::getsockopt` for a boolean option.
@@ -302,15 +295,13 @@ pub fn get_bool_option(fd: RawFd, level: i32, optname: i32) -> Option<bool> {
     let mut value: i32 = 0;
     let mut len = std::mem::size_of::<i32>() as u32;
     let result = unsafe {
-        libc::getsockopt(
-            fd,
-            level,
-            optname,
-            &mut value as *mut i32 as *mut _,
-            &mut len,
-        )
+        libc::getsockopt(fd, level, optname, &mut value as *mut i32 as *mut _, &mut len)
     };
-    if result != 0 { None } else { Some(value != 0) }
+    if result != 0 {
+        None
+    } else {
+        Some(value != 0)
+    }
 }
 
 /// `::getsockopt` for a signed integer option -- `getBufferSize`, which
@@ -319,13 +310,7 @@ pub fn get_int_option(fd: RawFd, level: i32, optname: i32) -> Option<i32> {
     let mut value: i32 = -1;
     let mut len = std::mem::size_of::<i32>() as u32;
     let result = unsafe {
-        libc::getsockopt(
-            fd,
-            level,
-            optname,
-            &mut value as *mut i32 as *mut _,
-            &mut len,
-        )
+        libc::getsockopt(fd, level, optname, &mut value as *mut i32 as *mut _, &mut len)
     };
     if result == 0 && len as usize == std::mem::size_of::<i32>() {
         Some(value)
@@ -337,7 +322,15 @@ pub fn get_int_option(fd: RawFd, level: i32, optname: i32) -> Option<i32> {
 /// `::setsockopt` for a signed integer option -- `setBufferSize`.
 pub fn set_int_option(fd: RawFd, level: i32, optname: i32, value: i32) -> i32 {
     let len = std::mem::size_of::<i32>() as u32;
-    unsafe { libc::setsockopt(fd, level, optname, &value as *const i32 as *const _, len) }
+    unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            optname,
+            &value as *const i32 as *const _,
+            len,
+        )
+    }
 }
 
 /// `::setsockopt` with a `timeval` value (`SO_RCVTIMEO`/`SO_SNDTIMEO`),
@@ -373,68 +366,40 @@ pub struct QueuedError {
 /// Returns `None` when the queue is empty. When the kernel left
 /// `msg_namelen` at zero (the bug the reference works around) the
 /// offender is read out of `SO_EE_OFFENDER` with its port forced to zero.
-///
-/// The error queue is a Linux IP-layer facility; the BSDs have no
-/// `IP_RECVERR` queue to read, so there this reports "no queued error"
-/// and `Endpoint::readFromErrorQueue` answers `false`, the same way the
-/// reference behaves where the platform has no queue.
 pub fn read_error_queue(fd: RawFd) -> Option<QueuedError> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut offender = sockaddr_in(0, 0);
-        let mut header = libc::msghdr {
-            msg_name: &mut offender as *mut _ as *mut _,
-            msg_namelen: std::mem::size_of::<libc::sockaddr_in>() as u32,
-            msg_iov: std::ptr::null_mut(),
-            msg_iovlen: 0,
-            msg_control: std::ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: 0,
-        };
+    let mut offender = sockaddr_in(0, 0);
+    let mut header = libc::msghdr {
+        msg_name: &mut offender as *mut _ as *mut _,
+        msg_namelen: std::mem::size_of::<libc::sockaddr_in>() as u32,
+        msg_iov: std::ptr::null_mut(),
+        msg_iovlen: 0,
+        msg_control: std::ptr::null_mut(),
+        msg_controllen: 0,
+        msg_flags: 0,
+    };
 
-        let mut data = [0u8; 256];
-        let mut control = [0u8; 256];
-        let mut packet = libc::iovec {
-            iov_base: data.as_mut_ptr() as *mut _,
-            iov_len: data.len(),
-        };
-        header.msg_iov = &mut packet;
-        header.msg_iovlen = 1;
-        header.msg_control = control.as_mut_ptr() as *mut _;
-        header.msg_controllen = control.len() as _;
+    let mut data = [0u8; 256];
+    let mut control = [0u8; 256];
+    let mut packet = libc::iovec {
+        iov_base: data.as_mut_ptr() as *mut _,
+        iov_len: data.len(),
+    };
+    header.msg_iov = &mut packet;
+    header.msg_iovlen = 1;
+    header.msg_control = control.as_mut_ptr() as *mut _;
+    header.msg_controllen = control.len();
 
-        if unsafe { libc::recvmsg(fd, &mut header, MSG_ERRQUEUE) } < 0 {
-            return None;
-        }
-
-        let cursor = find_recv_error(&header)?;
-        parse_queued_error(
-            unsafe { libc::CMSG_DATA(cursor) as *const u8 },
-            &header,
-            &offender,
-        )
+    if unsafe { libc::recvmsg(fd, &mut header, MSG_ERRQUEUE) } < 0 {
+        return None;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = fd;
-        None
-    }
-<<<<<<< HEAD
-=======
 
     let cursor = find_recv_error(&header)?;
-    parse_queued_error(
-        unsafe { libc::CMSG_DATA(cursor) as *const u8 },
-        &header,
-        &offender,
-    )
->>>>>>> origin/lane/bw19-docs
+    parse_queued_error(unsafe { libc::CMSG_DATA(cursor) as *const u8 }, &header, &offender)
 }
 
 /// Walk `header`'s control messages for the `IP_RECVERR` one. Kept apart
 /// from `read_error_queue` so the walk can be driven from a fixture
 /// instead of needing a kernel that actually fails to deliver a packet.
-#[cfg(target_os = "linux")]
 fn find_recv_error(header: &libc::msghdr) -> Option<*mut libc::cmsghdr> {
     let mut cursor = unsafe { libc::CMSG_FIRSTHDR(header) };
     while !cursor.is_null() {
@@ -451,7 +416,6 @@ fn find_recv_error(header: &libc::msghdr) -> Option<*mut libc::cmsghdr> {
 /// Decode the `IP_RECVERR` data at `data`, which the kernel fills with a
 /// `sock_extended_err` at the start. `SO_EE_OFFENDER` steps back out of it
 /// to the offender address for the kernel that drops `msg_name`.
-#[cfg(target_os = "linux")]
 fn parse_queued_error(
     data: *const u8,
     header: &libc::msghdr,
@@ -499,7 +463,9 @@ pub fn host_by_name(text: &str) -> Option<u32> {
     let addrs = (text, 0u16).to_socket_addrs().ok()?;
     for addr in addrs {
         match addr.ip() {
-            std::net::IpAddr::V4(ipv4) => return Some(u32::from_ne_bytes(ipv4.octets())),
+            std::net::IpAddr::V4(ipv4) => {
+                return Some(u32::from_ne_bytes(ipv4.octets()))
+            }
             std::net::IpAddr::V6(_) => continue,
         }
     }
@@ -532,18 +498,7 @@ pub fn host_by_addr(ip: u32) -> Option<String> {
 /// in network byte order.
 fn sockaddr_in(port: u16, ip: u32) -> libc::sockaddr_in {
     libc::sockaddr_in {
-        // The BSDs carry the struct length in the first byte; Linux's
-        // `sockaddr_in` has no `sin_len` field.
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "ios",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd",
-            target_os = "dragonfly"
-        ))]
-        sin_len: 0,
-        sin_family: AF_INET as _,
+        sin_family: AF_INET as u16,
         sin_port: port,
         sin_addr: libc::in_addr { s_addr: ip },
         sin_zero: [0; 8],
@@ -597,11 +552,7 @@ mod tests {
     #[test]
     fn udp_round_trip_and_local_address() {
         let fd = create_socket(SOCK_DGRAM);
-        assert!(
-            fd >= 0,
-            "socket() failed: {}",
-            std::io::Error::last_os_error()
-        );
+        assert!(fd >= 0, "socket() failed: {}", std::io::Error::last_os_error());
         // Port 0 asks the kernel to pick a free one; ip 0 is INADDR_ANY.
         assert_eq!(bind(fd, 0, 0), 0, "bind() failed");
         let (port, ip) = local_address(fd).expect("getsockname");
@@ -761,11 +712,7 @@ mod tests {
         assert_eq!(inet_aton("not.an.address"), None);
         assert_eq!(inet_aton("256.0.0.1"), None);
         assert_eq!(inet_aton("1.2.3.4.5"), None);
-        assert_eq!(
-            inet_aton("127.0.0.1"),
-            Some(LOOPBACK),
-            "recheck: four octets"
-        );
+        assert_eq!(inet_aton("127.0.0.1"), Some(LOOPBACK), "recheck: four octets");
         assert_eq!(inet_aton("1.2.3"), None, "too few octets");
         assert_eq!(inet_aton("1..3.4"), None, "an empty octet is not one");
         assert_eq!(inet_aton("1234.2.3.4"), None, "four digits is not an octet");
@@ -780,7 +727,6 @@ mod tests {
 
     /// The error queue stays empty on a healthy socket, and enabling it
     /// is a plain `IP_RECVERR` option.
-    #[cfg(target_os = "linux")]
     #[test]
     fn the_error_queue_is_empty_when_nothing_failed() {
         let fd = create_socket(SOCK_DGRAM);
@@ -792,7 +738,6 @@ mod tests {
 
     /// An undeliverable packet lands on the error queue with the
     /// destination as its offender.
-    #[cfg(target_os = "linux")]
     #[test]
     fn the_error_queue_reports_an_undeliverable_packet() {
         let fd = create_socket(SOCK_DGRAM);
@@ -813,17 +758,7 @@ mod tests {
     /// Lay one control message into `control` at the kernel's alignment and
     /// return where the next one starts. `data` must already look like the
     /// kernel lays it out.
-<<<<<<< HEAD
-    #[cfg(target_os = "linux")]
-=======
->>>>>>> origin/lane/bw19-docs
-    fn put_control_message(
-        control: &mut [u8],
-        from: usize,
-        level: i32,
-        kind: i32,
-        data: &[u8],
-    ) -> usize {
+    fn put_control_message(control: &mut [u8], from: usize, level: i32, kind: i32, data: &[u8]) -> usize {
         let offset = (from + 7) & !7;
         // CMSG_SPACE already adds the header, so it is handed the payload size.
         let space = unsafe { libc::CMSG_SPACE(data.len() as libc::c_uint) } as usize;
@@ -834,7 +769,11 @@ mod tests {
             (*header).cmsg_level = level;
             (*header).cmsg_type = kind;
             (*header).cmsg_len = space;
-            std::ptr::copy_nonoverlapping(data.as_ptr(), libc::CMSG_DATA(header), data.len());
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                libc::CMSG_DATA(header),
+                data.len(),
+            );
         }
         offset + space
     }
@@ -842,7 +781,6 @@ mod tests {
     /// The `IP_RECVERR` data exactly as the kernel fills it: a
     /// `sock_extended_err` at the start, then the offender address, which
     /// is what `SO_EE_OFFENDER` steps to.
-    #[cfg(target_os = "linux")]
     fn extended_error_fixture() -> ([u8; 48], libc::sockaddr_in) {
         let offender = sockaddr_in(htons(4321), 0x0100_007f);
         let ext = libc::sock_extended_err {
@@ -871,10 +809,7 @@ mod tests {
                 std::mem::size_of::<libc::sockaddr_in>(),
             )
         };
-        copy(
-            offender_bytes,
-            std::mem::size_of::<libc::sock_extended_err>(),
-        );
+        copy(offender_bytes, std::mem::size_of::<libc::sock_extended_err>());
         (block, offender)
     }
 
@@ -882,7 +817,6 @@ mod tests {
     /// out of a message, so the fixture drives it directly: an
     /// unrelated message comes first, the kernel drops `msg_name`
     /// sometimes.
-    #[cfg(target_os = "linux")]
     #[test]
     fn the_error_queue_parser_walks_past_other_control_messages() {
         let (block, offender) = extended_error_fixture();
@@ -890,7 +824,13 @@ mod tests {
         // A non-IP_RECVERR message first, then the real one.
         let mut control = [0u8; 256];
         let after_junk = put_control_message(&mut control, 0, SOL_SOCKET, 0x11, &[]);
-        let after_recv = put_control_message(&mut control, after_junk, SOL_IP, IP_RECVERR, &block);
+        let after_recv = put_control_message(
+            &mut control,
+            after_junk,
+            SOL_IP,
+            IP_RECVERR,
+            &block,
+        );
 
         let mut header = libc::msghdr {
             msg_name: std::ptr::null_mut(),
@@ -904,12 +844,8 @@ mod tests {
 
         // The walk skips the unrelated message and lands on the address.
         let cursor = find_recv_error(&header).expect("the IP_RECVERR message");
-        let queued = parse_queued_error(
-            unsafe { libc::CMSG_DATA(cursor) as *const u8 },
-            &header,
-            &offender,
-        )
-        .expect("one queued error");
+        let queued = parse_queued_error(unsafe { libc::CMSG_DATA(cursor) as *const u8 }, &header, &offender)
+            .expect("one queued error");
         assert_eq!(queued.errno, libc::ECONNREFUSED as u32);
         assert_eq!(queued.info, 0x21);
         assert_eq!(queued.ip, LOOPBACK);

@@ -15,7 +15,8 @@
 //!   empty, a zero length plus a one-byte flag telling them apart
 //!   (`blob_or_null.cpp`);
 //! * an over-long read sets the stream error and clamps the read cursor to the
-//!   end instead of aborting, so following reads fail the same way.
+//!   end instead of aborting, so following reads fail the same way (`retrieve`
+//!   in `lib/cstdmf/memory_stream.ipp`).
 
 /// Maximum size of the zero buffer a failed bounded read hands out.
 ///
@@ -582,6 +583,324 @@ mod tests {
         let mut s = BinaryStream::new();
         s.write_bytes(b"ab").write_bytes(&[0x00, 0xFF]);
         assert_eq!(s.as_bytes(), b"ab\x00\xff");
+    }
+
+    /// The BW-01-02-01 acceptance: the port reproduces the reference's exact
+    /// bytes for every fixed-width primitive, and reads them back — the
+    /// original fixtures round-trip byte for byte.
+    ///
+    /// The expected bytes are derived by hand from the reference's own wire
+    /// format (`lib/cstdmf/binary_stream.ipp`): the network order is
+    /// little-endian (`BW_HTON*` are identity on a little-endian host, so
+    /// every value is written as-is on x86-64), a byte/bool is one raw byte,
+    /// an integer is its two's-complement little-endian form, and a
+    /// float/double is its IEEE-754 bit pattern in little-endian order
+    /// (`bw_netlong`/`bw_netlonglong`).
+    #[test]
+    fn reproduces_the_reference_fixed_width_bytes() {
+        let mut s = BinaryStream::new();
+        s.write_u8(0xAB);
+        s.write_i8(-7);
+        s.write_bool(true);
+        s.write_bool(false);
+        s.write_u16(0x1234);
+        s.write_i16(-1234);
+        s.write_u32(0x0102_0304);
+        s.write_i32(-1_000_000);
+        s.write_u64(0x0102_0304_0506_0708);
+        s.write_i64(-9_000_000_000);
+        s.write_f32(-1.5);
+        s.write_f32(1.0);
+        s.write_f64(-2.75);
+        s.write_f64(2.75);
+
+        assert_eq!(
+            s.as_bytes(),
+            &[
+                0xAB, // u8 0xAB
+                0xF9, // i8 -7
+                0x01, // bool true
+                0x00, // bool false
+                0x34, 0x12, // u16 0x1234
+                0x2E, 0xFB, // i16 -1234
+                0x04, 0x03, 0x02, 0x01, // u32 0x01020304
+                0xC0, 0xBD, 0xF0, 0xFF, // i32 -1_000_000
+                0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // u64 0x0102030405060708
+                0x00, 0xE6, 0x8E, 0xE7, 0xFD, 0xFF, 0xFF, 0xFF, // i64 -9_000_000_000
+                0x00, 0x00, 0xC0, 0xBF, // f32 -1.5
+                0x00, 0x00, 0x80, 0x3F, // f32 1.0
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0xC0, // f64 -2.75
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x40, // f64 2.75
+            ]
+        );
+        // The reference's sizeof per primitive, in stream order.
+        assert_eq!(
+            s.length(),
+            1 + 1 + 1 + 1 + 2 + 2 + 4 + 4 + 8 + 8 + 4 + 4 + 8 + 8
+        );
+
+        // Reading those same bytes back reproduces every value.
+        s.rewind();
+        assert_eq!(s.read_u8(), Ok(0xAB));
+        assert_eq!(s.read_i8(), Ok(-7));
+        assert_eq!(s.read_bool(), Ok(true));
+        assert_eq!(s.read_bool(), Ok(false));
+        assert_eq!(s.read_u16(), Ok(0x1234));
+        assert_eq!(s.read_i16(), Ok(-1234));
+        assert_eq!(s.read_u32(), Ok(0x0102_0304));
+        assert_eq!(s.read_i32(), Ok(-1_000_000));
+        assert_eq!(s.read_u64(), Ok(0x0102_0304_0506_0708));
+        assert_eq!(s.read_i64(), Ok(-9_000_000_000));
+        assert_eq!(s.read_f32(), Ok(-1.5));
+        assert_eq!(s.read_f32(), Ok(1.0));
+        assert_eq!(s.read_f64(), Ok(-2.75));
+        assert_eq!(s.read_f64(), Ok(2.75));
+        assert!(s.at_end());
+    }
+
+    /// The BW-01-02-02 acceptance: a packed int crosses the 1-byte form into
+    /// the 4-byte form at 255, and the boundary values pack to the reference's
+    /// exact bytes (`binary_stream.hpp` `writePackedInt`/`readPackedInt`):
+    /// 0..=254 are a single byte; 255..=2^24-1 are `0xFF` followed by the
+    /// three low bytes little-endian. A string's length prefix crosses the
+    /// same boundary.
+    #[test]
+    fn reproduces_the_reference_packed_int_bytes() {
+        let cases: [(u32, &[u8], usize); 8] = [
+            (0, &[0x00], 1),
+            (254, &[0xFE], 1),
+            // The crossover: 255 packs as `0xFF` then its three low bytes
+            // (0xFF, 0x00, 0x00), so the reader recovers 255.
+            (255, &[0xFF, 0xFF, 0x00, 0x00], 4),
+            (256, &[0xFF, 0x00, 0x01, 0x00], 4),
+            (0x010203, &[0xFF, 0x03, 0x02, 0x01], 4),
+            (0xFFFF, &[0xFF, 0xFF, 0xFF, 0x00], 4),
+            (0x0001_0000, &[0xFF, 0x00, 0x00, 0x01], 4),
+            (MAX_PACKED_INT, &[0xFF, 0xFF, 0xFF, 0xFF], 4),
+        ];
+        for (value, expected, size) in cases {
+            let mut s = BinaryStream::new();
+            s.write_packed_int(value).unwrap();
+            assert_eq!(s.as_bytes(), expected, "value {value}");
+            assert_eq!(packed_int_size(value), size, "value {value}");
+            assert_eq!(s.length(), size, "value {value}");
+            s.rewind();
+            assert_eq!(s.read_packed_int(), Ok(value), "value {value}");
+            assert!(s.at_end(), "value {value}");
+        }
+
+        // A string's packed length prefix crosses the same boundary: a 254-byte
+        // string carries a 1-byte prefix, a 255-byte string a 4-byte prefix.
+        let long254 = "x".repeat(254);
+        let mut s = BinaryStream::new();
+        s.write_string(&long254).unwrap();
+        assert_eq!(s.as_bytes()[..5], [0xFE, 0x78, 0x78, 0x78, 0x78]);
+        assert_eq!(s.length(), 1 + 254);
+        s.rewind();
+        assert_eq!(s.read_string().unwrap(), long254);
+
+        let long255 = "y".repeat(255);
+        let mut t = BinaryStream::new();
+        t.write_string(&long255).unwrap();
+        assert_eq!(t.as_bytes()[..5], [0xFF, 0xFF, 0x00, 0x00, 0x79]);
+        assert_eq!(t.length(), 4 + 255);
+        t.rewind();
+        assert_eq!(t.read_string().unwrap(), long255);
+    }
+
+    /// The BW-01-02-03 acceptance: a string is length-prefixed, not
+    /// NUL-terminated — the reference's own comment in `appendString`
+    /// (`binary_stream.hpp`) says so because "BW::strings can contain null
+    /// characters" — so an embedded NUL survives the round trip, and the read
+    /// cursor's remaining length is exact.
+    #[test]
+    fn strings_carry_embedded_nul_and_remaining_length() {
+        // Empty value: a zero length prefix, read back empty.
+        let mut s = BinaryStream::new();
+        s.write_string("").unwrap();
+        assert_eq!(s.as_bytes(), &[0x00]);
+        assert_eq!(s.length(), 1);
+        s.rewind();
+        assert_eq!(s.remaining(), 1);
+        assert_eq!(s.read_string(), Ok(String::new()));
+        assert!(s.at_end());
+
+        // Embedded NUL survives: the length prefix counts bytes, not up to
+        // the first NUL.
+        let mut s = BinaryStream::new();
+        s.write_string("a\u{0}b").unwrap();
+        assert_eq!(s.as_bytes(), &[0x03, 0x61, 0x00, 0x62]);
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("a\u{0}b".to_string()));
+        assert!(s.at_end());
+
+        // A string followed by a trailing value: after reading the string,
+        // the remaining length is exact.
+        let mut s = BinaryStream::new();
+        s.write_string("hello").unwrap();
+        s.write_u8(0xEE);
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("hello".to_string()));
+        assert_eq!(s.remaining(), 1);
+        assert_eq!(s.read_u8(), Ok(0xEE));
+        assert!(s.at_end());
+    }
+
+    /// Read a `u8`, failing the closure if the stream is over-run.
+    fn over_read_u8(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_u8().map(drop)
+    }
+
+    /// Read a `u16`, failing the closure if the stream is over-run.
+    fn over_read_u16(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_u16().map(drop)
+    }
+
+    /// Read an `f64`, failing the closure if the stream is over-run.
+    fn over_read_f64(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_f64().map(drop)
+    }
+
+    /// Read a packed int, failing the closure if the stream is over-run.
+    fn over_read_packed_int(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_packed_int().map(drop)
+    }
+
+    /// Read a string, failing the closure if the stream is over-run.
+    fn over_read_string(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_string().map(drop)
+    }
+
+    /// Read a prefixed blob, failing the closure if the stream is over-run.
+    fn over_read_blob(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_blob().map(drop)
+    }
+
+    /// Read 100 raw bytes, failing the closure if the stream is over-run.
+    fn over_read_raw_100(s: &mut BinaryStream) -> Result<(), StreamError> {
+        s.read_blob_raw(100).map(drop)
+    }
+
+    /// The BW-01-02-05 acceptance: abnormal inputs produce the same class of
+    /// stream error as the reference. `MemoryIStream::retrieve`
+    /// (`lib/cstdmf/memory_stream.ipp`) answers an over-read by clamping the
+    /// read cursor to `pEnd_`, setting `error_`, and handing out a zero buffer
+    /// (or NULL). Every read funnel — fixed width, packed int, string, blob —
+    /// goes through it, so every kind of over-run lands in that one report.
+    ///
+    /// The port reports the same class: `Err(StreamError::Truncated)`, the
+    /// error flag set, the cursor clamped to the end, and every following
+    /// read failing identically. Unlike the reference it hands out no bytes
+    /// at all, so a failed read can never masquerade as a silently-zero value.
+    /// One abnormal input: a name, the fixture bytes, and the read that
+    /// over-runs them.
+    type OverReadCase = (
+        &'static str,
+        &'static [u8],
+        fn(&mut BinaryStream) -> Result<(), StreamError>,
+    );
+
+    #[test]
+    fn abnormal_reads_all_report_the_same_stream_error_class() {
+        let cases: [OverReadCase; 7] = [
+            // The cursor sits on the end already: any positive read over-runs
+            // (`pCurr_ + nBytes <= pEnd_` fails in the reference).
+            ("u8 read on an exhausted stream", b"", over_read_u8),
+            // Partial bytes of a wider fixed-width value.
+            ("u16 read with one byte left", b"\xAB", over_read_u16),
+            (
+                "f64 read with five bytes left",
+                &[0x01, 0x02, 0x03, 0x04, 0x05],
+                over_read_f64,
+            ),
+            // The packed int's four-byte form is declared but under-filled.
+            (
+                "packed int with a two-byte tail",
+                &[0xFF, 0x01, 0x02],
+                over_read_packed_int,
+            ),
+            // The length prefix declares more bytes than remain.
+            (
+                "string prefix beyond the remaining bytes",
+                &[0x05, b'a', b'b'],
+                over_read_string,
+            ),
+            (
+                "blob prefix beyond the remaining bytes",
+                &[0xFF, 0x00, 0x01, 0x00, 0x00, 0xAB],
+                over_read_blob,
+            ),
+            (
+                "raw blob request beyond the remaining bytes",
+                &[0x01, 0x02, 0x03, 0x04],
+                over_read_raw_100,
+            ),
+        ];
+
+        for (name, bytes, read) in cases {
+            let mut s = BinaryStream::new();
+            s.write_bytes(bytes);
+            s.rewind();
+
+            assert_eq!(read(&mut s), Err(StreamError::Truncated), "{name}");
+            assert!(s.has_error(), "{name}: the reference's error_ is set");
+            assert!(
+                s.at_end(),
+                "{name}: the reference clamps the cursor to pEnd_"
+            );
+            assert_eq!(s.remaining(), 0, "{name}: no bytes left to read");
+
+            // Following reads keep failing: the report sticks and the cursor
+            // stays on the end.
+            assert_eq!(s.read_u8(), Err(StreamError::Truncated), "{name}");
+            assert_eq!(s.read_string(), Err(StreamError::Truncated), "{name}");
+            assert!(s.has_error(), "{name}");
+            assert!(s.at_end(), "{name}");
+        }
+    }
+
+    /// The class boundary: a zero-length read is not an over-read. The
+    /// reference's `retrieve(0)` returns the cursor pointer without touching
+    /// `error_` (`pCurr_ + 0 <= pEnd_` always holds), so an empty string reads
+    /// fine. The reference reports a failed *bounded* read with a zero buffer
+    /// of at most `BS_BUFF_MAX_SIZE` (`binary_stream.hpp`) bytes or NULL; the
+    /// port pins the same ceiling and hands out none of them.
+    #[test]
+    fn zero_length_reads_are_not_the_error_class() {
+        assert_eq!(STREAM_ERROR_BUFFER_MAX, 2048); // `BS_BUFF_MAX_SIZE`
+
+        let mut s = BinaryStream::new();
+        s.write_u8(0x00); // packed length 0
+        s.rewind();
+        assert_eq!(s.read_string(), Ok(String::new()));
+        assert!(!s.has_error());
+        assert!(s.at_end());
+
+        let mut s = BinaryStream::new();
+        assert_eq!(s.read_blob_raw(0), Ok(Vec::new()));
+        assert!(!s.has_error());
+    }
+
+    /// The report is a sticky flag, not a latch: `MemoryIStream::rewind`
+    /// moves the read point back but leaves `error_` set, so a rewound stream
+    /// reads successfully again while the report of the earlier over-read
+    /// remains — exactly the reference's class of report.
+    #[test]
+    fn a_reported_over_read_still_reports_after_a_rewind() {
+        let mut s = BinaryStream::new();
+        s.write_u32(0x01020304);
+        s.rewind();
+        assert_eq!(s.read_u64(), Err(StreamError::Truncated)); // 4 of 8 bytes
+        assert!(s.has_error());
+
+        s.rewind();
+        assert!(s.has_error(), "the report sticks across a rewind");
+        assert_eq!(s.remaining(), 4);
+
+        // The reference's error_ does not stop reads once the cursor is back
+        // in range — only the over-run report is recorded.
+        assert_eq!(s.read_u32(), Ok(0x01020304));
+        assert!(s.has_error());
     }
 }
 

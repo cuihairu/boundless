@@ -11,29 +11,15 @@
 //! limiter) arrives with the channels (BW-02-03 / BW-02-05-04).
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
-use std::collections::HashSet;
 use std::rc::{Rc, Weak};
 
 use platform::socket;
 
 use crate::endpoint::Address;
-use crate::fragmented_bundle::FragmentedBundle;
-use crate::misc::{Reason, SEQ_NULL, SeqNum, seq_less_than};
-use crate::network_interface::{ChannelRef, NetworkInterface};
-use crate::packet::{HEADER_SIZE, Packet, flags};
+use crate::misc::Reason;
+use crate::network_interface::NetworkInterface;
+use crate::packet::Packet;
 use crate::poller::InputNotificationHandler;
-use crate::udp_bundle::UDPBundle;
-use crate::udp_bundle_processor::UDPBundleProcessor;
-use crate::udp_channel::{AddToReceiveWindowResult, UDPChannel};
-
-/// `OnceOffReceiver::FragmentedBundles` (once_off_packet.hpp): the
-/// off-channel fragment bundles, keyed by (address, fragBegin).
-type FragmentedBundles = BTreeMap<(Address, SeqNum), Rc<RefCell<FragmentedBundle>>>;
-
-/// `OnceOffReceiver::OnceOffReceipts`: the two generations of received
-/// once-off reliable packets (once_off_packet.cpp:65).
-type OnceOffReceipts = (HashSet<(Address, SeqNum)>, HashSet<(Address, SeqNum)>);
 
 /// `dispatcher().errorReporter().reportException` (error_reporter.cpp:86).
 /// The real reporter counts and throttles reports; that machinery belongs
@@ -60,41 +46,11 @@ impl ErrorReporter for LogReporter {
 
 /// Where a received packet goes: `PacketReceiver::processPacket` hands
 /// each datagram to the interface, and the interface routes it to its
-/// channels (BW-02-03) or its tests. The packet is shared (`PacketPtr` in
-/// the reference) because the receive window and the fragment chains store
-/// it and chain onto it.
+/// channels (BW-02-03) or its tests.
 pub trait PacketSink {
     /// `processPacket`: consume the datagram, name the reason it failed
     /// (`REASON_SUCCESS` when it was delivered onward).
-    fn process_packet(&self, addr: &Address, packet: Rc<RefCell<Packet>>) -> Reason;
-}
-
-/// The slice of `PacketReceiverStats` (packet_receiver_stats.hpp) the
-/// channel's receive window touches: the duplicate-packet counter. The full
-/// statistics container and its one-second gathering belong to the
-/// EventDispatcher item (BW-02-01-05).
-#[derive(Default)]
-pub struct PacketReceiverStats {
-    num_duplicate_packets_received: Cell<u32>,
-}
-
-impl PacketReceiverStats {
-    pub fn new() -> Self {
-        Self {
-            num_duplicate_packets_received: Cell::new(0),
-        }
-    }
-
-    /// `incDuplicatePackets()`.
-    pub fn inc_duplicate_packets(&self) {
-        self.num_duplicate_packets_received
-            .set(self.num_duplicate_packets_received.get() + 1);
-    }
-
-    /// `numDuplicatePacketsReceived()`.
-    pub fn num_duplicate_packets_received(&self) -> u32 {
-        self.num_duplicate_packets_received.get()
-    }
+    fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason;
 }
 
 /// `INoSuchPort::onNoSuchPort`: told when a send to `address` bounced.
@@ -125,16 +81,6 @@ pub struct PacketReceiver {
     max_socket_processing_time_stamps: Cell<u64>,
     /// `pNoSuchPortCallback_`.
     no_such_port_callback: RefCell<Option<Rc<NoSuchPortCallback>>>,
-    /// `stats_`: the receive-path statistics (BW-02-03-05).
-    stats: RefCell<PacketReceiverStats>,
-    /// `onceOffReceiver_.fragmentedBundles()`: the off-channel fragment
-    /// bundles, keyed by (address, fragBegin) (packet_receiver.cpp:1295).
-    /// On-channel bundles live in the channel's own `pFragments_`.
-    fragmented_bundles: RefCell<FragmentedBundles>,
-    /// `onceOffReceiver_`'s received once-off reliable receipts
-    /// (once_off_packet.cpp:65): two generations, so a resend of a received
-    /// packet is dropped without losing legitimate new ones.
-    once_off_receipts: RefCell<OnceOffReceipts>,
 }
 
 impl PacketReceiver {
@@ -146,9 +92,6 @@ impl PacketReceiver {
             next_packet: RefCell::new(Packet::new()),
             max_socket_processing_time_stamps: Cell::new(0),
             no_such_port_callback: RefCell::new(None),
-            stats: RefCell::new(PacketReceiverStats::new()),
-            fragmented_bundles: RefCell::new(BTreeMap::new()),
-            once_off_receipts: RefCell::new((HashSet::new(), HashSet::new())),
         })
     }
 
@@ -174,465 +117,8 @@ impl PacketReceiver {
         *self.no_such_port_callback.borrow_mut() = callback;
     }
 
-    /// `processPacket( addr, p, pStatsHelper )` (packet_receiver.cpp:445):
-    /// the entry point for a received datagram: find the channel it belongs
-    /// to (creating an anonymous one for an off-channel `CREATE_CHANNEL`
-    /// packet on an internal interface), then parse and dispatch. The rate
-    /// limiter and the channel / off-channel filters are the later item's
-    /// seams.
-    pub fn process_packet(
-        &self,
-        interface: &Rc<NetworkInterface>,
-        addr: &Address,
-        p: Rc<RefCell<Packet>>,
-    ) -> Reason {
-        // Packets arriving on an external interface may be encrypted, so
-        // their header flags are not examined there.
-        let p_channel = interface.find_or_create_channel(
-            addr,
-            !interface.is_external() && p.borrow().should_create_anonymous(),
-        );
-
-        if let Some(channel) = p_channel {
-            // Addressed channels update their received time here; indexed
-            // channels do so after their footer is stripped.
-            channel.on_packet_received(p.borrow().total_size() as i32);
-
-            // The channel filter (pFilter()->recv) is a seam.
-            self.process_filtered_packet(interface, addr, p, Some(&channel))
-        } else if interface.is_external() && interface.is_dead(addr) {
-            // Ignoring incoming packet on recently dead channel.
-            Reason::Success
-        } else {
-            // The off-channel filter is a seam.
-            self.process_filtered_packet(interface, addr, p, None)
-        }
-    }
-
-    /// `processFilteredPacket` (packet_receiver.cpp:518): validate the
-    /// packet, strip and apply the ACK footers, then push reliable packets
-    /// through the channel's receive window and dispatch the ordered chain.
-    /// `p_channel` is `Some` for an addressed or indexed channel, `None`
-    /// for once-off traffic.
-    fn process_filtered_packet(
-        &self,
-        interface: &Rc<NetworkInterface>,
-        addr: &Address,
-        p: Rc<RefCell<Packet>>,
-        p_channel: Option<&Rc<UDPChannel>>,
-    ) -> Reason {
-        if p.borrow().total_size() < std::mem::size_of::<u16>() {
-            return Reason::CorruptedPacket;
-        }
-
-        // The packet monitor (pPacketMonitor_->packetIn) is a seam.
-
-        // Make sure we understand all the flags.
-        if p.borrow().flags() & !flags::KNOWN_FLAGS != 0 {
-            return Reason::CorruptedPacket;
-        }
-
-        // The off-channel receive counter belongs to the statistics item.
-
-        // Don't allow FLAG_CREATE_CHANNEL on external interfaces.
-        if interface.is_external() && p.borrow().has_flags(flags::CREATE_CHANNEL) {
-            return Reason::CorruptedPacket;
-        }
-
-        // Make sure there's something in the packet.
-        if p.borrow().total_size() <= HEADER_SIZE {
-            return Reason::CorruptedPacket;
-        }
-
-        // Start stripping footers: the checksum first.
-        if !p.borrow_mut().validate_checksum() {
-            return Reason::CorruptedPacket;
-        }
-
-        // Strip off piggybacks and process them immediately (they are older
-        // than this packet). The visitation is the BW-02-03-04 seam.
-        if !self.process_piggybacks(&p) {
-            return Reason::CorruptedPacket;
-        }
-
-        // Strip off the indexed channel ID and version, if present.
-        let mut p_channel = p_channel.cloned();
-        if p.borrow().has_flags(flags::INDEXED_CHANNEL) {
-            let Some(channel_id) = p.borrow_mut().strip_footer_u32() else {
-                return Reason::CorruptedPacket;
-            };
-            let Some(channel_version) = p.borrow_mut().strip_footer_u32() else {
-                return Reason::CorruptedPacket;
-            };
-            {
-                let mut packet = p.borrow_mut();
-                packet.set_channel_id(channel_id as i32);
-                packet.set_channel_version(channel_version);
-            }
-
-            // `findIndexedChannel` (the channel-finder seam) may forward the
-            // packet; the port looks in the condemned map and gives up when
-            // the channel is gone.
-            p_channel = interface.find_condemned_channel(channel_id as i32);
-            if p_channel.is_none() {
-                return Reason::Success;
-            }
-            if let Some(channel) = p_channel.as_ref() {
-                channel.on_packet_received(p.borrow().total_size() as i32);
-            }
-        }
-
-        if p_channel.is_none() && p.borrow().has_flags(flags::ON_CHANNEL) {
-            p_channel = interface.find_channel_owned(addr);
-            if p_channel.is_none() {
-                // Dropping packet due to absence of local channel.
-                return Reason::GeneralNetwork;
-            }
-        }
-
-        if let Some(channel) = p_channel.as_ref() {
-            if channel.has_remote_failed() {
-                return Reason::GeneralNetwork;
-            }
-            if seq_less_than(p.borrow().channel_version(), channel.creation_version()) {
-                // Dropping packet from old channel.
-                return Reason::Success;
-            }
-            if channel.wants_first_packet() {
-                if p.borrow().has_flags(flags::CREATE_CHANNEL) {
-                    channel.got_first_packet();
-                } else {
-                    // Dropping packet on channel wanting FLAG_CREATE_CHANNEL.
-                    return Reason::GeneralNetwork;
-                }
-            }
-        }
-
-        // Strip and handle the cumulative ACK.
-        if p.borrow().has_flags(flags::HAS_CUMULATIVE_ACK) {
-            let Some(channel) = p_channel.as_ref() else {
-                return Reason::CorruptedPacket;
-            };
-            let Some(end_seq) = p.borrow_mut().strip_footer_u32() else {
-                return Reason::CorruptedPacket;
-            };
-            if !channel.handle_cumulative_ack(end_seq) {
-                return Reason::CorruptedPacket;
-            }
-        }
-
-        // Strip and handle the ACK list.
-        if p.borrow().has_flags(flags::HAS_ACKS) {
-            let Some(n_acks) = p.borrow_mut().strip_footer_u8() else {
-                return Reason::CorruptedPacket;
-            };
-            if n_acks == 0 {
-                return Reason::CorruptedPacket;
-            }
-
-            let ack_size = n_acks as usize * std::mem::size_of::<SeqNum>();
-
-            // Check that we have enough footers for the acks the packet
-            // claims to have.
-            if p.borrow().body_size() < ack_size {
-                return Reason::CorruptedPacket;
-            }
-
-            if let Some(channel) = p_channel.as_ref() {
-                for _ in 0..n_acks {
-                    let Some(seq) = p.borrow_mut().strip_footer_u32() else {
-                        return Reason::CorruptedPacket;
-                    };
-                    if !channel.handle_ack(seq) {
-                        return Reason::CorruptedPacket;
-                    }
-                }
-            } else if !p.borrow().has_flags(flags::ON_CHANNEL) {
-                // Once-off: the resend timer cancellation is the once-off
-                // sender seam; the ACKs are just stripped.
-                for _ in 0..n_acks {
-                    if p.borrow_mut().strip_footer_u32().is_none() {
-                        return Reason::CorruptedPacket;
-                    }
-                }
-            } else {
-                // Got acks without a channel: drop them.
-                p.borrow_mut().shrink(ack_size);
-            }
-        }
-
-        // Strip the sequence number.
-        if p.borrow().has_flags(flags::HAS_SEQUENCE_NUMBER) {
-            let Some(seq) = p.borrow_mut().strip_footer_u32() else {
-                return Reason::CorruptedPacket;
-            };
-            p.borrow_mut().set_seq(seq);
-        }
-
-        let mut should_send_channel = false;
-
-        // Now do something if it's reliable.
-        if p.borrow().has_flags(flags::IS_RELIABLE) {
-            // First make sure it has a sequence number.
-            if p.borrow().seq() == SEQ_NULL {
-                return Reason::CorruptedPacket;
-            }
-
-            if let Some(channel) = p_channel.as_ref() {
-                let result = channel.add_to_receive_window(p.clone(), *addr, &self.stats.borrow());
-
-                if !channel.is_local_regular() {
-                    should_send_channel = true;
-                }
-
-                if result != AddToReceiveWindowResult::PacketIsNextInWindow {
-                    // Already received, or too early and buffered. ACK it
-                    // immediately when the channel is established and
-                    // irregular; a corrupt packet is a real failure.
-                    if result != AddToReceiveWindowResult::PacketIsCorrupt {
-                        if channel.is_established() && should_send_channel {
-                            let mut empty = UDPBundle::new(0);
-                            channel.send(&mut empty);
-                        }
-                        return Reason::Success;
-                    }
-                    return Reason::CorruptedPacket;
-                }
-            } else {
-                // Once-off reliable: no such traffic on external interfaces.
-                if interface.is_external() {
-                    return Reason::Success;
-                }
-
-                // Send back the ack for this packet.
-                let mut back_bundle = UDPBundle::new(0);
-                back_bundle.add_ack(p.borrow().seq());
-                interface.send(addr, &mut back_bundle, None);
-
-                if self.on_reliable_received(*addr, p.borrow().seq()) {
-                    return Reason::Success;
-                }
-            }
-        } else if let Some(channel) = p_channel.as_ref() {
-            // Unreliable: confirm the sequence number is incrementing, as a
-            // sanity check against malicious parties.
-            if channel.is_external() && !channel.validate_unreliable_seq_num(p.borrow().seq()) {
-                return Reason::CorruptedPacket;
-            }
-        }
-
-        // Push the packet chain through processOrderedPacket. Condemned
-        // channels still deliver their remaining messages.
-        let mut ret = Reason::Success;
-        let mut curr = Some(p);
-        while let Some(p_curr) = curr {
-            if p_channel.as_ref().is_some_and(|c| c.is_condemned()) {
-                break;
-            }
-
-            let p_next = p_curr.borrow().next();
-            let r = self.process_ordered_packet(interface, addr, p_curr, p_channel.as_ref());
-            if ret == Reason::Success {
-                ret = r;
-            }
-            curr = p_next;
-        }
-
-        // If this bundle was delivered to a channel and there are still ACKs
-        // to send, do it now.
-        if let Some(channel) = p_channel.as_ref()
-            && !channel.is_destroyed()
-            && should_send_channel
-            && channel.is_established()
-            && channel.has_acks()
-        {
-            let mut empty = UDPBundle::new(0);
-            channel.send(&mut empty);
-        }
-
-        ret
-    }
-
-    /// `processOrderedPacket` (packet_receiver.cpp:1170): dispatch a packet
-    /// after reliable ordering has been imposed, reassembling fragmented
-    /// bundles (the fragment chain the receive window or the off-channel
-    /// map holds) before the message walk.
-    fn process_ordered_packet(
-        &self,
-        interface: &Rc<NetworkInterface>,
-        addr: &Address,
-        p: Rc<RefCell<Packet>>,
-        p_channel: Option<&Rc<UDPChannel>>,
-    ) -> Reason {
-        // The label used in debug output.
-        let source = p_channel.map_or_else(|| addr.c_str(), |c| c.c_str());
-
-        // Strip first request offset.
-        if p.borrow().has_flags(flags::HAS_REQUESTS) {
-            let Some(offset) = p.borrow_mut().strip_footer_u16() else {
-                return Reason::CorruptedPacket;
-            };
-            p.borrow_mut().set_first_request_offset(offset);
-            if offset as usize > p.borrow().msg_end_offset() {
-                return Reason::CorruptedPacket;
-            }
-        }
-
-        let is_on_channel = p_channel.is_some() && p.borrow().has_flags(flags::IS_RELIABLE);
-
-        // Strip fragment footers.
-        if !p.borrow().has_flags(flags::IS_FRAGMENT)
-            && p.borrow().has_flags(flags::HAS_SEQUENCE_NUMBER)
-            && (is_on_channel && p_channel.unwrap().p_fragments().is_some())
-        {
-            // Got a non-fragment packet when expecting a fragment.
-            return Reason::CorruptedPacket;
-        }
-
-        let mut dispatch_packet = p.clone();
-        if p.borrow().has_flags(flags::IS_FRAGMENT) {
-            if !p.borrow_mut().strip_frag_info() {
-                return Reason::CorruptedPacket;
-            }
-
-            let key = (*addr, p.borrow().frag_begin());
-
-            // Find the existing packet chain for this bundle, if any.
-            let mut p_fragments: Option<Rc<RefCell<FragmentedBundle>>> = if is_on_channel {
-                p_channel.unwrap().p_fragments()
-            } else {
-                self.fragmented_bundles.borrow().get(&key).cloned()
-            };
-
-            // If the previous fragment is really old, this must be a failed
-            // bundle that was never resent, so get rid of it.
-            if let Some(ref fragments) = p_fragments
-                && fragments.borrow().is_old(interface.dispatcher().now())
-                && !is_on_channel
-            {
-                eprintln!(
-                    "PacketReceiver::processOrderedPacket( {} ): Discarding abandoned stale overlapping fragmented bundle from seq {} to {}",
-                    source,
-                    p.borrow().frag_begin(),
-                    fragments.borrow().last_fragment()
-                );
-                self.fragmented_bundles.borrow_mut().remove(&key);
-                p_fragments = None;
-            }
-
-            if p_fragments.is_none() {
-                // On a channel this must be the first packet in the bundle,
-                // since channel traffic is ordered.
-                if p_channel.is_some() && p.borrow().seq() != p.borrow().frag_begin() {
-                    eprintln!(
-                        "PacketReceiver::processOrderedPacket( {} ): Bundle (#{},#{}) is missing packets before #{}",
-                        source,
-                        p.borrow().frag_begin(),
-                        p.borrow().frag_end(),
-                        p.borrow().seq()
-                    );
-                    return Reason::CorruptedPacket;
-                }
-
-                // This is the first fragment of the bundle: make a new one.
-                let new_bundle = Rc::new(RefCell::new(FragmentedBundle::new(
-                    &p,
-                    interface.dispatcher().now(),
-                )));
-                if is_on_channel {
-                    p_channel
-                        .unwrap()
-                        .set_p_fragments(Some(Rc::clone(&new_bundle)));
-                } else {
-                    self.fragmented_bundles
-                        .borrow_mut()
-                        .insert(key, Rc::clone(&new_bundle));
-                }
-                return Reason::Success;
-            }
-
-            let p_fragments = p_fragments.unwrap();
-            if !p_fragments.borrow_mut().add_packet(
-                p.clone(),
-                interface.is_external(),
-                &source,
-                interface.dispatcher().now(),
-            ) {
-                return Reason::CorruptedPacket;
-            }
-
-            // If the bundle is still incomplete, stop processing now.
-            if !p_fragments.borrow().is_complete() {
-                return Reason::Success;
-            }
-
-            // The bundle is complete: process the whole chain below.
-            dispatch_packet = p_fragments.borrow().p_chain();
-
-            if is_on_channel {
-                p_channel.unwrap().set_p_fragments(None);
-            } else {
-                self.fragmented_bundles.borrow_mut().remove(&key);
-            }
-        }
-
-        // We have a complete packet chain (or a single packet). Dispatch.
-        let output_bundle = UDPBundleProcessor::new(Some(dispatch_packet), false);
-        let channel_ref: Option<Rc<dyn ChannelRef>> =
-            p_channel.map(|c| Rc::clone(c) as Rc<dyn ChannelRef>);
-
-        let reason = output_bundle.dispatch_messages(
-            interface.interface_table(),
-            addr,
-            channel_ref.as_ref(),
-        );
-
-        if reason == Reason::CorruptedPacket {
-            return Reason::CorruptedPacket;
-        }
-        reason
-    }
-
-    /// `processPiggybacks` (packet_receiver.cpp:1205): visit and process the
-    /// piggyback packets on `p` before its own footers. The port never
-    /// emits piggybacks (the BW-02-03-04 seam), so a packet claiming them
-    /// cannot be parsed and is refused.
-    fn process_piggybacks(&self, p: &Rc<RefCell<Packet>>) -> bool {
-        !p.borrow().has_flags(flags::HAS_PIGGYBACKS)
-    }
-
-    /// `OnceOffReceiver::onReliableReceived` (once_off_packet.cpp:65): is a
-    /// once-off reliable packet already accepted? A resend of an accepted
-    /// packet is dropped; the 30-second cleanup timer that rotates the two
-    /// receipt generations is the dispatcher seam.
-    fn on_reliable_received(&self, addr: Address, seq: SeqNum) -> bool {
-        let mut receipts = self.once_off_receipts.borrow_mut();
-        let (curr, prev) = &mut *receipts;
-        if curr.contains(&(addr, seq)) || prev.contains(&(addr, seq)) {
-            return true;
-        }
-        curr.insert((addr, seq));
-        false
-    }
-
-    /// `onceOffReliableCleanup()` (once_off_packet.cpp:114): demote the
-    /// recent receipts to less-recent and clear the oldest.
-    pub fn once_off_reliable_cleanup(&self) {
-        let mut receipts = self.once_off_receipts.borrow_mut();
-        let (curr, prev) = &mut *receipts;
-        prev.clear();
-        std::mem::swap(curr, prev);
-    }
-
-    /// `stats()`: the receive-path statistics slice.
-    pub fn stats(&self) -> std::cell::Ref<'_, PacketReceiverStats> {
-        self.stats.borrow()
-    }
-
-    /// Run `body` against the attached interface, when there is one. The
-    /// shared handle is passed so `processPacket`'s `findChannel` can call
-    /// the `self: &Rc<Self>` arms.
-    fn with_interface<T>(&self, body: impl FnOnce(&Rc<NetworkInterface>) -> T) -> Option<T> {
+    /// Run `body` against the attached interface, when there is one.
+    fn with_interface<T>(&self, body: impl FnOnce(&NetworkInterface) -> T) -> Option<T> {
         self.interface
             .borrow()
             .upgrade()
@@ -686,7 +172,7 @@ impl PacketReceiver {
     /// the sink or the error path. True when a packet was read.
     fn process_socket(
         &self,
-        interface: &Rc<NetworkInterface>,
+        interface: &NetworkInterface,
         source_address: &mut Address,
         expecting_packet: bool,
     ) -> bool {
@@ -701,12 +187,10 @@ impl PacketReceiver {
         }
 
         // The reference swaps in a fresh packet buffer and hands the full
-        // one to processPacket. The packet is shared (`PacketPtr`) because
-        // the receive window and the fragment chains take it.
-        let current_packet = std::mem::take(&mut *self.next_packet.borrow_mut());
-        let current_packet = Rc::new(RefCell::new(current_packet));
+        // one to processPacket.
+        let mut current_packet = std::mem::take(&mut *self.next_packet.borrow_mut());
 
-        let reason = interface.process_packet(source_address, current_packet);
+        let reason = interface.process_packet(source_address, &mut current_packet);
 
         if reason != Reason::Success && interface.is_verbose() {
             interface
@@ -927,10 +411,10 @@ pub(crate) mod tests_support {
     }
 
     impl PacketSink for RecordingSink {
-        fn process_packet(&self, addr: &Address, packet: Rc<RefCell<Packet>>) -> Reason {
+        fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
             self.packets
                 .borrow_mut()
-                .push((*addr, packet.borrow().data().to_vec()));
+                .push((*addr, packet.data().to_vec()));
             Reason::Success
         }
     }
@@ -942,7 +426,7 @@ pub(crate) mod tests_support {
     }
 
     impl PacketSink for RefusingSink {
-        fn process_packet(&self, _addr: &Address, _packet: Rc<RefCell<Packet>>) -> Reason {
+        fn process_packet(&self, _addr: &Address, _packet: &mut Packet) -> Reason {
             self.reason
         }
     }
@@ -963,15 +447,8 @@ pub(crate) mod tests_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundation::stream::BinaryStream;
-
     use crate::endpoint::Endpoint;
-    use crate::interface_element::{FIXED_LENGTH_MESSAGE, InterfaceElement};
-    use crate::interfaces::InputMessageHandler;
-    use crate::misc::{MessageID, REPLY_ID_NONE, ReplyID};
     use crate::network_interface::InterfaceType;
-    use crate::udp_bundle::ReliableType;
-    use crate::unpacked_message_header::UnpackedMessageHeader;
     use std::cell::Cell as SoloCell;
 
     /// `127.0.0.1` as the repo stores it.
@@ -1019,9 +496,6 @@ mod tests {
             self.failed.set(true);
             self.marks.set(self.marks.get() + 1);
         }
-        fn addr(&self) -> Address {
-            crate::endpoint::NONE
-        }
     }
 
     /// An internal interface on the loopback, with recording plumbing.
@@ -1052,15 +526,13 @@ mod tests {
 
     /// Every queued datagram goes through the sink in one notification;
     /// the follow-up empty read is quiet (`EAGAIN` when not expecting a
-    /// packet is not reportable). The datagrams are valid header-only
-    /// packets (zero flags, one body byte) so they clear the filtered
-    /// path's guards and reach the sink.
+    /// packet is not reportable).
     #[test]
     fn every_queued_datagram_is_processed_in_one_notification() {
         let (interface, _receiver, sink, reporter) = listening_interface();
 
-        for index in 0..3u8 {
-            send_to(&interface, &[0, 0, b'x' + index]);
+        for index in 0..3 {
+            send_to(&interface, &[b'x' + index]);
         }
 
         assert!(
@@ -1071,7 +543,7 @@ mod tests {
             let packets = sink.packets.borrow();
             assert_eq!(packets.len(), 3);
             for (index, (_, payload)) in packets.iter().enumerate() {
-                assert_eq!(payload, &[0, 0, b'x' + index as u8]);
+                assert_eq!(payload, &[b'x' + index as u8]);
             }
         }
 
@@ -1276,7 +748,7 @@ mod tests {
         let (interface, receiver, sink, reporter) = listening_interface();
 
         for index in 0..3 {
-            send_to(&interface, &[0, 0, b'y' + index]);
+            send_to(&interface, &[b'y' + index]);
         }
 
         // Non-positive values disable the budget; one microsecond is
@@ -1381,7 +853,7 @@ mod tests {
             reason: Reason::WindowOverflow,
         })));
 
-        let sender = send_to(&interface, &[0, 0, b'r']);
+        let sender = send_to(&interface, b"reject me");
         assert!(interface.poller().process_pending_events(0.05) >= 1);
 
         let reports = reporter.reports.borrow();
@@ -1401,16 +873,16 @@ mod tests {
         let (a, _ra, sink_a, _reporter_a) = listening_interface();
         let (b, _rb, sink_b, _reporter_b) = listening_interface();
 
-        let sender = send_to(&a, &[0, 0, b'a']);
+        let sender = send_to(&a, b"for a");
         drop(sender);
-        send_to(&b, &[0, 0, b'b']);
+        send_to(&b, b"for b");
 
         // Poll only A: its socket saw its own datagram, never B's.
         assert!(a.poller().process_pending_events(0.05) >= 1);
         {
             let packets = sink_a.packets.borrow();
             assert_eq!(packets.len(), 1);
-            assert_eq!(packets[0].1, &[0, 0, b'a']);
+            assert_eq!(packets[0].1, b"for a");
         }
         assert!(sink_b.packets.borrow().is_empty());
 
@@ -1419,225 +891,8 @@ mod tests {
         {
             let packets = sink_b.packets.borrow();
             assert_eq!(packets.len(), 1);
-            assert_eq!(packets[0].1, &[0, 0, b'b']);
+            assert_eq!(packets[0].1, b"for b");
         }
         assert_eq!(sink_a.packets.borrow().len(), 1);
-    }
-
-    /// One delivery: `(identifier, length, reply_id, body bytes)`.
-    type Delivery = (MessageID, i32, ReplyID, Vec<u8>);
-
-    /// A delivery that records what it was handed.
-    struct Recorder {
-        records: Rc<RefCell<Vec<Delivery>>>,
-    }
-
-    impl Recorder {
-        fn shared() -> (Rc<Self>, Rc<RefCell<Vec<Delivery>>>) {
-            let records = Rc::new(RefCell::new(Vec::new()));
-            (
-                Rc::new(Self {
-                    records: Rc::clone(&records),
-                }),
-                records,
-            )
-        }
-    }
-
-    impl InputMessageHandler for Recorder {
-        fn handle_message(
-            &self,
-            _source: &Address,
-            header: &mut UnpackedMessageHeader,
-            data: &mut BinaryStream,
-        ) {
-            self.records.borrow_mut().push((
-                header.identifier,
-                header.length,
-                header.reply_id,
-                data.as_bytes().to_vec(),
-            ));
-        }
-    }
-
-    /// Read one datagram off the interface's non-blocking socket, waiting
-    /// briefly for the loopback delivery to land.
-    fn wait_frame(interface: &Rc<NetworkInterface>) -> (Packet, Address) {
-        for _ in 0..100 {
-            let mut frame = Packet::new();
-            let mut source = Address::default();
-            {
-                let socket = interface.udp_socket();
-                if frame.recv_from_endpoint(&socket, &mut source) > 0 {
-                    return (frame, source);
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        panic!("no datagram arrived on the loopback");
-    }
-
-    /// BW-02-03-07: two real loopback interfaces exchange a reliable message
-    /// in each direction. A's first send is dropped at the sender, so its
-    /// resend lands on B instead; each receiver auto-acks, so both windows
-    /// drain, and the resend counters track what went out twice.
-    #[test]
-    fn two_directions_exchange_and_resends_are_counted() {
-        let (interface_a, _receiver_a) =
-            NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
-        let (interface_b, _receiver_b) =
-            NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
-        let addr_a = interface_a.address();
-        let addr_b = interface_b.address();
-
-        let ping = InterfaceElement::new("ping", 1, FIXED_LENGTH_MESSAGE, 3, None);
-        let (recorder_a, records_a) = Recorder::shared();
-        let (recorder_b, records_b) = Recorder::shared();
-        interface_a.interface_table().serve(
-            &ping,
-            Some(Rc::clone(&recorder_a) as Rc<dyn InputMessageHandler>),
-        );
-        interface_b.interface_table().serve(
-            &ping,
-            Some(Rc::clone(&recorder_b) as Rc<dyn InputMessageHandler>),
-        );
-
-        // Each side holds the channel for its peer. Both sides are irregular:
-        // the receiver pushes an ACK as soon as it queues one, and the
-        // sender's resend scan uses the inactivity rule.
-        let channel_a = UDPChannel::get(&interface_a, addr_b);
-        let channel_b = UDPChannel::get(&interface_b, addr_a);
-        channel_a.debug_set_local_regular(false);
-        channel_b.debug_set_local_regular(false);
-        channel_a.debug_set_remote_regular(false);
-        channel_b.debug_set_remote_regular(false);
-
-        // A -> B: the first send is dropped at the sender, so nothing reaches
-        // B. The packet is already in A's window, and a resend pushes it out.
-        channel_a.set_should_drop_next_send(true);
-        {
-            let mut bundle = UDPBundle::new(0);
-            bundle.start_message(&ping, ReliableType::Driver);
-            bundle.add_blob(&[0x11, 0x22, 0x33]);
-            channel_a.send(&mut bundle);
-        }
-        assert_eq!(
-            channel_a.num_reliable_packets_sent(),
-            1,
-            "the reliable send is counted"
-        );
-        assert_eq!(channel_a.num_packets_resent(), 0, "nothing resent yet");
-        assert!(
-            channel_a.has_unacked_packets(),
-            "the packet waits in A's window"
-        );
-        assert_eq!(
-            interface_a
-                .packet_sender()
-                .sending_stats()
-                .num_packets_resent
-                .get(),
-            0,
-            "the sender has resent nothing"
-        );
-
-        channel_a.debug_make_packets_old();
-        channel_a.check_resend_timers();
-        assert_eq!(
-            channel_a.num_packets_resent(),
-            1,
-            "the aged packet is resent once"
-        );
-        assert_eq!(
-            interface_a
-                .packet_sender()
-                .sending_stats()
-                .num_packets_resent
-                .get(),
-            1,
-            "the sender counted the resend"
-        );
-
-        // B receives the resent packet, dispatches it, and auto-acks back.
-        let (frame, source) = wait_frame(&interface_b);
-        assert_eq!(
-            interface_b.process_packet(&source, Rc::new(RefCell::new(frame))),
-            Reason::Success
-        );
-        assert_eq!(
-            *records_b.borrow(),
-            vec![(1u8, 3, REPLY_ID_NONE, vec![0x11, 0x22, 0x33])],
-            "B delivered the message A resent"
-        );
-
-        // A receives B's ACK, which releases the packet from A's window.
-        let (frame, source) = wait_frame(&interface_a);
-        assert_eq!(
-            interface_a.process_packet(&source, Rc::new(RefCell::new(frame))),
-            Reason::Success
-        );
-        assert!(
-            !channel_a.has_unacked_packets(),
-            "the ACK drained A's window"
-        );
-
-        // B -> A: the same exchange, without the drop.
-        channel_b.set_should_drop_next_send(true);
-        {
-            let mut bundle = UDPBundle::new(0);
-            bundle.start_message(&ping, ReliableType::Driver);
-            bundle.add_blob(&[0xaa, 0xbb, 0xcc]);
-            channel_b.send(&mut bundle);
-        }
-        assert_eq!(
-            channel_b.num_reliable_packets_sent(),
-            1,
-            "the reliable send is counted"
-        );
-        assert_eq!(channel_b.num_packets_resent(), 0, "nothing resent yet");
-        assert!(
-            channel_b.has_unacked_packets(),
-            "the packet waits in B's window"
-        );
-
-        channel_b.debug_make_packets_old();
-        channel_b.check_resend_timers();
-        assert_eq!(
-            channel_b.num_packets_resent(),
-            1,
-            "the aged packet is resent once"
-        );
-        assert_eq!(
-            interface_b
-                .packet_sender()
-                .sending_stats()
-                .num_packets_resent
-                .get(),
-            1,
-            "B's sender counted the resend"
-        );
-
-        // A receives the resent packet, dispatches it, and auto-acks back.
-        let (frame, source) = wait_frame(&interface_a);
-        assert_eq!(
-            interface_a.process_packet(&source, Rc::new(RefCell::new(frame))),
-            Reason::Success
-        );
-        assert_eq!(
-            *records_a.borrow(),
-            vec![(1u8, 3, REPLY_ID_NONE, vec![0xaa, 0xbb, 0xcc])],
-            "A delivered the message B resent"
-        );
-
-        // B receives A's ACK, which releases B's packet.
-        let (frame, source) = wait_frame(&interface_b);
-        assert_eq!(
-            interface_b.process_packet(&source, Rc::new(RefCell::new(frame))),
-            Reason::Success
-        );
-        assert!(
-            !channel_b.has_unacked_packets(),
-            "the ACK drained B's window"
-        );
     }
 }

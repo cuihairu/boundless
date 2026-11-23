@@ -10,6 +10,7 @@ members = [
     "crates/chunk",
     "crates/db",
     "crates/python-host",
+    "crates/python-module",
     "crates/server-runtime",
     "crates/test-support",
     "crates/asset-pipeline",

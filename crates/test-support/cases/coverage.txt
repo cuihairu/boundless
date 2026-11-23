@@ -1,0 +1,80 @@
+target	kind	source	enable	task	fixture	status
+CppUnitLite2	library	third_party/CppUnitLite2/src/Makefile.rules	always	-	-	gap
+_bw_profile	shared_library	server/tools/bw_profile/Makefile.rules	always	BW-12	-	gap
+_bwlog	shared_library	server/tools/message_logger/Makefile.message_reader	always	BW-12	-	gap
+baseapp	binary	server/baseapp/Makefile.rules	always	BW-07	-	covered
+baseapp	unit_test	server/baseapp/unit_test/Makefile.rules	always	BW-07	-	gap
+baseappmgr	binary	server/baseappmgr/Makefile.rules	always	BW-05	-	gap
+baseappmgr	unit_test	server/baseappmgr/unit_test/Makefile.rules	always	BW-05	-	gap
+bots	binary	server/tools/bots/Makefile.rules	always	BW-12	-	gap
+build	library	lib/build/Makefile.rules	always	BW-01	-	gap
+bwengine_mysql	shared_library	server/dbapp_extensions/bwengine_mysql/Makefile.rules	MySQL development libraries present	BW-09	-	gap
+bwengine_xml	shared_library	server/dbapp_extensions/bwengine_xml/Makefile.rules	always	BW-09	-	gap
+bwmachined2	binary	server/tools/bwmachined/Makefile.rules	always	BW-05	-	gap
+cellapp	binary	server/cellapp/Makefile.rules	always	BW-08	-	gap
+cellapp	unit_test	server/cellapp/unit_test/Makefile.rules	always	BW-08	-	gap
+cellapp_example	shared_library	examples/cellapp_extension/Makefile.rules	user_shouldBuildExamples != 0	BW-14	-	gap
+cellappmgr	binary	server/cellappmgr/Makefile.rules	cellappmgr/Makefile present	BW-05	-	gap
+cellappmgr	unit_test	server/cellappmgr/unit_test/Makefile.rules	cellappmgr/Makefile present	BW-05	-	gap
+chunk	library	lib/chunk/Makefile.rules	always	BW-10	-	gap
+chunk_loading	library	lib/chunk_loading/Makefile.rules	always	BW-10	-	gap
+clear_auto_load	binary	server/tools/clear_auto_load/Makefile.rules	MySQL development libraries present	BW-09	-	gap
+connection	library	lib/connection/Makefile.rules	always	BW-02,BW-06	-	gap
+connection_model	library	lib/connection_model/Makefile.rules	always	BW-06	-	gap
+consolidate_dbs	binary	server/tools/consolidate_dbs/Makefile.rules	MySQL development libraries present	BW-09	-	gap
+cstdmf	library	lib/cstdmf/Makefile.rules	always	BW-01,BW-12	-	gap
+cstdmf	unit_test	lib/cstdmf/unit_test/Makefile.rules	always	BW-01,BW-12	-	gap
+db	library	lib/db/Makefile.rules	always	BW-09	-	gap
+db	unit_test	lib/db/unit_test/Makefile.rules	always	BW-09	-	gap
+db_storage	library	lib/db_storage/Makefile.rules	always	BW-09	-	gap
+db_storage_mysql	library	lib/db_storage_mysql/Makefile.rules	MySQL development libraries present	BW-09	-	gap
+db_storage_xml	library	lib/db_storage_xml/Makefile.rules	always	BW-09	-	gap
+dbapp	binary	server/dbapp/Makefile.rules	always	BW-09	-	gap
+dbapp	unit_test	server/dbapp/unit_test/Makefile.rules	always	BW-09	-	gap
+dbappmgr	binary	server/dbappmgr/Makefile.rules	always	BW-05	-	gap
+dbappmgr	unit_test	server/dbappmgr/unit_test/Makefile.rules	always	BW-05	-	gap
+delegate_interface	library	lib/delegate_interface/Makefile.rules	always	BW-10	-	gap
+entitydef	library	lib/entitydef/Makefile.rules	always	BW-04	-	gap
+entitydef	unit_test	lib/entitydef/unit_test/Makefile.rules	always	BW-04	-	gap
+entitydef_script	library	lib/entitydef_script/Makefile.rules	always	BW-04	-	gap
+loginapp	binary	server/loginapp/Makefile.rules	always	BW-06	-	gap
+loginapp	unit_test	server/loginapp/unit_test/Makefile.rules	always	BW-06	-	gap
+math	library	lib/math/Makefile.rules	always	BW-01	-	gap
+math	unit_test	lib/math/unit_test/Makefile.rules	always	BW-01	-	gap
+memhook	library	lib/memhook/Makefile.rules	always	BW-01	-	gap
+message_logger	binary	server/tools/message_logger/Makefile.message_logger	always	BW-12	-	gap
+moo	library	lib/moo/Makefile.rules	always	BW-11	-	gap
+network	library	lib/network/Makefile.rules	always	BW-02,BW-12	-	gap
+network	unit_test	lib/network/unit_test/Makefile.rules	always	BW-02,BW-12	-	gap
+physics2	library	lib/physics2/Makefile.rules	always	BW-10	-	gap
+physics2	unit_test	lib/physics2/unit_test/Makefile.rules	always	BW-10	-	gap
+png	library	third_party/png/Makefile.rules	always	-	-	gap
+process_defs	binary	tools/process_defs/Makefile.rules	always	BW-04,BW-13	-	gap
+pyscript	library	lib/pyscript/Makefile.rules	always	BW-03	-	gap
+pyscript	unit_test	lib/pyscript/unit_test/Makefile.rules	always	BW-03	-	gap
+remove_db	-	server/tools/remove_db/Makefile.rules	always	BW-09	-	gap
+res_packer	binary	tools/res_packer/Makefile.rules	always	BW-13	-	gap
+resmgr	library	lib/resmgr/Makefile.rules	always	BW-01	-	gap
+resmgr	unit_test	lib/resmgr/unit_test/Makefile.rules	always	BW-01	-	gap
+reviver	binary	server/reviver/Makefile.rules	always	BW-05	-	gap
+reviver	unit_test	server/reviver/unit_test/Makefile.rules	always	BW-05	-	gap
+scene	library	lib/scene/Makefile.rules	always	BW-10	-	gap
+scene	unit_test	lib/scene/unit_test/Makefile.rules	always	BW-10	-	gap
+script	library	lib/script/Makefile.rules	always	BW-03	-	gap
+script	unit_test	lib/script/unit_test/Makefile.rules	always	BW-03	-	gap
+server	library	lib/server/Makefile.rules	always	BW-08,BW-12	-	gap
+server	unit_test	lib/server/unit_test/Makefile.rules	always	BW-08,BW-12	-	gap
+serviceapp	copy_of_binary	server/baseapp/Makefile.serviceapp	always	BW-07	-	gap
+simple_python_client	binary	examples/client_integration/python/simple/Makefile.rules	user_shouldBuildExamples != 0	BW-14	asset_fixtures:client-integration-example	covered
+snapshot_helper	binary	server/tools/snapshot_helper/Makefile.rules	MySQL development libraries present	BW-09	-	gap
+speedtree	library	lib/speedtree/Makefile.rules	always	BW-11	-	gap
+sqlite	library	lib/sqlite/Makefile.rules	always	BW-09	-	gap
+sync_db	binary	server/tools/sync_db/Makefile.rules	MySQL development libraries present	BW-09	-	gap
+terrain	library	lib/terrain/Makefile.rules	always	BW-10	-	gap
+terrain	unit_test	lib/terrain/unit_test/Makefile.rules	always	BW-10	-	gap
+transfer_db	binary	server/tools/transfer_db/Makefile.rules	always	BW-09	-	gap
+unit_test_lib	library	lib/unit_test_lib/Makefile.rules	always	BW-12	-	gap
+unit_test_lib	unit_test	lib/unit_test_lib/unit_test/Makefile.rules	always	BW-12	-	gap
+urlrequest	library	lib/urlrequest/Makefile.rules	always	BW-03	-	gap
+waypoint	library	lib/waypoint/Makefile.rules	always	BW-10	-	gap
+zip	library	third_party/zip/Makefile.rules	always	-	-	gap

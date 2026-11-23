@@ -598,12 +598,7 @@ mod tests {
             // reference's `StubPoller` defaults its hook to succeed.
             let controls = StubControls::default();
             controls.register_result.set(true);
-            (
-                Self {
-                    controls: controls.clone(),
-                },
-                controls,
-            )
+            (Self { controls: controls.clone() }, controls)
         }
     }
 

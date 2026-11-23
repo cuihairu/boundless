@@ -10,4 +10,3 @@ repository.workspace = true
 [dependencies]
 foundation = { workspace = true }
 platform = { workspace = true }
-blowfish = { workspace = true }

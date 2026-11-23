@@ -10,3 +10,4 @@ pub mod multi_file_system;
 pub mod packed;
 pub mod special_chars;
 pub mod zip;
+pub mod zip_stream;

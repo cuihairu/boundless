@@ -1,0 +1,23 @@
+dep	license	notice	reuse_decision	source
+CppUnitLite2	MIT	no	vendored-source	third_party/CppUnitLite2
+WTL	MS-PL	no	vendored-source	third_party/WTL
+cmake-win32-x86	BSD-3-Clause (CMake, licenses in share/cmake-3.23/Licenses)	no	precompiled	third_party/cmake-win32-x86
+curl	MIT-style (curl COPYING)	no	vendored-source	third_party/curl
+mongodb	Apache-2.0 (upstream mongo-cxx-driver, archive)	no	vendored-archive	third_party/mongodb
+nedalloc	Boost-1.0	no	vendored-source	third_party/nedalloc
+nvmeshmender	NVIDIA proprietary (SDK license, header AS-IS disclaimer)	no	vendored-source	third_party/nvmeshmender
+nvtt	MIT	no	vendored-source	third_party/nvtt
+openautomate	NVIDIA OpenAutomate SDK EULA (proprietary)	no	vendored-source	third_party/openautomate
+openssl-vs2010	OpenSSL license (precompiled, version in tree)	no	precompiled	third_party/openssl-vs2010
+openssl-vs2012	OpenSSL license (precompiled, version in tree)	no	precompiled	third_party/openssl-vs2012
+openssl-vs2013	OpenSSL license (precompiled, version in tree)	no	precompiled	third_party/openssl-vs2013
+openssl-vs2015	OpenSSL license (precompiled, version in tree)	no	precompiled	third_party/openssl-vs2015
+openssl_android	OpenSSL license (BSD-like, Android port)	yes	vendored-source	third_party/openssl_android
+png	zlib (libpng notice)	no	vendored-source	third_party/png
+putty	MIT (upstream PuTTY, precompiled tools)	no	precompiled	third_party/putty
+python	PSF-2.0	no	vendored-source	third_party/python
+python_modules	mixed Python package licenses (Twisted MIT, Zope ZPL, Pympler BSD)	no	vendored-archive	third_party/python_modules
+re2	BSD-3-Clause	no	vendored-source	third_party/re2
+recastnavigation	zlib	no	vendored-source	third_party/recastnavigation
+sqlite	public domain (SQLite amalgamation)	no	vendored-source	third_party/sqlite
+zip	zlib	no	vendored-source	third_party/zip

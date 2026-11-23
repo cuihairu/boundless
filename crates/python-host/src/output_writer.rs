@@ -409,6 +409,12 @@ unsafe fn getattr_or_null(
 /// observable behaviour (`write` reaching the log entry, `softspace`
 /// present) stays the same.
 ///
+/// A no-op `flush` is added because the CPython this port embeds finalises
+/// `sys.stdout` on interpreter shutdown (the reference's older Python did
+/// not), and the stdout protocol requires a `flush` method; the line
+/// buffering in `handle_write` already delivers complete lines, so a no-op
+/// flush matches the reference's "only complete lines reach the log".
+///
 /// The flag each `write` builtin carries (`Py_True` for stderr, `Py_False`
 /// for stdout) plays the reference's `isStderr_` member.
 pub fn install() -> bool {
@@ -428,6 +434,8 @@ class PyOutputStream:
     def __init__(self, write):
         self.write = write
         self.softspace = False
+    def flush(self):
+        pass
 sys.stdout = PyOutputStream(sys._bw_stdout_write)
 sys.stderr = PyOutputStream(sys._bw_stderr_write)
 del PyOutputStream

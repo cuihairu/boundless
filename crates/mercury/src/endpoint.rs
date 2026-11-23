@@ -52,7 +52,11 @@ impl Eq for Address {}
 impl Address {
     /// `Address(uint32 ipArg, uint16 portArg)`: `salt` starts at zero.
     pub fn new(ip: u32, port: u16) -> Self {
-        Address { ip, port, salt: 0 }
+        Address {
+            ip,
+            port,
+            salt: 0,
+        }
     }
 
     /// `Address::isNone`.
@@ -92,12 +96,7 @@ impl Address {
     /// them.
     fn octets(&self) -> (u32, u32, u32, u32) {
         let hip = socket::ntohl(self.ip);
-        (
-            (hip >> 24) & 0xff,
-            (hip >> 16) & 0xff,
-            (hip >> 8) & 0xff,
-            hip & 0xff,
-        )
+        ((hip >> 24) & 0xff, (hip >> 16) & 0xff, (hip >> 8) & 0xff, hip & 0xff)
     }
 }
 
@@ -152,10 +151,7 @@ fn atoi(text: &str) -> i32 {
     let end = digits
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(digits.len());
-    digits[..end]
-        .parse::<i64>()
-        .map(|v| (sign * v) as i32)
-        .unwrap_or(0)
+    digits[..end].parse::<i64>().map(|v| (sign * v) as i32).unwrap_or(0)
 }
 
 /// `NetMask` (`netmask.hpp/.cpp`): the prefix matcher `getInterfaces`
@@ -244,7 +240,9 @@ pub struct Endpoint {
 impl Endpoint {
     /// `Endpoint()`: no socket until `socket` is called.
     pub fn new() -> Self {
-        Endpoint { socket_: NO_SOCKET }
+        Endpoint {
+            socket_: NO_SOCKET,
+        }
     }
 
     /// `fileno`.
@@ -276,12 +274,7 @@ impl Endpoint {
 
     /// `setbroadcast`.
     pub fn set_broadcast(&self, broadcast: bool) -> i32 {
-        socket::set_bool_option(
-            self.socket_,
-            socket::SOL_SOCKET,
-            socket::SO_BROADCAST,
-            broadcast,
-        )
+        socket::set_bool_option(self.socket_, socket::SOL_SOCKET, socket::SO_BROADCAST, broadcast)
     }
 
     /// `setreuseaddr`.
@@ -407,23 +400,13 @@ impl Endpoint {
 
     /// `enableErrorQueue`: `IP_RECVERR` on `SOL_IP`.
     pub fn enable_error_queue(&self, should_enable: bool) {
-        socket::set_bool_option(
-            self.socket_,
-            socket::SOL_IP,
-            socket::IP_RECVERR,
-            should_enable,
-        );
+        socket::set_bool_option(self.socket_, socket::SOL_IP, socket::IP_RECVERR, should_enable);
     }
 
     /// `readFromErrorQueue`: read one queued ICMP error. Fills the kernel
     /// error number, the offending peer and `ee_info`. False when the
     /// queue is empty.
-    pub fn read_error_queue(
-        &self,
-        queued_err_no: &mut i32,
-        offender: &mut Address,
-        info: &mut u32,
-    ) -> bool {
+    pub fn read_error_queue(&self, queued_err_no: &mut i32, offender: &mut Address, info: &mut u32) -> bool {
         let Some(queued) = socket::read_error_queue(self.socket_) else {
             return false;
         };
@@ -486,7 +469,11 @@ impl Endpoint {
     }
 
     /// `accept`: the new endpoint, or `None` when `accept` failed.
-    pub fn accept(&self, port: Option<&mut u16>, addr: Option<&mut u32>) -> Option<Endpoint> {
+    pub fn accept(
+        &self,
+        port: Option<&mut u16>,
+        addr: Option<&mut u32>,
+    ) -> Option<Endpoint> {
         let (fd, peer_port, peer_ip) = socket::accept_address(self.socket_);
         if fd < 0 {
             eprintln!(
@@ -702,8 +689,8 @@ impl Endpoint {
 
         // `strncpy(iftemp, spec, IFNAMSIZ); iftemp[IFNAMSIZ] = 0`: the
         // working copy keeps at most 16 bytes.
-        let iftemp: String =
-            String::from_utf8_lossy(&spec.as_bytes()[..spec.len().min(16)]).into_owned();
+        let iftemp: String = String::from_utf8_lossy(&spec.as_bytes()[..spec.len().min(16)])
+            .into_owned();
 
         let mut netmask_bits = 32;
         let mut addr = 0;
@@ -837,17 +824,10 @@ mod tests {
         let mut buf = [0u8; 32];
         let written = addr.write_to_string(&mut buf);
         assert_eq!(written, 14);
-        assert_eq!(
-            std::str::from_utf8(&buf[..written]).unwrap(),
-            "127.0.0.1:8080"
-        );
+        assert_eq!(std::str::from_utf8(&buf[..written]).unwrap(), "127.0.0.1:8080");
 
         let mut short = [0u8; 4];
-        assert_eq!(
-            addr.write_to_string(&mut short),
-            14,
-            "snprintf reports the full length"
-        );
+        assert_eq!(addr.write_to_string(&mut short), 14, "snprintf reports the full length");
         assert_eq!(&short, b"127.");
 
         // No leading zeros, unlike C's %03d style formatters.
@@ -875,9 +855,7 @@ mod tests {
         map.insert(a, "first");
         map.insert(higher_port, "second");
         assert_eq!(
-            map.range(..)
-                .map(|(k, _)| socket::ntohs(k.port))
-                .collect::<Vec<_>>(),
+            map.range(..).map(|(k, _)| socket::ntohs(k.port)).collect::<Vec<_>>(),
             vec![1, 2]
         );
     }
@@ -905,10 +883,7 @@ mod tests {
         let bound = local.local();
         assert_ne!(bound.port, 0, "the kernel picked a port");
         assert_eq!(bound.ip, 0);
-        assert_eq!(
-            local.c_str(),
-            format!("0.0.0.0:{}", socket::ntohs(bound.port))
-        );
+        assert_eq!(local.c_str(), format!("0.0.0.0:{}", socket::ntohs(bound.port)));
 
         let peer = udp_endpoint();
         assert_eq!(peer.bind(0, LOOPBACK), 0);
@@ -931,14 +906,7 @@ mod tests {
 
         let mut again = [0u8; 16];
         let mut seen_again = Address::default();
-        assert_eq!(
-            peer.recvfrom(
-                &mut again,
-                Some(&mut seen_again.port),
-                Some(&mut seen_again.ip)
-            ),
-            4
-        );
+        assert_eq!(peer.recvfrom(&mut again, Some(&mut seen_again.port), Some(&mut seen_again.ip)), 4);
         assert_eq!(&again[..4], b"pong");
         assert_eq!(seen_again.ip, LOOPBACK);
 
@@ -946,10 +914,7 @@ mod tests {
         // emptiness instead of stale data.
         let mut port = 0u16;
         let mut ip = u32::MAX;
-        assert_eq!(
-            Endpoint::new().local_address(Some(&mut port), Some(&mut ip)),
-            -1
-        );
+        assert_eq!(Endpoint::new().local_address(Some(&mut port), Some(&mut ip)), -1);
         assert_eq!(port, 0);
         assert_eq!(ip, 0, "local_address clears its out-parameters");
     }
@@ -1018,11 +983,7 @@ mod tests {
         assert_eq!(live.close(), 0);
         assert!(!live.good(), "the descriptor is cleared");
         assert_eq!(live.fileno(), NO_SOCKET);
-        assert_eq!(
-            socket::recv(dead_fd(), &mut [0u8; 4]),
-            -1,
-            "a dead descriptor will not read"
-        );
+        assert_eq!(socket::recv(dead_fd(), &mut [0u8; 4]), -1, "a dead descriptor will not read");
 
         // Detach hands the fd out instead of closing it.
         let mut handed = Endpoint::new();
@@ -1049,14 +1010,8 @@ mod tests {
 
         // Kernels cap socket buffers; a huge request comes back short, so
         // the unsatisfiable case reports false instead of pretending.
-        assert!(
-            !ep.set_buffer_size(socket::SO_SNDBUF, 1 << 30),
-            "1 GiB is refused"
-        );
-        assert!(
-            !ep.set_buffer_size(socket::SO_RCVBUF, i32::MAX),
-            "INT_MAX is refused"
-        );
+        assert!(!ep.set_buffer_size(socket::SO_SNDBUF, 1 << 30), "1 GiB is refused");
+        assert!(!ep.set_buffer_size(socket::SO_RCVBUF, i32::MAX), "INT_MAX is refused");
     }
 
     /// `numBytesAvailableForReading` counts what is queued, and -1 when the
@@ -1161,19 +1116,13 @@ mod tests {
         // does not clear these.
         let mut keep_port = htons(4321);
         let mut keep_ip = 0xDEAD_BEEF;
-        assert_eq!(
-            dead.remote_address(Some(&mut keep_port), Some(&mut keep_ip)),
-            -1
-        );
+        assert_eq!(dead.remote_address(Some(&mut keep_port), Some(&mut keep_ip)), -1);
         assert_eq!(keep_port, htons(4321));
         assert_eq!(keep_ip, 0xDEAD_BEEF);
 
         // `recvfrom` with no out-parameters still counts its failure.
         assert_eq!(dead.recvfrom(&mut [0u8; 4], None, None), -1);
-        assert_eq!(
-            dead.recvfrom_address(&mut [0u8; 4], &mut Address::default()),
-            -1
-        );
+        assert_eq!(dead.recvfrom_address(&mut [0u8; 4], &mut Address::default()), -1);
 
         dead.set_file_descriptor(raw);
     }
@@ -1250,11 +1199,7 @@ mod tests {
         // `accept` needs a listening socket.
         let mut junk_port = 0u16;
         let mut junk_ip = 0u32;
-        assert!(
-            client
-                .accept(Some(&mut junk_port), Some(&mut junk_ip))
-                .is_none()
-        );
+        assert!(client.accept(Some(&mut junk_port), Some(&mut junk_ip)).is_none());
         assert!(
             Endpoint::new().accept(None, None).is_none(),
             "an endpoint with no socket cannot accept"
@@ -1264,10 +1209,7 @@ mod tests {
         // an unconnected socket would block instead of failing.
         let mut broken = Endpoint::new();
         broken.set_file_descriptor(dead_fd());
-        assert!(
-            !broken.recv_all(&mut [0u8; 4]),
-            "a dead descriptor is an error"
-        );
+        assert!(!broken.recv_all(&mut [0u8; 4]), "a dead descriptor is an error");
 
         // `getBufferSize` reports the failure instead of a size.
         assert_eq!(broken.get_buffer_size(socket::SO_SNDBUF), -1);
@@ -1278,24 +1220,11 @@ mod tests {
         assert!(!blank.good());
         let mut blank_port = 0u16;
         let mut blank_ip = 0u32;
-        assert_eq!(
-            blank.local_address(Some(&mut blank_port), Some(&mut blank_ip)),
-            -1
-        );
-        assert_eq!(
-            blank.remote_address(Some(&mut blank_port), Some(&mut blank_ip)),
-            -1
-        );
+        assert_eq!(blank.local_address(Some(&mut blank_port), Some(&mut blank_ip)), -1);
+        assert_eq!(blank.remote_address(Some(&mut blank_port), Some(&mut blank_ip)), -1);
         assert_eq!(blank.remote_host_name(&mut empty), -1);
-        assert_eq!(
-            blank.recvfrom(&mut [0u8; 4], Some(&mut blank_port), Some(&mut blank_ip)),
-            -1
-        );
-        assert!(
-            blank
-                .accept(Some(&mut blank_port), Some(&mut blank_ip))
-                .is_none()
-        );
+        assert_eq!(blank.recvfrom(&mut [0u8; 4], Some(&mut blank_port), Some(&mut blank_ip)), -1);
+        assert!(blank.accept(Some(&mut blank_port), Some(&mut blank_ip)).is_none());
     }
 
     /// The address accessors write their out-parameters on the happy path,
@@ -1344,10 +1273,7 @@ mod tests {
 
         let mut seen_port = 0u16;
         let mut seen_ip = u32::MAX;
-        assert_eq!(
-            conn.remote_address(Some(&mut seen_port), Some(&mut seen_ip)),
-            0
-        );
+        assert_eq!(conn.remote_address(Some(&mut seen_port), Some(&mut seen_ip)), 0);
         assert_eq!(seen_ip, LOOPBACK);
         assert_eq!(seen_port, peer_port, "the peer port is the client's own");
         assert_eq!(conn.remote_address(Some(&mut seen_port), None), 0);
@@ -1373,10 +1299,7 @@ mod tests {
             -1,
             "10.0.255.1 has no name"
         );
-        assert_eq!(
-            nameless_host, "stale",
-            "a failed lookup leaves the buffer alone"
-        );
+        assert_eq!(nameless_host, "stale", "a failed lookup leaves the buffer alone");
         assert_eq!(unnameable.remote().ip, nameless);
 
         // Out-parameters set only once: `recvfrom` and `accept` write the
@@ -1387,15 +1310,9 @@ mod tests {
 
         let sender = udp_endpoint();
         assert_eq!(sender.bind(0, LOOPBACK), 0);
-        assert_eq!(
-            sender.sendto(b"both", receiver_addr.port, receiver_addr.ip),
-            4
-        );
+        assert_eq!(sender.sendto(b"both", receiver_addr.port, receiver_addr.ip), 4);
 
-        assert_eq!(
-            sender.sendto(b"again", receiver_addr.port, receiver_addr.ip),
-            5
-        );
+        assert_eq!(sender.sendto(b"again", receiver_addr.port, receiver_addr.ip), 5);
 
         let mut mut_port = 0u16;
         let mut mut_ip = u32::MAX;
@@ -1527,11 +1444,7 @@ mod tests {
 
         let mut flags = 0;
         assert_eq!(endpoint.get_interface_flags("lo", &mut flags), 0);
-        assert_ne!(
-            flags & platform::interface::IFF_LOOPBACK,
-            0,
-            "lo is loopback"
-        );
+        assert_ne!(flags & platform::interface::IFF_LOOPBACK, 0, "lo is loopback");
 
         let mut addr = 0;
         assert_eq!(endpoint.get_interface_address("lo", &mut addr), 0);
@@ -1578,37 +1491,25 @@ mod tests {
 
         // ip/bits: same scan, prefix semantics.
         let mut name = String::new();
-        assert_eq!(
-            endpoint.find_indicated_interface("127.0.0.0/8", &mut name),
-            0
-        );
+        assert_eq!(endpoint.find_indicated_interface("127.0.0.0/8", &mut name), 0);
         assert_eq!(name, "lo");
 
         // Empty and garbage specs: -1, name cleared.
         let mut name = String::new();
         assert_eq!(endpoint.find_indicated_interface("", &mut name), -1);
         assert!(name.is_empty());
-        assert_eq!(
-            endpoint.find_indicated_interface("no-such-if-xyz", &mut name),
-            -1
-        );
+        assert_eq!(endpoint.find_indicated_interface("no-such-if-xyz", &mut name), -1);
         assert!(name.is_empty());
 
         // A valid netmask nothing carries: -2, parsing ok but no match.
         let mut name = String::new();
-        assert_eq!(
-            endpoint.find_indicated_interface("10.11.12.13/24", &mut name),
-            -2
-        );
+        assert_eq!(endpoint.find_indicated_interface("10.11.12.13/24", &mut name), -2);
         assert!(name.is_empty());
 
         // A malformed netmask: -1 with the not-valid message.
         let mut name = String::new();
         assert_eq!(endpoint.find_indicated_interface("1.2.3/40", &mut name), -1);
         assert!(name.is_empty());
-        assert_eq!(
-            endpoint.find_indicated_interface("1.2.3.4/0", &mut name),
-            -1
-        );
+        assert_eq!(endpoint.find_indicated_interface("1.2.3.4/0", &mut name), -1);
     }
 }
