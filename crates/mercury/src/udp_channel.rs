@@ -27,6 +27,7 @@ use crate::misc::{
 };
 use crate::network_interface::{ChannelRef, NetworkInterface};
 use crate::packet::{HEADER_SIZE, MAX_ACKS, Packet, flags};
+use crate::packet_filter::PacketFilter;
 use crate::reply_order::ReplyOrder;
 use crate::udp_bundle::UdpBundle;
 use crate::unacked_packet::UnackedPacket;
@@ -198,6 +199,10 @@ pub struct UdpChannel {
     /// `numReliablePacketsSent_` (udp_channel.cpp:789): reliable outbound
     /// packets this channel has pushed through the interface.
     num_reliable_packets_sent: u32,
+    /// `pFilter_` (udp_channel.hpp:381): the channel's packet filter, the
+    /// encryption filter of BW-02-05. An `Rc` so the reference's smart
+    /// pointer shares the filter the same way.
+    p_filter: Option<Rc<dyn PacketFilter>>,
 
     /// The interface this channel registers with. Weak so the map's
     /// strong references do not keep the interface alive.
@@ -208,8 +213,9 @@ impl UdpChannel {
     /// `UDPChannel( networkInterface, addr, traits, minInactivityResendDelay, id )`
     /// (udp_channel.cpp:82): initialise the window fields from the traits
     /// and id, open the bundle, and register non-indexed channels through
-    /// [`set_address`](Self::set_address_fn). The `pFilter && id_` critical
-    /// is unrepresentable until filters land (BW-02-05).
+    /// [`set_address`](Self::set_address_fn). A filter is fitted later,
+    /// through [`set_p_filter`](Self::set_p_filter), which carries the
+    /// `pFilter && id_` critical (udp_channel.cpp:129).
     pub fn new(
         interface: &Rc<NetworkInterface>,
         addr: Address,
@@ -245,6 +251,7 @@ impl UdpChannel {
             push_unsent_acks_threshold: 0,
             should_auto_switch_to_src_addr: false,
             num_reliable_packets_sent: 0,
+            p_filter: None,
             small_out_seq_at: 0,
             large_out_seq_at: 0,
             oldest_unacked_seq: SEQ_NULL,
@@ -828,11 +835,22 @@ impl UdpChannel {
             if let Some(packet_mut) = Rc::get_mut(unacked.packet_mut()) {
                 packet_mut.update_channel_version(version, id);
             }
-            let packet = unacked.packet().clone();
+            let packet = unacked.packet().as_ref().clone();
             (packet, addr, interface)
         };
         if let Some(interface) = interface.as_ref() {
-            interface.send_packet(&addr, &packet);
+            // `sendRescheduledPacket` (packet_sender.cpp:241-258): a
+            // resend rides the channel's filter before the socket, same as
+            // a fresh send.
+            match channel.borrow().p_filter() {
+                Some(filter) => {
+                    let mut packet = packet;
+                    filter.send(&addr, &mut packet, &|addr, packet| {
+                        interface.send_packet(addr, packet)
+                    });
+                }
+                None => interface.send_packet(&addr, &packet),
+            }
         }
 
         let mut this = channel.borrow_mut();
@@ -947,6 +965,13 @@ impl UdpChannel {
             return Reason::CorruptedPacket;
         }
         if p.flags() & !flags::KNOWN_FLAGS != 0 {
+            return Reason::CorruptedPacket;
+        }
+
+        // `validateChecksum` (packet_receiver.cpp:585-599): a packet that
+        // fails its footer is "Invalid checksum" and corrupted. A packet
+        // with no checksum flag validates trivially.
+        if !p.validate_checksum() {
             return Reason::CorruptedPacket;
         }
 
@@ -1592,6 +1617,25 @@ impl UdpChannel {
         self.addr
     }
 
+    /// `pFilter()` (udp_channel.hpp:139): the channel's packet filter, if
+    /// one is fitted.
+    pub fn p_filter(&self) -> Option<Rc<dyn PacketFilter>> {
+        self.p_filter.clone()
+    }
+
+    /// `pFilter( PacketFilterPtr )` (udp_channel.hpp:140). The constructor
+    /// critical (udp_channel.cpp:129) -- filters are not supported on
+    /// indexed channels -- lands here, where the port fits a filter.
+    pub fn set_p_filter(&mut self, filter: Option<Rc<dyn PacketFilter>>) {
+        if filter.is_some() && self.id != CHANNEL_ID_NULL {
+            panic!(
+                "UDPChannel::pFilter: PacketFilters are not supported on indexed channels (id:{})",
+                self.id
+            );
+        }
+        self.p_filter = filter;
+    }
+
     /// `bundle()`: the channel's own bundle.
     pub fn bundle(&self) -> &UdpBundle {
         &self.bundle
@@ -1602,10 +1646,21 @@ impl UdpChannel {
         &mut self.bundle
     }
 
-    /// `clearBundle()` (channel.cpp:299): reuse the bundle or make one,
-    /// primers being BW-02-05.
+    /// `clearBundle()` (channel.cpp:299): the reference rebuilds the
+    /// bundle through `newBundle`, which sizes the spare room off the
+    /// current filter (udp_channel.cpp:1523-1529). A filter that claims
+    /// padding gets a fresh bundle; one that claims nothing keeps the
+    /// cheap reuse.
     pub fn clear_bundle(&mut self) {
-        self.bundle.clear();
+        let spare = self
+            .p_filter
+            .as_deref()
+            .map_or(0, |f| f.max_spare_size().min(u8::MAX as usize));
+        if spare != 0 {
+            self.bundle = UdpBundle::new(spare as u8);
+        } else {
+            self.bundle.clear();
+        }
     }
 
     /// `isDestroyed()`.
@@ -3451,5 +3506,106 @@ mod tests {
         );
         assert!(a.interface.poller().process_pending_events(0.1) >= 1);
         assert!(!a.channel.borrow().has_unacked_packets());
+    }
+
+    // -- The channel filter (BW-02-05-01) ---------------------------------
+
+    /// A no-op filter, so the accessors and the guard are drivable.
+    struct TestFilter;
+
+    impl PacketFilter for TestFilter {
+        fn recv(
+            &self,
+            _addr: &Address,
+            _packet: &mut Packet,
+            _next: &dyn Fn(&Address, &mut Packet) -> Reason,
+        ) -> Reason {
+            Reason::Success
+        }
+    }
+
+    /// A filter that claims spare room.
+    struct SpareFilter {
+        spare: usize,
+    }
+
+    impl PacketFilter for SpareFilter {
+        fn max_spare_size(&self) -> usize {
+            self.spare
+        }
+        fn recv(
+            &self,
+            _addr: &Address,
+            _packet: &mut Packet,
+            _next: &dyn Fn(&Address, &mut Packet) -> Reason,
+        ) -> Reason {
+            Reason::Success
+        }
+    }
+
+    /// `pFilter` (udp_channel.hpp:139-140): a filter fits on a channel and
+    /// reads back; the constructor critical (udp_channel.cpp:129) -- no
+    /// filters on indexed channels -- lands in the setter.
+    #[test]
+    fn a_filter_fits_on_a_channel_but_not_an_indexed_one() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d1),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        assert!(channel.borrow().p_filter().is_none());
+        channel.borrow_mut().set_p_filter(Some(Rc::new(TestFilter)));
+        assert!(channel.borrow().p_filter().is_some());
+
+        let indexed = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d2),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            1,
+        );
+        let fitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            indexed.borrow_mut().set_p_filter(Some(Rc::new(TestFilter)));
+        }));
+        assert!(fitted.is_err(), "filters are refused on indexed channels");
+    }
+
+    /// `clearBundle` (channel.cpp:299) rebuilds through `newBundle`, which
+    /// sizes the spare room off the current filter's `maxSpareSize`
+    /// (udp_channel.cpp:1523-1529): a filter that claims room puts its
+    /// padding on the bundle's packets, one that claims none reuses.
+    #[test]
+    fn a_claiming_filter_sizes_the_own_bundle() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d3),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        channel.borrow_mut().clear_bundle();
+        assert_eq!(
+            channel.borrow().bundle().packet(0).extra_filter_size(),
+            0,
+            "no filter: no spare room"
+        );
+
+        channel
+            .borrow_mut()
+            .set_p_filter(Some(Rc::new(SpareFilter { spare: 8 })));
+        channel.borrow_mut().clear_bundle();
+        assert_eq!(
+            channel.borrow().bundle().packet(0).extra_filter_size(),
+            8,
+            "the claiming filter's room rides the bundle"
+        );
     }
 }

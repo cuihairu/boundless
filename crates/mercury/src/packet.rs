@@ -525,6 +525,12 @@ impl Packet {
     /// packet is left as `validateChecksum` leaves it: stripped, with the
     /// field restored for the caller to skip over.
     pub fn validate_checksum(&mut self) -> bool {
+        // packet.cpp:279: only a checksum-flagged packet owes a footer.
+        // Everything else validates, leaving itself untouched.
+        if !self.has_flags(flags::HAS_CHECKSUM) {
+            return true;
+        }
+
         let stored = match self.strip_footer_u32() {
             Some(stored) => stored,
             None => return false,
@@ -850,8 +856,9 @@ mod tests {
         assert_eq!(tiny.strip_footer_u8(), None, "nothing left but the flags");
     }
 
-    /// A packet with nothing past the flags word refuses every footer:
-    /// the piggyback peel and the checksum validation both answer "no".
+    /// A packet with nothing past the flags word refuses the piggyback
+    /// peel. The checksum arm differs: only a checksum-flagged packet owes
+    /// a footer, so an unflagged one validates trivially (packet.cpp:279).
     #[test]
     fn footers_past_the_flags_word_are_refused() {
         let mut bare = Packet::new();
@@ -861,8 +868,8 @@ mod tests {
             "there is no piggyback footer to peel"
         );
         assert!(
-            !bare.validate_checksum(),
-            "there is no checksum footer to validate"
+            bare.validate_checksum(),
+            "without the checksum flag there is nothing to validate"
         );
     }
 

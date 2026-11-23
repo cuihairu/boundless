@@ -727,6 +727,12 @@ impl UdpBundle {
         &self.packets[index]
     }
 
+    /// Mutable: a channel filter (BW-02-05-01) rewrites or drops a packet
+    /// on its way out (packet_sender.cpp:241-258 `sendRescheduledPacket`).
+    pub fn packet_mut(&mut self, index: usize) -> &mut Packet {
+        &mut self.packets[index]
+    }
+
     /// `numMessages_`.
     pub fn num_messages(&self) -> u32 {
         self.num_messages

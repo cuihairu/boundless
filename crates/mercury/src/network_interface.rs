@@ -567,11 +567,26 @@ impl NetworkInterface {
         if packet.has_flags(flags::ON_CHANNEL)
             && let Some(channel) = self.find_channel(*addr, false)
         {
+            // `processPacket` (packet_receiver.cpp:471-474): the channel's
+            // filter gets first say over the packet, unless the remote has
+            // failed; its continuation is the channel's own dispatch.
+            let filter = channel.borrow().p_filter();
+            let remote_failed = channel.borrow().has_remote_failed();
+            if let Some(filter) = filter
+                && !remote_failed
+            {
+                return filter.recv(addr, packet, &|addr, packet| {
+                    UdpChannel::process_packet(&channel, addr, packet)
+                });
+            }
             return UdpChannel::process_packet(&channel, addr, packet);
         }
         // `networkInterface_.pOffChannelFilter()` (packet_receiver.cpp:493):
         // the interface's off-channel filter gets first say over stray
         // datagrams; with none installed they go straight to the sink.
+        // This half of `processFilteredPacket` stays as loose as the rest
+        // of it here: the size and flag checks run in the on-channel
+        // dispatch, and the checksum with them.
         if let Some(filter) = self.off_channel_filter.borrow().as_ref() {
             return filter.recv(addr, packet, &|addr, packet| {
                 self.deliver_packet(addr, packet)
@@ -612,13 +627,22 @@ impl NetworkInterface {
             channel,
         );
 
+        // `sendRescheduledPacket` (packet_sender.cpp:241-258): the owning
+        // channel's filter, when fitted, gets each packet before the
+        // physical send; the base `send` forwards straight to it.
+        let filter = channel.and_then(|c| c.borrow().p_filter());
+
         let count = bundle.num_data_units();
         for index in 0..count {
             if Some(index) == first_overflow {
                 break;
             }
-            let packet = bundle.packet(index);
-            self.send_packet(addr, packet);
+            match filter.as_ref() {
+                Some(filter) => filter.send(addr, bundle.packet_mut(index), &|addr, packet| {
+                    self.send_packet(addr, packet)
+                }),
+                None => self.send_packet(addr, bundle.packet(index)),
+            }
         }
     }
 
@@ -1189,5 +1213,214 @@ mod tests {
             .error_reporter()
             .report_exception(Reason::Inactivity, None);
         assert_eq!(*reporter.reports.borrow(), vec![(Reason::Inactivity, None)]);
+    }
+
+    // -- The channel filter and the checksum (BW-02-05-01) ---------------
+
+    /// A filter that records what it is asked about and hands everything
+    /// on, so the order and the pass-through are observable.
+    #[derive(Default)]
+    struct RecordingFilter {
+        recv: std::cell::Cell<usize>,
+        sends: std::cell::Cell<usize>,
+        saw_recv: std::cell::RefCell<Vec<u8>>,
+        saw_send: std::cell::RefCell<Vec<u8>>,
+    }
+
+    impl PacketFilter for RecordingFilter {
+        fn recv(
+            &self,
+            addr: &Address,
+            packet: &mut Packet,
+            next: &dyn Fn(&Address, &mut Packet) -> Reason,
+        ) -> Reason {
+            self.recv.set(self.recv.get() + 1);
+            self.saw_recv.borrow_mut().extend_from_slice(packet.wire());
+            next(addr, packet)
+        }
+
+        fn send(&self, addr: &Address, packet: &mut Packet, next: &dyn Fn(&Address, &mut Packet)) {
+            self.sends.set(self.sends.get() + 1);
+            self.saw_send.borrow_mut().extend_from_slice(packet.wire());
+            next(addr, packet)
+        }
+    }
+
+    /// An on-channel reliable datagram as it comes off the socket: flags,
+    /// body, the sequence footer, and -- when asked for -- the checksum
+    /// footer above it. `corrupt` leaves the stored sum a byte wrong.
+    fn on_channel_packet(body: &[u8], seq: u32, checksum: Option<bool>) -> Packet {
+        let mut word = flags::ON_CHANNEL | flags::IS_RELIABLE | flags::HAS_SEQUENCE_NUMBER;
+        if checksum.is_some() {
+            word |= flags::HAS_CHECKSUM;
+        }
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&word.to_le_bytes());
+        wire.extend_from_slice(body);
+        wire.extend_from_slice(&seq.to_le_bytes());
+        if checksum.is_some() {
+            wire.extend_from_slice(&[0u8; 4]);
+        }
+
+        let mut packet = Packet::new();
+        packet.grow(wire.len());
+        packet.buffer_mut()[..wire.len()].copy_from_slice(&wire);
+        if let Some(corrupt) = checksum {
+            let at = packet.msg_end_offset() - 4;
+            packet.write_checksum(at);
+            if corrupt {
+                packet.buffer_mut()[at] ^= 0xff;
+            }
+        }
+        packet
+    }
+
+    /// A channel the filter can be fitted on, registered at its own address.
+    fn filtered_channel<F: PacketFilter + 'static>(
+        interface: &Rc<NetworkInterface>,
+        port: u16,
+        filter: Rc<F>,
+    ) -> ChannelPtr {
+        let channel = UdpChannel::new(
+            interface,
+            Address::new(LOOPBACK, port),
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        channel
+            .borrow_mut()
+            .set_p_filter(Some(filter as Rc<dyn PacketFilter>));
+        channel
+    }
+
+    /// The acceptance: a fitted channel filter gets first say over an
+    /// incoming packet, and the one it forwards reaches the channel's own
+    /// dispatch and, with it, the sink.
+    #[test]
+    fn the_channel_filter_sits_between_the_socket_and_the_channel() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let filter = Rc::new(RecordingFilter::default());
+        let channel = filtered_channel(&interface, socket::htons(7101), filter.clone());
+        let addr = channel.borrow().addr();
+
+        let mut packet = on_channel_packet(b"ABCD", 0, None);
+        assert_eq!(
+            interface.process_packet(&addr, &mut packet),
+            Reason::Success
+        );
+
+        assert_eq!(filter.recv.get(), 1, "the filter saw the packet");
+        assert_eq!(
+            sink.packets.borrow().len(),
+            1,
+            "the packet reached the sink"
+        );
+    }
+
+    /// The acceptance: a checksummed packet that fails validates as
+    /// corrupted and never reaches the sink, while one that validates
+    /// goes through the channel as before. The filter saw both -- it sits
+    /// ahead of the checksum, exactly as `processPacket` orders it.
+    #[test]
+    fn a_checksummed_packet_is_validated_before_the_channel() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let filter = Rc::new(RecordingFilter::default());
+        let channel = filtered_channel(&interface, socket::htons(7102), filter.clone());
+        let addr = channel.borrow().addr();
+
+        let mut corrupt = on_channel_packet(b"ABCD", 0, Some(true));
+        assert_eq!(
+            interface.process_packet(&addr, &mut corrupt),
+            Reason::CorruptedPacket,
+            "a failed checksum is a corrupted packet"
+        );
+        assert_eq!(filter.recv.get(), 1, "the filter saw it first");
+        assert_eq!(
+            sink.packets.borrow().len(),
+            0,
+            "the corrupt packet is not delivered"
+        );
+
+        let mut sound = on_channel_packet(b"ABCD", 0, Some(false));
+        assert_eq!(interface.process_packet(&addr, &mut sound), Reason::Success);
+        assert_eq!(sink.packets.borrow().len(), 1, "the valid one is delivered");
+    }
+
+    /// A filter that decides a packet's fate instead of forwarding it.
+    struct DenyingFilter;
+
+    impl PacketFilter for DenyingFilter {
+        fn recv(
+            &self,
+            _addr: &Address,
+            _packet: &mut Packet,
+            _next: &dyn Fn(&Address, &mut Packet) -> Reason,
+        ) -> Reason {
+            Reason::GeneralNetwork
+        }
+    }
+
+    /// The acceptance: the filter's verdict is the packet's -- a filter
+    /// that denies keeps the continuation (and so the sink) from running.
+    #[test]
+    fn a_denying_channel_filter_keeps_the_packet_out() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let channel = filtered_channel(&interface, socket::htons(7103), Rc::new(DenyingFilter));
+        let addr = channel.borrow().addr();
+
+        let mut packet = on_channel_packet(b"ABCD", 0, None);
+        assert_eq!(
+            interface.process_packet(&addr, &mut packet),
+            Reason::GeneralNetwork,
+            "the filter's reason is the packet's"
+        );
+        assert_eq!(
+            sink.packets.borrow().len(),
+            0,
+            "a denied packet never reaches the sink"
+        );
+    }
+
+    /// The acceptance: a fitted channel filter rides every packet out,
+    /// seeing it before it leaves the socket -- a fresh send and a resend
+    /// alike -- and what it saw is what went over the wire.
+    #[test]
+    fn a_channel_filter_rides_each_outgoing_packet() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+
+        // The channel's own address, held by a listener, so the datagrams
+        // have somewhere to land.
+        let mut listener = Endpoint::new();
+        listener.socket(socket::SOCK_DGRAM);
+        listener.bind(0, LOOPBACK);
+        let port = listener.local().port;
+
+        let filter = Rc::new(RecordingFilter::default());
+        let channel = filtered_channel(&interface, port, filter.clone());
+
+        UdpChannel::send_bundle(&channel, &mut UdpBundle::new(0));
+
+        assert_eq!(filter.sends.get(), 1, "the filter saw the send");
+        let mut seen = [0u8; 16];
+        assert!(
+            listener.recvfrom_address(&mut seen, &mut Address::default()) > 0,
+            "the packet left the interface"
+        );
+        let saw = filter.saw_send.borrow();
+        assert_eq!(
+            &seen[..saw.len()],
+            &saw[..],
+            "the wire bytes are the ones the filter saw"
+        );
     }
 }

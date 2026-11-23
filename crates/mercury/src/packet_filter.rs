@@ -10,23 +10,41 @@
 //! interface admits only a `baseAppLogin` request and drops every other
 //! stray datagram with `REASON_GENERAL_NETWORK`.
 //!
-//! The send side (`PacketFilter::send`), `maxSpareSize`, and the
-//! channel-level filter are BW-02-05's.
+//! The send side (`PacketFilter::send`, packet_filter.cpp:25),
+//! `maxSpareSize` (packet_filter.hpp:56) and the channel-level filter
+//! (`UDPChannel::pFilter`, wired in BW-02-05-01) are all of this module.
 
 use crate::endpoint::Address;
 use crate::misc::{MessageID, Reason};
 use crate::packet::{self, HEADER_SIZE, Packet};
 
-/// `lib/network/packet_filter.hpp`: a filter on packets entering a channel
-/// or an interface.
+/// `lib/network/packet_filter.hpp`: a filter on packets entering or leaving
+/// a channel or an interface.
 ///
 /// The reference's base `recv` hands the packet to
 /// `receiver.processFilteredPacket`, i.e. the normal processing continues;
 /// a subclass inspects the packet first and either forwards it (calling
 /// that base `recv`) or drops it. The port expresses the "continue" step
 /// as the `next` continuation the caller passes in -- the interface
-/// routes it to its own `deliver_packet`.
+/// routes it to its own `deliver_packet`, the interface's send path to
+/// its own `send_packet`.
 pub trait PacketFilter {
+    /// `maxSpareSize` (packet_filter.hpp:56): the room a filter may claim
+    /// on each of its packets. The channel sizes its bundles off it
+    /// (`UDPChannel::newBundle`, udp_channel.cpp:1523-1529); a filter
+    /// that adds nothing declares zero.
+    fn max_spare_size(&self) -> usize {
+        0
+    }
+
+    /// `send` (packet_filter.cpp:25): decide an outbound packet's fate.
+    /// The base forwards it to `next` (the reference's
+    /// `packetSender.basicSendWithRetries`); a subclass may transform or
+    /// drop the packet instead.
+    fn send(&self, addr: &Address, packet: &mut Packet, next: &dyn Fn(&Address, &mut Packet)) {
+        next(addr, packet)
+    }
+
     /// `recv` (packet_filter.cpp:39): decide a received packet's fate.
     /// Return `Reason::Success` to hand the packet to `next` (the
     /// reference's `processFilteredPacket`); any other reason drops it.
@@ -185,5 +203,21 @@ mod tests {
             );
         }
         assert_eq!(delivered.get(), 0, "denied packets are not delivered");
+    }
+
+    /// The reference's base arms: `send` forwards its packet to the
+    /// physical sender, and `maxSpareSize` declares no padding, so a
+    /// filter that only inspects packets neither changes nor sizes them.
+    #[test]
+    fn the_base_send_forwards_and_claims_no_spare() {
+        let filter = InitialConnectionFilter::new(0);
+        let addr = Address::new(0x0100_007f, 0);
+        let mut packet = base_app_login_packet(0);
+        let sent = std::cell::Cell::new(0);
+
+        filter.send(&addr, &mut packet, &|_, _| sent.set(sent.get() + 1));
+
+        assert_eq!(sent.get(), 1, "the base send hands the packet on");
+        assert_eq!(filter.max_spare_size(), 0, "it claims no spare room");
     }
 }
