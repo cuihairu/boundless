@@ -8,6 +8,7 @@ pub mod baseapp_continuation;
 pub mod baseapp_relogon;
 pub mod baseappmgr;
 pub mod billing;
+pub mod buffered_ghost;
 pub mod cell;
 pub mod cell_data;
 pub mod cellappmgr;
