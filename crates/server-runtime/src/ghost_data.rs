@@ -12,6 +12,13 @@
 //! Real sends — and that a late property update never rewinds the event
 //! marker.
 //!
+//! BW-08-04-03 adds the Real-address tracking: during an offload the old Real
+//! sends `ghostSetNextReal` (recording the pending address) and the new Real
+//! sends `ghostSetReal` (switching the routing), validated by the
+//! monotonically increasing `numTimesRealOffloaded` subsequence id. The
+//! acceptance, "路由更新后抵达正确进程", is that after a successful routing
+//! update a message to the Ghost arrives at the new process.
+//!
 //! Reference:
 //! - `entity.cpp:1829` `writeGhostDataToStream` — the id and entity type.
 //! - `entity.cpp:1846` `writeGhostDataToStreamInternal` — the snapshot fields:
@@ -23,6 +30,11 @@
 //!   property updates the Real streams to a Ghost.
 //! - `entity.cpp:5032` `Controllers::updateGhost` — controller updates are
 //!   part of the same replication stream.
+//! - `cellapp_interface.hpp:307` `ghostSetReal` and `:310` `ghostSetNextReal`.
+//! - `entity.cpp:4927` `ghostSetReal` — the subsequence-id check and the
+//!   `pRealChannel_` switch.
+//! - `entity.cpp:4970` `ghostSetNextReal` — the sign-off that records the
+//!   pending Real.
 
 use std::collections::BTreeMap;
 
@@ -98,10 +110,28 @@ pub struct Ghost {
     pub id: u32,
     /// The replicated state.
     pub state: GhostState,
-    /// The address the Ghost routes the Real's messages to.
+    /// `pRealChannel_`: the address the Ghost routes the Real's messages to.
     pub real_address: Address,
     /// The base entity address.
     pub base_address: Address,
+    /// `nextRealAddr_` (`entity.cpp:4977`): the pending Real during an
+    /// offload, set by `ghostSetNextReal`.
+    pub next_real_address: Option<Address>,
+    /// `numTimesRealOffloaded_` (`entity.cpp:4932`): the subsequence id that
+    /// must increase by one for each offload.
+    pub num_times_real_offloaded: u32,
+}
+
+/// The result of a `ghostSetReal` attempt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SetRealOutcome {
+    /// The subsequence id matched: the Ghost now routes to the new Real
+    /// (`entity.cpp:4946`).
+    Applied,
+    /// The subsequence id was out of order, or the Ghost never saw the sign-off
+    /// for this Real: the message is delayed and the routing is unchanged
+    /// (`entity.cpp:4937` `delaySubsequence`).
+    OutOfOrder,
 }
 
 impl Ghost {
@@ -112,6 +142,8 @@ impl Ghost {
             state: snapshot.state.clone(),
             real_address: snapshot.real_address,
             base_address: snapshot.base_address,
+            next_real_address: None,
+            num_times_real_offloaded: snapshot.num_times_real_offloaded,
         }
     }
 
@@ -138,6 +170,33 @@ impl Ghost {
     /// 对应 Real 快照吻合`).
     pub fn matches(&self, snapshot: &GhostSnapshot) -> bool {
         self.id == snapshot.id && self.state == snapshot.state
+    }
+
+    /// `ghostSetNextReal` (`entity.cpp:4970`): the old Real's sign-off before
+    /// it offloads. The Ghost then only accepts messages from the pending Real.
+    pub fn set_next_real(&mut self, next: Address) {
+        self.next_real_address = Some(next);
+    }
+
+    /// `ghostSetReal` (`entity.cpp:4927`): validate the monotonically
+    /// increasing subsequence id and, when it matches, switch the routing to
+    /// the new Real (`pRealChannel_`).
+    pub fn set_real(&mut self, owner: Address, num_times_real_offloaded: u32) -> SetRealOutcome {
+        if num_times_real_offloaded != self.num_times_real_offloaded + 1
+            || self.next_real_address != Some(owner)
+        {
+            return SetRealOutcome::OutOfOrder;
+        }
+
+        self.num_times_real_offloaded = num_times_real_offloaded;
+        self.real_address = owner;
+        self.next_real_address = None;
+        SetRealOutcome::Applied
+    }
+
+    /// The address a message to this Ghost is routed to (the current Real).
+    pub fn route_to(&self) -> Address {
+        self.real_address
     }
 }
 
@@ -255,5 +314,82 @@ mod tests {
         assert_eq!(ghost.real_address, Address(300));
         assert_eq!(ghost.base_address, Address(400));
         assert!(ghost.matches(&snapshot));
+    }
+
+    /// A Ghost routes every message to its current Real.
+    #[test]
+    fn a_ghost_routes_messages_to_its_current_real() {
+        let ghost = Ghost::from_snapshot(&snapshot());
+        assert_eq!(ghost.route_to(), Address(100));
+        assert_eq!(ghost.num_times_real_offloaded, 0);
+        assert_eq!(ghost.next_real_address, None);
+    }
+
+    /// The acceptance: after a routing update, a message to the Ghost reaches
+    /// the new process.
+    #[test]
+    fn after_a_routing_update_messages_reach_the_new_process() {
+        let mut ghost = Ghost::from_snapshot(&snapshot());
+
+        // The old Real signs off, then the new Real takes over.
+        ghost.set_next_real(Address(200));
+        assert_eq!(ghost.next_real_address, Some(Address(200)));
+        assert_eq!(
+            ghost.set_real(Address(200), 1),
+            SetRealOutcome::Applied,
+            "the subsequence id matched"
+        );
+
+        assert_eq!(
+            ghost.route_to(),
+            Address(200),
+            "the message arrives at the new process"
+        );
+        assert_eq!(ghost.num_times_real_offloaded, 1);
+        assert_eq!(
+            ghost.next_real_address, None,
+            "the pending address is cleared"
+        );
+    }
+
+    /// An out-of-order subsequence id is rejected and the routing is unchanged.
+    #[test]
+    fn an_out_of_order_subsequence_id_is_rejected() {
+        let mut ghost = Ghost::from_snapshot(&snapshot());
+        ghost.set_next_real(Address(200));
+
+        assert_eq!(
+            ghost.set_real(Address(200), 3),
+            SetRealOutcome::OutOfOrder,
+            "the id must be exactly one more"
+        );
+        assert_eq!(ghost.route_to(), Address(100), "the routing did not change");
+    }
+
+    /// The Ghost must have seen the sign-off for the pending Real first
+    /// (`entity.cpp:4941` `MF_ASSERT(nextRealAddr_ == args.owner)`).
+    #[test]
+    fn the_ghost_must_have_seen_the_sign_off_first() {
+        let mut ghost = Ghost::from_snapshot(&snapshot());
+
+        assert_eq!(
+            ghost.set_real(Address(200), 1),
+            SetRealOutcome::OutOfOrder,
+            "no sign-off was received"
+        );
+        assert_eq!(ghost.route_to(), Address(100));
+    }
+
+    /// Offloads accumulate: each routing update advances the subsequence id.
+    #[test]
+    fn offloads_accumulate_across_several_reals() {
+        let mut ghost = Ghost::from_snapshot(&snapshot());
+
+        for (owner, n) in [(Address(200), 1), (Address(300), 2)] {
+            ghost.set_next_real(owner);
+            assert_eq!(ghost.set_real(owner, n), SetRealOutcome::Applied);
+            assert_eq!(ghost.route_to(), owner);
+        }
+        assert_eq!(ghost.num_times_real_offloaded, 2);
     }
 }
