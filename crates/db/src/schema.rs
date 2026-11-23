@@ -24,10 +24,11 @@
 //! `Index` (`table_meta_data.cpp:22-29`).
 
 use entitydef::data_description::DataDescription;
-use entitydef::data_type::{DataType, Kind};
+use entitydef::data_type::{DataType, Kind, TypeContext};
 use entitydef::entity_description::EntityDescription;
 use entitydef::flags::DatabaseIndexing;
 use resources::datasection::DataSection;
+use std::collections::HashMap;
 
 /// `TABLE_NAME_PREFIX` (`constants.hpp:38`).
 pub const TABLE_NAME_PREFIX: &str = "tbl";
@@ -551,12 +552,15 @@ impl Namer {
     }
 }
 
-/// What one property mapping contributes: columns on the current table, or
-/// a sub-table of its own.
+/// What one property mapping contributes: columns on the current table, a
+/// sub-table of its own, or a composite's mix of both
+/// (`CompositePropertyMapping`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Mapped {
     Columns(Vec<ColumnDescription>),
     SubTable(TableDescription),
+    /// `UserTypeMapping`'s bound children: columns and sub-tables at once.
+    Composite(Vec<ColumnDescription>, Vec<TableDescription>),
 }
 
 /// The schema of one entity type: its table, any array sub-tables, and the
@@ -574,6 +578,36 @@ pub struct EntitySchema {
     pub unmapped: Vec<String>,
 }
 
+/// One `bind()` call of a user type's binding
+/// (`PyUserTypeBinder::bind`, `py_user_type_binder.cpp:44-77`): an
+/// attribute bound to a BigWorld type name, with the bind's database
+/// length (the reference default is 255).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundAttribute {
+    /// The attribute name, the bind's `propName`.
+    pub name: String,
+    /// The type name, the bind's `typeName` — plain (`INT32`) or compound
+    /// (`ARRAY <of> INT32 </of>`), the text of the constructed
+    /// `<Type>` section (`py_user_type_binder.cpp:56-60`).
+    pub type_name: String,
+    /// The bind's `databaseLength`.
+    pub database_length: i32,
+}
+
+/// The binding one user type registers through `bindSectionToDB`
+/// (`user_type_mapping.cpp:106-145`): the `bind()` calls the script
+/// makes, in order. `beginTable`/`endTable` groups are not carried — a
+/// user type binding maps attributes as columns on the owner's table.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UserTypeBinding {
+    /// The bound attributes, in bind order.
+    pub attributes: Vec<BoundAttribute>,
+}
+
+/// The bindings of all user types, keyed by the `<implementedBy>`
+/// `module.instance` pair (`Kind::UserType`).
+pub type UserTypeBindings = HashMap<(String, String), UserTypeBinding>;
+
 /// The name a property maps under — `DataDescription::fullName`
 /// (`data_description.ipp:325-336`): `componentName.name` for a
 /// componentised property, the plain name otherwise.
@@ -588,8 +622,23 @@ fn mapping_name(prop: &DataDescription) -> String {
 /// Build the schema of one entity type — the Rust counterpart of
 /// `PropertyMappingsPerType::initPropertyMappings`
 /// (`property_mappings_per_type.cpp:139-174`) plus `EntityMapping`'s fixed
-/// columns.
+/// columns. User types stay unmapped; see
+/// [`entity_schema_with_user_types`].
 pub fn entity_schema(entity: &EntityDescription) -> EntitySchema {
+    entity_schema_with_user_types(entity, &HashMap::new())
+}
+
+/// [`entity_schema`] with a user type binding registry: a `USER_TYPE`
+/// property whose `<implementedBy>` module/instance has a binding maps
+/// like the reference's `UserTypeMapping` — a composite of the bound
+/// attributes (`user_type_mapping.cpp:106-145` calls the script's
+/// `bindSectionToDB`, whose `bind()` calls declare the children,
+/// `py_user_type_binder.cpp:44-77`). Without a binding it stays
+/// unmapped, the reference's failed script import.
+pub fn entity_schema_with_user_types(
+    entity: &EntityDescription,
+    bindings: &UserTypeBindings,
+) -> EntitySchema {
     let namer = Namer::new(&entity.name);
     let table_name = format!("{TABLE_NAME_PREFIX}_{}", entity.name);
 
@@ -620,9 +669,14 @@ pub fn entity_schema(entity: &EntityDescription) -> EntitySchema {
             prop.database_length,
             prop.database_indexing,
             default,
+            bindings,
         ) {
             Some(Mapped::Columns(cols)) => columns.extend(cols),
             Some(Mapped::SubTable(table)) => sub_tables.push(table),
+            Some(Mapped::Composite(cols, tables)) => {
+                columns.extend(cols);
+                sub_tables.extend(tables);
+            }
             None => unmapped.push(name),
         }
     }
@@ -795,6 +849,7 @@ fn map_property(
     db_len: i32,
     indexing: DatabaseIndexing,
     default: Option<&DataSection>,
+    bindings: &UserTypeBindings,
 ) -> Option<Mapped> {
     let index_type = IndexType::from_database_indexing(indexing);
     let is_indexed = indexing != DatabaseIndexing::None;
@@ -835,24 +890,55 @@ fn map_property(
                     db_len,
                     DatabaseIndexing::None,
                     element.default_section(),
+                    bindings,
                 )?;
                 let mut columns = vec![parent_id_column()];
-                let Mapped::Columns(child_columns) = child else {
-                    return None;
-                };
-                columns.extend(child_columns);
-                Some(Mapped::SubTable(TableDescription {
+                let mut nested_tables = Vec::new();
+                // A plain sub-table element (an array of arrays) has no
+                // column set — the reference's dispatch falls out.
+                match child {
+                    Mapped::Columns(child_columns) => columns.extend(child_columns),
+                    // A composite element (a bound user type) contributes
+                    // its columns relative to the sub-table — the binder's
+                    // unnamed context pushes no level
+                    // (`py_user_type_binder.cpp:17-21`) — and carries its
+                    // own sub-tables after this one.
+                    Mapped::Composite(child_columns, child_tables) => {
+                        columns.extend(child_columns);
+                        nested_tables = child_tables;
+                    }
+                    Mapped::SubTable(_) => return None,
+                }
+                let element_table = TableDescription {
                     name: namer.build_table_name(prop_name),
                     columns,
-                }))
+                };
+                if nested_tables.is_empty() {
+                    Some(Mapped::SubTable(element_table))
+                } else {
+                    Some(Mapped::Composite(
+                        Vec::new(),
+                        std::iter::once(element_table)
+                            .chain(nested_tables)
+                            .collect(),
+                    ))
+                }
             }
         }
         Kind::FixedDict {
             allow_none, fields, ..
-        } if !is_indexed => map_class(namer, prop_name, *allow_none, fields, default),
+        } if !is_indexed => map_class(namer, prop_name, *allow_none, fields, default, bindings),
         Kind::Class { allow_none, fields } if !is_indexed => {
-            map_class(namer, prop_name, *allow_none, fields, default)
+            map_class(namer, prop_name, *allow_none, fields, default, bindings)
         }
+        // A USER_TYPE maps only through a registered binding — the
+        // reference's script `bindSectionToDB`
+        // (`user_type_mapping.cpp:106-145`); a failed import (no binding)
+        // or an indexed user type is the "cannot be persistent" error
+        // (`property_mapping.cpp:264-288`).
+        Kind::UserType { module, instance } if !is_indexed => bindings
+            .get(&(module.clone(), instance.clone()))
+            .map(|binding| map_user_type(namer, prop_name, binding, default, bindings)),
         Kind::UserType { .. } | Kind::MailBox => None,
         Kind::Int { bytes, signed } => {
             let field_type = match (*bytes, usize::from(!signed)) {
@@ -978,6 +1064,7 @@ fn map_class(
     allow_none: bool,
     fields: &[entitydef::data_type::Field],
     default: Option<&DataSection>,
+    bindings: &UserTypeBindings,
 ) -> Option<Mapped> {
     let mut columns = Vec::new();
     if allow_none {
@@ -1004,11 +1091,73 @@ fn map_class(
             field.db_len,
             DatabaseIndexing::None,
             field_default,
+            bindings,
         ) {
             columns.extend(field_columns);
         }
     }
     Some(Mapped::Columns(columns))
+}
+
+/// `UserTypeMapping` — a bound user type maps as the composite of its
+/// `bind()` calls (`py_user_type_binder.cpp:16-31` pushes a non-table
+/// naming level for the property, then every `bind` creates the child
+/// mapping on that namer, `:44-77`): no `fm_` flag, one level for the
+/// property, then each attribute's columns on it. Attributes the dispatch
+/// cannot take are skipped the way class fields are.
+fn map_user_type(
+    namer: &Namer,
+    prop_name: &str,
+    binding: &UserTypeBinding,
+    default: Option<&DataSection>,
+    bindings: &UserTypeBindings,
+) -> Mapped {
+    let child_namer = namer.child(prop_name, false);
+    let attr_namer = if prop_name.is_empty() {
+        namer
+    } else {
+        &child_namer
+    };
+
+    let ctx = TypeContext::default();
+    let mut columns = Vec::new();
+    let mut sub_tables = Vec::new();
+    for attr in &binding.attributes {
+        let Some(type_) = build_bound_type(&ctx, &attr.type_name) else {
+            continue;
+        };
+        // The bind's default: the parent default's attribute section
+        // (`py_user_type_binder.cpp:50-55`).
+        let attr_default = default.and_then(|section| section.find_child(&attr.name));
+        match map_property(
+            attr_namer,
+            &attr.name,
+            &type_,
+            attr.database_length,
+            DatabaseIndexing::None,
+            attr_default,
+            bindings,
+        ) {
+            Some(Mapped::Columns(attr_columns)) => columns.extend(attr_columns),
+            Some(Mapped::SubTable(table)) => sub_tables.push(table),
+            Some(Mapped::Composite(attr_columns, attr_tables)) => {
+                columns.extend(attr_columns);
+                sub_tables.extend(attr_tables);
+            }
+            None => {}
+        }
+    }
+    Mapped::Composite(columns, sub_tables)
+}
+
+/// Build a bound attribute's type from its name — the binder's
+/// `<Type>typeName</Type>` section through `DataType::buildDataType`
+/// (`py_user_type_binder.cpp:56-66`).
+fn build_bound_type(ctx: &TypeContext, type_name: &str) -> Option<DataType> {
+    let xml = format!("<Type>{type_name}</Type>");
+    let section = resources::datasection::parse("", xml.as_bytes()).ok()?;
+    let mut diag = entitydef::diagnostics::Diagnostics::new();
+    entitydef::data_type::build_type(ctx, Some(&section), &mut diag)
 }
 
 /// `StringConv::toStr` for a numeric default: integers decimal, floats the
@@ -2006,5 +2155,199 @@ mod tests {
         )]);
         let schema = entity_schema(&desc);
         assert_eq!(schema.unmapped, vec!["grid"]);
+    }
+
+    /// The acceptance, 原版数据库行可读写: a bound user type maps as the
+    /// composite of its `bind()` calls — the attributes become columns on
+    /// the owner's table under the property's naming level, the way
+    /// `UserTypeMapping` produces them
+    /// (`user_type_mapping.cpp:106-145`, `py_user_type_binder.cpp:16-77`).
+    #[test]
+    fn a_bound_user_type_maps_as_the_composite_of_its_binds() {
+        let desc = parse_entity(&[(
+            "scripts/entity_defs/Avatar.def",
+            "<root> <Properties> \
+                 <stats> <Type> USER_TYPE <implementedBy> game.stats </implementedBy> \
+                     </Type> <Flags> BASE </Flags> <Persistent> true </Persistent> \
+                 </stats> \
+             </Properties> </root>",
+        )]);
+
+        let mut bindings: UserTypeBindings = HashMap::new();
+        bindings.insert(
+            ("game".to_string(), "stats".to_string()),
+            UserTypeBinding {
+                attributes: vec![
+                    BoundAttribute {
+                        name: "hp".to_string(),
+                        type_name: "INT32".to_string(),
+                        database_length: 255,
+                    },
+                    BoundAttribute {
+                        name: "title".to_string(),
+                        type_name: "STRING".to_string(),
+                        database_length: 32,
+                    },
+                    // A bound array attribute gets its own sub-table, the
+                    // way a beginTable group does.
+                    BoundAttribute {
+                        name: "tags".to_string(),
+                        type_name: "ARRAY <of> INT32 </of>".to_string(),
+                        database_length: 255,
+                    },
+                    // A bound nested user type contributes its own binds'
+                    // columns under this one.
+                    BoundAttribute {
+                        name: "inner".to_string(),
+                        type_name: "USER_TYPE <implementedBy> game.inner </implementedBy>"
+                            .to_string(),
+                        database_length: 255,
+                    },
+                    // A mailbox attribute no mapping takes is skipped, the
+                    // way class fields are.
+                    BoundAttribute {
+                        name: "box".to_string(),
+                        type_name: "MAILBOX".to_string(),
+                        database_length: 255,
+                    },
+                    // An unknown type name is the reference's invalid bind;
+                    // the attribute contributes nothing.
+                    BoundAttribute {
+                        name: "junk".to_string(),
+                        type_name: "NO_SUCH_TYPE".to_string(),
+                        database_length: 255,
+                    },
+                ],
+            },
+        );
+        bindings.insert(
+            ("game".to_string(), "inner".to_string()),
+            UserTypeBinding {
+                attributes: vec![BoundAttribute {
+                    name: "level".to_string(),
+                    type_name: "INT8".to_string(),
+                    database_length: 255,
+                }],
+            },
+        );
+
+        let schema = entity_schema_with_user_types(&desc, &bindings);
+        assert!(schema.unmapped.is_empty(), "{:?}", schema.unmapped);
+
+        let names: Vec<&str> = schema
+            .table
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        // sm_stats_<attr>: the binder's naming level for the property, then
+        // each attribute; no fm_ flag, the composite has none. The nested
+        // user type's own bind lands under it; the mailbox and the unknown
+        // type contribute nothing.
+        assert_eq!(
+            names,
+            vec![
+                "id",
+                "sm_stats_hp",
+                "sm_stats_title",
+                "sm_stats_inner_level",
+                "sm_gameTime",
+                "sm_timestamp"
+            ]
+        );
+        let find = |name: &str| {
+            schema
+                .table
+                .columns
+                .iter()
+                .find(|c| c.name == name)
+                .expect(name)
+                .col_type
+                .get_as_string(IndexType::None)
+        };
+        assert_eq!(find("sm_stats_hp"), "INT DEFAULT 0 NOT NULL");
+        assert_eq!(find("sm_stats_title"), "VARBINARY(32) NOT NULL");
+        // The bound array's sub-table, off the property's naming level.
+        assert_eq!(schema.sub_tables.len(), 1);
+        let tags = &schema.sub_tables[0];
+        assert_eq!(tags.name, "tbl_Avatar_stats_tags");
+        let tag_names: Vec<&str> = tags.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(tag_names, vec!["parentID", "sm_value"]);
+    }
+
+    /// An unbound user type stays unmapped — the reference's failed script
+    /// import (`user_type_mapping.cpp:112-125`) — and an indexed one is
+    /// the "cannot be persistent" error (`property_mapping.cpp:264-288`).
+    #[test]
+    fn an_unbound_or_indexed_user_type_is_unmapped() {
+        let desc = parse_entity(&[(
+            "scripts/entity_defs/Avatar.def",
+            "<root> <Properties> \
+                 <plain> <Type> USER_TYPE <implementedBy> no.such </implementedBy> \
+                     </Type> <Flags> BASE </Flags> <Persistent> true </Persistent> \
+                 </plain> \
+                 <fixed> <Type> USER_TYPE <implementedBy> game.stats </implementedBy> \
+                     </Type> <Flags> BASE </Flags> <Persistent> true </Persistent> \
+                     <Identifier> true </Identifier> </fixed> \
+             </Properties> </root>",
+        )]);
+
+        let mut bindings: UserTypeBindings = HashMap::new();
+        bindings.insert(
+            ("game".to_string(), "stats".to_string()),
+            UserTypeBinding::default(),
+        );
+
+        let schema = entity_schema_with_user_types(&desc, &bindings);
+        assert_eq!(schema.unmapped, vec!["plain", "fixed"]);
+    }
+
+    /// A bound user type inside a sequence element maps relative to the
+    /// sub-table — the binder's unnamed context pushes no level
+    /// (`py_user_type_binder.cpp:17-21`).
+    #[test]
+    fn a_bound_user_type_element_maps_relative_to_the_sub_table() {
+        let desc = parse_entity(&[(
+            "scripts/entity_defs/Avatar.def",
+            "<root> <Properties> \
+                 <items> <Type> ARRAY <size> 0 </size> \
+                         <of> USER_TYPE <implementedBy> game.item </implementedBy> </of> \
+                     </Type> <Flags> BASE </Flags> <Persistent> true </Persistent> \
+                 </items> \
+             </Properties> </root>",
+        )]);
+
+        let mut bindings: UserTypeBindings = HashMap::new();
+        bindings.insert(
+            ("game".to_string(), "item".to_string()),
+            UserTypeBinding {
+                attributes: vec![
+                    BoundAttribute {
+                        name: "count".to_string(),
+                        type_name: "INT8".to_string(),
+                        database_length: 255,
+                    },
+                    // An array attribute inside the element carries its own
+                    // sub-table after the element's.
+                    BoundAttribute {
+                        name: "mods".to_string(),
+                        type_name: "ARRAY <of> INT32 </of>".to_string(),
+                        database_length: 255,
+                    },
+                ],
+            },
+        );
+
+        let schema = entity_schema_with_user_types(&desc, &bindings);
+        assert!(schema.unmapped.is_empty(), "{:?}", schema.unmapped);
+        assert_eq!(schema.sub_tables.len(), 2);
+        let items = &schema.sub_tables[0];
+        assert_eq!(items.name, "tbl_Avatar_items");
+        let names: Vec<&str> = items.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["parentID", "sm_count"]);
+        let mods = &schema.sub_tables[1];
+        assert_eq!(mods.name, "tbl_Avatar_items_mods");
+        let mod_names: Vec<&str> = mods.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(mod_names, vec!["parentID", "sm_value"]);
     }
 }
