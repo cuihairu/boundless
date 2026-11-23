@@ -428,11 +428,79 @@ impl WatcherNode {
             }
         }
     }
+
+    /// `DirectoryWatcher::getAsString` (watcher.cpp:128-162) plus the
+    /// `DataWatcher` override (watcher.hpp:2589-2603): resolve `path` and
+    /// report `(rendered value, mode)`. An empty path names *this* node —
+    /// a directory reports `<DIR>` with `WT_DIRECTORY`, a leaf reports its
+    /// value with its own mode — while any non-empty path that runs through
+    /// a leaf fails.
+    pub fn get_string(&self, path: &str) -> Option<(String, Mode)> {
+        match self {
+            Self::Directory { .. } => {
+                if path.is_empty() {
+                    return Some((DIRECTORY_STRING.to_string(), Mode::Directory));
+                }
+                let (label, tail) = first_segment(path)?;
+                match self.child(label) {
+                    Some(child) => child.get_string(tail),
+                    None => None,
+                }
+            }
+            Self::Value { mode, value, .. } => {
+                if path.is_empty() {
+                    Some((value.as_string(), *mode))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// `DirectoryWatcher::setFromString` (watcher.cpp:202-216) plus the
+    /// `DataWatcher` override (watcher.hpp:2604-2617): parse `value_str`
+    /// into the leaf at `path`. Only a read-write leaf accepts a write, and
+    /// only when the value parses for its type; anything else returns false
+    /// and leaves the tree untouched.
+    pub fn set_string(&mut self, path: &str, value_str: &str) -> bool {
+        match self {
+            Self::Directory { children } => {
+                let Some((label, tail)) = first_segment(path) else {
+                    return false;
+                };
+                match children.get_mut(label) {
+                    Some(child) => child.set_string(tail, value_str),
+                    None => false,
+                }
+            }
+            Self::Value { mode, value, .. } => {
+                if path.is_empty() && *mode == Mode::ReadWrite {
+                    parse_into_value(value, value_str)
+                } else {
+                    false
+                }
+            }
+        }
+    }
 }
 
-/// `Watcher::partitionPath` (watcher.cpp:574-596): split a full path at its
-/// last separator into `(name, directory)`, where `directory` keeps the
-/// trailing separator. A path without a separator is all name.
+/// `DirectoryWatcher::findChild` semantics (watcher.cpp:477-519): the first
+/// path segment and what follows it. An empty first segment (a path that
+/// starts with the separator) is refused — the reference logs
+/// "Empty watcher path segment" and finds nothing.
+fn first_segment(path: &str) -> Option<(&str, &str)> {
+    match path.find(WATCHER_SEPARATOR) {
+        None => Some((path, "")),
+        Some(position) => {
+            let label = &path[..position];
+            if label.is_empty() {
+                None
+            } else {
+                Some((label, &path[position + 1..]))
+            }
+        }
+    }
+}
 pub fn partition_path(path: &str) -> (String, String) {
     match path.rfind(WATCHER_SEPARATOR) {
         Some(position) => (
@@ -448,6 +516,145 @@ pub fn partition_path(path: &str) -> (String, String) {
 pub fn tail(path: &str) -> Option<&str> {
     path.find(WATCHER_SEPARATOR)
         .map(|separator| &path[separator + 1..])
+}
+
+/// The longest leading integer token of `text`, `stream >> int` style: an
+/// optional sign then digits, stopping at the first non-digit. `None` when
+/// there is no digit at all.
+fn leading_int(text: &str) -> Option<i64> {
+    let text = text.trim_start();
+    let bytes = text.as_bytes();
+    let mut end = 0;
+    if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+        end += 1;
+    }
+    let digits_start = end;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end == digits_start {
+        return None;
+    }
+    text[..end].parse().ok()
+}
+
+/// The longest leading unsigned integer token of `text` (no sign, like
+/// `stream >> unsigned int`), or `None` when there is no digit.
+fn leading_uint(text: &str) -> Option<u64> {
+    let text = text.trim_start();
+    let digits: String = text
+        .bytes()
+        .take_while(|b| b.is_ascii_digit())
+        .map(|b| b as char)
+        .collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+/// The longest leading float token of `text`, `stream >> float` style: an
+/// optional sign, digits, an optional fraction and an optional exponent
+/// (which is only part of the token when it has digits). `None` when no
+/// numeric prefix parses.
+fn leading_float(text: &str) -> Option<f64> {
+    let text = text.trim_start();
+    let bytes = text.as_bytes();
+    let mut end = 0;
+    if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+        end += 1;
+    }
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end < bytes.len() && bytes[end] == b'.' {
+        end += 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+    }
+    if end < bytes.len() && (bytes[end] == b'e' || bytes[end] == b'E') {
+        let exponent_start = end;
+        end += 1;
+        if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+            end += 1;
+        }
+        let digits_start = end;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == digits_start {
+            // "1e" is not a float token; the exponent needs digits.
+            end = exponent_start;
+        }
+    }
+    if end == 0 {
+        return None;
+    }
+    text[..end].parse().ok()
+}
+
+/// `watcherStringToValue` (watcher.hpp:79-177) for the scalar types: parse
+/// `text` into `value`, leaving it untouched on failure. Strings always
+/// accept, booleans take `true`/`false` (case-insensitively) or any integer
+/// token, and the numeric types take their leading token.
+fn parse_into_value(value: &mut WatcherValue, text: &str) -> bool {
+    match value {
+        WatcherValue::Int(target) => match leading_int(text) {
+            Some(parsed) => {
+                *target = parsed;
+                true
+            }
+            None => false,
+        },
+        WatcherValue::Uint(target) => match leading_uint(text) {
+            Some(parsed) => {
+                *target = parsed;
+                true
+            }
+            None => false,
+        },
+        WatcherValue::Float(target) => match leading_float(text) {
+            Some(parsed) => {
+                *target = parsed;
+                true
+            }
+            None => false,
+        },
+        WatcherValue::Bool(target) => {
+            if text.eq_ignore_ascii_case("true") {
+                *target = true;
+                true
+            } else if text.eq_ignore_ascii_case("false") {
+                *target = false;
+                true
+            } else {
+                match leading_int(text) {
+                    Some(parsed) => {
+                        *target = parsed != 0;
+                        true
+                    }
+                    None => false,
+                }
+            }
+        }
+        WatcherValue::String(target) => {
+            *target = text.to_string();
+            true
+        }
+        WatcherValue::Type(target) => match leading_uint(text).and_then(|parsed| {
+            u8::try_from(parsed)
+                .ok()
+                .and_then(WatcherDataType::from_discriminant)
+        }) {
+            Some(parsed) => {
+                *target = parsed;
+                true
+            }
+            None => false,
+        },
+    }
 }
 
 /// The watcher path tree rooted at a `DirectoryWatcher` — the port of
@@ -492,6 +699,21 @@ impl WatcherTree {
     /// The root directory's children, in sorted label order.
     pub fn children(&self) -> Vec<(&str, &WatcherNode)> {
         self.root.children()
+    }
+
+    /// `Watcher::rootWatcher().getAsString` (watcher.cpp:128-162): read the
+    /// value at `path`, reporting the rendered value and its mode. An empty
+    /// path reads the root directory (`<DIR>`, `WT_DIRECTORY`).
+    pub fn get_string(&self, path: &str) -> Option<(String, Mode)> {
+        self.root.get_string(path)
+    }
+
+    /// `Watcher::rootWatcher().setFromString` (watcher.cpp:202-216): parse
+    /// `value_str` into the read-write leaf at `path`. Returns false — and
+    /// changes nothing — when the path is absent, names a directory, runs
+    /// through a leaf, is read-only, or the text does not parse.
+    pub fn set_string(&mut self, path: &str, value_str: &str) -> bool {
+        self.root.set_string(path, value_str)
     }
 }
 
@@ -886,5 +1108,236 @@ mod tests {
     fn default_tree_is_empty() {
         assert_eq!(WatcherTree::default(), WatcherTree::new());
         assert_eq!(WatcherTree::default().children().len(), 0);
+    }
+
+    /// test_watcher.cpp:142-166 — DirectoryWatcher_getAsString: the root
+    /// reads as `<DIR>` with WT_DIRECTORY, a leaf reads its value with its
+    /// own mode, and unknown children or paths through a leaf fail.
+    #[test]
+    fn get_string_matches_the_reference_suite() {
+        let mut tree = WatcherTree::new();
+        assert_eq!(
+            tree.get_string(""),
+            Some((DIRECTORY_STRING.to_string(), Mode::Directory))
+        );
+        assert!(tree.add("value", WatcherValue::Int(7), Mode::ReadOnly));
+
+        assert_eq!(
+            tree.get_string("value"),
+            Some(("7".to_string(), Mode::ReadOnly))
+        );
+        assert_eq!(tree.get_string("nonExistent"), None);
+        assert_eq!(tree.get_string("value/sub"), None);
+
+        // A trailing separator lands on the leaf as itself.
+        assert_eq!(
+            tree.get_string("value/"),
+            Some(("7".to_string(), Mode::ReadOnly))
+        );
+
+        // A read-write leaf reports its own mode and value.
+        assert!(tree.add("count", WatcherValue::Uint(3), Mode::ReadWrite));
+        assert_eq!(
+            tree.get_string("count"),
+            Some(("3".to_string(), Mode::ReadWrite))
+        );
+    }
+
+    /// test_watcher.cpp:168-190 and 253-283 — DirectoryWatcher_setFromString
+    /// / DataWatcher_getAndSetAsString: a read-write leaf accepts a parsed
+    /// value, an unknown path and a read-only leaf are refused, and a bad
+    /// parse leaves the value untouched.
+    #[test]
+    fn set_string_matches_the_reference_suite() {
+        let mut tree = WatcherTree::new();
+        assert!(tree.add("value", WatcherValue::Int(0), Mode::ReadWrite));
+        assert!(tree.add("roValue", WatcherValue::Int(0), Mode::ReadOnly));
+
+        // The read-write leaf takes the new value.
+        assert!(tree.set_string("value", "13"));
+        assert_eq!(
+            tree.get("value").unwrap().watched_value(),
+            Some(&WatcherValue::Int(13))
+        );
+        assert_eq!(
+            tree.get_string("value"),
+            Some(("13".to_string(), Mode::ReadWrite))
+        );
+
+        // An unknown path is refused.
+        assert!(!tree.set_string("nonExistent", "1"));
+
+        // A read-only leaf is refused and keeps its value.
+        assert!(!tree.set_string("roValue", "99"));
+        assert_eq!(
+            tree.get("roValue").unwrap().watched_value(),
+            Some(&WatcherValue::Int(0))
+        );
+
+        // An invalid value is refused and keeps the old value.
+        assert!(!tree.set_string("value", "not_a_number"));
+        assert_eq!(
+            tree.get("value").unwrap().watched_value(),
+            Some(&WatcherValue::Int(13))
+        );
+
+        // Setting a directory, or a path through a leaf, is refused.
+        assert!(tree.add("sub/deep", WatcherValue::Int(1), Mode::ReadWrite));
+        assert!(!tree.set_string("sub", "1"));
+        assert!(!tree.set_string("sub/deep/x", "1"));
+
+        // An empty or leading-separator path is refused (findChild finds no
+        // non-empty first segment).
+        assert!(!tree.set_string("", "1"));
+        assert!(!tree.set_string("/x", "1"));
+    }
+
+    /// test_watcher.cpp:253-283 — the DataWatcher read-write leaf is read
+    /// back with its own mode, and a non-empty path on a leaf fails.
+    #[test]
+    fn get_and_set_on_a_leaf_follow_the_data_watcher() {
+        let mut tree = WatcherTree::new();
+        assert!(tree.add("v", WatcherValue::Int(5), Mode::ReadWrite));
+
+        assert_eq!(
+            tree.get_string("v"),
+            Some(("5".to_string(), Mode::ReadWrite))
+        );
+        assert_eq!(tree.get_string("v/sub"), None);
+
+        assert!(tree.set_string("v", "10"));
+        assert_eq!(
+            tree.get("v").unwrap().watched_value(),
+            Some(&WatcherValue::Int(10))
+        );
+
+        // The trailing-separator walk reaches the leaf as itself.
+        assert!(tree.set_string("v/", "21"));
+        assert_eq!(
+            tree.get("v").unwrap().watched_value(),
+            Some(&WatcherValue::Int(21))
+        );
+    }
+
+    /// `watcherStringToValue` (watcher.hpp:79-177) per scalar: numeric
+    /// types take their leading token, strings take everything, booleans
+    /// take true/false (any case) or a non-zero integer, and a `Type` leaf
+    /// takes its protocol discriminant.
+    #[test]
+    fn set_string_parses_each_scalar_type() {
+        let mut tree = WatcherTree::new();
+        assert!(tree.add("int", WatcherValue::Int(0), Mode::ReadWrite));
+        assert!(tree.add("uint", WatcherValue::Uint(0), Mode::ReadWrite));
+        assert!(tree.add("float", WatcherValue::Float(0.0), Mode::ReadWrite));
+        assert!(tree.add("bool", WatcherValue::Bool(false), Mode::ReadWrite));
+        assert!(tree.add("str", WatcherValue::String(String::new()), Mode::ReadWrite));
+        assert!(tree.add(
+            "type",
+            WatcherValue::Type(WatcherDataType::Unknown),
+            Mode::ReadWrite
+        ));
+
+        // Integers take the leading token, sign included.
+        assert!(tree.set_string("int", "-5"));
+        assert_eq!(
+            tree.get("int").unwrap().watched_value(),
+            Some(&WatcherValue::Int(-5))
+        );
+        assert!(tree.set_string("int", "13abc"));
+        assert_eq!(
+            tree.get("int").unwrap().watched_value(),
+            Some(&WatcherValue::Int(13))
+        );
+
+        // An unsigned leaf rejects a negative token.
+        assert!(tree.set_string("uint", "7"));
+        assert_eq!(
+            tree.get("uint").unwrap().watched_value(),
+            Some(&WatcherValue::Uint(7))
+        );
+        assert!(!tree.set_string("uint", "-1"));
+        assert_eq!(
+            tree.get("uint").unwrap().watched_value(),
+            Some(&WatcherValue::Uint(7))
+        );
+
+        // Floats take their leading token, sign, and an exponent only when
+        // it has digits.
+        assert!(tree.set_string("float", "3.5x"));
+        assert_eq!(
+            tree.get("float").unwrap().watched_value(),
+            Some(&WatcherValue::Float(3.5))
+        );
+        assert!(tree.set_string("float", "-2.5"));
+        assert_eq!(
+            tree.get("float").unwrap().watched_value(),
+            Some(&WatcherValue::Float(-2.5))
+        );
+        assert!(tree.set_string("float", "1.5e3"));
+        assert_eq!(
+            tree.get("float").unwrap().watched_value(),
+            Some(&WatcherValue::Float(1500.0))
+        );
+        assert!(tree.set_string("float", "2E+3"));
+        assert_eq!(
+            tree.get("float").unwrap().watched_value(),
+            Some(&WatcherValue::Float(2000.0))
+        );
+        assert!(tree.set_string("float", "2e"));
+        assert_eq!(
+            tree.get("float").unwrap().watched_value(),
+            Some(&WatcherValue::Float(2.0))
+        );
+        assert!(!tree.set_string("float", "abc"));
+        assert_eq!(
+            tree.get("float").unwrap().watched_value(),
+            Some(&WatcherValue::Float(2.0))
+        );
+
+        // Booleans: true/false in any case, or a non-zero integer.
+        assert!(tree.set_string("bool", "TRUE"));
+        assert_eq!(
+            tree.get("bool").unwrap().watched_value(),
+            Some(&WatcherValue::Bool(true))
+        );
+        assert!(tree.set_string("bool", "false"));
+        assert_eq!(
+            tree.get("bool").unwrap().watched_value(),
+            Some(&WatcherValue::Bool(false))
+        );
+        assert!(tree.set_string("bool", "1"));
+        assert_eq!(
+            tree.get("bool").unwrap().watched_value(),
+            Some(&WatcherValue::Bool(true))
+        );
+        assert!(tree.set_string("bool", "0"));
+        assert_eq!(
+            tree.get("bool").unwrap().watched_value(),
+            Some(&WatcherValue::Bool(false))
+        );
+        assert!(!tree.set_string("bool", "nope"));
+        assert_eq!(
+            tree.get("bool").unwrap().watched_value(),
+            Some(&WatcherValue::Bool(false))
+        );
+
+        // A string leaf accepts everything verbatim.
+        assert!(tree.set_string("str", "anything goes"));
+        assert_eq!(
+            tree.get("str").unwrap().watched_value(),
+            Some(&WatcherValue::String("anything goes".into()))
+        );
+
+        // A type leaf takes its protocol discriminant.
+        assert!(tree.set_string("type", "5"));
+        assert_eq!(
+            tree.get("type").unwrap().watched_value(),
+            Some(&WatcherValue::Type(WatcherDataType::String))
+        );
+        assert!(!tree.set_string("type", "9"));
+        assert_eq!(
+            tree.get("type").unwrap().watched_value(),
+            Some(&WatcherValue::Type(WatcherDataType::String))
+        );
     }
 }
