@@ -703,6 +703,9 @@ dependencies = [
 [[package]]
 name = "message_logger"
 version = "0.1.0"
+dependencies = [
+ "regex",
+]
 
 [[package]]
 name = "miniz_oxide"
