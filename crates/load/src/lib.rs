@@ -8,6 +8,7 @@
 pub mod bot;
 pub mod executor;
 pub mod fleet;
+pub mod hurricane;
 pub mod scenario;
 
 pub use bot::{
@@ -16,4 +17,5 @@ pub use bot::{
 };
 pub use executor::{Executor, StageTimeline};
 pub use fleet::{ControllerRegistry, Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};
+pub use hurricane::{HurricaneLedger, run_login_hurricane};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
