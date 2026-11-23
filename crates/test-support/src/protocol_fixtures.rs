@@ -113,12 +113,16 @@ fn width(param: &str) -> u8 {
 
 /// The canonical frame bytes for a minimal non-request instance.
 fn frame_bytes(id: u8, length_style: &str, length_param: &str) -> String {
-    let mut bytes = vec![id];
-    if length_style == "variable" {
-        for _ in 0..width(length_param) {
-            bytes.push(0);
+    let width = usize::from(width(length_param));
+    let mut bytes = vec![
+        0u8;
+        if length_style == "variable" {
+            width + 1
+        } else {
+            1
         }
-    }
+    ];
+    bytes[0] = id;
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
