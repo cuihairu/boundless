@@ -866,6 +866,15 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
             pfunc: base as *mut std::os::raw::c_void,
         });
     }
+    if let Some(dealloc) = spec.dealloc {
+        // A body that owns reference-counted members carries its own
+        // teardown: drop the members, then free the instance generically.
+        // The reference's `PyObjectPlus` destructors run before the free.
+        slots.push(capi::PyTypeSlot {
+            slot: capi::Py_tp_dealloc,
+            pfunc: dealloc as *mut std::os::raw::c_void,
+        });
+    }
     slots.push(capi::PyTypeSlot {
         slot: 0,
         pfunc: std::ptr::null_mut(),

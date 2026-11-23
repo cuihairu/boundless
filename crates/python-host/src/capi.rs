@@ -223,6 +223,9 @@ pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mu
 /// `PyCapsule_Destructor`, the `destructor` argument of `PyCapsule_New`.
 pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
 
+/// `destructor`, the `Py_tp_dealloc` slot signature (`pyobject.h`).
+pub type Destructor = unsafe extern "C" fn(*mut PyObject);
+
 /// A `PyGetSetDef` getter (`descrobject.h`).
 pub type Getter = unsafe extern "C" fn(*mut PyObject, *mut std::os::raw::c_void) -> *mut PyObject;
 
@@ -324,6 +327,9 @@ pub const Py_tp_repr: c_int = 66;
 pub const Py_tp_base: c_int = 48;
 /// `Py_tp_dealloc` (`typeslots.h`): the destruction entry.
 pub const Py_tp_dealloc: c_int = 52;
+/// `Py_tp_free` (`typeslots.h`): the plain-memory free entry, used when a
+/// type body owns no references and CPython's own free would suffice.
+pub const Py_tp_free: c_int = 74;
 /// `Py_TPFLAGS_BASETYPE` (`cpython/object.h`): the type may be subclassed.
 pub const Py_TPFLAGS_BASETYPE: c_uint = 1 << 10;
 /// `PyMappingMethods` (`cpython/object.h`): the mapping protocol table.
@@ -468,10 +474,10 @@ unsafe extern "C" {
     pub static mut PyTraceBack_Type: PyTypeObject;
     pub static mut PyTuple_Type: PyTypeObject;
     pub static mut PyList_Type: PyTypeObject;
+    pub static mut PyUnicode_Type: PyTypeObject;
     pub static mut PyBytes_Type: PyTypeObject;
     pub static mut PyFloat_Type: PyTypeObject;
     pub static mut PyLong_Type: PyTypeObject;
-    pub static mut PyUnicode_Type: PyTypeObject;
 }
 
 unsafe extern "C" {

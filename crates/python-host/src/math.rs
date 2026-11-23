@@ -6097,6 +6097,7 @@ pub fn register() {
     let _ = vector3::register();
     let _ = vector4::register();
     let _ = matrix::register();
+    let _ = providers::register();
     let _ = plane::register();
     let _ = v4provider::register();
     let _ = v4product::register();
@@ -6113,3 +6114,11 @@ pub fn register() {
     let _ = matrixproduct::register();
     let _ = matrixinverse::register();
 }
+
+// The provider layer (BW-03-03-02): `MatrixProduct`, `MatrixInverse`, the
+// `Vector4Provider` family and `Math.getRegister`, following the reference's
+// `script_math.cpp` provider classes. Kept as a sibling module so the
+// provider dispatch can extend `matrix::provider_matrix` and reuse the
+// module's value helpers.
+#[path = "math_providers.rs"]
+mod providers;

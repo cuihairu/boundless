@@ -25,12 +25,23 @@
 //! payload" check into a plain bounds check, and the walk's end
 //! condition into `offset >= body.len()`.
 //!
+//! A handler can stop the walk from inside: `header.breakBundleLoop()`
+//! sets the flag the loop reads, and the rest of the bundle is left
+//! undelivered (BW-02-05-03). That is the return status the
+//! authentication failure sets -- it breaks the loop and attaches no
+//! channel, so nothing further in the bundle can establish a session.
+//!
 //! Left with the channel layer of BW-02-03: the packet chain and its
 //! `nextPacket`, early (`isEarly`) dispatch, the per-channel
-//! `MessageFilter`, the break-loop hook a dying channel pulls
-//! (`header.pBreakLoop`), the fragment reassembly, the
-//! `ProcessSocketStatsHelper`, and the table's `onBundleStarted`/
-//! `onBundleFinished` hooks, whose handler takes a `Channel *`.
+//! `MessageFilter`, the channel-death half of the break flag
+//! (`breakLoop = pChannel->isDead()` at the start, and the
+//! `if (pChannel->isDead())` re-check after each delivery), the
+//! fragment reassembly, the `ProcessSocketStatsHelper`, and the
+//! table's `onBundleStarted`/`onBundleFinished` hooks, whose handler
+//! takes a `Channel *`.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use foundation::stream::BinaryStream;
 
@@ -74,10 +85,15 @@ pub fn dispatch_messages(
     // wire offset, which starts at the flags word the body lacks.
     let mut next_request_offset = first_request_offset;
 
-    // `while (iter != end && !breakLoop)`: with one buffer, the iterator
-    // runs out of packets exactly when the next message would start at or
-    // past the end of the body.
-    while offset < msg_end {
+    // `bool breakLoop = false; ... while (iter != end && !breakLoop)`:
+    // one flag per walk, handed to every header via `pBreakLoop`. A
+    // handler breaks the loop with `header.breakBundleLoop()` -- the
+    // authentication failure does exactly that before attaching nothing.
+    let break_loop = Rc::new(Cell::new(false));
+
+    // With one buffer, the iterator runs out of packets exactly when the
+    // next message would start at or past the end of the body.
+    while offset < msg_end && !break_loop.get() {
         // `interfaceTable[ iter.msgID() ]`
         let msg_id = body[offset];
         let served = table.element(msg_id);
@@ -120,6 +136,10 @@ pub fn dispatch_messages(
         // `header.pInterfaceElement = &ie`: the served entry, callback
         // style and all, not the resolved copy.
         unpacked.header.set_interface_element(served.clone());
+
+        // `header.pBreakLoop = &breakLoop`, set for the duration of this
+        // message's delivery: the handler may break the walk.
+        unpacked.header.set_break_loop(Rc::clone(&break_loop));
 
         // `iter.data()`: with the payload already bounds-checked against
         // this one buffer, the data is always where unpack left it -- the
@@ -166,6 +186,8 @@ pub fn dispatch_messages(
         offset = unpacked.data_offset + unpacked.data_length;
     }
 
+    // A broken loop is not an error: the reference leaves `ret` at
+    // `REASON_SUCCESS` and counts a broken walk as `wasOkay`.
     Reason::Success
 }
 
@@ -405,6 +427,49 @@ mod tests {
             _header: &mut UnpackedMessageHeader,
             _data: &mut BinaryStream,
         ) {
+        }
+    }
+
+    /// `LoginHandler::login` (`server/baseapp/login_handler.cpp:106-153`):
+    /// the authentication failure shape, the acceptance fixture of
+    /// BW-02-05-03. A `baseAppLogin` message carries a key; a key the
+    /// pending set does not hold is a failed authentication, which breaks
+    /// the bundle (`header.breakBundleLoop()`) and attaches no channel --
+    /// no session is established, and the rest of the bundle is skipped.
+    /// A held key attaches (`attachToClient`) and the walk continues.
+    struct LoginHandler {
+        pending: RefCell<Vec<u32>>,
+        attached: RefCell<Vec<u32>>,
+    }
+
+    impl LoginHandler {
+        fn pending(key: u32) -> Self {
+            LoginHandler {
+                pending: RefCell::new(vec![key]),
+                attached: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl InputMessageHandler for LoginHandler {
+        fn handle_message(
+            &self,
+            _source: &Address,
+            header: &mut UnpackedMessageHeader,
+            data: &mut BinaryStream,
+        ) {
+            let mut key_bytes = [0u8; 4];
+            for byte in &mut key_bytes {
+                *byte = data.read_u8().unwrap();
+            }
+            data.finish();
+            let key = u32::from_le_bytes(key_bytes);
+
+            if !self.pending.borrow().contains(&key) {
+                header.break_bundle_loop();
+                return;
+            }
+            self.attached.borrow_mut().push(key);
         }
     }
 
@@ -952,5 +1017,125 @@ mod tests {
         assert_eq!((id, reply), (5, REPLY_ID_NONE));
         assert_eq!(bytes.len(), 255, "the handler sees the declared length");
         assert_eq!(bytes, payload, "the displaced head is put back");
+    }
+
+    /// A failed authentication -- a key nobody is pending -- breaks the
+    /// bundle and attaches no session, and a message sitting after the
+    /// failure is never delivered (BW-02-05-03: no residual established
+    /// session). A broken loop is not an error: the reference leaves the
+    /// reason at `REASON_SUCCESS`.
+    #[test]
+    fn a_failed_authentication_breaks_the_bundle_and_establishes_no_session() {
+        let table = InterfaceTable::new();
+        let login = Rc::new(LoginHandler::pending(7));
+        let login_element = variable(1, 4); // baseAppLogin, four-byte key
+        table.serve(
+            &login_element,
+            Some(Rc::clone(&login) as Rc<dyn InputMessageHandler>),
+        );
+        let later = Rc::new(Recorder::default());
+        let later_element = variable(2, 2);
+        table.serve(&later_element, Some(handler_of(&later)));
+
+        let mut body = Vec::new();
+        // Key 99 is nobody's: authentication fails.
+        fill_variable(&mut body, &login_element, &99u32.to_le_bytes());
+        // A message packed after the failure, which must not be delivered.
+        fill_variable(&mut body, &later_element, b"tail");
+
+        let reason = dispatch_messages(&table, &source(), &mut body, None);
+
+        assert_eq!(reason, Reason::Success, "a broken loop is not an error");
+        assert!(
+            login.attached.borrow().is_empty(),
+            "no session was established"
+        );
+        assert!(
+            later.notes().is_empty(),
+            "the rest of the bundle is skipped"
+        );
+    }
+
+    /// A held key attaches a session and the walk carries on to the rest
+    /// of the bundle -- the successful-login control for the failure test.
+    #[test]
+    fn a_valid_authentication_attaches_and_the_bundle_continues() {
+        let table = InterfaceTable::new();
+        let login = Rc::new(LoginHandler::pending(7));
+        let login_element = variable(1, 4);
+        table.serve(
+            &login_element,
+            Some(Rc::clone(&login) as Rc<dyn InputMessageHandler>),
+        );
+        let later = Rc::new(Recorder::default());
+        let later_element = variable(2, 2);
+        table.serve(&later_element, Some(handler_of(&later)));
+
+        let mut body = Vec::new();
+        fill_variable(&mut body, &login_element, &7u32.to_le_bytes());
+        fill_variable(&mut body, &later_element, b"ok");
+
+        let reason = dispatch_messages(&table, &source(), &mut body, None);
+
+        assert_eq!(reason, Reason::Success);
+        assert_eq!(login.attached.borrow().as_slice(), &[7]);
+        assert_eq!(later.notes(), vec![(2, REPLY_ID_NONE, b"ok".to_vec())]);
+    }
+
+    /// A break in one bundle does not leak into the next: the reference's
+    /// `breakLoop` is a fresh local per `dispatchMessages` call, so a
+    /// later walk starts unbroken even when the same handler broke the
+    /// one before it.
+    #[test]
+    fn a_break_does_not_leak_into_the_next_dispatch() {
+        let table = InterfaceTable::new();
+        let breaking = Rc::new(BreakOnFirst::default());
+        let breaking_element = variable(8, 2);
+        table.serve(
+            &breaking_element,
+            Some(Rc::clone(&breaking) as Rc<dyn InputMessageHandler>),
+        );
+        let later = Rc::new(Recorder::default());
+        let later_element = variable(9, 2);
+        table.serve(&later_element, Some(handler_of(&later)));
+
+        // First walk: the handler breaks, the tail is skipped.
+        let mut body = Vec::new();
+        fill_variable(&mut body, &breaking_element, b"go");
+        fill_variable(&mut body, &later_element, b"skip");
+        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        assert_eq!(reason, Reason::Success);
+        assert!(later.notes().is_empty());
+
+        // Second walk: the same handler is unarmed and the tail lands.
+        let mut body = Vec::new();
+        fill_variable(&mut body, &breaking_element, b"go");
+        fill_variable(&mut body, &later_element, b"land");
+        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        assert_eq!(reason, Reason::Success);
+        assert_eq!(later.notes(), vec![(9, REPLY_ID_NONE, b"land".to_vec())]);
+    }
+
+    /// A handler that breaks the walk on its first delivery and carries on
+    /// afterwards, the per-dispatch freshness probe.
+    #[derive(Default)]
+    struct BreakOnFirst {
+        calls: Cell<u32>,
+    }
+
+    impl InputMessageHandler for BreakOnFirst {
+        fn handle_message(
+            &self,
+            _source: &Address,
+            header: &mut UnpackedMessageHeader,
+            data: &mut BinaryStream,
+        ) {
+            data.finish();
+            let call = self.calls.get();
+            self.calls.set(call + 1);
+            if call == 0 {
+                header.break_bundle_loop();
+            }
+        }
     }
 }
