@@ -18,6 +18,12 @@ const TRANSITIONS: &[&str] = &[
     // active edits settle; everything else in server-runtime routes
     // through `platform::signals` already.
     "crates/server-runtime/src/server_app.rs",
+    // The bw00-generation signal tests (sigwait contract, thread-directed
+    // delivery, pthread_kill self-raise) exercise raw syscall semantics that
+    // belong to the kernel contract itself; migrating them under
+    // `platform::signals` wrappers is pending and tracked with the file's
+    // active edits.
+    "crates/server-runtime/src/signals.rs",
 ];
 
 /// Whole-word names that are signal syscalls wherever they appear
