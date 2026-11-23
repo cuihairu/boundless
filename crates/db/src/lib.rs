@@ -19,6 +19,7 @@ pub mod error;
 pub mod log_on;
 pub mod record;
 pub mod retry;
+pub mod schema;
 pub mod storage;
 
 pub use connection::StorageConnection;
@@ -26,4 +27,5 @@ pub use error::DbError;
 pub use log_on::LogOnRecord;
 pub use record::EntityRecord;
 pub use retry::{Completion, run_with_retry};
+pub use schema::{EntitySchema, IndexType, MySqlType, Namer, TableDescription};
 pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity, load_entity_by_name};

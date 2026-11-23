@@ -71,6 +71,7 @@ version = "0.1.0"
 dependencies = [
  "entitydef",
  "foundation",
+ "resources",
 ]
 
 [[package]]
