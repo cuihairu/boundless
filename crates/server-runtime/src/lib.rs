@@ -34,6 +34,7 @@ pub mod offloaded_backup;
 pub mod pending_logins;
 pub mod proxy_client;
 pub mod proxy_logoff;
+pub mod real_entity;
 pub mod relogon;
 pub mod reviver;
 pub mod script_timers;
