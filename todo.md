@@ -1042,7 +1042,11 @@
   - 证据：验收（原版结果对照）——`the_same_path_reports_the_same_value_and_type`：Int/Uint/Float/Bool/String/Type 六型同路径 get 后 data_type 与值逐一匹配，深路径 `cells/count` 完整解析、父目录类型 UNKNOWN；原版套件逐条对应移植：`partition_path`（test_watcher.cpp:18-35）、`tail`（:37-43）、`addAndGetChild`（:78-96，含重复/空路径拒绝）、`addNestedPath`（:98-113，`sub/value/deeper` 拒绝）、`removeChild`（:116-140，空壳目录残留）、`getAsString`（:142-166，`<DIR>`+WT_DIRECTORY、"value/sub" 不可过叶）、`visitChildren` 排序断言（:222-238）。
   - 证据：值渲染——`cpp_float_string` 复刻 `ostream <<` 默认（precision 6 + %g：指数在 -4..5 用定点、否则科学计数两位带符号指数、尾零裁剪），`float_strings_match_ostream_defaults` 钉死 0.1+0.2→`0.3`、1e6→`1e+06`、1e-5→`1e-05`、123456.789→`123457`、-0.0→`-0`；bool→`true`/`false`、目录→`<DIR>`。
   - 测试与覆盖：server-runtime **144 通过 / 0 失败**；`cargo clippy -p server-runtime --all-targets` 本轮文件 0 警告；rustfmt 本轮文件 0 diff；llvm-cov 0.9.1：path_tree.rs **100.0%** 行（≥98% 门）；layering 8 通过。
-- [ ] **BW-12-01-02 移植 get/set**。**验收** 读写结果和拒绝状态吻合。
+- [x] **BW-12-01-02 移植 get/set**（034056c）。**验收** 读写结果和拒绝状态吻合。
+  - 证据：读侧——`WatcherNode/WatcherTree::get_string` 移植 `DirectoryWatcher::getAsString`（watcher.cpp:128-162）+ `DataWatcher` override（watcher.hpp:2589-2603）：空路径=**本节点自身**（根目录→`<DIR>`+WT_DIRECTORY，叶→值+自身模式），走 `findChild`（首段查找）+ `tail` 递归——**空尾巴落在叶上仍是自身**（`value/` 读出值，与 `getChild` 的空段拒绝不同），叶拒绝非空路径（`value/sub`→None）、空首段（前导斜杠）拒绝（findChild compareLength!=0，watcher.cpp:507）。
+  - 证据：写侧——`set_string` 移植 `DirectoryWatcher::setFromString`（watcher.cpp:202-216）+ `DataWatcher` override（watcher.hpp:2604-2617）：仅**空尾巴 + WT_READ_WRITE** 的叶接受写；未知路径/目录/穿叶路径/只读叶一律 false 且树不动。解析按 `watcherStringToValue`（watcher.hpp:79-177）：数值取**前导 token**（`stream >>` 语义：`13abc`→13、`-5`、`1.5e3`、无位数的指数回退 `2e`→2.0）、uint 拒负号、bool 取不区分大小写 `true`/`false` 否则非零整数、string 全收、Type 取协议判别值。
+  - 证据：验收（原版结果对照）——`get_string_matches_the_reference_suite`（test_watcher.cpp:142-166：`<DIR>`/WT_DIRECTORY、`"7"`/WT_READ_ONLY、nonExistent 与 value/sub 失败）；`set_string_matches_the_reference_suite`（:168-190：RW 叶 `13` 落值、nonExistent 拒、只读 `roValue` 拒且原值不动 + :253-283：`not_a_number` 拒且保 10）；`get_and_set_on_a_leaf_follow_the_data_watcher`（:253-283：RW 叶 get 出自身模式、`v/sub` 失败、`v/` 写入 21）；`set_string_parses_each_scalar_type`（六型全解析/拒绝臂）。
+  - 测试与覆盖：server-runtime **148 通过 / 0 失败**；`cargo clippy -p server-runtime --all-targets` 本轮文件 0 警告；rustfmt 0 diff；llvm-cov 0.9.1：path_tree.rs **100.0%** 行（≥98% 门）。
 - [ ] **BW-12-01-03 移植 callable Watcher**。**验收** 参数和返回值匹配。
 - [ ] **BW-12-01-04 实现远端查询与转发**。**验收** 多节点同一路径正确路由。
 - [ ] **BW-12-01-05 核对统计字段**。**验收** 稳定快照和错误状态与原版一致。
