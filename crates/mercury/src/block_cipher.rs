@@ -177,3 +177,75 @@ mod tests {
         assert_eq!(cipher.readable_key(), "DE AD BE EF");
     }
 }
+
+/// A test double that stands in for the reference's keyed
+/// `SymmetricBlockCipher`: its transform actually depends on the key (each
+/// byte XOR-combines with a key byte), so a peer holding a different key
+/// produces ciphertext the session's filter cannot decrypt -- the shape a
+/// real block cipher gives the authentication-failure path. The reference
+/// has no such cipher; this one exists because the no-op `NullCipher`
+/// cannot tell keys apart.
+#[cfg(test)]
+pub struct KeyedXorCipher {
+    key: Key,
+    block_size: usize,
+}
+
+#[cfg(test)]
+impl KeyedXorCipher {
+    /// A keyed cipher over the given block size. The key must be non-empty,
+    /// as a real session key is.
+    pub fn create(key: Key, block_size: usize) -> BlockCipherPtr {
+        Rc::new(Self { key, block_size })
+    }
+}
+
+#[cfg(test)]
+impl BlockCipher for KeyedXorCipher {
+    /// XOR-combine each byte with a key byte. Self-inverse, so `decrypt` is
+    /// the same transform -- the reference's `SymmetricBlockCipher` is not,
+    /// but the filter only ever pairs one cipher's encrypt with the same
+    /// cipher's decrypt, so the test double's symmetry is enough.
+    fn encrypt_block(&self, input: &[u8], output: &mut [u8]) -> bool {
+        let n = self.block_size.min(input.len()).min(output.len());
+        for i in 0..n {
+            output[i] = input[i] ^ self.key[i % self.key.len()];
+        }
+        true
+    }
+
+    fn decrypt_block(&self, input: &[u8], output: &mut [u8]) -> bool {
+        self.encrypt_block(input, output)
+    }
+
+    fn key(&self) -> &Key {
+        &self.key
+    }
+
+    fn block_size(&self) -> usize {
+        self.block_size
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    /// The keyed double transforms with its key, so two different keys turn
+    /// the same plaintext into different ciphertexts -- the property that
+    /// makes a wrong-key authentication fail the magic check.
+    #[test]
+    fn the_keyed_double_distinguishes_keys() {
+        let a = KeyedXorCipher::create(vec![0x11], 4);
+        let b = KeyedXorCipher::create(vec![0x22], 4);
+        let mut out_a = [0u8; 4];
+        let mut out_b = [0u8; 4];
+        a.encrypt_block(&[1, 2, 3, 4], &mut out_a);
+        b.encrypt_block(&[1, 2, 3, 4], &mut out_b);
+        assert_ne!(out_a, out_b, "different keys, different ciphertext");
+        // And each is its own inverse.
+        let mut back = [0u8; 4];
+        a.decrypt_block(&out_a, &mut back);
+        assert_eq!(back, [1, 2, 3, 4]);
+    }
+}

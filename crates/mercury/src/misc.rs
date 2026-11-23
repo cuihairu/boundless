@@ -10,6 +10,19 @@ pub type MessageID = u8;
 /// the one byte a message id is.
 pub type ReplyID = i32;
 
+/// `SessionKey` (`lib/network/basictypes.hpp:171`): the authentication key
+/// exchanged between ClientApp and BaseApp. Four bytes on the wire: the
+/// login reply carries it, and the client's `authenticate` request echoes it
+/// back. A zero key is never valid (`Proxy::regenerateSessionKey`).
+pub type SessionKey = u32;
+
+/// `Proxy::regenerateSessionKey` (proxy.cpp:562): the key is drawn from
+/// the current timestamp and a zero result is redrawn -- a key is never
+/// zero. The port reduces the loop to its outcome on a single draw.
+pub fn regenerate_session_key(now: u32) -> SessionKey {
+    if now == 0 { 1 } else { now }
+}
+
 /// `REPLY_ID_NONE` (`misc.hpp:111`): no reply expected, and the value a
 /// header carries until one is handed out.
 pub const REPLY_ID_NONE: ReplyID = -1;
@@ -213,5 +226,14 @@ mod tests {
         assert_eq!(allocator.get_next(), SEQ_SIZE - 1);
         assert_eq!(allocator.get_next(), 0, "wraps through the mask");
         assert_eq!(allocator.peek(), 1);
+    }
+
+    /// `SessionKey` (basictypes.hpp:171) and `Proxy::regenerateSessionKey`
+    /// (proxy.cpp:562): a timestamp draw, never zero -- the reference
+    /// redraws until one is non-zero, the port takes the first non-zero.
+    #[test]
+    fn a_session_key_is_never_zero() {
+        assert_eq!(regenerate_session_key(1_772_000_000), 1_772_000_000);
+        assert_eq!(regenerate_session_key(0), 1, "a zero draw is redrawn");
     }
 }

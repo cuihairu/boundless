@@ -1481,4 +1481,61 @@ mod tests {
             "the wire really carried ciphertext"
         );
     }
+
+    /// The BW-02-05-03 acceptance at the transport layer: an authentication
+    /// failure -- a packet encrypted with a key other than the session's --
+    /// is rejected with a failure status, nothing is delivered, and no new
+    /// session is left established.
+    #[test]
+    fn a_wrong_key_authentication_leaves_no_residual_session() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        // The established session's channel, fitted with the session cipher.
+        let session = crate::block_cipher::KeyedXorCipher::create(b"session-key".to_vec(), 8);
+        let channel = UdpChannel::new(
+            &interface,
+            Address::new(LOOPBACK, socket::htons(7104)),
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        channel.borrow_mut().set_encryption(Some(session));
+        let channel_addr = channel.borrow().addr();
+
+        // A peer encrypts a login packet with a *different* key -- a wrong
+        // authentication attempt against the established session. The
+        // channel's filter decrypts it with the session cipher and finds
+        // garbage where the magic should be.
+        let wrong = crate::block_cipher::KeyedXorCipher::create(b"wrong-key".to_vec(), 8);
+        let peer = crate::encryption_filter::EncryptionFilter::create(wrong);
+        let mut plain = on_channel_packet(b"login", 0, None);
+        let encrypted = Rc::new(RefCell::new(None));
+        peer.send(&channel_addr, &mut plain, &|_, p| {
+            *encrypted.borrow_mut() = Some(p.clone());
+        });
+        let mut encrypted = encrypted.borrow_mut().take().expect("the peer encrypted");
+
+        assert_eq!(
+            interface.process_packet(&channel_addr, &mut encrypted),
+            Reason::CorruptedPacket,
+            "the wrong-key packet is rejected"
+        );
+        assert_eq!(
+            sink.packets.borrow().len(),
+            0,
+            "the failed authentication delivers nothing"
+        );
+        // No residual session: the established channel is still registered
+        // and still the same one -- the failed attempt neither destroyed the
+        // session nor created a new one.
+        let after = interface
+            .find_channel(channel_addr, false)
+            .expect("the established session is still registered");
+        assert!(
+            Rc::ptr_eq(&channel, &after),
+            "the failed attempt left no residual new session"
+        );
+    }
 }
