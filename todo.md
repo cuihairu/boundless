@@ -1309,7 +1309,8 @@
 
 提供建库、schema 同步与 dry-run、备份恢复和现有 MySQL 数据导入。用原版样本核对实体 ID、账号关联、二进制字段、默认值和下一个可分配 DBID。验证迁移失败时的状态和重试行为。
 
-- [ ] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。
+- [x] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。
+  - 证据：`crates/db-postgres/src/schema_init.rs`（e71ccdc）——`plan()` 逐句移植 `sync_db/mysql_synchronise.cpp createSpecialBigWorldTables`：11 张固定表 `bigworldInfo/bigworldEntityTypes/bigworldLogOns/bigworldLogOnMapping/bigworldNewID/bigworldUsedIDs/bigworldGameTime/bigworldSpaces/bigworldSpaceData/bigworldSecondaryDatabases/bigworldEntityDefsChecksum` + 2 个索引，全部 `CREATE TABLE IF NOT EXISTS`（幂等）；类型宽度按 PG 无无符号口径换算（INT UNSIGNED→BIGINT、INT→INTEGER、SMALLINT UNSIGNED→INTEGER、BOOL→BOOLEAN DEFAULT FALSE、CHAR(255)→VARCHAR(255)、VARBINARY/BLOB→BYTEA、AUTO_INCREMENT→BIGSERIAL）；主键逐一对齐（`PRIMARY KEY(typeID, databaseID)`、logOnName 主键、bigworldSpaces id UNIQUE）。版本种子走 `getBigWorldDBVersion`（table_inspector.cpp:300-315）语义：空表插 `DBAPP_CURRENT_VERSION=9`（versions.hpp），`WHERE NOT EXISTS` 守卫。`apply()` 顺序执行 plan。**验收**：`tests/schema_init.rs` 对本地 PG18 真跑——空库 0 表→apply 后 11 表全在、版本读回 9、实体表可建可写可读（DBApp 启动口径）、二次 apply 不变（版本行仍 1）；2 测绿，schema_init.rs llvm-cov 行 182/182 100%；工作区 3039 测绿。
 - [ ] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。
 - [ ] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。
 - [ ] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。
