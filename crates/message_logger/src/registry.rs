@@ -17,18 +17,21 @@ use crate::{
 };
 
 /// A Mercury-style source address, the registration key.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Address {
     /// The IP as host-order bytes.
     pub ip: u32,
     /// The port.
     pub port: u16,
+    /// The salt part of the wire address (`Mercury::Address::ip_/port_/salt_`);
+    /// the components file persists it alongside the ip and port.
+    pub salt: u16,
 }
 
 impl Address {
     /// Build from parts.
     pub fn new(ip: u32, port: u16) -> Self {
-        Self { ip, port }
+        Self { ip, port, salt: 0 }
     }
 
     /// The reference renders addresses as `ip:port`, most significant
