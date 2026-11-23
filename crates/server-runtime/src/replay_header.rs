@@ -235,6 +235,13 @@ impl ReplayHeader {
         ProtocolVersion::stream_size() + 16 + 1 + 4 + NONCE_SIZE + 2
     }
 
+    /// `ReplayHeader::numTicksFieldOffset` (`replay_header.cpp:255`): the file
+    /// offset of the header's tick-count field, the whole header minus that
+    /// field. Finalisation rewrites the count there.
+    pub fn num_ticks_field_offset(scheme: &ReplayChecksumScheme) -> u64 {
+        (Self::signed_prefix_size() + scheme.stream_size()) as u64
+    }
+
     /// `ReplayHeader::addToStream` (`replay_header.ipp:8`): write the header to
     /// `out` and return the signature the scheme produced over the signed
     /// prefix.
