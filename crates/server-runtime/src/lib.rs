@@ -42,6 +42,7 @@ pub mod mailbox_call;
 pub mod message_redirect;
 pub mod movement;
 pub mod offload;
+pub mod offload_recovery;
 pub mod offload_role;
 pub mod offloaded_backup;
 pub mod passenger_teleport;
