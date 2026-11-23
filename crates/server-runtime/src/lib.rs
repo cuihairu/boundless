@@ -35,6 +35,7 @@ pub mod pending_logins;
 pub mod proxy_client;
 pub mod proxy_logoff;
 pub mod relogon;
+pub mod replay_header;
 pub mod reviver;
 pub mod script_timers;
 pub mod server_app;
