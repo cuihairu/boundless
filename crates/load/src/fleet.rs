@@ -7,11 +7,13 @@
 //! with the `clientTickIndex_` iterator; this port keeps a `Vec` and
 //! mirrors every iterator adjustment with index arithmetic (see the
 //! round-robin notes on `tick`, `del_bots` and `del_tagged_entities`).
-//! The personality-script hook inside the tick (`BWPersonality.onTick`)
-//! and the controller factory behind `update_movement` both arrive with
-//! BW-17-01-03.
+//! The movement-controller registry behind `update_movement` and the
+//! seeded speed draw land here with BW-17-01-03; the personality
+//! script's fleet-wide `BWPersonality.onTick` hook
+//! (main_app.cpp:605-613) is driven by the scenario instead — the
+//! reference's hook receives no arguments and no fleet handle.
 
-use crate::bot::{Bot, FD_PER_BOT, TICK_PERIOD, Transport};
+use crate::bot::{Bot, FD_PER_BOT, MovementController, MovementFactory, TICK_PERIOD, Transport};
 
 /// `TICK_FRAGMENTS` (main_app.cpp:63): the bots are updated in this many
 /// fragments per game tick; the reference builds with 1, so every bot is
@@ -21,6 +23,94 @@ pub const TICK_FRAGMENTS: u32 = 1;
 /// `MINI_TICK_PERIOD` (main_app.cpp:67): the slice of game time one fleet
 /// tick represents (`0.1f / TICK_FRAGMENTS`).
 pub const MINI_TICK_PERIOD: f64 = 0.1;
+
+/// The `createMovementController` failure: a controller type no factory
+/// serves, which the reference reports as `TypeError
+/// "No such controller type"` (main_app.cpp:800-803).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownControllerType;
+
+/// `MainApp::createMovementController` (main_app.cpp:740-803): resolves a
+/// controller type against the registered factories — `s_pMovementFactories`
+/// (main_app.cpp:807-815) — with `"None"` the documented way to run
+/// without a controller.
+pub struct ControllerRegistry {
+    factories: std::collections::HashMap<String, Box<dyn MovementFactory>>,
+}
+
+impl ControllerRegistry {
+    pub fn new() -> Self {
+        Self {
+            factories: std::collections::HashMap::new(),
+        }
+    }
+
+    /// `MainApp::addFactory` (main_app.cpp:807-815): register a factory
+    /// under its name. The reference reaches its factories through the
+    /// dynamically loaded controller libraries
+    /// (`bots-extensions/<name>.so:`, main_app.cpp:761-784); the port
+    /// registers them directly.
+    pub fn register(&mut self, name: &str, factory: Box<dyn MovementFactory>) {
+        self.factories.insert(name.to_string(), factory);
+    }
+
+    /// Resolve `kind`: `Ok(None)` for `"None"`, `Ok(Some(controller))` for
+    /// a registered factory, `Err` for an unknown type. Factories may
+    /// adjust the starting position on the way in (main_app.cpp:730-734).
+    pub fn create(
+        &self,
+        kind: &str,
+        data: &str,
+        speed: f32,
+        start_pos: &mut foundation::math::vector::Vector3,
+    ) -> Result<Option<Box<dyn MovementController>>, UnknownControllerType> {
+        if kind == "None" {
+            return Ok(None);
+        }
+        match self.factories.get(kind) {
+            Some(factory) => Ok(factory.create(data, speed, start_pos)),
+            None => Err(UnknownControllerType),
+        }
+    }
+}
+
+impl Default for ControllerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The constructor's speed draw (client_app.cpp:387): `6 + rand()*2/RAND_MAX`,
+/// landing in [6, 8). The C runtime's `rand()` is unseeded; the port draws
+/// from a xorshift64* keyed by the fleet seed (`Fleet::with_seed`), which is
+/// what makes BW-17-02-04's "a fixed seed produces the same trajectory"
+/// face reproducible.
+struct SpeedDraw {
+    state: u64,
+}
+
+impl SpeedDraw {
+    fn new(seed: u64) -> Self {
+        // A zero state would stall the generator.
+        Self {
+            state: if seed == 0 { 0x9E3779B97F4A7C15 } else { seed },
+        }
+    }
+
+    /// A value in [0, 1).
+    fn unit(&mut self) -> f32 {
+        let mut x = self.state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.state = x;
+        ((x.wrapping_mul(0x2545F4914F6CDD1D) >> 40) as f32) / 16777216.0
+    }
+
+    fn draw(&mut self) -> f32 {
+        6.0 + self.unit() * 2.0
+    }
+}
 
 /// The per-run fleet settings, seeded with the `BotsConfig` defaults
 /// (bots_config.cpp:17-31). The config reader belongs to BW-12-04; this
@@ -94,12 +184,22 @@ pub struct Fleet {
     local_time: f64,
     /// The `static bool inTick` recursion guard (main_app.cpp:595-601).
     in_tick: bool,
+    /// `s_pMovementFactories` (main_app.cpp:807-815).
+    registry: ControllerRegistry,
+    /// The seeded draw standing in for the constructor's `rand()`.
+    speed_draw: SpeedDraw,
 }
 
 impl Fleet {
     /// A fleet for the given app id, capped at the process file-descriptor
     /// limit.
     pub fn new(app_id: &str, fd_limit: i32) -> Self {
+        Self::with_seed(app_id, fd_limit, 0)
+    }
+
+    /// A fleet whose bots are named, logged in and seeded by `seed` — the
+    /// scenario's determinism face (BW-17-02-04).
+    pub fn with_seed(app_id: &str, fd_limit: i32, seed: u64) -> Self {
         Self {
             settings: FleetSettings::default(),
             app_id: app_id.to_string(),
@@ -112,7 +212,15 @@ impl Fleet {
             remainder: 0,
             local_time: 0.0,
             in_tick: false,
+            registry: ControllerRegistry::new(),
+            speed_draw: SpeedDraw::new(seed),
         }
+    }
+
+    /// The movement-controller registry the settings' controller type
+    /// resolves against.
+    pub fn registry_mut(&mut self) -> &mut ControllerRegistry {
+        &mut self.registry
     }
 
     /// The run settings.
@@ -169,17 +277,21 @@ impl Fleet {
     /// `MainApp::addBotWithName` (main_app.cpp:376-399): refuse when the
     /// file-descriptor budget (`fdOpen + FD_PER_BOT > fdLimit`) would be
     /// exceeded, otherwise create the bot with the settings' transport and
-    /// tag and append it to the list. The reference logs the refusal and
-    /// returns void; the port reports it with `false`.
+    /// tag and append it to the list. The bot's speed comes from the
+    /// seeded draw standing in for the constructor's `rand()`
+    /// (client_app.cpp:387). The reference logs the refusal and returns
+    /// void; the port reports it with `false`.
     pub fn add_bot_with_name(&mut self, name: &str, password: &str) -> bool {
         if self.fd_open + FD_PER_BOT > self.fd_limit {
             return false;
         }
-        self.bots.push(Bot::new(
+        let speed = self.speed_draw.draw();
+        self.bots.push(Bot::with_speed(
             name,
             password,
             self.settings.transport,
             &self.settings.tag,
+            speed,
         ));
         true
     }
@@ -260,15 +372,17 @@ impl Fleet {
 
     /// `MainApp::updateMovement` (main_app.cpp:521-547): apply the
     /// settings' controller type/data to every bot matching the tag; an
-    /// empty tag targets all bots. A bot that is not in the world refuses
-    /// the controller and keeps the old one — the reference prints (and
-    /// clears) the Python error, which has no counterpart here.
+    /// empty tag targets all bots. The type resolves through the registry,
+    /// and a bot that is not in the world — or a bot whose type no factory
+    /// serves — refuses the controller and keeps the old one; the reference
+    /// prints (and clears) the Python error, which has no counterpart here.
     pub fn update_movement(&mut self, tag: &str) {
         let controller_type = self.settings.controller_type.clone();
         let controller_data = self.settings.controller_data.clone();
-        for bot in &mut self.bots {
+        let Self { bots, registry, .. } = self;
+        for bot in bots.iter_mut() {
             if tag.is_empty() || bot.tag() == tag {
-                let _ = bot.set_movement_controller(&controller_type, &controller_data);
+                let _ = bot.set_movement_controller(&controller_type, &controller_data, registry);
             }
         }
     }
@@ -284,8 +398,9 @@ impl Fleet {
     /// can pump the connection and reach the timer handler again; that
     /// call chain is structurally absent behind the event-feed
     /// abstraction, but the guard is kept for parity. The personality
-    /// script's `onTick` hook (main_app.cpp:605-613) arrives with
-    /// BW-17-01-03.
+    /// script's fleet-wide `onTick` hook (main_app.cpp:605-613) takes no
+    /// arguments and no fleet handle in the reference, so the scenario
+    /// drives it instead.
     pub fn tick(&mut self, now: f64) {
         if self.in_tick {
             return;
@@ -338,7 +453,39 @@ impl Fleet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::{ConnState, NULL_ENTITY_ID};
+    use crate::bot::{ConnState, MovementController, NULL_ENTITY_ID};
+    use foundation::math::vector::Vector3;
+
+    /// A stub controller that plants the player at a fixed spot, so a test
+    /// can tell an installed controller from the circle walk.
+    struct StubController;
+
+    impl MovementController for StubController {
+        fn next_step(
+            &mut self,
+            _speed: &mut f32,
+            _dtime: f32,
+            pos: &mut Vector3,
+            _yaw: &mut f32,
+        ) -> bool {
+            *pos = Vector3::new(7.0, 0.0, 7.0);
+            true
+        }
+    }
+
+    /// A stub factory serving [`StubController`].
+    struct StubFactory;
+
+    impl MovementFactory for StubFactory {
+        fn create(
+            &self,
+            _data: &str,
+            _speed: f32,
+            _start_pos: &mut Vector3,
+        ) -> Option<Box<dyn MovementController>> {
+            Some(Box::new(StubController))
+        }
+    }
 
     /// bots_config.cpp:17-31 — the settings a fresh fleet runs with.
     #[test]
@@ -569,11 +716,15 @@ mod tests {
     }
 
     /// main_app.cpp:521-547 — the acceptance face: a tag-filtered command
-    /// touches only the matching bots, an empty tag targets everyone, and
-    /// a bot not in the world refuses without losing its old controller.
+    /// touches only the matching bots, an empty tag targets everyone, a
+    /// bot not in the world refuses without losing its old controller, and
+    /// logging off resets it (client_app.cpp:1197).
     #[test]
     fn update_movement_scopes_to_the_tag() {
         let mut fleet = Fleet::new("0", 100);
+        fleet.registry_mut().register("Stub", Box::new(StubFactory));
+        fleet.settings_mut().controller_type = "Stub".to_string();
+
         fleet.add_bots_with_name(&[("A", "p")]);
         fleet.settings_mut().tag = "Raid".to_string();
         fleet.add_bots_with_name(&[("C", "p")]);
@@ -582,23 +733,56 @@ mod tests {
         fleet.tick(0.0);
 
         fleet.update_movement("Raid");
-        assert!(fleet.bots()[0].controller().is_none());
-        let spec = fleet.bots()[1].controller().expect("raid bot updated");
-        assert_eq!(spec.kind, "Patrol");
-        assert_eq!(spec.data, "server/bots/test.bwp");
+        assert!(!fleet.bots()[0].controller_installed());
+        assert!(fleet.bots()[1].controller_installed());
 
         // The empty tag targets every bot.
         fleet.update_movement("");
-        assert!(fleet.bots()[0].controller().is_some());
+        assert!(fleet.bots()[0].controller_installed());
 
-        // C logs off; a refused update leaves its controller unchanged.
+        // C logs off: the controller resets with the logged-off processing
+        // and a refused update cannot restore it.
         fleet.bots_mut()[1].feed_logged_off(Some(true));
         fleet.tick(0.1);
         fleet.update_movement("Raid");
-        assert_eq!(
-            fleet.bots()[1].controller().map(|spec| spec.kind.as_str()),
-            Some("Patrol")
-        );
+        assert!(!fleet.bots()[1].controller_installed());
         assert_eq!(fleet.bots()[1].id(), NULL_ENTITY_ID);
+    }
+
+    /// main_app.cpp:740-803 — the registry resolves `"None"` to no
+    /// controller, an unknown type to an error (the reference's
+    /// `TypeError`), and a registered factory to its controller.
+    #[test]
+    fn the_registry_dispatches_like_the_factory() {
+        let mut registry = ControllerRegistry::default();
+        registry.register("Stub", Box::new(StubFactory));
+
+        let mut pos = Vector3::new(0.0, 0.0, 0.0);
+        assert!(matches!(
+            registry.create("None", "", 6.0, &mut pos),
+            Ok(None)
+        ));
+        assert!(registry.create("Ghost", "", 6.0, &mut pos).is_err());
+        assert!(registry.create("Stub", "", 6.0, &mut pos).is_ok());
+    }
+
+    /// client_app.cpp:387 — every added bot draws a speed in [6, 8) off
+    /// the fleet seed; the same seed reproduces the same draw.
+    #[test]
+    fn the_speed_draw_is_seed_deterministic() {
+        let mut fleet = Fleet::with_seed("0", 100, 12345);
+        fleet.add_bots(8);
+        let speeds: Vec<f32> = fleet.bots().iter().map(|bot| bot.speed()).collect();
+        assert!(speeds.iter().all(|&speed| (6.0..8.0).contains(&speed)));
+
+        let mut replay = Fleet::with_seed("0", 100, 12345);
+        replay.add_bots(8);
+        let replayed: Vec<f32> = replay.bots().iter().map(|bot| bot.speed()).collect();
+        assert_eq!(speeds, replayed);
+
+        let mut other = Fleet::with_seed("0", 100, 54321);
+        other.add_bots(8);
+        let other_speeds: Vec<f32> = other.bots().iter().map(|bot| bot.speed()).collect();
+        assert_ne!(speeds, other_speeds);
     }
 }

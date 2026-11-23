@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The bot movement faces carry Vector3 positions, ported from the same
+# `lib/math/` scalar path the reference builds.
+foundation = { workspace = true }
 # Scenario documents are XML DataSections (the reference Bots read their
 # config through the same `BWConfig`/DataSection style), so the section
 # reader is needed here.

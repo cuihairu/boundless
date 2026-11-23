@@ -11,9 +11,9 @@ pub mod fleet;
 pub mod scenario;
 
 pub use bot::{
-    Bot, ConnState, ControllerSpec, FD_PER_BOT, NULL_ENTITY_ID, TICK_FREQUENCY, TICK_PERIOD,
-    Transport, transport_from_config,
+    Behaviour, Bot, BotView, ConnState, Directive, FD_PER_BOT, MATH_PI, MovementController,
+    MovementFactory, NULL_ENTITY_ID, TICK_FREQUENCY, TICK_PERIOD, Transport, transport_from_config,
 };
 pub use executor::{Executor, StageTimeline};
-pub use fleet::{Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};
+pub use fleet::{ControllerRegistry, Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
