@@ -35,6 +35,7 @@ pub mod machined;
 pub mod mailbox_call;
 pub mod movement;
 pub mod offloaded_backup;
+pub mod passenger_teleport;
 pub mod pending_logins;
 pub mod physical_space;
 pub mod proxy_client;
