@@ -13,6 +13,7 @@ pub mod cellappmgr;
 pub mod client_login;
 pub mod cluster_shutdown;
 pub mod config;
+pub mod controllers;
 pub mod data_download;
 pub mod db_login;
 pub mod dbappmgr;
