@@ -1,0 +1,135 @@
+original_path	kind	index	ticket	how
+model (lib/model)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+model_unit_test (lib/model/unit_test)	executable	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+model_unit_test (lib/model/unit_test)	test	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+terrain (lib/terrain)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+terrain_unit_test (lib/terrain/unit_test)	executable	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+terrain_unit_test (lib/terrain/unit_test)	test	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+waypoint_generator (lib/waypoint_generator)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+scaleform (lib/scaleform)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+sqlite (lib/sqlite)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+sqlite (lib/sqlite)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+sqlite (lib/sqlite)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+romp (lib/romp)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+ual (lib/ual)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+gizmo (lib/gizmo)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+guimanager (lib/guimanager)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+asset_pipeline (lib/asset_pipeline)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+controls (lib/controls)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+network (lib/network)	library	crates/mercury	BW-02,BW-05,BW-12	mercury is the BW-02 transports, message-framing and RPC port
+network_unit_test (lib/network/unit_test)	executable	crates/mercury	BW-02,BW-05,BW-12	the port crate's test suite covers the reference unit tests (mercury is the BW-02 transports, message-framing and RPC port)
+network_unit_test (lib/network/unit_test)	test	crates/mercury	BW-02,BW-05,BW-12	the port crate's test suite covers the reference unit tests (mercury is the BW-02 transports, message-framing and RPC port)
+guitabs (lib/guitabs)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+appmgr (lib/appmgr)	library	none yet	BW-07	no port counterpart yet; the ticket's source scope covers it
+pyscript (lib/pyscript)	library	crates/python-host	BW-03	python-host ports lib/pyscript and lib/script (its own doc line)
+pyscript_unit_test (lib/pyscript/unit_test)	executable	crates/python-host	BW-03	the port crate's test suite covers the reference unit tests (python-host ports lib/pyscript and lib/script (its own doc line))
+pyscript_unit_test (lib/pyscript/unit_test)	test	crates/python-host	BW-03	the port crate's test suite covers the reference unit tests (python-host ports lib/pyscript and lib/script (its own doc line))
+duplo (lib/duplo)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+duplo_unit_test (lib/duplo/unit_test)	executable	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+duplo_unit_test (lib/duplo/unit_test)	test	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+physics2 (lib/physics2)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+physics2_unit_test (lib/physics2/unit_test)	executable	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+physics2_unit_test (lib/physics2/unit_test)	test	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+db_storage_xml (lib/db_storage_xml)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+particle (lib/particle)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+particle_unit_test (lib/particle/unit_test)	executable	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+particle_unit_test (lib/particle/unit_test)	test	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+moo (lib/moo)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+moo_unit_test (lib/moo/unit_test)	executable	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+moo_unit_test (lib/moo/unit_test)	test	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+unit_test_lib (lib/unit_test_lib)	library	none yet	BW-12	no port counterpart yet; the ticket's source scope covers it
+unit_test_lib_unit_test (lib/unit_test_lib/unit_test)	executable	none yet	BW-12	no port counterpart yet; the ticket's source scope covers it
+unit_test_lib_unit_test (lib/unit_test_lib/unit_test)	test	none yet	BW-12	no port counterpart yet; the ticket's source scope covers it
+connection_model (lib/connection_model)	library	none yet	BW-06	no port counterpart yet; the ticket's source scope covers it
+chunk_loading (lib/chunk_loading)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+cstdmf (lib/cstdmf)	library	crates/foundation	BW-01,BW-12	foundation is the BW-01 shared-primitives port (ids, clocks, math, byte codecs)
+cstdmf (lib/cstdmf)	library	crates/foundation	BW-01,BW-12	foundation is the BW-01 shared-primitives port (ids, clocks, math, byte codecs)
+cstdmf_unit_test (lib/cstdmf/unit_test)	executable	crates/foundation	BW-01,BW-12	the port crate's test suite covers the reference unit tests (foundation is the BW-01 shared-primitives port (ids, clocks, math, byte codecs))
+cstdmf_unit_test (lib/cstdmf/unit_test)	test	crates/foundation	BW-01,BW-12	the port crate's test suite covers the reference unit tests (foundation is the BW-01 shared-primitives port (ids, clocks, math, byte codecs))
+memhook (lib/memhook)	library	none yet	BW-01	no port counterpart yet; the ticket's source scope covers it
+speedtree (lib/speedtree)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+script (lib/script)	library	crates/python-host	BW-03	python-host ports lib/pyscript and lib/script (its own doc line)
+script_unit_test (lib/script/unit_test)	executable	crates/python-host	BW-03	the port crate's test suite covers the reference unit tests (python-host ports lib/pyscript and lib/script (its own doc line))
+script_unit_test (lib/script/unit_test)	test	crates/python-host	BW-03	the port crate's test suite covers the reference unit tests (python-host ports lib/pyscript and lib/script (its own doc line))
+open_automate (lib/open_automate)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+compiled_space (lib/compiled_space)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+compiled_space_writers (lib/compiled_space/binary_writers)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+compiled_space_unit_test (lib/compiled_space/unit_test)	executable	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+compiled_space_unit_test (lib/compiled_space/unit_test)	test	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+waypoint (lib/waypoint)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+resmgr (lib/resmgr)	library	crates/resources	BW-01	resources is the BW-01 DataSection and resource-search-path port
+resmgr_unit_test (lib/resmgr/unit_test)	executable	crates/resources	BW-01	the port crate's test suite covers the reference unit tests (resources is the BW-01 DataSection and resource-search-path port)
+resmgr_unit_test (lib/resmgr/unit_test)	test	crates/resources	BW-01	the port crate's test suite covers the reference unit tests (resources is the BW-01 DataSection and resource-search-path port)
+entitydef_script (lib/entitydef_script)	library	crates/entitydef	BW-04	entitydef covers BW-04's lib/entitydef_script scope
+input (lib/input)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+space (lib/space)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+space_unit_test (lib/space/unit_test)	executable	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+space_unit_test (lib/space/unit_test)	test	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+chunk (lib/chunk)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+math (lib/math)	library	crates/foundation	BW-01	foundation::math ports lib/math
+math_unit_test (lib/math/unit_test)	executable	crates/foundation	BW-01	the port crate's test suite covers the reference unit tests (foundation::math ports lib/math)
+math_unit_test (lib/math/unit_test)	test	crates/foundation	BW-01	the port crate's test suite covers the reference unit tests (foundation::math ports lib/math)
+bwentity (lib/bwentity)	library	crates/entitydef	BW-04	entitydef covers BW-04's lib/bwentity scope
+bwentity_unit_test (lib/bwentity/unit_test)	executable	crates/entitydef	BW-04	the port crate's test suite covers the reference unit tests (entitydef covers BW-04's lib/bwentity scope)
+bwentity_unit_test (lib/bwentity/unit_test)	test	crates/entitydef	BW-04	the port crate's test suite covers the reference unit tests (entitydef covers BW-04's lib/bwentity scope)
+fmodsound (lib/fmodsound)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+navigation_recast (lib/navigation_recast)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+visual_manipulator (lib/visual_manipulator)	library	none yet	BW-13	no port counterpart yet; the ticket's source scope covers it
+build (lib/build)	library	none yet	BW-01	no port counterpart yet; the ticket's source scope covers it
+db_storage_mysql (lib/db_storage_mysql)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+urlrequest (lib/urlrequest)	library	none yet	none	no port counterpart; no BW-xx source scope covers it
+emptyvoip (lib/emptyvoip)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+connection (lib/connection)	library	none yet	BW-02,BW-06	no port counterpart yet; the ticket's source scope covers it
+camera (lib/camera)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+post_processing (lib/post_processing)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+db_storage (lib/db_storage)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+db (lib/db)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+db_unit_test (lib/db/unit_test)	executable	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+db_unit_test (lib/db/unit_test)	test	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+web_render (lib/web_render)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+delegate_interface (lib/delegate_interface)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+ashes (lib/ashes)	library	none yet	BW-11	no port counterpart yet; the ticket's source scope covers it
+server (lib/server)	library	crates/server-runtime	BW-01,BW-08,BW-12	server-runtime is the BW-01 process-bootstrap port (server_app, tick, signals)
+server_unit_test (lib/server/unit_test)	executable	crates/server-runtime	BW-01,BW-08,BW-12	the port crate's test suite covers the reference unit tests (server-runtime is the BW-01 process-bootstrap port (server_app, tick, signals))
+server_unit_test (lib/server/unit_test)	test	crates/server-runtime	BW-01,BW-08,BW-12	the port crate's test suite covers the reference unit tests (server-runtime is the BW-01 process-bootstrap port (server_app, tick, signals))
+chunk_scene_adapter (lib/chunk_scene_adapter)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+scene (lib/scene)	library	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+scene_unit_test (lib/scene/unit_test)	executable	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+scene_unit_test (lib/scene/unit_test)	test	none yet	BW-10	no port counterpart yet; the ticket's source scope covers it
+entitydef (lib/entitydef)	library	crates/entitydef	BW-04	entitydef is the BW-04 entity-definitions port
+entitydef_unit_test (lib/entitydef/unit_test)	executable	crates/entitydef	BW-04	the port crate's test suite covers the reference unit tests (entitydef is the BW-04 entity-definitions port)
+entitydef_unit_test (lib/entitydef/unit_test)	test	crates/entitydef	BW-04	the port crate's test suite covers the reference unit tests (entitydef is the BW-04 entity-definitions port)
+cellappmgr (server/cellappmgr)	executable	apps/server	BW-05	boundless-server runs the cellappmgr role (KNOWN_ROLES)
+cellappmgr_unit_test (server/cellappmgr/unit_test)	executable	apps/server	BW-05	the port crate's test suite covers the reference unit tests (boundless-server runs the cellappmgr role (KNOWN_ROLES))
+cellappmgr_unit_test (server/cellappmgr/unit_test)	test	apps/server	BW-05	the port crate's test suite covers the reference unit tests (boundless-server runs the cellappmgr role (KNOWN_ROLES))
+cellapp (server/cellapp)	executable	apps/server	BW-08	boundless-server runs the cellapp role (KNOWN_ROLES)
+cellapp_unit_test (server/cellapp/unit_test)	executable	apps/server	BW-08	the port crate's test suite covers the reference unit tests (boundless-server runs the cellapp role (KNOWN_ROLES))
+cellapp_unit_test (server/cellapp/unit_test)	test	apps/server	BW-08	the port crate's test suite covers the reference unit tests (boundless-server runs the cellapp role (KNOWN_ROLES))
+reviver (server/reviver)	executable	apps/server	BW-05	boundless-server runs the reviver role (KNOWN_ROLES)
+reviver_unit_test (server/reviver/unit_test)	executable	apps/server	BW-05	the port crate's test suite covers the reference unit tests (boundless-server runs the reviver role (KNOWN_ROLES))
+reviver_unit_test (server/reviver/unit_test)	test	apps/server	BW-05	the port crate's test suite covers the reference unit tests (boundless-server runs the reviver role (KNOWN_ROLES))
+bwengine_xml (server/dbapp_extensions/bwengine_xml)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+bwengine_mysql (server/dbapp_extensions/bwengine_mysql)	library	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+baseapp (server/baseapp)	executable	apps/server	BW-06,BW-07	boundless-server runs the baseapp role (KNOWN_ROLES)
+baseapp_unit_test (server/baseapp/unit_test)	executable	apps/server	BW-06,BW-07	the port crate's test suite covers the reference unit tests (boundless-server runs the baseapp role (KNOWN_ROLES))
+baseapp_unit_test (server/baseapp/unit_test)	test	apps/server	BW-06,BW-07	the port crate's test suite covers the reference unit tests (boundless-server runs the baseapp role (KNOWN_ROLES))
+dbappmgr (server/dbappmgr)	executable	apps/server	BW-05	boundless-server runs the dbappmgr role (KNOWN_ROLES)
+dbappmgr_unit_test (server/dbappmgr/unit_test)	executable	apps/server	BW-05	the port crate's test suite covers the reference unit tests (boundless-server runs the dbappmgr role (KNOWN_ROLES))
+dbappmgr_unit_test (server/dbappmgr/unit_test)	test	apps/server	BW-05	the port crate's test suite covers the reference unit tests (boundless-server runs the dbappmgr role (KNOWN_ROLES))
+dbapp (server/dbapp)	executable	apps/server	BW-06,BW-09	boundless-server runs the dbapp role (KNOWN_ROLES)
+dbapp_unit_test (server/dbapp/unit_test)	executable	apps/server	BW-06,BW-09	the port crate's test suite covers the reference unit tests (boundless-server runs the dbapp role (KNOWN_ROLES))
+dbapp_unit_test (server/dbapp/unit_test)	test	apps/server	BW-06,BW-09	the port crate's test suite covers the reference unit tests (boundless-server runs the dbapp role (KNOWN_ROLES))
+loginapp (server/loginapp)	executable	apps/server	BW-06	boundless-server runs the loginapp role (KNOWN_ROLES)
+loginapp_unit_test (server/loginapp/unit_test)	executable	apps/server	BW-06	the port crate's test suite covers the reference unit tests (boundless-server runs the loginapp role (KNOWN_ROLES))
+loginapp_unit_test (server/loginapp/unit_test)	test	apps/server	BW-06	the port crate's test suite covers the reference unit tests (boundless-server runs the loginapp role (KNOWN_ROLES))
+sync_db (server/tools/sync_db)	executable	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+clear_auto_load (server/tools/clear_auto_load)	executable	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+bwmachined (server/tools/bwmachined)	executable	none yet	BW-05	no port counterpart yet; the ticket's source scope covers it
+snapshot_helper (server/tools/snapshot_helper)	executable	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+bots (server/tools/bots)	executable	none yet	BW-12	no port counterpart yet; the ticket's source scope covers it
+_bw_profile (server/tools/bw_profile)	library	none yet	BW-12	no port counterpart yet; the ticket's source scope covers it
+transfer_db (server/tools/transfer_db)	executable	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+consolidate_dbs (server/tools/consolidate_dbs)	executable	none yet	BW-09	no port counterpart yet; the ticket's source scope covers it
+baseappmgr (server/baseappmgr)	executable	apps/server	BW-05	boundless-server runs the baseappmgr role (KNOWN_ROLES)
+baseappmgr_unit_test (server/baseappmgr/unit_test)	executable	apps/server	BW-05	the port crate's test suite covers the reference unit tests (boundless-server runs the baseappmgr role (KNOWN_ROLES))
+baseappmgr_unit_test (server/baseappmgr/unit_test)	test	apps/server	BW-05	the port crate's test suite covers the reference unit tests (boundless-server runs the baseappmgr role (KNOWN_ROLES))

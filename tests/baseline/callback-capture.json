@@ -1,0 +1,10 @@
+{
+  "face": "python logon callback capture",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "01a38d3ee6e3ffe6f7226d6c2e68e863b23d9c1c",
+  "capture_gate": "closed",
+  "capture_gate_detail": "absent (no server/bw.xml at the game resource root); absent (/home/cui/.bwmachined.conf)",
+  "capture": "absent (no callback sequence retained — the gate names the gap)",
+  "recorded_at": "2026-11-21T22:26:44Z",
+  "lane_git_sha": "d3fbd4b"
+}

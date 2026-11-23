@@ -1,0 +1,414 @@
+{
+  "rows": [
+    {
+      "artifact": "distribution/baseapp",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/baseapp",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/baseappmgr",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/baseappmgr",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/bots",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/bots",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/cellapp",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/cellapp",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/cellapp-extensions/cellapp_example.so",
+      "kind": "server extension",
+      "source": "game/bin/server/el7/server/cellapp-extensions/cellapp_example.so",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/cellappmgr",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/cellappmgr",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/commands/clear_auto_load",
+      "kind": "server command",
+      "source": "game/bin/server/el7/server/commands/clear_auto_load",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/commands/consolidate_dbs",
+      "kind": "server command",
+      "source": "game/bin/server/el7/server/commands/consolidate_dbs",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/commands/remove_db",
+      "kind": "server command",
+      "source": "game/bin/server/el7/server/commands/remove_db",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/commands/sync_db",
+      "kind": "server command",
+      "source": "game/bin/server/el7/server/commands/sync_db",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/commands/transfer_db",
+      "kind": "server command",
+      "source": "game/bin/server/el7/server/commands/transfer_db",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/dbapp",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/dbapp",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/dbapp-extensions/bwengine_mysql.so",
+      "kind": "server extension",
+      "source": "game/bin/server/el7/server/dbapp-extensions/bwengine_mysql.so",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/dbapp-extensions/bwengine_xml.so",
+      "kind": "server extension",
+      "source": "game/bin/server/el7/server/dbapp-extensions/bwengine_xml.so",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/dbappmgr",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/dbappmgr",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/loginapp",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/loginapp",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/reviver",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/reviver",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/serviceapp",
+      "kind": "server process",
+      "source": "game/bin/server/el7/server/serviceapp",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/_bw_profile.so",
+      "kind": "tool",
+      "source": "game/bin/server/el7/tools/_bw_profile.so",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/_bwlog.so",
+      "kind": "tool",
+      "source": "game/bin/server/el7/tools/_bwlog.so",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/bwmachined2",
+      "kind": "tool",
+      "source": "game/bin/server/el7/tools/bwmachined2",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/message_logger",
+      "kind": "tool",
+      "source": "game/bin/server/el7/tools/message_logger",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/process_defs",
+      "kind": "tool",
+      "source": "game/bin/server/el7/tools/process_defs",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/res_packer",
+      "kind": "tool",
+      "source": "game/bin/server/el7/tools/res_packer",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/simple_python_client",
+      "kind": "example",
+      "source": "game/bin/server/el7/examples/simple_python_client",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/baseapp_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/baseapp_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/baseappmgr_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/baseappmgr_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/cellapp_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/cellapp_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/cellappmgr_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/cellappmgr_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/cstdmf_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/cstdmf_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/db_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/db_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/dbapp_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/dbapp_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/dbappmgr_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/dbappmgr_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/entitydef_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/entitydef_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/loginapp_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/loginapp_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/math_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/math_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/network_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/network_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/physics2_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/physics2_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/pyscript_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/pyscript_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/resmgr_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/resmgr_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/reviver_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/reviver_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/scene_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/scene_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/script_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/script_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/server_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/server_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/terrain_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/terrain_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/unit_test_lib_test",
+      "kind": "unit test",
+      "source": "game/bin/server/el7/unit_tests/unit_test_lib_test",
+      "index": "BW-14",
+      "how": "the reference's prebuilt distribution; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/python",
+      "kind": "bundled python",
+      "source": "game/bin/server/el7/third_party/python",
+      "index": "BW-14",
+      "how": "the reference bundles its Python runtime; BW-14's scope names the \u53d1\u884c\u7269"
+    },
+    {
+      "artifact": "distribution/scripts",
+      "kind": "runtime scripts tree",
+      "source": "game/res/bigworld/scripts",
+      "index": "BW-14",
+      "how": "the reference ships the runtime scripts tree (common/ Lib, site-packages, server_common) as \u53d1\u884c\u7269; BW-14's scope names it"
+    },
+    {
+      "artifact": "sdk/unity",
+      "kind": "sdk part",
+      "source": "client_sdk/unity",
+      "index": "BW-21",
+      "how": "the reference's client SDK (unity); BW-21 owns the SDK"
+    },
+    {
+      "artifact": "sdk/unreal",
+      "kind": "sdk part",
+      "source": "client_sdk/unreal",
+      "index": "BW-21",
+      "how": "the reference's client SDK (unreal); BW-21 owns the SDK"
+    },
+    {
+      "artifact": "sdk/typescript",
+      "kind": "sdk part",
+      "source": "client_sdk/typescript",
+      "index": "BW-21",
+      "how": "the reference's client SDK (typescript); BW-21 owns the SDK"
+    },
+    {
+      "artifact": "sdk/generator",
+      "kind": "sdk part",
+      "source": "client_sdk/generator",
+      "index": "BW-21",
+      "how": "the reference's client SDK (generator); BW-21 owns the SDK"
+    },
+    {
+      "artifact": "sdk/port",
+      "kind": "port sdk gap",
+      "source": "the reference client_sdk",
+      "index": "none yet",
+      "how": "the port's sdk/ tree is planned by BW-21-01-01; the reference ships 4 SDK part(s) on its own lane/client-sdk branch"
+    },
+    {
+      "artifact": "missing/bundled-scripts",
+      "kind": "missing resource",
+      "source": "the server bootstrap reads the runtime scripts from game/res/bigworld/scripts",
+      "index": "none yet",
+      "how": "the port ships no bundled runtime scripts tree; BW-03 (python-host) embeds CPython but no scripts tree"
+    },
+    {
+      "artifact": "missing/game-project-server-config",
+      "kind": "missing resource",
+      "source": "the server processes load bw.xml from the game project's res/server",
+      "index": "none yet",
+      "how": "the port ships no game-project res; the reference keeps it only in fantasydemo's res/server (turned on by BW-14)"
+    },
+    {
+      "artifact": "missing/entity-definitions",
+      "kind": "missing resource",
+      "source": "the EntityDef loader reads entity_defs from the game project's res",
+      "index": "none yet",
+      "how": "the port ships no game-project res; the reference keeps it only in fantasydemo's res/scripts (turned on by BW-14)"
+    },
+    {
+      "artifact": "missing/game-scripts",
+      "kind": "missing resource",
+      "source": "the server processes run the game scripts from the game project's res",
+      "index": "none yet",
+      "how": "the port ships no game-project res; the reference keeps it only in fantasydemo's res/scripts (turned on by BW-14)"
+    }
+  ],
+  "count": 57,
+  "distribution": 48,
+  "sdk": 5,
+  "missing": 4,
+  "schema": [
+    "artifact",
+    "kind",
+    "source",
+    "index",
+    "how"
+  ]
+}

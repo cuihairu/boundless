@@ -503,41 +503,83 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # BW-00-04-04 — the full-stack comparison: the same input through the original
-  # stack and the new stack, each producer leaving its own evidence. The
-  # entity-definition scenario runs both halves live when the reference tree is
-  # present; the protocol and callback scenarios record the reference evidence
-  # and SKIP the new half, naming the missing producer (mercury wire,
-  # python-host callbacks). Like the parity job this expects to SKIP on a
-  # hosted runner: the original binary lives in a reference checkout
-  # (BW_REFERENCE) that a clean runner does not have. On a self-hosted runner
-  # that carries the reference tree the same step becomes the gate.
-  fullstack:
-    name: Full-stack comparison against the reference stack
+  # BW-00-02-01..05, BW-00-04-01, BW-00-04-02 and BW-00-04-03 — the reference
+  # face: the original tree's commit, binary hashes and stated versions (the
+  # baseline), its own unit tests rerun with list, command and result saved,
+  # then the single-machine cluster face — topology, configuration and the
+  # launch gate —, the minimal client login face — request, callbacks and the
+  # capture gate —, the wire protocol face — every registered message with
+  # its id, length style and direction, plus the framing those ids use —, the
+  # Python logon callback face — the callback sequence, its arguments and the
+  # fields a differential run must ignore —, the fixture face — the resource
+  # bundle, the entity definitions and the database seed, each
+  # content-addressed —, and the Windows client and tools baseline — per-target
+  # result or gap — the same way local and CI run them.
+  # A hosted runner has no reference checkout, so the job records the honest
+  # SKIP naming the missing tree; the self-test in the harness job proves the
+  # collection itself bites, and the durable record lives under
+  # tests/baseline/ in the repo.
+  refbase:
+    name: Reference record and tests
     needs: changes
-    if: contains(needs.changes.outputs.lanes, 'fullstack')
+    if: contains(needs.changes.outputs.lanes, 'refbase')
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
-      - name: Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache: true
+      - name: Record the reference baseline
+        run: ci/reference-baseline.sh
 
-      - name: Python
-        uses: actions/setup-python@v6
-        with:
-          python-version-file: .python-version
+      - name: Rerun the reference unit tests
+        run: ci/reference-tests.sh
 
-      - name: Run the comparison
+      - name: Record the reference cluster baseline
+        run: ci/reference-cluster.sh
+
+      - name: Record the reference login face
+        run: ci/reference-login.sh
+
+      - name: Record the reference wire protocol
+        run: ci/reference-protocol.sh
+
+      - name: Record the reference python logon callback
+        run: ci/reference-callback.sh
+
+      - name: Record the reference fixtures
+        run: ci/reference-fixtures.sh
+
+      - name: Record the original and new full-stack comparison
+        run: ci/compare-fullstack.sh
+
+      - name: Record the single-component replacement run
+        run: ci/replace-role.sh
+
+      - name: Locate the compatibility differences
+        run: ci/compat-report.sh
+
+      - name: Record the coverage ledger fields
+        run: ci/coverage-ledger.sh
+
+      - name: Map the engine library and server targets
+        run: ci/map-coverage.sh
+
+      - name: Map the client and tool targets
+        run: CI_MAP_TASKS=BW-00-05-03 ci/map-coverage.sh
+
+      - name: Map the common code and FantasyDemo entries
         run: |
-          ci/fullstack-compare.sh
-          ci/fullstack-compare.sh substitute
-          # The difference report (BW-00-04-06) reads the evidence pairs the
-          # comparison above wrote, so it must run after them.
-          ci/diff-report.sh
+          CI_MAP_TASKS=BW-00-05-04 ci/map-coverage.sh
+          ci/map-entry.sh
+
+      - name: Record the reference distribution, SDK and resource gaps
+        run: ci/coverage-artifacts.sh
+
+      - name: Close the coverage ledger
+        run: ci/coverage-reconcile.sh
+
+      - name: Record the reference windows baseline
+        run: ci/reference-winbaseline.sh
 
       - name: Bundle results
         if: always()
@@ -547,43 +589,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ci-results-fullstack-${{ github.run_id }}
-          path: ci-results/
-          retention-days: 14
-          if-no-files-found: warn
-
-  # BW-00-05-06 — the coverage ledger is the index of every original build
-  # target. The lane validates the committed ledger in place and, when the
-  # reference tree is present (BW_REFERENCE), that it is the one the generator
-  # produces from it. On a runner without the reference tree the regeneration
-  # check SKIPs and the in-place completeness gate still runs.
-  ledger:
-    name: Feature-coverage ledger completeness
-    needs: changes
-    if: contains(needs.changes.outputs.lanes, 'ledger')
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Python
-        uses: actions/setup-python@v6
-        with:
-          python-version-file: .python-version
-
-      - name: Run the completeness gate
-        run: |
-          ci/ledger-check.sh
-
-      - name: Bundle results
-        if: always()
-        run: ci/archive-results.sh
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v7.0.2
-        with:
-          name: ci-results-ledger-${{ github.run_id }}
+          name: ci-results-refbase-${{ github.run_id }}
           path: ci-results/
           retention-days: 14
           if-no-files-found: warn
@@ -947,9 +953,6 @@ jobs:
           ci/check-docs.sh self-test
           ci/runners.sh self-test
           ci/parity.sh self-test
-          ci/fullstack-compare.sh self-test
-          ci/diff-report.sh self-test
-          ci/ledger-check.sh self-test
           ci/sdk.sh self-test
           ci/load.sh self-test
           ci/fault.sh self-test
@@ -959,6 +962,22 @@ jobs:
           ci/sdk-archive.sh self-test
           ci/vsix.sh self-test
           ci/checksums.sh self-test
+          ci/reference-baseline.sh self-test
+          ci/reference-tests.sh self-test
+          ci/reference-cluster.sh self-test
+          ci/reference-login.sh self-test
+          ci/reference-protocol.sh self-test
+          ci/reference-callback.sh self-test
+          ci/reference-fixtures.sh self-test
+          ci/compare-fullstack.sh self-test
+          ci/replace-role.sh self-test
+          ci/compat-report.sh self-test
+          ci/coverage-ledger.sh self-test
+          ci/map-coverage.sh self-test
+          ci/map-entry.sh self-test
+          ci/coverage-artifacts.sh self-test
+          ci/coverage-reconcile.sh self-test
+          ci/reference-winbaseline.sh self-test
           ci/archive-results.sh self-test
 
       - name: Bundle results

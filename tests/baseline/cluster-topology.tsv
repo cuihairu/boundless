@@ -1,0 +1,20 @@
+# reference cluster topology
+# tree: /home/cui/workspaces/BigWorld
+# commit: 4657a17cf10d55e2fbebf258f96da96a3dbe0c22
+baseapp	el7/server/baseapp
+baseappmgr	el7/server/baseappmgr
+bots	el7/server/bots
+cellapp	el7/server/cellapp
+cellapp-extensions	el7/server/cellapp-extensions
+cellappmgr	el7/server/cellappmgr
+commands	el7/server/commands
+dbapp	el7/server/dbapp
+dbapp-extensions	el7/server/dbapp-extensions
+dbappmgr	el7/server/dbappmgr
+loginapp	el7/server/loginapp
+reviver	el7/server/reviver
+serviceapp	el7/server/serviceapp
+bwmachined2	el7/tools/bwmachined2
+message_logger	el7/tools/message_logger
+process_defs	el7/tools/process_defs
+res_packer	el7/tools/res_packer

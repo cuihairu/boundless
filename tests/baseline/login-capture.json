@@ -1,0 +1,10 @@
+{
+  "face": "minimal client login capture",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "e9cb96784c66ac1dd8318ecdc7689e3447703b49",
+  "capture_gate": "closed",
+  "capture_gate_detail": "absent (no server/bw.xml at the game resource root); absent (/home/cui/.bwmachined.conf)",
+  "capture": "absent (no handshake retained — the gate names the gap)",
+  "recorded_at": "2026-11-21T18:28:41Z",
+  "lane_git_sha": "dda27a0"
+}

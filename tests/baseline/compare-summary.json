@@ -1,0 +1,77 @@
+{
+  "comparison": [
+    {
+      "boundary": "login_wire.login",
+      "original": {
+        "id": 0,
+        "length_style": "VARIABLE_LENGTH_MESSAGE",
+        "length_param": 2
+      },
+      "new": {
+        "length_style": "VARIABLE_LENGTH_MESSAGE",
+        "length_param": 2,
+        "id": 0
+      },
+      "agree": true,
+      "note": "identical"
+    },
+    {
+      "boundary": "login_wire.probe",
+      "original": {
+        "id": 1,
+        "length_style": "FIXED_LENGTH_MESSAGE",
+        "length_param": 0
+      },
+      "new": {
+        "length_style": "FIXED_LENGTH_MESSAGE",
+        "length_param": 0,
+        "id": 1
+      },
+      "agree": true,
+      "note": "identical"
+    },
+    {
+      "boundary": "login_wire.challengeResponse",
+      "original": {
+        "id": 2,
+        "length_style": "VARIABLE_LENGTH_MESSAGE",
+        "length_param": 2
+      },
+      "new": {
+        "length_style": "VARIABLE_LENGTH_MESSAGE",
+        "length_param": 2,
+        "id": 2
+      },
+      "agree": true,
+      "note": "identical"
+    },
+    {
+      "boundary": "login_wire.payload_bytes",
+      "original": "00 00 09 02",
+      "new": "00 00 09 02",
+      "agree": true,
+      "note": "the protocol version byte string both sides carry"
+    },
+    {
+      "boundary": "callback.order",
+      "original": "11 site(s), 5 runtime path(s)",
+      "new": "not implemented",
+      "agree": false,
+      "note": "the callback sequence order; the new side carries it when BW-02 lands"
+    },
+    {
+      "boundary": "db_state.seed",
+      "original": "LogOnMapping [{'logOnName': 'FantasyAccount', 'password': 'a', 'type': 'Account', 'entityID': '2'}] + 2 table(s)",
+      "new": "no consumer",
+      "agree": false,
+      "note": "the database seed the login consumes"
+    }
+  ],
+  "original_run": {
+    "gate": "see original-evidence.json"
+  },
+  "new_run": {
+    "gate": "closed",
+    "reason": "the server runtime validates the role name only \u2014 no network, no login path (Mercury joins at BW-02)"
+  }
+}

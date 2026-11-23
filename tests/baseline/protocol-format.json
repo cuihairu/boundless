@@ -1,0 +1,45 @@
+{
+  "face": "mercury wire protocol framing",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "51272509b8154a31d9b121df10e6a0b81907fe0a",
+  "message_id": {
+    "type": "uint8",
+    "width_bytes": 1,
+    "encoding": "unsigned byte, value = position in declaration order (0-based)",
+    "id_rule": "InterfaceMinder::add assigns id = elements_.size() — lib/network/interface_minder.cpp",
+    "id_rule_verified_by": "login=0, probe=1, challengeResponse=2 (lib/connection/login_interface.hpp)"
+  },
+  "length_field": {
+    "encoding": "big-endian (BW_HTONS / BW_HTONL), width = lengthParam bytes",
+    "value": "body length only, not including the id byte or the length field",
+    "widths": {"1": "0xff oversize threshold", "2": "0xffff", "3": "0xffffff", "4": "full uint32"},
+    "oversize": "length >= threshold routes through specialCompressLength — lib/network/interface_element.cpp"
+  },
+  "header_size": {
+    "FIXED_LENGTH_MESSAGE": "1 (MessageID only) + lengthParam body bytes",
+    "VARIABLE_LENGTH_MESSAGE": "1 + lengthParam",
+    "CALLBACK_LENGTH_MESSAGE": "-1 (no fixed width in the declaration) — lib/network/interface_element.cpp"
+  },
+  "callback_length": {
+    "rule": "framing resolved at receive time: InterfaceElement::updateLengthDetails queries the handler's getMessageStreamSize; streamSize < 0 => VARIABLE_LENGTH_MESSAGE with lengthParam = -streamSize, streamSize >= 0 => FIXED_LENGTH_MESSAGE with lengthParam = streamSize",
+    "source": "lib/network/interface_element.cpp"
+  },
+  "pack": "#pragma pack(push, 1) before BEGIN_MERCURY_INTERFACE in every interface file",
+  "login_payload": {
+    "protocol_version_bytes": "00 00 09 02",
+    "layout": "ClientServerProtocolVersion streams subpatch, patch, minor, major each as uint8 (2.9.0.0) — lib/connection/client_server_protocol_version.hpp",
+    "login_message": {"interface": "LoginInterface", "id": 0, "length_style": "VARIABLE_LENGTH_MESSAGE", "length_param": 2},
+    "probe_message": {"interface": "LoginInterface", "id": 1, "length_style": "FIXED_LENGTH_MESSAGE", "length_param": 0},
+    "challenge_response_message": {"interface": "LoginInterface", "id": 2, "length_style": "VARIABLE_LENGTH_MESSAGE", "length_param": 2}
+  },
+  "source_refs": [
+    "lib/network/interface_element.cpp",
+    "lib/network/interface_element.hpp",
+    "lib/network/interface_minder.cpp",
+    "lib/network/interface_macros.hpp",
+    "lib/connection/client_server_protocol_version.hpp",
+    "lib/connection/login_interface.hpp"
+  ],
+  "recorded_at": "2026-11-21T21:44:51Z",
+  "lane_git_sha": "71561da"
+}

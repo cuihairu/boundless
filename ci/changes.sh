@@ -79,7 +79,7 @@ main() {
 
     local p owner
     local rust_pkgs=""
-    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 fullstack=0 sdk=0 load=0 fault=0 report=0 package=0 docspkg=0 sdkarc=0 vsix=0 ledger=0
+    local py=0 ts=0 md=0 rs=0 ci=0 tc=0 run=0 store=0 parity=0 sdk=0 load=0 fault=0 report=0 package=0 docspkg=0 sdkarc=0 vsix=0 refbase=0
     local rust_all=0
 
     while IFS= read -r p; do
@@ -125,19 +125,6 @@ main() {
         case "$p" in
         tests/parity/* | ci/parity.sh) parity=1 ;;
         esac
-        # The full-stack comparison runs the original and new producers on the
-        # same input, so it follows the captured fixtures and the lane. The
-        # difference report reads that lane's evidence pairs, so it travels
-        # with them.
-        case "$p" in
-        docs/review/fixtures/* | docs/review/reference/* | ci/fullstack-compare.sh | ci/diff-report.sh | ci/diff_report.py) fullstack=1 ;;
-        esac
-        # The coverage ledger follows its generator, its checker and the ledger
-        # it indexes: those are what a ledger change means.
-        case "$p" in
-        docs/review/tools/*.py | docs/review/bw00-05-ledger.tsv \
-            | docs/review/bw00-05-coverage-ledger.md | ci/ledger-check.sh) ledger=1 ;;
-        esac
         # The SDK and plugin cases gate on artifacts a host loads, so they
         # follow the SDK tree, the plugin crates and the lane.
         case "$p" in
@@ -174,6 +161,23 @@ main() {
         case "$p" in
         extensions/vscode/* | ci/vsix.sh) vsix=1 ;;
         esac
+        # The reference baseline follows its recorded snapshots and the lane.
+        case "$p" in
+        tests/baseline/* | ci/reference-baseline.sh | ci/reference-tests.sh \
+            | ci/reference-cluster.sh | ci/reference-login.sh \
+            | ci/reference-protocol.sh | ci/reference-protocol.py \
+            | ci/reference-callback.sh | ci/reference-callback.py \
+            | ci/reference-fixtures.sh | ci/reference-fixtures.py \
+            | ci/compare-fullstack.sh | ci/compare-fullstack.py \
+            | ci/replace-role.sh | ci/replace-role.py \
+            | ci/compat-report.sh | ci/compat-report.py \
+            | ci/coverage-ledger.sh | ci/coverage-ledger.py \
+            | ci/map-coverage.sh | ci/map-coverage.py \
+            | ci/map-entry.sh | ci/map-entry.py | ci/coverage_scope.py \
+            | ci/coverage-artifacts.sh | ci/coverage-artifacts.py \
+            | ci/coverage-reconcile.sh | ci/coverage-reconcile.py \
+            | ci/reference-winbaseline.sh) refbase=1 ;;
+        esac
 
         if owner="$(owning_package "$p")" && [ "$owner" != workspace-root ] && [ -n "$owner" ]; then
             if [[ "$rust_pkgs" != *"$owner"* ]]; then
@@ -203,8 +207,6 @@ main() {
     [ "$run" -eq 1 ] && add_lane runners
     [ "$store" -eq 1 ] && add_lane store
     [ "$parity" -eq 1 ] && add_lane parity
-    [ "$fullstack" -eq 1 ] && add_lane fullstack
-    [ "$ledger" -eq 1 ] && add_lane ledger
     [ "$sdk" -eq 1 ] && add_lane sdk
     [ "$load" -eq 1 ] && add_lane load
     [ "$fault" -eq 1 ] && add_lane fault
@@ -213,6 +215,7 @@ main() {
     [ "$docspkg" -eq 1 ] && add_lane docspkg
     [ "$sdkarc" -eq 1 ] && add_lane sdkarc
     [ "$vsix" -eq 1 ] && add_lane vsix
+    [ "$refbase" -eq 1 ] && add_lane refbase
 
     # A Rust source change whose owning package could not be resolved (a crate
     # directory that has no Cargo.toml yet, a stray .rs outside crates/ and

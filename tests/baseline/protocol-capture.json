@@ -1,0 +1,10 @@
+{
+  "face": "mercury wire protocol capture",
+  "reference_root": "/home/cui/workspaces/BigWorld",
+  "reference_commit": "51272509b8154a31d9b121df10e6a0b81907fe0a",
+  "capture_gate": "closed",
+  "capture_gate_detail": "absent (no server/bw.xml at the game resource root); absent (/home/cui/.bwmachined.conf)",
+  "capture": "absent (no raw frame retained — the gate names the gap)",
+  "recorded_at": "2026-11-21T21:44:51Z",
+  "lane_git_sha": "71561da"
+}

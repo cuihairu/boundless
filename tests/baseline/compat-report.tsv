@@ -1,0 +1,3 @@
+category	boundary	original	new	note
+order	callback.order	"11 site(s), 5 runtime path(s)"	"not implemented"	the callback sequence order; the new side carries it when BW-02 lands
+field	db_state.seed	"LogOnMapping [{'logOnName': 'FantasyAccount', 'password': 'a', 'type': 'Account', 'entityID': '2'}] + 2 table(s)"	"no consumer"	the database seed the login consumes
