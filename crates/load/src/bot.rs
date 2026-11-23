@@ -81,6 +81,20 @@ enum ConnEvent {
     LoggedOff(Option<bool>),
 }
 
+/// A movement-controller request: the `type`/`data` pair the reference
+/// feeds to `MainApp::createMovementController` (client_app.cpp:729-732).
+/// The factory that interprets the pair lands with BW-17-01-03; until then
+/// an accepted request is recorded verbatim so the fleet's tag-filtered
+/// update is observable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerSpec {
+    /// The controller type (e.g. `"Patrol"`, bots_config.cpp:28).
+    pub kind: String,
+    /// The controller data (e.g. `"server/bots/test.bwp"`,
+    /// bots_config.cpp:29).
+    pub data: String,
+}
+
 /// One simulated client: the `ClientApp` connection layer.
 ///
 /// The default speed mirrors the constructor's `6 + rand()*2/RAND_MAX`
@@ -99,6 +113,7 @@ pub struct Bot {
     speed: f32,
     entity_id: u32,
     space_id: u32,
+    controller: Option<ControllerSpec>,
     events: VecDeque<ConnEvent>,
 }
 
@@ -119,6 +134,7 @@ impl Bot {
             speed: 6.0,
             entity_id: NULL_ENTITY_ID,
             space_id: 0,
+            controller: None,
             events: VecDeque::new(),
         };
         bot.log_on();
@@ -331,6 +347,38 @@ impl Bot {
     pub const fn tick_period() -> f32 {
         TICK_PERIOD
     }
+
+    /// `ClientApp::canSetMovementController` (client_app.cpp:697-711): a
+    /// controller can only be set while the player entity is alive, in the
+    /// world and client-controlled — here, an established session with an
+    /// assigned player entity on an undestroyed bot.
+    pub const fn can_set_movement_controller(&self) -> bool {
+        !self.destroyed
+            && matches!(self.conn_state, ConnState::Online)
+            && self.entity_id != NULL_ENTITY_ID
+    }
+
+    /// `ClientApp::setMovementController` (client_app.cpp:713-742): on a
+    /// bot that cannot take one the controller is left unchanged and the
+    /// call fails. The accepted request is recorded verbatim — the factory
+    /// that builds the controller (and validates the type) arrives with
+    /// BW-17-01-03.
+    pub fn set_movement_controller(&mut self, kind: &str, data: &str) -> bool {
+        if !self.can_set_movement_controller() {
+            return false;
+        }
+        self.controller = Some(ControllerSpec {
+            kind: kind.to_string(),
+            data: data.to_string(),
+        });
+        true
+    }
+
+    /// The recorded movement-controller request, `None` until one is
+    /// accepted (`pMovementController_`).
+    pub fn controller(&self) -> Option<&ControllerSpec> {
+        self.controller.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -542,5 +590,27 @@ mod tests {
         assert_eq!(TICK_FREQUENCY, 10);
         assert_eq!(Bot::tick_period(), 0.1);
         assert_eq!(FD_PER_BOT, 10);
+    }
+
+    /// client_app.cpp:697-742 — a controller only lands on a bot whose
+    /// player entity is alive in the world; a refused request leaves the
+    /// slot unchanged.
+    #[test]
+    fn a_controller_only_lands_on_a_bot_in_the_world() {
+        let mut bot = Bot::new("b", "p", UDP, "t");
+        assert!(!bot.can_set_movement_controller());
+        assert!(!bot.set_movement_controller("Patrol", "server/bots/test.bwp"));
+        assert!(bot.controller().is_none());
+
+        bot.feed_log_on_result(4, 2);
+        bot.tick(TICK_PERIOD);
+        assert!(bot.can_set_movement_controller());
+        assert!(bot.set_movement_controller("Patrol", "server/bots/test.bwp"));
+        let spec = bot.controller().expect("controller recorded");
+        assert_eq!(spec.kind, "Patrol");
+        assert_eq!(spec.data, "server/bots/test.bwp");
+
+        bot.destroy();
+        assert!(!bot.can_set_movement_controller());
     }
 }

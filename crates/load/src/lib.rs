@@ -7,9 +7,13 @@
 
 pub mod bot;
 pub mod executor;
+pub mod fleet;
 pub mod scenario;
 
-pub use bot::{transport_from_config, Bot, ConnState, NULL_ENTITY_ID, TICK_FREQUENCY, TICK_PERIOD,
-    Transport, FD_PER_BOT};
+pub use bot::{
+    Bot, ConnState, ControllerSpec, FD_PER_BOT, NULL_ENTITY_ID, TICK_FREQUENCY, TICK_PERIOD,
+    Transport, transport_from_config,
+};
 pub use executor::{Executor, StageTimeline};
+pub use fleet::{Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
