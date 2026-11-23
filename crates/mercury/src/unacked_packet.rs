@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::misc::SeqNum;
 use crate::packet::Packet;
-use crate::reliable_order::ReliableOrder;
+use crate::reply_order::ReplyOrder;
 
 /// `UDPChannel::UnackedPacket` (unacked_packet.hpp:16): a packet on the way
 /// out, with the bookkeeping the ack and resend paths draw on.
@@ -25,9 +25,9 @@ pub struct UnackedPacket {
     /// `wasResent_`: set the moment a resend goes out, so the RTT average
     /// does not count the round trip of a resent packet.
     was_resent: bool,
-    /// `reliableOrders_`: which runs of the packet were reliable, kept for
+    /// `reliableOrders_`: which parts of the packet were reliable, kept for
     /// when the resend is piggybacked.
-    reliable_orders: Vec<ReliableOrder>,
+    reliable_orders: Vec<Rc<ReplyOrder>>,
 }
 
 impl UnackedPacket {
@@ -51,13 +51,6 @@ impl UnackedPacket {
     /// `pPacket_`.
     pub fn packet(&self) -> &Rc<Packet> {
         &self.packet
-    }
-
-    /// The write half of `pPacket_`, for the resend that re-stamps an
-    /// indexed packet's channel version. The window's `Rc` is the sole
-    /// owner at that point, so this mutates in place rather than copying.
-    pub fn packet_mut(&mut self) -> &mut Packet {
-        Rc::make_mut(&mut self.packet)
     }
 
     /// `lastSentAtOutSeq_`.
@@ -91,12 +84,12 @@ impl UnackedPacket {
     }
 
     /// `reliableOrders_`.
-    pub fn reliable_orders(&self) -> &[ReliableOrder] {
+    pub fn reliable_orders(&self) -> &[Rc<ReplyOrder>] {
         &self.reliable_orders
     }
 
     /// `reliableOrders_.assign( roBeg, roEnd )` (udp_channel.cpp:843).
-    pub fn set_reliable_orders(&mut self, orders: Vec<ReliableOrder>) {
+    pub fn set_reliable_orders(&mut self, orders: Vec<Rc<ReplyOrder>>) {
         self.reliable_orders = orders;
     }
 
@@ -148,21 +141,47 @@ mod tests {
         assert!(unacked.was_resent());
     }
 
-    /// `reliableOrders_` carries the reliable orders the resend may
-    /// piggyback.
+    /// `reliableOrders_` carries the reply orders the resend may piggyback.
     #[test]
     fn the_slot_holds_its_reliable_orders() {
+        use crate::interfaces::ReplyMessageHandler;
+        use crate::nub_exception::NubException;
+        use crate::unpacked_message_header::UnpackedMessageHeader;
+        use foundation::stream::BinaryStream;
+
+        struct NoOp;
+        impl ReplyMessageHandler for NoOp {
+            fn handle_message(
+                &self,
+                _source: &crate::endpoint::Address,
+                _header: &UnpackedMessageHeader,
+                _data: &mut BinaryStream,
+                _arg: usize,
+            ) {
+            }
+            fn handle_exception(&self, _exception: &NubException, _arg: usize) {}
+        }
+
         let mut unacked = UnackedPacket::new(packet_with_seq(3));
         assert!(unacked.reliable_orders().is_empty());
 
-        let order = crate::reliable_order::ReliableOrder {
-            packet: 0,
-            offset: 1,
-            length: 5,
-            part_of_request: false,
-        };
-        unacked.set_reliable_orders(vec![order.clone()]);
-        assert_eq!(unacked.reliable_orders(), [order]);
+        let handler: Rc<dyn ReplyMessageHandler> = Rc::new(NoOp);
+        let orders = vec![Rc::new(ReplyOrder::new(Rc::clone(&handler), 1, 500_000, 0))];
+        unacked.set_reliable_orders(orders);
+        assert_eq!(unacked.reliable_orders().len(), 1);
+
+        // The placeholder's whole contract: accept a delivery and an
+        // exception, and say nothing.
+        handler.handle_message(
+            &crate::endpoint::Address::new(0, 0),
+            &UnpackedMessageHeader::new(1),
+            &mut BinaryStream::new(),
+            0,
+        );
+        handler.handle_exception(
+            &NubException::new(crate::misc::Reason::TimerExpired, None),
+            0,
+        );
     }
 
     /// Two slots holding the same packet keep independent bookkeeping --

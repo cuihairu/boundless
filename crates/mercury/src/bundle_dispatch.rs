@@ -25,29 +25,18 @@
 //! payload" check into a plain bounds check, and the walk's end
 //! condition into `offset >= body.len()`.
 //!
-//! A handler can stop the walk from inside: `header.breakBundleLoop()`
-//! sets the flag the loop reads, and the rest of the bundle is left
-//! undelivered (BW-02-05-03). That is the return status the
-//! authentication failure sets -- it breaks the loop and attaches no
-//! channel, so nothing further in the bundle can establish a session.
-//!
 //! Left with the channel layer of BW-02-03: the packet chain and its
-//! `nextPacket`, early (`isEarly`) dispatch, the per-channel
-//! `MessageFilter`, the channel-death half of the break flag
-//! (`breakLoop = pChannel->isDead()` at the start, and the
-//! `if (pChannel->isDead())` re-check after each delivery), the
-//! fragment reassembly, the `ProcessSocketStatsHelper`, and the
-//! table's `onBundleStarted`/`onBundleFinished` hooks, whose handler
-//! takes a `Channel *`.
-
-use std::cell::Cell;
-use std::rc::Rc;
+//! `nextPacket`, early (`isEarly`) dispatch, the break-loop hook a dying
+//! channel pulls (`header.pBreakLoop`), the fragment reassembly, the
+//! `ProcessSocketStatsHelper`, and the table's `onBundleStarted`/
+//! `onBundleFinished` hooks, whose handler takes a `Channel *`.
 
 use foundation::stream::BinaryStream;
 
 use crate::endpoint::Address;
 use crate::interface_element::{InterfaceElement, REPLY_MESSAGE_IDENTIFIER};
 use crate::interface_table::InterfaceTable;
+use crate::message_filter::MessageFilter;
 use crate::message_framing::{NEXT_REQUEST_OFFSET_SIZE, REPLY_ID_SIZE, SPECIAL_LENGTH_SIZE};
 use crate::misc::{Reason, ReplyID};
 use crate::unpacked_message_header::{NO_REPLY, UnpackedMessageHeader};
@@ -69,6 +58,12 @@ struct Unpacked {
 /// [`None`] when the packet carried no request footer; the request links
 /// each message carries chain the rest, in the same wire terms.
 ///
+/// `p_message_filter` is the dispatching channel's message filter, the
+/// `pMessageFilter` the reference fetches before its loop
+/// (udp_bundle_processor.cpp:59-60): a channel with one takes the
+/// delivery through it instead of the handler, and the filter delivers
+/// by calling the handler itself (:161-170).
+///
 /// The reference returns the reason it stopped on (`REASON_SUCCESS` when
 /// every message was delivered); the rest of a bundle after an error is
 /// never delivered.
@@ -77,6 +72,7 @@ pub fn dispatch_messages(
     source: &Address,
     body: &mut [u8],
     first_request_offset: Option<usize>,
+    p_message_filter: Option<&dyn MessageFilter>,
 ) -> Reason {
     let msg_end = body.len();
     let mut offset = 0usize;
@@ -85,15 +81,10 @@ pub fn dispatch_messages(
     // wire offset, which starts at the flags word the body lacks.
     let mut next_request_offset = first_request_offset;
 
-    // `bool breakLoop = false; ... while (iter != end && !breakLoop)`:
-    // one flag per walk, handed to every header via `pBreakLoop`. A
-    // handler breaks the loop with `header.breakBundleLoop()` -- the
-    // authentication failure does exactly that before attaching nothing.
-    let break_loop = Rc::new(Cell::new(false));
-
-    // With one buffer, the iterator runs out of packets exactly when the
-    // next message would start at or past the end of the body.
-    while offset < msg_end && !break_loop.get() {
+    // `while (iter != end && !breakLoop)`: with one buffer, the iterator
+    // runs out of packets exactly when the next message would start at or
+    // past the end of the body.
+    while offset < msg_end {
         // `interfaceTable[ iter.msgID() ]`
         let msg_id = body[offset];
         let served = table.element(msg_id);
@@ -137,10 +128,6 @@ pub fn dispatch_messages(
         // style and all, not the resolved copy.
         unpacked.header.set_interface_element(served.clone());
 
-        // `header.pBreakLoop = &breakLoop`, set for the duration of this
-        // message's delivery: the handler may break the walk.
-        unpacked.header.set_break_loop(Rc::clone(&break_loop));
-
         // `iter.data()`: with the payload already bounds-checked against
         // this one buffer, the data is always where unpack left it -- the
         // reference's "chain too short" (`data() == NULL`) cannot happen
@@ -153,7 +140,15 @@ pub fn dispatch_messages(
             &body[unpacked.data_offset..unpacked.data_offset + unpacked.header.length() as usize],
         );
 
-        handler.handle_message(source, &mut unpacked.header, &mut stream);
+        // The channel's message filter first-passes the delivery when it
+        // has one, and delivers by calling the handler itself
+        // (udp_bundle_processor.cpp:161-170).
+        match p_message_filter {
+            Some(filter) => {
+                filter.filter_message(source, &mut unpacked.header, &mut stream, handler.as_ref())
+            }
+            None => handler.handle_message(source, &mut unpacked.header, &mut stream),
+        }
 
         // `ie.stopProfile( header.length )` records the delivery against
         // the element (the reference does it under `ENABLE_WATCHERS`).
@@ -186,8 +181,6 @@ pub fn dispatch_messages(
         offset = unpacked.data_offset + unpacked.data_length;
     }
 
-    // A broken loop is not an error: the reference leaves `ret` at
-    // `REASON_SUCCESS` and counts a broken walk as `wasOkay`.
     Reason::Success
 }
 
@@ -344,6 +337,7 @@ mod tests {
         CALLBACK_LENGTH_MESSAGE, FIXED_LENGTH_MESSAGE, INVALID_STREAM_SIZE, VARIABLE_LENGTH_MESSAGE,
     };
     use crate::interfaces::{InputMessageHandler, ReplyMessageHandler};
+    use crate::message_filter::MessageFilter;
     use crate::misc::{MessageID, REPLY_ID_NONE};
     use crate::nub_exception::NubException;
     use crate::reply_order::ReplyOrder;
@@ -427,49 +421,6 @@ mod tests {
             _header: &mut UnpackedMessageHeader,
             _data: &mut BinaryStream,
         ) {
-        }
-    }
-
-    /// `LoginHandler::login` (`server/baseapp/login_handler.cpp:106-153`):
-    /// the authentication failure shape, the acceptance fixture of
-    /// BW-02-05-03. A `baseAppLogin` message carries a key; a key the
-    /// pending set does not hold is a failed authentication, which breaks
-    /// the bundle (`header.breakBundleLoop()`) and attaches no channel --
-    /// no session is established, and the rest of the bundle is skipped.
-    /// A held key attaches (`attachToClient`) and the walk continues.
-    struct LoginHandler {
-        pending: RefCell<Vec<u32>>,
-        attached: RefCell<Vec<u32>>,
-    }
-
-    impl LoginHandler {
-        fn pending(key: u32) -> Self {
-            LoginHandler {
-                pending: RefCell::new(vec![key]),
-                attached: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl InputMessageHandler for LoginHandler {
-        fn handle_message(
-            &self,
-            _source: &Address,
-            header: &mut UnpackedMessageHeader,
-            data: &mut BinaryStream,
-        ) {
-            let mut key_bytes = [0u8; 4];
-            for byte in &mut key_bytes {
-                *byte = data.read_u8().unwrap();
-            }
-            data.finish();
-            let key = u32::from_le_bytes(key_bytes);
-
-            if !self.pending.borrow().contains(&key) {
-                header.break_bundle_loop();
-                return;
-            }
-            self.attached.borrow_mut().push(key);
         }
     }
 
@@ -578,6 +529,49 @@ mod tests {
         Address::new(0x7f000001, 2000)
     }
 
+    /// A `MessageFilter` that records each message it intercepts and then
+    /// delivers it through the handler itself, the reference's
+    /// `filterMessage( ..., pHandler )` idiom.
+    #[derive(Default)]
+    struct RecordingFilter {
+        seen: RefCell<Vec<(MessageID, Vec<u8>)>>,
+    }
+
+    impl RecordingFilter {
+        fn notes(&self) -> Vec<(MessageID, Vec<u8>)> {
+            self.seen.borrow().clone()
+        }
+    }
+
+    impl MessageFilter for RecordingFilter {
+        fn filter_message(
+            &self,
+            src_addr: &Address,
+            header: &mut UnpackedMessageHeader,
+            data: &mut BinaryStream,
+            handler: &dyn InputMessageHandler,
+        ) {
+            self.seen
+                .borrow_mut()
+                .push((header.identifier(), data.unread_bytes().to_vec()));
+            handler.handle_message(src_addr, header, data);
+        }
+    }
+
+    /// A filter that swallows its message: no forward, no delivery.
+    struct SwallowingFilter;
+
+    impl MessageFilter for SwallowingFilter {
+        fn filter_message(
+            &self,
+            _src_addr: &Address,
+            _header: &mut UnpackedMessageHeader,
+            _data: &mut BinaryStream,
+            _handler: &dyn InputMessageHandler,
+        ) {
+        }
+    }
+
     // ------------------------------------------------------------------
     // Tests
     // ------------------------------------------------------------------
@@ -596,7 +590,7 @@ mod tests {
         fill_variable(&mut body, &variable(9, 2), b"rogue");
         fill_variable(&mut body, &element, b"good");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::NonexistentEntry);
         assert!(
@@ -615,9 +609,52 @@ mod tests {
         let mut body = Vec::new();
         fill_variable(&mut body, &variable(5, 2), b"body");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::NonexistentEntry);
+    }
+
+    /// A channel's message filter takes the delivery instead of the
+    /// handler, and it delivers by calling the handler itself
+    /// (udp_bundle_processor.cpp:161-170).
+    #[test]
+    fn a_message_filter_takes_the_delivery() {
+        let table = InterfaceTable::new();
+        let recorder = Rc::new(Recorder::default());
+        let element = variable(5, 2);
+        table.serve(&element, Some(handler_of(&recorder)));
+        let filter = RecordingFilter::default();
+
+        let mut body = Vec::new();
+        fill_variable(&mut body, &element, b"body");
+
+        let reason = dispatch_messages(&table, &source(), &mut body, None, Some(&filter));
+
+        assert_eq!(reason, Reason::Success);
+        assert_eq!(filter.notes().len(), 1, "the filter saw the message");
+        assert_eq!(recorder.notes().len(), 1, "the filter forwarded it");
+        assert_eq!(recorder.notes()[0].2, b"body");
+    }
+
+    /// A filter that does not forward its message swallows it: the
+    /// handler is never called, and the untouched body is reported and
+    /// consumed like any other handler that leaves bytes.
+    #[test]
+    fn a_filter_that_does_not_forward_swallows_the_message() {
+        let table = InterfaceTable::new();
+        let recorder = Rc::new(Recorder::default());
+        table.serve(&variable(5, 2), Some(handler_of(&recorder)));
+
+        let mut body = Vec::new();
+        fill_variable(&mut body, &variable(5, 2), b"body");
+
+        let reason = dispatch_messages(&table, &source(), &mut body, None, Some(&SwallowingFilter));
+
+        assert_eq!(reason, Reason::Success);
+        assert!(
+            recorder.notes().is_empty(),
+            "a filter that does not forward drops the message"
+        );
     }
 
     /// A callback message whose handler declares the bundle invalid stops
@@ -642,7 +679,7 @@ mod tests {
         body.extend_from_slice(&[6, 1, 2, 3]);
         fill_variable(&mut body, &plain, b"tail");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(later.notes().is_empty(), "nothing after the failure");
@@ -670,7 +707,7 @@ mod tests {
         body.extend_from_slice(&[3, 0, 0]); // three-byte length field
         body.extend_from_slice(b"abc");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
         assert_eq!(reason, Reason::Success);
         assert_eq!(sized.notes(), vec![(6, REPLY_ID_NONE, b"abc".to_vec())]);
 
@@ -689,7 +726,7 @@ mod tests {
         body.push(6);
         body.extend_from_slice(b"abcd"); // a fixed message writes no field
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
         assert_eq!(reason, Reason::Success);
         assert_eq!(sized.notes(), vec![(6, REPLY_ID_NONE, b"abcd".to_vec())]);
     }
@@ -706,7 +743,7 @@ mod tests {
         body.push(5);
         body.push(3); // one byte of a two-byte length field, then nothing
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(got.notes().is_empty());
@@ -724,7 +761,7 @@ mod tests {
         body.push(5);
         body.extend_from_slice(&0x8000_0000u32.to_le_bytes());
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(got.notes().is_empty());
@@ -748,6 +785,7 @@ mod tests {
             &source(),
             &mut body,
             Some(crate::packet::HEADER_SIZE),
+            None,
         );
 
         assert_eq!(reason, Reason::CorruptedPacket);
@@ -772,6 +810,7 @@ mod tests {
             &source(),
             &mut body,
             Some(crate::packet::HEADER_SIZE),
+            None,
         );
 
         assert_eq!(reason, Reason::CorruptedPacket);
@@ -791,7 +830,7 @@ mod tests {
         body.extend_from_slice(&10u16.to_le_bytes());
         body.extend_from_slice(b"ab"); // claims ten, carries two
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::CorruptedPacket);
         assert!(got.notes().is_empty());
@@ -813,7 +852,7 @@ mod tests {
         fill_fixed(&mut body, &first_element, b"ABCD");
         fill_variable(&mut body, &second_element, b"hello");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::Success);
         assert_eq!(first.notes(), vec![(3, REPLY_ID_NONE, b"ABCD".to_vec())]);
@@ -837,6 +876,7 @@ mod tests {
             &source(),
             &mut body,
             Some(crate::packet::HEADER_SIZE),
+            None,
         );
 
         assert_eq!(reason, Reason::Success);
@@ -859,7 +899,7 @@ mod tests {
         let second = fill_request(&mut body, &element, 202, b"two");
         let start = chain(&[first, second], &mut body);
 
-        let reason = dispatch_messages(&table, &source(), &mut body, start);
+        let reason = dispatch_messages(&table, &source(), &mut body, start, None);
 
         assert_eq!(reason, Reason::Success);
         assert_eq!(
@@ -919,6 +959,7 @@ mod tests {
             &source(),
             &mut body,
             Some(crate::packet::HEADER_SIZE),
+            None,
         );
 
         assert_eq!(reason, Reason::Success);
@@ -943,7 +984,7 @@ mod tests {
         fill_fixed(&mut body, &first_element, b"ABCD");
         fill_variable(&mut body, &second_element, b"xyz");
 
-        dispatch_messages(&table, &source(), &mut body, None);
+        dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(table.element_stats(3).num_messages_received(), 1);
         assert_eq!(table.element_stats(3).num_bytes_received(), 4);
@@ -967,7 +1008,7 @@ mod tests {
         fill_variable(&mut body, &variable(4, 2), b"waste");
         fill_variable(&mut body, &element, b"next");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::Success);
         assert_eq!(got.notes(), vec![(5, REPLY_ID_NONE, b"next".to_vec())]);
@@ -980,7 +1021,7 @@ mod tests {
         let got = Rc::new(Recorder::default());
         table.serve(&variable(5, 2), Some(handler_of(&got)));
 
-        let reason = dispatch_messages(&table, &source(), &mut Vec::new(), None);
+        let reason = dispatch_messages(&table, &source(), &mut Vec::new(), None, None);
 
         assert_eq!(reason, Reason::Success);
         assert!(got.notes().is_empty());
@@ -1010,132 +1051,12 @@ mod tests {
             .unwrap();
         assert_eq!(body[1], 0xff, "the length field is marked for the form");
 
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
+        let reason = dispatch_messages(&table, &source(), &mut body, None, None);
 
         assert_eq!(reason, Reason::Success);
         let (id, reply, bytes) = got.notes().remove(0);
         assert_eq!((id, reply), (5, REPLY_ID_NONE));
         assert_eq!(bytes.len(), 255, "the handler sees the declared length");
         assert_eq!(bytes, payload, "the displaced head is put back");
-    }
-
-    /// A failed authentication -- a key nobody is pending -- breaks the
-    /// bundle and attaches no session, and a message sitting after the
-    /// failure is never delivered (BW-02-05-03: no residual established
-    /// session). A broken loop is not an error: the reference leaves the
-    /// reason at `REASON_SUCCESS`.
-    #[test]
-    fn a_failed_authentication_breaks_the_bundle_and_establishes_no_session() {
-        let table = InterfaceTable::new();
-        let login = Rc::new(LoginHandler::pending(7));
-        let login_element = variable(1, 4); // baseAppLogin, four-byte key
-        table.serve(
-            &login_element,
-            Some(Rc::clone(&login) as Rc<dyn InputMessageHandler>),
-        );
-        let later = Rc::new(Recorder::default());
-        let later_element = variable(2, 2);
-        table.serve(&later_element, Some(handler_of(&later)));
-
-        let mut body = Vec::new();
-        // Key 99 is nobody's: authentication fails.
-        fill_variable(&mut body, &login_element, &99u32.to_le_bytes());
-        // A message packed after the failure, which must not be delivered.
-        fill_variable(&mut body, &later_element, b"tail");
-
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
-
-        assert_eq!(reason, Reason::Success, "a broken loop is not an error");
-        assert!(
-            login.attached.borrow().is_empty(),
-            "no session was established"
-        );
-        assert!(
-            later.notes().is_empty(),
-            "the rest of the bundle is skipped"
-        );
-    }
-
-    /// A held key attaches a session and the walk carries on to the rest
-    /// of the bundle -- the successful-login control for the failure test.
-    #[test]
-    fn a_valid_authentication_attaches_and_the_bundle_continues() {
-        let table = InterfaceTable::new();
-        let login = Rc::new(LoginHandler::pending(7));
-        let login_element = variable(1, 4);
-        table.serve(
-            &login_element,
-            Some(Rc::clone(&login) as Rc<dyn InputMessageHandler>),
-        );
-        let later = Rc::new(Recorder::default());
-        let later_element = variable(2, 2);
-        table.serve(&later_element, Some(handler_of(&later)));
-
-        let mut body = Vec::new();
-        fill_variable(&mut body, &login_element, &7u32.to_le_bytes());
-        fill_variable(&mut body, &later_element, b"ok");
-
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
-
-        assert_eq!(reason, Reason::Success);
-        assert_eq!(login.attached.borrow().as_slice(), &[7]);
-        assert_eq!(later.notes(), vec![(2, REPLY_ID_NONE, b"ok".to_vec())]);
-    }
-
-    /// A break in one bundle does not leak into the next: the reference's
-    /// `breakLoop` is a fresh local per `dispatchMessages` call, so a
-    /// later walk starts unbroken even when the same handler broke the
-    /// one before it.
-    #[test]
-    fn a_break_does_not_leak_into_the_next_dispatch() {
-        let table = InterfaceTable::new();
-        let breaking = Rc::new(BreakOnFirst::default());
-        let breaking_element = variable(8, 2);
-        table.serve(
-            &breaking_element,
-            Some(Rc::clone(&breaking) as Rc<dyn InputMessageHandler>),
-        );
-        let later = Rc::new(Recorder::default());
-        let later_element = variable(9, 2);
-        table.serve(&later_element, Some(handler_of(&later)));
-
-        // First walk: the handler breaks, the tail is skipped.
-        let mut body = Vec::new();
-        fill_variable(&mut body, &breaking_element, b"go");
-        fill_variable(&mut body, &later_element, b"skip");
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
-        assert_eq!(reason, Reason::Success);
-        assert!(later.notes().is_empty());
-
-        // Second walk: the same handler is unarmed and the tail lands.
-        let mut body = Vec::new();
-        fill_variable(&mut body, &breaking_element, b"go");
-        fill_variable(&mut body, &later_element, b"land");
-        let reason = dispatch_messages(&table, &source(), &mut body, None);
-        assert_eq!(reason, Reason::Success);
-        assert_eq!(later.notes(), vec![(9, REPLY_ID_NONE, b"land".to_vec())]);
-    }
-
-    /// A handler that breaks the walk on its first delivery and carries on
-    /// afterwards, the per-dispatch freshness probe.
-    #[derive(Default)]
-    struct BreakOnFirst {
-        calls: Cell<u32>,
-    }
-
-    impl InputMessageHandler for BreakOnFirst {
-        fn handle_message(
-            &self,
-            _source: &Address,
-            header: &mut UnpackedMessageHeader,
-            data: &mut BinaryStream,
-        ) {
-            data.finish();
-            let call = self.calls.get();
-            self.calls.set(call + 1);
-            if call == 0 {
-                header.break_bundle_loop();
-            }
-        }
     }
 }

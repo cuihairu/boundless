@@ -152,7 +152,10 @@ mod tests {
         name: &'static str,
     ) -> Rc<dyn FrequentTask> {
         let log = Rc::clone(log);
-        Rc::new(FrequentTaskFn(move || log.borrow_mut().push(name), name))
+        Rc::new(FrequentTaskFn(
+            move || log.borrow_mut().push(name),
+            name,
+        ))
     }
 
     /// Tasks run in registration order on every pass.

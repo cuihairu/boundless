@@ -1,61 +1,56 @@
-# BW-00-02-01 采集原版运行环境 — 记录
+# BW-00-02-01 原版运行环境采集
 
-- **任务编号**: BW-00-02-01（lane BW-00-02 原版运行基准，todo.md 行 100）
-- **参考树**: `/home/cui/workspaces/BigWorld`（读采集，未改动）；构建根 `programming/bigworld/build/`。
-- **Boundless 模块**: 无（原版运行环境基准，供 BW-00-02 差分验收与 BW-00-05 覆盖台账引用）。
-- **采集方式**: 只读命令（git describe/rev-parse、sha256sum、CMakeCache 读取、头文件 grep）。
+基线 `4657a17cf10d55e2fbebf258f96da96a3dbe0c22`（2026-11-12 17:41:26 +0800，"docs: note doc-gif scope and blockers"），参考树 `../BigWorld/`。对应 todo.md BW-00-02-01：**记录提交、二进制哈希、构建参数、Python 和 DB 版本**。
 
-## 提交锚点
+## 采集方法（全动态实查，2026-11-21）
 
-- **HEAD**: `b119c389`（docs: register vscode extension plan (VSX-1..4) in todo ledger）
-- **git describe**: `bigworld-14.4.1-320-gb119c389`（基线 tag `bigworld-14.4.1` 后 320 提交）
-- **基线 tag**: `bigworld-14.4.1`
+`git rev-parse` 定版本；`sha256sum` 全量哈希（manifest 见下）；`file`/`readelf -p .comment` 定构建形态与编译器；`ldd` 定动态闭包；嵌入解释器以自带 `python3.13.exe` 自报 + `strings` 交叉核对；DB/SSL 版本以解释器模块自报（`sqlite3.sqlite_version`/`ssl.OPENSSL_VERSION`）。
 
-## 二进制哈希
+## 提交与产物清单
 
-参考树当前构建产物共 **389 个**（静态库 `.a`、共享库 `.so`、已构建可执行），分布在 6 个构建目录：
-
-| 构建目录 | 产物数 | 内容 |
-|---|---|---|
-| `build/cmake-entitydef` | 173 | entitydef 单测 + 库 |
-| `build/el7` | 137 | Make 构建树（lib/*.a + third_party Python wheels） |
-| `build/cmake-python` | 21 | bwpython313 构建 + python3.13 |
-| `build/cmake-network` | 20 | network 单测 + 库 |
-| `build/cmake-resmgr` | 19 | resmgr 单测 + 库 |
-| `build/cmake-cstdmf` | 19 | cstdmf 单测 + 库 |
-
-**完整哈希清单**: `docs/review/data/bw00-02-01-built-artifacts.sha256`（389 行，路径相对 `programming/bigworld/build`）。运行可执行的哈希（内联）：
-
-| 可执行 | sha256 |
-|---|---|
-| `cmake-cstdmf/cstdmf_test` | `34c0de67d56b9013d2fe6176860d8899da6b9ab01648d61aa2ba2a8423439ef3` |
-| `cmake-resmgr/resmgr_test` | `2a52dfa15f3f9416698a2c81ab1db6297b22b8772abdc2830d35777f89f0ef01` |
-| `cmake-entitydef/entitydef_test` | `f2abeaf6e81c93c7311bd06e50dcc93ab850bfa887f80f2566f00f096956c6e1` |
-
-`build/el7/lib/` 关键库（均已入清单）：`libbwpython3.13.a`、`libbwcrypto.a`、`libbwssl.a`、`libbwcurl.a`、`libnetwork.a`、`libdb.a`、`libdb_storage_mysql.a`、`libdb_storage_xml.a`、`libjsoncpp.a`、`libpng.a`、`libentitydef.a`、`libcstdmf.a` 等。
+- 提交：`4657a17cf10d55e2fbebf258f96da96a3dbe0c22`（上述日期/主题）。
+- 完整 SHA256 manifest：`docs/review/data/bw00-02-01-el7-manifest.sha256`（本仓内，逐文件全量哈希 47 件：server 10 进程 + cellapp/dbapp extensions 3 件 + commands 6 件（含 `_helpers/snapshot_helper`）+ tools 5 件（含 `_bwlog.so`，**仅 tools 有、server/ 无**）+ examples 1 件 + `libpython3.13.a` + unit_tests 21 件）。
+- 代表性哈希（前 16 位，全量见 manifest）：`baseapp 067335432b211e8d`、`cellapp 06ac88f023f24cc5`、`dbapp 40146e961b2bd563`、`loginapp 147cf9c77f143522`、`bwmachined2 6499c0a4d0d118d6`、`process_defs 3da7255c8f06673b`。
+- 产物形态：ELF x86-64 PIE，**带 debug_info 未 strip**；构建时间戳 2026-09-29～10-18（与迁移工程时间线一致）。
 
 ## 构建参数
 
-- **CMake 侧**（`build/cmake-cstdmf/CMakeCache.txt`）：`CMAKE_BUILD_TYPE=Release`；编译器 `/usr/bin/cc`、`/usr/bin/c++`。
-- **Make 侧**（`build/el7` 树）：Make 构建树完整（build/dep/lib/obj/third_party）；配置变体来自 `build/bw_internal/scripts/makeServer.py`（`MF_CONFIG` 循环：Debug/Hybrid ×64 + `_SingleThreaded`/`_SystemPython` 变体）。
-- **build_revision**: `build/el7/build/build_revision.hpp` 与 `.generated.hpp` 均 `#define REVISION_NUMBER -1`（**未烘焙版本号**——参考构建未注入 Git 版本）。
+| 项 | 值 | 证据 |
+|---|---|---|
+| 构建链 | GNU Make 4.4.1 + `bigworld/build/make/`（BW-00-01-01 清册） | `make --version`；清册 |
+| 编译器 | GCC (Ubuntu 15.2.0-16ubuntu1) 15.2.0 | `readelf -p .comment baseapp` → `GCC: (Ubuntu 15.2.0-16ubuntu1) 15.2.0`；与嵌入解释器自报 `[GCC 15.2.0]` 一致 |
+| 配置 | `BW_CONFIG` 缺省 = `hybrid`（`BW_CONFIG_DEFAULT := $(BW_CONFIG_HYBRID)`，Makefile:39） | make 链 |
+| 第三方接线 | vcpkg manifest（baseline `10541e3`）+ 自定义 triplet `x64-linux-bw`（静态、仅 release） | vcpkg.json + BW-00-01-04 |
+| 动态闭包 | server 进程仅依赖 libc 族：`libstdc++.so.6/libm.so.6/libgcc_s.so.1/libc.so.6` + ld-linux——**第三方（含 OpenSSL/curl/mysql 客户端/CPython）全部静态链接**（`ldd dbapp` 实查） | ldd |
+| 运行目录约定 | `BW_RES_PATH`/`~/.bwmachined.conf` 未设时 baseapp 报 `No res path set`（错误口径留存） | 实跑 |
 
 ## Python 版本
 
-- **3.13**：`third_party_python.mak:7` `BW_PYTHON_VERSION := 3.13`；`build/cmake-python/` 已构建 `bwpython313` 与 `python3.13`；`build/el7/lib/libbwpython3.13.a`。
-- **site-packages（el7 构建的 Python 3.13 服务端模块，14 个 wheels）**：sqlalchemy-1.4.54、attrs-24.2.0、twisted-24.7.0、constantly-23.10.4、hyperlink-21.0.0、msgpack-1.1.0、pika-1.3.2、zope.interface-7.0、automat-24.8.1、idna-3.10、incremental-24.7.0、typing_extensions-4.12.2、Pympler-1.0、setuptools-75.3.0。
+| 面 | 版本 | 证据 |
+|---|---|---|
+| 安装的宿主解释器（`third_party/python/bin/python3.13.exe`，Linux ELF） | **Python 3.13.15**（main, Sep 28 2026, GCC 15.2.0） | `--version`/`sys.version` 自报 |
+| 链接进 server 的静态库（`libpython3.13.a`，69,054,000 B） | **3.13.15**（strings） | `strings libpython3.13.a` |
+| baseapp 内嵌字符串 | 另见 `3.13.16` 字样 | `strings baseapp` |
+| 携带 stdlib | `third_party/python/lib/python3.13/`（含 LICENSE.txt） | 目录实查 |
+| ssl / sqlite3 | OpenSSL **3.6.1**（27 Jan 2026）/ SQLite **3.46.1** | 解释器模块自报 |
+
+版本差登记：vcpkg-migration 文档称 vendored 树为 3.13.16，实链产物与宿主 exe 均自报 **3.13.15**，baseapp 内另有 `3.13.16` 字符串——以二进制自报为准（3.13.15），差异登记不强行归一。
 
 ## DB 版本
 
-- **MySQL 客户端**: **8.4.13**（系统 `/usr/bin/mysql_config`；参考构建用系统 MySQL 客户端，未 vendored——`third_party` 无 `mysql_version.h`）。服务端 dbapp 经 `libdb_storage_mysql.a`（el7）链接。
-- **SQLite**: **3.6.23.1**（`third_party/sqlite/sqlite3.h` `#define SQLITE_VERSION "3.6.23.1"`；vendored，供 consolidate_dbs/transfer_db 等工具）。
+| 项 | 值 | 证据 |
+|---|---|---|
+| 系统客户端 | mysql Ver 15.2 Distrib **11.8.6-MariaDB**（debian-linux-gnu, EditLine） | `mysql --version` |
+| dbapp 链接形态 | mysql 客户端**静态**入包（ldd 无任何 mysql/mariadb 动态依赖；dbapp 内含 `BW::DBConfig::MySQLConfigBlock`、`mysql>` 字符串） | ldd + strings |
+| XML 后备 | `bwengine_xml.so`（dbapp-extensions）随树交付 | 目录实查 |
+| SQLite | vcpkg 3.53.4（迁移决策）+ 解释器内 3.46.1（见上，两口径分开登记） | vcpkg-migration §1 / 模块自报 |
 
-## 边界与已知登记项
+## 差距登记
 
-1. **服务端进程二进制未建**：参考构建止于库阶段（el7/lib 全部 `.a` 已产出），`baseapp`/`cellapp`/`loginapp`/`bwmachined` 等可执行未在构建树（与 01-01/01-02 一致：Make `everything`/`rpm` 目标在当前树无定义，仅库面可建）。故二进制哈希覆盖库与单测可执行，**服务端进程可执行哈希留待原版全量构建后补采**（BW-00-02-02 复跑单测不依赖进程二进制）。
-2. **`build_revision` 为 -1**：参考构建未注入版本，哈希基线以 git 提交锚点为准。
-3. **MySQL 8.4 为系统依赖**：非参考树自带；若差分验收需复现，须固定 `mysql_config` 8.4.13。
+1. sqlite 双口径（vcpkg 3.53.4 vs python 内嵌 3.46.1）并存是原版树实态：引擎侧走 vcpkg、解释器扩展走自带构建，如实记录。
+2. `python3.13.exe` 命名（Linux ELF 带 .exe 后缀）为 make 链 install 规则原样输出，非笔误。
+3. 单测二进制 21 件与 make 清册一致；`unit_tests/` 另含历史 assert log（哈希重复、非产物），manifest 已排除。
 
-## 状态
+## 结论
 
-原版运行环境记录完成：提交锚点（b119c389 = bigworld-14.4.1-320-gb119c389）、389 个构建产物哈希（清单 + 3 个单测可执行内联）、构建参数（CMake Release + /usr/bin/{cc,c++}；Make el7 树 + MF_CONFIG 变体；build_revision=-1）、Python 3.13（14 wheels）、DB（MySQL client 8.4.13 系统 + SQLite 3.6.23.1 vendored）。
+验收达成：提交（4657a17）、全量二进制哈希（manifest 落仓）、构建参数（GCC 15.2.0/hybrid/静态三方/仅 libc 族动态）、Python（3.13.15 实链 + 3.13.16 字样差登记 + OpenSSL 3.6.1/SQLite 3.46.1）、DB（MariaDB 11.8.6 客户端、静态入包、XML 后备）逐项记录在案，证据可复跑。

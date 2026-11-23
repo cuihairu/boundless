@@ -11,10 +11,9 @@
 //! * a packed int is one byte for `0..=254`, otherwise `0xFF` followed by the
 //!   three low bytes little-endian, capped at `1 << 24`;
 //! * a container is a fixed 4-byte element count followed by its elements;
-//! * a compressed payload is a packed uncompressed length, a packed compressed
-//!   length, then the raw zlib bytes of `compress2` (reference `ZipOStream`
-//!   destructor / `ZipIStream::init`, framing via `writeStringLength` =
-//!   `writePackedInt`);
+//! * a possibly-null blob is either a length-prefixed blob or, when null or
+//!   empty, a zero length plus a one-byte flag telling them apart
+//!   (`blob_or_null.cpp`);
 //! * an over-long read sets the stream error and clamps the read cursor to the
 //!   end instead of aborting, so following reads fail the same way.
 
@@ -35,10 +34,12 @@ pub enum StreamError {
     Truncated,
     /// The requested length exceeds what a packed int can carry.
     PackedIntTooLarge,
-    /// The requested level is outside the reference ZIP_1..ZIP_9 range.
-    InvalidCompressionLevel,
-    /// zlib compress or uncompress failed.
-    Zlib,
+    /// The zlib container could not be encoded or decoded.
+    CompressionFailed,
+    /// A compressed container declares an original length beyond what its
+    /// compressed payload could ever inflate to (DEFLATE's worst case is
+    /// 1032:1), so the declaration cannot come from a real zlib stream.
+    CompressionRatioExceeded,
 }
 
 impl std::fmt::Display for StreamError {
@@ -46,50 +47,18 @@ impl std::fmt::Display for StreamError {
         match self {
             Self::Truncated => write!(f, "stream read would run past the end of the buffer"),
             Self::PackedIntTooLarge => write!(f, "packed int length exceeds 2^24 - 1"),
-            Self::InvalidCompressionLevel => write!(
-                f,
-                "compression level must be 1..=9 (reference ZIP_1..ZIP_9)"
-            ),
-            Self::Zlib => write!(f, "zlib compress or uncompress failed"),
+            Self::CompressionFailed => write!(f, "zlib compression container is invalid"),
+            Self::CompressionRatioExceeded => {
+                write!(
+                    f,
+                    "declared original length exceeds the deflate expansion ratio"
+                )
+            }
         }
     }
 }
 
 impl std::error::Error for StreamError {}
-
-/// Compression level, matching the reference `BWCompressionType` ZIP_1..ZIP_9.
-///
-/// The reference default internal/external compression levels are configuration
-/// resolved; `ZipOStream` itself defaults to level 1 (`Z_BEST_SPEED`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompressionLevel(u8);
-
-impl CompressionLevel {
-    /// Reference `BW_COMPRESSION_ZIP_BEST_SPEED` and the `ZipOStream` default.
-    pub const BEST_SPEED: Self = Self(1);
-    /// Reference `BW_COMPRESSION_ZIP_BEST_COMPRESSION`.
-    pub const BEST_COMPRESSION: Self = Self(9);
-
-    /// Level 1..=9; anything else is rejected as the reference would.
-    pub fn new(level: u8) -> Result<Self, StreamError> {
-        if (1..=9).contains(&level) {
-            Ok(Self(level))
-        } else {
-            Err(StreamError::InvalidCompressionLevel)
-        }
-    }
-
-    /// The level as passed through to zlib.
-    pub fn get(self) -> u8 {
-        self.0
-    }
-}
-
-impl Default for CompressionLevel {
-    fn default() -> Self {
-        Self::BEST_SPEED
-    }
-}
 
 /// A byte buffer that supports sequential reading and sequential writing,
 /// mirroring the reference `BinaryIStream` / `BinaryOStream` pair.
@@ -144,6 +113,12 @@ impl BinaryStream {
     /// Bytes not yet read, from the read cursor on.
     pub fn unread_bytes(&self) -> &[u8] {
         &self.buf[self.read..]
+    }
+
+    /// Record an unrecoverable read fault, the same way the reference sets
+    /// `error_ = true` before refusing to hand out further data.
+    pub(crate) fn mark_error(&mut self) {
+        self.error = true;
     }
 
     /// Reset the read cursor to the start without changing the contents.
@@ -265,6 +240,26 @@ impl BinaryStream {
         Ok(self)
     }
 
+    /// A possibly-null blob (`lib/cstdmf/blob_or_null.cpp`). Present,
+    /// non-empty data goes out as a length-prefixed blob; a null or an empty
+    /// blob writes a zero length plus one flag byte marking which it was, so
+    /// the two cannot be confused on the way back.
+    pub fn write_blob_or_null(&mut self, blob: Option<&[u8]>) -> Result<&mut Self, StreamError> {
+        match blob {
+            Some(data) if !data.is_empty() => self.write_blob(data),
+            Some(_) => {
+                self.write_packed_int(0)?;
+                self.buf.push(1);
+                Ok(self)
+            }
+            None => {
+                self.write_packed_int(0)?;
+                self.buf.push(0);
+                Ok(self)
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Reading
     // ------------------------------------------------------------------
@@ -377,60 +372,20 @@ impl BinaryStream {
         Ok(self.take(len)?.to_vec())
     }
 
-    // ------------------------------------------------------------------
-    // Compression stream (reference ZipOStream / ZipIStream)
-    // ------------------------------------------------------------------
-
-    /// Append a compressed payload in the reference framing: a packed
-    /// uncompressed length, a packed compressed length, then the zlib bytes
-    /// produced by `compress2(src, level)`.
-    ///
-    /// Compresses into a temporary buffer first, so a failed encode leaves the
-    /// stream untouched.
-    pub fn write_compressed(
-        &mut self,
-        plaintext: &[u8],
-        level: CompressionLevel,
-    ) -> Result<&mut Self, StreamError> {
-        let mut encoder = flate2::write::ZlibEncoder::new(
-            Vec::new(),
-            flate2::Compression::new(level.get() as u32),
-        );
-        use std::io::Write as _;
-        encoder
-            .write_all(plaintext)
-            .map_err(|_| StreamError::Zlib)?;
-        let body = encoder.finish().map_err(|_| StreamError::Zlib)?;
-
-        self.write_packed_int(plaintext.len() as u32)?;
-        self.write_packed_int(body.len() as u32)?;
-        self.buf.extend_from_slice(&body);
-        Ok(self)
-    }
-
-    /// Read a payload written by [`BinaryStream::write_compressed`],
-    /// decompressing the zlib body and returning the plaintext.
-    pub fn read_compressed(&mut self) -> Result<Vec<u8>, StreamError> {
-        let orig_len = self.read_packed_int()? as usize;
-        let body_len = self.read_packed_int()? as usize;
-        let body = self.read_blob_raw(body_len)?;
-
-        let mut decoder = flate2::write::ZlibDecoder::new(Vec::new());
-        use std::io::Write as _;
-        let plaintext = match decoder.write_all(&body).and_then(|_| decoder.finish()) {
-            Ok(out) => out,
-            Err(_) => {
-                self.error = true;
-                return Err(StreamError::Zlib);
-            }
-        };
-        // zlib already reports the true decompressed size, so a mismatch means
-        // the stream is corrupt or the buffer is too small.
-        if plaintext.len() != orig_len {
-            self.error = true;
-            return Err(StreamError::Zlib);
+    /// The inverse of `write_blob_or_null`: `None` for a null blob, `Some`
+    /// for a present one (possibly empty).
+    pub fn read_blob_or_null(&mut self) -> Result<Option<Vec<u8>>, StreamError> {
+        let len = self.read_packed_int()? as usize;
+        if len > 0 {
+            Ok(Some(self.take(len)?.to_vec()))
+        } else {
+            let is_not_null = self.read_u8()?;
+            Ok(if is_not_null != 0 {
+                Some(Vec::new())
+            } else {
+                None
+            })
         }
-        Ok(plaintext)
     }
 }
 
@@ -533,34 +488,6 @@ mod tests {
         assert_eq!(s.read_string(), Ok("实体与太空".to_string()));
     }
 
-    /// Length prefixing preserves embedded zeros: no terminator is written,
-    /// so `a\0b` round-trips instead of truncating at the NUL.
-    #[test]
-    fn embedded_zeros_survive_string_roundtrip() {
-        let mut s = BinaryStream::new();
-        s.write_string("a\0b").unwrap();
-        s.rewind();
-        assert_eq!(s.read_string(), Ok("a\0b".to_string()));
-        assert_eq!(s.length(), 1 + 3);
-    }
-
-    #[test]
-    fn strings_embed_zero_and_track_remaining() {
-        // The reference string has no terminator, so an embedded NUL is data,
-        // not an end marker.
-        let mut s = BinaryStream::new();
-        s.write_string("a\0b\0").unwrap();
-        s.write_string("").unwrap();
-        assert_eq!(s.as_bytes(), &[0x04, b'a', 0, b'b', 0, 0x00]);
-        s.rewind();
-        assert_eq!(s.remaining(), 6);
-        assert_eq!(s.read_string(), Ok("a\0b\0".to_string()));
-        assert_eq!(s.remaining(), 1);
-        assert_eq!(s.read_string(), Ok(String::new()));
-        assert_eq!(s.remaining(), 0);
-        assert!(s.at_end());
-    }
-
     #[test]
     fn counts_are_plain_u32() {
         let mut s = BinaryStream::new();
@@ -645,232 +572,306 @@ mod tests {
         s.write_bytes(b"ab").write_bytes(&[0x00, 0xFF]);
         assert_eq!(s.as_bytes(), b"ab\x00\xff");
     }
+}
 
-    // ------------------------------------------------------------------
-    // BW-01-02-01: golden bytes captured from the reference wire format.
-    // ------------------------------------------------------------------
+/// Byte-exact fixtures captured from the reference cstdmf streams
+/// (`lib/cstdmf/binary_stream.hpp`, `memory_stream.hpp`, `blob_or_null.hpp`
+/// compiled against the original tree). Every record below is the exact byte
+/// sequence the original wrote, so a divergence in layout fails here first.
+#[cfg(test)]
+mod original_fixtures {
+    use super::*;
 
-    /// Fill the same sequence as `fixed_width_roundtrip` and compare against
-    /// bytes produced independently (little-endian host, reference `BW_HTON*`
-    /// identity). Guards the encoding, not just self-consistency.
-    #[test]
-    fn golden_fixed_width_bytes() {
-        let mut s = BinaryStream::new();
-        s.write_i8(-7)
-            .write_bool(true)
-            .write_i16(-1234)
-            .write_i32(-1_000_000)
-            .write_i64(-9_000_000_000)
-            .write_f32(-1.5)
-            .write_f64(-2.75);
-
-        let golden: [u8; 28] = [
-            0xF9, // i8  -7
-            0x01, // bool true
-            0x2E, 0xFB, // i16 -1234
-            0xC0, 0xBD, 0xF0, 0xFF, // i32 -1000000
-            0x00, 0xE6, 0x8E, 0xE7, 0xFD, 0xFF, 0xFF, 0xFF, // i64 -9000000000
-            0x00, 0x00, 0xC0, 0xBF, // f32 -1.5
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0xC0, // f64 -2.75
-        ];
-        assert_eq!(s.as_bytes(), &golden);
-
-        // Byte-exact roundtrip of the same buffer.
-        s.rewind();
-        assert_eq!(s.read_i8(), Ok(-7));
-        assert_eq!(s.read_bool(), Ok(true));
-        assert_eq!(s.read_i16(), Ok(-1234));
-        assert_eq!(s.read_i32(), Ok(-1_000_000));
-        assert_eq!(s.read_i64(), Ok(-9_000_000_000));
-        assert_eq!(s.read_f32(), Ok(-1.5));
-        assert_eq!(s.read_f64(), Ok(-2.75));
-        assert!(s.at_end());
-    }
-
-    #[test]
-    fn golden_fixed_width_bytes_unsigned_bounds() {
-        let mut s = BinaryStream::new();
-        s.write_u8(0xFF)
-            .write_u16(0xFFFF)
-            .write_u32(0xFFFF_FFFF)
-            .write_u64(u64::MAX);
-        assert_eq!(
-            s.as_bytes(),
-            &[
-                0xFF, //
-                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-            ]
-        );
-        s.rewind();
-        assert_eq!(s.read_u8(), Ok(0xFF));
-        assert_eq!(s.read_u16(), Ok(0xFFFF));
-        assert_eq!(s.read_u32(), Ok(0xFFFF_FFFF));
-        assert_eq!(s.read_u64(), Ok(u64::MAX));
-    }
-
-    #[test]
-    fn golden_float_negative_zero_and_infinity() {
-        let mut s = BinaryStream::new();
-        s.write_f32(-0.0)
-            .write_f32(f32::INFINITY)
-            .write_f64(f64::NEG_INFINITY);
-        assert_eq!(
-            s.as_bytes(),
-            &[
-                0x00, 0x00, 0x00, 0x80, // f32 -0.0
-                0x00, 0x00, 0x80, 0x7F, // f32 +inf
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xFF, // f64 -inf
-            ]
-        );
-        s.rewind();
-        assert!(s.read_f32().unwrap().is_sign_negative());
-        assert_eq!(s.read_f32(), Ok(f32::INFINITY));
-        assert_eq!(s.read_f64(), Ok(f64::NEG_INFINITY));
-    }
-
-    // ------------------------------------------------------------------
-    // BW-01-02-04: compression stream (reference ZipOStream / ZipIStream).
-    // ------------------------------------------------------------------
-
-    /// Plaintext behind the reference zlib fixture below.
-    fn reference_plaintext() -> Vec<u8> {
-        let mut v = b"BW compression fixture ".to_vec();
-        v.extend(0u8..=255);
-        v
-    }
-
-    /// Bytes captured from the system zlib (the same library `compress2` uses)
-    /// at level 1 = `Z_BEST_SPEED`: `[packed 279][packed 290][zlib body]`.
-    fn reference_zlib_fixture() -> BinaryStream {
-        let body = hex_to_bytes(concat!(
-            "7801011701e8fe425720636f6d7072657373696f6e20666978747572652000",
-            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
-            "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
-            "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
-            "6162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80",
-            "8182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0",
-            "a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
-            "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
-            "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
-            "c72f8833"
-        ));
-        let mut s = BinaryStream::new();
-        s.write_packed_int(279).unwrap();
-        s.write_packed_int(body.len() as u32).unwrap();
-        s.write_blob_raw(&body);
-        s
-    }
-
-    fn hex_to_bytes(hex: &str) -> Vec<u8> {
-        (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+    fn decode_hex(hex: &str) -> Vec<u8> {
+        assert_eq!(hex.len() % 2, 0, "odd hex length: {hex}");
+        hex.as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect()
     }
 
-    #[test]
-    fn compressed_reads_reference_zlib_fixture() {
-        // Both partners can decode the same fixture: decoding the reference
-        // bytes must yield the reference plaintext.
-        let mut s = reference_zlib_fixture();
-        s.rewind();
-        assert_eq!(s.read_compressed(), Ok(reference_plaintext()));
-        assert!(s.at_end());
-    }
+    // --- BW-01-02-01: fixed-width integers and floats -----------------------
 
+    /// One record per original value, mirroring the harness that produced it:
+    /// each value went into its own stream, so each is checked in its own.
     #[test]
-    fn compressed_frame_shape_matches_reference() {
-        let mut ours = BinaryStream::new();
-        ours.write_compressed(&reference_plaintext(), CompressionLevel::BEST_SPEED)
-            .unwrap();
-
-        // Same framing, and the zlib body is byte-identical to the system
-        // zlib output the reference `compress2` produces.
-        assert_eq!(ours.as_bytes(), reference_zlib_fixture().as_bytes());
-    }
-
-    #[test]
-    fn compressed_roundtrip_uncompressible_and_empty() {
-        for payload in [
-            Vec::new(),
-            vec![0u8; 5000],
-            (0..2000u32)
-                .map(|i| (i.wrapping_mul(2654435761) >> 24) as u8)
-                .collect(),
-        ] {
-            let mut s = BinaryStream::new();
-            s.write_compressed(&payload, CompressionLevel::BEST_COMPRESSION)
-                .unwrap();
-            let len = s.length();
-            s.rewind();
-            assert_eq!(s.read_compressed(), Ok(payload));
-            assert_eq!(s.remaining(), 0);
-            // Two packed prefixes plus a non-empty zlib stream.
-            assert!(len >= 2);
-        }
-    }
-
-    #[test]
-    fn compressed_roundtrip_all_levels() {
-        let payload = reference_plaintext();
-        for level in 1..=9u8 {
-            let mut s = BinaryStream::new();
-            s.write_compressed(&payload, CompressionLevel::new(level).unwrap())
-                .unwrap();
-            s.rewind();
-            assert_eq!(s.read_compressed(), Ok(payload.clone()), "level {level}");
-        }
-    }
-
-    #[test]
-    fn compression_level_rejects_out_of_range() {
-        assert_eq!(
-            CompressionLevel::new(0).unwrap_err(),
-            StreamError::InvalidCompressionLevel
-        );
-        assert_eq!(
-            CompressionLevel::new(10).unwrap_err(),
-            StreamError::InvalidCompressionLevel
-        );
-        assert_eq!(CompressionLevel::default(), CompressionLevel::BEST_SPEED);
-        assert_eq!(CompressionLevel::BEST_COMPRESSION.get(), 9);
-    }
-
-    #[test]
-    fn compressed_rejects_corrupt_body() {
+    fn fixed_width_matches_original_bytes() {
         let mut s = BinaryStream::new();
-        s.write_packed_int(64).unwrap();
-        s.write_packed_int(4).unwrap();
-        s.write_blob_raw(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        s.write_u8(0x7f);
+        assert_eq!(s.as_bytes(), decode_hex("7f").as_slice());
         s.rewind();
-        assert_eq!(s.read_compressed(), Err(StreamError::Zlib));
+        assert_eq!(s.read_u8(), Ok(0x7f));
+
+        let mut s = BinaryStream::new();
+        s.write_i8(-128);
+        assert_eq!(s.as_bytes(), decode_hex("80").as_slice());
+        s.rewind();
+        assert_eq!(s.read_i8(), Ok(-128));
+
+        let mut s = BinaryStream::new();
+        s.write_u16(0x1234);
+        assert_eq!(s.as_bytes(), decode_hex("3412").as_slice());
+        s.rewind();
+        assert_eq!(s.read_u16(), Ok(0x1234));
+
+        let mut s = BinaryStream::new();
+        s.write_i16(-12345);
+        assert_eq!(s.as_bytes(), decode_hex("c7cf").as_slice());
+        s.rewind();
+        assert_eq!(s.read_i16(), Ok(-12345));
+
+        let mut s = BinaryStream::new();
+        s.write_u32(0xdead_beef);
+        assert_eq!(s.as_bytes(), decode_hex("efbeadde").as_slice());
+        s.rewind();
+        assert_eq!(s.read_u32(), Ok(0xdead_beef));
+
+        let mut s = BinaryStream::new();
+        s.write_i32(-123_456_789);
+        assert_eq!(s.as_bytes(), decode_hex("eb32a4f8").as_slice());
+        s.rewind();
+        assert_eq!(s.read_i32(), Ok(-123_456_789));
+
+        let mut s = BinaryStream::new();
+        s.write_u64(0x0123_4567_89ab_cdef);
+        assert_eq!(s.as_bytes(), decode_hex("efcdab8967452301").as_slice());
+        s.rewind();
+        assert_eq!(s.read_u64(), Ok(0x0123_4567_89ab_cdef));
+
+        let mut s = BinaryStream::new();
+        s.write_i64(-1);
+        assert_eq!(s.as_bytes(), decode_hex("ffffffffffffffff").as_slice());
+        s.rewind();
+        assert_eq!(s.read_i64(), Ok(-1));
+
+        let mut s = BinaryStream::new();
+        s.write_f32(3.5);
+        assert_eq!(s.as_bytes(), decode_hex("00006040").as_slice());
+        s.rewind();
+        assert_eq!(s.read_f32(), Ok(3.5));
+
+        let mut s = BinaryStream::new();
+        // The original fixture wrote 2.718281828459045, which is exactly
+        // `f64::consts::E` at binary64 precision (bytes checked below).
+        s.write_f64(std::f64::consts::E);
+        assert_eq!(s.as_bytes(), decode_hex("6957148b0abf0540").as_slice());
+        s.rewind();
+        assert_eq!(s.read_f64(), Ok(std::f64::consts::E));
+    }
+
+    #[test]
+    fn bool_is_one_byte_per_value() {
+        let mut s = BinaryStream::new();
+        s.write_bool(true);
+        s.write_bool(false);
+        assert_eq!(s.as_bytes(), decode_hex("0100").as_slice());
+
+        s.rewind();
+        assert_eq!(s.read_bool(), Ok(true));
+        assert_eq!(s.read_bool(), Ok(false));
+    }
+
+    // --- BW-01-02-02: variable-length integers and length prefixes -----------
+
+    /// Every boundary value the original packed, with the exact bytes it
+    /// produced. `>= 255` becomes `0xFF` plus the three low bytes little-endian
+    /// (`BW_PACK3`); everything else is a single byte.
+    #[test]
+    fn packed_int_matches_original_bytes() {
+        let cases: &[(u32, &str)] = &[
+            (0, "00"),
+            (1, "01"),
+            (127, "7f"),
+            (128, "80"),
+            (253, "fd"),
+            (254, "fe"),
+            (255, "ffff0000"),
+            (256, "ff000100"),
+            (1023, "ffff0300"),
+            (65534, "fffeff00"),
+            (65535, "ffffff00"),
+            (65536, "ff000001"),
+            (1_000_000, "ff40420f"),
+            (16_777_214, "fffeffff"),
+            (16_777_215, "ffffffff"),
+        ];
+        for &(value, hex) in cases {
+            let mut s = BinaryStream::new();
+            s.write_packed_int(value).unwrap();
+            assert_eq!(s.as_bytes(), decode_hex(hex).as_slice(), "value {value}");
+            assert_eq!(packed_int_size(value), if value < 0xff { 1 } else { 4 });
+            s.rewind();
+            assert_eq!(s.read_packed_int(), Ok(value), "value {value}");
+        }
+    }
+
+    /// `write_count` is a plain u32 element count, exactly as the original
+    /// writes a container's element count (`operator<<` for `BW::vector`).
+    #[test]
+    fn count_is_plain_u32_like_original_vector_writes() {
+        let mut s = BinaryStream::new();
+        s.write_count(0x0102_0304);
+        assert_eq!(s.as_bytes(), decode_hex("04030201").as_slice());
+        s.rewind();
+        assert_eq!(s.read_count(), Ok(0x0102_0304));
+    }
+
+    // --- BW-01-02-03: strings and the memory-stream surface ------------------
+
+    #[test]
+    fn string_fixtures_match_original_bytes() {
+        let mut s = BinaryStream::new();
+        s.write_string("").unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("00").as_slice());
+
+        let mut s = BinaryStream::new();
+        s.write_string("abc").unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("03616263").as_slice());
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("abc".to_string()));
+
+        // Embedded NUL survives: the format is length-prefixed, never
+        // terminated, so the zero inside is payload like any other byte.
+        let mut s = BinaryStream::new();
+        s.write_string("a\0b").unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("03610062").as_slice());
+        s.rewind();
+        assert_eq!(s.read_string(), Ok("a\0b".to_string()));
+
+        // A 255-byte string crosses the packed-int boundary into 4-byte form.
+        let long = "x".repeat(255);
+        let mut s = BinaryStream::new();
+        s.write_string(&long).unwrap();
+        assert_eq!(&s.as_bytes()[..4], decode_hex("ffff0000").as_slice());
+        assert_eq!(s.length(), 259);
+        s.rewind();
+        assert_eq!(s.read_string(), Ok(long));
+    }
+
+    #[test]
+    fn add_blob_writes_raw_bytes_without_prefix() {
+        let mut s = BinaryStream::new();
+        s.write_blob_raw(b"abc");
+        assert_eq!(s.as_bytes(), decode_hex("616263").as_slice());
+    }
+
+    /// `BlobOrNull` framing from `lib/cstdmf/blob_or_null.cpp`: present data
+    /// is a length-prefixed blob; null and empty each write a zero length
+    /// plus a one-byte flag telling them apart.
+    #[test]
+    fn blob_or_null_fixtures_match_original_framing() {
+        // null: packed 0 + flag 0
+        let mut s = BinaryStream::new();
+        s.write_blob_or_null(None).unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("0000").as_slice());
+        s.rewind();
+        assert_eq!(s.read_blob_or_null(), Ok(None));
+
+        // empty (non-null): packed 0 + flag 1
+        let mut s = BinaryStream::new();
+        s.write_blob_or_null(Some(&[])).unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("0001").as_slice());
+        s.rewind();
+        assert_eq!(s.read_blob_or_null(), Ok(Some(Vec::new())));
+
+        // data: packed length + bytes, no trailing flag
+        let mut s = BinaryStream::new();
+        s.write_blob_or_null(Some(b"data")).unwrap();
+        assert_eq!(s.as_bytes(), decode_hex("0464617461").as_slice());
+        s.rewind();
+        assert_eq!(s.read_blob_or_null(), Ok(Some(b"data".to_vec())));
+    }
+
+    #[test]
+    fn remaining_length_after_partial_read_matches_original() {
+        // The original wrote three u32s and read one back: remaining 8.
+        let mut s = BinaryStream::new();
+        s.write_u32(1).write_u32(2).write_u32(3);
+        s.rewind();
+        assert_eq!(s.read_u32(), Ok(1));
+        assert_eq!(s.remaining(), 8);
+        assert!(!s.has_error());
+    }
+
+    #[test]
+    fn rewind_readback_returns_written_wire_bytes() {
+        let mut s = BinaryStream::new();
+        s.write_u16(0x0102).write_u16(0x0304);
+        s.rewind();
+        assert_eq!(s.as_bytes(), decode_hex("02010403").as_slice());
+        assert_eq!(s.unread_bytes(), decode_hex("02010403").as_slice());
+    }
+
+    // --- BW-01-02-05: truncation and out-of-bounds reporting ----------------
+
+    /// Every one of the original's overread records reports `error=1` with
+    /// `remaining=0`, which is this stream's `has_error()` plus a clamped read
+    /// cursor. The reference hands back an internal `errBuf` for reads of at
+    /// most 2048 bytes so a failed fixed-width read yields a zeroed
+    /// destination instead of aborting (the harness prints `value=0x00000000`
+    /// for a read into `0xAAAAAAAA`); the Rust analogue is an error value, so
+    /// those out-param zeroes map onto `Err` here.
+    #[test]
+    fn short_fixed_width_read_reports_error() {
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("3412"));
+        s.rewind();
+        assert_eq!(s.read_u32(), Err(StreamError::Truncated));
         assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
     }
 
     #[test]
-    fn compressed_rejects_length_mismatch() {
-        // Valid zlib body but a lying original length.
-        let mut encoded = BinaryStream::new();
-        encoded
-            .write_compressed(b"hello", CompressionLevel::BEST_SPEED)
-            .unwrap();
-        let body = encoded.as_bytes()[2..].to_vec();
-
+    fn read_from_an_empty_stream_reports_error() {
         let mut s = BinaryStream::new();
-        s.write_packed_int(99).unwrap();
-        s.write_packed_int(body.len() as u32).unwrap();
-        s.write_blob_raw(&body);
-        s.rewind();
-        assert_eq!(s.read_compressed(), Err(StreamError::Zlib));
+        assert_eq!(s.read_u8(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
     }
 
     #[test]
-    fn compressed_truncated_body_reports_truncation() {
-        let s = reference_zlib_fixture();
-        let cut = s.length() - 10;
-        let mut truncated = BinaryStream::new();
-        truncated.write_blob_raw(&s.as_bytes()[..cut]);
-        truncated.rewind();
-        assert_eq!(truncated.read_compressed(), Err(StreamError::Truncated));
+    fn string_overrun_reports_error() {
+        // Declares 5 bytes, has 2.
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("056162"));
+        s.rewind();
+        assert_eq!(s.read_string(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn packed_int_payload_truncation_reports_error() {
+        // Starts the 4-byte extension but has only one byte behind it.
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("ff00"));
+        s.rewind();
+        assert_eq!(s.read_packed_int(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn error_is_sticky_across_reads() {
+        // A one-byte stream: the u32 read fails, and the original clamps the
+        // cursor to the end, so the surviving byte is unreachable and the later
+        // u8 read reports the same error too.
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("01"));
+        s.rewind();
+        assert_eq!(s.read_u32(), Err(StreamError::Truncated));
+        assert_eq!(s.read_u8(), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn retrieve_beyond_end_reports_error() {
+        let mut s = BinaryStream::new();
+        s.write_bytes(&decode_hex("0102"));
+        s.rewind();
+        assert_eq!(s.read_blob_raw(4), Err(StreamError::Truncated));
+        assert!(s.has_error());
+        assert_eq!(s.remaining(), 0);
     }
 }

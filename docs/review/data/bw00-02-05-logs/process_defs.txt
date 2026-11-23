@@ -1,0 +1,7 @@
+WARNING: [ResMgr] The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+ERROR: Personality::import: Failed to import personality moduleProcessDefs
+ERROR: ModuleNotFoundError: No module named 'ProcessDefs'
+ERROR: Exception ignored on flushing sys.stdout:
+ERROR: AttributeError: 'PyOutputStream' object has no attribute 'flush'
+ERROR: Exception ignored in sys.unraisablehook: <built-in function unraisablehook>
+ERROR: AttributeError: 'PyOutputStream' object has no attribute 'flush'

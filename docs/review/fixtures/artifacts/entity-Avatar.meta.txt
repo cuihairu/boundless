@@ -1,0 +1,10 @@
+  name Avatar
+  index 65535
+  propertyCount 4
+  canBeOnCell 1
+  property playerName type STRING persistent 1 streamSize -1
+  property prop1 type INT32 persistent 0 streamSize 4
+  property prop2 type INT16 persistent 1 streamSize 2
+  property prop3 type INT8 persistent 0 streamSize 1
+  entity-snapshot (15 bytes):
+    640000000741646d6972616cc8002c

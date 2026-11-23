@@ -1,0 +1,13 @@
+BW-00-04-01 protocol fixtures
+source: BigWorld 4657a17 reference stack (x86-64 Linux, host order LE)
+captured by docs/review/tools/capture_protocol.cpp
+
+name                       file                                   bytes
+----------------------------------------------------------------------
+notification-empty         notification-empty.bin                 3
+notification-fixed         notification-fixed.bin                 7
+notification-var1-short    notification-var1-short.bin            8
+notification-var1-long     notification-var1-long.bin             308
+notification-var2          notification-var2.bin                  15
+request-var1               request-var1.bin                       16
+reply-var1                 reply-var1.bin                         13

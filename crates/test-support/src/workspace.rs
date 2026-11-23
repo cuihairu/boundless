@@ -12,6 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Leaf name of the fixture base directory.
 pub const BASE_DIRECTORY: &str = "boundless-test";
 
+/// Environment variable that redirects the fixture base (BW-00-03-04):
+/// set it to give one environment its own scratch root, so two heavy
+/// runs on one machine write through disjoint trees. Empty or unset
+/// keeps the system default.
+pub const TEST_TMP_ENV: &str = "BOUNDLESS_TEST_TMP";
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// The per-environment fixture base directory (BW-00-03-04).
@@ -50,7 +56,8 @@ impl TempWorkspace {
     }
 
     /// Create a unique directory named after `label`, so an archived failure
-    /// directory is readable (`label`-`pid`-`sequence`).
+    /// directory is readable (`label`-`pid`-`sequence`). The base is
+    /// [`test_base`], so the fixture honours `BOUNDLESS_TEST_TMP`.
     pub fn with_label(label: &str) -> Self {
         Self::with_base(&base_dir(), label)
     }
@@ -206,6 +213,24 @@ fn sanitize(label: &str) -> String {
     }
 }
 
+/// Resolve the fixture base from a `BOUNDLESS_TEST_TMP` value (BW-00-03-04).
+///
+/// A non-empty value replaces the base wholesale; empty or `None` keeps
+/// the system default under the temporary directory. Pure so the rule is
+/// testable without mutating process-wide state.
+pub fn base_from_env(value: Option<&str>) -> PathBuf {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => std::env::temp_dir().join(BASE_DIRECTORY),
+    }
+}
+
+/// The directory every fixture of this process is created under: the
+/// `BOUNDLESS_TEST_TMP` override when set, else the system temp directory.
+pub fn test_base() -> PathBuf {
+    base_from_env(std::env::var(TEST_TMP_ENV).ok().as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +324,20 @@ mod tests {
         b.keep(); // leave for the cleanup below
         drop(b);
         let _ = std::fs::remove_dir_all(&scratch);
+    #[test]
+    fn the_base_env_replaces_the_default_wholesale() {
+        assert_eq!(
+            base_from_env(Some("/scratch/boundless")),
+            PathBuf::from("/scratch/boundless")
+        );
+        // A stray amount of whitespace is still a real override.
+        assert_eq!(
+            base_from_env(Some("  /scratch/boundless  ")),
+            PathBuf::from("/scratch/boundless")
+        );
+        // Whitespace only is not a path, so it falls back to the default.
+        let default = std::env::temp_dir().join(BASE_DIRECTORY);
+        assert_eq!(base_from_env(Some("   ")), default);
+        assert_eq!(base_from_env(None), default);
     }
 }

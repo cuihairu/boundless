@@ -1,0 +1,42 @@
+Compatible usage: res_packer [-r|--res search_paths] input_file [output_file [base_path]]
+Batch list usage: res_packer --list|-l asset_list_file
+    --in|-i input_path_root
+    --out|-o output_path_root
+    [--err|-e error_log_file]
+    [--res|-r search_paths]
+
+'asset_list_file' is the file which contains all the files to process
+'input_path_root' is the root directory for the input files
+'output_path_root' is the root directory for the output files
+'error_log_file' is the error output file
+
+The batch list mode is the new, fast way of using res_packer
+The argument 'search_paths' is a semicolon-separated list of paths
+used when processing some assets types such as fonts, models, etc.
+If 'search_paths' is not specified, the file 'paths.xml' or the 
+environment variable BW_RES_PATH will be used.
+
+In the old compatible mode, If an output file is specified, the input data
+is packed depending on the file type. If an output file is not specified,
+the input file string representation is printed.
+Some assets types also require that a correct base path is specified.
+For example, packing .font and .model assets require valid base_path.
+The base_path must point to the root path of the assets in the
+destination folder, so if packing the a file 'dragon.bmp' to the folder
+'/bw/finalgame/res/maps/monsters/dragon.bmp', and the root of the game
+will be '/bw/finalgame/res', then base_path must be '/bw/finalgame/res'
+If an incorrect base_path is specified, packing might fail or might
+generate invalid assets (for example, an invalid .font file)
+
+Full example of the old compatible form:
+    res_packer --res /bw/fantasydemo/res;/bw/bigworld/res
+    /bw/fantasydemo/res/models/my_model.model
+    /bw/fantasydemo/res_packed/models/my_model.model
+    /bw/fantasydemo/res_packed
+
+Full example of the batch list form:
+    res_packer --list assets.txt
+    --in /bw/fantasydemo/res
+    --out /bw/fantasydemo/res_packed
+    --err error.log
+    --res /bw/fantasydemo/res;/bw/bigworld/res

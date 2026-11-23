@@ -2,14 +2,9 @@
 //!
 //! The header Mercury hands to a handler once a message has been unpacked
 //! out of a bundle: what it is, which request it answers, and how long it
-//! is. The break-loop back-pointer (`pBreakLoop`) is ported too -- it is
-//! the handler-facing half of the walk's stop flag, delivered with
-//! BW-02-05-03. The `ChannelPtr` and `NetworkInterface` fields the
-//! reference carries are still not ported; they arrive with the channel
-//! and delivery items of BW-02-03.
-
-use std::cell::Cell;
-use std::rc::Rc;
+//! is. The `ChannelPtr`, `NetworkInterface` and break-loop fields the
+//! reference carries are not ported yet; they arrive with the channel and
+//! delivery items of BW-02-03.
 
 use crate::interface_element::InterfaceElement;
 use crate::misc::MessageID;
@@ -23,8 +18,7 @@ pub const NO_REPLY: ReplyID = crate::misc::REPLY_ID_NONE;
 ///
 /// `Clone` only: the element this header carries a shared handler in, so
 /// it cannot be compared, and the reference has no comparison for it
-/// either. Cloning shares the break-loop back-pointer, exactly as the
-/// reference copies the raw `pBreakLoop` pointer.
+/// either.
 #[derive(Debug, Clone)]
 pub struct UnpackedMessageHeader {
     /// `identifier`: the message identifier.
@@ -36,13 +30,6 @@ pub struct UnpackedMessageHeader {
     /// `pInterfaceElement`: the element that declared this message, which
     /// is where `msgName()` reads from.
     element: Option<InterfaceElement>,
-    /// `pBreakLoop` (`unpacked_message_header.hpp:28`): the bundle walk's
-    /// break flag. The dispatcher points it at its loop flag before each
-    /// delivery; a handler that wants the rest of the bundle skipped calls
-    /// [`break_bundle_loop`], and the flag the loop reads is set. [`None`]
-    /// when the header is not being delivered, so a stray call is a no-op
-    /// (the reference's `if (pBreakLoop)` guard).
-    break_loop: Option<Rc<Cell<bool>>>,
 }
 
 impl Default for UnpackedMessageHeader {
@@ -60,7 +47,6 @@ impl UnpackedMessageHeader {
             reply_id: NO_REPLY,
             length: 0,
             element: None,
-            break_loop: None,
         }
     }
 
@@ -106,24 +92,6 @@ impl UnpackedMessageHeader {
     pub fn msg_name(&self) -> &'static str {
         self.element.as_ref().map_or("", |element| element.name())
     }
-
-    /// `breakBundleLoop()` (`unpacked_message_header.hpp:43`): used to
-    /// break bundle processing -- stop dispatching the rest of the bundle
-    /// this message came in on. A no-op when the header is not being
-    /// delivered (`pBreakLoop` is null outside a walk).
-    pub fn break_bundle_loop(&self) {
-        if let Some(flag) = &self.break_loop {
-            flag.set(true);
-        }
-    }
-
-    /// The dispatcher's half of `header.pBreakLoop = &breakLoop`: point
-    /// the header at the loop flag for the duration of one delivery. The
-    /// same flag is handed to every message of one walk, as the reference
-    /// hands every header the address of its one `breakLoop` local.
-    pub(crate) fn set_break_loop(&mut self, flag: Rc<Cell<bool>>) {
-        self.break_loop = Some(flag);
-    }
 }
 
 #[cfg(test)]
@@ -131,40 +99,6 @@ mod tests {
     use super::*;
     use crate::interface_element::VARIABLE_LENGTH_MESSAGE;
     use crate::misc::{REPLY_ID_MAX, REPLY_ID_NONE};
-
-    /// `breakBundleLoop()` with no walk behind the header is a no-op: a
-    /// header the dispatcher has not pointed at its loop flag carries
-    /// `pBreakLoop == NULL`, the reference's guard.
-    #[test]
-    fn a_stray_break_is_a_no_op() {
-        let header = UnpackedMessageHeader::new(3);
-        // Nothing to observe beyond not panicking and not setting a flag
-        // that does not exist; a header the walk is not driving simply
-        // answers a break with nothing.
-        header.break_bundle_loop();
-        assert!(header.break_loop.is_none());
-    }
-
-    /// `breakBundleLoop()` sets the flag the dispatcher pointed at. A
-    /// clone carries the same back-pointer (the reference copies the raw
-    /// pointer), so a clone's break still stops the walk.
-    #[test]
-    fn a_break_sets_the_dispatchers_flag_and_a_clone_shares_it() {
-        let flag = Rc::new(Cell::new(false));
-        let mut header = UnpackedMessageHeader::new(3);
-        header.set_break_loop(Rc::clone(&flag));
-        assert!(!flag.get(), "the walk starts unbroken");
-
-        header.break_bundle_loop();
-        assert!(flag.get(), "the break reached the walk's flag");
-
-        // The reference's `pBreakLoop` is a plain pointer, so copying the
-        // header copies the address; the clone still breaks the same walk.
-        flag.set(false);
-        let clone = header.clone();
-        clone.break_bundle_loop();
-        assert!(flag.get(), "the clone shares the walk's flag");
-    }
 
     #[test]
     fn a_default_header_has_no_reply_and_no_length() {

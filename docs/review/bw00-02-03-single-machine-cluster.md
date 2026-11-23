@@ -1,44 +1,68 @@
-# BW-00-02-03 录制单机集群启动基线 — 记录（部分，卡点）
+# BW-00-02-03 单机集群启动基线
 
-- **任务编号**: BW-00-02-03（lane BW-00-02 原版运行基准，todo.md 行 102）
-- **参考树**: `/home/cui/workspaces/BigWorld`（构建 + 启动尝试，只改构建产物，未改源码）。
-- **Boundless 模块**: 无（原版单机集群基线，供 BW-00-02 差分验收引用）。
+基线 `4657a17`，产物树 `game/bin/server/el7/`，参考源 `programming/bigworld/`。对应 todo.md BW-00-02-03：**留存拓扑、配置和日志**。
 
-## 进展：服务端二进制全量构建（此前未建）
+## 状态：BLOCKED（关键凭据缺件）
 
-参考树服务端二进制**此前未建**（见 BW-00-02-01：库阶段完成、可执行未产出）。本次用 `make -j$(nproc)`（`VCPKG_ROOT=/home/cui/vcpkg`，工具链 g++ 15.2 `-std=c++23`——本参考树已迁移 c++23，与 el7 构建一致）完成全量构建，**成功无错误**，产出（`game/bin/server/el7/`）：
+单机集群**全绿拉起**被 `server/bigworld.key`（BigWorld 服务器许可密钥）硬阻塞：baseapp/cellapp/dbapp/loginapp 四个组件均在 `ServerApp::init` 硬失败——`ERROR: No key file server/bigworld.key found.` + `ERROR: [Server] Failed to initialise <App>`（日志见下）。该文件为 BigWorld 商业授权凭据，**不存在于本仓，且不可自造**（需向 BigWorld 官方申领）。缺件：`<res>/server/bigworld.key`。
 
-| 二进制 | 位置 |
-|---|---|
-| baseapp / serviceapp / baseappmgr / cellapp / cellappmgr / dbapp / dbappmgr / loginapp / reviver / bots | `server/el7/server/` |
-| bwmachined2 | `server/el7/tools/` |
-| clear_auto_load / consolidate_dbs / sync_db / transfer_db / remove_db | `server/el7/server/commands/` |
+拓扑、配置与可采集的启动日志已如实留存（下方三节），以佐证"除许可密钥外其余环节可达"。
 
-（构建日志 `/tmp/bw-build-full.log`，373 次编译 + 链接，末步 `cp baseapp serviceapp`。）
+## 拓扑（单机集群进程集）
 
-## 启动尝试（fantasydemo 最小配置）
+产物树实查（`game/bin/server/el7/`）给出单机集群的进程集与角色：
 
-资源路径：`fantasydemo/res:game/res/bigworld`（simple client README 给出的运行面）；配置 `server/bw.xml`（fantasydemo 最小版，BWConfig::init 读入，缺失段用默认值）。进程以 `--res <路径>` 启动，bwmachined2 `-f` 先起（接口发现回退全接口，单机可接受）。
-
-| 进程 | 结果 | 说明 |
+| 进程 | 角色 | 二进制 |
 |---|---|---|
-| bwmachined2 | 启动 | 后台运行（接口发现用） |
-| baseappmgr | **运行** | 达 `Version: 14.4.1`，持续运行至超时（日志 `bw00-02-03-baseappmgr-start.log`） |
-| cellappmgr | **运行** | 达 `Version: 14.4.1`，持续运行（`metaLoadBalancePriority` 配置段缺失警告，仍运行） |
-| dbappmgr | **运行** | 达 `Version: 14.4.1`，持续运行 |
-| loginapp | **失败** | `Couldn't load private key from non-existent file server/loginapp.privkey`（RSA 密钥缺失，日志 `bw00-02-03-loginapp-blocked.log`） |
-| baseapp | **失败** | `No key file server/bigworld.key found`（BigWorld 许可密钥缺失，日志 `bw00-02-03-baseapp-blocked.log`） |
-| cellapp | **失败** | 同上（`bigworld.key` 缺失） |
-| dbapp | **失败** | `No key file server/bigworld.key found` + `ModuleNotFoundError: No module named 'twisted'`（许可密钥 + 服务端 site-packages 未入路径） |
+| `bwmachined2` | 机守护：广播发现、端口登记、进程看护 | `tools/bwmachined2` |
+| `baseappmgr` | base 应用管理器 | `server/baseappmgr` |
+| `baseapp` | base 应用（客户端会话/脚本） | `server/baseapp` |
+| `cellappmgr` | cell 应用管理器 | `server/cellappmgr` |
+| `cellapp` | cell 应用（空间逻辑） | `server/cellapp` |
+| `dbappmgr` | DB 应用管理器 | `server/dbappmgr` |
+| `dbapp` | DB 应用（持久化） | `server/dbapp` |
+| `loginapp` | 登录应用 | `server/loginapp` |
+| `reviver` | 组件复活看护 | `server/reviver` |
+| `serviceapp` | 服务应用 | `server/serviceapp` |
+| `bots` | 机器人（压测/自动测试客户端） | `server/bots` |
+| `process_defs` | 实体 def → Python 过程定义代码生成器 | `tools/process_defs` |
+| `message_logger` | 日志收集器 | `tools/message_logger` |
+| `res_packer` | 资源打包 | `tools/res_packer` |
 
-## 卡点（外部条件，照实登记）
+- 组件配置装载（`lib/server/bwconfig.cpp:182`）：每个进程以 `server/bw.xml` 为主配置，先尝试 `server/bw_<username>.xml`（个性化），沿 `parentFile` 链回退。
+- 机守护配置（`server/tools/bwmachined/linux_machine_guard.cpp:31-32`）：`/etc/bwmachined.conf` + `/etc/bigworld.conf`（INI 式 `[tag]`/`key=value`，`bwmachined.cpp:553-611`）；**两个文件本机均不存在，bwmachined2 仅 WARN 继续**（见日志）。
+- 实跑拓扑（本机 ens18 = 192.168.5.188）：bwmachined2 广播发现 → 确认 ens18 为默认广播路由接口 → `Listening for requests` → `Bootstrap complete; 1 machines on network`（`bwmachined2.record.txt` 转自 syslog）。
 
-1. **`server/bigworld.key`（BigWorld 许可密钥）缺失**：baseapp/cellapp/dbapp 均要求该文件（`ERROR: No key file server/bigworld.key found. Either place your server/bigworld.key file at the root of your resource tree...`）。全仓搜索无 `bigworld.key`（仅 curl 测试证书 `*.key`）——**商业许可制品，被裁剪，不可重建**。
-2. **`server/loginapp.privkey`（RSA 私钥）缺失**：loginapp 初始化即失败——同样被裁剪（部署级密钥制品）。
-3. **dbapp 的 `twisted` 模块**：Python 服务端模块（el7 third_party wheels 已建但未入 `sys.path`）——次要，随许可密钥一并待补。
+## 配置
 
-**结论**：单机集群的**管理器层**（baseappmgr/cellappmgr/dbappmgr）可在本参考树启动并运行；但**应用层**（baseapp/cellapp/dbapp）与 **loginapp** 被 BigWorld 商业许可密钥 / 部署密钥阻断——**完整单机集群拓扑与运行日志无法从当前参考树获取**。
+| 项 | 值 | 出处 |
+|---|---|---|
+| 主配置链 | `server/bw.xml`（可 `parentFile` 串联），个性化优先 `server/bw_<user>.xml` | `bwconfig.cpp:182-233` |
+| 机守护配置 | `/etc/bwmachined.conf`、`/etc/bigworld.conf`（INI） | `linux_machine_guard.cpp:31-32` |
+| 仓内可用样例 | `programming/fantasydemo/res/server/bw.xml`（最小自含）、`programming/bigworld/examples/client_integration/python/simple/res/server/bw.xml` | 实查 |
+| 仓内缺失 | `server/development_defaults.xml`（上游 `bigworld/res` 的开发缺省配置）——fantasydemo bw.xml 注释自述"does not exist in this repository" | `fantasydemo/res/server/bw.xml` 头注 |
+| 仓内缺失 | `server/bigworld.key`（许可密钥，硬阻塞） | 实跑错误 |
+| res 路径 | `BW_RES_PATH` 逗号/冒号串联；bwconfig 以 `server/bw.xml` 为入口 | 实跑 |
 
-## 状态（部分，未勾）
+- 组件脚本面（`game/res/bigworld/scripts/`：`server_common/`、`common/`、`lib-dynload-el7/`）与 fantasydemo 实体面（`entities.xml`、`db.xml`、`entity_defs/`、base/cell/client 脚本）均在场。
+- baseapp 完整打印 `ServerAppConfig` 选项（`baseapp2.log`：serverMode=standalone、production=true、timeSyncPeriod=60、maxOpenFileDescriptors=-1、numStartupRetries=60、hitchDetection 阈值 1.5 等）——配置装载路径全通。
 
-服务端二进制全量构建成功（新进展）；管理器启动基线已录（3 个日志）；应用层/登录被 `bigworld.key`/`loginapp.privkey` 阻断（外部许可制品，不可重建）——**待用户提供合法许可密钥或改用授权环境后补录完整基线**。
+## 日志
+
+实跑日志入仓 `docs/review/data/bw00-02-03-logs/`（命令：`timeout 6 env BW_RES_PATH="<fantasydemo res>:<game/res/bigworld>" <el7>/server/<组件>`）：
+
+| 日志 | 要点 |
+|---|---|
+| `baseapp.log` | `BWConfig::init: Adding server/bw.xml`；`MachineDaemon::queryForInternalInterface` 超时（未起 bwmachined 时） |
+| `baseapp2.log` | 起 bwmachined 后：`bound to all interfaces ... ens18 (192.168.5.188)`、`TCPServer::initWithPort`、`Internal address`、`ServerApp::init: Run from bwmachined = false`、**key 错误** |
+| `cellapp.log` | 同 key 错误（init 失败后崩溃回收，exit 139） |
+| `dbapp.log` | 同 key 错误（exit 1） |
+| `loginapp.log` | 同 key 错误（exit 1） |
+| `bwmachined2.record.txt` | 守护 ps/cmdline + syslog：`Bootstrap complete; 1 machines on network`、`Dropping dead listener (for BaseAppMgrInterface's)` |
+
+## 结论与缺口
+
+- 拓扑、配置、可采集日志已留存（本文件 + `data/bw00-02-03-logs/`）。
+- **阻塞项**：`server/bigworld.key` 缺失——四组件均硬失败于 `ServerApp::init`，无任何配置开关可绕过（源码无开发口径）。需 BigWorld 官方许可凭据。
+- 次要观察：init 失败后的析构在 baseapp/cellapp 触发段错误（exit 139），属失败路径回收缺陷，非主因；dbapp/loginapp 干净退出（exit 1）。
+- 后续如需绿跑：申领/配置 `server/bigworld.key`，补 `server/development_defaults.xml`，并按 bw.xml 缺省模板补全组件节。

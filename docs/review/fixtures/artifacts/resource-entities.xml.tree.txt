@@ -1,0 +1,7 @@
+  ClientServerEntities
+    Account = 
+    Avatar = 
+    Guard = 
+    Space = 
+    ClientOnly = 
+  ServerOnlyEntities =

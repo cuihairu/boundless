@@ -14,7 +14,8 @@ use crate::endpoint::Endpoint;
 
 /// `Updater::DEFAULT_UPDATE_INTERVAL` (network_stats.cpp:43), 400ms.
 const DEFAULT_UPDATE_INTERVAL_MICROS: u64 = 400_000;
-const DEFAULT_UPDATE_INTERVAL_SECONDS: f64 = DEFAULT_UPDATE_INTERVAL_MICROS as f64 / 1_000_000.0;
+const DEFAULT_UPDATE_INTERVAL_SECONDS: f64 =
+    DEFAULT_UPDATE_INTERVAL_MICROS as f64 / 1_000_000.0;
 
 /// `Updater::StatsBlock`: the queued tx/rx byte counts of one socket.
 type QueueSizes = (i32, i32);
@@ -126,8 +127,7 @@ impl Updater {
             let rest = &txrx_field[consumed..];
             let (rx, _) = parse_hex(rest.strip_prefix(':').unwrap_or(rest));
 
-            self.stats_map
-                .insert((ip as u32, port), (tx as i32, rx as i32));
+            self.stats_map.insert((ip as u32, port), (tx as i32, rx as i32));
             self.last_active_record_count += 1;
 
             line.clear();
@@ -151,7 +151,10 @@ fn parse_hex(text: &str) -> (u64, usize) {
 
 /// `Updater::update: /proc/net/udp invalid format` (network_stats.cpp:158).
 fn invalid_format(line: &str) -> bool {
-    eprintln!("Updater::update: /proc/net/udp invalid format: {}", line);
+    eprintln!(
+        "Updater::update: /proc/net/udp invalid format: {}",
+        line
+    );
     false
 }
 
@@ -201,9 +204,8 @@ mod tests {
     /// A `/proc/net/udp`-shaped table: header, then records whose columns
     /// sit where the kernel puts them.
     fn proc_table(records: &[&str]) -> Cursor<String> {
-        let mut text = String::from(
-            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid  timeout inode ref pointer drops\n",
-        );
+        let mut text =
+            String::from("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid  timeout inode ref pointer drops\n");
         for record in records {
             text.push_str(record);
             text.push('\n');
@@ -318,7 +320,10 @@ mod tests {
             .micros()
             .saturating_sub(DEFAULT_UPDATE_INTERVAL_MICROS + 1);
         assert_eq!(updater.get_queue_sizes(LOOPBACK, port_word(40001)), None);
-        assert!(!updater.stats_map.is_empty(), "the kernel file was read");
+        assert!(
+            !updater.stats_map.is_empty(),
+            "the kernel file was read"
+        );
     }
 
     /// A fresh updater has a zero timestamp, so its first query

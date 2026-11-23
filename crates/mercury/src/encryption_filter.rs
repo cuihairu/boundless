@@ -1,26 +1,26 @@
-//! `lib/network/encryption_filter.{hpp,cpp}` (BW-02-05-02): the per-channel
-//! packet filter that encrypts and decrypts a channel's datagrams -- the
-//! Mercury layer of session negotiation. The login handlers hand a
-//! `BlockCipher` built from the session key to `UDPChannel::setEncryption`,
-//! which installs one of these on the channel, and from then on every
-//! packet in or out of the channel is encrypted.
+//! `Mercury::EncryptionFilter` (lib/network/encryption_filter.{hpp,cpp}): the
+//! `PacketFilter` that encrypts the datagrams on a channel with a
+//! non-modal block cipher. It is the filter `UDPChannel::setEncryption`
+//! installs (udp_channel.cpp:675-687), so an encrypted client channel is the
+//! filter the interface's found-channel `pFilter` arm hands every datagram to
+//! (wire compatibility with the original client is the point of the layer).
 //!
-//! Framing (encryption_filter.cpp:63-118): outbound, the filter pads the
-//! datagram up to a whole number of cipher blocks, writes a
-//! `0xdeadbeef` magic and a one-byte wastage count into the trailing pad
-//! bytes, and encrypts the lot; the base `send` then forwards the cipher
-//! text. Inbound (encryption_filter.cpp:120-206) it decrypts in place,
-//! checks the magic and the wastage sanity, and shrinks the datagram back
-//! to its real length before the base `recv` takes the header walk. The
-//! block chaining is a plaintext-feedback CBC the filter runs itself over
-//! the cipher's ECB primitive, so rearranged blocks break the chain
-//! (encryption_filter.cpp:305-384).
+//! On the wire each datagram becomes a whole number of Blowfish blocks with a
+//! `4-byte magic + 1-byte wastage` footer.
 //!
-//! Deviation: the reference's `send` writes the magic and wastage into the
-//! spare room of the packet it was handed; the port's `send` takes the
-//! packet by `&Rc<Packet>`, so it builds the framed bytes in a scratch
-//! buffer instead. The original packet is left untouched either way, and
-//! the bytes that reach the wire are identical.
+//! `encrypt` (encryption_filter.cpp:271) pads `packetSize + 4` up to a block
+//! multiple (`wastage` is computed so the total is a multiple, and is always at
+//! least one), then XORs each block after the first against the previous plain
+//! block before encrypting -- this is the anti-replay / anti-reassembly
+//! chaining. `recv` (encryption_filter.cpp:126) decrypts in place, checks the
+//! footer magic, validates the wastage, shrinks the footer off, then hands the
+//! plaintext to the base `PacketFilter::recv` (the receive path).
+//!
+//! The stream API (`encryptStream`/`decryptStream`) is the same cipher in a
+//! stream shape: zero-pad the clear stream to a block multiple, chain-encrypt
+//! into the cipher stream. The port takes it over `Vec<u8>` rather than the
+//! reference's `MemoryOStream`, because mercury's bundle streams are byte
+//! vectors.
 
 use std::rc::Rc;
 
@@ -30,199 +30,182 @@ use crate::misc::Reason;
 use crate::network_interface::NetworkInterface;
 use crate::packet::Packet;
 use crate::packet_filter::PacketFilter;
-use crate::packet_receiver::PacketReceiver;
-use crate::packet_sender::PacketSender;
-use crate::udp_channel::ChannelPtr;
 
-/// `ENCRYPTION_MAGIC` (encryption_filter.cpp:26): written at the end of
-/// the plaintext so a decrypted stream is recognised. Host-endian on the
-/// wire, as the reference reads and writes it through a `MagicType` cast
-/// (little-endian here).
-const ENCRYPTION_MAGIC: u32 = 0xdeadbeef;
+/// `MagicType ENCRYPTION_MAGIC = 0xdeadbeef` (encryption_filter.cpp:18).
+pub const ENCRYPTION_MAGIC: u32 = 0xdeadbeef;
 
-/// `sizeof( ENCRYPTION_MAGIC )`.
-const ENCRYPTION_MAGIC_SIZE: usize = 4;
-
-/// `MTU_ALLOWANCE` (encryption_filter.cpp:297): headroom for networks
-/// whose packets cannot fill a UDP datagram, e.g. a VPN.
+/// `MTU_ALLOWANCE` in `maxSpareSize` (encryption_filter.cpp:227): room for
+/// networks that cannot carry full-sized UDP packets.
 const MTU_ALLOWANCE: usize = 200;
 
-/// `Mercury::EncryptionFilter` (encryption_filter.hpp:26): a `PacketFilter`
-/// that encrypts through a non-modal block cipher.
+/// `Mercury::EncryptionFilter` (encryption_filter.hpp:29): a `PacketFilter`
+/// that uses a non-modal block cipher.
 pub struct EncryptionFilter {
-    /// `pBlockCipher_`.
-    cipher: Rc<dyn BlockCipher>,
+    p_block_cipher: Rc<dyn BlockCipher>,
 }
 
 impl EncryptionFilter {
-    /// `EncryptionFilter::create` (encryption_filter.cpp:31).
-    pub fn create(cipher: Rc<dyn BlockCipher>) -> Rc<EncryptionFilter> {
-        Rc::new(Self { cipher })
+    /// `EncryptionFilter::create( pCipher )` (encryption_filter.cpp:31).
+    pub fn create(p_block_cipher: Rc<dyn BlockCipher>) -> Rc<EncryptionFilter> {
+        Rc::new(EncryptionFilter { p_block_cipher })
     }
 
-    /// `key()`.
+    /// `key()` (encryption_filter.hpp:36): the shared key.
     pub fn key(&self) -> &[u8] {
-        self.cipher.key()
+        self.p_block_cipher.key()
     }
 
-    /// `encryptStream` (encryption_filter.cpp:210): pad `clear` up to a
-    /// whole number of blocks in place, then append the cipher text to
-    /// `cipher_stream`. The port takes plain byte buffers in place of the
-    /// reference's `MemoryOStream`/`BinaryOStream` pair, which grow the
-    /// same way.
-    pub fn encrypt_stream(&self, clear: &mut Vec<u8>, cipher_stream: &mut Vec<u8>) {
-        let block = self.cipher.block_size();
-        let remainder = clear.len() % block;
+    /// `maxSpareSize()` (encryption_filter.cpp:223): the block size plus the
+    /// magic footer plus the MTU allowance.
+    pub fn max_spare_size(&self) -> usize {
+        self.p_block_cipher.block_size() + std::mem::size_of::<u32>() + MTU_ALLOWANCE
+    }
+
+    /// `encryptStream` (encryption_filter.cpp:248): pad `clear` in place up
+    /// to a whole number of blocks, then chain-encrypt it into the returned
+    /// cipher stream. The padded clear carries the zero padding at its tail,
+    /// matching the reference's in-place `MemoryOStream` reserve.
+    pub fn encrypt_stream(&self, clear: &mut Vec<u8>) -> Vec<u8> {
+        let block_size = self.p_block_cipher.block_size();
+        let remainder = clear.len() % block_size;
         if remainder != 0 {
-            clear.resize(clear.len() + (block - remainder), 0);
+            clear.resize(clear.len() + (block_size - remainder), 0);
         }
-
-        let mut cipher_text = vec![0u8; clear.len()];
-        self.encrypt(clear, &mut cipher_text);
-        cipher_stream.extend_from_slice(&cipher_text);
+        self.chain_encrypt(clear)
     }
 
-    /// `decryptStream` (encryption_filter.cpp:230): decrypt `cipher` into
-    /// the tail of `clear`, growing it first. `false` if the cipher text is
-    /// not a whole number of blocks -- the reference still grows the output
-    /// stream before the failed attempt, and this port does the same.
-    pub fn decrypt_stream(&self, cipher: &[u8], clear: &mut Vec<u8>) -> bool {
-        let start = clear.len();
-        clear.resize(start + cipher.len(), 0);
-        self.decrypt(cipher, &mut clear[start..])
+    /// `decryptStream` (encryption_filter.cpp:273): the inverse of
+    /// `encryptStream`. A cipher stream that is not a whole number of blocks
+    /// is refused (`None`, the reference's `false`); the recovered plaintext
+    /// keeps the zero padding that encryption added.
+    pub fn decrypt_stream(&self, cipher: &[u8]) -> Option<Vec<u8>> {
+        self.chain_decrypt(cipher)
     }
 
-    /// `encrypt( src, dest, length )` (encryption_filter.cpp:305): the
-    /// plaintext-feedback chain -- each block is XORed with the previous
-    /// plaintext block before the cipher, so blocks cannot be reassembled
-    /// across packets. `src` and `dest` must not alias.
-    fn encrypt(&self, src: &[u8], dest: &mut [u8]) {
-        let block = self.cipher.block_size();
-        debug_assert_eq!(src.len() % block, 0);
-        debug_assert_eq!(src.len(), dest.len());
-
-        let mut prev: Option<&[u8]> = None;
-        for i in (0..src.len()).step_by(block) {
-            let this = &src[i..i + block];
-            let out = &mut dest[i..i + block];
-            match prev {
-                None => out.copy_from_slice(this),
-                Some(previous) => self.cipher.combine_blocks(this, previous, out),
-            }
-            self.cipher.encrypt_block(out);
-            prev = Some(this);
-        }
-    }
-
-    /// `decrypt( src, dest, length )` (encryption_filter.cpp:355): the
-    /// inverse of `encrypt`. `false` if the length is not a whole number of
-    /// blocks. `src` and `dest` must not alias.
-    fn decrypt(&self, src: &[u8], dest: &mut [u8]) -> bool {
-        let block = self.cipher.block_size();
-        if !src.len().is_multiple_of(block) {
-            return false;
+    /// `EncryptionFilter::send` (encryption_filter.cpp:49): the send-side
+    /// transform -- build the footer (magic + wastage) past the packet's
+    /// original end, then encrypt the whole thing. The port's signature
+    /// returns the ready datagram instead of driving a `PacketSender`
+    /// (mercury has no send path wired yet, so the caller would transmit
+    /// `out.wire()`); see the deviation note in the review doc.
+    pub fn encrypt_packet(&self, src: &Packet) -> Option<Packet> {
+        if self.p_block_cipher.key().is_empty() {
+            eprintln!("EncryptionFilter::encrypt_packet: Dropping packet due to invalid filter");
+            return None;
         }
 
-        for i in (0..src.len()).step_by(block) {
-            let out = &mut dest[i..i + block];
-            out.copy_from_slice(&src[i..i + block]);
-            self.cipher.decrypt_block(out);
-        }
-        // Fold the chain back: block i is XORed with the plaintext block
-        // before it, in place, after every block is decrypted.
-        for i in (block..dest.len()).step_by(block) {
-            for k in 0..block {
-                let previous = dest[i + k - block];
-                dest[i + k] ^= previous;
-            }
-        }
-        true
-    }
+        let block_size = self.p_block_cipher.block_size();
+        // `len = packetSize + sizeof(ENCRYPTION_MAGIC)` (encryption_filter.cpp:71).
+        let mut len = src.total_size() + std::mem::size_of::<u32>();
+        // `wastage = ((BLOCK_SIZE - ((len + 1) % BLOCK_SIZE)) % BLOCK_SIZE) + 1`
+        // (encryption_filter.cpp:75-77): >= 1, and makes the total a block
+        // multiple.
+        let wastage = (block_size - ((len + 1) % block_size)) % block_size + 1;
+        len += wastage;
 
-    /// `decrypt( dest, dest, length )`: the receive path's in-place
-    /// decrypt, the shape the reference uses for a packet it just read
-    /// (encryption_filter.cpp:146).
-    fn decrypt_in_place(&self, data: &mut [u8]) -> bool {
-        let block = self.cipher.block_size();
-        if !data.len().is_multiple_of(block) {
-            return false;
-        }
-
-        for i in (0..data.len()).step_by(block) {
-            let out = &mut data[i..i + block];
-            self.cipher.decrypt_block(out);
-        }
-        for i in (block..data.len()).step_by(block) {
-            for k in 0..block {
-                let previous = data[i + k - block];
-                data[i + k] ^= previous;
-            }
-        }
-        true
-    }
-}
-
-impl PacketFilter for EncryptionFilter {
-    /// `maxSpareSize`: the trait hook the channel consults when a packet
-    /// opens (packet_filter.hpp:61), so it must be the same value as the
-    /// inherent accessor -- without this, `Rc<dyn PacketFilter>` sees the
-    /// default 0 and `setEncryption` reserves no headroom.
-    fn max_spare_size(&self) -> usize {
-        self.cipher.block_size() + ENCRYPTION_MAGIC_SIZE + MTU_ALLOWANCE
-    }
-
-    /// `send` (encryption_filter.cpp:53): frame the packet -- pad it up to
-    /// a whole number of blocks, stamp the magic and wastage into the tail,
-    /// encrypt it -- and forward the cipher text through the base.
-    fn send(&self, sender: &mut PacketSender, addr: &Address, packet: &Rc<Packet>) -> Reason {
-        if self.cipher.key().is_empty() {
-            eprintln!(
-                "EncryptionFilter::send: Dropping packet to {} due to invalid filter",
-                addr.c_str()
-            );
-            return Reason::GeneralNetwork;
-        }
-
-        // `len`: the datagram, plus the magic footer, padded to a whole
-        // number of blocks. `wastage` counts the trailing pad bytes
-        // including the wastage byte itself (>= 1), so the last byte of
-        // the framed data is always the wastage count.
-        let block = self.cipher.block_size();
-        let orig_len = packet.total_size();
-        let len_with_magic = orig_len + ENCRYPTION_MAGIC_SIZE;
-        let wastage = ((block - ((len_with_magic + 1) % block)) % block) + 1;
-        let total_len = len_with_magic + wastage;
-        let start_wastage = total_len - 1;
-        let start_magic = start_wastage - ENCRYPTION_MAGIC_SIZE;
-
-        let mut plain = vec![0u8; total_len];
-        plain[..orig_len].copy_from_slice(packet.wire());
-        plain[start_magic..start_magic + ENCRYPTION_MAGIC_SIZE]
-            .copy_from_slice(&ENCRYPTION_MAGIC.to_le_bytes());
+        // Build the plaintext to encrypt: the original datagram followed by
+        // the magic and the wastage byte at the very end.
+        let mut plain = vec![0u8; len];
+        plain[..src.total_size()].copy_from_slice(src.wire());
+        let start_wastage = len - 1;
+        let start_magic = start_wastage - std::mem::size_of::<u32>();
         plain[start_wastage] = wastage as u8;
+        plain[start_magic..start_magic + 4].copy_from_slice(&ENCRYPTION_MAGIC.to_le_bytes());
 
-        let mut cipher_text = vec![0u8; total_len];
-        self.encrypt(&plain, &mut cipher_text);
+        let cipher_stream = self.chain_encrypt(&plain);
 
-        let mut to_send = Packet::new();
-        to_send.grow(total_len);
-        to_send.buffer_mut()[..total_len].copy_from_slice(&cipher_text);
-
-        sender.basic_send_with_retries(addr, &Rc::new(to_send))
+        let mut out = Packet::new();
+        out.buffer_mut()[..len].copy_from_slice(&cipher_stream);
+        out.grow(len);
+        Some(out)
     }
 
-    /// `recv` (encryption_filter.cpp:120): decrypt in place, check the
-    /// magic and wastage, shrink back to the real length, and hand the
-    /// plaintext to the header walk.
-    fn recv(
+    /// The chained encrypt of one datagram/stream (encryption_filter.cpp:271).
+    fn chain_encrypt(&self, clear: &[u8]) -> Vec<u8> {
+        let block_size = self.p_block_cipher.block_size();
+        let mut out = vec![0u8; clear.len()];
+        let mut previous: Vec<u8> = vec![0u8; block_size];
+        let mut have_previous = false;
+        for (i, chunk) in clear.chunks_exact(block_size).enumerate() {
+            let mut work = vec![0u8; block_size];
+            if have_previous {
+                // `combineBlocks( src + i, pPrevBlock, dest + i )`: XOR with
+                // the previous PLAINTEXT block.
+                for b in 0..block_size {
+                    work[b] = chunk[b] ^ previous[b];
+                }
+            } else {
+                work.copy_from_slice(chunk);
+            }
+            self.p_block_cipher
+                .encrypt_block(&work, &mut out[i * block_size..i * block_size + block_size]);
+            previous.copy_from_slice(chunk);
+            have_previous = true;
+        }
+        out
+    }
+
+    /// The chained decrypt of one datagram/stream (encryption_filter.cpp:319).
+    fn chain_decrypt(&self, cipher: &[u8]) -> Option<Vec<u8>> {
+        let block_size = self.p_block_cipher.block_size();
+        if !cipher.len().is_multiple_of(block_size) {
+            return None;
+        }
+        let mut out = vec![0u8; cipher.len()];
+        let mut previous: Vec<u8> = vec![0u8; block_size];
+        let mut have_previous = false;
+        for (i, chunk) in cipher.chunks_exact(block_size).enumerate() {
+            let mut plain = vec![0u8; block_size];
+            self.p_block_cipher.decrypt_block(chunk, &mut plain);
+            if have_previous {
+                // Inverse of the encrypt XOR: fold the previous plaintext
+                // back off the decrypted block.
+                for b in 0..block_size {
+                    plain[b] ^= previous[b];
+                }
+            }
+            out[i * block_size..i * block_size + block_size].copy_from_slice(&plain);
+            previous.copy_from_slice(&plain);
+            have_previous = true;
+        }
+        Some(out)
+    }
+
+    /// Decrypt `data` in place, the reference's `decrypt` applied to the whole
+    /// packet (encryption_filter.cpp:340). False when the length is not a
+    /// block multiple.
+    fn decrypt_in_place(&self, data: &mut [u8]) -> bool {
+        let block_size = self.p_block_cipher.block_size();
+        if !data.len().is_multiple_of(block_size) {
+            return false;
+        }
+        let mut previous: Vec<u8> = vec![0u8; block_size];
+        let mut have_previous = false;
+        for chunk in data.chunks_exact_mut(block_size) {
+            let mut plain = vec![0u8; block_size];
+            self.p_block_cipher.decrypt_block(chunk, &mut plain);
+            if have_previous {
+                for b in 0..block_size {
+                    plain[b] ^= previous[b];
+                }
+            }
+            chunk.copy_from_slice(&plain);
+            previous.copy_from_slice(&plain);
+            have_previous = true;
+        }
+        true
+    }
+
+    /// `PacketFilter::recv` (encryption_filter.cpp:126): decrypt the datagram
+    /// in place, validate the magic footer, then hand the plaintext to the
+    /// receive path.
+    fn decrypt_datagram(
         &self,
-        receiver: &PacketReceiver,
-        interface: &Rc<NetworkInterface>,
+        interface: &NetworkInterface,
         addr: &Address,
         packet: &mut Packet,
-        channel: Option<ChannelPtr>,
     ) -> Reason {
-        if self.cipher.key().is_empty() {
+        if self.p_block_cipher.key().is_empty() {
             if interface.is_verbose() {
                 eprintln!(
                     "EncryptionFilter::recv: Dropping packet from {} due to invalid filter",
@@ -232,363 +215,461 @@ impl PacketFilter for EncryptionFilter {
             return Reason::GeneralNetwork;
         }
 
-        let total_len = packet.total_size();
-        if !self.decrypt_in_place(&mut packet.buffer_mut()[..total_len]) {
-            receiver.inc_corrupted_packets();
+        let total_size = packet.total_size();
+        let block_size = self.p_block_cipher.block_size();
+        let decrypted = {
+            let data = &mut packet.buffer_mut()[..total_size];
+            self.decrypt_in_place(data)
+        };
+        if !decrypted {
+            interface
+                .receive_stats()
+                .borrow_mut()
+                .inc_corrupted_packets();
             return Reason::CorruptedPacket;
         }
 
-        let start_wastage = total_len - 1;
-        if start_wastage < ENCRYPTION_MAGIC_SIZE {
-            receiver.inc_corrupted_packets();
+        let start_wastage = total_size - 1;
+        if start_wastage < std::mem::size_of::<u32>() {
+            interface
+                .receive_stats()
+                .borrow_mut()
+                .inc_corrupted_packets();
             return Reason::CorruptedPacket;
         }
-
-        let start_magic = start_wastage - ENCRYPTION_MAGIC_SIZE;
-        let wastage = packet.buffer_mut()[start_wastage];
-        let mut magic_bytes = [0u8; ENCRYPTION_MAGIC_SIZE];
-        magic_bytes.copy_from_slice(
-            &packet.buffer_mut()[start_magic..start_magic + ENCRYPTION_MAGIC_SIZE],
+        let start_magic = start_wastage - std::mem::size_of::<u32>();
+        let wastage = packet.buffer_mut()[start_wastage] as usize;
+        let magic = u32::from_le_bytes(
+            packet.buffer_mut()[start_magic..start_magic + 4]
+                .try_into()
+                .unwrap(),
         );
-        let packet_magic = u32::from_le_bytes(magic_bytes);
-
-        if packet_magic != ENCRYPTION_MAGIC {
+        if magic != ENCRYPTION_MAGIC {
             if interface.is_verbose() {
                 eprintln!(
-                    "EncryptionFilter::recv: Dropping packet with invalid magic 0x{:x} (expected 0x{:x})",
-                    packet_magic, ENCRYPTION_MAGIC
+                    "EncryptionFilter::recv: Dropping packet with invalid magic {:#x} (expected {:#x})",
+                    magic, ENCRYPTION_MAGIC
                 );
             }
-            receiver.inc_corrupted_packets();
+            interface
+                .receive_stats()
+                .borrow_mut()
+                .inc_corrupted_packets();
             return Reason::CorruptedPacket;
         }
 
-        let footer_size = wastage as usize + ENCRYPTION_MAGIC_SIZE;
-        if wastage as usize > self.cipher.block_size() || footer_size > total_len {
+        let footer_size = wastage + std::mem::size_of::<u32>();
+        if wastage > block_size || footer_size > total_size {
             if interface.is_verbose() {
                 eprintln!(
-                    "EncryptionFilter::recv: Dropping packet from {} due to illegal wastage count ({})",
-                    addr.c_str(),
+                    "EncryptionFilter::recv: Dropping packet due to illegal wastage count ({})",
                     wastage
                 );
             }
-            receiver.inc_corrupted_packets();
+            interface
+                .receive_stats()
+                .borrow_mut()
+                .inc_corrupted_packets();
             return Reason::CorruptedPacket;
         }
 
         packet.shrink(footer_size);
+        Reason::Success
+    }
+}
 
-        receiver.process_filtered_packet(interface, addr, packet, channel)
+impl PacketFilter for EncryptionFilter {
+    /// `EncryptionFilter::recv` (encryption_filter.cpp:126): the filter's
+    /// verdict is the datagram's fate; a valid decrypt reaches the base
+    /// `PacketFilter::recv` pass-through (the receive path).
+    fn recv(&self, interface: &NetworkInterface, addr: &Address, packet: &mut Packet) -> Reason {
+        let reason = self.decrypt_datagram(interface, addr, packet);
+        if reason != Reason::Success {
+            return reason;
+        }
+        interface.process_filtered_packet(addr, packet)
+    }
+
+    /// `maxSpareSize()` (encryption_filter.cpp:223).
+    fn max_spare_size(&self) -> usize {
+        EncryptionFilter::max_spare_size(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block_cipher::NullCipher;
     use crate::endpoint::Address;
+    use crate::event_dispatcher::EventDispatcher;
+    use crate::misc::{CHANNEL_ID_NULL, Reason};
     use crate::network_interface::InterfaceType;
+    use crate::packet::{Packet, flags};
+    use crate::packet_receiver::tests_support::RecordingSink;
     use crate::symmetric_block_cipher::SymmetricBlockCipher;
-    use crate::udp_channel::Traits as ChannelTraits;
-    use crate::udp_channel::{ChannelPtr, UdpChannel};
+    use crate::udp_channel::{
+        DEFAULT_INACTIVITY_RESEND_DELAY, Traits as ChannelTraits, UdpChannel,
+    };
     use platform::socket;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
-    const LOOPBACK: u32 = 0x0100_007f;
+    /// The reference's own fixture (test_encryption_filter.cpp): a 26-byte
+    /// Blowfish key and a two-block plaintext of visually distinct blocks.
     const BLOWFISH_KEY: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
-
-    /// The reference's two visually distinct blocks
-    /// (test_encryption_filter.cpp:22): 0x11..0x88 then 0x99..0xff,0x00.
     const PLAIN_TWO_BLOCKS: [u8; 16] = [
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
         0x00,
     ];
 
-    fn blowfish() -> Rc<EncryptionFilter> {
-        EncryptionFilter::create(
-            SymmetricBlockCipher::create_with_key(BLOWFISH_KEY).expect("key in range"),
+    fn cipher() -> Rc<dyn BlockCipher> {
+        SymmetricBlockCipher::create(BLOWFISH_KEY).unwrap()
+    }
+
+    fn filter() -> Rc<EncryptionFilter> {
+        EncryptionFilter::create(cipher())
+    }
+
+    /// A socketless interface with a pinned clock, as the network_interface
+    /// tests drive it.
+    fn test_interface() -> Rc<NetworkInterface> {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let clock_cell = Rc::clone(&clock);
+        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || {
+            clock_cell.get()
+        })));
+        NetworkInterface::new_with_dispatcher(InterfaceType::Internal, dispatcher)
+    }
+
+    fn wire(flags: u16, body: &[u8]) -> Packet {
+        let mut packet = Packet::new();
+        packet.set_flags(flags);
+        packet.grow(2 + body.len());
+        packet.buffer_mut()[2..2 + body.len()].copy_from_slice(body);
+        packet
+    }
+
+    /// A valid on-channel datagram, as `ordered_wire` builds it.
+    fn ordered_wire(seq: u32, msg: u8) -> Packet {
+        let mut body = vec![msg];
+        body.extend_from_slice(&seq.to_le_bytes());
+        wire(
+            flags::ON_CHANNEL | flags::IS_RELIABLE | flags::HAS_SEQUENCE_NUMBER,
+            &body,
         )
     }
 
-    // ------------------------------------------------------------------
-    // Stream API (the reference's test_encryption_filter.cpp)
-    // ------------------------------------------------------------------
+    /// A channel registered at `port` with the session encryption installed.
+    fn encrypted_channel(
+        interface: &Rc<NetworkInterface>,
+        port: u16,
+        cipher: Option<Rc<dyn BlockCipher>>,
+    ) -> crate::udp_channel::ChannelPtr {
+        let addr = Address::new(0x0100_007f, socket::htons(port));
+        let channel = UdpChannel::new(
+            interface,
+            addr,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        UdpChannel::set_encryption(&channel, cipher);
+        channel
+    }
 
-    /// 20 bytes is not a whole number of blocks: the clear stream pads in
-    /// place to 24, the cipher text is exactly the padded length, and the
-    /// round trip recovers the plaintext with a zero tail.
+    // -- the stream API, byte-exact against the reference oracle ----------
+
+    /// test_encryption_filter.cpp's `streamRoundTrip`: 20 bytes (not a block
+    /// multiple) pad to 24 in place, the cipher stream is exactly the padded
+    /// length, and the recovered plaintext carries the zero tail.
     #[test]
-    fn stream_round_trip_pads_to_a_block() {
-        let filter = blowfish();
-
+    fn the_reference_stream_round_trip() {
+        let f = filter();
         let mut clear = PLAIN_TWO_BLOCKS.to_vec();
         clear.extend_from_slice(b"four");
-        assert_eq!(clear.len(), 20);
 
-        let mut cipher = Vec::new();
-        filter.encrypt_stream(&mut clear, &mut cipher);
-        assert_eq!(clear.len(), 24, "the clear stream is padded in place");
-        assert_eq!(cipher.len(), 24, "the cipher text is the padded length");
+        let cipher_stream = f.encrypt_stream(&mut clear);
+        assert_eq!(clear.len(), 24);
+        assert_eq!(cipher_stream.len(), 24);
 
-        let mut recovered = Vec::new();
-        assert!(filter.decrypt_stream(&cipher, &mut recovered));
+        // The wire bytes OpenSSL's Blowfish (the reference's) produce for
+        // this exact clear stream -- the interop proof.
+        assert_eq!(
+            cipher_stream,
+            [
+                0xef, 0x51, 0x74, 0x6f, 0x6c, 0x3a, 0x38, 0x35, 0x2d, 0x32, 0x2d, 0x8e, 0x89, 0xd9,
+                0xd7, 0x47, 0xc4, 0x32, 0x1a, 0xc0, 0xa1, 0x04, 0x40, 0x7a
+            ]
+        );
+
+        let recovered = f.decrypt_stream(&cipher_stream).unwrap();
         assert_eq!(recovered.len(), 24);
         assert_eq!(&recovered[..16], &PLAIN_TWO_BLOCKS);
-        assert_eq!(&recovered[20..], &[0u8; 4], "the padding decrypts to zeros");
+        assert_eq!(&recovered[16..20], b"four");
+        assert_eq!(&recovered[20..], &[0u8; 4]);
     }
 
-    /// An exact multiple needs no padding and the round trip is exact.
+    /// `streamRoundTripExactMultiple`: a whole number of blocks needs no
+    /// padding; the cipher text is the same length and the round trip exact.
     #[test]
-    fn stream_round_trip_exact_multiple() {
-        let filter = blowfish();
-
+    fn the_reference_exact_multiple_stream_round_trip() {
+        let f = filter();
         let mut clear = PLAIN_TWO_BLOCKS.to_vec();
-        let mut cipher = Vec::new();
-        filter.encrypt_stream(&mut clear, &mut cipher);
+        let cipher_stream = f.encrypt_stream(&mut clear);
         assert_eq!(clear.len(), 16);
-        assert_eq!(cipher.len(), 16);
-
-        let mut recovered = Vec::new();
-        assert!(filter.decrypt_stream(&cipher, &mut recovered));
-        assert_eq!(recovered, PLAIN_TWO_BLOCKS);
+        assert_eq!(cipher_stream.len(), 16);
+        assert_eq!(
+            cipher_stream,
+            [
+                0xef, 0x51, 0x74, 0x6f, 0x6c, 0x3a, 0x38, 0x35, 0x2d, 0x32, 0x2d, 0x8e, 0x89, 0xd9,
+                0xd7, 0x47
+            ]
+        );
+        assert_eq!(f.decrypt_stream(&cipher_stream).unwrap(), PLAIN_TWO_BLOCKS);
     }
 
-    /// The null cipher lays the block chain bare: the first block passes
-    /// through and every later block is the plaintext XORed with the one
-    /// before it (the reference's `EncryptionFilter_nullCipherRevealsChain`).
+    /// `nullCipherRevealsChain`: with the identity cipher the chained XOR is
+    /// laid bare -- block 0 passes through, every later block is the plain
+    /// block XORed with the one before.
     #[test]
-    fn null_cipher_reveals_the_chain() {
-        let filter = EncryptionFilter::create(crate::block_cipher::NullCipher::create(8));
-        assert!(filter.key().is_empty(), "the null cipher has no key");
-
+    fn the_reference_null_cipher_reveals_the_chain() {
+        let f = EncryptionFilter::create(NullCipher::create(8));
+        assert!(f.key().is_empty());
         let mut clear = PLAIN_TWO_BLOCKS.to_vec();
-        let mut cipher = Vec::new();
-        filter.encrypt_stream(&mut clear, &mut cipher);
+        let cipher_stream = f.encrypt_stream(&mut clear);
+        assert_eq!(cipher_stream.len(), 16);
 
-        assert_eq!(
-            &cipher[..8],
-            &PLAIN_TWO_BLOCKS[..8],
-            "block 0 is copied through"
-        );
-        let mut expected_second = [0u8; 8];
+        // Block 0 copied through.
+        assert_eq!(&cipher_stream[..8], &PLAIN_TWO_BLOCKS[..8]);
+        // Block 1 is plaintext block 1 XOR plaintext block 0.
         for i in 0..8 {
-            expected_second[i] = PLAIN_TWO_BLOCKS[8 + i] ^ PLAIN_TWO_BLOCKS[i];
+            assert_eq!(
+                cipher_stream[8 + i],
+                PLAIN_TWO_BLOCKS[8 + i] ^ PLAIN_TWO_BLOCKS[i]
+            );
         }
-        assert_eq!(&cipher[8..], &expected_second, "block 1 is P1 XOR P0");
-
-        let mut recovered = Vec::new();
-        assert!(filter.decrypt_stream(&cipher, &mut recovered));
-        assert_eq!(
-            recovered, PLAIN_TWO_BLOCKS,
-            "decrypting folds the chain back"
-        );
+        // And decrypting folds the chain back.
+        assert_eq!(f.decrypt_stream(&cipher_stream).unwrap(), PLAIN_TWO_BLOCKS);
     }
 
-    /// A cipher text that is not a whole number of blocks is refused, but
-    /// the output stream still grows (the reference's
-    /// `EncryptionFilter_decryptStreamRejectsNonMultiple`).
+    /// `decryptStreamRejectsNonMultiple`: a cipher text that is not a whole
+    /// number of blocks is refused.
     #[test]
-    fn decrypt_stream_rejects_a_non_multiple() {
-        let filter = blowfish();
-
-        let cipher = [0xa5u8; 10];
-        let mut recovered = Vec::new();
-        assert!(!filter.decrypt_stream(&cipher, &mut recovered));
-        assert_eq!(
-            recovered.len(),
-            10,
-            "the reserve happens before the attempt"
-        );
+    fn the_reference_decrypt_stream_rejects_a_non_multiple() {
+        let f = filter();
+        assert!(f.decrypt_stream(&[0xa5u8; 10]).is_none());
     }
 
-    /// Swapping two cipher blocks garbles only the leading block of the
-    /// moved region; the chain self-heals after one block (the reference's
-    /// `EncryptionFilter_blockRearrangementBreaksChain`).
+    /// `blockRearrangementBreaksChain`: swapping two cipher blocks corrupts
+    /// exactly the leading block; the chain self-heals after one block.
     #[test]
-    fn block_rearrangement_breaks_the_chain() {
-        let filter = blowfish();
-
+    fn the_reference_block_rearrangement_breaks_the_chain() {
+        let f = filter();
         let mut clear = PLAIN_TWO_BLOCKS.to_vec();
-        let mut cipher = Vec::new();
-        filter.encrypt_stream(&mut clear, &mut cipher);
+        let mut cipher_stream = f.encrypt_stream(&mut clear);
+        cipher_stream.swap(0, 8);
+        cipher_stream.swap(1, 9);
+        cipher_stream.swap(2, 10);
+        cipher_stream.swap(3, 11);
+        cipher_stream.swap(4, 12);
+        cipher_stream.swap(5, 13);
+        cipher_stream.swap(6, 14);
+        cipher_stream.swap(7, 15);
 
-        let (head, tail) = cipher.split_at_mut(8);
-        head.swap_with_slice(&mut tail[..8]);
-
-        let mut recovered = Vec::new();
-        assert!(filter.decrypt_stream(&cipher, &mut recovered));
-        assert_ne!(
-            &recovered[..8],
-            &PLAIN_TWO_BLOCKS[..8],
-            "the leading block is garbled"
-        );
-        assert_eq!(
-            &recovered[8..],
-            &PLAIN_TWO_BLOCKS[8..],
-            "the chain self-heals"
-        );
+        let recovered = f.decrypt_stream(&cipher_stream).unwrap();
+        // The leading block is garbled.
+        assert_ne!(&recovered[..8], &PLAIN_TWO_BLOCKS[..8]);
+        // The chain has self-healed: the second block is exactly P1.
+        assert_eq!(&recovered[8..], &PLAIN_TWO_BLOCKS[8..]);
+        // Overall the plaintext is not recovered.
         assert_ne!(recovered, PLAIN_TWO_BLOCKS);
     }
 
-    /// `maxSpareSize`: block size + 4-byte magic + 200-byte MTU allowance,
-    /// scaling with the cipher's block size (the reference's
-    /// `EncryptionFilter_maxSpareSize`).
+    /// `maxSpareSize`: block size + 4-byte magic + 200-byte MTU allowance.
     #[test]
-    fn max_spare_size() {
-        assert_eq!(blowfish().max_spare_size(), 212);
-        let null16 = EncryptionFilter::create(crate::block_cipher::NullCipher::create(16));
-        assert_eq!(null16.max_spare_size(), 220);
+    fn the_reference_max_spare_size() {
+        assert_eq!(filter().max_spare_size(), 212);
+        let null = EncryptionFilter::create(NullCipher::create(16));
+        assert_eq!(null.max_spare_size(), 220);
     }
 
-    // ------------------------------------------------------------------
-    // Packet send/recv path (the framing `setEncryption` installs)
-    // ------------------------------------------------------------------
-
-    /// A channel with an encryption filter sends cipher text: the datagram
-    /// that leaves is padded up to a block and decrypts back to the
-    /// original bytes with the right length.
+    /// `key()` reports the cipher's key.
     #[test]
-    fn the_send_path_encrypts_the_datagram() {
-        let (interface, _receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
-        let addr = Address::new(LOOPBACK, socket::htons(9));
-        let channel = external_channel(&interface, addr);
-        let filter = blowfish();
-        UdpChannel::set_p_filter(&channel, Some(filter.clone() as Rc<dyn PacketFilter>));
-
-        // 14-byte body: not a whole number of 8-byte blocks.
-        let mut packet = Packet::new();
-        packet.grow(14);
-        packet.buffer_mut()[..14].copy_from_slice(b"hello world!!!");
-        interface.send_packet(&addr, &Rc::new(packet), Some(&channel), false);
-
-        // The datagram that reached the wire is 14 + 4 (magic) + 6
-        // (wastage) = 24 bytes, a whole number of blocks.
-        assert_eq!(interface.sending_stats().num_packets_sent, 1);
+    fn the_filter_reports_the_shared_key() {
+        assert_eq!(filter().key(), BLOWFISH_KEY);
     }
 
-    /// `recv` decrypts a framed datagram back to its plaintext and shrinks
-    /// it to the real length. Built by hand with the filter's own framing,
-    /// then run through the receive path.
+    // -- the packet path, through the channel filter ----------------------
+
+    /// A datagram encrypted for a channel decrypts back to the plaintext the
+    /// receive path dispatches: the same datagram sent bare to a channel
+    /// without session encryption dispatches the very same packet.
     #[test]
-    fn recv_decrypts_and_restores_the_length() {
-        let (interface, receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
-        let addr = Address::new(LOOPBACK, socket::htons(9));
-        let filter = blowfish();
+    fn an_encrypted_datagram_reaches_the_dispatch_through_the_channel_filter() {
+        let interface = test_interface();
+        let cipher = cipher();
+        let enc_addr = Address::new(0x0100_007f, socket::htons(9201));
+        let bare_addr = Address::new(0x0100_007f, socket::htons(9206));
+        let _encrypted = encrypted_channel(&interface, 9201, Some(cipher.clone()));
+        let _bare = encrypted_channel(&interface, 9206, None);
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
 
-        let plain = b"hello world!!!"; // 14 bytes
-        let total = 14 + ENCRYPTION_MAGIC_SIZE + 6; // wastage = 6
-        let mut framed = vec![0u8; total];
-        framed[..14].copy_from_slice(plain);
-        let start_wastage = total - 1;
-        let start_magic = start_wastage - ENCRYPTION_MAGIC_SIZE;
-        framed[start_magic..start_magic + ENCRYPTION_MAGIC_SIZE]
-            .copy_from_slice(&ENCRYPTION_MAGIC.to_le_bytes());
-        framed[start_wastage] = (total - 14 - ENCRYPTION_MAGIC_SIZE) as u8;
-        let mut cipher_text = vec![0u8; total];
-        filter.encrypt(&framed, &mut cipher_text);
-
-        let mut packet = Packet::new();
-        packet.grow(total);
-        packet.buffer_mut()[..total].copy_from_slice(&cipher_text);
-
-        let reason = filter.recv(&receiver, &interface, &addr, &mut packet, None);
+        let mut encrypted = EncryptionFilter::create(cipher)
+            .encrypt_packet(&ordered_wire(0, 0x41))
+            .unwrap();
         assert_eq!(
-            reason,
-            Reason::CorruptedPacket,
-            "the walk refuses the short body"
+            interface.process_packet(&enc_addr, &mut encrypted),
+            Reason::Success
         );
-        assert_eq!(packet.total_size(), 14, "the footer is stripped");
-        assert_eq!(&packet.buffer_mut()[..14], plain);
-    }
-
-    /// A corrupted magic makes the receive path drop the packet and count
-    /// it, the reference's `REASON_CORRUPTED_PACKET` (encryption_filter.cpp:
-    /// 175-188).
-    #[test]
-    fn bad_magic_is_corrupted() {
-        let (interface, receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
-        let addr = Address::new(LOOPBACK, socket::htons(9));
-        let filter = blowfish();
-
-        // One whole block of cipher text decrypts fine but has a bad magic.
-        let framed = vec![0u8; 8];
-        let mut cipher_text = vec![0u8; 8];
-        filter.encrypt(&framed, &mut cipher_text);
-        cipher_text[0] ^= 0xff; // keep it a block, break the plaintext
-
-        let mut packet = Packet::new();
-        packet.grow(8);
-        packet.buffer_mut()[..8].copy_from_slice(&cipher_text);
-
-        let reason = filter.recv(&receiver, &interface, &addr, &mut packet, None);
-        assert_eq!(reason, Reason::CorruptedPacket);
-        assert_eq!(receiver.stats().num_corrupted_packets_received, 1);
-    }
-
-    /// A datagram that is not a whole number of blocks is refused before
-    /// any magic check (encryption_filter.cpp:147-160).
-    #[test]
-    fn non_multiple_datagram_is_corrupted() {
-        let (interface, receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
-        let addr = Address::new(LOOPBACK, socket::htons(9));
-        let filter = blowfish();
-
-        let mut packet = Packet::new();
-        packet.grow(10);
-        packet.buffer_mut()[..10].copy_from_slice(&[0xabu8; 10]);
-
-        let reason = filter.recv(&receiver, &interface, &addr, &mut packet, None);
-        assert_eq!(reason, Reason::CorruptedPacket);
-        assert_eq!(receiver.stats().num_corrupted_packets_received, 1);
-    }
-
-    /// An empty-key filter refuses every packet with
-    /// `REASON_GENERAL_NETWORK` (encryption_filter.cpp:64-77): this is what
-    /// the reference's no-OpenSSL build amounts to.
-    #[test]
-    fn an_empty_key_filter_drops_packets() {
-        let filter = EncryptionFilter::create(crate::block_cipher::NullCipher::create(8));
-
-        let (interface, _receiver) = NetworkInterface::new(InterfaceType::External, 0, "127.0.0.1");
-        let addr = Address::new(LOOPBACK, socket::htons(9));
-        let mut packet = Packet::new();
-        packet.grow(8);
-
-        let reason = filter.recv(&_receiver, &interface, &addr, &mut packet, None);
-        assert_eq!(reason, Reason::GeneralNetwork);
-    }
-
-    /// `set_encryption` installs a filter when given a cipher and clears
-    /// the channel's filter when given `None`, matching
-    /// `UDPChannel::setEncryption` (udp_channel.cpp:670-687).
-    #[test]
-    fn set_encryption_installs_and_clears() {
-        let (interface, _receiver) = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1");
-        let addr = Address::new(LOOPBACK, socket::htons(9));
-        let channel = external_channel(&interface, addr);
-        assert!(UdpChannel::p_filter(&channel).is_none());
-
-        let cipher = SymmetricBlockCipher::create_with_key(BLOWFISH_KEY).unwrap();
-        UdpChannel::set_encryption(&channel, Some(cipher));
-        let installed = UdpChannel::p_filter(&channel).expect("a filter is installed");
         assert_eq!(
-            installed.max_spare_size(),
-            212,
-            "the encryption filter claims the Blowfish spare room"
+            sink.packets.borrow().len(),
+            1,
+            "the datagram reached the dispatch"
         );
 
-        UdpChannel::set_encryption(&channel, None);
-        assert!(
-            UdpChannel::p_filter(&channel).is_none(),
-            "a null cipher clears the filter"
+        // The identical plaintext, bare, to the reference channel.
+        let mut bare = ordered_wire(0, 0x41);
+        assert_eq!(
+            interface.process_packet(&bare_addr, &mut bare),
+            Reason::Success
+        );
+        assert_eq!(sink.packets.borrow().len(), 2);
+        assert_eq!(
+            sink.packets.borrow()[1].1,
+            sink.packets.borrow()[0].1,
+            "the encrypted datagram dispatched exactly what the bare one did"
         );
     }
 
-    fn external_channel(interface: &Rc<NetworkInterface>, addr: Address) -> ChannelPtr {
-        UdpChannel::new(
-            interface,
-            addr,
-            ChannelTraits::External,
-            crate::udp_channel::DEFAULT_INACTIVITY_RESEND_DELAY,
-            crate::misc::CHANNEL_ID_NULL,
-        )
+    /// The wire datagram is a whole number of blocks, and the plaintext it
+    /// carries ends in the reference's footer: the 4-byte magic (little-
+    /// endian) with the wastage byte behind it, accounting for exactly the
+    /// padding that block-aligned the buffer.
+    #[test]
+    fn the_encrypted_wire_is_block_aligned_with_a_magic_footer() {
+        let f = filter();
+        let plain = ordered_wire(0, 0x41);
+        let encrypted = f.encrypt_packet(&plain).unwrap();
+        let wire = encrypted.wire();
+        assert_eq!(
+            wire.len() % 8,
+            0,
+            "the datagram is a whole number of blocks"
+        );
+
+        // The footer rides inside the encrypted stream; decode it back out.
+        let decoded = f.decrypt_stream(wire).unwrap();
+        let start_magic = decoded.len() - 1 - 4;
+        assert_eq!(
+            u32::from_le_bytes(decoded[start_magic..start_magic + 4].try_into().unwrap()),
+            ENCRYPTION_MAGIC
+        );
+        let wastage = decoded[decoded.len() - 1] as usize;
+        assert!((1..=8).contains(&wastage));
+        assert_eq!(decoded.len(), plain.total_size() + 4 + wastage);
+    }
+
+    /// A datagram without the magic footer is corrupted and never reaches the
+    /// dispatch.
+    #[test]
+    fn a_datagram_with_a_bad_magic_is_corrupted() {
+        let interface = test_interface();
+        let addr = Address::new(0x0100_007f, socket::htons(9202));
+        let cipher = cipher();
+        encrypted_channel(&interface, 9202, Some(cipher.clone()));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let mut encrypted = EncryptionFilter::create(cipher)
+            .encrypt_packet(&ordered_wire(0, 0x41))
+            .unwrap();
+        // Corrupt the magic.
+        let magic_at = encrypted.wire().len() - 1 - 4;
+        encrypted.buffer_mut()[magic_at] ^= 0xff;
+
+        assert_eq!(
+            interface.process_packet(&addr, &mut encrypted),
+            Reason::CorruptedPacket
+        );
+        assert!(sink.packets.borrow().is_empty());
+    }
+
+    /// A datagram whose length is not a whole number of blocks is corrupted.
+    #[test]
+    fn a_datagram_of_a_non_block_length_is_corrupted() {
+        let interface = test_interface();
+        let addr = Address::new(0x0100_007f, socket::htons(9203));
+        encrypted_channel(&interface, 9203, Some(cipher()));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let mut bad = Packet::new();
+        bad.grow(10); // 10 is not a block multiple.
+        assert_eq!(
+            interface.process_packet(&addr, &mut bad),
+            Reason::CorruptedPacket
+        );
+        assert!(sink.packets.borrow().is_empty());
+    }
+
+    /// A datagram whose wastage count is illegal is corrupted.
+    #[test]
+    fn a_datagram_with_an_illegal_wastage_is_corrupted() {
+        let interface = test_interface();
+        let addr = Address::new(0x0100_007f, socket::htons(9204));
+        let cipher = cipher();
+        encrypted_channel(&interface, 9204, Some(cipher.clone()));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let mut encrypted = EncryptionFilter::create(cipher)
+            .encrypt_packet(&ordered_wire(0, 0x41))
+            .unwrap();
+        // Wastage beyond the block size.
+        let last = encrypted.wire().len() - 1;
+        encrypted.buffer_mut()[last] = 9;
+
+        assert_eq!(
+            interface.process_packet(&addr, &mut encrypted),
+            Reason::CorruptedPacket
+        );
+        assert!(sink.packets.borrow().is_empty());
+    }
+
+    /// A cipher with an empty key refuses the datagram outright (the
+    /// reference's `key().empty()` bail).
+    #[test]
+    fn an_invalid_filter_drops_the_packet() {
+        let interface = test_interface();
+        let addr = Address::new(0x0100_007f, socket::htons(9205));
+        encrypted_channel(&interface, 9205, Some(NullCipher::create(8)));
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+
+        let mut plain = ordered_wire(0, 0x41);
+        assert_eq!(
+            interface.process_packet(&addr, &mut plain),
+            Reason::GeneralNetwork
+        );
+        assert!(sink.packets.borrow().is_empty());
+    }
+
+    /// The send-side transform refuses an empty key, as `send` does.
+    #[test]
+    fn encrypt_packet_refuses_an_empty_key() {
+        let f = EncryptionFilter::create(NullCipher::create(8));
+        assert!(f.encrypt_packet(&ordered_wire(0, 0x41)).is_none());
+    }
+
+    /// Encrypting a packet and decrypting the stream recovers the plaintext:
+    /// the packet wire and the stream API share the cipher and the chaining.
+    #[test]
+    fn an_encrypted_packet_stream_decrypts_back() {
+        let plain = ordered_wire(7, 0x55);
+        let encrypted = filter().encrypt_packet(&plain).unwrap();
+        let recovered = filter().decrypt_stream(encrypted.wire()).unwrap();
+        // The packet's own bytes, with the footer bytes still on the tail.
+        assert_eq!(&recovered[..plain.total_size()], plain.wire());
     }
 }
