@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 # foundation = { workspace = true }  # re-add with first consumer
-# platform = { workspace = true }  # re-add with first consumer
+platform = { workspace = true }  # thread-directed stop signal (BW-15-02-01 topology test)
 resources = { workspace = true }  # BWResource::init from argv (BW-15-02-01)
 server-runtime = { workspace = true }
 

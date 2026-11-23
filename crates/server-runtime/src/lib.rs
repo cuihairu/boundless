@@ -48,6 +48,12 @@ pub mod task_manager;
 pub mod tick;
 pub mod time_and_move;
 pub mod timekeeper;
+/// The server topology supervisor: spawn the roles as children and
+/// stop them by signal -> kill -> wait (BW-15-01-03). Unix only, like
+/// the `platform::process` primitives it builds on; the Windows
+/// `CreateProcess` stop path is a separate BW-15-03 item.
+#[cfg(unix)]
+pub mod topology;
 // The time queue is cstdmf and lives in foundation; re-exported under the
 // historical `timers` name so `crate::timers::…` paths keep working.
 pub use foundation::time_queue as timers;
