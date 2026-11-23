@@ -462,6 +462,14 @@ pub unsafe fn unicode_from_bytes(bytes: &[u8]) -> *mut PyObject {
     unsafe { PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as PySsize) }
 }
 
+/// The CPython `Py_TYPE` macro: the type pointer lives in the object header's
+/// `ob_type` field, so it reads directly instead of linking against a
+/// `libpython` export (3.12 ships it as a static inline, not a symbol).
+#[inline]
+pub unsafe fn Py_TYPE(obj: *mut PyObject) -> *mut PyTypeObject {
+    unsafe { (*obj).ob_type }
+}
+
 unsafe extern "C" {
     pub static mut _Py_NoneStruct: PyObject;
     pub static mut _Py_TrueStruct: PyObject;
@@ -513,7 +521,6 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyUnicode_CompareWithASCIIString(unicode: *mut PyObject, ascii: *const c_char) -> c_int;
     pub fn PyUnicode_AsUTF8AndSize(unicode: *mut PyObject, size: *mut PySsize) -> *mut c_char;
-    pub fn Py_TYPE(obj: *mut PyObject) -> *mut PyTypeObject;
     pub fn PyType_IsSubtype(derived: *mut PyTypeObject, base: *mut PyTypeObject) -> c_int;
     pub fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObject;
     pub fn PyImport_GetModuleDict() -> *mut PyObject;
