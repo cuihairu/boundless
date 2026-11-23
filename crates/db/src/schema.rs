@@ -318,6 +318,83 @@ fn escape_sql_string(value: &str) -> String {
     out
 }
 
+/// The other half of [`escape_sql_string`] — what a MySQL parser reads
+/// back from the escaped literal, so an escaped value round-trips without
+/// loss. An unknown escape sequence stands for the character itself, the
+/// way MySQL treats it.
+pub fn unescape_sql_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('0') => out.push('\0'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('b') => out.push('\x08'),
+            Some('t') => out.push('\t'),
+            Some('Z') => out.push('\x1a'),
+            Some('\\') => out.push('\\'),
+            Some('\'') => out.push('\''),
+            Some('"') => out.push('"'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// The default unicode column character set (`DBConfig::MySQL::UnicodeString`,
+/// `db_config.cpp:153`; the sync tool's `DEFAULT_CHARACTER_SET`).
+pub const DEFAULT_CHARACTER_SET: &str = "utf8";
+/// The default unicode column collation (`db_config.cpp:154`; the sync
+/// tool's `DEFAULT_COLLATION`).
+pub const DEFAULT_COLLATION: &str = "utf8_bin";
+
+/// `MySqlSynchronise::alterDBCharSet`
+/// (`sync_db/mysql_synchronise.cpp:436-470`): the database-wide character
+/// set, applied on sync. An empty character set leaves the existing
+/// setting — `None`; an empty collation alters the set alone.
+pub fn alter_database_charset_stmt(character_set: &str, collation: &str) -> Option<String> {
+    if character_set.is_empty() {
+        return None;
+    }
+    let mut sql = format!(
+        "ALTER DATABASE CHARACTER SET '{}'",
+        escape_sql_string(character_set)
+    );
+    if !collation.is_empty() {
+        sql += &format!(" COLLATE '{}'", escape_sql_string(collation));
+    }
+    Some(sql)
+}
+
+/// `TableInitialiser::onExistingTable`'s conversion
+/// (`sync_db/mysql_table_initialiser.cpp:407-426`): every existing table
+/// converts to the configured unicode character set. An empty character
+/// set leaves the table as-is — `None`.
+pub fn convert_table_charset_stmt(
+    table: &str,
+    character_set: &str,
+    collation: &str,
+) -> Option<String> {
+    let character_set = character_set.to_string();
+    alter_database_charset_stmt(&character_set, collation).map(|_| {
+        let mut sql = format!(
+            "ALTER TABLE {} CONVERT TO CHARACTER SET '{}'",
+            table,
+            escape_sql_string(&character_set)
+        );
+        if !collation.is_empty() {
+            sql += &format!(" COLLATE '{}'", escape_sql_string(collation));
+        }
+        sql
+    })
+}
+
 /// The description of one column (`ColumnDescription`,
 /// `column_type.hpp:102-121`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -790,14 +867,14 @@ fn none_flag_column(namer: &Namer, prop_name: &str) -> ColumnDescription {
     )
 }
 
-/// The blob-family type for a string-like value of `char_length` bytes
+/// The blob-family type for a string-like value of `byte_length` bytes
 /// (`MySqlTypeTraits<BW::string>::colType`, `type_traits.hpp:47-66`).
-fn blob_ladder(char_length: u32) -> MySqlType {
-    if char_length < 1 << 8 {
+fn blob_ladder(byte_length: u32) -> MySqlType {
+    if byte_length < 1 << 8 {
         MySqlType::TinyBlob
-    } else if char_length < 1 << 16 {
+    } else if byte_length < 1 << 16 {
         MySqlType::Blob
-    } else if char_length < 1 << 24 {
+    } else if byte_length < 1 << 24 {
         MySqlType::MediumBlob
     } else {
         MySqlType::LongBlob
@@ -810,6 +887,13 @@ fn blob_ladder(char_length: u32) -> MySqlType {
 /// (`string_mapping.cpp:28-38`, `unicode_string_mapping.cpp:93-101`) —
 /// only those two types take the VAR_STRING path; blobs, python and
 /// blobbed sequences always use the blob ladder.
+///
+/// `char_length` is the def's `DatabaseLength`. The ladder reads the byte
+/// length: binary mappings keep raw bytes, and the non-binary one is the
+/// unicode mapping, which passes `charLength * 3` because MySQL allows
+/// three bytes per utf8 character (`unicode_string_mapping.cpp:21-24`) —
+/// so the same `DatabaseLength` reaches a higher rung than a plain
+/// string's.
 fn string_like_column(
     namer: &Namer,
     prop_name: &str,
@@ -819,18 +903,31 @@ fn string_like_column(
     default: Option<String>,
     short_strings_are_var: bool,
 ) -> ColumnDescription {
+    let byte_length = if is_binary {
+        char_length
+    } else {
+        char_length.saturating_mul(3)
+    };
     let field_type = if short_strings_are_var && char_length < 256 {
         MySqlType::VarString
     } else {
-        blob_ladder(char_length)
+        blob_ladder(byte_length)
     };
     let mut col_type = ColumnType::string_like(field_type, is_binary, char_length);
-    // StringMapping truncates its default to the character length
-    // (`string_mapping.cpp:20-26`).
     if let Some(value) = default {
-        let mut bytes = value.into_bytes();
-        bytes.truncate(char_length as usize);
-        col_type.default_value = String::from_utf8_lossy(&bytes).into_owned();
+        // StringMapping truncates its default at `charLength` bytes
+        // (`string_mapping.cpp:20-26`); UnicodeStringMapping truncates at
+        // whole UTF-8 characters — `getUTF8CharOffsets` finds the start
+        // byte of each character and the cut lands on a boundary
+        // (`unicode_string_mapping.cpp:31-45,50-58`).
+        let truncated = if is_binary {
+            let mut bytes = value.into_bytes();
+            bytes.truncate(char_length as usize);
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            value.chars().take(char_length as usize).collect()
+        };
+        col_type.default_value = truncated;
     }
     ColumnDescription::new(
         &namer.build_column_name("sm", prop_name),
@@ -1007,7 +1104,11 @@ fn map_property(
         Kind::UnicodeString => Some(Mapped::Columns(vec![string_like_column(
             namer,
             prop_name,
-            /*is_binary=*/ false,
+            // The only non-binary string-like mapping: its ladder reads
+            // three bytes per utf8 character
+            // (`unicode_string_mapping.cpp:21-24`).
+            /*is_binary=*/
+            false,
             db_len as u32,
             index_type,
             default.map(|section| section.as_string().to_string()),
@@ -2349,5 +2450,133 @@ mod tests {
         assert_eq!(mods.name, "tbl_Avatar_items_mods");
         let mod_names: Vec<&str> = mods.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(mod_names, vec!["parentID", "sm_value"]);
+    }
+
+    /// The acceptance, Unicode 和二进制往返无损: a unicode string's
+    /// `DatabaseLength` is characters, and the column's ladder reads the
+    /// three-bytes-per-character byte length
+    /// (`unicode_string_mapping.cpp:21-24`) — so the same length reaches a
+    /// higher rung than a plain string's, and a unicode default truncates
+    /// at whole characters (`unicode_string_mapping.cpp:31-58`).
+    #[test]
+    fn unicode_lengths_take_three_bytes_per_character() {
+        let desc = parse_entity(&[(
+            "scripts/entity_defs/Avatar.def",
+            "<root> <Properties> \
+                 <uni> <Type> UNICODE_STRING </Type> <Flags> BASE </Flags> \
+                     <Persistent> true </Persistent> \
+                     <DatabaseLength> 22000 </DatabaseLength> </uni> \
+                 <bin> <Type> STRING </Type> <Flags> BASE </Flags> \
+                     <Persistent> true </Persistent> \
+                     <DatabaseLength> 66000 </DatabaseLength> </bin> \
+                 <short> <Type> UNICODE_STRING \
+                         <Default> 你好你好 </Default> </Type> \
+                     <Flags> BASE </Flags> <Persistent> true </Persistent> \
+                     <DatabaseLength> 3 </DatabaseLength> </short> \
+             </Properties> </root>",
+        )]);
+        let schema = entity_schema(&desc);
+        let find = |name: &str| {
+            schema
+                .table
+                .columns
+                .iter()
+                .find(|c| c.name == name)
+                .expect(name)
+                .col_type
+                .clone()
+        };
+
+        // 22000 characters need 66000 bytes: the MEDIUMTEXT rung, where a
+        // plain string of the same count would still be TEXT.
+        assert_eq!(
+            find("sm_uni").get_as_string(IndexType::None),
+            "MEDIUMTEXT NOT NULL"
+        );
+        // The plain string reads raw bytes: 66000 bytes is MEDIUMBLOB.
+        assert_eq!(
+            find("sm_bin").get_as_string(IndexType::None),
+            "MEDIUMBLOB NOT NULL"
+        );
+        // Under 256 characters unicode stays VARCHAR.
+        let short = find("sm_short");
+        assert_eq!(short.length, 3);
+        // The four-character default truncates to three whole characters,
+        // never mid-character.
+        assert_eq!(short.default_value, "你好你");
+        assert_eq!(
+            short.get_as_string(IndexType::None),
+            "VARCHAR(3) DEFAULT '你好你' NOT NULL"
+        );
+    }
+
+    /// The escape and its parse are inverses: every character that goes
+    /// into an escaped literal comes back
+    /// (`MySqlEscapedString` and MySQL's literal parsing).
+    #[test]
+    fn escaped_strings_round_trip_without_loss() {
+        let ascii: String = (0x20..0x7f).map(|b| b as u8 as char).collect();
+        let cases = [
+            "".to_string(),
+            ascii,
+            "it's \"quoted\"\\backslash\nnewline\rreturn\ttab\0nul\x08back\x1aend".to_string(),
+            "你好，世界！😀".to_string(),
+            "\\".to_string(),
+            "trailing\\\\".to_string(),
+        ];
+        for case in &cases {
+            assert_eq!(
+                unescape_sql_string(&escape_sql_string(case)),
+                *case,
+                "{case:?}"
+            );
+        }
+        // Each special character escapes alone.
+        for (raw, escaped) in [
+            ("\0", "\\0"),
+            ("\n", "\\n"),
+            ("\r", "\\r"),
+            ("\x08", "\\b"),
+            ("\t", "\\t"),
+            ("\x1a", "\\Z"),
+            ("\\", "\\\\"),
+            ("'", "\\'"),
+            ("\"", "\\\""),
+        ] {
+            assert_eq!(escape_sql_string(raw), escaped);
+            assert_eq!(unescape_sql_string(escaped), raw);
+        }
+    }
+
+    /// The character set of the unicode columns: the defaults are utf8 and
+    /// utf8_bin (`db_config.cpp:153-154`), the database converts on sync
+    /// (`mysql_synchronise.cpp:436-470`) and every existing table converts
+    /// with it (`mysql_table_initialiser.cpp:407-426`); an empty set
+    /// leaves the current setting.
+    #[test]
+    fn the_charset_statements_match_the_reference() {
+        assert_eq!(DEFAULT_CHARACTER_SET, "utf8");
+        assert_eq!(DEFAULT_COLLATION, "utf8_bin");
+
+        assert_eq!(
+            alter_database_charset_stmt("utf8", "utf8_bin").as_deref(),
+            Some("ALTER DATABASE CHARACTER SET 'utf8' COLLATE 'utf8_bin'")
+        );
+        // An empty collation alters the set alone.
+        assert_eq!(
+            alter_database_charset_stmt("utf8", "").as_deref(),
+            Some("ALTER DATABASE CHARACTER SET 'utf8'")
+        );
+        // An empty character set leaves the existing setting.
+        assert_eq!(alter_database_charset_stmt("", "utf8_bin"), None);
+
+        assert_eq!(
+            convert_table_charset_stmt("tbl_Avatar", "utf8", "utf8_bin").as_deref(),
+            Some("ALTER TABLE tbl_Avatar CONVERT TO CHARACTER SET 'utf8' COLLATE 'utf8_bin'")
+        );
+        assert_eq!(
+            convert_table_charset_stmt("tbl_Avatar", "", "utf8_bin"),
+            None
+        );
     }
 }
