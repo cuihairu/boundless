@@ -4,17 +4,19 @@
 //! The reference's persistence contract is `lib/db_storage/idatabase.hpp`
 //! (`class IDatabase`). Each entity operation is one `todo.md` item: this
 //! module carries `get_entity` (BW-09-01-01), `put_entity` (BW-09-01-02),
-//! `del_entity` (BW-09-01-03) and the lookups (BW-09-01-04); id allocation
-//! and online state (BW-09-01-05) join the trait as they land. The
-//! in-memory backend lets the entity-operation acceptance cases run before
-//! any real backend exists; MySQL/XML/SQLite/PostgreSQL plug into the same
-//! trait.
+//! `del_entity` (BW-09-01-03), the lookups (BW-09-01-04) and the online
+//! state (BW-09-01-05, the log-on record in [`crate::log_on`]). The DBID
+//! allocation itself is the backend's id allocator — `AUTO_INCREMENT` in
+//! the reference, the in-memory allocator's `next_id` here. The in-memory
+//! backend lets the entity-operation acceptance cases run before any real
+//! backend exists; MySQL/XML/SQLite/PostgreSQL plug into the same trait.
 
 use std::collections::HashMap;
 
 use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
 
 use crate::error::DbError;
+use crate::log_on::LogOnRecord;
 use crate::record::EntityRecord;
 
 /// `EntityKey`: the identity of a stored entity, `(type, database id)`.
@@ -89,6 +91,24 @@ pub trait EntityStorage {
     /// `lib/server/look_up_entities.hpp`: property queries, online filter,
     /// sort, limit, offset) joins with the online state (BW-09-01-05).
     fn lookup_entities(&self, type_id: EntityTypeId) -> Result<Vec<EntityRecord>, DbError>;
+
+    /// `EntityTypeMapping::addLogOnRecord` as reached from `PutEntityTask`
+    /// (`put_entity_task.cpp:120-131`): mark the row online at `record`'s
+    /// base. The add is an upsert — a relogon replaces the location, and
+    /// there is never more than one record per row. A record is refused
+    /// for a row that does not exist, the
+    /// `definitelyExists || checkExists` guard against invalid log-on
+    /// records (`put_entity_task.cpp:123-130`).
+    fn set_log_on_record(&mut self, key: &EntityKey, record: LogOnRecord) -> Result<(), DbError>;
+
+    /// `EntityTypeMapping::removeLogOnRecord` as reached from
+    /// `DelEntityTask` (`del_entity_task.cpp:66`) and the removeBaseMailbox
+    /// put (`put_entity_task.cpp:132-136`): mark the row offline. Removing
+    /// where nothing is recorded is fine.
+    fn remove_log_on_record(&mut self, key: &EntityKey) -> Result<(), DbError>;
+
+    /// The row's checked-out base location, if it is online.
+    fn log_on_record(&self, key: &EntityKey) -> Result<Option<LogOnRecord>, DbError>;
 }
 
 /// The DBApp load: fetch the record for `key`, or [`DbError::NotFound`]
@@ -124,6 +144,7 @@ pub fn load_entity_by_name(
 pub struct MemoryStorage {
     entities: HashMap<EntityKey, EntityRecord>,
     names: HashMap<(EntityTypeId, String), DatabaseId>,
+    log_ons: HashMap<EntityKey, LogOnRecord>,
     next_id: DatabaseId,
 }
 
@@ -132,6 +153,7 @@ impl Default for MemoryStorage {
         Self {
             entities: HashMap::new(),
             names: HashMap::new(),
+            log_ons: HashMap::new(),
             next_id: 1,
         }
     }
@@ -285,6 +307,9 @@ impl EntityStorage for MemoryStorage {
                 if let Some(name) = record.name {
                     self.names.remove(&(key.type_id, name));
                 }
+                // The checked-out entity goes offline with its row
+                // (del_entity_task.cpp:66).
+                self.log_ons.remove(key);
                 Ok(())
             }
             None => Err(DbError::NotFound),
@@ -312,6 +337,23 @@ impl EntityStorage for MemoryStorage {
         rows.sort_by_key(|record| record.db_id);
         Ok(rows)
     }
+
+    fn set_log_on_record(&mut self, key: &EntityKey, record: LogOnRecord) -> Result<(), DbError> {
+        if !self.entities.contains_key(key) {
+            return Err(DbError::NotFound);
+        }
+        self.log_ons.insert(*key, record);
+        Ok(())
+    }
+
+    fn remove_log_on_record(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.log_ons.remove(key);
+        Ok(())
+    }
+
+    fn log_on_record(&self, key: &EntityKey) -> Result<Option<LogOnRecord>, DbError> {
+        Ok(self.log_ons.get(key).copied())
+    }
 }
 
 /// The key for one row.
@@ -324,7 +366,7 @@ mod tests {
     use super::*;
     use crate::record::EntityRecord;
     use entitydef::value::PropertyValue;
-    use foundation::ids::PENDING_DATABASE_ID;
+    use foundation::ids::{EntityId, PENDING_DATABASE_ID};
 
     fn record(db_id: DatabaseId) -> EntityRecord {
         EntityRecord {
@@ -722,6 +764,139 @@ mod tests {
             None,
             "the dropped name resolves nothing"
         );
+    }
+
+    /// A log-on record online.
+    fn log_on(entity_id: EntityId) -> LogOnRecord {
+        LogOnRecord {
+            entity_id,
+            ip: 0x0A00_0001,
+            port: 31234,
+            salt: 42,
+        }
+    }
+
+    /// The acceptance: 并发登录无重复占用 — concurrent logons of one name
+    /// leave exactly one row and one online record for it. The first
+    /// create claims the name; the loser logs on the existing row instead,
+    /// and the upsert replaces the location rather than adding a second
+    /// record (`put_entity_task.cpp:120-131`).
+    #[test]
+    fn concurrent_logons_do_not_double_occupy() {
+        let mut store = MemoryStorage::new();
+
+        // The first logon creates the row and goes online.
+        let db_id = store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "wenchuan"), false)
+            .expect("the first logon claims the name");
+        let key = EntityKey { type_id: 1, db_id };
+        store
+            .set_log_on_record(&key, log_on(101))
+            .expect("the row exists, so it goes online");
+
+        // The concurrent logon of the same name cannot create a second
+        // row — the unique index refuses it.
+        let err = store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "wenchuan"), false)
+            .expect_err("the name is already occupied");
+        assert!(matches!(err, DbError::Storage(_)));
+
+        // It logs on the existing row instead: the record is an upsert,
+        // still exactly one for the row, holding the newest location.
+        store
+            .set_log_on_record(&key, log_on(202))
+            .expect("the relogon replaces the location");
+        let online = store
+            .log_on_record(&key)
+            .expect("read the online state")
+            .expect("the row is online");
+        assert_eq!(online, log_on(202));
+        assert_eq!(store.len(), 1, "no second row appeared");
+
+        // A different name at the same time takes its own row and record.
+        let other = store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "pinghu"), false)
+            .expect("a distinct name occupies its own row");
+        let other_key = EntityKey {
+            type_id: 1,
+            db_id: other,
+        };
+        store
+            .set_log_on_record(&other_key, log_on(303))
+            .expect("the other row goes online");
+        assert_eq!(store.log_on_record(&key).expect("read"), Some(log_on(202)));
+        assert_eq!(
+            store.log_on_record(&other_key).expect("read"),
+            Some(log_on(303)),
+            "the two occupants hold distinct locations"
+        );
+    }
+
+    /// A log-on record is refused for a row that does not exist — the
+    /// `definitelyExists || checkExists` guard
+    /// (`put_entity_task.cpp:123-130`).
+    #[test]
+    fn a_log_on_record_refuses_a_missing_row() {
+        let mut store = MemoryStorage::new();
+
+        let err = store
+            .set_log_on_record(
+                &EntityKey {
+                    type_id: 1,
+                    db_id: 7,
+                },
+                log_on(101),
+            )
+            .expect_err("no row to check out");
+        assert_eq!(err, DbError::NotFound);
+        assert_eq!(
+            store
+                .log_on_record(&EntityKey {
+                    type_id: 1,
+                    db_id: 7
+                })
+                .expect("read"),
+            None
+        );
+    }
+
+    /// `DelEntityTask` removes the log-on record with the row
+    /// (`del_entity_task.cpp:66`): a deleted entity is offline.
+    #[test]
+    fn a_delete_takes_the_online_record_with_it() {
+        let mut store = MemoryStorage::new();
+        let db_id = store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "wenchuan"), false)
+            .expect("create");
+        let key = EntityKey { type_id: 1, db_id };
+        store.set_log_on_record(&key, log_on(101)).expect("online");
+
+        store.del_entity(&key).expect("delete");
+
+        assert_eq!(
+            store.log_on_record(&key).expect("read"),
+            None,
+            "the deleted row is offline"
+        );
+    }
+
+    /// `removeLogOnRecord` takes the row offline; removing where nothing
+    /// is recorded is fine (`put_entity_task.cpp:132-136`).
+    #[test]
+    fn a_logoff_takes_the_row_offline() {
+        let mut store = MemoryStorage::new();
+        let db_id = store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "wenchuan"), false)
+            .expect("create");
+        let key = EntityKey { type_id: 1, db_id };
+        store.set_log_on_record(&key, log_on(101)).expect("online");
+
+        store.remove_log_on_record(&key).expect("logoff");
+        assert_eq!(store.log_on_record(&key).expect("read"), None);
+
+        store
+            .remove_log_on_record(&key)
+            .expect("a second logoff is fine");
     }
 
     /// Deleting a row releases its name for the next claimant.

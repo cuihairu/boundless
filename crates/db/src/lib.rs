@@ -16,10 +16,12 @@
 
 pub mod connection;
 pub mod error;
+pub mod log_on;
 pub mod record;
 pub mod storage;
 
 pub use connection::StorageConnection;
 pub use error::DbError;
+pub use log_on::LogOnRecord;
 pub use record::EntityRecord;
 pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity, load_entity_by_name};

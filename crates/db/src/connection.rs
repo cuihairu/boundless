@@ -17,6 +17,7 @@ use std::rc::Rc;
 use foundation::ids::{DatabaseId, EntityTypeId};
 
 use crate::error::DbError;
+use crate::log_on::LogOnRecord;
 use crate::record::EntityRecord;
 use crate::storage::{EntityKey, EntityStorage, MemoryStorage};
 
@@ -68,6 +69,18 @@ impl EntityStorage for StorageConnection {
 
     fn lookup_entities(&self, type_id: EntityTypeId) -> Result<Vec<EntityRecord>, DbError> {
         self.store.borrow().lookup_entities(type_id)
+    }
+
+    fn set_log_on_record(&mut self, key: &EntityKey, record: LogOnRecord) -> Result<(), DbError> {
+        self.store.borrow_mut().set_log_on_record(key, record)
+    }
+
+    fn remove_log_on_record(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.store.borrow_mut().remove_log_on_record(key)
+    }
+
+    fn log_on_record(&self, key: &EntityKey) -> Result<Option<LogOnRecord>, DbError> {
+        self.store.borrow().log_on_record(key)
     }
 }
 
@@ -239,6 +252,47 @@ mod tests {
                 .lookup_entity_by_name(1, "pinghu")
                 .expect("read by name")
                 .is_some()
+        );
+    }
+
+    /// The online state is shared like every other row state: a logon on
+    /// the writer connection is the checked-out location every other
+    /// connection reads, and a logoff or delete on any connection takes
+    /// the row offline everywhere.
+    #[test]
+    fn the_online_state_is_visible_from_an_independent_connection() {
+        let store = Rc::new(RefCell::new(MemoryStorage::new()));
+        let mut writer = StorageConnection::open(Rc::clone(&store));
+        let mut reader = StorageConnection::open(Rc::clone(&store));
+
+        let db_id = writer
+            .put_entity(&avatar("wenchuan"), false)
+            .expect("create");
+        let key = EntityKey { type_id: 1, db_id };
+
+        let location = LogOnRecord {
+            entity_id: 101,
+            ip: 0x0A00_0001,
+            port: 31234,
+            salt: 42,
+        };
+        writer
+            .set_log_on_record(&key, location)
+            .expect("the writer goes online");
+
+        let seen = reader
+            .log_on_record(&key)
+            .expect("read over the reader")
+            .expect("the row is online on the reader too");
+        assert_eq!(seen, location);
+
+        // The reader's logoff takes the row offline for both.
+        reader
+            .remove_log_on_record(&key)
+            .expect("logoff over the reader");
+        assert_eq!(
+            writer.log_on_record(&key).expect("read over the writer"),
+            None
         );
     }
 }
