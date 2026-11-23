@@ -26,6 +26,7 @@ pub(super) fn register() -> Result<PyRef, binding::BindError> {
 /// provider object that is not a `Matrix` value (`script_math.cpp`'s
 /// `MatrixProvider::matrix` vtable entry). The stub answers `None`, so
 /// `provider_matrix` reduces to the value read until the providers land.
+#[expect(dead_code, reason = "placeholder until the provider vtable lands")]
 pub(super) fn provider_matrix_dispatch(_object: *mut capi::PyObject) -> Option<Matrix> {
     None
 }
