@@ -193,14 +193,14 @@ fn first_set_body(text: &str, var: &str) -> Option<String> {
             if paren_open == "(" {
                 let close = matching_paren(text, next2 - 1)?;
                 let inner = &text[next2..close - 1];
-                if let Some((head, head_end)) = next_token(inner, 0) {
-                    if head == var {
-                        let body = inner[head_end..].to_string();
-                        let is_append =
-                            next_token(&body, 0).is_some_and(|(first, _)| first == self_ref);
-                        if !is_append {
-                            return Some(body);
-                        }
+                if let Some((head, head_end)) = next_token(inner, 0)
+                    && head == var
+                {
+                    let body = inner[head_end..].to_string();
+                    let is_append =
+                        next_token(&body, 0).is_some_and(|(first, _)| first == self_ref);
+                    if !is_append {
+                        return Some(body);
                     }
                 }
                 pos = close;
@@ -243,23 +243,21 @@ fn parse_config(name: &str, text: &str) -> CmakeTarget {
     // `ADD_DEFINITIONS( -DX ... )` — each `-D`-prefixed token.
     let mut pos = 0usize;
     while let Some((token, next)) = next_token(&clean, pos) {
-        if token == "ADD_DEFINITIONS" {
-            if let Some((paren_open, next2)) = next_token(&clean, next) {
-                if paren_open == "(" {
-                    if let Some(close) = matching_paren(&clean, next2 - 1) {
-                        let inner = &clean[next2..close - 1];
-                        let mut ipos = 0usize;
-                        while let Some((tok, inext)) = next_token(inner, ipos) {
-                            if let Some(def) = tok.strip_prefix("-D") {
-                                target.defines.push(def.to_string());
-                            }
-                            ipos = inext;
-                        }
-                        pos = close;
-                        continue;
-                    }
+        if token == "ADD_DEFINITIONS"
+            && let Some((paren_open, next2)) = next_token(&clean, next)
+            && paren_open == "("
+            && let Some(close) = matching_paren(&clean, next2 - 1)
+        {
+            let inner = &clean[next2..close - 1];
+            let mut ipos = 0usize;
+            while let Some((tok, inext)) = next_token(inner, ipos) {
+                if let Some(def) = tok.strip_prefix("-D") {
+                    target.defines.push(def.to_string());
                 }
+                ipos = inext;
             }
+            pos = close;
+            continue;
         }
         pos = next;
     }
@@ -269,28 +267,26 @@ fn parse_config(name: &str, text: &str) -> CmakeTarget {
     // `BW_SERVER_UNIT_TEST_LIBRARIES` are not feature flags.
     pos = 0usize;
     while let Some((token, next)) = next_token(&clean, pos) {
-        if token == "SET" {
-            if let Some((paren_open, next2)) = next_token(&clean, next) {
-                if paren_open == "(" {
-                    if let Some(close) = matching_paren(&clean, next2 - 1) {
-                        let inner = &clean[next2..close - 1];
-                        let mut tokens = Vec::new();
-                        let mut ipos = 0usize;
-                        while let Some((tok, inext)) = next_token(inner, ipos) {
-                            tokens.push(tok);
-                            ipos = inext;
-                        }
-                        if tokens.len() == 2
-                            && (tokens[0].starts_with("BW_") || tokens[0] == "USE_MEMHOOK")
-                            && !tokens[0].ends_with("_PROJECTS")
-                        {
-                            target.flags.push(format!("{}={}", tokens[0], tokens[1]));
-                        }
-                        pos = close;
-                        continue;
-                    }
-                }
+        if token == "SET"
+            && let Some((paren_open, next2)) = next_token(&clean, next)
+            && paren_open == "("
+            && let Some(close) = matching_paren(&clean, next2 - 1)
+        {
+            let inner = &clean[next2..close - 1];
+            let mut tokens = Vec::new();
+            let mut ipos = 0usize;
+            while let Some((tok, inext)) = next_token(inner, ipos) {
+                tokens.push(tok);
+                ipos = inext;
             }
+            if tokens.len() == 2
+                && (tokens[0].starts_with("BW_") || tokens[0] == "USE_MEMHOOK")
+                && !tokens[0].ends_with("_PROJECTS")
+            {
+                target.flags.push(format!("{}={}", tokens[0], tokens[1]));
+            }
+            pos = close;
+            continue;
         }
         pos = next;
     }
@@ -319,20 +315,18 @@ fn parse_config(name: &str, text: &str) -> CmakeTarget {
     // Linux commands: `BW_TARGET_LINUX_COMMAND( name "cmd" )`.
     pos = 0usize;
     while let Some((token, next)) = next_token(&clean, pos) {
-        if token == "BW_TARGET_LINUX_COMMAND" {
-            if let Some((paren_open, next2)) = next_token(&clean, next) {
-                if paren_open == "(" {
-                    if let Some(close) = matching_paren(&clean, next2 - 1) {
-                        let inner = &clean[next2..close - 1];
-                        if let Some((name, after)) = next_token(inner, 0) {
-                            let cmd = inner[after..].trim().trim_matches('"');
-                            target.linux_commands.push(format!("{}:{}", name, cmd));
-                        }
-                        pos = close;
-                        continue;
-                    }
-                }
+        if token == "BW_TARGET_LINUX_COMMAND"
+            && let Some((paren_open, next2)) = next_token(&clean, next)
+            && paren_open == "("
+            && let Some(close) = matching_paren(&clean, next2 - 1)
+        {
+            let inner = &clean[next2..close - 1];
+            if let Some((name, after)) = next_token(inner, 0) {
+                let cmd = inner[after..].trim().trim_matches('"');
+                target.linux_commands.push(format!("{}:{}", name, cmd));
             }
+            pos = close;
+            continue;
         }
         pos = next;
     }
@@ -340,22 +334,20 @@ fn parse_config(name: &str, text: &str) -> CmakeTarget {
     // `INCLUDE( BWConfiguration_<x> )` base configs.
     pos = 0usize;
     while let Some((token, next)) = next_token(&clean, pos) {
-        if token == "INCLUDE" {
-            if let Some((paren_open, next2)) = next_token(&clean, next) {
-                if paren_open == "(" {
-                    if let Some(close) = matching_paren(&clean, next2 - 1) {
-                        let inner = &clean[next2..close - 1];
-                        if let Some((inc, _)) = next_token(inner, 0) {
-                            if let Some(base) = inc.strip_prefix("BWConfiguration_") {
-                                let base = base.strip_suffix(".cmake").unwrap_or(base);
-                                target.includes.push(base.to_string());
-                            }
-                        }
-                        pos = close;
-                        continue;
-                    }
-                }
+        if token == "INCLUDE"
+            && let Some((paren_open, next2)) = next_token(&clean, next)
+            && paren_open == "("
+            && let Some(close) = matching_paren(&clean, next2 - 1)
+        {
+            let inner = &clean[next2..close - 1];
+            if let Some((inc, _)) = next_token(inner, 0)
+                && let Some(base) = inc.strip_prefix("BWConfiguration_")
+            {
+                let base = base.strip_suffix(".cmake").unwrap_or(base);
+                target.includes.push(base.to_string());
             }
+            pos = close;
+            continue;
         }
         pos = next;
     }
@@ -364,19 +356,17 @@ fn parse_config(name: &str, text: &str) -> CmakeTarget {
     let mut seen = std::collections::BTreeSet::new();
     let mut ipos = 0usize;
     while let Some((token, next)) = next_token(&clean, ipos) {
-        if token == "IF" {
-            if let Some((paren_open, next2)) = next_token(&clean, next) {
-                if paren_open == "(" {
-                    if let Some(close) = matching_paren(&clean, next2 - 1) {
-                        let inner = clean[next2..close - 1].trim().to_string();
-                        if seen.insert(inner.clone()) {
-                            target.conditions.push(inner);
-                        }
-                        ipos = close;
-                        continue;
-                    }
-                }
+        if token == "IF"
+            && let Some((paren_open, next2)) = next_token(&clean, next)
+            && paren_open == "("
+            && let Some(close) = matching_paren(&clean, next2 - 1)
+        {
+            let inner = clean[next2..close - 1].trim().to_string();
+            if seen.insert(inner.clone()) {
+                target.conditions.push(inner);
             }
+            ipos = close;
+            continue;
         }
         ipos = next;
     }
