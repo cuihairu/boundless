@@ -502,20 +502,20 @@
 
 移植 TCPBundle/TCPChannel、帧边界、读写缓冲、连接过滤及在构建中启用的传输方式。对照短读写、背压、超时和断链。
 
-- [ ] **BW-02-04-01 实现 TCPBundle 帧解析**。**验收** 短读与合并读取两类夹具通过。
-- [ ] **BW-02-04-02 实现短写和待发送缓冲**。**验收** 背压下按序发出完整帧。
-- [ ] **BW-02-04-03 接入原版启用的连接过滤**。**验收** 允许及拒绝分别匹配。
-- [ ] **BW-02-04-04 实现超时和断链清理**。**验收** 挂起应答与队列状态吻合。
-- [ ] **BW-02-04-05 核查其余已启用传输方式**。**验收** 每种有混跑夹具或阻塞记录。
+- [x] **BW-02-04-01 实现 TCPBundle 帧解析**（`b3ce240`）。**验收** 短读与合并读取两类夹具通过。
+- [x] **BW-02-04-02 实现短写和待发送缓冲**（`1a63485`）。**验收** 背压下按序发出完整帧。
+- [x] **BW-02-04-03 接入原版启用的连接过滤**（`d1dbe3f`）。**验收** 允许及拒绝分别匹配。
+- [x] **BW-02-04-04 实现超时和断链清理**（`82cf2f2`）。**验收** 挂起应答与队列状态吻合。
+- [x] **BW-02-04-05 核查其余已启用传输方式**（`ceb6eb8`）。**验收** 每种有混跑夹具或阻塞记录。
 
 #### BW-02-05 包过滤和加密互通
 
 按原版启用条件复现过滤链、会话加密协商、包校验和受控限流，使用双方合法客户端互操作。对照正常握手、认证失败及流量达到配置上限时的结果。
 
-- [ ] **BW-02-05-01 实现过滤链与包校验**。**验收** 过滤顺序及校验失败结果一致。
-- [ ] **BW-02-05-02 对齐会话协商**。**验收** 原版和新版客户端可合法握手。
-- [ ] **BW-02-05-03 校验认证失败时的返回状态**。**验收** 无残留已建立会话。
-- [ ] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。
+- [x] **BW-02-05-01 实现过滤链与包校验**（`24d5896`）。**验收** 过滤顺序及校验失败结果一致。
+- [x] **BW-02-05-02 对齐会话协商**（`f0f2556`）。**验收** 原版和新版客户端可合法握手。
+- [x] **BW-02-05-03 校验认证失败时的返回状态**（`8e48c85`）。**验收** 无残留已建立会话。
+- [x] **BW-02-05-04 实现配置限流**（`87a6642`）。**验收** 边界流量下的处置与原版吻合。
 
 ### BW-03 CPython 嵌入和脚本 API
 
@@ -533,27 +533,27 @@
   - 证据：`crates/python-host/src/{lib.rs,capi.rs}` 新增 + `init_time_job.rs` 新建 + `interpreter.rs` 接线。**原版结果**：`Script::init`（`lib/pyscript/script.cpp`）在 `PySys_SetObject("argv")` 之后依次执行 `runInitTimeJobs()`（script.cpp:584）→ `Script::disablePythonGarbage()` → `ScriptModule::getOrCreate("BigWorld")` + `setAttribute("component", componentName)`（componentName 为 `cell`/`base`/`client`/`database`/`bot`/`editor` 之一，script.cpp:599 注释）→ `s_pOurInitTimeModules = PyDict_Copy(PySys_GetObject("modules"))`（:602，快照供 `Script::createInterpreter` 把 init 期导入过的模块合入新建子解释器，BW-03-04-03 消费）。`runInitTimeJobs` 按 `map<int, vector<job*>>`（`lib/script/init_time_job.cpp:21`）键升序、组内插入序排空；二次调用 `ERROR_MSG`；init 后再构造 `InitTimeJob` 触发 `CRITICAL_MSG`；map 排空后删除；`FiniTimeJob` 默认 rung 1。**新版结果**：`init_time_job.rs` 以 `BTreeMap<i32, Vec<Job>>` + `OnceLock<Mutex<Registry>>` 复刻双注册表——`add_init_time_job(rung)`/`run_init_time_jobs`/`add_fini_time_job[_at]`/`run_fini_time_jobs`；run 前置 `has_run=true` 并在持锁时 `std::mem::take` 排空（「排空后删除」天然成立），故运行中注册的作业返回 `Err(JobError::AlreadyRan)` 而非死锁，二次运行同报 `AlreadyRan`。**delta**：原版 init 后构造作业为 `CRITICAL_MSG`（进程级告警中止语义），本移植是 Result 错误码（测试可断言）；另加 `std::sync::Mutex` 中毒恢复（`unwrap_or_else(into_inner)`，C++ 无锁故无此面）。`Interpreter::init` 顺序同原版：argv → `run_init_time_jobs()`（interpreter.rs:124）→ `disable_garbage()` → `create_big_world_module(component)`（interpreter.rs:270，`PyImport_AddModule`+`PyObject_SetAttrString`，失败按 `ScriptErrorPrint` 静默继续）→ `take_modules_snapshot()`（interpreter.rs:295，`PyDict_Copy`）。**覆盖发现的真实缺陷**：快照 DECREF 原排在 `Py_Finalize` 之后，`_Py_Dealloc` 对已拆除分配器 free → SIGSEGV（gdb 回溯定位 `fini()`→`dec_ref`→`_Py_Dealloc`）；按原版 script.cpp 的 DECREF 位置移到 collect 循环之前修复。**验收**：`scenario_init_runs_the_init_time_jobs` 在 rung 0 注册作业断言其先于 `gc.disable()` 执行（job 内 `gc.isenabled()==True`，init 后为 `False`）；`scenario_init_time_jobs_run_once_in_rung_order` 证 rung 升序+组内插入序+只跑一次；`scenario_fini_time_jobs_run_once_in_rung_order` 同证 fini 侧；`scenario_big_world_module_carries_the_component` 证 `BigWorld.component=='cell'` 且 `'BigWorld' in sys.modules`；`scenario_a_component_with_a_nul_stays_unset` 证 component 含 NUL 时属性留空（`ScriptErrorPrint` 语义）；`scenario_init_time_modules_snapshot_taken_at_init` 证快照=init 末模块表、`Interpreter::init_time_modules()` 访问器、fini 后回 null；单元测试覆盖 rung 序、二次运行、运行中注册、锁中毒恢复（`init_time_job.rs` 行级全覆盖）。**证据链接**：`interpreter.rs:124-133`（init 接线）、`init_time_job.rs`、`capi.rs:206`（`PyObject_SetAttrString`）、`capi.rs:170`（`PyDict_Copy`）、`interpreter.rs:270-293`（BigWorld 模块/快照）、`interpreter.rs:179-199`（fini 顺序+DECREF 修复位）。**平台差异如实登记**：① 角色清单未做枚举校验——`InitConfig.component` 为调用方字符串（本车道无角色运行时，待 BW-03-04 消费）；② `sys.path` 替换使快照只含内建模块+init 期资源根导入的模块（BW-03-01-02 已登记）；③ 本项无平台差（CPython API 跨平台一致）。测试：python-host 26 passed / 23 ignored、0 警告；workspace 500 passed 0 failed。llvm-cov：init_time_job.rs 95.96%（lcov DA:0 行为 0——摘要口径含测试码行）、interpreter.rs 96.88%、capi.rs 98.61%、import_paths.rs 97.18%、pyref.rs 100%、crate 合计 97.17%（余 27 行全部为 CPython 故障臂：`Py_IsInitialized()==0`、`PyList_New`/`PyUnicode_FromString`/`PyObject_SetAttrString` 返回 null、`import gc`/`getattr("disable")`/`call` 失败、`PyImport_GetModuleDict`/`PyModule_GetDict` null——健康解释器不可触发，按约定不加故障注入脚手架）。
 - [x] **BW-03-01-04 接入脚本日志**。**验收** stdout 和异常落入预期日志入口。
   - 证据：`crates/python-host/src/output_writer.rs` 新建 + `interpreter.rs` 接线 + `capi.rs` 扩展（`PyCFunction_New`/`PyArg_ParseTuple`/`PyTuple_GetItem`/`PyObject_Repr`/`PyErr_Display`/`PySys_WriteStderr`/`METH_VARARGS`/`PyMethodDef`/`PyTraceBack_Type`/`py_traceback_check`）+ `lib.rs` 导出。**原版结果**：`Script::init`（script.cpp:531）`MF_VERIFY( new ScriptOutputWriter )` 把 `sys.stdout`/`sys.stderr` 换成 `PyOutputStream`（`lib/script/py_script_output_writer.cpp`，C heap type，成员 `isStderr_`），其 `write` 以 `PyArg_ParseTuple("s#")` 取参：含内嵌 NUL 改记 `PyObject_Repr` 的结果，否则原文交给 `handleWrite`——按流缓冲、收到结尾 `\n` 才冲刷（剥一个尾换行、按 `\n` 切行、每行一条 LogMsg：stderr→`MESSAGE_PRIORITY_ERROR`、stdout→INFO、source 均为 SCRIPT），冲刷后 hook 链收**原始分块**；hook 可在回调内自删（`pCurrentHook_`/`shouldDeleteCurrentHook_` 配对，删除延到回调返回后生效，`delHook` 删别的 hook 立即生效、同一 hook 加两次须删两次），未重定向时 `getCurrentStdio()==NULL` 拒绝挂 hook。异常面：`lib/pyscript/py_traceback.cpp:533` 的 `printTraceBack` excepthook——`PySys_WriteStderr("Traceback (most recent call last):\n")`、逐帧 `  File "f", line N, in name` + 源码行（原版经 Mercury EventDispatcher **异步**读源文件，outputFrame :436）、沿 `tb_next` 走完、`PyErr_Display(type, value, NULL)` 收尾；`initExceptionHook`（:575）`PyCFunction_New` + `PySys_SetObject("excepthook")`，由各进程 main 在 `Script::init` 后显式调（cellapp.cpp:3622/baseapp.cpp:1304/dbapp.cpp:324/bots main_app.cpp:273）。init 尾部（:617）`import bw_site`，失败「Script::init: Unable to import bw_site」返回 false。**新版结果**：`output_writer.rs` 同序复刻——`install()`（:414，guard 对齐原版 MF_VERIFY → `InitError::StdioFailed`）以 Python bootstrap 类 `PyOutputStream(write)` 绑定两个 `PyCFunction_New(PY_WRITE_DEF)` 内建 `write`（`Py_True`/`Py_False` 作 isStderr 标志）替换 stdio；`py_write`（:221）解析 `s#:write`、NUL 走 `PyObject_Repr` 臂、坏参 TypeError 上抛；`handle_write`（:168）双流缓冲 + 尾 `\n` 冲刷进 `LogSink`（`set_log_sink` 可换、缺省 `console_sink` 走 stderr，INFO/ERROR 以 `is_stderr` 布尔交付）再跑 hook 原始分块；`remove_hook`（:131）回调内经 `thread_local CURRENT_HOOK/DELETE_CURRENT`（:90，原版 `pCurrentHook_`/`shouldDeleteCurrentHook_` 的等价物）延迟自删；`print_trace_back`（:260）解析 `OOO:printTraceBack`、`py_traceback_check` 不过则 `PyErr_Display` 兜底、逐帧 `write_frame`（:309）`tb_lineno/tb_frame/f_code/co_filename/co_name` + `read_source_line`（:349）同步读源码行、尾 `PyErr_Display`；`install_exception_hook`（:475）设 `sys.excepthook`。`Interpreter::init` 全序同 script.cpp（install → argv → sys.path → init jobs → gc.disable → BigWorld → 快照 → `import_bw_site`（interpreter.rs:348，失败 `InitError::BwSiteImportFailed` + 完整回卷）→ excepthook），`fini` 经 `reset()`（:532）丢缓冲与 hook、保留宿主 sink。**验收**：`scenario_stdout_lands_in_the_log_sink`/`scenario_stderr_lands_in_the_log_sink` 证 print 落 sink 且软空格 `softspace` 属性在位；`scenario_partial_writes_buffer_and_hooks_see_chunks` 证半行缓冲、hook 收原始分块、fini 后挂 hook 被 `NoStdioWriter` 拒；`scenario_a_hook_may_remove_itself_mid_callback` 证回调内删他者被拒、自删延迟生效、后续 hook 不丢块、回调外按 id 即删+重复删报 `NoSuchHook`；`scenario_an_embedded_nul_logs_the_repr` 证 NUL 走 repr 臂且 repr 无尾换行故随下一换行写合并冲出（与原版 handleWrite 缓冲语义一致）；`scenario_the_excepthook_formats_the_traceback` 证头行+`  File "…/boom.py", line 2, in boom`+源码行+`ValueError: boom message` 全走 stderr；`scenario_the_excepthook_handles_a_missing_traceback` 证无 traceback 落 `PyErr_Display`、参数不足三静默返回 None；`scenario_bad_write_arguments_raise` 证 `write()` 坏参 TypeError 上抛；`scenario_bw_site_is_imported_at_the_tail_of_init`/`scenario_missing_bw_site_fails_init` 证 bw_site 导入与失败回卷；`hooks_refuse_without_the_redirect` 证未重定向拒绝挂 hook。**覆盖发现并修复的两个真实缺陷**：① `install()` 原整块重置 `WriterState` 把宿主 init 前预设的 sink 抹掉 → 拆出保 sink 的 `clear_writer()`；② `remove_hook` 自删死锁——`handle_write` 持非重入 `std::Mutex` 跨回调、回调再锁同线程卡死（测试挂 600s 定位），以 thread_local 重入通道修复。**delta 如实登记**：① `PyOutputStream` 用 Python bootstrap 类而非 C heap type（省 `PyType_FromSpec` slot 机制，可观测行为同：write/softspace）；② isStderr 以 `Py_True`/`Py_False` 标志对象挂内建 self，原版为 C++ 成员；③ 日志入口接口化——`LogSink` 回调替代 cstdmf LogMsg（本 crate 不依赖 cstdmf，优先级映射留给消费方）；④ traceback 源码行**同步**读，原版经 Mercury dispatcher 异步读（无 dispatcher 层，见 `install_exception_hook` 文档）；⑤ excepthook 折叠进 `Interpreter::init`，原版由各进程 main 显式调；⑥ 非 UTF-8 分块 `from_utf8_lossy` 防御性降级（`"s#"` 实参本已强制 str→UTF-8，正常不可达）；⑦ 回调内 `remove_hook` 仅允许删当前 hook（原版无锁可删任意 hook），std Mutex 不可重入的补偿；⑧ 退出期 `no attribute 'flush'` 噪音忠实原版（PyOutputStream 无 flush 属性）；⑨ `bw_build_platform()`/`platform_mismatch()`（import_paths.rs:165-190，对齐 script.cpp:486 平台不匹配 WARNING）已备、随角色运行时接线（本项未接）。**平台差异**：本项无平台差（stdio 换绑与 `PySys_WriteStderr` 跨平台一致）。测试：python-host 38 passed / 33 ignored、0 警告（唯一 warning 为根 Cargo.toml 既有 `unused workspace dependency`，非本车道）；workspace 512 passed 0 failed。llvm-cov：output_writer.rs 96.77%、interpreter.rs 97.51%、capi.rs 98.84%、import_paths.rs 95.21%、init_time_job.rs 95.96%、pyref.rs 100%、crate 合计 97.18%（余 46 行为 CPython 故障臂——`PyCFunction_New`/`PyObject_SetAttrString`/`PyObject_Repr`/`PyObject_Str` 返回 null、静态字面量 `CString::new`、源码行含 NUL 的 `CString::new`、traceback 帧缺 `tb_frame`/`f_code`——健康解释器不可触发，按约定不加故障注入脚手架）。
-- [ ] **BW-03-01-05 核查 Python 关服顺序**。**验收** 脚本清理回调满足宿主释放时序。
+- [x] **BW-03-01-05 核查 Python 关服顺序**（`c085671`）。**验收** 脚本清理回调满足宿主释放时序。
 
 #### BW-03-02 Python 对象桥接
 
 覆盖原生对象包装、属性与方法绑定、容器代理、引用保活、GC、GIL 和跨线程回调约束。比较对象身份、异常类型、回调析构与循环引用。
 
-- [ ] **BW-03-02-01 实现原生包装对象的身份缓存**。**验收** 同一底层对象取回同一实例。
-- [ ] **BW-03-02-02 实现属性和方法绑定**。**验收** 错误参数抛出约定异常。
-- [ ] **BW-03-02-03 实现容器代理**。**验收** 修改代理可观察到原生状态同步。
-- [ ] **BW-03-02-04 实现引用保活与循环 GC**。**验收** 对象释放只发生一次。
-- [ ] **BW-03-02-05 约束 GIL 与跨线程回调**。**验收** 线程退出及异常后无悬挂回调。
+- [x] **BW-03-02-01 实现原生包装对象的身份缓存**（`cec4274`）。**验收** 同一底层对象取回同一实例。
+- [x] **BW-03-02-02 实现属性和方法绑定**（`0fc2898`）。**验收** 错误参数抛出约定异常。
+- [x] **BW-03-02-03 实现容器代理**（`0d355bb`）。**验收** 修改代理可观察到原生状态同步。
+- [x] **BW-03-02-04 实现引用保活与循环 GC**（`8ec91d2`）。**验收** 对象释放只发生一次。
+- [x] **BW-03-02-05 约束 GIL 与跨线程回调**（`55b9fbe`）。**验收** 线程退出及异常后无悬挂回调。
 
 #### BW-03-03 公共脚本模块
 
 移植脚本数学与 Provider、时间和定时器、资源访问、网络/URL 请求（`lib/urlrequest/`）及共享模块。按进程盘点模块名、参数、返回值和异常，通过原样调用的 Python 测试。
 
-- [ ] **BW-03-03-01 维护公共 Python 导出清单**。**验收** 模块、签名与进程范围可核对。
-- [ ] **BW-03-03-02 移植数学对象及 Provider**。**验收** 运算和求值顺序匹配。
-- [ ] **BW-03-03-03 绑定定时器模块**。**验收** 取消、重注册和返回值匹配。
-- [ ] **BW-03-03-04 绑定资源访问**。**验收** 读写 DataSection 与继承路径匹配。
-- [ ] **BW-03-03-05 绑定网络和 URL 请求**。**验收** 成功及超时回调匹配。
+- [x] **BW-03-03-01 维护公共 Python 导出清单**（`b50a875`）。**验收** 模块、签名与进程范围可核对。
+- [x] **BW-03-03-02 移植数学对象及 Provider**（`72df05b`，lane/bw03-script）。**验收** 运算和求值顺序匹配。
+- [x] **BW-03-03-03 绑定定时器模块**（`8657bc1`，lane/bw03-script）。**验收** 取消、重注册和返回值匹配。
+- [x] **BW-03-03-04 绑定资源访问**（`983adc0`，lane/bw03-pyhost）。**验收** 读写 DataSection 与继承路径匹配。
+- [x] **BW-03-03-05 绑定网络和 URL 请求**（`db84aa5`，lane/bw03-pyhost）。**验收** 成功及超时回调匹配。
 - [ ] **BW-03-03-06 回归公共脚本**。**验收** 原版测试可直接调用兼容模块。
 
 #### BW-03-04 进程脚本入口与热重载
