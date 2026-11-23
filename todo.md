@@ -1629,7 +1629,7 @@
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/ios/`（`FantasyDemo.xcodeproj`/`.xcworkspace` + cocos2d/cocoslive/CocosDenshion libs + `Settings.bundle`）需 macOS + Xcode 构建运行，本机为 Linux 无 macOS 宿主（同 BW-15-01-01 macOS 卡点）；互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [ ] **BW-14-02-04 移植 Controller/Extra 样例**。**验收** 注册、回调及卸载可验。
-  - 卡点（cell 侧扩展宿主未落地）：参考 `examples/cellapp_extension/`（13 文件 1142 行）为 `BW_ADD_LIBRARY(... MODULE ...)` 加载时解析共享库，深绑 cell 运行时——`EgExtra : EntityExtra`（`Py_EntityExtraHeader`/`Instance` 注册进 Python 实体系统）、`EgController`（`ControllerPtr`）、`debug_extension.cpp`（`cellapp/entity.hpp`、`real_entity.hpp`、`entitydef/script_data_source.hpp`、`server/stream_helper.hpp`）+ `bwpython313`。需 CellApp Entity/EntityExtra/Controller（BW-08）+ 脚本宿主（BW-03-03/BW-17）先落地，非 plugin-host（BW-13-06-03）面。
+  - 卡点（依赖面未并 main）：CellApp Entity/EntityExtra/Controller 已由 BW-08 全勾（BW-08-01..06，`lane/bw19-docs` `795948d23`，未并 main）、脚本宿主已并本树（BW-03-03 全勾，`f4f7392`）；余该 cell 面经主席并入 main 后即可开工移植 `examples/cellapp_extension/`（13 文件 1142 行，`BW_ADD_LIBRARY(... MODULE ...)` 加载时解析共享库——`EgExtra : EntityExtra`、`EgController : ControllerPtr`、`debug_extension.cpp`；非 plugin-host（BW-13-06-03）面）。
 
 #### BW-14-03 Web Integration
 
@@ -1638,11 +1638,11 @@
 - [x] **BW-14-03-01 核对 PHP 页面与 RPM**。**验收** 列出能够验证的接口和页面。（commit 9f69eeb）
   - 证据：`docs/review/bw14-03-01-web-and-rpm-inventory.md`（9f69eeb）——**PHP 页面 28 项**（`programming/fantasydemo/web/php/`：认证/会话 5、角色 2、物品 4、拍卖 2、框架/工具 15 + index.php + 素材）逐项列功能；**Web 接口契约** = ServiceApp twisted Web 服务（`BigWorld.php` `http://localhost:13000`）+ `RemoteEntity("db")` 的 `authenticateUserPass`（返回 type/id）+ 会话 token；**RPM**（`fixwork/` 三 x86_64 RPM）：bwmachined 4.4MB **真 payload**（`bwmachined2`/`init.d`/systemd unit/`bwmachined.conf`/`sysctl.d`，`rpm2cpio` 可列）、devel + web-integration **占位**（Size=0 无 payload，头信息在）。可验证性：清单与 bwmachined payload 现可验；页面运行时后端（ServiceApp 服务 BW-07-03-02 + 登录链路 BW-14-01-02）未落地。
 - [ ] **BW-14-03-02 移植登录与会话**。**验收** 同样的会话状态可继续访问。
-  - 卡点（Web 服务面未落地）：登录/会话语义移植需 ServiceApp Web 服务（BW-07-03-02 启动并注册 Service 未勾）响应 `RemoteEntity("db")` 的 `authenticateUserPass`；参考侧运行时比对亦被 BW-00-02-03 记录的 `serviceapp`/`loginapp` 缺许可密钥（bigworld.key/loginapp.privkey）挡住。会话状态需可运行会话方比对，当前两侧均无运行面。
+  - 卡点（依赖面未并 main）：ServiceApp Service 注册与调用分发已由 BW-07-03-01..04 全勾（`lane/bw19-docs` `795948d23`，未并 main），db 侧 logOn/在线状态已由 BW-09-01-05 勾（同 lane）；余该面经主席并入 main 后移植 BW-14-03-01 已核契约（`BWAuthenticator.authenticateUserPass`：空用户名/密码抛 `InvalidFieldError`，`RemoteEntity("db")->logOn` 返 type/id，token 存 `entity_type`+`entity_path`=`entities_by_id/<type>/<id>`，logout 失效）。参考侧活体比对仍被 BW-00-02-03 记录的许可密钥缺失（bigworld.key/loginapp.privkey，不可重建）挡住。
 - [ ] **BW-14-03-03 移植角色与物品查询**。**验收** 样本列表和错误语义一致。
-  - 卡点（db 查询面未落地）：角色/物品查询需 dbapp 查询（BW-09-01-04 lookup/01-05 未勾）经 ServiceApp Web 暴露；参考侧运行时同受许可密钥阻断（BW-00-02-03）。
+  - 卡点（依赖面未并 main）：dbapp 查询面已由 BW-09-01-01..06 全勾（get/write/delete/lookup/DBID+在线/重试回调，`lane/bw19-docs` `795948d23`，未并 main）；余 ServiceApp Web 暴露面（同 03-02）经主席并入 main 后移植，参考侧运行时同受许可密钥阻断（BW-00-02-03）。
 - [ ] **BW-14-03-04 移植拍卖工作流**。**验收** 提交和查询状态匹配。
-  - 卡点（同 03-03）：拍卖提交/查询需 db 读写 + ServiceApp Web；两侧运行面均缺（新侧未建服务、参考侧缺许可密钥）。
+  - 卡点（同 03-03）：db 读写已由 BW-09-01-02/03/04 勾（`lane/bw19-docs` `795948d23`，未并 main）；余 ServiceApp Web 暴露面并 main 后移植，参考侧缺许可密钥（BW-00-02-03）。
 
 #### BW-14-04 可安装发布物
 
@@ -1697,7 +1697,7 @@
 - [x] **BW-15-02-04 验证 Linux 安装包**。**验收** 干净系统可安装和启动。（commit b0a4d3e）
   - 证据：`ci/install-layout.sh`（b0a4d3e 起，5da86a6/a8758e3 续）——Linux 归档 `boundless-0.1.0-linux-x86_64.tar.gz`（包属树 `bin/ lib/ res/`，`data/` 不在包）**干净安装**进全新前缀（install-clean：清空→解包→建 `data/`，无 pre-existing 安装），**安装后可启动**：装后 `boundless-server baseapp` 首启（`starting`→`running`）并自停（`has shut down.`，exit 0，install-smoke-server PASS）、`process_defs --help` 出用法 exit 0（install-cli PASS）、`process_defs -r <prefix>/res` 定位安装资源树（install-cli-res PASS）、装后模块**裸解释器** `import boundless`（install-module PASS，无 cargo/target/venv——即干净系统无需开发环境）、布局完整（install-layout PASS）、升级/卸载保留用户数据（install-upgrade/uninstall PASS）。**边界（已注）**：干净性以「全新前缀 + 无开发环境可导入」验证（包自含：原生二进制 + 样例资源 + 稳定 ABI 模块，仅需宿主 CPython 与 libc）；整机级干净系统烟测随 BW-15-05-01/04 与 BW-14-04-04 三端矩阵落地。
 - [ ] **BW-15-02-05 验证旧 EL7 互通**。**验收** 记录该基线配置和结果。
-  - 证据（部分，未勾）：`docs/review/bw15-02-05-el7-baseline.md`（920356b）——**基线配置已记录**：参考 HEAD `dc3b0b59`/tag `bigworld-14.4.1`、RPM `14.4.1.el7.x86_64`（bwmachined 真 payload：`opt/bigworld/14.4/bwmachined/{sbin,init.d}`、`etc/bwmachined.conf`、`etc/sysctl.d/bwmachined2.conf`、`usr/lib/systemd/system/bwmachined2.service`，devel/web-integration 占位——同 BW-14-04 §2）、EL7 分发二进制树（`game/bin/server/el7/`：server ELF×25 + tools + unit_tests + third_party/python）、`BWResource` res 路径发现链与 `bw_site` 站点要求。**部分结果已实测**：`process_defs --help` 本机运行 exit 0、`BW_RES_PATH=game/res/bigworld` 下 `process_defs -r` 成功导入 `bw_site` 进入 `EntityDescriptionMap::parse`、`ldd` 表明 process_defs/baseapp 仅依赖 libstdc++/libm/libgcc_s/libc（现代 Linux 可满足）。**卡点（互通结果未采集）**：新服务端登录链路**已合入**（BW-06-01-02 挑战协商 + BW-07-01 baseapp 装载/ID 分配），但缺 dbapp 账户/角色持久化（BW-09-01-04/05 未勾）且 `app::run` 仍为最小入口（无 tick loop，同 BW-15-02-01 卡点），互通两侧无可驱动的完整登录流；另需同时含 `bw_site.py` 与 `.def` 的同一 res 根、完整 EL7 服务端进程面（全角色在 EL7 库上跑）未复现。
+  - 证据（部分，未勾）：`docs/review/bw15-02-05-el7-baseline.md`（920356b）——**基线配置已记录**：参考 HEAD `dc3b0b59`/tag `bigworld-14.4.1`、RPM `14.4.1.el7.x86_64`（bwmachined 真 payload：`opt/bigworld/14.4/bwmachined/{sbin,init.d}`、`etc/bwmachined.conf`、`etc/sysctl.d/bwmachined2.conf`、`usr/lib/systemd/system/bwmachined2.service`，devel/web-integration 占位——同 BW-14-04 §2）、EL7 分发二进制树（`game/bin/server/el7/`：server ELF×25 + tools + unit_tests + third_party/python）、`BWResource` res 路径发现链与 `bw_site` 站点要求。**部分结果已实测**：`process_defs --help` 本机运行 exit 0、`BW_RES_PATH=game/res/bigworld` 下 `process_defs -r` 成功导入 `bw_site` 进入 `EntityDescriptionMap::parse`、`ldd` 表明 process_defs/baseapp 仅依赖 libstdc++/libm/libgcc_s/libc（现代 Linux 可满足）。**卡点（互通结果未采集）**：新服务端登录链路**已合入**（BW-06-01-02 挑战协商 + BW-07-01 baseapp 装载/ID 分配），dbapp 账户/角色持久化已由 BW-09-01-01..06 全勾（`lane/bw19-docs` `795948d23`，未并 main），但 `app::run` 仍为最小入口（无 tick loop，同 BW-15-02-01 卡点——该事实经 `795948d23` 的 `apps/server/src/main.rs` 复核仍真），互通两侧无可驱动的完整登录流；另需同时含 `bw_site.py` 与 `.def` 的同一 res 根、完整 EL7 服务端进程面（全角色在 EL7 库上跑）未复现。
 
 #### BW-15-03 Windows
 
