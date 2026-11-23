@@ -26,6 +26,28 @@
 //!   (but never destroys) the reals — those belong to `~Cell` — cancels the
 //!   shutdown timer and clears the physical space.
 //!
+//! BW-08-01-02 adds the CellApp-side `Cell` (`server/cellapp/cell.cpp`) and
+//! its registration (`server/cellapp/cells.cpp`), with the CellAppMgr-facing
+//! bookkeeping the acceptance pins — manager and CellApp agreeing on which
+//! cells exist where:
+//!
+//! * `CellApp::addCell` (`cellapp.cpp:1584-1667`) acquires the space (reusing
+//!   an existing one), refreshes the cell-info mirror, and creates or
+//!   revives the local cell — `Cells::add` registering it by space id while
+//!   the `Cell` constructor installs itself as the space's `pCell_`;
+//! * `Cell::retireCell` (`cell.cpp:638`) toggles the retiring flag;
+//! * `Cell::removeCell` (`cell.cpp:661`) marks the cell removed and banks the
+//!   neighbour-address acks it must collect, `Cell::notifyOfCellRemoval`
+//!   (`cell.cpp:694`) sends an `ackCellRemoval` back and marks the leaving
+//!   neighbour's `CellInfo` pending-delete, and `Cell::ackCellRemoval`
+//!   (`cell.cpp:714`) consumes a banked ack (or banks an early one);
+//! * `Cells::checkOffloads` (`cells.cpp:115-143`) destroys the cells that are
+//!   ready for deletion — removed, no space entities, no pending acks
+//!   (`Cell::isReadyForDeletion`, `cell.cpp:149-159`) — each `~Cell`
+//!   (`cell.cpp:108-131`) clearing the space's `pCell_` back-pointer, and
+//!   `Cells::handleCellAppDeath` (`cells.cpp:96-106`) drops a dead app from
+//!   every ack set.
+//!
 //! The Mercury traffic is not modelled here: the module records the state
 //! transitions and collects the outbound `shutDownSpace` requests into a
 //! [`SpaceOutbound`] outbox, matching the CellAppMgr module's shape. The
@@ -39,6 +61,21 @@
 //!   cell-info tree is BW-08-01-03's topology surface, so until that lands a
 //!   celled space in this module is single-cell by construction — the port
 //!   tests `pCell_ != NULL` only;
+//! * the reference's `Cells::container_` owns the heap `Cell`s, with each
+//!   `Space` holding a raw `pCell_` back-pointer; the port keeps each cell
+//!   inside its space and `Cells` holds the registered keys, so the two
+//!   views agreeing is exactly the invariant the reference's
+//!   `MF_ASSERT_DEV( space_.pCell() == this )` pins;
+//! * `Cell::isReadyForDeletion`'s `realEntities_` and buffered-message gates
+//!   arrive with BW-08-02's entities; until then the space's entity list
+//!   stands in for both;
+//! * the `RemovalAcks` are a `BW::multiset` keyed by app address; the
+//!   manager's addr lists name each app once, and a `multiset::erase(key)`
+//!   erases every occurrence, so the port's sets carry the same semantics;
+//! * `Space::updateGeometry`'s tree read and mark-and-sweep is BW-08-01-03's;
+//!   the mirror population here is the flat record replace, and
+//!   `CellApp::addCell`'s reply, `allSpaceData` and `onGetFirstCell` faces
+//!   are not modelled;
 //! * `PhysicalChunkSpace::isFullyUnloaded` reads
 //!   `EdgeGeometryMappings::isFullyUnloaded`, whose per-axis edge collapse
 //!   belongs to the chunk-loading lane; the port tracks the live mapping
@@ -49,7 +86,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cellappmgr::{Addr, SpaceId};
+use crate::cellappmgr::{Addr, Rect, SpaceId};
 
 /// `EntityID` (`server/common.hpp`), the entity identity across this module.
 pub type EntityId = u32;
@@ -90,6 +127,59 @@ pub struct SpaceOutbound {
     /// default space"` cases (`space.cpp:1127-1131`): the request is still
     /// sent, exactly as the reference logs and proceeds.
     pub default_space_shutdown_errors: Vec<SpaceId>,
+}
+
+// -----------------------------------------------------------------------------
+// Section: The CellInfo mirror
+// -----------------------------------------------------------------------------
+
+/// One `CellInfo` record (`server/cellapp/cell_info.hpp`): the CellAppMgr's
+/// view of one cell of a space, mirrored on the app. The record's identity
+/// is the owning app's address — `Space::cellInfos_` keys it that way.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CellInfoRecord {
+    /// `addr_`: the CellApp running the cell.
+    pub addr: Addr,
+    /// `load_`, streamed by the manager (`CellInfo::updateFromStream`).
+    pub load: f32,
+    /// `rect_`: the range of the world this cell owns.
+    pub rect: Rect,
+    /// `shouldDelete_`: `updateGeometry`'s mark-and-sweep mark (BW-08-01-03).
+    pub should_delete: bool,
+    /// `isDeletePending_`: ghosts stop being created toward a pending-delete
+    /// cell (`setPendingDelete`).
+    pub is_delete_pending: bool,
+    /// `hasBeenCreated_`.
+    pub has_been_created: bool,
+}
+
+impl CellInfoRecord {
+    /// `CellInfo::CellInfo` (`cell_info.cpp:23-39`): everything at its zero
+    /// but the identity and the range.
+    pub fn new(addr: Addr, rect: Rect) -> Self {
+        Self {
+            addr,
+            load: 0.0,
+            rect,
+            should_delete: false,
+            is_delete_pending: false,
+            has_been_created: false,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Section: The CellApp outbound messages
+// -----------------------------------------------------------------------------
+
+/// The outbound messages this module's cell lifecycle would send: the
+/// `ackCellRemoval` replies `Cell::notifyOfCellRemoval` streams, one per
+/// leaving neighbour — `(removed cell app, space)`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CellAppOutbound {
+    /// `bundle.startMessage( CellAppInterface::ackCellRemoval )` sends
+    /// (`cell.cpp:700-706`).
+    pub ack_cell_removals: Vec<(Addr, SpaceId)>,
 }
 
 // -----------------------------------------------------------------------------
@@ -180,12 +270,13 @@ pub struct SpaceTeardown {
 }
 
 // -----------------------------------------------------------------------------
-// Section: The local Cell slot
+// Section: The local Cell
 // -----------------------------------------------------------------------------
 
-/// The local `Cell` of a space. The full cell surface (entity ranges,
-/// retirement, offloads) is BW-08-01-02's; the slot here carries the
-/// identity and the one marker the space-shutdown path reads.
+/// The local `Cell` of a space (`server/cellapp/cell.hpp`) — the CellApp-side
+/// half of one cell, running on this app. The entity surfaces (real-entity
+/// ranges, offloads) are BW-08-02's; the state here is the removal
+/// bookkeeping the CellAppMgr drives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     /// The address of the CellApp running this cell (the reference's
@@ -194,6 +285,110 @@ pub struct Cell {
     /// `Cell::onSpaceGone` was called (`cell.cpp:837`) — the shutdown
     /// timer's first act.
     pub space_gone: bool,
+    /// `isRetiring_`: the manager is moving this cell's load away.
+    is_retiring: bool,
+    /// `isRemoved_`: the manager has asked for this cell to go.
+    is_removed: bool,
+    /// `pendingAcks_`: the CellApps that must still confirm no entities are
+    /// on their way before this cell may die.
+    pending_acks: BTreeSet<Addr>,
+    /// `receivedAcks_`: early acks, banked against a removal that has not
+    /// asked for them yet.
+    received_acks: BTreeSet<Addr>,
+}
+
+impl Cell {
+    /// `Cell::Cell` (`cell.cpp:82-102`): the removal state starts clean and
+    /// the constructor installs itself as the space's cell
+    /// (`space_.pCell( this )`).
+    pub fn new(addr: Addr) -> Self {
+        Self {
+            addr,
+            space_gone: false,
+            is_retiring: false,
+            is_removed: false,
+            pending_acks: BTreeSet::new(),
+            received_acks: BTreeSet::new(),
+        }
+    }
+
+    /// `Cell::retireCell` (`cell.cpp:638-652`): set (or clear) the retiring
+    /// flag — never on a removed cell, and only ever toggling.
+    pub fn retire(&mut self, is_retiring: bool) {
+        debug_assert!(!self.is_removed);
+        debug_assert!(is_retiring == !self.is_retiring);
+        self.is_retiring = is_retiring;
+    }
+
+    /// `Cell::removeCell` (`cell.cpp:661-685`): mark removed and collect the
+    /// acks owed — every address not already banked in `receivedAcks_`.
+    pub fn remove(&mut self, addrs: &[Addr]) {
+        debug_assert!(!self.is_removed);
+        self.is_removed = true;
+        for addr in addrs {
+            if self.received_acks.remove(addr) {
+                // The early ack is consumed.
+            } else {
+                self.pending_acks.insert(*addr);
+            }
+        }
+    }
+
+    /// `Cell::ackCellRemoval` (`cell.cpp:714-739`): a neighbour confirms no
+    /// more entities are coming — consume the pending ack, or bank an early
+    /// one.
+    pub fn ack_removal(&mut self, src: Addr) {
+        if self.pending_acks.remove(&src) {
+            // INFO_MSG "Got removal ack"
+        } else {
+            self.received_acks.insert(src);
+        }
+    }
+
+    /// `Cell::handleCellAppDeath` (`cell.cpp:762-768`): a dead app owes
+    /// nothing any more.
+    pub fn handle_app_death(&mut self, addr: Addr) {
+        self.pending_acks.remove(&addr);
+        self.received_acks.remove(&addr);
+    }
+
+    /// `Cell::reuse` (`cell.cpp:745-755`): revive from a retiring-and-made
+    /// removal — the "Cell did not fully remove" recovery. Returns whether
+    /// the cell was in that state.
+    pub fn reuse(&mut self) -> bool {
+        let is_ok = self.is_retiring && self.is_removed;
+        self.is_retiring = false;
+        self.is_removed = false;
+        is_ok
+    }
+
+    /// `Cell::isReadyForDeletion` (`cell.cpp:149-159`), the BW-08-01 face:
+    /// removed, the space empty and no acks pending. The reference also
+    /// gates on the cell's own `realEntities_` and the app's buffered
+    /// messages — BW-08-02's surfaces.
+    pub fn is_ready_for_deletion(&self, space_entities_empty: bool) -> bool {
+        self.is_removed && space_entities_empty && self.pending_acks.is_empty()
+    }
+
+    /// `isRetiring_`.
+    pub fn is_retiring(&self) -> bool {
+        self.is_retiring
+    }
+
+    /// `isRemoved_`.
+    pub fn is_removed(&self) -> bool {
+        self.is_removed
+    }
+
+    /// `pendingAcks_`.
+    pub fn pending_acks(&self) -> &BTreeSet<Addr> {
+        &self.pending_acks
+    }
+
+    /// `receivedAcks_`.
+    pub fn received_acks(&self) -> &BTreeSet<Addr> {
+        &self.received_acks
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -218,6 +413,9 @@ pub struct Space {
     id: SpaceId,
     cell: Option<Cell>,
     physical: PhysicalSpace,
+    /// `cellInfos_` (`space.hpp:186`): the CellAppMgr's cells of this space,
+    /// mirrored, keyed by the owning app's address.
+    cell_infos: BTreeMap<Addr, CellInfoRecord>,
     /// `entities_`: the entities this process serves here, with the swap-pop
     /// removal-handle order (`space.cpp:302-345`).
     entities: Vec<SpaceEntitySlot>,
@@ -251,6 +449,7 @@ impl Space {
                     mappings: BTreeSet::new(),
                 }
             },
+            cell_infos: BTreeMap::new(),
             entities: Vec::new(),
             shutting_down: false,
             beg_data_seq: 0,
@@ -276,14 +475,53 @@ impl Space {
         self.cell.is_some()
     }
 
+    /// The mutable half of `Space::pCell()`.
+    pub fn cell_mut(&mut self) -> Option<&mut Cell> {
+        self.cell.as_mut()
+    }
+
     /// `Space::pCell( Cell * )` (`space.cpp:147-150`) plus the `Cell`
     /// constructor's `space_.pCell( this )` (`cell.cpp:96`): install the
     /// local cell slot.
     pub fn set_cell(&mut self, addr: Addr) {
-        self.cell = Some(Cell {
-            addr,
-            space_gone: false,
-        });
+        self.cell = Some(Cell::new(addr));
+    }
+
+    /// `~Cell`'s `space_.pCell( NULL )` (`cell.cpp:130`): the cell slot
+    /// clears when the cell is destroyed.
+    pub fn clear_cell(&mut self) {
+        self.cell = None;
+    }
+
+    /// `Space::findCell` (`space.cpp:2338-2350`): the CellAppMgr's record
+    /// for the cell running on `addr`, if the mirror knows one.
+    pub fn find_cell(&self, addr: Addr) -> Option<&CellInfoRecord> {
+        self.cell_infos.get(&addr)
+    }
+
+    /// The mirror itself, keyed by app address.
+    pub fn cell_infos(&self) -> &BTreeMap<Addr, CellInfoRecord> {
+        &self.cell_infos
+    }
+
+    /// Populate the cell-info mirror — the flat face of
+    /// `Space::updateGeometry` (`space.cpp:885-958`); the tree read and the
+    /// mark-and-sweep arrive with BW-08-01-03.
+    pub fn set_cell_infos(&mut self, records: &[CellInfoRecord]) {
+        self.cell_infos = records.iter().cloned().map(|r| (r.addr, r)).collect();
+    }
+
+    /// `Space::setPendingCellDelete` (`space.cpp:2357-2366`): mark the
+    /// leaving neighbour's record — ghosts should no longer be created
+    /// toward it. Returns whether the mirror knew the address.
+    pub fn set_pending_cell_delete(&mut self, addr: Addr) -> bool {
+        match self.cell_infos.get_mut(&addr) {
+            Some(record) => {
+                record.is_delete_pending = true;
+                true
+            }
+            None => false,
+        }
     }
 
     /// The physical backend, read-only.
@@ -422,14 +660,17 @@ impl Space {
     /// expiry — `onSpaceGone` on the cell, and the cell destroyed when it is
     /// the single one and the space is empty. The destructor of the
     /// reference's `Cell` clears the space's pointer back, which is the
-    /// slot removal here.
-    pub fn handle_timeout(&mut self) {
-        if let Some(cell) = self.cell.as_mut() {
-            cell.space_gone = true;
-            if self.has_single_cell() && self.entities.is_empty() {
-                self.cell = None;
-            }
+    /// slot removal here. Returns whether the cell was destroyed.
+    pub fn handle_timeout(&mut self) -> bool {
+        let Some(cell) = self.cell.as_mut() else {
+            return false;
+        };
+        cell.space_gone = true;
+        if self.has_single_cell() && self.entities.is_empty() {
+            self.clear_cell();
+            return true;
         }
+        false
     }
 
     /// `Space::isFullyUnloaded` (`space.cpp:1230-1248`): no entities, and
@@ -556,6 +797,11 @@ impl Spaces {
         self.container.values()
     }
 
+    /// The mutable half of [`Spaces::iter`].
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Space> {
+        self.container.values_mut()
+    }
+
     /// `Spaces::create` (`spaces.cpp:44-51`). The reference asserts the id
     /// is not present (`MF_ASSERT( this->find( id ) == NULL )`) and would
     /// otherwise leak the old entry; the port returns `None` for a duplicate
@@ -602,6 +848,303 @@ impl Spaces {
             }
         }
         doomed
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Section: The cell registry
+// -----------------------------------------------------------------------------
+
+/// The CellApp's collection of `Cell`s (`server/cellapp/cells.hpp`). The
+/// reference's `container_` maps space ids to the heap `Cell`s, with each
+/// `Space` holding a raw `pCell_` back-pointer; the port keeps each cell
+/// inside its space, so the registry holds the registered keys — the two
+/// views agreeing is the invariant every operation here maintains.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cells {
+    /// `container_`, ordered by space id like the reference's `BW::map`.
+    container: BTreeSet<SpaceId>,
+}
+
+impl Cells {
+    /// A fresh, empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `Cells::add` (`cells.cpp:159-166`): register one cell per space. The
+    /// reference asserts the space is not registered; the port refuses a
+    /// duplicate id and keeps the original.
+    pub fn add(&mut self, space_id: SpaceId) -> bool {
+        self.container.insert(space_id)
+    }
+
+    /// `Cells::destroy` (`cells.cpp:44-61`): drop a registered cell.
+    /// Returns whether it was registered.
+    pub fn destroy(&mut self, space_id: SpaceId) -> bool {
+        self.container.remove(&space_id)
+    }
+
+    /// Whether the space has its cell registered.
+    pub fn contains(&self, space_id: SpaceId) -> bool {
+        self.container.contains(&space_id)
+    }
+
+    /// `Cells::size`.
+    pub fn len(&self) -> usize {
+        self.container.len()
+    }
+
+    /// `Cells::empty`.
+    pub fn is_empty(&self) -> bool {
+        self.container.is_empty()
+    }
+
+    /// The registered space ids, in id order.
+    pub fn iter(&self) -> impl Iterator<Item = SpaceId> + '_ {
+        self.container.iter().copied()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Section: The CellApp
+// -----------------------------------------------------------------------------
+
+/// What [`CellApp::add_cell`] did — the `CellApp::addCell` branches
+/// (`cellapp.cpp:1607-1666`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddCellOutcome {
+    /// The `CRITICAL_MSG "Failed to add a cell for space %u"` branch: the
+    /// space's mirror holds no `CellInfo` for this app. The space itself has
+    /// been created or reused and its mirror refreshed — only the cell is
+    /// refused.
+    NoCellInfo,
+    /// A fresh `Cell` was made and registered
+    /// (`new Cell( *pSpace, *pCellInfo )` + `cells_.add`).
+    Created {
+        /// How the space itself was acquired (`Spaces::acquire`).
+        space: SpaceAcquisition,
+    },
+    /// The `WARNING_MSG "Cell did not fully remove; reusing."` branch: the
+    /// space still holds its cell and `Cell::reuse` revives it.
+    Reused {
+        /// How the space itself was acquired (`Spaces::acquire`).
+        space: SpaceAcquisition,
+    },
+}
+
+/// The CellApp-side state this module tracks (`CellApp`, `cellapp.cpp`):
+/// the spaces this process serves, the cells registered on them, and the
+/// configuration context their lifecycles read.
+#[derive(Clone, Debug, Default)]
+pub struct CellApp {
+    /// `pSpaces_`.
+    spaces: Spaces,
+    /// `cells_`.
+    cells: Cells,
+    /// The `CellApp::instance()` state the lifecycles read.
+    context: CellAppContext,
+}
+
+impl CellApp {
+    /// A fresh app under the given configuration.
+    pub fn new(context: CellAppContext) -> Self {
+        Self {
+            spaces: Spaces::new(),
+            cells: Cells::new(),
+            context,
+        }
+    }
+
+    /// The spaces this process serves.
+    pub fn spaces(&self) -> &Spaces {
+        &self.spaces
+    }
+
+    /// The mutable half of [`CellApp::spaces`].
+    pub fn spaces_mut(&mut self) -> &mut Spaces {
+        &mut self.spaces
+    }
+
+    /// `cells_`.
+    pub fn cells(&self) -> &Cells {
+        &self.cells
+    }
+
+    /// The configuration context.
+    pub fn context(&self) -> &CellAppContext {
+        &self.context
+    }
+
+    /// `CellApp::addCell` (`cellapp.cpp:1584-1667`), without the reply and
+    /// the `allSpaceData`/`onGetFirstCell` faces: acquire the space — the
+    /// reuse branch runs `Space::reuse` — refresh the cell-info mirror,
+    /// then create or revive this app's cell on it.
+    pub fn add_cell(
+        &mut self,
+        space_id: SpaceId,
+        geometry: &[CellInfoRecord],
+        own_addr: Addr,
+        delegate_mode: bool,
+    ) -> AddCellOutcome {
+        let (acquisition, space) = self.spaces.acquire(space_id, delegate_mode);
+        if matches!(acquisition, SpaceAcquisition::Reused) {
+            space.reuse();
+        }
+        space.set_cell_infos(geometry);
+
+        let info_addr = match space.find_cell(own_addr) {
+            Some(info) => info.addr,
+            None => {
+                // CRITICAL_MSG "Failed to add a cell for space %u"
+                return AddCellOutcome::NoCellInfo;
+            }
+        };
+
+        if let Some(cell) = space.cell_mut() {
+            // WARNING_MSG "Cell did not fully remove; reusing." — the
+            // reference asserts the surviving cell is the same one.
+            debug_assert_eq!(cell.addr, info_addr);
+            cell.reuse();
+            return AddCellOutcome::Reused { space: acquisition };
+        }
+
+        space.set_cell(info_addr);
+        let newly_registered = self.cells.add(space_id);
+        debug_assert!(newly_registered);
+        AddCellOutcome::Created { space: acquisition }
+    }
+
+    /// `Cell::retireCell` for the cell of `space_id`: set or clear the
+    /// retiring flag. Returns whether the cell exists.
+    pub fn retire_cell(&mut self, space_id: SpaceId, is_retiring: bool) -> bool {
+        let Some(cell) = self.cell_of_mut(space_id) else {
+            return false;
+        };
+        cell.retire(is_retiring);
+        true
+    }
+
+    /// `Cell::removeCell` for the cell of `space_id`: mark removed and
+    /// collect the neighbour acks. Returns whether the cell exists.
+    pub fn remove_cell(&mut self, space_id: SpaceId, addrs: &[Addr]) -> bool {
+        let Some(cell) = self.cell_of_mut(space_id) else {
+            return false;
+        };
+        cell.remove(addrs);
+        true
+    }
+
+    /// `Cell::notifyOfCellRemoval` (`cell.cpp:694-707`) for the cell this
+    /// app holds in `space_id`: reply `ackCellRemoval` to the leaving cell
+    /// and mark its `CellInfo` pending-delete in this app's mirror of the
+    /// space. Returns whether this app holds a cell there.
+    pub fn notify_of_cell_removal(
+        &mut self,
+        space_id: SpaceId,
+        removed_addr: Addr,
+        out: &mut CellAppOutbound,
+    ) -> bool {
+        let Some(space) = self.spaces.find_mut(space_id) else {
+            return false;
+        };
+        if !space.has_cell() {
+            return false;
+        }
+        out.ack_cell_removals.push((removed_addr, space_id));
+        space.set_pending_cell_delete(removed_addr);
+        true
+    }
+
+    /// `Cell::ackCellRemoval` for the cell of `space_id`. Returns whether
+    /// the cell exists.
+    pub fn ack_cell_removal(&mut self, space_id: SpaceId, src: Addr) -> bool {
+        let Some(cell) = self.cell_of_mut(space_id) else {
+            return false;
+        };
+        cell.ack_removal(src);
+        true
+    }
+
+    /// `Cells::handleCellAppDeath` (`cells.cpp:96-106`): a dead app owes no
+    /// acks anywhere.
+    pub fn handle_cell_app_death(&mut self, addr: Addr) {
+        for space in self.spaces.iter_mut() {
+            if let Some(cell) = space.cell_mut() {
+                cell.handle_app_death(addr);
+            }
+        }
+    }
+
+    /// `Cell::isReadyForDeletion` for the cell of `space_id`: `None` when
+    /// this app holds no cell there.
+    pub fn is_cell_ready_for_deletion(&self, space_id: SpaceId) -> Option<bool> {
+        let space = self.spaces.find(space_id)?;
+        let cell = space.cell()?;
+        Some(cell.is_ready_for_deletion(space.num_entities() == 0))
+    }
+
+    /// `Cells::checkOffloads` (`cells.cpp:115-143`): destroy every cell
+    /// that is ready for deletion — removed, its space empty and no acks
+    /// pending — and report the destroyed space ids.
+    pub fn check_offloads(&mut self) -> Vec<SpaceId> {
+        let doomed: Vec<SpaceId> = self
+            .cells
+            .iter()
+            .filter(|id| self.is_cell_ready_for_deletion(*id) == Some(true))
+            .collect();
+        for id in &doomed {
+            self.destroy_cell(*id);
+        }
+        doomed
+    }
+
+    /// `CellApp::destroyCell` (`cellapp.cpp:1487-1490`) — `Cells::destroy`
+    /// plus `~Cell`'s `space_.pCell( NULL )` (`cell.cpp:130`). Returns
+    /// whether the cell was registered.
+    pub fn destroy_cell(&mut self, space_id: SpaceId) -> bool {
+        if !self.cells.destroy(space_id) {
+            return false;
+        }
+        if let Some(space) = self.spaces.find_mut(space_id) {
+            space.clear_cell();
+        }
+        true
+    }
+
+    /// `Space::handleTimeout`'s destroy, driven from the app: the expiry
+    /// runs on the space and a destroyed cell unregisters, exactly as the
+    /// reference's `destroyCell` call does. Returns whether the space
+    /// exists.
+    pub fn handle_space_timeout(&mut self, space_id: SpaceId) -> bool {
+        let Some(space) = self.spaces.find_mut(space_id) else {
+            return false;
+        };
+        let destroyed = space.handle_timeout();
+        if destroyed {
+            self.cells.destroy(space_id);
+        }
+        true
+    }
+
+    /// `Cells::destroyAll` (`cells.cpp:64-74`): the shutdown drain — every
+    /// registered cell goes, whatever state it is in. Returns how many.
+    pub fn destroy_all_cells(&mut self) -> usize {
+        let ids: Vec<SpaceId> = self.cells.iter().collect();
+        for id in &ids {
+            self.destroy_cell(*id);
+        }
+        ids.len()
+    }
+
+    /// The cell of `space_id` — the registered-cell read accessor.
+    pub fn cell_of(&self, space_id: SpaceId) -> Option<&Cell> {
+        self.spaces.find(space_id)?.cell()
+    }
+
+    /// The cell of `space_id`, mutable — the registered-cell accessor.
+    fn cell_of_mut(&mut self, space_id: SpaceId) -> Option<&mut Cell> {
+        self.spaces.find_mut(space_id)?.cell_mut()
     }
 }
 
@@ -1035,5 +1578,456 @@ mod tests {
         let teardown = space.destroy();
         assert_eq!(teardown.destroyed_ghosts, 1);
         assert_eq!(teardown.real_warnings, 0);
+    }
+
+    // -------------------------------------------------------------------
+    // TDD: BW-08-01-02 创建与注册 Cell — 管理器和 CellApp 状态一致
+    // -------------------------------------------------------------------
+
+    /// The `CellApp::addCell` registration: the cell lands in the registry,
+    /// the space holds it as its local cell, and the manager's and the
+    /// CellApp's views of the space's cells agree — the acceptance.
+    #[test]
+    fn the_manager_and_the_cellapp_agree_on_a_spaces_cells() {
+        use crate::cellappmgr::{AddAppOutcome, CellAppMgr, Outbound, Space as MgrSpace};
+
+        let app1_addr = (0x7f000001, 40001);
+        let app2_addr = (0x7f000001, 40002);
+        let space_id = 1;
+
+        // The manager's side: one space, first cell on the first app.
+        let mut mgr = CellAppMgr::new();
+        mgr.set_base_app((0x7f000001, 9000));
+        mgr.set_db_app_alpha((0x7f000001, 9001));
+        mgr.allow_new_cell_apps = true;
+        assert!(matches!(
+            mgr.add_app(app1_addr, 0, 0),
+            AddAppOutcome::Accepted { .. }
+        ));
+        assert!(matches!(
+            mgr.add_app(app2_addr, 0, 0),
+            AddAppOutcome::Accepted { .. }
+        ));
+        mgr.add_space(MgrSpace::new(space_id, false, 0));
+        assert_eq!(mgr.add_cell_for_app(space_id, app1_addr), Some(app1_addr));
+        assert_eq!(mgr.outbox, vec![Outbound::AddCell(app1_addr, space_id)]);
+
+        // The CellApp side: the geometry the addCell message carries is the
+        // manager's cells of the space.
+        let geometry = |mgr: &CellAppMgr| -> Vec<CellInfoRecord> {
+            mgr.spaces[&space_id]
+                .cells()
+                .iter()
+                .map(|leaf| CellInfoRecord::new(leaf.app, leaf.range))
+                .collect()
+        };
+        let mut app1 = CellApp::new(started());
+        assert_eq!(
+            app1.add_cell(space_id, &geometry(&mgr), app1_addr, false),
+            AddCellOutcome::Created {
+                space: SpaceAcquisition::Created
+            }
+        );
+
+        // Both views hold exactly the one cell, on the same app.
+        assert_eq!(mgr.spaces[&space_id].num_cells(), 1);
+        assert_eq!(app1.cells().len(), 1);
+        assert!(app1.cells().contains(space_id));
+        let space = app1.spaces().find(space_id).expect("the space");
+        assert_eq!(space.cell().expect("the local cell").addr, app1_addr);
+
+        // A second cell on a second app: both sides grow to two.
+        assert_eq!(mgr.add_cell_for_app(space_id, app2_addr), Some(app2_addr));
+        let two_cell_geometry = geometry(&mgr);
+        let mut app2 = CellApp::new(started());
+        assert_eq!(
+            app2.add_cell(space_id, &two_cell_geometry, app2_addr, false),
+            AddCellOutcome::Created {
+                space: SpaceAcquisition::Created
+            }
+        );
+        // The first app's addCell refresh carries the same two-cell
+        // geometry; its cell survives it (the reusing branch).
+        assert_eq!(
+            app1.add_cell(space_id, &two_cell_geometry, app1_addr, false),
+            AddCellOutcome::Reused {
+                space: SpaceAcquisition::Reused
+            }
+        );
+        assert_eq!(mgr.spaces[&space_id].num_cells(), 2);
+        assert_eq!(app1.cells().len() + app2.cells().len(), 2);
+
+        // The removal, driven from the manager's view: the manager erases
+        // the second app's cell from the space, and the addr list the
+        // removeCell message carries is the other cells' apps
+        // (`Cells::notifyOfCellRemoval`, cellappmgr/cells.cpp:83-113).
+        assert!(mgr.spaces.get_mut(&space_id).unwrap().erase_cell(app2_addr));
+        let neighbours: Vec<Addr> = mgr.spaces[&space_id]
+            .cells()
+            .iter()
+            .map(|leaf| leaf.app)
+            .filter(|addr| *addr != app2_addr)
+            .collect();
+        assert_eq!(neighbours, vec![app1_addr]);
+
+        // The leaving app gets removeCell; the staying app gets
+        // notifyOfCellRemoval, acks back and marks the leaver pending.
+        assert!(app2.remove_cell(space_id, &neighbours));
+        let mut out1 = CellAppOutbound::default();
+        assert!(app1.notify_of_cell_removal(space_id, app2_addr, &mut out1));
+        assert_eq!(out1.ack_cell_removals, vec![(app2_addr, space_id)]);
+        assert!(
+            app1.spaces()
+                .find(space_id)
+                .unwrap()
+                .find_cell(app2_addr)
+                .expect("the mirror record")
+                .is_delete_pending
+        );
+
+        // The ack lands on the leaving cell: no acks pending, space empty —
+        // ready to die.
+        assert!(!app2.is_cell_ready_for_deletion(space_id).unwrap());
+        assert!(app2.ack_cell_removal(space_id, app1_addr));
+        assert_eq!(app2.is_cell_ready_for_deletion(space_id), Some(true));
+        assert_eq!(app2.check_offloads(), vec![space_id]);
+
+        // The end state, both views: the manager sees one cell, the first
+        // app holds it and the second app holds none.
+        assert_eq!(mgr.spaces[&space_id].num_cells(), 1);
+        assert_eq!(app1.cells().len(), 1);
+        assert!(app2.cells().is_empty());
+        assert!(app2.spaces().find(space_id).unwrap().cell().is_none());
+    }
+
+    /// The `CRITICAL_MSG "Failed to add a cell for space %u"` branch
+    /// (`cellapp.cpp:1662-1666`): a space with no `CellInfo` for this app
+    /// gets no cell — but the space itself exists and holds the geometry.
+    #[test]
+    fn add_cell_refuses_without_a_cell_info() {
+        let mut app = CellApp::new(started());
+        let other_geometry = [CellInfoRecord::new(
+            (0x7f000001, 5000),
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert_eq!(
+            app.add_cell(4, &other_geometry, (0x7f000001, 6000), false),
+            AddCellOutcome::NoCellInfo
+        );
+        let space = app.spaces().find(4).expect("the space exists");
+        assert!(!space.has_cell());
+        assert!(app.cells().is_empty());
+        assert_eq!(space.cell_infos().len(), 1);
+    }
+
+    /// `Cell::reuse` (`cell.cpp:745-755`) through `add_cell`: a cell left
+    /// retiring-and-removed by an aborted removal revives, and the return
+    /// says whether that was the state it was in.
+    #[test]
+    fn add_cell_revives_a_cell_that_did_not_fully_remove() {
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        let mut app = CellApp::new(started());
+
+        // Create, then abort a removal mid-flight: retiring and removed.
+        assert!(matches!(
+            app.add_cell(7, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+        assert!(app.retire_cell(7, true));
+        assert!(app.remove_cell(7, &[(0x7f000001, 5000), (0x7f000001, 5001)]));
+        assert!(app.cell_of(7).expect("the cell").is_retiring());
+        // One neighbour acked; the other still pends, so the cell lingers.
+        assert!(app.ack_cell_removal(7, (0x7f000001, 5000)));
+        assert!(
+            app.cell_of(7)
+                .unwrap()
+                .pending_acks()
+                .contains(&(0x7f000001, 5001))
+        );
+
+        // The re-add revives the cell in place — same registration.
+        assert_eq!(
+            app.add_cell(7, &geometry, own_addr, false),
+            AddCellOutcome::Reused {
+                space: SpaceAcquisition::Reused
+            }
+        );
+        assert_eq!(app.cells().len(), 1);
+        let cell = app.cell_of(7).expect("the revived cell");
+        assert!(!cell.is_retiring());
+        assert!(!cell.is_removed());
+        // `Cell::reuse` resets only the two flags (`cell.cpp:745-755`) —
+        // the pending ack of the unfinished removal survives it.
+        assert!(cell.pending_acks().contains(&(0x7f000001, 5001)));
+    }
+
+    /// `Cell::retireCell` (`cell.cpp:638-652`): the flag sets and clears,
+    /// on the registered cell of the space.
+    #[test]
+    fn retire_cell_toggles_the_flag() {
+        let mut app = CellApp::new(started());
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert!(matches!(
+            app.add_cell(8, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+
+        assert!(app.retire_cell(8, true));
+        assert!(app.cell_of(8).unwrap().is_retiring());
+        assert!(app.retire_cell(8, false));
+        assert!(!app.cell_of(8).unwrap().is_retiring());
+
+        // A space with no cell answers false.
+        assert!(!app.retire_cell(99, true));
+    }
+
+    /// `Cell::removeCell` (`cell.cpp:661-685`) + `Cell::ackCellRemoval`
+    /// (`cell.cpp:714-739`) + `Cells::checkOffloads` (`cells.cpp:115-143`):
+    /// the removal only completes once every neighbour has acked.
+    #[test]
+    fn a_removed_cell_dies_only_after_every_neighbour_acked() {
+        let mut app = CellApp::new(started());
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert!(matches!(
+            app.add_cell(9, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+
+        let neighbours = [(0x7f000001, 5000), (0x7f000001, 5001)];
+        assert!(app.remove_cell(9, &neighbours));
+        assert!(app.cell_of(9).unwrap().is_removed());
+
+        // Removed, space empty, but one ack still pending: not ready.
+        assert!(app.ack_cell_removal(9, neighbours[0]));
+        assert_eq!(app.is_cell_ready_for_deletion(9), Some(false));
+        assert!(app.check_offloads().is_empty());
+        assert!(app.cells().contains(9));
+
+        // The last ack completes it.
+        assert!(app.ack_cell_removal(9, neighbours[1]));
+        assert_eq!(app.is_cell_ready_for_deletion(9), Some(true));
+        assert_eq!(app.check_offloads(), vec![9]);
+
+        // The registry and the space slot cleared together.
+        assert!(app.cells().is_empty());
+        assert!(app.spaces().find(9).unwrap().cell().is_none());
+        // A further removal of the dead cell is refused.
+        assert!(!app.remove_cell(9, &neighbours));
+    }
+
+    /// `Cell::ackCellRemoval`'s bank branch (`cell.cpp:729-738`): an ack
+    /// that arrives before the removal is banked and then consumed by it.
+    #[test]
+    fn an_early_ack_is_banked_and_consumed_by_the_removal() {
+        let mut app = CellApp::new(started());
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert!(matches!(
+            app.add_cell(10, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+
+        // The neighbour acks before the manager's removal arrives.
+        let neighbour = (0x7f000001, 5000);
+        assert!(app.ack_cell_removal(10, neighbour));
+        assert!(
+            app.cell_of(10)
+                .unwrap()
+                .received_acks()
+                .contains(&neighbour)
+        );
+
+        // The removal consumes the banked ack — nothing pending.
+        assert!(app.remove_cell(10, &[neighbour]));
+        assert!(app.cell_of(10).unwrap().pending_acks().is_empty());
+        assert_eq!(app.is_cell_ready_for_deletion(10), Some(true));
+        assert_eq!(app.check_offloads(), vec![10]);
+    }
+
+    /// `Cell::isReadyForDeletion`'s space gate (`cell.cpp:156`): the
+    /// space's entities pin the cell even with every ack in.
+    #[test]
+    fn a_cell_with_space_entities_is_not_ready_for_deletion() {
+        let mut app = CellApp::new(started());
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert!(matches!(
+            app.add_cell(11, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+        app.spaces_mut().find_mut(11).unwrap().add_entity(61, false);
+
+        assert!(app.remove_cell(11, &[]));
+        assert_eq!(app.is_cell_ready_for_deletion(11), Some(false));
+        assert!(app.check_offloads().is_empty());
+
+        // The entity leaving releases the cell.
+        let context = started();
+        let mut out = SpaceOutbound::default();
+        assert!(
+            app.spaces_mut()
+                .find_mut(11)
+                .unwrap()
+                .remove_entity(61, &context, &mut out)
+        );
+        assert_eq!(app.check_offloads(), vec![11]);
+    }
+
+    /// `Cell::handleCellAppDeath` (`cell.cpp:762-768`) through
+    /// `Cells::handleCellAppDeath` (`cells.cpp:96-106`): a dead app's acks
+    /// vanish from every cell of the app.
+    #[test]
+    fn a_dead_app_loses_the_acks_it_owed() {
+        let mut app = CellApp::new(started());
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert!(matches!(
+            app.add_cell(12, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+
+        let dead = (0x7f000001, 5000);
+        assert!(app.remove_cell(12, &[dead]));
+        assert_eq!(app.is_cell_ready_for_deletion(12), Some(false));
+
+        app.handle_cell_app_death(dead);
+        assert!(app.cell_of(12).unwrap().pending_acks().is_empty());
+        assert_eq!(app.is_cell_ready_for_deletion(12), Some(true));
+    }
+
+    /// `CellApp::destroyCell` + `Cells::destroyAll` (`cells.cpp:64-74`): the
+    /// shutdown drain unregisters every cell and clears every slot,
+    /// whatever state the cells are in.
+    #[test]
+    fn destroy_all_cells_drains_the_registry_and_the_slots() {
+        let mut app = CellApp::new(started());
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert!(matches!(
+            app.add_cell(13, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+        assert!(matches!(
+            app.add_cell(14, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+        // One cell mid-removal, one clean.
+        assert!(app.remove_cell(13, &[(0x7f000001, 5000)]));
+
+        assert_eq!(app.destroy_all_cells(), 2);
+        assert!(app.cells().is_empty());
+        for id in [13, 14] {
+            assert!(app.spaces().find(id).unwrap().cell().is_none());
+        }
+        // The spaces themselves stay, cellless.
+        assert_eq!(app.spaces().len(), 2);
+    }
+
+    /// `Space::handleTimeout`'s destroy, driven from the app
+    /// (`Space::handleTimeout`, `space.cpp:1037-1050`): a destroyed cell
+    /// unregisters, so the registry and the slot agree.
+    #[test]
+    fn the_space_shutdown_timer_unregisters_the_destroyed_cell() {
+        let mut app = CellApp::new(started());
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert!(matches!(
+            app.add_cell(15, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+
+        assert!(app.handle_space_timeout(15));
+        assert!(app.cells().is_empty());
+        assert!(app.spaces().find(15).unwrap().cell().is_none());
+        // The space stays until `deleteOldSpaces` reclaims it, exactly as
+        // the -01 chain pins.
+        assert_eq!(app.spaces_mut().delete_old_spaces(), vec![15]);
+    }
+
+    /// The remaining lifecycle edges: the chunk-backend default, the
+    /// config accessor, the space iterators, the duplicate-entity refusal
+    /// (`Space::addEntity`'s `MF_ASSERT` face) and the false answers of the
+    /// registry lookups on unknown spaces and cellless spaces.
+    #[test]
+    fn the_remaining_lifecycle_edges_answer_false_and_walk_the_map() {
+        assert_eq!(
+            PhysicalSpace::default(),
+            PhysicalSpace::Chunk {
+                mappings: BTreeSet::new()
+            }
+        );
+
+        let mut app = CellApp::new(started());
+        assert!(app.context().has_started);
+        assert!(!app.context().use_default_space);
+
+        let own_addr = (0x7f000001, 6000);
+        let geometry = [CellInfoRecord::new(
+            own_addr,
+            crate::cellappmgr::Rect::unbounded(),
+        )];
+        assert!(matches!(
+            app.add_cell(20, &geometry, own_addr, false),
+            AddCellOutcome::Created { .. }
+        ));
+        app.spaces_mut().create(21, false);
+
+        // The iterators walk every served space in id order.
+        assert_eq!(
+            app.spaces().iter().map(|s| s.id()).collect::<Vec<_>>(),
+            vec![20, 21]
+        );
+        assert_eq!(
+            app.spaces_mut()
+                .iter_mut()
+                .map(|s| s.id())
+                .collect::<Vec<_>>(),
+            vec![20, 21]
+        );
+
+        // The duplicate-entity add is refused.
+        let space = app.spaces_mut().find_mut(20).unwrap();
+        assert_eq!(space.add_entity(70, false), Some(0));
+        assert_eq!(space.add_entity(70, false), None);
+
+        // Unknown records, unknown spaces and cellless spaces refuse.
+        assert!(
+            !app.spaces_mut()
+                .find_mut(20)
+                .unwrap()
+                .set_pending_cell_delete((9, 9))
+        );
+        assert!(!app.notify_of_cell_removal(99, (9, 9), &mut CellAppOutbound::default()));
+        assert!(!app.notify_of_cell_removal(21, (9, 9), &mut CellAppOutbound::default()));
+        assert!(!app.ack_cell_removal(99, (9, 9)));
+        assert!(!app.destroy_cell(99));
+        assert!(!app.handle_space_timeout(99));
     }
 }
