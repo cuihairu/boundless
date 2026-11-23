@@ -324,6 +324,8 @@ mod tests {
         b.keep(); // leave for the cleanup below
         drop(b);
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
     #[test]
     fn the_base_env_replaces_the_default_wholesale() {
         assert_eq!(

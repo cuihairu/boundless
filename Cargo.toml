@@ -34,6 +34,7 @@ libc = "0.2"
 md-5 = "0.10"
 # Asset rules / directory dependency patterns (the reference uses RE2).
 regex = "1"
+sha2 = "0.10"
 # Blowfish ECB for the session encryption (BW-02-05-02): the reference uses
 # OpenSSL's `BF_set_key`/`BF_ecb_encrypt`; this crate is the standard Blowfish
 # (wire-tested against Eric Young's published vectors in the unit tests).
@@ -45,7 +46,7 @@ foundation = { path = "crates/foundation" }
 platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
 mercury = { path = "crates/mercury" }
-# contracts = { path = "crates/contracts" }  # re-add when a role runtime consumes it
+contracts = { path = "crates/contracts" }
 entitydef = { path = "crates/entitydef" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }

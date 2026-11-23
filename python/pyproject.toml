@@ -1,20 +1,11 @@
 [build-system]
-<<<<<<< HEAD
-requires = ["setuptools>=61"]
-=======
 requires = ["setuptools>=68"]
->>>>>>> origin/lane/bw19-docs
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boundless"
 version = "0.1.0"
-<<<<<<< HEAD
-description = "The Boundless engine Python module"
-license = "Apache-2.0"
-=======
 description = "Boundless Python module: the installable surface the engine's Python half shares."
->>>>>>> origin/lane/bw19-docs
 requires-python = ">=3.12"
 
 [tool.setuptools]

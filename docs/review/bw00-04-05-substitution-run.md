@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # BW-00-04-05 — 单组件替换运行
 
 验收：报告注明被替换角色。
@@ -53,7 +52,6 @@ python-host 回调）无可替换的新半——按"原版证据 + 点名缺失"
 （oracle 首字节改写）替换实体定义检查器，断言替换记录首列为
 `entitydef-checker` 且判 FAIL。自证通过即证明：报告**确实注明被替换角色**，
 且替换对照能看见错误替换。
-=======
 # BW-00-04-05 单组件替换运行
 
 > 证据面（BW-00-04-05 验收：报告注明被替换角色）。
@@ -100,4 +98,3 @@ python-host 回调）无可替换的新半——按"原版证据 + 点名缺失"
 - 报告：`reference/bw00_04_05_substitution.json`。
 
 生成：`substitution_run.py` + `substitution_doc.py`。
->>>>>>> origin/lane/bw19-docs

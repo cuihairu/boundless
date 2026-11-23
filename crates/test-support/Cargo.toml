@@ -18,6 +18,7 @@ server-runtime = { workspace = true }
 # libc: kill(2) against a role's process group when tearing the process
 # tree down (BW-18-02-05).
 libc = { workspace = true }
+platform = { workspace = true }
 # python-host: the embedded interpreter a profiled script runs in, reached
 # through `Interpreter::run_simple_string` (BW-23-01-02).
 python-host = { workspace = true }

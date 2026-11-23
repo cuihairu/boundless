@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # BW-00-04-02 — 采集 Python 回调夹具
 
 验收：保留顺序、参数与可忽略字段。
@@ -70,7 +69,6 @@ b、c 同 level 0，c 后注册，稳定序为 a(-1) → b(0) → c(0)。
 3. **返回**：results 与监听器一一对应，位置一致（`None` 表示无返回值或
    抛异常）。
 4. **可忽略**：`ts` 字段不比较。
-=======
 # BW-00-04-02 Python 回调夹具
 
 > 证据面（BW-00-04-02 验收：保留顺序、参数与可忽略字段）。
@@ -126,4 +124,3 @@ b、c 同 level 0，c 后注册，稳定序为 a(-1) → b(0) → c(0)。
 - 夹具：`reference/bw00_04_02_callback_fixtures.json`。
 
 生成：`python_callback_fixture.py` + `python_callback_fixture_doc.py`。
->>>>>>> origin/lane/bw19-docs

@@ -96,6 +96,12 @@ impl From<StreamError> for ZipStreamError {
         match err {
             StreamError::Truncated => Self::Truncated,
             StreamError::PackedIntTooLarge => Self::LengthTooLarge,
+            // The bw00-generation stream carries compression-side failures
+            // (encode/decode failure, impossible declared ratio); a zip
+            // stream reading path can only surface them as corrupt data.
+            StreamError::CompressionFailed | StreamError::CompressionRatioExceeded => {
+                Self::InflateFailed
+            }
         }
     }
 }

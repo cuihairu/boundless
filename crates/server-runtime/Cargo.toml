@@ -10,7 +10,9 @@ repository.workspace = true
 [dependencies]
 foundation = { workspace = true }
 libc = { workspace = true }
-platform = { workspace = true }  # the signal syscalls land here (BW-16-02-01)
+contracts = { workspace = true }
+platform = { workspace = true }
+sha2 = { workspace = true }  # the signal syscalls land here (BW-16-02-01)
 # mercury: the dispatcher's network pass is `mercury::poller::EventPoller`
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
