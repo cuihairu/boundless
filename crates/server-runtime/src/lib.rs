@@ -38,6 +38,7 @@ pub mod relogon;
 pub mod reviver;
 pub mod script_timers;
 pub mod server_app;
+pub mod server_download;
 pub mod server_finder;
 pub mod services_map;
 pub mod shared_data;
