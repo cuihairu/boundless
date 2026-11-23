@@ -5,8 +5,11 @@
 //! the fixed input a run is driven by (seed, account pool, concurrency shape)
 //! and the metrics the results are aggregated into.
 
+pub mod bot;
 pub mod executor;
 pub mod scenario;
 
+pub use bot::{transport_from_config, Bot, ConnState, NULL_ENTITY_ID, TICK_FREQUENCY, TICK_PERIOD,
+    Transport, FD_PER_BOT};
 pub use executor::{Executor, StageTimeline};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
