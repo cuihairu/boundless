@@ -1,0 +1,16 @@
+[package]
+name = "bots"
+description = "BW-12-04 Bots tool port (server/tools/bots): config face first"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The `BWConfig` chain the options read from (`BWConfig::update`, the
+# same reader `ServerAppConfig` uses).
+server-runtime = { workspace = true }
+# The fixture-facing resource init the tests share with the pipeline
+# tests (`BwResource::init_paths`).
+resources = { workspace = true }

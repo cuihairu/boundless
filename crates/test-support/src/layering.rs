@@ -45,7 +45,7 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
             Some(LAYER_DOMAIN)
         }
         "server-runtime" => Some(LAYER_ROLE_RUNTIME),
-        "boundless-server" | "client" | "test-support" => Some(LAYER_APPLICATION),
+        "boundless-server" | "client" | "bots" | "test-support" => Some(LAYER_APPLICATION),
         _ => None,
     }
 }
@@ -595,6 +595,7 @@ mod tests {
             "watcher",
             "server-runtime",
             "boundless-server",
+            "bots",
             "test-support",
         ] {
             assert!(layer_of(name).is_some(), "{name} has no layer");

@@ -21,6 +21,7 @@ members = [
     "crates/message_logger",
     "crates/client",
     "crates/load",
+    "crates/bots",
     "apps/server",
 ]
 

@@ -134,6 +134,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bots"
+version = "0.1.0"
+dependencies = [
+ "resources",
+ "server-runtime",
+]
+
+[[package]]
 name = "boundless-server"
 version = "0.1.0"
 dependencies = [
