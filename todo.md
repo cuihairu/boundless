@@ -1194,7 +1194,9 @@
 
 移植 RangeList/RangeTrigger、Witness、EntityCache、优先级/带宽调度、进入/离开事件、位置和属性同步。覆盖半径边界、实体移动、自身实体及多个观察者。
 
-- [ ] **BW-08-03-01 移植 RangeList 与触发边界**。**验收** 半径临界进入和离开事件吻合。
+- [x] **BW-08-03-01 移植 RangeList 与触发边界**。**验收** 半径临界进入和离开事件吻合。
+    - (commit 7ba5828, lane/bw08-witness) crates/server-runtime/src/range_list.rs：逐面移植 server/cellapp/{range_list_node,range_trigger,cell_range_list,entity_range_list_node,range_list_appeal_trigger} 参照（shuffleX/Z 双链穿行、RangeTrigger 上下界、insert 光标走、setRange 收缩、EntityRangeListNode::remove 传 z=FLT_MAX、appeal 大实体交叉、AoITrigger/AppealTrigger 标志面）；事件以 RangeEvent 日志外显。
+    - 验收证据：21 项 range_list 测试——上界含端/下界开区间（x=r 恰界 enter、x=r+ε leave、x=-r 排除）、x/z 双轴穿越序列、对角单事件、共位零半径无假事件、setRange 收缩/扩张、remove/trigger_remove；cargo test -p server-runtime 653 passed，workspace 81 binaries exit 0，llvm-cov 行覆盖 98.13%（模块）、layering 9 passed。
 - [ ] **BW-08-03-02 管理 Witness 与 EntityCache**。**验收** 首次观察和重复进入结果一致。
 - [ ] **BW-08-03-03 按带宽与优先级选择更新**。**验收** 固定负载下发送序列吻合。
 - [ ] **BW-08-03-04 同步位置与属性**。**验收** 自身和其他观察者收到各自投影。
