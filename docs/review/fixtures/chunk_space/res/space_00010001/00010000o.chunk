@@ -1,0 +1,14 @@
+<00010000o.chunk>
+	<model>
+		<resource>tree01.model</resource>
+		<transform>
+			<row3>5 0 60</row3>
+		</transform>
+	</model>
+	<entity>
+		<id>1</id>
+		<type>Item</type>
+		<position>10 0 20</position>
+		<instantiate>SIMULATION</instantiate>
+	</entity>
+</00010000o.chunk>

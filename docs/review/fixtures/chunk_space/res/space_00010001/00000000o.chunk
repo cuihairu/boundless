@@ -1,0 +1,31 @@
+<00000000o.chunk>
+	<model>
+		<resource>tree00.model</resource>
+		<transform>
+			<row0>1 0 0</row0>
+			<row1>0 1 0</row1>
+			<row2>0 0 1</row2>
+			<row3>12 0 34</row3>
+		</transform>
+	</model>
+	<model>
+		<resource>rock00.model</resource>
+		<transform>
+			<row3>40 0 55</row3>
+		</transform>
+	</model>
+	<light>
+		<type>Omni</type>
+		<colour>1 0.8 0.6</colour>
+		<innerRadius>6.6</innerRadius>
+		<outerRadius>13.5</outerRadius>
+		<transform>
+			<row3>20 30 20</row3>
+		</transform>
+	</light>
+	<sound>
+		<resource>ambience00.sound</resource>
+		<position>50 0 50</position>
+		<period>1.0</period>
+	</sound>
+</00000000o.chunk>

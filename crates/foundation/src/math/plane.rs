@@ -24,6 +24,15 @@ impl Default for PlaneEq {
 }
 
 impl PlaneEq {
+    /// `PlaneEq(normal, d)` / `init(normal, d)` (`planeeq.ipp:29-51`): a plane
+    /// from a normal and the dot product of that normal with any point on the
+    /// plane, so `normal · p = d`. The normal is not normalised here; callers
+    /// that build a plane from a raw `(normal, d)` pair normalise both like
+    /// the reference `ChunkBoundary` constructor (`chunk_boundary.cpp:72-77`).
+    pub fn new(normal: Vector3, d: f32) -> Self {
+        Self { normal, d }
+    }
+
     /// `normal()` (`planeeq.ipp:173-177`): unit length after a normalised
     /// init, pointing out of the front of the plane.
     pub fn normal(&self) -> &Vector3 {
@@ -78,6 +87,14 @@ mod tests {
 
     fn assert_almost_eq(a: f32, b: f32) {
         assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    }
+
+    #[test]
+    fn new_builds_a_plane_from_normal_and_offset() {
+        let plane = PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 5.0);
+        assert_eq!(plane.normal().z, 1.0);
+        assert_eq!(plane.d(), 5.0);
+        assert_almost_eq(plane.distance_to(&Vector3::new(0.0, 0.0, 7.0)), 2.0);
     }
 
     #[test]
