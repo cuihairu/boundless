@@ -741,6 +741,28 @@ pub fn get_watcher(path: &str) -> Option<Rc<RefCell<dyn Watcher>>> {
     root().borrow().get_child(path)
 }
 
+/// The top-level string read, the entry the query machinery takes against
+/// the root (`rootWatcher()->getAsString( path, ... )`): the value string
+/// for `path`, with the node's comment written into `desc` and its mode
+/// into `mode`. `None` when the path does not resolve; the empty path is
+/// the root itself and answers "<DIR>".
+pub fn get_watcher_string(path: &str, desc: &mut String, mode: &mut Mode) -> Option<String> {
+    let mut result = String::new();
+    if root().borrow().get_as_string(path, &mut result, desc, mode) {
+        Some(result)
+    } else {
+        None
+    }
+}
+
+/// The top-level string write (`rootWatcher()->setFromString( path, ... )`):
+/// parse `value` into the leaf at `path`. `false` on a missing path, a
+/// non-writable node or a parse failure -- every rejected shape leaves the
+/// old value in place.
+pub fn set_watcher_string(path: &str, value: &str) -> bool {
+    root().borrow_mut().set_from_string(path, value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1183,5 +1205,174 @@ mod tests {
         assert!(directory.get_child("").is_none());
         assert!(!directory.remove_child(""));
         assert!(directory.remove_child("inner"));
+    }
+
+    /// The root get/set entries answer registered leaves and reject every
+    /// non-resolving shape (`rootWatcher()->getAsString`/`setFromString`).
+    #[test]
+    fn the_root_get_set_entries_answer_and_reject() {
+        fini();
+        let rounds = Rc::new(RefCell::new(3i32));
+        add_watcher_value("game/rounds", &rounds, Mode::ReadWrite, "round count");
+        // Read: value, comment and mode come back together.
+        let mut desc = String::new();
+        let mut mode = Mode::Invalid;
+        assert_eq!(
+            get_watcher_string("game/rounds", &mut desc, &mut mode),
+            Some("3".to_string())
+        );
+        assert_eq!(desc, "round count");
+        assert_eq!(mode, Mode::ReadWrite);
+        // Write through the entry, then read the new value back.
+        assert!(set_watcher_string("game/rounds", "7"));
+        assert_eq!(*rounds.borrow(), 7);
+        assert_eq!(
+            get_watcher_string("game/rounds", &mut desc, &mut mode),
+            Some("7".to_string())
+        );
+        // The root itself answers "<DIR>" at the empty path.
+        assert_eq!(
+            get_watcher_string("", &mut desc, &mut mode),
+            Some("<DIR>".to_string())
+        );
+        assert_eq!(mode, Mode::Directory);
+        // The intermediate directory answers the same shape.
+        assert_eq!(
+            get_watcher_string("game", &mut desc, &mut mode),
+            Some("<DIR>".to_string())
+        );
+        // Rejections: missing paths, directory writes, empty segments.
+        assert_eq!(
+            get_watcher_string("game/absent", &mut desc, &mut mode),
+            None
+        );
+        assert!(!set_watcher_string("game/absent", "1"));
+        assert!(!set_watcher_string("", "1"));
+        assert!(!set_watcher_string("game", "1"));
+        assert!(!set_watcher_string("/game/rounds", "1"));
+        assert_eq!(*rounds.borrow(), 7);
+    }
+
+    /// Every rejected write leaves the old value in place; a read-only leaf
+    /// refuses through the entry but keeps answering reads.
+    #[test]
+    fn rejected_writes_leave_old_values_in_place() {
+        fini();
+        let locked = Rc::new(RefCell::new(9i32));
+        add_watcher_value("game/locked", &locked, Mode::ReadOnly, "locked leaf");
+        let mut desc = String::new();
+        let mut mode = Mode::Invalid;
+        assert_eq!(
+            get_watcher_string("game/locked", &mut desc, &mut mode),
+            Some("9".to_string())
+        );
+        assert_eq!(mode, Mode::ReadOnly);
+        assert_eq!(desc, "locked leaf");
+        assert!(!set_watcher_string("game/locked", "10"));
+        assert_eq!(*locked.borrow(), 9);
+        // A parse failure keeps the old value; a trailing-garbage run parses.
+        let rounds = Rc::new(RefCell::new(1i32));
+        add_watcher_value("game/rounds", &rounds, Mode::ReadWrite, "");
+        assert!(!set_watcher_string("game/rounds", "abc"));
+        assert_eq!(*rounds.borrow(), 1);
+        assert!(!set_watcher_string("game/rounds", "99999999999"));
+        assert_eq!(*rounds.borrow(), 1);
+        assert!(!set_watcher_string("game/rounds", "true"));
+        assert_eq!(*rounds.borrow(), 1);
+        assert!(set_watcher_string("game/rounds", "42abc"));
+        assert_eq!(*rounds.borrow(), 42);
+        assert_eq!(
+            get_watcher_string("game/rounds", &mut desc, &mut mode),
+            Some("42".to_string())
+        );
+    }
+
+    /// Every scalar type round-trips through the root get/set entries with
+    /// the reference renderings; per-leaf access modes report correctly.
+    #[test]
+    fn every_scalar_type_round_trips_through_the_root_entry() {
+        fini();
+        let int_leaf = Rc::new(RefCell::new(0i32));
+        let uint_leaf = Rc::new(RefCell::new(0u32));
+        let int64_leaf = Rc::new(RefCell::new(0i64));
+        let uint64_leaf = Rc::new(RefCell::new(0u64));
+        let float32_leaf = Rc::new(RefCell::new(0f32));
+        let float64_leaf = Rc::new(RefCell::new(0f64));
+        let bool_leaf = Rc::new(RefCell::new(false));
+        let string_leaf = Rc::new(RefCell::new(String::new()));
+        add_watcher_value("types/i", &int_leaf, Mode::ReadWrite, "");
+        add_watcher_value("types/u", &uint_leaf, Mode::ReadWrite, "");
+        add_watcher_value("types/i64", &int64_leaf, Mode::ReadWrite, "");
+        add_watcher_value("types/u64", &uint64_leaf, Mode::ReadOnly, "");
+        add_watcher_value("types/f32", &float32_leaf, Mode::ReadWrite, "");
+        add_watcher_value("types/f64", &float64_leaf, Mode::ReadWrite, "");
+        add_watcher_value("types/b", &bool_leaf, Mode::ReadWrite, "");
+        add_watcher_value("types/s", &string_leaf, Mode::ReadWrite, "");
+        let mut desc = String::new();
+        let mut mode = Mode::Invalid;
+        // i32: signed write and read.
+        assert!(set_watcher_string("types/i", "-12"));
+        assert_eq!(*int_leaf.borrow(), -12);
+        assert_eq!(
+            get_watcher_string("types/i", &mut desc, &mut mode),
+            Some("-12".to_string())
+        );
+        // u32: negative runs wrap modulo 2^32 ("num_get" semantics).
+        assert!(set_watcher_string("types/u", "-5"));
+        assert_eq!(*uint_leaf.borrow(), 4294967291);
+        assert_eq!(
+            get_watcher_string("types/u", &mut desc, &mut mode),
+            Some("4294967291".to_string())
+        );
+        // i64: full range.
+        assert!(set_watcher_string("types/i64", "9223372036854775807"));
+        assert_eq!(*int64_leaf.borrow(), i64::MAX);
+        assert_eq!(
+            get_watcher_string("types/i64", &mut desc, &mut mode),
+            Some("9223372036854775807".to_string())
+        );
+        // u64: read-only mode reports through the entry and refuses writes.
+        assert_eq!(mode, Mode::ReadWrite);
+        assert_eq!(
+            get_watcher_string("types/u64", &mut desc, &mut mode),
+            Some("0".to_string())
+        );
+        assert_eq!(mode, Mode::ReadOnly);
+        assert!(!set_watcher_string("types/u64", "1"));
+        assert_eq!(*uint64_leaf.borrow(), 0);
+        // f32: plain rendering.
+        assert!(set_watcher_string("types/f32", "2.5"));
+        assert_eq!(*float32_leaf.borrow(), 2.5);
+        assert_eq!(
+            get_watcher_string("types/f32", &mut desc, &mut mode),
+            Some("2.5".to_string())
+        );
+        // f64: six-significant-digit rendering on read.
+        assert!(set_watcher_string("types/f64", "0.00001"));
+        assert_eq!(*float64_leaf.borrow(), 0.00001);
+        assert_eq!(
+            get_watcher_string("types/f64", &mut desc, &mut mode),
+            Some("1e-05".to_string())
+        );
+        // bool: case-insensitive words in, lowercase "true"/"false" out.
+        assert!(set_watcher_string("types/b", "TRUE"));
+        assert!(*bool_leaf.borrow());
+        assert_eq!(
+            get_watcher_string("types/b", &mut desc, &mut mode),
+            Some("true".to_string())
+        );
+        assert!(set_watcher_string("types/b", "0"));
+        assert!(!*bool_leaf.borrow());
+        assert_eq!(
+            get_watcher_string("types/b", &mut desc, &mut mode),
+            Some("false".to_string())
+        );
+        // String: text passes through both directions, spaces included.
+        assert!(set_watcher_string("types/s", "any text at all"));
+        assert_eq!(*string_leaf.borrow(), "any text at all");
+        assert_eq!(
+            get_watcher_string("types/s", &mut desc, &mut mode),
+            Some("any text at all".to_string())
+        );
     }
 }
