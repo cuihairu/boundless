@@ -47,6 +47,7 @@ pub mod offload_role;
 pub mod offloaded_backup;
 pub mod passenger_teleport;
 pub mod pending_logins;
+pub mod perception;
 pub mod physical_space;
 pub mod proxy_client;
 pub mod proxy_logoff;
