@@ -134,12 +134,17 @@ impl<'a> MemoryIStream<'a> {
 
     /// `operator>>( BW::string )`.
     pub fn read_string(&mut self) -> String {
+        String::from_utf8_lossy(self.read_string_bytes().as_slice()).into_owned()
+    }
+
+    /// The raw bytes of a `BW::string` — the metadata paths need them
+    /// pre-UTF-8-mangling because `cleanString` runs over the wire bytes.
+    pub fn read_string_bytes(&mut self) -> Vec<u8> {
         let len = self.read_string_length();
         if len < 0 {
-            return String::new();
+            return Vec::new();
         }
-        let bytes = self.retrieve(len as usize).unwrap_or(&[]);
-        String::from_utf8_lossy(bytes).into_owned()
+        self.retrieve(len as usize).unwrap_or(&[]).to_vec()
     }
 
     /// A one-byte little-endian scalar.

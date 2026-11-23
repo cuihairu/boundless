@@ -2,6 +2,14 @@
 //! `log_time.hpp/.cpp`, `log_entry.hpp`). `LogTime` is the fixed
 //! `(seconds, milliseconds)` pair; `LogEntry` is the fixed-length portion of
 //! an entry, the part that lands in the `entries` file.
+//!
+//! On disk the record is the C++ struct's natural-alignment image: the
+//! writer does `*pEntries_ << entry`, a raw 48-byte `memcpy` of the struct
+//! that includes the alignment holes after `time_`, `categoryID_`,
+//! `messagePriority_` and `argsLen_`. The reference leaves those holes
+//! holding uninitialized stack bytes; this port zeroes them (the only
+//! deterministic choice), and the reader skips them, so records written by
+//! the reference binary decode correctly and vice versa.
 
 use crate::MessageSource;
 
@@ -56,11 +64,29 @@ impl Ord for LogTime {
     }
 }
 
-/// The fixed-length portion of a log entry (`log_entry.hpp`), packed (one
-/// `#pragma pack(1)` struct) in this field order:
-/// time (10 bytes), userComponentID (4), categoryID (2), messageSource (1),
-/// messagePriority (1), stringOffset (4), argsOffset (4), argsLen (2),
-/// metadataOffset (4), metadataLen (2).
+/// The fixed-length portion of a log entry (`log_entry.hpp`). The C++ struct
+/// is **not** `#pragma pack`ed: fields sit at their natural alignment and
+/// the holes between them travel with the record. Field offsets (x86-64,
+/// confirmed from the reference binary's debug info and the original sample):
+///
+/// ```text
+///  0..8   time_.secs_        i64
+///  8..10  time_.msecs_       u16
+///  10..12 (alignment hole)
+/// 12..16  componentID_       u32
+/// 16..18  categoryID_        u16
+/// 18..20  (alignment hole)
+/// 20..24  messageSource_     i32 (DebugMessageSource)
+/// 24      messagePriority_   u8
+/// 25..28  (alignment hole)
+/// 28..32  stringOffset_      u32
+/// 32..36  argsOffset_        u32
+/// 36..38  argsLen_           u16
+/// 38..40  (alignment hole)
+/// 40..44  metadataOffset_    u32
+/// 44..46  metadataLen_       u16
+/// 46..48  (trailing padding)
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct LogEntry {
     /// When the message was logged.
@@ -86,8 +112,53 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    /// The packed record size: 10 + 4 + 2 + 1 + 1 + 4 + 4 + 2 + 4 + 2.
-    pub const PACKED_SIZE: usize = 34;
+    /// The on-disk record size: the struct's aligned size (`sizeof`).
+    pub const DISK_SIZE: usize = 48;
+
+    /// The little-endian 48-byte struct image the entries file carries.
+    /// Holes and trailing padding are zeroed — the reference leaves them
+    /// uninitialized, so the reader must never give them meaning.
+    pub fn to_disk_bytes(&self) -> [u8; Self::DISK_SIZE] {
+        let mut out = [0u8; Self::DISK_SIZE];
+        out[0..8].copy_from_slice(&self.time.secs.to_le_bytes());
+        out[8..10].copy_from_slice(&self.time.msecs.to_le_bytes());
+        out[12..16].copy_from_slice(&self.user_component_id.to_le_bytes());
+        out[16..18].copy_from_slice(&self.category_id.to_le_bytes());
+        out[20..24].copy_from_slice(&(self.message_source.to_byte() as i32).to_le_bytes());
+        out[24] = self.message_priority;
+        out[28..32].copy_from_slice(&self.string_offset.to_le_bytes());
+        out[32..36].copy_from_slice(&self.args_offset.to_le_bytes());
+        out[36..38].copy_from_slice(&self.args_len.to_le_bytes());
+        out[40..44].copy_from_slice(&self.metadata_offset.to_le_bytes());
+        out[44..46].copy_from_slice(&self.metadata_len.to_le_bytes());
+        out
+    }
+
+    /// Decode one 48-byte record. Holes are ignored (they hold garbage in
+    /// reference-written files).
+    pub fn from_disk_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::DISK_SIZE {
+            return None;
+        }
+        let rd_i64 = |r: std::ops::Range<usize>| i64::from_le_bytes(bytes[r].try_into().unwrap());
+        let rd_u16 = |r: std::ops::Range<usize>| u16::from_le_bytes(bytes[r].try_into().unwrap());
+        let rd_u32 = |r: std::ops::Range<usize>| u32::from_le_bytes(bytes[r].try_into().unwrap());
+        Some(Self {
+            time: LogTime {
+                secs: rd_i64(0..8),
+                msecs: rd_u16(8..10),
+            },
+            user_component_id: rd_u32(12..16),
+            category_id: rd_u16(16..18),
+            message_source: MessageSource::from_byte(bytes[20]),
+            message_priority: bytes[24],
+            string_offset: rd_u32(28..32),
+            args_offset: rd_u32(32..36),
+            args_len: rd_u16(36..38),
+            metadata_offset: rd_u32(40..44),
+            metadata_len: rd_u16(44..46),
+        })
+    }
 
     /// Build the fixed-length record the way `UserSegmentWriter` does,
     /// taking the timestamp split already millisecond-rounded.
@@ -177,7 +248,122 @@ mod tests {
         assert_eq!(entry.message_priority, 2);
         assert_eq!(entry.string_offset, 4096);
         assert_eq!(LogEntry::default().args_len, 0);
-        // The packed record is 34 bytes; keep the constant honest.
-        assert_eq!(LogEntry::PACKED_SIZE, 34);
+        // The aligned record is 48 bytes; keep the constant honest.
+        assert_eq!(LogEntry::DISK_SIZE, 48);
+    }
+
+    /// The entries file of the reference-written sample user log
+    /// (`message_logger` from BigWorld, four messages fed through its
+    /// REGISTER/LOG protocol). Records carry the struct's alignment holes
+    /// with uninitialized bytes (e.g. `e0 7f`, `43 e8`, `ce 69 31`) — the
+    /// exact stack garbage the reference happened to hold.
+    const SAMPLE_ENTRIES: [u8; 192] = [
+        0x9e, 0x3b, 0x04, 0x6b, 0x00, 0x00, 0x00, 0x00, 0x28, 0x03, 0xe0, 0x7f, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x43, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x02, 0xce, 0x69, 0x31, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24,
+        0x00, 0x00, 0x00, 0x9e, 0x3b, 0x04, 0x6b, 0x00, 0x00, 0x00, 0x00, 0x29, 0x03, 0xe0, 0x7f,
+        0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x43, 0xe8, 0x01, 0x00, 0x00, 0x00, 0x04, 0xce, 0x69,
+        0x31, 0x28, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x24, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9e, 0x3b, 0x04, 0x6b, 0x00, 0x00, 0x00, 0x00, 0x29,
+        0x03, 0xe0, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x43, 0xe8, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0xce, 0x69, 0x31, 0x52, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00,
+        0x00, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9e, 0x3b, 0x04, 0x6b, 0x00, 0x00,
+        0x00, 0x00, 0x29, 0x03, 0xe0, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x43, 0xe8, 0x00,
+        0x00, 0x00, 0x00, 0x03, 0xce, 0x69, 0x31, 0x79, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00,
+        0x10, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn disk_roundtrip_preserves_all_fields() {
+        let entry = LogEntry::new(1795550878, 808, 0, 1, MessageSource::Cpp, 2, 0);
+        let bytes = entry.to_disk_bytes();
+        assert_eq!(bytes.len(), 48);
+        // Holes and padding stay zero.
+        for hole in [10..12, 18..20, 25..28, 38..40, 46..48] {
+            assert!(bytes[hole].iter().all(|&b| b == 0), "hole not zeroed");
+        }
+        let back = LogEntry::from_disk_bytes(&bytes).unwrap();
+        assert_eq!(back.time, entry.time);
+        assert_eq!(back.user_component_id, entry.user_component_id);
+        assert_eq!(back.category_id, entry.category_id);
+        assert_eq!(back.message_source, entry.message_source);
+        assert_eq!(back.message_priority, entry.message_priority);
+        assert_eq!(back.string_offset, entry.string_offset);
+        assert_eq!(back.args_offset, entry.args_offset);
+        assert_eq!(back.args_len, entry.args_len);
+        assert_eq!(back.metadata_offset, entry.metadata_offset);
+        assert_eq!(back.metadata_len, entry.metadata_len);
+        // Short input is refused.
+        assert!(LogEntry::from_disk_bytes(&bytes[..47]).is_none());
+        assert!(LogEntry::from_disk_bytes(&[]).is_none());
+    }
+
+    #[test]
+    fn reads_the_reference_sample_entries_file() {
+        for (i, record) in SAMPLE_ENTRIES.chunks(LogEntry::DISK_SIZE).enumerate() {
+            let entry =
+                LogEntry::from_disk_bytes(record).unwrap_or_else(|| panic!("record {i} decode"));
+            assert_eq!(entry.time.secs, 0x6b043b9e, "record {i} secs");
+            assert_eq!(entry.user_component_id, 0, "record {i} componentID");
+            assert_eq!(
+                entry.args_offset + entry.args_len as u32,
+                [4, 10, 18, 34][i],
+                "record {i} args extent"
+            );
+            // Only the first record carried metadata.
+            assert_eq!(
+                (entry.metadata_offset, entry.metadata_len as u32),
+                [(0, 36), (36, 0), (36, 0), (36, 0)][i],
+                "record {i} metadata extent"
+            );
+        }
+
+        let first = LogEntry::from_disk_bytes(&SAMPLE_ENTRIES[..48]).unwrap();
+        assert_eq!(first.time.msecs, 808);
+        assert_eq!(first.category_id, 1); // "combat"
+        assert_eq!(first.message_source, MessageSource::Cpp);
+        assert_eq!(first.message_priority, 2); // INFO
+        assert_eq!(first.string_offset, 0);
+        assert_eq!(first.args_len, 4);
+        assert_eq!(first.metadata_len, 36);
+
+        let second = LogEntry::from_disk_bytes(&SAMPLE_ENTRIES[48..96]).unwrap();
+        assert_eq!(second.time.msecs, 809);
+        assert_eq!(second.category_id, 2); // ""
+        assert_eq!(second.message_source, MessageSource::Script);
+        assert_eq!(second.message_priority, 4); // WARNING
+        assert_eq!(second.string_offset, 40);
+        assert_eq!(second.args_len, 6);
+        assert_eq!(second.metadata_len, 0);
+
+        let third = LogEntry::from_disk_bytes(&SAMPLE_ENTRIES[96..144]).unwrap();
+        assert_eq!(third.message_priority, 2);
+        assert_eq!(third.string_offset, 82);
+        assert_eq!(third.args_len, 8);
+
+        let fourth = LogEntry::from_disk_bytes(&SAMPLE_ENTRIES[144..]).unwrap();
+        assert_eq!(fourth.message_priority, 3); // NOTICE
+        assert_eq!(fourth.category_id, 1);
+        assert_eq!(fourth.string_offset, 121);
+        assert_eq!(fourth.args_len, 16);
+    }
+
+    #[test]
+    fn rewriting_the_sample_matches_every_non_hole_byte() {
+        // Re-encode the four decoded records; every field byte must land
+        // back where it came from. Only the holes may differ (ours are
+        // zeroed, the reference's hold stack garbage).
+        let holes: &[usize] = &[10, 11, 18, 19, 25, 26, 27, 38, 39, 46, 47];
+        for (i, record) in SAMPLE_ENTRIES.chunks(LogEntry::DISK_SIZE).enumerate() {
+            let entry = LogEntry::from_disk_bytes(record).unwrap();
+            let rewritten = entry.to_disk_bytes();
+            for (off, &byte) in rewritten.iter().enumerate() {
+                if holes.contains(&off) {
+                    assert_eq!(byte, 0, "record {i} hole byte {off} not zeroed");
+                } else {
+                    assert_eq!(byte, record[off], "record {i} byte {off} diverged");
+                }
+            }
+        }
     }
 }
