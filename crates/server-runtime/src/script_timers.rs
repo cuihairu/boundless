@@ -217,7 +217,10 @@ fn get_new_id(map: &BTreeMap<ScriptId, TimerHandle<u32>>) -> ScriptId {
 }
 
 /// `ScriptTimers::findTimer`: find the id by handle identity.
-fn find_id(map: &BTreeMap<ScriptId, TimerHandle<u32>>, handle: &TimerHandle<u32>) -> Option<ScriptId> {
+fn find_id(
+    map: &BTreeMap<ScriptId, TimerHandle<u32>>,
+    handle: &TimerHandle<u32>,
+) -> Option<ScriptId> {
     for (id, h) in map {
         if h == handle {
             return Some(*id);

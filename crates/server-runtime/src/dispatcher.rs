@@ -130,10 +130,7 @@ impl Dispatcher {
 
     /// `cancelFrequentTask`: remove by pointer identity, returning
     /// whether it was registered.
-    pub fn cancel_frequent_task(
-        &mut self,
-        task: &Rc<RefCell<dyn FrequentTask>>,
-    ) -> bool {
+    pub fn cancel_frequent_task(&mut self, task: &Rc<RefCell<dyn FrequentTask>>) -> bool {
         self.tasks_dirty.set(true);
         if let Some(index) = self
             .tasks
@@ -261,14 +258,10 @@ mod tests {
         impl FrequentTask for DefaultTask {
             fn do_task(&mut self) {}
         }
-        let default_task: Rc<RefCell<dyn FrequentTask>> =
-            Rc::new(RefCell::new(DefaultTask));
+        let default_task: Rc<RefCell<dyn FrequentTask>> = Rc::new(RefCell::new(DefaultTask));
         assert_eq!(default_task.borrow().task_name(), "UnnamedTask");
 
-        let named = Rc::new(RefCell::new(FrequentTaskFn(
-            || {},
-            "SignalProcessor",
-        )));
+        let named = Rc::new(RefCell::new(FrequentTaskFn(|| {}, "SignalProcessor")));
         assert_eq!(named.borrow().task_name(), "SignalProcessor");
 
         let mut dispatcher = Dispatcher::new();

@@ -3402,10 +3402,7 @@ mod tests {
 
     #[test]
     fn a_repeated_death_notification_is_a_no_op() {
-        let mut mgr = mgr_with(vec![
-            ((0x7f000001, 3000), 0.5),
-            ((0x7f000002, 3000), 0.5),
-        ]);
+        let mut mgr = mgr_with(vec![((0x7f000001, 3000), 0.5), ((0x7f000002, 3000), 0.5)]);
         mgr.create_space(NULL_SPACE_ID, false, 0).unwrap();
 
         mgr.handle_cell_app_death((0x7f000001, 3000));
