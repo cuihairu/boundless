@@ -433,7 +433,12 @@
 
 按原版启用条件复现过滤链、会话加密协商、包校验和受控限流，使用双方合法客户端互操作。对照正常握手、认证失败及流量达到配置上限时的结果。
 
-- [ ] **BW-02-05-01 实现过滤链与包校验**。**验收** 过滤顺序及校验失败结果一致。
+- [x] **BW-02-05-01 实现过滤链与包校验**（54c778a）。**验收** 过滤顺序及校验失败结果一致。
+  - 实现：`PacketFilter` trait 增 `send(addr, packet, next)`（基类转发 `next`=interface 的 `send_packet`，即参考 `basicSendWithRetries`；packet_filter.cpp:25）与 `max_spare_size()`（默认 0，packet_filter.hpp:56）；`UdpChannel` 增 `p_filter: Option<Rc<dyn PacketFilter>>` + `p_filter()`/`set_p_filter()`（udp_channel.hpp:139-140），setter 带构造临界——索引信道拒装过滤（udp_channel.cpp:129）；`clear_bundle` 按参考 `newBundle`（udp_channel.cpp:1523-1529）以当前过滤的 `maxSpareSize` 重建包（有 spare 才重建，无则复用）。
+  - 接线：接收侧 `NetworkInterface::process_packet` 的 on-channel 半臂在进 `UdpChannel::process_packet` 前先过信道过滤（packet_receiver.cpp:471-474，`!hasRemoteFailed` 门控）；发送侧 `NetworkInterface::send` 逐包过信道过滤再入 socket（packet_sender.cpp:241-258 `sendRescheduledPacket`），`send_unacked` 重传同路。`UdpBundle` 增 `packet_mut`。
+  - 校验：`Packet::validate_checksum` 补 flags 门（packet.cpp:279：无 `FLAG_HAS_CHECKSUM` 即平凡通过）；`UdpChannel::process_packet` 在 flags 检查后加 `validate_checksum`（packet_receiver.cpp:585-599「Invalid checksum」→`REASON_CORRUPTED_PACKET`）。
+  - 有意偏离/边界：off-channel 半臂保持原宽松口径（该臂本无 size/flags 检查，端口有意从简，注释已注），校验失败结果一致性落在信道路径——过滤在 checksum 之前，与 `processPacket` 序一致。
+  - 测试：+7（trait 基类 send/maxSpareSize 1；recv 序与放行 1；checksum 坏/好 1；deny 不放行 1；send 逐包过过滤 1；信道装/拒装过滤 1；claiming filter 重建包 1）。mercury 332 绿，workspace 588+2 环境性红（test-support 重扫 BigWorld 参考树兄弟席脏面，非本席）。
 - [ ] **BW-02-05-02 对齐会话协商**。**验收** 原版和新版客户端可合法握手。
 - [ ] **BW-02-05-03 校验认证失败时的返回状态**。**验收** 无残留已建立会话。
 - [ ] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。
