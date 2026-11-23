@@ -1,5 +1,5 @@
 item	value	source
-reference-commit	93bb08372424	git rev-parse HEAD
+reference-commit	ee43578b2036	git rev-parse HEAD
 gen.generator	programming/bigworld/scripts/generate-fantasydemo-assets.py	reference source tree
 gen.bytes	12787	reference source tree
 gen.sha256	625dc3f5dd5d8c29d920d51d85e637ea78865d224fba187472f52abe1f7c35d8	reference source tree
@@ -130,8 +130,8 @@ tree.client-integration-example.root	programming/bigworld/examples/client_integr
 tree.client-integration-example.generated	no	generator comment / git history
 tree.client-integration-example.generator	-	generator anchor
 tree.client-integration-example.files	24	reference source tree
-tree.client-integration-example.bytes	18273	reference source tree
-tree.client-integration-example.digest	8fbc9674f278f3a1eddf868634ae39fd56bc18387669b4d3f04cd6f10bc1feb7	sha256 of sorted relpath/bytes list
+tree.client-integration-example.bytes	18360	reference source tree
+tree.client-integration-example.digest	eb63bd6f71e1b9715c98d57e588b91497a34a08df9726e9773f3ad07c6f96f50	sha256 of sorted relpath/bytes list
 tree.client-integration-example.entities	Guard,ClientAvatar,Account,Space,ClientOnly	scripts/entities.xml
 tree.client-integration-example.db-logons	1	scripts/db.xml
 tree.client-integration-example.db-rowtypes	Account,ClientAvatar	scripts/db.xml
@@ -193,8 +193,8 @@ file.client-integration-example.14.bytes	54	reference source tree
 file.client-integration-example.14.sha256	49a74738cae6589ea1d46768702cc6825a0d26808b295f2c8972b2ebe9642b70	reference source tree
 file.client-integration-example.15.kind	entity	path classification
 file.client-integration-example.15.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/common/TestDataType.py	reference source tree
-file.client-integration-example.15.bytes	2740	reference source tree
-file.client-integration-example.15.sha256	371997bf411703ae43042296590b7303dd9bfb1bc853a4bce399862d1361079d	reference source tree
+file.client-integration-example.15.bytes	2827	reference source tree
+file.client-integration-example.15.sha256	205c65ee681ad5d992d20266f6112ff1099a821144cb39524c7fa93ca6365aa8	reference source tree
 file.client-integration-example.16.kind	database	path classification
 file.client-integration-example.16.input	programming/bigworld/examples/client_integration/python/simple/res/scripts/db.xml	reference source tree
 file.client-integration-example.16.bytes	1069	reference source tree

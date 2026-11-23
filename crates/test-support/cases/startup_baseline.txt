@@ -1,37 +1,37 @@
 item	value	source
-reference-commit	8a74479c7877	git rev-parse HEAD
+reference-commit	ee43578b2036	git rev-parse HEAD
 topology.1.role	baseapp	programming/bigworld/server
 topology.1.source-dir	programming/bigworld/server/baseapp	programming/bigworld/server
 topology.1.binary	game/bin/server/el7/server/baseapp	game/bin/server/el7/server
-topology.1.bytes	194591088	game/bin/server/el7/server (size)
+topology.1.bytes	194526008	game/bin/server/el7/server (size)
 topology.2.role	baseappmgr	programming/bigworld/server
 topology.2.source-dir	programming/bigworld/server/baseappmgr	programming/bigworld/server
 topology.2.binary	game/bin/server/el7/server/baseappmgr	game/bin/server/el7/server
-topology.2.bytes	80618104	game/bin/server/el7/server (size)
+topology.2.bytes	80704008	game/bin/server/el7/server (size)
 topology.3.role	cellapp	programming/bigworld/server
 topology.3.source-dir	programming/bigworld/server/cellapp	programming/bigworld/server
 topology.3.binary	game/bin/server/el7/server/cellapp	game/bin/server/el7/server
-topology.3.bytes	227330704	game/bin/server/el7/server (size)
+topology.3.bytes	227588416	game/bin/server/el7/server (size)
 topology.4.role	cellappmgr	programming/bigworld/server
 topology.4.source-dir	programming/bigworld/server/cellappmgr	programming/bigworld/server
 topology.4.binary	game/bin/server/el7/server/cellappmgr	game/bin/server/el7/server
-topology.4.bytes	84264928	game/bin/server/el7/server (size)
+topology.4.bytes	84351320	game/bin/server/el7/server (size)
 topology.5.role	dbapp	programming/bigworld/server
 topology.5.source-dir	programming/bigworld/server/dbapp	programming/bigworld/server
 topology.5.binary	game/bin/server/el7/server/dbapp	game/bin/server/el7/server
-topology.5.bytes	163334760	game/bin/server/el7/server (size)
+topology.5.bytes	163472232	game/bin/server/el7/server (size)
 topology.6.role	dbappmgr	programming/bigworld/server
 topology.6.source-dir	programming/bigworld/server/dbappmgr	programming/bigworld/server
 topology.6.binary	game/bin/server/el7/server/dbappmgr	game/bin/server/el7/server
-topology.6.bytes	74951672	game/bin/server/el7/server (size)
+topology.6.bytes	75032728	game/bin/server/el7/server (size)
 topology.7.role	loginapp	programming/bigworld/server
 topology.7.source-dir	programming/bigworld/server/loginapp	programming/bigworld/server
 topology.7.binary	game/bin/server/el7/server/loginapp	game/bin/server/el7/server
-topology.7.bytes	88546120	game/bin/server/el7/server (size)
+topology.7.bytes	88630448	game/bin/server/el7/server (size)
 topology.8.role	reviver	programming/bigworld/server
 topology.8.source-dir	programming/bigworld/server/reviver	programming/bigworld/server
 topology.8.binary	game/bin/server/el7/server/reviver	game/bin/server/el7/server
-topology.8.bytes	74571312	game/bin/server/el7/server (size)
+topology.8.bytes	74656096	game/bin/server/el7/server (size)
 config.res-path	programming/fantasydemo/res	command line (--res)
 config.bw-xml	programming/fantasydemo/res/server/bw.xml	BWConfig::init (Adding server/bw.xml)
 config.personality	fantasydemo	programming/fantasydemo/res/server/bw.xml
