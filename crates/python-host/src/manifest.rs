@@ -989,8 +989,8 @@ static BW_CONFIG_ITEMS: &[Item] = &[
     ),
 ];
 
-/// The `_bw_profile` tool module (BW-12-03-02): the start/stop surface.
-/// The JSON dump rows stay pending until BW-12-03-03 delivers them.
+/// The `_bw_profile` tool module (BW-12-03-02, BW-12-03-03): the
+/// start/stop surface and the JSON dump face.
 static BW_PROFILE_ITEMS: &[Item] = &[
     item(
         "__onThreadStart",
@@ -1046,7 +1046,7 @@ static BW_PROFILE_ITEMS: &[Item] = &[
         "startJsonDump",
         Kind::Function,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "None",
         "",
@@ -1056,7 +1056,7 @@ static BW_PROFILE_ITEMS: &[Item] = &[
         "setJsonDumpCount",
         Kind::Function,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "count: int",
         "None",
         "TypeError from the auto argument parse",
@@ -1066,7 +1066,7 @@ static BW_PROFILE_ITEMS: &[Item] = &[
         "setJsonDumpDir",
         Kind::Function,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "dir: str",
         "None",
         "IOError \"setJsonDumpDir: Unable to write to JSON dump directory: <dir>: <errno>.\"",
@@ -1076,7 +1076,7 @@ static BW_PROFILE_ITEMS: &[Item] = &[
         "getJsonDumpState",
         Kind::Function,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "int (the JsonDumpState value)",
         "",
@@ -1086,7 +1086,7 @@ static BW_PROFILE_ITEMS: &[Item] = &[
         "getJsonDumpStateValue",
         Kind::Function,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "state: str",
         "int (the JsonDumpState value)",
         "RuntimeError \"getJsonDumpStateValue: Invalid dump state value <state>\"",
@@ -1096,7 +1096,7 @@ static BW_PROFILE_ITEMS: &[Item] = &[
         "getJsonOutputFilePath",
         Kind::Function,
         Scope::Both,
-        Status::Pending,
+        Status::Ported,
         "no arguments",
         "str",
         "",
@@ -1837,8 +1837,8 @@ mod tests {
     /// the server trio gated to the server roles -- and the ungated
     /// `fetchURL` BW-03-03-05 delivered, plus the Math module with every
     /// factory name, and the `_bw_profile` start/stop surface BW-12-03-02
-    /// delivered with its JSON dump rows still pending; the Windows-only
-    /// matrix animation is the one other row still pending.
+    /// delivered with its JSON dump face BW-12-03-03 delivered too; the
+    /// Windows-only matrix animation is the one other row still pending.
     #[test]
     fn only_the_delivered_surface_is_marked_ported() {
         let ported_modules: Vec<_> = entries()
@@ -1921,17 +1921,6 @@ mod tests {
                 "enable",
                 "isEnabled",
                 "tick",
-            ]
-        );
-        let pending_profile: Vec<_> = bw_profile
-            .items
-            .iter()
-            .filter(|item| item.status == Status::Pending)
-            .map(|item| item.name)
-            .collect();
-        assert_eq!(
-            pending_profile,
-            vec![
                 "startJsonDump",
                 "setJsonDumpCount",
                 "setJsonDumpDir",
@@ -1940,6 +1929,13 @@ mod tests {
                 "getJsonOutputFilePath",
             ]
         );
+        let pending_profile: Vec<_> = bw_profile
+            .items
+            .iter()
+            .filter(|item| item.status == Status::Pending)
+            .map(|item| item.name)
+            .collect();
+        assert_eq!(pending_profile, Vec::<&str>::new());
     }
 
     /// Rendering a row spells the scope and the status the way the

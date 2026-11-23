@@ -1,15 +1,13 @@
-//! The `_bw_profile` module face (BW-12-03-02): the start/stop interface
-//! of `server/tools/bw_profile/bw_profile.cpp` — the module methods the
-//! scripts drive (`enable`, `isEnabled`, `tick`, `__onThreadStart`,
-//! `__onThreadEnd`, `bw_profile.cpp:31-67`), the trace callback that
-//! turns Python call events into profiler entries (`profileFunc`,
+//! The `_bw_profile` module face (BW-12-03-02, BW-12-03-03): the
+//! start/stop interface of `server/tools/bw_profile/bw_profile.cpp` —
+//! the module methods the scripts drive (`enable`, `isEnabled`, `tick`,
+//! `__onThreadStart`, `__onThreadEnd` and the JSON dump six
+//! `startJsonDump`, `setJsonDumpCount`, `setJsonDumpDir`,
+//! `getJsonDumpState`, `getJsonDumpStateValue`, `getJsonOutputFilePath`,
+//! `bw_profile.cpp:31-67`), the trace callback that turns Python call
+//! events into profiler entries (`profileFunc`,
 //! `bw_profile.cpp:76-121`) and the module's creation work
 //! (`PyInit__bw_profile`, `bw_profile.cpp:322-342`).
-//!
-//! The JSON dump methods — `startJsonDump`, `setJsonDumpCount`,
-//! `setJsonDumpDir`, `getJsonDumpState`, `getJsonDumpStateValue`,
-//! `getJsonOutputFilePath` — are BW-12-03-03's and stay off the table
-//! until that item delivers them.
 //!
 //! The reference builds the extension module into its profiling binaries
 //! and scripts reach it with `import _bw_profile`, whose import runs
@@ -23,15 +21,25 @@
 //! from here too, the watcher addressing the global the way the
 //! reference's `MF_WATCH` does.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
 use profile::{
-    EventCategory, EventType, MAXIMUM_NUMBER_OF_THREADS, g_profiler, mount_enabled_watcher,
-    our_thread_id,
+    EventCategory, EventType, JsonDumpState, MAXIMUM_NUMBER_OF_THREADS, g_profiler,
+    mount_enabled_watcher, our_thread_id,
 };
 
 use crate::capi;
+
+// `BW_ACCESS`/`BW_W_OK` resolve to the POSIX calls on this platform
+// (`bw_profile.cpp:20-24`); the port declares them directly.
+unsafe extern "C" {
+    fn access(path: *const c_char, mode: c_int) -> c_int;
+    fn strerror(errnum: c_int) -> *const c_char;
+}
+
+/// `W_OK` (`unistd.h`): the write-permission probe of `setJsonDumpDir`.
+const W_OK: c_int = 2;
 
 /// `MAX_PROFILER_MEMORY_BYTES` (`bw_profile.cpp:330`): the fixed budget
 /// the reference's TODO marks "make this configurable".
@@ -99,6 +107,43 @@ pub unsafe fn install() {
                     ml_meth: Some(method_tick),
                     ml_flags: capi::METH_NOARGS,
                     ml_doc: c"Profiler Tick event".as_ptr(),
+                },
+                capi::PyMethodDef {
+                    ml_name: c"startJsonDump".as_ptr(),
+                    ml_meth: Some(method_start_json_dump),
+                    ml_flags: capi::METH_NOARGS,
+                    ml_doc: c"Create a json dump file".as_ptr(),
+                },
+                capi::PyMethodDef {
+                    ml_name: c"setJsonDumpCount".as_ptr(),
+                    ml_meth: Some(method_set_json_dump_count),
+                    ml_flags: capi::METH_VARARGS,
+                    ml_doc: c"Set the Json Dump Count ".as_ptr(),
+                },
+                capi::PyMethodDef {
+                    ml_name: c"setJsonDumpDir".as_ptr(),
+                    ml_meth: Some(method_set_json_dump_dir),
+                    ml_flags: capi::METH_VARARGS,
+                    ml_doc: c"Set the Json Dump Dir ".as_ptr(),
+                },
+                capi::PyMethodDef {
+                    ml_name: c"getJsonDumpState".as_ptr(),
+                    ml_meth: Some(method_get_json_dump_state),
+                    ml_flags: capi::METH_NOARGS,
+                    ml_doc: c"Get the Json Dump State".as_ptr(),
+                },
+                capi::PyMethodDef {
+                    ml_name: c"getJsonDumpStateValue".as_ptr(),
+                    ml_meth: Some(method_get_json_dump_state_value),
+                    ml_flags: capi::METH_VARARGS,
+                    ml_doc: c"Get the equivalent dump state enum value of the argument string"
+                        .as_ptr(),
+                },
+                capi::PyMethodDef {
+                    ml_name: c"getJsonOutputFilePath".as_ptr(),
+                    ml_meth: Some(method_get_json_output_file_path),
+                    ml_flags: capi::METH_VARARGS,
+                    ml_doc: c"Get the latest json output file path ".as_ptr(),
                 },
                 capi::PyMethodDef::END,
             ]
@@ -359,4 +404,192 @@ unsafe extern "C" fn method_tick(
 ) -> *mut capi::PyObject {
     g_profiler().lock().expect("the profiler lock").tick();
     capi::py_none()
+}
+
+/// `_bw_profile_startJsonDump` (`bw_profile.cpp:179-184`): the watcher
+/// arm, the same write `profiler/enabled`'s dump toggle performs.
+///
+/// # Safety
+///
+/// The interpreter is calling the module method with the GIL held.
+unsafe extern "C" fn method_start_json_dump(
+    _module: *mut capi::PyObject,
+    _args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    g_profiler()
+        .lock()
+        .expect("the profiler lock")
+        .watcher_set_dump_profile(true);
+    capi::py_none()
+}
+
+/// `_bw_profile_setJsonDumpCount` (`bw_profile.cpp:186-196`).
+///
+/// # Safety
+///
+/// The interpreter is calling the module method with the GIL held.
+unsafe extern "C" fn method_set_json_dump_count(
+    _module: *mut capi::PyObject,
+    args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let mut count: c_int = 0;
+    // SAFETY: the caller owns the GIL and the parse target is a live
+    // local of C ABI size.
+    if unsafe { capi::PyArg_ParseTuple(args, c"i".as_ptr(), &mut count) } == 0 {
+        // The parser left its own `TypeError` pending.
+        return std::ptr::null_mut();
+    }
+    g_profiler()
+        .lock()
+        .expect("the profiler lock")
+        .set_json_dump_count(count);
+    capi::py_none()
+}
+
+/// `_bw_profile_setJsonDumpDir` (`bw_profile.cpp:198-237`): the
+/// write-permission probe first, the `IOError` with the reference's
+/// exact message on failure, the store on success. The reference's
+/// `ERROR_MSG` tag here names `getJsonDumpStateValue` — its own
+/// copy-paste (`bw_profile.cpp:216-218`); the port has no error log of
+/// this shape and keeps only the raised message.
+///
+/// # Safety
+///
+/// The interpreter is calling the module method with the GIL held.
+unsafe extern "C" fn method_set_json_dump_dir(
+    _module: *mut capi::PyObject,
+    args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let mut dir: *const c_char = std::ptr::null();
+    // SAFETY: the caller owns the GIL and the parse target is a live
+    // local of C ABI size.
+    if unsafe { capi::PyArg_ParseTuple(args, c"s".as_ptr(), &mut dir) } == 0 {
+        // The parser left its own `TypeError` pending.
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the parser handed back a NUL-terminated C string.
+    let path = unsafe { CStr::from_ptr(if dir.is_null() { c"".as_ptr() } else { dir }) };
+
+    // SAFETY: `path` is a valid NUL-terminated path for the call's
+    // duration and `W_OK` is a valid mode.
+    if unsafe { access(path.as_ptr(), W_OK) } < 0 {
+        // `errno` survives until the next libc call; read it before
+        // anything else touches FFI.
+        let message = format!(
+            "Unable to write to JSON dump directory: {}: {}.",
+            path.to_string_lossy(),
+            // SAFETY: `strerror` returns a static NUL-terminated string.
+            unsafe {
+                CStr::from_ptr(strerror(
+                    std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+                ))
+            }
+            .to_string_lossy()
+        );
+        // SAFETY: the interpreter is up, this thread owns the GIL and
+        // both exception globals are initialized.
+        unsafe {
+            let text = CString::new(format!("setJsonDumpDir: {message}")).unwrap_or_default();
+            capi::PyErr_SetString(capi::PyExc_IOError, text.as_ptr());
+        }
+        return std::ptr::null_mut();
+    }
+
+    g_profiler()
+        .lock()
+        .expect("the profiler lock")
+        .set_json_dump_dir(path.to_str().unwrap_or(""));
+    capi::py_none()
+}
+
+/// `_bw_profile_getJsonDumpState` (`bw_profile.cpp:239-245`): the state
+/// as an int.
+///
+/// # Safety
+///
+/// The interpreter is calling the module method with the GIL held.
+unsafe extern "C" fn method_get_json_dump_state(
+    _module: *mut capi::PyObject,
+    _args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let dump_state = g_profiler()
+        .lock()
+        .expect("the profiler lock")
+        .json_dump_state() as i32;
+    // The reference builds through `Py_BuildValue("i", ...)`
+    // (`bw_profile.cpp:244`); the port's int constructor is the same
+    // value.
+    // SAFETY: the interpreter is up and this thread owns the GIL.
+    unsafe { capi::PyLong_FromLong(i64::from(dump_state)) }
+}
+
+/// `_bw_profile_getJsonDumpStateValue` (`bw_profile.cpp:269-305`): the
+/// name-to-enum-value lookup whose strcmp chain the reference keeps in
+/// lockstep with `profiler.hpp`'s enum — unknown names raise
+/// `RuntimeError` with the reference's message, no trailing period.
+///
+/// # Safety
+///
+/// The interpreter is calling the module method with the GIL held.
+unsafe extern "C" fn method_get_json_dump_state_value(
+    _module: *mut capi::PyObject,
+    args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let mut state: *const c_char = std::ptr::null();
+    // SAFETY: the caller owns the GIL and the parse target is a live
+    // local of C ABI size.
+    if unsafe { capi::PyArg_ParseTuple(args, c"s".as_ptr(), &mut state) } == 0 {
+        // The parser left its own `TypeError` pending.
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the parser handed back a NUL-terminated C string.
+    let name = unsafe { CStr::from_ptr(if state.is_null() { c"".as_ptr() } else { state }) }
+        .to_str()
+        .unwrap_or("");
+    let dump_state_value = match name {
+        "JSON_DUMPING_INACTIVE" => JsonDumpState::Inactive,
+        "JSON_DUMPING_ACTIVE" => JsonDumpState::Active,
+        "JSON_DUMPING_COMPLETED" => JsonDumpState::Completed,
+        "JSON_DUMPING_FAILED" => JsonDumpState::Failed,
+        _ => {
+            // SAFETY: the interpreter is up, this thread owns the GIL
+            // and the exception global is initialized.
+            unsafe {
+                let text = CString::new(format!(
+                    "getJsonDumpStateValue: Invalid dump state value {name}"
+                ))
+                .unwrap_or_default();
+                capi::PyErr_SetString(capi::PyExc_RuntimeError, text.as_ptr());
+            }
+            return std::ptr::null_mut();
+        }
+    };
+    // SAFETY: the interpreter is up and this thread owns the GIL.
+    unsafe { capi::PyLong_FromLong(i64::from(dump_state_value as i32)) }
+}
+
+/// `_bw_profile_getJsonOutputFilePath` (`bw_profile.cpp:307-314`): the
+/// latest dump file path, empty before the first dump.
+///
+/// # Safety
+///
+/// The interpreter is calling the module method with the GIL held.
+unsafe extern "C" fn method_get_json_output_file_path(
+    _module: *mut capi::PyObject,
+    _args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let path = g_profiler()
+        .lock()
+        .expect("the profiler lock")
+        .get_json_output_file_path()
+        .to_string();
+    // The reference builds through `Py_BuildValue("s", ...)`
+    // (`bw_profile.cpp:313`); the port's string constructor copies the
+    // same way.
+    // SAFETY: the interpreter is up and this thread owns the GIL; the
+    // text is owned and NUL-terminated for the call.
+    unsafe {
+        let text = CString::new(path).unwrap_or_default();
+        capi::PyUnicode_FromString(text.as_ptr())
+    }
 }

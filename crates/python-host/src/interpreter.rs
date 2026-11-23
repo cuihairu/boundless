@@ -692,6 +692,7 @@ mod tests {
         "interpreter::tests::scenario_a_failed_reload_leaves_the_old_definitions_callable",
         "interpreter::tests::scenario_the_bw_profile_module_imports_with_its_state_face",
         "interpreter::tests::scenario_the_bw_profile_trace_callback_records_the_script",
+        "interpreter::tests::scenario_the_bw_profile_json_dump_writes_the_reference_product",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -9399,8 +9400,8 @@ __probe = '; '.join(_f) or 'ok'
                 ..Default::default()
             },
             |interpreter| {
-                // The non-dunder surface is the three plain faces; the
-                // thread hooks ride under their dunder names.
+                // The non-dunder surface is the start/stop and JSON dump
+                // faces; the thread hooks ride under their dunder names.
                 assert_eq!(
                     probe(
                         interpreter,
@@ -9408,7 +9409,9 @@ __probe = '; '.join(_f) or 'ok'
                          __probe = ', '.join(n for n in dir(_bw_profile) \
                          if not n.startswith('_'))",
                     ),
-                    "enable, isEnabled, tick",
+                    "enable, getJsonDumpState, getJsonDumpStateValue, \
+                     getJsonOutputFilePath, isEnabled, setJsonDumpCount, \
+                     setJsonDumpDir, startJsonDump, tick",
                 );
                 assert_eq!(
                     probe(
@@ -9569,6 +9572,271 @@ __probe = '; '.join(_f) or 'ok'
                 let profiler = profile::g_profiler().lock().expect("the profiler lock");
                 assert_eq!(profiler.get_thread_name(0), None, "the sweep deleted");
                 assert_eq!(profiler.num_threads(), 0);
+            },
+        );
+    }
+
+    /// BW-12-03-03. The JSON dump face produces the reference's fixed
+    /// event product: the state-value walk answers the four enum names
+    /// and rejects the rest (`bw_profile.cpp:259-301`), an unwritable
+    /// directory raises the `IOError` with the reference's message
+    /// (`bw_profile.cpp:202-236`), and a two-frame dump through
+    /// `startJsonDump`/`tick` writes the Chrome trace event file the
+    /// reference's `fprintf`s pin (`profiler.cpp:1198-1465`) -- the
+    /// `thread_name` metadata for the live slot, one event per record
+    /// in collection order with the previous dump's scoped records at
+    /// its head, and the closing bracket at the count's last frame.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_bw_profile_json_dump_writes_the_reference_product() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("bot"),
+                ..Default::default()
+            },
+            |interpreter| {
+                // The name-to-value walk and its unknown-name error.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import _bw_profile\n\
+                         __probe = _bw_profile.getJsonDumpStateValue('JSON_DUMPING_INACTIVE')",
+                    ),
+                    "0",
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "__probe = _bw_profile.getJsonDumpStateValue('JSON_DUMPING_ACTIVE')",
+                    ),
+                    "1",
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "__probe = _bw_profile.getJsonDumpStateValue('JSON_DUMPING_COMPLETED')",
+                    ),
+                    "2",
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "__probe = _bw_profile.getJsonDumpStateValue('JSON_DUMPING_FAILED')",
+                    ),
+                    "3",
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "try:\n    \
+                         _bw_profile.getJsonDumpStateValue('junk')\n\
+                         except RuntimeError as error:\n    \
+                         __probe = str(error)",
+                    ),
+                    "getJsonDumpStateValue: Invalid dump state value junk",
+                );
+
+                // The parsers' TypeErrors: a non-int count, a non-str
+                // directory and a stateless state lookup.
+                assert!(!interpreter.run_simple_string(
+                    "_bw_profile.setJsonDumpCount('two')"
+                ));
+                assert!(!interpreter.run_simple_string("_bw_profile.setJsonDumpDir(3)"));
+                assert!(!interpreter.run_simple_string("_bw_profile.getJsonDumpStateValue()"));
+
+                // Fresh state: inactive, and no file has been named yet.
+                assert_eq!(
+                    probe(interpreter, "__probe = _bw_profile.getJsonDumpState()"),
+                    "0"
+                );
+                assert_eq!(
+                    probe(interpreter, "__probe = _bw_profile.getJsonOutputFilePath()"),
+                    ""
+                );
+
+                // A directory that cannot take the dump raises the
+                // reference's `IOError`, strerror text and all.
+                let dir = std::env::temp_dir()
+                    .join(format!("boundless-bwprofile-json-{}", std::process::id()));
+                std::fs::remove_dir_all(&dir).ok();
+                std::fs::create_dir_all(&dir).expect("build the dump dir");
+                let missing = dir.join("no-such-subdir");
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        &format!(
+                            "try:\n    \
+                             _bw_profile.setJsonDumpDir(r'{}')\n\
+                             except OSError as error:\n    \
+                             __probe = str(error)",
+                            missing.display()
+                        ),
+                    ),
+                    format!(
+                        "setJsonDumpDir: Unable to write to JSON dump directory: \
+                         {missing_display}: No such file or directory.",
+                        missing_display = missing.display()
+                    ),
+                );
+
+                // The writable directory stores; the dump still has not
+                // named a file.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        &format!("__probe = _bw_profile.setJsonDumpDir(r'{}')", dir.display()),
+                    ),
+                    "None",
+                );
+                assert_eq!(
+                    probe(interpreter, "__probe = _bw_profile.getJsonOutputFilePath()"),
+                    ""
+                );
+
+                // Arm a two-frame dump and take the profiler live: the
+                // first tick opens the file (the count holds it open),
+                // the thread hook registers the slot, and `busy` records
+                // its pair into the frame the second tick dumps and
+                // closes.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "_bw_profile.setJsonDumpCount(2)\n\
+                         _bw_profile.startJsonDump()\n\
+                         _bw_profile.enable(1)\n\
+                         _bw_profile.tick()\n\
+                         _bw_profile.__onThreadStart('MainThread')\n\
+                         def busy():\n    pass\n\
+                         busy()\n\
+                         __probe = _bw_profile.getJsonDumpState()",
+                    ),
+                    "1",
+                    "the first frame of the count holds the dump open",
+                );
+                let path: String =
+                    probe(interpreter, "__probe = _bw_profile.getJsonOutputFilePath()")
+                        .parse()
+                        .expect("a path string");
+                assert!(
+                    path.starts_with(dir.to_str().expect("utf8 temp dir")),
+                    "{path}"
+                );
+                assert!(
+                    path.contains("_profile_") && path.ends_with(".json"),
+                    "{path}"
+                );
+
+                // The closing frame: the dump completes and the arm
+                // clears for the next one.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "_bw_profile.tick()\n\
+                         __probe = _bw_profile.getJsonDumpState()",
+                    ),
+                    "2",
+                );
+                assert_eq!(
+                    probe(interpreter, "__probe = _bw_profile.getJsonOutputFilePath()"),
+                    path,
+                    "the latest path outlives the close"
+                );
+
+                // The product itself: the reference's exact bytes. The
+                // first frame was collected before the thread registered
+                // -- an empty dump that opened the file -- so what the
+                // second frame wrote is the metadata block for the one
+                // live slot and every record gathered since, each in the
+                // reference's exact `fprintf` shape. The `ts` origin was
+                // pinned at the first frame's dump (`profiler.cpp:1212`),
+                // so the numbers here are raw micro stamps, not deltas;
+                // the walk below pins everything else byte-wise.
+                let product = std::fs::read_to_string(&path).expect("the dump file");
+                let expected_prefix = "[{\"pid\":0,\"tid\":0, \"ph\": \"M\", \
+                      \"name\":\"thread_name\",\"args\":{\"name\": \"MainThread\"}} \
+                      ,{ \"cat\":\"C++\", \"pid\":0,\"tid\":0, \"ts\":";
+                assert!(
+                    product.starts_with(expected_prefix),
+                    "the file opens with the metadata and the first frame's \
+                     own scoped jsonDump record:\n{product}"
+                );
+                assert!(
+                    product.ends_with(",\"ph\":\"B\",\"name\":\"tick\"}]"),
+                    "the file closes on the dump tick's call record and the \
+                     bracket:\n{product}"
+                );
+                assert_eq!(
+                    product.matches("\"name\":\"thread_name\"").count(),
+                    1,
+                    "the empty first frame wrote no metadata of its own:\n{product}"
+                );
+
+                // The record walk: the file's events, in order, are the
+                // first dump's scoped Cpp records (the `PROFILER_SCOPED`
+                // pairs land in the collecting buffer, so this dump
+                // carries the previous one), the script's python records,
+                // and the dump tick's call at the close. The `ts` of
+                // every entry is a bare micro stamp -- the
+                // stamps-to-seconds formula never renders anything else
+                // (`profiler.cpp:1428-1430`).
+                let mut events: Vec<(String, String, String)> = Vec::new();
+                let mut rest = product.as_str();
+                while let Some(at) = rest.find("{ \"cat\":\"") {
+                    rest = &rest[at + "{ \"cat\":\"".len()..];
+                    let end = rest.find('"').expect("the category close");
+                    let category = &rest[..end];
+                    rest = &rest[end + 1..];
+                    let ts_at = rest.find("\"ts\":").expect("the stamp");
+                    rest = &rest[ts_at + "\"ts\":".len()..];
+                    let digits = rest
+                        .split(|c: char| !c.is_ascii_digit())
+                        .next()
+                        .expect("a digit run");
+                    assert!(!digits.is_empty(), "a bare ts number in: {rest}");
+                    rest = &rest[digits.len()..];
+                    let phase_at = rest.find("\"ph\":\"").expect("the phase");
+                    rest = &rest[phase_at + "\"ph\":\"".len()..];
+                    let phase = &rest[..1];
+                    let name_at = rest.find("\"name\":\"").expect("the name");
+                    rest = &rest[name_at + "\"name\":\"".len()..];
+                    let name_end = rest.find('"').expect("the name close");
+                    events.push((
+                        category.to_string(),
+                        phase.to_string(),
+                        rest[..name_end].to_string(),
+                    ));
+                    rest = &rest[name_end + 1..];
+                }
+                assert_eq!(
+                    events,
+                    [
+                        ("C++", "B", "jsonDump"),
+                        ("C++", "B", "jsonDump_open"),
+                        ("C++", "E", "jsonDump_open"),
+                        ("C++", "E", "jsonDump"),
+                        ("Python", "E", "tick"),
+                        ("Python", "B", "__onThreadStart"),
+                        ("Python", "E", "__onThreadStart"),
+                        ("Python", "B", "busy"),
+                        ("Python", "E", "busy"),
+                        ("Python", "B", "getJsonDumpState"),
+                        ("Python", "E", "getJsonDumpState"),
+                        ("Python", "E", "<module>"),
+                        ("Python", "B", "<module>"),
+                        ("Python", "B", "getJsonOutputFilePath"),
+                        ("Python", "E", "getJsonOutputFilePath"),
+                        ("Python", "E", "<module>"),
+                        ("Python", "B", "<module>"),
+                        ("Python", "B", "tick"),
+                    ]
+                    .map(|(category, phase, name)| (
+                        category.to_string(),
+                        phase.to_string(),
+                        name.to_string()
+                    ))
+                );
+
+                std::fs::remove_dir_all(&dir).ok();
             },
         );
     }

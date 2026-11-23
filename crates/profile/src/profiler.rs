@@ -29,6 +29,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use crate::stamps_to_seconds;
 use foundation::time::stamp_now;
 use watcher::{Mode, Watcher, add_watcher};
 
@@ -222,6 +223,26 @@ pub struct Profiler {
     high_watermark_of_entry_count: usize,
     /// `jsonDumpState_`.
     json_dump_state: JsonDumpState,
+    /// `doJsonDump_` (`profiler.hpp:453`).
+    do_json_dump: bool,
+    /// `jsonDumpIndex_` (`profiler.hpp:454`): the frames written into
+    /// the open file so far.
+    json_dump_index: i32,
+    /// `jsonDumpCount_` (`profiler.hpp:455`): the frames per file.
+    json_dump_count: i32,
+    /// `jsonDumpStartTime_` (`profiler.hpp:456`): the file's `ts`
+    /// origin — the first entry of the first dumped frame.
+    json_dump_start_time: u64,
+    /// `jsonFileHasData_` (`profiler.hpp:457`): the comma gate across
+    /// the whole file.
+    json_file_has_data: bool,
+    /// `jsonOutputFile_` (`profiler.hpp:458`): the open dump stream;
+    /// `None` is the reference's NULL.
+    json_output_file: Option<std::fs::File>,
+    /// `jsonOutputFilePath_` (`profiler.hpp:459`).
+    json_output_file_path: String,
+    /// `jsonDumpDir_` (`profiler.hpp:460`).
+    json_dump_dir: String,
 }
 
 impl Profiler {
@@ -244,6 +265,14 @@ impl Profiler {
             frame_start_time: 0,
             high_watermark_of_entry_count: 0,
             json_dump_state: JsonDumpState::Inactive,
+            do_json_dump: false,
+            json_dump_index: 0,
+            json_dump_count: 1,
+            json_dump_start_time: 0,
+            json_file_has_data: false,
+            json_output_file: None,
+            json_output_file_path: String::new(),
+            json_dump_dir: String::new(),
         }
     }
 
@@ -279,6 +308,12 @@ impl Profiler {
         self.threads = vec![ThreadEntry::dead(); max_num_threads];
         self.num_threads = 0;
         self.threads_to_remove.clear();
+        // "By default, dumping to the executable directory"
+        // (`profiler.cpp:1070`).
+        self.json_dump_dir = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|dir| dir.to_string_lossy().into_owned()))
+            .unwrap_or_default();
         self.is_active = false;
         self.is_pending_active = false;
         self.profile_frame_number = 0;
@@ -318,6 +353,17 @@ impl Profiler {
         self.is_pending_active = false;
         self.is_active = true;
         self.frame_start_time = stamp_now();
+
+        // The consumer side of the hand-over (`profiler.cpp:1483-1491`):
+        // the reference's queued `processEntries` task dumps or closes
+        // the JSON file at this boundary (`forceJsonDump_` belongs to
+        // the hitch/freeze machinery and stays out); the port runs the
+        // step inline, the background task itself being BW-23's.
+        if self.do_json_dump {
+            self.json_dump();
+        } else if self.json_output_file.is_some() {
+            self.stop_json_dump();
+        }
     }
 
     /// `addEntry` (`profiler.ipp:25-51`): append one record — gated on
@@ -547,6 +593,227 @@ impl Profiler {
     pub fn json_dump_state(&self) -> JsonDumpState {
         self.json_dump_state
     }
+
+    /// `watcherSetDumpProfile` (`profiler.hpp:375-379`): arm (or
+    /// disarm) the per-frame JSON dump; the index restarts so the next
+    /// dump opens a fresh file.
+    pub fn watcher_set_dump_profile(&mut self, new_value: bool) {
+        self.json_dump_index = 0;
+        self.do_json_dump = new_value;
+    }
+
+    /// `watcherGetDumpProfile` (`profiler.hpp:381-383`).
+    pub fn watcher_get_dump_profile(&self) -> bool {
+        self.do_json_dump
+    }
+
+    /// `setJsonDumpCount` (`profiler.hpp:367-370`): the frames per
+    /// file — multiple frames share one file through this.
+    pub fn set_json_dump_count(&mut self, count: i32) {
+        self.json_dump_count = count;
+    }
+
+    /// `setJsonDumpDir` (`profiler.cpp:1282-1288`): the reference
+    /// guards the write with `jsonDumpDirMutex_`; the port's global
+    /// lock covers it.
+    pub fn set_json_dump_dir(&mut self, json_dump_dir: &str) {
+        self.json_dump_dir = json_dump_dir.to_string();
+    }
+
+    /// `getJsonOutputFilePath` (`profiler.hpp:417-418`): the latest
+    /// dump file's path, empty before the first successful create.
+    pub fn get_json_output_file_path(&self) -> &str {
+        &self.json_output_file_path
+    }
+
+    /// `jsonDump` (`profiler.cpp:1198-1261`): write one frame's
+    /// records into the open file. The first frame opens the file —
+    /// closing any stale one first (`profiler.cpp:1207-1213`) — and
+    /// takes the file's `ts` origin from the handed-over buffer's
+    /// first entry (`profiler.cpp:1215`; the reference reads
+    /// `entries_[0].time_` off the eagerly allocated array, the port's
+    /// on-demand buffer reads 0 when the frame is empty). A failed
+    /// create fails the dump; the last frame of the count closes it.
+    fn json_dump(&mut self) {
+        // `PROFILER_SCOPED( jsonDump )` (`profiler.cpp:1200`): the
+        // records land in the collecting buffer, the same way.
+        self.add_entry("jsonDump", EventType::Start, 0, EventCategory::Cpp);
+        self.json_dump_index += 1;
+
+        if self.json_dump_index == 1 {
+            // `PROFILER_SCOPED( jsonDump_open )` (`profiler.cpp:1207`).
+            self.add_entry("jsonDump_open", EventType::Start, 0, EventCategory::Cpp);
+            if let Some(mut stale) = self.json_output_file.take() {
+                let _ = std::io::Write::write_all(&mut stale, b"]");
+            }
+
+            self.json_dump_start_time = self.buffers[self.final_index]
+                .entries
+                .first()
+                .map(|entry| entry.time)
+                .unwrap_or(0);
+
+            self.json_output_file = self.create_new_json_dump_file();
+            if self.json_output_file.is_none() {
+                self.json_dump_index = 0;
+                self.do_json_dump = false;
+                self.set_json_dump_state(JsonDumpState::Failed);
+                self.add_entry("jsonDump_open", EventType::End, 0, EventCategory::Cpp);
+                self.add_entry("jsonDump", EventType::End, 0, EventCategory::Cpp);
+                return;
+            }
+
+            self.set_json_dump_state(JsonDumpState::Active);
+            self.json_file_has_data = false;
+            if let Some(file) = self.json_output_file.as_mut() {
+                let _ = std::io::Write::write_all(file, b"[");
+            }
+            self.add_entry("jsonDump_open", EventType::End, 0, EventCategory::Cpp);
+        }
+
+        self.write_json_entries();
+        if let Some(file) = self.json_output_file.as_mut() {
+            let _ = std::io::Write::flush(file);
+        }
+
+        if self.json_dump_index == self.json_dump_count {
+            self.stop_json_dump();
+        }
+        self.add_entry("jsonDump", EventType::End, 0, EventCategory::Cpp);
+    }
+
+    /// `stopJsonDump` (`profiler.cpp:1268-1279`): close the file and
+    /// mark the dump complete.
+    fn stop_json_dump(&mut self) {
+        // `PROFILER_SCOPED( jsonDump_close )` (`profiler.cpp:1270`).
+        self.add_entry("jsonDump_close", EventType::Start, 0, EventCategory::Cpp);
+        if let Some(mut file) = self.json_output_file.take() {
+            let _ = std::io::Write::write_all(&mut file, b"]");
+        }
+        self.json_dump_index = 0;
+        self.do_json_dump = false;
+        self.set_json_dump_state(JsonDumpState::Completed);
+        self.add_entry("jsonDump_close", EventType::End, 0, EventCategory::Cpp);
+    }
+
+    /// `setJsonDumpState` (`profiler.cpp:1264-1267`).
+    fn set_json_dump_state(&mut self, json_dump_state: JsonDumpState) {
+        self.json_dump_state = json_dump_state;
+    }
+
+    /// `createNewJsonDumpFile` (`profiler.cpp:1296-1337`):
+    /// `<dir>/<exe>_profile_YYYYMMDD_HHMMSS.json` in local time — the
+    /// reference pins the schema because WebConsole parses it
+    /// (`profiler.cpp:1309-1310`). A failed create answers `None`, the
+    /// reference's NULL.
+    fn create_new_json_dump_file(&mut self) -> Option<std::fs::File> {
+        let exe = std::env::current_exe().ok()?;
+        let basename = exe
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let stamp = local_stamp();
+        let file_name = format!("{basename}_profile_{stamp}.json");
+        let path = if self.json_dump_dir.is_empty() {
+            file_name
+        } else {
+            format!("{}/{file_name}", self.json_dump_dir)
+        };
+        let file = std::fs::File::create(&path).ok()?;
+        self.json_output_file_path = path;
+        Some(file)
+    }
+
+    /// `writeJsonEntries` (`profiler.cpp:1390-1465`): the Chrome trace
+    /// event format — one `thread_name` metadata event per live thread
+    /// slot, then one event per record, `B`/`E`/`C` phases, category
+    /// names the way `eventCategories_` spells them (`profiler.cpp:951-959`:
+    /// `C++`, `Python`, `GPU`, `All`), timestamps in micros from the
+    /// file origin. The reference keeps a per-thread entry stack to
+    /// detect unclosed scopes; nothing it computes reaches the output,
+    /// so the port leaves it out.
+    fn write_json_entries(&mut self) {
+        let mut out = String::new();
+
+        for (tid, slot) in self.threads.iter().enumerate().take(self.max_num_threads) {
+            if slot.thread != 0 {
+                if self.json_file_has_data {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"pid\":0,\"tid\":{tid}, \"ph\": \"M\", \
+                     \"name\":\"thread_name\",\"args\":{{\"name\": \"{}\"}}}} ",
+                    slot.name
+                ));
+                self.json_file_has_data = true;
+            }
+        }
+
+        for entry in &self.buffers[self.final_index].entries {
+            if entry.thread_idx == -1 {
+                continue;
+            }
+            if self.json_file_has_data {
+                out.push(',');
+            }
+            let category = match entry.category {
+                EventCategory::Cpp => "C++",
+                EventCategory::Gpu => "GPU",
+                EventCategory::Python => "Python",
+                EventCategory::All => "All",
+            };
+            // `(int)(stampsToSeconds( entry->time_ - jsonDumpStartTime_ )
+            // * 1000000)` (`profiler.cpp:1428-1430`): the two's
+            // complement subtraction wraps the same way.
+            let ts = (stamps_to_seconds(entry.time.wrapping_sub(self.json_dump_start_time))
+                * 1_000_000.0) as i32;
+            let phase = match entry.event {
+                EventType::Start | EventType::StartIdle => "\"B\"",
+                EventType::End => "\"E\"",
+                EventType::Counter => "\"C\"",
+            };
+            out.push_str(&format!(
+                "{{ \"cat\":\"{category}\", \"pid\":0,\"tid\":{}, \
+                 \"ts\":{ts},\"ph\":{phase},\"name\":\"{}\"",
+                entry.thread_idx,
+                entry.name()
+            ));
+            if entry.event == EventType::Counter {
+                out.push_str(&format!(",\"args\":{{\"counter\": {}}}}}", entry.value));
+            } else {
+                out.push('}');
+            }
+            self.json_file_has_data = true;
+        }
+
+        if let Some(file) = self.json_output_file.as_mut() {
+            let _ = std::io::Write::write_all(file, out.as_bytes());
+        }
+    }
+}
+
+/// `%04d%02d%02d_%02d%02d%02d` over the local clock
+/// (`profiler.cpp:1305-1315`): `time(NULL)` through `localtime`.
+fn local_stamp() -> String {
+    // SAFETY: `libc::time` needs no argument; the null pointer asks for
+    // the return value form.
+    let time_t = unsafe { libc::time(std::ptr::null_mut()) };
+    // SAFETY: `tm` is a plain C struct; zeroed is its "empty" value.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `localtime_r` fills the given `tm` from the clock value;
+    // it is the thread-safe form of the reference's `localtime`.
+    unsafe {
+        libc::localtime_r(&time_t, &mut tm);
+    }
+    format!(
+        "{:04}{:02}{:02}_{:02}{:02}{:02}",
+        1900 + tm.tm_year,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
 }
 
 impl Default for Profiler {
@@ -1149,5 +1416,205 @@ mod tests {
         assert_eq!(profiler.profile_entries()[0].event, EventType::Start);
         assert_eq!(profiler.profile_entries()[0].category, EventCategory::Cpp);
         assert_eq!(profiler.profile_entries()[1].event, EventType::End);
+    }
+
+    /// A scratch dump directory for one test.
+    fn dump_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "boundless-profile-json-{tag}-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("build the dump dir");
+        dir
+    }
+
+    /// The JSON dump of one fixed frame (`profiler.cpp:1198-1465`):
+    /// the file is the Chrome trace event format — `[`, one
+    /// `thread_name` metadata event per live slot, one event per
+    /// record with the reference's exact spacing, `]` at the close.
+    /// The first record pins the `ts` origin, so its delta reads 0;
+    /// the rest carry the real micro deltas the same formula
+    /// (`profiler.cpp:1428-1430`) renders.
+    #[test]
+    fn the_json_dump_writes_the_fixed_event_product() {
+        let dir = dump_dir("single");
+        let mut profiler = Profiler::new();
+        profiler.init(128 * 1024 * 1024, MAXIMUM_NUMBER_OF_THREADS);
+        profiler.set_json_dump_dir(dir.to_str().expect("utf8 temp dir"));
+        profiler.add_this_thread("MainThread");
+        profiler.enable(true);
+        profiler.tick();
+        profiler.watcher_set_dump_profile(true);
+
+        profiler.add_entry("busy", EventType::Start, 0, EventCategory::Python);
+        profiler.add_entry("busy", EventType::End, 0, EventCategory::Python);
+        profiler.tick();
+
+        assert_eq!(profiler.json_dump_state(), JsonDumpState::Completed);
+        assert!(!profiler.watcher_get_dump_profile(), "the dump rearmed off");
+        let path = profiler.get_json_output_file_path().to_string();
+        assert!(
+            path.starts_with(dir.to_str().expect("utf8 temp dir")),
+            "{path}"
+        );
+        let name = path.rsplit('/').next().expect("a file name");
+        let binary = std::env::current_exe()
+            .expect("the test binary")
+            .file_name()
+            .expect("a binary name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            name.starts_with(&binary) && name.contains("_profile_") && name.ends_with(".json"),
+            "{name} carries the reference's schema"
+        );
+
+        let product = std::fs::read_to_string(&path).expect("the dump file");
+        let prefix = "[{\"pid\":0,\"tid\":0, \"ph\": \"M\", \
+                      \"name\":\"thread_name\",\"args\":{\"name\": \"MainThread\"}} \
+                      ,{ \"cat\":\"Python\", \"pid\":0,\"tid\":0, \
+                      \"ts\":0,\"ph\":\"B\",\"name\":\"busy\"}";
+        assert!(
+            product.starts_with(prefix),
+            "the file opens with the metadata and the zero-delta start:\n{product}"
+        );
+        assert!(
+            product.ends_with("\"ph\":\"E\",\"name\":\"busy\"}]"),
+            "the file closes on the end record and the bracket:\n{product}"
+        );
+
+        // The dump's own scoped records color the collecting buffer the
+        // way the reference's `PROFILER_SCOPED`s do
+        // (`profiler.cpp:1200,1207,1270`).
+        let scopes: Vec<_> = profiler
+            .profile_entries()
+            .iter()
+            .map(|entry| (entry.name(), entry.event))
+            .collect();
+        assert_eq!(
+            scopes,
+            vec![
+                ("jsonDump", EventType::Start),
+                ("jsonDump_open", EventType::Start),
+                ("jsonDump_open", EventType::End),
+                ("jsonDump_close", EventType::Start),
+                ("jsonDump_close", EventType::End),
+                ("jsonDump", EventType::End),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Several frames share one file through `jsonDumpCount_`
+    /// (`profiler.hpp:367-370`): the comma gate joins the frames'
+    /// events, the metadata repeats per frame, and the last frame of
+    /// the count closes the file
+    /// (`profiler.cpp:1239-1241`).
+    #[test]
+    fn a_multi_frame_dump_shares_one_file() {
+        let dir = dump_dir("multi");
+        let mut profiler = Profiler::new();
+        profiler.init(128 * 1024 * 1024, MAXIMUM_NUMBER_OF_THREADS);
+        profiler.set_json_dump_dir(dir.to_str().expect("utf8 temp dir"));
+        profiler.add_this_thread("MainThread");
+        profiler.enable(true);
+        profiler.tick();
+        profiler.watcher_set_dump_profile(true);
+        profiler.set_json_dump_count(2);
+
+        profiler.add_entry("first", EventType::Start, 0, EventCategory::Cpp);
+        profiler.add_entry("first", EventType::End, 0, EventCategory::Cpp);
+        profiler.tick();
+        assert_eq!(profiler.json_dump_state(), JsonDumpState::Active);
+        assert!(profiler.watcher_get_dump_profile(), "still dumping");
+
+        profiler.add_entry("second", EventType::Counter, 7, EventCategory::Cpp);
+        profiler.tick();
+        assert_eq!(profiler.json_dump_state(), JsonDumpState::Completed);
+
+        let product =
+            std::fs::read_to_string(profiler.get_json_output_file_path()).expect("the dump file");
+        assert!(product.starts_with('['));
+        assert!(product.ends_with(']'));
+        assert_eq!(
+            product.matches("\"name\":\"thread_name\"").count(),
+            2,
+            "each frame writes its metadata:\n{product}"
+        );
+        assert!(product.contains("\"ph\":\"B\",\"name\":\"first\""));
+        assert!(product.contains("\"ph\":\"E\",\"name\":\"first\""));
+        assert!(
+            product.contains("\"ph\":\"C\",\"name\":\"second\",\"args\":{\"counter\": 7}}"),
+            "the counter phase carries the value:\n{product}"
+        );
+        assert!(
+            product.contains(",{\"pid\":0,\"tid\":0, \"ph\": \"M\""),
+            "the second frame's metadata joins through the comma gate:\n{product}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A failed create fails the dump (`profiler.cpp:1217-1224`): the
+    /// state goes `JSON_DUMPING_FAILED`, the arm clears and the index
+    /// resets, so the next arm opens fresh.
+    #[test]
+    fn a_failed_create_fails_the_dump() {
+        let dir = dump_dir("failed");
+        let missing = dir.join("no-such-subdir");
+        let mut profiler = Profiler::new();
+        profiler.init(128 * 1024 * 1024, MAXIMUM_NUMBER_OF_THREADS);
+        profiler.set_json_dump_dir(missing.to_str().expect("utf8 temp dir"));
+        profiler.enable(true);
+        profiler.tick();
+        profiler.watcher_set_dump_profile(true);
+        profiler.tick();
+
+        assert_eq!(profiler.json_dump_state(), JsonDumpState::Failed);
+        assert!(!profiler.watcher_get_dump_profile());
+        assert_eq!(profiler.get_json_output_file_path(), "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An arm cleared between frames closes the open file through the
+    /// consumer's other branch (`profiler.cpp:1489-1491`): the next
+    /// tick stops the dump and the state completes.
+    #[test]
+    fn a_disarmed_dump_closes_the_open_file() {
+        let dir = dump_dir("disarm");
+        let mut profiler = Profiler::new();
+        profiler.init(128 * 1024 * 1024, MAXIMUM_NUMBER_OF_THREADS);
+        profiler.set_json_dump_dir(dir.to_str().expect("utf8 temp dir"));
+        profiler.add_this_thread("MainThread");
+        profiler.enable(true);
+        profiler.tick();
+        profiler.watcher_set_dump_profile(true);
+        profiler.set_json_dump_count(2);
+        profiler.add_entry("work", EventType::Start, 0, EventCategory::Cpp);
+        profiler.tick();
+        assert_eq!(profiler.json_dump_state(), JsonDumpState::Active);
+
+        profiler.watcher_set_dump_profile(false);
+        profiler.tick();
+        assert_eq!(profiler.json_dump_state(), JsonDumpState::Completed);
+        let product =
+            std::fs::read_to_string(profiler.get_json_output_file_path()).expect("the dump file");
+        assert!(product.ends_with(']'));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `init` defaults the dump directory to the executable's
+    /// (`profiler.cpp:1070`).
+    #[test]
+    fn the_dump_defaults_to_the_executable_directory() {
+        let mut profiler = Profiler::new();
+        profiler.init(128 * 1024 * 1024, MAXIMUM_NUMBER_OF_THREADS);
+        let expected = std::env::current_exe()
+            .expect("the test binary")
+            .parent()
+            .expect("a binary directory")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(profiler.json_dump_dir, expected);
     }
 }

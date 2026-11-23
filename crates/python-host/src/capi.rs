@@ -670,6 +670,7 @@ unsafe extern "C" {
     pub static mut PyExc_AttributeError: *mut PyObject;
     pub static mut PyExc_EnvironmentError: *mut PyObject;
     pub static mut PyExc_IOError: *mut PyObject;
+    pub static mut PyExc_RuntimeError: *mut PyObject;
     pub static mut PyExc_SystemError: *mut PyObject;
     pub fn PyIndex_Check(obj: *mut PyObject) -> c_int;
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
