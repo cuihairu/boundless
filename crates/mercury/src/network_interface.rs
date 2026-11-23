@@ -1423,4 +1423,62 @@ mod tests {
             "the wire bytes are the ones the filter saw"
         );
     }
+
+    /// The BW-02-05-02 acceptance at the transport layer: once the session
+    /// cipher is agreed (`setEncryption`), the channel's outgoing bundle is
+    /// encrypted -- the datagram on the wire is not the plaintext -- and a
+    /// peer holding the same cipher accepts and decrypts it back (the legal
+    /// handshake, both ways).
+    #[test]
+    fn an_agreed_cipher_encrypts_the_channel_and_the_peer_decrypts() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+
+        // The peer's socket, so the encrypted datagram has somewhere to land.
+        let mut listener = Endpoint::new();
+        listener.socket(socket::SOCK_DGRAM);
+        listener.bind(0, LOOPBACK);
+        let port = listener.local().port;
+
+        let cipher =
+            crate::block_cipher::NullCipher::with_key(b"session-encryption-key".to_vec(), 8);
+        let channel = UdpChannel::new(
+            &interface,
+            Address::new(LOOPBACK, port),
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+        channel.borrow_mut().set_encryption(Some(cipher.clone()));
+
+        UdpChannel::send_bundle(&channel, &mut UdpBundle::new(0));
+
+        let mut seen = [0u8; 256];
+        let len = listener.recvfrom_address(&mut seen, &mut Address::default());
+        assert!(len > 0, "the encrypted packet left the interface");
+        let len = len as usize;
+
+        // A peer holding the same cipher reconstructs the datagram and its
+        // filter accepts it: magic, wastage and block chaining all check out.
+        let peer = crate::encryption_filter::EncryptionFilter::create(cipher);
+        let mut packet = Packet::new();
+        packet.grow(len);
+        packet.buffer_mut()[..len].copy_from_slice(&seen[..len]);
+        let delivered = Rc::new(RefCell::new(None));
+        let reason = peer.recv(&Address::new(LOOPBACK, port), &mut packet, &|_, p| {
+            *delivered.borrow_mut() = Some(p.clone());
+            Reason::Success
+        });
+
+        assert_eq!(
+            reason,
+            Reason::Success,
+            "the peer accepts the encrypted packet"
+        );
+        let plaintext = delivered.borrow().clone().expect("the peer decrypted");
+        assert_ne!(
+            plaintext.wire(),
+            &seen[..len],
+            "the wire really carried ciphertext"
+        );
+    }
 }

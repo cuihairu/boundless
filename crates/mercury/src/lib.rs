@@ -1,5 +1,6 @@
 //! BW-02 transports, message framing and RPC.
 
+pub mod block_cipher;
 pub mod bundle_dispatch;
 #[cfg(target_os = "linux")]
 pub mod channel_listener;
@@ -8,6 +9,7 @@ pub mod channel_map;
 pub mod circular_array;
 #[cfg(target_os = "linux")]
 pub mod condemned_channels;
+pub mod encryption_filter;
 pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;

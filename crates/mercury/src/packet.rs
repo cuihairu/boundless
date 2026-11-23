@@ -146,6 +146,16 @@ impl Packet {
         self.msg_end_offset
     }
 
+    /// `msgEndOffset( nBytes )` (the setter): point the body at a fresh size
+    /// on a packet being rebuilt by a filter. `EncryptionFilter::send`
+    /// (encryption_filter.cpp:104) builds its outbound packet this way --
+    /// the whole datagram, padding and magic included, becomes one body with
+    /// no footer trail.
+    pub fn set_body_size(&mut self, size: usize) {
+        self.msg_end_offset = size;
+        self.footer_size = 0;
+    }
+
     /// `bodySize()`: everything after the flags word.
     pub fn body_size(&self) -> usize {
         self.msg_end_offset.saturating_sub(HEADER_SIZE)
@@ -181,6 +191,14 @@ impl Packet {
     /// assembling a datagram by hand.
     pub fn buffer_mut(&mut self) -> &mut [u8] {
         &mut self.data[..]
+    }
+
+    /// The whole backing array, read-only: an encryption filter encrypts
+    /// `len` bytes of it -- the datagram plus the padding, magic and wastage
+    /// count it just wrote past [`Packet::total_size`] -- into the rebuilt
+    /// packet (encryption_filter.cpp:116).
+    pub fn buffer(&self) -> &[u8] {
+        &self.data[..]
     }
 
     // -- flags -----------------------------------------------------------

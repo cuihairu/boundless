@@ -18,6 +18,7 @@ use std::rc::{Rc, Weak};
 
 use foundation::time_queue::{TimerHandle, TimerHandler};
 
+use crate::block_cipher::BlockCipherPtr;
 use crate::channel_listener::ChannelListener;
 use crate::circular_array::CircularArray;
 use crate::endpoint::{Address, NONE};
@@ -1634,6 +1635,16 @@ impl UdpChannel {
             );
         }
         self.p_filter = filter;
+    }
+
+    /// `setEncryption` (udp_channel.cpp:675): fit an encryption filter built
+    /// on the negotiated block cipher, or clear the channel's filter when
+    /// the cipher is gone. The indexed-channel guard of `pFilter` applies
+    /// just the same.
+    pub fn set_encryption(&mut self, cipher: Option<BlockCipherPtr>) {
+        self.set_p_filter(cipher.map(|cipher| {
+            crate::encryption_filter::EncryptionFilter::create(cipher) as Rc<dyn PacketFilter>
+        }));
     }
 
     /// `bundle()`: the channel's own bundle.
@@ -3573,6 +3584,45 @@ mod tests {
             indexed.borrow_mut().set_p_filter(Some(Rc::new(TestFilter)));
         }));
         assert!(fitted.is_err(), "filters are refused on indexed channels");
+    }
+
+    /// `setEncryption` (udp_channel.cpp:675): the agreed session cipher
+    /// becomes an `EncryptionFilter` on the channel -- the negotiation that
+    /// turns the channel encrypted -- and `None` clears it.
+    #[test]
+    fn set_encryption_fits_the_ciphers_filter_and_clears_it() {
+        let clock = Rc::new(Cell::new(1_000_000u64));
+        let interface = interface(&clock);
+        let channel = UdpChannel::new(
+            &interface,
+            addr(0x0100_00d4),
+            Traits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        assert!(channel.borrow().p_filter().is_none());
+        channel
+            .borrow_mut()
+            .set_encryption(Some(crate::block_cipher::NullCipher::with_key(
+                b"session-encryption-key".to_vec(),
+                8,
+            )));
+        let filter = channel
+            .borrow()
+            .p_filter()
+            .expect("the cipher fitted a filter");
+        assert_eq!(
+            filter.max_spare_size(),
+            8 + 4 + 200,
+            "the encryption filter's spare room"
+        );
+
+        channel.borrow_mut().set_encryption(None);
+        assert!(
+            channel.borrow().p_filter().is_none(),
+            "a null cipher clears the filter"
+        );
     }
 
     /// `clearBundle` (channel.cpp:299) rebuilds through `newBundle`, which
