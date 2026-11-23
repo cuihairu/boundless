@@ -1371,6 +1371,26 @@ pub fn add_watcher_value<T: WatcherValue>(
     add_watcher(path, Rc::clone(&registered))
 }
 
+/// The free `watchTypeCount(basePrefix, typeName, var)` helper
+/// (`watcher.cpp:596-602`): concatenate the prefix and the type name, then
+/// register the counter under it. The inner `addWatcher(path, rValue)` call
+/// keeps its template defaults — read-write access, no comment — and the
+/// watcher reads the live variable, so the count stays a stable snapshot of
+/// it. `None` when the tree refused the path (a duplicate registration
+/// leaves the original watcher in place).
+pub fn watch_type_count<T: WatcherValue>(
+    base_prefix: &str,
+    type_name: &str,
+    var: &Rc<RefCell<T>>,
+) -> Option<Rc<RefCell<dyn Watcher>>> {
+    add_watcher_value(
+        &format!("{base_prefix}{type_name}"),
+        var,
+        Mode::ReadWrite,
+        "",
+    )
+}
+
 /// `getWatcher(path)` (`watcher.hpp:3233-3238`).
 pub fn get_watcher(path: &str) -> Option<Rc<RefCell<dyn Watcher>>> {
     root().borrow().get_child(path)
@@ -2430,5 +2450,70 @@ mod tests {
             MODE_READ_ONLY,
         );
         assert_eq!(request.data(), expected.data());
+    }
+
+    /// `watchTypeCount` concatenates the prefix and the type name and
+    /// registers the live counter under it (`watcher.cpp:596-602`, taking
+    /// the `addWatcher` template defaults: read-write, no comment).
+    #[test]
+    fn type_counts_watch_the_live_counter() {
+        fini();
+        let counter = Rc::new(RefCell::new(7i32));
+        assert!(watch_type_count("OrderedStringMapTables/", "Foo", &counter).is_some());
+
+        // The string read answers the live counter with the defaults.
+        let mut desc = String::new();
+        let mut mode = Mode::Invalid;
+        assert_eq!(
+            get_watcher_string("OrderedStringMapTables/Foo", &mut desc, &mut mode),
+            Some("7".to_string())
+        );
+        assert_eq!(mode, Mode::ReadWrite);
+        assert!(desc.is_empty());
+
+        // The snapshot moves with the variable, not with registration time.
+        *counter.borrow_mut() += 3;
+        assert_eq!(
+            get_watcher_string("OrderedStringMapTables/Foo", &mut desc, &mut mode),
+            Some("10".to_string())
+        );
+
+        // The default access is read-write and the write lands in the
+        // counter.
+        assert!(set_watcher_string("OrderedStringMapTables/Foo", "22"));
+        assert_eq!(*counter.borrow(), 22);
+
+        // The remote query reads the same counter as a typed INT.
+        let mut request = WatcherPathRequestV2::new("OrderedStringMapTables/Foo");
+        request.set_sequence_number(5);
+        request.fetch_watcher_value();
+        assert!(request.completed());
+        let mut expected = MemoryOStream::new();
+        expected.write_u32(5);
+        value_to_stream(&mut expected, &StreamValue::Int(22), MODE_READ_WRITE);
+        assert_eq!(request.data(), expected.data());
+
+        // The prefix is taken verbatim: no separator is added for callers
+        // that do not carry one.
+        let other = Rc::new(RefCell::new(0u32));
+        assert!(watch_type_count("counts", "Bar", &other).is_some());
+        assert_eq!(
+            get_watcher_string("countsBar", &mut desc, &mut mode),
+            Some("0".to_string())
+        );
+
+        // Error states: a second registration of the same path is refused
+        // and the original keeps answering; a missing path reads as None.
+        let again = Rc::new(RefCell::new(1i32));
+        assert!(watch_type_count("OrderedStringMapTables/", "Foo", &again).is_none());
+        assert_eq!(*again.borrow(), 1);
+        assert_eq!(
+            get_watcher_string("OrderedStringMapTables/Foo", &mut desc, &mut mode),
+            Some("22".to_string())
+        );
+        assert_eq!(
+            get_watcher_string("OrderedStringMapTables/Nope", &mut desc, &mut mode),
+            None
+        );
     }
 }
