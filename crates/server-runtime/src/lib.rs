@@ -28,6 +28,7 @@ pub mod login_request;
 pub mod loginapp;
 pub mod machined;
 pub mod mailbox_call;
+pub mod offloaded_backup;
 pub mod pending_logins;
 pub mod proxy_client;
 pub mod proxy_logoff;
