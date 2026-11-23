@@ -81,6 +81,17 @@ impl BinaryStream {
         s
     }
 
+    /// Create a read stream over an existing byte slice, cursor at the start.
+    /// Used by `MGMPacket::read` to hand each enclosed message its own
+    /// bounded stream, mirroring the reference `MemoryIStream msgstream`.
+    pub fn from_slice(bytes: &[u8]) -> Self {
+        Self {
+            buf: bytes.to_vec(),
+            read: 0,
+            error: false,
+        }
+    }
+
     pub fn capacity(&self) -> usize {
         self.buf.len()
     }
