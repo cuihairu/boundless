@@ -25,6 +25,7 @@
 | `resmgr` | `crates/resources` | 内联（`crates/resources/src/*`，212 测） | `BWResource`/`DataSection`（BW-01-04） |
 | `asset_pipeline` | `crates/asset-pipeline` | 内联（62 测） | BW-13-01-01/02/03 已由 tools 席位勾 |
 | `server`（`lib/server`） | `crates/server-runtime` | 内联（134 测） | 角色生命周期面随 BW-06..10 |
+| `chunk` | `crates/chunk` | 内联 | BW-10-01（标识符/边界/portal/流式绑定） |
 | `testing` | `crates/test-support` | 内联（113 测） | 共享测试框架（BW-18）+ 分层检查器（BW-16-01-01/02-05） |
 | `unit_test_lib` | `crates/test-support` | 同上 | 同上 |
 | `db`/`db_storage`/`db_storage_mysql`/`db_storage_xml`/`sqlite` | `crates/db` | 内联（4 测） | **部分**：后端矩阵（MySQL/XML/SQLite，BW-15-05-03）、PostgreSQL（BW-15-05-04）待 |
@@ -55,14 +56,14 @@ BW-00-03-05）承载：
 | `baseapp_extensions`/`cellapp_extensions`/`dbapp_extensions` | `crates/python-module`（`boundless.so`）+ `crates/python-host` 宿主 | `crates/python-module/tests/import.rs` | **部分**：模块面（BW-00-03-03）绿；扩展**内容**（各角色 API，BW-03-03/04）待 |
 | `process_defs` | `crates/entitydef` bin | `crates/entitydef/src/bin/process_defs.rs` + install 布局自检（BW-04-04-01） | CLI 与参考逐项对齐（BW-14-04-01） |
 | `plugin_system`（tools） | `crates/plugin-host` | `crates/plugin-host/tests/*`（1 文件）+ 内联 | `PluginLoader` 移植（BW-13-06-03） |
+| `client`（`bwclient`） | `crates/client` | 内联 | BW-11（窗口/设备/渲染后端，`render/` 建模参考 `IDirect3DDevice9` 生命周期） |
 | `assetprocessor`/`batch_compiler`（tools） | `crates/asset-pipeline` | 内联（`asset_compiler.rs`/`batch_compiler.rs`/`task_processor.rs` 等，62 测） | BW-13-01-01/02/03 已由 tools 席位勾 |
 
 ## 2. 未建目标（有归属，无模块/测试路径）
 
 | 原版目标 | 计划归属 | 解锁项 | 现状 |
 |---|---|---|---|
-| `client`（`bwclient`） | `crates/`（渲染栈） | BW-11 | 参考客户端 Windows-only（BW-15-06-01） |
-| `appmgr`/`memhook`/`moo`/`romp`/`chunk`/`chunk_loading`/`chunk_scene_adapter`/`compiled_space`/`model`/`particle`/`speedtree`/`terrain`/`post_processing`/`scaleform`/`fmodsound`/`web_render`/`ual`/`gizmo`/`guimanager`/`guitabs`/`controls`/`input`/`camera`/`duplo`/`scene`/`space`/`physics2`/`navigation_recast`/`open_automate`/`emptyvoip`/`connection`/`connection_model`/`waypoint`/`waypoint_generator`/`visual_manipulator`/`bwentity`/`delegate_interface`/`ashes` | `crates/`（客户端/渲染/工具库） | BW-11 / BW-13 | 未建 |
+| `appmgr`/`memhook`/`moo`/`romp`/`chunk_loading`/`chunk_scene_adapter`/`compiled_space`/`model`/`particle`/`speedtree`/`terrain`/`post_processing`/`scaleform`/`fmodsound`/`web_render`/`ual`/`gizmo`/`guimanager`/`guitabs`/`controls`/`input`/`camera`/`duplo`/`scene`/`space`/`physics2`/`navigation_recast`/`open_automate`/`emptyvoip`/`connection`/`connection_model`/`waypoint`/`waypoint_generator`/`visual_manipulator`/`bwentity`/`delegate_interface`/`ashes` | `crates/`（客户端/渲染/工具库） | BW-11 / BW-13 | 未建（`moo` 的设备生命周期面已由 `crates/client/src/render` 建模，完整渲染器待 BW-11） |
 | `modeleditor`/`worldeditor`/`worldeditor_ui`/`particle_editor`/`modeleditor_core`/`editor_shared` | `crates/` + `apps/editor` | BW-13（编辑器立项） | 未建；`apps/` 现仅 server（BW-16-04-02/03 同卡） |
 | `navgen` | `crates/`（导航） | BW-13 | 未建；OpenGL 预览后端见 BW-15-06-01 |
 | `visualexporter`/`animationexporter`/`mayavisualexporter` | `crates/`（导出器） | BW-13-02 | 未建；宿主矩阵见 BW-15-06-02 |
@@ -75,10 +76,10 @@ BW-00-03-05）承载：
 
 ## 3. 覆盖与卡点
 
-- **已合入**：17 个库目标、8 个角色目标（单二进制面）、3 个扩展目标（模块面）、
-  4 个工具（`process_defs`/`plugin_system`/`assetprocessor`/`batch_compiler`）——
+- **已合入**：18 个库目标（含 `chunk`）、8 个角色目标（单二进制面）、3 个扩展目标（模块面）、
+  5 个应用/工具（`client`/`process_defs`/`plugin_system`/`assetprocessor`/`batch_compiler`）——
   **均已有模块与测试路径**（§1）。
-- **未建**：客户端、39 个客户端/渲染/工具库（含 `appmgr`/`memhook`/`urlrequest`）、
+- **未建**：38 个客户端/渲染/工具库（含 `appmgr`/`memhook`/`urlrequest`）、
   5 个编辑器目标、3 个导出器、Bots、machined、日志/DB 工具、其余工具——
   **无模块与测试路径**（§2），各随 BW-09/11/12-04/13 立项解锁。
 - **部分**：`db`（后端矩阵）、3 个扩展（扩展内容）——模块面已有，内容/后端待解锁项。
