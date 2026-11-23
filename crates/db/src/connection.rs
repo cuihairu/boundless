@@ -53,6 +53,10 @@ impl EntityStorage for StorageConnection {
     ) -> Result<DatabaseId, DbError> {
         self.store.borrow_mut().put_entity(record, put_explicit_id)
     }
+
+    fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.store.borrow_mut().del_entity(key)
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +155,33 @@ mod tests {
         let err = other
             .put_entity(&ghost, false)
             .expect_err("the id exists on no connection");
+        assert_eq!(err, DbError::NotFound);
+    }
+
+    /// A delete on one connection leaves the row missing for every other:
+    /// the independent reader queries it back as gone, and a repeated
+    /// delete from the reader is the same missing-row outcome.
+    #[test]
+    fn a_delete_is_visible_from_an_independent_connection() {
+        let store = Rc::new(RefCell::new(MemoryStorage::new()));
+        let mut deleter = StorageConnection::open(Rc::clone(&store));
+        let mut reader = StorageConnection::open(Rc::clone(&store));
+
+        let db_id = deleter
+            .put_entity(&avatar("wenchuan"), false)
+            .expect("create");
+        let key = EntityKey { type_id: 1, db_id };
+
+        deleter
+            .del_entity(&key)
+            .expect("the row is there to delete");
+
+        let found = reader.get_entity(&key).expect("read over the reader");
+        assert_eq!(found, None, "the deleted row is gone on the reader too");
+
+        let err = reader
+            .del_entity(&key)
+            .expect_err("a repeated delete finds nothing");
         assert_eq!(err, DbError::NotFound);
     }
 }

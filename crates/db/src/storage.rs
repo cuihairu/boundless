@@ -1,10 +1,10 @@
-//! The storage contract (`IDatabase`) and the entity get/load/write
+//! The storage contract (`IDatabase`) and the entity get/load/write/delete
 //! operations.
 //!
 //! The reference's persistence contract is `lib/db_storage/idatabase.hpp`
 //! (`class IDatabase`). Each entity operation is one `todo.md` item: this
-//! module carries `get_entity` (BW-09-01-01) and `put_entity` (BW-09-01-02);
-//! `del_entity` (BW-09-01-03), lookup (BW-09-01-04) and id allocation
+//! module carries `get_entity` (BW-09-01-01), `put_entity` (BW-09-01-02)
+//! and `del_entity` (BW-09-01-03); lookup (BW-09-01-04) and id allocation
 //! (BW-09-01-05) join the trait as they land. The in-memory backend lets
 //! the entity-operation acceptance cases run before any real backend
 //! exists; MySQL/XML/SQLite/PostgreSQL plug into the same trait.
@@ -57,6 +57,18 @@ pub trait EntityStorage {
         record: &EntityRecord,
         put_explicit_id: bool,
     ) -> Result<DatabaseId, DbError>;
+
+    /// `IDatabase::delEntity` (`idatabase.hpp:249-258`): remove the row
+    /// `key` names. `isOK is false if the entity doesn't exist`
+    /// (`idatabase.hpp:239-240`) — [`DbError::NotFound`]; `DelEntityTask`
+    /// `setFailure()`s the same way when the name lookup or
+    /// `deleteWithID` finds nothing (`del_entity_task.cpp:44-64`). A
+    /// pending db id is never a real key
+    /// (`del_entity_task.cpp:35`, `MF_ASSERT( dbID != PENDING_DATABASE_ID )`),
+    /// so deleting one is the missing-row outcome too. The db id == 0
+    /// by-name leg is `getDbID(conn, name)` (`del_entity_task.cpp:38-40`),
+    /// which joins the lookup item (BW-09-01-04).
+    fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError>;
 }
 
 /// The DBApp load: fetch the record for `key`, or [`DbError::NotFound`]
@@ -162,6 +174,13 @@ impl EntityStorage for MemoryStorage {
         }
         self.entities.insert(key, record.clone());
         Ok(record.db_id)
+    }
+
+    fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.entities
+            .remove(key)
+            .map(|_| ())
+            .ok_or(DbError::NotFound)
     }
 }
 
@@ -355,5 +374,59 @@ mod tests {
             })
             .expect("read back");
         assert_eq!(found, Some(record(1001)));
+    }
+
+    /// The acceptance: a deleted row queries back as missing.
+    #[test]
+    fn a_deleted_row_queries_back_as_missing() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 1001,
+        };
+        store
+            .del_entity(&key)
+            .expect("the row exists, so it deletes");
+
+        let found = store.get_entity(&key).expect("read back");
+        assert_eq!(found, None, "the deleted row is gone");
+        assert!(store.is_empty());
+    }
+
+    /// The acceptance: a repeated delete is the same missing-row outcome as
+    /// the first delete's aftermath (`idatabase.hpp:239-240`, `isOK is
+    /// false if the entity doesn't exist`).
+    #[test]
+    fn a_repeated_delete_is_the_missing_row_outcome() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 1001,
+        };
+        store.del_entity(&key).expect("first delete");
+        let err = store
+            .del_entity(&key)
+            .expect_err("the second delete finds nothing");
+        assert_eq!(err, DbError::NotFound);
+    }
+
+    /// A pending db id is never a real key
+    /// (`del_entity_task.cpp:35`, the `MF_ASSERT`).
+    #[test]
+    fn deleting_a_pending_key_is_the_missing_row_outcome() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+
+        let err = store
+            .del_entity(&EntityKey {
+                type_id: 3,
+                db_id: PENDING_DATABASE_ID,
+            })
+            .expect_err("a pending id names no row");
+        assert_eq!(err, DbError::NotFound);
     }
 }

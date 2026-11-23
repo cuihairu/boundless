@@ -40,7 +40,9 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
     match crate_name {
         "foundation" => Some(LAYER_FOUNDATION),
         "platform" => Some(LAYER_PLATFORM),
-        "contracts" | "entitydef" | "mercury" | "python-host" | "resources" => Some(LAYER_DOMAIN),
+        "contracts" | "entitydef" | "mercury" | "python-host" | "resources" | "db" => {
+            Some(LAYER_DOMAIN)
+        }
         "server-runtime" => Some(LAYER_ROLE_RUNTIME),
         "boundless-server" | "test-support" => Some(LAYER_APPLICATION),
         _ => None,
@@ -582,6 +584,7 @@ mod tests {
             "foundation",
             "platform",
             "contracts",
+            "db",
             "entitydef",
             "mercury",
             "python-host",
