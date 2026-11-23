@@ -15,6 +15,7 @@ pub mod client_login;
 pub mod cluster_shutdown;
 pub mod config;
 pub mod controller_extra;
+pub mod controller_stream;
 pub mod data_download;
 pub mod db_login;
 pub mod dbappmgr;
