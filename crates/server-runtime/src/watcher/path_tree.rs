@@ -685,6 +685,13 @@ impl WatcherTree {
         self.root.add(path, WatcherNode::value(value, mode))
     }
 
+    /// Attach a pre-built node (a directory, for instance) at `path`, the
+    /// way `Watcher::rootWatcher().addChild` mounts a directory watcher
+    /// (watcher.cpp:297-385). Returns false when the path is refused.
+    pub fn add_node(&mut self, path: &str, node: WatcherNode) -> bool {
+        self.root.add(path, node)
+    }
+
     /// Resolve `path` to its node; `None` when there is no node there.
     pub fn get(&self, path: &str) -> Option<&WatcherNode> {
         self.root.get(path)
