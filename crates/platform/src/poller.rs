@@ -34,11 +34,7 @@ pub const ENOENT: i32 = libc::ENOENT;
 pub fn create(expected_size: i32) -> RawFd {
     let _ = expected_size;
     let fd = unsafe { libc::epoll_create1(0) };
-    if fd < 0 {
-        -1
-    } else {
-        fd
-    }
+    if fd < 0 { -1 } else { fd }
 }
 
 /// `epoll_ctl(op, fd)`: the single entry point behind the four
@@ -65,9 +61,7 @@ pub struct PollEvent {
 pub fn wait(epfd: RawFd, events: &mut [PollEvent], timeout_ms: i32) -> i32 {
     let mut raw: [libc::epoll_event; 10] = unsafe { std::mem::zeroed() };
     let count = events.len().min(raw.len());
-    let result = unsafe {
-        libc::epoll_wait(epfd, raw.as_mut_ptr(), count as i32, timeout_ms)
-    };
+    let result = unsafe { libc::epoll_wait(epfd, raw.as_mut_ptr(), count as i32, timeout_ms) };
     if result <= 0 {
         return result;
     }

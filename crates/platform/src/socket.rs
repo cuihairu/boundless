@@ -131,8 +131,7 @@ pub fn listen(fd: RawFd, backlog: i32) -> i32 {
 pub fn accept_address(fd: RawFd) -> (RawFd, u16, u32) {
     let mut sin = sockaddr_in(0, 0);
     let mut len = std::mem::size_of::<libc::sockaddr_in>() as u32;
-    let result =
-        unsafe { libc::accept(fd, &mut sin as *mut _ as *mut _, &mut len) as RawFd };
+    let result = unsafe { libc::accept(fd, &mut sin as *mut _ as *mut _, &mut len) as RawFd };
     (result, sin.sin_port, sin.sin_addr.s_addr)
 }
 
@@ -153,9 +152,7 @@ pub fn sendto(fd: RawFd, data: &[u8], port: u16, ip: u32) -> i32 {
 
 /// `::send`.
 pub fn send(fd: RawFd, data: &[u8]) -> i32 {
-    unsafe {
-        libc::send(fd, data.as_ptr() as *const _, data.len(), 0) as i32
-    }
+    unsafe { libc::send(fd, data.as_ptr() as *const _, data.len(), 0) as i32 }
 }
 
 /// `::recvfrom`, returning the byte count with the source port and
@@ -190,8 +187,7 @@ pub fn shutdown(fd: RawFd, how: i32) -> i32 {
 pub fn local_address(fd: RawFd) -> Option<(u16, u32)> {
     let mut sin = sockaddr_in(0, 0);
     let mut len = std::mem::size_of::<libc::sockaddr_in>() as u32;
-    let result =
-        unsafe { libc::getsockname(fd, &mut sin as *mut _ as *mut _, &mut len) };
+    let result = unsafe { libc::getsockname(fd, &mut sin as *mut _ as *mut _, &mut len) };
     if result == 0 {
         Some((sin.sin_port, sin.sin_addr.s_addr))
     } else {
@@ -221,7 +217,10 @@ pub fn close(fd: RawFd) -> i32 {
 /// number the kernel will ever hand out, so it stays dead forever -- a
 /// closed descriptor's number does not, because the next `open` reuses it.
 pub fn descriptor_limit() -> RawFd {
-    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
     limit.rlim_cur as RawFd
 }
@@ -267,11 +266,7 @@ pub fn set_nonblocking(fd: RawFd, nonblocking: bool) -> i32 {
 pub fn bytes_available(fd: RawFd) -> i32 {
     let mut bytes: i32 = 0;
     let result = unsafe { libc::ioctl(fd, FIONREAD, &mut bytes) };
-    if result != 0 {
-        -1
-    } else {
-        bytes
-    }
+    if result != 0 { -1 } else { bytes }
 }
 
 /// `::setsockopt` for a boolean option, mirroring the reference's
@@ -279,15 +274,7 @@ pub fn bytes_available(fd: RawFd) -> i32 {
 pub fn set_bool_option(fd: RawFd, level: i32, optname: i32, value: bool) -> i32 {
     let value = if value { 1 } else { 0 };
     let len = std::mem::size_of::<i32>() as u32;
-    unsafe {
-        libc::setsockopt(
-            fd,
-            level,
-            optname,
-            &value as *const i32 as *const _,
-            len,
-        )
-    }
+    unsafe { libc::setsockopt(fd, level, optname, &value as *const i32 as *const _, len) }
 }
 
 /// `::getsockopt` for a boolean option.
@@ -295,13 +282,15 @@ pub fn get_bool_option(fd: RawFd, level: i32, optname: i32) -> Option<bool> {
     let mut value: i32 = 0;
     let mut len = std::mem::size_of::<i32>() as u32;
     let result = unsafe {
-        libc::getsockopt(fd, level, optname, &mut value as *mut i32 as *mut _, &mut len)
+        libc::getsockopt(
+            fd,
+            level,
+            optname,
+            &mut value as *mut i32 as *mut _,
+            &mut len,
+        )
     };
-    if result != 0 {
-        None
-    } else {
-        Some(value != 0)
-    }
+    if result != 0 { None } else { Some(value != 0) }
 }
 
 /// `::getsockopt` for a signed integer option -- `getBufferSize`, which
@@ -310,7 +299,13 @@ pub fn get_int_option(fd: RawFd, level: i32, optname: i32) -> Option<i32> {
     let mut value: i32 = -1;
     let mut len = std::mem::size_of::<i32>() as u32;
     let result = unsafe {
-        libc::getsockopt(fd, level, optname, &mut value as *mut i32 as *mut _, &mut len)
+        libc::getsockopt(
+            fd,
+            level,
+            optname,
+            &mut value as *mut i32 as *mut _,
+            &mut len,
+        )
     };
     if result == 0 && len as usize == std::mem::size_of::<i32>() {
         Some(value)
@@ -322,15 +317,7 @@ pub fn get_int_option(fd: RawFd, level: i32, optname: i32) -> Option<i32> {
 /// `::setsockopt` for a signed integer option -- `setBufferSize`.
 pub fn set_int_option(fd: RawFd, level: i32, optname: i32, value: i32) -> i32 {
     let len = std::mem::size_of::<i32>() as u32;
-    unsafe {
-        libc::setsockopt(
-            fd,
-            level,
-            optname,
-            &value as *const i32 as *const _,
-            len,
-        )
-    }
+    unsafe { libc::setsockopt(fd, level, optname, &value as *const i32 as *const _, len) }
 }
 
 /// `::setsockopt` with a `timeval` value (`SO_RCVTIMEO`/`SO_SNDTIMEO`),
@@ -394,7 +381,11 @@ pub fn read_error_queue(fd: RawFd) -> Option<QueuedError> {
     }
 
     let cursor = find_recv_error(&header)?;
-    parse_queued_error(unsafe { libc::CMSG_DATA(cursor) as *const u8 }, &header, &offender)
+    parse_queued_error(
+        unsafe { libc::CMSG_DATA(cursor) as *const u8 },
+        &header,
+        &offender,
+    )
 }
 
 /// Walk `header`'s control messages for the `IP_RECVERR` one. Kept apart
@@ -463,9 +454,7 @@ pub fn host_by_name(text: &str) -> Option<u32> {
     let addrs = (text, 0u16).to_socket_addrs().ok()?;
     for addr in addrs {
         match addr.ip() {
-            std::net::IpAddr::V4(ipv4) => {
-                return Some(u32::from_ne_bytes(ipv4.octets()))
-            }
+            std::net::IpAddr::V4(ipv4) => return Some(u32::from_ne_bytes(ipv4.octets())),
             std::net::IpAddr::V6(_) => continue,
         }
     }
@@ -552,7 +541,11 @@ mod tests {
     #[test]
     fn udp_round_trip_and_local_address() {
         let fd = create_socket(SOCK_DGRAM);
-        assert!(fd >= 0, "socket() failed: {}", std::io::Error::last_os_error());
+        assert!(
+            fd >= 0,
+            "socket() failed: {}",
+            std::io::Error::last_os_error()
+        );
         // Port 0 asks the kernel to pick a free one; ip 0 is INADDR_ANY.
         assert_eq!(bind(fd, 0, 0), 0, "bind() failed");
         let (port, ip) = local_address(fd).expect("getsockname");
@@ -712,7 +705,11 @@ mod tests {
         assert_eq!(inet_aton("not.an.address"), None);
         assert_eq!(inet_aton("256.0.0.1"), None);
         assert_eq!(inet_aton("1.2.3.4.5"), None);
-        assert_eq!(inet_aton("127.0.0.1"), Some(LOOPBACK), "recheck: four octets");
+        assert_eq!(
+            inet_aton("127.0.0.1"),
+            Some(LOOPBACK),
+            "recheck: four octets"
+        );
         assert_eq!(inet_aton("1.2.3"), None, "too few octets");
         assert_eq!(inet_aton("1..3.4"), None, "an empty octet is not one");
         assert_eq!(inet_aton("1234.2.3.4"), None, "four digits is not an octet");
@@ -758,7 +755,13 @@ mod tests {
     /// Lay one control message into `control` at the kernel's alignment and
     /// return where the next one starts. `data` must already look like the
     /// kernel lays it out.
-    fn put_control_message(control: &mut [u8], from: usize, level: i32, kind: i32, data: &[u8]) -> usize {
+    fn put_control_message(
+        control: &mut [u8],
+        from: usize,
+        level: i32,
+        kind: i32,
+        data: &[u8],
+    ) -> usize {
         let offset = (from + 7) & !7;
         // CMSG_SPACE already adds the header, so it is handed the payload size.
         let space = unsafe { libc::CMSG_SPACE(data.len() as libc::c_uint) } as usize;
@@ -769,11 +772,7 @@ mod tests {
             (*header).cmsg_level = level;
             (*header).cmsg_type = kind;
             (*header).cmsg_len = space;
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                libc::CMSG_DATA(header),
-                data.len(),
-            );
+            std::ptr::copy_nonoverlapping(data.as_ptr(), libc::CMSG_DATA(header), data.len());
         }
         offset + space
     }
@@ -809,7 +808,10 @@ mod tests {
                 std::mem::size_of::<libc::sockaddr_in>(),
             )
         };
-        copy(offender_bytes, std::mem::size_of::<libc::sock_extended_err>());
+        copy(
+            offender_bytes,
+            std::mem::size_of::<libc::sock_extended_err>(),
+        );
         (block, offender)
     }
 
@@ -824,13 +826,7 @@ mod tests {
         // A non-IP_RECVERR message first, then the real one.
         let mut control = [0u8; 256];
         let after_junk = put_control_message(&mut control, 0, SOL_SOCKET, 0x11, &[]);
-        let after_recv = put_control_message(
-            &mut control,
-            after_junk,
-            SOL_IP,
-            IP_RECVERR,
-            &block,
-        );
+        let after_recv = put_control_message(&mut control, after_junk, SOL_IP, IP_RECVERR, &block);
 
         let mut header = libc::msghdr {
             msg_name: std::ptr::null_mut(),
@@ -844,8 +840,12 @@ mod tests {
 
         // The walk skips the unrelated message and lands on the address.
         let cursor = find_recv_error(&header).expect("the IP_RECVERR message");
-        let queued = parse_queued_error(unsafe { libc::CMSG_DATA(cursor) as *const u8 }, &header, &offender)
-            .expect("one queued error");
+        let queued = parse_queued_error(
+            unsafe { libc::CMSG_DATA(cursor) as *const u8 },
+            &header,
+            &offender,
+        )
+        .expect("one queued error");
         assert_eq!(queued.errno, libc::ECONNREFUSED as u32);
         assert_eq!(queued.info, 0x21);
         assert_eq!(queued.ip, LOOPBACK);
