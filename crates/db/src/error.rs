@@ -33,3 +33,24 @@ impl fmt::Display for DbError {
 }
 
 impl std::error::Error for DbError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_errors_display_their_cause() {
+        assert_eq!(DbError::NotFound.to_string(), "entity not found");
+        assert_eq!(DbError::Retry.to_string(), "storage busy, retry");
+        assert_eq!(
+            DbError::Storage("disk full".into()).to_string(),
+            "storage error: disk full"
+        );
+    }
+
+    #[test]
+    fn the_errors_are_std_errors() {
+        let err: &dyn std::error::Error = &DbError::Retry;
+        assert!(err.source().is_none());
+    }
+}
