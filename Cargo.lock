@@ -1098,6 +1098,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "profile"
+version = "0.1.0"
+dependencies = [
+ "foundation",
+ "watcher",
+]
+
+[[package]]
 name = "python-host"
 version = "0.1.0"
 dependencies = [

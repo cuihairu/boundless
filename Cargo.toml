@@ -17,6 +17,7 @@ members = [
     "crates/python-module",
     "crates/plugin-host",
     "crates/watcher",
+    "crates/profile",
     "crates/message_logger",
     "crates/client",
     "crates/load",
