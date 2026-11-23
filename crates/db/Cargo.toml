@@ -1,0 +1,10 @@
+[package]
+name = "db"
+description = "BW-09 DBApp persistence: the entity storage contract and entity operations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+foundation = { workspace = true }
+entitydef = { workspace = true }
