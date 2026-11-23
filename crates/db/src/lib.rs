@@ -14,10 +14,12 @@
 //! the id vocabulary, and is consumed by the `dbapp` role runtime and the
 //! BW-09-05 operational tools.
 
+pub mod config;
 pub mod error;
 pub mod record;
 pub mod storage;
 
+pub use config::{DatabaseConfig, PostgresConnection, StorageBackend};
 pub use error::DbError;
 pub use record::EntityRecord;
 pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity};

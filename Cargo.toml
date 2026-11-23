@@ -51,6 +51,7 @@ resources = { path = "crates/resources" }
 mercury = { path = "crates/mercury" }
 contracts = { path = "crates/contracts" }
 entitydef = { path = "crates/entitydef" }
+db = { path = "crates/db" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
