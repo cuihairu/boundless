@@ -10,6 +10,7 @@ pub mod executor;
 pub mod fleet;
 pub mod hurricane;
 pub mod scenario;
+pub mod steady;
 
 pub use bot::{
     Behaviour, Bot, BotView, ConnState, Directive, FD_PER_BOT, MATH_PI, MovementController,
@@ -19,3 +20,4 @@ pub use executor::{Executor, StageTimeline};
 pub use fleet::{ControllerRegistry, Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};
 pub use hurricane::{HurricaneLedger, run_login_hurricane};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
+pub use steady::{SteadyLedger, SteadyTrack, run_steady_movement};
