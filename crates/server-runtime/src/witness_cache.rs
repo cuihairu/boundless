@@ -35,6 +35,15 @@
 //! of entities at fixed distances and a fixed budget, the update selects the
 //! same sequence every time — closest first, bounded by the budget, capped by
 //! `maxPriority`, and reset when fully drained.
+//!
+//! BW-08-03-05 adds [`WitnessSet`]: a cell runs one witness per real entity,
+//! and each witness keeps its own `aoiMap_`, queue, alias pool and packet
+//! budget. Updating or dropping an entity under one observer never touches
+//! another observer's cache or budget.
+//!
+//! The BW-08-03-05 acceptance, "互不污染缓存和预算", is that two observers
+//! watching the same entities each keep an independent cache and that the send
+//! selection of one leaves the other's cache and budget untouched.
 
 use std::collections::BTreeMap;
 
@@ -712,6 +721,91 @@ impl Witness {
     }
 }
 
+/// A set of independent observers over one world (the cell's per-real-entity
+/// `Witness` collection).
+///
+/// BW-08-03-05: a cell runs one [`Witness`] per real entity. Each witness owns
+/// its own `aoiMap_`, priority queue and id-alias pool, so removing or updating
+/// an entity under one observer never touches another observer's cache. Each
+/// observer's packet budget is likewise its own: [`Self::update_all`] calls
+/// [`Witness::update`] with each observer's origin and budget, so one
+/// observer's sends never consume another observer's budget.
+///
+/// The BW-08-03-05 acceptance, "互不污染缓存和预算", is that two observers
+/// watching the same entity each keep an independent cache and that the send
+/// selection of one leaves the other's cache and budget untouched.
+#[derive(Debug, Default)]
+pub struct WitnessSet {
+    /// The witnesses, keyed by their owning entity.
+    witnesses: BTreeMap<EntityId, Witness>,
+}
+
+impl WitnessSet {
+    /// An empty set.
+    pub fn new() -> Self {
+        WitnessSet::default()
+    }
+
+    /// Inserts a witness, returning the previous witness for the same owner if
+    /// there was one.
+    pub fn insert(&mut self, witness: Witness) -> Option<Witness> {
+        self.witnesses.insert(witness.owner(), witness)
+    }
+
+    /// Removes the witness owned by `owner`.
+    pub fn remove(&mut self, owner: EntityId) -> Option<Witness> {
+        self.witnesses.remove(&owner)
+    }
+
+    /// The witness owned by `owner`.
+    pub fn get(&self, owner: EntityId) -> Option<&Witness> {
+        self.witnesses.get(&owner)
+    }
+
+    /// The witness owned by `owner`, mutably.
+    pub fn get_mut(&mut self, owner: EntityId) -> Option<&mut Witness> {
+        self.witnesses.get_mut(&owner)
+    }
+
+    /// The number of witnesses.
+    pub fn len(&self) -> usize {
+        self.witnesses.len()
+    }
+
+    /// Whether the set holds no witnesses.
+    pub fn is_empty(&self) -> bool {
+        self.witnesses.is_empty()
+    }
+
+    /// The witnesses and their owners.
+    pub fn iter(&self) -> impl Iterator<Item = (&EntityId, &Witness)> {
+        self.witnesses.iter()
+    }
+
+    /// Updates every observer independently (the per-witness `update` loop).
+    ///
+    /// Each witness is updated from its own origin with its own budget, so the
+    /// send decisions of one observer leave every other observer's cache and
+    /// budget untouched. A witness missing from `origins` sits at the origin; a
+    /// witness missing from `budgets` is unbounded.
+    pub fn update_all(
+        &mut self,
+        origins: &BTreeMap<EntityId, Position>,
+        budgets: &BTreeMap<EntityId, usize>,
+        scheme: &AoIUpdateScheme,
+        positions: &BTreeMap<EntityId, Position>,
+    ) -> BTreeMap<EntityId, UpdateResult> {
+        let mut results = BTreeMap::new();
+        for (&owner, witness) in &mut self.witnesses {
+            let origin = origins.get(&owner).copied().unwrap_or(Position::ZERO);
+            let budget = budgets.get(&owner).copied().unwrap_or(usize::MAX);
+            let result = witness.update(origin, budget, scheme, positions);
+            results.insert(owner, result);
+        }
+        results
+    }
+}
+
 /// `getLoDPriority` (`entity_cache.ipp`): the squared ground-plane distance
 /// from `origin` to `pos`.
 fn distance_squared(origin: Position, pos: Position) -> f64 {
@@ -971,6 +1065,141 @@ mod tests {
             w.cache(3).unwrap().priority(),
             far_priority,
             "the far entity was not updated"
+        );
+    }
+
+    /// Two witnesses watching the same entities, one for each observer.
+    fn observer_set() -> WitnessSet {
+        let mut set = WitnessSet::new();
+        for owner in [100u32, 101] {
+            let mut w = Witness::new(owner, 50.0, 500.0);
+            for entity in [2u32, 3, 4] {
+                w.add_to_aoi(entity, false);
+                w.cache_mut(entity).unwrap().clear_enter_pending();
+            }
+            set.insert(w);
+        }
+        set
+    }
+
+    /// The BW-08-03-05 acceptance, cache half: dropping an entity from one
+    /// observer leaves the other observer's cache untouched.
+    #[test]
+    fn two_observers_watching_the_same_entity_keep_independent_caches() {
+        let mut set = observer_set();
+
+        // Observer 100 drops entity 2; observer 101 never did.
+        set.get_mut(100).unwrap().remove_from_aoi(2, false);
+
+        let a_cache = set.get(100).unwrap().cache(2).unwrap();
+        let b_cache = set.get(101).unwrap().cache(2).unwrap();
+        assert!(a_cache.is_gone(), "observer 100 dropped the entity");
+        assert!(!b_cache.is_gone(), "observer 101's cache is untouched");
+        assert!(
+            set.get(101).unwrap().inside(2),
+            "observer 101 still holds it"
+        );
+        assert_eq!(
+            set.get(101).unwrap().events(),
+            &[
+                AoIEvent::Entered(2),
+                AoIEvent::Entered(3),
+                AoIEvent::Entered(4)
+            ],
+            "observer 101's events are untouched"
+        );
+
+        // Removing the whole witness 100 leaves 101's caches alone too.
+        assert!(set.remove(100).is_some());
+        assert_eq!(set.get(101).unwrap().len(), 3);
+        assert_eq!(set.len(), 1);
+    }
+
+    /// The BW-08-03-05 acceptance, budget half: each observer spends only its
+    /// own budget, and one observer's drain does not reset the other's
+    /// priorities.
+    #[test]
+    fn each_observer_spends_only_its_own_budget() {
+        let mut set = observer_set();
+        let scheme = AoIUpdateScheme::default_scheme(500.0);
+        let positions = BTreeMap::from([
+            (2, Position::new(10.0, 0.0)),
+            (3, Position::new(20.0, 0.0)),
+            (4, Position::new(30.0, 0.0)),
+        ]);
+        let origins = BTreeMap::from([(100, Position::ZERO), (101, Position::ZERO)]);
+        // Observer 100 can afford one update; observer 101 can afford all.
+        let budgets = BTreeMap::from([(100, UPDATE_BYTES), (101, 3 * UPDATE_BYTES)]);
+
+        let results = set.update_all(&origins, &budgets, &scheme, &positions);
+
+        assert_eq!(results.len(), 2);
+        let a = &results[&100];
+        let b = &results[&101];
+        assert_eq!(
+            a.sent_updates,
+            vec![2],
+            "observer 100 sent the closest only"
+        );
+        assert_eq!(
+            b.sent_updates,
+            vec![2, 3, 4],
+            "observer 101 sent everything"
+        );
+        assert_ne!(a, b, "the selections are independent");
+        assert_eq!(a.bandwidth_deficit, 0);
+        assert_eq!(b.bandwidth_deficit, 0);
+
+        // Observer 101 drained its queue, so its priorities reset; observer
+        // 100 did not, so its priorities survive.
+        assert_eq!(set.get(101).unwrap().cache(2).unwrap().priority(), 0.0);
+        assert!(set.get(100).unwrap().cache(2).unwrap().priority() > 0.0);
+    }
+
+    /// A missing origin or budget entry defaults independently: the origin is
+    /// the world origin and the budget is unbounded.
+    #[test]
+    fn a_missing_origin_or_budget_defaults_for_that_observer_only() {
+        let mut set = observer_set();
+        let scheme = AoIUpdateScheme::default_scheme(500.0);
+        let positions = BTreeMap::from([
+            (2, Position::new(10.0, 0.0)),
+            (3, Position::new(20.0, 0.0)),
+            (4, Position::new(30.0, 0.0)),
+        ]);
+        // No origins at all; observer 101 gets a one-update budget.
+        let budgets = BTreeMap::from([(101, UPDATE_BYTES)]);
+
+        let results = set.update_all(&BTreeMap::new(), &budgets, &scheme, &positions);
+
+        // Observer 100 (no budget entry) is unbounded and sends everything.
+        assert_eq!(results[&100].sent_updates, vec![2, 3, 4]);
+        assert_eq!(results[&101].sent_updates, vec![2]);
+        assert_eq!(results[&101].bandwidth_deficit, 0);
+    }
+
+    /// An empty set updates to an empty result and the basic set operations
+    /// keep the owners distinct.
+    #[test]
+    fn the_set_tracks_its_witnesses_by_owner() {
+        let mut set = WitnessSet::new();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+
+        set.insert(Witness::new(100, 50.0, 500.0));
+        assert_eq!(set.len(), 1);
+        assert!(set.get(100).is_some());
+        assert!(set.get(101).is_none());
+
+        // Reinserting under the same owner replaces the witness.
+        let replaced = set.insert(Witness::new(100, 50.0, 500.0));
+        assert!(replaced.is_some());
+        assert_eq!(set.len(), 1);
+
+        set.insert(Witness::new(101, 50.0, 500.0));
+        assert_eq!(
+            set.iter().map(|(&owner, _)| owner).collect::<Vec<_>>(),
+            vec![100, 101]
         );
     }
 }
