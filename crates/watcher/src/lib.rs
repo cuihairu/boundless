@@ -513,6 +513,187 @@ struct DirData {
     watcher: Rc<RefCell<dyn Watcher>>,
 }
 
+/// `CallableWatcher::ExposeHint` (`watcher.hpp:2877-2884`): where a debug
+/// tool may route the call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExposeHint {
+    /// `WITH_ENTITY`.
+    WithEntity,
+    /// `ALL`.
+    All,
+    /// `WITH_SPACE`.
+    WithSpace,
+    /// `LEAST_LOADED`.
+    LeastLoaded,
+    /// `LOCAL_ONLY`, the constructor default.
+    LocalOnly,
+}
+
+/// `CallableWatcher::ArgDescription` (`watcher.hpp:2862-2875`): one
+/// declared parameter's type and description.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArgDescription {
+    /// The `WatcherDataType` the parameter takes.
+    pub data_type: DataType,
+    /// The parameter's description text.
+    pub description: String,
+}
+
+/// `CallableWatcher` (`watcher.cpp:611-706`): a watcher that names a
+/// function instead of holding a value. The string protocol answers reads
+/// with the marker "Callable function" and refuses writes -- the reference
+/// only supports invoking callables over the protocol 2 stream request
+/// machinery (`setFromStream`, BW-12-01-04), and its `setFromString` is a
+/// hard rejection (`watcher.cpp:663-673`).
+pub struct CallableWatcher {
+    expose_hint: ExposeHint,
+    arg_list: Vec<ArgDescription>,
+    comment: String,
+}
+
+impl CallableWatcher {
+    /// The reference constructor (`watcher.cpp:622-629`), `LOCAL_ONLY` by
+    /// default.
+    pub fn new(hint: ExposeHint) -> Self {
+        Self {
+            expose_hint: hint,
+            arg_list: Vec::new(),
+            comment: String::new(),
+        }
+    }
+
+    /// `CallableWatcher::addArg` (`watcher.cpp:635-640`): declare one
+    /// parameter, in call order.
+    pub fn add_arg(&mut self, data_type: DataType, description: &str) {
+        self.arg_list.push(ArgDescription {
+            data_type,
+            description: description.to_string(),
+        });
+    }
+
+    /// `CallableWatcher::exposedHint()`.
+    pub fn exposed_hint(&self) -> ExposeHint {
+        self.expose_hint
+    }
+
+    /// `CallableWatcher::exposeHint( hint )`.
+    pub fn set_expose_hint(&mut self, hint: ExposeHint) {
+        self.expose_hint = hint;
+    }
+
+    /// The declared parameters, in call order.
+    pub fn arg_list(&self) -> &[ArgDescription] {
+        &self.arg_list
+    }
+
+    /// `CallableWatcher::isArgsPath` (`watcher.cpp:735-742`): the pseudo
+    /// path carrying the parameter descriptions.
+    pub fn is_args_path(path: &str) -> bool {
+        path == "__args__"
+    }
+
+    /// `CallableWatcher::isExposePath` (`watcher.cpp:749-756`): the pseudo
+    /// path carrying the expose hint.
+    pub fn is_expose_path(path: &str) -> bool {
+        path == "__expose__"
+    }
+}
+
+impl Watcher for CallableWatcher {
+    fn get_as_string(
+        &self,
+        path: &str,
+        result: &mut String,
+        desc: &mut String,
+        mode: &mut Mode,
+    ) -> bool {
+        if path.is_empty() {
+            // (`watcher.cpp:644-659`): a callable answers the marker string.
+            *result = "Callable function".to_string();
+            *mode = Mode::Callable;
+            *desc = self.comment.clone();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn set_from_string(&mut self, _path: &str, _value: &str) -> bool {
+        // (`watcher.cpp:663-673`): protocol v1 callable invocation is not
+        // supported -- the reference logs ERROR_MSG and refuses.
+        false
+    }
+
+    fn comment(&self) -> &str {
+        &self.comment
+    }
+
+    fn set_comment(&mut self, comment: String) {
+        self.comment = comment;
+    }
+}
+
+/// `NoArgFuncCallableWatcher::Function` (`watcher.hpp:2949-2950`): fills
+/// the stdio `output` and the return `value`, `false` when the call fails.
+pub type NoArgFunc = Box<dyn FnMut(&mut String, &mut String) -> bool>;
+
+/// `NoArgFuncCallableWatcher` (`watcher.cpp:836-960`): a callable backed by
+/// one function. The reference invokes it from `setFromStream` after the
+/// protocol 2 argument tuple decodes; the port keeps the same `onCall`
+/// contract behind a stored closure, and the wire decode lands with the
+/// request machinery (BW-12-01-04).
+pub struct NoArgFuncCallableWatcher {
+    callable: CallableWatcher,
+    func: NoArgFunc,
+}
+
+impl NoArgFuncCallableWatcher {
+    /// The reference constructor (`watcher.cpp:944-951`).
+    pub fn new(func: NoArgFunc, hint: ExposeHint) -> Self {
+        Self {
+            callable: CallableWatcher::new(hint),
+            func,
+        }
+    }
+
+    /// `NoArgCallableWatcher::onCall` (`watcher.cpp:925-932`): run the
+    /// function, returning `(stdio output, return value)`; `None` when the
+    /// function fails, the shape `setFromStream` treats as a failed call.
+    pub fn on_call(&mut self) -> Option<(String, String)> {
+        let mut output = String::new();
+        let mut value = String::new();
+        if (self.func)(&mut output, &mut value) {
+            Some((output, value))
+        } else {
+            None
+        }
+    }
+}
+
+impl Watcher for NoArgFuncCallableWatcher {
+    fn get_as_string(
+        &self,
+        path: &str,
+        result: &mut String,
+        desc: &mut String,
+        mode: &mut Mode,
+    ) -> bool {
+        self.callable.get_as_string(path, result, desc, mode)
+    }
+
+    fn set_from_string(&mut self, path: &str, value: &str) -> bool {
+        self.callable.set_from_string(path, value)
+    }
+
+    fn comment(&self) -> &str {
+        &self.callable.comment
+    }
+
+    fn set_comment(&mut self, comment: String) {
+        self.callable.set_comment(comment);
+    }
+}
+
 /// `DirectoryWatcher` (`watcher.cpp:115-544`): the tree node. Children are
 /// kept sorted by label -- the reference builds with `SORTED_WATCHERS`
 /// (`watcher.cpp:96`).
@@ -1374,5 +1555,123 @@ mod tests {
             get_watcher_string("types/s", &mut desc, &mut mode),
             Some("any text at all".to_string())
         );
+    }
+
+    /// A callable watcher answers the marker string with the callable mode
+    /// and refuses every string-protocol write (`watcher.cpp:644-673`).
+    #[test]
+    fn a_callable_answers_the_marker_and_refuses_writes() {
+        let mut callable = CallableWatcher::new(ExposeHint::LocalOnly);
+        callable.set_comment("do a thing".to_string());
+        let mut result = String::new();
+        let mut desc = String::new();
+        let mut mode = Mode::Invalid;
+        assert!(callable.get_as_string("", &mut result, &mut desc, &mut mode));
+        assert_eq!(result, "Callable function");
+        assert_eq!(mode, Mode::Callable);
+        assert_eq!(desc, "do a thing");
+        // Any non-empty path does not resolve.
+        assert!(!callable.get_as_string("sub", &mut result, &mut desc, &mut mode));
+        // Protocol v1 invocation is not supported: every set refuses.
+        assert!(!callable.set_from_string("", ""));
+        assert!(!callable.set_from_string("sub", "1"));
+        assert_eq!(callable.comment(), "do a thing");
+    }
+
+    /// Parameters declare in call order with their types and descriptions
+    /// (`CallableWatcher::addArg`, `watcher.cpp:635-640`).
+    #[test]
+    fn a_callable_declares_parameters_in_order_with_types() {
+        let mut callable = CallableWatcher::new(ExposeHint::All);
+        callable.add_arg(DataType::Int, "count");
+        callable.add_arg(DataType::Bool, "enable");
+        assert_eq!(
+            callable.arg_list(),
+            &[
+                ArgDescription {
+                    data_type: DataType::Int,
+                    description: "count".to_string()
+                },
+                ArgDescription {
+                    data_type: DataType::Bool,
+                    description: "enable".to_string()
+                },
+            ]
+        );
+    }
+
+    /// The expose hint defaults to `LOCAL_ONLY` and resets through its
+    /// accessor (`watcher.hpp:2886-2892`).
+    #[test]
+    fn an_expose_hint_defaults_local_and_resets() {
+        let mut callable = CallableWatcher::new(ExposeHint::LocalOnly);
+        assert_eq!(callable.exposed_hint(), ExposeHint::LocalOnly);
+        callable.set_expose_hint(ExposeHint::WithEntity);
+        assert_eq!(callable.exposed_hint(), ExposeHint::WithEntity);
+        callable.set_expose_hint(ExposeHint::All);
+        assert_eq!(callable.exposed_hint(), ExposeHint::All);
+        callable.set_expose_hint(ExposeHint::WithSpace);
+        assert_eq!(callable.exposed_hint(), ExposeHint::WithSpace);
+        callable.set_expose_hint(ExposeHint::LeastLoaded);
+        assert_eq!(callable.exposed_hint(), ExposeHint::LeastLoaded);
+        assert_eq!(
+            CallableWatcher::new(ExposeHint::All).exposed_hint(),
+            ExposeHint::All
+        );
+    }
+
+    /// The pseudo paths match exactly (`isArgsPath`/`isExposePath`,
+    /// `watcher.cpp:735-756`).
+    #[test]
+    fn the_callable_pseudo_paths_match_exactly() {
+        assert!(CallableWatcher::is_args_path("__args__"));
+        assert!(!CallableWatcher::is_args_path(""));
+        assert!(!CallableWatcher::is_args_path("args"));
+        assert!(!CallableWatcher::is_args_path("__expose__"));
+        assert!(CallableWatcher::is_expose_path("__expose__"));
+        assert!(!CallableWatcher::is_expose_path(""));
+        assert!(!CallableWatcher::is_expose_path("__args__"));
+    }
+
+    /// A function-backed callable returns its output and value through the
+    /// `onCall` contract and serves the same string protocol in the tree.
+    #[test]
+    fn a_no_arg_func_callable_returns_its_output_and_value() {
+        let mut callable = NoArgFuncCallableWatcher::new(
+            Box::new(|output: &mut String, value: &mut String| {
+                output.push_str("printed\n");
+                value.push_str("42");
+                true
+            }),
+            ExposeHint::LocalOnly,
+        );
+        assert_eq!(
+            callable.on_call(),
+            Some(("printed\n".to_string(), "42".to_string()))
+        );
+        // A failing call is the shape `setFromStream` reports as failure.
+        let mut failing = NoArgFuncCallableWatcher::new(
+            Box::new(|_: &mut String, _: &mut String| false),
+            ExposeHint::LocalOnly,
+        );
+        assert_eq!(failing.on_call(), None);
+        // Registered into the tree it answers the marker through the root
+        // entry and refuses the protocol v1 write.
+        fini();
+        let registered: Rc<RefCell<dyn Watcher>> = Rc::new(RefCell::new(callable));
+        registered
+            .borrow_mut()
+            .set_comment("run the thing".to_string());
+        assert_eq!(registered.borrow().comment(), "run the thing");
+        assert!(add_watcher("tools/do_thing", registered).is_some());
+        let mut desc = String::new();
+        let mut mode = Mode::Invalid;
+        assert_eq!(
+            get_watcher_string("tools/do_thing", &mut desc, &mut mode),
+            Some("Callable function".to_string())
+        );
+        assert_eq!(desc, "run the thing");
+        assert_eq!(mode, Mode::Callable);
+        assert!(!set_watcher_string("tools/do_thing", "1"));
     }
 }
