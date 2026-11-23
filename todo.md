@@ -1899,7 +1899,10 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 复用客户端连接层，覆盖批量加减、标签分组、Python 行为驱动、beeline 和巡逻路径，以及原版 Watcher 控制接口。验证原版和新版 Bots 均可登录并完成同一移动轨迹。
 
-- [ ] **BW-17-01-01 接入客户端连接层**。**验收** Bot 可登录及退出。
+- [x] **BW-17-01-01 接入客户端连接层**。**验收** Bot 可登录及退出。（2ee059a）
+  - 模型落点：`crates/load/src/bot.rs`（2ee059a）——`ClientApp` 连接面（`server/tools/bots/client_app.{hpp,cpp}`）+ `BotsConfig::postInit` 传输推导（`bots_config.cpp:56-67`）。Mercury `BWServerConnection` 属 connection_model 席，本席以事件喂入法抽象（与 watcher forwarding 同法）：`feed_log_on_result/feed_log_on_failure/feed_logged_off` 排队，由 `tick` 内的连接更新（= `pConnection_->update(dTime)`）处理——`wasOnline` 分支因此能在 tick 里观察到新鲜断线，与参考一致。`ConnState{Idle,LoggingIn,Online}`、`log_on`（destroyed 拒绝/dormant 唤醒/已 LoggingIn 或 Online 跳过，client_app.cpp:554-572）、`log_off`（仅 Online）、`drop_connection`（仅 Online、不走 logged-off 处理、实体不清，client_app.cpp:584-593）、`destroy` 幂等、`onLoggedOff` 的脚本 dormant 决策（`Some(true/false)/None`，client_app.cpp:1193-1235）、`onLogOnFailure` 重试时刻（非零 period 才排，client_app.cpp:1261-1266）、常量 `TICK_FREQUENCY=10/TICK_PERIOD=0.1/FD_PER_BOT=10`（main_app.cpp:63-74）。
+  - 验收（Bot 可登录及退出）：`a_new_bot_wakes_and_starts_logging_in`（构造即 logOn，client_app.cpp:405）→ `delivered_results_move_the_connection_state`（受理→Online+实体/空间分配）→ `log_off_only_takes_an_online_bot_offline` + `losing_the_connection_leaves_the_dormant_decision_to_script`（退出→Idle+实体清空+dormant 决策）→ `log_on_is_noop_while_destroyed_or_already_connecting`（退出后重登语义：destroyed 拒绝；重试链由 17-01-02 fleet 接管）。附：`drop_connection_cuts_without_telling_the_server`（切断≠登出：实体保留）、`destroy_is_idempotent_and_ends_the_session`、`transport_follows_the_config_flags`、`the_fleet_constants_match_the_reference`。
+  - 测试与覆盖：`cargo test -p load` 36 过 0 挂（新增 11）；clippy 我文件 0 警告；rustfmt --check 过；llvm-cov bot.rs 行/函数/区域 100%（450 行全盖）；layering 过。原版无 bots 单测（grep 证空），测试按 client_app.cpp 行号逐条钉。
 - [ ] **BW-17-01-02 提供批量增减与标签过滤**。**验收** 控制命令只影响指定 Bot。
 - [ ] **BW-17-01-03 移植 Python 行为入口**。**验收** 按脚本推进移动。
 - [ ] **BW-17-01-04 实现 beeline**。**验收** 与原版固定路线对照。
