@@ -41,6 +41,7 @@ pub mod pending_logins;
 pub mod physical_space;
 pub mod proxy_client;
 pub mod proxy_logoff;
+pub mod range_list;
 pub mod real_entity;
 pub mod relogon;
 pub mod replay_file_writer;
