@@ -140,7 +140,7 @@ pub fn load_entity_by_name(
 /// (`entityTypeMapping_.insertNew`, `put_entity_task.cpp:99-104`), and
 /// named rows sit under a unique `(type, name)` index the way the
 /// identifier column does (`EntityTypeMapping::hasIdentifier()`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemoryStorage {
     entities: HashMap<EntityKey, EntityRecord>,
     names: HashMap<(EntityTypeId, String), DatabaseId>,
@@ -185,6 +185,43 @@ impl MemoryStorage {
     /// The id the next create will be assigned.
     pub fn next_id(&self) -> DatabaseId {
         self.next_id
+    }
+
+    /// Remove the row and everything hanging off it — its name index
+    /// entry and its online record. The rollback leg of a transaction
+    /// (`crate::transaction`) uses this to take a created row back out;
+    /// unlike [`EntityStorage::del_entity`] the row is known to exist, so
+    /// there is no missing-row outcome. The id allocator is untouched: an
+    /// `AUTO_INCREMENT` value a rollback burns stays burned.
+    pub(crate) fn remove_entity(&mut self, key: &EntityKey) {
+        if let Some(record) = self.entities.remove(key)
+            && let Some(name) = record.name
+        {
+            self.names.remove(&(key.type_id, name));
+        }
+        self.log_ons.remove(key);
+    }
+
+    /// Put a row back exactly as it was, the rollback leg of an update or
+    /// a delete: every name entry pointing at the row goes first, then
+    /// the record's own name is indexed again.
+    pub(crate) fn restore_entity(&mut self, record: EntityRecord) {
+        self.names
+            .retain(|(type_id, _), id| !(*type_id == record.type_id && *id == record.db_id));
+        self.insert(record);
+    }
+
+    /// Put the online record back to what it was, the rollback leg of a
+    /// log-on write.
+    pub(crate) fn restore_log_on(&mut self, key: &EntityKey, record: Option<LogOnRecord>) {
+        match record {
+            Some(record) => {
+                self.log_ons.insert(*key, record);
+            }
+            None => {
+                self.log_ons.remove(key);
+            }
+        }
     }
 
     /// Number of stored entities.
@@ -302,17 +339,13 @@ impl EntityStorage for MemoryStorage {
     }
 
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
-        match self.entities.remove(key) {
-            Some(record) => {
-                if let Some(name) = record.name {
-                    self.names.remove(&(key.type_id, name));
-                }
-                // The checked-out entity goes offline with its row
-                // (del_entity_task.cpp:66).
-                self.log_ons.remove(key);
-                Ok(())
-            }
-            None => Err(DbError::NotFound),
+        if self.entities.contains_key(key) {
+            // The checked-out entity goes offline with its row
+            // (del_entity_task.cpp:66).
+            self.remove_entity(key);
+            Ok(())
+        } else {
+            Err(DbError::NotFound)
         }
     }
 
