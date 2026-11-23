@@ -1931,8 +1931,10 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 模型落点：`crates/load/src/steady.rs`（9e03e4c）——稳态移动跑批：`run_steady_movement(scenario, fd_limit, seed) -> SteadyLedger{sample_period, tracks}`，`SteadyTrack{name, speed, xs, zs, yaws}`。满员起步：`concurrency` 个 bot 逐个准入（预算记账同洪峰，超限拒收即不进 track）+ 服务端应答即时喂入（`feed_log_on_result` 每 bot 实体/空间，连接席负责真实应答）→ idle 圆律开转（client_app.cpp:1106-1134：period=10·speed/7、radius 10、θ=clientTime·2π/period、yaw=θ+π/2；速度抽取=种子 xorshift，26efbfa）。warmup 按 mini-tick 走完不采样；load 窗口每 `TICK_PERIOD` 全员 `tick` 后采样一次（时长×TICK_FREQUENCY 个样本）。轨迹=纯种子数学：固定种子 → 速度序+圆律 f32 逐语句同序 → 逐坐标位级复现。
   - 验收（固定种子生成相同轨迹）：`the_fixed_seed_generates_the_same_trajectory`（同 seed 两跑 ledger 全等——f32 位级）→ `another_seed_redraws_the_trajectories`（异 seed 速度重抽、轨迹分离、速度仍落 [6,8)）→ `the_ledger_shape_follows_the_scenario`（每 bot 一 track 按车队序、样本数=时长×10、每点落 10 半径环）→ `the_first_sample_lands_one_tick_into_the_load_window`（首样本=暖机+一 tick 的圆律解析值，θ/yaw 逐断言钉公式）→ `the_fd_budget_bounds_the_fleet`（预算拒收 bot 不入 track）。
   - 测试与覆盖：`cargo test -p load` 68 过 0 挂（新增 5）；clippy 我文件 0 警告；rustfmt --check 过；llvm-cov steady.rs 行/函数/区域 100%；layering 过。无活服务端：轨迹由客户端圆律自走（autoMove 无需服务端回包），服务端位移对比归 BW-08 cell 席——验收句无三端字样，按档勾账。
-- [ ] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。
-  - 卡点（无 cell 运行时）：密度与可见数需活服务端 AOI——依赖 BW-08 cell 运行时 + BW-17-01 bot 连入；场景文件已备。
+- [x] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。（7ce12df）
+  - 模型落点：`crates/load/src/dense.rs`（7ce12df）——密集 AOI 跑批：`run_dense_aoi(scenario, spacing, aoi_radius) -> DenseAoiLedger{spacing, aoi_radius, density, positions, visible_counts}`。布局面归负载端、AOI 仲裁归 cell 席（BW-08）：`ceil(√n)` 边长方格网 packing，位置=(列×spacing, 行×spacing) 纯函数无 RNG；密度=数量/网面积；可见数=距离²≤AOI 半径²的异己目标数（平方比较免开方）。账本即活跑的对照期望——服务端 enter/leave 流与本记录对账。
+  - 验收（记录目标密度及可见数）：`the_grid_packs_the_requested_density`（9 bot/间距 1 → 3×3 网密度 1.0、位置逐点钉）→ `the_visible_counts_follow_the_aoi_radius`（半径 1.5 下角 3/边 5/心 8 → `[3,5,3,5,8,5,3,5,3]` 逐位）→ `a_sparse_packing_empties_the_view`（间距×2 → 全零可见、密度降 4 倍）→ `the_layout_is_repeatable_for_any_count`（同参两跑全等；非平方数 5 → 3×3 网全互见 4、密度 5/9）。
+  - 测试与覆盖：`cargo test -p load` 72 过 0 挂（新增 4）；clippy 我文件 0 警告；rustfmt --check 过；llvm-cov dense.rs 行/函数/区域 100%；layering 过。记录型验收：布局与期望记录已可复现，活服务端 AOI 对账归 BW-08 cell 席，按档勾账。
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——依赖 BW-08-01 cell 管理 + BW-10-02-01 compiled space + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
