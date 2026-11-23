@@ -45,6 +45,7 @@ pub mod shared_data;
 pub mod shutdown;
 pub mod signals;
 pub mod space;
+pub mod space_data;
 pub mod task_manager;
 pub mod tick;
 pub mod time_and_move;

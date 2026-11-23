@@ -57,10 +57,10 @@
 //!
 //! Faithfulness notes (deltas from the reference, all deliberate):
 //!
-//! * `hasSingleCell` tests `pCellInfoTree_ == &pCell_->cellInfo()`; the
-//!   cell-info tree is BW-08-01-03's topology surface, so until that lands a
-//!   celled space in this module is single-cell by construction — the port
-//!   tests `pCell_ != NULL` only;
+//! * `hasSingleCell` tests `pCellInfoTree_ == &pCell_->cellInfo()`; since
+//!   BW-08-01-03 the port compares the read tree's root leaf against the
+//!   cell's address, and a cell installed without a topology (the
+//!   [`Space::set_cell`] face) is single-cell by construction;
 //! * the reference's `Cells::container_` owns the heap `Cell`s, with each
 //!   `Space` holding a raw `pCell_` back-pointer; the port keeps each cell
 //!   inside its space and `Cells` holds the registered keys, so the two
@@ -72,21 +72,34 @@
 //! * the `RemovalAcks` are a `BW::multiset` keyed by app address; the
 //!   manager's addr lists name each app once, and a `multiset::erase(key)`
 //!   erases every occurrence, so the port's sets carry the same semantics;
-//! * `Space::updateGeometry`'s tree read and mark-and-sweep is BW-08-01-03's;
-//!   the mirror population here is the flat record replace, and
-//!   `CellApp::addCell`'s reply, `allSpaceData` and `onGetFirstCell` faces
-//!   are not modelled;
+//! * `Space::updateGeometry`'s tree read and mark-and-sweep is BW-08-01-03's
+//!   ([`Space::update_geometry`]); the mirror population stays available as
+//!   the flat [`Space::set_cell_infos`] face, and `CellApp::addCell`'s
+//!   reply and `onGetFirstCell` faces are not modelled;
+//! * the space-data rows live in [`crate::space_data::SpaceDataMapping`]
+//!   (`lib/network/space_data_mapping.cpp`), keyed per space — the routing
+//!   that keeps one space's rows out of another's is the caller picking the
+//!   space, which is exactly the reference's per-space
+//!   `spaceDataMapping_`; the script-event faces
+//!   (`onSpaceData`/`onSpaceDataDeleted`) are recorded on the space until
+//!   the scripting lane lands, and the `writeDataToStream` wire face is the
+//!   transport lane's;
 //! * `PhysicalChunkSpace::isFullyUnloaded` reads
 //!   `EdgeGeometryMappings::isFullyUnloaded`, whose per-axis edge collapse
 //!   belongs to the chunk-loading lane; the port tracks the live mapping
 //!   names directly and is unloaded when none remain;
-//! * `Space::reuse`'s `recentData_`/`begDataSeq_`/`endDataSeq_` and
-//!   time-of-day fields are ported as the plain fields they reset;
-//!   `spaceDataMapping_` arrives with BW-08-01-03.
+//! * `Space::reuse`'s `recentData_`/`begDataSeq_`/`endDataSeq_`, the
+//!   time-of-day pair, the cell-info tree and `spaceDataMapping_` are the
+//!   plain fields it resets; `lastMappedGeometry_` and
+//!   `artificialMinLoad_` survive it, exactly as the reference leaves them;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cellappmgr::{Addr, Rect, SpaceId};
+use crate::space_data::{
+    DataValue, NO_KEY, SPACE_DATA_ARTIFICIAL_LOAD, SPACE_DATA_FIRST_CELL_ONLY_KEY,
+    SPACE_DATA_MAPPING_KEY_CLIENT_SERVER, SPACE_DATA_TOD_KEY, SpaceDataMapping,
+};
 
 /// `EntityID` (`server/common.hpp`), the entity identity across this module.
 pub type EntityId = u32;
@@ -127,6 +140,10 @@ pub struct SpaceOutbound {
     /// default space"` cases (`space.cpp:1127-1131`): the request is still
     /// sent, exactly as the reference logs and proceeds.
     pub default_space_shutdown_errors: Vec<SpaceId>,
+    /// The `CellAppMgrInterface::updateSpaceData` sends
+    /// (`space.cpp:686-694`): `(space, entry, key, value)` — the value
+    /// `None` for a delete, whose message omits the blob.
+    pub update_space_data: Vec<(SpaceId, SpaceEntryId, u16, Option<Vec<u8>>)>,
 }
 
 // -----------------------------------------------------------------------------
@@ -192,11 +209,13 @@ pub struct CellAppOutbound {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PhysicalSpace {
     /// `PhysicalChunkSpace` (`physical_chunk_space.cpp`): the live geometry
-    /// mappings, by name. The reference's
+    /// mappings, keyed by their loading entry id. The reference's
     /// `EdgeGeometryMappings::isFullyUnloaded` walks per-axis edge collapse;
     /// the edge machinery is the chunk-loading lane's, so the port tracks
-    /// the mapping names and is unloaded when none remain.
-    Chunk { mappings: BTreeSet<String> },
+    /// the mapping paths and is unloaded when none remain.
+    Chunk {
+        mappings: BTreeMap<SpaceEntryId, String>,
+    },
     /// `PhysicalDelegateSpace` (`physical_delegate_space.cpp`): the world
     /// resources by entry id (`paths_`); unloaded when none remain
     /// (`physical_delegate_space.cpp:258-261`).
@@ -209,7 +228,7 @@ impl Default for PhysicalSpace {
     /// The chunk backend is the construction default (no game delegate).
     fn default() -> Self {
         PhysicalSpace::Chunk {
-            mappings: BTreeSet::new(),
+            mappings: BTreeMap::new(),
         }
     }
 }
@@ -235,6 +254,35 @@ impl PhysicalSpace {
         match self {
             PhysicalSpace::Chunk { mappings } => mappings.clear(),
             PhysicalSpace::Delegate { paths } => paths.clear(),
+        }
+    }
+
+    /// `PhysicalChunkSpace::loadResource` /
+    /// `PhysicalDelegateSpace::loadResource`: bind the path under the
+    /// loading entry id (the `SPACE_DATA_MAPPING_KEY_CLIENT_SERVER` effect,
+    /// `space.cpp:834-835`).
+    pub fn load_resource(&mut self, entry_id: SpaceEntryId, path: &str) {
+        match self {
+            PhysicalSpace::Chunk { mappings } => {
+                mappings.insert(entry_id, path.to_owned());
+            }
+            PhysicalSpace::Delegate { paths } => {
+                paths.insert(entry_id, path.to_owned());
+            }
+        }
+    }
+
+    /// `PhysicalChunkSpace::unloadResource` /
+    /// `PhysicalDelegateSpace::unloadResource`: drop the mapping the entry
+    /// id loaded (`space.cpp:849`).
+    pub fn unload_resource(&mut self, entry_id: SpaceEntryId) {
+        match self {
+            PhysicalSpace::Chunk { mappings } => {
+                mappings.remove(&entry_id);
+            }
+            PhysicalSpace::Delegate { paths } => {
+                paths.remove(&entry_id);
+            }
         }
     }
 }
@@ -392,7 +440,62 @@ impl Cell {
 }
 
 // -----------------------------------------------------------------------------
-// Section: Space
+// Section: The topology tree
+// -----------------------------------------------------------------------------
+
+/// One node of the space's BSP tree (`SpaceNode`,
+/// `server/cellapp/space_node.hpp`): what `Space::readTree`
+/// (`space.cpp:2288-2334`) reads the manager's topology into. The wire
+/// decode is the transport lane's; the tree itself is constructed here.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpaceNode {
+    /// `SpaceBranch` (`space_branch.cpp:13-36`): the split, with the two
+    /// subtrees the recursion read — horizontal splits on z, vertical on x.
+    Branch {
+        /// `isHorizontal_`.
+        is_horizontal: bool,
+        /// `position_`.
+        position: f32,
+        /// `pLeft_`.
+        left: Box<SpaceNode>,
+        /// `pRight_`.
+        right: Box<SpaceNode>,
+    },
+    /// The `CellInfo` leaf: the app address with the streamed
+    /// `load`/`hasBeenCreated` pair (`CellInfo::updateFromStream`). The
+    /// rect the branch recursion computes lands on the mirrored record,
+    /// not on the node.
+    Leaf {
+        /// `addr_`.
+        addr: Addr,
+        /// `load_`.
+        load: f32,
+        /// `hasBeenCreated_`.
+        has_been_created: bool,
+    },
+}
+
+/// What one [`Space::update_geometry`] pass did
+/// (`space.cpp:885-958`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UpdateGeometryReport {
+    /// The `wasMulticell` flag the reference captures before the sweep.
+    pub was_multicell: bool,
+    /// Fresh `CellInfo`s the tree introduced.
+    pub added: Vec<Addr>,
+    /// Existing `CellInfo`s the tree refreshed (`updateFromStream`).
+    pub refreshed: usize,
+    /// The marked records the sweep erased.
+    pub erased: Vec<Addr>,
+    /// The `INFO_MSG "Cell in space %u is going"` case: this app's cell's
+    /// record was swept, so the cell is going.
+    pub own_cell_going: bool,
+    /// Whether the `wasMulticell` tail fired a shutdown request.
+    pub requested_shutdown: bool,
+}
+
+// -----------------------------------------------------------------------------
+// Section: Space data
 // -----------------------------------------------------------------------------
 
 /// One recent data entry, `Space::RecentDataEntry` (`space.hpp:186-190`):
@@ -407,6 +510,19 @@ pub struct RecentDataEntry {
     pub key: u16,
 }
 
+/// The script event a space-data change triggers
+/// (`CellApp::instance().scriptEvents().triggerEvent`, `space.cpp:755-770`):
+/// recorded on the space until the scripting lane lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpaceScriptEvent {
+    /// `"onSpaceData"` for an add, `"onSpaceDataDeleted"` for a delete.
+    pub is_added: bool,
+    /// The effective key — for a delete, the key the deleted row held.
+    pub key: u16,
+    /// The payload — for a delete, the deleted row's data.
+    pub value: Vec<u8>,
+}
+
 /// A space as one CellApp process serves it (`server/cellapp/space.hpp`).
 #[derive(Clone, Debug, Default)]
 pub struct Space {
@@ -416,6 +532,19 @@ pub struct Space {
     /// `cellInfos_` (`space.hpp:186`): the CellAppMgr's cells of this space,
     /// mirrored, keyed by the owning app's address.
     cell_infos: BTreeMap<Addr, CellInfoRecord>,
+    /// `pCellInfoTree_`: the topology the last `update_geometry` read,
+    /// `None` until one has.
+    tree_root: Option<SpaceNode>,
+    /// `spaceDataMapping_`.
+    space_data_mapping: SpaceDataMapping,
+    /// `lastMappedGeometry_`.
+    last_mapped_geometry: String,
+    /// `shouldCheckLoadBounds_` (`space.hpp:176-181`).
+    should_check_load_bounds: bool,
+    /// `artificialMinLoad_`.
+    artificial_min_load: f32,
+    /// The script events the data handlers triggered, in order.
+    script_events: Vec<SpaceScriptEvent>,
     /// `entities_`: the entities this process serves here, with the swap-pop
     /// removal-handle order (`space.cpp:302-345`).
     entities: Vec<SpaceEntitySlot>,
@@ -446,10 +575,16 @@ impl Space {
                 }
             } else {
                 PhysicalSpace::Chunk {
-                    mappings: BTreeSet::new(),
+                    mappings: BTreeMap::new(),
                 }
             },
             cell_infos: BTreeMap::new(),
+            tree_root: None,
+            space_data_mapping: SpaceDataMapping::new(),
+            last_mapped_geometry: String::new(),
+            should_check_load_bounds: false,
+            artificial_min_load: 0.0,
+            script_events: Vec::new(),
             entities: Vec::new(),
             shutting_down: false,
             beg_data_seq: 0,
@@ -612,12 +747,54 @@ impl Space {
         true
     }
 
-    /// `Space::hasSingleCell` (`space.cpp:982-985`). The reference tests
-    /// `pCell_ && pCellInfoTree_ == &pCell_->cellInfo()`; the cell-info tree
-    /// is BW-08-01-03's, so a celled space here is single-cell by
-    /// construction.
+    /// `Space::hasSingleCell` (`space.cpp:982-985`): a cell, and the read
+    /// tree's root being that cell's own leaf. A cell installed without a
+    /// topology — the [`Space::set_cell`] face — is single-cell by
+    /// construction; a multi-cell tree says otherwise.
     pub fn has_single_cell(&self) -> bool {
-        self.cell.is_some()
+        let Some(cell) = &self.cell else {
+            return false;
+        };
+        match &self.tree_root {
+            None => true,
+            Some(SpaceNode::Leaf { addr, .. }) => *addr == cell.addr,
+            Some(SpaceNode::Branch { .. }) => false,
+        }
+    }
+
+    /// The read topology tree, read-only.
+    pub fn tree_root(&self) -> Option<&SpaceNode> {
+        self.tree_root.as_ref()
+    }
+
+    /// `spaceDataMapping_`.
+    pub fn space_data_mapping(&self) -> &SpaceDataMapping {
+        &self.space_data_mapping
+    }
+
+    /// `lastMappedGeometry_`.
+    pub fn last_mapped_geometry(&self) -> &str {
+        &self.last_mapped_geometry
+    }
+
+    /// `space.hpp:120`'s setter.
+    pub fn set_last_mapped_geometry(&mut self, path: &str) {
+        self.last_mapped_geometry = path.to_owned();
+    }
+
+    /// `shouldCheckLoadBounds_`.
+    pub fn should_check_load_bounds(&self) -> bool {
+        self.should_check_load_bounds
+    }
+
+    /// `artificialMinLoad_`.
+    pub fn artificial_min_load(&self) -> f32 {
+        self.artificial_min_load
+    }
+
+    /// The script events the data handlers triggered, in order.
+    pub fn script_events(&self) -> &[SpaceScriptEvent] {
+        &self.script_events
     }
 
     /// `Space::checkForShutDown` (`space.cpp:966-979`): single cell, no
@@ -693,6 +870,10 @@ impl Space {
         self.end_data_seq = 0;
         self.initial_time_of_day = -1.0;
         self.game_seconds_per_second = 0.0;
+        // space.cpp:149-153 — the topology is deleted and re-read.
+        self.tree_root = None;
+        // space.cpp:155
+        self.space_data_mapping.clear();
         self.physical.reuse();
     }
 
@@ -711,6 +892,334 @@ impl Space {
     pub fn advance_data_seq(&mut self, beg: i32, end: i32) {
         self.beg_data_seq = beg;
         self.end_data_seq = end;
+    }
+
+    /// `Space::updateGeometry` (`space.cpp:885-958`): read the manager's
+    /// topology, mark every mirrored record for deletion, unmark and
+    /// refresh the leaves the tree still carries, add the fresh ones, sweep
+    /// the rest, then run the tails — the "our cell is going" check and the
+    /// `wasMulticell` shutdown check.
+    pub fn update_geometry(
+        &mut self,
+        root: &SpaceNode,
+        context: &CellAppContext,
+        out: &mut SpaceOutbound,
+    ) -> UpdateGeometryReport {
+        let mut report = UpdateGeometryReport {
+            was_multicell: !self.has_single_cell(),
+            ..UpdateGeometryReport::default()
+        };
+
+        // Mark them all to be deleted (space.cpp:889-902).
+        for record in self.cell_infos.values_mut() {
+            record.should_delete = true;
+        }
+
+        // Read the tree (space.cpp:904-915), refreshing and adding leaves;
+        // the tree read becomes the space's topology (space.cpp:915).
+        Self::read_tree_node(self, root, Rect::unbounded(), &mut report);
+        self.tree_root = Some(root.clone());
+
+        // Sweep the records the tree no longer carries
+        // (space.cpp:917-937).
+        let erased: Vec<Addr> = self
+            .cell_infos
+            .iter()
+            .filter(|(_, record)| record.should_delete)
+            .map(|(addr, _)| *addr)
+            .collect();
+        for addr in &erased {
+            self.cell_infos.remove(addr);
+        }
+        report.erased = erased;
+
+        // The app's own cell (space.cpp:939-951): its record swept means it
+        // is going; the staying case runs `checkOffloadsAndGhosts`, the
+        // BW-08-02 offload face, not modelled yet.
+        report.own_cell_going = self
+            .cell
+            .as_ref()
+            .is_some_and(|cell| report.erased.contains(&cell.addr));
+
+        // The `wasMulticell` tail (space.cpp:953-957).
+        if report.was_multicell {
+            let before = out.shutdown_space.len();
+            self.check_for_shut_down(context, out);
+            report.requested_shutdown = out.shutdown_space.len() > before;
+        }
+        report
+    }
+
+    /// One `Space::readTree` recursion step (`space.cpp:2288-2334`): the
+    /// branch splits its rect and recurses; the leaf refreshes or adds its
+    /// record — `updateFromStream` also clears a pending delete, an update
+    /// for a re-added cell (`cell_info.cpp:50-60`).
+    fn read_tree_node(
+        space: &mut Self,
+        node: &SpaceNode,
+        rect: Rect,
+        report: &mut UpdateGeometryReport,
+    ) {
+        match node {
+            SpaceNode::Branch {
+                is_horizontal,
+                position,
+                left,
+                right,
+            } => {
+                let (mut left_rect, mut right_rect) = (rect, rect);
+                if *is_horizontal {
+                    left_rect.ymax = *position;
+                    right_rect.ymin = *position;
+                } else {
+                    left_rect.xmax = *position;
+                    right_rect.xmin = *position;
+                }
+                Self::read_tree_node(space, left, left_rect, report);
+                Self::read_tree_node(space, right, right_rect, report);
+            }
+            SpaceNode::Leaf {
+                addr,
+                load,
+                has_been_created,
+            } => match space.cell_infos.get_mut(addr) {
+                Some(record) => {
+                    record.should_delete = false;
+                    record.rect = rect;
+                    record.is_delete_pending = false;
+                    record.load = *load;
+                    record.has_been_created = *has_been_created;
+                    report.refreshed += 1;
+                }
+                None => {
+                    space.cell_infos.insert(
+                        *addr,
+                        CellInfoRecord {
+                            addr: *addr,
+                            load: *load,
+                            rect,
+                            should_delete: false,
+                            is_delete_pending: false,
+                            has_been_created: *has_been_created,
+                        },
+                    );
+                    report.added.push(*addr);
+                }
+            },
+        }
+    }
+
+    /// `Space::spaceDataEntry` (`space.cpp:675-878`) — the one face every
+    /// data row flows through. `update_cell_app_mgr` selects the
+    /// `UPDATE_CELL_APP_MGR` branch (the manager echo goes out and the
+    /// recently-deleted guard does not run) or the broadcast branch (the
+    /// guard runs, no echo). `need_effect` selects the `NEED_TO_EFFECT`
+    /// tail. `now` is the app time the recent entries stamp. Returns
+    /// whether the row changed anything.
+    #[allow(clippy::too_many_arguments)]
+    pub fn space_data_entry(
+        &mut self,
+        entry_id: SpaceEntryId,
+        key: u16,
+        value: &[u8],
+        update_cell_app_mgr: bool,
+        need_effect: bool,
+        now: u32,
+        out: &mut SpaceOutbound,
+    ) -> bool {
+        if update_cell_app_mgr {
+            // space.cpp:682-700 — the manager echo; the replay-data copy is
+            // the replay lane's.
+            out.update_space_data.push((
+                self.id,
+                entry_id,
+                key,
+                (key != NO_KEY).then(|| value.to_vec()),
+            ));
+        } else if key < SPACE_DATA_FIRST_CELL_ONLY_KEY {
+            // space.cpp:703-720 — never add back a recently deleted entry.
+            if self
+                .recent_data
+                .iter()
+                .rev()
+                .any(|rde| rde.entry_id == entry_id && rde.key == NO_KEY)
+            {
+                return false;
+            }
+        }
+
+        let has_been_added;
+        let mut old_value = DataValue::invalid();
+        let effective_key;
+        if key != NO_KEY {
+            has_been_added = self.space_data_mapping.add_data_entry(entry_id, key, value);
+            effective_key = if has_been_added { key } else { NO_KEY };
+        } else {
+            match self.space_data_mapping.del_data_entry_with_old(entry_id) {
+                Some(old) => {
+                    has_been_added = false;
+                    effective_key = old.key;
+                    old_value = old;
+                }
+                None => {
+                    has_been_added = false;
+                    effective_key = NO_KEY;
+                }
+            }
+        }
+        if effective_key == NO_KEY {
+            // WARNING_MSG "Attempted to add or delete entry twice!"
+            return false;
+        }
+
+        // The script events (space.cpp:753-770).
+        self.script_events.push(SpaceScriptEvent {
+            is_added: has_been_added,
+            key: effective_key,
+            value: if has_been_added {
+                value.to_vec()
+            } else {
+                old_value.data.clone()
+            },
+        });
+
+        // Client-visible keys join the recent window
+        // (space.cpp:772-785) — the key itself, `-1` included for a
+        // revoked row.
+        if effective_key < SPACE_DATA_FIRST_CELL_ONLY_KEY {
+            self.recent_data.push(RecentDataEntry {
+                entry_id,
+                time: now,
+                key,
+            });
+            self.end_data_seq += 1;
+        }
+
+        // The `NEED_TO_EFFECT` tail (space.cpp:787-875).
+        if need_effect {
+            if effective_key == SPACE_DATA_TOD_KEY {
+                match self
+                    .space_data_mapping
+                    .data_retrieve_first(SPACE_DATA_TOD_KEY)
+                {
+                    Some(data) if data.len() >= 8 => {
+                        self.initial_time_of_day =
+                            f32::from_le_bytes(data[0..4].try_into().expect("four bytes"));
+                        self.game_seconds_per_second =
+                            f32::from_le_bytes(data[4..8].try_into().expect("four bytes"));
+                    }
+                    _ => {
+                        self.initial_time_of_day = -1.0;
+                        self.game_seconds_per_second = 0.0;
+                    }
+                }
+            } else if effective_key == SPACE_DATA_ARTIFICIAL_LOAD {
+                match self
+                    .space_data_mapping
+                    .data_retrieve_first(SPACE_DATA_ARTIFICIAL_LOAD)
+                {
+                    Some(data) if data.len() >= 4 => {
+                        self.artificial_min_load =
+                            f32::from_le_bytes(data[0..4].try_into().expect("four bytes"));
+                    }
+                    _ => {
+                        self.artificial_min_load = 0.0;
+                    }
+                }
+            } else if effective_key == SPACE_DATA_MAPPING_KEY_CLIENT_SERVER {
+                if has_been_added {
+                    // space.cpp:827-845 — the payload is the 4x4 matrix
+                    // followed by the path.
+                    let path = if value.len() >= 64 {
+                        String::from_utf8_lossy(&value[64..]).into_owned()
+                    } else {
+                        String::new()
+                    };
+                    self.physical.load_resource(entry_id, &path);
+                    self.should_check_load_bounds = true;
+                    // Someone else mapped a geometry: our last-mapped mark
+                    // cannot be the last any more.
+                    self.last_mapped_geometry.clear();
+                } else {
+                    self.physical.unload_resource(entry_id);
+                }
+            }
+            // `SPACE_DATA_RECORDING` starts a replay recording
+            // (`space.cpp:858-874`) — the replay lane's face; the row
+            // itself lands in the mapping all the same.
+        }
+        true
+    }
+
+    /// `Space::spaceData` (`space.cpp:648-659`), the message handler
+    /// another CellApp streams through: no manager echo, the effect runs.
+    pub fn space_data(
+        &mut self,
+        entry_id: SpaceEntryId,
+        key: u16,
+        value: &[u8],
+        now: u32,
+        out: &mut SpaceOutbound,
+    ) -> bool {
+        self.space_data_entry(entry_id, key, value, false, true, now, out)
+    }
+
+    /// `Space::allSpaceData` (`space.cpp:666-669`), the manager's
+    /// catch-up stream: every row through the same face, no echo.
+    pub fn all_space_data(
+        &mut self,
+        entries: &[(SpaceEntryId, u16, Vec<u8>)],
+        now: u32,
+        out: &mut SpaceOutbound,
+    ) -> usize {
+        let mut applied = 0;
+        for (entry_id, key, value) in entries {
+            if self.space_data_entry(*entry_id, *key, value, false, true, now, out) {
+                applied += 1;
+            }
+        }
+        applied
+    }
+
+    /// `Space::dataBySeq` (`space.cpp:593-619`): the row a local sequence
+    /// number names — `None` outside the window, and `None` data for a
+    /// row since revoked (or since unloaded from the mapping).
+    pub fn data_by_seq(&self, seq: i32) -> Option<(SpaceEntryId, u16, Option<Vec<u8>>)> {
+        if seq < self.beg_data_seq || seq >= self.end_data_seq {
+            return None;
+        }
+        let rde = &self.recent_data[(seq - self.beg_data_seq) as usize];
+        if rde.key != NO_KEY {
+            let data = self
+                .space_data_mapping
+                .data_retrieve_specific(rde.entry_id)
+                .filter(|value| value.valid())
+                .map(|value| value.data.clone());
+            Some((rde.entry_id, rde.key, data))
+        } else {
+            Some((rde.entry_id, rde.key, None))
+        }
+    }
+
+    /// `Space::dataRecencyLevel` (`space.cpp:626-640`): 0 under 10
+    /// seconds, 1 under 20, 3 under 30, else 4 — `None` outside the
+    /// window.
+    pub fn data_recency_level(&self, seq: i32, now: u32, hertz: u32) -> Option<i32> {
+        if seq < self.beg_data_seq || seq >= self.end_data_seq {
+            return None;
+        }
+        let rde = &self.recent_data[(seq - self.beg_data_seq) as usize];
+        let diff = now.saturating_sub(rde.time) as i32;
+        let hertz = hertz as i32;
+        if diff < hertz * 10 {
+            Some(0)
+        } else if diff < hertz * 20 {
+            Some(1)
+        } else if diff < hertz * 30 {
+            Some(3)
+        } else {
+            Some(4)
+        }
     }
 
     /// `~Space` (`space.cpp:86-125`) as an explicit teardown: destroy the
@@ -740,6 +1249,8 @@ impl Space {
         }
         // shuttingDownTimerHandle_.cancel();
         self.shutting_down = false;
+        // space.cpp:126-130 — the cell-info tree goes with the space.
+        self.tree_root = None;
         self.physical.clear();
         teardown
     }
@@ -1137,6 +1648,81 @@ impl CellApp {
         ids.len()
     }
 
+    /// `Space::spaceDataEntry` routed through the app's spaces: `None`
+    /// when no such space lives here, the space's answer otherwise
+    /// (the manager echo already collected in `out`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn space_data_entry(
+        &mut self,
+        space_id: SpaceId,
+        entry_id: SpaceEntryId,
+        key: u16,
+        value: &[u8],
+        update_cell_app_mgr: bool,
+        need_effect: bool,
+        now: u32,
+        out: &mut SpaceOutbound,
+    ) -> Option<bool> {
+        Some(self.spaces_mut().find_mut(space_id)?.space_data_entry(
+            entry_id,
+            key,
+            value,
+            update_cell_app_mgr,
+            need_effect,
+            now,
+            out,
+        ))
+    }
+
+    /// `Space::spaceData` routed: another CellApp's broadcast row — no
+    /// manager echo, the effect runs.
+    pub fn space_data(
+        &mut self,
+        space_id: SpaceId,
+        entry_id: SpaceEntryId,
+        key: u16,
+        value: &[u8],
+        now: u32,
+        out: &mut SpaceOutbound,
+    ) -> Option<bool> {
+        Some(
+            self.spaces_mut()
+                .find_mut(space_id)?
+                .space_data(entry_id, key, value, now, out),
+        )
+    }
+
+    /// `Space::allSpaceData` routed: the manager's catch-up stream.
+    pub fn all_space_data(
+        &mut self,
+        space_id: SpaceId,
+        entries: &[(SpaceEntryId, u16, Vec<u8>)],
+        now: u32,
+        out: &mut SpaceOutbound,
+    ) -> Option<usize> {
+        Some(
+            self.spaces_mut()
+                .find_mut(space_id)?
+                .all_space_data(entries, now, out),
+        )
+    }
+
+    /// `Space::updateGeometry` routed: the app's context feeds the
+    /// `wasMulticell` shutdown tail.
+    pub fn update_geometry(
+        &mut self,
+        space_id: SpaceId,
+        root: &SpaceNode,
+        out: &mut SpaceOutbound,
+    ) -> Option<UpdateGeometryReport> {
+        let context = self.context;
+        Some(
+            self.spaces_mut()
+                .find_mut(space_id)?
+                .update_geometry(root, &context, out),
+        )
+    }
+
     /// The cell of `space_id` — the registered-cell read accessor.
     pub fn cell_of(&self, space_id: SpaceId) -> Option<&Cell> {
         self.spaces.find(space_id)?.cell()
@@ -1181,7 +1767,7 @@ mod tests {
         assert_eq!(
             chunk.physical(),
             &PhysicalSpace::Chunk {
-                mappings: BTreeSet::new()
+                mappings: BTreeMap::new()
             }
         );
         assert_eq!(chunk.beg_data_seq(), 0);
@@ -1258,7 +1844,7 @@ mod tests {
         {
             let space = spaces.find_mut(9).unwrap();
             if let PhysicalSpace::Chunk { mappings } = space.physical_mut() {
-                mappings.insert("space.center".to_owned());
+                mappings.insert((1, 5000), "space.center".to_owned());
             }
             assert!(!space.is_fully_unloaded());
         }
@@ -1484,7 +2070,7 @@ mod tests {
         space.initial_time_of_day = 0.25;
         space.game_seconds_per_second = 2.0;
         if let PhysicalSpace::Chunk { mappings } = space.physical_mut() {
-            mappings.insert("space.center".to_owned());
+            mappings.insert((1, 5000), "space.center".to_owned());
         }
 
         space.reuse();
@@ -1496,7 +2082,7 @@ mod tests {
         assert_eq!(
             space.physical(),
             &PhysicalSpace::Chunk {
-                mappings: BTreeSet::new()
+                mappings: BTreeMap::new()
             }
         );
     }
@@ -1561,7 +2147,7 @@ mod tests {
         assert_eq!(
             space.physical(),
             &PhysicalSpace::Chunk {
-                mappings: BTreeSet::new()
+                mappings: BTreeMap::new()
             }
         );
     }
@@ -1980,7 +2566,7 @@ mod tests {
         assert_eq!(
             PhysicalSpace::default(),
             PhysicalSpace::Chunk {
-                mappings: BTreeSet::new()
+                mappings: BTreeMap::new()
             }
         );
 
@@ -2029,5 +2615,466 @@ mod tests {
         assert!(!app.ack_cell_removal(99, (9, 9)));
         assert!(!app.destroy_cell(99));
         assert!(!app.handle_space_timeout(99));
+    }
+
+    // -------------------------------------------------------------------
+    // TDD: BW-08-01-03 传播空间数据和拓扑变化 — 多 Space 不串数据
+    // -------------------------------------------------------------------
+
+    /// `SpaceNode::Leaf` shorthand for the tree fixtures.
+    fn leaf(addr: Addr) -> SpaceNode {
+        SpaceNode::Leaf {
+            addr,
+            load: 0.0,
+            has_been_created: true,
+        }
+    }
+
+    /// The `SpaceData_ToDData` payload: initial time-of-day then
+    /// game-seconds-per-second.
+    fn tod_payload(initial: f32, rate: f32) -> Vec<u8> {
+        let mut data = initial.to_le_bytes().to_vec();
+        data.extend_from_slice(&rate.to_le_bytes());
+        data
+    }
+
+    /// The acceptance: two spaces served by one app each carry their own
+    /// rows — a row in one never lands in the other, and every manager
+    /// echo is tagged with its own space.
+    #[test]
+    fn two_spaces_keep_their_data_rows_separate() {
+        let mut app = CellApp::new(started());
+        let geometry = vec![CellInfoRecord::new((10, 1), Rect::unbounded())];
+        assert!(matches!(
+            app.add_cell(7, &geometry, (10, 1), false),
+            AddCellOutcome::Created { .. }
+        ));
+        assert!(matches!(
+            app.add_cell(8, &geometry, (10, 1), false),
+            AddCellOutcome::Created { .. }
+        ));
+
+        let mut out = SpaceOutbound::default();
+        assert!(
+            app.space_data_entry(
+                7,
+                (1, 5000),
+                SPACE_DATA_TOD_KEY,
+                &tod_payload(6.5, 1.0),
+                true,
+                true,
+                100,
+                &mut out
+            )
+            .unwrap()
+        );
+        assert!(
+            app.space_data_entry(
+                8,
+                (1, 5000),
+                SPACE_DATA_TOD_KEY,
+                &tod_payload(3.25, 2.0),
+                true,
+                true,
+                100,
+                &mut out
+            )
+            .unwrap()
+        );
+        assert!(
+            app.space_data_entry(7, (2, 5001), 9, b"seven", true, true, 100, &mut out)
+                .unwrap()
+        );
+
+        // The echoes name their own space.
+        assert_eq!(out.update_space_data.len(), 3);
+        assert_eq!(out.update_space_data[0].0, 7);
+        assert_eq!(out.update_space_data[1].0, 8);
+        assert_eq!(out.update_space_data[2].0, 7);
+
+        // Each space reads only its own rows.
+        {
+            let (seven, eight) = (app.spaces().find(7).unwrap(), app.spaces().find(8).unwrap());
+            assert_eq!(
+                seven
+                    .space_data_mapping()
+                    .data_retrieve_first(SPACE_DATA_TOD_KEY),
+                Some(tod_payload(6.5, 1.0).as_slice())
+            );
+            assert_eq!(
+                seven.space_data_mapping().data_retrieve_first(9),
+                Some(b"seven".as_slice())
+            );
+            assert_eq!(
+                eight
+                    .space_data_mapping()
+                    .data_retrieve_first(SPACE_DATA_TOD_KEY),
+                Some(tod_payload(3.25, 2.0).as_slice())
+            );
+            assert_eq!(eight.space_data_mapping().data_retrieve_first(9), None);
+            assert_eq!(seven.initial_time_of_day(), 6.5);
+            assert_eq!(eight.initial_time_of_day(), 3.25);
+        }
+
+        // Deleting the row in space 7 leaves space 8's alone.
+        assert!(
+            app.space_data_entry(7, (1, 5000), NO_KEY, b"", true, true, 100, &mut out)
+                .unwrap()
+        );
+        {
+            let (seven, eight) = (app.spaces().find(7).unwrap(), app.spaces().find(8).unwrap());
+            assert_eq!(
+                seven
+                    .space_data_mapping()
+                    .data_retrieve_first(SPACE_DATA_TOD_KEY),
+                None
+            );
+            assert_eq!(seven.initial_time_of_day(), -1.0);
+            assert_eq!(
+                eight
+                    .space_data_mapping()
+                    .data_retrieve_first(SPACE_DATA_TOD_KEY),
+                Some(tod_payload(3.25, 2.0).as_slice())
+            );
+            assert_eq!(eight.initial_time_of_day(), 3.25);
+        }
+    }
+
+    /// `Space::spaceDataEntry` (`space.cpp:720-750`): one row per entry id
+    /// — a second add or a delete of nothing is the "twice" rejection that
+    /// stops before the script events; the manager echoes still go out.
+    #[test]
+    fn adding_the_same_entry_twice_and_deleting_nothing_change_nothing() {
+        let mut space = Space::new(3, false);
+        let mut out = SpaceOutbound::default();
+        assert!(space.space_data_entry((1, 5000), 7, b"a", true, true, 100, &mut out));
+        assert!(!space.space_data_entry((1, 5000), 8, b"b", true, true, 100, &mut out));
+        assert!(!space.space_data_entry((2, 5001), NO_KEY, b"", true, true, 100, &mut out));
+        assert_eq!(space.space_data_mapping().len(), 1);
+        assert_eq!(
+            space.space_data_mapping().data_retrieve_first(7),
+            Some(b"a".as_slice())
+        );
+        assert_eq!(space.script_events().len(), 1);
+        assert_eq!(out.update_space_data.len(), 3);
+    }
+
+    /// The recently-deleted guard (`space.cpp:703-720`): a broadcast add
+    /// for an entry deleted inside the window is refused; the
+    /// `UPDATE_CELL_APP_MGR` echo branch skips the guard; a cell-only key
+    /// never consults the window at all.
+    #[test]
+    fn a_recently_deleted_entry_stays_deleted_until_the_manager_echo() {
+        let mut space = Space::new(3, false);
+        let mut out = SpaceOutbound::default();
+        assert!(space.space_data_entry((4, 5002), 7, b"row", true, true, 100, &mut out));
+        assert!(space.space_data_entry((4, 5002), NO_KEY, b"", true, true, 100, &mut out));
+        // The delete echo carries no blob, like the reference message.
+        assert_eq!(out.update_space_data.last().unwrap().3, None);
+
+        assert!(!space.space_data_entry((4, 5002), 7, b"again", false, true, 100, &mut out));
+        assert!(space.space_data_mapping().data_retrieve_first(7).is_none());
+
+        // The manager echo path skips the guard.
+        assert!(space.space_data_entry((4, 5002), 7, b"again", true, true, 100, &mut out));
+        assert_eq!(
+            space.space_data_mapping().data_retrieve_first(7),
+            Some(b"again".as_slice())
+        );
+
+        // A cell-only key bypasses the guard both ways.
+        assert!(space.space_data_entry(
+            (5, 5003),
+            SPACE_DATA_ARTIFICIAL_LOAD,
+            &4.5f32.to_le_bytes(),
+            true,
+            true,
+            100,
+            &mut out
+        ));
+        assert!(space.space_data_entry((5, 5003), NO_KEY, b"", true, true, 100, &mut out));
+        assert!(space.space_data_entry(
+            (5, 5003),
+            SPACE_DATA_ARTIFICIAL_LOAD,
+            &1.0f32.to_le_bytes(),
+            false,
+            true,
+            100,
+            &mut out
+        ));
+        assert_eq!(space.artificial_min_load(), 1.0);
+    }
+
+    /// The script events (`space.cpp:753-770`): an add names the row; a
+    /// delete names the deleted key and its old value, and lands in the
+    /// recent window under `NO_KEY`.
+    #[test]
+    fn script_events_carry_the_row_and_its_deleted_value() {
+        let mut space = Space::new(3, false);
+        let mut out = SpaceOutbound::default();
+        assert!(space.space_data_entry((1, 5000), 7, b"payload", false, true, 100, &mut out));
+        assert!(space.space_data_entry((1, 5000), NO_KEY, b"", false, true, 100, &mut out));
+        let events = space.script_events();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].is_added);
+        assert_eq!(events[0].key, 7);
+        assert_eq!(events[0].value, b"payload");
+        assert!(!events[1].is_added);
+        assert_eq!(events[1].key, 7);
+        assert_eq!(events[1].value, b"payload");
+        // The add's sequence still names its entry, but the mapping row is
+        // gone — the data answers empty, exactly the reference's miss.
+        assert_eq!(space.data_by_seq(0), Some(((1, 5000), 7, None)));
+        assert_eq!(space.data_by_seq(1), Some(((1, 5000), NO_KEY, None)));
+    }
+
+    /// `Space::dataBySeq` (`space.cpp:593-619`): the window bounds the
+    /// sequence numbers; a row revoked from the mapping since answers with
+    /// no data.
+    #[test]
+    fn the_sequence_window_bounds_data_by_seq() {
+        let mut space = Space::new(3, false);
+        let mut out = SpaceOutbound::default();
+        assert!(space.space_data((1, 5000), 7, b"one", 100, &mut out));
+        assert!(space.space_data((2, 5001), 8, b"two", 100, &mut out));
+        assert_eq!(
+            space.data_by_seq(0),
+            Some(((1, 5000), 7, Some(b"one".to_vec())))
+        );
+        assert_eq!(
+            space.data_by_seq(1),
+            Some(((2, 5001), 8, Some(b"two".to_vec())))
+        );
+        assert_eq!(space.data_by_seq(2), None);
+        assert_eq!(space.data_by_seq(-1), None);
+
+        // The window only grows: the reference never moves `begDataSeq_`
+        // outside the constructor and `reuse` (space.cpp:70,144), so the
+        // entries keep their sequence numbers.
+        assert!(space.space_data_entry((1, 5000), NO_KEY, b"", true, false, 100, &mut out));
+        assert_eq!(space.data_by_seq(0), Some(((1, 5000), 7, None)));
+        assert_eq!(
+            space.data_by_seq(1),
+            Some(((2, 5001), 8, Some(b"two".to_vec())))
+        );
+        assert_eq!(space.data_by_seq(2), Some(((1, 5000), NO_KEY, None)));
+    }
+
+    /// `Space::dataRecencyLevel` (`space.cpp:626-640`): the four age
+    /// brackets at `hertz * 10/20/30`.
+    #[test]
+    fn data_recency_levels_match_the_hertz_thresholds() {
+        let mut space = Space::new(3, false);
+        let mut out = SpaceOutbound::default();
+        assert!(space.space_data((1, 5000), 7, b"x", 1000, &mut out));
+        assert_eq!(space.data_recency_level(0, 1009, 1), Some(0));
+        assert_eq!(space.data_recency_level(0, 1019, 1), Some(1));
+        assert_eq!(space.data_recency_level(0, 1029, 1), Some(3));
+        assert_eq!(space.data_recency_level(0, 1030, 1), Some(4));
+        assert_eq!(space.data_recency_level(5, 1009, 1), None);
+    }
+
+    /// The `NEED_TO_EFFECT` tail for `SPACE_DATA_TOD_KEY`
+    /// (`space.cpp:787-810`): the payload drives the clock; a delete or a
+    /// truncated payload resets it to the constructor values.
+    #[test]
+    fn time_of_day_rows_drive_and_reset_the_space_clock() {
+        let mut space = Space::new(3, false);
+        let mut out = SpaceOutbound::default();
+        assert!(space.space_data(
+            (1, 5000),
+            SPACE_DATA_TOD_KEY,
+            &tod_payload(6.5, 2.0),
+            100,
+            &mut out
+        ));
+        assert_eq!(space.initial_time_of_day(), 6.5);
+        assert_eq!(space.game_seconds_per_second(), 2.0);
+        assert!(space.space_data((1, 5000), NO_KEY, b"", 100, &mut out));
+        assert_eq!(space.initial_time_of_day(), -1.0);
+        assert_eq!(space.game_seconds_per_second(), 0.0);
+        assert!(space.space_data((2, 5001), SPACE_DATA_TOD_KEY, &[1, 2, 3], 100, &mut out));
+        assert_eq!(space.initial_time_of_day(), -1.0);
+        assert_eq!(space.game_seconds_per_second(), 0.0);
+    }
+
+    /// The `NEED_TO_EFFECT` tail for `SPACE_DATA_MAPPING_KEY_CLIENT_SERVER`
+    /// (`space.cpp:827-845`): the payload tail after the 4x4 matrix is the
+    /// path — load it, mark the load bounds, clear the last-mapped mark;
+    /// the delete unloads.
+    #[test]
+    fn mapping_rows_load_and_unload_the_geometry() {
+        let mut space = Space::new(3, false);
+        space.set_last_mapped_geometry("maps/old.chunk");
+        let mut out = SpaceOutbound::default();
+        let mut payload = vec![0u8; 64];
+        payload.extend_from_slice(b"maps/central.chunk");
+        assert!(space.space_data(
+            (1, 5000),
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            &payload,
+            100,
+            &mut out
+        ));
+        let loaded = match space.physical() {
+            PhysicalSpace::Chunk { mappings } => mappings.get(&(1, 5000)).cloned(),
+            _ => panic!("the chunk backend is the default"),
+        };
+        assert_eq!(loaded.as_deref(), Some("maps/central.chunk"));
+        assert!(space.should_check_load_bounds());
+        assert_eq!(space.last_mapped_geometry(), "");
+
+        assert!(space.space_data((1, 5000), NO_KEY, b"", 100, &mut out));
+        let unloaded = match space.physical() {
+            PhysicalSpace::Chunk { mappings } => mappings.is_empty(),
+            _ => panic!("the chunk backend is the default"),
+        };
+        assert!(unloaded);
+        // Only the add raises the flag; the delete leaves it standing.
+        assert!(space.should_check_load_bounds());
+    }
+
+    /// `Space::updateGeometry` (`space.cpp:885-958`), first read on a
+    /// flat-installed mirror: refresh the surviving cell, add the fresh
+    /// one, sweep the stale one — and clear a pending delete on the way.
+    #[test]
+    fn update_geometry_refreshes_adds_and_sweeps() {
+        let mut space = Space::new(7, false);
+        space.set_cell((10, 1));
+        let mut own = CellInfoRecord::new((10, 1), Rect::unbounded());
+        own.is_delete_pending = true;
+        let stale = CellInfoRecord::new((10, 2), Rect::unbounded());
+        space.set_cell_infos(&[own, stale]);
+
+        let tree = SpaceNode::Branch {
+            is_horizontal: false,
+            position: 100.0,
+            left: Box::new(leaf((10, 1))),
+            right: Box::new(leaf((10, 3))),
+        };
+        let mut out = SpaceOutbound::default();
+        let report = space.update_geometry(&tree, &started(), &mut out);
+        assert_eq!(report.added, vec![(10, 3)]);
+        assert_eq!(report.erased, vec![(10, 2)]);
+        assert_eq!(report.refreshed, 1);
+        assert!(!report.own_cell_going);
+        assert!(!report.was_multicell, "the flat mirror reads as single");
+        assert!(!report.requested_shutdown);
+        assert!(out.shutdown_space.is_empty());
+
+        let info = space.find_cell((10, 1)).unwrap();
+        assert!(!info.should_delete);
+        assert!(!info.is_delete_pending);
+        assert_eq!(info.rect.xmax, 100.0, "a vertical branch splits x");
+        assert!(space.tree_root().is_some());
+        assert!(!space.has_single_cell(), "a branch tree is multicell");
+    }
+
+    /// The `wasMulticell` tail (`space.cpp:953-957`): once a tree is in,
+    /// shrinking back to exactly the local cell's leaf runs
+    /// `checkForShutDown`, which — no entities, app started — asks for
+    /// the space's shutdown.
+    #[test]
+    fn shrinking_back_to_one_cell_checks_for_shutdown() {
+        let mut space = Space::new(7, false);
+        space.set_cell((10, 1));
+        space.set_cell_infos(&[
+            CellInfoRecord::new((10, 1), Rect::unbounded()),
+            CellInfoRecord::new((10, 2), Rect::unbounded()),
+        ]);
+        let branch = SpaceNode::Branch {
+            is_horizontal: true,
+            position: 50.0,
+            left: Box::new(leaf((10, 1))),
+            right: Box::new(leaf((10, 2))),
+        };
+        let mut out = SpaceOutbound::default();
+        let first = space.update_geometry(&branch, &started(), &mut out);
+        assert!(!first.was_multicell);
+        assert!(!first.requested_shutdown);
+
+        let second = space.update_geometry(&leaf((10, 1)), &started(), &mut out);
+        assert!(second.was_multicell);
+        assert!(second.requested_shutdown);
+        assert_eq!(out.shutdown_space, vec![7]);
+        assert!(space.has_single_cell(), "the leaf is the local cell");
+    }
+
+    /// The "our cell is going" check (`space.cpp:939-951`): a sweep that
+    /// takes the local cell's record reports it — and the shutdown tail
+    /// re-reads `hasSingleCell`, which is false for a tree naming
+    /// another cell, so no shutdown is requested.
+    #[test]
+    fn losing_our_own_cell_in_a_multicell_space_reports_it_without_shutdown() {
+        let mut space = Space::new(7, false);
+        space.set_cell((10, 1));
+        space.set_cell_infos(&[CellInfoRecord::new((10, 1), Rect::unbounded())]);
+        let branch = SpaceNode::Branch {
+            is_horizontal: false,
+            position: 100.0,
+            left: Box::new(leaf((10, 1))),
+            right: Box::new(leaf((10, 2))),
+        };
+        let mut out = SpaceOutbound::default();
+        assert!(
+            !space
+                .update_geometry(&branch, &started(), &mut out)
+                .was_multicell
+        );
+
+        let report = space.update_geometry(&leaf((10, 2)), &started(), &mut out);
+        assert!(report.was_multicell);
+        assert!(report.own_cell_going);
+        assert_eq!(report.erased, vec![(10, 1)]);
+        assert!(!report.requested_shutdown);
+        assert!(out.shutdown_space.is_empty());
+    }
+
+    /// The `CellApp` routes: every face answers `None` for a space this
+    /// app does not serve and lands on the named space otherwise — one
+    /// space's topology read never touches another's.
+    #[test]
+    fn the_app_routes_data_and_topology_to_the_named_space() {
+        let mut app = CellApp::new(started());
+        let mut out = SpaceOutbound::default();
+        assert!(
+            app.space_data_entry(9, (1, 5000), 7, b"x", false, true, 100, &mut out)
+                .is_none()
+        );
+        assert!(
+            app.space_data(9, (1, 5000), 7, b"x", 100, &mut out)
+                .is_none()
+        );
+        assert!(
+            app.all_space_data(9, &[((1, 5000), 7, b"x".to_vec())], 100, &mut out)
+                .is_none()
+        );
+        assert!(app.update_geometry(9, &leaf((10, 1)), &mut out).is_none());
+
+        let geometry = vec![CellInfoRecord::new((10, 1), Rect::unbounded())];
+        assert!(matches!(
+            app.add_cell(7, &geometry, (10, 1), false),
+            AddCellOutcome::Created { .. }
+        ));
+        assert_eq!(
+            app.all_space_data(7, &[((1, 5000), 9, b"nine".to_vec())], 100, &mut out),
+            Some(1)
+        );
+        assert_eq!(
+            app.spaces()
+                .find(7)
+                .unwrap()
+                .space_data_mapping()
+                .data_retrieve_first(9),
+            Some(b"nine".as_slice())
+        );
+        let branch = SpaceNode::Branch {
+            is_horizontal: false,
+            position: 100.0,
+            left: Box::new(leaf((10, 1))),
+            right: Box::new(leaf((10, 2))),
+        };
+        let report = app.update_geometry(7, &branch, &mut out).unwrap();
+        assert_eq!(report.added, vec![(10, 2)]);
     }
 }
