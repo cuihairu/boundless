@@ -22,6 +22,7 @@ pub mod record;
 pub mod retry;
 pub mod schema;
 pub mod storage;
+pub mod transaction;
 
 pub use account::{AccountLogOnStatus, AccountRow, AccountStore, hash_password};
 pub use connection::StorageConnection;
@@ -33,3 +34,4 @@ pub use schema::{
     BoundAttribute, EntitySchema, IndexType, MySqlType, Namer, TableDescription, UserTypeBindings,
 };
 pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity, load_entity_by_name};
+pub use transaction::{StorageTransaction, run_transactional};
