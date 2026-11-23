@@ -11,6 +11,7 @@ pub mod billing;
 pub mod buffered_ghost;
 pub mod cell;
 pub mod cell_data;
+pub mod cell_viewer;
 pub mod cellappmgr;
 pub mod client_login;
 pub mod client_update;
