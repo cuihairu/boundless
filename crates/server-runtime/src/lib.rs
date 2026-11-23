@@ -25,6 +25,7 @@ pub mod destroy_real;
 pub mod dispatcher;
 pub mod entity_creator;
 pub mod entity_dispatch;
+pub mod ghost;
 pub mod global_bases;
 pub mod headless_client;
 pub mod log_on_records;
