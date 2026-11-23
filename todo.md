@@ -1498,7 +1498,7 @@
 
 复现路径树、类型信息、读/写/调用、远程请求、转发和统计字段。比较原版监控工具的查询、返回值、权限和错误。
 
-- [ ] **BW-12-01-01 构建 Watcher 路径树及类型**。**验收** 同路径的值与类型匹配。
+- [x] **BW-12-01-01 构建 Watcher 路径树及类型**。**验收** 同路径的值与类型匹配。`5f92ed9` crates/watcher 落地：Mode/DataType 枚举 + Watcher trait（get/set/visit_children 与 addChild/removeChild/getChild 基类默认，对应 watcher.hpp:961-990）+ DataWatcher<T>（istream 前缀解析/ostream %g 六位有效数字/只读拒写/解析失败保旧值）+ DirectoryWatcher（SORTED_WATCHERS 标签排序、重名拒绝、深路径自动建目录、removeChild）+ partition_path（末分隔符切分、目录带尾斜杠）+ thread_local 根注册表（root/has_root/fini，对应 rootWatcherInternal/finiInternal）；21 测试，llvm-cov 行覆盖 100%（747/747）、函数 100%；NULL/空路径统一为 ""，协议 2 流接口与 __doc__ 归 BW-12-01-04。
 - [ ] **BW-12-01-02 移植 get/set**。**验收** 读写结果和拒绝状态吻合。
 - [ ] **BW-12-01-03 移植 callable Watcher**。**验收** 参数和返回值匹配。
 - [ ] **BW-12-01-04 实现远端查询与转发**。**验收** 多节点同一路径正确路由。
