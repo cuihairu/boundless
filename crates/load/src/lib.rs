@@ -5,6 +5,8 @@
 //! the fixed input a run is driven by (seed, account pool, concurrency shape)
 //! and the metrics the results are aggregated into.
 
+pub mod executor;
 pub mod scenario;
 
+pub use executor::{Executor, StageTimeline};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
