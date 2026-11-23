@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 contracts = { workspace = true }
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 foundation = { workspace = true }
 libc = { workspace = true }
 platform = { workspace = true }
