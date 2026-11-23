@@ -22,4 +22,4 @@ pub mod storage;
 pub use connection::StorageConnection;
 pub use error::DbError;
 pub use record::EntityRecord;
-pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity};
+pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity, load_entity_by_name};

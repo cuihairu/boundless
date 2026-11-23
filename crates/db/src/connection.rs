@@ -14,7 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use foundation::ids::DatabaseId;
+use foundation::ids::{DatabaseId, EntityTypeId};
 
 use crate::error::DbError;
 use crate::record::EntityRecord;
@@ -56,6 +56,18 @@ impl EntityStorage for StorageConnection {
 
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
         self.store.borrow_mut().del_entity(key)
+    }
+
+    fn lookup_entity_by_name(
+        &self,
+        type_id: EntityTypeId,
+        name: &str,
+    ) -> Result<Option<EntityRecord>, DbError> {
+        self.store.borrow().lookup_entity_by_name(type_id, name)
+    }
+
+    fn lookup_entities(&self, type_id: EntityTypeId) -> Result<Vec<EntityRecord>, DbError> {
+        self.store.borrow().lookup_entities(type_id)
     }
 }
 
@@ -183,5 +195,50 @@ mod tests {
             .del_entity(&key)
             .expect_err("a repeated delete finds nothing");
         assert_eq!(err, DbError::NotFound);
+    }
+
+    /// The lookups see other connections' writes like every other read:
+    /// a named row created on the writer connection resolves by name and
+    /// by type from the independent reader.
+    #[test]
+    fn lookups_are_visible_from_an_independent_connection() {
+        let store = Rc::new(RefCell::new(MemoryStorage::new()));
+        let mut writer = StorageConnection::open(Rc::clone(&store));
+        let reader = StorageConnection::open(Rc::clone(&store));
+
+        let mut wenchuan = avatar("wenchuan");
+        wenchuan.name = Some("wenchuan".into());
+        let db_id = writer
+            .put_entity(&wenchuan, false)
+            .expect("create the named row");
+
+        // By name, over the reader connection.
+        let found = reader
+            .lookup_entity_by_name(1, "wenchuan")
+            .expect("read by name over the reader")
+            .expect("the name resolves");
+        assert_eq!(found.db_id, db_id);
+
+        // By type, over the reader connection.
+        let rows = reader.lookup_entities(1).expect("read by type");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name.as_deref(), Some("wenchuan"));
+
+        // And a rename on the writer moves the reader's name resolution.
+        let mut renamed = found.clone();
+        renamed.name = Some("pinghu".into());
+        writer.put_entity(&renamed, false).expect("rename");
+        assert_eq!(
+            reader
+                .lookup_entity_by_name(1, "wenchuan")
+                .expect("read by name"),
+            None
+        );
+        assert!(
+            reader
+                .lookup_entity_by_name(1, "pinghu")
+                .expect("read by name")
+                .is_some()
+        );
     }
 }
