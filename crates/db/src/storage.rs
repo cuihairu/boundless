@@ -1,13 +1,14 @@
 //! The storage contract (`IDatabase`) and the entity get/load/write/delete
-//! operations.
+//! and lookup operations.
 //!
 //! The reference's persistence contract is `lib/db_storage/idatabase.hpp`
 //! (`class IDatabase`). Each entity operation is one `todo.md` item: this
-//! module carries `get_entity` (BW-09-01-01), `put_entity` (BW-09-01-02)
-//! and `del_entity` (BW-09-01-03); lookup (BW-09-01-04) and id allocation
-//! (BW-09-01-05) join the trait as they land. The in-memory backend lets
-//! the entity-operation acceptance cases run before any real backend
-//! exists; MySQL/XML/SQLite/PostgreSQL plug into the same trait.
+//! module carries `get_entity` (BW-09-01-01), `put_entity` (BW-09-01-02),
+//! `del_entity` (BW-09-01-03) and the lookups (BW-09-01-04); id allocation
+//! and online state (BW-09-01-05) join the trait as they land. The
+//! in-memory backend lets the entity-operation acceptance cases run before
+//! any real backend exists; MySQL/XML/SQLite/PostgreSQL plug into the same
+//! trait.
 
 use std::collections::HashMap;
 
@@ -19,8 +20,9 @@ use crate::record::EntityRecord;
 /// `EntityKey`: the identity of a stored entity, `(type, database id)`.
 ///
 /// `lib/db_storage/entity_key.hpp` `EntityKey`. The reference resolves by
-/// `name` when `dbID == 0`; the name leg is `getDatabaseIDFromName`, which
-/// joins with the lookup item (BW-09-01-04).
+/// `name` when `dbID == 0`; that leg is
+/// [`EntityStorage::lookup_entity_by_name`] (BW-09-01-04), and
+/// [`load_entity_by_name`] composes it into a load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntityKey {
     /// `EntityKey::typeID`.
@@ -69,6 +71,24 @@ pub trait EntityStorage {
     /// by-name leg is `getDbID(conn, name)` (`del_entity_task.cpp:38-40`),
     /// which joins the lookup item (BW-09-01-04).
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError>;
+
+    /// `IDatabase::getDatabaseIDFromName` (`idatabase.hpp:131-135`)
+    /// composed with the get: the row of `type_id` whose identifier
+    /// property is `name`. The identifier is the row's `name` column under
+    /// a unique index (`EntityTypeMapping::hasIdentifier()`);
+    /// `Ok(None)` is an unknown name, not a failure.
+    fn lookup_entity_by_name(
+        &self,
+        type_id: EntityTypeId,
+        name: &str,
+    ) -> Result<Option<EntityRecord>, DbError>;
+
+    /// `IDatabase::lookUpEntities` (`idatabase.hpp:176-186`): every row of
+    /// `type_id`, in database-id order — the lookup with no property
+    /// queries. The criteria form (`LookUpEntitiesCriteria`,
+    /// `lib/server/look_up_entities.hpp`: property queries, online filter,
+    /// sort, limit, offset) joins with the online state (BW-09-01-05).
+    fn lookup_entities(&self, type_id: EntityTypeId) -> Result<Vec<EntityRecord>, DbError>;
 }
 
 /// The DBApp load: fetch the record for `key`, or [`DbError::NotFound`]
@@ -77,15 +97,33 @@ pub fn load_entity(storage: &impl EntityStorage, key: &EntityKey) -> Result<Enti
     storage.get_entity(key)?.ok_or(DbError::NotFound)
 }
 
+/// The DBApp load by identifier: fetch the record named `name` of
+/// `type_id`, or [`DbError::NotFound`] when no row carries it. This is
+/// `getDatabaseIDFromName` + `getEntity`
+/// (`idatabase.hpp:131-135`); `del_entity_task.cpp:38-40` resolves the
+/// same `getDbID(conn, name)` leg before deleting.
+pub fn load_entity_by_name(
+    storage: &impl EntityStorage,
+    type_id: EntityTypeId,
+    name: &str,
+) -> Result<EntityRecord, DbError> {
+    storage
+        .lookup_entity_by_name(type_id, name)?
+        .ok_or(DbError::NotFound)
+}
+
 /// An in-memory backend.
 ///
 /// The BW-09-01 entity-operation acceptance cases run against this before a
 /// real backend exists. Created rows get ids from a monotonically growing
 /// allocator, the way an `AUTO_INCREMENT` primary key does
-/// (`entityTypeMapping_.insertNew`, `put_entity_task.cpp:99-104`).
+/// (`entityTypeMapping_.insertNew`, `put_entity_task.cpp:99-104`), and
+/// named rows sit under a unique `(type, name)` index the way the
+/// identifier column does (`EntityTypeMapping::hasIdentifier()`).
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
     entities: HashMap<EntityKey, EntityRecord>,
+    names: HashMap<(EntityTypeId, String), DatabaseId>,
     next_id: DatabaseId,
 }
 
@@ -93,6 +131,7 @@ impl Default for MemoryStorage {
     fn default() -> Self {
         Self {
             entities: HashMap::new(),
+            names: HashMap::new(),
             next_id: 1,
         }
     }
@@ -107,13 +146,17 @@ impl MemoryStorage {
     /// Store `record` under its key.
     ///
     /// Seeding a real id moves the allocator past it, so a later create
-    /// never hands out an id that is already stored.
+    /// never hands out an id that is already stored. A named record is
+    /// indexed; the uniqueness contract is `put_entity`'s to enforce.
     pub fn insert(&mut self, record: EntityRecord) {
         let key = EntityKey {
             type_id: record.type_id,
             db_id: record.db_id,
         };
         self.next_id = self.next_id.max(record.db_id + 1);
+        if let Some(name) = record.name.clone() {
+            self.names.insert((key.type_id, name), record.db_id);
+        }
         self.entities.insert(key, record);
     }
 
@@ -130,6 +173,44 @@ impl MemoryStorage {
     /// Whether the store is empty.
     pub fn is_empty(&self) -> bool {
         self.entities.is_empty()
+    }
+
+    /// Reject `name` when another row of the type already owns it — the
+    /// unique index the identifier column carries
+    /// (`EntityTypeMapping::hasIdentifier()`). The row's own id always
+    /// passes, so a rename to the same name is a no-op.
+    fn check_name(
+        &self,
+        type_id: EntityTypeId,
+        name: Option<&String>,
+        db_id: DatabaseId,
+    ) -> Result<(), DbError> {
+        if let Some(name) = name
+            && let Some(&owner) = self.names.get(&(type_id, name.clone()))
+            && owner != db_id
+        {
+            return Err(DbError::Storage("entity name already in use".into()));
+        }
+        Ok(())
+    }
+
+    /// Move the row's name index entry from its previous name to the
+    /// record's.
+    fn reindex_name(
+        &mut self,
+        type_id: EntityTypeId,
+        old: Option<&String>,
+        new: Option<&String>,
+        db_id: DatabaseId,
+    ) {
+        if old != new
+            && let Some(name) = old
+        {
+            self.names.remove(&(type_id, name.clone()));
+        }
+        if let Some(name) = new {
+            self.names.insert((type_id, name.clone()), db_id);
+        }
     }
 }
 
@@ -150,6 +231,13 @@ impl EntityStorage for MemoryStorage {
             self.next_id += 1;
             let mut stored = record.clone();
             stored.db_id = db_id;
+            self.check_name(stored.type_id, stored.name.as_ref(), db_id)?;
+            self.names.extend(
+                stored
+                    .name
+                    .clone()
+                    .map(|name| ((stored.type_id, name), db_id)),
+            );
             self.entities.insert(key(stored.type_id, db_id), stored);
             return Ok(db_id);
         }
@@ -162,25 +250,67 @@ impl EntityStorage for MemoryStorage {
             if self.entities.contains_key(&key) {
                 return Err(DbError::Storage("entity id already in use".into()));
             }
+            self.check_name(record.type_id, record.name.as_ref(), record.db_id)?;
             self.next_id = self.next_id.max(record.db_id + 1);
+            self.names.extend(
+                record
+                    .name
+                    .clone()
+                    .map(|name| ((record.type_id, name), record.db_id)),
+            );
             self.entities.insert(key, record.clone());
             return Ok(record.db_id);
         }
 
         // Update: the db id must identify an existing row
         // (idatabase.hpp:195-196).
-        if !self.entities.contains_key(&key) {
+        let Some(old) = self.entities.get(&key) else {
             return Err(DbError::NotFound);
-        }
+        };
+        let old_name = old.name.clone();
+        self.check_name(record.type_id, record.name.as_ref(), record.db_id)?;
+        self.reindex_name(
+            record.type_id,
+            old_name.as_ref(),
+            record.name.as_ref(),
+            record.db_id,
+        );
         self.entities.insert(key, record.clone());
         Ok(record.db_id)
     }
 
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
-        self.entities
-            .remove(key)
-            .map(|_| ())
-            .ok_or(DbError::NotFound)
+        match self.entities.remove(key) {
+            Some(record) => {
+                if let Some(name) = record.name {
+                    self.names.remove(&(key.type_id, name));
+                }
+                Ok(())
+            }
+            None => Err(DbError::NotFound),
+        }
+    }
+
+    fn lookup_entity_by_name(
+        &self,
+        type_id: EntityTypeId,
+        name: &str,
+    ) -> Result<Option<EntityRecord>, DbError> {
+        let Some(&db_id) = self.names.get(&(type_id, name.to_string())) else {
+            return Ok(None);
+        };
+        self.get_entity(&key(type_id, db_id))
+    }
+
+    fn lookup_entities(&self, type_id: EntityTypeId) -> Result<Vec<EntityRecord>, DbError> {
+        let mut rows: Vec<EntityRecord> = self
+            .entities
+            .values()
+            .filter(|record| record.type_id == type_id)
+            .cloned()
+            .collect();
+        rows.sort_by_key(|record| record.db_id);
+        Ok(rows)
     }
 }
 
@@ -200,6 +330,7 @@ mod tests {
         EntityRecord {
             type_id: 3,
             db_id,
+            name: None,
             values: vec![PropertyValue::Int(7), PropertyValue::String("hi".into())],
         }
     }
@@ -354,6 +485,16 @@ mod tests {
             .expect("create after the explicit insert");
         assert_eq!(next, 1002);
         assert_eq!(store.len(), 3);
+
+        // An explicit insert indexes its name too — the restore-by-id path.
+        store
+            .put_entity(&named(501, 1, "wenchuan"), true)
+            .expect("explicit named insert");
+        let found = store
+            .lookup_entity_by_name(1, "wenchuan")
+            .expect("read by name")
+            .expect("the restored row resolves by name");
+        assert_eq!(found.db_id, 501);
     }
 
     #[test]
@@ -428,5 +569,180 @@ mod tests {
             })
             .expect_err("a pending id names no row");
         assert_eq!(err, DbError::NotFound);
+    }
+
+    /// A named row of one type.
+    fn named(db_id: DatabaseId, type_id: EntityTypeId, name: &str) -> EntityRecord {
+        EntityRecord {
+            type_id,
+            db_id,
+            name: Some(name.into()),
+            values: Vec::new(),
+        }
+    }
+
+    /// The acceptance: 按名称或类型返回对应记录 — a name resolves its
+    /// record and a type returns every record of that type.
+    #[test]
+    fn a_name_or_a_type_returns_the_matching_records() {
+        let mut store = MemoryStorage::new();
+        store.insert(named(1, 1, "wenchuan"));
+        store.insert(named(2, 1, "pinghu"));
+        store.insert(named(3, 2, "the dragon"));
+
+        // By name: the identifier resolves the one row of that type.
+        let found = store
+            .lookup_entity_by_name(1, "wenchuan")
+            .expect("read by name")
+            .expect("the name is in the store");
+        assert_eq!(found.db_id, 1);
+
+        // The same name under another type is a different entity.
+        assert_eq!(
+            store
+                .lookup_entity_by_name(2, "wenchuan")
+                .expect("read by name"),
+            None
+        );
+        assert_eq!(
+            store.lookup_entity_by_name(1, "nobody").expect("read"),
+            None,
+            "an unknown name is not a failure"
+        );
+
+        // By type: every row of the type, in db-id order, and only those.
+        let avatars = store.lookup_entities(1).expect("read by type");
+        assert_eq!(
+            avatars.iter().map(|row| row.db_id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(store.lookup_entities(2).expect("read").len(), 1);
+        assert_eq!(
+            store
+                .lookup_entities(9)
+                .expect("a type with no rows is empty, not failed"),
+            Vec::<EntityRecord>::new()
+        );
+
+        // The composed load by identifier.
+        let found = load_entity_by_name(&store, 2, "the dragon").expect("load by name");
+        assert_eq!(found.db_id, 3);
+        let err = load_entity_by_name(&store, 1, "nobody").expect_err("unknown name");
+        assert_eq!(err, DbError::NotFound);
+    }
+
+    /// The identifier column carries a unique index per type
+    /// (`EntityTypeMapping::hasIdentifier()`): a second row claiming a
+    /// taken name fails the write, and the original row is untouched.
+    #[test]
+    fn a_taken_name_fails_the_write() {
+        let mut store = MemoryStorage::new();
+        let db_id = store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "wenchuan"), false)
+            .expect("create the first wenchuan");
+
+        let mut second = named(PENDING_DATABASE_ID, 1, "wenchuan");
+        second.values.push(PropertyValue::Int(1));
+        let err = store
+            .put_entity(&second, false)
+            .expect_err("the name is taken");
+        assert!(matches!(err, DbError::Storage(_)));
+
+        // The original row is still the only wenchuan.
+        let found = store
+            .lookup_entity_by_name(1, "wenchuan")
+            .expect("read by name")
+            .expect("the first row holds the name");
+        assert_eq!(found.db_id, db_id);
+        assert_eq!(store.len(), 1);
+
+        // The same name under another type is free.
+        store
+            .put_entity(&named(PENDING_DATABASE_ID, 2, "wenchuan"), false)
+            .expect("another type's identifier namespace is its own");
+    }
+
+    /// An update can rename a row: the old name is released, the new one
+    /// resolves, and a rename to the same name is a no-op.
+    #[test]
+    fn an_update_can_rename_and_releases_the_old_name() {
+        let mut store = MemoryStorage::new();
+        let db_id = store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "wenchuan"), false)
+            .expect("create");
+
+        let mut renamed = named(PENDING_DATABASE_ID, 1, "pinghu");
+        renamed.db_id = db_id;
+        store
+            .put_entity(&renamed, false)
+            .expect("rename via update");
+
+        assert_eq!(
+            store.lookup_entity_by_name(1, "wenchuan").expect("read"),
+            None,
+            "the old name is released"
+        );
+        let found = store
+            .lookup_entity_by_name(1, "pinghu")
+            .expect("read")
+            .expect("the new name resolves");
+        assert_eq!(found.db_id, db_id);
+
+        store
+            .put_entity(&renamed, false)
+            .expect("renaming to the same name passes the unique index");
+    }
+
+    /// An unnamed row can gain an identifier, and a named row can drop
+    /// it — the index moves both ways with the update.
+    #[test]
+    fn an_update_can_gain_or_drop_a_name() {
+        let mut store = MemoryStorage::new();
+        let db_id = store
+            .put_entity(&record(PENDING_DATABASE_ID), false)
+            .expect("create unnamed");
+
+        let mut gaining = named(PENDING_DATABASE_ID, 3, "wenchuan");
+        gaining.db_id = db_id;
+        store.put_entity(&gaining, false).expect("gain the name");
+        assert!(
+            store
+                .lookup_entity_by_name(3, "wenchuan")
+                .expect("read by name")
+                .is_some()
+        );
+
+        store
+            .put_entity(&record(db_id), false)
+            .expect("drop the name");
+        assert_eq!(
+            store
+                .lookup_entity_by_name(3, "wenchuan")
+                .expect("read by name"),
+            None,
+            "the dropped name resolves nothing"
+        );
+    }
+
+    /// Deleting a row releases its name for the next claimant.
+    #[test]
+    fn a_delete_releases_its_name() {
+        let mut store = MemoryStorage::new();
+        let db_id = store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "wenchuan"), false)
+            .expect("create");
+
+        store
+            .del_entity(&EntityKey { type_id: 1, db_id })
+            .expect("delete");
+
+        assert_eq!(
+            store.lookup_entity_by_name(1, "wenchuan").expect("read"),
+            None,
+            "the deleted row's name resolves nothing"
+        );
+        store
+            .put_entity(&named(PENDING_DATABASE_ID, 1, "wenchuan"), false)
+            .expect("the name is free again");
     }
 }
