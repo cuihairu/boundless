@@ -1,0 +1,13 @@
+<scenario>
+  <name>long-stability</name>
+  <seed>173205</seed>
+  <concurrency>500</concurrency>
+  <rampRate>25</rampRate>
+  <warmup>30</warmup>
+  <duration>7200</duration>
+  <accountPool mode="generated">
+    <prefix>LongBot</prefix>
+    <count>1000</count>
+    <password>long</password>
+  </accountPool>
+</scenario>

@@ -1,0 +1,12 @@
+<scenario>
+  <name>steady-move</name>
+  <seed>314159</seed>
+  <concurrency>300</concurrency>
+  <rampRate>30</rampRate>
+  <warmup>10</warmup>
+  <duration>600</duration>
+  <accountPool mode="explicit">
+    <accounts>SteadyBot1,SteadyBot2,SteadyBot3</accounts>
+    <password>steady</password>
+  </accountPool>
+</scenario>

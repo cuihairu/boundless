@@ -1,0 +1,13 @@
+<scenario>
+  <name>dense-aoi</name>
+  <seed>271828</seed>
+  <concurrency>1500</concurrency>
+  <rampRate>150</rampRate>
+  <warmup>5</warmup>
+  <duration>420</duration>
+  <accountPool mode="generated">
+    <prefix>AoiBot</prefix>
+    <count>3000</count>
+    <password>aoi</password>
+  </accountPool>
+</scenario>

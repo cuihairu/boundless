@@ -1,0 +1,12 @@
+<scenario>
+  <name>reconnect</name>
+  <seed>141421</seed>
+  <concurrency>200</concurrency>
+  <rampRate>20</rampRate>
+  <warmup>10</warmup>
+  <duration>300</duration>
+  <accountPool mode="explicit">
+    <accounts>ReconnectBot1,ReconnectBot2,ReconnectBot3,ReconnectBot4</accounts>
+    <password>reconnect</password>
+  </accountPool>
+</scenario>

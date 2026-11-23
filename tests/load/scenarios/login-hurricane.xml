@@ -1,0 +1,13 @@
+<scenario>
+  <name>login-hurricane</name>
+  <seed>20261123</seed>
+  <concurrency>2000</concurrency>
+  <rampRate>200</rampRate>
+  <warmup>5</warmup>
+  <duration>180</duration>
+  <accountPool mode="generated">
+    <prefix>HurricaneBot</prefix>
+    <count>5000</count>
+    <password>hurricane</password>
+  </accountPool>
+</scenario>

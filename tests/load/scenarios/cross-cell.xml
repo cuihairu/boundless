@@ -1,0 +1,13 @@
+<scenario>
+  <name>cross-cell</name>
+  <seed>161803</seed>
+  <concurrency>800</concurrency>
+  <rampRate>80</rampRate>
+  <warmup>10</warmup>
+  <duration>540</duration>
+  <accountPool mode="generated">
+    <prefix>CrossBot</prefix>
+    <count>1600</count>
+    <password>cross</password>
+  </accountPool>
+</scenario>

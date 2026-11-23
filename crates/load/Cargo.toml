@@ -1,0 +1,14 @@
+[package]
+name = "load"
+description = "BW-17 load-test scenario input definitions and result aggregation"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Scenario documents are XML DataSections (the reference Bots read their
+# config through the same `BWConfig`/DataSection style), so the section
+# reader is needed here.
+resources = { workspace = true }
