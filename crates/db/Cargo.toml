@@ -9,3 +9,4 @@ license.workspace = true
 foundation = { workspace = true }
 entitydef = { workspace = true }
 resources = { workspace = true }
+md-5 = { workspace = true }

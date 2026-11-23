@@ -14,6 +14,7 @@
 //! the id vocabulary, and is consumed by the `dbapp` role runtime and the
 //! BW-09-05 operational tools.
 
+pub mod account;
 pub mod connection;
 pub mod error;
 pub mod log_on;
@@ -22,10 +23,13 @@ pub mod retry;
 pub mod schema;
 pub mod storage;
 
+pub use account::{AccountLogOnStatus, AccountRow, AccountStore, hash_password};
 pub use connection::StorageConnection;
 pub use error::DbError;
 pub use log_on::LogOnRecord;
 pub use record::EntityRecord;
 pub use retry::{Completion, run_with_retry};
-pub use schema::{EntitySchema, IndexType, MySqlType, Namer, TableDescription};
+pub use schema::{
+    BoundAttribute, EntitySchema, IndexType, MySqlType, Namer, TableDescription, UserTypeBindings,
+};
 pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity, load_entity_by_name};
