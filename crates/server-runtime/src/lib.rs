@@ -19,6 +19,7 @@ pub mod dbappmgr;
 pub mod dead_cell_app;
 pub mod dispatcher;
 pub mod entity_creator;
+pub mod ghost;
 pub mod entity_dispatch;
 pub mod global_bases;
 pub mod headless_client;
