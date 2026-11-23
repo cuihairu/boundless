@@ -1698,7 +1698,7 @@
   - 证据（部分，未勾）：**bw.xml 接线半完成**（5da86a6）——`apps/server/src/main.rs` 按参考 `BIGWORLD_MAIN` 在跑角色前 `BWResource::init_from_args`（argv `--res`/`-r` → `BW_RES_PATH` → `~/.bwmachined.conf`）+ `BwConfig::init_from_args`（`server/bw.xml` 链 + `+key value` 覆盖），返回值按参考丢弃（缺配置不中止、选项落默认、失败仅记录——BW-01-04-03）。首启定位可观测：定位静默 / 未定位记参考「Could not find」「No configuration section」行（`role_lifecycle.rs::first_start_locates_the_installed_style_res_tree`/`first_start_without_a_res_tree_logs_the_reference_failure`）；装后实测 `ci/install-layout.sh::install-res-server`（装前缀首启定位安装配置）。**剩余**：真实 Dispatcher 事件循环与 Mercury 接口初始化——BW-02 已合入 `dispatcher.rs`（`EventDispatcher`+`FrequentTasks`）+ `server_app.rs`（`ServerApp`）+ `tick.rs`（`Updatables`/游戏 tick），但 `app::run` 仍为最小入口（信号等停，无 tick loop、无 Mercury 接口初始化接线），随服务端运行时席位（BW-06..10）角色事件循环落地；per-app SIGQUIT handler 随 ServerApp 接线落地。
   - 证据（部分，未勾）：runners lane 预算（1612c33）——`ci/runners.sh::start_role` 用 `CI_RUNNERS_TIMEOUT`（缺省 20）起服务端、**期望它自行退出**；185d7f7 令 `run` 阻塞等信号后该 lane 会在三 OS 矩阵上挂到 job 超时。1612c33 让 `app::run` 尊重预算：`ci_runners_budget` 读 `CI_RUNNERS_TIMEOUT`（整秒才认，`parse_budget`，畸形值忽略防自停），到期由 `runners-timeout` 看门狗线程 `pthread_kill(主线程, SIGTERM)`——主线程持有退出信号屏蔽集，信号变 pending 被 `wait_for_signals` 消费，**与操作员信号同一干净关服路径**。实测 `CI_RUNNERS_TIMEOUT=1 boundless-server baseapp`→1s 自退 exit 0、打 `dispatchSignal: SIGTERM` 与 `has shut down.`；预算路径按 POSIX 门控 `#[cfg(unix)]`（非 unix 入口仅保留启动烟测，Windows 控制事件属 BW-15-03）。新增验收测试 `the_runners_lane_budget_stops_the_server_alone`（截止期 10s 内须自退，回归即失败不挂死）。
 - [ ] **BW-15-02-02 跑 Linux Bots 与离线工具**。**验收** 样例输出和负载报告有效。
-  - 卡点（外部条件）：Bots 工具未移植（BW-12-04-01..04、BW-17-01-01..06、BW-17-02-01..08 全未勾），离线工具未移植（BW-13-02-01..05 全未勾）。`apps/` 仅有 server，无 bots/离线工具二进制可跑；验收「样例输出和负载报告有效」需 Bots 端口（BW-12-04/BW-17）先落地。
+  - 卡点（外部条件）：Bots 工具未移植（BW-12-04-01..04、BW-17-01-01..06、BW-17-02-03..08 未勾；BW-17-02-01/02 已勾），离线工具未移植（BW-13-02-01..05 全未勾）。`apps/` 仅有 server，无 bots/离线工具二进制可跑；验收「样例输出和负载报告有效」需 Bots 端口（BW-12-04/BW-17）先落地。
 - [ ] **BW-15-02-03 跑 Linux 客户端和编辑器**。**验收** 固定地图可显示并编辑。
   - 卡点（外部条件）：客户端未移植（BW-11-01..05 全未勾），编辑器未移植（BW-13-03/04/05 全未勾）。无客户端/编辑器二进制可跑；验收「固定地图可显示并编辑」需 BW-11/BW-13 先落地。
 - [x] **BW-15-02-04 验证 Linux 安装包**。**验收** 干净系统可安装和启动。（commit b0a4d3e）
@@ -1921,22 +1921,34 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-02-02 实现爬升、预热和持续时间**。**验收** 执行器输出各阶段时间。（commit 7b4873a）
   - 证据：`crates/load/src/executor.rs`（7b4873a）——`Executor::new(scenario).stages() -> StageTimeline` 输出各阶段时间：`warmup`（无负载）、`ramp`（`ceil(concurrency/rampRate)` 秒，`rampRate=0` 或空峰值→0）、`steady`（`duration - ramp`，爬升长于持续→饱和 0）、`total`（`warmup + duration`）；不变量 `ramp + steady == total - warmup`；`active_bots_at(t)` 给爬升曲线（预热末 0、爬升中段 `min((t-warmup)·rampRate, concurrency)`、峰值后恒 `concurrency`），供执行器逐秒调度。消费 BW-17-02-01 的 `Scenario` 字段。8 个单测逐值断言；行覆盖 99.01%（executor 100%，门禁 ≥98%），函数 100%；workspace 全绿、`workspace_rules_hold` 绿、docs 链接 77/0 死链。详见 `docs/review/bw17-02-02-stage-times.md`。
 - [ ] **BW-17-02-03 实现登录洪峰场景**。**验收** 可重复发送指定速率。
+  - 卡点（无 Bot 运行时）：需 BW-17-01-01 客户端连接层 + 活服务端按速率驱动登录；场景 `tests/load/scenarios/login-hurricane.xml` 与阶段计时（7b4873a）已备，无 bot 可执行。
 - [ ] **BW-17-02-04 实现稳态移动场景**。**验收** 固定种子生成相同轨迹。
+  - 卡点（无 Bot 运行时）：轨迹由 bot 在服务端世界移动产生——依赖 BW-17-01-03/04/05 + 活服务端；种子/RNG 已备（BW-17-02-01/02、test-support SeededRng），无 bot 即无轨迹可比。
 - [ ] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。
+  - 卡点（无 cell 运行时）：密度与可见数需活服务端 AOI——依赖 BW-08 cell 运行时 + BW-17-01 bot 连入；场景文件已备。
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
+  - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——依赖 BW-08-01 cell 管理 + BW-10-02-01 compiled space + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
+  - 卡点（无 Bot 运行时）：恢复时长需真实断线/重连——依赖 BW-17-01 客户端连接层 + 活服务端；场景文件已备。
 - [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
+  - 卡点（无 Bot 运行时）：负载生成器自身资源使用需压测进程实际运行——依赖 BW-17-01 + BW-12-04；场景 `long-stability.xml` 与计时已备。
 
 #### BW-17-03 指标和回归
 
 输出机器可读结果，按场景汇总登录成功率、在线数、延迟分位数、tick 超时、带宽及资源使用。短场景进 PR smoke，容量和长稳场景进入定时或手动任务，结合测得的基线设阈值。
 
 - [ ] **BW-17-03-01 输出机器可读场景结果**。**验收** 版本、拓扑和种子可追溯。
+  - 卡点（无实测结果）：需先由 BW-17-01 bot 跑出场景结果再汇总；版本/拓扑/种子可追溯属报告层，无运行数据则无结果可输出。
 - [ ] **BW-17-03-02 聚合登录成功率及在线数**。**验收** 用已知输入核对统计。
+  - 卡点（无实测结果）：成功率/在线数需实测登录数据核对（同 03-01 卡点）。
 - [ ] **BW-17-03-03 聚合延迟分位数与超时**。**验收** 固定样本验证 p95/p99。
+  - 卡点（无实测结果）：p95/p99 需固定样本延迟数据（同 03-01 卡点）。
 - [ ] **BW-17-03-04 聚合带宽与资源使用**。**验收** 报告指标口径和采样周期。
+  - 卡点（无实测结果）：带宽/资源指标口径需实测采样（同 03-01 卡点）。
 - [ ] **BW-17-03-05 设置 PR smoke**。**验收** 低负载失败可复跑。
+  - 卡点（无实测结果）：PR smoke 需低负载场景实跑（同 03-01 卡点）。
 - [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
+  - 卡点（无实测结果）：容量/长稳阈值需已记录基线——依赖 BW-17-02-08 长稳实测（同 03-01 卡点）。
 
 ### BW-18 内部测试框架
 
