@@ -97,15 +97,14 @@ pub unsafe fn wrap(native: *mut std::os::raw::c_void, id: u64) -> Result<PyRef, 
     let mut cache = cache();
     if let Some(existing) = cache.entries.get(&id) {
         // `Py_XINCREF` and return, the subscript layer's move: the caller
-        // owns one fresh reference, the registry keeps its own. (`PyRef::
-        // borrowed(..).clone()` would net zero -- the temporary's `Drop`
-        // gives back what the clone took -- so the increment and the
-        // adoption are spelled out.)
+        // owns one fresh reference, the registry keeps its own. A borrowed
+        // handle's `Drop` does not touch the count, so the increment is
+        // adopted explicitly.
         let pointer = object_of(*existing);
         // SAFETY: the interpreter is up and the pointer is one
         // `PyCapsule_New` gave out.
         unsafe { capi::inc_ref(pointer) };
-        return Ok(PyRef::borrowed(pointer));
+        return Ok(PyRef::from_owned(pointer).expect("a cached wrapper object"));
     }
     if unsafe { capi::Py_IsInitialized() } == 0 {
         return Err(WrapError::NoInterpreter);

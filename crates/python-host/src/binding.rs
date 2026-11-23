@@ -42,14 +42,11 @@ pub enum BindError {
 }
 
 /// One attribute of a native type: a getter, and a setter unless the
-/// attribute is read-only. `closure` is handed to both, the reference's
-/// `PyGetSetDef.closure` -- the generic provider handlers carry the
-/// attribute name there for the reference's `%s` error text.
+/// attribute is read-only.
 struct Attribute {
     name: String,
     get: capi::Getter,
     set: Option<capi::Setter>,
-    closure: *mut std::os::raw::c_void,
 }
 
 /// One method of a native type: a `METH_VARARGS` handler.
@@ -69,27 +66,6 @@ struct SequenceHandlers {
     ass_item: capi::SsizeObjArgFunction,
 }
 
-/// The number-protocol handlers of a value type, the `PyNumberMethods`
-/// table of the reference's `PyVector_tp_as_number`
-/// (`script_math.cpp:2338-2396`). Every field is optional: an absent field
-/// is an empty slot, which is exactly what the reference's zeroed
-/// designated-initialiser rows are. The inplace forms mutate `self` and
-/// return it; `bool_` is `nb_bool`.
-#[derive(Clone, Copy, Default)]
-struct NumberHandlers {
-    add: Option<capi::BinaryFunction>,
-    subtract: Option<capi::BinaryFunction>,
-    multiply: Option<capi::BinaryFunction>,
-    true_divide: Option<capi::BinaryFunction>,
-    negative: Option<capi::UnaryFunction>,
-    positive: Option<capi::UnaryFunction>,
-    bool_: Option<capi::Inquiry>,
-    inplace_add: Option<capi::BinaryFunction>,
-    inplace_subtract: Option<capi::BinaryFunction>,
-    inplace_multiply: Option<capi::BinaryFunction>,
-    inplace_true_divide: Option<capi::BinaryFunction>,
-}
-
 /// The description of one native type, the builder-side stand-in for the
 /// reference's `PY_TYPEOBJECT` macro body.
 ///
@@ -104,23 +80,13 @@ pub struct TypeSpec {
     methods: Vec<Method>,
     /// Sequence handlers, or a bare wrapper when absent.
     sequence: Option<SequenceHandlers>,
-    /// Number-protocol handlers, or a bare wrapper when absent.
-    number: Option<NumberHandlers>,
-    /// The comparison handler, or `None` for the default identity compare.
-    richcompare: Option<capi::RichcmpFunction>,
-    /// The construction entry; `None` is the reference's refusal.
-    new_: Option<capi::NewFunction>,
-    /// The destruction entry; `None` lets CPython free the object directly.
-    /// A provider type that holds references to other providers wires its
-    /// own dealloc to release them before the free.
-    dealloc: Option<capi::DeallocFunction>,
-    /// The address of a previously registered heap type this type derives
-    /// from, wired as the `Py_tp_base` slot; `None` is the `object` root.
-    base: Option<usize>,
-    /// `Py_TPFLAGS_*` layered onto the heap type; zero is the default set.
-    flags: u32,
     /// Extra bytes of instance body the allocated objects carry.
     instance_size: usize,
+    /// Extra protocol slots beyond the generic set: number-protocol entries
+    /// (`Py_nb_*`), rich compare, `tp_str`, or a `tp_new` that replaces the
+    /// construction refusal. An extra replaces the default slot of the same
+    /// id, or is appended before the terminator.
+    extra_slots: Vec<(c_int, *mut std::os::raw::c_void)>,
 }
 
 impl TypeSpec {
@@ -131,39 +97,24 @@ impl TypeSpec {
             attributes: Vec::new(),
             methods: Vec::new(),
             sequence: None,
-            number: None,
-            richcompare: None,
-            new_: None,
-            dealloc: None,
-            base: None,
-            flags: 0,
             instance_size: 0,
+            extra_slots: Vec::new(),
         }
     }
 
     /// Add an attribute: `getter` is called for every read, and `setter` is
     /// called for every assignment unless the attribute is read-only.
     #[must_use]
-    pub fn attribute(self, name: &str, getter: capi::Getter, setter: Option<capi::Setter>) -> Self {
-        self.attribute_with(name, getter, setter, std::ptr::null_mut())
-    }
-
-    /// An attribute carrying a `closure`, the reference's
-    /// `PyGetSetDef.closure`, handed to every read and assignment. A
-    /// generic handler family reads its own name from it.
-    #[must_use]
-    pub fn attribute_with(
+    pub fn attribute(
         mut self,
         name: &str,
         getter: capi::Getter,
         setter: Option<capi::Setter>,
-        closure: *mut std::os::raw::c_void,
     ) -> Self {
         self.attributes.push(Attribute {
             name: name.to_owned(),
             get: getter,
             set: setter,
-            closure,
         });
         self
     }
@@ -198,61 +149,6 @@ impl TypeSpec {
         self
     }
 
-    /// Turn the type into a value type: the handlers fill the
-    /// `nb_add`/`nb_subtract`/`nb_multiply`/`nb_true_divide`/`nb_negative`/
-    /// `nb_positive`/`nb_bool` slots and their `nb_inplace_*` partners, the
-    /// reference's `PyNumberMethods` (an absent field is an empty slot).
-    /// The eleven parameters mirror the eleven `PyNumberMethods` slots the
-    /// reference wires, so the count is the shape, not an API smell.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn number(
-        mut self,
-        add: Option<capi::BinaryFunction>,
-        subtract: Option<capi::BinaryFunction>,
-        multiply: Option<capi::BinaryFunction>,
-        true_divide: Option<capi::BinaryFunction>,
-        negative: Option<capi::UnaryFunction>,
-        positive: Option<capi::UnaryFunction>,
-        bool_: Option<capi::Inquiry>,
-        inplace_add: Option<capi::BinaryFunction>,
-        inplace_subtract: Option<capi::BinaryFunction>,
-        inplace_multiply: Option<capi::BinaryFunction>,
-        inplace_true_divide: Option<capi::BinaryFunction>,
-    ) -> Self {
-        self.number = Some(NumberHandlers {
-            add,
-            subtract,
-            multiply,
-            true_divide,
-            negative,
-            positive,
-            bool_,
-            inplace_add,
-            inplace_subtract,
-            inplace_multiply,
-            inplace_true_divide,
-        });
-        self
-    }
-
-    /// The comparison handler `tp_richcompare`; `None` keeps the default
-    /// identity compare.
-    #[must_use]
-    pub fn richcompare(mut self, handler: Option<capi::RichcmpFunction>) -> Self {
-        self.richcompare = handler;
-        self
-    }
-
-    /// A construction entry of the reference's `_pyNew` shape: the engine
-    /// builds the object and the script calls the type directly. Without it
-    /// `tp_new` is the reference's refusal.
-    #[must_use]
-    pub fn with_new(mut self, handler: capi::NewFunction) -> Self {
-        self.new_ = Some(handler);
-        self
-    }
-
     /// The instance body the allocated objects carry beyond the `PyObject`
     /// header. The default of zero is the bare wrapper.
     #[must_use]
@@ -261,29 +157,14 @@ impl TypeSpec {
         self
     }
 
-    /// The destruction entry, for a type whose body owns references the
-    /// interpreter's plain free would leak.
+    /// Add one protocol slot on top of the generic set. A slot id the
+    /// generic set already fills is replaced -- a `Py_tp_new` here overrides
+    /// the construction refusal, which is how the engine-constructed types
+    /// that scripts *do* build (`Math.Vector3( ... )`) declare their real
+    /// constructor.
     #[must_use]
-    pub fn dealloc(mut self, handler: capi::DeallocFunction) -> Self {
-        self.dealloc = Some(handler);
-        self
-    }
-
-    /// Derive this type from an already-registered type, the reference's
-    /// `public MatrixProvider` inheritance: `PyMatrix` and the providers are
-    /// `MatrixProvider` subclasses before they are themselves, so
-    /// `isinstance` and the provider conversion both see the base.
-    #[must_use]
-    pub fn base(mut self, base: usize) -> Self {
-        self.base = Some(base);
-        self
-    }
-
-    /// Layer `Py_TPFLAGS_*` onto the heap type: `BASETYPE` is what lets
-    /// `PyType_FromSpec` accept this type as another spec's `Py_tp_base`.
-    #[must_use]
-    pub fn flags(mut self, flags: u32) -> Self {
-        self.flags |= flags;
+    pub fn slot(mut self, slot: c_int, handler: *mut std::os::raw::c_void) -> Self {
+        self.extra_slots.push((slot, handler));
         self
     }
 }
@@ -525,6 +406,27 @@ fn raise_type_error(rendered: &str) {
     }
 }
 
+/// The `PY_RO_ATTRIBUTE_SET` error setter (`pyobject_plus.hpp:443-454`): a
+/// read-only attribute never carries a null setter, it carries this one, so
+/// the assignment raises the reference's `TypeError` naming the attribute
+/// and the type instead of the interpreter's `AttributeError`. The
+/// `PyGetSetDef` closure is the leaked attribute name.
+unsafe extern "C" fn read_only_setter(
+    object: *mut capi::PyObject,
+    _value: *mut capi::PyObject,
+    closure: *mut std::os::raw::c_void,
+) -> std::os::raw::c_int {
+    // SAFETY: the closure is a `CString` leaked at type creation and the
+    // object's type is live while the interpreter holds the call.
+    let name = unsafe { std::ffi::CStr::from_ptr(closure.cast::<std::os::raw::c_char>()) }
+        .to_string_lossy();
+    let type_name = unsafe { capi::type_name(capi::Py_TYPE(object)) };
+    raise_type_error(&format!(
+        "Sorry, the attribute {name} in {type_name} is read-only"
+    ));
+    -1
+}
+
 /// `mp_subscript` (`pyobject_plus.cpp:294`'s `seqMappingMethods`): normalise
 /// the key exactly the way the reference's bridge does, then dispatch to the
 /// type's own `sq_item`. Public so a host can dispatch it itself.
@@ -615,7 +517,7 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
         let pointer = existing as *mut capi::PyObject;
         // SAFETY: the registry only stores objects this function created.
         unsafe { capi::inc_ref(pointer) };
-        return Ok(PyRef::borrowed(pointer));
+        return Ok(PyRef::from_owned(pointer).expect("the registry address is a live type object"));
     }
     if unsafe { capi::Py_IsInitialized() } == 0 {
         return Err(BindError::NoInterpreter);
@@ -643,17 +545,31 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
     let methods: &'static mut [capi::PyMethodDef] = Box::leak(methods.into_boxed_slice());
 
     // The attribute table: one getset descriptor per attribute, terminated
-    // by a null name. A missing setter is the read-only attribute.
+    // by a null name. A missing setter is the read-only attribute: the
+    // descriptor carries the reference's error setter instead of a null one,
+    // so an assignment raises the `TypeError` the reference raises, and the
+    // closure carries the leaked attribute name for that message.
     let mut attributes: Vec<capi::PyGetSetDef> = spec
         .attributes
         .iter()
         .zip(&names[1..1 + spec.attributes.len()])
-        .map(|(attribute, name)| capi::PyGetSetDef {
-            name: name.as_ptr(),
-            get: Some(attribute.get),
-            set: attribute.set,
-            doc: std::ptr::null(),
-            closure: attribute.closure,
+        .map(|(attribute, name)| {
+            let (set, closure) = match attribute.set {
+                Some(set) => (set, std::ptr::null_mut()),
+                None => (
+                    read_only_setter as capi::Setter,
+                    std::ffi::CString::from(*name)
+                        .into_raw()
+                        .cast::<std::os::raw::c_void>(),
+                ),
+            };
+            capi::PyGetSetDef {
+                name: name.as_ptr(),
+                get: Some(attribute.get),
+                set: Some(set),
+                doc: std::ptr::null(),
+                closure,
+            }
         })
         .collect();
     attributes.push(capi::PyGetSetDef {
@@ -670,7 +586,7 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
     // `PyObject_GenericSetAttr` (a `NULL` value in the slot layer is the
     // delete, which `PyObject_GenericSetAttr` itself handles), `_pyNew` the
     // refusal, `pyRepr` the address format.
-    let mut slots = vec![
+    let mut slots: Vec<capi::PyTypeSlot> = vec![
         capi::PyTypeSlot {
             slot: capi::Py_tp_getattro,
             pfunc: capi::PyObject_GenericGetAttr as *mut std::os::raw::c_void,
@@ -681,16 +597,7 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
         },
         capi::PyTypeSlot {
             slot: capi::Py_tp_new,
-            pfunc: spec.new_.unwrap_or(refuse_new) as *mut std::os::raw::c_void,
-        },
-        // A destruction entry is emitted only when a type owns references
-        // its dealloc must release; otherwise CPython's own free runs and
-        // the body is plain memory.
-        capi::PyTypeSlot {
-            slot: capi::Py_tp_dealloc,
-            pfunc: spec.dealloc.map_or(std::ptr::null_mut(), |handler| {
-                handler as *mut std::os::raw::c_void
-            }),
+            pfunc: refuse_new as *mut std::os::raw::c_void,
         },
         capi::PyTypeSlot {
             slot: capi::Py_tp_repr,
@@ -743,111 +650,6 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
             },
         },
         capi::PyTypeSlot {
-            slot: capi::Py_tp_richcompare,
-            pfunc: spec.richcompare.map_or(std::ptr::null_mut(), |handler| {
-                handler as *mut std::os::raw::c_void
-            }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_add,
-            pfunc: spec
-                .number
-                .and_then(|number| number.add)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_subtract,
-            pfunc: spec
-                .number
-                .and_then(|number| number.subtract)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_multiply,
-            pfunc: spec
-                .number
-                .and_then(|number| number.multiply)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_true_divide,
-            pfunc: spec
-                .number
-                .and_then(|number| number.true_divide)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_negative,
-            pfunc: spec
-                .number
-                .and_then(|number| number.negative)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_positive,
-            pfunc: spec
-                .number
-                .and_then(|number| number.positive)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_bool,
-            pfunc: spec
-                .number
-                .and_then(|number| number.bool_)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_inplace_add,
-            pfunc: spec
-                .number
-                .and_then(|number| number.inplace_add)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_inplace_subtract,
-            pfunc: spec
-                .number
-                .and_then(|number| number.inplace_subtract)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_inplace_multiply,
-            pfunc: spec
-                .number
-                .and_then(|number| number.inplace_multiply)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
-            slot: capi::Py_nb_inplace_true_divide,
-            pfunc: spec
-                .number
-                .and_then(|number| number.inplace_true_divide)
-                .map_or(std::ptr::null_mut(), |handler| {
-                    handler as *mut std::os::raw::c_void
-                }),
-        },
-        capi::PyTypeSlot {
             slot: capi::Py_tp_methods,
             pfunc: methods.as_mut_ptr().cast(),
         },
@@ -855,30 +657,28 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
             slot: capi::Py_tp_getset,
             pfunc: attributes.as_mut_ptr().cast(),
         },
+        capi::PyTypeSlot {
+            slot: 0,
+            pfunc: std::ptr::null_mut(),
+        },
     ];
-    if let Some(base) = spec.base {
-        // The registry only stores addresses of type objects `create_type`
-        // built, so the cast is the real type object. The slot is emitted
-        // only when a base is present: CPython packs a `Py_tp_base` slot
-        // into a one-element bases tuple and a null pointer would crash.
-        slots.push(capi::PyTypeSlot {
-            slot: capi::Py_tp_base,
-            pfunc: base as *mut std::os::raw::c_void,
-        });
+    // The spec's extra slots replace the generic entry of the same id -- a
+    // `Py_tp_new` here is the real constructor standing in for the refusal
+    // -- or join the table ahead of the terminator.
+    for (slot, handler) in &spec.extra_slots {
+        if let Some(entry) = slots.iter_mut().find(|entry| entry.slot == *slot) {
+            entry.pfunc = *handler;
+        } else {
+            let position = slots.len().saturating_sub(1);
+            slots.insert(
+                position,
+                capi::PyTypeSlot {
+                    slot: *slot,
+                    pfunc: *handler,
+                },
+            );
+        }
     }
-    if let Some(dealloc) = spec.dealloc {
-        // A body that owns reference-counted members carries its own
-        // teardown: drop the members, then free the instance generically.
-        // The reference's `PyObjectPlus` destructors run before the free.
-        slots.push(capi::PyTypeSlot {
-            slot: capi::Py_tp_dealloc,
-            pfunc: dealloc as *mut std::os::raw::c_void,
-        });
-    }
-    slots.push(capi::PyTypeSlot {
-        slot: 0,
-        pfunc: std::ptr::null_mut(),
-    });
     let slots: &'static mut [capi::PyTypeSlot] = Box::leak(slots.into_boxed_slice());
 
     // The instance body is the `PyObject` header plus whatever the spec
@@ -888,7 +688,7 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
         basicsize: (std::mem::size_of::<capi::PyObject>() + spec.instance_size)
             as std::os::raw::c_int,
         itemsize: 0,
-        flags: spec.flags,
+        flags: 0,
         slots: slots.as_mut_ptr(),
     }));
 
@@ -982,21 +782,6 @@ mod tests {
         let spec = TypeSpec::new("boundless.Demo").attribute("va\0lue", value_get, None);
         assert_eq!(create_type(&spec), Err(BindError::BadName));
         assert!(registry().types.is_empty());
-    }
-
-    /// A destruction entry builds into the spec without changing the
-    /// no-interpreter refusal: the dealloc slot is a create-time concern,
-    /// and the builder only carries the handler.
-    #[test]
-    fn a_dealloc_spec_is_still_refused_without_an_interpreter() {
-        let spec = TypeSpec::new("boundless.DeallocDemo").dealloc(stub_dealloc);
-        assert_eq!(create_type(&spec), Err(BindError::NoInterpreter));
-        assert!(registry().types.is_empty());
-    }
-
-    unsafe extern "C" fn stub_dealloc(_self_: *mut capi::PyObject) {
-        // The stub never runs without an interpreter; the refusal above
-        // means this line is for the handler's type alone.
     }
 
     /// The empty handle instantiates nothing, whatever the interpreter

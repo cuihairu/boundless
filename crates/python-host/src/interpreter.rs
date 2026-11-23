@@ -146,14 +146,21 @@ impl Interpreter {
             // does the same; through `init`'s own guard a second call is
             // unreachable.
             let _ = init_time_job::run_init_time_jobs();
-            // `TempPyVectorInit` (`script_math.cpp:3060`), rung zero of the
-            // same init pass: the `Math` module and its vector widths.
-            math::register();
         }
         if error.is_none() && !disable_garbage() {
             error = Some(InitError::GarbageCollectionUnavailable);
         }
         if error.is_none() {
+            // `TempPyVectorInit` (`script_math.cpp:3053-3067`) is a rung-0
+            // init-time job: the Math module and its classes exist before
+            // the BigWorld module is built, and the module-table snapshot
+            // sees Math either way.
+            math::install();
+            // The ResMgr module (`res_mgr_script.cpp`): the resource faces
+            // exist before the BigWorld module is built, so the module
+            // table snapshot sees ResMgr as well.
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            unsafe { crate::resmgr::install(&config.component) };
             // `ScriptModule::getOrCreate("BigWorld")` with the `component`
             // attribute, then the `s_pOurInitTimeModules` snapshot.
             create_big_world_module(&config.component);
@@ -238,17 +245,36 @@ impl Interpreter {
         // a posted-but-never-run callback is not a dangling one for
         // `Py_Finalize` to find.
         gil::clear();
-        // `Script::clearTimers` (`py_callback.cpp:81-91`): the reference reaches it
-        // from the app's shutdown, ahead of `Script::fini`; the port places it here,
-        // behind the fini-time jobs, so a job that posts a callback is not the one
-        // that leaves a callback behind for `Py_Finalize` to find. The timer
-        // records hold script references, so they go while the allocator lives.
-        super::timers::clear();
-        super::timers::set_total_game_time(0.0);
         // The native registries die before the script system finalises --
         // `CellApp::shutDown` deletes its entities before `Script::fini` --
         // so every native wrapper `Py_DecRef`s here, allocator still alive.
         wrapper::reset();
+        // The timer faces drain first: the reference cancels the entity
+        // timers in `CellApp::shutDown` before `Script::fini`, and its
+        // `Script::fini` runs the clear timers job before the collect loop
+        // (`script.cpp:686`), so every callback record and time queue
+        // entry releases while every teardown table is still intact.
+        crate::timers::reset();
+        // The event registry clears the same way: `ScriptApp::~ScriptApp`
+        // runs `scriptEvents_.clear()` before `Script::fini`
+        // (`script_app.cpp:50-55`), so every held listener releases while
+        // the interpreter is still up.
+        crate::script_events::reset();
+        // The Math module's providers release their held references next:
+        // the teardown table must stay intact for the deallocs that release
+        // fires, so the reset sits before `binding::reset`, which drops the
+        // type objects themselves.
+        math::reset();
+        // The ResMgr censuses release next: the wrappers hold tree handles
+        // and the tables hold links, all DECREFed while every teardown
+        // table is still intact -- before `binding::reset` drops the type
+        // objects themselves.
+        crate::resmgr::reset();
+        // The URL manager's held callbacks drop next: the `Manager` keeps
+        // one reference of each in-flight callable, and they must release
+        // while the interpreter is still up -- the `ScriptFini` job the
+        // reference registers (`manager.cpp:14-24`).
+        crate::urlrequest::fini();
         // The type registry's references go the same way: the static
         // `s_type_` objects outlive every script object, and the port holds
         // its registry references until here.
@@ -368,9 +394,37 @@ fn create_big_world_module(component: &str) {
         // reference leaves the attribute unset and moves on.
         capi::PyObject_SetAttrString(module, c"component".as_ptr(), value);
         capi::dec_ref(value);
-        // The timer pair, the reference's `PY_MODULE_FUNCTION` links into the
-        // same module (`lib/pyscript/py_callback.cpp:288,:333`).
-        super::timers::register(module);
+        // The timer faces join the module per role (`PyModuleMethodLink`
+        // tables, `script.cpp:1409-1453`): the component decides whether
+        // the client callback pair or the server timer trio is linked, the
+        // way `MF_SERVER` decides it at build time.
+        crate::timers::install(module, component);
+        // `fetchURL` joins the same module unconditionally -- the
+        // reference's `PY_MODULE_FUNCTION_WITH_KEYWORDS` face
+        // (`py_urlrequest.cpp:318`). `URL::Manager::init` stays an app
+        // call (`client/connection_control.cpp:342`), so the host drives
+        // `crate::urlrequest::init` itself and the face refuses until it
+        // has: `PyURLRequest has not been initialised`.
+        crate::urlrequest::install(module);
+        // The server re-asserts the module with its mode marker
+        // (`ScriptApp::initScript`, `script_app.cpp:219-225`), the value
+        // `ServerAppConfig::serverMode()` reads. That is a read-only
+        // option defaulting to "standalone" (`server_app_config.cpp:19`)
+        // and the port has no config source, so the default is what every
+        // server component gets.
+        if crate::manifest::is_server_component(component) {
+            let mode = capi::PyUnicode_FromString(c"standalone".as_ptr());
+            if !mode.is_null() {
+                capi::PyObject_SetAttrString(module, c"serverMode".as_ptr(), mode);
+                capi::dec_ref(mode);
+            }
+            // The script event registry stands up with the module the way
+            // `ScriptApp`'s constructor creates the `onInit`/`onFini`
+            // event types (`script_app.cpp:44-49`) before the app runs:
+            // the standard types exist and the module carries the
+            // `addEventListener` / `removeEventListener` faces.
+            crate::script_events::install(module);
+        }
     }
 }
 
@@ -488,9 +542,16 @@ mod tests {
     use crate::manifest;
     use crate::pyref::PyRef;
     use crate::sequence;
-    use crate::timers;
+
     use std::path::PathBuf;
     use std::process::Command;
+
+    /// BW-03-03-06: the original `test_script_math.cpp` cases, extracted into
+    /// the ordered `Step` table the regression replays against the ported
+    /// `Math` module. See `src/tests/math_regression.rs`.
+    mod math_regression {
+        include!("tests/math_regression.rs");
+    }
 
     /// One container state plus the view over it: the sequence scenarios
     /// build a proxy on it and park the view in `__main__`, the same way the
@@ -531,6 +592,8 @@ mod tests {
         "interpreter::tests::scenario_sys_path_is_the_assembled_list",
         "interpreter::tests::scenario_an_unencodable_path_fails_init",
         "interpreter::tests::scenario_big_world_module_carries_the_component",
+        "interpreter::tests::scenario_the_client_callbacks_cancel_reregister_and_keep_order",
+        "interpreter::tests::scenario_the_server_timers_cancel_reregister_and_answer",
         "interpreter::tests::scenario_a_component_with_a_nul_stays_unset",
         "interpreter::tests::scenario_stdout_lands_in_the_log_sink",
         "interpreter::tests::scenario_stderr_lands_in_the_log_sink",
@@ -591,6 +654,31 @@ mod tests {
         "interpreter::tests::scenario_the_math_matrixinverse_behaves_like_the_reference",
         "interpreter::tests::scenario_the_bigworld_timers_behave_like_the_reference",
         "interpreter::tests::scenario_the_manifest_matches_the_interpreter",
+        "interpreter::tests::scenario_the_base_component_sees_the_server_surface",
+        "interpreter::tests::scenario_the_cell_component_sees_the_server_surface",
+        "interpreter::tests::scenario_the_database_component_sees_the_server_surface",
+        "interpreter::tests::scenario_the_bot_component_sees_the_server_surface",
+        "interpreter::tests::scenario_the_client_component_sees_the_client_surface",
+        "interpreter::tests::scenario_the_editor_component_sees_the_client_surface",
+        "interpreter::tests::scenario_an_unknown_component_sees_only_the_shared_surface",
+        "interpreter::tests::scenario_an_empty_component_sees_only_the_shared_surface",
+        "interpreter::tests::scenario_the_script_events_fire_in_level_order_with_the_reference_arguments",
+        "interpreter::tests::scenario_a_raising_listener_fails_the_trigger_and_contributes_none",
+        "interpreter::tests::scenario_the_big_world_module_functions_route_the_event_registry",
+        "interpreter::tests::scenario_the_personality_attributes_join_the_event_registry",
+        "interpreter::tests::scenario_the_math_module_serves_the_ported_surface",
+        "interpreter::tests::scenario_the_vector_types_exercise_their_surface",
+        "interpreter::tests::scenario_the_matrix_and_plane_types_exercise_their_surface",
+        "interpreter::tests::scenario_the_matrix_and_plane_methods_exercise_their_surface",
+        "interpreter::tests::scenario_the_v4_providers_exercise_their_surface",
+        "interpreter::tests::scenario_the_resmgr_module_serves_the_ported_surface",
+        "interpreter::tests::scenario_the_resmgr_editor_tools_serve_the_ported_surface",
+        "interpreter::tests::scenario_the_big_world_url_request_face_serves_the_ported_surface",
+        "interpreter::tests::scenario_the_original_math_regressions_run_against_the_port",
+        "interpreter::tests::scenario_replacing_a_script_class_updates_existing_instances",
+        "interpreter::tests::scenario_swapping_in_a_module_window_keeps_sys_and_main",
+        "interpreter::tests::scenario_migrate_reports_the_hook_success_and_failure",
+        "interpreter::tests::scenario_a_failed_reload_leaves_the_old_definitions_callable",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to
@@ -717,6 +805,18 @@ mod tests {
             capi::dec_ref(text);
             rendered
         }
+    }
+
+    /// A borrowed reference to the object `__main__` names `name`, NULL if it
+    /// names nothing: the reload scenarios park their instances and classes
+    /// there so the host can reach them.
+    fn main_object(name: &str) -> *mut capi::PyObject {
+        // SAFETY: the interpreter is up and this thread owns the GIL.
+        let main = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+        let dictionary = unsafe { capi::PyModule_GetDict(main) };
+        let key = std::ffi::CString::new(name).expect("a name with no NUL");
+        // SAFETY: `dictionary` is the module dict and `key` is NUL-terminated.
+        unsafe { capi::PyDict_GetItemString(dictionary, key.as_ptr()) }
     }
 
     /// A fresh list parked in `__main__` under `__handle`, as a borrowed handle
@@ -1151,6 +1251,378 @@ mod tests {
         );
     }
 
+    /// The client callback pair (`py_callback.cpp:257-333`): the handle is
+    /// an int, the walls raise the reference's own sentences, equal delays
+    /// keep registration order, a cancelled record never runs, a
+    /// `cancelCallback` of an unknown handle is silent `None`, a callback
+    /// that cancels itself still completes, a zero-delay registration made
+    /// during the tick waits a frame, and a negative delay clamps to now.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_client_callbacks_cancel_reregister_and_keep_order() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("client"),
+                ..Default::default()
+            },
+            |interpreter| {
+                // The role split: a client carries the callback pair, never
+                // the server trio.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         __probe = (hasattr(BigWorld, 'callback'), \
+                         hasattr(BigWorld, 'cancelCallback'), \
+                         hasattr(BigWorld, 'addTimer'), \
+                         hasattr(BigWorld, 'addFrequentTask'))",
+                    ),
+                    "(True, True, False, False)"
+                );
+                // Return values, walls, the cancel of a live record, and
+                // the silence around an unknown handle.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         seen = []\n\
+                         h1 = BigWorld.callback(0.1, lambda: seen.append('a'))\n\
+                         h2 = BigWorld.callback(0.1, lambda: seen.append('b'))\n\
+                         h3 = BigWorld.callback(0.05, lambda: seen.append('c'))\n\
+                         walls = []\n\
+                         try:\n\
+                         \x20   BigWorld.callback('x', lambda: None)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         try:\n\
+                         \x20   BigWorld.callback(1.0, 42)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         try:\n\
+                         \x20   BigWorld.cancelCallback('x')\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         cancelled = BigWorld.cancelCallback(h2)\n\
+                         unknown = BigWorld.cancelCallback(99999)\n\
+                         __probe = (isinstance(h1, int), h1 != h2, h1 != h3, \
+                         tuple(walls), cancelled, unknown, seen)",
+                    ),
+                    "(True, True, True, \
+                     ('BigWorld.callback: Argument parsing error.', \
+                     'BigWorld.callback: Argument parsing error.', \
+                     'py_cancelCallback: Argument parsing error.'), \
+                     None, None, [])",
+                );
+                // The tick eats the due records in registration order for
+                // equal delays -- minus the cancelled one -- and stops at
+                // the first future record. A negative delay clamps to the
+                // current game time, which is still the start here, so the
+                // clamped record sorts first.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         BigWorld.callback(-5, lambda: seen.append('now'))\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                crate::timers::tick(0.2);
+                assert_eq!(probe(interpreter, "__probe = seen"), "['now', 'c', 'a']",);
+                // A callback that cancels its own record still completes --
+                // `cancelCallback` refuses to erase the record being
+                // called (`py_callback.cpp:319-326`) -- and a zero-delay
+                // registration made during the tick waits a frame
+                // (`:160-171`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         marks = []\n\
+                         holder = []\n\
+                         def self_cancel():\n\
+                         \x20   BigWorld.cancelCallback(holder[0])\n\
+                         \x20   marks.append('self')\n\
+                         def reregister(reg):\n\
+                         \x20   reg.append('first')\n\
+                         \x20   BigWorld.callback(0, lambda: reg.append('second'))\n\
+                         holder.append(BigWorld.callback(0.05, self_cancel))\n\
+                         BigWorld.callback(0.05, lambda: reregister(marks))\n\
+                         __probe = len(holder)",
+                    ),
+                    "1",
+                );
+                crate::timers::tick(0.05);
+                // The cancelled-during-call record is skipped, the
+                // zero-delay registration waits.
+                assert_eq!(probe(interpreter, "__probe = marks"), "['self', 'first']");
+                crate::timers::tick(0.01);
+                assert_eq!(
+                    probe(interpreter, "__probe = marks"),
+                    "['self', 'first', 'second']",
+                );
+                // A failing callback is printed and the walk carries on --
+                // `Script::call` (`script.ipp:21-35`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         def boom():\n\
+                         \x20   raise RuntimeError('exploded')\n\
+                         BigWorld.callback(0.05, boom)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                crate::timers::tick(0.05);
+                assert_eq!(probe(interpreter, "__probe = 'still here'"), "still here");
+            },
+        );
+    }
+
+    /// The server timer trio (`script_timers.cpp`, `app_script_timers.cpp`,
+    /// `script_frequent_tasks.cpp`): offsets round to ticks at 10 hertz, a
+    /// one-shot fires once and frees its id, the smallest free id is
+    /// reused, a repeat reschedules every tick until `delTimer`, a
+    /// negative offset clamps to now, the callback receives `(id,
+    /// userArg)`, an `onTimer` attribute stands in for a non-callable, and
+    /// the frequent tasks run per tick across two levels with a truthy
+    /// return deregistering and a mid-walk registration waiting a tick.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_server_timers_cancel_reregister_and_answer() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                // The role split mirrored: a server component carries the
+                // trio, never the client pair.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         __probe = (hasattr(BigWorld, 'callback'), \
+                         hasattr(BigWorld, 'addTimer'), \
+                         hasattr(BigWorld, 'delTimer'), \
+                         hasattr(BigWorld, 'addFrequentTask'))",
+                    ),
+                    "(False, True, True, True)"
+                );
+                // Registration answers the smallest free ids in order.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         seen = []\n\
+                         def on_timer(timer_id, user_arg):\n\
+                         \x20   seen.append((timer_id, user_arg))\n\
+                         id1 = BigWorld.addTimer(on_timer, 0.1, 0, 7)\n\
+                         id2 = BigWorld.addTimer(on_timer, 0.2, 0.1, 9)\n\
+                         id3 = BigWorld.addTimer(on_timer, 0.15, 0, 3)\n\
+                         __probe = (isinstance(id1, int), id1 == 1, id2 == 2, id3 == 3)",
+                    ),
+                    "(True, True, True, True)",
+                );
+                crate::timers::tick(0.05);
+                crate::timers::tick(0.05);
+                // Tick 1: only the 0.1s one-shot is due.
+                assert_eq!(probe(interpreter, "__probe = seen"), "[(1, 7)]");
+                crate::timers::tick(0.1);
+                // Tick 2: the repeat's first shot and the 0.15s one-shot.
+                assert_eq!(
+                    probe(interpreter, "__probe = seen"),
+                    "[(1, 7), (2, 9), (3, 3)]"
+                );
+                crate::timers::tick(0.1);
+                // Tick 3: the repeat reschedules from its old deadline.
+                assert_eq!(
+                    probe(interpreter, "__probe = seen"),
+                    "[(1, 7), (2, 9), (3, 3), (2, 9)]"
+                );
+                // `delTimer` answers `None` however the scan went -- the
+                // unknown id only logs (`app_script_timers.cpp:214-221`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld; __probe = (BigWorld.delTimer(2), BigWorld.delTimer(999))",
+                    ),
+                    "(None, None)",
+                );
+                crate::timers::tick(0.1);
+                // The cancelled repeat is gone.
+                assert_eq!(
+                    probe(interpreter, "__probe = seen"),
+                    "[(1, 7), (2, 9), (3, 3), (2, 9)]"
+                );
+                // The freed ids are reused smallest-first -- ids 1, 2 and 3
+                // are all free now (`script_timers.cpp:89-100`) -- and a
+                // negative offset clamps to now, while the walls keep the
+                // reference's own sentences: the callable check with the
+                // `onTimer` fallback, the parser's sentence for a bad
+                // parse, the frequent-task sentences.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         class Has:\n\
+                         \x20   def __init__(self):\n\
+                         \x20       self.hits = []\n\
+                         \x20   def onTimer(self, timer_id, user_arg):\n\
+                         \x20       self.hits.append(user_arg)\n\
+                         obj = Has()\n\
+                         id5 = BigWorld.addTimer(on_timer, -1.0, 0, 0)\n\
+                         id6 = BigWorld.addTimer(obj, 0.05, 0, 11)\n\
+                         walls = []\n\
+                         try:\n\
+                         \x20   BigWorld.addTimer(42, 0.1)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         try:\n\
+                         \x20   BigWorld.addTimer(lambda a, b: None)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError:\n\
+                         \x20   walls.append('TypeError')\n\
+                         try:\n\
+                         \x20   BigWorld.delTimer('x')\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError:\n\
+                         \x20   walls.append('TypeError')\n\
+                         try:\n\
+                         \x20   BigWorld.addFrequentTask(42)\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         try:\n\
+                         \x20   BigWorld.addFrequentTask()\n\
+                         \x20   walls.append('no')\n\
+                         except TypeError:\n\
+                         \x20   walls.append('TypeError')\n\
+                         try:\n\
+                         \x20   BigWorld.addFrequentTask(lambda: True, 5)\n\
+                         \x20   walls.append('no')\n\
+                         except ValueError as e:\n\
+                         \x20   walls.append(str(e))\n\
+                         __probe = (id5, id6, tuple(walls))",
+                    ),
+                    "(1, 2, ('Callback function is not callable', 'TypeError', \
+                     'TypeError', 'Argument is not callable', 'TypeError', \
+                     'Failed to register for update'))",
+                );
+                // Tick 4: the clamped timer fires at once.
+                crate::timers::tick(0.01);
+                assert_eq!(
+                    probe(interpreter, "__probe = seen"),
+                    "[(1, 7), (2, 9), (3, 3), (2, 9), (1, 0)]"
+                );
+                crate::timers::tick(0.1);
+                // Tick 5: the `onTimer` stand-in receives the user arg.
+                assert_eq!(probe(interpreter, "__probe = obj.hits"), "[11]");
+                // A repeat that cancels itself during its own call wins over
+                // the reschedule (`time_queue.ipp:429-437`), and a failing
+                // callback is printed and the queue carries on --
+                // `PY_ERROR_CHECK` (`pyobject_plus.hpp:49-56`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         def boom(timer_id, user_arg):\n\
+                         \x20   raise RuntimeError('exploded')\n\
+                         def suicide(timer_id, user_arg):\n\
+                         \x20   quitter.append(timer_id)\n\
+                         \x20   BigWorld.delTimer(timer_id)\n\
+                         quitter = []\n\
+                         bad = BigWorld.addTimer(boom, 0.05, 0.2, 0)\n\
+                         sid = BigWorld.addTimer(suicide, 0.05, 0.1, 0)\n\
+                         __probe = (bad, sid)",
+                    ),
+                    "(1, 2)",
+                );
+                crate::timers::tick(0.1);
+                // Tick 6: the suicide repeat cancelled itself mid-call; the
+                // failing repeat printed and rescheduled.
+                assert_eq!(probe(interpreter, "__probe = quitter"), "[2]");
+                crate::timers::tick(0.2);
+                // Tick 8: the failing repeat fired once more and lives on.
+                assert_eq!(probe(interpreter, "__probe = quitter"), "[2]");
+                // A failing frequent task stays registered
+                // (`script_frequent_tasks.cpp:56-62`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         hits = []\n\
+                         def bad_task():\n\
+                         \x20   hits.append('hit')\n\
+                         \x20   raise RuntimeError('exploded')\n\
+                         BigWorld.addFrequentTask(bad_task)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                crate::timers::tick(0.05);
+                crate::timers::tick(0.05);
+                assert_eq!(probe(interpreter, "__probe = hits"), "['hit', 'hit']");
+                // The frequent tasks: level 0 runs before level 1, a truthy
+                // return deregisters, a `False` return keeps the task, and
+                // a registration made during the walk waits a tick
+                // (`updatables.cpp:199-203`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         tasks = []\n\
+                         def once():\n\
+                         \x20   tasks.append('once')\n\
+                         \x20   return True\n\
+                         def forever():\n\
+                         \x20   tasks.append('forever')\n\
+                         ok1 = BigWorld.addFrequentTask(once)\n\
+                         ok2 = BigWorld.addFrequentTask(forever, 1)\n\
+                         __probe = (ok1, ok2)",
+                    ),
+                    "(True, True)",
+                );
+                crate::timers::tick(0.05);
+                assert_eq!(probe(interpreter, "__probe = tasks"), "['once', 'forever']");
+                crate::timers::tick(0.05);
+                assert_eq!(
+                    probe(interpreter, "__probe = tasks"),
+                    "['once', 'forever', 'forever']"
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         def adder():\n\
+                         \x20   tasks.append('adder')\n\
+                         \x20   BigWorld.addFrequentTask(lambda: tasks.append('late'))\n\
+                         \x20   return False\n\
+                         __probe = BigWorld.addFrequentTask(adder)",
+                    ),
+                    "True",
+                );
+                crate::timers::tick(0.05);
+                // `late` registered during the walk: not called this tick.
+                assert_eq!(
+                    probe(interpreter, "__probe = tasks"),
+                    "['once', 'forever', 'forever', 'adder', 'forever']"
+                );
+                crate::timers::tick(0.05);
+                assert_eq!(
+                    probe(interpreter, "__probe = tasks"),
+                    "['once', 'forever', 'forever', 'adder', 'forever', \
+                     'adder', 'late', 'forever']"
+                );
+            },
+        );
+    }
+
     /// `s_pOurInitTimeModules`: the module table as it stood at the end of
     /// init -- `BigWorld` in, anything imported later out. `Script::fini`
     /// releases it, so the accessor reads null again afterwards.
@@ -1360,7 +1832,7 @@ mod tests {
     fn scenario_a_foreign_object_carries_no_native_id() {
         interpreter_scenario(&InitConfig::default(), |_interpreter| {
             let text = unsafe { capi::PyUnicode_FromString(c"not a native object".as_ptr()) };
-            let borrowed = PyRef::borrowed(text);
+            let borrowed = PyRef::from_owned(text).expect("a fresh unicode object");
             assert_eq!(unsafe { wrapper::native(&borrowed) }, None);
         });
     }
@@ -1520,8 +1992,10 @@ mod tests {
         });
     }
 
-    /// The reference's three rejections: assigning a read-only attribute,
-    /// reading an unknown one, and deleting a bound one -- the last is the
+    /// The reference's three rejections: assigning a read-only attribute is
+    /// the `PY_RO_ATTRIBUTE_SET` `TypeError` naming the attribute and the
+    /// `tp_name` (`pyobject_plus.hpp:443-454`), reading an unknown one stays
+    /// the interpreter's `AttributeError`, and deleting a bound one is the
     /// `pyDelAttribute` path, which a getset table answers with `TypeError`.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
@@ -1536,10 +2010,9 @@ mod tests {
             assert_eq!(
                 probe(
                     interpreter,
-                    "try:\n    demo.label = 1\nexcept AttributeError:\n    __probe = True\n\
-                     else:\n    __probe = False",
+                    "try:\n    demo.label = 1\nexcept TypeError as error:\n    __probe = str(error)",
                 ),
-                "True"
+                "Sorry, the attribute label in boundless.Demo is read-only"
             );
             assert_eq!(
                 probe(
@@ -1552,10 +2025,9 @@ mod tests {
             assert_eq!(
                 probe(
                     interpreter,
-                    "try:\n    del demo.value\nexcept TypeError:\n    __probe = True\n\
-                     else:\n    __probe = False",
+                    "try:\n    del demo.value\nexcept TypeError as error:\n    __probe = str(error)",
                 ),
-                "True"
+                "cannot delete the value attribute"
             );
         });
     }
@@ -2688,11 +3160,13 @@ __probe = '; '.join(_f) or 'ok'
         });
     }
 
-    /// `TempPyVectorInit` also puts the `MatrixProvider` base and the
-    /// `Matrix` factory on `Math`; the method table, the attribute table and
-    /// the pickling state methods behave as the reference's `PyMatrix` does.
-    /// The check list mirrors the reference semantics one by one, so the
-    /// acceptance is that the live object and the C++ semantics agree.
+    /// `TempPyVectorInit` also puts the `Matrix` factory on `Math`; the
+    /// `MatrixProvider` base exists as a type (it is not a module attribute,
+    /// matching the reference, where it has a `PY_TYPEOBJECT` but no
+    /// `PY_FACTORY`). The method table, the attribute table and the pickling
+    /// state methods behave as the reference's `PyMatrix` does. The check
+    /// list mirrors the reference semantics one by one, so the acceptance is
+    /// that the live object and the C++ semantics agree.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
     fn scenario_the_math_matrix_behaves_like_the_reference() {
@@ -2715,12 +3189,19 @@ def raises(exc, fn):
         return False
     return False
 
-# Module surface and inheritance.
-ck(hasattr(Math, 'MatrixProvider'), 'MatrixProvider in module')
+# Module surface and inheritance: the factory, not the type, is the entry.
+ck(not hasattr(Math, 'MatrixProvider'), 'no MatrixProvider factory')
 ck(hasattr(Math, 'Matrix'), 'Matrix factory in module')
 ck(callable(Math.Matrix), 'Math.Matrix callable')
 m = Math.Matrix()
-ck(isinstance(m, Math.MatrixProvider), 'Matrix is a MatrixProvider')
+# A Matrix satisfies the reference's MatrixProvider::Check (there is no
+# MatrixProvider type object; the check is by type identity). The observable
+# surface proof: a Matrix is accepted where a provider argument is expected
+# -- the factory snapshot -- and a non-provider is refused there.
+ck(type(Math.Matrix(m)).__name__ == 'Matrix',
+   'Matrix satisfies the provider check')
+ck(raises(TypeError, lambda: Math.Matrix(5)),
+   'a non-provider fails the provider check')
 
 # Construction: `Math.Matrix()` is the identity matrix.
 ck(tuple(m.translation) == (0.0, 0.0, 0.0), 'identity translation')
@@ -2946,8 +3427,10 @@ ck(tuple(tx.translation) == (1.0, 2.0, 3.0), 'translation attribute write')
 ck(raises(TypeError, lambda: setattr(Math.Matrix(), 'translation', 5)),
    'translation non vector')
 
-# Pickle state argument rules.
-ck(raises(TypeError, lambda: Math.Matrix().__getstate__(1)), 'getstate no args')
+# Pickle state argument rules: the reference getstate never inspects its
+# argument tuple (script_math.cpp:741-751), so an argument list is accepted;
+# setstate wants exactly one.
+ck(len(Math.Matrix().__getstate__(1)) == 64, 'getstate ignores args')
 ck(raises(TypeError, lambda: Math.Matrix().__setstate__()), 'setstate no args')
 
 __probe = '; '.join(_f) or 'ok'
@@ -2992,7 +3475,8 @@ ck(p is not None, 'Plane constructs')
 ck(type(p).__name__ == 'Plane', 'the Math.Plane type')
 p2 = Math.Plane(1, 2, 3)
 ck(type(p2).__name__ == 'Plane', 'factory ignores args')
-ck(not isinstance(p, Math.MatrixProvider), 'Plane is not a MatrixProvider')
+ck('MatrixProvider' not in [c.__name__ for c in type(p).__mro__],
+   'Plane is not a MatrixProvider')
 ck(not hasattr(p, 'translation'), 'no matrix attributes')
 
 # init: the plane through three points on z == 0, returns None.
@@ -3458,11 +3942,14 @@ ck(hasattr(Math, 'Vector4Translation'), 'Vector4Translation in module')
 src = Math.Matrix()
 t = Math.Vector4Translation(src)
 ck(type(t).__name__ == 'Vector4Translation', 'the translation type')
-ck('Vector4Provider' in [c.__name__ for c in type(t).__mro__],
-   'the Vector4Provider base chain')
-ck('MatrixProvider' in [c.__name__ for c in type(t.source).__mro__],
-   'the source is a provider')
+# The provider checks are virtual -- there are no Vector4Provider or
+# MatrixProvider type objects -- so the base chains are proved by
+# acceptance: `src` passed the MatrixProvider check to reach the factory
+# above, and the translation slots into a Vector4Provider hole below.
 ck(t.source is src, 'the source is the matrix itself')
+holder = Math.Vector4Product()
+holder.a = t
+ck(holder.a is t, 'the translation is a Vector4Provider')
 
 # The output is the translation row, the reference's `applyToOrigin`.
 v = t.value
@@ -3483,13 +3970,12 @@ ck(t.source is other, 'the replacement sticks')
 src.setTranslate((99.0, 0.0, 0.0))
 ck(t.value.x == 5.0, 'the old matrix no longer drives it')
 
-# None empties the slot; the reference would then trap on `output`, so the
-# port defines the zero translation instead.
+# None empties the slot. Reading `value` with a null source is the
+# reference's crash (`source_->matrix` on the NULL pointer the converter
+# lets through), which the port answers with a named abort -- so the empty
+# state is not readable, and this test only pins the emptying.
 t.source = None
 ck(t.source is None, 'None empties the slot')
-v = t.value
-ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 1.0,
-   'an empty source is the zero translation')
 
 # Refusals: a non-provider, a Vector4Provider that is no MatrixProvider, a
 # deletion, and factory argument errors.
@@ -3503,8 +3989,11 @@ ck(raises(TypeError, lambda: Math.Vector4Translation()),
    'the factory wants one argument')
 ck(raises(TypeError, lambda: Math.Vector4Translation(src, src)),
    'the factory takes one argument')
-ck(raises(TypeError, lambda: Math.Vector4Translation(None)),
-   'the factory refuses None')
+# None is the empty source, not a refusal: the `SmartPointer` conversion
+# the factory argument goes through answers the null pointer for it
+# (`script.hpp:617-620`), the same empty slot the `source` attribute
+# holds.
+ck(Math.Vector4Translation(None).source is None, 'the factory takes None')
 ck(raises(TypeError, lambda: Math.Vector4Translation(5)),
    'the factory wants a provider')
 
@@ -3548,9 +4037,13 @@ a = Math.Matrix()
 b = Math.Matrix()
 d = Math.Vector4Distance(a, b)
 ck(type(d).__name__ == 'Vector4Distance', 'the distance type')
-ck('Vector4Provider' in [c.__name__ for c in type(d).__mro__],
-   'the Vector4Provider base chain')
+# The provider check is virtual -- no Vector4Provider type object -- so the
+# base chain is proved by acceptance: the distance slots into a
+# Vector4Provider hole without coercion.
 ck(d.a is a and d.b is b, 'the slots are the matrices')
+holder = Math.Vector4Product()
+holder.b = d
+ck(holder.b is d, 'the distance is a Vector4Provider')
 
 # Two identity origins are the zero distance.
 v = d.value
@@ -3587,12 +4080,11 @@ ck(d.a is other, 'the replacement sticks')
 v = d.value
 ck(abs(v.x - 6.0) < 1e-6, 'the new slot drives the distance')
 
-# None empties a slot; the reference would then trap on `output`, so the
-# port treats the empty slot as the zero origin.
+# None empties a slot. Reading `value` with a null endpoint is the
+# reference's crash, which the port answers with a named abort -- so the
+# empty state is not readable, and this test only pins the emptying.
 d.b = None
 ck(d.b is None, 'None empties the b slot')
-v = d.value
-ck(abs(v.x - 6.0) < 1e-6, 'an empty slot is the zero origin')
 
 # Refusals: non-providers, a Vector4Provider that is no MatrixProvider,
 # deletions, and factory argument errors.
@@ -3659,8 +4151,12 @@ def close(a, b, tol=1e-5):
 ck(hasattr(Math, 'Vector4LFO'), 'Vector4LFO in module')
 l = Math.Vector4LFO()
 ck(type(l).__name__ == 'Vector4LFO', 'the lfo type')
-ck('Vector4Provider' in [c.__name__ for c in type(l).__mro__],
-   'the Vector4Provider base chain')
+# The provider check is virtual -- no Vector4Provider type object -- so the
+# base chain is proved by acceptance: the lfo slots into a Vector4Provider
+# hole without coercion.
+holder = Math.Vector4Product()
+holder.a = l
+ck(holder.a is l, 'the lfo is a Vector4Provider')
 
 # The reference's defaults: SINE, unit period and amplitude, zero phase and
 # time, so a fresh wave sits at the middle of its range.
@@ -3741,8 +4237,11 @@ ck(raises(TypeError, lambda: setattr(l, 'waveform', None)),
    'None is no waveform')
 ck(raises(TypeError, lambda: setattr(l, 'period', 'x')),
    'period wants a float')
-ck(raises(TypeError, lambda: setattr(l, 'period', 2**100)),
-   'an overflowing int is no float')
+# An int past `long` reads as -1, the reference not checking the overflow
+# error (`script.cpp:1865-1868`), so the value lands as -1.0.
+l.period = 2**100
+ck(l.period == -1.0, 'an overflowing int reads as -1')
+l.period = 1.0
 ck(msg(TypeError, lambda: setattr(l, 'time', None)) == 'time must be set to a float',
    'the float TypeError message')
 ck(raises(TypeError, lambda: l.__delattr__('waveform')),
@@ -3803,9 +4302,11 @@ def close(a, b, tol=1e-5):
 ck(hasattr(Math, 'Vector4MatrixAdaptor'), 'Vector4MatrixAdaptor in module')
 a = Math.Vector4MatrixAdaptor()
 ck(type(a).__name__ == 'Vector4MatrixAdaptor', 'the adaptor type')
-ck('MatrixProvider' in [c.__name__ for c in type(a).__mro__],
-   'the MatrixProvider base chain')
-ck('Vector4Provider' not in [c.__name__ for c in type(a).__mro__],
+# The provider checks are virtual -- no type objects -- so the base chains
+# are proved by acceptance: `Math.Matrix(a)` below wants a MatrixProvider,
+# and a Vector4Provider hole refuses the adaptor here.
+holder = Math.Vector4Product()
+ck(raises(TypeError, lambda: setattr(holder, 'a', a)),
    'the adaptor is no Vector4Provider')
 
 # The reference's defaults: the XY_SCALE style and two empty slots.
@@ -3993,8 +4494,12 @@ def msg(exc, fn):
 ck(hasattr(Math, 'Vector4Swizzle'), 'Vector4Swizzle in module')
 s = Math.Vector4Swizzle()
 ck(type(s).__name__ == 'Vector4Swizzle', 'the swizzle type')
-ck('Vector4Provider' in [c.__name__ for c in type(s).__mro__],
-   'the Vector4Provider base chain')
+# The provider check is virtual -- no Vector4Provider type object -- so the
+# base chain is proved by acceptance: the swizzle slots into a
+# Vector4Provider hole without coercion.
+holder = Math.Vector4Product()
+holder.a = s
+ck(holder.a is s, 'the swizzle is a Vector4Provider')
 
 # The reference's defaults: all four slots empty, and an all-empty swizzle
 # is the caller's zero vector.
@@ -4092,8 +4597,12 @@ def close(a, b, tol=1e-6):
 ck(hasattr(Math, 'Vector4Combiner'), 'Vector4Combiner in module')
 c = Math.Vector4Combiner()
 ck(type(c).__name__ == 'Vector4Combiner', 'the combiner type')
-ck('Vector4Provider' in [x.__name__ for x in type(c).__mro__],
-   'the Vector4Provider base chain')
+# The provider check is virtual -- no Vector4Provider type object -- so the
+# base chain is proved by acceptance: the combiner slots into a
+# Vector4Provider hole without coercion.
+holder = Math.Vector4Product()
+holder.b = c
+ck(holder.b is c, 'the combiner is a Vector4Provider')
 
 # The reference's defaults: the ADD function and two empty slots, and either
 # empty slot leaves the caller's zero vector.
@@ -4248,8 +4757,12 @@ r12 = Math.getRegister(12)
 r13 = Math.getRegister(13)
 r14 = Math.getRegister(14)
 ck(type(r0).__name__ == 'Vector4Register', 'the register type')
-ck('Vector4Provider' in [x.__name__ for x in type(r0).__mro__],
-   'the Vector4Provider base chain')
+# The provider check is virtual -- no Vector4Provider type object -- so the
+# base chain is proved by acceptance: the register slots into a
+# Vector4Provider hole without coercion.
+holder = Math.Vector4Product()
+holder.a = r0
+ck(holder.a is r0, 'the register is a Vector4Provider')
 ck(Math.getRegister(0) is r0, 'the same register for the same number')
 ck(type(Math.getRegister(62)).__name__ == 'Vector4Register',
    'the last temporary register')
@@ -4257,8 +4770,12 @@ ck(type(Math.getRegister(62)).__name__ == 'Vector4Register',
 # A fresh shader reads the file's r_[0], still the zero default.
 empty = Math.Vector4Shader()
 ck(type(empty).__name__ == 'Vector4Shader', 'the shader type')
-ck('Vector4Provider' in [x.__name__ for x in type(empty).__mro__],
-   'the Vector4Provider base chain')
+# The provider check is virtual -- no Vector4Provider type object -- so the
+# base chain is proved by acceptance: the shader slots into a
+# Vector4Provider hole without coercion.
+holder = Math.Vector4Product()
+holder.b = empty
+ck(holder.b is empty, 'the shader is a Vector4Provider')
 v = empty.value
 ck(v.x == 0.0 and v.y == 0.0 and v.z == 0.0 and v.w == 0.0,
    'an empty shader is zero')
@@ -4329,7 +4846,11 @@ v = later.value
 ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0,
    'the register file persists across shaders')
 ck(r0.value.x == 2.0, 'the register reads the file live')
-ck(raises(AttributeError,
+# The inherited `Vector4Provider.value` declares a read-only setter
+# (`script_math.hpp`'s `PY_RO_ATTRIBUTE_SET( value )`), which raises a
+# `TypeError` naming the attribute and the concrete type -- not the
+# interpreter's `AttributeError`.
+ck(raises(TypeError,
           lambda: setattr(r1, 'value', Math.Vector4(0.0, 0.0, 0.0, 0.0))),
    'the register value is read-only')
 
@@ -4346,7 +4867,7 @@ ck(msg(TypeError, lambda: sh.addOp('x', r0, src)) ==
 ck(msg(TypeError, lambda: sh.addOp(300, r0, src)) ==
    'Integer is out of range', 'the opcode range error')
 ck(msg(TypeError, lambda: Math.getRegister(63)) ==
-   'argument 1 is greater than maximum value', 'the register maximum')
+   '() argument 1 is greater than maximum value', 'the register maximum')
 ck(type(Math.getRegister(6.9)).__name__ == 'Vector4Register',
    'the float register number truncates')
 ck(msg(TypeError, lambda: Math.getRegister(10 ** 20)) ==
@@ -4367,8 +4888,11 @@ ck(msg(TypeError, lambda: sh.addOp(0, 'no', src)) ==
 ck(msg(TypeError, lambda: sh.addOp(0, r0, 'no')) ==
    '() argument 3 must be set to a Vector4Provider or None',
    'the first input TypeError')
+# The fourth argument is the optional one: the reference's
+# `OPTARG( Vector4ProviderPtr, NULL, END )` names it `() argument 4
+# optionally`, the name that rides into the coercion message.
 ck(msg(TypeError, lambda: sh.addOp(0, r0, src, 'no')) ==
-   '() argument 4 must be set to a Vector4Provider or None',
+   '() argument 4 optionally must be set to a Vector4Provider or None',
    'the second input TypeError')
 v = sh.value
 ck(v.x == 2.0 and v.y == 3.0 and v.z == 4.0 and v.w == 5.0,
@@ -4464,10 +4988,15 @@ def msg(exc, fn):
 ck(hasattr(Math, 'MatrixProduct'), 'MatrixProduct in module')
 mp = Math.MatrixProduct()
 ck(type(mp).__name__ == 'MatrixProduct', 'the product type')
-ck(isinstance(mp, Math.MatrixProvider), 'the product is a MatrixProvider')
+# There is no MatrixProvider type object to isinstance against (the
+# reference has a PY_TYPEOBJECT but no PY_FACTORY); the provider check is
+# proved below by `Math.Matrix(mp)`, whose argument wants a MatrixProvider.
 ck(mp.a is None and mp.b is None, 'the slots start empty')
+# `argCountError`'s empty branch keeps the trailing full stop
+# (`script.cpp:2586`), and `PY_AUTO_DEFINE_INT`'s `#NAME` names the bare
+# class (`script.hpp:1046`), not the `Math.`-qualified spelling.
 ck(msg(TypeError, lambda: Math.MatrixProduct(1)) ==
-   'Math.MatrixProduct() takes no arguments', 'the factory count error')
+   'MatrixProduct() takes no arguments.', 'the factory count error')
 
 # Both slots empty: the identity, the reference's `m = identity` half.
 m = Math.Matrix(mp)
@@ -4567,7 +5096,9 @@ def msg(exc, fn):
 ck(hasattr(Math, 'MatrixInverse'), 'MatrixInverse in module')
 mi = Math.MatrixInverse(None)
 ck(type(mi).__name__ == 'MatrixInverse', 'the inverse type')
-ck(isinstance(mi, Math.MatrixProvider), 'the inverse is a MatrixProvider')
+# There is no MatrixProvider type object to isinstance against; the provider
+# check is proved right below by `Math.Matrix(mi)`, whose argument wants a
+# MatrixProvider.
 ck(mi.source is None, 'the source starts empty')
 m = Math.Matrix(mi)
 ck(m.get(0,0) == 1.0 and m.get(0,1) == 0.0, 'an empty source is the identity')
@@ -4597,12 +5128,14 @@ m = Math.Matrix(mi2)
 ck(m.get(0,0) == 0.0 and m.get(1,1) == 0.0 and m.get(2,2) == 0.0,
    'a singular source keeps its own value')
 
-# The factory count errors and the provider refusal.
+# The factory count errors and the provider refusal. `argCountError`
+# names the bare class (`PY_AUTO_DEFINE_INT`'s `#NAME`, `script.hpp:1046`),
+# not the `Math.`-qualified spelling.
 ck(msg(TypeError, lambda: Math.MatrixInverse()) ==
-   'Math.MatrixInverse() expects 1 argument of type MatrixProvider',
+   'MatrixInverse() expects 1 argument of type MatrixProvider',
    'the missing source count error')
 ck(msg(TypeError, lambda: Math.MatrixInverse(src, src)) ==
-   'Math.MatrixInverse() expects 1 argument of type MatrixProvider',
+   'MatrixInverse() expects 1 argument of type MatrixProvider',
    'the extra source count error')
 ck(msg(TypeError, lambda: Math.MatrixInverse('x')) ==
    '() argument 1 must be set to a MatrixProvider or None', 'the source refusal')
@@ -4627,417 +5160,4213 @@ __probe = '; '.join(_f) or 'ok'
         });
     }
 
-    /// `BigWorld.callback` and `BigWorld.cancelCallback` behave as the
-    /// reference's client timer pair does (`lib/pyscript/py_callback.cpp`,
-    /// the `#ifndef MF_SERVER` file): a registration returns a positive
-    /// `int` handle that increases with every registration, a pending
-    /// callback fires once at its deadline and not again, cancelling a
-    /// pending callback keeps it from firing while cancelling a missing,
-    /// invalid or already-fired handle is a quiet `None` no-op,
-    /// re-registering a fired function issues a fresh higher handle, a
-    /// negative delay clamps to zero, equal deadlines fire in registration
-    /// order, a zero-delay timer registered during its own tick waits one
-    /// frame, a callback cannot cancel the record running it (it still
-    /// leaves and the tick keeps going), a callback that raises is logged
-    /// with the reference's composed message without stopping the tick, and
-    /// the two argument-parsing errors carry the reference's strings.
+    /// The export manifest agrees with the live interpreter: the surface it
+    /// marks ported imports and resolves, and its scoping records read true
+    /// against the modules that exist today -- under a client component the
+    /// `BigWorld.component` attribute and the client callback pair are
+    /// present while the server timer trio is not, and the ported `Math`
+    /// module imports with every delivered name.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
-    fn scenario_the_bigworld_timers_behave_like_the_reference() {
-        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        {
-            let lines = lines.clone();
-            output_writer::set_log_sink(move |line, is_stderr| {
-                lines.lock().unwrap().push((line.to_owned(), is_stderr));
-            });
-        }
-        interpreter_scenario(&InitConfig::default(), |interpreter| {
-            let read = |source: &str| probe(interpreter, source);
-            let mut faults: Vec<String> = Vec::new();
-            macro_rules! ck {
-                ($cond:expr, $($arg:tt)*) => {
-                    if !($cond) {
-                        faults.push(format!($($arg)*));
+    fn scenario_the_manifest_matches_the_interpreter() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("client"),
+                ..Default::default()
+            },
+            |interpreter| {
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                assert_eq!(unsafe { manifest::check() }, Ok(()));
+                let _ = interpreter;
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                let big_world = unsafe { capi::PyImport_ImportModule(c"BigWorld".as_ptr()) };
+                assert!(!big_world.is_null(), "BigWorld imports");
+                // SAFETY: BigWorld is a live module object.
+                let component =
+                    unsafe { capi::PyObject_GetAttrString(big_world, c"component".as_ptr()) };
+                assert!(!component.is_null(), "BigWorld.component is present");
+                // SAFETY: both results are owned references from the calls
+                // above.
+                unsafe {
+                    capi::dec_ref(component);
+                    // The client role carries the callback pair...
+                    let callback = capi::PyObject_GetAttrString(big_world, c"callback".as_ptr());
+                    assert!(!callback.is_null(), "BigWorld.callback is here");
+                    capi::dec_ref(callback);
+                    capi::clear_error();
+                    // ...and never the server trio: the scoping facts the
+                    // manifest pins for BW-03-03-03.
+                    for name in ["addTimer", "delTimer", "addFrequentTask"] {
+                        let face = capi::PyObject_GetAttrString(
+                            big_world,
+                            std::ffi::CString::new(name)
+                                .expect("an ASCII name")
+                                .as_ptr(),
+                        );
+                        assert!(face.is_null(), "{name} is not on a client");
+                        capi::clear_error();
                     }
+                    capi::dec_ref(big_world);
+                }
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                let math = unsafe { capi::PyImport_ImportModule(c"Math".as_ptr()) };
+                assert!(!math.is_null(), "Math imports: the port delivered it");
+                // SAFETY: math is a live module object.
+                unsafe { capi::dec_ref(math) };
+            },
+        );
+    }
+
+    /// One role's `BigWorld` surface agrees with the manifest two ways:
+    /// `check()` walks the live module under the component it reads and
+    /// finds every ported row present-or-absent as its scope demands, and
+    /// the exact non-dunder name list the scripts see matches the
+    /// manifest's ported set for that role -- so a face that registered
+    /// under the wrong gate, or one the manifest forgot to row, fails here.
+    fn assert_role_visible_surface(interpreter: &Interpreter, component: &str) {
+        // SAFETY: the interpreter is up and this thread owns the GIL; the
+        // manifest check reads the live `BigWorld.component`.
+        assert_eq!(unsafe { manifest::check() }, Ok(()));
+        let expected = manifest::ported_surface_for_role(component).join(", ");
+        assert_eq!(
+            probe(
+                interpreter,
+                "import BigWorld\n\
+                 __probe = ', '.join(sorted(n for n in dir(BigWorld) \
+                 if not n.startswith('_')))",
+            ),
+            expected,
+            "the {component} component's visible BigWorld surface",
+        );
+    }
+
+    /// The role-visible `BigWorld` surface (BW-03-04-01): each named
+    /// component of the reference's role list (`script.cpp:599`) sees
+    /// exactly its manifest surface -- the server builds (`base`, `cell`,
+    /// `database`, `bot`) carry the timer trio and the mode marker, the
+    /// client and the editor carry the callback pair, and an unknown or
+    /// empty name carries only the shared `component` and `fetchURL`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_base_component_sees_the_server_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("base"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "base"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_cell_component_sees_the_server_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "cell"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_database_component_sees_the_server_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("database"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "database"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_bot_component_sees_the_server_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("bot"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "bot"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_client_component_sees_the_client_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("client"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "client"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_editor_component_sees_the_client_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("editor"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "editor"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_unknown_component_sees_only_the_shared_surface() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("watcher"),
+                ..Default::default()
+            },
+            |interpreter| assert_role_visible_surface(interpreter, "watcher"),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_an_empty_component_sees_only_the_shared_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert_role_visible_surface(interpreter, "")
+        });
+    }
+
+    /// The startup events the reference's `ScriptApp` owns
+    /// (`script_app.cpp:44-49`, `triggerOnInit` `:289-295`, `fini` `:81-89`):
+    /// the `onInit` / `onFini` listeners fire in level order, stable for
+    /// equal levels, `onInit` carries one boolean (`False` on a plain start,
+    /// `True` on a reload), `onFini` carries none, and `removeEventListener`
+    /// detaches the first listener matching by identity -- its second call
+    /// and an unknown event type both raise the reference's
+    /// `"Invalid event type '%s'"` sentence.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_script_events_fire_in_level_order_with_the_reference_arguments() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         log = []\n\
+                         def cb_a(*args): log.append(('a', args))\n\
+                         def cb_b(*args): log.append(('b', args))\n\
+                         def cb_c(*args): log.append(('c', args))\n\
+                         def cb_d(*args): log.append(('d', args))\n\
+                         def cb_f(*args): log.append(('f', args))\n\
+                         BigWorld.addEventListener('onInit', cb_a, -1)\n\
+                         BigWorld.addEventListener('onInit', cb_b, 0)\n\
+                         BigWorld.addEventListener('onInit', cb_c, 0)\n\
+                         BigWorld.addEventListener('onInit', cb_d, 10)\n\
+                         BigWorld.addEventListener('onFini', cb_f)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                // A plain start: one boolean `False`, level order with the
+                // equal-level pair keeping its insertion order.
+                assert!(crate::script_events::trigger_on_init(false));
+                assert_eq!(
+                    probe(interpreter, "__probe = log"),
+                    "[('a', (False,)), ('b', (False,)), ('c', (False,)), ('d', (False,))]",
+                );
+                // A reload: the same order, the flag flips to `True`.
+                assert!(crate::script_events::trigger_on_init(true));
+                assert_eq!(
+                    probe(interpreter, "__probe = log[4:]"),
+                    "[('a', (True,)), ('b', (True,)), ('c', (True,)), ('d', (True,))]",
+                );
+                // Fini: no arguments at all.
+                assert!(crate::script_events::trigger_on_fini());
+                assert_eq!(probe(interpreter, "__probe = log[8:]"), "[('f', ())]");
+                // Removing detaches the first pointer-identity match, so the
+                // equal-level pair keeps just `c`.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "BigWorld.removeEventListener('onInit', cb_b)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                assert!(crate::script_events::trigger_on_init(false));
+                assert_eq!(
+                    probe(interpreter, "__probe = log[9:]"),
+                    "[('a', (False,)), ('c', (False,)), ('d', (False,))]",
+                );
+                // The reference raises the same sentence for a listener that
+                // was never registered and for an unknown event type
+                // (`script_events.cpp:352-356`).
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "try:\n\
+                         \x20   BigWorld.removeEventListener('onInit', cb_b)\n\
+                         \x20   __probe = 'no-error'\n\
+                         except ValueError as e:\n\
+                         \x20   __probe = str(e)",
+                    ),
+                    "Invalid event type 'onInit'",
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "try:\n\
+                         \x20   BigWorld.addEventListener('nope', cb_a)\n\
+                         \x20   __probe = 'no-error'\n\
+                         except ValueError as e:\n\
+                         \x20   __probe = str(e)",
+                    ),
+                    "Invalid event type 'nope'",
+                );
+            },
+        );
+    }
+
+    /// A listener that raises fails its trigger (`is_okay` drops to false),
+    /// contributes `None` to the results list, and is printed and cleared the
+    /// way `Script::ask` does (`script.cpp:1185-1204`), so the walk carries
+    /// on to the later listeners and a subsequent trigger runs clean.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_raising_listener_fails_the_trigger_and_contributes_none() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         log = []\n\
+                         def cb_one(*args):\n\
+                         \x20   log.append('one')\n\
+                         \x20   return 'one'\n\
+                         def cb_boom(*args):\n\
+                         \x20   log.append('boom')\n\
+                         \x20   raise RuntimeError('exploded')\n\
+                         def cb_three(*args):\n\
+                         \x20   log.append('three')\n\
+                         \x20   return 'three'\n\
+                         BigWorld.addEventListener('onInit', cb_one, 0)\n\
+                         BigWorld.addEventListener('onInit', cb_boom, 0)\n\
+                         BigWorld.addEventListener('onInit', cb_three, 0)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                let (ok, results) = unsafe {
+                    // The event carries no arguments the listeners use.
+                    let args = capi::PyTuple_New(0);
+                    crate::script_events::trigger_event("onInit", args)
                 };
-            }
-
-            // The fixture: a log of every firing, the error capture, and the
-            // callback targets.
-            read(
-                r#"
-import BigWorld
-log = []
-def make(name):
-    def f():
-        log.append(name)
-    return f
-a = make('a'); b = make('b'); c = make('c'); d = make('d')
-after_self = make('after_self'); after_boom = make('after_boom')
-then = make('then')
-def boom():
-    raise ValueError('boom message')
-"#,
-            );
-            // A positive int handle that climbs per registration, and `None`
-            // from cancelling `b` before it ever fires.
-            let r = read(
-                "h1 = BigWorld.callback(10.0, a)\n\
-                 h2 = BigWorld.callback(10.0, b)\n\
-                 h3 = BigWorld.callback(10.0, c)\n\
-                 __probe = repr((type(h1).__name__, h1 > 0, h2 > h1, h3 > h2,\n\
-                                 BigWorld.cancelCallback(h2) is None))",
-            );
-            ck!(r == "('int', True, True, True, True)", "handles: {r}");
-
-            // Nothing due at 5; a and c fire at 10, once each.
-            timers::set_total_game_time(5.0);
-            timers::tick(5.0);
-            let r = read("__probe = repr(log)");
-            ck!(r == "[]", "nothing due at 5: {r}");
-            timers::set_total_game_time(10.0);
-            timers::tick(10.0);
-            let r = read("__probe = repr(log)");
-            ck!(r == "['a', 'c']", "a and c fire, cancelled b does not: {r}");
-            timers::set_total_game_time(20.0);
-            timers::tick(20.0);
-            let r = read("__probe = repr(log)");
-            ck!(r == "['a', 'c']", "one-shot: nothing fires again: {r}");
-
-            // Cancelling an invalid, unknown or already-fired handle is a
-            // quiet no-op.
-            let r = read(
-                "__probe = repr((BigWorld.cancelCallback(0) is None,\n\
-                                 BigWorld.cancelCallback(999999) is None,\n\
-                                 BigWorld.cancelCallback(h1) is None))",
-            );
-            ck!(r == "(True, True, True)", "quiet cancels: {r}");
-
-            // Re-registration: a fresh, higher handle for the same function
-            // that fires again (game time 20 + 5 = 25).
-            let h3n: i64 = read("__probe = h3").parse().expect("h3 is an int handle");
-            let r = read("h4 = BigWorld.callback(5.0, b)\n__probe = h4");
-            let h4n: i64 = r.parse().expect("h4 is an int handle");
-            ck!(
-                h4n > h3n,
-                "re-registration raises the handle: {h3n} -> {h4n}"
-            );
-            timers::set_total_game_time(24.0);
-            timers::tick(24.0);
-            let r = read("__probe = repr(log)");
-            ck!(r == "['a', 'c']", "re-registered b not due at 24: {r}");
-            timers::set_total_game_time(25.0);
-            timers::tick(25.0);
-            let r = read("__probe = repr(log)");
-            ck!(r == "['a', 'c', 'b']", "re-registered b fires at 25: {r}");
-
-            // A zero-delay timer registered during its own tick waits one
-            // frame: `reenter` fires at 30, the `d` it registers (deadline
-            // 30) is not reached until the next tick.
-            let r = read(
-                "def reenter():\n\
-                 \x20   log.append('r')\n\
-                 \x20   BigWorld.callback(0.0, d)\n\
-                 h5 = BigWorld.callback(0.0, reenter)\n\
-                 __probe = h5",
-            );
-            let h5n: i64 = r.parse().expect("h5 is an int handle");
-            ck!(
-                h5n > h4n,
-                "re-entrant registration raises the handle: {h4n} -> {h5n}"
-            );
-            timers::set_total_game_time(30.0);
-            timers::tick(30.0);
-            let r = read("__probe = repr(log)");
-            ck!(
-                r == "['a', 'c', 'b', 'r']",
-                "reenter fires, its zero-delay child waits a frame: {r}"
-            );
-            timers::tick(30.0);
-            let r = read("__probe = repr(log)");
-            ck!(
-                r == "['a', 'c', 'b', 'r', 'd']",
-                "the child fires next tick: {r}"
-            );
-
-            // A callback cannot cancel the record running it: the cancel is
-            // a no-op, the record still leaves, and the tick keeps going to
-            // the next due callback.
-            read(
-                "def self_cancel():\n\
-                 \x20   log.append('s')\n\
-                 \x20   BigWorld.cancelCallback(mine)\n\
-                 mine = BigWorld.callback(0.0, self_cancel)\n\
-                 BigWorld.callback(0.0, after_self)\n\
-                 __probe = 0",
-            );
-            timers::tick(30.0);
-            let r = read("__probe = repr(log)");
-            ck!(
-                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self']",
-                "self-cancel is a no-op and the tick continues: {r}"
-            );
-
-            // Cancelling a later pending callback keeps it from firing; a
-            // sibling with a later deadline still does (deadlines 35 and 40).
-            read(
-                "h_never = BigWorld.callback(5.0, make('never'))\n\
-                 BigWorld.callback(10.0, then)\n\
-                 __probe = 0",
-            );
-            let r = read("__probe = repr(BigWorld.cancelCallback(h_never) is None)");
-            ck!(
-                r == "True",
-                "cancelling the later callback returns None: {r}"
-            );
-            timers::set_total_game_time(40.0);
-            timers::tick(40.0);
-            let r = read("__probe = repr(log)");
-            ck!(
-                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then']",
-                "cancelled never does not fire, then does: {r}"
-            );
-
-            // A negative delay clamps to zero: due at the current game time
-            // (40), it fires on the next tick.
-            read("BigWorld.callback(-5.0, make('neg'))\n__probe = 0");
-            timers::set_total_game_time(50.0);
-            timers::tick(50.0);
-            let r = read("__probe = repr(log)");
-            ck!(
-                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg']",
-                "a negative delay clamps to zero and fires: {r}"
-            );
-
-            // Equal deadlines keep registration order.
-            read(
-                "seq = []\n\
-                 def make_seq(name):\n\
-                 \x20   def f():\n\
-                 \x20       seq.append(name)\n\
-                 \x20   return f\n\
-                 BigWorld.callback(0.0, make_seq('p'))\n\
-                 BigWorld.callback(0.0, make_seq('q'))\n\
-                 BigWorld.callback(0.0, make_seq('w'))\n\
-                 __probe = 0",
-            );
-            timers::set_total_game_time(60.0);
-            timers::tick(60.0);
-            let r = read("__probe = repr(seq)");
-            ck!(
-                r == "['p', 'q', 'w']",
-                "equal deadlines fire in registration order: {r}"
-            );
-
-            // The argument-parsing errors carry the reference's messages.
-            let r = read(
-                "def cap(exc, fn):\n\
-                 \x20   try:\n\
-                 \x20       fn()\n\
-                 \x20   except exc as e:\n\
-                 \x20       return str(e)\n\
-                 \x20   except Exception:\n\
-                 \x20       return 'unexpected'\n\
-                 \x20   return 'no error'\n\
-                 __probe = repr((cap(TypeError, lambda: BigWorld.callback(5.0)),\n\
-                 \x20               cap(TypeError, lambda: BigWorld.callback(5.0, 42)),\n\
-                 \x20               cap(TypeError, lambda: BigWorld.cancelCallback('x'))))",
-            );
-            ck!(
-                r == "('BigWorld.callback: Argument parsing error.', \
-                      'BigWorld.callback: Argument parsing error.', \
-                      'py_cancelCallback: Argument parsing error.')",
-                "argument errors: {r}"
-            );
-
-            // A callback that raises is logged with the reference's composed
-            // message -- `str(value) + " (" + str(type) + ")"` behind the
-            // prefix -- and the tick continues to the next due callback.
-            read("BigWorld.callback(0.0, boom)\nBigWorld.callback(0.0, after_boom)\n__probe = 0");
-            timers::set_total_game_time(70.0);
-            timers::tick(70.0);
-            let r = read("__probe = repr(log)");
-            ck!(
-                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg', \
-                      'after_boom']",
-                "the tick continues past a raising callback: {r}"
-            );
-            {
-                let captured = lines.lock().unwrap();
-                let logged = captured
-                    .iter()
-                    .filter(|(_, stderr)| *stderr)
-                    .map(|(line, _)| line.clone())
-                    .collect::<Vec<_>>();
-                ck!(
-                    logged
-                        .iter()
-                        .any(|line| line
-                            == "BigWorld Callback:  boom message (<class 'ValueError'>)"),
-                    "the raising callback is logged: {logged:?}"
+                assert!(!ok, "a raising listener fails the trigger");
+                assert_eq!(results.len(), 3);
+                // The walk reaches every listener: the raising one is in the
+                // middle, so the third still fires.
+                assert_eq!(
+                    probe(interpreter, "__probe = log"),
+                    "['one', 'boom', 'three']",
                 );
-            }
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                assert_eq!(unsafe { capi::to_string(results[0].as_ptr()) }, "one");
+                assert_eq!(results[1].as_ptr(), capi::py_none());
+                assert_eq!(unsafe { capi::to_string(results[2].as_ptr()) }, "three");
+                // The exception was printed and cleared, so the interpreter
+                // state is clean: once the raising listener is gone the next
+                // trigger runs clean.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "BigWorld.removeEventListener('onInit', cb_boom)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                assert!(crate::script_events::trigger_on_init(false));
+            },
+        );
+    }
 
-            // A malformed record is `Script::ask`'s generic contract, not a
-            // timer-path shape: `BigWorld.callback` validates the callable and
-            // always passes an empty tuple, so these records are only
-            // reachable through the port's `add` (the `Script::addTimer`
-            // surface). Each fires the reference's TypeError, is logged, and
-            // the tick keeps going to the next record.
-            read(
-                "def vec(a, b):\n\
-                 \x20   log.append('vec')\n\
-                 \x20   return a + b\n\
-                 __probe = 0",
+    /// The module functions route through the registry the reference's
+    /// `BigWorld.addEventListener` / `removeEventListener` do: a non-callable
+    /// raises `TypeError` before the registry is consulted, a registered
+    /// listener fires on the next trigger, and the removal drops it again.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_big_world_module_functions_route_the_event_registry() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         try:\n\
+                         \x20   BigWorld.addEventListener('onInit', 42)\n\
+                         \x20   __probe = 'no-error'\n\
+                         except TypeError as e:\n\
+                         \x20   __probe = str(e)",
+                    ),
+                    "Argument is not callable",
+                );
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "try:\n\
+                         \x20   BigWorld.removeEventListener('onInit', 42)\n\
+                         \x20   __probe = 'no-error'\n\
+                         except TypeError as e:\n\
+                         \x20   __probe = str(e)",
+                    ),
+                    "Argument is not callable",
+                );
+                // A callable registers and fires on the next trigger; the
+                // removal drops it again.
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "log = []\n\
+                         def cb(*args):\n\
+                         \x20   log.append('fired')\n\
+                         __added = BigWorld.addEventListener('onInit', cb)\n\
+                         __probe = (__added is None, len(log))",
+                    ),
+                    "(True, 0)",
+                );
+                assert!(crate::script_events::trigger_on_init(false));
+                assert_eq!(probe(interpreter, "__probe = log"), "['fired']");
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "BigWorld.removeEventListener('onInit', cb)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                assert!(crate::script_events::trigger_on_init(false));
+                assert_eq!(probe(interpreter, "__probe = log"), "['fired']");
+            },
+        );
+    }
+
+    /// `initFromPersonality` (`script_events.cpp:248-268`) folds the
+    /// personality module's same-named attributes in as level-0 listeners: a
+    /// personality with an `onInit` fires it on the next startup trigger, a
+    /// missing `onFini` attribute is cleared and skipped, and the personality
+    /// listener joins the level-0 band after the module-registered one, in
+    /// registration order.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_personality_attributes_join_the_event_registry() {
+        interpreter_scenario(
+            &InitConfig {
+                component: String::from("cell"),
+                ..Default::default()
+            },
+            |interpreter| {
+                assert_eq!(
+                    probe(
+                        interpreter,
+                        "import BigWorld\n\
+                         log = []\n\
+                         class Personality:\n\
+                         \x20   pass\n\
+                         personality = Personality()\n\
+                         def personality_on_init(flag): log.append(('p', flag))\n\
+                         personality.onInit = personality_on_init\n\
+                         def cb(*args): log.append(('m', args))\n\
+                         BigWorld.addEventListener('onInit', cb, 0)\n\
+                         __probe = 'ok'",
+                    ),
+                    "ok",
+                );
+                // SAFETY: the interpreter is up and this thread owns the GIL.
+                let personality = unsafe {
+                    let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                    let attribute = capi::PyObject_GetAttrString(main, c"personality".as_ptr());
+                    PyRef::from_owned(attribute).expect("the personality module")
+                };
+                // SAFETY: the personality module is live and this thread owns
+                // the GIL.
+                unsafe { crate::script_events::init_from_personality(personality.as_ptr()) };
+                assert!(crate::script_events::trigger_on_init(false));
+                // The personality's level-0 listener joined the module's
+                // level-0 one, in registration order.
+                assert_eq!(
+                    probe(interpreter, "__probe = log"),
+                    "[('m', (False,)), ('p', False)]",
+                );
+            },
+        );
+    }
+
+    /// The Math module serves the ported surface: the delivered factory
+    /// names sit in the module while the internal coercion target, the
+    /// register type and the Windows-only animation never show, a provider
+    /// chain re-evaluates bottom-up on every read, a tuple coerces into the
+    /// Basic provider whose `value` answers the reference's read-only
+    /// sentence, the walls raise the reference's own sentences, the
+    /// register file hands out one shared handle per cell, and the host
+    /// tick walks the autoTick providers.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_math_module_serves_the_ported_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // Every delivered factory name, and none of the internals: the
+            // coercion target (`Vector4Basic`) and the register type are
+            // link-internal in the reference, and `MatrixAnimation` is
+            // Windows-only.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = ', '.join(sorted(n for n in dir(Math) if not n.startswith('_')))",
+                ),
+                "Matrix, MatrixInverse, MatrixProduct, Plane, Vector2, Vector3, Vector4, \
+                 Vector4Animation, Vector4Combiner, Vector4Distance, Vector4LFO, \
+                 Vector4MatrixAdaptor, Vector4Morph, Vector4Product, Vector4Shader, \
+                 Vector4Swizzle, Vector4Translation, getRegister",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = any(n in dir(Math) for n in \
+                     ('Vector4Basic', 'Vector4Register', 'MatrixAnimation'))",
+                ),
+                "False",
+            );
+
+            // A product chain re-evaluates bottom-up on every read: a
+            // provider assigned to an input reads through, so a later write
+            // below it shows on top without a re-assign. A product with
+            // only one source provides that source's value -- the rule the
+            // reference documents (`script_math.cpp:3322-3325`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     top = Math.Vector4Product()\n\
+                     bottom = Math.Vector4Product()\n\
+                     bottom.b = (2, 2, 2, 2)\n\
+                     top.a = bottom\n\
+                     top.b = (1, 1, 1, 1)\n\
+                     before = tuple(top.value)\n\
+                     bottom.a = (3, 3, 3, 3)\n\
+                     __probe = (before, tuple(top.value))",
+                ),
+                "((2.0, 2.0, 2.0, 2.0), (6.0, 6.0, 6.0, 6.0))",
+            );
+
+            // A tuple coerced into a provider slot becomes the Basic type.
+            // Its `value` is read-write: the reference declares the member
+            // `PY_RW_ATTRIBUTE_DECLARE( value_, value )`
+            // (`script_math.hpp:492`), so a write lands in the held value
+            // and feeds the product; a non-vector is refused.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     p = Math.Vector4Product()\n\
+                     p.a = (1, 2, 3, 4)\n\
+                     __probe = tuple(p.a.value)",
+                ),
+                "(1.0, 2.0, 3.0, 4.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     p = Math.Vector4Product()\n\
+                     p.a = (1, 2, 3, 4)\n\
+                     p.a.value = (5, 6, 7, 8)\n\
+                     __probe = (tuple(p.a.value), tuple(p.value))",
+                ),
+                "((5.0, 6.0, 7.0, 8.0), (5.0, 6.0, 7.0, 8.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     p = Math.Vector4Product()\n\
+                     p.a = (1, 2, 3, 4)\n\
+                     try:\n\
+                     \x20   p.a.value = 5\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "value must be set to a Vector4 or tuple of 4 floats",
+            );
+
+            // The constructor wall: the factories take no script arguments.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4Product(1)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector4Product() takes no arguments.",
+            );
+
+            // The enum walls: a string name round-trips, an unknown name is
+            // the `ValueError` listing the legal ones, a non-string is the
+            // same sentence as the `TypeError`.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     lfo = Math.Vector4LFO()\n\
+                     lfo.waveform = 'SINE'\n\
+                     __probe = lfo.waveform",
+                ),
+                "SINE",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     lfo = Math.Vector4LFO()\n\
+                     try:\n\
+                     \x20   lfo.waveform = 'WOBBLE'\n\
+                     except ValueError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     lfo = Math.Vector4LFO()\n\
+                     try:\n\
+                     \x20   lfo.waveform = 2\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH",
+            );
+
+            // The keyframe walls: a non-sequence and a wrong pair refuse
+            // with the reference's sentences, a good set lerp-walks on the
+            // `time` attribute.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     animation = Math.Vector4Animation()\n\
+                     try:\n\
+                     \x20   animation.keyframes = 5\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "keyframes must be set to a sequence",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     animation = Math.Vector4Animation()\n\
+                     try:\n\
+                     \x20   animation.keyframes = [(0.0,)]\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "An item of a PySTLSequence of a keyframe must be set to a tuple of \
+                 a float and a Vector4Provider",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     animation = Math.Vector4Animation()\n\
+                     animation.keyframes = [(0.0, (1, 2, 3, 4)), (1.0, (2, 2, 2, 2))]\n\
+                     animation.time = 0.5\n\
+                     __probe = tuple(animation.value)",
+                ),
+                "(1.5, 2.0, 2.5, 3.0)",
+            );
+
+            // The register file: one shared handle per cell, zeros until a
+            // shader writes, and the cap of 62 is the reference's own
+            // `MAX_ARG` sentence.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     register = Math.getRegister(3)\n\
+                     __probe = (register is Math.getRegister(3), tuple(register.value))",
+                ),
+                "(True, (0.0, 0.0, 0.0, 0.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.getRegister(63)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "() argument 1 is greater than maximum value",
+            );
+
+            // The provider wall: a plain number is no provider.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     product = Math.Vector4Product()\n\
+                     try:\n\
+                     \x20   product.a = 5\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "a must be set to a Vector4Provider or None",
+            );
+
+            // The autoTick providers walk under the host's per-frame tick:
+            // the morph sits a hair past its old value -- `target` writes
+            // `time_ = 0.f` directly (`script_math.cpp:3852-3856`) but the
+            // `duration` setter re-clamps through the 0.0001 floor
+            // (`:3882-3885`) -- and reaches the target halfway through its
+            // duration.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     morph = Math.Vector4Morph((0, 0, 0, 0))\n\
+                     morph.target = (2, 2, 2, 2)\n\
+                     morph.duration = 1.0\n\
+                     __probe = tuple(round(c, 5) for c in morph.value)",
+                ),
+                "(0.0002, 0.0002, 0.0002, 0.0002)",
             );
             // SAFETY: the interpreter is up and this thread owns the GIL.
-            unsafe {
-                // A non-callable function with an empty argument tuple.
-                let non_callable =
-                    PyRef::from_owned(capi::PyLong_FromLong(5)).expect("an int object");
-                let empty = PyRef::from_owned(capi::PyTuple_New(0)).expect("an empty tuple");
-                timers::add(non_callable, empty, "Script: ", 0.0);
-
-                // A record whose function and arguments are both null.
-                timers::add(PyRef::empty(), PyRef::empty(), "Script: ", 0.0);
-
-                // A callable with a two-element argument tuple: the general
-                // `call_object` walk, not the empty-tuple fast path.
-                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
-                let dictionary = capi::PyModule_GetDict(main);
-                let vec_fn = capi::PyDict_GetItemString(dictionary, c"vec".as_ptr());
-                capi::inc_ref(vec_fn);
-                let vec_fn = PyRef::from_owned(vec_fn).expect("the vec function");
-                let pair = capi::PyTuple_New(2);
-                assert_eq!(capi::PyTuple_SetItem(pair, 0, capi::PyLong_FromLong(1)), 0);
-                assert_eq!(capi::PyTuple_SetItem(pair, 1, capi::PyLong_FromLong(2)), 0);
-                let pair = PyRef::from_owned(pair).expect("a pair tuple");
-                timers::add(vec_fn, pair, "Script: ", 0.0);
-            }
-            timers::set_total_game_time(90.0);
-            timers::tick(90.0);
-            let r = read("__probe = repr(log)");
-            ck!(
-                r == "['a', 'c', 'b', 'r', 'd', 's', 'after_self', 'then', 'neg', \
-                      'after_boom', 'vec']",
-                "the malformed records leave the tick running to vec: {r}"
-            );
-            {
-                let captured = lines.lock().unwrap();
-                let logged = captured
-                    .iter()
-                    .filter(|(_, stderr)| *stderr)
-                    .map(|(line, _)| line.clone())
-                    .collect::<Vec<_>>();
-                ck!(
-                    logged.iter().any(|line| line
-                        == "Script:  Script call attempted on a non-callable object or  pArgs is not a tuple. (<class 'TypeError'>)"),
-                    "the non-callable record is logged: {logged:?}"
-                );
-                ck!(
-                    logged.iter().any(|line| line
-                        == "Script:  Script call attempted with a NULL function or argument pointers. (<class 'TypeError'>)"),
-                    "the null record is logged: {logged:?}"
-                );
-            }
-
-            // `Script::ask`'s first guard (`if (PyErr_Occurred())
-            // PyErr_Print()`): an exception already pending when the tick
-            // starts is printed before the call, and the record still runs.
-            // `BigWorld.callback` cannot leave one pending (every failed
-            // callback is printed and cleared), so the pending error is set
-            // the way a host-side caller would leave it.
-            read("def quiet():\n\x20   log.append('quiet')\n__probe = 0");
-            // SAFETY: the interpreter is up and this thread owns the GIL.
-            unsafe {
-                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
-                let dictionary = capi::PyModule_GetDict(main);
-                let quiet = capi::PyDict_GetItemString(dictionary, c"quiet".as_ptr());
-                capi::inc_ref(quiet);
-                let quiet = PyRef::from_owned(quiet).expect("the quiet function");
-                let empty = PyRef::from_owned(capi::PyTuple_New(0)).expect("an empty tuple");
-                timers::add(quiet, empty, "Script: ", 0.0);
-                capi::PyErr_SetString(capi::PyExc_TypeError, c"pending before the tick".as_ptr());
-            }
-            timers::set_total_game_time(100.0);
-            timers::tick(100.0);
-            let r = read("__probe = repr(log[-1])");
-            ck!(
-                r == "'quiet'",
-                "the record ran behind the pending error: {r}"
-            );
-            {
-                let captured = lines.lock().unwrap();
-                let logged = captured
-                    .iter()
-                    .filter(|(_, stderr)| *stderr)
-                    .map(|(line, _)| line.clone())
-                    .collect::<Vec<_>>();
-                ck!(
-                    logged
-                        .iter()
-                        .any(|line| line.contains("pending before the tick")),
-                    "the pending error is printed before the call: {logged:?}"
-                );
-            }
-
-            assert!(
-                faults.is_empty(),
-                "timer behaviour mismatch:\n  {}",
-                faults.join("\n  ")
+            crate::math::tick(0.5);
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n__probe = tuple(round(c, 5) for c in morph.value)"
+                ),
+                "(1.0002, 1.0002, 1.0002, 1.0002)",
             );
         });
     }
 
-    /// The export manifest agrees with the live interpreter: the surface it
-    /// marks ported imports and resolves, and its scoping records read true
-    /// against the modules that exist today -- `BigWorld.component` and the
-    /// client-only timer pair `BigWorld.callback`/`cancelCallback` are
-    /// present and callable, and the `Math` module and every delivered row
-    /// it carries are ported, the Client-scope `MatrixAnimation` row still
-    /// pending.
+    /// The vector types carry their whole script surface: the constructor
+    /// forms and their wall, the ostream string, the arithmetic slots with
+    /// the Vector3 cross-product multiply, the lexicographic comparisons,
+    /// the in-place operators handing the same object back, the method
+    /// set with its per-dimension refusals, the attributes, the sequence
+    /// protocol, and the bytes state round trip.
     #[test]
     #[ignore = "runs in its own process: see SCENARIOS"]
-    fn scenario_the_manifest_matches_the_interpreter() {
+    fn scenario_the_vector_types_exercise_their_surface() {
         interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // Construction: empty is zeros, a single float fills, a tuple
+            // sets, and a wrong shape is the set wall.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (str(Math.Vector2()), str(Math.Vector2(3)), \
+                     str(Math.Vector3(1, 2, 3)), str(Math.Vector4(1, 2, 3, 4)))",
+                ),
+                "('(0, 0)', '(3, 3)', '(1, 2, 3)', '(1, 2, 3, 4)')",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector2((1, 2, 3))\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector.set must be set to a sequence of 2 floats, or one float",
+            );
+
+            // The arithmetic slots: tuple operands work on either side,
+            // scalars multiply and divide, and a fresh vector comes back
+            // from every operator.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector2((1, 2))\n\
+                     w = Math.Vector2((3, 4))\n\
+                     __probe = (str(v + w), str(v - w), str(v + (1, 1)), \
+                     str((1, 1) + v), str(v * 2), str(2 * v), str(v / 2))",
+                ),
+                "('(4, 6)', '(-2, -2)', '(2, 3)', '(2, 3)', '(2, 4)', '(2, 4)', '(0.5, 1)')",
+            );
+            // A division by zero is the ostream's word, not a crash.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n__probe = str(Math.Vector2((1, 2)) / 0)",
+                ),
+                "(inf, inf)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector2((1, 2))\n\
+                     __probe = (str(-v), str(+v), bool(Math.Vector2()), bool(v))",
+                ),
+                "('(-1, -2)', '(1, 2)', False, True)",
+            );
+            // The Vector3 multiply: two vectors are the cross product, a
+            // scalar the plain multiply, anything else the interpreter's
+            // own refusal.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (str(Math.Vector3((1, 0, 0)) * Math.Vector3((0, 1, 0))), \
+                     str(Math.Vector3((1, 0, 0)) * 3))",
+                ),
+                "('(0, 0, 1)', '(3, 0, 0)')",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 0, 0)) * 'nope'\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "can't multiply sequence by non-int of type 'Math.Vector3'",
+            );
+
+            // The comparisons are lexicographic over the components.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     a = Math.Vector2((1, 2))\n\
+                     b = Math.Vector2((1, 3))\n\
+                     __probe = (a == b, a != b, a < b, b <= a, b > a, a >= b, \
+                     a == Math.Vector2((1, 2)))",
+                ),
+                "(False, True, True, False, True, False, True)",
+            );
+
+            // The in-place operators hand the same object back.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     q = Math.Vector2((1, 2))\n\
+                     r = q\n\
+                     q += (1, 1)\n\
+                     __probe = (str(q), r is q)",
+                ),
+                "('(2, 3)', True)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     a3 = Math.Vector3((1, 0, 0))\n\
+                     a3 *= Math.Vector3((0, 1, 0))\n\
+                     __probe = str(a3)",
+                ),
+                "(0, 0, 1)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     q = Math.Vector2((1, 2))\n\
+                     try:\n\
+                     \x20   q += 'nope'\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = (str(error), str(q))",
+                ),
+                "(\"unsupported operand type(s) for +=: 'Math.Vector2' and 'str'\", '(1, 2)')",
+            );
+
+            // The methods: dot, the cross2D specializations and the
+            // refusal past them, the flat distances, the pitch/yaw setter
+            // and its refusals, the distance pair, scale, normalise, and
+            // the tuple and list views.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (Math.Vector2((1, 2)).dot((3, 4)), \
+                     Math.Vector2((1, 2)).cross2D((3, 4)), \
+                     Math.Vector3((1, 2, 3)).cross2D((4, 5, 6)))",
+                ),
+                "(11.0, -2.0, -6.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4((1, 2, 3, 4)).cross2D((1, 2, 3, 4))\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "No cross2D for this type of vector",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (Math.Vector3((1, 2, 3)).flatDistTo((4, 6, 0)), \
+                     Math.Vector3((1, 2, 3)).flatDistSqrTo((4, 6, 0)), \
+                     Math.Vector2((0, 0)).distTo((3, 4)), \
+                     Math.Vector2((0, 0)).distSqrTo((3, 4)))",
+                ),
+                "(4.242640495300293, 18.0, 5.0, 25.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector2((1, 2)).flatDistTo((3, 4))\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "No flatDistTo for this type of vector",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     p = Math.Vector3((1, 2, 3))\n\
+                     answer = p.setPitchYaw(0.0, 1.0)\n\
+                     __probe = (answer, round(p.x, 4), round(p.y, 4), round(p.z, 4))",
+                ),
+                "(None, 0.8415, -0.0, 0.5403)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector2((1, 2)).setPitchYaw(1, 2)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "No setPitchYaw for this type of vector",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3)).setPitchYaw(1)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector3.setPitchYaw expects exactly two arguments",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     s = Math.Vector3((1, 2, 3))\n\
+                     scaled = s.scale(2)\n\
+                     n = Math.Vector3((3, 0, 0))\n\
+                     normalised = n.normalise()\n\
+                     __probe = (str(s), str(scaled), str(n), normalised, \
+                     Math.Vector2((3, 4)).length, Math.Vector2((3, 4)).lengthSquared)",
+                ),
+                "('(1, 2, 3)', '(2, 4, 6)', '(1, 0, 0)', None, 5.0, 25.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3)).normalise(1)\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector.normalise takes no arguments (nor does it brook any dissent :)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (Math.Vector3((1, 2, 3)).tuple(), \
+                     Math.Vector3((1, 2, 3)).list(), tuple(Math.Vector2((1, 2))), \
+                     len(Math.Vector2((1, 2))))",
+                ),
+                "((1.0, 2.0, 3.0), [1.0, 2.0, 3.0], (1.0, 2.0), 2)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector2((3, 4))\n\
+                     __probe = (v.isReference, v.isReadOnly)",
+                ),
+                "(False, False)",
+            );
+            // The yaw and pitch views of a Vector3, in degrees.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((0, 1, 0))\n\
+                     __probe = (round(v.yaw, 4), round(v.pitch, 4))",
+                ),
+                "(0.0, -1.5708)",
+            );
+
+            // The sequence protocol: indexing reads and writes, the
+            // negative index, and the out-of-range and non-integer walls.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((1, 2, 3))\n\
+                     __probe = (v[0], v[-1], len(v))",
+                ),
+                "(1.0, 3.0, 3)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3))[5]\n\
+                     except IndexError as error:\n\
+                     \x20   __probe = str(error)",
+                ),
+                "Vector index out of range",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((1, 2, 3))\n\
+                     v[0] = 9\n\
+                     v[-1] = 7\n\
+                     __probe = str(v)",
+                ),
+                "(9, 2, 7)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3))['a']\n\
+                     except TypeError:\n\
+                     \x20   __probe = 'TypeError'\n\
+                     else:\n\
+                     \x20   __probe = 'no error'",
+                ),
+                "TypeError",
+            );
+
+            // The state round trip is a bytes blob of the raw vector.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     blob = Math.Vector3((1, 2, 3)).__getstate__()\n\
+                     v = Math.Vector3((9, 9, 9))\n\
+                     __probe = (type(blob).__name__, len(blob), v.__setstate__(blob), \
+                     str(v))",
+                ),
+                "('bytes', 12, None, '(1, 2, 3)')",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector3((1, 2, 3)).__setstate__(b'xx')\n\
+                     except TypeError as error:\n\
+                     \x20   __probe = repr(str(error))",
+                ),
+                "'__setstate__ called with invalid type\\n'",
+            );
+
+            // The per-dimension attribute spread: z and w only where the
+            // dimension carries them.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     __probe = (hasattr(Math.Vector2((1, 2)), 'z'), \
+                     hasattr(Math.Vector3((1, 2, 3)), 'z'), \
+                     hasattr(Math.Vector3((1, 2, 3)), 'w'), \
+                     hasattr(Math.Vector4((1, 2, 3, 4)), 'w'), \
+                     Math.Vector4((1, 2, 3, 4)).w)",
+                ),
+                "(False, True, False, True, 4.0)",
+            );
+
+            // The component setters write through `safeSetVector`, the
+            // in-place operators fold a scalar into every component, and
+            // `set` takes every accepted form: separate floats, a tuple, a
+            // list, another vector, or one float repeated. The component
+            // setter's refusal and the non-3-vector `flatDistSqrTo` are
+            // walls (`script_math.cpp:1798-1884, 2110-2157`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((1, 2, 3))\n\
+                     v.x = 10.0\n\
+                     v.y = 20.0\n\
+                     v.z = 30.0\n\
+                     w = Math.Vector4((1, 1, 1, 1))\n\
+                     w.w = 4.0\n\
+                     v *= 2.0\n\
+                     v /= 2.0\n\
+                     w *= 3.0\n\
+                     w /= 1.5\n\
+                     kind = 'none'\n\
+                     try:\n\
+                     \x20   v.x = 'x'\n\
+                     except TypeError as error:\n\
+                     \x20   kind = type(error).__name__\n\
+                     packed = Math.Vector3((0, 0, 0))\n\
+                     packed.set((5, 6, 7))\n\
+                     listed = Math.Vector3((0, 0, 0))\n\
+                     listed.set([8, 9, 10])\n\
+                     repeated = Math.Vector3((0, 0, 0))\n\
+                     repeated.set(42)\n\
+                     flat = 'none'\n\
+                     try:\n\
+                     \x20   w.flatDistSqrTo((0, 0, 0), (0, 0, 0))\n\
+                     except TypeError as error:\n\
+                     \x20   flat = type(error).__name__\n\
+                     __probe = (v.x, v.y, v.z, w.w, kind, packed.x, packed.z, \
+                     listed.y, repeated.x, flat)",
+                ),
+                "(10.0, 20.0, 30.0, 8.0, 'TypeError', 5.0, 7.0, 9.0, 42.0, \
+                 'TypeError')",
+            );
+
+            // The in-place operator answers `NotImplemented` for a
+            // non-number, which Python surfaces as the `TypeError`, and
+            // `scale` refuses its non-float argument; a tuple crosses over
+            // as a vector and the distance pair takes one -- the arms the
+            // arithmetic probes leave alone. The `cross2D` read is the
+            // XZ-plane product the reference computes
+            // (`script_math.cpp:2014`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     v = Math.Vector3((2, 0, 0))\n\
+                     w = Math.Vector3((0, 3, 0))\n\
+                     inplace = 'no'\n\
+                     try:\n\
+                     \x20   v *= 'x'\n\
+                     except BaseException as error:\n\
+                     \x20   inplace = type(error).__name__\n\
+                     scaled = 'no'\n\
+                     try:\n\
+                     \x20   v.scale('x')\n\
+                     except TypeError as error:\n\
+                     \x20   scaled = type(error).__name__\n\
+                     try:\n\
+                     \x20   dot = v.dot((4, 0, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   dot = type(error).__name__\n\
+                     try:\n\
+                     \x20   cross = v.cross2D((0, 5, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   cross = type(error).__name__\n\
+                     try:\n\
+                     \x20   near = v.distTo((1, 0, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   near = type(error).__name__\n\
+                     try:\n\
+                     \x20   flat = v.flatDistTo((2, 0, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   flat = type(error).__name__\n\
+                     try:\n\
+                     \x20   squared = v.flatDistSqrTo((2, 1, 0))\n\
+                     except BaseException as error:\n\
+                     \x20   squared = type(error).__name__\n\
+                     __probe = (inplace, scaled, dot, cross, near, flat, squared)",
+                ),
+                "('TypeError', 'TypeError', 8.0, 0.0, 1.0, 0.0, 0.0)",
+            );
+
+            // The walls the arithmetic probes leave alone: `set` from a
+            // vector, its short-tuple zero fill and its refusal, the
+            // binary operators answering `NotImplemented` for a non-number,
+            // the rich-compare fallthrough, the sequence slot, the
+            // `tuple`/`list` argument windows, and the distance and
+            // cross-product parses refusing a non-vector.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except BaseException as error:\n\
+                     \x20       return type(error).__name__\n\
+                     def put(seq, key, value):\n\
+                     \x20   seq[key] = value\n\
+                     v = Math.Vector3((2, 0, 0))\n\
+                     s = Math.Vector3((0, 0, 0))\n\
+                     short = Math.Vector3((0, 0, 0))\n\
+                     sx = 'err'\n\
+                     try:\n\
+                     \x20   s.set(v)\n\
+                     \x20   sx = s.x\n\
+                     except BaseException as error:\n\
+                     \x20   sx = type(error).__name__\n\
+                     shx = 'err'\n\
+                     try:\n\
+                     \x20   short.set((1, 2))\n\
+                     \x20   shx = (short.x, short.z)\n\
+                     except BaseException as error:\n\
+                     \x20   shx = type(error).__name__\n\
+                     sub = 'err'\n\
+                     try:\n\
+                     \x20   d = Math.Vector4((3, 1, 1, 1)) - Math.Vector4((1, 1, 1, 1))\n\
+                     \x20   sub = d.w\n\
+                     except BaseException as error:\n\
+                     \x20   sub = type(error).__name__\n\
+                     bad = wall(lambda: s.set('x'))\n\
+                     add = wall(lambda: v + 'x')\n\
+                     radd = wall(lambda: 'x' + v)\n\
+                     cmp = wall(lambda: v < 'x')\n\
+                     assign = wall(lambda: put(v, 0, 5.0))\n\
+                     element = wall(lambda: v[0])\n\
+                     idx = wall(lambda: put(v, 9, 1.0))\n\
+                     typ = wall(lambda: put(v, 0, 'x'))\n\
+                     tp = wall(lambda: v.tuple(1))\n\
+                     ls = wall(lambda: v.list(1))\n\
+                     dt = wall(lambda: v.distTo('x'))\n\
+                     ds = wall(lambda: v.distSqrTo('x'))\n\
+                     fd = wall(lambda: v.flatDistTo('x'))\n\
+                     fs = wall(lambda: v.flatDistSqrTo('x'))\n\
+                     c2 = wall(lambda: v.cross2D('x'))\n\
+                     __probe = (sx, shx, sub, bad, add, radd, cmp, assign, \
+                     element, idx, typ, tp, ls, dt, ds, fd, fs, c2)",
+                ),
+                "(2.0, 'TypeError', 0.0, 'TypeError', 'TypeError', 'TypeError', \
+                 'TypeError', 'no', 'no', 'IndexError', 'TypeError', 'TypeError', \
+                 'TypeError', 'TypeError', 'TypeError', 'TypeError', 'TypeError', \
+                 'TypeError')",
+            );
+        });
+    }
+
+    /// The matrix and plane types carry their whole script surface, and
+    /// the matrix providers read through live while a `Math.Matrix`
+    /// constructor copy snapshots: the cell and attribute reads, the
+    /// rotation and multiplication order, the inversion and its
+    /// singular refusal, the projections, the state blob, the plane ray,
+    /// the adaptor's enum wall, and the product and inverse providers.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_matrix_and_plane_types_exercise_their_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // The cells: identity start, setElement and get, the
+            // translation and the axis and origin applications.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setElement(1, 2, 7)\n\
+                     __probe = (m.get(0, 0), m.get(1, 2))",
+                ),
+                "(1.0, 7.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((3, 4, 5))\n\
+                     a = str(m.applyToOrigin())\n\
+                     b = str(m.applyToAxis(0))\n\
+                     c = str(m.applyV4Point((1, 2, 3, 1)))\n\
+                     __probe = (a, b, c)",
+                ),
+                "('(3, 4, 5)', '(1, 0, 0)', '(4, 6, 8, 1)')",
+            );
+
+            // The quarter turn and the vector application: the row
+            // layout sends +X to -Z, with the f32 epsilon on the cosine.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setRotateY(1.5707964)\n\
+                     p = m.applyPoint((1, 0, 0))\n\
+                     __probe = tuple(round(c, 6) for c in p)",
+                ),
+                "(-0.0, 0.0, -1.0)",
+            );
+
+            // The Euler attributes read back the composition, and the
+            // determinant and mirror read the axes.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setRotateYPR((0.5, -0.25, 0.125))\n\
+                     s = Math.Matrix()\n\
+                     s.setScale((2, 3, 4))\n\
+                     d = Math.Matrix()\n\
+                     d.setScale((-2, 3, 4))\n\
+                     __probe = (round(m.yaw, 5), round(m.pitch, 5), round(m.roll, 5), \
+                     round(s.determinant, 5), s.isMirrored, round(d.determinant, 5), \
+                     d.isMirrored)",
+                ),
+                "(0.5, -0.25, 0.125, 24.0, False, -24.0, True)",
+            );
+
+            // The multiplication order: pre lands the argument on the
+            // left, post on the right -- the pre-multiplied rotation
+            // swings the translated origin, the post one does not.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     r = Math.Matrix()\n\
+                     r.setRotateY(1.5707964)\n\
+                     t = Math.Matrix()\n\
+                     t.setTranslate((1, 0, 0))\n\
+                     left = Math.Matrix()\n\
+                     left.postMultiply(t)\n\
+                     left.preMultiply(r)\n\
+                     right = Math.Matrix()\n\
+                     right.postMultiply(t)\n\
+                     right.postMultiply(r)\n\
+                     lp = left.applyToOrigin()\n\
+                     rp = right.applyToOrigin()\n\
+                     __probe = (tuple(round(c, 4) for c in lp), \
+                     tuple(round(c, 4) for c in rp))",
+                ),
+                "((1.0, 0.0, 0.0), (-0.0, 0.0, -1.0))",
+            );
+
+            // The inversion round-trips and the singular refusal leaves
+            // the matrix untouched.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setRotateY(0.9)\n\
+                     m.setTranslate((3, -2, 5))\n\
+                     o = Math.Matrix()\n\
+                     o.setRotateY(0.9)\n\
+                     o.setTranslate((3, -2, 5))\n\
+                     m.invert()\n\
+                     m.postMultiply(o)\n\
+                     home = m.applyToOrigin()\n\
+                     s = Math.Matrix()\n\
+                     s.setScale((0, 1, 1))\n\
+                     try:\n\
+                     \x20   s.invert()\n\
+                     except ValueError as error:\n\
+                     \x20   refusal = str(error)\n\
+                     __probe = (tuple(abs(c) < 1e-4 for c in home), refusal, \
+                     round(s.get(0, 0), 5))",
+                ),
+                "((True, True, True), 'Matrix could not be inverted', 0.0)",
+            );
+
+            // The projections and the lookAt bottom row.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.orthogonalProjection(4, 2, 1, 101)\n\
+                     l = Math.Matrix()\n\
+                     l.lookAt((1, 2, 3), (0, 0, 1), (0, 1, 0))\n\
+                     __probe = (m.get(0, 0), m.get(1, 1), m.get(3, 3), \
+                     round(l.get(3, 0), 5), round(l.get(3, 1), 5), round(l.get(3, 2), 5))",
+                ),
+                "(0.5, 1.0, 1.0, -1.0, -2.0, -3.0)",
+            );
+
+            // The state blob round trip.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((1, 2, 3))\n\
+                     blob = m.__getstate__()\n\
+                     c = Math.Matrix()\n\
+                     c.__setstate__(blob)\n\
+                     __probe = (type(blob).__name__, len(blob), str(c.applyToOrigin()))",
+                ),
+                "('bytes', 64, '(1, 2, 3)')",
+            );
+
+            // The plane: three points, the ray hit on the plane, and an
+            // in-plane ray answers the source itself.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     plane = Math.Plane()\n\
+                     plane.init((0, 0, 5), (1, 0, 5), (0, 1, 5))\n\
+                     hit = plane.intersectRay((0, 0, 10), (0, 0, -1))\n\
+                     flat = plane.intersectRay((0, 0, 5), (1, 0, 0))\n\
+                     __probe = (str(hit), str(flat))",
+                ),
+                "('(0, 0, 5)', '(0, 0, 5)')",
+            );
+
+            // The matrix providers read through live, while a Matrix
+            // constructor copy snapshots -- the reference documents the
+            // difference (`script_math.cpp:857-858`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     t = Math.Matrix()\n\
+                     t.setTranslate((3, 4, 5))\n\
+                     only = Math.MatrixProduct()\n\
+                     only.a = t\n\
+                     only_view = str(Math.Matrix(only).applyToOrigin())\n\
+                     p = Math.MatrixProduct()\n\
+                     p.a = t\n\
+                     p.b = Math.Matrix()\n\
+                     via_a = str(Math.Matrix(p.a).applyToOrigin())\n\
+                     snapshot = Math.Matrix(p)\n\
+                     before = str(snapshot.applyToOrigin())\n\
+                     t.setTranslate((9, 9, 9))\n\
+                     fresh = str(Math.Matrix(p).applyToOrigin())\n\
+                     frozen = str(snapshot.applyToOrigin())\n\
+                     __probe = (only_view, via_a, before, fresh, frozen)",
+                ),
+                "('(3, 4, 5)', '(3, 4, 5)', '(3, 4, 5)', '(9, 9, 9)', '(3, 4, 5)')",
+            );
+
+            // The inverse provider negates the rotation and translation.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     t = Math.Matrix()\n\
+                     t.setTranslate((3, 4, 5))\n\
+                     inverse = Math.MatrixInverse(t)\n\
+                     __probe = Math.Matrix(inverse).applyToOrigin()",
+                ),
+                "(-3, -4, -5)",
+            );
+
+            // The adaptor's enum wall and its look-at composition.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ad = Math.Vector4MatrixAdaptor()\n\
+                     ad.style = 'XYZ_SCALE'\n\
+                     name = ad.style\n\
+                     try:\n\
+                     \x20   ad.style = 'BAD'\n\
+                     except ValueError as error:\n\
+                     \x20   refusal = str(error)\n\
+                     __probe = (name, refusal)",
+                ),
+                "('XYZ_SCALE', 'style must be set to one of XYZ_SCALE, XY_SCALE, \
+                 X_ROTATE, Y_ROTATE, Z_ROTATE, LOOKAT, or LOOKAT_SCALEZ')",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ad = Math.Vector4MatrixAdaptor()\n\
+                     ad.style = 'X_ROTATE'\n\
+                     ad.source = (1.5707964, 0, 0, 0)\n\
+                     ad.position = (5, 0, 0, 0)\n\
+                     m = Math.Matrix(ad)\n\
+                     first = tuple(round(c, 5) for c in m.applyToAxis(1))\n\
+                     ad.source = (0, 0, 0, 0)\n\
+                     fresh = tuple(round(c, 5) for c in Math.Matrix(ad).applyToAxis(1))\n\
+                     frozen = tuple(round(c, 5) for c in m.applyToAxis(1))\n\
+                     __probe = (first, fresh, frozen)",
+                ),
+                "((0.0, -0.0, 1.0), (0.0, 1.0, 0.0), (0.0, -0.0, 1.0))",
+            );
+        });
+    }
+    /// The `Matrix` and `Plane` methods the type scenario leaves alone:
+    /// the setters and the element accessors, the three axis rotations
+    /// with their angle window, the multiply order and the singular
+    /// refusal, the four applications, the two projections, the state
+    /// blob's rejections, the translation accessor, the call slot, and
+    /// the plane's ray -- every expectation pinned against
+    /// `test_script_math.cpp:296-1026`.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_matrix_and_plane_methods_exercise_their_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // The zero and identity setters, the scale, and the mirror
+            // flag the determinant's sign drives.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     zero = Math.Matrix()\n\
+                     zero.setZero()\n\
+                     ident = Math.Matrix()\n\
+                     ident.setScale((2, 3, 4))\n\
+                     ident.setIdentity()\n\
+                     scale = Math.Matrix()\n\
+                     scale.setScale((2, 3, 4))\n\
+                     mirror = Math.Matrix()\n\
+                     mirror.setScale((1, 1, -1))\n\
+                     __probe = (zero.determinant, zero.get(1, 1), ident.determinant, \
+                     ident.get(0, 0), ident.get(0, 1), tuple(scale.get(i, i) for i in range(4)), \
+                     scale.determinant, mirror.determinant, mirror.isMirrored)",
+                ),
+                "(0.0, 0.0, 1.0, 1.0, 0.0, (2.0, 3.0, 4.0, 1.0), 24.0, -1.0, True)",
+            );
+
+            // `set` copies a whole matrix through the provider parse, and
+            // the translation accessor reads and writes the bottom row
+            // while the elements mask their indices with `& 3`.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     trans = Math.Matrix()\n\
+                     trans.setTranslate((1, 2, 3))\n\
+                     m.set(trans)\n\
+                     copied = m.translation.z\n\
+                     el = Math.Matrix()\n\
+                     el.setElement(3, 0, 1.0)\n\
+                     el.setElement(3, 1, 2.0)\n\
+                     el.setElement(3, 2, 4.0)\n\
+                     rows = (el.get(3, 0), el.get(3, 1), el.get(3, 2), el.get(3, 3))\n\
+                     el.translation = (7, 8, 9)\n\
+                     after = (el.translation.x, el.translation.y, el.translation.z, \
+                     el.get(3, 0), el.get(3, 1), el.get(3, 2), el.get(3, 3), \
+                     el.applyToOrigin().z)\n\
+                     wrap = Math.Matrix()\n\
+                     wrap.setElement(4, 0, 5.0)\n\
+                     __probe = (copied, rows, after, wrap.get(0, 0), wrap.get(4, 0))",
+                ),
+                "(3.0, (1.0, 2.0, 4.0, 1.0), (7.0, 8.0, 9.0, 7.0, 8.0, 9.0, 1.0, 9.0), \
+                 5.0, 5.0)",
+            );
+
+            // The three axis rotations, the YPR triple, the angle window
+            // at both ends, and the determinant every rotation keeps.
+            // The `yaw` read back is the Euler decomposition of the stored
+            // matrix, so the legal 100 radian angle wraps into `(-pi, pi]` --
+            // `100 - 16*pi` in the f32 arithmetic the reference carries
+            // (`script_math.cpp:2417-2439`).
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     rx = Math.Matrix()\n\
+                     rx.setRotateX(0.5)\n\
+                     ry = Math.Matrix()\n\
+                     ry.setRotateY(0.5)\n\
+                     rz = Math.Matrix()\n\
+                     rz.setRotateZ(0.5)\n\
+                     ypr = Math.Matrix()\n\
+                     ypr.setRotateYPR((0.1, 0.2, 0.3))\n\
+                     edge = Math.Matrix()\n\
+                     edge.setRotateY(100.0)\n\
+                     __probe = (round(rx.pitch, 5), round(rx.yaw, 5), round(ry.yaw, 5), \
+                     round(ry.pitch, 5), round(rz.roll, 5), round(rz.yaw, 5), \
+                     round(ypr.yaw, 5), round(ypr.pitch, 5), round(ypr.roll, 5), \
+                     round(ypr.determinant, 5), round(edge.yaw, 5))",
+                ),
+                "(0.5, 0.0, 0.5, -0.0, 0.5, 0.0, 0.1, 0.2, 0.3, 1.0, -0.53096)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     edge = Math.Matrix()\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except TypeError as error:\n\
+                     \x20       return str(error)\n\
+                     __probe = (wall(lambda: edge.setRotateY(100.5)), \
+                     wall(lambda: edge.setRotateY(-100.5)), \
+                     wall(lambda: edge.setRotateX(1000.0)), \
+                     wall(lambda: edge.setRotateZ(1000.0)), \
+                     wall(lambda: edge.setRotateYPR((0.0, 0.0, 200.0))), \
+                     wall(lambda: edge.setRotateYPR((0.0, 200.0, 0.0))), \
+                     wall(lambda: edge.setRotateYPR((200.0, 0.0, 0.0))), \
+                     wall(lambda: edge.setRotateY()), \
+                     wall(lambda: edge.setRotateYPR((0.0, 0.0))), \
+                     wall(lambda: edge.setScale(1)), \
+                     wall(lambda: edge.setScale()), \
+                     wall(lambda: edge.setZero(1)), \
+                     wall(lambda: edge.setIdentity(1)))",
+                ),
+                "('() argument 1 must be a valid angle', '() argument 1 must be a valid angle', \
+                 '() argument 1 must be a valid angle', '() argument 1 must be a valid angle', \
+                 '() argument 1 element 2 must be a valid angle', \
+                 '() argument 1 element 1 must be a valid angle', \
+                 '() argument 1 element 0 must be a valid angle', \
+                 'setRotateY() expects 1 argument of type float', \
+                 '() argument 1 must be set to a Vector3 or a tuple of 3 floats', \
+                 '() argument 1 must be set to a Vector3 or a tuple of 3 floats', \
+                 'setScale() expects 1 argument of type Vector3', \
+                 'setZero() takes no arguments.', \
+                 'setIdentity() takes no arguments.')",
+            );
+
+            // The multiply order and the inversion: the pre-multiply
+            // swings the old translation, the post one keeps it, the
+            // inverse undoes it, and a singular matrix is refused with
+            // its cells left as they were.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     half = 3.14159 / 2\n\
+                     tr = Math.Matrix()\n\
+                     tr.setTranslate((1, 0, 0))\n\
+                     ro = Math.Matrix()\n\
+                     ro.setRotateY(half)\n\
+                     pre = Math.Matrix()\n\
+                     pre.set(ro)\n\
+                     pre.preMultiply(tr)\n\
+                     post = Math.Matrix()\n\
+                     post.set(ro)\n\
+                     post.postMultiply(tr)\n\
+                     inv = Math.Matrix()\n\
+                     inv.setTranslate((1, 2, 3))\n\
+                     inv.invert()\n\
+                     back = Math.Matrix()\n\
+                     back.set(inv)\n\
+                     back.invert()\n\
+                     sing = Math.Matrix()\n\
+                     sing.setZero()\n\
+                     try:\n\
+                     \x20   sing.invert()\n\
+                     \x20   refusal = 'no'\n\
+                     except ValueError as error:\n\
+                     \x20   refusal = str(error)\n\
+                     __probe = (round(pre.translation.x, 3), round(pre.translation.z, 3), \
+                     round(pre.yaw, 2), round(post.translation.x, 3), \
+                     round(post.translation.y, 3), round(inv.translation.x, 3), \
+                     round(inv.translation.z, 3), round(back.translation.x, 3), \
+                     round(back.translation.y, 3), round(back.translation.z, 3), \
+                     round(back.determinant, 3), sing.determinant, refusal)",
+                ),
+                "(0.0, -1.0, 1.57, 1.0, 0.0, -1.0, -3.0, 1.0, 2.0, 3.0, 1.0, 0.0, \
+                 'Matrix could not be inverted')",
+            );
+
+            // The four applications: the translation reaches points and
+            // origins but not vectors, the fourth component divides, and
+            // the axis index wraps with `& 3`.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((2, 4, 8))\n\
+                     rot = Math.Matrix()\n\
+                     rot.setRotateY(3.14159 / 2)\n\
+                     p = m.applyPoint((1, 2, 3))\n\
+                     v4 = m.applyV4Point((1, 2, 3, 1))\n\
+                     v = m.applyVector((1, 2, 3))\n\
+                     o = m.applyToOrigin()\n\
+                     __probe = ((p.x, p.y, p.z), (v4.x, v4.z, v4.w), (v.x, v.z), \
+                     (o.x, o.z), round(rot.applyToAxis(2).x, 3), \
+                     round(rot.applyToAxis(2).z, 3), round(rot.applyToAxis(9).x, 3), \
+                     round(rot.applyToAxis(9).y, 3))",
+                ),
+                "((3.0, 6.0, 11.0), (3.0, 11.0, 1.0), (1.0, 3.0), (2.0, 8.0), 1.0, 0.0, \
+                 0.0, 1.0)",
+            );
+
+            // `lookAt` builds a view matrix whose translation reads back
+            // the negated basis dot products.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     look = Math.Matrix()\n\
+                     look.lookAt((0, 0, -10), (0, 0, 10), (0, 1, 0))\n\
+                     __probe = (round(look.translation.x, 3), round(look.translation.z, 3))",
+                ),
+                // `-position.dotProduct(Right)` negates the zero dot product,
+                // so the `x` translation is the negative zero the reference
+                // writes (`matrix.cpp:726`).
+                "(-0.0, 10.0)",
+            );
+
+            // The projections fill the documented 4x4 layouts.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     orth = Math.Matrix()\n\
+                     orth.orthogonalProjection(2.0, 4.0, 1.0, 10.0)\n\
+                     persp = Math.Matrix()\n\
+                     persp.perspectiveProjection(3.14159265 / 2, 1.0, 1.0, 11.0)\n\
+                     __probe = (round(orth.get(0, 0), 4), round(orth.get(0, 1), 4), \
+                     round(orth.get(1, 1), 4), round(orth.get(2, 2), 4), \
+                     round(orth.get(3, 3), 4), round(orth.translation.z, 4), \
+                     round(persp.get(0, 0), 4), round(persp.get(1, 1), 4), \
+                     round(persp.get(2, 2), 4), round(persp.get(3, 2), 4), \
+                     round(persp.determinant, 4))",
+                ),
+                "(1.0, 0.0, 0.5, 0.1111, 1.0, -0.1111, 1.0, 1.0, 1.1, -1.1, 1.1)",
+            );
+
+            // The state blob round trips, and each rejected shape leaves
+            // the target untouched.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((1, 2, 3))\n\
+                     state = m.__getstate__()\n\
+                     other = Math.Matrix()\n\
+                     other.__setstate__(state)\n\
+                     kept = (other.translation.x, other.translation.y, other.translation.z)\n\
+                     def wall(body, kind):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except kind as error:\n\
+                     \x20       return str(error)\n\
+                     shaped = (len(state), isinstance(state, bytes), kept, \
+                     wall(lambda: other.__setstate__(state, state), TypeError), \
+                     wall(lambda: other.__setstate__(('nope',)), ValueError), \
+                     wall(lambda: other.__setstate__((b'short',)), ValueError), \
+                     other.translation.x)\n\
+                     __probe = shaped",
+                ),
+                "(64, True, (1.0, 2.0, 3.0), \
+                 'Matrix.__setstate__ was given wrong args', \
+                 'Matrix.__setstate__ was given bad state', \
+                 'Matrix.__setstate__ was given bad state', 1.0)",
+            );
+
+            // The call slot is `get`: the same two-index read, the same
+            // masked lookup, and the same walls.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setElement(1, 2, 7.0)\n\
+                     m.translation = (5, 6, 7)\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except TypeError as error:\n\
+                     \x20       return str(error)\n\
+                     __probe = (m(1, 2), m(5, 2), wall(lambda: m(1)), \
+                     wall(lambda: m('x', 0)), wall(lambda: m(0, 'x')), \
+                     wall(lambda: Math.Matrix(42)), wall(lambda: Math.Matrix(1, 2)), \
+                     wall(lambda: m.set(42)), wall(lambda: m.set(None)), \
+                     wall(lambda: m.set()), wall(lambda: m.get()), \
+                     wall(lambda: m.setElement(0, 0)), \
+                     wall(lambda: m.setElement(0, 0, 'x')), \
+                     wall(lambda: m.applyPoint((1.0, 2.0))), \
+                     wall(lambda: m.applyV4Point((1.0, 2.0, 3.0))), \
+                     wall(lambda: m.applyVector('x')), \
+                     wall(lambda: m.applyToAxis()), wall(lambda: m.applyToOrigin(1)), \
+                     wall(lambda: m.lookAt((0.0, 0.0, 0.0))), \
+                     wall(lambda: m.orthogonalProjection(1.0)), \
+                     wall(lambda: m.perspectiveProjection(1.0, 1.0, 1.0)), \
+                     wall(lambda: m.preMultiply(42)), \
+                     wall(lambda: m.postMultiply(42)), wall(lambda: m.preMultiply()), \
+                     str(m.translation))",
+                ),
+                "(7.0, 7.0, 'get() expects 2 arguments of types uint, uint', \
+                 '() argument 1 must be set to an uint', \
+                 '() argument 2 must be set to an uint', \
+                 'Math.Matrix(): Expected an optional MatrixProvider', \
+                 'Math.Matrix(): Expected an optional MatrixProvider', \
+                 '() argument 1 must be set to a MatrixProvider or None', \
+                 '() argument 1 cannot be None', 'set() expects 1 argument of type \
+                 MatrixProvider', 'get() expects 2 arguments of types uint, uint', \
+                 'setElement() expects 3 arguments of types uint, uint, float', \
+                 '() argument 3 must be set to a float', \
+                 '() argument 1 must be set to a Vector3 or a tuple of 3 floats', \
+                 '() argument 1 must be set to a Vector4 or tuple of 4 floats', \
+                 '() argument 1 must be set to a Vector3 or a tuple of 3 floats', \
+                 'applyToAxis() expects 1 argument of type uint', \
+                 'applyToOrigin() takes no arguments.', \
+                 'lookAt() expects 3 arguments of types Vector3, Vector3, Vector3', \
+                 'orthogonalProjection() expects 4 arguments of types float, float, float, \
+                 float', \
+                 'perspectiveProjection() expects 4 arguments of types float, float, float, \
+                 float', \
+                 '() argument 1 must be set to a MatrixProvider or None', \
+                 '() argument 1 must be set to a MatrixProvider or None', \
+                 'preMultiply() expects 1 argument of type MatrixProvider', \
+                 '(5, 6, 7)')",
+            );
+
+            // The plane: the ray through the floor, the parallel ray that
+            // hands the source back, and the parse walls. The reference's
+            // own test (`test_script_math.cpp:1019-1022`) only asserts
+            // `TypeError` for each, and its `Plane` factory ignores its
+            // argument (`script_math.cpp:5279-5283`), so the two-argument
+            // `init` fails the count and the extra argument is accepted.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     floor = Math.Plane()\n\
+                     floor.init((0, 0, 0), (1, 0, 0), (0, 0, 1))\n\
+                     hit = floor.intersectRay((0, 5, 0), (0, -1, 0))\n\
+                     par = floor.intersectRay((0, 5, 0), (1, 0, 0))\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except TypeError as error:\n\
+                     \x20       return str(error)\n\
+                     __probe = (round(hit.x, 3), round(hit.y, 3), round(hit.z, 3), \
+                     round(par.x, 3), round(par.y, 3), round(par.z, 3), \
+                     wall(lambda: floor.init((0, 1, 0))), \
+                     wall(lambda: floor.intersectRay((0, 0, 0))), \
+                     wall(lambda: floor.init((0, 0, 0), (1, 0))), \
+                     wall(lambda: Math.Plane(5).intersectRay((0, 5, 0), (0, -1, 0)).y))",
+                ),
+                "(0.0, 0.0, 0.0, 0.0, 5.0, 0.0, \
+                 'init() expects 3 arguments of types Vector3, Vector3, Vector3', \
+                 'intersectRay() expects 2 arguments of types Vector3, Vector3', \
+                 'init() expects 3 arguments of types Vector3, Vector3, Vector3', \
+                 'no')",
+            );
+
+            // The pickling hooks drive a real round trip through the
+            // protocol, the translation setter rewrites the bottom row,
+            // and a couple of reads the type scenario does not touch. The
+            // reference replaces `sys.path` with the resource paths
+            // (`script.cpp:566-571`), so the stdlib `copy` module is not
+            // importable and the round trip calls the hooks the way
+            // `copy.copy` would.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     m = Math.Matrix()\n\
+                     m.setTranslate((1, 2, 3))\n\
+                     clone = Math.Matrix()\n\
+                     clone.__setstate__(m.__getstate__())\n\
+                     clone.translation = (4, 5, 6)\n\
+                     __probe = (round(clone.translation.x, 3), round(clone.translation.z, 3), \
+                     round(clone.applyToOrigin().y, 3), clone.get(3, 3), \
+                     round(m.determinant, 3))",
+                ),
+                "(4.0, 6.0, 5.0, 1.0, 1.0)",
+            );
+
+            // The walls the happy-path probes leave alone: the argument
+            // windows on `setRotateYPR`, `invert` and `applyV4Point`, the
+            // state blob's length check, the plane and application parses,
+            // and the translation setter's non-vector refusal.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except BaseException as error:\n\
+                     \x20       return type(error).__name__\n\
+                     m = Math.Matrix()\n\
+                     ypr = wall(lambda: m.setRotateYPR())\n\
+                     inv = wall(lambda: m.invert(1))\n\
+                     v4 = wall(lambda: m.applyV4Point())\n\
+                     st = wall(lambda: m.__setstate__(b'short'))\n\
+                     pl = Math.Plane()\n\
+                     pi = wall(lambda: pl.init('x'))\n\
+                     pr = wall(lambda: pl.intersectRay('x'))\n\
+                     ap = wall(lambda: m.applyPoint('x'))\n\
+                     pre = wall(lambda: m.preMultiply('x'))\n\
+                     tr = wall(lambda: setattr(m, 'translation', 'x'))\n\
+                     __probe = (ypr, inv, v4, st, pi, pr, ap, pre, tr)",
+                ),
+                "('TypeError', 'TypeError', 'TypeError', 'ValueError', 'TypeError', \
+                 'TypeError', 'TypeError', 'TypeError', 'TypeError')",
+            );
+        });
+    }
+
+    /// The `Vector4` providers exercise their whole script surface: the
+    /// product's source forms and walls, the translation and the distance
+    /// over matrix origins, the LFO's four waveforms under the shared
+    /// tick, the swizzle and the combiner's seven functions, the
+    /// animation's keyframe walk with the clock wrap, the morph's clamped
+    /// clock, the adaptor's styles, and the shader's register machine --
+    /// every expectation pinned against the reference's own unit tests
+    /// (`test_script_math.cpp:1028-1608`).
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_v4_providers_exercise_their_surface() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            // The product: no source is the zero vector, either source
+            // alone passes through, both multiply componentwise, and a
+            // tuple or a `Vector4` both wrap as a `Vector4Basic`.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     none = Math.Vector4Product()\n\
+                     lone = Math.Vector4Product()\n\
+                     lone.a = (1, 2, 0.5, 0)\n\
+                     only_b = Math.Vector4Product()\n\
+                     only_b.b = (3, 6, 9, 12)\n\
+                     prod = Math.Vector4Product()\n\
+                     prod.a = (1, 2, 0.5, 0)\n\
+                     prod.b = Math.Vector4(2, 2, 2, 2)\n\
+                     __probe = (Math.Vector4Product().a is None, type(prod.a).__name__, \
+                     str(prod.a.value), str(none.value), str(lone.value), str(only_b.value), \
+                     str(prod.value), isinstance(prod.a.value, Math.Vector4))",
+                ),
+                "(True, 'Vector4Basic', '(1, 2, 0.5, 0)', '(0, 0, 0, 0)', \
+                 '(1, 2, 0.5, 0)', '(3, 6, 9, 12)', '(2, 4, 1, 0)', True)",
+            );
+
+            // The product's walls: `value` is read-only, a plain number
+            // is no provider, and `None` clears a slot to the other
+            // source.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   prod.value = (1, 1, 1, 1)\n\
+                     \x20   read_only = 'no'\n\
+                     except TypeError as error:\n\
+                     \x20   read_only = str(error)\n\
+                     try:\n\
+                     \x20   prod.a = 42\n\
+                     \x20   wall = 'no'\n\
+                     except TypeError as error:\n\
+                     \x20   wall = str(error)\n\
+                     prod.a = None\n\
+                     __probe = (read_only, wall, str(prod.value))",
+                ),
+                "('Sorry, the attribute value in Math.Vector4Product is read-only', \
+                 'a must be set to a Vector4Provider or None', '(2, 2, 2, 2)')",
+            );
+
+            // The translation reads the source's origin with w = 1, and
+            // the distance spreads the gap between the two origins into
+            // all four components.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ma = Math.Matrix()\n\
+                     ma.setTranslate((1, 2, 3))\n\
+                     mb = Math.Matrix()\n\
+                     mb.setTranslate((4, 6, 3))\n\
+                     trans = Math.Vector4Translation(ma)\n\
+                     trans.source = mb\n\
+                     dist = Math.Vector4Distance(ma, mb)\n\
+                     __probe = (tuple(trans.value), trans.source is mb, \
+                     tuple(round(c, 5) for c in dist.value), dist.a is ma, dist.b is mb)",
+                ),
+                "((4.0, 6.0, 3.0, 1.0), True, (5.0, 5.0, 5.0, 5.0), True, True)",
+            );
+
+            // The translation and distance walls: the argument counts and
+            // the matrix-provider converter's sentence.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4Translation(42)\n\
+                     except TypeError as error:\n\
+                     \x20   not_provider = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Translation()\n\
+                     except TypeError as error:\n\
+                     \x20   missing = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Distance(ma)\n\
+                     except TypeError as error:\n\
+                     \x20   one = str(error)\n\
+                     try:\n\
+                     \x20   trans.source = 42\n\
+                     except TypeError as error:\n\
+                     \x20   attribute = str(error)\n\
+                     __probe = (not_provider, missing, one, attribute)",
+                ),
+                "('() argument 1 must be set to a MatrixProvider or None', \
+                 'Vector4Translation() expects 1 argument of type MatrixProvider', \
+                 'Vector4Distance() expects 2 arguments of types MatrixProvider, \
+                 MatrixProvider', \
+                 'source must be set to a MatrixProvider or None')",
+            );
+
+            // The LFO's four waveforms at the clock the reference's unit
+            // test pins: the half-amplitude sine at zero, the sawtooth
+            // ramp, the triangle each side of the half period, the square
+            // low then high, and the flat line a zero period draws.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     sine = Math.Vector4LFO()\n\
+                     sine.period = 1.0\n\
+                     sine.amplitude = 2.0\n\
+                     saw = Math.Vector4LFO()\n\
+                     saw.period = 1.0\n\
+                     saw.amplitude = 2.0\n\
+                     saw.waveform = 'SAWTOOTH'\n\
+                     saw.time = 0.25\n\
+                     tri = Math.Vector4LFO()\n\
+                     tri.period = 1.0\n\
+                     tri.amplitude = 2.0\n\
+                     tri.waveform = 'TRIANGLE'\n\
+                     tri.time = 0.25\n\
+                     tri_high = Math.Vector4LFO()\n\
+                     tri_high.period = 1.0\n\
+                     tri_high.amplitude = 2.0\n\
+                     tri_high.waveform = 'TRIANGLE'\n\
+                     tri_high.time = 0.75\n\
+                     sq = Math.Vector4LFO()\n\
+                     sq.period = 1.0\n\
+                     sq.amplitude = 2.0\n\
+                     sq.waveform = 'SQUARE'\n\
+                     sq.time = 0.25\n\
+                     sq_high = Math.Vector4LFO()\n\
+                     sq_high.period = 1.0\n\
+                     sq_high.amplitude = 2.0\n\
+                     sq_high.waveform = 'SQUARE'\n\
+                     sq_high.time = 0.75\n\
+                     flat = Math.Vector4LFO()\n\
+                     flat.period = 0.0\n\
+                     flat.amplitude = 5.0\n\
+                     neg = Math.Vector4LFO()\n\
+                     neg.period = -1.0\n\
+                     neg.amplitude = 5.0\n\
+                     neg.waveform = 'SQUARE'\n\
+                     neg.time = 0.3\n\
+                     __probe = (sine.waveform, round(sine.period, 5), \
+                     round(sine.amplitude, 5), round(sine.phase, 5), round(sine.time, 5), \
+                     round(sine.value.x, 5), round(saw.value.x, 5), round(tri.value.x, 5), \
+                     round(tri_high.value.x, 5), round(sq.value.x, 5), \
+                     round(sq_high.value.x, 5), round(flat.value.x, 5), \
+                     round(neg.value.x, 5))",
+                ),
+                "('SINE', 1.0, 2.0, 0.0, 0.0, 1.0, 0.5, 1.5, 1.5, 0.0, 2.0, 0.0, 0.0)",
+            );
+
+            // The tick advances the clock and flips the parity: the
+            // negative-period square follows the parity counter, which
+            // starts out even and goes odd after one frame.
             // SAFETY: the interpreter is up and this thread owns the GIL.
-            assert_eq!(unsafe { manifest::check() }, Ok(()));
-            let _ = interpreter;
+            crate::math::tick(0.1);
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n__probe = (round(neg.value.x, 5), round(neg.time, 5))",
+                ),
+                "(5.0, 0.4)",
+            );
+
+            // The LFO's walls: the enum sentences and the float parse.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   neg.waveform = 'NOPE'\n\
+                     except ValueError as error:\n\
+                     \x20   wrong = str(error)\n\
+                     try:\n\
+                     \x20   neg.waveform = 5\n\
+                     except TypeError as error:\n\
+                     \x20   not_string = str(error)\n\
+                     try:\n\
+                     \x20   neg.period = 'x'\n\
+                     except TypeError as error:\n\
+                     \x20   period = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4LFO(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     __probe = (wrong, not_string, period, factory)",
+                ),
+                "('waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH', \
+                 'waveform must be set to one of SQUARE, TRIANGLE, SINE, or SAWTOOTH', \
+                 'period must be set to a float', \
+                 'Vector4LFO() takes no arguments.')",
+            );
+
+            // The swizzle gathers the x component of each source into
+            // its own slot.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     sw = Math.Vector4Swizzle()\n\
+                     sw.x = (1, 9, 9, 9)\n\
+                     sw.y = (2, 9, 9, 9)\n\
+                     sw.z = (3, 9, 9, 9)\n\
+                     sw.w = (4, 9, 9, 9)\n\
+                     __probe = (type(sw.x).__name__, tuple(sw.value))",
+                ),
+                "('Vector4Basic', (1.0, 2.0, 3.0, 4.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   sw.x = 42\n\
+                     except TypeError as error:\n\
+                     \x20   first = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Swizzle(5)\n\
+                     except TypeError as error:\n\
+                     \x20   second = str(error)\n\
+                     __probe = (first, second)",
+                ),
+                "('x must be set to a Vector4Provider or None', \
+                 'Vector4Swizzle() takes no arguments.')",
+            );
+
+            // The combiner's seven functions over the same two inputs,
+            // and the zero vector an absent operand leaves.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     cb = Math.Vector4Combiner()\n\
+                     cb.a = (1, 2, 3, 4)\n\
+                     cb.b = (4, 3, 2, 1)\n\
+                     name = cb.fn\n\
+                     add = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'SUBTRACT'\n\
+                     subtract = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'MULTIPLY'\n\
+                     multiply = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'DIVIDE'\n\
+                     divide = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'DOT'\n\
+                     dot = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'MIN'\n\
+                     minimum = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.fn = 'MAX'\n\
+                     maximum = tuple(round(c, 5) for c in cb.value)\n\
+                     cb.a = None\n\
+                     zero = tuple(round(c, 5) for c in cb.value)\n\
+                     __probe = (name, add, subtract, multiply, divide, dot, minimum, \
+                     maximum, zero)",
+                ),
+                "('ADD', (5.0, 5.0, 5.0, 5.0), (-3.0, -1.0, 1.0, 3.0), (4.0, 6.0, 6.0, 4.0), \
+                 (0.25, 0.66667, 1.5, 4.0), (20.0, 20.0, 20.0, 20.0), (1.0, 2.0, 2.0, 1.0), \
+                 (4.0, 3.0, 3.0, 4.0), (0.0, 0.0, 0.0, 0.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   cb.fn = 'NOPE'\n\
+                     except ValueError as error:\n\
+                     \x20   wrong = str(error)\n\
+                     try:\n\
+                     \x20   cb.fn = 5\n\
+                     except TypeError as error:\n\
+                     \x20   not_string = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Combiner(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     __probe = (wrong, not_string, factory)",
+                ),
+                "('fn must be set to one of MULTIPLY, DIVIDE, ADD, SUBTRACT, DOT, MIN, or \
+                 MAX', \
+                 'fn must be set to one of MULTIPLY, DIVIDE, ADD, SUBTRACT, DOT, MIN, or \
+                 MAX', \
+                 'Vector4Combiner() takes no arguments.')",
+            );
+
+            // The animation: empty is the zero vector, the keyframe walk
+            // holds the first value before the first keyframe, lerps
+            // between, and holds the last past the end. The raw tuple
+            // form of `keyframes` reads back the same list shape.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     empty = Math.Vector4Animation()\n\
+                     anim = Math.Vector4Animation()\n\
+                     anim.duration = 2.0\n\
+                     anim.keyframes = [(0.0, (1, 0, 0, 0)), (1.0, (0, 1, 0, 0))]\n\
+                     before = tuple(anim.value)\n\
+                     anim.time = 0.5\n\
+                     half = tuple(anim.value)\n\
+                     anim.time = 5.0\n\
+                     after = tuple(anim.value)\n\
+                     anim.keyframes = ((0.0, (1, 0, 0, 0)), (1.0, (0, 1, 0, 0)))\n\
+                     start = Math.Vector4Animation()\n\
+                     start.keyframes = [(0.0, (1, 0, 0, 0)), (1.0, (0, 1, 0, 0))]\n\
+                     start.time = 0.0\n\
+                     __probe = (str(empty.value), round(empty.duration, 5), \
+                     len(anim.keyframes), anim.keyframes[0][0], \
+                     type(anim.keyframes[0][1]).__name__, before, half, after)",
+                ),
+                "('(0, 0, 0, 0)', 1.0, 2, 0.0, 'Vector4Basic', \
+                 (1.0, 0.0, 0.0, 0.0), (0.5, 0.5, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0))",
+            );
+
+            // The shared provider store advances the animation clock and
+            // wraps it at the duration.
             // SAFETY: the interpreter is up and this thread owns the GIL.
-            let big_world = unsafe { capi::PyImport_ImportModule(c"BigWorld".as_ptr()) };
-            assert!(!big_world.is_null(), "BigWorld imports");
-            // SAFETY: BigWorld is a live module object.
-            let component =
-                unsafe { capi::PyObject_GetAttrString(big_world, c"component".as_ptr()) };
-            assert!(!component.is_null(), "BigWorld.component is present");
-            // SAFETY: both results are owned references from the calls above.
-            unsafe {
-                capi::dec_ref(component);
-                // The timer pair is the BW-03-03-03 deliverable, and it is
-                // client-only surface: its presence is the fact the manifest
-                // pins for this lane.
-                for name in [c"callback", c"cancelCallback"] {
-                    // SAFETY: `name` is a NUL-terminated C string and the
-                    // module is live.
-                    let function = capi::PyObject_GetAttrString(big_world, name.as_ptr());
-                    assert!(
-                        !function.is_null() && capi::is_callable(function),
-                        "BigWorld.{} is present and callable",
-                        name.to_str().unwrap_or("<non-utf8>")
-                    );
-                    capi::dec_ref(function);
-                }
-                capi::clear_error();
-                capi::dec_ref(big_world);
+            crate::math::tick(0.25);
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n__probe = (round(start.time, 5), round(start.value.x, 5))",
+                ),
+                "(0.25, 0.75)",
+            );
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            crate::math::tick(2.0);
+            assert_eq!(
+                probe(interpreter, "import Math\n__probe = round(start.time, 5)"),
+                "0.25",
+            );
+
+            // The keyframe wall: each item is a float and a provider, and
+            // the assignment itself a sequence. Every bad item -- a short
+            // tuple, a non-float clock, a `None` source, a non-numeric
+            // clock -- reads as the pair sentence, never the inner wall.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   anim.keyframes = [(0.0, 5)]\n\
+                     except TypeError as error:\n\
+                     \x20   item = str(error)\n\
+                     try:\n\
+                     \x20   anim.keyframes = [5]\n\
+                     except TypeError as error:\n\
+                     \x20   shape = str(error)\n\
+                     try:\n\
+                     \x20   anim.keyframes = 5\n\
+                     except TypeError as error:\n\
+                     \x20   sequence = str(error)\n\
+                     try:\n\
+                     \x20   anim.keyframes = [(0.0, None)]\n\
+                     except TypeError as error:\n\
+                     \x20   null = str(error)\n\
+                     try:\n\
+                     \x20   anim.keyframes = [('x', (1, 1, 1, 1))]\n\
+                     except TypeError as error:\n\
+                     \x20   number = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Animation(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     __probe = (item, shape, sequence, null, number, factory)",
+                ),
+                "('An item of a PySTLSequence of a keyframe must be set to a tuple of a \
+                 float and a Vector4Provider', \
+                 'An item of a PySTLSequence of a keyframe must be set to a tuple of a \
+                 float and a Vector4Provider', \
+                 'keyframes must be set to a sequence', \
+                 'An item of a PySTLSequence of a keyframe must be set to a tuple of a \
+                 float and a Vector4Provider', \
+                 'An item of a PySTLSequence of a keyframe must be set to a tuple of a \
+                 float and a Vector4Provider', \
+                 'Vector4Animation() takes no arguments.')",
+            );
+
+            // The morph: the duration rewrite carries the progress and
+            // clamps through the 0.0001 floor, and `target` snapshots the
+            // current value and rewinds the clock.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     morph = Math.Vector4Morph((0, 0, 0, 0))\n\
+                     morph.target = (10, 10, 10, 10)\n\
+                     morph.duration = 1.0\n\
+                     began = (round(morph.duration, 5), round(morph.time, 5))\n\
+                     near = tuple(round(c, 4) for c in morph.value)\n\
+                     morph.time = 0.5\n\
+                     half = tuple(round(c, 5) for c in morph.value)\n\
+                     morph.duration = 2.0\n\
+                     carried = (round(morph.duration, 5), round(morph.time, 5), \
+                     tuple(round(c, 5) for c in morph.value))\n\
+                     morph.time = 100.0\n\
+                     clamped = (round(morph.time, 5), tuple(round(c, 5) for c in morph.value))\n\
+                     morph.time = -5.0\n\
+                     floor = round(morph.time, 5)\n\
+                     morph.duration = 0.0\n\
+                     duration_floor = round(morph.duration, 5)\n\
+                     morph.time = 1.0\n\
+                     morph.target = (20, 20, 20, 20)\n\
+                     retarget = (round(morph.time, 5), round(morph.target.x, 5))\n\
+                     __probe = (began, near, half, carried, clamped, floor, duration_floor, \
+                     retarget)",
+                ),
+                "((1.0, 0.0001), (0.001, 0.001, 0.001, 0.001), (5.0, 5.0, 5.0, 5.0), \
+                 (2.0, 1.0, (5.0, 5.0, 5.0, 5.0)), (2.0, (10.0, 10.0, 10.0, 10.0)), \
+                 0.0001, 0.0001, (0.0, 20.0))",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4Morph(5)\n\
+                     except TypeError as error:\n\
+                     \x20   first = str(error)\n\
+                     try:\n\
+                     \x20   morph.target = 5\n\
+                     except TypeError as error:\n\
+                     \x20   second = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Morph(1, 2)\n\
+                     except TypeError as error:\n\
+                     \x20   third = str(error)\n\
+                     __probe = (first, second, third)",
+                ),
+                "('() argument 1 optionally must be set to a Vector4 or tuple of 4 floats', \
+                 'target must be set to a Vector4 or tuple of 4 floats', \
+                 'Vector4Morph() expects between 0 and 1 arguments of types Vector4')",
+            );
+
+            // The adaptor's styles: the scales read the components, the
+            // rotations their angles, the look-ats stay invertible, and a
+            // missing source leaves the receiving matrix zeroed.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ad = Math.Vector4MatrixAdaptor()\n\
+                     ad.source = (2, 3, 4, 0)\n\
+                     ad.position = (1, 0, 0, 0)\n\
+                     xy = (round(Math.Matrix(ad).get(0, 0), 5), \
+                     round(Math.Matrix(ad).get(1, 1), 5), \
+                     round(Math.Matrix(ad).get(2, 2), 5), \
+                     round(Math.Matrix(ad).translation.x, 5))\n\
+                     xyz = Math.Vector4MatrixAdaptor()\n\
+                     xyz.source = (2, 3, 4, 0)\n\
+                     xyz.style = 'XYZ_SCALE'\n\
+                     rot_y = Math.Vector4MatrixAdaptor()\n\
+                     rot_y.source = (2, 3, 4, 0)\n\
+                     rot_y.style = 'Y_ROTATE'\n\
+                     rot_z = Math.Vector4MatrixAdaptor()\n\
+                     rot_z.source = (2, 3, 4, 0)\n\
+                     rot_z.style = 'Z_ROTATE'\n\
+                     look = Math.Vector4MatrixAdaptor()\n\
+                     look.source = (1, 0, 0, 0)\n\
+                     look.style = 'LOOKAT'\n\
+                     look_z = Math.Vector4MatrixAdaptor()\n\
+                     look_z.source = (0, 0, 2, 0)\n\
+                     look_z.style = 'LOOKAT_SCALEZ'\n\
+                     __probe = (xy, round(Math.Matrix(xyz).get(2, 2), 5), \
+                     round(Math.Matrix(rot_y).yaw, 5), round(Math.Matrix(rot_z).roll, 5), \
+                     Math.Matrix(look).determinant != 0, \
+                     Math.Matrix(look_z).determinant != 0, \
+                     round(Math.Matrix(Math.Vector4MatrixAdaptor()).determinant, 5), \
+                     round(Math.Matrix(Math.Vector4MatrixAdaptor()).translation.x, 5))",
+                ),
+                "((2.0, 3.0, 1.0, 1.0), 4.0, 3.0, -2.28319, True, True, 0.0, 0.0)",
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     try:\n\
+                     \x20   Math.Vector4MatrixAdaptor(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     try:\n\
+                     \x20   ad.source = 42\n\
+                     except TypeError as error:\n\
+                     \x20   source = str(error)\n\
+                     try:\n\
+                     \x20   ad.position = 42\n\
+                     except TypeError as error:\n\
+                     \x20   position = str(error)\n\
+                     __probe = (factory, source, position)",
+                ),
+                "('Vector4MatrixAdaptor() takes no arguments.', \
+                 'source must be set to a Vector4Provider or None', \
+                 'position must be set to a Vector4Provider or None')",
+            );
+
+            // The register file: one shared handle per cell, zeros until
+            // a shader writes, and the scratch cap's `MAX_ARG` sentence.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     reg = Math.getRegister(0)\n\
+                     last = Math.getRegister(62)\n\
+                     try:\n\
+                     \x20   Math.getRegister(63)\n\
+                     except TypeError as error:\n\
+                     \x20   over = str(error)\n\
+                     try:\n\
+                     \x20   Math.getRegister()\n\
+                     except TypeError as error:\n\
+                     \x20   count = str(error)\n\
+                     try:\n\
+                     \x20   Math.getRegister('x')\n\
+                     except TypeError as error:\n\
+                     \x20   parse = str(error)\n\
+                     __probe = (Math.getRegister(0) is reg, tuple(reg.value), over, count, \
+                     parse)",
+                ),
+                "(True, (0.0, 0.0, 0.0, 0.0), \
+                 '() argument 1 is greater than maximum value', \
+                 'getRegister() expects 1 argument of type uint8', \
+                 '() argument 1 must be set to a long')",
+            );
+
+            // The one-operand shader ops over register zero.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def const(x, y, z, w):\n\
+                     \x20   p = Math.Vector4Product()\n\
+                     \x20   p.a = (x, y, z, w)\n\
+                     \x20   return p\n\
+                     move = Math.Vector4Shader()\n\
+                     move.addOp(0, reg, const(5, 6, 7, 8))\n\
+                     recip = Math.Vector4Shader()\n\
+                     recip.addOp(1, reg, const(2, 4, 8, 16))\n\
+                     bias = Math.Vector4Shader()\n\
+                     bias.addOp(2, reg, const(1, 2, 3, 4))\n\
+                     complement = Math.Vector4Shader()\n\
+                     complement.addOp(3, reg, const(1, 2, 3, 4))\n\
+                     __probe = (tuple(round(c, 5) for c in move.value), \
+                     tuple(round(c, 5) for c in recip.value), \
+                     tuple(round(c, 5) for c in bias.value), \
+                     tuple(round(c, 5) for c in complement.value))",
+                ),
+                "((5.0, 6.0, 7.0, 8.0), (0.5, 0.25, 0.125, 0.0625), \
+                 (0.5, 1.5, 2.5, 3.5), (0.0, -1.0, -2.0, -3.0))",
+            );
+
+            // The two-operand ops, the comparisons included: the
+            // staircase against i0.x the reference pins.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     mul = Math.Vector4Shader()\n\
+                     mul.addOp(4, reg, const(1, 2, 3, 4), const(10, 20, 30, 40))\n\
+                     div = Math.Vector4Shader()\n\
+                     div.addOp(5, reg, const(1, 2, 3, 4), const(2, 2, 2, 2))\n\
+                     add = Math.Vector4Shader()\n\
+                     add.addOp(6, reg, const(1, 2, 3, 4), const(10, 20, 30, 40))\n\
+                     sub = Math.Vector4Shader()\n\
+                     sub.addOp(7, reg, const(1, 2, 3, 4), const(1, 1, 1, 1))\n\
+                     dot = Math.Vector4Shader()\n\
+                     dot.addOp(8, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     mn = Math.Vector4Shader()\n\
+                     mn.addOp(9, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     mx = Math.Vector4Shader()\n\
+                     mx.addOp(10, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     greater = Math.Vector4Shader()\n\
+                     greater.addOp(11, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     less = Math.Vector4Shader()\n\
+                     less.addOp(12, reg, const(1, 2, 3, 4), const(4, 3, 2, 1))\n\
+                     __probe = (tuple(round(c, 5) for c in mul.value), \
+                     tuple(round(c, 5) for c in div.value), \
+                     tuple(round(c, 5) for c in add.value), \
+                     tuple(round(c, 5) for c in sub.value), \
+                     tuple(round(c, 5) for c in dot.value), \
+                     tuple(round(c, 5) for c in mn.value), \
+                     tuple(round(c, 5) for c in mx.value), \
+                     tuple(round(c, 5) for c in greater.value), \
+                     tuple(round(c, 5) for c in less.value))",
+                ),
+                "((10.0, 40.0, 90.0, 160.0), (0.5, 1.0, 1.5, 2.0), (11.0, 22.0, 33.0, 44.0), \
+                 (0.0, 1.0, 2.0, 3.0), (20.0, 20.0, 20.0, 20.0), (1.0, 2.0, 2.0, 1.0), \
+                 (4.0, 3.0, 3.0, 4.0), (0.0, 0.0, 0.0, 1.0), (1.0, 1.0, 1.0, 0.0))",
+            );
+
+            // The instructions run in order with the last write to
+            // register zero winning, a register an earlier shader wrote
+            // feeds a later one as a plain input, and the same provider in
+            // both operand slots is one user input.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     ordered = Math.Vector4Shader()\n\
+                     ordered.addOp(6, reg, const(1, 1, 1, 1), const(1, 1, 1, 1))\n\
+                     ordered.addOp(4, reg, const(1, 2, 3, 4), const(10, 20, 30, 40))\n\
+                     feeder = Math.Vector4Shader()\n\
+                     feeder.addOp(6, last, const(1, 2, 3, 4), const(1, 1, 1, 1))\n\
+                     feeder.value\n\
+                     reader = Math.Vector4Shader()\n\
+                     reader.addOp(0, reg, last)\n\
+                     shared = const(3, 3, 3, 3)\n\
+                     dedupe = Math.Vector4Shader()\n\
+                     dedupe.addOp(6, reg, shared, shared)\n\
+                     __probe = (tuple(round(c, 5) for c in ordered.value), \
+                     tuple(round(c, 5) for c in reader.value), \
+                     tuple(round(c, 5) for c in dedupe.value))",
+                ),
+                "((10.0, 40.0, 90.0, 160.0), (2.0, 3.0, 4.0, 5.0), (6.0, 6.0, 6.0, 6.0))",
+            );
+
+            // A non-register output slot maps to the unused cell, an
+            // unknown opcode writes nothing, plain tuples coerce as
+            // constant snapshots, and the 65th distinct user input
+            // reuses the unused cell rather than a 65th register. Both
+            // non-writing shaders answer the shared register file's cell
+            // zero: `r_[]` is class-static and only the user inputs at
+            // `BASE_USER_REGISTER` upward are ever written
+            // (`script_math.cpp:5017,5126-5131`), so the leftover is the
+            // `(6, 6, 6, 6)` the previous probe left in it.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     misplaced = Math.Vector4Shader()\n\
+                     misplaced.addOp(4, const(1, 1, 1, 1), const(1, 1, 1, 1))\n\
+                     unknown = Math.Vector4Shader()\n\
+                     unknown.addOp(13, reg, const(7, 8, 9, 10))\n\
+                     tuples = Math.Vector4Shader()\n\
+                     tuples.addOp(0, reg, (1, 1, 1, 1))\n\
+                     tuples.addOp(4, reg, reg, (3, 3, 3, 3))\n\
+                     capped = Math.Vector4Shader()\n\
+                     for i in range(65):\n\
+                     \x20   capped.addOp(4, reg, (i, i, i, i))\n\
+                     __probe = (tuple(round(c, 5) for c in misplaced.value), \
+                     tuple(round(c, 5) for c in unknown.value), \
+                     tuple(round(c, 5) for c in tuples.value), \
+                     tuple(round(c, 5) for c in capped.value))",
+                ),
+                "((6.0, 6.0, 6.0, 6.0), (6.0, 6.0, 6.0, 6.0), (3.0, 3.0, 3.0, 3.0), \
+                 (0.0, 0.0, 0.0, 0.0))",
+            );
+
+            // The shader's walls: the addOp argument window, the opcode
+            // and operand parses, and the factory.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     sh = Math.Vector4Shader()\n\
+                     try:\n\
+                     \x20   sh.addOp(4)\n\
+                     except TypeError as error:\n\
+                     \x20   count = str(error)\n\
+                     try:\n\
+                     \x20   sh.addOp('x', reg, sh)\n\
+                     except TypeError as error:\n\
+                     \x20   opcode = str(error)\n\
+                     try:\n\
+                     \x20   sh.addOp(4, 42, sh)\n\
+                     except TypeError as error:\n\
+                     \x20   output = str(error)\n\
+                     try:\n\
+                     \x20   sh.addOp(4, reg, Math.Matrix())\n\
+                     except TypeError as error:\n\
+                     \x20   operand = str(error)\n\
+                     try:\n\
+                     \x20   Math.Vector4Shader(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     __probe = (count, opcode, output, operand, factory)",
+                ),
+                "('addOp() expects between 3 and 4 arguments of types uint8, \
+                 Vector4Provider, Vector4Provider, Vector4Provider', \
+                 '() argument 1 must be set to a long', \
+                 '() argument 2 must be set to a Vector4Provider or None', \
+                 '() argument 3 must be set to a Vector4Provider or None', \
+                 'Vector4Shader() takes no arguments.')",
+            );
+
+            // The matrix providers' walls and the single-slot form.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     t = Math.Matrix()\n\
+                     t.setTranslate((7, 8, 9))\n\
+                     only_b = Math.MatrixProduct()\n\
+                     only_b.b = t\n\
+                     via_b = str(Math.Matrix(only_b).applyToOrigin())\n\
+                     try:\n\
+                     \x20   Math.MatrixProduct(5)\n\
+                     except TypeError as error:\n\
+                     \x20   factory = str(error)\n\
+                     try:\n\
+                     \x20   Math.MatrixInverse()\n\
+                     except TypeError as error:\n\
+                     \x20   missing = str(error)\n\
+                     try:\n\
+                     \x20   Math.MatrixInverse(42)\n\
+                     except TypeError as error:\n\
+                     \x20   not_provider = str(error)\n\
+                     __probe = (via_b, factory, missing, not_provider)",
+                ),
+                "('(7, 8, 9)', 'MatrixProduct() takes no arguments.', \
+                 'MatrixInverse() expects 1 argument of type MatrixProvider', \
+                 '() argument 1 must be set to a MatrixProvider or None')",
+            );
+
+            // The remaining provider walls and lazy slots: the morph clamp
+            // setters, both Distance endpoint parses, the swizzle's unset
+            // components, the LFO clocks at a dead period, the bare product
+            // the matrix folds as identity, and the product slot that a
+            // None clears back out.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except BaseException as error:\n\
+                     \x20       return type(error).__name__\n\
+                     mo = Math.Vector4Morph()\n\
+                     du = wall(lambda: setattr(mo, 'duration', 'x'))\n\
+                     ti = wall(lambda: setattr(mo, 'time', 'x'))\n\
+                     d1 = wall(lambda: Math.Vector4Distance('x', Math.Matrix()))\n\
+                     d2 = wall(lambda: Math.Vector4Distance(Math.Matrix(), 'x'))\n\
+                     sz = str(Math.Vector4Swizzle().value)\n\
+                     tri = Math.Vector4LFO()\n\
+                     tri.waveform = 'TRIANGLE'\n\
+                     tri.period = 0.0\n\
+                     tv = tuple(round(c, 5) for c in tri.value)\n\
+                     saw = Math.Vector4LFO()\n\
+                     saw.waveform = 'SAWTOOTH'\n\
+                     saw.period = 0.0\n\
+                     wv = tuple(round(c, 5) for c in saw.value)\n\
+                     bare = str(Math.Matrix(Math.MatrixProduct()).applyToOrigin())\n\
+                     mp = Math.MatrixProduct()\n\
+                     mp.a = None\n\
+                     mp.b = Math.Matrix()\n\
+                     mp.b.setTranslate((7, 8, 9))\n\
+                     via_none = str(Math.Matrix(mp).applyToOrigin())\n\
+                     __probe = (du, ti, d1, d2, sz, tv, wv, bare, via_none)",
+                ),
+                "('TypeError', 'TypeError', 'TypeError', 'TypeError', \
+                 '(0, 0, 0, 0)', (0.0, 0.0, 0.0, 0.0), \
+                 (0.0, 0.0, 0.0, 0.0), '(0, 0, 0)', '(7, 8, 9)')",
+            );
+
+            // The leftover walls across the three families: the vector
+            // subtraction, the zero-argument construction, the tuple parse
+            // over a non-number, the division and two-wide multiplication
+            // NotImplemented falls, the register read-only wall, the
+            // matrix argument parses, the shader's fourth operand, the
+            // inverse with a cleared source, and the look-at over the pole
+            // where the reference swaps the up axis.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "import Math\n\
+                     def wall(body):\n\
+                     \x20   try:\n\
+                     \x20       body()\n\
+                     \x20       return 'no'\n\
+                     \x20   except BaseException as error:\n\
+                     \x20       return type(error).__name__\n\
+                     sub = str(Math.Vector3((1, 2, 3)) - Math.Vector3((1, 1, 1)))\n\
+                     zero = str(Math.Vector3())\n\
+                     dnot = wall(lambda: Math.Vector3((1, 2, 3)) / 'x')\n\
+                     mnot = wall(lambda: Math.Vector2((1, 0)) * Math.Vector2((0, 1)))\n\
+                     badtuple = wall(lambda: Math.Vector3((1, 'x', 3)))\n\
+                     dt = wall(lambda: Math.Vector3().dot('x'))\n\
+                     c2 = wall(lambda: Math.Vector3().cross2D('x'))\n\
+                     sf = wall(lambda: Math.Vector3().set(1, 2, 3))\n\
+                     py = wall(lambda: Math.Vector3().setPitchYaw('x', 1))\n\
+                     m = Math.Matrix()\n\
+                     st = wall(lambda: m.setTranslate('x'))\n\
+                     lk = wall(lambda: m.lookAt((0, 0, 0), 'x', (0, 1, 0)))\n\
+                     g1 = wall(lambda: m.get('x', 1))\n\
+                     g2 = wall(lambda: m.get(1, 'x'))\n\
+                     ax = wall(lambda: m.applyToAxis('x'))\n\
+                     p = Math.Plane()\n\
+                     pi = wall(lambda: p.init((0, 0, 0), 'x', (0, 1, 0)))\n\
+                     ir = wall(lambda: p.intersectRay('x', (0, 0, 1)))\n\
+                     sh = Math.Vector4Shader()\n\
+                     reg = Math.getRegister(3)\n\
+                     a4 = wall(lambda: sh.addOp(4, reg, sh, 'x'))\n\
+                     vv = Math.Vector3((4, 5, 6))\n\
+                     vv -= Math.Vector3((1, 1, 1))\n\
+                     insub = str(vv)\n\
+                     d0 = round(Math.Vector3((1, 2, 3)).dot(), 5)\n\
+                     inv_id = str(Math.Matrix(Math.MatrixInverse(None)).applyToOrigin())\n\
+                     look_up = Math.Vector4MatrixAdaptor()\n\
+                     look_up.source = (0, 10, 0, 0)\n\
+                     look_up.style = 'LOOKAT'\n\
+                     look_up_z = Math.Vector4MatrixAdaptor()\n\
+                     look_up_z.source = (0, 5, 0, 0)\n\
+                     look_up_z.style = 'LOOKAT_SCALEZ'\n\
+                     lu = Math.Matrix(look_up).determinant != 0\n\
+                     lz = Math.Matrix(look_up_z).determinant != 0\n\
+                     __probe = (sub, zero, dnot, mnot, badtuple, dt, c2, sf, py, st, \
+                     lk, g1, g2, ax, pi, ir, a4, insub, d0, inv_id, lu, lz)",
+                ),
+                "('(0, 1, 2)', '(0, 0, 0)', 'TypeError', 'TypeError', 'TypeError', \
+                 'TypeError', 'TypeError', 'no', 'TypeError', 'TypeError', \
+                 'TypeError', 'TypeError', 'TypeError', 'TypeError', 'TypeError', \
+                 'TypeError', 'TypeError', '(3, 4, 5)', 0.0, '(0, 0, 0)', True, True)",
+            );
+        });
+    }
+
+    /// BW-03-03-04 acceptance. The `ResMgr` module's resource faces -- the
+    /// module functions, the `DataSection` read/write surface, and the
+    /// resource path resolution: the reference resolves a resource id
+    /// through `BWResource`'s search paths (`openSection`, `isFile`,
+    /// `isDir`, `save`, `resolveToAbsolutePath`), and there is no `<inherit>`
+    /// mechanism in `DataSection` or the resource layer for "inheritance
+    /// paths" to mean anything but that search.
+    ///
+    /// The host lays the search paths down before the interpreter comes up
+    /// (`BWResource::init` before `Script::init`), so the scenario does the
+    /// same with one fixture root carrying a real resource, then probes the
+    /// surface a script sees.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_resmgr_module_serves_the_ported_surface() {
+        let root = std::env::temp_dir().join(format!("boundless-resmgr-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("settings/creatures")).expect("build the res tree");
+        std::fs::write(
+            root.join("settings/creatures/crab.xml"),
+            "<root>\n\
+             <name>crab</name>\n\
+             <health>100</health>\n\
+             <speed>3.5</speed>\n\
+             <position>1 2 3</position>\n\
+             <alive>true</alive>\n\
+             </root>\n",
+        )
+        .expect("write the fixture resource");
+        std::fs::create_dir_all(root.join("settings/items")).expect("build the item tree");
+        // The typed fixture: one node per conversion the `as*` faces read.
+        std::fs::write(
+            root.join("settings/items/kit.xml"),
+            "<kit>\n\
+             <name>shield</name>\n\
+             <armour>40</armour>\n\
+             <price>12.5</price>\n\
+             <dir>1 2 3</dir>\n\
+             <quad>1 2 3 4</quad>\n\
+             <pair>5 6</pair>\n\
+             <flag>true</flag>\n\
+             <data>aGVsbG8=</data>\n\
+             <row0>1 0 0</row0>\n\
+             <row1>0 1 0</row1>\n\
+             <row2>0 0 1</row2>\n\
+             <row3>0 0 0</row3>\n\
+             <part>blade</part>\n\
+             <part>hilt</part>\n\
+             </kit>\n",
+        )
+        .expect("write the typed fixture");
+        // The write round-trip fixture: the writes land on the same tree the
+        // reads open again.
+        std::fs::write(
+            root.join("settings/items/writes.xml"),
+            "<writes>\n<note>start</note>\n</writes>\n",
+        )
+        .expect("write the round-trip fixture");
+        // The mapping fixture: one child per listing face, in order.
+        std::fs::write(
+            root.join("settings/items/list.xml"),
+            "<list>\n<one>1</one>\n<two>2</two>\n<three>3</three>\n</list>\n",
+        )
+        .expect("write the listing fixture");
+        // The deprecated table fixture: the `value` defaults plus one `key`
+        // entry.
+        std::fs::write(
+            root.join("settings/items/table.xml"),
+            "<table>\n\
+             <value>\n<cost>10</cost>\n<rare>false</rare>\n<pos>(1 2 3)</pos>\n</value>\n\
+             <key>crab</key>\n\
+             <key>lobster</key>\n\
+             </table>\n",
+        )
+        .expect("write the table fixture");
+        let root_path = root.to_str().expect("a UTF-8 root");
+        crate::resmgr::init_paths(&[root_path]);
+
+        let interpreter =
+            Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
+
+        // The module surface: the three linked classes, `root`, and the
+        // unconditional function table -- with the editor trio absent from a
+        // non-editor component.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 __probe = (hasattr(ResMgr, 'DataSection'), \
+                 hasattr(ResMgr, 'ResourceTable'), hasattr(ResMgr, 'root'), \
+                 hasattr(ResMgr, 'save'), hasattr(ResMgr, 'purge'), \
+                 hasattr(ResMgr, 'remove'))",
+            ),
+            "(True, True, True, True, True, False)",
+        );
+
+        // Path resolution through the search path: a resource under the
+        // fixture root answers `isFile`/`isDir`, a missing one does not.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 __probe = (ResMgr.isFile('settings/creatures/crab.xml'), \
+                 ResMgr.isDir('settings/creatures'), \
+                 ResMgr.isFile('nope/nope.xml'))",
+            ),
+            "(True, True, False)",
+        );
+
+        // `openSection` resolves the id through the same search path, and the
+        // reads answer the fixture's values (a miss answers its default).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 __probe = (s.readString('name'), s.readInt('health'), \
+                 s.readFloat('speed'), tuple(s.readVector3('position')), \
+                 s.readBool('alive'), s.readString('missing', 'default'), len(s))",
+            ),
+            "('crab', 100, 3.5, (1.0, 2.0, 3.0), True, 'default', 5)",
+        );
+
+        // A child wrapper carries its tag name and reads its own value; the
+        // root wrapper's `name` is the resource id's filename. `as*` reads
+        // the node's own value.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 name = s.child(0)\n\
+                 __probe = (s.name, name.name, name.asString, name.asInt, \
+                 s.readFloat('a/b/c', 7.5))",
+            ),
+            "('crab.xml', 'name', 'crab', 0, 7.5)",
+        );
+
+        // The write*s round-trip: a write lands in the shared tree and the
+        // read answers it back.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 s.writeString('name', 'lobster')\n\
+                 s.writeInt('health', 120)\n\
+                 s.writeFloat('speed', 9.75)\n\
+                 s.writeVector3('position', (7, 8, 9))\n\
+                 __probe = (s.readString('name'), s.readInt('health'), \
+                 s.readFloat('speed'), tuple(s.readVector3('position')), s.name)",
+            ),
+            "('lobster', 120, 9.75, (7.0, 8.0, 9.0), 'crab.xml')",
+        );
+
+        // Two opens of the same id alias one tree: a write through one shows
+        // in the other (the wrappers themselves stay distinct).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 a = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 b = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 a.writeString('name', 'crab')\n\
+                 __probe = (b.readString('name'), a is b)",
+            ),
+            "('crab', False)",
+        );
+
+        // `createSection` returns a wrapper over the new child, `child`/`name`
+        // read it, and `deleteSection` drops the child so the read answers its
+        // default.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 child = s.createSection('shell')\n\
+                 child.writeString('colour', 'white')\n\
+                 written = (s.readString('shell/colour'), child.name)\n\
+                 deleted = s.deleteSection('shell')\n\
+                 gone = s.readString('shell/colour', 'empty')\n\
+                 __probe = (written, deleted, gone)",
+            ),
+            "(('white', 'shell'), True, 'empty')",
+        );
+
+        // A dotted path form creates the parent chain: the wrapper answers
+        // the new leaf inside it, not the parent the leaf went under.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 nested = s.createSection('legs/left')\n\
+                 nested.writeString('state', 'up')\n\
+                 __probe = (nested.name, s.readString('legs/left/state'))",
+            ),
+            "('left', 'up')",
+        );
+
+        // The write reaches the disk: `save` writes the tree back, `purge`
+        // drops the census and cache, and a re-open re-reads the file.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 s.save()\n\
+                 ResMgr.purge('settings/creatures/crab.xml')\n\
+                 again = ResMgr.openSection('settings/creatures/crab.xml')\n\
+                 __probe = (again.readString('name'), again.readInt('health'), \
+                 again.readFloat('speed'))",
+            ),
+            "('crab', 120, 9.75)",
+        );
+
+        // The openSection walls: a dotted id with `makeNew` builds a fresh
+        // section, an undotted missing id without `makeNew` answers `None`,
+        // and an undotted `makeNew` is the reference's `ValueError`.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 fresh = ResMgr.openSection('settings/creatures/newone.xml', True)\n\
+                 made = fresh.readString('name', 'none')\n\
+                 miss = ResMgr.openSection('settings/creatures/nothing')\n\
+                 try:\n\
+                 \x20   ResMgr.openSection('settings/creatures/nothing', True)\n\
+                 except ValueError as error:\n\
+                 \x20   refused = str(error)\n\
+                 __probe = (fresh is not None, made, miss, refused)",
+            ),
+            "(True, 'none', None, \"ResMgr.openSection(): Could not make new section \
+             'settings/creatures/nothing'\")",
+        );
+
+        // The remaining functions answer in-scope: `resolveToAbsolutePath`
+        // resolves through the search path, `localise` answers its key
+        // unchanged (no localisation data is in scope).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 __probe = (ResMgr.resolveToAbsolutePath('settings/creatures/crab.xml').endswith('crab.xml'), \
+                 ResMgr.localise('a key'))",
+            ),
+            "(True, 'a key')",
+        );
+
+        // The typed attribute faces read the node's own value: the
+        // conversions answer the fixture, the vector and matrix reads
+        // build from the component nodes, and the setters write through --
+        // `asBool` included, whose write is the reference's own no-op.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/kit.xml')\n\
+                 name = s['name']\n\
+                 armour = s['armour']\n\
+                 price = s['price']\n\
+                 pair = s['pair']\n\
+                 quad = s['quad']\n\
+                 direction = s['dir']\n\
+                 flag = s['flag']\n\
+                 name.isAttribute = True\n\
+                 name.asBool = True\n\
+                 name.asBinary = 'ignored'\n\
+                 flag_bool = flag.asBool\n\
+                 s._flag = 7\n\
+                 __probe = (name.asString, name.asWideString, armour.asInt, armour.asInt64, \
+                 price.asFloat, tuple(pair.asVector2), tuple(direction.asVector3), \
+                 tuple(quad.asVector4), flag_bool, s['data'].asBlob, name.isAttribute, \
+                 name.asBool, s.asMatrix.get(0, 0), s.asMatrix.get(1, 1), \
+                 s.asMatrix.get(2, 2), s.asMatrix.get(3, 3), s.asMatrix.get(0, 3), \
+                 s.asBinary.startswith(b'<kit.xml'), name.name, len(s), s['no/such'], \
+                 s._pair.asString, s.readFloat('flag'))",
+            ),
+            "('shield', 'shield', 40, 40, 12.5, (5.0, 6.0), (1.0, 2.0, 3.0), \
+             (1.0, 2.0, 3.0, 4.0), True, 'hello', True, False, 1.0, 1.0, 1.0, 1.0, 0.0, True, \
+             'name', 14, None, '5 6', 7.0)",
+        );
+
+        // The typed read and write faces: the writes land on the shared
+        // tree, the reads answer them back, and a miss answers its default.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr, Math\n\
+                 s = ResMgr.openSection('settings/items/writes.xml')\n\
+                 matrix = Math.Matrix()\n\
+                 matrix.setElement(2, 1, 8)\n\
+                 written = s.writeString('str', 'hello')\n\
+                 s.writeWideString('wide', 'widevalue')\n\
+                 s.writeInt('int', 5)\n\
+                 s.writeInt64('int64', 4000000000)\n\
+                 s.writeFloat('float', 2.75)\n\
+                 s.writeBool('bool', 'true')\n\
+                 s.writeVector2('v2', (1, 2))\n\
+                 s.writeVector3('v3', (3, 4, 5))\n\
+                 s.writeVector4('v4', (6, 7, 8, 9))\n\
+                 s.writeBlob('blob', 'b64world')\n\
+                 s.writeMatrix('mat', matrix)\n\
+                 __probe = (written.asString, s.readString('str'), s.readWideString('wide'), \
+                 s.readInt('int'), s.readInt64('int64'), s.readFloat('float'), \
+                 s.readBool('bool'), tuple(s.readVector2('v2')), tuple(s.readVector3('v3')), \
+                 tuple(s.readVector4('v4')), s.readBlob('blob'), s.readMatrix('mat').get(2, 1), \
+                 s.readMatrix('mat').get(3, 3), s.readString('absent', 'fallback'), \
+                 s.readInt('absent', 42), s.readFloat('absent', 1.5), \
+                 s.readBool('absent', True), tuple(s.readVector2('absent', (1, 2))), \
+                 s.readMatrix('absent', matrix).get(2, 1))",
+            ),
+            "('hello', 'hello', 'widevalue', 5, 4000000000, 2.75, True, (1.0, 2.0), \
+             (3.0, 4.0, 5.0), (6.0, 7.0, 8.0, 9.0), 'b64world', 8.0, 1.0, 'fallback', 42, \
+             1.5, True, (1.0, 2.0), 8.0)",
+        );
+
+        // The plural faces write one child per item and read every child
+        // carrying the leaf tag.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/kit.xml')\n\
+                 s.writeStrings('slot', ('a', 'b', 'c'))\n\
+                 s.writeWideStrings('wide', ('w',))\n\
+                 s.writeInts('num', (10, 20, 30))\n\
+                 s.writeFloats('rate', (0.5, 0.25))\n\
+                 s.writeVector2s('p2', ((1, 2), (3, 4)))\n\
+                 s.writeVector3s('p3', ((1, 2, 3),))\n\
+                 s.writeVector4s('p4', ((1, 2, 3, 4),))\n\
+                 __probe = (s.readStrings('part'), s.readStrings('slot'), \
+                 s.readWideStrings('wide'), s.readInts('num'), s.readFloats('rate'), \
+                 tuple(tuple(v) for v in s.readVector2s('p2')), \
+                 tuple(tuple(v) for v in s.readVector3s('p3')), \
+                 tuple(tuple(v) for v in s.readVector4s('p4')), s.readStrings('absent'))",
+            ),
+            "(('blade', 'hilt'), ('a', 'b', 'c'), ('w',), (10, 20, 30), (0.5, 0.25), \
+             ((1.0, 2.0), (3.0, 4.0)), ((1.0, 2.0, 3.0),), ((1.0, 2.0, 3.0, 4.0),), ())",
+        );
+
+        // The type-dispatching `write`, the zip conversion answer, the
+        // section copy, `createSectionFromString` (the DETACHED parse, not
+        // the copy that landed), and the wrapper form of `deleteSection`.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr, Math\n\
+                 s = ResMgr.openSection('settings/items/kit.xml')\n\
+                 s.write('num', 9)\n\
+                 s.write('rate', 1.5)\n\
+                 s.write('word', 'written')\n\
+                 s.write('v2', (1, 2))\n\
+                 s.write('v3', (3, 4, 5))\n\
+                 s.write('v4', (6, 7, 8, 9))\n\
+                 s.write('mv3', Math.Vector3(4, 5, 6))\n\
+                 s.write('mat', Math.Matrix())\n\
+                 try:\n\
+                 \x20   s.write('bad', object())\n\
+                 except TypeError as error:\n\
+                 \x20   refuse = str(error)\n\
+                 zipped = s.copyToZip()\n\
+                 target = s['part']\n\
+                 target.copy(s['name'])\n\
+                 copied = (target.asString, target.name)\n\
+                 parsed = s.createSectionFromString('<thing><id>7</id></thing>')\n\
+                 deleted = s.deleteSection(s['part'])\n\
+                 __probe = (s.readInt('num'), s.readFloat('rate'), s.readString('word'), \
+                 tuple(s.readVector2('v2')), tuple(s.readVector3('v3')), \
+                 tuple(s.readVector4('v4')), tuple(s.readVector3('mv3')), \
+                 s.readMatrix('mat').get(0, 0), refuse, zipped[0].name, zipped[1], \
+                 copied[0], copied[1], parsed.name, parsed.readString('id'), \
+                 s.readString('thing/id'), deleted, s.readStrings('part'))",
+            ),
+            "(9, 1.5, 'written', (1.0, 2.0), (3.0, 4.0, 5.0), (6.0, 7.0, 8.0, 9.0), \
+             (4.0, 5.0, 6.0), 1.0, 'PyDataSection.write: Unrecognised object type object', \
+             'kit.xml', False, 'shield', 'part', 'thing', '7', '7', True, ('hilt',))",
+        );
+
+        // The mapping faces: the length and the subscript, the underscore
+        // attribute sugar, the membership, and the child listings.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/list.xml')\n\
+                 first = s['one']\n\
+                 __probe = (len(s), first.asString, s._two.asString, s['two/three'], \
+                 s.has_key('one'), s.has_key('one/two'), tuple(s.keys()), \
+                 tuple(name for name, _ in s.items()), \
+                 tuple(w.name for w in s.values()), \
+                 [w.asString for w in s.values()], first.name)",
+            ),
+            "(3, '1', '2', None, True, False, ('one', 'two', 'three'), \
+             ('one', 'two', 'three'), ('one', 'two', 'three'), ['1', '2', '3'], 'one')",
+        );
+
+        // `cleanName` sanitises the tag the way `XMLSection` does,
+        // `isNameClean` answers the always-true gated check, and the
+        // constructor builds a fresh in-memory section.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/list.xml')\n\
+                 leaf = s.createSection('9 bad')\n\
+                 changed = leaf.cleanName()\n\
+                 clean = leaf.isNameClean()\n\
+                 fresh = ResMgr.DataSection('scratch')\n\
+                 __probe = (changed, clean, s['id.9..bad'].name, fresh.name, len(fresh), \
+                 fresh.readString('nothing', 'empty'))",
+            ),
+            "(True, True, 'id.9..bad', 'scratch', 0, 'empty')",
+        );
+
+        // The module `save` of a never-opened id is the `IOError`, the
+        // recursive `purge` drops the whole directory's census, and an
+        // unsaved write is lost behind it.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/writes.xml')\n\
+                 s.writeString('str', 'unsaved')\n\
+                 ResMgr.purge('settings/items', True)\n\
+                 again = ResMgr.openSection('settings/items/writes.xml')\n\
+                 try:\n\
+                 \x20   ResMgr.save('settings/items/never.xml')\n\
+                 except IOError as error:\n\
+                 \x20   refused = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.purge()\n\
+                 except TypeError as error:\n\
+                 \x20   wall = str(error)\n\
+                 __probe = (again.readString('str', 'missing'), again.readString('note'), \
+                 refused, wall)",
+            ),
+            "('missing', 'start', 'Save of settings/items/never.xml failed', \
+             'purge() expects between 1 and 2 arguments of types BW::string, bool')",
+        );
+
+        // The deprecated `ResourceTable`: the keyed entries answer through
+        // `at`/`sub`/the subscripts, the `key`/`index`/`value` attributes
+        // read the wrapped node, the value struct's `get` walks the parent
+        // chain, and the links run their callable once each.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 calls = []\n\
+                 table = ResMgr.ResourceTable('settings/items/table.xml')\n\
+                 entry = table.at(0)\n\
+                 try:\n\
+                 \x20   table.at(9)\n\
+                 except ValueError as error:\n\
+                 \x20   at_wall = str(error)\n\
+                 try:\n\
+                 \x20   table.sub('absent')\n\
+                 except ValueError as error:\n\
+                 \x20   sub_wall = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.ResourceTable('settings/items/absent.xml')\n\
+                 except ValueError as error:\n\
+                 \x20   missing = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.ResourceTable('settings/items/table.xml', 42)\n\
+                 except TypeError as error:\n\
+                 \x20   not_callable = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.ResourceTable()\n\
+                 except TypeError as error:\n\
+                 \x20   count_wall = str(error)\n\
+                 table.link(lambda entry: calls.append(entry.key))\n\
+                 __probe = (len(table), entry.key, table.at(-1).key, table[1].key, \
+                 table.keyOfIndex(1), table.indexOfKey('crab'), table.indexOfKey('absent'), \
+                 table.keyOfIndex(9), table.sub('crab').key, table['crab'].key, table.index, \
+                 table.at(0).index, table.at(1).index, table.value.get('cost'), \
+                 table.value.cost, table.value.get('rare'), table.value.get('absent'), \
+                 table.value.get('absent', 7), table.at(0).value.get('cost'), calls, \
+                 table.link(lambda entry: None), table.unlink(lambda entry: None), \
+                 table.value.pos, at_wall, sub_wall, missing, not_callable, count_wall)",
+            ),
+            "(2, 'crab', 'lobster', 'lobster', 'lobster', 0, -1, '', 'crab', 'crab', \
+             4294967295, 0, 1, 10, 10, False, None, 7, 10, [''], True, None, \
+             '(1 2 3)', \
+             'ResourceTable.at: index 9 out of range', \
+             'ResourceTable.find: no entry for key absent', \
+             \"ResourceTable() no such resource 'settings/items/absent.xml'\", \
+             'ResourceTable() second arg must be callable', \
+             'ResourceTable() expects between 1 and 2 arguments of types BW::string, PyObjectPtr')",
+        );
+
+        // The `as*` setters write through the typed attribute faces: the
+        // vector and matrix setters convert their argument, the int64
+        // setter answers through the plain long ladder, the underscore
+        // assignment walks the vector ladder, and every refusal raises its
+        // own sentence. The `__getitem__` guess on a `"(x y z)"` text stays
+        // a string: the paren guard passes but the parse cannot cross the
+        // leading `(` (strtod fails there), so the sentinel compare keeps
+        // the default — the reference `XMLSection::asVector3` answers the
+        // same way, which makes the Vector3 arm an unreachable parity.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr, Math\n\
+                 s = ResMgr.openSection('settings/items/kit.xml')\n\
+                 pair = s['pair']\n\
+                 quad = s['quad']\n\
+                 row = s['row0']\n\
+                 name = s['name']\n\
+                 armour = s['armour']\n\
+                 pair.asVector2 = (9, 10)\n\
+                 quad.asVector4 = (1, 2, 3, 4)\n\
+                 matrix = Math.Matrix()\n\
+                 matrix.setElement(1, 2, 3)\n\
+                 row.asMatrix = matrix\n\
+                 armour.asInt64 = 41\n\
+                 name.isAttribute = 'False'\n\
+                 s._flag = (1, 2)\n\
+                 try:\n\
+                 \x20   pair.asVector2 = 'no'\n\
+                 except TypeError as error:\n\
+                 \x20   vector_wall = str(error)\n\
+                 try:\n\
+                 \x20   row.asMatrix = 5\n\
+                 except TypeError as error:\n\
+                 \x20   matrix_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.isAttribute = True\n\
+                 except AttributeError as error:\n\
+                 \x20   attribute_wall = str(error)\n\
+                 try:\n\
+                 \x20   name.isAttribute = 'maybe'\n\
+                 except TypeError as error:\n\
+                 \x20   bool_wall = str(error)\n\
+                 __probe = (tuple(pair.asVector2), tuple(quad.asVector4), \
+                 row.asMatrix.get(1, 2), armour.asInt64, name.isAttribute, \
+                 s.readString('flag'), vector_wall, matrix_wall, \
+                 attribute_wall, bool_wall)",
+            ),
+            "((9.0, 10.0), (1.0, 2.0, 3.0, 4.0), 3.0, 41, False, '1.000000 2.000000', \
+             'asVector2 must be set to a Vector2 or tuple of 2 floats', \
+             'asMatrix must be a MatrixProvider', \
+             'isAttribute can only be used on XML DataSections which have no children', \
+             'isAttribute must be set to a bool')",
+        );
+
+        // The indexed child faces answer the child and its name and raise
+        // the reference's walls, the module parse walls quote the auto
+        // sentences, and the `bool` argument takes the true/false strings.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/list.xml')\n\
+                 first = s.child(0)\n\
+                 opened = ResMgr.openSection('settings/items/list.xml', 'true')\n\
+                 try:\n\
+                 \x20   s.child(9)\n\
+                 except IndexError as error:\n\
+                 \x20   child_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.childName(9)\n\
+                 except IndexError as error:\n\
+                 \x20   name_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.childName('x')\n\
+                 except TypeError as error:\n\
+                 \x20   arg_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.childName()\n\
+                 except TypeError as error:\n\
+                 \x20   count_wall = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.openSection()\n\
+                 except TypeError as error:\n\
+                 \x20   open_count = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.openSection(42)\n\
+                 except TypeError as error:\n\
+                 \x20   open_type = str(error)\n\
+                 try:\n\
+                 \x20   ResMgr.openSection('settings/items/list.xml', object())\n\
+                 except TypeError as error:\n\
+                 \x20   open_bool = str(error)\n\
+                 __probe = (first.asString, s.childName(1), opened.name, child_wall, \
+                 name_wall, arg_wall, count_wall, open_count, open_type, open_bool)",
+            ),
+            "('1', 'two', 'list.xml', 'child index out of range', \
+             'child index out of range', '() argument 1 must be set to an int', \
+             'childName() expects 1 argument of type int', \
+             'openSection() expects between 1 and 2 arguments of types BW::string, bool', \
+             '() argument 1 must be set to a string.', \
+             '() argument 2 optionally must be set to a bool')",
+        );
+
+        // The typed faces refuse the wrong types with the reference's
+        // sentences, the plural wall quotes the per-item index, the
+        // `one-string` parse is shared by the read*s and section makers,
+        // and the table and struct faces raise their own walls.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/writes.xml')\n\
+                 table = ResMgr.ResourceTable('settings/items/table.xml')\n\
+                 try:\n\
+                 \x20   s.readFloat('absent', 'nope')\n\
+                 except TypeError as error:\n\
+                 \x20   read_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.writeInt64('absent', 'x')\n\
+                 except TypeError as error:\n\
+                 \x20   int64_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.writeString('p', 3)\n\
+                 except TypeError as error:\n\
+                 \x20   write_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.writeStrings('p', ('a', 3))\n\
+                 except TypeError as error:\n\
+                 \x20   plural_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.readStrings(42)\n\
+                 except TypeError as error:\n\
+                 \x20   arg_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.deleteSection(42)\n\
+                 except TypeError as error:\n\
+                 \x20   delete_wall = str(error)\n\
+                 try:\n\
+                 \x20   table[42]\n\
+                 except ValueError as error:\n\
+                 \x20   table_wall = str(error)\n\
+                 try:\n\
+                 \x20   table[1.5]\n\
+                 except TypeError as error:\n\
+                 \x20   item_type_wall = str(error)\n\
+                 try:\n\
+                 \x20   table.value.get()\n\
+                 except TypeError as error:\n\
+                 \x20   get_wall = str(error)\n\
+                 __probe = (read_wall, int64_wall, write_wall, plural_wall, arg_wall, \
+                 delete_wall, table_wall, item_type_wall, get_wall)",
+            ),
+            "('Expected a string and an optional float', \
+             'Expected string and int64.', \
+             'Expected string and BW::string.', \
+             'Section 1 is not of of type BW::string.', \
+             'Expected one string argument.', \
+             'py_deleteSection: Expected a DataSection\\tor String argument.', \
+             'ResourceTable.at: index 42 out of range', \
+             'ResourceTable[x]: x must be set to a string', \
+             'get() expects between 1 and 2 arguments of types BW::string, PyObjectPtr')",
+        );
+
+        // The module `save` of an open id answers its key, `createSection`
+        // with the auto-parsed one-string wall and a directory path, and
+        // the `child` index parse takes the auto int sentence.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 s = ResMgr.openSection('settings/items/writes.xml')\n\
+                 s.writeString('str', 'again')\n\
+                 saved = ResMgr.save('settings/items/writes.xml')\n\
+                 made = s.createSection('sub/leaf')\n\
+                 opened_again = ResMgr.openSection('settings/items/writes.xml')\n\
+                 try:\n\
+                 \x20   s.createSection(42)\n\
+                 except TypeError as error:\n\
+                 \x20   make_wall = str(error)\n\
+                 try:\n\
+                 \x20   s.child('x')\n\
+                 except TypeError as error:\n\
+                 \x20   child_arg = str(error)\n\
+                 __probe = (saved, opened_again.readString('str'), \
+                 s.readString('sub/leaf'), make_wall, child_arg)",
+            ),
+            "(True, 'again', '', \
+             'Expected one string argument.', \
+             '() argument 1 must be set to an int')",
+        );
+
+        interpreter.fini();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// BW-03-03-04 editor component. The `#ifdef EDITOR_ENABLED` trio the
+    /// `res_mgr_script.cpp` links only into an editor build: `remove`,
+    /// `rename` and `copy` act on the file system through the search path.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_resmgr_editor_tools_serve_the_ported_surface() {
+        let root =
+            std::env::temp_dir().join(format!("boundless-resmgr-editor-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("settings/items")).expect("build the editor tree");
+        std::fs::write(root.join("settings/items/scrap.xml"), "<scrap/>\n").expect("scrap");
+        std::fs::write(root.join("settings/items/moved.xml"), "<moved/>\n").expect("moved");
+        std::fs::write(
+            root.join("settings/items/kit.xml"),
+            "<kit>\n<name>shield</name>\n</kit>\n",
+        )
+        .expect("kit");
+        let root_path = root.to_str().expect("a UTF-8 root");
+        crate::resmgr::init_paths(&[root_path]);
+
+        let interpreter = Interpreter::init(&InitConfig {
+            component: String::from("editor"),
+            ..scenario_config(&InitConfig::default())
+        })
+        .expect("Script::init");
+
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import ResMgr\n\
+                 removed = ResMgr.remove('settings/items/scrap.xml')\n\
+                 gone = ResMgr.isFile('settings/items/scrap.xml')\n\
+                 try:\n\
+                 \x20   ResMgr.remove('settings/items/absent.xml')\n\
+                 except IOError as error:\n\
+                 \x20   no_remove = str(error)\n\
+                 renamed = ResMgr.rename('settings/items/moved.xml', 'settings/items/moved2.xml')\n\
+                 moved = ResMgr.isFile('settings/items/moved2.xml')\n\
+                 try:\n\
+                 \x20   ResMgr.rename('settings/items/absent.xml', 'settings/items/nope.xml')\n\
+                 except IOError as error:\n\
+                 \x20   no_rename = str(error)\n\
+                 copied = ResMgr.copy('settings/items/kit.xml', 'settings/items/kit_copy.xml')\n\
+                 present = ResMgr.isFile('settings/items/kit_copy.xml')\n\
+                 try:\n\
+                 \x20   ResMgr.copy('settings/items/absent.xml', 'settings/items/nope.xml')\n\
+                 except IOError as error:\n\
+                 \x20   no_copy = str(error)\n\
+                 __probe = (removed, gone, no_remove, renamed, moved, no_rename, copied, \
+                 present, no_copy)",
+            ),
+            "(True, False, 'Removing of settings/items/absent.xml failed', True, True, \
+             'Renaming of settings/items/absent.xml to settings/items/nope.xml failed', True, \
+             True, 'Copying of settings/items/absent.xml to settings/items/nope.xml failed')",
+        );
+
+        interpreter.fini();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Drive `urlrequest::tick` until the script expression answers
+    /// `expected`, the host loop the reference's dispatcher ran, bounded so
+    /// a broken transport fails the test instead of hanging it.
+    fn wait_for_url(interpreter: &Interpreter, expression: &str, expected: &str) -> bool {
+        for _ in 0..600 {
+            // SAFETY: the scenario thread owns the GIL.
+            unsafe { crate::urlrequest::tick() };
+            // `probe` reads `__probe`, so the expression is what assigns it.
+            if probe(interpreter, &format!("__probe = {expression}")) == expected {
+                return true;
             }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// `BigWorld.fetchURL` and the `PyURLResponse` the callback receives
+    /// (`common/py_urlrequest.cpp`): the module surface, the uninitialised
+    /// wall, then -- with the manager stood up -- the four argument walls, a
+    /// real loopback success, a real timeout, the read-only attributes, and
+    /// a failing callback that is printed rather than raised.
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_big_world_url_request_face_serves_the_ported_surface() {
+        // A loopback server answering every connection with one fixed 200,
+        // and a silent one that accepts and never replies -- the timeout's
+        // counterpart.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the loopback server");
+        let port = server.local_addr().expect("a local address").port();
+        let _answering = std::thread::spawn(move || {
+            for stream in server.incoming() {
+                let mut stream = match stream {
+                    Ok(stream) => stream,
+                    Err(_) => break,
+                };
+                let mut buffer = [0; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut buffer);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\
+                      Content-Length: 5\r\n\r\nhello",
+                );
+                // The stream drops here: the client's read ends at the
+                // close, the `Connection: close` the port sends.
+            }
+        });
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the silent server");
+        let silent_port = silent.local_addr().expect("a local address").port();
+        let _holding = std::thread::spawn(move || {
+            let (_socket, _) = silent.accept().expect("accept");
+            // The socket stays open and silent: the read never ends, so the
+            // client times out instead of erroring.
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+
+        // The transport-error line the reference prints through
+        // `SCRIPT_ERROR_MSG`; the sink captures it for the assertion.
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let log = log.clone();
+            output_writer::set_log_sink(move |line, _is_stderr| {
+                log.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(line.to_owned());
+            });
+        }
+
+        let interpreter =
+            Interpreter::init(&scenario_config(&InitConfig::default())).expect("Script::init");
+
+        // The module surface: `fetchURL` on the module, the type is not.
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 __probe = (hasattr(BigWorld, 'fetchURL'), hasattr(BigWorld, 'URLResponse'))",
+            ),
+            "(True, False)",
+        );
+
+        // The manager gate: before `URL::Manager::init` the face refuses
+        // (`py_urlrequest.cpp:166-169`).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', lambda response: None)\n\
+                 \x20   __probe = 'no error'\n\
+                 except EnvironmentError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "PyURLRequest has not been initialised",
+        );
+
+        // `Manager::init` stands the singleton up; a second one refuses
+        // (`manager.cpp:128-136`).
+        assert!(crate::urlrequest::init());
+        assert!(!crate::urlrequest::init());
+
+        // The argument walls, in the reference's order (`:196-307`).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', 'not callable')\n\
+                 \x20   __probe = 'no error'\n\
+                 except ValueError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "Callback is not callable",
+        );
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', len, headers=42)\n\
+                 \x20   __probe = 'no error'\n\
+                 except ValueError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "headers argument is not a sequence",
+        );
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', len, postdata=4.5)\n\
+                 \x20   __probe = 'no error'\n\
+                 except ValueError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "postData argument should be a dict or string",
+        );
+        assert_eq!(
+            probe(
+                &interpreter,
+                "import BigWorld\n\
+                 try:\n\
+                 \x20   BigWorld.fetchURL('http://127.0.0.1:1/', len, method='HEAD')\n\
+                 \x20   __probe = 'no error'\n\
+                 except ValueError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "Invalid method HEAD. Should be 'GET', 'PUT', 'POST', 'DELETE' or 'PATCH''",
+        );
+
+        // The success path: one loopback exchange, the callback receives
+        // the response with the reference's three read-only fields.
+        probe(
+            &interpreter,
+            &format!(
+                "import BigWorld\n\
+                 results = []\n\
+                 def on_response(response):\n\
+                 \x20   results.append(response)\n\
+                 BigWorld.fetchURL('http://127.0.0.1:{port}/get', on_response, timeout=5)"
+            ),
+        );
+        assert!(
+            wait_for_url(&interpreter, "len(results)", "1"),
+            "the success callback ran"
+        );
+        assert_eq!(
+            probe(
+                &interpreter,
+                "response = results[0]\n\
+                 __probe = (response.contentType, response.body, \
+                 response.responseCode, type(response).__name__)",
+            ),
+            "('text/plain', 'hello', 200, 'PyURLResponse')",
+        );
+        // The read-only wall (`pyobject_plus.hpp:443-454`).
+        assert_eq!(
+            probe(
+                &interpreter,
+                "try:\n\
+                 \x20   response.body = 'no'\n\
+                 \x20   __probe = 'no error'\n\
+                 except TypeError as error:\n\
+                 \x20   __probe = str(error)",
+            ),
+            "Sorry, the attribute body in PyURLResponse is read-only",
+        );
+
+        // The timeout path: the silent server never answers, so the
+        // callback receives a zero response and the engine logs the
+        // reference's sentence (`:110-113`).
+        probe(
+            &interpreter,
+            &format!(
+                "import BigWorld\n\
+                 timeouts = []\n\
+                 def on_timeout(response):\n\
+                 \x20   timeouts.append((response.contentType, response.body, \
+                 response.responseCode))\n\
+                 BigWorld.fetchURL('http://127.0.0.1:{silent_port}/hold', \
+                 on_timeout, timeout=1)"
+            ),
+        );
+        assert!(
+            wait_for_url(&interpreter, "len(timeouts)", "1"),
+            "the timeout callback ran"
+        );
+        assert_eq!(probe(&interpreter, "__probe = timeouts[0]"), "('', '', 0)");
+        let logged = log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|line| line.contains("Response::onDone: Timeout was reached"));
+        assert!(logged, "the transport error is logged");
+
+        // A failing callback is printed, not raised (`:125`).
+        probe(
+            &interpreter,
+            &format!(
+                "import BigWorld\n\
+                 flops = []\n\
+                 def boom(response):\n\
+                 \x20   flops.append('called')\n\
+                 \x20   raise RuntimeError('callback boom')\n\
+                 BigWorld.fetchURL('http://127.0.0.1:{port}/again', boom, timeout=5)"
+            ),
+        );
+        assert!(
+            wait_for_url(&interpreter, "len(flops)", "1"),
+            "the failing callback ran"
+        );
+        let printed = log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|line| line.contains("callback boom"));
+        assert!(printed, "the failing callback's traceback is printed");
+
+        interpreter.fini();
+    }
+
+    /// The `__main__` namespace's dictionary, as a borrowed reference. The
+    /// helpers below run everything in it, the way the original harness's
+    /// `runPython`/`evalExpr` pass `__main__`'s dict as both globals and
+    /// locals.
+    ///
+    /// SAFETY: the interpreter is up and this thread owns the GIL.
+    unsafe fn main_globals() -> *mut PyObject {
+        unsafe {
+            let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+            capi::PyModule_GetDict(main)
+        }
+    }
+
+    /// `PyErr_Fetch` + `PyErr_NormalizeException`, then the exception's
+    /// `tp_name` and its `str()` value. The exception state is left clean.
+    ///
+    /// SAFETY: a fresh exception must be pending, and the GIL held.
+    unsafe fn take_pending_exception() -> (String, String) {
+        unsafe {
+            let mut ptype: *mut PyObject = std::ptr::null_mut();
+            let mut pvalue: *mut PyObject = std::ptr::null_mut();
+            let mut ptrace: *mut PyObject = std::ptr::null_mut();
+            capi::PyErr_Fetch(&mut ptype, &mut pvalue, &mut ptrace);
+            capi::PyErr_NormalizeException(&mut ptype, &mut pvalue, &mut ptrace);
+            let type_name = if ptype.is_null() {
+                "(none)".to_owned()
+            } else {
+                capi::type_name(ptype as *mut capi::PyTypeObject)
+            };
+            let message = if pvalue.is_null() {
+                String::new()
+            } else {
+                capi::to_string(pvalue)
+            };
+            capi::dec_ref(ptype);
+            capi::dec_ref(pvalue);
+            capi::dec_ref(ptrace);
+            (type_name, message)
+        }
+    }
+
+    /// The pending exception rendered as `Type: message`, for eval failures.
+    ///
+    /// SAFETY: a fresh exception must be pending, and the GIL held.
+    unsafe fn take_pending_error() -> String {
+        unsafe {
+            let (type_name, message) = take_pending_exception();
+            if message.is_empty() {
+                type_name
+            } else {
+                format!("{type_name}: {message}")
+            }
+        }
+    }
+
+    /// `evalExpr` (`test_script_math.cpp`): `PyRun_String(expression,
+    /// Py_eval_input, globals, globals)` in `__main__`. Returns a new
+    /// reference, or the reported-and-consumed error on failure.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn eval_expr(expression: &str) -> Result<*mut PyObject, String> {
+        unsafe {
+            capi::clear_error();
+            let Ok(encoded) = CString::new(expression) else {
+                return Err(format!("'{expression}' contains a NUL"));
+            };
+            let globals = main_globals();
+            let value = capi::PyRun_String(encoded.as_ptr(), capi::Py_eval_input, globals, globals);
+            if value.is_null() {
+                Err(take_pending_error())
+            } else {
+                Ok(value)
+            }
+        }
+    }
+
+    /// `evalFloat`: the expression must be a number, and it is read back as
+    /// a double. A non-number is reported the way the C++ helper reports it.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn eval_float(expression: &str) -> Result<f64, String> {
+        unsafe {
+            let value = eval_expr(expression)?;
+            if !capi::py_float_check(value) && !capi::py_long_check(value) {
+                capi::dec_ref(value);
+                return Err(format!("'{expression}' is not a number"));
+            }
+            let number = capi::PyFloat_AsDouble(value);
+            capi::dec_ref(value);
+            Ok(number)
+        }
+    }
+
+    /// `evalString`: the expression must be a `str`, read back as UTF-8.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn eval_string(expression: &str) -> Result<String, String> {
+        unsafe {
+            let value = eval_expr(expression)?;
+            if !capi::py_str_check(value) {
+                capi::dec_ref(value);
+                return Err(format!("'{expression}' is not a string"));
+            }
+            let text = capi::to_string(value);
+            capi::dec_ref(value);
+            Ok(text)
+        }
+    }
+
+    /// `checkTrue`: the expression must evaluate truthy.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn check_true(expression: &str) -> Result<(), String> {
+        unsafe {
+            let value = eval_expr(expression)?;
+            let is_true = capi::PyObject_IsTrue(value);
+            capi::dec_ref(value);
+            if is_true < 0 {
+                return Err(take_pending_error());
+            }
+            if is_true != 1 {
+                return Err(format!("'{expression}' is not true"));
+            }
+            Ok(())
+        }
+    }
+
+    /// `PyRun_String(statement, Py_file_input, globals, globals)` in
+    /// `__main__`, with the error state cleared first. Returns a new
+    /// reference, or null leaving the exception pending.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn run_stmt_raw(statement: &str) -> Result<*mut PyObject, String> {
+        unsafe {
+            capi::clear_error();
+            let Ok(encoded) = CString::new(statement) else {
+                return Err(format!("'{statement}' contains a NUL"));
+            };
+            let globals = main_globals();
+            Ok(capi::PyRun_String(
+                encoded.as_ptr(),
+                capi::Py_file_input,
+                globals,
+                globals,
+            ))
+        }
+    }
+
+    /// `checkSucceeds`: the statement must run clean.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn check_succeeds(statement: &str) -> Result<(), String> {
+        unsafe {
+            let value = run_stmt_raw(statement)?;
+            if value.is_null() {
+                return Err(take_pending_error());
+            }
+            capi::dec_ref(value);
+            Ok(())
+        }
+    }
+
+    /// `checkRaises`: the statement must raise the named exception type, and
+    /// the comparison is on the `tp_name`, exactly as the C++ helper reads it.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn check_raises(statement: &str, expected: &str) -> Result<(), String> {
+        unsafe {
+            let value = run_stmt_raw(statement)?;
+            if !value.is_null() {
+                capi::dec_ref(value);
+                return Err(format!("'{statement}' did not raise {expected}"));
+            }
+            let (actual, _) = take_pending_exception();
+            if actual != expected {
+                return Err(format!(
+                    "'{statement}' raised {actual}, expected {expected}"
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    /// One original step, played against the port. `Run`/`Succeeds`/`Raises`
+    /// run the source as a statement block; the tick steps advance the port's
+    /// provider store the way the host's per-frame `ProviderStore::tick` did.
+    ///
+    /// SAFETY: the GIL is held.
+    unsafe fn run_original_math_step(step: &math_regression::Step) -> Result<(), String> {
+        unsafe {
+            use math_regression::Step;
+            match step {
+                Step::Run(source) => {
+                    let value = run_stmt_raw(source)?;
+                    if value.is_null() {
+                        return Err(take_pending_error());
+                    }
+                    capi::dec_ref(value);
+                    Ok(())
+                }
+                Step::Float(expression, expected, epsilon) => {
+                    let actual = eval_float(expression)?;
+                    if (expected - actual).abs() > *epsilon {
+                        return Err(format!(
+                            "'{expression}' == {actual}, expected {expected} within {epsilon}"
+                        ));
+                    }
+                    Ok(())
+                }
+                Step::Count(expression, expected) => {
+                    let actual = eval_float(expression)?;
+                    if actual != *expected as f64 {
+                        return Err(format!("'{expression}' == {actual}, expected {expected}"));
+                    }
+                    Ok(())
+                }
+                Step::Str(expression, expected) => {
+                    let actual = eval_string(expression)?;
+                    if actual != *expected {
+                        return Err(format!(
+                            "'{expression}' == {actual:?}, expected {expected:?}"
+                        ));
+                    }
+                    Ok(())
+                }
+                Step::True(expression) => check_true(expression),
+                Step::Raises(statement, exception) => check_raises(statement, exception),
+                Step::Succeeds(statement) => check_succeeds(statement),
+                Step::Tick(d_time) => {
+                    crate::math::tick(*d_time);
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// BW-03-03-06: the 22 Python-side cases of the original
+    /// `test_script_math.cpp` replayed in order against the ported `Math`
+    /// module. The C++-side case `Math_vectorReferenceAndReadOnly` is not in
+    /// the table; it is a documented delta of the task.
+    fn run_original_math_regressions() {
+        let mut failures: Vec<String> = Vec::new();
+        // SAFETY: the scenario owns the GIL for its whole body.
+        unsafe {
+            for case in math_regression::CASES {
+                for step in case.steps {
+                    if let Err(message) = run_original_math_step(step) {
+                        failures.push(format!("{}: {}", case.name, message));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} original Math step(s) diverged:\n  - {}",
+            failures.len(),
+            failures.join("\n  - "),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_the_original_math_regressions_run_against_the_port() {
+        interpreter_scenario(&InitConfig::default(), |_interpreter| {
+            run_original_math_regressions();
+        });
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_replacing_a_script_class_updates_existing_instances() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            probe(
+                interpreter,
+                "class Old:\n    def greet(self): return 'old'\n\
+                 a = Old()\n\
+                 class New:\n    def greet(self): return 'new'\n    def extra(self): return 41\n\
+                 NewCls = New\n\
+                 class Slotted:\n    __slots__ = ('x',)\n\
+                 s = Slotted()\n\
+                 class Plain:\n    def greet(self): return 'plain'\n\
+                 PlainCls = Plain\n\
+                 __probe = 'ok'",
+            );
+            // The interpreter is up and the parked objects are live.
+            let (old_instance, new_class) = (main_object("a"), main_object("NewCls"));
+            // `Entity::swapScriptClass` (`entity.ipp:364-368`): the old
+            // instance's `__class__` moves to the reloaded class, so the
+            // instance answers with the new class's methods.
+            assert!(unsafe { crate::reload::swap_script_class(old_instance, new_class) });
+            assert_eq!(probe(interpreter, "__probe = a.greet()"), "new");
+            assert_eq!(probe(interpreter, "__probe = a.extra()"), "41");
+            assert_eq!(probe(interpreter, "__probe = type(a).__name__"), "New");
+            // CPython's `__class__` assignment is all-or-nothing: a layout
+            // mismatch (slots against a plain object) is rejected, leaving
+            // the attribute untouched -- the rollback `Entity::migrate`
+            // relies on (`entity.cpp:4300-4306`).
+            let (slotted, plain) = (main_object("s"), main_object("PlainCls"));
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(slotted, plain) },
+                (false, false)
+            );
+            assert_eq!(probe(interpreter, "__probe = type(s).__name__"), "Slotted");
+        });
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_swapping_in_a_module_window_keeps_sys_and_main() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            assert!(interpreter.run_simple_string("import sys"));
+            // The reloaded window is the live one plus a module only the
+            // window names, the way the scratch interpreter's `sys.modules`
+            // holds modules the live one has not seen.
             // SAFETY: the interpreter is up and this thread owns the GIL.
-            let math = unsafe { capi::PyImport_ImportModule(c"Math".as_ptr()) };
-            // The vector widths are ported, so the module imports; the row
-            // stays pending until Matrix, Plane and the providers land, and
-            // `audit` skips a pending module, so the inventory still holds.
-            assert!(!math.is_null(), "Math imports with the vector widths");
-            // SAFETY: the reference the import handed back is dropped here.
-            unsafe { capi::dec_ref(math) };
+            let (modules, window, fresh) = unsafe {
+                (
+                    capi::PySys_GetObject(c"modules".as_ptr()),
+                    capi::PyDict_Copy(capi::PySys_GetObject(c"modules".as_ptr())),
+                    capi::PyModule_New(c"fresh_module".as_ptr()),
+                )
+            };
+            assert!(!modules.is_null());
+            assert!(!window.is_null());
+            assert!(!fresh.is_null());
+            unsafe {
+                assert_eq!(
+                    capi::PyObject_SetAttrString(fresh, c"READY".as_ptr(), capi::py_true()),
+                    0
+                );
+                assert_eq!(
+                    capi::PyDict_SetItemString(window, c"fresh_module".as_ptr(), fresh),
+                    0
+                );
+            }
+            // `EntityType::swapInModules` (`entity_type.ipp:74-112`): the
+            // live window is refilled from the reloaded one, `sys` is
+            // restored so its stdout/stderr redirection survives, and
+            // `BigWorld` is re-exposed on `__main__`.
+            unsafe { crate::reload::swap_in_modules(modules, window) };
+            // The host's own references go; the window the swap installed
+            // holds its own.
+            unsafe {
+                capi::dec_ref(fresh);
+                capi::dec_ref(window);
+            }
+            assert_eq!(
+                probe(interpreter, "__probe = __import__('fresh_module').READY"),
+                "True"
+            );
+            assert_eq!(
+                probe(interpreter, "__probe = __import__('sys') is sys"),
+                "True"
+            );
+            // `__main__` started without a `BigWorld` name, so the re-add is
+            // the only way the reloaded window can expose it.
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "__probe = hasattr(__import__('__main__'), 'BigWorld')"
+                ),
+                "True"
+            );
+            // A window that names no `BigWorld` has nothing to re-expose: the
+            // port skips the expose rather than handing `PyModule_AddObject`
+            // a NULL value, so the window simply loses the name while the
+            // exposure the earlier swap put on `__main__` stays.
+            let bare = unsafe { capi::PyDict_Copy(modules) };
+            assert!(!bare.is_null());
+            assert_eq!(
+                unsafe { capi::PyDict_DelItemString(bare, c"BigWorld".as_ptr()) },
+                0
+            );
+            unsafe { crate::reload::swap_in_modules(modules, bare) };
+            unsafe { capi::dec_ref(bare) };
+            assert_eq!(
+                probe(interpreter, "__probe = 'BigWorld' in sys.modules"),
+                "False"
+            );
+            assert_eq!(
+                probe(
+                    interpreter,
+                    "__probe = hasattr(__import__('__main__'), 'BigWorld')"
+                ),
+                "True"
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_migrate_reports_the_hook_success_and_failure() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            probe(
+                interpreter,
+                "class Plain: pass\n\
+                 p1 = Plain()\n\
+                 p2 = Plain()\n\
+                 p3 = Plain()\n\
+                 p4 = Plain()\n\
+                 class NoHook:\n    def marker(self): return 'nh'\n\
+                 nh = NoHook\n\
+                 class CleanHook:\n    def onMigrate(self, other):\n        self.seen = other\n    def marker(self): return 'ch'\n\
+                 ch = CleanHook\n\
+                 class RaiseHook:\n    def onMigrate(self, other):\n        raise RuntimeError('hook boom')\n\
+                 rh = RaiseHook\n\
+                 class IntHook:\n    onMigrate = 7\n\
+                 ih = IntHook\n\
+                 __probe = 'ok'",
+            );
+            // The interpreter is up and the parked objects are live.
+            let (p1, p2, p3, p4) = (
+                main_object("p1"),
+                main_object("p2"),
+                main_object("p3"),
+                main_object("p4"),
+            );
+            let (nh, ch, rh, ih) = (
+                main_object("nh"),
+                main_object("ch"),
+                main_object("rh"),
+                main_object("ih"),
+            );
+            // A missing hook is the allowed-to-be-null success: the swap
+            // lands and nothing raises (`entity.cpp:4327-4334`).
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(p1, nh) },
+                (true, false)
+            );
+            assert_eq!(probe(interpreter, "__probe = p1.marker()"), "nh");
+            // A clean hook runs with the entity as its argument.
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(p2, ch) },
+                (true, false)
+            );
+            assert_eq!(probe(interpreter, "__probe = p2.seen is p2"), "True");
+            assert_eq!(probe(interpreter, "__probe = p2.marker()"), "ch");
+            // A raising hook is a migration failure the reference still counts
+            // as a successful migrate (`entity.cpp:4338-4341`).
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(p3, rh) },
+                (true, true)
+            );
+            // A non-callable hook fails the same way (`script.cpp:1188-1191`).
+            assert_eq!(
+                unsafe { crate::reload::migrate_instance(p4, ih) },
+                (true, true)
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "runs in its own process: see SCENARIOS"]
+    fn scenario_a_failed_reload_leaves_the_old_definitions_callable() {
+        interpreter_scenario(&InitConfig::default(), |interpreter| {
+            probe(
+                interpreter,
+                "import sys\n\
+                 class Old:\n    def greet(self): return 'old'\n\
+                 old = Old()\n\
+                 __probe = 'ok'",
+            );
+            // SAFETY: the interpreter is up and this thread owns the GIL.
+            let (modules, old_window, scratch) = unsafe {
+                (
+                    capi::PySys_GetObject(c"modules".as_ptr()),
+                    capi::PyDict_Copy(capi::PySys_GetObject(c"modules".as_ptr())),
+                    capi::PyDict_Copy(capi::PySys_GetObject(c"modules".as_ptr())),
+                )
+            };
+            let scratch_mod = unsafe { capi::PyModule_New(c"scratch_mod".as_ptr()) };
+            assert!(!scratch_mod.is_null());
+            unsafe {
+                // Park the scratch module so `refcount` can read it; this is
+                // its only owner at the baseline, before the scratch window
+                // takes its own.
+                let main = capi::PyImport_AddModule(c"__main__".as_ptr());
+                let dictionary = capi::PyModule_GetDict(main);
+                assert_eq!(
+                    capi::PyDict_SetItemString(dictionary, c"__handle".as_ptr(), scratch_mod),
+                    0
+                );
+                // Release the host's own `PyModule_New` reference: the park
+                // keeps the module alive, so the baseline counts exactly the
+                // references the failure tail is meant to return to.
+                capi::dec_ref(scratch_mod);
+            }
+            let before = refcount(interpreter);
+            unsafe {
+                // The scratch window takes the only owner role next.
+                assert_eq!(
+                    capi::PyDict_SetItemString(scratch, c"scratch_mod".as_ptr(), scratch_mod),
+                    0
+                );
+            }
+            // The attempt swaps the scratch window in and out, the way the
+            // plan's SWAP_IN / SWAP_BACK bracket the loads inside the scratch
+            // interpreter (`reload_plan.rs`).
+            unsafe { crate::reload::swap_in_modules(modules, scratch) };
+            let during = refcount(interpreter);
+            assert!(during > before, "the attempt holds a live reference");
+            // Failure tail (planReload): SWAP_BACK restores the live window
+            // and DESTROY releases the scratch window's references; nothing
+            // in between restores anything the old definitions need, because
+            // the live window was the one restored.
+            unsafe { crate::reload::swap_in_modules(modules, old_window) };
+            unsafe {
+                capi::dec_ref(scratch);
+                capi::dec_ref(old_window);
+            }
+            // The old definition is still callable after the failed reload...
+            assert_eq!(probe(interpreter, "__probe = old.greet()"), "old");
+            // ...and the scratch references are released: the module is back
+            // to the baseline its `__handle` park held before the attempt.
+            assert_eq!(refcount(interpreter), before);
         });
     }
 }

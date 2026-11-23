@@ -26,8 +26,13 @@ pub mod manifest;
 pub mod math;
 pub mod output_writer;
 pub mod pyref;
+pub mod reload;
+pub mod reload_plan;
+pub mod resmgr;
+pub mod script_events;
 pub mod sequence;
 pub mod timers;
+pub mod urlrequest;
 pub mod wrapper;
 
 pub use binding::BindError;

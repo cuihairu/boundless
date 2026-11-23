@@ -1,820 +1,954 @@
-//! The client script timer pair `BigWorld.callback`/`BigWorld.cancelCallback`
-//! (`lib/pyscript/py_callback.cpp`, `#ifndef MF_SERVER`, "Not available on
-//! server yet, pending refactoring.").
+//! The script timer faces of `BigWorld`: the client callback pair and the
+//! server timer trio.
 //!
-//! A one-shot callback registers a callable to run after a delay; the host's
-//! frame tick (`Script::tick`, `py_callback.cpp:96-135`) fires every callback
-//! whose time has come, in chronological order, and removes it. The callbacks
-//! are the client's timer module: `BigWorld.callback` returns an integer
-//! handle, `BigWorld.cancelCallback` removes the pending one, and a cancelled
-//! or already-fired callback is simply gone.
+//! The reference splits them at compile time: `BigWorld.callback` and
+//! `cancelCallback` live behind `#ifndef MF_SERVER`
+//! (`lib/pyscript/py_callback.cpp:9`, "Not available on server yet, pending
+//! refactoring"), while `addTimer`/`delTimer`/`addFrequentTask` come from
+//! `lib/server/` (`app_script_timers.cpp:193`/`:235`,
+//! `script_frequent_tasks.cpp:142`), which only server builds link. The port
+//! is one crate, so the split becomes a runtime role test over the
+//! `componentName` `Script::init` was given: a server component (`base`,
+//! `cell`, `database`, `bot`) carries the server trio, anything else with a
+//! name (client, editor) carries the callback pair, and an unknown name
+//! carries neither -- the same faces, gated the way the builds gate them.
 //!
-//! # Port shape
+//! Client side (`py_callback.cpp:46-229`): a sorted, stable list of
+//! records holding a callable and an empty argument tuple. `tick(timeNow)`
+//! walks the list with `gCurrent` parked ON the record being called and
+//! erases it only after the call returns (`:103-121`), so a
+//! `cancelCallback` from inside the call skips the current record
+//! (`:319-326`) and a registration with `delay <= 0` stops its insert scan
+//! at `gCurrent` (`:160-171`) -- it always waits a frame, even when the
+//! walk is already past every due record. `cancelCallback` erases the
+//! first handle match it may touch and stops there (`:327`). Handles come
+//! from a counter that wraps at `MAX_TIMER_HANDLE` = 2^32-1
+//! (`py_callback.hpp:17-19`, `:202-210`), so they only grow in practice.
+//! A failing callback is printed and the walk carries on (`Script::call`,
+//! `script.ipp:21-35`).
 //!
-//! The reference keeps three process globals in `namespace Script`
-//! (`py_callback.cpp:21-76`): the `gTimers` list, the `gCurrent` iterator and
-//! the `lastTimerHandle_` counter. The port keeps the same three in a
-//! [`Timers`] behind a mutex. The reference's single-threaded re-entrancy
-//! (a callback may register or cancel during `Script::call`) is preserved: the
-//! port releases the mutex across the Python call, so a callback re-enters
-//! [`add`]/[`cancel`] exactly as the reference's re-enters `addTimer`/
-//! `cancelCallback`.
+//! Server side (`cstdmf/time_queue.ipp:157-218` folded with
+//! `lib/server/script_timers.cpp` and `app_script_timers.cpp`): a time
+//! queue in game ticks at `DEFAULT_GAME_UPDATE_HERTZ` = 10
+//! (`lib/server/common.hpp:55`); offsets round to ticks with `+0.5f`, a
+//! repeat that rounds below one tick runs every tick, a negative initial
+//! offset clamps to zero (`script_timers.cpp:41-83`). `ScriptTimers` maps
+//! script ids to queue entries and hands out the smallest free id by
+//! linear search (`script_timers.cpp:89-100`) -- ids are reused the moment
+//! a timer fires its only shot or is cancelled, because `delTimer` cancels
+//! through `TimerHandle::cancel` and `onRelease` frees the id
+//! synchronously (`script_timers.cpp:108-124`,
+//! `app_script_timers.cpp:68-72`). The queue's `process` loop eats every
+//! entry that is due or cancelled (`time_queue.ipp:174-176`); a repeating
+//! timer reschedules from its old deadline (`time_ += interval`,
+//! `:438-441`), a zero-interval timer self-cancels after one shot
+//! (`:434-436`), and a `delTimer` from inside the own callback wins over
+//! the reschedule because `triggerTimer` re-checks the cancelled flag
+//! (`:429-441`). The id for the call is looked up at call time
+//! (`getIDForHandle`, `app_script_timers.cpp:58`) and the callback
+//! receives `(id, userArg)` through the `"ik"` format (`:60`), the user
+//! arg round-tripped through `intptr`/`uintptr` like the reference casts
+//! it. A callable check first, an `onTimer` attribute fallback second
+//! (`:105-122`); `delTimer` of an unknown id logs, never raises
+//! (`:214-221`).
 //!
-//! # Deltas
+//! `addFrequentTask` (`script_frequent_tasks.cpp:35-67`) runs its callable
+//! every tick across the `Updatables` two ordered levels; a truthy return
+//! deregisters the task, a failing call is printed and the task stays.
+//! Tasks added during an update wait for the next one -- the walk bounds
+//! itself to the size captured before the calls (`updatables.cpp:199-203`)
+//! -- and a level outside 0..2 refuses the registration
+//! (`updatables.cpp:33-38`), which is the
+//! `ValueError "Failed to register for update"` of
+//! `script_frequent_tasks.cpp:120`.
 //!
-//! - The reference's `TotalGameTimeFn` is engine plumbing
-//!   (`setTotalGameTimeFn`/`getTotalGameTime`, `py_callback.cpp:23-44`); the
-//!   port keeps the game clock itself ([`set_total_game_time`]) as the
-//!   engine's future frame loop, and [`add`] reads it the same way.
-//! - `Script::callNextFrame` (`py_callback.cpp:225-229`) is engine-internal
-//!   (no Python binding); it is not ported.
-//! - `Script::clearTimers` (`py_callback.cpp:81-91`) is called by the app at
-//!   a different point than `Script::fini`; the port calls [`clear`] from
-//!   `Interpreter::fini` so no record holds a reference into a finalised
-//!   interpreter.
+//! [`tick`] drives all three walks once per frame, the way the client app
+//! ticks its callbacks and the server app processes its time queue; like
+//! [`crate::math::tick`] it is a host-app step, not a script surface. The
+//! walks release the module lock across every `PyObject_CallObject`
+//! because a callback re-enters this module to register and cancel. The
+//! reference's `TimerFini` (`app_script_timers.cpp:24-36`) and
+//! `Script::clearTimers` (`py_callback.cpp:81-91`) both drain at
+//! shutdown, which is [`reset`] here.
 
-use super::capi::{self, PyObject};
-use super::pyref::PyRef;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 
-/// `INVALID_TIMER_HANDLE` (`py_callback.hpp:26`): the "no timer" value.
-/// [`Timers::get_handle`] never returns it, so the reference's overflow
-/// check is a defensive arm (see [`Timers::add`]).
-const INVALID_TIMER_HANDLE: u32 = 0;
-/// `MAX_TIMER_HANDLE` (`py_callback.hpp:27`): the counter wraps here.
+use crate::capi;
+use crate::pyref::PyRef;
+
+/// The time-queue resolution of the server faces:
+/// `DEFAULT_GAME_UPDATE_HERTZ` (`lib/server/common.hpp:55`).
+const UPDATE_HERTZ: f64 = 10.0;
+
+/// `MAX_TIMER_HANDLE` (`py_callback.hpp:19`).
 const MAX_TIMER_HANDLE: u32 = 0xffff_ffff;
 
-/// The game clock, `getTotalGameTime()` (`py_callback.cpp:41-44`). The
-/// reference reads it through a registered engine function; the port stores
-/// the value the host's frame loop would supply, starting at zero.
-static TOTAL_GAME_TIME: AtomicU64 = AtomicU64::new(0.0f64.to_bits());
-
-/// `getTotalGameTime` (`py_callback.cpp:41-44`): the time offsets in
-/// [`add`] are measured from.
-pub fn total_game_time() -> f64 {
-    f64::from_bits(TOTAL_GAME_TIME.load(Ordering::SeqCst))
-}
-
-/// The host's game clock, the port of `setTotalGameTimeFn`'s value. The
-/// reference registers the engine's frame counter; the port sets it the way
-/// the frame loop will, and [`crate::Interpreter`] resets it at init.
-pub fn set_total_game_time(time: f64) {
-    TOTAL_GAME_TIME.store(time.to_bits(), Ordering::SeqCst);
-}
-
-/// One `TimerRecord` (`py_callback.cpp:52-71`): the fire time, the issued
-/// handle, and the payload the caller owns (the reference's `function`,
-/// `arguments` and `source` fields).
-struct Record<T> {
-    time: f64,
+/// One client callback request, the `TimerRecord` of
+/// `py_callback.cpp:52-71`.
+struct CallbackRecord {
+    /// The handle `callback` answered with.
     handle: u32,
-    payload: T,
+    /// The absolute game time the record goes off at.
+    time: f64,
+    /// The callable; the registration owns its increment.
+    function: PyRef,
+    /// The fresh empty argument tuple of `py_callback.cpp:274`.
+    arguments: PyRef,
 }
 
-/// What [`Timers::peek_current`] found at the iterator position.
-enum Peek<T> {
-    /// The record is due: a copy of the payload to run.
-    Due { payload: T },
-    /// The record is not due yet: the iterator is left at the end, the
-    /// reference's `gCurrent = gTimers.end(); break;` (`py_callback.cpp:131`).
-    NotDue,
-    /// The list is exhausted.
-    Done,
-}
-
-/// `gTimers`, `gCurrent` and `lastTimerHandle_` (`py_callback.cpp:46-76`).
-///
-/// The reference's `BW::list` with an iterator is ported as a `Vec` with the
-/// iterator as an index; [`Timers::add`] and [`Timers::cancel`] adjust the
-/// index the way the linked list's iterator stability would, so the index
-/// always names the record the reference's iterator names. `current == len`
-/// is "at the end", the reference's `gTimers.end()`.
-struct Timers<T> {
-    records: Vec<Record<T>>,
-    current: usize,
+/// The `gTimers` list (`py_callback.cpp:74-76`) plus the handle counter and
+/// the `gCurrent` marker, kept as the handle of the record being called
+/// because positions shift under the inserts a callback makes.
+struct ClientTimers {
+    /// Sorted ascending by time; equal times keep insertion order, which is
+    /// what the strict `it->time > t` comparison buys
+    /// (`py_callback.cpp:180-184`).
+    records: Vec<CallbackRecord>,
+    /// `lastTimerHandle_` (`:46`).
     last_handle: u32,
+    /// The handle of the record being called, `gCurrent` (`:76`); outside a
+    /// call this is `None`, which is the walk's `end()`.
+    current: Option<u32>,
 }
 
-impl<T> Timers<T> {
-    const fn new() -> Self {
-        Timers {
-            records: Vec::new(),
-            current: 0,
-            last_handle: 0,
-        }
-    }
-
-    /// `getHandle` (`py_callback.cpp:202-210`): each handle is one more than
-    /// the last, wrapping past `MAX_TIMER_HANDLE` to one. Returns whether the
-    /// counter wrapped, the reference's `ERROR_MSG` for the port's log sink.
-    fn get_handle(&mut self) -> (u32, bool) {
-        let wrapped = self.last_handle == MAX_TIMER_HANDLE;
-        if wrapped {
+impl ClientTimers {
+    /// `addTimer` (`:172-199`): register at `now + delay`, insert-sorted,
+    /// with the scan of a `delay <= 0` registration stopping at the record
+    /// being called so it waits a frame.
+    fn add(&mut self, function: PyRef, arguments: PyRef, delay: f64, now: f64) -> u32 {
+        if self.last_handle == MAX_TIMER_HANDLE {
+            // `getHandle` (`:202-210`): the exhaustion log is the only
+            // observable, then the counter wraps and keeps going.
             self.last_handle = 0;
         }
         self.last_handle += 1;
-        (self.last_handle, wrapped)
-    }
-
-    /// `addTimer` (`py_callback.cpp:145-193`): insert-sorts `payload` at
-    /// `time` and returns its handle. `delay` keeps the sign that drives the
-    /// "must wait at least one frame" rule for a timer registered while its
-    /// own tick is running (`py_callback.cpp:155-171`).
-    ///
-    /// The insertion point is the first record with a time strictly later
-    /// than `time`, so equal times keep registration order (the reference's
-    /// `it->time > t` test advances past equals).
-    fn add(&mut self, time: f64, delay: f64, payload: T) -> u32 {
-        let (handle, wrapped) = self.get_handle();
-        if wrapped {
-            // `ERROR_MSG( "Script::getHandle - timer handles exhausted\n" )`.
-            super::output_writer::handle_write(
-                "Script::getHandle - timer handles exhausted\n",
-                true,
-            );
-        }
-        if handle == INVALID_TIMER_HANDLE {
-            // The reference skips the insert on the invalid handle; the arm
-            // is unreachable because `get_handle` cannot return it.
-            return handle;
-        }
-        let end = if delay <= 0.0 {
+        let handle = self.last_handle;
+        let time = now + delay;
+        let limit = if delay <= 0.0 {
             self.current
+                .map(|current| {
+                    self.records
+                        .iter()
+                        .position(|record| record.handle == current)
+                        .expect("the record being called stays in the list")
+                })
+                .unwrap_or(self.records.len())
         } else {
             self.records.len()
         };
-        let mut position = end;
-        for (index, record) in self.records[..end].iter().enumerate() {
+        let mut at = limit;
+        for (index, record) in self.records[..limit].iter().enumerate() {
             if record.time > time {
-                position = index;
+                at = index;
                 break;
             }
         }
         self.records.insert(
-            position,
-            Record {
-                time,
+            at,
+            CallbackRecord {
                 handle,
-                payload,
+                time,
+                function,
+                arguments,
             },
         );
-        // An insert at or before the current record shifts it right; follow
-        // it the way the reference's list iterator does.
-        if position <= self.current {
-            self.current += 1;
-        }
         handle
     }
 
-    /// `py_cancelCallback`'s loop (`py_callback.cpp:314-329`): remove the
-    /// first record with `handle` and return its payload for the caller to
-    /// release; the currently-running record (`gCurrent`) is never erased --
-    /// it is removed by [`Timers::finish_current`] after the call instead.
-    fn cancel(&mut self, handle: u32) -> Option<T> {
-        for (index, record) in self.records.iter().enumerate() {
-            if record.handle == handle {
-                if index != self.current {
-                    if index < self.current {
-                        self.current -= 1;
-                    }
-                    return Some(self.records.remove(index).payload);
-                }
-                return None;
-            }
-        }
-        None
-    }
-
-    /// `Script::tick`'s first line (`py_callback.cpp:98`):
-    /// `gCurrent = gTimers.begin()`.
-    fn begin(&mut self) {
-        self.current = 0;
-    }
-
-    /// The tick's test at `py_callback.cpp:102`: is the record at the current
-    /// iterator due at `now`? A due record yields a copy of its payload to
-    /// run; an undued one leaves the iterator at the end (`:131`).
-    fn peek_current(&mut self, now: f64) -> Peek<T>
-    where
-        T: Clone,
-    {
-        if self.current >= self.records.len() {
-            return Peek::Done;
-        }
-        let record = &self.records[self.current];
-        if record.time <= now {
-            Peek::Due {
-                payload: record.payload.clone(),
-            }
-        } else {
-            self.current = self.records.len();
-            Peek::NotDue
+    /// `py_cancelCallback` (`:304-332`): erase the first handle match,
+    /// unless it is the record being called; either way the scan stops
+    /// there.
+    fn cancel(&mut self, handle: u32) {
+        if let Some(position) = self
+            .records
+            .iter()
+            .position(|record| record.handle == handle)
+            .filter(|_| self.current != Some(handle))
+        {
+            self.records.remove(position);
         }
     }
 
-    /// The tick's `gCurrent = gTimers.erase( gCurrent )` (`py_callback.cpp:124`):
-    /// drop the record that just ran; the next record slides into the index,
-    /// which is why the index does not advance.
-    fn finish_current(&mut self) -> T {
-        debug_assert!(self.current < self.records.len());
-        self.records.remove(self.current).payload
-    }
-
-    /// `clearTimers` (`py_callback.cpp:81-91`): release every record; the
-    /// payload drops release the reference's function and arguments.
+    /// `clearTimers` (`:81-91`): drop every record, releasing the held
+    /// references.
     fn clear(&mut self) {
         self.records.clear();
-        self.current = 0;
-    }
-
-    /// Whether anything is pending, a test seam.
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.current = None;
     }
 }
 
-/// The port of a timer record's script-carrying fields: the reference's
-/// `function` and `arguments` (`py_callback.cpp:67-68`) and the `reason`
-/// string `Script::call` logs (`:69`). The pointers are stored as `usize`
-/// the way the wrapper registry stores its capsule pointers: a raw
-/// `*mut PyObject` would drag the non-`Send` pointer type into the process
-/// static, while the record owns one reference of each pointer.
-struct TimerPayload {
-    function: usize,
-    arguments: usize,
-    source: &'static str,
+/// One entry of the server time queue: a `TimeQueueT::Node` folded together
+/// with the script id map's payload.
+struct TimerNode {
+    /// The queue entry's identity, stable across the position shifts a
+    /// callback's own `addTimer`/`delTimer` cause mid-fire.
+    key: u64,
+    /// The absolute deadline in game ticks.
+    time: u64,
+    /// Ticks between refires; 0 is the one-shot of
+    /// `script_timers.cpp:56-65`.
+    interval: u64,
+    /// The callable (or resolved `onTimer`); the registration owns one
+    /// reference (`app_script_timers.cpp:105`).
+    function: PyRef,
+    /// The `pUser` int (`app_script_timers.cpp:70`).
+    user_arg: i32,
+    /// The `STATE_CANCELLED` of `time_queue.hpp:44-47`: cancelled entries
+    /// wait in the queue until `process` surfaces them
+    /// (`time_queue.ipp:174-176`).
+    cancelled: bool,
 }
 
-impl Clone for TimerPayload {
-    /// `Script::call` holds the record's references while it runs; the tick
-    /// peeks a copy to call and leaves the record's own references in the
-    /// list for [`Timers::finish_current`] to release.
-    fn clone(&self) -> Self {
-        // SAFETY: the pointers name objects the interpreter handed out and
-        // the GIL is held for the whole tick.
-        unsafe {
-            if !capi::is_finalized() {
-                capi::inc_ref(self.function as *mut PyObject);
-                capi::inc_ref(self.arguments as *mut PyObject);
-            }
-        }
-        TimerPayload {
-            function: self.function,
-            arguments: self.arguments,
-            source: self.source,
-        }
-    }
+/// The server faces' data: the time queue and the `ScriptTimers` id map
+/// (`script_timers.cpp:67-73`).
+struct ServerTimers {
+    /// Kept unsorted; the process step picks the earliest deadline by
+    /// scan. The reference's priority queue is a performance shape, and its
+    /// order between equal deadlines is heap-dependent -- unspecified, so
+    /// scripts must not rely on it and the tests do not.
+    queue: Vec<TimerNode>,
+    /// script id -> queue entry key.
+    map: BTreeMap<i32, u64>,
+    /// The next unused queue entry identity.
+    next_key: u64,
 }
 
-impl Drop for TimerPayload {
-    /// The reference's `Py_XDECREF` pair in `Script::ask` (`script.cpp:1210-1211`):
-    /// the record's own references go when the record leaves the list.
-    fn drop(&mut self) {
-        if capi::is_finalized() {
-            return;
-        }
-        // SAFETY: the pointers name objects the interpreter handed out and
-        // the GIL is held whenever a record is dropped.
-        unsafe {
-            capi::dec_ref(self.function as *mut PyObject);
-            capi::dec_ref(self.arguments as *mut PyObject);
-        }
-    }
-}
-
-/// The process-global timer state, `namespace Script::gTimers` +
-/// `gCurrent` + `lastTimerHandle_`.
-static TIMERS: Mutex<Timers<TimerPayload>> = Mutex::new(Timers::new());
-
-/// `Script::addTimer` for the Python side: register `function` to fire
-/// `delay` seconds from the current game time, with the reference's empty
-/// argument tuple. Returns the handle. The handles transfer ownership of
-/// their references into the timer record.
-pub fn add(function: PyRef, arguments: PyRef, source: &'static str, delay: f64) -> u32 {
-    let time = total_game_time() + delay;
-    let function_ptr = function.as_ptr() as usize;
-    let arguments_ptr = arguments.as_ptr() as usize;
-    // The record now owns the references; the handles must not release them.
-    std::mem::forget(function);
-    std::mem::forget(arguments);
-    TIMERS
-        .lock()
-        .expect("the timer mutex is never poisoned")
-        .add(
-            time,
-            delay,
-            TimerPayload {
-                function: function_ptr,
-                arguments: arguments_ptr,
-                source,
-            },
-        )
-}
-
-/// `BigWorld.cancelCallback`: remove the pending timer named by `handle`; a
-/// missing or already-fired handle is a no-op (`py_callback.cpp:304-332`).
-pub fn cancel(handle: u32) {
-    let _ = TIMERS
-        .lock()
-        .expect("the timer mutex is never poisoned")
-        .cancel(handle);
-}
-
-/// `Script::tick` (`py_callback.cpp:96-135`): fire every record due at
-/// `now`, in order. The mutex is released across each call so a callback may
-/// re-enter [`add`]/[`cancel`], the reference's single-threaded re-entrancy.
-pub fn tick(now: f64) {
-    let mut state = TIMERS.lock().expect("the timer mutex is never poisoned");
-    state.begin();
-    loop {
-        let payload = match state.peek_current(now) {
-            Peek::Due { payload, .. } => payload,
-            Peek::NotDue | Peek::Done => break,
+impl ServerTimers {
+    /// `ScriptTimersUtil::addTimer` folded with
+    /// `ScriptTimers::addTimer` (`script_timers.cpp:41-83`): clamp, round
+    /// to ticks, allocate the smallest free script id, queue the entry.
+    fn add(&mut self, function: PyRef, initial: f32, repeat: f32, user_arg: i32, now: u64) -> i32 {
+        // The clamp of `script_timers.cpp:44-49`; the warning only reaches
+        // the log.
+        let initial = if initial < 0.0 { 0.0 } else { initial };
+        let initial_ticks = now + (initial * UPDATE_HERTZ as f32 + 0.5) as u64;
+        let interval = if repeat > 0.0 {
+            let ticks = (repeat * UPDATE_HERTZ as f32 + 0.5) as u64;
+            // `script_timers.cpp:60-64`: a repeat that rounds below one
+            // tick still runs every tick.
+            if ticks < 1 { 1 } else { ticks }
+        } else {
+            0
         };
-        drop(state);
-        let TimerPayload {
+        // `getNewID` (`script_timers.cpp:89-100`): the linear search makes
+        // ids reusable the instant their timer is gone.
+        let mut id = 1;
+        while self.map.contains_key(&id) {
+            id += 1;
+        }
+        let key = self.next_key;
+        self.next_key += 1;
+        self.map.insert(id, key);
+        self.queue.push(TimerNode {
+            key,
+            time: initial_ticks,
+            interval,
             function,
-            arguments,
-            source,
-        } = payload;
-        script_call(
-            function as *mut PyObject,
-            arguments as *mut PyObject,
-            source,
-        );
-        state = TIMERS.lock().expect("the timer mutex is never poisoned");
-        // The record's own references release here, the reference's
-        // `Py_XDECREF` pair in `Script::ask` after the call; the peeked copy
-        // releases at the end of the iteration.
-        let _ = state.finish_current();
+            user_arg,
+            cancelled: false,
+        });
+        id
+    }
+
+    /// `ScriptTimers::delTimer` (`script_timers.cpp:108-124`): cancel the
+    /// entry behind the id. The id frees immediately -- the reference's
+    /// `TimerHandle::cancel` reaches `onRelease` synchronously -- while the
+    /// queue entry itself waits for `process` to surface it.
+    fn del(&mut self, id: i32) -> bool {
+        let Some(key) = self.map.remove(&id) else {
+            return false;
+        };
+        if let Some(node) = self.queue.iter_mut().find(|node| node.key == key) {
+            node.cancelled = true;
+        }
+        true
+    }
+
+    /// `ScriptTimers::cancelAll` (`script_timers.cpp:161-174`), the
+    /// shutdown drain: every id frees, every held reference drops.
+    fn clear(&mut self) {
+        self.queue.clear();
+        self.map.clear();
     }
 }
 
-/// `clearTimers`: release every pending record. The interpreter's fini calls
-/// this before `Py_Finalize`; the reference's app does it at its own point
-/// (`py_callback.cpp:81-91`).
-pub fn clear() {
-    TIMERS
-        .lock()
-        .expect("the timer mutex is never poisoned")
-        .clear();
+/// `ScriptFrequentTask` (`script_frequent_tasks.cpp:35-67`) times two: the
+/// `Updatables` two-level registry (`updatables.hpp:14-38`).
+struct FrequentTasks {
+    /// Level 0 then level 1, in registration order inside a level. A
+    /// `None` slot is a task that deregistered itself mid-walk; the slot
+    /// stays until it is overwritten or cleared.
+    levels: [Vec<Option<PyRef>>; 2],
 }
 
-/// `Script::ask` as the timer tick uses it (`script.cpp:1148-1262`) with
-/// `printException` true: call `function` with `arguments`, print a failed
-/// call's traceback, and report success.
-///
-/// `arguments` is always the reference's empty tuple for these callbacks, so
-/// the call is a no-argument one; the non-callable and non-tuple arms are the
-/// generic contract of `Script::ask` and are unreachable from the timer path
-/// (a record only ever stores what `BigWorld.callback` accepted).
-fn script_call(function: *mut PyObject, arguments: *mut PyObject, source: &'static str) -> bool {
-    // SAFETY: the interpreter is up (tick runs under the host's GIL) and the
-    // handles name objects the module created.
-    unsafe {
-        // `Script::ask`'s first guard: an error already pending is printed.
-        if !capi::PyErr_Occurred().is_null() {
-            capi::PyErr_PrintEx(0);
-        }
-        let mut result: *mut PyObject = std::ptr::null_mut();
-        if !function.is_null() && !arguments.is_null() {
-            if capi::is_callable(function) && capi::py_tuple_check(arguments) {
-                result = call_object(function, arguments);
-            } else {
-                // `Script::ask` (`script.cpp:1186-1190`): unreachable here.
-                capi::PyErr_SetString(
-                    capi::PyExc_TypeError,
-                    c"Script call attempted on a non-callable object or  pArgs is not a tuple."
-                        .as_ptr(),
-                );
+impl FrequentTasks {
+    /// `Updatables::add` (`updatables.cpp:30-70`): a level outside 0..2
+    /// refuses.
+    fn add(&mut self, function: PyRef, level: usize) -> bool {
+        let Some(slot) = self.levels.get_mut(level) else {
+            return false;
+        };
+        slot.push(Some(function));
+        true
+    }
+
+    /// `ScriptFrequentTask::fini` (`script_frequent_tasks.cpp:69-76`), the
+    /// shutdown drain.
+    fn clear(&mut self) {
+        self.levels = [Vec::new(), Vec::new()];
+    }
+}
+
+/// Everything the module holds between walks.
+struct Store {
+    /// The client face's records.
+    client: ClientTimers,
+    /// The server face's queue and id map.
+    server: ServerTimers,
+    /// The frequent tasks.
+    frequent: FrequentTasks,
+    /// The client's total game time, `getTotalGameTime`
+    /// (`py_callback.cpp:41-44`): the time base `callback` registers
+    /// against and the walk compares against.
+    game_time: f64,
+    /// The server's game tick counter, the `time()` the offsets are added
+    /// to (`script_timers.cpp:53`).
+    ticks: u64,
+    /// The sub-tick remainder the clock accumulates.
+    fraction: f64,
+}
+
+// SAFETY: the store's `PyRef`s are raw object pointers; the static they
+// feed is only ever touched on the interpreter thread that owns the GIL.
+unsafe impl Send for Store {}
+
+fn store() -> &'static Mutex<Store> {
+    static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
+    STORE.get_or_init(|| {
+        Mutex::new(Store {
+            client: ClientTimers {
+                records: Vec::new(),
+                last_handle: 0,
+                current: None,
+            },
+            server: ServerTimers {
+                queue: Vec::new(),
+                map: BTreeMap::new(),
+                next_key: 0,
+            },
+            frequent: FrequentTasks {
+                levels: [Vec::new(), Vec::new()],
+            },
+            game_time: 0.0,
+            ticks: 0,
+            fraction: 0.0,
+        })
+    })
+}
+
+/// The one lock scope helper: a failed lock is a poisoned mutex, which
+/// means a callback panicked; the walks carry on like the reference
+/// carries on past a failing callback.
+fn guarded() -> std::sync::MutexGuard<'static, Store> {
+    store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Where the client walk stands, the `gCurrent` iterator of
+/// `py_callback.cpp:96-135`. The walk is positional, so it survives the
+/// position shifts the inserts and cancels a callback cause: the cursor is
+/// the handle of the next record to examine.
+enum ClientStep {
+    /// `gTimers.begin()` -- the walk has not started.
+    Start,
+    /// Parked on the record with this handle.
+    At(u32),
+    /// `gTimers.end()` -- the walk finished or hit a not-yet-due record.
+    Done,
+}
+
+/// The `tick` of `py_callback.cpp:96-135`, one record at a time with the
+/// lock released across each call: a callback's own `callback`/
+/// `cancelCallback` calls re-enter the module lock. The record being
+/// called stays in the list for the duration (`gCurrent` parked on it) and
+/// is erased after the call returns.
+fn client_tick() {
+    let mut step = ClientStep::Start;
+    loop {
+        let due = {
+            let mut store_state = guarded();
+            let now = store_state.game_time;
+            let index = match step {
+                ClientStep::Start => Some(0),
+                ClientStep::At(handle) => store_state
+                    .client
+                    .records
+                    .iter()
+                    .position(|record| record.handle == handle),
+                ClientStep::Done => None,
+            };
+            let Some(index) = index.filter(|index| {
+                *index < store_state.client.records.len()
+                    && store_state.client.records[*index].time <= now
+            }) else {
+                // The reference's else branch: callbacks are in order, so
+                // the first not-yet-due record ends the walk
+                // (`:122-128`).
+                break;
+            };
+            // Snapshot the call's operands; the entry keeps its own
+            // references until the erase after the call.
+            let record = &store_state.client.records[index];
+            let handle = record.handle;
+            let function = record.function.clone();
+            let arguments = record.arguments.clone();
+            store_state.client.current = Some(handle);
+            (handle, function, arguments)
+        };
+        // `Script::call` (`script.ipp:21-35`): on failure print the
+        // traceback and carry on; the source prefix only reaches the log.
+        // SAFETY: the record holds live objects and the caller owns the
+        // GIL.
+        let result = unsafe { capi::PyObject_CallObject(due.1.as_ptr(), due.2.as_ptr()) };
+        if result.is_null() {
+            // SAFETY: the caller owns the GIL.
+            unsafe {
+                capi::PyErr_PrintEx(0);
+                capi::clear_error();
             }
         } else {
-            // `Script::ask` (`script.cpp:1196-1201`): unreachable here; the
-            // record always holds both handles.
-            capi::PyErr_SetString(
-                capi::PyExc_TypeError,
-                c"Script call attempted with a NULL function or argument pointers.".as_ptr(),
+            // SAFETY: the result is a fresh owned reference.
+            unsafe { capi::dec_ref(result) };
+        }
+        // The erase half of the loop body (`:119-121`): the record goes
+        // even if the call cancelled it, and the walk advances to
+        // whatever the erase left in its place.
+        let mut store_state = guarded();
+        store_state.client.current = None;
+        let position = store_state
+            .client
+            .records
+            .iter()
+            .position(|record| record.handle == due.0)
+            .expect("the record being called stays in the list");
+        store_state.client.records.remove(position);
+        step = store_state
+            .client
+            .records
+            .get(position)
+            .map_or(ClientStep::Done, |record| ClientStep::At(record.handle));
+    }
+}
+
+/// The `TimeQueueT::process` loop (`time_queue.ipp:169-218`) folded with
+/// the `ScriptTimerHandler::handleTimeout` call
+/// (`app_script_timers.cpp:52-66`), one entry at a time with the lock
+/// released across each call: a callback's own `addTimer`/`delTimer` calls
+/// re-enter the module lock.
+fn server_process() {
+    loop {
+        // The earliest entry, cancelled ones included -- they are dropped
+        // when they surface, exactly the reference's loop condition
+        // (`time_queue.ipp:174-176`). Ties break by entry age; the
+        // reference's heap order between equal deadlines is unspecified
+        // and scripts must not rely on it.
+        let next = guarded()
+            .server
+            .queue
+            .iter()
+            .min_by_key(|node| (node.time, node.key))
+            .map(|node| (node.time, node.cancelled, node.key));
+        let Some((time, cancelled, key)) = next else {
+            return;
+        };
+        let mut store_state = guarded();
+        let now = store_state.ticks;
+        if cancelled {
+            // The purge half of the loop body (`:206-212`): the id freed
+            // when the cancel happened, so only the queue entry goes.
+            store_state.server.queue.retain(|node| node.key != key);
+            continue;
+        }
+        if time > now {
+            return;
+        }
+        // `handleTimeout` (`app_script_timers.cpp:52-66`): resolve the
+        // current script id for the entry, then call with `(id, userArg)`
+        // -- the id looked up at call time, the user arg round-tripped
+        // through the same integer widths the reference casts it.
+        let node = store_state
+            .server
+            .queue
+            .iter()
+            .find(|node| node.key == key)
+            .expect("the entry being fired stays in the queue");
+        let Some(id) = store_state
+            .server
+            .map
+            .iter()
+            .find(|(_, entry_key)| **entry_key == key)
+            .map(|(id, _)| *id)
+        else {
+            continue;
+        };
+        let function = node.function.clone();
+        let user_arg = node.user_arg;
+        drop(store_state);
+        // SAFETY: both are fresh objects the tuple adopts.
+        let arguments = unsafe {
+            let id_object = capi::PyLong_FromLong(id as std::os::raw::c_long);
+            let user_object = capi::PyLong_FromUnsignedLong(
+                user_arg as std::os::raw::c_long as std::os::raw::c_ulong,
             );
+            let tuple = capi::PyTuple_New(2);
+            capi::PyTuple_SetItem(tuple, 0, id_object);
+            capi::PyTuple_SetItem(tuple, 1, user_object);
+            tuple
+        };
+        // SAFETY: the entry holds a live callable, the tuple is fresh, and
+        // the caller owns the GIL.
+        let result = unsafe { capi::PyObject_CallObject(function.as_ptr(), arguments) };
+        // SAFETY: the tuple is owned by this call only.
+        unsafe { capi::dec_ref(arguments) };
+        if result.is_null() {
+            // `PY_ERROR_CHECK` (`pyobject_plus.hpp:49-56`): print and
+            // carry on.
+            // SAFETY: the caller owns the GIL.
+            unsafe {
+                capi::PyErr_PrintEx(0);
+                capi::clear_error();
+            }
+        } else {
+            // SAFETY: a fresh owned reference.
+            unsafe { capi::dec_ref(result) };
         }
-        if !result.is_null() {
-            capi::dec_ref(result);
+        // Post-call state, re-read by key because the callback could add
+        // and cancel entries (`time_queue.ipp:429-441`): cancelled during
+        // the call, the one-shot self-cancel (`:434-436`), or the
+        // reschedule from the old deadline (`:438-441`).
+        let mut store_state = guarded();
+        let Some(position) = store_state
+            .server
+            .queue
+            .iter()
+            .position(|node| node.key == key)
+        else {
+            continue;
+        };
+        let entry = &store_state.server.queue[position];
+        if entry.cancelled {
+            // Cancelled during its own call: the id freed when the cancel
+            // happened, the entry goes now.
+            store_state.server.queue.swap_remove(position);
+        } else if entry.interval == 0 {
+            // The one-shot self-cancel of `triggerTimer`
+            // (`time_queue.ipp:434-436`): the id frees the way
+            // `onRelease` -> `releaseTimer` frees it
+            // (`app_script_timers.cpp:68-72`).
+            store_state
+                .server
+                .map
+                .retain(|_, entry_key| *entry_key != key);
+            store_state.server.queue.swap_remove(position);
+        } else {
+            store_state.server.queue[position].time += store_state.server.queue[position].interval;
         }
-        if !capi::PyErr_Occurred().is_null() {
-            print_timer_error(source);
-        }
-        !result.is_null()
     }
 }
 
-/// `Script::ask`'s `printException` block (`script.cpp:1213-1259`): log
-/// `source` plus the exception text the reference composes, then print the
-/// traceback and clear.
-unsafe fn print_timer_error(source: &str) {
-    // SAFETY: called only while the interpreter is up and the GIL is held.
-    unsafe {
-        let mut ptype: *mut PyObject = std::ptr::null_mut();
-        let mut pvalue: *mut PyObject = std::ptr::null_mut();
-        let mut ptraceback: *mut PyObject = std::ptr::null_mut();
-        capi::PyErr_Fetch(&mut ptype, &mut pvalue, &mut ptraceback);
-
-        // `PyErr_Occurred` returns the exception instance, the same value
-        // `Fetch` pulls; the reference composes `str(value) + " (" +
-        // str(value) + ")"`, the 3.13 reading of its `pErr` and `pValue`.
-        let mut final_error = String::new();
-        if !pvalue.is_null() {
-            let text = capi::PyObject_Str(pvalue);
-            if !text.is_null() {
-                final_error.push_str(&capi::to_string(text));
-                final_error.push_str(" (");
-                capi::dec_ref(text);
+/// The two-level walk of `Updatables::call` (`updatables.cpp:185-207`)
+/// with `ScriptFrequentTask::update` (`script_frequent_tasks.cpp:43-63`):
+/// each level bounds itself to the size captured before its calls, tasks
+/// added during the walk wait for the next tick, a truthy result
+/// deregisters, a failing call prints and the task stays.
+fn frequent_call() {
+    for level in 0..2 {
+        let bound = guarded().frequent.levels[level].len();
+        for index in 0..bound {
+            // Snapshot the callable; a `None` slot is a task that
+            // deregistered itself earlier in the walk.
+            let function = guarded().frequent.levels[level]
+                .get(index)
+                .and_then(Option::as_ref)
+                .cloned();
+            let Some(function) = function else {
+                continue;
+            };
+            // SAFETY: the entry holds a live callable and the caller owns
+            // the GIL.
+            let result = unsafe {
+                let arguments = capi::PyTuple_New(0);
+                let answer = capi::PyObject_CallObject(function.as_ptr(), arguments);
+                capi::dec_ref(arguments);
+                answer
+            };
+            if result.is_null() {
+                // `Script::ask` printed (`script.cpp:1208-1226`); the
+                // task's own log line only reaches the log, and the task
+                // stays registered.
+                // SAFETY: the caller owns the GIL.
+                unsafe {
+                    capi::PyErr_PrintEx(0);
+                    capi::clear_error();
+                }
+            } else {
+                // SAFETY: the caller owns the GIL.
+                let truthy = unsafe { capi::PyObject_IsTrue(result) } == 1;
+                // SAFETY: a fresh owned reference.
+                unsafe { capi::dec_ref(result) };
+                if truthy {
+                    guarded().frequent.levels[level][index] = None;
+                }
             }
         }
-        if !ptype.is_null() {
-            let text = capi::PyObject_Str(ptype);
-            if !text.is_null() {
-                final_error.push_str(&capi::to_string(text));
-                capi::dec_ref(text);
-            }
-        }
-        if !pvalue.is_null() {
-            final_error.push(')');
-        }
-
-        super::output_writer::handle_write(&format!("{source} {final_error}\n"), true);
-
-        capi::PyErr_Restore(ptype, pvalue, ptraceback);
-        capi::PyErr_PrintEx(0);
-        capi::clear_error();
     }
 }
 
-/// `PyObject_CallObject(function, arguments)` (`script.cpp:1181`), the port's
-/// `PyObject_Vectorcall` form: an empty tuple calls with no arguments, the
-/// only shape the timer path uses, and the general case walks the tuple.
-unsafe fn call_object(function: *mut PyObject, arguments: *mut PyObject) -> *mut PyObject {
-    // SAFETY: the caller guarantees the interpreter is up and the GIL is held.
-    unsafe {
-        let size = capi::PyTuple_Size(arguments);
-        if size < 0 {
-            return std::ptr::null_mut();
-        }
-        if size == 0 {
-            return capi::PyObject_CallNoArgs(function);
-        }
-        let mut items: Vec<*mut PyObject> = Vec::with_capacity(size as usize);
-        for index in 0..size {
-            items.push(capi::PyTuple_GetItem(arguments, index));
-        }
-        capi::PyObject_Vectorcall(function, items.as_ptr(), size, std::ptr::null_mut())
-    }
-}
-
-/// `BigWorld.callback` (`py_callback.cpp:257-288`): register a one-shot
-/// callback at `time` and return its handle.
-unsafe extern "C" fn py_callback(_module: *mut PyObject, args: *mut PyObject) -> *mut PyObject {
-    // SAFETY: called by CPython with the interpreter up and the GIL held.
-    unsafe {
-        let mut time: f64 = 0.0;
-        let mut function: *mut PyObject = std::ptr::null_mut();
-        // `PyArg_ParseTuple( args, "dO", &time, &function )` with the
-        // callable check (`py_callback.cpp:262-268`).
-        if capi::PyArg_ParseTuple(args, c"dO".as_ptr(), &mut time, &mut function) == 0
-            || function.is_null()
-            || !capi::is_callable(function)
-        {
+/// `py_callback` (`py_callback.cpp:257-288`): the `"dO"` parse and the
+/// callable check share one fixed sentence, the time clamps at zero, and
+/// the handle answers as an int.
+///
+/// # Safety
+///
+/// A C function call; the interpreter holds the GIL.
+unsafe extern "C" fn method_callback(
+    _module: *mut capi::PyObject,
+    args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let mut time = 0.0_f64;
+    let mut function: *mut capi::PyObject = std::ptr::null_mut();
+    // SAFETY: the caller owns the GIL and the parse targets are live
+    // locals of C ABI sizes.
+    if unsafe { capi::PyArg_ParseTuple(args, c"dO".as_ptr(), &mut time, &mut function) } == 0
+        || function.is_null()
+        || unsafe { capi::PyCallable_Check(function) } == 0
+    {
+        // `py_callback.cpp:262-268`: one sentence however the parse went.
+        unsafe {
             capi::PyErr_SetString(
                 capi::PyExc_TypeError,
                 c"BigWorld.callback: Argument parsing error.".as_ptr(),
             );
-            return std::ptr::null_mut();
         }
-        if time < 0.0 {
-            time = 0.0;
-        }
-        capi::inc_ref(function);
-        let empty = PyRef::from_owned(capi::PyTuple_New(0));
-        let Some(function) = PyRef::from_owned(function) else {
-            return std::ptr::null_mut();
-        };
-        let Some(arguments) = empty else {
-            return std::ptr::null_mut();
-        };
-        let handle = add(function, arguments, "BigWorld Callback: ", time);
-        if handle == INVALID_TIMER_HANDLE {
-            // `py_callback.cpp:276-280`: unreachable, see `Timers::add`.
-            capi::PyErr_SetString(
-                capi::PyExc_TypeError,
-                c"py_callback: Callback handle overflow.".as_ptr(),
-            );
-            return std::ptr::null_mut();
-        }
-        capi::PyLong_FromLong(handle as std::os::raw::c_long)
+        return std::ptr::null_mut();
     }
+    // `:270`: the clamp.
+    let delay = if time < 0.0 { 0.0 } else { time };
+    // `:272-274`: the registration increments the function and hands a
+    // fresh empty tuple to the record.
+    let function_ref = PyRef::borrowed(function).clone();
+    // SAFETY: a fresh object this call owns.
+    let Some(arguments) = PyRef::from_owned(unsafe { capi::PyTuple_New(0) }) else {
+        return std::ptr::null_mut();
+    };
+    let mut store_state = guarded();
+    let now = store_state.game_time;
+    let handle = store_state.client.add(function_ref, arguments, delay, now);
+    // SAFETY: the caller owns the GIL.
+    unsafe { capi::PyLong_FromLong(handle as std::os::raw::c_long) }
 }
 
-/// `BigWorld.cancelCallback` (`py_callback.cpp:304-333`): remove the pending
-/// callback named by `handle`.
-unsafe extern "C" fn py_cancel_callback(
-    _module: *mut PyObject,
-    args: *mut PyObject,
-) -> *mut PyObject {
-    // SAFETY: called by CPython with the interpreter up and the GIL held.
-    unsafe {
-        let mut handle: std::os::raw::c_int = 0;
-        if capi::PyArg_ParseTuple(args, c"i".as_ptr(), &mut handle) == 0 {
+/// `py_cancelCallback` (`py_callback.cpp:304-333`): the `"i"` parse with
+/// its own sentence, the cancel, and `None` however the scan went.
+///
+/// # Safety
+///
+/// A C function call; the interpreter holds the GIL.
+unsafe extern "C" fn method_cancel_callback(
+    _module: *mut capi::PyObject,
+    args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let mut handle = 0_i32;
+    // SAFETY: the caller owns the GIL and the parse target is a live
+    // local of C ABI size.
+    if unsafe { capi::PyArg_ParseTuple(args, c"i".as_ptr(), &mut handle) } == 0 {
+        // `py_callback.cpp:308-312`.
+        unsafe {
             capi::PyErr_SetString(
                 capi::PyExc_TypeError,
                 c"py_cancelCallback: Argument parsing error.".as_ptr(),
             );
-            return std::ptr::null_mut();
         }
-        cancel(handle as u32);
-        capi::py_none()
+        return std::ptr::null_mut();
     }
+    guarded().client.cancel(handle as u32);
+    capi::py_none()
 }
 
-/// The `BigWorld.callback` method descriptor; leaked for the module's
-/// lifetime, the reference's static method table.
-fn callback_def() -> *mut capi::PyMethodDef {
-    Box::leak(Box::new(capi::PyMethodDef {
-        ml_name: c"callback".as_ptr() as *const std::ffi::c_char,
-        ml_meth: Some(py_callback),
-        ml_flags: capi::METH_VARARGS,
-        ml_doc: std::ptr::null(),
-    }))
-}
-
-/// The `BigWorld.cancelCallback` method descriptor; leaked for the module's
-/// lifetime, the reference's static method table.
-fn cancel_callback_def() -> *mut capi::PyMethodDef {
-    Box::leak(Box::new(capi::PyMethodDef {
-        ml_name: c"cancelCallback".as_ptr() as *const std::ffi::c_char,
-        ml_meth: Some(py_cancel_callback),
-        ml_flags: capi::METH_VARARGS,
-        ml_doc: std::ptr::null(),
-    }))
-}
-
-/// Attach `callback` and `cancelCallback` into the `BigWorld` module
-/// dictionary, the port of the reference's `PY_MODULE_FUNCTION` links for
-/// the client timer pair (`lib/pyscript/py_callback.cpp:288,:333`).
+/// `py_addTimer` (`app_script_timers.cpp:82-141`): the `"Of|fi"` parse,
+/// the `onTimer` fallback for non-callables, the registration, the id.
 ///
 /// # Safety
 ///
-/// The interpreter must be up and the caller must own the GIL.
-pub unsafe fn register(module: *mut PyObject) {
-    // SAFETY: the interpreter is up and the caller owns the GIL.
-    unsafe {
-        if module.is_null() {
-            return;
+/// A C function call; the interpreter holds the GIL.
+unsafe extern "C" fn method_add_timer(
+    _module: *mut capi::PyObject,
+    args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let mut object: *mut capi::PyObject = std::ptr::null_mut();
+    let mut initial = 0.0_f32;
+    let mut repeat = 0.0_f32;
+    let mut user_arg = 0_i32;
+    // SAFETY: the caller owns the GIL and the parse targets are live
+    // locals of C ABI sizes.
+    if unsafe {
+        capi::PyArg_ParseTuple(
+            args,
+            c"Of|fi:addTimer".as_ptr(),
+            &mut object,
+            &mut initial,
+            &mut repeat,
+            &mut user_arg,
+        )
+    } == 0
+    {
+        // The parse failure keeps the parser's own sentence, which is what
+        // the reference does (`app_script_timers.cpp:99-103`).
+        return std::ptr::null_mut();
+    }
+    // `:105-122`: the callable check first, the `onTimer` attribute
+    // fallback second; a failed attribute fetch is overwritten by the one
+    // fixed sentence, which is what `PyErr_SetString` does to whatever
+    // `PyObject_GetAttrString` left behind.
+    let function = if unsafe { capi::PyCallable_Check(object) } != 0 {
+        PyRef::borrowed(object).clone()
+    } else {
+        // SAFETY: the caller owns the GIL.
+        let Some(on_timer) =
+            PyRef::from_owned(unsafe { capi::PyObject_GetAttrString(object, c"onTimer".as_ptr()) })
+        else {
+            // SAFETY: the caller owns the GIL.
+            unsafe {
+                capi::PyErr_SetString(
+                    capi::PyExc_TypeError,
+                    c"Callback function is not callable".as_ptr(),
+                );
+            }
+            return std::ptr::null_mut();
+        };
+        on_timer
+    };
+    let mut store_state = guarded();
+    let now = store_state.ticks;
+    let id = store_state
+        .server
+        .add(function, initial, repeat, user_arg, now);
+    // The `id == 0` arm (`:132-138`) cannot fire here: the id search
+    // starts at 1 and the queue push cannot fail. The reference reaches it
+    // only when the time queue refuses an entry outright.
+    // SAFETY: the caller owns the GIL.
+    unsafe { capi::PyLong_FromLong(id as std::os::raw::c_long) }
+}
+
+/// `py_delTimer` (`app_script_timers.cpp:205-222`): the `"i"` parse keeps
+/// the parser's sentence; an unknown id logs and still answers `None`.
+///
+/// # Safety
+///
+/// A C function call; the interpreter holds the GIL.
+unsafe extern "C" fn method_del_timer(
+    _module: *mut capi::PyObject,
+    args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let mut id = 0_i32;
+    // SAFETY: the caller owns the GIL and the parse target is a live
+    // local of C ABI size.
+    if unsafe { capi::PyArg_ParseTuple(args, c"i".as_ptr(), &mut id) } == 0 {
+        return std::ptr::null_mut();
+    }
+    let deleted = guarded().server.del(id);
+    // `:214-219`: the failure only logs (`ERROR_MSG`), never raises.
+    let _ = deleted;
+    capi::py_none()
+}
+
+/// `addFrequentTask` (`script_frequent_tasks.cpp:97-128`): the parse is
+/// `"O|i"`, the callable check has its own sentence, the answer is the
+/// success flag.
+///
+/// # Safety
+///
+/// A C function call; the interpreter holds the GIL.
+unsafe extern "C" fn method_add_frequent_task(
+    _module: *mut capi::PyObject,
+    args: *mut capi::PyObject,
+) -> *mut capi::PyObject {
+    let mut object: *mut capi::PyObject = std::ptr::null_mut();
+    let mut level = 0_i32;
+    // SAFETY: the caller owns the GIL and the parse targets are live
+    // locals of C ABI sizes.
+    if unsafe {
+        capi::PyArg_ParseTuple(
+            args,
+            c"O|i:addFrequentTask".as_ptr(),
+            &mut object,
+            &mut level,
+        )
+    } == 0
+    {
+        return std::ptr::null_mut();
+    }
+    // `:99-104`.
+    if unsafe { capi::PyCallable_Check(object) } == 0 {
+        // SAFETY: the caller owns the GIL.
+        unsafe {
+            capi::PyErr_SetString(capi::PyExc_TypeError, c"Argument is not callable".as_ptr());
         }
-        let dict = capi::PyModule_GetDict(module);
-        let callback = capi::PyCFunction_New(callback_def(), std::ptr::null_mut());
-        if !callback.is_null() {
-            capi::PyDict_SetItemString(dict, c"callback".as_ptr(), callback);
-            capi::dec_ref(callback);
+        return std::ptr::null_mut();
+    }
+    // The `g_pUpdatables` arm (`:106-111`) cannot fire here: the port
+    // builds its registry with the module, so it is never uninitialised.
+    let function = PyRef::borrowed(object).clone();
+    let registered = guarded().frequent.add(function, level as usize);
+    if !registered {
+        // `:120`: the invalid-level refusal.
+        // SAFETY: the caller owns the GIL.
+        unsafe {
+            capi::PyErr_SetString(
+                capi::PyExc_ValueError,
+                c"Failed to register for update".as_ptr(),
+            );
         }
-        let cancel = capi::PyCFunction_New(cancel_callback_def(), std::ptr::null_mut());
-        if !cancel.is_null() {
-            capi::PyDict_SetItemString(dict, c"cancelCallback".as_ptr(), cancel);
-            capi::dec_ref(cancel);
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the caller owns the GIL.
+    unsafe { capi::PyBool_FromLong(1) }
+}
+
+/// A method table's shared handle: `PyMethodDef` carries raw pointers, so
+/// the slice alone is not `Sync`, but these tables are immutable constants
+/// that `PyModule_AddFunctions` only reads.
+struct MethodTable(&'static [capi::PyMethodDef]);
+unsafe impl Sync for MethodTable {}
+
+/// The client method table, live under a client (or editor) component.
+static CLIENT_FUNCTIONS: MethodTable = MethodTable(&[
+    capi::PyMethodDef {
+        ml_name: c"callback".as_ptr(),
+        ml_meth: Some(method_callback),
+        ml_flags: capi::METH_VARARGS,
+        ml_doc: std::ptr::null(),
+    },
+    capi::PyMethodDef {
+        ml_name: c"cancelCallback".as_ptr(),
+        ml_meth: Some(method_cancel_callback),
+        ml_flags: capi::METH_VARARGS,
+        ml_doc: std::ptr::null(),
+    },
+    capi::PyMethodDef::END,
+]);
+
+/// The server method table, live under a server component. `addTimer` and
+/// `addFrequentTask` are the two faces of the trio with doc strings
+/// (`app_script_timers.cpp:193-200`, `script_frequent_tasks.cpp:131-138`).
+static SERVER_FUNCTIONS: MethodTable = MethodTable(&[
+    capi::PyMethodDef {
+        ml_name: c"addTimer".as_ptr(),
+        ml_meth: Some(method_add_timer),
+        ml_flags: capi::METH_VARARGS,
+        ml_doc: c"The function addTimer registers a callback function to be \n\
+                  called after \"initialOffset\" seconds. Optionally it can be \
+                  repeated every \n\"repeatOffset\" seconds, and have optional \
+                  user data (an integer that is \nsimply passed to the timer \
+                  function).\n\n\"callback\" must be a function that accepts 2 \
+                  arguments; the internal id of the timer \n(useful to remove \
+                  the timer via the \"delTimer\" method), and the optional \n\
+                  user supplied integer \"userArg\"."
+            .as_ptr(),
+    },
+    capi::PyMethodDef {
+        ml_name: c"delTimer".as_ptr(),
+        ml_meth: Some(method_del_timer),
+        ml_flags: capi::METH_VARARGS,
+        ml_doc: std::ptr::null(),
+    },
+    capi::PyMethodDef {
+        ml_name: c"addFrequentTask".as_ptr(),
+        ml_meth: Some(method_add_frequent_task),
+        ml_flags: capi::METH_VARARGS,
+        ml_doc: c"The function addFrequentTask registers a callback function to be \n\
+                   called periodically (at game tick frequency). If the callback \
+                   ever \nreturns True, it is deregistered and will not be called \
+                   again."
+            .as_ptr(),
+    },
+    capi::PyMethodDef::END,
+]);
+
+/// Which faces a component carries: the `MF_SERVER` builds (`base`, `cell`,
+/// `database`, `bot`) get the server trio, the non-server builds with a
+/// name (client, editor) get the callback pair, and an unknown name gets
+/// neither -- the manifest's scope rows, applied at install time.
+static EMPTY_FUNCTIONS: MethodTable = MethodTable(&[]);
+
+fn carries(component: &str) -> &'static MethodTable {
+    match component {
+        "base" | "cell" | "database" | "bot" => &SERVER_FUNCTIONS,
+        "client" | "editor" => &CLIENT_FUNCTIONS,
+        _ => &EMPTY_FUNCTIONS,
+    }
+}
+
+/// The `PyModuleMethodLink::init` of the timer faces
+/// (`script.cpp:1409-1453`): add the component's table to the `BigWorld`
+/// module. A table-less component adds nothing, and an add failure logs
+/// and carries on in the reference (`ScriptErrorPrint`), so it does here.
+///
+/// # Safety
+///
+/// The interpreter must be up, the caller must own the GIL, and `module`
+/// must be the live `BigWorld` module object.
+pub unsafe fn install(module: *mut capi::PyObject, component: &str) {
+    let table = carries(component);
+    if table.0.is_empty() {
+        return;
+    }
+    // SAFETY: the module is live and the table is a terminated static
+    // array of `PyMethodDef`.
+    let added = unsafe { capi::PyModule_AddFunctions(module, table.0.as_ptr()) };
+    if added != 0 {
+        // The reference logs through `ScriptErrorPrint` and moves on.
+        // SAFETY: the caller owns the GIL.
+        unsafe {
+            capi::PyErr_PrintEx(0);
+            capi::clear_error();
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A tick loop over the core, in the shape `Script::tick` uses, with a
-    /// run step the test controls so re-entrancy is exercisable. The payload
-    /// is a clone out of the list, so the run step may mutate the state the
-    /// way a script callback re-enters `add`/`cancel`.
-    fn run_tick(state: &mut Timers<i32>, now: f64, run: &mut dyn FnMut(&mut Timers<i32>, &i32)) {
-        state.begin();
-        while let Peek::Due { payload } = state.peek_current(now) {
-            run(state, &payload);
-            let _ = state.finish_current();
-        }
+/// The per-frame step the host app runs: the client callback walk against
+/// the accumulated game time, the server time queue against the tick
+/// counter, then the frequent tasks. Like [`crate::math::tick`], it is the
+/// port's stand-in for the app loops the reference drives these from.
+pub fn tick(d_time: f32) {
+    {
+        let mut store_state = guarded();
+        store_state.game_time += d_time as f64;
+        // The tick counter advances in whole `1 / UPDATE_HERTZ` steps,
+        // accumulating the sub-tick remainder, the way the server's
+        // `updateHertz` clock quantises frame time into ticks.
+        let advanced = store_state.fraction + d_time as f64 * UPDATE_HERTZ;
+        let whole = advanced as u64;
+        store_state.fraction = advanced - whole as f64;
+        store_state.ticks += whole;
     }
+    client_tick();
+    server_process();
+    frequent_call();
+}
 
-    #[test]
-    fn handles_count_up_from_one() {
-        let mut state = Timers::<i32>::new();
-        assert_eq!(state.add(1.0, 1.0, 0), 1);
-        assert_eq!(state.add(2.0, 1.0, 1), 2);
-        assert_eq!(state.add(3.0, 1.0, 2), 3);
-    }
-
-    #[test]
-    fn the_counter_wraps_past_the_maximum_and_reports_it() {
-        let mut state = Timers::<i32>::new();
-        state.last_handle = MAX_TIMER_HANDLE;
-        let (handle, wrapped) = state.get_handle();
-        assert_eq!(handle, 1);
-        assert!(wrapped);
-        // The wrap logs one line; the next handle is normal again.
-        let (handle, wrapped) = state.get_handle();
-        assert_eq!(handle, 2);
-        assert!(!wrapped);
-    }
-
-    #[test]
-    fn an_added_timer_never_gets_the_invalid_handle() {
-        let mut state = Timers::<i32>::new();
-        assert_ne!(state.add(1.0, 1.0, 0), INVALID_TIMER_HANDLE);
-    }
-
-    /// `add` through `getHandle`'s wrap: the counter climbs past `MAX` and
-    /// the record is still inserted, with the reference's exhaustion line
-    /// handed to the log sink.
-    #[test]
-    fn the_handle_wrap_is_reported_through_add() {
-        let mut state = Timers::<i32>::new();
-        state.last_handle = MAX_TIMER_HANDLE;
-        let handle = state.add(1.0, 1.0, 0);
-        assert_eq!(handle, 1);
-        assert_eq!(state.last_handle, 1);
-        assert!(!state.is_empty());
-    }
-
-    #[test]
-    fn timers_fire_in_chronological_order() {
-        let mut state = Timers::<i32>::new();
-        state.add(3.0, 1.0, 3);
-        state.add(1.0, 1.0, 1);
-        state.add(2.0, 1.0, 2);
-        let mut fired = Vec::new();
-        run_tick(&mut state, 10.0, &mut |_, payload| fired.push(*payload));
-        assert_eq!(fired, vec![1, 2, 3]);
-        assert!(state.is_empty());
-    }
-
-    #[test]
-    fn equal_times_keep_registration_order() {
-        let mut state = Timers::<i32>::new();
-        state.add(1.0, 1.0, 0);
-        state.add(1.0, 1.0, 1);
-        state.add(1.0, 1.0, 2);
-        let mut fired = Vec::new();
-        run_tick(&mut state, 1.0, &mut |_, payload| fired.push(*payload));
-        assert_eq!(fired, vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn a_timer_not_yet_due_stops_the_tick_at_the_end() {
-        let mut state = Timers::<i32>::new();
-        state.add(1.0, 1.0, 0);
-        state.add(2.0, 1.0, 1);
-        state.begin();
-        assert!(matches!(state.peek_current(0.5), Peek::NotDue));
-        // The iterator was left at the end, so nothing fires.
-        let mut fired = Vec::new();
-        run_tick(&mut state, 1.5, &mut |_, payload| fired.push(*payload));
-        assert_eq!(fired, vec![0]);
-    }
-
-    #[test]
-    fn cancelling_a_pending_timer_removes_only_it() {
-        let mut state = Timers::<i32>::new();
-        let a = state.add(1.0, 1.0, 0);
-        state.add(2.0, 1.0, 1);
-        let _ = state.cancel(a);
-        let mut fired = Vec::new();
-        run_tick(&mut state, 10.0, &mut |_, payload| fired.push(*payload));
-        assert_eq!(fired, vec![1]);
-        assert!(state.is_empty());
-    }
-
-    #[test]
-    fn cancelling_an_unknown_or_fired_handle_is_a_no_op() {
-        let mut state = Timers::<i32>::new();
-        let a = state.add(1.0, 1.0, 0);
-        assert!(state.cancel(99).is_none());
-        assert!(state.cancel(a).is_some());
-        assert!(state.cancel(a).is_none());
-    }
-
-    #[test]
-    fn a_zero_delay_timer_registered_during_a_tick_fires_next_tick() {
-        let mut state = Timers::<i32>::new();
-        let mut fired = Vec::new();
-        let mut registered = false;
-        // The first timer registers a zero-delay timer while it runs.
-        state.add(0.0, 1.0, 0);
-        run_tick(&mut state, 10.0, &mut |state, payload| {
-            fired.push(*payload);
-            if !registered {
-                registered = true;
-                state.add(10.0, 0.0, 1);
-            }
-        });
-        // Only the first timer fired in this tick.
-        assert_eq!(fired, vec![0]);
-        // The next tick fires the zero-delay one.
-        let mut second = Vec::new();
-        run_tick(&mut state, 10.0, &mut |_, payload| second.push(*payload));
-        assert_eq!(second, vec![1]);
-    }
-
-    /// A positive-delay timer registered while a tick is running lands after
-    /// the current record: the iterator does not shift, so the newly added
-    /// timer is not picked up by the in-flight tick (the reference's
-    /// `it->time > t` insert with a live `gCurrent`).
-    #[test]
-    fn a_positive_delay_timer_registered_during_a_tick_lands_after_the_current_record() {
-        let mut state = Timers::<i32>::new();
-        state.add(0.0, 1.0, 0);
-        let mut fired = Vec::new();
-        run_tick(&mut state, 10.0, &mut |state, payload| {
-            fired.push(*payload);
-            // Registered while the first record runs: a later deadline.
-            state.add(20.0, 1.0, 1);
-        });
-        // Only the in-flight record fired; the new one waits for a later tick.
-        assert_eq!(fired, vec![0]);
-        let mut second = Vec::new();
-        run_tick(&mut state, 20.0, &mut |_, payload| second.push(*payload));
-        assert_eq!(second, vec![1]);
-    }
-
-    /// Cancelling a record at an index after the current one during a tick
-    /// removes it without shifting the iterator (the reference's
-    /// `if (it != gCurrent)` arm with `it` past `gCurrent`).
-    #[test]
-    fn cancelling_a_later_pending_timer_during_a_tick_keeps_the_run_going() {
-        let mut state = Timers::<i32>::new();
-        state.add(0.0, 1.0, 0);
-        let later = state.add(0.0, 1.0, 1);
-        let mut fired = Vec::new();
-        run_tick(&mut state, 10.0, &mut |state, payload| {
-            if *payload == 0 {
-                // The second record is at index 1, past the running index 0.
-                assert_eq!(state.cancel(later), Some(1));
-            }
-            fired.push(*payload);
-        });
-        assert_eq!(fired, vec![0]);
-    }
-
-    #[test]
-    fn cancelling_the_running_timer_is_a_no_op_but_it_still_leaves() {
-        let mut state = Timers::<i32>::new();
-        state.add(0.0, 1.0, 0);
-        let mut fired = Vec::new();
-        run_tick(&mut state, 10.0, &mut |state, payload| {
-            fired.push(*payload);
-            // The running record is skipped; the handle matches gCurrent.
-            let running = state.records[state.current].handle;
-            assert!(state.cancel(running).is_none());
-        });
-        assert_eq!(fired, vec![0]);
-        assert!(state.is_empty());
-    }
-
-    #[test]
-    fn cancelling_an_earlier_timer_during_a_tick_keeps_the_run_going() {
-        let mut state = Timers::<i32>::new();
-        let earlier = state.add(0.0, 1.0, 0);
-        state.add(0.0, 1.0, 1);
-        let mut fired = Vec::new();
-        run_tick(&mut state, 10.0, &mut |state, payload| {
-            if *payload == 1 {
-                // Cancel the already-fired first record: it is gone, so the
-                // cancel finds nothing.
-                assert!(state.cancel(earlier).is_none());
-            }
-            fired.push(*payload);
-        });
-        assert_eq!(fired, vec![0, 1]);
-    }
-
-    #[test]
-    fn clear_releases_everything() {
-        let mut state = Timers::<i32>::new();
-        state.add(1.0, 1.0, 0);
-        state.add(2.0, 1.0, 1);
-        state.clear();
-        assert!(state.is_empty());
-        let mut fired = Vec::new();
-        run_tick(&mut state, 10.0, &mut |_, payload| fired.push(*payload));
-        assert!(fired.is_empty());
-    }
-
-    #[test]
-    fn the_game_time_clock_reads_back_what_it_was_set_to() {
-        set_total_game_time(42.5);
-        assert_eq!(total_game_time(), 42.5);
-    }
-
-    /// `register` guards a null module: there is nothing to attach the
-    /// functions to, so the call is a quiet no-op.
-    #[test]
-    fn registering_into_a_null_module_is_a_no_op() {
-        // SAFETY: a null module is the guard's own input; nothing is
-        // dereferenced before the early return.
-        unsafe { register(std::ptr::null_mut()) };
-    }
+/// The shutdown drain of `Script::clearTimers` (`py_callback.cpp:81-91`),
+/// `ScriptTimersUtil::cancelAll` (`app_script_timers.cpp:24-36`) and
+/// `ScriptFrequentTask::fini` (`script_frequent_tasks.cpp:69-76`): every
+/// held reference releases before the interpreter finalises.
+pub fn reset() {
+    let mut store_state = guarded();
+    store_state.client.clear();
+    store_state.server.clear();
+    store_state.frequent.clear();
+    store_state.game_time = 0.0;
+    store_state.ticks = 0;
+    store_state.fraction = 0.0;
 }

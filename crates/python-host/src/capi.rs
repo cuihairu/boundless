@@ -23,7 +23,7 @@
     clippy::missing_safety_doc
 )]
 
-use std::os::raw::{c_char, c_int, c_uint};
+pub use std::os::raw::{c_char, c_int, c_uint};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Set once `Py_Finalize` has run. `PyRef::drop` consults it so a handle that
@@ -57,12 +57,105 @@ pub struct PyTypeObject {
     _opaque: [u8; 0],
 }
 
+/// The head of a `PyTypeObject` up to `tp_name`: the `PyObject_VAR_HEAD`
+/// plus the name pointer, the one field the port reads straight out of the
+/// type -- the reference's read-only attribute sentence formats `typeName()`,
+/// which is `tp_name` (`pyobject_plus.hpp:443-454`). The layout is fixed by
+/// the CPython ABI.
+#[repr(C)]
+pub struct PyTypeHead {
+    ob_refcnt: isize,
+    ob_type: *mut PyTypeObject,
+    ob_size: PySsize,
+    tp_name: *const c_char,
+}
+
+/// `typeName()`: the type's `tp_name`, `Math.Vector3` style with the module
+/// prefix.
+///
+/// # Safety
+///
+/// `type_` must be a live type object.
+pub unsafe fn type_name(type_: *mut PyTypeObject) -> String {
+    // SAFETY: the head layout above is the CPython ABI and the name pointer
+    // is a live NUL-terminated static string.
+    let name = unsafe { (*(type_.cast::<PyTypeHead>())).tp_name };
+    unsafe { std::ffi::CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// `Py_ssize_t`.
 pub type PySsize = isize;
 
 /// `Py_None`, `_Py_NoneStruct` in the C API.
 pub fn py_none() -> *mut PyObject {
     std::ptr::addr_of_mut!(_Py_NoneStruct)
+}
+
+/// `Py_NotImplemented`, `_Py_NotImplementedStruct` in the C API.
+pub fn py_not_implemented() -> *mut PyObject {
+    std::ptr::addr_of_mut!(_Py_NotImplementedStruct)
+}
+
+/// `PyObject_TypeCheck` against `PyFloat_Type`: a float or a subtype.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_float_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyFloat_Type)) == 1 }
+}
+
+/// `PyObject_TypeCheck` against `PyLong_Type`: an int or a subtype.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_long_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyLong_Type)) == 1 }
+}
+
+/// `PyObject_TypeCheck` against `PyTuple_Type`.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_tuple_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTuple_Type)) == 1 }
+}
+
+/// `PyObject_TypeCheck` against `PyList_Type`.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_list_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyList_Type)) == 1 }
+}
+
+/// `PyObject_TypeCheck` against `PyBytes_Type`.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_bytes_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyBytes_Type)) == 1 }
+}
+
+/// `PyObject_TypeCheck` against `PyUnicode_Type`: a str or a subtype.
+///
+/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
+pub unsafe fn py_str_check(obj: *mut PyObject) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyUnicode_Type)) == 1 }
 }
 
 /// `Py_True`.
@@ -111,91 +204,6 @@ pub unsafe fn py_traceback_check(obj: *mut PyObject) -> bool {
     unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTraceBack_Type)) == 1 }
 }
 
-/// `PyTuple_Check`, the C API macro (`PyObject_TypeCheck` against
-/// `&PyTuple_Type`). The type is concrete, so this is an exact type match;
-/// the math operand conversions only ever receive the exact type.
-///
-/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
-pub unsafe fn py_tuple_check(obj: *mut PyObject) -> bool {
-    if obj.is_null() {
-        return false;
-    }
-    unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyTuple_Type)) }
-}
-
-/// `PyCallable_Check`, the C API macro (`cpython/abstract.h`: the object has
-/// `__call__`). The macro is `PyObject_CheckMethod(obj) ||
-/// PyObject_HasAttr(obj, "_call_")`; the attribute test is the portable half,
-/// the same choice the port's other macro ports make.
-///
-/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
-pub unsafe fn is_callable(obj: *mut PyObject) -> bool {
-    if obj.is_null() {
-        return false;
-    }
-    unsafe { PyObject_HasAttrString(obj, c"__call__".as_ptr()) == 1 }
-}
-
-/// `PyList_Check`, the C API macro (`PyObject_TypeCheck` against
-/// `&PyList_Type`), exact match as for `py_tuple_check`.
-///
-/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
-pub unsafe fn py_list_check(obj: *mut PyObject) -> bool {
-    if obj.is_null() {
-        return false;
-    }
-    unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyList_Type)) }
-}
-
-/// `PyFloat_Check`, the C API macro (`PyObject_TypeCheck` against
-/// `&PyFloat_Type`). Subtype-aware, so a float subclass passes; the
-/// reference's float converter relies on that.
-///
-/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
-pub unsafe fn py_float_check(obj: *mut PyObject) -> bool {
-    if obj.is_null() {
-        return false;
-    }
-    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyFloat_Type)) == 1 }
-}
-
-/// `PyLong_Check`, the C API macro (`PyObject_TypeCheck` against
-/// `&PyLong_Type`). Subtype-aware, so `bool` -- a subclass of `int` -- passes,
-/// exactly as the reference's float converter accepts a truth value.
-///
-/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
-pub unsafe fn py_long_check(obj: *mut PyObject) -> bool {
-    if obj.is_null() {
-        return false;
-    }
-    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyLong_Type)) == 1 }
-}
-
-/// `PyUnicode_Check`, the C API macro (`PyObject_TypeCheck` against
-/// `&PyUnicode_Type`). Subtype-aware, so `str` and its subclasses pass; the
-/// reference's enum converter (`script.hpp:830-869`) relies on the exact
-/// `PyUnicode_Check` shape to pick its error class.
-///
-/// SAFETY: `obj` must be a borrowed object the interpreter handed out, or null.
-pub unsafe fn py_unicode_check(obj: *mut PyObject) -> bool {
-    if obj.is_null() {
-        return false;
-    }
-    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyUnicode_Type)) == 1 }
-}
-
-/// `PyBytes_Check`, the C API macro (`PyObject_TypeCheck` against
-/// `&PyBytes_Type`). A `bytes` type cannot be subclassed in the interpreter's
-/// own sense for our purposes, so an exact type match is the same test.
-///
-/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
-pub unsafe fn py_bytes_check(obj: *mut PyObject) -> bool {
-    if obj.is_null() {
-        return false;
-    }
-    unsafe { std::ptr::eq(Py_TYPE(obj), std::ptr::addr_of_mut!(PyBytes_Type)) }
-}
-
 /// `PyObjectPlus::refCount()` (`pyobject_plus.hpp:1100`) and the cstdmf
 /// `hasZeroReferenceCount` specialisation that reads `ob_refcnt` directly
 /// (`pyobject_pointer.hpp:40`): the reference inspects the count for its own
@@ -209,22 +217,17 @@ pub unsafe fn refcount(obj: *mut PyObject) -> isize {
     unsafe { std::ptr::addr_of!((*obj).ob_refcnt).read() }
 }
 
-/// `Py_NotImplemented` (`Include/object.h`): the singleton a protocol
-/// handler returns to defer to the other operand. The C macro is
-/// `(&_Py_NotImplementedStruct)`; the helper spells the same address.
-pub fn not_implemented() -> *mut PyObject {
-    // SAFETY: the static is the process-global NotImplemented singleton.
-    std::ptr::addr_of_mut!(_Py_NotImplementedStruct)
-}
-
 /// `PyCFunction`: a builtin function object's implementation (`ml_meth`).
 pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
 
+/// `PyCFunctionWithKeywords`, the `ml_meth` signature of a
+/// `METH_VARARGS | METH_KEYWORDS` handler: the interpreter casts the stored
+/// `ml_meth` pointer and calls it with `(self, args, kwargs)`.
+pub type PyCFunctionWithKeywords =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+
 /// `PyCapsule_Destructor`, the `destructor` argument of `PyCapsule_New`.
 pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
-
-/// `destructor`, the `Py_tp_dealloc` slot signature (`pyobject.h`).
-pub type Destructor = unsafe extern "C" fn(*mut PyObject);
 
 /// A `PyGetSetDef` getter (`descrobject.h`).
 pub type Getter = unsafe extern "C" fn(*mut PyObject, *mut std::os::raw::c_void) -> *mut PyObject;
@@ -238,26 +241,29 @@ pub type Setter =
 pub type NewFunction =
     unsafe extern "C" fn(*mut PyTypeObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
 
-/// `tp_dealloc` (`object.h`): the destruction entry, which must release the
-/// instance body and then hand the allocation back with `PyObject_Free`.
-pub type DeallocFunction = unsafe extern "C" fn(*mut PyObject);
-
-/// `binaryfunc`: the two-operand number-protocol handler (`nb_add`, ...).
-pub type BinaryFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
-
-/// `unaryfunc`: the one-operand number-protocol handler (`nb_negative`, ...).
-pub type UnaryFunction = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
-
-/// `inquiry`: the flag-style number-protocol handler (`nb_bool`).
-pub type Inquiry = unsafe extern "C" fn(*mut PyObject) -> c_int;
-
-/// `richcmpfunc`: the comparison handler of `tp_richcompare`; `op` is one of
-/// the `Py_*` ordering constants.
-pub type RichcmpFunction =
-    unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject;
-
 /// `reprfunc`.
 pub type ReprFunction = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+
+/// `destructor`, the `tp_dealloc` handler.
+pub type Destructor = unsafe extern "C" fn(*mut PyObject);
+
+/// `richcmpfunc`, the `tp_richcompare` handler; `op` is one of the `Py_*`
+/// comparison opcodes.
+pub type RichCompareFunction =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, c_int) -> *mut PyObject;
+
+/// `binaryfunc`, the two-operand number handler (`nb_add` and friends).
+pub type BinaryFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+
+/// `unaryfunc`, the one-operand number handler (`nb_negative` and friends).
+pub type UnaryFunction = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+
+/// `inquiry`, the truth-value handler (`nb_bool`).
+pub type InquiryFunction = unsafe extern "C" fn(*mut PyObject) -> c_int;
+
+/// `ternaryfunc`, the `tp_call` handler: callee, argument tuple, keywords.
+pub type TernaryFunction =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
 
 /// `lenfunc`, the `sq_length`/`mp_length` handler.
 pub type LenFunction = unsafe extern "C" fn(*mut PyObject) -> PySsize;
@@ -271,6 +277,18 @@ pub type SsizeObjArgFunction = unsafe extern "C" fn(*mut PyObject, PySsize, *mut
 
 /// `METH_VARARGS` from `Include/methodobject.h`.
 pub const METH_VARARGS: c_int = 0x0001;
+
+/// `METH_KEYWORDS` from `Include/methodobject.h`: the handler takes a third
+/// `kwargs` argument (see [`PyCFunctionWithKeywords`]).
+pub const METH_KEYWORDS: c_int = 0x0002;
+
+/// `Py_file_input` from `Include/pythonrun.h`: `PyRun_String` parses the
+/// source as a statement block.
+pub const Py_file_input: c_int = 257;
+
+/// `Py_eval_input` from `Include/pythonrun.h`: `PyRun_String` parses the
+/// source as an expression.
+pub const Py_eval_input: c_int = 258;
 
 /// `PyGetSetDef`, one attribute descriptor of a type.
 #[repr(C)]
@@ -315,6 +333,50 @@ pub struct PyTypeSpec {
 pub const Py_tp_getattro: c_int = 58;
 /// `Py_tp_setattro` (`typeslots.h`).
 pub const Py_tp_setattro: c_int = 69;
+/// `Py_nb_add` (`typeslots.h`).
+pub const Py_nb_add: c_int = 7;
+/// `Py_nb_subtract` (`typeslots.h`).
+pub const Py_nb_subtract: c_int = 36;
+/// `Py_nb_multiply` (`typeslots.h`).
+pub const Py_nb_multiply: c_int = 29;
+/// `Py_nb_negative` (`typeslots.h`).
+pub const Py_nb_negative: c_int = 30;
+/// `Py_nb_positive` (`typeslots.h`).
+pub const Py_nb_positive: c_int = 32;
+/// `Py_nb_bool` (`typeslots.h`).
+pub const Py_nb_bool: c_int = 9;
+/// `Py_nb_true_divide` (`typeslots.h`).
+pub const Py_nb_true_divide: c_int = 37;
+/// `Py_nb_inplace_add` (`typeslots.h`).
+pub const Py_nb_inplace_add: c_int = 14;
+/// `Py_nb_inplace_subtract` (`typeslots.h`).
+pub const Py_nb_inplace_subtract: c_int = 23;
+/// `Py_nb_inplace_multiply` (`typeslots.h`).
+pub const Py_nb_inplace_multiply: c_int = 18;
+/// `Py_nb_inplace_true_divide` (`typeslots.h`).
+pub const Py_nb_inplace_true_divide: c_int = 24;
+/// `Py_tp_richcompare` (`typeslots.h`).
+pub const Py_tp_richcompare: c_int = 67;
+/// `Py_tp_str` (`typeslots.h`).
+pub const Py_tp_str: c_int = 70;
+/// `Py_tp_call` (`typeslots.h`).
+pub const Py_tp_call: c_int = 50;
+/// `Py_tp_dealloc` (`typeslots.h`).
+pub const Py_tp_dealloc: c_int = 52;
+
+/// The rich-comparison operation codes of `Py_LT`..`Py_GE`
+/// (`Include/object.h`).
+pub const Py_LT: c_int = 0;
+/// `Py_LE`.
+pub const Py_LE: c_int = 1;
+/// `Py_EQ`.
+pub const Py_EQ: c_int = 2;
+/// `Py_NE`.
+pub const Py_NE: c_int = 3;
+/// `Py_GT`.
+pub const Py_GT: c_int = 4;
+/// `Py_GE`.
+pub const Py_GE: c_int = 5;
 /// `Py_tp_doc` (`typeslots.h`).
 pub const Py_tp_doc: c_int = 56;
 /// `Py_tp_methods` (`typeslots.h`).
@@ -323,15 +385,6 @@ pub const Py_tp_methods: c_int = 64;
 pub const Py_tp_new: c_int = 65;
 /// `Py_tp_repr` (`typeslots.h`).
 pub const Py_tp_repr: c_int = 66;
-/// `Py_tp_base` (`typeslots.h`): the heap type's base, a `PyTypeObject*`.
-pub const Py_tp_base: c_int = 48;
-/// `Py_tp_dealloc` (`typeslots.h`): the destruction entry.
-pub const Py_tp_dealloc: c_int = 52;
-/// `Py_tp_free` (`typeslots.h`): the plain-memory free entry, used when a
-/// type body owns no references and CPython's own free would suffice.
-pub const Py_tp_free: c_int = 74;
-/// `Py_TPFLAGS_BASETYPE` (`cpython/object.h`): the type may be subclassed.
-pub const Py_TPFLAGS_BASETYPE: c_uint = 1 << 10;
 /// `PyMappingMethods` (`cpython/object.h`): the mapping protocol table.
 #[repr(C)]
 pub struct PyMappingMethods {
@@ -357,43 +410,6 @@ pub const Py_sq_length: c_int = 45;
 pub const Py_sq_item: c_int = 44;
 /// `Py_sq_ass_item` (`typeslots.h`).
 pub const Py_sq_ass_item: c_int = 39;
-/// `Py_nb_add` (`typeslots.h`): the `nb_add` slot of `PyNumberMethods`.
-pub const Py_nb_add: c_int = 7;
-/// `Py_nb_bool` (`typeslots.h`): `nb_bool` (`PyNumberMethods`).
-pub const Py_nb_bool: c_int = 9;
-/// `Py_nb_inplace_add` (`typeslots.h`).
-pub const Py_nb_inplace_add: c_int = 14;
-/// `Py_nb_inplace_multiply` (`typeslots.h`).
-pub const Py_nb_inplace_multiply: c_int = 18;
-/// `Py_nb_inplace_subtract` (`typeslots.h`).
-pub const Py_nb_inplace_subtract: c_int = 23;
-/// `Py_nb_inplace_true_divide` (`typeslots.h`).
-pub const Py_nb_inplace_true_divide: c_int = 24;
-/// `Py_nb_multiply` (`typeslots.h`).
-pub const Py_nb_multiply: c_int = 29;
-/// `Py_nb_negative` (`typeslots.h`).
-pub const Py_nb_negative: c_int = 30;
-/// `Py_nb_positive` (`typeslots.h`).
-pub const Py_nb_positive: c_int = 32;
-/// `Py_nb_subtract` (`typeslots.h`).
-pub const Py_nb_subtract: c_int = 36;
-/// `Py_nb_true_divide` (`typeslots.h`).
-pub const Py_nb_true_divide: c_int = 37;
-/// `Py_tp_richcompare` (`typeslots.h`): the comparison slot.
-pub const Py_tp_richcompare: c_int = 67;
-
-/// `Py_LT` (`Include/object.h`): the rich-compare operator code for `<`.
-pub const Py_LT: c_int = 0;
-/// `Py_LE`, the rich-compare operator code for `<=`.
-pub const Py_LE: c_int = 1;
-/// `Py_EQ`, the rich-compare operator code for `==`.
-pub const Py_EQ: c_int = 2;
-/// `Py_NE`, the rich-compare operator code for `!=`.
-pub const Py_NE: c_int = 3;
-/// `Py_GT`, the rich-compare operator code for `>`.
-pub const Py_GT: c_int = 4;
-/// `Py_GE`, the rich-compare operator code for `>=`.
-pub const Py_GE: c_int = 5;
 
 /// `PyMethodDef`, the descriptor a `PyCFunction` is created from.
 #[repr(C)]
@@ -406,6 +422,17 @@ pub struct PyMethodDef {
     pub ml_flags: c_int,
     /// `ml_doc`.
     pub ml_doc: *const c_char,
+}
+
+impl PyMethodDef {
+    /// The sentinel entry that ends a method table, the zeroed
+    /// `PyMethodDef` a `PyMethodDef[]` array must be terminated with.
+    pub const END: PyMethodDef = PyMethodDef {
+        ml_name: std::ptr::null(),
+        ml_meth: None,
+        ml_flags: 0,
+        ml_doc: std::ptr::null(),
+    };
 }
 
 /// `PyErr_Clear`, called without touching the exception state.
@@ -462,30 +489,23 @@ pub unsafe fn unicode_from_bytes(bytes: &[u8]) -> *mut PyObject {
     unsafe { PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as PySsize) }
 }
 
-/// The CPython `Py_TYPE` macro: the type pointer lives in the object header's
-/// `ob_type` field, so it reads directly instead of linking against a
-/// `libpython` export (3.12 ships it as a static inline, not a symbol).
-#[inline]
-pub unsafe fn Py_TYPE(obj: *mut PyObject) -> *mut PyTypeObject {
-    unsafe { (*obj).ob_type }
-}
-
 unsafe extern "C" {
     pub static mut _Py_NoneStruct: PyObject;
     pub static mut _Py_TrueStruct: PyObject;
     pub static mut _Py_FalseStruct: PyObject;
-    pub static mut _Py_NotImplementedStruct: PyObject;
     pub static mut Py_FrozenFlag: c_int;
     pub static mut Py_NoSiteFlag: c_int;
     pub static mut Py_IgnoreEnvironmentFlag: c_int;
     pub static mut PyModule_Type: PyTypeObject;
     pub static mut PyTraceBack_Type: PyTypeObject;
-    pub static mut PyTuple_Type: PyTypeObject;
-    pub static mut PyList_Type: PyTypeObject;
-    pub static mut PyUnicode_Type: PyTypeObject;
-    pub static mut PyBytes_Type: PyTypeObject;
     pub static mut PyFloat_Type: PyTypeObject;
     pub static mut PyLong_Type: PyTypeObject;
+    pub static mut PyTuple_Type: PyTypeObject;
+    pub static mut PyList_Type: PyTypeObject;
+    pub static mut PyBytes_Type: PyTypeObject;
+    pub static mut PyUnicode_Type: PyTypeObject;
+    pub static mut PyExc_ValueError: *mut PyObject;
+    pub static mut _Py_NotImplementedStruct: PyObject;
 }
 
 unsafe extern "C" {
@@ -498,6 +518,12 @@ unsafe extern "C" {
     pub fn PyEval_SaveThread() -> *mut std::os::raw::c_void;
     pub fn PyThreadState_Swap(tstate: *mut std::os::raw::c_void) -> *mut std::os::raw::c_void;
     pub fn PyRun_SimpleString(string: *const c_char) -> c_int;
+    pub fn PyRun_String(
+        code: *const c_char,
+        start: c_int,
+        globals: *mut PyObject,
+        locals: *mut PyObject,
+    ) -> *mut PyObject;
     pub fn PySys_SetObject(name: *const c_char, value: *mut PyObject) -> c_int;
     pub fn PySys_GetObject(name: *const c_char) -> *mut PyObject;
     pub fn PyList_New(size: PySsize) -> *mut PyObject;
@@ -513,6 +539,9 @@ unsafe extern "C" {
         key: *const c_char,
         value: *mut PyObject,
     ) -> c_int;
+    pub fn PyDict_DelItemString(dict: *mut PyObject, key: *const c_char) -> c_int;
+    pub fn PyDict_Clear(dict: *mut PyObject);
+    pub fn PyDict_Update(dict: *mut PyObject, other: *mut PyObject) -> c_int;
     pub fn PyDict_Next(
         dict: *mut PyObject,
         position: *mut PySsize,
@@ -523,6 +552,7 @@ unsafe extern "C" {
     pub fn PyUnicode_AsUTF8AndSize(unicode: *mut PyObject, size: *mut PySsize) -> *mut c_char;
     pub fn PyType_IsSubtype(derived: *mut PyTypeObject, base: *mut PyTypeObject) -> c_int;
     pub fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObject;
+    pub fn PyModule_New(name: *const c_char) -> *mut PyObject;
     pub fn PyImport_GetModuleDict() -> *mut PyObject;
     pub fn PyErr_Clear();
     pub fn PyErr_Occurred() -> *mut PyObject;
@@ -532,10 +562,16 @@ unsafe extern "C" {
         value: *mut *mut PyObject,
         traceback: *mut *mut PyObject,
     );
+    pub fn PyErr_NormalizeException(
+        type_: *mut *mut PyObject,
+        value: *mut *mut PyObject,
+        traceback: *mut *mut PyObject,
+    );
     pub fn PyErr_Restore(type_: *mut PyObject, value: *mut PyObject, traceback: *mut PyObject);
     pub fn PyUnicode_FromFormat(format: *const c_char, ...) -> *mut PyObject;
     pub fn PyErr_SetObject(exception: *mut PyObject, value: *mut PyObject) -> c_int;
     pub fn PyErr_SetString(exception: *mut PyObject, message: *const c_char);
+    pub fn PyErr_Format(exception: *mut PyObject, format: *const c_char, ...) -> *mut PyObject;
     pub fn PyThreadState_Get() -> *mut std::os::raw::c_void;
     pub fn PyGILState_Check() -> c_int;
     pub fn PyImport_AddModule(name: *const c_char) -> *mut PyObject;
@@ -549,16 +585,25 @@ unsafe extern "C" {
         value: *mut PyObject,
     ) -> c_int;
     pub fn PyObject_CallNoArgs(func: *mut PyObject) -> *mut PyObject;
-    /// `PyObject_Vectorcall` (`cpython/object.h`): the 3.13 vectorcall form
-    /// `PyObject_CallObject` expands to, for a tuple of arguments.
-    pub fn PyObject_Vectorcall(
-        callable: *mut PyObject,
-        args: *const *mut PyObject,
-        nargs: PySsize,
-        kwnames: *mut PyObject,
-    ) -> *mut PyObject;
+    pub fn PyObject_CallObject(func: *mut PyObject, args: *mut PyObject) -> *mut PyObject;
+    pub fn PyCallable_Check(obj: *mut PyObject) -> c_int;
+    pub fn PyObject_IsTrue(obj: *mut PyObject) -> c_int;
+    pub fn PyModule_AddFunctions(module: *mut PyObject, functions: *const PyMethodDef) -> c_int;
+    pub fn PyModule_AddObject(
+        module: *mut PyObject,
+        name: *const c_char,
+        value: *mut PyObject,
+    ) -> c_int;
+    pub fn PyBool_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyCFunction_New(def: *mut PyMethodDef, self_: *mut PyObject) -> *mut PyObject;
     pub fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
+    pub fn PyArg_ParseTupleAndKeywords(
+        args: *mut PyObject,
+        kwds: *mut PyObject,
+        format: *const c_char,
+        keywords: *mut *mut c_char,
+        ...
+    ) -> c_int;
     pub fn PyTuple_GetItem(tuple: *mut PyObject, index: PySsize) -> *mut PyObject;
     pub fn PyObject_Repr(obj: *mut PyObject) -> *mut PyObject;
     pub fn PyErr_Display(type_: *mut PyObject, value: *mut PyObject, traceback: *mut PyObject);
@@ -575,18 +620,16 @@ unsafe extern "C" {
     pub fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int;
     pub static mut PyExc_TypeError: *mut PyObject;
     pub static mut PyExc_IndexError: *mut PyObject;
-    pub static mut PyExc_ValueError: *mut PyObject;
+    pub static mut PyExc_AttributeError: *mut PyObject;
+    pub static mut PyExc_EnvironmentError: *mut PyObject;
+    pub static mut PyExc_IOError: *mut PyObject;
+    pub static mut PyExc_SystemError: *mut PyObject;
     pub fn PyIndex_Check(obj: *mut PyObject) -> c_int;
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
-    /// `PyObject_Free` (`Include/obmalloc.h`): release an object allocated
-    /// by `PyType_GenericAlloc` for a type that is not GC-tracked. A
-    /// `tp_dealloc` handler calls this after releasing the instance body's
-    /// held references, the same free the reference's `PyObjectPlus`
-    /// destructor reaches.
-    pub fn PyObject_Free(ptr: *mut std::os::raw::c_void);
     pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
+    pub fn PyObject_GetAttr(obj: *mut PyObject, attr_name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericGetAttr(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericSetAttr(
         obj: *mut PyObject,
@@ -594,27 +637,37 @@ unsafe extern "C" {
         value: *mut PyObject,
     ) -> c_int;
     pub fn PyLong_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
+    pub fn PyLong_FromUnsignedLong(value: std::os::raw::c_ulong) -> *mut PyObject;
     pub fn PyLong_AsLong(obj: *mut PyObject) -> std::os::raw::c_long;
-
-    // The bytes protocol the pickling state methods use: `__getstate__`
-    // hands out a raw copy of the instance body, `__setstate__` reads one
-    // back, both against `PyBytes_FromStringAndSize`/`PyBytes_AsString`.
-    pub fn PyBytes_FromStringAndSize(string: *const c_char, length: PySsize) -> *mut PyObject;
-    pub fn PyBytes_AsString(bytes: *mut PyObject) -> *mut c_char;
-    pub fn PyBytes_Size(bytes: *mut PyObject) -> PySsize;
-
-    // The number-protocol building blocks, the ones the math types need:
-    // every reference arithmetic handler converts its operands through
-    // `PyFloat_AsDouble` and builds its results with `PyFloat_FromDouble`.
-    pub fn PyFloat_FromDouble(value: f64) -> *mut PyObject;
+    pub fn PyLong_AsLongLong(obj: *mut PyObject) -> i64;
     pub fn PyFloat_AsDouble(obj: *mut PyObject) -> f64;
+    pub fn PyFloat_FromDouble(value: f64) -> *mut PyObject;
+    pub fn PySequence_Fast(obj: *mut PyObject, message: *const c_char) -> *mut PyObject;
+    pub fn PySequence_Check(obj: *mut PyObject) -> c_int;
+    pub fn PySequence_Size(obj: *mut PyObject) -> PySsize;
+    pub fn PySequence_GetItem(obj: *mut PyObject, index: PySsize) -> *mut PyObject;
+    pub fn PyMapping_Check(obj: *mut PyObject) -> c_int;
+    pub fn PyMapping_Size(obj: *mut PyObject) -> PySsize;
+    pub fn PyMapping_Items(obj: *mut PyObject) -> *mut PyObject;
     pub fn PyTuple_Size(tuple: *mut PyObject) -> PySsize;
     pub fn PyTuple_New(size: PySsize) -> *mut PyObject;
     pub fn PyTuple_SetItem(tuple: *mut PyObject, index: PySsize, item: *mut PyObject) -> c_int;
     pub fn PyList_AsTuple(list: *mut PyObject) -> *mut PyObject;
-    pub fn PySequence_Size(obj: *mut PyObject) -> PySsize;
-    pub fn PySequence_GetItem(obj: *mut PyObject, index: PySsize) -> *mut PyObject;
-    pub fn PySequence_Check(obj: *mut PyObject) -> c_int;
+    pub fn PyBytes_FromStringAndSize(string: *const c_char, length: PySsize) -> *mut PyObject;
+    pub fn PyBytes_AsStringAndSize(
+        obj: *mut PyObject,
+        buffer: *mut *mut c_char,
+        length: *mut PySsize,
+    ) -> c_int;
+    pub fn PyObject_Free(pointer: *mut std::os::raw::c_void);
+}
+
+/// The CPython `Py_TYPE` macro: the type pointer lives in the object header's
+/// `ob_type` field, so it reads directly instead of linking against a
+/// `libpython` export (3.12 ships it as a static inline, not a symbol).
+#[inline]
+pub unsafe fn Py_TYPE(obj: *mut PyObject) -> *mut PyTypeObject {
+    unsafe { (*obj).ob_type }
 }
 
 #[cfg(test)]

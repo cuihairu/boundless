@@ -120,7 +120,7 @@ pub fn take_out(id: u64) -> Option<PyRef> {
     registry.entries.remove(&id).map(|address| {
         // The caller owns the entry's reference outright: adopt it, do not
         // drop it here.
-        PyRef::borrowed(address as *mut capi::PyObject)
+        PyRef::from_owned(address as *mut capi::PyObject).unwrap_or_default()
     })
 }
 

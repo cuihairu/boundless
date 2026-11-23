@@ -467,6 +467,34 @@ impl DataSection {
         &self.name
     }
 
+    /// Replace the tag (`XMLSection::setTagName`).
+    pub fn set_section_name(&mut self, tag: &str) {
+        self.name = tag.to_string();
+    }
+
+    /// `XMLSection::sanitiseSectionName` (`xml_section.cpp:2524-2546`):
+    /// every space becomes the `..` token, a leading digit gains an `id.`
+    /// prefix, and the answer says whether the name changed.
+    pub fn sanitise_section_name(&mut self) -> bool {
+        let mut new_name = self.name.replace(' ', "..");
+        let first = new_name.as_bytes().first().copied();
+        if first.is_some_and(|b| b.is_ascii_digit()) {
+            new_name = format!("id.{new_name}");
+        }
+        if new_name != self.name {
+            self.name = new_name;
+            return true;
+        }
+        false
+    }
+
+    /// `XMLSection::isValidSectionName` (`xml_section.cpp:2551-2558`): the
+    /// tag check is gated behind `s_shouldCheckXMLTag`, whose default is
+    /// off -- the check never runs and the answer is always true.
+    pub fn is_valid_section_name(&self) -> bool {
+        true
+    }
+
     /// Children include attribute nodes, in document order.
     pub fn count_children(&self) -> usize {
         self.children.len()
@@ -507,6 +535,16 @@ impl DataSection {
 
     pub fn is_attribute(&self) -> bool {
         self.is_attribute
+    }
+
+    /// `XMLSection::isAttribute(bool)`: the flag moves only on a childless
+    /// node; a section with children reports false and keeps its state.
+    pub fn set_is_attribute(&mut self, is_attribute: bool) -> bool {
+        if !self.children.is_empty() {
+            return false;
+        }
+        self.is_attribute = is_attribute;
+        true
     }
 
     /// Raw string value. The reference's `defaultVal` and flags parameters
@@ -836,6 +874,58 @@ impl DataSection {
             }
             None => false,
         }
+    }
+
+    /// The `makeNewSection = true` lookup the typed writers hand their
+    /// value to (`openSection(path, true)`): the first node at `path`,
+    /// with every missing intermediate and leaf tag appended. The empty
+    /// path is `self`.
+    pub fn open_or_make_section(&mut self, path: &str) -> Option<&mut DataSection> {
+        self.open_or_make(path)
+    }
+
+    /// `XMLSection::delChild(tag)`: removes the first child carrying
+    /// `tag`; true when a child went away.
+    pub fn del_child(&mut self, tag: &str) -> bool {
+        match self.children.iter().position(|c| c.name == tag) {
+            Some(index) => {
+                self.children.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::deleteSection(tagPath)`: walks the `'/'`-separated
+    /// tags down through first matches and removes the final node from
+    /// its parent. An intermediate miss -- including the empty tags an
+    /// empty, leading or doubled slash yields -- stops the walk and
+    /// reports false.
+    pub fn delete_section(&mut self, tag_path: &str) -> bool {
+        let mut components: Vec<&str> = tag_path.split('/').collect();
+        let Some(final_tag) = components.pop() else {
+            return false;
+        };
+        let mut current = self;
+        for tag in components {
+            let Some(position) = current.children.iter().position(|c| c.name == tag) else {
+                return false;
+            };
+            let Some(next) = current.child_mut(position) else {
+                return false;
+            };
+            current = next;
+        }
+        current.del_child(final_tag)
+    }
+
+    /// `DataSection::copy(pSection)` with `modifyCurrent = true`: this
+    /// section's value, attribute flag and children are replaced with
+    /// deep copies of the source's; the name is kept.
+    pub fn copy_from(&mut self, other: &DataSection) {
+        self.children = other.children.clone();
+        self.set_string(other.as_string());
+        self.is_attribute = other.is_attribute;
     }
 
     // ------------------------------------------------------------------
@@ -2111,5 +2201,65 @@ mod tests {
         // The empty path writes the section's own value.
         assert!(doc.write_string("", "root value"));
         assert_eq!(doc.as_string(), "root value");
+    }
+
+    #[test]
+    fn del_child_takes_the_first_match_only() {
+        let mut doc = parse_doc("<r><b>1</b><b>2</b><c>3</c></r>");
+        assert!(doc.del_child("b"));
+        assert_eq!(doc.count_children(), 2);
+        assert_eq!(doc.open_child(0).unwrap().as_string(), "2");
+        // A missing tag removes nothing and reports the miss.
+        assert!(!doc.del_child("missing"));
+        assert_eq!(doc.count_children(), 2);
+    }
+
+    #[test]
+    fn delete_section_walks_and_removes_the_final_node() {
+        let mut doc = parse_doc("<r><a><b><c>v</c></b></a></r>");
+        assert!(doc.delete_section("a/b/c"));
+        assert_eq!(doc.open_section("a/b").unwrap().count_children(), 0);
+        // The descent only follows first matches; a miss anywhere is a miss.
+        assert!(!doc.delete_section("a/x/c"));
+        assert!(!doc.delete_section(""));
+        assert!(!doc.delete_section("a/"));
+        assert!(!doc.delete_section("//c"));
+        // The final tag deletes by name from the walked parent.
+        let mut dup = parse_doc("<r><b>1</b><b>2</b></r>");
+        assert!(dup.delete_section("b"));
+        assert_eq!(dup.open_child(0).unwrap().as_string(), "2");
+    }
+
+    #[test]
+    fn copy_from_replaces_value_children_and_attribute_flag() {
+        let mut target = parse_doc("<target>old</target>");
+        target.add_child("kept");
+        let mut source = parse_doc("<source>new text</source>");
+        let marked = source.open_or_make_section("extra").expect("made");
+        marked.set_is_attribute(true);
+        let source = source;
+        let snapshot = source.clone();
+        target.copy_from(&snapshot);
+        // `parse` renamed the root tag; the point is the name is kept
+        // rather than taken from the source.
+        assert_eq!(target.section_name(), "root", "copy keeps the name");
+        assert_eq!(target.as_string(), "new text");
+        assert_eq!(target.count_children(), 1);
+        assert_eq!(target.open_child(0).unwrap().section_name(), "extra");
+        assert!(target.open_child(0).unwrap().is_attribute());
+    }
+
+    #[test]
+    fn set_is_attribute_refuses_sections_with_children() {
+        let mut doc = parse_doc("<r><c><sub>v</sub></c></r>");
+        let child = doc.open_or_make_section("c").expect("existing");
+        assert!(!child.set_is_attribute(true));
+        assert!(!child.is_attribute());
+        // A childless value node takes the flag either way.
+        let made = doc.open_or_make_section("flag").expect("made");
+        assert!(made.set_is_attribute(true));
+        assert!(made.is_attribute());
+        assert!(made.set_is_attribute(false));
+        assert!(!made.is_attribute());
     }
 }
