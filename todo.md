@@ -1210,7 +1210,9 @@
 
 覆盖 Ghost 建立、跟随和销毁、属性/位置复制、Real 地址追踪、消息缓冲和重放。验证邻 Cell 穿越期间客户端看到的实体序列。
 
-- [ ] **BW-08-04-01 创建与销毁 Ghost**。**验收** 两相邻 Cell 保持正确数量。
+- [x] **BW-08-04-01 创建与销毁 Ghost**。**验收** 两相邻 Cell 保持正确数量。
+    - (commit ac2155a, lane/bw08-witness) crates/server-runtime/src/ghost.rs：逐面移植 entity_ghost_maintainer.{hpp,cpp}——check 的三段式（markHaunts 全置标记→createOrUnmarkRequiredHaunts 按兴趣矩形走访解标→deleteMarkedHaunts 删遗留标记）、checkEntityForOffload 的 pCellAt 定位与自宅/删除中/死亡通道三拒、visit 的本址跳过（按地址不按 cell id）、删除中 cell 不建 ghost、已标记先解标即返回、offload 目标外不建、迟滞带（interestArea=ghostDistance+appealRadius，再扩 GHOST_FUDGE=20 后走访、判交用未扩矩形）、createGhost/addDelGhostMessage 消息轨迹；OffloadChecker 的 canDeleteMoreGhosts(≤上限100)/addDeletedGhost；NEW_REAL_KEEP_GHOST_PERIOD(2s) 与 minGhostLifespan(5s) 双保留；BW::Rect 的 XZ 范围 inflateBy 坐标极限钳制与 touch-edge 相交语义（range1dt.ipp:129-131）；参照每次迭代新构 maintainer 的计数清零。SpaceTree::visitRect 的访问集=矩形相交集，用平扫等价移植。
+    - 验收证据：24 项 ghost 测试——两相邻 cell（本侧按地址排除）只对邻侧建恰一个 ghost 且消息序 [Create{2}]、越界后兴趣区仍覆盖时迟滞保留（已存 haunt 解标不删）、实体跨入邻侧被 offload 后从目标侧视角 ghost 翻面（cell1 得 Create、cell2 陈旧 ghost 得 Delete，两侧数量始终各恰一个）、offload 目标 cell 是唯一新建者、迟滞带（仅入 GHOST_FUDGE 带不入兴趣区）拒建、删除中/死亡 cell 拒建拒卸载、本宅拒卸载、无家可归拒卸载、新 real 2 秒保留、新 ghost 5 秒保留、删除上限耗尽不删、死通道删除不发消息、消失 cell 的 haunt 不炸不清标、Rect 极限 inflate 与贴边相交、numGhostsCreated 每迭代清零；cargo test -p server-runtime 704 passed，workspace exit 0 全绿 3058 项，llvm-cov ghost.rs 生产行覆盖 100.00%，clippy 对 ghost.rs 零告警，layering 9 passed。
 - [ ] **BW-08-04-02 复制属性和位置**。**验收** Ghost 与对应 Real 快照吻合。
 - [ ] **BW-08-04-03 跟踪 Real 地址**。**验收** 路由更新后抵达正确进程。
 - [ ] **BW-08-04-04 缓冲与重放切换期消息**。**验收** 交付顺序与去重结果吻合。
