@@ -11,6 +11,7 @@ pub mod dense;
 pub mod executor;
 pub mod fleet;
 pub mod hurricane;
+pub mod patrol;
 pub mod scenario;
 pub mod steady;
 
@@ -22,5 +23,6 @@ pub use dense::{DenseAoiLedger, run_dense_aoi};
 pub use executor::{Executor, StageTimeline};
 pub use fleet::{ControllerRegistry, Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};
 pub use hurricane::{HurricaneLedger, run_login_hurricane};
+pub use patrol::{Graph, GraphTraverser, Graphs, PatrolFactory, PatrolRandom};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
 pub use steady::{SteadyLedger, SteadyTrack, run_steady_movement};

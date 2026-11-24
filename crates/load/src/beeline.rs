@@ -52,7 +52,7 @@ impl MovementFactory for BeelineControllerFactory {
     fn create(
         &self,
         data: &str,
-        _speed: f32,
+        _speed: &mut f32,
         _start_pos: &mut Vector3,
     ) -> Option<Box<dyn MovementController>> {
         Some(Box::new(BeelineController::new(parse_destination(data))))
@@ -104,7 +104,7 @@ fn atof(text: &str) -> f32 {
 mod tests {
     use super::*;
     use crate::fleet::ControllerRegistry;
-    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, SQRT_2};
 
     /// The reference fixed route (beeline_controller.cpp:19-37): start at
     /// the origin, destination `(10, 0, 0)`, speed 2, dTime 1 — strides
@@ -146,9 +146,9 @@ mod tests {
         assert!(controller.next_step(&mut speed, 1.0, &mut pos, &mut yaw));
         assert_eq!(yaw, FRAC_PI_4);
         // A stride of 2 along the (1, 0, 1) direction.
-        assert!((pos.x - 1.4142136).abs() < 1e-5);
+        assert!((pos.x - SQRT_2).abs() < 1e-5);
         assert_eq!(pos.y, 0.0);
-        assert!((pos.z - 1.4142136).abs() < 1e-5);
+        assert!((pos.z - SQRT_2).abs() < 1e-5);
     }
 
     /// An already-arrived bot neither moves nor turns, and `nextStep`
@@ -172,8 +172,9 @@ mod tests {
     fn the_factory_parses_the_destination_triple() {
         let factory = BeelineControllerFactory;
         let mut start_pos = Vector3::new(99.0, 99.0, 99.0);
+        let mut speed = 7.0;
         let mut controller = factory
-            .create("3.5,1.0,-2.25", 7.0, &mut start_pos)
+            .create("3.5,1.0,-2.25", &mut speed, &mut start_pos)
             .unwrap();
 
         assert_eq!(start_pos, Vector3::new(99.0, 99.0, 99.0));
@@ -188,7 +189,9 @@ mod tests {
         // Spaces around the numbers are tolerated the way `atof` skips
         // leading whitespace: the destination still lands on (10, 0, 0)
         // and the bot strides toward it.
-        let mut controller = factory.create("10, 0, 0", 2.0, &mut start_pos).unwrap();
+        let mut controller = factory
+            .create("10, 0, 0", &mut 2.0, &mut start_pos)
+            .unwrap();
         let mut pos = Vector3::new(4.0, 0.0, 0.0);
         let mut yaw = 0.0;
         let mut speed = 2.0;
@@ -219,7 +222,7 @@ mod tests {
 
         let mut start_pos = Vector3::new(0.0, 0.0, 0.0);
         let mut controller = registry
-            .create("Beeline", "10,0,0", 2.0, &mut start_pos)
+            .create("Beeline", "10,0,0", &mut 2.0, &mut start_pos)
             .unwrap()
             .expect("Beeline creates a controller");
 

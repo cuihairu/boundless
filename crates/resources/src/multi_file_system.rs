@@ -22,7 +22,7 @@ use crate::file_system::{FileInfo, FileSystem, FileType};
 
 /// `MultiFileSystem`: priority search over the res path roots.
 pub struct MultiFileSystem {
-    base_file_systems: Vec<Box<dyn FileSystem>>,
+    base_file_systems: Vec<Box<dyn FileSystem + Send>>,
     /// `dirCache_`, keyed on the path with one trailing `/` removed. The
     /// reference mutates it from `const` lookups, so it sits behind a cell.
     dir_cache: RefCell<HashMap<String, Vec<String>>>,
@@ -48,7 +48,7 @@ impl MultiFileSystem {
 
     /// `addBaseFileSystem`: inserts at `index`, appending when the index is
     /// negative or out of range (the C++ `uint(index)` cast quirk).
-    pub fn add_base_file_system(&mut self, file_system: Box<dyn FileSystem>, index: isize) {
+    pub fn add_base_file_system(&mut self, file_system: Box<dyn FileSystem + Send>, index: isize) {
         if index < 0 || index as usize >= self.base_file_systems.len() {
             self.base_file_systems.push(file_system);
         } else {
@@ -285,7 +285,7 @@ mod tests {
         fs::write(full, data).unwrap();
     }
 
-    fn native(root: &str) -> Box<dyn FileSystem> {
+    fn native(root: &str) -> Box<dyn FileSystem + Send> {
         Box::new(NativeFileSystem::new(root))
     }
 
