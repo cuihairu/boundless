@@ -2707,6 +2707,160 @@ mod tests {
         }
     }
 
+    // ---- BW-08-03-05: multiple observers retest ----
+
+    #[test]
+    fn observers_select_and_stamp_history_independently() {
+        // Both caches exist before the history grows, exactly as for two
+        // clients watching one cell; each then sees the growth on its own
+        // entity copy.
+        let mut base = EntitySnapshot::new(2, 1, (3.0, 0.0, 0.0));
+        base.volatile = VolatileInfo::NONE;
+        let mut grown = base.clone();
+        grown.events = vec![
+            HistoryEvent {
+                number: 5,
+                level: HistoryLevel::Detail(0),
+                payload_bytes: 2,
+            },
+            HistoryEvent {
+                number: 7,
+                level: HistoryLevel::Detail(1),
+                payload_bytes: 2,
+            },
+        ];
+        grown.last_event_number = 7;
+
+        let mut a = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut a, base.clone());
+        a.witness.cache_mut(2).detail_level = 1;
+
+        let mut b = projection_world((15.0, 0.0, 0.0));
+        seed_observer(&mut b, base);
+        b.witness.cache_mut(2).detail_level = 0;
+
+        // A's tick first: at detail 1 only the Detail(1) event rides, and
+        // the cache stamps the entity's history end.
+        a.witness.upsert_entity(grown.clone());
+        match first_entity_update(&mut a) {
+            ClientMessage::EntityUpdate { id, events, .. } => {
+                assert_eq!(id, 2);
+                assert_eq!(events, &[7]);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+        assert_eq!(a.witness.aoi_map.get(&2).unwrap().last_event_number(), 7);
+
+        // B runs after A has consumed the history: its own stamp is still
+        // 0, so both events ride — nothing was used up by A's send.
+        b.witness.upsert_entity(grown);
+        match first_entity_update(&mut b) {
+            ClientMessage::EntityUpdate { id, events, .. } => {
+                assert_eq!(id, 2);
+                assert_eq!(events, &[5, 7]);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+        let b_cache = b.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(b_cache.last_event_number(), 7);
+        assert_eq!(b_cache.detail_level(), 0);
+    }
+
+    #[test]
+    fn an_observers_detail_transition_does_not_reach_the_other_observer() {
+        let mut entity = EntitySnapshot::new(2, 1, (50.0, 0.0, 0.0));
+        entity.lod_levels = 2;
+        entity.lod_thresholds = vec![
+            LodLevelThreshold {
+                low: -1.0,
+                high: 1600.0, // 40m squared
+            },
+            LodLevelThreshold {
+                low: 900.0, // 30m squared
+                high: 1600.0,
+            },
+        ];
+
+        // A watches from the grid origin: 2500 > 1600 drops it to the
+        // outermost level — a stamp on its own cache, no select, no resend.
+        let mut a = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut a, entity.clone());
+        a.witness.cache_mut(2).detail_level = 1;
+        a.witness.cache_mut(2).id_alias = 7;
+        a.witness.update();
+        let a_bundle = a.witness.take_bundle();
+        assert!(matches!(
+            a_bundle.first(),
+            Some(ClientMessage::EntityUpdate { .. })
+        ));
+        assert!(!a_bundle.iter().any(|m| matches!(
+            m,
+            ClientMessage::SelectEntity { .. }
+                | ClientMessage::SelectAliasedEntity { .. }
+                | ClientMessage::UpdateProperties { .. }
+        )));
+        let a_cache = a.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(a_cache.detail_level(), 2);
+        assert_eq!(a_cache.id_alias(), 7);
+
+        // B watches the same entity from (45, 0, 0): 25 < 900 raises it to
+        // level 0 — its own select and property resend, on its own alias,
+        // after A already transitioned the other way.
+        let mut b = projection_world((45.0, 0.0, 0.0));
+        seed_observer(&mut b, entity);
+        b.witness.cache_mut(2).detail_level = 1;
+        b.witness.cache_mut(2).id_alias = 9;
+        b.witness.update();
+        // The volatile update already addresses the entity by alias, so the
+        // property resend rides right behind it without a select.
+        let b_bundle = b.witness.take_bundle();
+        assert!(!b_bundle.iter().any(|m| matches!(
+            m,
+            ClientMessage::SelectEntity { .. } | ClientMessage::SelectAliasedEntity { .. }
+        )));
+        assert_eq!(
+            b_bundle.get(1),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: Some(9),
+                detail_level: 0
+            })
+        );
+        let b_cache = b.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(b_cache.detail_level(), 0);
+        assert_eq!(b_cache.id_alias(), 9);
+    }
+
+    #[test]
+    fn observer_budgets_do_not_bleed_into_each_other() {
+        // A runs a 27-byte packet while sending 30-byte updates: one update
+        // per tick and a standing deficit.
+        let mut a = prioritised_world();
+        a.witness.set_entity_update_bytes(30);
+        assert_eq!(update_ids(&mut a), vec![2]);
+        assert_eq!(a.witness.bandwidth_deficit(), 3);
+
+        // B drains the same three entities in one tick even though entity 2
+        // just went out on A's budget; its queue empties and resets.
+        let mut b = prioritised_world();
+        b.witness.set_witness_capacity(1_000_000, 10);
+        assert_eq!(update_ids(&mut b), vec![2, 3, 4]);
+        assert_eq!(b.witness.bandwidth_deficit(), 0);
+        for id in [2, 3, 4] {
+            assert_eq!(b.witness.cache_priority(id), Some(0.0));
+        }
+
+        // A keeps paying its own deficit on the next tick: the unsent 3 and
+        // 4 still sit at 0.0 and outrun the grown entity 2 (3.0), and the
+        // 30-byte send shuts the gate after one update. None of that ever
+        // shows up in B.
+        assert_eq!(update_ids(&mut a), vec![3]);
+        // tick two's desired budget is 27 - 3 = 24, so the same 30-byte
+        // update now overspends by 6.
+        assert_eq!(a.witness.bandwidth_deficit(), 6);
+        assert_eq!(b.witness.bandwidth_deficit(), 0);
+    }
+
     #[test]
     fn an_offset_beyond_the_packed_limits_falls_back_to_detailed() {
         let mut world = projection_world((0.0, 0.0, 0.0));
