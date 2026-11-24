@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use foundation::math::Vector3;
 
 use crate::cellappmgr::{Addr, Rect, SpaceId};
+use crate::controllers::Controllers;
+use crate::entity_creator::PropValue;
 use crate::entity_dispatch::EntityId;
 use crate::real_entity::{Haunt, RealEntity};
 use crate::space::CellInfoRecord;
@@ -117,6 +119,34 @@ pub struct GhostCreatePayload {
     pub real_addr: Addr,
     /// `baseAddr_`.
     pub base_addr: Addr,
+    /// `localDirection_`.
+    pub direction: Vector3,
+    /// `propertyEventStamps_` — one stamp per event-stamped property.
+    pub property_event_stamps: Vec<i32>,
+    /// The `propCountGhost` leading properties (`GProperties` token block).
+    pub ghost_properties: Vec<PropValue>,
+    /// `Controllers::writeGhostsToStream`'s per-controller records
+    /// (`GController` token block): id, type, user arg, ghost payload.
+    pub ghost_controllers: Vec<GhostControllerSeed>,
+    /// `periodsWithoutWitness_` (`GTail` token block).
+    pub periods_without_witness: u16,
+    /// `aoiUpdateSchemeID_`.
+    pub aoi_update_scheme_id: u8,
+}
+
+/// One `Controllers::writeGhostsToStream` entry
+/// (`controllers.cpp:152-165`): `id << type << userArg` then the
+/// controller's own `writeGhostToStream` payload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GhostControllerSeed {
+    /// `pController->id()`.
+    pub id: crate::controllers::ControllerId,
+    /// `pController->type()`.
+    pub type_id: crate::controllers::ControllerType,
+    /// `pController->userArg()`.
+    pub user_arg: i32,
+    /// `writeGhostToStream`'s payload.
+    pub payload: Vec<u8>,
 }
 
 /// The pieces of a `CellAppChannel` the maintainer touches: the mark used to
@@ -398,6 +428,12 @@ impl GhostMaintainer {
                 volatile: view.volatile,
                 real_addr: self.own_addr,
                 base_addr: view.base_addr,
+                direction: view.direction,
+                property_event_stamps: view.property_event_stamps.clone(),
+                ghost_properties: view.ghost_properties.clone(),
+                ghost_controllers: view.ghost_controllers.clone(),
+                periods_without_witness: view.periods_without_witness,
+                aoi_update_scheme_id: view.aoi_update_scheme_id,
             }));
         report.ghosts_created += 1;
     }
@@ -466,7 +502,7 @@ impl GhostMaintainer {
 
 /// The ghost-side entity record `Space::createGhost` builds
 /// (`space.cpp:271-292`): `newEntity` + `initGhost` over the streamed head.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct GhostRecord {
     /// `id_`.
     pub entity_id: EntityId,
@@ -486,8 +522,37 @@ pub struct GhostRecord {
     pub real_addr: Addr,
     /// `baseAddr_`.
     pub base_addr: Addr,
+    /// `localDirection_` (`globalDirection_ = localDirection_` on init).
+    pub direction: Vector3,
+    /// `propertyEventStamps_` after the read — one per event-stamped
+    /// property of the type.
+    pub property_event_stamps: Vec<i32>,
+    /// `eventHistory_.lastTrimmedEventNumber( lastEventNumber_ )` — the
+    /// ghost's history starts trimmed at the real's last event number.
+    pub last_trimmed_event_number: i32,
+    /// The `propCountGhost` leading properties.
+    pub ghost_properties: Vec<PropValue>,
+    /// `Controllers::readGhostsFromStream`'s result: the ghost-domain
+    /// controllers, started (`startGhost`).
+    pub controllers: Controllers,
+    /// `periodsWithoutWitness_`.
+    pub periods_without_witness: u16,
+    /// `aoiUpdateSchemeID_`.
+    pub aoi_update_scheme_id: u8,
     /// The app time the ghost was created at (haunt-age bookkeeping).
     pub creation_time: u32,
+}
+
+/// The local entity type facts `initGhost` needs: how many properties are
+/// ghosted, and how many are event-stamped (`propertyEventStamps_.init`
+/// resizes to the stamped count, `readGhostDataFromStreamInternal` reads
+/// exactly that many).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GhostEntityTypeDesc {
+    /// `pEntityType_->propCountGhost()`.
+    pub prop_count_ghost: usize,
+    /// `entityDescription.numEventStampedProperties()`.
+    pub num_event_stamped_properties: usize,
 }
 
 /// What `Space::createGhost(srcAddr, data)` did with the message.
@@ -498,6 +563,15 @@ pub enum GhostCreateOutcome {
     /// The entity already exists here (`space.cpp:236-266` buffers the
     /// message instead; the buffered replay is BW-08-04-04's face).
     EntityAlreadyExists,
+    /// The payload names a type this app does not know (the reference
+    /// MF-asserts on the lookup).
+    UnknownEntityType,
+    /// The streamed stamp count does not match the local type
+    /// (`removeFromStream` reads exactly `eventStamps_.size()` entries).
+    StampCountMismatch,
+    /// The streamed property count does not match the local type's
+    /// `propCountGhost`.
+    PropertyCountMismatch,
 }
 
 /// The receiving CellApp's ghost surface: the ghost records of one space.
@@ -505,9 +579,16 @@ pub enum GhostCreateOutcome {
 pub struct GhostHost {
     /// `app.findEntity` + the ghost population, keyed by entity id.
     pub ghosts: BTreeMap<EntityId, GhostRecord>,
+    /// The local `EntityTypeDB` slice the creates are validated against.
+    pub types: BTreeMap<u16, GhostEntityTypeDesc>,
 }
 
 impl GhostHost {
+    /// Register a local entity type (`EntityTypeDB` lookup fact).
+    pub fn register_type(&mut self, entity_type_id: u16, desc: GhostEntityTypeDesc) {
+        self.types.insert(entity_type_id, desc);
+    }
+
     /// `Space::createGhost(srcAddr, header, data)`
     /// (`space.cpp:228-266`): an existing entity (or pending buffer) takes
     /// the buffered path, otherwise the ghost is created at once.
@@ -518,6 +599,23 @@ impl GhostHost {
     ) -> GhostCreateOutcome {
         if self.ghosts.contains_key(&payload.entity_id) {
             return GhostCreateOutcome::EntityAlreadyExists;
+        }
+
+        let Some(desc) = self.types.get(&payload.entity_type_id) else {
+            return GhostCreateOutcome::UnknownEntityType;
+        };
+        if payload.property_event_stamps.len() != desc.num_event_stamped_properties {
+            return GhostCreateOutcome::StampCountMismatch;
+        }
+        if payload.ghost_properties.len() != desc.prop_count_ghost {
+            return GhostCreateOutcome::PropertyCountMismatch;
+        }
+
+        // `readGhostsFromStream` (`controllers.cpp:50-73`): create each
+        // ghost-domain controller and start it.
+        let mut controllers = Controllers::new();
+        for seed in &payload.ghost_controllers {
+            controllers.create_ghost(seed.id, seed.type_id, seed.user_arg, seed.payload.clone());
         }
 
         self.ghosts.insert(
@@ -532,6 +630,13 @@ impl GhostHost {
                 volatile: payload.volatile,
                 real_addr: payload.real_addr,
                 base_addr: payload.base_addr,
+                direction: payload.direction,
+                property_event_stamps: payload.property_event_stamps,
+                last_trimmed_event_number: payload.last_event_number,
+                ghost_properties: payload.ghost_properties,
+                controllers,
+                periods_without_witness: payload.periods_without_witness,
+                aoi_update_scheme_id: payload.aoi_update_scheme_id,
                 creation_time: time,
             },
         );
@@ -572,6 +677,18 @@ pub struct GhostedEntityView {
     pub volatile: VolatileInfo,
     /// `baseAddr()`.
     pub base_addr: Addr,
+    /// `localDirection()`.
+    pub direction: Vector3,
+    /// `propertyEventStamps()`.
+    pub property_event_stamps: Vec<i32>,
+    /// The ghosted properties (`propCountGhost` leading values).
+    pub ghost_properties: Vec<PropValue>,
+    /// The ghost-domain controllers (`writeGhostsToStream`).
+    pub ghost_controllers: Vec<GhostControllerSeed>,
+    /// `periodsWithoutWitness()`.
+    pub periods_without_witness: u16,
+    /// `aoiUpdateSchemeID()`.
+    pub aoi_update_scheme_id: u8,
 }
 
 // -----------------------------------------------------------------------------
@@ -638,6 +755,17 @@ mod tests {
             last_event_number: 0,
             volatile: VolatileInfo::NONE,
             base_addr: (9, 9),
+            direction: Vector3::new(1.5, 0.25, -0.5),
+            property_event_stamps: vec![7, 13],
+            ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+            ghost_controllers: vec![GhostControllerSeed {
+                id: 3,
+                type_id: 9,
+                user_arg: 42,
+                payload: vec![1, 2, 3],
+            }],
+            periods_without_witness: 4,
+            aoi_update_scheme_id: 3,
         };
         (real, view)
     }
@@ -671,6 +799,17 @@ mod tests {
                 volatile: VolatileInfo::NONE,
                 real_addr: APP_A,
                 base_addr: (9, 9),
+                direction: Vector3::new(1.5, 0.25, -0.5),
+                property_event_stamps: vec![7, 13],
+                ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+                ghost_controllers: vec![GhostControllerSeed {
+                    id: 3,
+                    type_id: 9,
+                    user_arg: 42,
+                    payload: vec![1, 2, 3],
+                }],
+                periods_without_witness: 4,
+                aoi_update_scheme_id: 3,
             })]
         );
 
@@ -727,6 +866,17 @@ mod tests {
                     volatile: VolatileInfo::NONE,
                     real_addr: APP_A,
                     base_addr: (9, 9),
+                    direction: Vector3::new(1.5, 0.25, -0.5),
+                    property_event_stamps: vec![7, 13],
+                    ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+                    ghost_controllers: vec![GhostControllerSeed {
+                        id: 3,
+                        type_id: 9,
+                        user_arg: 42,
+                        payload: vec![1, 2, 3],
+                    }],
+                    periods_without_witness: 4,
+                    aoi_update_scheme_id: 3,
                 }),
                 GhostMessage::DelGhost { entity_id: 10 },
             ]
@@ -953,8 +1103,106 @@ mod tests {
     }
 
     #[test]
+    fn the_ghost_history_starts_trimmed_at_the_real() {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 0,
+                num_event_stamped_properties: 0,
+            },
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 12,
+            entity_type_id: 4,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 31,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        assert_eq!(
+            host.receive_create_ghost(payload, 5),
+            GhostCreateOutcome::Created
+        );
+        // `eventHistory_.lastTrimmedEventNumber( lastEventNumber_ )`: the
+        // ghost never replays events the real already handed out.
+        assert_eq!(host.ghosts[&12].last_trimmed_event_number, 31);
+    }
+
+    #[test]
+    fn a_create_for_an_unknown_type_or_mismatched_body_is_rejected() {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 2,
+                num_event_stamped_properties: 1,
+            },
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 12,
+            entity_type_id: 5,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![1],
+            ghost_properties: vec![PropValue::Int(0), PropValue::Int(0)],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+
+        // Unknown type: the local EntityTypeDB has no such entry.
+        assert_eq!(
+            host.receive_create_ghost(payload.clone(), 5),
+            GhostCreateOutcome::UnknownEntityType
+        );
+
+        // Wrong stamp count: removeFromStream would read past the message.
+        let mut payload = payload;
+        payload.entity_type_id = 4;
+        payload.property_event_stamps = vec![1, 2];
+        assert_eq!(
+            host.receive_create_ghost(payload.clone(), 5),
+            GhostCreateOutcome::StampCountMismatch
+        );
+
+        // Wrong ghosted-property count.
+        payload.property_event_stamps = vec![1];
+        payload.ghost_properties = vec![PropValue::Int(0)];
+        assert_eq!(
+            host.receive_create_ghost(payload, 5),
+            GhostCreateOutcome::PropertyCountMismatch
+        );
+        assert!(host.ghosts.is_empty());
+    }
+
+    #[test]
     fn the_ghost_host_keeps_exactly_one_record_per_create() {
         let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 2,
+                num_event_stamped_properties: 2,
+            },
+        );
         let payload = GhostCreatePayload {
             space_id: 7,
             entity_id: 10,
@@ -966,6 +1214,17 @@ mod tests {
             volatile: VolatileInfo::NONE,
             real_addr: APP_A,
             base_addr: (9, 9),
+            direction: Vector3::new(1.5, 0.25, -0.5),
+            property_event_stamps: vec![7, 13],
+            ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+            ghost_controllers: vec![GhostControllerSeed {
+                id: 3,
+                type_id: 9,
+                user_arg: 42,
+                payload: vec![1, 2, 3],
+            }],
+            periods_without_witness: 4,
+            aoi_update_scheme_id: 3,
         };
 
         assert_eq!(
@@ -979,6 +1238,24 @@ mod tests {
         assert_eq!(record.last_event_number, 5);
         assert_eq!(record.real_addr, APP_A);
         assert_eq!(record.creation_time, 42);
+        // The snapshot matches the real that streamed it, head to tail.
+        assert_eq!(record.direction, Vector3::new(1.5, 0.25, -0.5));
+        assert_eq!(record.property_event_stamps, vec![7, 13]);
+        assert_eq!(
+            record.ghost_properties,
+            vec![PropValue::Int(5), PropValue::Str("hi".to_string())]
+        );
+        assert_eq!(record.periods_without_witness, 4);
+        assert_eq!(record.aoi_update_scheme_id, 3);
+        // The ghost-domain controllers were created and started.
+        assert_eq!(record.controllers.len(), 1);
+        assert_eq!(record.controllers.ids(), vec![3]);
+        let controller = record.controllers.controller(3).unwrap();
+        assert_eq!(controller.type_id, 9);
+        assert_eq!(controller.user_arg, 42);
+        assert_eq!(controller.domain, crate::controllers::DOMAIN_GHOST);
+        assert_eq!(controller.ghost_state, vec![1, 2, 3]);
+        assert!(controller.attached);
 
         // A second create for a living entity takes the buffered path — no
         // duplicate record, no count drift.
