@@ -17,6 +17,7 @@
 //! Layering: this is a domain library (layer 2) next to
 //! [`crate::xml_database`], which it can import into.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -25,6 +26,7 @@ use foundation::ids::{DatabaseId, EntityTypeId};
 use foundation::stream::BinaryStream;
 
 use crate::error::DbError;
+use crate::storage::EntityKey;
 use crate::xml_database::{AutoLoadUpdate, XmlDatabase};
 
 /// The checksum table (`secondary_database.cpp:15`).
@@ -172,21 +174,10 @@ impl SecondaryDatabase {
     /// entity's stream exactly as written, so the import is lossless.
     /// Returns the database ids that were written.
     pub fn import_into(&self, database: &mut XmlDatabase) -> Result<Vec<DatabaseId>, DbError> {
-        let mut written = Vec::new();
-        for row in self.read_all()? {
-            let is_new = !database
-                .get_entity_stream(row.type_id, row.db_id, None, &mut BinaryStream::new())
-                .found;
-            let mut stream = BinaryStream::from_slice(&row.blob);
-            written.push(database.put_entity_stream(
-                row.type_id,
-                row.db_id,
-                &mut stream,
-                AutoLoadUpdate::Retain,
-                is_new,
-            )?);
-        }
-        Ok(written)
+        self.read_all()?
+            .iter()
+            .map(|row| put_row(row, database))
+            .collect()
     }
 
     /// Discover the data tables and total the rows
@@ -256,6 +247,96 @@ impl SecondaryDatabase {
             None => Ok(0),
         }
     }
+}
+
+/// The version-selection bookkeeping of the consolidate tool
+/// (`ConsolidatedTimes`, `primary_database_update_queue.hpp:56-57`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ConsolidatedTimes {
+    times: BTreeMap<EntityKey, u32>,
+}
+
+impl ConsolidatedTimes {
+    /// Check if we've already written a newer version of this entity:
+    /// a strictly older write is dropped and an equal-or-newer write
+    /// replaces the record, so the first of two equal times wins
+    /// (`primary_database_update_queue.cpp:69-75`).
+    pub fn admits(&mut self, key: &EntityKey, time: u32) -> bool {
+        if let Some(&latest) = self.times.get(key) {
+            if time < latest {
+                return false;
+            }
+        }
+        self.times.insert(key.clone(), time);
+        true
+    }
+
+    /// The newest consolidated time for a key.
+    pub fn latest(&self, key: &EntityKey) -> Option<u32> {
+        self.times.get(key).copied()
+    }
+
+    fn into_inner(self) -> BTreeMap<EntityKey, u32> {
+        self.times
+    }
+}
+
+/// The outcome of a [`merge_into`]: how many rows landed, how many were
+/// dropped as stale versions of an already-consolidated entity, and the
+/// winning time per entity key.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    pub written: usize,
+    pub stale_skipped: usize,
+    pub latest_times: BTreeMap<EntityKey, u32>,
+}
+
+/// Write one secondary row into the XML database: an absent entity is
+/// created with the row's own id, a present one is updated — the
+/// consolidate path (`ConsolidateEntityTask` driving `putEntity`).
+fn put_row(row: &SecondaryRow, database: &mut XmlDatabase) -> Result<DatabaseId, DbError> {
+    let is_new = !database
+        .get_entity_stream(row.type_id, row.db_id, None, &mut BinaryStream::new())
+        .found;
+    let mut stream = BinaryStream::from_slice(&row.blob);
+    database.put_entity_stream(
+        row.type_id,
+        row.db_id,
+        &mut stream,
+        AutoLoadUpdate::Retain,
+        is_new,
+    )
+}
+
+/// Consolidate several secondary databases into one XML database, the
+/// archive-merge step of the reference tool: databases are replayed in the
+/// given order, tables oldest-first, and only the newest write per entity
+/// key lands (`SecondaryDatabase::consolidate`,
+/// `secondary_database.cpp:180-207`).
+pub fn merge_into(
+    databases: &[&SecondaryDatabase],
+    target: &mut XmlDatabase,
+) -> Result<MergeReport, DbError> {
+    let mut times = ConsolidatedTimes::default();
+    let mut report = MergeReport::default();
+
+    for database in databases {
+        for row in database.read_all()? {
+            let key = EntityKey {
+                type_id: row.type_id,
+                db_id: row.db_id,
+            };
+            if !times.admits(&key, row.time) {
+                report.stale_skipped += 1;
+                continue;
+            }
+            put_row(&row, target)?;
+            report.written += 1;
+        }
+    }
+
+    report.latest_times = times.into_inner();
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -461,5 +542,131 @@ mod tests {
         let outcome = xml.get_entity_stream(avatar, 1, None, &mut BinaryStream::new());
         assert!(outcome.found);
         assert_eq!(outcome.name.as_deref(), Some("avatar-99"));
+    }
+
+    /// A fixture whose flip table holds one Avatar row.
+    fn one_row_fixture(
+        name: &str,
+        avatar: EntityTypeId,
+        db_id: i64,
+        time: i64,
+        hp: i64,
+    ) -> Fixture {
+        let fixture = Fixture::new(name);
+        {
+            let conn = fixture.connect();
+            create_data_table(&conn, FLIP_TABLE);
+            let stream = crate::xml_database::tests::avatar_stream(hp, 0);
+            insert_row(
+                &conn,
+                FLIP_TABLE,
+                db_id,
+                avatar as i64,
+                time,
+                stream.as_bytes(),
+            );
+        }
+        fixture
+    }
+
+    #[test]
+    fn the_newest_version_of_an_entity_wins_regardless_of_merge_order() {
+        let defs = crate::xml_database::tests::defs();
+        let avatar = defs.name_to_index("Avatar").unwrap();
+        let older = one_row_fixture("merge-old", avatar, 1, 10, 10);
+        let newer = one_row_fixture("merge-new", avatar, 1, 20, 20);
+
+        let older_db = SecondaryDatabase::open(&older.path).expect("open older");
+        let newer_db = SecondaryDatabase::open(&newer.path).expect("open newer");
+
+        // Oldest database first: both writes land, the newer wins.
+        let defs2 = crate::xml_database::tests::defs();
+        let mut xml = XmlDatabase::new(defs2);
+        let report = merge_into(&[&older_db, &newer_db], &mut xml).expect("merge");
+        assert_eq!(report.written, 2);
+        assert_eq!(report.stale_skipped, 0);
+        let key = EntityKey {
+            type_id: avatar,
+            db_id: 1,
+        };
+        assert_eq!(report.latest_times.get(&key), Some(&20));
+        let outcome = xml.get_entity_stream(avatar, 1, None, &mut BinaryStream::new());
+        assert_eq!(outcome.name.as_deref(), Some("avatar-20"));
+
+        // Reversed order: the older write is dropped as a stale version
+        // (`primary_database_update_queue.cpp:69-75`).
+        let mut xml = XmlDatabase::new(defs);
+        let report = merge_into(&[&newer_db, &older_db], &mut xml).expect("merge");
+        assert_eq!(report.written, 1);
+        assert_eq!(report.stale_skipped, 1);
+        let outcome = xml.get_entity_stream(avatar, 1, None, &mut BinaryStream::new());
+        assert_eq!(outcome.name.as_deref(), Some("avatar-20"));
+    }
+
+    #[test]
+    fn an_equal_time_keeps_the_first_version() {
+        let defs = crate::xml_database::tests::defs();
+        let avatar = defs.name_to_index("Avatar").unwrap();
+        let first = one_row_fixture("tie-first", avatar, 1, 15, 1);
+        let second = one_row_fixture("tie-second", avatar, 1, 15, 2);
+        let first_db = SecondaryDatabase::open(&first.path).expect("open");
+        let second_db = SecondaryDatabase::open(&second.path).expect("open");
+
+        // `time < latest` is strict, so an equal time is not stale — but
+        // it does overwrite the record, so a third equal-time write would
+        // still be admitted (`primary_database_update_queue.cpp:71-75`).
+        let mut times = ConsolidatedTimes::default();
+        let key = EntityKey {
+            type_id: avatar,
+            db_id: 1,
+        };
+        assert!(times.admits(&key, 15));
+        assert!(times.admits(&key, 15));
+        assert!(!times.admits(&key, 14));
+        assert_eq!(times.latest(&key), Some(15));
+
+        let mut xml = XmlDatabase::new(defs);
+        let report = merge_into(&[&first_db, &second_db], &mut xml).expect("merge");
+        assert_eq!(report.written, 2);
+        let outcome = xml.get_entity_stream(avatar, 1, None, &mut BinaryStream::new());
+        assert_eq!(outcome.name.as_deref(), Some("avatar-2"));
+    }
+
+    #[test]
+    fn distinct_entities_all_land_in_the_merge() {
+        let defs = crate::xml_database::tests::defs();
+        let avatar = defs.name_to_index("Avatar").unwrap();
+        let left = one_row_fixture("distinct-left", avatar, 1, 10, 1);
+        let right = one_row_fixture("distinct-right", avatar, 2, 30, 2);
+        let left_db = SecondaryDatabase::open(&left.path).expect("open");
+        let right_db = SecondaryDatabase::open(&right.path).expect("open");
+
+        let mut xml = XmlDatabase::new(defs);
+        let report = merge_into(&[&left_db, &right_db], &mut xml).expect("merge");
+        assert_eq!(report.written, 2);
+        assert_eq!(report.stale_skipped, 0);
+        assert_eq!(report.latest_times.len(), 2);
+        assert_eq!(
+            report.latest_times[&EntityKey {
+                type_id: avatar,
+                db_id: 1
+            }],
+            10
+        );
+        assert_eq!(
+            report.latest_times[&EntityKey {
+                type_id: avatar,
+                db_id: 2
+            }],
+            30
+        );
+        assert!(
+            xml.get_entity_stream(avatar, 1, None, &mut BinaryStream::new())
+                .found
+        );
+        assert!(
+            xml.get_entity_stream(avatar, 2, None, &mut BinaryStream::new())
+                .found
+        );
     }
 }
