@@ -17,7 +17,7 @@
 //!   (`as_int64`, `as_vector2/4` with the strict eof check), because the
 //!   reference mixes both freely.
 
-use foundation::math::{Vector2, Vector3, Vector4};
+use foundation::math::{Matrix, Vector2, Vector3, Vector4};
 
 use crate::special_chars;
 
@@ -969,6 +969,33 @@ impl DataSection {
         }
     }
 
+    /// `DataSection::writeVector3` (`datasection.cpp:1022-1032`): create
+    /// the path as needed and set its Vector3 value.
+    pub fn write_vector3(&mut self, path: &str, value: Vector3) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_vector3(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeMatrix34` (`datasection.cpp:1066-1076`): create
+    /// the path as needed and set its matrix value.
+    pub fn write_matrix34(&mut self, path: &str, value: &Matrix) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => section.set_matrix34(value),
+            None => false,
+        }
+    }
+
+    /// `DataSection::deleteSections` (`datasection.cpp:364-370`): remove
+    /// every match, `while deleteSection(tagPath) {}`.
+    pub fn delete_sections(&mut self, tag_path: &str) {
+        while self.delete_section(tag_path) {}
+    }
+
     /// `DataSection::deleteSection(tagPath)`: walks the `'/'`-separated
     /// tags down through first matches and removes the final node from
     /// its parent. An intermediate miss -- including the empty tags an
@@ -1054,6 +1081,18 @@ impl DataSection {
 
     pub fn set_vector4(&mut self, v: Vector4) {
         self.set_string(&format!("{:.6} {:.6} {:.6} {:.6}", v.x, v.y, v.z, v.w));
+    }
+
+    /// `XMLSection::setMatrix34` (`xml_section.cpp:1246-1260`): the four
+    /// row vectors as `row0`..`row3` children (the homogeneous column is
+    /// implied and never written).
+    pub fn set_matrix34(&mut self, value: &Matrix) -> bool {
+        let mut good = true;
+        for (row, name) in ["row0", "row1", "row2", "row3"].iter().enumerate() {
+            let v = Vector3::new(value.m[row][0], value.m[row][1], value.m[row][2]);
+            good &= self.write_vector3(name, v);
+        }
+        good
     }
 
     /// Serialise as the reference `writeToStream` does from level 0:
@@ -2333,6 +2372,67 @@ mod tests {
         let mut dup = parse_doc("<r><b>1</b><b>2</b></r>");
         assert!(dup.delete_section("b"));
         assert_eq!(dup.open_child(0).unwrap().as_string(), "2");
+    }
+
+    #[test]
+    fn write_vector3_creates_the_path_and_formats_setprecision6() {
+        let mut doc = parse_doc("<r><boundingBox/></r>");
+        assert!(doc.write_vector3("boundingBox/min", Vector3::new(1.5, -2.25, 3.0)));
+        assert_eq!(
+            doc.write_to_string(),
+            "<root>\n\t<boundingBox>\n\t\t<min>\t1.500000 -2.250000 3.000000\t</min>\n\t</boundingBox>\n</root>\n"
+        );
+        // The path is made when missing, and an existing leaf is replaced.
+        assert!(doc.write_vector3("boundingBox/max", Vector3::new(9.0, 8.0, 7.0)));
+        assert_eq!(
+            doc.open_section("boundingBox/max")
+                .unwrap()
+                .as_vector3(Vector3::ZERO),
+            Vector3::new(9.0, 8.0, 7.0)
+        );
+        assert!(doc.write_vector3("boundingBox/max", Vector3::new(4.0, 5.0, 6.0)));
+        assert_eq!(
+            doc.open_section("boundingBox/max")
+                .unwrap()
+                .as_vector3(Vector3::ZERO),
+            Vector3::new(4.0, 5.0, 6.0)
+        );
+    }
+
+    #[test]
+    fn write_matrix34_writes_four_row_vectors() {
+        let mut doc = parse_doc("<r/>");
+        let mut m = Matrix::identity();
+        m.set_translate(5.0, 10.0, 15.0);
+        assert!(doc.write_matrix34("transform", &m));
+        // The homogeneous column is implied and never written.
+        assert_eq!(
+            doc.write_to_string(),
+            "<root>\n\t<transform>\n\t\t<row0>\t1.000000 0.000000 0.000000\t</row0>\n\t\t<row1>\t0.000000 1.000000 0.000000\t</row1>\n\t\t<row2>\t0.000000 0.000000 1.000000\t</row2>\n\t\t<row3>\t5.000000 10.000000 15.000000\t</row3>\n\t</transform>\n</root>\n"
+        );
+        // The written tree reads back through the path-aware reader the
+        // reference `readMatrix34` uses (`as_matrix34` is the chunk-crate
+        // reader face, so here the rows are checked directly).
+        let back = parse("", doc.write_to_string().as_bytes()).unwrap();
+        let ts = back.open_section("transform").unwrap();
+        assert_eq!(
+            ts.read_vector3("row3", Vector3::ZERO),
+            Vector3::new(5.0, 10.0, 15.0)
+        );
+    }
+
+    #[test]
+    fn delete_sections_removes_every_match() {
+        let mut doc = parse_doc(
+            "<r><processed>a</processed><b>keep</b><processed/><boundary>1</boundary><processed>c</processed><boundary>2</boundary></r>",
+        );
+        doc.delete_sections("processed");
+        doc.delete_sections("boundary");
+        assert_eq!(doc.count_children(), 1);
+        assert_eq!(doc.open_child(0).unwrap().section_name(), "b");
+        // An all-miss pass is a silent no-op.
+        doc.delete_sections("processed");
+        assert_eq!(doc.count_children(), 1);
     }
 
     #[test]
