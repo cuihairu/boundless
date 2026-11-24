@@ -787,9 +787,11 @@ impl DataSection {
         )
     }
 
-    /// `DataSection::readVector3`: find the child, convert or default.
+    /// `DataSection::readVector3`: walk the (possibly slash-delimited)
+    /// path, convert or default — the reference goes through
+    /// `openSection`, so `boundingBox/min` reaches a grandchild.
     pub fn read_vector3(&self, tag: &str, default: Vector3) -> Vector3 {
-        match self.find_child(tag) {
+        match self.open_section(tag) {
             Some(child) => child.as_vector3(default),
             None => default,
         }
@@ -1755,6 +1757,28 @@ mod tests {
         );
         assert_eq!(
             doc.read_vector3("missing", Vector3::new(7.0, 8.0, 9.0)),
+            Vector3::new(7.0, 8.0, 9.0)
+        );
+    }
+
+    #[test]
+    fn read_vector3_walks_slash_paths() {
+        // The reference's readVector3 goes through openSection, so
+        // "boundingBox/min" is a two-hop path, not a literal child name
+        // (the resourcechecker reads visual bounding boxes exactly this
+        // way).
+        let doc =
+            parse_doc("<r><boundingBox><min>-1 -2 -3</min><max>1 2 3</max></boundingBox></r>");
+        assert_eq!(
+            doc.read_vector3("boundingBox/min", Vector3::ZERO),
+            Vector3::new(-1.0, -2.0, -3.0)
+        );
+        assert_eq!(
+            doc.read_vector3("boundingBox/max", Vector3::ZERO),
+            Vector3::new(1.0, 2.0, 3.0)
+        );
+        assert_eq!(
+            doc.read_vector3("boundingBox/missing", Vector3::new(7.0, 8.0, 9.0)),
             Vector3::new(7.0, 8.0, 9.0)
         );
     }
