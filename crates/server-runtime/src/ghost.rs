@@ -225,6 +225,88 @@ impl OffloadCheckerBudget {
 }
 
 // -----------------------------------------------------------------------------
+// Section: the offload checker (`offload_checker.cpp`)
+// -----------------------------------------------------------------------------
+
+/// One entry of `offloadList_`: the entity and the channel
+/// `Cell::offloadEntity` will send it down (the send itself is the
+/// Real/Ghost role switch, BW-08-05-02).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OffloadPlan {
+    /// The real entity being moved.
+    pub entity_id: EntityId,
+    /// The destination app's address.
+    pub destination: Addr,
+}
+
+/// `OffloadChecker` (`offload_checker.hpp`): the per-tick pass over a
+/// cell's real entities. One instance lives for one run — the ghost-delete
+/// budget and the offload list belong to the run, not to an entity.
+#[derive(Debug, Default)]
+pub struct OffloadChecker {
+    /// `cell_.space().isShuttingDown()` — the whole run is skipped so
+    /// entities are not lost with the cells.
+    pub is_shutting_down: bool,
+    /// `Cell::shouldOffload()` — `shouldOffload_ && CellApp::shouldOffload()`.
+    /// When false the offload decision is skipped but ghosts are still
+    /// maintained.
+    pub should_offload: bool,
+    /// `numGhostsDeleted_` — shared by every entity this run visits.
+    pub budget: OffloadCheckerBudget,
+    /// `offloadList_`.
+    pub offload_list: Vec<OffloadPlan>,
+}
+
+impl OffloadChecker {
+    /// `OffloadChecker::run` (`offload_checker.cpp:39-62`): ghost upkeep
+    /// per entity, then the offload list drains as plans.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(
+        &mut self,
+        cells: &BTreeMap<Addr, CellInfoRecord>,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        reals: &mut [(RealEntity, GhostedEntityView)],
+        config: &GhostConfig,
+        own_addr: Addr,
+        space_id: SpaceId,
+        time: u32,
+    ) -> Vec<OffloadPlan> {
+        self.offload_list.clear();
+
+        // "If this space is shutting down, don't offload any entities so
+        // that they are not lost when the cells are shut down."
+        if self.is_shutting_down {
+            return Vec::new();
+        }
+
+        for (real, view) in reals.iter_mut() {
+            // The run owns the delete budget; the per-entity maintainer
+            // borrows it and hands it back.
+            let mut maintainer = GhostMaintainer {
+                config: config.clone(),
+                own_addr,
+                space_id,
+                should_offload: self.should_offload,
+                budget: std::mem::take(&mut self.budget),
+            };
+            let report = maintainer.check(cells, channels, real, view, time);
+            self.budget = maintainer.budget;
+
+            // `addToOffloads` + `sendOffloads`: the plans are what
+            // `sendOffload` would walk.
+            if let Some(destination) = report.offload_destination {
+                self.offload_list.push(OffloadPlan {
+                    entity_id: real.id,
+                    destination,
+                });
+            }
+        }
+
+        self.offload_list.clone()
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Section: the maintainer (`entity_ghost_maintainer.cpp`)
 // -----------------------------------------------------------------------------
 
@@ -1304,6 +1386,47 @@ mod tests {
         (cells, channels, maintainer)
     }
 
+    /// The cell/channel layout for checker tests (A and B created, C is a
+    /// third app with a channel but no cell record here).
+    fn checker_world() -> (
+        BTreeMap<Addr, CellInfoRecord>,
+        BTreeMap<Addr, GhostChannel>,
+        GhostConfig,
+    ) {
+        let mut cells = BTreeMap::new();
+        cells.insert(
+            APP_A,
+            CellInfoRecord::new(APP_A, Rect::new(0.0, 0.0, 100.0, 100.0)),
+        );
+        cells.insert(
+            APP_B,
+            CellInfoRecord::new(APP_B, Rect::new(100.0, 0.0, 200.0, 100.0)),
+        );
+        for info in cells.values_mut() {
+            info.has_been_created = true;
+        }
+
+        let mut channels = BTreeMap::new();
+        for addr in [APP_A, APP_B, APP_C] {
+            channels.insert(addr, GhostChannel::new(addr));
+        }
+
+        let config = GhostConfig {
+            ghost_distance: 30.0,
+            ..GhostConfig::default()
+        };
+        (cells, channels, config)
+    }
+
+    /// A checker with the given gates, ready for one run.
+    fn checker(should_offload: bool, is_shutting_down: bool) -> OffloadChecker {
+        OffloadChecker {
+            is_shutting_down,
+            should_offload,
+            ..OffloadChecker::default()
+        }
+    }
+
     /// A real entity of type 4 living on A, created 100 ticks ago.
     fn ghosted_real(id: EntityId, x: f32) -> (RealEntity, GhostedEntityView) {
         let mut real = RealEntity::new(id, APP_A, Vector3::new(x, 0.0, 50.0), 0, 0);
@@ -2328,6 +2451,95 @@ mod tests {
         assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
         assert_eq!(host.ghosts[&10].creation_time, 400);
         assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn an_entity_past_the_boundary_is_planned_to_the_owning_cell() {
+        let (cells, mut channels, config) = checker_world();
+        let mut reals = vec![ghosted_real(10, 140.0), ghosted_real(11, 50.0)];
+        let mut run = checker(true, false);
+
+        // Entity 10 sits in B's half of the space: it is planned across
+        // the boundary; entity 11 is at home on A and stays.
+        let plans = run.run(&cells, &mut channels, &mut reals, &config, APP_A, 7, 200);
+        assert_eq!(
+            plans,
+            vec![OffloadPlan {
+                entity_id: 10,
+                destination: APP_B,
+            }]
+        );
+        assert_eq!(run.offload_list, plans);
+    }
+
+    #[test]
+    fn the_offload_gate_only_silences_the_offload_half() {
+        let (cells, mut channels, config) = checker_world();
+        let mut reals = vec![ghosted_real(10, 140.0)];
+        let mut run = checker(false, false);
+
+        // The gate is shut: nothing is planned to move — but the ghost
+        // half still ran (the interest area reaches into B).
+        let plans = run.run(&cells, &mut channels, &mut reals, &config, APP_A, 7, 200);
+        assert!(plans.is_empty());
+        assert_eq!(run.offload_list, Vec::<OffloadPlan>::new());
+        assert!(
+            channels[&APP_B]
+                .out
+                .iter()
+                .any(|m| matches!(m, GhostMessage::CreateGhost(_)))
+        );
+    }
+
+    #[test]
+    fn a_shutting_down_space_skips_the_whole_run() {
+        let (cells, mut channels, config) = checker_world();
+        let mut reals = vec![ghosted_real(10, 140.0)];
+        let mut run = checker(true, true);
+
+        // Nothing at all: no plans, no ghosts — the entities must not be
+        // lost with the cells.
+        let plans = run.run(&cells, &mut channels, &mut reals, &config, APP_A, 7, 200);
+        assert!(plans.is_empty());
+        assert!(channels[&APP_B].out.is_empty());
+    }
+
+    #[test]
+    fn the_ghost_budget_is_shared_across_the_run() {
+        let (cells, mut channels, mut config) = checker_world();
+        config.max_ghosts_to_delete = 1;
+
+        let (mut e1, view1) = ghosted_real(10, 50.0);
+        let (mut e2, view2) = ghosted_real(11, 50.0);
+        for real in [&mut e1, &mut e2] {
+            for addr in [APP_B, APP_C] {
+                real.haunts.push(Haunt {
+                    addr,
+                    creation_time: 0,
+                });
+            }
+        }
+        let mut reals = vec![(e1, view1), (e2, view2)];
+        let mut run = checker(false, false);
+
+        // Each entity's pair of ghosts is far outside the interest area
+        // and past every keep rule. The run cap of 1 (which allows one
+        // deletion past the cap) is shared: entity 10 spends it on both
+        // of its ghosts, entity 11 gets nothing.
+        let plans = run.run(&cells, &mut channels, &mut reals, &config, APP_A, 7, 200);
+        assert!(plans.is_empty());
+        assert_eq!(run.budget.num_ghosts_deleted, 2);
+        assert_eq!(reals[0].0.haunts.len(), 0);
+        assert_eq!(reals[1].0.haunts.len(), 2);
+        let dels_to = |addr: Addr| -> usize {
+            channels[&addr]
+                .out
+                .iter()
+                .filter(|m| matches!(m, GhostMessage::DelGhost { .. }))
+                .count()
+        };
+        assert_eq!(dels_to(APP_B), 1);
+        assert_eq!(dels_to(APP_C), 1);
     }
 
     #[test]
