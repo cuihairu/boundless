@@ -5,8 +5,21 @@
 //! the fixed input a run is driven by (seed, account pool, concurrency shape)
 //! and the metrics the results are aggregated into.
 
+pub mod bot;
+pub mod dense;
 pub mod executor;
+pub mod fleet;
+pub mod hurricane;
 pub mod scenario;
+pub mod steady;
 
+pub use bot::{
+    Behaviour, Bot, BotView, ConnState, Directive, FD_PER_BOT, MATH_PI, MovementController,
+    MovementFactory, NULL_ENTITY_ID, TICK_FREQUENCY, TICK_PERIOD, Transport, transport_from_config,
+};
+pub use dense::{DenseAoiLedger, run_dense_aoi};
 pub use executor::{Executor, StageTimeline};
+pub use fleet::{ControllerRegistry, Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};
+pub use hurricane::{HurricaneLedger, run_login_hurricane};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
+pub use steady::{SteadyLedger, SteadyTrack, run_steady_movement};
