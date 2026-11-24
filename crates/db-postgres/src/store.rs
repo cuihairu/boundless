@@ -15,13 +15,13 @@ use db::{BaseMailbox, CheckOut, DbError, EntityKey, EntityRecord, EntityStorage}
 use entitydef::value::PropertyValue;
 use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
 use mercury::endpoint::Address;
+use postgres::Client;
 use postgres::error::SqlState;
 use postgres::types::ToSql;
-use postgres::Client;
 
 use crate::json;
 use crate::schema::{
-    column_name, entity_table_name, quote_ident, ColumnKind, EntitySchema, ID_COLUMN,
+    ColumnKind, EntitySchema, ID_COLUMN, column_name, entity_table_name, quote_ident,
 };
 
 /// Maps a backend error to the storage contract. A unique-key violation is
@@ -219,6 +219,66 @@ fn get_logon_sql() -> String {
 /// deletes unconditionally, so releasing nothing held is fine.
 fn remove_logon_sql() -> String {
     "DELETE FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2".to_string()
+}
+
+/// `updateLogOnAutoLoadQuery` (entity_type_mapping.cpp:793-795): the
+/// auto-load status of an entity's log-on mapping. A row-less entity
+/// matches nothing and the update stays silent (MySQL UPDATE semantics).
+fn update_auto_load_sql() -> String {
+    "UPDATE \"bigworldLogOns\" SET \"shouldAutoLoad\" = $1 \
+     WHERE \"databaseID\" = $2 AND \"typeID\" = $3"
+        .to_string()
+}
+
+/// `autoLoadEntities`' cleanup leg (mysql_database.cpp:674-675): the
+/// sessions of the entities that must not auto-load are stale at a
+/// restart and go first.
+fn clear_non_autoload_sql() -> String {
+    "DELETE FROM \"bigworldLogOns\" WHERE NOT \"shouldAutoLoad\"".to_string()
+}
+
+/// `autoLoadEntities`' listing leg (mysql_database.cpp:677-683): the
+/// flagged entities joined with the meta table for the running-server
+/// type id (`typeID` is the id used internally by the database,
+/// `bigworldID` the one used by a running server).
+fn auto_load_list_sql() -> String {
+    "SELECT logOn.\"databaseID\", entityType.\"bigworldID\" \
+     FROM \"bigworldLogOns\" logOn, \"bigworldEntityTypes\" entityType \
+     WHERE logOn.\"typeID\" = entityType.\"typeID\" AND logOn.\"shouldAutoLoad\""
+        .to_string()
+}
+
+/// `autoLoadEntities`' holder leg (mysql_database.cpp:702): the restart
+/// hands every loaded entity to a fresh base, so the stored addresses
+/// are stale — they zero, while `objectID` and `salt` stay.
+fn clear_holders_sql() -> String {
+    "UPDATE \"bigworldLogOns\" SET \"ip\" = 0, \"port\" = 0".to_string()
+}
+
+/// `addEntityTypeQuery`/`setEntityTypeIDQuery`/`getEntityTypeIDQuery`
+/// (bw_meta_data.cpp:13-21): the `bigworldEntityTypes` row the auto-load
+/// join resolves through. The reference inserts with `typeID` `NULL` and
+/// lets the database assign its internal id; the port keeps one type-id
+/// space (`EntityTypeId`), so both columns carry the caller's value.
+fn add_entity_type_sql() -> String {
+    "INSERT INTO \"bigworldEntityTypes\" (\"typeID\", \"bigworldID\", \"name\") \
+     VALUES ($1, $1, $2)"
+        .to_string()
+}
+
+fn set_entity_type_id_sql() -> String {
+    // The reference's `setEntityTypeIDQuery` updates `bigworldID` alone:
+    // its internal `typeID` is stable, so old log-on records keep
+    // joining after a re-point. The port's one type-id space carries the
+    // running-server id in both columns, so both move together — the
+    // join keeps resolving through the new id.
+    "UPDATE \"bigworldEntityTypes\" SET \"typeID\" = $1, \"bigworldID\" = $1 \
+     WHERE \"name\" = $2"
+        .to_string()
+}
+
+fn get_entity_type_id_sql() -> &'static str {
+    "SELECT \"bigworldID\" FROM \"bigworldEntityTypes\" WHERE \"name\" = $1"
 }
 
 /// The reference stores the base address in network byte order:
@@ -674,6 +734,86 @@ impl PostgresStorage {
         })
         .map_err(map_db_error)?;
         Ok(())
+    }
+
+    /// Writes the `bigworldEntityTypes` row the auto-load join resolves
+    /// through — the sync pass's `TypesCollector::addType`
+    /// (table_inspector.cpp:250-272) driving `BigWorldMetaData`
+    /// (bw_meta_data.cpp:42-70): absent by name the row is added, a
+    /// different id re-points it, the same id is a no-op. The reference's
+    /// two type-id spaces — the database-internal `typeID` and the
+    /// `entities.xml` `bigworldID` — collapse into the port's one
+    /// [`EntityTypeId`] space, so both columns carry the same value and
+    /// a re-point moves both together (the reference's stable internal
+    /// id lets `setEntityTypeID` move `bigworldID` alone).
+    pub fn add_entity_type(&mut self, type_id: EntityTypeId, name: &str) -> Result<(), DbError> {
+        let current = self
+            .run_with_reconnect(|client| client.query_opt(get_entity_type_id_sql(), &[&name]))
+            .map_err(map_db_error)?;
+        let id = type_id as i64;
+        match current.map(|row| row.get::<_, i64>(0)) {
+            None => {
+                self.run_with_reconnect(|client| {
+                    client.execute(add_entity_type_sql().as_str(), &[&id, &name])
+                })
+                .map_err(map_db_error)?;
+            }
+            Some(stored) if stored != id => {
+                self.run_with_reconnect(|client| {
+                    client.execute(set_entity_type_id_sql().as_str(), &[&id, &name])
+                })
+                .map_err(map_db_error)?;
+            }
+            Some(_) => {}
+        }
+        Ok(())
+    }
+
+    /// Sets the auto-load status of an entity's log-on mapping
+    /// (`EntityTypeMapping::updateAutoLoad`, entity_type_mapping.cpp:792-800
+    /// — `updateLogOnAutoLoadQuery`). An entity without a log-on record
+    /// matches no rows and the update stays silent, the reference's MySQL
+    /// UPDATE semantics — the task that carries the flag writes it right
+    /// after the record itself (put_entity_task.cpp:117-121).
+    pub fn set_auto_load(
+        &mut self,
+        key: &EntityKey,
+        should_auto_load: bool,
+    ) -> Result<(), DbError> {
+        self.run_with_reconnect(|client| {
+            client.execute(
+                update_auto_load_sql().as_str(),
+                &[&should_auto_load, &key.db_id, &(key.type_id as i32)],
+            )
+        })
+        .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    /// The restart face (`MySqlDatabase::autoLoadEntities`,
+    /// mysql_database.cpp:669-715): the sessions of the entities that
+    /// must not auto-load are stale and go first, the flagged entities
+    /// are listed for the auto-loader — running-server type id first,
+    /// then `databaseID`, the `autoLoader.addEntity` order — and when the
+    /// list is non-empty the stored holders zero (`ip = 0, port = 0`;
+    /// `objectID` and `salt` stay). The caller feeds the list to the
+    /// loader's `reserve`/`addEntity` and drives `start` — the
+    /// auto-load recovery seam.
+    pub fn auto_load_entities(&self) -> Result<Vec<(EntityTypeId, DatabaseId)>, DbError> {
+        self.run_with_reconnect(|client| client.execute(clear_non_autoload_sql().as_str(), &[]))
+            .map_err(map_db_error)?;
+        let rows = self
+            .run_with_reconnect(|client| client.query(auto_load_list_sql().as_str(), &[]))
+            .map_err(map_db_error)?;
+        let mut list: Vec<(EntityTypeId, DatabaseId)> = Vec::with_capacity(rows.len());
+        for row in rows {
+            list.push((row.get::<_, i64>(1) as EntityTypeId, row.get::<_, i64>(0)));
+        }
+        if !list.is_empty() {
+            self.run_with_reconnect(|client| client.execute(clear_holders_sql().as_str(), &[]))
+                .map_err(map_db_error)?;
+        }
+        Ok(list)
     }
 
     /// Creates this schema's table if it is missing (the entity-mapping
