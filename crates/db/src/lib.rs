@@ -15,6 +15,7 @@
 //! BW-09-05 operational tools.
 
 pub mod account;
+pub mod auto_load_recovery;
 pub mod buffered_entity_tasks;
 pub mod connection;
 pub mod error;
@@ -29,6 +30,7 @@ pub mod transaction;
 pub mod xml_database;
 
 pub use account::{AccountLogOnStatus, AccountRow, AccountStore, hash_password};
+pub use auto_load_recovery::{EntityAutoLoader, MAX_CONCURRENT_ENTITY_LOADERS, RecoveryOutcome};
 pub use buffered_entity_tasks::{
     BufferedEntityTasks, EntityTask, EntityTaskPtr, TaskQueue, TaskSink,
 };
