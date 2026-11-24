@@ -409,6 +409,10 @@ pub struct PostgresStorage {
     /// indexes them by id (`entityTypeMappings_`); the contract
     /// operations resolve the table shape through the same map.
     schemas: HashMap<EntityTypeId, EntitySchema>,
+    /// Whether this connection is inside a transaction the reference
+    /// would be holding as an open `MySqlTransaction`
+    /// (`transaction.cpp:15-23` keeps `inTransaction` on the connection).
+    in_transaction: bool,
 }
 
 impl std::fmt::Debug for PostgresStorage {
@@ -424,7 +428,53 @@ impl PostgresStorage {
         Ok(Self {
             client: RefCell::new(client),
             schemas: HashMap::new(),
+            in_transaction: false,
         })
+    }
+
+    /// Opens a server-side transaction on this connection: the reference's
+    /// `MySqlTransaction` constructor issues `START TRANSACTION` and only
+    /// then marks the connection as being inside one
+    /// (`transaction.cpp:15-23` — the flag is last because the execute can
+    /// fail). Every statement this connection runs afterwards belongs to
+    /// the transaction, so the contract operations send nothing else.
+    pub fn begin_transaction(&mut self) -> Result<(), DbError> {
+        // The reference only ever has one transaction per connection
+        // (the constructor sets `inTransaction`), so a second begin is
+        // refused rather than left to PostgreSQL's warning-and-no-op.
+        if self.in_transaction {
+            return Err(DbError::Storage(
+                "the connection already has a transaction open".into(),
+            ));
+        }
+        self.client
+            .borrow_mut()
+            .execute("START TRANSACTION", &[])
+            .map_err(map_db_error)?;
+        // `inTransaction(true)` is set last in the reference: a failing
+        // execute leaves the connection outside any transaction
+        // (transaction.cpp:19-22).
+        self.in_transaction = true;
+        Ok(())
+    }
+
+    /// Commits the open transaction (`transaction.cpp:66-71`): the writes
+    /// this connection has made are visible from the other connections.
+    pub fn commit_transaction(&mut self) -> Result<(), DbError> {
+        if !self.in_transaction {
+            return Err(DbError::Storage("there is no transaction to commit".into()));
+        }
+        self.client
+            .borrow_mut()
+            .execute("COMMIT", &[])
+            .map_err(map_db_error)?;
+        self.in_transaction = false;
+        Ok(())
+    }
+
+    /// Whether a transaction is open on this connection.
+    pub fn in_transaction(&self) -> bool {
+        self.in_transaction
     }
 
     /// The underlying client, for the schema tools (BW-09-07).
