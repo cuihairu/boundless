@@ -1900,13 +1900,19 @@ dependencies = [
 name = "server-runtime"
 version = "0.1.0"
 dependencies = [
+ "client",
  "contracts",
  "criterion",
  "db",
  "db-postgres",
+ "flate2",
  "foundation",
  "libc",
+<<<<<<< HEAD
  "md-5 0.10.6",
+=======
+ "md-5",
+>>>>>>> origin/lane/bw15-platform
  "mercury",
  "platform",
  "resources",

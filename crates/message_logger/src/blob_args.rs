@@ -106,7 +106,7 @@ pub fn stream_to_log(
                 }
                 crate::format_string::conv_flags::DP_C_LONG => {
                     let value = if version < MESSAGE_LOGGER_VERSION_64BIT {
-                        stream.read_u32().map(|v| v as u32 as u64)
+                        stream.read_u32().map(u64::from)
                     } else {
                         stream.read_u64()
                     };
@@ -317,9 +317,9 @@ mod tests {
     #[test]
     fn char_and_pointer_conversions_keep_their_widths() {
         let record = FormatStringRecord::parse("%c").unwrap();
-        let (out, ok) = stream_to_log(&record, &[b'A'], 10);
+        let (out, ok) = stream_to_log(&record, b"A", 10);
         assert!(ok);
-        assert_eq!(out.data(), [b'A']);
+        assert_eq!(out.data(), b"A");
 
         let record = FormatStringRecord::parse("%p").unwrap();
         let (out, ok) = stream_to_log(&record, &[0x34, 0x12, 0, 0, 0, 0, 0, 0], 10);
