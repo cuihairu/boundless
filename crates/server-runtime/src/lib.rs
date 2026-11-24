@@ -20,6 +20,7 @@ pub mod db_login;
 pub mod dbappmgr;
 pub mod dead_cell_app;
 pub mod dispatcher;
+pub mod emergency_throttle;
 pub mod entity_creator;
 pub mod entity_destroy;
 pub mod entity_dispatch;
