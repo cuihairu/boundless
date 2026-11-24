@@ -11,6 +11,7 @@ pub mod dense;
 pub mod executor;
 pub mod fleet;
 pub mod hurricane;
+pub mod patrol;
 pub mod scenario;
 pub mod steady;
 
