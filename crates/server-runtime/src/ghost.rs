@@ -1806,6 +1806,127 @@ impl GhostHost {
     }
 }
 
+/// `Entity::checkIfZombied`'s outcome (`entity.cpp:3309-3355`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZombieVerdict {
+    /// A real, or an already-destroyed entity — never a zombie.
+    NotZombied,
+    /// The ghost re-pointed at its next real: the handover survived the
+    /// old real's death (`Recovering zombie ... by updating current real
+    /// to next real`).
+    RecoveredToNext,
+    /// No live real to point at — the ghost is a zombie and dies.
+    Zombied,
+}
+
+/// `Entity::checkIfZombied` (`entity.cpp:3309-3355`) over the port's
+/// routing record. `is_real`/`is_destroyed` are the caller's entity
+/// facts — the port splits reals from ghost records; `recently_dead` is
+/// `CellAppChannels::hasRecentlyDied`. The next real is checked FIRST:
+/// a mid-offload ghost whose destination died is a zombie even though
+/// the record's routing still names it.
+pub fn check_if_zombied(
+    record: &mut GhostRecord,
+    is_real: bool,
+    is_destroyed: bool,
+    dying_addr: Addr,
+    recently_dead: &dyn Fn(Addr) -> bool,
+    channels: &mut BTreeMap<Addr, GhostChannel>,
+) -> ZombieVerdict {
+    if is_destroyed || is_real {
+        return ZombieVerdict::NotZombied;
+    }
+
+    // Zombied if next real is dying or dead.
+    if let Some(next) = record.next_real_addr
+        && (next == dying_addr || recently_dead(next))
+    {
+        return ZombieVerdict::Zombied;
+    }
+
+    // Current real healthy?
+    if record.real_addr != dying_addr {
+        return ZombieVerdict::NotZombied;
+    }
+    if let Some(next) = record.next_real_addr {
+        // Recovering zombie: the current real becomes the next real
+        // (`pRealChannel_ = get(nextRealAddr_)` — the get creates the
+        // channel).
+        channels
+            .entry(next)
+            .or_insert_with(|| GhostChannel::new(next));
+        record.real_addr = next;
+        return ZombieVerdict::RecoveredToNext;
+    }
+    ZombieVerdict::Zombied
+}
+
+/// `CellApp::handleCellAppDeath`'s real half (`cellapp.cpp:1787-1804`):
+/// the real clears its haunts on the dead app. Returns the number of
+/// haunts removed.
+pub fn reals_clear_dead_haunts(real: &mut RealEntity, dying_addr: Addr) -> usize {
+    let before = real.haunts.len();
+    real.haunts.retain(|haunt| haunt.addr != dying_addr);
+    before - real.haunts.len()
+}
+
+impl GhostHost {
+    /// `CellApp::handleCellAppDeath`'s ghost half
+    /// (`cellapp.cpp:1769-1838`): every ghost is checked against the
+    /// dying app; zombies are destroyed, and each destroy offers the
+    /// buffered queues a new lifespan — a revived ghost re-zombies
+    /// (the reference's do-while) until its queues are spent. Returns
+    /// the destroyed ids, one entry per destroy.
+    pub fn handle_cell_app_death(
+        &mut self,
+        dying_addr: Addr,
+        recently_dead: &dyn Fn(Addr) -> bool,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        time: u32,
+    ) -> Vec<EntityId> {
+        let mut zombies = Vec::new();
+        for (id, record) in self.ghosts.iter_mut() {
+            if matches!(
+                check_if_zombied(record, false, false, dying_addr, recently_dead, channels),
+                ZombieVerdict::Zombied
+            ) {
+                zombies.push(*id);
+            }
+        }
+
+        let mut destroyed = Vec::new();
+        for id in zombies {
+            let mut current = Some(id);
+            while let Some(entity_id) = current {
+                if self.ghosts.remove(&entity_id).is_none() {
+                    break;
+                }
+                destroyed.push(entity_id);
+                self.play_new_lifespan_for(entity_id, time);
+                current = match self.ghosts.get_mut(&entity_id) {
+                    Some(record) => {
+                        let verdict = check_if_zombied(
+                            record,
+                            false,
+                            false,
+                            dying_addr,
+                            recently_dead,
+                            channels,
+                        );
+                        if matches!(verdict, ZombieVerdict::Zombied) {
+                            Some(entity_id)
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+            }
+        }
+        destroyed
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Section: the entity view
 // -----------------------------------------------------------------------------
