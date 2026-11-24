@@ -85,7 +85,7 @@ pub fn check_password(
     _is_password_hashed: bool,
     presented: &str,
 ) -> AccountLogOn {
-    if presented == &row.password {
+    if presented == row.password {
         AccountLogOn::LoggedOn
     } else {
         AccountLogOn::RejectedInvalidPassword
@@ -110,9 +110,9 @@ pub fn bind_user_type(property_name: &str, bind: impl FnOnce() -> bool) -> UserT
     if bind() {
         UserTypeBinding::Bound
     } else {
-        UserTypeBinding::Unbound(
-            format!("Unable to bind USER_TYPE property '{property_name}' to database.").into(),
-        )
+        UserTypeBinding::Unbound(format!(
+            "Unable to bind USER_TYPE property '{property_name}' to database."
+        ))
     }
 }
 
