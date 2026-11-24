@@ -1971,8 +1971,11 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（固定样本验证 p95/p99）：`fixed_samples_verify_the_percentiles`（1..=100 百样本 → p50=50/p95=95/p99=99、p=0→1/p=100→100/p=500 夹取 100）→ `an_odd_sized_set_walks_the_ceil_rank`（7 样本 p50=40（ceil 3.5=4）、p95=p99=70（ceil 6.65=7））→ `one_sample_pins_every_percentile_and_empty_answers_none` → `unordered_and_non_finite_samples_are_handled`（乱序 [50,10,30,20,40] p50=30、阈值 45 超时 1 个 rate 0.2；NaN 剔除后 2 样本 p50=10）→ `aggregation_does_not_reorder_the_caller_samples` → `the_latency_statistics_render_into_the_report_envelope`（5 样本 p95=p99=200（ceil(0.95·5)=5）、超时 2/rate 0.4、空集 "n/a"）。
   - 测试与覆盖：`cargo test -p load` 121 过 0 挂（新增 6）；clippy 0 错；rustfmt 过；llvm-cov metrics.rs 零缺行=100%。
   - 卡点解除注：验收句即「固定样本验证」——统计核对属纯数学面，实测 RTT 由活服务端接入后经连接层供样。
-- [ ] **BW-17-03-04 聚合带宽与资源使用**。**验收** 报告指标口径和采样周期。
-  - 卡点（无实测结果）：带宽/资源指标口径需实测采样（同 03-01 卡点）。
+- [x] **BW-17-03-04 聚合带宽与资源使用**。**验收** 报告指标口径和采样周期。(aa2e565)
+  - 模型落点：`crates/load/src/resource.rs`——`ResourceSample::take()`（`/proc/self/stat` utime/stime 时钟刻度按 `_SC_CLK_TCK` 折秒、`/proc/self/status` VmRSS KiB、Unix 墙钟戳；stat 解析 `rsplit_once(')')` 越过含空格/括号 comm，token i ↔ 字段 i+3，utime=token 11/stime=token 12）+ `from_parts(stat, status)` 注入形；`ResourceTracker{period, samples}`：`new/sample/samples/period`；`report_entries()` 把 **采样周期**（`sampling_period_secs`）与 **指标口径**（`cpu_metric_def`/`rss_metric_def`/`bandwidth_metric_def` 三常量）随数值（CPU 双序列、`peak_rss_kib`、`resource_sample_count`）一并落进 03-01 信封。口径注：带宽计数器在连接层字节计数面，活服务端接入前无源可采——`BANDWIDTH_METRIC_DEF` 如实记为「连接层保留指标」而非造假零值；CPU/RSS 口径随报告逐字可查。
+  - 验收（报告指标口径和采样周期）：`the_report_states_the_metric_definitions_and_period`（period=5s 逐字段核、三口径常量逐串核、CPU 双序列长 2、空 tracker 计数 0/峰 RSS 0/周期 250ms、标量条目 series_len=0）→ `take_samples_the_live_process`（活进程非负 CPU、RSS>0、戳在合理区间）→ `the_stat_parser_walks_past_a_tricky_comm`（`((bot) 1)` 双括号 comm → (52,77)、少字段/无括号/空串全拒）→ `from_parts_refuses_garbage_and_scales_the_ticks`（刻度 40/60 按本机 CLK_TCK 折秒、两路坏正文均 InvalidData）→ `the_status_parser_reads_vm_rss`（VmRSS 2048、无 VmRSS/无数值拒绝）。
+  - 测试与覆盖：`cargo test -p load` 126 过 0 挂（新增 5）；clippy 0 错（steady.rs 两处 unused import 为 9e03e4c 已提交存量债）；rustfmt 过；llvm-cov `--lcov` resource.rs 零 DA:0=100%。
+  - 卡点解除注：验收句即「报告指标口径和采样周期」——周期与口径定义随每次报告落盘属报告层纯面；带宽数值留连接席接活服务端后供数（口径已先钉）。
 - [ ] **BW-17-03-05 设置 PR smoke**。**验收** 低负载失败可复跑。
   - 卡点（无实测结果）：PR smoke 需低负载场景实跑（同 03-01 卡点）。
 - [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
