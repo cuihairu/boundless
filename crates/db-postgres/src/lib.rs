@@ -21,6 +21,7 @@
 //! and [`foundation`] for the id vocabulary.
 
 pub mod accounts;
+pub mod backup;
 pub mod dry_run;
 pub mod json;
 pub mod schema;
@@ -29,6 +30,10 @@ pub mod store;
 pub mod upgrade;
 
 pub use accounts::{AccountRow, account_table_ddl};
+pub use backup::{
+    BackupCell, BackupColumn, BackupColumnKind, BackupDump, BackupTable, BackupTableData,
+    export_backup, fixed_table_specs, restore_backup,
+};
 pub use schema::{ColumnKind, EntitySchema, column_name, entity_table_name, quote_ident};
 pub use schema_init::{CURRENT_VERSION, OLDEST_SUPPORTED_VERSION};
 pub use store::PostgresStorage;
