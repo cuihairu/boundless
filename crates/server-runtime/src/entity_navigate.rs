@@ -1330,6 +1330,9 @@ impl GetStopPointFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controllers::{
+        CancelArg, Controller, Controllers, DOMAIN_REAL, ExclusiveControllerIds,
+    };
     use crate::movement::{
         DEFAULT_GAME_UPDATE_HERTZ, Direction3D, EntityState, FACING_NONE, FACING_VELOCITY,
         ScriptCallback,
@@ -3741,6 +3744,154 @@ mod tests {
         assert_eq!(
             err.message(),
             "This method can only be called on a real entity."
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // TDD: BW-10-06-13 取消活动寻路控制器
+    // -------------------------------------------------------------------
+
+    /// `Entity.cancel("Movement")` (`controllers.cpp:529-584`): the
+    /// movement controllers are exclusive-category `"Movement"`
+    /// (`IMPLEMENT_EXCLUSIVE_CONTROLLER_TYPE` in move_controller.cpp:186),
+    /// so the category id *is* the walk's controller id and the cancel
+    /// finds it. The delete erases the record before the stop
+    /// (`controllers.cpp:379-407`) and no notification method runs
+    /// ("The notification methods are not called when movement is
+    /// cancelled", entity_navigate.cpp moveToPoint docstring) — the next
+    /// tick cannot advance the walk.
+    #[test]
+    fn cancelling_the_movement_category_freezes_the_walk_with_no_callbacks() {
+        // The category registers itself at static-init in the reference
+        // (`Controller::TypeRegisterer`, controller.hpp:146-153); the
+        // movement face is handed that id by addController.
+        let mut exclusive = ExclusiveControllerIds::default();
+        let movement_id = exclusive.get_id("Movement", true).expect("created");
+        let navigate = real_entity();
+        let mut controller = navigate
+            .move_to_point(
+                Vector3::new(10.0, 0.0, 0.0),
+                3.0,
+                9,
+                true,
+                false,
+                movement_id,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("a real entity gets the controller");
+
+        let mut controllers = Controllers::new();
+        let mut out = Vec::new();
+        let mut record = Controller::new(0, DOMAIN_REAL);
+        record.exclusive_id = movement_id;
+        assert_eq!(
+            controllers.add_controller(record, 9, 7, &[], &mut out),
+            movement_id,
+            "the category id is the controller id"
+        );
+
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log: Vec<ScriptCallback> = Vec::new();
+
+        // The engine loop reaches the walk only while its record is
+        // registered. Tick 5 is the last one: the script cancels the walk
+        // from that tick's own handler and the next iteration's gate finds
+        // the registry empty.
+        let mut now = 0;
+        loop {
+            if controllers.controller(movement_id).is_none() {
+                break;
+            }
+            now += 1;
+            assert!(
+                !controller.update(&mut state, now, &mut log),
+                "a cancelled walk never arrives"
+            );
+            assert!(now < 20, "the loop should have stopped at once");
+            if now == 5 {
+                let outcome = controllers
+                    .py_cancel(
+                        CancelArg::Category("Movement".to_owned()),
+                        &mut exclusive,
+                        7,
+                        &[],
+                        &mut out,
+                    )
+                    .expect("a live category cancels");
+                assert!(outcome.cancelled);
+                assert!(outcome.warnings.is_empty());
+            }
+        }
+        assert_eq!(now, 5, "the cancel takes effect before the next tick");
+        let cancelled = state.position;
+        assert!(
+            (cancelled.x - 1.5).abs() < 1e-4,
+            "five ticks of 0.3, at {}",
+            cancelled.x
+        );
+        assert!(log.is_empty());
+
+        // The next ten ticks: the gate stays closed, so nothing advances
+        // and no notification method fires.
+        for _ in 6..=15 {
+            assert!(
+                controllers.controller(movement_id).is_none(),
+                "still cancelled"
+            );
+        }
+        assert_eq!(state.position, cancelled);
+        assert!(log.is_empty(), "cancelled movement fires no callbacks");
+    }
+
+    /// The int face: `Entity.cancel(controllerID)` stops a walk by its id,
+    /// and an unknown id only warns (`controllers.cpp:578-582`) — it does
+    /// not disturb the entity.
+    #[test]
+    fn cancelling_the_walk_by_id_stops_it_and_unknown_ids_only_warn() {
+        let navigate = real_entity();
+        let mut controllers = Controllers::new();
+        let mut exclusive = ExclusiveControllerIds::default();
+        let mut out = Vec::new();
+        let registered =
+            controllers.add_controller(Controller::new(1, DOMAIN_REAL), 9, 7, &[], &mut out);
+        let mut controller = navigate
+            .move_to_point(
+                Vector3::new(10.0, 0.0, 0.0),
+                3.0,
+                9,
+                true,
+                false,
+                registered,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("a real entity gets the controller");
+
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log: Vec<ScriptCallback> = Vec::new();
+        for now in 1..=4 {
+            assert!(!controller.update(&mut state, now, &mut log));
+        }
+        let frozen = state.position;
+
+        let outcome = controllers
+            .py_cancel(CancelArg::Id(registered), &mut exclusive, 7, &[], &mut out)
+            .expect("an int argument parses");
+        assert!(outcome.cancelled);
+
+        // The registry no longer holds the walk: the next tick never
+        // advances it and no callback fires.
+        assert!(controllers.controller(registered).is_none());
+        assert_eq!(state.position, frozen);
+        assert!(log.is_empty());
+
+        // Unknown id: the verbatim warning, nothing else.
+        let outcome = controllers
+            .py_cancel(CancelArg::Id(99), &mut exclusive, 7, &[], &mut out)
+            .expect("an int argument parses");
+        assert!(!outcome.cancelled);
+        assert_eq!(
+            outcome.warnings,
+            vec!["Entity.cancel(7): Cancelling an unknown controller ID 99\n"]
         );
     }
 }
