@@ -56,7 +56,16 @@
 //! (`lib/connection/replay_metadata.cpp`) — the version, digest, frequency,
 //! timestamp, nonce, signature and tick count, and the metadata key/value
 //! collection — so a known recording reads out the same fields.
+//!
+//! BW-13-04-03 is the ModelEditor's animation face: `animation_editor`
+//! (`tools/modeleditor_core/Models/mutant_animations.cpp`, with the census
+//! walk in `mutant.cpp` `reloadAllLists`) — the `<animation>` table the
+//! editor manipulates, its frame-range and frame-rate edits, the channel
+//! backup/restore scratch, the per-bone alpha weights and the read-only
+//! probe — whose fixed clock times drive the pose engine of [`skeleton`]
+//! against the BW-11-04-01 oracle.
 
+pub mod animation_editor;
 pub mod avatar_filter;
 pub mod camera;
 pub mod data_download;
