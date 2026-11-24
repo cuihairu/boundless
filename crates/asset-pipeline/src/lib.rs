@@ -79,7 +79,11 @@
 //! - [`resource_checker`] — the `VisualChecker` that judges a `.visual`
 //!   against `visual_rules.xml` (size, triangle count, hierarchy depth,
 //!   portals, hard points, texture names)
-//!   (`tools/resourcechecker/visual_checker.*`).
+//!   (`tools/resourcechecker/visual_checker.*`);
+//! - [`model_editor`] — the ModelEditor's model open and save face: the
+//!   `ensureModelValid` judgement, the save/save-as flows and the metadata
+//!   block they refresh, against the `lib/model` read contract
+//!   (`tools/modeleditor_core/Models/`, `lib/gizmo/meta_data*`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -102,6 +106,7 @@ pub mod hash64;
 pub mod hierarchical_config;
 pub mod hierarchical_config_converter;
 pub mod jit_compiler;
+pub mod model_editor;
 pub mod offline_processor;
 pub mod plugin_loader;
 pub mod primitive_file_structs;
