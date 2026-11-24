@@ -133,7 +133,7 @@ mod tests {
         set: &Rc<crate::chunk_waypoint_set_data::ChunkWaypointSetData>,
         point: Vector3,
     ) -> ChunkWaypointState {
-        ChunkWaypointState::from_navloc(&NavLoc::from_parts(Rc::clone(set), 0, point))
+        ChunkWaypointState::from_navloc(&NavLoc::from_parts(Rc::clone(set), 0, point, 0.0))
     }
 
     /// A three-state walk with no duplicate points, no colinear middle
@@ -221,11 +221,13 @@ mod tests {
                 one_set(),
                 0,
                 Vector3::new(0.0, 0.4, 0.5),
+                0.0,
             )),
             ChunkWPSetState::from_navloc(&NavLoc::from_parts(
                 one_set(),
                 0,
                 Vector3::new(1.0, 0.4, 0.5),
+                0.0,
             )),
         ]);
         cache.save_way_set_path(&astar);

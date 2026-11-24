@@ -16,6 +16,10 @@
 //! - the chunk-level A* crossing one portal (XPATH),
 //! - the set-level A* over the portal connections (SETSEARCH/SETHOP) —
 //!   the portal access order.
+//!
+//! BW-10-04-06/07 add the navigator faces on the same truth: the
+//! findPath probes (FP) and the maxSearchDistance sweep (DOK/DPNONE, plus
+//! DCACHE — a changed limit on one navigator).
 
 use foundation::math::Vector3;
 use std::rc::Rc;
@@ -108,7 +112,7 @@ fn point_near(p: Vector3, x: f32, y: f32, z: f32) -> bool {
 /// A navloc on a set at the truth log's (already height-lifted) probe
 /// position and waypoint.
 fn loc(set: &Rc<waypoint::ChunkWaypointSetData>, waypoint: i32, x: f32, y: f32, z: f32) -> NavLoc {
-    NavLoc::from_parts(set.clone(), waypoint, Vector3::new(x, y, z))
+    NavLoc::from_parts(set.clone(), waypoint, Vector3::new(x, y, z), 100.0)
 }
 
 #[test]
@@ -603,4 +607,280 @@ fn the_navigator_answers_the_reference_findpath_probes() {
         dst.point().y,
         dst.point().z
     ));
+}
+
+/// The probe endpoints, keyed by the D-section pair name: source
+/// (set, waypoint, point) then destination.
+fn endpoints<'a>(
+    name: &str,
+    a: &'a Rc<waypoint::ChunkWaypointSetData>,
+    b: &'a Rc<waypoint::ChunkWaypointSetData>,
+    c: &'a Rc<waypoint::ChunkWaypointSetData>,
+) -> (
+    &'a Rc<waypoint::ChunkWaypointSetData>,
+    i32,
+    Vector3,
+    &'a Rc<waypoint::ChunkWaypointSetData>,
+    i32,
+    Vector3,
+) {
+    match name {
+        "AA" => (
+            a,
+            0,
+            Vector3::new(0.15, 0.41, 0.4),
+            a,
+            0,
+            Vector3::new(0.2, 0.41, 0.6),
+        ),
+        "AB" => (
+            a,
+            0,
+            Vector3::new(0.15, 0.41, 0.4),
+            b,
+            0,
+            Vector3::new(0.5, 0.41, 0.25),
+        ),
+        "AC" => (
+            a,
+            0,
+            Vector3::new(0.15, 0.41, 0.4),
+            c,
+            0,
+            Vector3::new(0.85, 0.41, 0.5),
+        ),
+        "CA" => (
+            c,
+            0,
+            Vector3::new(0.85, 0.41, 0.6),
+            a,
+            0,
+            Vector3::new(0.15, 0.41, 0.4),
+        ),
+        "BC" => (
+            b,
+            0,
+            Vector3::new(0.5, 0.41, 0.25),
+            c,
+            0,
+            Vector3::new(0.85, 0.41, 0.5),
+        ),
+        "BB" => (
+            b,
+            0,
+            Vector3::new(0.5, 0.41, 0.25),
+            b,
+            1,
+            Vector3::new(0.5, 0.41, 0.75),
+        ),
+        "AE" => (
+            a,
+            0,
+            Vector3::new(0.15, 0.41, 0.4),
+            b,
+            0,
+            Vector3::new(0.4, 0.41, 0.36),
+        ),
+        _ => unreachable!("unknown pair {name}"),
+    }
+}
+
+/// The maxSearchDistance probes (`DOK`/`DPNONE`): the original navigator's
+/// answer at limits straddling the two original thresholds — the A* filter
+/// `distanceToGoal(start) > maxDistance` (`astar.ipp:125-131`) and the
+/// in-set clamp `maxSearchDistance > src.gridSize()`
+/// (`navigator.cpp:455-460`, the probes carry a 0.6 grid). The x-z flips
+/// sit exactly on a pair distance (the set-level goal candidate carries
+/// the dst point as its position):
+///   AB sqrt(0.145)=0.380789, AC sqrt(0.50)=0.707107,
+///   CA sqrt(0.53)=0.728010, BC sqrt(0.185)=0.430116;
+/// BB/AE flip on the in-set crossing candidate instead (0.3140064 /
+/// 0.26565), with the set level already green — the in-set filter is the
+/// binder there. A fresh `Navigator` per row, like the fixture.
+#[test]
+fn the_navigator_answers_the_reference_distance_probes() {
+    let (sets, _) = wired_world();
+    let (a, b, c) = (sets[0].clone(), sets[1].clone(), sets[2].clone());
+
+    // (pair, limit, ok, next x/y/z, next waypoint, next set) — the truth
+    // log's `DOK`/`DPNONE` lines in order, one flat row per log line; the
+    // next fields are 0 when the log answers DPNONE. The limits are the
+    // fixture's own literals, which happen to echo 1/sqrt(2) once rounded.
+    #[allow(clippy::approx_constant, clippy::type_complexity)] // the flat log row
+    let rows: &[(&str, f32, bool, f32, f32, f32, i32, usize)] = &[
+        // AA: one set, one waypoint — the start isGoal's the goal outright
+        // (both the goal-only and the waypoint-equal test answer on set
+        // identity), so no limit blocks it, not even 0.001.
+        ("AA", -1.0, true, 0.2, 0.41, 0.6, 0, 0),
+        ("AA", 0.0, true, 0.2, 0.41, 0.6, 0, 0),
+        ("AA", 0.001, true, 0.2, 0.41, 0.6, 0, 0),
+        ("AA", 0.05, true, 0.2, 0.41, 0.6, 0, 0),
+        ("AA", 0.6, true, 0.2, 0.41, 0.6, 0, 0),
+        ("AA", 2.0, true, 0.2, 0.41, 0.6, 0, 0),
+        // AB: flips exactly between 0.3807 and 0.3808.
+        ("AB", -1.0, true, 0.5, 0.41, 0.25, 0, 1),
+        ("AB", 0.0, true, 0.5, 0.41, 0.25, 0, 1),
+        ("AB", 0.3, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AB", 0.35, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AB", 0.3807, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AB", 0.3808, true, 0.5, 0.41, 0.25, 0, 1),
+        ("AB", 0.381, true, 0.5, 0.41, 0.25, 0, 1),
+        ("AB", 0.4, true, 0.5, 0.41, 0.25, 0, 1),
+        ("AB", 0.6, true, 0.5, 0.41, 0.25, 0, 1),
+        ("AB", 2.0, true, 0.5, 0.41, 0.25, 0, 1),
+        // AC: flips between 0.7071 and 0.7072; the answer is the crossing
+        // into B, not the destination.
+        ("AC", -1.0, true, 1.0 / 3.0, 0.6, 0.426190, 0, 1),
+        ("AC", 0.0, true, 1.0 / 3.0, 0.6, 0.426190, 0, 1),
+        ("AC", 0.5, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AC", 0.65, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AC", 0.70, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AC", 0.7071, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AC", 0.7072, true, 1.0 / 3.0, 0.6, 0.426190, 0, 1),
+        ("AC", 0.71, true, 1.0 / 3.0, 0.6, 0.426190, 0, 1),
+        ("AC", 0.8, true, 1.0 / 3.0, 0.6, 0.426190, 0, 1),
+        ("AC", 2.0, true, 1.0 / 3.0, 0.6, 0.426190, 0, 1),
+        // CA: flips between 0.7280 and 0.7281 — a different threshold than
+        // AC over the same portal chain, so the limit rides the pair
+        // distance and nothing else.
+        ("CA", -1.0, true, 2.0 / 3.0, 0.6, 0.5, 0, 1),
+        ("CA", 0.0, true, 2.0 / 3.0, 0.6, 0.5, 0, 1),
+        ("CA", 0.70, false, 0.0, 0.0, 0.0, 0, 0),
+        ("CA", 0.7279, false, 0.0, 0.0, 0.0, 0, 0),
+        ("CA", 0.7280, false, 0.0, 0.0, 0.0, 0, 0),
+        ("CA", 0.7281, true, 2.0 / 3.0, 0.6, 0.5, 0, 1),
+        ("CA", 0.73, true, 2.0 / 3.0, 0.6, 0.5, 0, 1),
+        ("CA", 0.8, true, 2.0 / 3.0, 0.6, 0.5, 0, 1),
+        ("CA", 2.0, true, 2.0 / 3.0, 0.6, 0.5, 0, 1),
+        // BC: flips between 0.4300 and 0.4302; the answer is the
+        // destination itself (the crossing candidate is waypoint-equal to
+        // it, so findPath swaps dst in).
+        ("BC", -1.0, true, 0.85, 0.41, 0.5, 0, 2),
+        ("BC", 0.0, true, 0.85, 0.41, 0.5, 0, 2),
+        ("BC", 0.35, false, 0.0, 0.0, 0.0, 0, 0),
+        ("BC", 0.42, false, 0.0, 0.0, 0.0, 0, 0),
+        ("BC", 0.43, false, 0.0, 0.0, 0.0, 0, 0),
+        ("BC", 0.4302, true, 0.85, 0.41, 0.5, 0, 2),
+        ("BC", 0.44, true, 0.85, 0.41, 0.5, 0, 2),
+        ("BC", 2.0, true, 0.85, 0.41, 0.5, 0, 2),
+        // BB: one set, two waypoints — only the in-set filter binds
+        // (flip between 0.3140 and 0.3141, the crossing candidate).
+        ("BB", -1.0, true, 0.5, 0.41, 0.75, 1, 1),
+        ("BB", 0.0, true, 0.5, 0.41, 0.75, 1, 1),
+        ("BB", 0.25, false, 0.0, 0.0, 0.0, 0, 0),
+        ("BB", 0.30, false, 0.0, 0.0, 0.0, 0, 0),
+        ("BB", 0.313, false, 0.0, 0.0, 0.0, 0, 0),
+        ("BB", 0.314, false, 0.0, 0.0, 0.0, 0, 0),
+        ("BB", 0.3141, true, 0.5, 0.41, 0.75, 1, 1),
+        ("BB", 0.315, true, 0.5, 0.41, 0.75, 1, 1),
+        ("BB", 0.32, true, 0.5, 0.41, 0.75, 1, 1),
+        ("BB", 0.5, true, 0.5, 0.41, 0.75, 1, 1),
+        ("BB", 2.0, true, 0.5, 0.41, 0.75, 1, 1),
+        // AE: the destination just past the A|B portal — the set level
+        // clears from 0.254 but the in-set crossing still trips the limit
+        // (flip between 0.2656 and 0.2657).
+        ("AE", -1.0, true, 0.4, 0.41, 0.36, 0, 1),
+        ("AE", 0.0, true, 0.4, 0.41, 0.36, 0, 1),
+        ("AE", 0.254, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AE", 0.26, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AE", 0.265, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AE", 0.2656, false, 0.0, 0.0, 0.0, 0, 0),
+        ("AE", 0.2657, true, 0.4, 0.41, 0.36, 0, 1),
+        ("AE", 0.267, true, 0.4, 0.41, 0.36, 0, 1),
+        ("AE", 0.27, true, 0.4, 0.41, 0.36, 0, 1),
+        ("AE", 0.4, true, 0.4, 0.41, 0.36, 0, 1),
+        ("AE", 2.0, true, 0.4, 0.41, 0.36, 0, 1),
+    ];
+
+    let next_sets = [&a, &b, &c];
+    for (pair, limit, ok, x, y, z, wp, set_index) in rows {
+        let (src_set, src_wp, src, dst_set, dst_wp, dst) = endpoints(pair, &a, &b, &c);
+        let src = loc(src_set, src_wp, src.x, src.y, src.z);
+        let dst = loc(dst_set, dst_wp, dst.x, dst.y, dst.z);
+        let mut next = NavLoc::new();
+        let mut passed_activated_portal = false;
+        let found = Navigator::default().find_path(
+            &src,
+            &dst,
+            *limit,
+            false,
+            &mut next,
+            &mut passed_activated_portal,
+            CacheState::ReadWriteCache,
+        );
+        assert_eq!(
+            found,
+            *ok,
+            "DOK/DPNONE {pair} {limit}: the original answers {}",
+            if *ok { "OK" } else { "NONE" }
+        );
+        if *ok {
+            assert!(
+                point_near(next.point(), *x, *y, *z),
+                "DOK {pair} {limit}: {:?}",
+                next.point()
+            );
+            assert_eq!(next.waypoint(), *wp, "DOK {pair} {limit}");
+            assert!(
+                Rc::ptr_eq(next.p_set().unwrap(), next_sets[*set_index]),
+                "DOK {pair} {limit}: the next set"
+            );
+            assert!(!passed_activated_portal, "DOK {pair} {limit}: act flag");
+        } else {
+            assert!(
+                next.point().y == 0.0,
+                "DPNONE {pair} {limit}: the untouched next stays invalid"
+            );
+        }
+    }
+}
+
+/// The `DCACHEOK`/`DCACHENONE` lines: a changed limit on one `Navigator`.
+/// Every set path in this world crosses a shell boundary (all chunks are
+/// inside, so each cross-set hop sets the flag), and the reference
+/// bypasses the set cache whenever it did — so each call re-searches and
+/// a limit tighter than the pair distance keeps failing even on the
+/// navigator that just answered unlimited.
+#[test]
+fn a_changed_limit_on_the_same_navigator_always_researches() {
+    let (sets, _) = wired_world();
+    let (a, c) = (sets[0].clone(), sets[2].clone());
+
+    let src = loc(&a, 0, 0.15, 0.41, 0.4);
+    let dst = loc(&c, 0, 0.85, 0.41, 0.5);
+    let navigator = Navigator::default();
+
+    let answer = |limit: f32| {
+        let mut next = NavLoc::new();
+        let mut passed_activated_portal = false;
+        let found = navigator.find_path(
+            &src,
+            &dst,
+            limit,
+            false,
+            &mut next,
+            &mut passed_activated_portal,
+            CacheState::ReadWriteCache,
+        );
+        (found, next)
+    };
+
+    // DCACHEOK 0 -1.0000: the unlimited search answers the B crossing.
+    let (found, next) = answer(-1.0);
+    assert!(found);
+    assert!(point_near(next.point(), 1.0 / 3.0, 0.6, 0.426190));
+
+    // DCACHENONE 1 0.0500 — the cached set path is bypassed, so the tight
+    // limit re-searches and fails.
+    let (found, _) = answer(0.05);
+    assert!(!found, "DCACHENONE 1");
+
+    // DCACHEOK 2 0.0000: zero disables the check, like -1.
+    let (found, next) = answer(0.0);
+    assert!(found);
+    assert!(point_near(next.point(), 1.0 / 3.0, 0.6, 0.426190));
+
+    // DCACHENONE 3 0.3000.
+    let (found, _) = answer(0.3);
+    assert!(!found, "DCACHENONE 3");
 }

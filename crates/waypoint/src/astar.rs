@@ -319,6 +319,7 @@ mod tests {
             Rc::clone(set),
             waypoint,
             Vector3::new(x, y, z),
+            0.0,
         ))
     }
 

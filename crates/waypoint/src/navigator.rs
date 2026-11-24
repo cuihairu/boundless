@@ -365,7 +365,7 @@ mod tests {
     }
 
     fn at(set: &Rc<ChunkWaypointSetData>, x: f32) -> NavLoc {
-        NavLoc::from_parts(Rc::clone(set), 0, Vector3::new(x, 0.4, 0.5))
+        NavLoc::from_parts(Rc::clone(set), 0, Vector3::new(x, 0.4, 0.5), 0.0)
     }
 
     #[test]
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn the_none_flag_and_sub_grid_distance_arms_run() {
+    fn the_none_flag_and_the_in_set_distance_clamp_arms_run() {
         let (a, b) = wired_pair();
         let navigator = Navigator::default();
         let mut cache = NavigatorCache::default();
@@ -561,6 +561,30 @@ mod tests {
             None
         ));
         assert_eq!(cache.get_way_set_path_size(), 2);
+
+        // Above the grid size the in-set search is clamped to unlimited —
+        // "it makes no sense to check for maxSearchDistance inside navpoly
+        // set if it is greater than gridSize" — so a limit far past the
+        // crossing still answers.
+        assert!(navigator.search_next_waypoint(
+            &mut cache,
+            &at(&a, 0.2),
+            &at(&b, 0.8),
+            1000.0,
+            false,
+            None
+        ));
+
+        // A limit tight under the pair distance fails outright; the
+        // shell-boundary bypass re-searches, so the limit is what loses.
+        assert!(!navigator.search_next_waypoint(
+            &mut cache,
+            &at(&a, 0.2),
+            &at(&b, 0.8),
+            0.1,
+            false,
+            None
+        ));
     }
 
     #[test]

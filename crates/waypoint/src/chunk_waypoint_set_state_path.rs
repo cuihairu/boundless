@@ -116,6 +116,7 @@ mod tests {
                     one_set(),
                     0,
                     Vector3::new(index as f32, 0.0, 0.0),
+                    0.0,
                 ));
                 let mut state = state;
                 if index == 1 {

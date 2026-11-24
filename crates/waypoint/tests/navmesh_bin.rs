@@ -701,11 +701,13 @@ fn the_reference_path_probes_are_replayed_point_by_point() {
             Rc::clone(&set),
             src_wp,
             src_point,
+            0.0,
         ));
         let dst_state = ChunkWaypointState::from_navloc(&NavLoc::from_parts(
             Rc::clone(&set),
             dst_wp,
             dst_point,
+            0.0,
         ));
 
         let mut astar = AStar::default();

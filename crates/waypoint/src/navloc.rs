@@ -78,19 +78,23 @@ impl NavLoc {
     /// constructors and `ChunkWaypointState::getAdjacency`, which the
     /// reference reaches through its `friend class ChunkWaypointState`
     /// clause. Waypoint -1 with a set is the goal-only state
-    /// (`ChunkWaypointState(dstSet, dstPoint)`). Public so the replay
-    /// harness can rebuild the reference probes' already-resolved
+    /// (`ChunkWaypointState(dstSet, dstPoint)`). `grid_size` is the space's
+    /// grid size the located reference constructors store
+    /// (`gridSize_( pChunk->space()->gridSize() )`, `navloc.cpp:66-70`) —
+    /// the value `searchNextWaypoint`'s in-set clamp reads. Public so the
+    /// replay harness can rebuild the reference probes' already-resolved
     /// locations; the find-based `from_guess` stays the primary face.
     pub fn from_parts(
         set: Rc<ChunkWaypointSetData>,
         waypoint: WaypointIndex,
         point: Vector3,
+        grid_size: f32,
     ) -> Self {
         Self {
             p_set: Some(set),
             waypoint,
             point,
-            grid_size: 0.0,
+            grid_size,
         }
     }
 

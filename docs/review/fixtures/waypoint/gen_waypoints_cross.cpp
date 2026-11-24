@@ -25,6 +25,15 @@
 //   XPATHBEGIN/XPATH/XPATHNONE/XPATHEND   chunk-level A* across one portal
 //   SETSEARCHBEGIN/SETHOP/SETSEARCHNONE/SETSEARCHEND
 //                                         set-level A* (ChunkWPSetState)
+//   DOK/DPNONE                            findPath under a maxSearchDistance
+//                                         grid straddling the two original
+//                                         thresholds (the A* filter
+//                                         distanceToGoal(start) > max and
+//                                         the in-set clamp max > gridSize;
+//                                         fresh Navigator per probe)
+//   DCACHEOK/DCACHENONE                   a changed limit on one Navigator
+//                                         (the shell-boundary bypass makes
+//                                         every call re-search)
 
 #include <cmath>
 #include <cstdio>
@@ -623,6 +632,133 @@ int main()
                     printf("FPNONE %s\n", probes[p].name);
                 }
                 printf("FPEND %s\n", probes[p].name);
+            }
+        }
+
+        // ---- the original navigator's maxSearchDistance: the limit face ----
+        // Limits straddling the two original thresholds: the A* filter
+        // "distanceToGoal(start) > maxDistance" (astar.ipp:125-131) and the
+        // in-set clamp "maxSearchDistance > src.gridSize()" (navigator.cpp
+        // :455-460, the probes carry a 0.6 grid). A fresh Navigator per
+        // probe keeps the cache out of the picture.
+        //
+        // Pairs and what binds them (x-z flips sit exactly on the pair
+        // distance; y is the located 0.41 on both ends):
+        //   AA  same set, same waypoint 0 — the start isGoal's the goal-only
+        //       / waypoint-equal test outright, no expansion, any limit OK.
+        //   AB  flip at |src->dst| = sqrt(0.145)  = 0.380789 (set-level goal
+        //       candidate carries the dst point as its position).
+        //   AC  flip at sqrt(0.50) = 0.707107.
+        //   CA  flip at sqrt(0.53) = 0.728010.
+        //   BC  flip at sqrt(0.185) = 0.430116.
+        //   BB  same set across the z = 1/2 in-set edge: only the in-set
+        //       filter binds (candidate = the crossing point, est. 0.314).
+        //   AE  dst just past the A|B portal: the set level clears at
+        //       ~0.253/0.254 but the in-set crossing (~0.266) still trips a
+        //       small limit — the in-set filter is the binder.
+        {
+            printf("GRID %.4f\n", pChunk[0]->space()->gridSize());
+
+            struct DistProbe
+            {
+                const char* name;
+                int         srcChunk;
+                int         dstChunk;
+                Vector3     src;
+                Vector3     dst;
+                const float* limits;
+                size_t       limitCount;
+            };
+            static const float LIM_AA[] =
+                { -1.f, 0.f, 0.001f, 0.05f, 0.6f, 2.f };
+            static const float LIM_AB[] =
+                { -1.f, 0.f, 0.30f, 0.35f, 0.3807f, 0.3808f, 0.381f, 0.4f, 0.6f, 2.f };
+            static const float LIM_AC[] =
+                { -1.f, 0.f, 0.5f, 0.65f, 0.70f, 0.7071f, 0.7072f, 0.71f, 0.8f, 2.f };
+            static const float LIM_CA[] =
+                { -1.f, 0.f, 0.70f, 0.7279f, 0.7280f, 0.7281f, 0.73f, 0.8f, 2.f };
+            static const float LIM_BC[] =
+                { -1.f, 0.f, 0.35f, 0.42f, 0.4300f, 0.4302f, 0.44f, 2.f };
+            static const float LIM_BB[] =
+                { -1.f, 0.f, 0.25f, 0.30f, 0.313f, 0.314f, 0.3141f, 0.315f,
+                  0.32f, 0.5f, 2.f };
+            static const float LIM_AE[] =
+                { -1.f, 0.f, 0.254f, 0.26f, 0.265f, 0.2656f, 0.2657f, 0.267f,
+                  0.27f, 0.4f, 2.f };
+            const DistProbe probes[] = {
+                { "AA", 0, 0, Vector3(0.15f, 0.4f, 0.4f), Vector3(0.20f, 0.4f, 0.6f),
+                  LIM_AA, sizeof(LIM_AA) / sizeof(LIM_AA[0]) },
+                { "AB", 0, 1, Vector3(0.15f, 0.4f, 0.4f), Vector3(0.50f, 0.4f, 0.25f),
+                  LIM_AB, sizeof(LIM_AB) / sizeof(LIM_AB[0]) },
+                { "AC", 0, 2, Vector3(0.15f, 0.4f, 0.4f), Vector3(0.85f, 0.4f, 0.5f),
+                  LIM_AC, sizeof(LIM_AC) / sizeof(LIM_AC[0]) },
+                { "CA", 2, 0, Vector3(0.85f, 0.4f, 0.6f), Vector3(0.15f, 0.4f, 0.4f),
+                  LIM_CA, sizeof(LIM_CA) / sizeof(LIM_CA[0]) },
+                { "BC", 1, 2, Vector3(0.50f, 0.4f, 0.25f), Vector3(0.85f, 0.4f, 0.5f),
+                  LIM_BC, sizeof(LIM_BC) / sizeof(LIM_BC[0]) },
+                { "BB", 1, 1, Vector3(0.50f, 0.4f, 0.25f), Vector3(0.50f, 0.4f, 0.75f),
+                  LIM_BB, sizeof(LIM_BB) / sizeof(LIM_BB[0]) },
+                { "AE", 0, 1, Vector3(0.15f, 0.4f, 0.4f), Vector3(0.40f, 0.4f, 0.36f),
+                  LIM_AE, sizeof(LIM_AE) / sizeof(LIM_AE[0]) },
+            };
+            for (size_t p = 0; p < sizeof(probes) / sizeof(probes[0]); ++p)
+            {
+                for (size_t m = 0; m < probes[p].limitCount; ++m)
+                {
+                    const float limit = probes[p].limits[m];
+                    NavLoc src(pChunk[probes[p].srcChunk], probes[p].src, 0.6f);
+                    NavLoc dst(pChunk[probes[p].dstChunk], probes[p].dst, 0.6f);
+                    Navigator navigator;
+                    NavLoc  next;
+                    bool    passedActivatedPortal = false;
+
+                    if (navigator.findPath(src, dst, limit, false, next,
+                            passedActivatedPortal))
+                    {
+                        printf("DOK %s %.4f %.6f %.6f %.6f %d %d %d\n",
+                               probes[p].name, limit,
+                               next.point().x, next.point().y,
+                               next.point().z, int(next.waypoint()),
+                               setIdxOf(next.pSet().get()),
+                               passedActivatedPortal ? 1 : 0);
+                    }
+                    else
+                    {
+                        printf("DPNONE %s %.4f\n", probes[p].name, limit);
+                    }
+                }
+            }
+        }
+
+        // ---- a changed limit on the same Navigator: the set path never
+        // serves again ----
+        // Every set path in this world crosses a shell boundary (all chunks
+        // are inside, so every cross-set hop sets the flag), and the
+        // reference bypasses the set cache whenever it did. Each call below
+        // therefore re-searches, and a limit tighter than the pair distance
+        // fails even on the Navigator that just answered unlimited.
+        {
+            const Vector3 src(0.15f, 0.4f, 0.4f);
+            const Vector3 dst(0.85f, 0.4f, 0.5f);
+            Navigator navigator;
+            const float limits[] = { -1.f, 0.05f, 0.00f, 0.30f };
+            for (size_t m = 0; m < sizeof(limits) / sizeof(limits[0]); ++m)
+            {
+                NavLoc  from(pChunk[0], src, 0.6f);
+                NavLoc  to(pChunk[2], dst, 0.6f);
+                NavLoc  next;
+                bool    passedActivatedPortal = false;
+                if (navigator.findPath(from, to, limits[m], false, next,
+                        passedActivatedPortal))
+                {
+                    printf("DCACHEOK %d %.4f %.6f %.6f %.6f\n", int(m),
+                           limits[m], next.point().x, next.point().y,
+                           next.point().z);
+                }
+                else
+                {
+                    printf("DCACHENONE %d %.4f\n", int(m), limits[m]);
+                }
             }
         }
     }

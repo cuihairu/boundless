@@ -41,7 +41,7 @@ impl ChunkWaypointState {
     /// dstPoint )` (`chunk_waypoint_state.cpp:29-43`): a goal-only state on
     /// the destination set — waypoint -1, the point lifted by `clip`.
     pub fn for_destination(set: Rc<ChunkWaypointSetData>, dst_point: Vector3) -> Self {
-        let mut nav_loc = NavLoc::from_parts(set, -1, dst_point);
+        let mut nav_loc = NavLoc::from_parts(set, -1, dst_point, 0.0);
         nav_loc.clip_in_place();
         Self {
             nav_loc,
@@ -189,7 +189,8 @@ impl ChunkWaypointState {
         if waypoint >= 0 {
             // In-set neighbour: rebuild the neighbour location in place.
             neigh_set = Rc::clone(set);
-            neigh.nav_loc = NavLoc::from_parts(Rc::clone(&neigh_set), waypoint, Vector3::default());
+            neigh.nav_loc =
+                NavLoc::from_parts(Rc::clone(&neigh_set), waypoint, Vector3::default(), 0.0);
             neigh.crossed_portal = false;
         } else if waypoint_adj_to_chunk {
             // `edgeLabel` (`chunk_waypoint_state.cpp:104-118`): the
@@ -201,8 +202,12 @@ impl ChunkWaypointState {
                 None => return false,
             };
             neigh_set = Rc::clone(&label.set);
-            neigh.nav_loc =
-                NavLoc::from_parts(Rc::clone(&neigh_set), label.waypoint, label.entry_point);
+            neigh.nav_loc = NavLoc::from_parts(
+                Rc::clone(&neigh_set),
+                label.waypoint,
+                label.entry_point,
+                0.0,
+            );
             neigh.crossed_portal = true;
             if neigh_set.chunk_identity().is_none() {
                 // "!neigh.navLoc_.pSet()->chunk()": the destination set's
@@ -251,6 +256,7 @@ impl ChunkWaypointState {
             neigh_set,
             neigh.nav_loc.waypoint(),
             Vector3::new(way.x, cw.max_height, way.y),
+            0.0,
         );
 
         search_data.set_connection(
@@ -450,6 +456,7 @@ mod tests {
             Rc::clone(set),
             waypoint,
             Vector3::new(x, 0.5, z),
+            0.0,
         ))
     }
 

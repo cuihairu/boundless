@@ -279,6 +279,7 @@ mod tests {
             Rc::clone(set),
             0,
             Vector3::new(x, 0.4, 0.5),
+            0.0,
         ))
     }
 
@@ -308,6 +309,7 @@ mod tests {
             Rc::clone(&set),
             -1,
             Vector3::new(0.3, 0.4, 0.5),
+            0.0,
         ));
         let located = state(&set, 0.7);
         let other = state(&one_set(), 0.7);
@@ -371,6 +373,7 @@ mod tests {
             Rc::clone(&set_a),
             -1,
             Vector3::new(0.3, 0.4, 0.5),
+            0.0,
         ));
         path.move_state_along_path(&parked);
         assert!(!path.is_part_of_path(&a), "the source fell behind");

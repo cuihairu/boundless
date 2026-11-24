@@ -303,7 +303,7 @@ mod tests {
     ];
 
     fn navloc(set: &Rc<ChunkWaypointSetData>, x: f32, y: f32, z: f32) -> NavLoc {
-        NavLoc::from_parts(Rc::clone(set), 0, Vector3::new(x, y, z))
+        NavLoc::from_parts(Rc::clone(set), 0, Vector3::new(x, y, z), 0.0)
     }
 
     /// The A|B world: two mounted squares, A linked to B through
