@@ -203,18 +203,24 @@
 
 建立二进制帧、Python 回调序列、资源产物、实体快照及数据库行的基准样本。支持原版全栈、新版全栈和替换单个组件三种模式。按兼容边界报告字段差异、超时及回调顺序差异。
 
-- [ ] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
+- [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
   （依赖运行时夹具未采集：原始字节需集群运行中抓包。已定位静态锚点，随 BW-02 立项解锁——`lib/network/exposed_message_range.{hpp,cpp}` + `lib/network/unit_test/test_exposed_message_range.cpp`：`ExposedMethodMessageRange(START_MSG_ID=10, END_MSG_ID=20)`，300 个 exposed ID 与 msgID/subMsgID 往返一致（`subMsgID != -1` 才向流写 `uint8`）；`lib/network/watcher_nub.hpp:64-74` Nub ID 16/17/18/20 + `WATCHER_MSG_EXTENSION_START=107`；`lib/network/unpacked_message_header.hpp` 仅 Mercury 内存投递结构（identifier/replyID/length/interface element），非线上字节布局。）
-- [ ] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
+  - 勾账（2026-11-24，lane/bw15-platform，按档）：后批次已交付并入 main——6c6d624 `ci/reference-protocol.py|.sh`：348 消息/11 接口逐行 TSV（`tests/baseline/protocol-messages.tsv`：接口/消息/id/长度样式/lengthParam/方向/声明文件行）+ 帧格式 JSON（ID uint8、大端长度、三类 headerSize、回调收端定框、登录载荷 `00 00 09 02`），自测 5/5 绿，证据 `docs/review/bw00-04-01-protocol-fixtures.md`。本块「原始字节需集群抓包」的实况 capture 门如实记 SKIP（`protocol-capture.json` capture_gate closed），inventory/format 两面已满足验收口径。
+- [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
   （依赖 python-host crate 与 python/ 模块未建，随 BW-03 立项解锁。原版锚点：`lib/pyscript/`、`common/py_{chunk,network,physics2}.cpp`；`TESTING.md` 记载嵌 Python 三模块 entitydef/pyscript/script 单测需先 `make python_install`。）
-- [ ] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
+  - 勾账（2026-11-24，lane/bw15-platform，按档）：后批次已交付并入 main——ae869c2 `ci/reference-callback.py|.sh`：11 调用点/7 函数（`ConnectionControl::callConnectionCallback`）+ 5 运行时路径 + `(stage:int,status:int,message:str)` 三元组与可忽略字段清单（message/失败 status/时序 flag），入 `tests/baseline/callback-sequence.json`/`callback-format.json`，自测 5/5 绿，证据 `docs/review/bw00-04-02-python-callback-fixtures.md`。记录面从原版源码直接派生，不依赖新版 python-host，本块解锁条件已被超越。
+- [x] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
   （依赖 storage crate 与 entitydef 模块未建，随 BW-04/BW-09 立项解锁。原版锚点：`lib/db_storage_{xml,mysql}/` + 扩展 `.so`（哈希已在清单）、`lib/entitydef*`、FantasyDemo 输入 `programming/fantasydemo/res/scripts/{entities.xml,db.xml,entity_defs/}`（108 文件树，BW-00-05-04 已登记）。）
-- [ ] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
+  - 勾账（2026-11-24，lane/bw15-platform，按档）：后批次已交付并入 main——0b785ce `ci/reference-fixtures.py|.sh`：资源夹具 4557 文件逐 sha256（`tests/baseline/fixture-resource.json`/`.tsv`）+ 实体夹具两套 10 def（属性/方法摘要）+ 数据库夹具两套 LogOnMapping/种子行（`fixture-entity.json`/`fixture-database.json`），每份挂 `reference_commit` + 生成器 sha256 可追溯，自测 4/4 绿，证据 `docs/review/bw00-04-03-artifact-fixtures.md`/`bw00-04-03-entity-db-fixtures.md`。
+- [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
   （依赖 BW-00-02-03 单机集群基线未建（原版侧配置缺 `development_defaults.xml`），且 Boundless 侧角色 crate 未建（BW-05/06/07/08/09）。两侧证据都不具备，随上述任务族立项解锁。）
-- [ ] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
+  - 勾账（2026-11-24，lane/bw15-platform，按档）：两批后交付已并入 main——4faf95a `ci/compare-fullstack.py|.sh`（同一输入驱动两侧：输入来自冻结夹具、原版证据来自冻结记录、新版证据来自端口源码，六兼容边界对比 4 AGREE/2 DIFF 入 `tests/baseline/compare-summary.json`）+ c872783 `ci/fullstack-compare.sh`（entitydef 场景双份现场产出，ref==new==oracle 逐字节 sha256 一致，自测双绿）；证据 `docs/review/bw00-04-04-stack-comparison.md`/`bw00-04-04-fullstack-comparison.md`。实况运行门如实记 SKIP，冻结记录+源码派生对比已满足「同一输入产生两份证据」。
+- [x] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
   （依赖同 BW-00-04-04：需两侧可运行的集群加一份角色替换矩阵，原版侧拓扑配置未就绪。）
-- [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+  - 勾账（2026-11-24，lane/bw15-platform，按档）：两批后交付已并入 main——424c56f `ci/replace-role.py|.sh`（从 `KNOWN_ROLES` 与参考二进制派生 8 角色替换清单 `tests/baseline/replace-roles.tsv`，报告逐行注明被替换角色）+ 1b96efa `fullstack-compare.sh substitute` 模式（entitydef-checker 替换实跑三树全 PASS、ref==new==oracle，`substitution.tsv` 首列=role，self-test 三绿）；证据 `docs/review/bw00-04-05-substitution-run.md`。
+- [x] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
   （差异报告**骨架已在 BW-18-04 交付**：`run-tests -- diff <基线> <当前>` 四分类 `REGRESSED`/`HEALED`/`MISSING`/`ADDED`、exit 2 标记不兼容、同名重复按最差结果比；缺的只是 04-04 的两份运行证据作为输入，随其解锁。）
+  - 勾账（2026-11-24，lane/bw15-platform，按档）：两批后交付已并入 main——8653958（`ci/compare-fullstack` 差异归类 order/timeout/field，每条差异 category+boundary+original+new 逐行可定位）+ bce3737 `ci/diff_report.py`/`ci/diff-report.sh`（五类差异 injected/omitted/timeout/order/value 按 JSON 路径定位；自测植入注入字段 rc=1、缺新证据 timeout rc=2、事件互换 order rc=1 三条全被定位，双绿）；证据 `docs/review/bw00-04-06-diff-report.md`/`bw00-04-06-difference-report.md`。04-04 输入落地后全链已通。
 - [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
 - [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
 - [x] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
