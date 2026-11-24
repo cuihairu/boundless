@@ -7,4 +7,5 @@
 //! [`crate::tools::sync_db::SyncDatabase`] seam — the statement log a test
 //! double records is the reviewable artifact the acceptance clauses ask for.
 
+pub mod dry_run;
 pub mod sync_db;
