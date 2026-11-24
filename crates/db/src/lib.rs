@@ -14,6 +14,7 @@
 //! the id vocabulary, and is consumed by the `dbapp` role runtime and the
 //! BW-09-05 operational tools.
 
+pub mod account;
 pub mod error;
 pub mod lookup;
 pub mod namer;
@@ -21,6 +22,11 @@ pub mod record;
 pub mod retry;
 pub mod storage;
 
+pub use account::{
+    AccountLogOn, AccountRow, BIGWORLD_ID_COLUMN, ENTITY_ID_COLUMN, ENTITY_TYPE_COLUMN,
+    ENTITY_TYPES_TABLE, INFO_TABLE, IS_PASSWORD_HASHED_COLUMN, LOG_ON_MAPPING_TABLE,
+    LOG_ON_NAME_COLUMN, PASSWORD_COLUMN, UserTypeBinding, bind_user_type, check_password,
+};
 pub use error::DbError;
 pub use lookup::{
     EntityDefIndex, LookUpEntitiesCriteria, LookUpEntitiesFilter, LookupDefs,
