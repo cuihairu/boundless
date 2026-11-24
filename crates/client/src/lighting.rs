@@ -613,13 +613,14 @@ fn box_outside_clip_space(bb: &BoundBox, m: &Matrix) -> bool {
 }
 
 // ===========================================================================
-// LinearAnimation (the float instance the pulse light uses)
+// LinearAnimation (the float instance the pulse light uses, and the vector
+// instance the day/night cycle uses)
 // ===========================================================================
 
-/// A `std::map<float, float>` key: `f32` ordered by `total_cmp` so the map
+/// A `std::map<float, Value>` key: `f32` ordered by `total_cmp` so the map
 /// stays total (key times are finite in practice).
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Key(f32);
+pub struct Key(pub f32);
 
 impl Eq for Key {}
 
@@ -635,16 +636,51 @@ impl Ord for Key {
     }
 }
 
-/// `LinearAnimation<float>` (`lib/math/linear_animation.hpp`): a time-keyed
-/// value map with optional looping and linear interpolation.
+/// A value a [`LinearAnimation`] can hold and interpolate. The reference
+/// template only ever default-constructs and mixes its values, which is all
+/// this trait requires.
+pub trait Interpolable: Copy {
+    /// `Value(0)`: what `animate` returns for an animation with no keys.
+    fn zero() -> Self;
+    /// The value `fraction` of the way from `first` to `last`.
+    fn mix(first: Self, last: Self, fraction: f32) -> Self;
+}
+
+impl Interpolable for f32 {
+    fn zero() -> Self {
+        0.0
+    }
+
+    fn mix(first: Self, last: Self, fraction: f32) -> Self {
+        first + (last - first) * fraction
+    }
+}
+
+impl Interpolable for Vector3 {
+    fn zero() -> Self {
+        Vector3::ZERO
+    }
+
+    fn mix(first: Self, last: Self, fraction: f32) -> Self {
+        Vector3::new(
+            first.x + (last.x - first.x) * fraction,
+            first.y + (last.y - first.y) * fraction,
+            first.z + (last.z - first.z) * fraction,
+        )
+    }
+}
+
+/// `LinearAnimation<Value>` (`lib/math/linear_animation.hpp`): a time-keyed
+/// value map with optional looping and linear interpolation. The pulse light
+/// instantiates it with `float`, the day/night cycle with `Vector3`.
 #[derive(Debug, Clone, Default)]
-pub struct LinearAnimation {
-    keys: BTreeMap<Key, f32>,
+pub struct LinearAnimation<V: Interpolable = f32> {
+    keys: BTreeMap<Key, V>,
     loop_: bool,
     max_time: f32,
 }
 
-impl LinearAnimation {
+impl<V: Interpolable> LinearAnimation<V> {
     /// `LinearAnimation(loop, maxTime)`.
     pub fn new(loop_: bool, max_time: f32) -> Self {
         LinearAnimation {
@@ -654,12 +690,22 @@ impl LinearAnimation {
         }
     }
 
+    /// `empty` (`linear_animation.hpp`): true when no key was added.
+    pub fn empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// `clear` (the `std::map` base): drops every key, keeps loop/maxTime.
+    pub fn clear(&mut self) {
+        self.keys.clear();
+    }
+
     /// `animate` (`linear_animation.hpp:20-101`): the value at `time`,
     /// interpolating between the neighbouring keys (wrapping through the loop
     /// seam when looping).
-    pub fn animate(&self, time: f32) -> f32 {
+    pub fn animate(&self, time: f32) -> V {
         if self.keys.is_empty() {
-            return 0.0;
+            return V::zero();
         }
         if self.keys.len() == 1 {
             return *self.keys.values().next().unwrap();
@@ -707,7 +753,7 @@ impl LinearAnimation {
             }
 
             let fraction = (time - first_time) / (last_time - first_time);
-            first_value + (last_value - first_value) * fraction
+            V::mix(first_value, last_value, fraction)
         } else {
             let upper = self
                 .keys
@@ -734,13 +780,13 @@ impl LinearAnimation {
             }
 
             let fraction = (time - first_time) / (last_time - first_time);
-            first_value + (last_value - first_value) * fraction
+            V::mix(first_value, last_value, fraction)
         }
     }
 
     /// `addKey` (`linear_animation.hpp:103-120`): while looping, only keys
     /// inside `[0, maxTime)` are accepted; `operator[]` overwrite semantics.
-    pub fn add_key(&mut self, time: f32, value: f32) {
+    pub fn add_key(&mut self, time: f32, value: V) {
         if self.loop_ {
             if time < self.max_time && time >= 0.0 {
                 self.keys.insert(Key(time), value);
@@ -2252,6 +2298,29 @@ mod tests {
         anim.add_key(3.0, 0.25);
         anim.add_key(5.0, 0.75);
         assert!((anim.animate(0.5) - (0.75 + (0.25 - 0.75) * (5.5 / 8.0))).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vector_animation_interpolates_and_zeroes_like_the_float_one() {
+        // The day/night cycle instantiates the same template with Vector3:
+        // an empty track returns Value(0), keys mix component-wise.
+        let empty = LinearAnimation::<Vector3>::new(true, 24.0);
+        assert!(empty.empty());
+        assert_eq!(empty.animate(12.0), Vector3::ZERO);
+
+        let mut track = LinearAnimation::<Vector3>::new(true, 24.0);
+        track.add_key(6.0, Vector3::new(0.0, 0.0, 0.0));
+        track.add_key(18.0, Vector3::new(255.0, 255.0, 255.0));
+        assert!(!track.empty());
+        assert_eq!(track.animate(6.0), Vector3::new(0.0, 0.0, 0.0));
+        let noon = track.animate(12.0);
+        assert!((noon.x - 127.5).abs() < 1e-4);
+        assert!((noon.y - 127.5).abs() < 1e-4);
+        assert!((noon.z - 127.5).abs() < 1e-4);
+
+        track.clear();
+        assert!(track.empty());
+        assert_eq!(track.animate(0.0), Vector3::ZERO);
     }
 
     #[test]
