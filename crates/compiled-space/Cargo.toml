@@ -9,3 +9,5 @@ repository.workspace = true
 
 [dependencies]
 foundation = { workspace = true }
+physics = { path = "../physics" }
+scene = { workspace = true }

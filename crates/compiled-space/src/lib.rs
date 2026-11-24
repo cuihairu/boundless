@@ -35,9 +35,9 @@ pub use binary_format::{
     Stream,
 };
 pub use dynamic_scene::{
-    DEFAULT_HANDLE_GROW_BY, DEFAULT_METERS_PER_NODE, DynamicObjectHandle, DynamicObjectId,
-    DynamicObjectStorageInfo, DynamicSceneProvider, HANDLE_GENERATION_BITS, HANDLE_INDEX_BITS,
-    HANDLE_INVALID_INDEX, HandleTable, MAX_OCTREE_DEPTH,
+    DEFAULT_HANDLE_GROW_BY, DEFAULT_METERS_PER_NODE, DynamicObjectHandle, DynamicObjectStorageInfo,
+    DynamicSceneProvider, HANDLE_GENERATION_BITS, HANDLE_INDEX_BITS, HANDLE_INVALID_INDEX,
+    HandleTable, MAX_OCTREE_DEPTH,
 };
 pub use loose_octree::{
     CONFIGURATION_SIZE as OCTREE_CONFIGURATION_SIZE, Configuration as OctreeConfiguration,

@@ -9,8 +9,10 @@ members = [
     "crates/entitydef",
     "crates/chunk",
     "crates/compiled-space",
+    "crates/scene",
     "crates/terrain",
     "crates/physics",
+    "crates/waypoint",
     "crates/db",
     "crates/db-postgres",
     "crates/python-host",
@@ -62,6 +64,7 @@ contracts = { path = "crates/contracts" }
 entitydef = { path = "crates/entitydef" }
 db = { path = "crates/db" }
 db-postgres = { path = "crates/db-postgres" }
+scene = { path = "crates/scene" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
 # The watcher path tree (BW-12-01); load's bots command callables are its

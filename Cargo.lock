@@ -377,6 +377,8 @@ name = "compiled-space"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "physics",
+ "scene",
 ]
 
 [[package]]
@@ -1825,6 +1827,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scene"
+version = "0.1.0"
+dependencies = [
+ "foundation",
+ "physics",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2537,6 +2547,13 @@ dependencies = [
  "log",
  "once_cell",
  "pkg-config",
+]
+
+[[package]]
+name = "waypoint"
+version = "0.1.0"
+dependencies = [
+ "foundation",
 ]
 
 [[package]]

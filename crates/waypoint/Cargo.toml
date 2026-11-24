@@ -1,0 +1,11 @@
+[package]
+name = "waypoint"
+description = "BW-10-04 waypoint navmesh faces (worldNavmesh decode, adjacency)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation = { path = "../foundation" }

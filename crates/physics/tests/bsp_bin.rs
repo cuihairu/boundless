@@ -16,7 +16,8 @@
 //!   original loader (UC lines): a real scene asset, not a hand-made one.
 
 use foundation::math::{PlaneEq, Vector3};
-use physics::{BSP_FILE_CUR_TOKEN, BspNode, BspTree, WorldTriangle};
+use physics::{BSP_FILE_CUR_TOKEN, CollisionVisitor, TRIANGLE_WATER};
+use physics::{BspNode, BspTree, WorldTriangle};
 use physics::{OFFSET_32BIT_NULL, PLANE_EQ_SIZE, WORLD_TRIANGLE_SIZE};
 
 const FIXTURE_DIR: &str = concat!(
@@ -67,7 +68,16 @@ struct RayLine {
     hit: Option<([String; 3], [String; 3], u16)>,
 }
 
-/// One dump_tree run in the truth log: tag, NT/NN/BB/CAN/TRI/USER/RAY lines.
+/// One SWP truth line: the VST visit records that preceded it (each the
+/// reported dist bits and the candidate's flags) and the walk's answer
+/// with the visit count.
+struct SweepLine {
+    visits: Vec<(u32, u16)>,
+    hit: bool,
+}
+
+/// One dump_tree run in the truth log: tag, NT/NN/BB/CAN/TRI/USER/RAY/
+/// STC/SWP/TRI/TSW lines.
 struct Truth {
     nt: u32,
     nn: u32,
@@ -76,6 +86,10 @@ struct Truth {
     tris: Vec<(u32, [String; 9], u16)>,
     user: Vec<(u32, Vec<u8>)>,
     rays: Vec<RayLine>,
+    stc: Vec<bool>,
+    tri: Vec<bool>,
+    tsw: Vec<bool>,
+    swp: Vec<SweepLine>,
 }
 
 fn truth(tag: &'static str) -> Truth {
@@ -87,7 +101,12 @@ fn truth(tag: &'static str) -> Truth {
         tris: Vec::new(),
         user: Vec::new(),
         rays: Vec::new(),
+        stc: Vec::new(),
+        tri: Vec::new(),
+        tsw: Vec::new(),
+        swp: Vec::new(),
     };
+    let mut pending_visits: Vec<(u32, u16)> = Vec::new();
     let mut saw_result_ok = false;
     for line in truth_lines() {
         let f: Vec<&str> = line.split_whitespace().collect();
@@ -101,6 +120,7 @@ fn truth(tag: &'static str) -> Truth {
             "NN" => t.nn = f[2].parse().unwrap(),
             "BB" => t.bb = row(&f[2..8]),
             "CAN" => t.can = f[2] == "1",
+            "TRI" if f[2] == "HIT" || f[2] == "MISS" => t.tri.push(f[2] == "HIT"),
             "TRI" => t.tris.push((
                 f[2].parse().unwrap(),
                 row(&f[3..12]),
@@ -132,6 +152,24 @@ fn truth(tag: &'static str) -> Truth {
                     hit,
                 });
             }
+            "VST" => pending_visits.push((
+                u32::from_str_radix(f[2], 16).unwrap(),
+                u16::from_str_radix(f[3], 16).unwrap(),
+            )),
+            "STC" => {
+                t.stc.push(f[2] == "HIT");
+                assert!(pending_visits.is_empty(), "stray VST before STC");
+            }
+            "SWP" => {
+                let hit = f[2] == "HIT";
+                let count: u32 = f[3].parse().unwrap();
+                assert_eq!(pending_visits.len() as u32, count, "{tag} SWP visit count");
+                t.swp.push(SweepLine {
+                    visits: std::mem::take(&mut pending_visits),
+                    hit,
+                });
+            }
+            "TSW" => t.tsw.push(f[2] == "HIT"),
             "RESULT" => {
                 assert_eq!(f[2], "OK");
                 saw_result_ok = true;
@@ -508,5 +546,377 @@ fn the_reference_rays_are_answered_bit_for_bit() {
                 ),
             }
         }
+    }
+}
+
+/// The test-side twin of the generator's ProbeVisitor: records every
+/// visit (dist bits, candidate flags) and accepts or rejects.
+struct ReplayVisitor {
+    accept: bool,
+    seen: Vec<(u32, u16)>,
+}
+
+impl CollisionVisitor for ReplayVisitor {
+    fn visit(&mut self, hit_triangle: &WorldTriangle, dist: f32) -> bool {
+        self.seen.push((dist.to_bits(), hit_triangle.flags()));
+        self.accept
+    }
+}
+
+#[test]
+fn the_reference_overlap_and_sweep_probes_are_answered_bit_for_bit() {
+    // The BT tree: static overlap hits, the down-sweep prism stops at
+    // the first candidate when the visitor accepts, and a rejecting
+    // visitor makes the walk enumerate all six candidates it crosses
+    // (tetra faces, the water triangle, the straddler) before answering
+    // MISS.
+    let bt = replay("BT", "built.bsp");
+    let bt_t = truth("BT");
+    let slab = WorldTriangle::new(
+        v3h(["bf800000", "3e4ccccd", "40200000"]),
+        v3h(["40400000", "3ecccccd", "40200000"]),
+        v3h(["3f800000", "3f19999a", "bfc00000"]),
+        0,
+    );
+    let far = WorldTriangle::new(
+        v3h(["42c80000", "00000000", "00000000"]),
+        v3h(["42ca0000", "00000000", "00000000"]),
+        v3h(["42c80000", "3f800000", "00000000"]),
+        0,
+    );
+    let sweep_tri = WorldTriangle::new(
+        v3h(["bf000000", "bf000000", "40400000"]),
+        v3h(["40200000", "bf000000", "40400000"]),
+        v3h(["bf000000", "40200000", "40400000"]),
+        0,
+    );
+    assert_eq!(bt.intersects_triangle(&slab), bt_t.stc[0], "BT STC hit");
+    assert_eq!(bt.intersects_triangle(&far), bt_t.stc[1], "BT STC miss");
+    let mut v = ReplayVisitor {
+        accept: true,
+        seen: Vec::new(),
+    };
+    assert!(bt.intersects_sweep(&sweep_tri, Vector3::new(0.0, 0.0, -4.5), Some(&mut v)));
+    assert_eq!(v.seen, bt_t.swp[0].visits, "BT accepting sweep visits");
+    assert!(bt_t.swp[0].hit);
+    assert!(v.seen.len() == 1 && v.seen[0].0 == 0.0f32.to_bits());
+
+    assert!(!bt.intersects_sweep(&sweep_tri, Vector3::new(0.0, 0.0, 10.0), None));
+    assert_eq!(bt_t.swp[1].visits.len(), 0, "BT away sweep sees nothing");
+
+    let mut rejecting = ReplayVisitor {
+        accept: false,
+        seen: Vec::new(),
+    };
+    assert!(!bt.intersects_sweep(
+        &sweep_tri,
+        Vector3::new(0.0, 0.0, -4.5),
+        Some(&mut rejecting)
+    ));
+    assert_eq!(
+        rejecting.seen, bt_t.swp[2].visits,
+        "BT rejecting sweep enumerates every candidate"
+    );
+    assert_eq!(rejecting.seen.len(), 6);
+    assert_eq!(rejecting.seen[1].1 & TRIANGLE_WATER, TRIANGLE_WATER);
+    assert_eq!(rejecting.seen[5].1, 0x0100, "the straddler's material kind");
+
+    // The legacy tree: the flat fin's crossing segment covers t1, the
+    // tilted prism hits on the way up, the fin pushed down its own
+    // plane answers MISS without a single visit, and the fin pushed up
+    // its plane normal hits.
+    let lg = replay("LG", "legacy.bsp");
+    let lg_t = truth("LG");
+    let fin = WorldTriangle::new(
+        v3h(["bf800000", "3f000000", "bf000000"]),
+        v3h(["40000000", "3f000000", "bf000000"]),
+        v3h(["3f000000", "3f000000", "40000000"]),
+        0,
+    );
+    let tilt = WorldTriangle::new(
+        v3h(["bf800000", "3f000000", "bf000000"]),
+        v3h(["40000000", "3f000000", "bf000000"]),
+        v3h(["3f000000", "40200000", "40000000"]),
+        0,
+    );
+    assert_eq!(lg_t.stc, vec![true], "LG STC");
+    assert!(lg.intersects_triangle(&fin));
+    let mut v = ReplayVisitor {
+        accept: true,
+        seen: Vec::new(),
+    };
+    assert!(lg.intersects_sweep(&tilt, Vector3::new(0.0, 0.0, 3.0), Some(&mut v)));
+    assert_eq!(v.seen, lg_t.swp[0].visits, "LG tilt sweep visits");
+    assert!(!lg.intersects_sweep(&fin, Vector3::new(0.0, 0.0, -3.0), None));
+    assert_eq!(
+        lg_t.swp[1].visits.len(),
+        0,
+        "LG fin-down sweep sees nothing"
+    );
+    let mut v = ReplayVisitor {
+        accept: true,
+        seen: Vec::new(),
+    };
+    assert!(lg.intersects_sweep(&fin, Vector3::new(0.0, 3.0, 0.0), Some(&mut v)));
+    assert_eq!(v.seen, lg_t.swp[2].visits, "LG fin-up sweep visits");
+
+    // The real scene asset: a wide prism down through the cube, the end
+    // cap exactly touching the top plane, and a horizontal slab through
+    // the cube's sides.
+    let uc = replay("UC", "unit_cube.bsp");
+    let uc_t = truth("UC");
+    let wide = WorldTriangle::new(
+        v3h(["bf800000", "bf800000", "40400000"]),
+        v3h(["40000000", "bf800000", "40400000"]),
+        v3h(["bf800000", "40000000", "40400000"]),
+        0,
+    );
+    let touching = WorldTriangle::new(
+        v3h(["bf800000", "bf800000", "40000000"]),
+        v3h(["40000000", "bf800000", "40000000"]),
+        v3h(["bf800000", "40000000", "40000000"]),
+        0,
+    );
+    let slab = WorldTriangle::new(
+        v3h(["c0000000", "be4ccccd", "3f000000"]),
+        v3h(["40000000", "be4ccccd", "3f000000"]),
+        v3h(["00000000", "40000000", "3f000000"]),
+        0,
+    );
+    let mut v = ReplayVisitor {
+        accept: true,
+        seen: Vec::new(),
+    };
+    assert!(uc.intersects_sweep(&wide, Vector3::new(0.0, 0.0, -4.0), Some(&mut v)));
+    assert_eq!(v.seen, uc_t.swp[0].visits, "UC wide sweep visits");
+    let mut v = ReplayVisitor {
+        accept: true,
+        seen: Vec::new(),
+    };
+    assert!(uc.intersects_sweep(&touching, Vector3::new(0.0, 0.0, -1.0), Some(&mut v)));
+    assert_eq!(v.seen, uc_t.swp[1].visits, "UC end-cap sweep visits");
+    assert!(uc.intersects_triangle(&slab));
+    assert_eq!(uc_t.stc, vec![true], "UC STC");
+}
+
+#[test]
+fn the_reference_triangle_faces_answer_every_truth_probe() {
+    // The WT section: the tri-tri walk and the swept prism against the
+    // standalone ground triangle, replayed answer-for-answer.
+    let t = truth("WT");
+    let wa = WorldTriangle::new(
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(2.0, 0.0, 0.0),
+        Vector3::new(2.0, 2.0, 0.0),
+        0,
+    );
+    let crossing = WorldTriangle::new(
+        Vector3::new(1.0, 0.5, -1.0),
+        Vector3::new(1.0, 0.5, 1.0),
+        Vector3::new(3.0, 2.0, 1.0),
+        0,
+    );
+    let distant = WorldTriangle::new(
+        Vector3::new(10.0, 10.0, -1.0),
+        Vector3::new(10.0, 10.0, 1.0),
+        Vector3::new(12.0, 12.0, 1.0),
+        0,
+    );
+    let coplanar = WorldTriangle::new(
+        Vector3::new(0.5, 0.0, 0.0),
+        Vector3::new(1.5, 0.0, 0.0),
+        Vector3::new(0.5, 1.0, 0.0),
+        0,
+    );
+    assert_eq!(
+        wa.intersects_triangle(&crossing),
+        t.tri[0],
+        "WT TRI crossing"
+    );
+    assert_eq!(wa.intersects_triangle(&distant), t.tri[1], "WT TRI distant");
+    assert_eq!(
+        wa.intersects_triangle(&coplanar),
+        t.tri[2],
+        "WT TRI coplanar"
+    );
+    assert_eq!(
+        WorldTriangle::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            Vector3::new(0.0, 2.0, 0.0),
+            0
+        )
+        .intersects_triangle(&WorldTriangle::new(
+            Vector3::new(0.5, 0.5, -1.0),
+            Vector3::new(1.5, 0.5, 1.0),
+            Vector3::new(1.5, 1.5, 1.0),
+            0
+        )),
+        t.tri[3],
+        "WT TRI y-dominant"
+    );
+    assert_eq!(
+        WorldTriangle::new(
+            Vector3::new(0.0, -1.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(0.0, 0.0, -2.0),
+            0
+        )
+        .intersects_triangle(&WorldTriangle::new(
+            Vector3::new(-1.0, 0.2, 0.0),
+            Vector3::new(1.0, 0.2, -2.0),
+            Vector3::new(-1.0, 1.2, -3.0),
+            0
+        )),
+        t.tri[4],
+        "WT TRI z-dominant"
+    );
+    let small = WorldTriangle::new(
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 1.0, 0.0),
+        0,
+    );
+    assert_eq!(
+        small.intersects_triangle(&WorldTriangle::new(
+            Vector3::new(-10.0, -10.0, 0.0003),
+            Vector3::new(10.0, 0.0, -0.0003),
+            Vector3::new(0.0, 10.0, 0.0),
+            0
+        )),
+        t.tri[5],
+        "WT TRI only-b-coplanar"
+    );
+    assert_eq!(
+        small.intersects_triangle(&WorldTriangle::new(
+            Vector3::new(0.5, 0.5, 0.0),
+            Vector3::new(1.5, 0.5, 0.0),
+            Vector3::new(0.5, 1.5, -1.0),
+            0
+        )),
+        t.tri[6],
+        "WT TRI degenerate third distance"
+    );
+
+    // Swept prisms: end cap on the plane, start cap coplanar, straddling
+    // brute, parallel slide, zero offset, back-facing caps, the far-cap
+    // stop, the Y-dominant projection and the three segment rejects.
+    #[allow(clippy::type_complexity)]
+    let probes: [(&WorldTriangle, &WorldTriangle, Vector3); 11] = [
+        (
+            &wa,
+            &WorldTriangle::new(
+                Vector3::new(0.5, 0.5, 1.0),
+                Vector3::new(1.5, 0.5, 1.0),
+                Vector3::new(0.5, 1.5, 1.0),
+                0,
+            ),
+            Vector3::new(0.0, 0.0, -1.0),
+        ),
+        (
+            &wa,
+            &WorldTriangle::new(
+                Vector3::new(0.5, 0.5, 0.0),
+                Vector3::new(1.5, 0.5, 0.0),
+                Vector3::new(0.5, 1.5, 0.0),
+                0,
+            ),
+            Vector3::new(0.0, 0.0, -1.0),
+        ),
+        (
+            &wa,
+            &WorldTriangle::new(
+                Vector3::new(0.3, 0.3, -1.0),
+                Vector3::new(1.5, 0.2, 1.0),
+                Vector3::new(0.2, 1.5, -1.0),
+                0,
+            ),
+            Vector3::new(0.0, 0.0, 0.5),
+        ),
+        (
+            &wa,
+            &WorldTriangle::new(
+                Vector3::new(0.5, 0.5, 0.3),
+                Vector3::new(2.0, 0.5, 0.3),
+                Vector3::new(0.5, 2.0, 0.3),
+                0,
+            ),
+            Vector3::new(1.0, 0.0, 0.0),
+        ),
+        (&wa, &wa, Vector3::new(0.0, 0.0, 0.0)),
+        (
+            &wa,
+            &WorldTriangle::new(
+                Vector3::new(0.5, 0.1, 0.0),
+                Vector3::new(1.5, 0.1, 1.0),
+                Vector3::new(0.5, 0.9, 1.0),
+                0,
+            ),
+            Vector3::new(1.0, 0.0, 0.0),
+        ),
+        (
+            &wa,
+            &WorldTriangle::new(
+                Vector3::new(-5.0, 0.2, 0.0),
+                Vector3::new(-6.0, 0.2, 1.0),
+                Vector3::new(-5.0, 0.8, 1.0),
+                0,
+            ),
+            Vector3::new(1.0, 0.0, 0.0),
+        ),
+        (
+            &WorldTriangle::new(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 0.0, 1.0),
+                Vector3::new(0.0, 0.0, -1.0),
+                0,
+            ),
+            &WorldTriangle::new(
+                Vector3::new(0.2, 2.0, 0.2),
+                Vector3::new(0.7, 2.0, 0.2),
+                Vector3::new(0.2, 2.0, 0.7),
+                0,
+            ),
+            Vector3::new(0.0, -2.5, 0.0),
+        ),
+        (
+            &small,
+            &WorldTriangle::new(
+                Vector3::new(5.0, 5.0, 1.0),
+                Vector3::new(6.0, 5.0, 1.0),
+                Vector3::new(5.0, 6.0, 1.0),
+                0,
+            ),
+            Vector3::new(0.0, 0.0, -1.5),
+        ),
+        (
+            &small,
+            &WorldTriangle::new(
+                Vector3::new(5.0, 0.4, 1.0),
+                Vector3::new(4.0, 0.4, 1.0),
+                Vector3::new(5.0, 1.4, 1.0),
+                0,
+            ),
+            Vector3::new(0.0, 0.0, -1.5),
+        ),
+        (
+            &WorldTriangle::new(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(10.0, 0.0, 0.0),
+                Vector3::new(0.0, 10.0, 0.0),
+                0,
+            ),
+            &WorldTriangle::new(
+                Vector3::new(-2.0, -1.0, 1.0),
+                Vector3::new(-4.0, -3.0, 1.0),
+                Vector3::new(1.0, -4.0, 1.0),
+                0,
+            ),
+            Vector3::new(0.0, 0.0, -1.5),
+        ),
+    ];
+    assert_eq!(probes.len(), t.tsw.len(), "WT TSW count");
+    for (i, (a, b, offset)) in probes.iter().enumerate() {
+        assert_eq!(a.intersects_swept(b, *offset), t.tsw[i], "WT TSW probe {i}");
     }
 }
