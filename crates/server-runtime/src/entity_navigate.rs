@@ -24,7 +24,10 @@ use waypoint::{
 };
 
 use crate::controllers::ControllerId;
-use crate::movement::{EntityState, MoveToPointController, NavigateStepController};
+use crate::entity_dispatch::EntityId;
+use crate::movement::{
+    EntityState, MoveToEntityController, MoveToPointController, NavigateStepController,
+};
 use crate::navigation_controller::{NavigationController, Navigator};
 
 // -----------------------------------------------------------------------------
@@ -1016,6 +1019,42 @@ impl EntityNavigate {
             user_arg,
             destination,
             velocity,
+            face_movement,
+            move_vertically,
+            hertz,
+        ))
+    }
+
+    /// `EntityNavigate::moveToEntity` (`entity_navigate.cpp:228-247`):
+    /// refuse non-real entities, then hand back the follow controller
+    /// for the caller's
+    /// `entity_.addController( pController, userArg )` — same shape as
+    /// `move_to_point`: **no vehicle check** and the unprefixed shared
+    /// TypeError. The target's position is resolved per tick by the
+    /// caller (the reference holds an `EntityPtr`); the controller picks
+    /// its full-range offset bearing on the first update.
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_to_entity(
+        &self,
+        dest_entity_id: EntityId,
+        velocity: f32,
+        range: f32,
+        user_arg: i32,
+        face_movement: bool,
+        move_vertically: bool,
+        controller_id: ControllerId,
+        hertz: f32,
+    ) -> Result<MoveToEntityController, NavigateFailure> {
+        if !self.is_real {
+            return Err(NavigateFailure::NotReal);
+        }
+
+        Ok(MoveToEntityController::new(
+            controller_id,
+            user_arg,
+            dest_entity_id,
+            velocity,
+            range,
             face_movement,
             move_vertically,
             hertz,
@@ -3067,5 +3106,116 @@ mod tests {
             err.message(),
             "This method can only be called on a real entity."
         );
+    }
+
+    #[test]
+    fn move_to_entity_follows_a_moving_target_and_stops_at_range() {
+        let navigate = real_entity();
+        let mut controller = navigate
+            .move_to_entity(42, 10.0, 1.0, 7, true, false, 6, DEFAULT_GAME_UPDATE_HERTZ)
+            .expect("a real entity gets the controller");
+        assert_eq!(controller.id, 6);
+        assert_eq!(controller.user_arg, 7);
+        assert_eq!(controller.dest_entity_id, 42);
+        assert!((controller.core.metres_per_tick - 1.0).abs() < 1e-6);
+
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log = Vec::new();
+
+        // rng 0 pins the offset bearing on +x, full range out — the
+        // first destination is target + (range, 0, 0). The target sits
+        // at (5,0,0) and relocates to (10,0,0) after two ticks; the walk
+        // retargets on the fly.
+        let mut target = Vector3::new(5.0, 0.0, 0.0);
+        let mut ticks = 0;
+        let mut xs = Vec::new();
+        while !controller.update(&mut state, Some(target), 0, ticks + 1, &mut log) {
+            ticks += 1;
+            xs.push(state.position.x);
+            assert!(ticks < 100, "must arrive");
+            if ticks == 2 {
+                target = Vector3::new(10.0, 0.0, 0.0);
+            }
+        }
+        ticks += 1;
+
+        // 1.0 per tick: two ticks toward (6,0,0), then the retargeted
+        // leg toward (11,0,0); tick 11 takes the close-enough arm.
+        assert_eq!(ticks, 11);
+        let d = |a: f32, b: f32| (a - b).abs();
+        assert!(d(xs[0], 1.0) < 1e-6, "tick 1 at {}", xs[0]);
+        assert!(d(xs[1], 2.0) < 1e-6, "tick 2 at {}", xs[1]);
+        assert!(d(xs[2], 3.0) < 1e-6, "tick 3 at {}", xs[2]);
+        assert!(d(xs[9], 10.0) < 1e-6, "tick 10 at {}", xs[9]);
+        assert!(d(state.position.x, 10.0) < 1e-6);
+        // The stop condition measures to the raw target, not the
+        // offset-bearing approach point: walking from 9 toward 11, the
+        // check fires the moment the entity itself is within range —
+        // here it parks on the target.
+        let remaining = (target - state.position).length();
+        assert!(remaining < controller.range);
+        assert_eq!(
+            log,
+            vec![ScriptCallback {
+                entity_id: 7,
+                method: "onMove",
+                controller_id: 6,
+                user_arg: 7,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_target_already_in_range_never_moves_the_entity() {
+        let navigate = real_entity();
+        let mut controller = navigate
+            .move_to_entity(42, 10.0, 1.0, 0, true, false, 6, DEFAULT_GAME_UPDATE_HERTZ)
+            .expect("a real entity gets the controller");
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log = Vec::new();
+
+        // remaining 0.5 < range 1.0: the close-enough arm fires before
+        // any step — the entity stays put and turns to face the target
+        // exactly.
+        assert!(controller.update(
+            &mut state,
+            Some(Vector3::new(0.5, 0.0, 0.0)),
+            0,
+            1,
+            &mut log
+        ));
+        assert_eq!(state.position, Vector3::ZERO);
+        assert!((state.direction.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].method, "onMove");
+    }
+
+    #[test]
+    fn a_missing_target_reports_on_move_failure_and_a_ghost_is_refused() {
+        let navigate = real_entity();
+        let mut controller = navigate
+            .move_to_entity(42, 10.0, 1.0, 3, true, false, 6, DEFAULT_GAME_UPDATE_HERTZ)
+            .expect("a real entity gets the controller");
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log = Vec::new();
+
+        assert!(controller.update(&mut state, None, 0, 1, &mut log));
+        assert_eq!(state.position, Vector3::ZERO);
+        assert_eq!(
+            log,
+            vec![ScriptCallback {
+                entity_id: 7,
+                method: "onMoveFailure",
+                controller_id: 6,
+                user_arg: 3,
+            }]
+        );
+
+        let mut navigate = real_entity();
+        navigate.is_real = false;
+        let err = navigate
+            .move_to_entity(42, 10.0, 1.0, 0, true, false, 6, DEFAULT_GAME_UPDATE_HERTZ)
+            .expect_err("a ghost is refused");
+        assert_eq!(err, NavigateFailure::NotReal);
     }
 }
