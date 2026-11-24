@@ -15,6 +15,7 @@
 //! BW-09-05 operational tools.
 
 pub mod account;
+pub mod authenticate_account;
 pub mod auto_load_recovery;
 pub mod billing;
 pub mod billing_creator;
