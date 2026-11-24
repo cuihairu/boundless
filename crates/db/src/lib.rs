@@ -25,4 +25,6 @@ pub use lookup::{
     get_database_id_from_name, lookup_entities, lookup_entity_by_name,
 };
 pub use record::EntityRecord;
-pub use storage::{EntityKey, EntityStorage, MemoryConnection, MemoryStorage, load_entity};
+pub use storage::{
+    BaseMailbox, CheckOut, EntityKey, EntityStorage, MemoryConnection, MemoryStorage, load_entity,
+};

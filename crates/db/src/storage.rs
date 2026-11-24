@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use entitydef::value::PropertyValue;
 use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
+use mercury::endpoint::Address;
 
 use crate::error::DbError;
 use crate::record::EntityRecord;
@@ -30,6 +31,30 @@ pub struct EntityKey {
     pub type_id: EntityTypeId,
     /// `EntityKey::dbID`. `PENDING_DATABASE_ID`/0 means "resolve by name".
     pub db_id: DatabaseId,
+}
+
+/// The storage face of `EntityMailBoxRef` — where a checked-out
+/// entity's base lives and which entity it is (`basictypes.hpp`). The
+/// occupancy contract never steals a holder, so the salt is carried but
+/// never compared (`Address::eq` ignores it, as in the reference).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BaseMailbox {
+    /// The base's address.
+    pub addr: Address,
+    /// `EntityMailBoxRef::id`.
+    pub entity_id: i32,
+}
+
+/// The outcome of a checkout attempt: the relogon face
+/// (`DBApp::onLogOnLoggedOnUser`, `dbapp.cpp:2153-2184`) — a free entity
+/// is granted, an occupied one is refused with the current holder
+/// reported back and the record left untouched.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheckOut {
+    /// The checkout was recorded.
+    Granted,
+    /// Already occupied; the current holder.
+    Elsewhere(BaseMailbox),
 }
 
 /// The storage contract (`IDatabase`).
@@ -83,6 +108,23 @@ pub trait EntityStorage {
     /// (BW-09-01-05).
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError>;
 
+    /// `IDatabase`'s logon-record face (`bigworldLogOnRecords` / the
+    /// XML `activeSet_`): the checkout holder of `key`, if any
+    /// (`getLogOnRecord`).
+    fn logon_of(&self, key: &EntityKey) -> Result<Option<BaseMailbox>, DbError>;
+
+    /// The occupancy grant. It succeeds only for an existing row
+    /// (`put_entity_task.cpp:103-108` checks existence before adding an
+    /// invalid logon record) that is not already checked out elsewhere.
+    /// A concurrent or repeated logon for an occupied entity never
+    /// creates a second record — the current holder comes back in
+    /// [`CheckOut::Elsewhere`], the acceptance for BW-09-01-05.
+    fn check_out(&mut self, key: &EntityKey, mailbox: BaseMailbox) -> Result<CheckOut, DbError>;
+
+    /// `removeLogOnRecord`: release the checkout. Absent records are
+    /// fine (the reference's unconditional DELETE).
+    fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError>;
+
     /// Every stored record, in a deterministic order
     /// `(type_id, db_id)`. The reference queries per type with SQL
     /// (`entity_type_mapping.cpp` builds the SELECT); the in-memory
@@ -97,10 +139,11 @@ pub fn load_entity(storage: &impl EntityStorage, key: &EntityKey) -> Result<Enti
     storage.get_entity(key)?.ok_or(DbError::NotFound)
 }
 
-/// The shared rows of an in-memory database.
+/// The shared rows and checkouts of an in-memory database.
 #[derive(Debug, Default)]
 struct MemoryInner {
     entities: HashMap<EntityKey, EntityRecord>,
+    logons: HashMap<EntityKey, BaseMailbox>,
 }
 
 impl MemoryInner {
@@ -161,10 +204,36 @@ impl MemoryInner {
     /// and only an existing row deletes — a missing row is the
     /// reference's `isOK=false`.
     fn del(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        // The reference delEntity removes the logon record with the row
+        // (`xml_database.cpp:805-811`, `del_entity_task.cpp`).
+        self.logons.remove(key);
         self.entities
             .remove(key)
             .map(|_| ())
             .ok_or(DbError::NotFound)
+    }
+
+    fn logon_of(&self, key: &EntityKey) -> Result<Option<BaseMailbox>, DbError> {
+        Ok(self.logons.get(key).cloned())
+    }
+
+    /// The occupancy grant: an existing, unoccupied row records the
+    /// holder; an occupied one reports the holder and is left alone.
+    fn check_out(&mut self, key: &EntityKey, mailbox: BaseMailbox) -> Result<CheckOut, DbError> {
+        if !self.entities.contains_key(key) {
+            // The reference never adds a logon record for a missing row.
+            return Err(DbError::NotFound);
+        }
+        if let Some(current) = self.logons.get(key) {
+            return Ok(CheckOut::Elsewhere(current.clone()));
+        }
+        self.logons.insert(*key, mailbox);
+        Ok(CheckOut::Granted)
+    }
+
+    fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.logons.remove(key);
+        Ok(())
     }
 }
 
@@ -231,6 +300,18 @@ impl EntityStorage for MemoryStorage {
         self.inner.borrow_mut().del(key)
     }
 
+    fn logon_of(&self, key: &EntityKey) -> Result<Option<BaseMailbox>, DbError> {
+        self.inner.borrow().logon_of(key)
+    }
+
+    fn check_out(&mut self, key: &EntityKey, mailbox: BaseMailbox) -> Result<CheckOut, DbError> {
+        self.inner.borrow_mut().check_out(key, mailbox)
+    }
+
+    fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.inner.borrow_mut().check_in(key)
+    }
+
     fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError> {
         let mut records: Vec<EntityRecord> =
             self.inner.borrow().entities.values().cloned().collect();
@@ -263,6 +344,18 @@ impl EntityStorage for MemoryConnection {
 
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
         self.inner.borrow_mut().del(key)
+    }
+
+    fn logon_of(&self, key: &EntityKey) -> Result<Option<BaseMailbox>, DbError> {
+        self.inner.borrow().logon_of(key)
+    }
+
+    fn check_out(&mut self, key: &EntityKey, mailbox: BaseMailbox) -> Result<CheckOut, DbError> {
+        self.inner.borrow_mut().check_out(key, mailbox)
+    }
+
+    fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.inner.borrow_mut().check_in(key)
     }
 
     fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError> {
@@ -594,6 +687,141 @@ mod tests {
                 .expect("read"),
             None
         );
+    }
+
+    fn mailbox(ip: u32, entity_id: i32) -> BaseMailbox {
+        BaseMailbox {
+            addr: Address {
+                ip,
+                port: 30000,
+                salt: 7,
+            },
+            entity_id,
+        }
+    }
+
+    #[test]
+    fn a_checkout_grants_and_reads_back() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 1001,
+        };
+
+        let outcome = store
+            .check_out(&key, mailbox(0x0A00_0001, 42))
+            .expect("checkout of a stored row");
+        assert_eq!(outcome, CheckOut::Granted);
+        assert_eq!(
+            store.logon_of(&key).expect("read"),
+            Some(mailbox(0x0A00_0001, 42))
+        );
+    }
+
+    #[test]
+    fn concurrent_logons_never_double_occupy() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+        let mut first = store.connection();
+        let mut second = store.connection();
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 1001,
+        };
+
+        // Two logons race for the same entity: exactly one wins.
+        assert_eq!(
+            first
+                .check_out(&key, mailbox(0x0A00_0001, 42))
+                .expect("first logon"),
+            CheckOut::Granted
+        );
+
+        // The second is told where the entity lives — twice, for the
+        // stragglers — and neither leaves a second record behind.
+        assert_eq!(
+            second
+                .check_out(&key, mailbox(0x0A00_0002, 43))
+                .expect("occupied checkout reports, not fails"),
+            CheckOut::Elsewhere(mailbox(0x0A00_0001, 42))
+        );
+        assert_eq!(
+            second
+                .check_out(&key, mailbox(0x0A00_0003, 44))
+                .expect("still occupied"),
+            CheckOut::Elsewhere(mailbox(0x0A00_0001, 42))
+        );
+        // The holder is visible from every connection — including the
+        // one that won.
+        assert_eq!(
+            first.logon_of(&key).expect("read"),
+            Some(mailbox(0x0A00_0001, 42))
+        );
+        assert_eq!(
+            store.logon_of(&key).expect("read"),
+            Some(mailbox(0x0A00_0001, 42))
+        );
+    }
+
+    #[test]
+    fn checkout_of_a_missing_row_is_not_found() {
+        let mut store = MemoryStorage::new();
+
+        let err = store
+            .check_out(
+                &EntityKey {
+                    type_id: 3,
+                    db_id: 4242,
+                },
+                mailbox(1, 1),
+            )
+            .expect_err("no row to check out");
+        assert_eq!(err, DbError::NotFound);
+    }
+
+    #[test]
+    fn checkin_releases_and_a_later_checkout_grants_again() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+        let mut holder = store.connection();
+        let reader = store.connection();
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 1001,
+        };
+        holder.check_out(&key, mailbox(1, 42)).expect("checkout");
+
+        holder.check_in(&key).expect("release");
+        assert_eq!(reader.logon_of(&key).expect("read"), None);
+
+        // A release with nothing held is fine — the reference DELETE is
+        // unconditional.
+        holder.check_in(&key).expect("release again");
+
+        // And the freed entity checks out to a new holder.
+        assert_eq!(
+            store.check_out(&key, mailbox(2, 43)).expect("re-grant"),
+            CheckOut::Granted
+        );
+    }
+
+    #[test]
+    fn deleting_an_entity_releases_its_checkout() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 1001,
+        };
+        store.check_out(&key, mailbox(1, 42)).expect("checkout");
+        // A check-in ahead of the delete goes through the store handle.
+        store.check_in(&key).expect("release");
+        assert_eq!(store.logon_of(&key).expect("read"), None);
+
+        store.check_out(&key, mailbox(1, 43)).expect("re-checkout");
+        store.del_entity(&key).expect("delete");
+        assert_eq!(store.logon_of(&key).expect("read"), None);
     }
 
     #[test]

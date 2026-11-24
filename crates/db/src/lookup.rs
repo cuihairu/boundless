@@ -176,17 +176,6 @@ pub fn lookup_entities(
 ) -> Result<Vec<EntityRecord>, DbError> {
     let def = defs.get(type_id)?;
 
-    match criteria.filter {
-        LookUpEntitiesFilter::All => {}
-        // The reference runs these as a join over `bigworldLogOnRecords`;
-        // they need the online-state face (BW-09-01-05).
-        LookUpEntitiesFilter::Online | LookUpEntitiesFilter::Offline => {
-            return Err(DbError::Storage(
-                "the online and offline filters need the online-state face (BW-09-01-05)".into(),
-            ));
-        }
-    }
-
     // Resolve the query legs against the def up front, as the reference
     // validates the property mappings before building the query.
     let mut queries = Vec::with_capacity(criteria.property_queries.len());
@@ -209,16 +198,37 @@ pub fn lookup_entities(
         None
     };
 
-    let mut matched: Vec<EntityRecord> = storage
-        .all_entities()?
-        .into_iter()
-        .filter(|record| record.type_id == type_id)
-        .filter(|record| {
-            queries
-                .iter()
-                .all(|(index, want)| match_string(record.values.get(*index), want))
-        })
-        .collect();
+    // The online filter is the reference's join over
+    // `bigworldLogOnRecords`: online rows carry a logon record.
+    let want_online = match criteria.filter {
+        LookUpEntitiesFilter::All => None,
+        LookUpEntitiesFilter::Online => Some(true),
+        LookUpEntitiesFilter::Offline => Some(false),
+    };
+    let mut matched: Vec<EntityRecord> = Vec::new();
+    for record in storage.all_entities()? {
+        if record.type_id != type_id {
+            continue;
+        }
+        if !queries
+            .iter()
+            .all(|(index, want)| match_string(record.values.get(*index), want))
+        {
+            continue;
+        }
+        if let Some(want) = want_online {
+            let online = storage
+                .logon_of(&EntityKey {
+                    type_id: record.type_id,
+                    db_id: record.db_id,
+                })?
+                .is_some();
+            if online != want {
+                continue;
+            }
+        }
+        matched.push(record);
+    }
 
     if let Some(index) = sort_index {
         matched.sort_by(|a, b| {
@@ -278,7 +288,8 @@ fn compare_values(a: Option<&PropertyValue>, b: Option<&PropertyValue>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::MemoryStorage;
+    use crate::storage::{BaseMailbox, MemoryStorage};
+    use mercury::endpoint::Address;
 
     /// Type 3: `name` (identifier), `level`, `title`. Type 4: `model`
     /// only, no identifier.
@@ -478,18 +489,38 @@ mod tests {
     }
 
     #[test]
-    fn the_online_and_offline_filters_wait_for_the_online_state_face() {
-        let store = store();
+    fn the_online_and_offline_filters_sort_by_the_logon_records() {
+        let mut store = store();
         let defs = defs();
+        // alice is logged on, bob and carol are not.
+        store
+            .check_out(
+                &EntityKey {
+                    type_id: 3,
+                    db_id: 1,
+                },
+                BaseMailbox {
+                    addr: Address {
+                        ip: 1,
+                        port: 30000,
+                        salt: 7,
+                    },
+                    entity_id: 42,
+                },
+            )
+            .expect("alice checks out");
 
-        for filter in [LookUpEntitiesFilter::Online, LookUpEntitiesFilter::Offline] {
+        for (filter, want) in [
+            (LookUpEntitiesFilter::Online, vec![1]),
+            (LookUpEntitiesFilter::Offline, vec![2, 3]),
+            (LookUpEntitiesFilter::All, vec![1, 2, 3]),
+        ] {
             let criteria = LookUpEntitiesCriteria {
                 filter,
                 ..Default::default()
             };
-            let err =
-                lookup_entities(&store, &defs, 3, &criteria).expect_err("no online state yet");
-            assert!(matches!(err, DbError::Storage(ref msg) if msg.contains("online-state face")));
+            let found = lookup_entities(&store, &defs, 3, &criteria).expect("filtered scan");
+            assert_eq!(found.into_iter().map(|r| r.db_id).collect::<Vec<_>>(), want);
         }
     }
 
