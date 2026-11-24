@@ -10,12 +10,12 @@
 
 use db::{DbError, EntityKey, EntityRecord};
 use entitydef::value::PropertyValue;
-use postgres::Client;
 use postgres::error::SqlState;
 use postgres::types::ToSql;
+use postgres::Client;
 
 use crate::json;
-use crate::schema::{ColumnKind, EntitySchema, ID_COLUMN, column_name, quote_ident};
+use crate::schema::{column_name, quote_ident, ColumnKind, EntitySchema, ID_COLUMN};
 
 /// Maps a backend error to the storage contract. A unique-key violation is
 /// the contract's duplicate outcome (BW-09-06-03: the accounts table's
@@ -50,22 +50,16 @@ fn uint_to_bigint(value: u64) -> Result<i64, DbError> {
         .map_err(|_| DbError::Storage(format!("uint64 value {value} exceeds BIGINT")))
 }
 
-/// Validates a record against its schema before any SQL runs: the values
-/// must be the schema's columns in visit order, the DBID must be assigned,
-/// and every `Uint` must fit `BIGINT`.
-fn validate_put(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
+/// Validates a record's values against its schema before any SQL runs:
+/// the values must be the schema's columns in visit order and every `Uint`
+/// must fit `BIGINT`.
+fn validate_put_values(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
     if record.values.len() != schema.columns.len() {
         return Err(DbError::Storage(format!(
             "record for {} carries {} values but the schema lists {} columns",
             schema.type_name,
             record.values.len(),
             schema.columns.len()
-        )));
-    }
-    if record.db_id < 0 {
-        return Err(DbError::Storage(format!(
-            "record for {} still has a pending database id",
-            schema.type_name
         )));
     }
     for value in &record.values {
@@ -76,20 +70,27 @@ fn validate_put(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbEr
     Ok(())
 }
 
+/// `validate_put_values` plus the rule for a row that already has a
+/// DatabaseID: a pending one (the reference's `PENDING_DATABASE_ID`,
+/// `-1`) means the table has not handed the entity a DBID out yet.
+fn validate_put(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
+    validate_put_values(schema, record)?;
+    if record.db_id < 0 {
+        return Err(DbError::Storage(format!(
+            "record for {} still has a pending database id",
+            schema.type_name
+        )));
+    }
+    Ok(())
+}
+
 /// Builds the upsert statement for a schema: the id column first, then one
 /// placeholder per property column, nested columns cast to JSONB. The
 /// `ON CONFLICT ("id") DO UPDATE` clause is the reference `REPLACE INTO`.
 fn put_entity_sql(schema: &EntitySchema) -> String {
     let mut placeholders = vec!["$1".to_string()];
     for (index, (_, kind)) in schema.columns.iter().enumerate() {
-        let placeholder = format!("${}", index + 2);
-        placeholders.push(match kind {
-            // The param binds as text and casts server-side: an un-annotated
-            // CAST would type-infer the parameter itself as jsonb, which the
-            // text binding then cannot serialize.
-            ColumnKind::Nested => format!("CAST({placeholder}::text AS JSONB)"),
-            _ => placeholder,
-        });
+        placeholders.push(nested_placeholder(index + 2, kind));
     }
     let assignments = schema
         .columns
@@ -104,13 +105,45 @@ fn put_entity_sql(schema: &EntitySchema) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
+        "INSERT INTO {} ({}) OVERRIDING SYSTEM VALUE VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
         schema.quoted_table(),
         schema.quoted_columns().join(", "),
         placeholders.join(", "),
         quote_ident(ID_COLUMN),
         assignments
     )
+}
+
+/// The same write for an entity the table has not given a DBID to: the
+/// id column is left out so the identity column allocates one, and the
+/// statement reads it back. This is the reference's shape — the buffered
+/// task path turns a `PENDING_DATABASE_ID` into `0` before the insert, so
+/// the table's `AUTO_INCREMENT` key column is what supplies the value.
+fn put_new_entity_sql(schema: &EntitySchema) -> String {
+    let placeholders: Vec<String> = schema
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(index, (_, kind))| nested_placeholder(index + 1, kind))
+        .collect();
+    format!(
+        "INSERT INTO {} ({}) VALUES ({}) RETURNING {}",
+        schema.quoted_table(),
+        schema.quoted_property_columns().join(", "),
+        placeholders.join(", "),
+        quote_ident(ID_COLUMN)
+    )
+}
+
+/// One placeholder for a property column. Nested values bind as text and
+/// cast server-side: an un-annotated `CAST` would type-infer the parameter
+/// itself as `jsonb`, which the text binding then cannot serialize.
+fn nested_placeholder(number: usize, kind: &ColumnKind) -> String {
+    let placeholder = format!("${number}");
+    match kind {
+        ColumnKind::Nested => format!("CAST({placeholder}::text AS JSONB)"),
+        _ => placeholder,
+    }
 }
 
 /// A bound parameter (the id first, then one per column).
@@ -122,9 +155,18 @@ type PutParam = Box<dyn ToSql + Sync>;
 fn put_entity_params(
     schema: &EntitySchema,
     record: &EntityRecord,
+    include_db_id: bool,
 ) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
-    validate_put(schema, record)?;
-    let mut params: Vec<PutParam> = vec![Box::new(record.db_id)];
+    if include_db_id {
+        validate_put(schema, record)?;
+    } else {
+        validate_put_values(schema, record)?;
+    }
+    let mut params: Vec<PutParam> = if include_db_id {
+        vec![Box::new(record.db_id)]
+    } else {
+        Vec::new()
+    };
     let mut nested_texts: Vec<String> = Vec::new();
     for value in &record.values {
         match value {
@@ -254,13 +296,34 @@ impl PostgresStorage {
         record: &EntityRecord,
     ) -> Result<(), DbError> {
         let sql = put_entity_sql(schema);
-        let (params, nested_texts) = put_entity_params(schema, record)?;
+        let (params, nested_texts) = put_entity_params(schema, record, true)?;
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
         self.client
             .execute(sql.as_str(), &refs)
             .map_err(map_db_error)?;
         drop(nested_texts);
         Ok(())
+    }
+
+    /// Writes an entity the table has not given a DatabaseID to and
+    /// returns the DatabaseID the table allocated. This is the
+    /// reference's buffered-task path: a `PENDING_DATABASE_ID` becomes
+    /// `0` before the insert, so the key column's `AUTO_INCREMENT`
+    /// supplies the value — in PostgreSQL, the identity column.
+    pub fn put_new_entity(
+        &mut self,
+        schema: &EntitySchema,
+        record: &EntityRecord,
+    ) -> Result<i64, DbError> {
+        let sql = put_new_entity_sql(schema);
+        let (params, nested_texts) = put_entity_params(schema, record, false)?;
+        let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
+        let row = self
+            .client
+            .query_one(sql.as_str(), &refs)
+            .map_err(map_db_error)?;
+        drop(nested_texts);
+        Ok(row.get::<_, i64>(0))
     }
 
     /// Reads an entity row back: `Ok(None)` is the reference's "row
@@ -359,7 +422,7 @@ mod tests {
 
     #[test]
     fn put_params_bind_the_id_then_each_value() {
-        let (params, nested) = put_entity_params(&schema(), &record(41)).unwrap();
+        let (params, nested) = put_entity_params(&schema(), &record(41), true).unwrap();
         assert_eq!(params.len(), 4);
         assert!(nested.is_empty());
         // A schema with a nested column proves the nested-text leg.
@@ -368,7 +431,7 @@ mod tests {
         let mut nested_record = EntityRecord::new(0);
         nested_record.db_id = 2;
         nested_record.values = values.clone();
-        let (params, nested) = put_entity_params(&schema, &nested_record).unwrap();
+        let (params, nested) = put_entity_params(&schema, &nested_record, true).unwrap();
         assert_eq!(params.len(), 2);
         assert_eq!(nested, vec!["{\"d\":null}".to_string()]);
     }
@@ -395,5 +458,42 @@ mod tests {
         let schema = EntitySchema::for_record("Monster", &["extra"], &values).unwrap();
         let sql = get_entity_sql(&schema);
         assert!(sql.contains("(\"sm_extra\")::text"));
+    }
+
+    #[test]
+    fn an_explicit_dbid_overrides_the_identity_column() {
+        let sql = put_entity_sql(&schema());
+        assert!(sql.starts_with(concat!(
+            "INSERT INTO \"tbl_Account\" ",
+            "(\"id\", \"sm_name\", \"sm_level\", \"sm_secret\") OVERRIDING SYSTEM VALUE"
+        )));
+        assert!(sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
+    }
+
+    #[test]
+    fn a_new_entity_leaves_the_id_to_the_table_and_reads_it_back() {
+        assert_eq!(
+            put_new_entity_sql(&schema()),
+            concat!(
+                "INSERT INTO \"tbl_Account\" ",
+                "(\"sm_name\", \"sm_level\", \"sm_secret\") VALUES ($1, $2, $3) ",
+                "RETURNING \"id\""
+            )
+        );
+    }
+
+    #[test]
+    fn new_entity_params_skip_the_dbid_but_keep_the_values() {
+        // The pending dbid is exactly what makes the row a new one, so it
+        // must not be rejected on this path.
+        let (params, nested) = put_entity_params(&schema(), &record(-1), false).unwrap();
+        assert_eq!(params.len(), 3);
+        assert!(nested.is_empty());
+    }
+
+    #[test]
+    fn a_pending_dbid_is_rejected_for_an_explicit_write() {
+        let err = put_entity_params(&schema(), &record(-1), true).unwrap_err();
+        assert!(err.to_string().contains("pending database id"));
     }
 }

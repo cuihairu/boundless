@@ -147,15 +147,20 @@ impl EntitySchema {
         quote_ident(&entity_table_name(&self.type_name))
     }
 
-    /// The quoted names of all columns: the id column first, then one
-    /// `sm_<prop>` per persistent property, in visit order.
+    /// The quoted names of the persistent property columns, in visit
+    /// order: one `sm_<prop>` per property.
+    pub fn quoted_property_columns(&self) -> Vec<String> {
+        self.columns
+            .iter()
+            .map(|(prop, _)| quote_ident(&column_name(prop)))
+            .collect()
+    }
+
+    /// The quoted names of all columns: the id column first, then the
+    /// property columns, in visit order.
     pub fn quoted_columns(&self) -> Vec<String> {
         let mut names = vec![quote_ident(ID_COLUMN)];
-        names.extend(
-            self.columns
-                .iter()
-                .map(|(prop, _)| quote_ident(&column_name(prop))),
-        );
+        names.extend(self.quoted_property_columns());
         names
     }
 
@@ -164,8 +169,17 @@ impl EntitySchema {
     /// carries one value per property — an unset fixed dict is the value
     /// `None`, stored as JSON `null`, not a missing column), and the DBID
     /// as the primary key.
+    ///
+    /// The DBID column is the table's identity column — PostgreSQL's
+    /// spelling of the reference's `AUTO_INCREMENT` key column
+    /// (`addAutoIncrement` in `column_type.cpp`) — so the table hands out
+    /// a DatabaseID for every row that leaves the column out: nothing
+    /// repeats and nothing restarts.
     pub fn create_table_ddl(&self) -> String {
-        let mut columns = vec![format!("{} BIGINT NOT NULL", quote_ident(ID_COLUMN))];
+        let mut columns = vec![format!(
+            "{} BIGINT NOT NULL GENERATED ALWAYS AS IDENTITY",
+            quote_ident(ID_COLUMN)
+        )];
         columns.extend(self.columns.iter().map(|(prop, kind)| {
             format!(
                 "{} {} NOT NULL",
@@ -292,5 +306,23 @@ mod tests {
         assert!(ddl.contains("\"sm_name\" TEXT NOT NULL"));
         assert!(ddl.contains("\"sm_loot\" JSONB NOT NULL"));
         assert!(ddl.contains("PRIMARY KEY (\"id\")"));
+        // PostgreSQL's spelling of the reference's `AUTO_INCREMENT` key
+        // column: the table allocates the DBID for a row that leaves the
+        // column out.
+        assert!(ddl.contains("GENERATED ALWAYS AS IDENTITY"));
+    }
+
+    #[test]
+    fn quoted_property_columns_lists_only_the_properties() {
+        let values = vec![PropertyValue::Int(1), PropertyValue::String("a".into())];
+        let schema = EntitySchema::for_record("Account", &["level", "name"], &values).unwrap();
+        assert_eq!(
+            schema.quoted_property_columns(),
+            vec!["\"sm_level\"", "\"sm_name\""]
+        );
+        assert_eq!(
+            schema.quoted_columns(),
+            vec!["\"id\"", "\"sm_level\"", "\"sm_name\""]
+        );
     }
 }
