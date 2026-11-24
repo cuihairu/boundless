@@ -200,18 +200,18 @@
 
 建立二进制帧、Python 回调序列、资源产物、实体快照及数据库行的基准样本。支持原版全栈、新版全栈和替换单个组件三种模式。按兼容边界报告字段差异、超时及回调顺序差异。
 
-- [ ] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
-  （依赖运行时夹具未采集：原始字节需集群运行中抓包。已定位静态锚点，随 BW-02 立项解锁——`lib/network/exposed_message_range.{hpp,cpp}` + `lib/network/unit_test/test_exposed_message_range.cpp`：`ExposedMethodMessageRange(START_MSG_ID=10, END_MSG_ID=20)`，300 个 exposed ID 与 msgID/subMsgID 往返一致（`subMsgID != -1` 才向流写 `uint8`）；`lib/network/watcher_nub.hpp:64-74` Nub ID 16/17/18/20 + `WATCHER_MSG_EXTENSION_START=107`；`lib/network/unpacked_message_header.hpp` 仅 Mercury 内存投递结构（identifier/replyID/length/interface element），非线上字节布局。）
-- [ ] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
-  （依赖 python-host crate 与 python/ 模块未建，随 BW-03 立项解锁。原版锚点：`lib/pyscript/`、`common/py_{chunk,network,physics2}.cpp`；`TESTING.md` 记载嵌 Python 三模块 entitydef/pyscript/script 单测需先 `make python_install`。）
-- [ ] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
-  （依赖 storage crate 与 entitydef 模块未建，随 BW-04/BW-09 立项解锁。原版锚点：`lib/db_storage_{xml,mysql}/` + 扩展 `.so`（哈希已在清单）、`lib/entitydef*`、FantasyDemo 输入 `programming/fantasydemo/res/scripts/{entities.xml,db.xml,entity_defs/}`（108 文件树，BW-00-05-04 已登记）。）
-- [ ] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
-  （依赖 BW-00-02-03 单机集群基线未建（原版侧配置缺 `development_defaults.xml`），且 Boundless 侧角色 crate 未建（BW-05/06/07/08/09）。两侧证据都不具备，随上述任务族立项解锁。）
-- [ ] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
-  （依赖同 BW-00-04-04：需两侧可运行的集群加一份角色替换矩阵，原版侧拓扑配置未就绪。）
-- [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
-  （差异报告**骨架已在 BW-18-04 交付**：`run-tests -- diff <基线> <当前>` 四分类 `REGRESSED`/`HEALED`/`MISSING`/`ADDED`、exit 2 标记不兼容、同名重复按最差结果比；缺的只是 04-04 的两份运行证据作为输入，随其解锁。）
+- [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
+  - 证据（勾账指针，本日复测绿）：`crates/test-support/src/protocol_fixtures.rs` + `cases/protocol_fixtures.txt` 清册（commit 6c6d624/复测；test-support 262 行重复项载全证据）——消息 ID/方向/原始字节（登录载荷、login/probe/challengeResponse 接口面）；2026-11-24 `cargo test -p test-support` 593 passed 0 failed（protocol_fixtures 五测含 rescan 不漂移）。
+- [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
+  - 证据（勾账指针，本日复测绿）：`crates/test-support/src/python_callbacks.rs` + `cases/python_callbacks.txt` 清册（commit ae869c2；test-support 263 行重复项载全证据）——cell 生命周期回调顺序/参数/可忽略字段；2026-11-24 同轮 test-support 测试全绿（python_callbacks 序列钉测在列）。
+- [x] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
+  - 证据（勾账指针，本日复测绿）：`crates/test-support/src/asset_fixtures.rs` + `cases/asset_fixtures.txt` 清册（commit 0b785ce；test-support 264 行重复项载全证据）——fantasydemo 资源/实体/数据库输入树可追溯（rescan 不漂移 + 生成器复现）；2026-11-24 同轮 test-support 测试全绿（asset_fixtures 六测在列）。
+- [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
+  - 证据（勾账指针，本日复测绿）：`ci/fullstack-compare.sh` + `docs/review/bw00-04-04-fullstack-comparison.md`（commit c872783）——同一 fixture 输入喂原版 `process_defs` 与新版 `crates/entitydef`，双份证据逐字节 ref==new==oracle；2026-11-24 `bash ci/fullstack-compare.sh self-test` 三绿（`[ci] no failed lane`）。
+- [x] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
+  - 证据（勾账指针，本日复测绿）：`ci/fullstack-compare.sh` substitute 模式 + `docs/review/bw00-04-05-substitution-run.md`（commit 1b96efa）——entitydef-checker 单角色替换三树全 PASS、报告逐行注明 replaced role；2026-11-24 self-test 三绿含「替换记录点名 role 且错误替换被拒」。
+- [x] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+  - 证据（勾账指针，本日复测绿）：`ci/diff_report.py` + `ci/diff-report.sh` + `docs/review/bw00-04-06-difference-report.md`（commit bce3737）——injected/omitted/timeout/order/value 五类按 JSON 路径定位；2026-11-24 `bash ci/diff-report.sh self-test` 三绿（injected 字段路径/timeout 判定/order $.events 各自可定位）。
 - [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
 - [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
 - [x] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
