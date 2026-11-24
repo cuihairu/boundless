@@ -4,12 +4,11 @@ Load testing is driven by headless bot clients against a real server topology.
 The reference entry point is `server/tools/bots/`; its behavioural parity is
 BW-12-04 and its scenario work is BW-17.
 
-::: warning No bot runner exists in the working tree
-There is no `apps/bots/` and no bot runtime code anywhere in this repository — a
-search for the bot runner returns nothing but `todo.md`. The scenario input
-layer (`crates/load` + `tests/load/scenarios/`) is in place (BW-17-02-01); this
-page specifies the target so the scenario files can be written before the
-runner exists.
+::: warning No standalone runner yet
+The bot runtime lives in `crates/load` (fleet, movement controllers, watcher
+commands — BW-17-01) and the scenario input layer in `crates/load` +
+`tests/load/scenarios/` (BW-17-02-01), but there is no `apps/bots/` binary
+that drives them as a process against a live topology yet.
 :::
 
 ## Target layout
@@ -71,11 +70,16 @@ schedule or manually, with thresholds set from measured baselines.
 
 ## What you can run today
 
-Nothing in this section. The only reproducible load-related fact in the tree is
-the tick rate the server is configured for, which is what a load test ultimately
-stresses:
+The report envelope (BW-17-03-01) is delivered: a scenario run produces a
+deterministic JSON document through `load::ScenarioReport::record` +
+`to_json`, carrying the schema tag, the scenario name, the generator
+version (`load <pkg version>`), the topology the run targeted (`offline`
+until a live server joins), the fixed seed, and the run's recorded
+values. Login success and online counts aggregate on top of the same
+ledger face (BW-17-03-02 onward).
 
 ```bash
+cargo test -p load                # fleet, scenarios, ledgers, reports
 cargo test -p server-runtime      # tick, timers, task manager
 ```
 
