@@ -1386,7 +1386,8 @@
 
 复现建表和同步、dry-run、快照、传输、二级库合并、清理 auto-load 及移除辅助工具。比较命令行、退出码、输出和操作前后数据。
 
-- [ ] **BW-09-05-01 移植 sync_db**。**验收** 原版 schema 上的 DDL 差异可复核。
+- [x] **BW-09-05-01 移植 sync_db**。**验收** 原版 schema 上的 DDL 差异可复核。（commit ffb802d）
+  - 证据：`crates/db/src/tools/sync_db.rs` + `sync_db/tests.rs`（`docs/review/bw09-05-01-sync-db.md`）。逐字节复刻 `ColumnType::getAsString`/`operator==` 的 family 渲染与等价怪癖（`""`↔`"0"`、STRING↔按列长填 null-string、TIMESTAMP 恒等、`onUpdateCmd` 不比、blob 默认值不比）；`TableInspector::visitTable/deleteUnvisitedTables/classifyColumns` 与只报告的 `TableValidator`（`Need to %s index…` 双用词、`Need to remove table` 无制表符）；`TableInitialiser` 的 `Witholding` typo、id 占位 erase/drop 怪癖、先 removeIndex 再合并 ALTER、createIndex 失败逐字后重抛、removeIndex 吞异常、External→逐字 CRITICAL；`doSynchronise` 门序（引擎→`bigworld%`→checkTableEngines→未合并二级库→版本>9 拒→字符集 NOTICE→`ALTER DATABASE CHARACTER SET ?` 占位符原样→升级钩子→口令哈希迁移→dry-run 早退）与 12 条特殊表语句；`resolve_connection` 选项存在才覆盖 + 三条退出消息。可复核制品是语句日志：全新库与已有 schema 两路径断言逐字 `CREATE TABLE`/合并 `ALTER TABLE …, DROP COLUMN id`/`CREATE UNIQUE INDEX nameIndex ON tbl_Account (name(64))`/`DROP TABLE tbl_Old`/12 条特殊表/`CONVERT TO CHARACTER SET`。`cargo test -p db --lib` **208 passed**、`--workspace` **4455 passed**；`sync_db.rs` 行覆盖 **98.61%**（1005 DA/14 missed，余为 Default 桩与 panic 分支）；作用域内 fmt/clippy 全清。诚实登记：目录落在 `tools/` 命名空间（另两席扁平 `sync_db.rs`，合并择一）；期望表清单是入参，property-mapping 面与升级阶梯内容、dry-run 语句过滤分别归 05-02 等后项。
 - [ ] **BW-09-05-02 移植 dry-run**。**验收** 报告计划且数据库前后相同。
 - [ ] **BW-09-05-03 移植快照工具**。**验收** 原版读者可读取结果。
 - [ ] **BW-09-05-04 移植 transfer_db**。**验收** 目标数据和退出码吻合。
