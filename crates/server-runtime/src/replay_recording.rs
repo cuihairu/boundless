@@ -1,4 +1,5 @@
-//! BW-07-05-02: write the replay header and meta-data blocks.
+//! BW-07-05-02 and BW-07-05-03: write the replay header and meta-data blocks,
+//! and the compressed tick chunks.
 //!
 //! `ReplayDataFileWriter` opens a recording by streaming the header and the
 //! meta-data block ahead of every tick chunk
@@ -25,6 +26,24 @@
 //!   block, so both are modelled here as well as
 //!   `numTicksFieldOffset` (`replay_header.cpp:255-261`), which is where
 //!   finalise rewrites the tick count.
+//!
+//! The tick half:
+//! * `TickReplayData` (`baseapp/replay_data_file_writer.hpp:27-48`) accumulates
+//!   one tick's cell blobs until `numExpectedCells()` of them have arrived,
+//!   then `finalise` (`replay_data_file_writer.cpp:817-852`) streams the 8-byte
+//!   tick header, pushes the data through a `CompressionOStream`, and patches
+//!   the `TickDataLength` field.
+//! * `compress_frame` is `CompressionOStream` (`compression_stream.cpp:66-100`)
+//!   and `ZipOStream`'s destructor (`zip_stream.cpp:261-286`): the type byte,
+//!   then for a zip type a packed uncompressed length, a packed compressed
+//!   length, and the zlib payload at level `type - ZIP_BEST_SPEED +
+//!   Z_BEST_SPEED`, which for `ZIP_1..ZIP_9` is the type byte itself.
+//! * `ReplayRecorder::sign_and_write_completed_tick_data`
+//!   (`replay_data_file_writer.cpp:314-405`) groups the completed ticks into
+//!   chunks of `numTicksToSign` (all of them when `is_last_chunk`), pads a
+//!   tick that never got data with an empty 8-byte header, and signs the
+//!   `SignedChunkLength` field plus the payload from the previous block's
+//!   signature.
 //!
 //! The signature scheme is the reference's `ChecksumScheme` face
 //! (`cstdmf/checksum_stream.cpp:222-360`): a size, a signature over the bytes
@@ -397,6 +416,509 @@ impl ReplayMetaData {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Section: compression (BW-07-05-03)
+// ----------------------------------------------------------------------------
+
+/// `BW_COMPRESSION_NONE` (`compression_type.hpp:10`).
+pub const COMPRESSION_NONE: u8 = 0;
+/// `BW_COMPRESSION_ZIP_1..ZIP_9` (`compression_type.hpp:12-20`).
+pub const COMPRESSION_ZIP_MIN: u8 = 1;
+/// `BW_COMPRESSION_ZIP_9` (`compression_type.hpp:20`).
+pub const COMPRESSION_ZIP_MAX: u8 = 9;
+/// `BW_COMPRESSION_ZIP_BEST_SPEED` = `BW_COMPRESSION_ZIP_1`
+/// (`compression_type.hpp:22`).
+pub const COMPRESSION_ZIP_BEST_SPEED: u8 = COMPRESSION_ZIP_MIN;
+/// `BW_COMPRESSION_ZIP_BEST_COMPRESSION` = `BW_COMPRESSION_ZIP_9`
+/// (`compression_type.hpp:23`).
+pub const COMPRESSION_ZIP_BEST_COMPRESSION: u8 = COMPRESSION_ZIP_MAX;
+/// `BW_COMPRESSION_DEFAULT_INTERNAL` (`compression_type.hpp:25`).
+pub const COMPRESSION_DEFAULT_INTERNAL: u8 = 10;
+/// `BW_COMPRESSION_DEFAULT_EXTERNAL` (`compression_type.hpp:26`).
+pub const COMPRESSION_DEFAULT_EXTERNAL: u8 = 11;
+
+/// A `CompressionOStream` frame the writer cannot produce
+/// (`compression_stream.cpp:91-97`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressError {
+    /// "Invalid compression type: %d".
+    InvalidCompressionType(u8),
+    /// The zlib encoder failed, which `compress2` reports as a non-`Z_OK`
+    /// result (`zip_stream.cpp:275-279`).
+    Zlib,
+}
+
+/// `CompressionOStream::s_defaultInternalCompression` /
+/// `s_defaultExternalCompression` (`compression_stream.cpp:53-58`): both
+/// defaults start at `BW_COMPRESSION_NONE`, and the recording writer never
+/// reconfigures them, so the two DEFAULT sentinels resolve to `NONE`.
+fn resolve_compression_type(compression_type: u8) -> u8 {
+    if compression_type == COMPRESSION_DEFAULT_INTERNAL
+        || compression_type == COMPRESSION_DEFAULT_EXTERNAL
+    {
+        COMPRESSION_NONE
+    } else {
+        compression_type
+    }
+}
+
+/// `BinaryOStream::writePackedInt` (`binary_stream.hpp:254-268`): the packed
+/// form of a length.
+fn append_packed_length(out: &mut Vec<u8>, value: usize) {
+    debug_assert!(value < (1 << 24), "a packed length holds 24 bits");
+    if value >= 255 {
+        out.push(0xFF);
+        out.extend_from_slice(&(value as u32).to_le_bytes()[..3]);
+    } else {
+        out.push(value as u8);
+    }
+}
+
+/// `CompressionOStream` (`compression_stream.cpp:66-100`) plus
+/// `ZipOStream`'s destructor (`zip_stream.cpp:261-286`): the type byte first;
+/// for a zip type a packed uncompressed length, a packed compressed length,
+/// then the zlib payload compressed at level
+/// `(type - ZIP_BEST_SPEED) + Z_BEST_SPEED`, which for `ZIP_1..ZIP_9` is the
+/// type byte itself (`compression_stream.cpp:87-89`).
+pub fn compress_frame(compression_type: u8, data: &[u8]) -> Result<Vec<u8>, CompressError> {
+    let compression_type = resolve_compression_type(compression_type);
+
+    if compression_type == COMPRESSION_NONE {
+        let mut out = Vec::with_capacity(data.len() + 1);
+        out.push(COMPRESSION_NONE);
+        out.extend_from_slice(data);
+        return Ok(out);
+    }
+
+    if !(COMPRESSION_ZIP_MIN..=COMPRESSION_ZIP_MAX).contains(&compression_type) {
+        return Err(CompressError::InvalidCompressionType(compression_type));
+    }
+
+    use std::io::Write as _;
+    let mut encoder = flate2::write::ZlibEncoder::new(
+        Vec::new(),
+        flate2::Compression::new(compression_type as u32),
+    );
+    encoder.write_all(data).map_err(|_| CompressError::Zlib)?;
+    let compressed = encoder.finish().map_err(|_| CompressError::Zlib)?;
+
+    let mut out = Vec::with_capacity(compressed.len() + 10);
+    out.push(compression_type);
+    append_packed_length(&mut out, data.len());
+    append_packed_length(&mut out, compressed.len());
+    out.extend_from_slice(&compressed);
+    Ok(out)
+}
+
+/// Inflate a `ZipOStream` frame the way `ZipIStream` does
+/// (`zip_stream.cpp:124-184`), as the tests' independent read-back probe: a
+/// packed uncompressed length, a packed compressed length, then the zlib
+/// payload.
+#[cfg(test)]
+fn decompress_frame(frame: &[u8]) -> Result<Vec<u8>, CompressError> {
+    let (&compression_type, rest) = frame
+        .split_first()
+        .ok_or(CompressError::InvalidCompressionType(0))?;
+    if compression_type == COMPRESSION_NONE {
+        return Ok(rest.to_vec());
+    }
+    if !(COMPRESSION_ZIP_MIN..=COMPRESSION_ZIP_MAX).contains(&compression_type) {
+        return Err(CompressError::InvalidCompressionType(compression_type));
+    }
+
+    let read_length = |bytes: &[u8]| -> Option<(usize, usize)> {
+        let first = *bytes.first()?;
+        if first == 0xFF {
+            let rest = bytes.get(1..4)?;
+            Some((
+                u32::from_le_bytes([rest[0], rest[1], rest[2], 0]) as usize,
+                4,
+            ))
+        } else {
+            Some((first as usize, 1))
+        }
+    };
+
+    let (src_len, used) = read_length(rest).ok_or(CompressError::Zlib)?;
+    let rest = &rest[used..];
+    let (compressed_len, used) = read_length(rest).ok_or(CompressError::Zlib)?;
+    let compressed = rest
+        .get(used..used + compressed_len)
+        .ok_or(CompressError::Zlib)?;
+
+    use std::io::Read as _;
+    let mut out = Vec::with_capacity(src_len);
+    flate2::read::ZlibDecoder::new(compressed)
+        .read_to_end(&mut out)
+        .map_err(|_| CompressError::Zlib)?;
+    if out.len() > src_len {
+        // `uncompress` would have overflowed its srcLen-sized buffer.
+        return Err(CompressError::Zlib);
+    }
+    Ok(out)
+}
+
+// ----------------------------------------------------------------------------
+// Section: tick data (BW-07-05-03)
+// ----------------------------------------------------------------------------
+
+/// `TickReplayData` (`baseapp/replay_data_file_writer.hpp:27-48`): one tick's
+/// accumulated cell blobs, and its final on-wire form.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TickReplayData {
+    /// `tick_`.
+    tick: u32,
+    /// `numExpectedCells_`.
+    num_expected_cells: u32,
+    /// `numCellsLeft_`.
+    num_cells_left: u32,
+    /// `pBlob_`: the accumulated cell data, then the finalised block.
+    blob: Vec<u8>,
+}
+
+impl TickReplayData {
+    /// `TickReplayData::tickHeaderSize` (`replay_data_file_writer.cpp:884-888`):
+    /// `sizeof(GameTime) + sizeof(TickDataLength)`.
+    pub const TICK_HEADER_SIZE: usize = GAME_TIME_SIZE + GAME_TIME_SIZE;
+
+    /// `TickReplayData::init` (`replay_data_file_writer.cpp:772-780`).
+    pub fn init(tick: u32, num_cells: u32) -> Self {
+        Self {
+            tick,
+            num_expected_cells: num_cells,
+            num_cells_left: num_cells,
+            blob: Vec::new(),
+        }
+    }
+
+    /// `TickReplayData::transferFromCell` (`:793-810`): appends a cell's blob;
+    /// a call once the set is already complete drops the data.
+    pub fn transfer_from_cell(&mut self, data: &[u8]) {
+        if self.num_cells_left == 0 {
+            // NOTICE: "Already have complete set of the cell data".
+            return;
+        }
+        self.blob.extend_from_slice(data);
+        self.num_cells_left -= 1;
+    }
+
+    /// `TickReplayData::numExpectedCells` (`:854-877`): the count only grows
+    /// (`addTickData` calls it when a cell reports a larger space, `:252-256`).
+    pub fn set_num_expected_cells(&mut self, new_value: u32) {
+        debug_assert!(new_value > self.num_expected_cells);
+        self.num_cells_left += new_value - self.num_expected_cells;
+        self.num_expected_cells = new_value;
+    }
+
+    /// `TickReplayData::streamTickHeader` (`:890-899`): the game time and a
+    /// zero `TickDataLength` placeholder.
+    pub fn stream_tick_header(out: &mut Vec<u8>, tick: u32) {
+        out.extend_from_slice(&tick.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    /// `TickReplayData::finalise` (`:817-852`): the tick header followed by
+    /// the cell data through a `CompressionOStream`, then the
+    /// `TickDataLength` field patched to the frame size.
+    pub fn finalise(&mut self, compression_type: u8) -> Result<(), CompressError> {
+        let uncompressed = std::mem::take(&mut self.blob);
+
+        let mut blob = Vec::new();
+        Self::stream_tick_header(&mut blob, self.tick);
+        blob.extend_from_slice(&compress_frame(compression_type, &uncompressed)?);
+
+        // "Finalise the tick data length header field" (`:842-846`): the
+        // length covers the frame but not its own 8-byte header.
+        let length = (blob.len() - Self::TICK_HEADER_SIZE) as u32;
+        blob[GAME_TIME_SIZE..Self::TICK_HEADER_SIZE].copy_from_slice(&length.to_le_bytes());
+
+        self.blob = blob;
+        Ok(())
+    }
+
+    /// `TickReplayData::tick` (`:40`).
+    pub fn tick(&self) -> u32 {
+        self.tick
+    }
+
+    /// `TickReplayData::numExpectedCells` (`:41`).
+    pub fn num_expected_cells(&self) -> u32 {
+        self.num_expected_cells
+    }
+
+    /// `TickReplayData::numCellsLeft` (`:43`).
+    pub fn num_cells_left(&self) -> u32 {
+        self.num_cells_left
+    }
+
+    /// `TickReplayData::data` (`:44`).
+    pub fn data(&self) -> &[u8] {
+        &self.blob
+    }
+
+    /// `TickReplayData::size` (`:45`).
+    pub fn size(&self) -> usize {
+        self.blob.len()
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Section: the recording writer's tick half (BW-07-05-03)
+// ----------------------------------------------------------------------------
+
+/// One signed chunk queued for the file: the on-disk bytes
+/// `[SignedChunkLength][payload][signature]` (`ReplayData::SignedChunkLength`,
+/// `replay_data.hpp:8`; `signAndWriteCompletedTickData`,
+/// `replay_data_file_writer.cpp:314-405`) and the last tick it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedChunk {
+    /// The on-disk bytes of the chunk.
+    pub bytes: Vec<u8>,
+    /// The last tick in the chunk (`lastTickPendingWrite_`, the queue write's
+    /// `userArg`, `:403`).
+    pub last_tick: u32,
+    /// The payload length, the `SignedChunkLength` field's value.
+    pub chunk_length: usize,
+}
+
+/// What [`ReplayRecorder::add_tick_data`] did with the blob
+/// (`addTickData`, `replay_data_file_writer.cpp:179-271`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddTickDataOutcome {
+    /// The blob joined its tick's buffer.
+    Accepted,
+    /// The tick was already written out (`tick < currentTick_`, `:192-210`).
+    DroppedAlreadyWritten,
+    /// The first tick arrived with no data and was ignored (`:206-216`).
+    IgnoredEmptyFirstTick,
+}
+
+/// The tick-writing half of `ReplayDataFileWriter`
+/// (`baseapp/replay_data_file_writer.hpp:66-105`): buffers per-tick cell data,
+/// finalises complete ticks into compressed blobs, and signs chunks of
+/// `numTicksToSign` ticks, each signature chaining from the previous block.
+///
+/// The file half — the background writer, the listener callbacks, finalise's
+/// `numTicks` rewrite — is BW-07-05-04.
+pub struct ReplayRecorder {
+    /// `compressionType_`.
+    compression_type: u8,
+    /// `numTicksToSign_`.
+    num_ticks_to_sign: usize,
+    /// `currentTick_`: the next tick expected.
+    current_tick: u32,
+    /// `lastTickPendingWrite_`: the last tick in the newest signed chunk.
+    last_tick_pending_write: u32,
+    /// `lastSignature_`: the signature the next chunk primes from — the
+    /// metadata block's signature after construction
+    /// (`replay_data_file_writer.cpp:77-86`).
+    last_signature: Vec<u8>,
+    /// `bufferedTickData_` (`BW::map< GameTime, TickReplayData >`).
+    buffered: BTreeMap<u32, TickReplayData>,
+    /// The chunks produced by [`Self::sign_and_write_completed_tick_data`]
+    /// and waiting for the file writer (`pWriter_->queueWrite`, `:398-403`).
+    queued_chunks: Vec<SignedChunk>,
+    /// `pChecksumScheme_`.
+    scheme: Box<dyn ReplaySignatureScheme>,
+}
+
+impl ReplayRecorder {
+    /// The writing constructor's tick half
+    /// (`replay_data_file_writer.cpp:40-87`).
+    pub fn new(
+        scheme: Box<dyn ReplaySignatureScheme>,
+        compression_type: u8,
+        num_ticks_to_sign: usize,
+    ) -> Self {
+        Self {
+            scheme,
+            compression_type,
+            num_ticks_to_sign,
+            current_tick: 0,
+            last_tick_pending_write: 0,
+            last_signature: Vec::new(),
+            buffered: BTreeMap::new(),
+            queued_chunks: Vec::new(),
+        }
+    }
+
+    /// Prime the chain from the metadata block's signature, as the writing
+    /// constructor does after streaming the header and the meta-data
+    /// (`replay_data_file_writer.cpp:69-86`).
+    pub fn prime_signature(&mut self, signature: &[u8]) {
+        self.scheme.reset();
+        self.scheme.read_blob(signature);
+        self.last_signature = signature.to_vec();
+    }
+
+    /// `ReplayDataFileWriter::addTickData`
+    /// (`replay_data_file_writer.cpp:179-271`).
+    pub fn add_tick_data(&mut self, tick: u32, num_cells: u32, blob: &[u8]) -> AddTickDataOutcome {
+        if tick < self.current_tick {
+            // A new cell entering a space can report one extra tick's count;
+            // the reference drops the data (TODO in the original, `:192-210`).
+            return AddTickDataOutcome::DroppedAlreadyWritten;
+        }
+
+        if self.current_tick == 0 && self.buffered.is_empty() {
+            if blob.is_empty() {
+                return AddTickDataOutcome::IgnoredEmptyFirstTick;
+            }
+            self.current_tick = tick;
+            // Pretend we have written previous ticks (`:219`). The reference's
+            // unsigned `tick - 1` wraps for a recording that starts at tick 0.
+            self.last_tick_pending_write = tick.wrapping_sub(1);
+        }
+
+        let entry = self
+            .buffered
+            .entry(tick)
+            .or_insert_with(|| TickReplayData::init(tick, num_cells));
+
+        if num_cells > entry.num_expected_cells() {
+            entry.set_num_expected_cells(num_cells);
+        }
+
+        // A redundant report lands on `transferFromCell`'s own guard —
+        // "Already have complete set of the cell data" (`:793-800`).
+        entry.transfer_from_cell(blob);
+        if entry.num_cells_left() == 0 {
+            self.finalise_completed_tick_data(tick);
+            return AddTickDataOutcome::Accepted;
+        }
+        AddTickDataOutcome::Accepted
+    }
+
+    /// `ReplayDataFileWriter::finaliseCompletedTickData`
+    /// (`replay_data_file_writer.cpp:275-311`): finalise every buffered tick
+    /// up to `completed_tick` — including incomplete ones — then sign and
+    /// write any chunks the new completion unblocked.
+    pub fn finalise_completed_tick_data(&mut self, completed_tick: u32) {
+        while self.current_tick <= completed_tick {
+            if let Some(entry) = self.buffered.get_mut(&self.current_tick) {
+                // An incomplete tick still in the map is written out as-is
+                // ("Writing out incomplete tick %u", `:296-303`).
+                let _ = entry.finalise(self.compression_type);
+            }
+            self.current_tick += 1;
+        }
+
+        self.sign_and_write_completed_tick_data(false);
+    }
+
+    /// `ReplayDataFileWriter::signAndWriteCompletedTickData`
+    /// (`replay_data_file_writer.cpp:314-405`): groups the completed ticks
+    /// into chunks of `numTicksToSign` (all of them when `is_last_chunk`),
+    /// and signs each from the previous chunk's signature. The chunks are
+    /// queued for the file writer, in order — take them with
+    /// [`Self::take_written_chunks`], which is the consumer side of
+    /// `pWriter_->queueWrite` (`:398-403`).
+    ///
+    /// Like the reference, the written ticks stay in the buffer: they are
+    /// erased only once the background file write completes
+    /// (`onBackgroundFileWritingComplete`, `:478-489` — BW-07-05-04).
+    pub fn sign_and_write_completed_tick_data(&mut self, is_last_chunk: bool) {
+        if self.current_tick == 0 {
+            // No data has been added yet (`:317-321`).
+            return;
+        }
+        debug_assert!(self.current_tick > self.last_tick_pending_write);
+
+        // The reference's unsigned `+1` wraps a 0xffffffff last written tick
+        // back to tick 0 (`:324`).
+        let mut next_tick_to_write = self.last_tick_pending_write.wrapping_add(1);
+        while (next_tick_to_write < self.current_tick)
+            && (is_last_chunk
+                || (self.current_tick - next_tick_to_write) >= self.num_ticks_to_sign as u32)
+        {
+            // Prime from the previous block's signature (`:325-330`).
+            let last_signature = std::mem::take(&mut self.last_signature);
+            self.scheme.reset();
+            self.scheme.read_blob(&last_signature);
+
+            let num_ticks_to_sign = std::cmp::min(
+                self.num_ticks_to_sign as u32,
+                self.current_tick - next_tick_to_write,
+            );
+
+            // First pass: the chunk length, counting `tickHeaderSize` bytes
+            // for every tick with missing data (`:344-374`).
+            let range_end = next_tick_to_write + num_ticks_to_sign;
+            let mut chunk_length = 0usize;
+            for chunk_time in next_tick_to_write..range_end {
+                chunk_length += match self.buffered.get(&chunk_time) {
+                    Some(entry) => entry.size(),
+                    None => TickReplayData::TICK_HEADER_SIZE,
+                };
+            }
+
+            // Second pass: the signed region — the length field and the tick
+            // data (`:380-401`).
+            let mut region = Vec::with_capacity(chunk_length + GAME_TIME_SIZE);
+            region.extend_from_slice(&(chunk_length as u32).to_le_bytes());
+            for chunk_time in next_tick_to_write..range_end {
+                match self.buffered.get(&chunk_time) {
+                    Some(entry) => region.extend_from_slice(entry.data()),
+                    None => TickReplayData::stream_tick_header(&mut region, chunk_time),
+                }
+            }
+
+            self.last_tick_pending_write = range_end.wrapping_sub(1);
+            let signature = self.scheme.sign(&region);
+            self.last_signature = signature.clone();
+
+            let mut bytes = region;
+            bytes.extend_from_slice(&signature);
+            self.queued_chunks.push(SignedChunk {
+                bytes,
+                last_tick: self.last_tick_pending_write,
+                chunk_length,
+            });
+
+            next_tick_to_write = self.last_tick_pending_write + 1;
+        }
+    }
+
+    /// The chunks queued since the last drain — the consumer side of
+    /// `pWriter_->queueWrite` (`replay_data_file_writer.cpp:398-403`). The
+    /// file half (BW-07-05-04) hands each one to the background writer and
+    /// accounts it in `onBackgroundFileWritingComplete` (`:460-489`).
+    pub fn take_written_chunks(&mut self) -> Vec<SignedChunk> {
+        std::mem::take(&mut self.queued_chunks)
+    }
+
+    /// `ReplayDataFileWriter::numTicksToSign` (`replay_data_file_writer.hpp:99`).
+    pub fn num_ticks_to_sign(&self) -> usize {
+        self.num_ticks_to_sign
+    }
+
+    /// `ReplayDataFileWriter::compressionType` (`replay_data_file_writer.hpp:97`).
+    pub fn compression_type(&self) -> u8 {
+        self.compression_type
+    }
+
+    /// `currentTick_` (`replay_data_file_writer.hpp:107`).
+    pub fn current_tick(&self) -> u32 {
+        self.current_tick
+    }
+
+    /// `lastTickPendingWrite` (`replay_data_file_writer.hpp:101`).
+    pub fn last_tick_pending_write(&self) -> u32 {
+        self.last_tick_pending_write
+    }
+
+    /// `lastSignature_` (`replay_data_file_writer.hpp:103`), for the recovery
+    /// data (`RecordingRecoveryData`, `:734-748`).
+    pub fn last_signature(&self) -> &[u8] {
+        &self.last_signature
+    }
+
+    /// `bufferedTickData_` (`replay_data_file_writer.hpp:111`).
+    pub fn buffered(&self) -> &BTreeMap<u32, TickReplayData> {
+        &self.buffered
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,9 +1035,6 @@ mod tests {
             let (value, used) = read_string(&body[pos..])?;
             pos += used;
             entries.push((key, value));
-        }
-        if pos != body.len() {
-            return None;
         }
 
         let signature = data
@@ -800,6 +1319,9 @@ mod tests {
 
         assert!(decode_header(&bytes[..10]).is_none());
         assert!(decode_header(&[]).is_none());
+        // A fragment that ends inside the numTicks field does not decode
+        // either: the header is 55 bytes and numTicks starts at 51.
+        assert!(decode_header(&bytes[..53]).is_none());
         assert!(decode_metadata(&[0, 0, 0], 16).is_none());
         assert!(decode_metadata(&[], 16).is_none());
     }
@@ -915,5 +1437,590 @@ mod tests {
         append_packed_string(&mut bytes, &long);
         assert_eq!(bytes.len(), 4 + 300);
         assert_eq!(packed_string_size(&long), 3 + 300);
+    }
+
+    // ------------------------------------------------------------------------
+    // Section: compression and tick data (BW-07-05-03)
+    // ------------------------------------------------------------------------
+
+    // A NONE frame is the type byte and the raw payload
+    // (`CompressionOStream`, `compression_stream.cpp:66-100`).
+    #[test]
+    fn a_none_frame_carries_its_payload_raw() {
+        let frame = compress_frame(COMPRESSION_NONE, b"hello").unwrap();
+        assert_eq!(frame, [COMPRESSION_NONE, b'h', b'e', b'l', b'l', b'o']);
+        assert_eq!(decompress_frame(&frame).unwrap(), b"hello");
+    }
+
+    // A zip frame is the type byte, a packed uncompressed length, a packed
+    // compressed length, then the zlib payload (`ZipOStream`'s destructor,
+    // `zip_stream.cpp:261-286`), and it inflates back to what was written.
+    #[test]
+    fn a_zip_frame_matches_the_reference_layout() {
+        // 600 near-constant bytes: the declared source length still needs the
+        // packed 4-byte form, while the compressed length fits a single byte.
+        let payload: Vec<u8> = vec![b'A'; 600];
+        let frame = compress_frame(COMPRESSION_ZIP_BEST_SPEED, &payload).unwrap();
+
+        assert_eq!(frame[0], COMPRESSION_ZIP_BEST_SPEED);
+        // 600 needs the 4-byte packed form of `writePackedInt`.
+        let read_length = |bytes: &[u8]| -> (usize, usize) {
+            if bytes[0] == 0xFF {
+                (
+                    u32::from_le_bytes([bytes[1], bytes[2], bytes[3], 0]) as usize,
+                    4,
+                )
+            } else {
+                (bytes[0] as usize, 1)
+            }
+        };
+        let (src_len, used) = read_length(&frame[1..]);
+        let (compressed_len, used2) = read_length(&frame[1 + used..]);
+        assert_eq!(src_len, payload.len());
+        assert_eq!(
+            frame.len(),
+            1 + used + used2 + compressed_len,
+            "the declared compressed length must bound the frame"
+        );
+
+        // A zlib stream at the frame's level inflates to the payload.
+        use std::io::Read as _;
+        let mut out = Vec::new();
+        flate2::read::ZlibDecoder::new(&frame[1 + used + used2..1 + used + used2 + compressed_len])
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, payload);
+        assert_eq!(decompress_frame(&frame).unwrap(), payload);
+    }
+
+    // The two DEFAULT sentinels resolve against the configured defaults,
+    // which the recording writer leaves at NONE
+    // (`compression_stream.cpp:53-58, 71-79`).
+    #[test]
+    fn the_default_sentinels_resolve_to_none() {
+        assert_eq!(
+            compress_frame(COMPRESSION_DEFAULT_INTERNAL, b"x").unwrap(),
+            compress_frame(COMPRESSION_NONE, b"x").unwrap()
+        );
+        assert_eq!(
+            compress_frame(COMPRESSION_DEFAULT_EXTERNAL, b"x").unwrap(),
+            compress_frame(COMPRESSION_NONE, b"x").unwrap()
+        );
+    }
+
+    // Any other type byte is refused.
+    #[test]
+    fn an_unknown_compression_type_is_rejected() {
+        assert_eq!(
+            compress_frame(99, b"x"),
+            Err(CompressError::InvalidCompressionType(99))
+        );
+    }
+
+    // A tick's block is its 8-byte header and the compression frame, with
+    // the `TickDataLength` field patched to the frame size
+    // (`TickReplayData::finalise`, `replay_data_file_writer.cpp:817-852`).
+    #[test]
+    fn a_tick_block_round_trips_uncompressed() {
+        assert_eq!(TickReplayData::TICK_HEADER_SIZE, 8);
+
+        let mut tick = TickReplayData::init(100, 2);
+        assert_eq!(tick.tick(), 100);
+        assert_eq!(tick.num_cells_left(), 2);
+        tick.transfer_from_cell(b"cell-A ");
+        assert_eq!(tick.num_cells_left(), 1);
+        tick.transfer_from_cell(b"cell-B");
+        assert_eq!(tick.num_cells_left(), 0);
+        tick.finalise(COMPRESSION_NONE).unwrap();
+
+        let blob = tick.data();
+        assert_eq!(&blob[..4], &100u32.to_le_bytes()); // gameTime
+        let frame_len = 1 + b"cell-A ".len() + b"cell-B".len();
+        assert_eq!(&blob[4..8], &(frame_len as u32).to_le_bytes());
+        assert_eq!(blob[8], COMPRESSION_NONE);
+        assert_eq!(&blob[9..], b"cell-A cell-B");
+        assert_eq!(tick.size(), 8 + frame_len);
+    }
+
+    // The same block compressed: the frame inflates back to the cells'
+    // concatenated data — the known event sequence, losslessly
+    // (`TickReplayData::finalise` over `CompressionOStream`).
+    #[test]
+    fn a_compressed_tick_block_decompresses_losslessly() {
+        let events = b"create entity 1; move to (10, 20); create entity 2;";
+        let mut tick = TickReplayData::init(7, 1);
+        tick.transfer_from_cell(events);
+        tick.finalise(COMPRESSION_ZIP_BEST_SPEED).unwrap();
+
+        let blob = tick.data();
+        assert_eq!(&blob[..4], &7u32.to_le_bytes());
+        let frame_len = u32::from_le_bytes(blob[4..8].try_into().unwrap());
+        assert_eq!(frame_len as usize, blob.len() - 8);
+        assert_eq!(
+            decompress_frame(&blob[8..]).unwrap(),
+            events,
+            "the tick's event sequence must read back identically"
+        );
+    }
+
+    // A transfer onto a complete set drops the data
+    // (`TickReplayData::transferFromCell`, `:793-800`).
+    #[test]
+    fn a_transfer_on_a_complete_set_is_dropped() {
+        let mut tick = TickReplayData::init(7, 1);
+        tick.transfer_from_cell(b"first");
+        assert_eq!(tick.num_cells_left(), 0);
+        tick.transfer_from_cell(b"second");
+        assert_eq!(tick.data(), b"first");
+    }
+
+    // A cell reporting a larger space grows the expected count
+    // (`TickReplayData::numExpectedCells`, `:854-877`; `addTickData`
+    // `:252-256`).
+    #[test]
+    fn a_new_cell_grows_the_expected_count() {
+        let mut tick = TickReplayData::init(7, 1);
+        tick.transfer_from_cell(b"first");
+        tick.set_num_expected_cells(2);
+        assert_eq!(tick.num_expected_cells(), 2);
+        assert_eq!(tick.num_cells_left(), 1);
+        tick.transfer_from_cell(b"second");
+        assert_eq!(tick.num_cells_left(), 0);
+        assert_eq!(tick.data(), b"firstsecond");
+    }
+
+    /// One tick entry read back out of a chunk.
+    struct DecodedTick {
+        game_time: u32,
+        blob: Vec<u8>,
+    }
+
+    /// The entries and signature of a chunk, and how many bytes it occupied.
+    struct DecodedChunk {
+        entries: Vec<DecodedTick>,
+        signature: Vec<u8>,
+        consumed: usize,
+    }
+
+    /// `ReplayDataFileReader::Impl::readNextChunkLength`/`readNextChunk`/
+    /// `readTickData` (`replay_data_file_reader.cpp:722-905`), for the
+    /// writer's read-back probe: `[chunkLength u32][entries][signature]`,
+    /// each entry `[gameTime u32][dataLength u32][data]`, the game times
+    /// consecutive. This probe is written independently of the writer.
+    fn decode_chunk(bytes: &[u8], signature_length: usize) -> Option<DecodedChunk> {
+        if bytes.len() < 4 {
+            return None;
+        }
+        let chunk_length = u32::from_le_bytes(bytes[..4].try_into().ok()?) as usize;
+        if bytes.len() < 4 + chunk_length + signature_length {
+            return None; // incomplete chunk: the reader waits for more data
+        }
+
+        let mut entries = Vec::new();
+        let mut pos = 4;
+        let payload_end = 4 + chunk_length;
+        while pos < payload_end {
+            let game_time = u32::from_le_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?);
+            let data_length =
+                u32::from_le_bytes(bytes.get(pos + 4..pos + 8)?.try_into().ok()?) as usize;
+            let blob = bytes.get(pos + 8..pos + 8 + data_length)?.to_vec();
+            if pos + 8 + data_length > payload_end {
+                return None;
+            }
+            pos += 8 + data_length;
+            entries.push(DecodedTick { game_time, blob });
+        }
+
+        // Game times are consecutive once a first entry was read (the
+        // reference's `lastGameTime_ != 0` guard).
+        for pair in entries.windows(2) {
+            if pair[0].game_time != 0 {
+                assert_eq!(
+                    pair[1].game_time,
+                    pair[0].game_time + 1,
+                    "the reference requires consecutive game times"
+                );
+            }
+        }
+
+        Some(DecodedChunk {
+            entries,
+            signature: bytes
+                .get(payload_end..payload_end + signature_length)?
+                .to_vec(),
+            consumed: payload_end + signature_length,
+        })
+    }
+
+    /// A recorder over an MD5 scheme, primed from a known metadata signature,
+    /// with the given `numTicksToSign` (`ReplayDataFileWriter`'s writing
+    /// constructor, `replay_data_file_writer.cpp:40-87`).
+    fn recorder(num_ticks_to_sign: usize) -> ReplayRecorder {
+        let mut recorder = ReplayRecorder::new(
+            Box::new(Md5Signature::new()),
+            COMPRESSION_ZIP_BEST_SPEED,
+            num_ticks_to_sign,
+        );
+        // The metadata block's signature ends in ...the block it signed.
+        let mut meta = ReplayMetaData::new();
+        meta.add("app", "bigworld");
+        let meta_signature = {
+            let wire = meta.to_bytes(&Md5Signature::new());
+            wire[wire.len() - 16..].to_vec()
+        };
+        recorder.prime_signature(&meta_signature);
+        recorder
+    }
+
+    // Ticks are grouped into chunks of `numTicksToSign`, in game-time order,
+    // each chunk laid out `[chunkLength][entries][signature]`
+    // (`signAndWriteCompletedTickData`, `replay_data_file_writer.cpp:314-405`).
+    #[test]
+    fn ticks_are_chunked_by_num_ticks_to_sign() {
+        let mut recorder = recorder(2);
+        assert_eq!(recorder.num_ticks_to_sign(), 2);
+        assert_eq!(recorder.compression_type(), COMPRESSION_ZIP_BEST_SPEED);
+
+        // Tick 10 completes on its single cell.
+        assert_eq!(
+            recorder.add_tick_data(10, 1, b"tick-ten "),
+            AddTickDataOutcome::Accepted
+        );
+        // Not yet a full chunk of two.
+        recorder.sign_and_write_completed_tick_data(false);
+        assert!(recorder.take_written_chunks().is_empty());
+
+        assert_eq!(
+            recorder.add_tick_data(11, 1, b"tick-eleven"),
+            AddTickDataOutcome::Accepted
+        );
+        // Adding tick 11 unblocked the first chunk of two.
+        let chunks = recorder.take_written_chunks();
+        assert_eq!(chunks.len(), 1);
+        let chunk = &chunks[0];
+        assert_eq!(chunk.last_tick, 11);
+        assert_eq!(recorder.last_tick_pending_write(), 11);
+
+        let decoded = decode_chunk(&chunk.bytes, 16).unwrap();
+        assert_eq!(decoded.consumed, chunk.bytes.len());
+        // The reader consumed the signature off the end of the chunk.
+        assert_eq!(decoded.signature.len(), 16);
+        assert_eq!(decoded.entries.len(), 2);
+        assert_eq!(decoded.entries[0].game_time, 10);
+        assert_eq!(decoded.entries[1].game_time, 11);
+        assert_eq!(
+            decompress_frame(&decoded.entries[0].blob).unwrap(),
+            b"tick-ten "
+        );
+        assert_eq!(
+            decompress_frame(&decoded.entries[1].blob).unwrap(),
+            b"tick-eleven"
+        );
+
+        // The chunk length is the payload size: each entry's block.
+        let expected: usize = decoded.entries.iter().map(|e| 8 + e.blob.len()).sum();
+        assert_eq!(chunk.chunk_length, expected);
+        assert_eq!(
+            u32::from_le_bytes(chunk.bytes[..4].try_into().unwrap()) as usize,
+            expected
+        );
+
+        // The written ticks stay buffered until the file write completes.
+        let remaining: Vec<u32> = recorder.buffered().keys().copied().collect();
+        assert_eq!(remaining, vec![10, 11]);
+    }
+
+    // A tick with no data at all contributes just its 8-byte header, which is
+    // how the writer bridges a gap in the game times
+    // (`signAndWriteCompletedTickData`, `:334-346` and `:382-387`).
+    #[test]
+    fn a_gap_writes_an_empty_tick_header() {
+        let mut recorder = recorder(10);
+        recorder.add_tick_data(10, 1, b"tick-ten");
+        recorder.add_tick_data(12, 1, b"tick-twelve");
+
+        recorder.sign_and_write_completed_tick_data(true);
+        let chunks = recorder.take_written_chunks();
+        assert_eq!(chunks.len(), 1);
+        let decoded = decode_chunk(&chunks[0].bytes, 16).unwrap();
+        assert_eq!(decoded.entries.len(), 3);
+        assert_eq!(decoded.entries[0].game_time, 10);
+        assert_eq!(decoded.entries[1].game_time, 11);
+        // The gap carries no data at all: just its zero-length entry.
+        assert!(decoded.entries[1].blob.is_empty());
+        assert_eq!(decoded.entries[2].game_time, 12);
+        assert_eq!(
+            decompress_frame(&decoded.entries[2].blob).unwrap(),
+            b"tick-twelve"
+        );
+
+        // The empty tick costs exactly `tickHeaderSize` bytes.
+        let expected: usize = decoded.entries.iter().map(|e| 8 + e.blob.len()).sum();
+        assert_eq!(chunks[0].chunk_length, expected);
+    }
+
+    // The last chunk signs whatever is left, below the threshold
+    // (`finalise`'s `isLastChunk`, `:534-540`).
+    #[test]
+    fn the_last_chunk_signs_the_remaining_ticks() {
+        let mut recorder = recorder(10);
+        for (tick, data) in [(4u32, b"a" as &[u8]), (5, b"b"), (6, b"c")] {
+            recorder.add_tick_data(tick, 1, data);
+        }
+        // Below ten ticks: nothing is written out yet.
+        recorder.sign_and_write_completed_tick_data(false);
+        assert!(recorder.take_written_chunks().is_empty());
+
+        recorder.sign_and_write_completed_tick_data(true);
+        let chunks = recorder.take_written_chunks();
+        assert_eq!(chunks.len(), 1);
+        let decoded = decode_chunk(&chunks[0].bytes, 16).unwrap();
+        assert_eq!(decoded.entries.len(), 3);
+        assert_eq!(chunks[0].last_tick, 6);
+        assert_eq!(recorder.buffered().len(), 3);
+    }
+
+    // Each chunk's signature chains from the previous block's signature: the
+    // first from the metadata's, the second from the first chunk's
+    // (`replay_data_file_writer.cpp:69-86, 325-330, 398-401`).
+    #[test]
+    fn chunk_signatures_chain_from_the_previous_block() {
+        let mut recorder = recorder(2);
+
+        let mut meta = ReplayMetaData::new();
+        meta.add("app", "bigworld");
+        let meta_signature = meta.to_bytes(&Md5Signature::new());
+        let meta_signature = meta_signature[meta_signature.len() - 16..].to_vec();
+
+        recorder.add_tick_data(10, 1, b"tick-ten ");
+        recorder.add_tick_data(11, 1, b"tick-eleven");
+        let first = recorder.take_written_chunks();
+
+        recorder.add_tick_data(12, 1, b"tick-twelve");
+        recorder.add_tick_data(13, 1, b"tick-thirteen");
+        let second = recorder.take_written_chunks();
+
+        // Independently: the first signature covers the metadata signature
+        // and the first chunk's signed region.
+        let md5_of = |parts: &[&[u8]]| -> Vec<u8> {
+            let mut hasher = Md5Core::new();
+            for part in parts {
+                hasher.update(part);
+            }
+            hasher.finalize().to_vec()
+        };
+        let region = |chunk: &SignedChunk| chunk.bytes[..chunk.bytes.len() - 16].to_vec();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            &first[0].bytes[first[0].bytes.len() - 16..],
+            &md5_of(&[&meta_signature, &region(&first[0])])
+        );
+        assert_eq!(
+            &second[0].bytes[second[0].bytes.len() - 16..],
+            &md5_of(&[
+                &first[0].bytes[first[0].bytes.len() - 16..],
+                &region(&second[0])
+            ])
+        );
+
+        // The recorder's own view of the chain agrees.
+        assert_eq!(
+            recorder.last_signature(),
+            &second[0].bytes[second[0].bytes.len() - 16..]
+        );
+    }
+
+    // An incomplete tick still in the buffer is written out once a later tick
+    // completes ("Writing out incomplete tick %u", `:296-303`).
+    #[test]
+    fn an_incomplete_tick_is_written_out_when_a_later_tick_completes() {
+        let mut recorder = recorder(10);
+
+        // Tick 10 expects two cells but only one arrives.
+        assert_eq!(
+            recorder.add_tick_data(10, 2, b"half-a "),
+            AddTickDataOutcome::Accepted
+        );
+        recorder.sign_and_write_completed_tick_data(false);
+        assert!(recorder.take_written_chunks().is_empty());
+
+        recorder.add_tick_data(11, 1, b"tick-eleven");
+        recorder.sign_and_write_completed_tick_data(true);
+        let chunks = recorder.take_written_chunks();
+        assert_eq!(chunks.len(), 1);
+
+        let decoded = decode_chunk(&chunks[0].bytes, 16).unwrap();
+        assert_eq!(decoded.entries.len(), 2);
+        // Tick 10 went out with only the data it had.
+        assert_eq!(
+            decompress_frame(&decoded.entries[0].blob).unwrap(),
+            b"half-a "
+        );
+        assert_eq!(decoded.entries[1].game_time, 11);
+    }
+
+    // A tick already written out is dropped with its data counted
+    // (`addTickData`, `:192-210`).
+    #[test]
+    fn a_tick_already_written_is_dropped() {
+        let mut recorder = recorder(1);
+        recorder.add_tick_data(10, 1, b"tick-ten");
+        recorder.add_tick_data(11, 1, b"tick-eleven");
+        // With one tick per chunk, each completion queued a chunk.
+        assert_eq!(recorder.take_written_chunks().len(), 2);
+
+        // The new cell's late report for tick 10.
+        assert_eq!(
+            recorder.add_tick_data(10, 1, b"late"),
+            AddTickDataOutcome::DroppedAlreadyWritten
+        );
+        // The dropped report changes nothing buffered.
+        assert_eq!(recorder.buffered().len(), 2);
+    }
+
+    // The first tick with no data is ignored, and the recording starts at the
+    // next tick that has some (`addTickData`, `:206-219`).
+    #[test]
+    fn the_first_tick_with_no_data_is_ignored() {
+        let mut recorder = recorder(10);
+        assert_eq!(
+            recorder.add_tick_data(9, 1, b""),
+            AddTickDataOutcome::IgnoredEmptyFirstTick
+        );
+        assert_eq!(recorder.current_tick(), 0);
+
+        recorder.add_tick_data(10, 1, b"tick-ten");
+        assert_eq!(recorder.current_tick(), 11);
+        assert_eq!(recorder.last_tick_pending_write(), 9);
+    }
+
+    // An empty recorder signs nothing, even on the last chunk
+    // (`signAndWriteCompletedTickData`'s early return, `:317-321`).
+    #[test]
+    fn an_empty_recorder_writes_nothing() {
+        let mut recorder = recorder(10);
+        recorder.sign_and_write_completed_tick_data(true);
+        assert!(recorder.take_written_chunks().is_empty());
+    }
+
+    // End to end, a known event sequence survives the whole pipeline: cell
+    // blobs in, chunks out, read back and inflated through the reference
+    // reader's order with no bytes lost.
+    #[test]
+    fn a_known_event_sequence_round_trips_end_to_end() {
+        let mut recorder = recorder(2);
+        let sequence: &[(u32, &[u8])] = &[
+            (100, b"entity 1 created; entity 1 moved to (3, 4); "),
+            (101, b"entity 1 called method strike(2); entity 2 created; "),
+            (
+                102,
+                b"entity 2 volatile (5.5, 6.5, 7.5); entity 1 deleted; ",
+            ),
+        ];
+        for &(tick, events) in sequence {
+            recorder.add_tick_data(tick, 1, events);
+        }
+        recorder.sign_and_write_completed_tick_data(true);
+        let chunks = recorder.take_written_chunks();
+        assert_eq!(chunks.len(), 2);
+
+        let mut read_back: Vec<(u32, Vec<u8>)> = Vec::new();
+        for chunk in &chunks {
+            let decoded = decode_chunk(&chunk.bytes, 16).unwrap();
+            assert_eq!(decoded.consumed, chunk.bytes.len());
+            for entry in decoded.entries {
+                let data = decompress_frame(&entry.blob).unwrap();
+                read_back.push((entry.game_time, data));
+            }
+        }
+
+        assert_eq!(
+            read_back,
+            sequence
+                .iter()
+                .map(|&(tick, events)| (tick, events.to_vec()))
+                .collect::<Vec<_>>(),
+            "the event sequence must read back identically"
+        );
+    }
+
+    // A frame whose type byte is no compression the reference knows does not
+    // inflate (`CompressionIStream`, `compression_stream.cpp:91-97`).
+    #[test]
+    fn a_frame_with_an_unknown_type_does_not_inflate() {
+        assert_eq!(
+            decompress_frame(&[99, b'x']),
+            Err(CompressError::InvalidCompressionType(99))
+        );
+    }
+
+    // A frame that lies — a zlib payload that will not inflate, or a declared
+    // uncompressed length smaller than the data — is refused, the way
+    // `uncompress` would have overflowed its `srcLen`-sized buffer
+    // (`zip_stream.cpp:124-184`).
+    #[test]
+    fn a_frame_lying_about_its_lengths_is_rejected() {
+        let mut frame = compress_frame(COMPRESSION_ZIP_BEST_SPEED, b"payload").unwrap();
+
+        // Flip the last byte of the zlib checksum: the payload will not
+        // inflate.
+        let tail = frame.len() - 1;
+        frame[tail] ^= 0xFF;
+        assert_eq!(decompress_frame(&frame), Err(CompressError::Zlib));
+
+        // Rebuild the frame and undershoot the declared source length.
+        let mut frame = compress_frame(COMPRESSION_ZIP_BEST_SPEED, b"payload").unwrap();
+        assert_eq!(frame[1], 7); // a one-byte packed length
+        frame[1] = 3;
+        assert_eq!(decompress_frame(&frame), Err(CompressError::Zlib));
+    }
+
+    // A repeated report for a still-buffered tick grows the expected cell
+    // count (`addTickData`, `:252-256`), and the tick goes out with every
+    // report it gathered.
+    #[test]
+    fn a_repeated_tick_can_grow_its_expected_cells() {
+        let mut recorder = recorder(10);
+        recorder.add_tick_data(10, 2, b"one");
+        recorder.add_tick_data(10, 3, b"two");
+
+        recorder.add_tick_data(11, 1, b"tick-eleven");
+        recorder.sign_and_write_completed_tick_data(true);
+        let chunks = recorder.take_written_chunks();
+        assert_eq!(chunks.len(), 1);
+
+        let decoded = decode_chunk(&chunks[0].bytes, 16).unwrap();
+        assert_eq!(decoded.entries.len(), 2);
+        assert_eq!(
+            decompress_frame(&decoded.entries[0].blob).unwrap(),
+            b"onetwo"
+        );
+        assert_eq!(decoded.entries[1].game_time, 11);
+    }
+
+    // The read-back probe mirrors the reference reader's guards: it waits
+    // for a whole chunk and refuses an entry whose data runs past the chunk's
+    // payload (`readNextChunkLength`/`readNextChunk`,
+    // `replay_data_file_reader.cpp:722-763`).
+    #[test]
+    fn the_chunk_probe_refuses_incomplete_or_overrunning_input() {
+        // Shorter than a chunk length field.
+        assert!(decode_chunk(&[1, 2], 16).is_none());
+
+        let mut recorder = recorder(10);
+        recorder.add_tick_data(10, 1, b"tick-ten");
+        recorder.sign_and_write_completed_tick_data(true);
+        let chunk = recorder.take_written_chunks().remove(0);
+
+        // One byte short of the signature waits for more data.
+        assert!(decode_chunk(&chunk.bytes[..chunk.bytes.len() - 1], 16).is_none());
+
+        // An entry claiming data that reaches into the signature is refused:
+        // the entry's length field sits at [8..12], right after its game time.
+        let mut bogus = chunk.bytes.clone();
+        bogus[8..12].copy_from_slice(&(chunk.chunk_length as u32).to_le_bytes());
+        assert!(decode_chunk(&bogus, 16).is_none());
     }
 }
