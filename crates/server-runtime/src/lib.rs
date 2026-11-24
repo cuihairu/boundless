@@ -47,6 +47,7 @@ pub mod real_entity;
 
 pub mod range_list;
 pub mod relogon;
+pub mod replay_recording;
 pub mod reviver;
 pub mod script_timers;
 pub mod server_app;

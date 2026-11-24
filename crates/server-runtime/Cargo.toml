@@ -15,6 +15,13 @@ platform = { workspace = true }
 # dbapp storage startup (BW-09-06-01): a downward edge into the domain layer.
 db = { workspace = true }
 sha2 = { workspace = true }  # the signal syscalls land here (BW-16-02-01)
+# Replay signing (BW-07-05-02): the reference's `MD5SumScheme` is a 16-byte
+# MD5 signature over the bytes read so far.
+md-5 = { workspace = true }
+# Replay tick-data compression (BW-07-05-03): `ZipOStream`/`CompressionOStream`
+# (`lib/network/compression_stream.cpp`), the same pure-Rust zlib backend the
+# client reader declares.
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 # mercury: the dispatcher's network pass is `mercury::poller::EventPoller`
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
