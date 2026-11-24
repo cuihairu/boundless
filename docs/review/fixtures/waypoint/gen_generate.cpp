@@ -267,7 +267,21 @@ void runScene( const char* name, const SlabPhysics& phys, bool clipChunk,
     BW::vector< Vector3 > frontier( seeds, seeds + nseeds );
     gener.calculateSetMembership( frontier, BW::string( name ) );
     dumpPolys( "SETMEM", gener );
-    dumpBinary( name, gener.asBinary( Matrix::identity, 0.8f ) );
+    BinaryPtr finalStream = gener.asBinary( Matrix::identity, 0.8f );
+    dumpBinary( name, finalStream );
+
+    // BW-10-05-05: the final stream is the asset navgen saves into
+    // .cdata/worldNavmesh — hand it to the reader-side harness
+    // (gen_navpaths.cpp, linked against the el7 waypoint libs) as a
+    // file. Deliberately no stdout, so gen_generate.log stays
+    // byte-identical.
+    {
+        char path[ 64 ];
+        snprintf( path, sizeof( path ), "./%s.navmesh", name );
+        FILE* nav = fopen( path, "wb" );
+        fwrite( finalStream->cdata(), 1, finalStream->len(), nav );
+        fclose( nav );
+    }
 }
 
 } // anonymous namespace
