@@ -20,6 +20,7 @@ members = [
     "crates/message_logger",
     "crates/client",
     "crates/load",
+    "apps/bots",
     "apps/server",
 ]
 
@@ -46,6 +47,7 @@ blowfish = "0.9"
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
+load = { path = "crates/load" }
 platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
 watcher = { path = "crates/watcher" }

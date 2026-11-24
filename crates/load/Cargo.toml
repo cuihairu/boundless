@@ -21,3 +21,4 @@ resources = { workspace = true }
 # The bots command callables (BW-17-01-06) register on the watcher tree the
 # same way `MainApp::initWatchers` lands them on the root watcher.
 watcher = { workspace = true }
+

@@ -16,6 +16,7 @@ pub mod patrol;
 pub mod report;
 pub mod resource;
 pub mod scenario;
+pub mod smoke;
 pub mod steady;
 pub mod watchers;
 
@@ -32,5 +33,8 @@ pub use patrol::{Graph, GraphTraverser, Graphs, PatrolFactory, PatrolRandom};
 pub use report::{REPORT_SCHEMA, ReportEntry, ReportValue, ScenarioReport};
 pub use resource::{ResourceSample, ResourceTracker};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
+pub use smoke::{
+    MetricValue, SmokeCaps, SmokeError, SmokeRun, cap_scenario, run_smoke, smoke_metrics,
+};
 pub use steady::{SteadyLedger, SteadyTrack, run_steady_movement};
 pub use watchers::{FleetCommandWatcher, register_fleet_commands};

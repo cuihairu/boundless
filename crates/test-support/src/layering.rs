@@ -43,7 +43,7 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         "contracts" | "entitydef" | "mercury" | "python-host" | "resources" | "db"
         | "asset-pipeline" | "plugin-host" | "chunk" | "load" | "watcher" => Some(LAYER_DOMAIN),
         "server-runtime" => Some(LAYER_ROLE_RUNTIME),
-        "boundless-server" | "client" | "test-support" => Some(LAYER_APPLICATION),
+        "boundless-server" | "bots" | "client" | "test-support" => Some(LAYER_APPLICATION),
         _ => None,
     }
 }
@@ -592,6 +592,7 @@ mod tests {
             "chunk",
             "server-runtime",
             "boundless-server",
+            "bots",
             "test-support",
         ] {
             assert!(layer_of(name).is_some(), "{name} has no layer");
