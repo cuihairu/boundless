@@ -20,6 +20,7 @@ pub mod billing;
 pub mod billing_creator;
 pub mod buffered;
 pub mod charset;
+pub mod clear_auto_load;
 pub mod consolidate;
 pub mod consolidate_dbs;
 pub mod dry_run;
@@ -30,6 +31,7 @@ pub mod namer;
 pub mod py_billing;
 pub mod record;
 pub mod recovery;
+pub mod remove_db;
 pub mod retry;
 pub mod secondary;
 pub mod snapshot_helper;
@@ -60,6 +62,9 @@ pub use charset::{
     CharsetWidths, utf8_byte_length_for, utf8_char_length, utf8_char_offsets,
     utf8_truncate_to_chars,
 };
+pub use clear_auto_load::{
+    ClearAutoLoadDatabase, ParseOutcome, check_tables_exist, delete_auto_load_entities, parse_args,
+};
 pub use consolidate::{
     ConsolidationOutcome, ConsolidationQueue, ConsolidationReport, consolidate_database,
 };
@@ -89,6 +94,7 @@ pub use namer::{
 pub use py_billing::{PyBillingResponse, PyBillingSystem};
 pub use record::EntityRecord;
 pub use recovery::{TRANSACTION_ATTEMPTS, query_with_reconnect, retry_query, retry_transaction};
+pub use remove_db::remove_database;
 pub use retry::{
     CR_CONN_HOST_ERROR, CR_CONNECTION_ERROR, CR_SERVER_GONE_ERROR, CR_SERVER_LOST, DatabaseFailure,
     ER_LOCK_DEADLOCK, ER_LOCK_WAIT_TIMEOUT, RetryTask, RunReport, failure_from_db_error,
