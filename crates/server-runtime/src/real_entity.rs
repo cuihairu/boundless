@@ -107,7 +107,7 @@ pub struct RealEntity {
 impl RealEntity {
     /// `RealEntity::RealEntity` (`real_entity.cpp:115-140`): the position
     /// sample starts at the creation position, sampled at the app time.
-    fn new(
+    pub fn new(
         id: EntityId,
         base_addr: Addr,
         position: Vector3,

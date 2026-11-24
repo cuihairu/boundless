@@ -238,6 +238,14 @@ impl Rect {
         if dx <= 0.0 || dy <= 0.0 { 0.0 } else { dx * dy }
     }
 
+    /// `BW::Rect::inflateBy`: grow every edge by the value.
+    pub fn inflate_by(&mut self, value: f32) {
+        self.xmin -= value;
+        self.ymin -= value;
+        self.xmax += value;
+        self.ymax += value;
+    }
+
     /// `BW::Rect::intersects`.
     pub fn intersects(&self, other: &Rect) -> bool {
         self.xmin < other.xmax
