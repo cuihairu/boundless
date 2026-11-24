@@ -955,6 +955,18 @@ impl DataSection {
         }
     }
 
+    /// `delChild(DataSectionPtr)`: removes the child at `index` — the
+    /// overload duplicate-named children need (res_packer's entity
+    /// filtering deletes specific sections, not first matches).
+    pub fn del_child_at(&mut self, index: usize) -> bool {
+        if index < self.children.len() {
+            self.children.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
     /// `DataSection::deleteSection(tagPath)`: walks the `'/'`-separated
     /// tags down through first matches and removes the final node from
     /// its parent. An intermediate miss -- including the empty tags an
@@ -1342,6 +1354,16 @@ mod tests {
         assert_eq!(doc.open_child(1).unwrap().as_string(), "2");
         assert_eq!(doc.open_child(2).unwrap().section_name(), "c");
         assert!(doc.open_child(3).is_none());
+    }
+
+    #[test]
+    fn del_child_at_removes_the_exact_duplicate() {
+        let mut doc = parse_doc("<a><b>1</b><b>2</b><b>3</b></a>");
+        assert!(doc.del_child_at(1));
+        assert_eq!(doc.count_children(), 2);
+        assert_eq!(doc.open_child(0).unwrap().as_string(), "1");
+        assert_eq!(doc.open_child(1).unwrap().as_string(), "3");
+        assert!(!doc.del_child_at(9), "out of range reports false");
     }
 
     #[test]
