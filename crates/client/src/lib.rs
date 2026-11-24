@@ -83,6 +83,7 @@ pub mod settings;
 pub mod shadow_math;
 pub mod simple_gui;
 pub mod skeleton;
+pub mod sound;
 pub mod terrain_height;
 pub mod texture;
 pub mod time_of_day;
