@@ -37,6 +37,8 @@ pub const WITNESS_UPDATE_DELTA_GROWTH_THROTTLE: f64 = 1.0 + 1.0 / 8.0;
 
 /// `CellAppConfig::witnessUpdateMaxPriorityDelta` default (`witness.cpp`).
 pub const MAX_PRIORITY_DELTA: f64 = 5.0;
+/// `CellAppConfig::sendDetailedPlayerVehicles` (default false).
+pub const SEND_DETAILED_PLAYER_VEHICLES: bool = false;
 
 /// `UDP_OVERHEAD` (`basictypes.hpp`).
 pub const UDP_OVERHEAD: i32 = 28;
@@ -47,8 +49,6 @@ pub const NETWORK_BITS_PER_BYTE: i32 = 8;
 /// Stand-in encoded size of one entity update while BW-08-03-04 has not yet
 /// brought the real property payloads (the reference writes variable-length
 /// position/property data here).
-pub const DEFAULT_ENTITY_UPDATE_BYTES: usize = 100;
-
 // Flag bits, verbatim from `entity_cache.hpp` `enum // Flags bits`.
 pub const ENTER_PENDING: u16 = 1 << 0;
 pub const REQUEST_PENDING: u16 = 1 << 1;
@@ -82,9 +82,19 @@ pub struct EntitySnapshot {
     pub roll: f32,
     /// `pVehicle()` — None when the entity is on the ground.
     pub vehicle_id: Option<EntityId>,
-    /// `volatileInfo().hasVolatile( 0.f )` — gates alias allocation and the
-    /// volatile create message.
-    pub has_volatile: bool,
+    /// `volatileInfo()` — gates alias allocation, the volatile create
+    /// message and the projection detail.
+    pub volatile: VolatileInfo,
+    /// `isOnGround()` — on-ground entities pack only x/z.
+    pub is_on_ground: bool,
+    /// `pReal()->controlledByRef().id == entity_.id()` — the witness's own
+    /// client drives this entity, so it already knows the position.
+    pub controlled_by_self: bool,
+    /// `eventHistory()` in chronological order.
+    pub events: Vec<HistoryEvent>,
+    /// `lodLevels()` transitions; empty means the entity never changes
+    /// detail level.
+    pub lod_thresholds: Vec<LodLevelThreshold>,
     /// `lastEventNumber()`.
     pub last_event_number: i32,
     /// `volatileUpdateNumber()`.
@@ -114,7 +124,11 @@ impl EntitySnapshot {
             pitch: 0.0,
             roll: 0.0,
             vehicle_id: None,
-            has_volatile: true,
+            volatile: VolatileInfo::ALWAYS_ALL,
+            is_on_ground: true,
+            controlled_by_self: false,
+            events: Vec::new(),
+            lod_thresholds: Vec::new(),
             last_event_number: 0,
             volatile_update_number: 0,
             vehicle_change_num: 0,
@@ -124,6 +138,10 @@ impl EntitySnapshot {
             destroyed: false,
             aoi_update_scheme_id: 0,
         }
+    }
+    /// `volatileInfo().hasVolatile( 0.f )`.
+    pub fn has_volatile(&self) -> bool {
+        self.volatile.has_volatile(0.0)
     }
 }
 
@@ -159,6 +177,12 @@ impl AoIUpdateScheme {
     }
 
     /// `apply` — priority delta for a squared distance.
+    /// `AoIUpdateSchemes::shouldTreatAsCoincident` — the coincident init
+    /// leaves both weightings at zero.
+    pub fn is_coincident(&self) -> bool {
+        self.weighting == 0.0 && self.distance_weighting == 0.0
+    }
+
     pub fn apply(&self, distance_squared: f32) -> f64 {
         if self.should_treat_as_coincident() {
             return 1.0;
@@ -181,6 +205,144 @@ pub fn bps_to_packet_size(bits_per_second: i32, update_hertz: i32) -> i32 {
 
 /// `AoIUpdateSchemes::apply` — scheme 0 is the default; custom schemes come
 /// with bw.xml and are treated as coincident until BW-08-03-03 needs them.
+/// `VolatileInfo::ALWAYS`.
+pub const VOLATILE_ALWAYS: f32 = f32::MAX;
+
+/// Port of `VolatileInfo` — the per-axis volatile thresholds of one entity
+/// type, already squared like the reference keeps them after `parse`
+/// (`asPriority` squares the configured metres and maps -1 to ALWAYS).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolatileInfo {
+    pub position_priority: f32,
+    pub yaw_priority: f32,
+    pub pitch_priority: f32,
+    pub roll_priority: f32,
+}
+
+impl VolatileInfo {
+    /// No volatile axis at all — `VolatileInfo()` defaults.
+    pub const NONE: VolatileInfo = VolatileInfo {
+        position_priority: -1.0,
+        yaw_priority: -1.0,
+        pitch_priority: -1.0,
+        roll_priority: -1.0,
+    };
+
+    /// Every axis at maximum rate.
+    pub const ALWAYS_ALL: VolatileInfo = VolatileInfo {
+        position_priority: VOLATILE_ALWAYS,
+        yaw_priority: VOLATILE_ALWAYS,
+        pitch_priority: VOLATILE_ALWAYS,
+        roll_priority: VOLATILE_ALWAYS,
+    };
+
+    /// `VolatileInfo::parse` thresholds in metres; `None` disables the axis
+    /// and `Some(-1.0)` means ALWAYS.
+    pub fn from_thresholds(
+        position: Option<f32>,
+        yaw: Option<f32>,
+        pitch: Option<f32>,
+        roll: Option<f32>,
+    ) -> Self {
+        let sq = |v: Option<f32>| match v {
+            None => -1.0,
+            Some(-1.0) => VOLATILE_ALWAYS,
+            Some(v) => v * v,
+        };
+        VolatileInfo {
+            position_priority: sq(position),
+            yaw_priority: sq(yaw),
+            pitch_priority: sq(pitch),
+            roll_priority: sq(roll),
+        }
+    }
+
+    pub fn should_send_position(&self) -> bool {
+        self.position_priority > 0.0
+    }
+
+    /// `dirType` — how many direction axes are too far away to send.
+    pub fn dir_type(&self, lod_priority: f32) -> u8 {
+        (lod_priority > self.yaw_priority) as u8
+            + (lod_priority > self.pitch_priority) as u8
+            + (lod_priority > self.roll_priority) as u8
+    }
+
+    /// `hasVolatile` — anything worth sending at this LoD priority?
+    pub fn has_volatile(&self, lod_priority: f32) -> bool {
+        lod_priority < self.position_priority || lod_priority < self.yaw_priority
+    }
+}
+
+/// `HistoryEvent::Level` — detail levels for state changes, priorities for
+/// messages (already squared like every other threshold in this module).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HistoryLevel {
+    Detail(i32),
+    Priority(f32),
+}
+
+/// `HistoryEvent` — one entry of the entity's event history.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistoryEvent {
+    pub number: i32,
+    pub level: HistoryLevel,
+    /// `msgLen()` — what the event charges to the bundle.
+    pub payload_bytes: usize,
+}
+
+impl HistoryEvent {
+    /// `HistoryEvent::shouldSend`.
+    pub fn should_send(&self, threshold: f32, detail_level: u8) -> bool {
+        match self.level {
+            HistoryLevel::Detail(detail) => detail_level as i32 <= detail,
+            HistoryLevel::Priority(priority) => threshold < priority,
+        }
+    }
+}
+
+/// One `DataLoDLevel` transition point, thresholds already squared.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LodLevelThreshold {
+    pub low: f32,
+    pub high: f32,
+}
+
+/// How an entity update projects its position onto the client.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PosProjection {
+    /// PackedXZ (on ground) or PackedXYZ (airborne), relative to the
+    /// witness's reference position.
+    Relative {
+        x: f32,
+        y: f32,
+        z: f32,
+        on_ground: bool,
+    },
+    /// PackedXZ/PackedXYZ with the absolute local position — a vehicle
+    /// passenger (`writeVolatileDataToBundle` skips the subtraction).
+    Absolute {
+        x: f32,
+        y: f32,
+        z: f32,
+        on_ground: bool,
+    },
+    /// `avatarUpdate*Detailed` — absolute local position when the packed
+    /// form cannot represent the offset.
+    Detailed { x: f32, y: f32, z: f32 },
+    /// The type sends no position at all (`shouldSendPosition()` false).
+    None,
+}
+
+/// How an entity update projects its direction, by `dirType`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DirProjection {
+    YawPitchRoll { yaw: f32, pitch: f32, roll: f32 },
+    YawPitch { yaw: f32, pitch: f32 },
+    Yaw { yaw: f32 },
+    None,
+}
+
 fn scheme_for(id: u8) -> AoIUpdateScheme {
     if id == 0 {
         default_aoi_scheme()
@@ -229,10 +391,41 @@ pub enum ClientMessage {
         pitch: f32,
         roll: f32,
     },
-    /// One prioritised entity update from `Witness::sendQueueElement`. The
-    /// property/position body is BW-08-03-04; `bytes` is what it charged to
-    /// this tick's packet budget.
-    EntityUpdate { id: EntityId, bytes: usize },
+    /// `BaseAppIntInterface::relativePositionArgs`.
+    RelativePosition { position: (f32, f32, f32) },
+    /// `BaseAppIntInterface::relativePositionReferenceArgs`.
+    RelativePositionReference { sequence_number: u32 },
+    /// `BaseAppIntInterface::avatarUpdatePlayerDetailed` — the witness's
+    /// own projection, sent ahead of every observed entity.
+    AvatarUpdatePlayerDetailed {
+        position: (f32, f32, f32),
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+    },
+    /// `BaseAppIntInterface::selectEntityArgs`.
+    SelectEntity { id: EntityId },
+    /// `BaseAppIntInterface::selectAliasedEntityArgs`.
+    SelectAliasedEntity { id_alias: u8 },
+    /// `BaseAppIntInterface::updateEntity` — the changed-properties resend
+    /// that follows a detail-level increase.
+    UpdateProperties {
+        id: EntityId,
+        id_alias: Option<u8>,
+        detail_level: u8,
+    },
+    /// One entity update from `Witness::sendQueueElement`: the projection
+    /// of position and direction onto this witness, plus the history events
+    /// that crossed the LoD gate. `bytes` is what it charged to this tick's
+    /// packet budget.
+    EntityUpdate {
+        id: EntityId,
+        id_alias: Option<u8>,
+        pos: PosProjection,
+        dir: DirProjection,
+        events: Vec<i32>,
+        bytes: usize,
+    },
 }
 
 impl ClientMessage {
@@ -378,6 +571,11 @@ impl EntityCache {
         self.detail_level
     }
 
+    /// `lodEventNumber( detailLevel )` readback.
+    pub fn lod_event_numbers(&self) -> [i32; MAX_LOD_LEVELS] {
+        self.lod_event_numbers
+    }
+
     /// Full flag word readback.
     pub fn flags(&self) -> u16 {
         self.flags
@@ -469,16 +667,40 @@ pub struct Witness {
     bandwidth_deficit: i32,
     /// `CellApp::emergencyThrottle()` snapshot for this tick.
     emergency_throttle: f32,
-    /// Encoded size charged per entity update (harness face; the real
-    /// payloads arrive with BW-08-03-04).
-    update_bytes: usize,
+    /// Fixed encoded size charged per entity update (harness face for the
+    /// 03-03 budget scenarios); `None` charges the computed payload size.
+    update_bytes: Option<usize>,
     /// Running `Mercury::Bundle::size` for the budget gates.
     bundle_bytes: usize,
+    /// `referencePosition_` — the grid-aligned point relative positions are
+    /// measured from.
+    reference_position: (f32, f32, f32),
+    /// `hasReferencePosition_` — the client has supplied a reference.
+    has_reference_position: bool,
+    /// `referenceSeqNum_`.
+    reference_seq_num: u32,
+    /// `CellApp::instance().time()` stand-in; bumped at the end of each
+    /// update pass. Starts at 1 so the "never sent" sentinel of
+    /// `last_sent_reliable_game_time` stays distinct.
+    time: u32,
+    /// `CellAppConfig::maxTimeBetweenPlayerUpdatesInTicks()`.
+    max_time_between_player_updates_in_ticks: i32,
+    /// `lastSentReliableGameTime_` — 0 means "never".
+    last_sent_reliable_game_time: u32,
+    /// `lastSentReliablePosition_`.
+    last_sent_reliable_position: (f32, f32, f32),
+    /// `lastSentReliableDirection_`.
+    last_sent_reliable_direction: (f32, f32, f32),
 }
 
 impl Witness {
     /// `Witness::Witness` for `CREATE_REAL_FROM_INIT`.
     pub fn new(entity_id: EntityId, self_entity: EntitySnapshot) -> Self {
+        let reference_position = (
+            self_entity.position.0.round(),
+            self_entity.position.1.round(),
+            self_entity.position.2.round(),
+        );
         let mut entities = HashMap::new();
         entities.insert(entity_id, self_entity);
         Witness {
@@ -495,8 +717,16 @@ impl Witness {
             max_packet_size: 0,
             bandwidth_deficit: 0,
             emergency_throttle: 1.0,
-            update_bytes: DEFAULT_ENTITY_UPDATE_BYTES,
+            update_bytes: None,
             bundle_bytes: 0,
+            reference_position,
+            has_reference_position: false,
+            reference_seq_num: 0,
+            time: 1,
+            max_time_between_player_updates_in_ticks: 0,
+            last_sent_reliable_game_time: 0,
+            last_sent_reliable_position: (0.0, 0.0, 0.0),
+            last_sent_reliable_direction: (0.0, 0.0, 0.0),
         }
     }
 
@@ -549,9 +779,32 @@ impl Witness {
         self.emergency_throttle = throttle;
     }
 
-    /// Harness face for the encoded update size.
+    /// Harness face for the encoded update size — fixes the per-update
+    /// budget charge; `clear_entity_update_bytes` returns to the computed
+    /// payload sizes.
     pub fn set_entity_update_bytes(&mut self, bytes: usize) {
-        self.update_bytes = bytes;
+        self.update_bytes = Some(bytes);
+    }
+
+    pub fn clear_entity_update_bytes(&mut self) {
+        self.update_bytes = None;
+    }
+
+    /// `CellAppConfig::maxTimeBetweenPlayerUpdatesInTicks` harness face.
+    pub fn set_max_time_between_player_updates(&mut self, ticks: i32) {
+        self.max_time_between_player_updates_in_ticks = ticks;
+    }
+
+    /// The client has supplied a reference position (`onSendReliablePosition`
+    /// counterpart on the receiving side).
+    pub fn set_client_reference_sequence(&mut self, sequence_number: u32) {
+        self.has_reference_position = true;
+        self.reference_seq_num = sequence_number;
+    }
+
+    /// `CellApp::instance().time()` readback.
+    pub fn time(&self) -> u32 {
+        self.time
     }
 
     /// `Mercury::Bundle::size` readback.
@@ -756,7 +1009,7 @@ impl Witness {
 
     /// `Witness::allocateIDAlias` — only volatile entities get an alias.
     fn allocate_id_alias(&mut self, entity: &EntitySnapshot) -> u8 {
-        if entity.has_volatile && !self.free_aliases.is_empty() {
+        if entity.has_volatile() && !self.free_aliases.is_empty() {
             return self.free_aliases.pop().expect("checked non-empty");
         }
         NO_ID_ALIAS
@@ -822,7 +1075,7 @@ impl Witness {
         }
 
         let (yaw, pitch, roll) = (entity.yaw, entity.pitch, entity.roll);
-        let message = if entity.has_volatile {
+        let message = if entity.has_volatile() {
             ClientMessage::CreateEntity {
                 id,
                 client_type_id: entity.client_type_id,
@@ -949,13 +1202,254 @@ impl Witness {
         self.entity_queue.push(id);
     }
 
-    /// `Witness::sendQueueElement` — one prioritised entity update. The
-    /// LoD distance still feeds the payload selection in BW-08-03-04; here it
-    /// only charges this tick's budget. Returns whether a reliable relative
-    /// position went out (never, until 03-04).
+    /// `EntityCache::getLoDPriority` — squared x/z distance to the origin,
+    /// or 0 for coincident schemes.
+    fn lod_priority_of(entity: &EntitySnapshot, origin: (f32, f32, f32)) -> f32 {
+        if scheme_for(entity.aoi_update_scheme_id).is_coincident() {
+            return 0.0;
+        }
+        let dx = entity.position.0 - origin.0;
+        let dz = entity.position.2 - origin.2;
+        let ret = dx * dx + dz * dz;
+        // FLT_MAX squared results in +inf; fix that
+        if ret > f32::MAX { f32::MAX } else { ret }
+    }
+
+    /// `PackedXZ::maxLimit` — `getLimit<3, 8>` works out to 510 at scale 1.
+    fn packed_limit(&self) -> f32 {
+        510.0 * (500.0 / 510.0)
+    }
+
+    /// `Witness::sendQueueElement` — one entity update: the vehicle change,
+    /// the LoD-gated event history and the volatile position/direction
+    /// projection, all on this tick's budget. Returns whether a reliable
+    /// relative position went out (reliability itself is not modelled).
     fn send_queue_element(&mut self, id: EntityId) -> bool {
-        let bytes = self.update_bytes;
-        self.push_message(ClientMessage::EntityUpdate { id, bytes });
+        let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+        let origin = self
+            .entities
+            .get(&self.entity_id)
+            .map(|e| e.position)
+            .expect("witness's own entity registered");
+        let lod_priority = Witness::lod_priority_of(&entity, origin);
+
+        // `writeVehicleChangeToBundle` — the client's record of this
+        // entity's vehicular state must match before anything else rides.
+        let vehicle_changed = self
+            .aoi_map
+            .get(&id)
+            .map(|cache| cache.vehicle_change_num != entity.vehicle_change_num)
+            .unwrap_or(false);
+        if vehicle_changed {
+            self.push_message(ClientMessage::SetVehicle {
+                passenger_id: id,
+                vehicle_id: entity.vehicle_id,
+            });
+            self.aoi_map
+                .get_mut(&id)
+                .expect("queued cache present")
+                .vehicle_change_num = entity.vehicle_change_num;
+        }
+
+        // Which pending history events clear the LoD gate?
+        let (last_event_number, detail_level, id_alias) = {
+            let cache = self.aoi_map.get(&id).expect("queued cache present");
+            (cache.last_event_number, cache.detail_level, cache.id_alias)
+        };
+        let pending: Vec<HistoryEvent> = entity
+            .events
+            .iter()
+            .filter(|e| e.number > last_event_number)
+            .copied()
+            .collect();
+        let has_events_to_send = pending
+            .iter()
+            .any(|e| e.should_send(lod_priority, detail_level));
+
+        // The volatile projection. `cache.lastVolatileUpdateNumber` stamps
+        // before the gate so unchanged positions are not resent.
+        let mut pos = PosProjection::None;
+        let mut dir = DirProjection::None;
+        let mut has_selected_entity = false;
+        {
+            let cache = self.aoi_map.get_mut(&id).expect("queued cache present");
+            if cache.last_volatile_update_number != entity.volatile_update_number {
+                cache.last_volatile_update_number = entity.volatile_update_number;
+                if entity.volatile.has_volatile(lod_priority) {
+                    let always_detailed = cache.has_flag(IS_ALWAYS_DETAILED)
+                        || (cache.has_flag(PRIORITISED) && SEND_DETAILED_PLAYER_VEHICLES);
+                    let dir_type = entity.volatile.dir_type(lod_priority);
+                    dir = match dir_type {
+                        0 => DirProjection::YawPitchRoll {
+                            yaw: entity.yaw,
+                            pitch: entity.pitch,
+                            roll: entity.roll,
+                        },
+                        1 => DirProjection::YawPitch {
+                            yaw: entity.yaw,
+                            pitch: entity.pitch,
+                        },
+                        2 => DirProjection::Yaw { yaw: entity.yaw },
+                        _ => DirProjection::None,
+                    };
+                    if !entity.volatile.should_send_position() {
+                        pos = PosProjection::None;
+                    } else if always_detailed {
+                        pos = PosProjection::Detailed {
+                            x: entity.position.0,
+                            y: entity.position.1,
+                            z: entity.position.2,
+                        };
+                    } else {
+                        // A passenger's packed position stays absolute; a
+                        // ground entity's is relative to our reference.
+                        let is_relative = entity.vehicle_id.is_none();
+                        let raw = if is_relative {
+                            (
+                                entity.position.0 - self.reference_position.0,
+                                entity.position.1 - self.reference_position.1,
+                                entity.position.2 - self.reference_position.2,
+                            )
+                        } else {
+                            entity.position
+                        };
+                        let limit = self.packed_limit();
+                        if raw.0 < -limit || limit <= raw.0 || raw.2 < -limit || limit <= raw.2 {
+                            pos = PosProjection::Detailed {
+                                x: entity.position.0,
+                                y: entity.position.1,
+                                z: entity.position.2,
+                            };
+                        } else {
+                            let (x, y, z) = raw;
+                            pos = if is_relative {
+                                PosProjection::Relative {
+                                    x,
+                                    y,
+                                    z,
+                                    on_ground: entity.is_on_ground,
+                                }
+                            } else {
+                                PosProjection::Absolute {
+                                    x,
+                                    y,
+                                    z,
+                                    on_ground: entity.is_on_ground,
+                                }
+                            };
+                        }
+                    }
+                    has_selected_entity = true;
+                }
+            }
+        }
+
+        // History events ride in chronological order behind a select.
+        let mut events = Vec::new();
+        if has_events_to_send {
+            if !has_selected_entity {
+                if id_alias != NO_ID_ALIAS {
+                    self.push_message(ClientMessage::SelectAliasedEntity { id_alias });
+                } else {
+                    self.push_message(ClientMessage::SelectEntity { id });
+                }
+                has_selected_entity = true;
+            }
+            events = pending
+                .iter()
+                .filter(|e| e.should_send(lod_priority, detail_level))
+                .map(|e| e.number)
+                .collect();
+        }
+
+        // `cache.lastEventNumber( this->lastEventNumber() )` stamps even
+        // when nothing was eligible.
+        self.aoi_map
+            .get_mut(&id)
+            .expect("queued cache present")
+            .last_event_number = entity.last_event_number;
+
+        // `EntityCache::updateDetailLevel` — detail transitions stamp their
+        // LoD levels on the way out and resend properties on the way in.
+        let mut props_level = None;
+        {
+            let cache = self.aoi_map.get_mut(&id).expect("queued cache present");
+            // An unconfigured level has no transition point, so neither
+            // transition fires.
+            while cache.detail_level > 0
+                && lod_priority
+                    < entity
+                        .lod_thresholds
+                        .get(cache.detail_level as usize)
+                        .map(|t| t.low)
+                        .unwrap_or(-1.0)
+            {
+                cache.detail_level -= 1;
+                props_level = Some(cache.detail_level);
+            }
+            while (cache.detail_level as usize) < entity.lod_thresholds.len()
+                && lod_priority
+                    > entity
+                        .lod_thresholds
+                        .get(cache.detail_level as usize)
+                        .map(|t| t.high)
+                        .unwrap_or(-1.0)
+            {
+                cache.lod_event_numbers[cache.detail_level as usize] = cache.last_event_number;
+                cache.detail_level += 1;
+            }
+        }
+        let bytes = self.update_bytes.unwrap_or_else(|| {
+            let mut bytes = if id_alias != NO_ID_ALIAS { 1 } else { 4 };
+            bytes += match pos {
+                PosProjection::Relative {
+                    on_ground: true, ..
+                }
+                | PosProjection::Absolute {
+                    on_ground: true, ..
+                } => 3, // PackedXZ
+                PosProjection::Relative { .. } | PosProjection::Absolute { .. } => 5, // PackedXYZ
+                PosProjection::Detailed { .. } => 12,
+                PosProjection::None => 0,
+            };
+            bytes += match dir {
+                DirProjection::YawPitchRoll { .. } => 12,
+                DirProjection::YawPitch { .. } => 8,
+                DirProjection::Yaw { .. } => 4,
+                DirProjection::None => 0,
+            };
+            bytes += pending
+                .iter()
+                .filter(|e| e.should_send(lod_priority, detail_level))
+                .map(|e| 4 + e.payload_bytes)
+                .sum::<usize>();
+            bytes
+        });
+        self.push_message(ClientMessage::EntityUpdate {
+            id,
+            id_alias: (id_alias != NO_ID_ALIAS).then_some(id_alias),
+            pos,
+            dir,
+            events,
+            bytes,
+        });
+
+        // `updateDetailLevel` appends its select + changed-properties resend
+        // after the rest of the entity's stream.
+        if let Some(level) = props_level {
+            if !has_selected_entity {
+                if id_alias != NO_ID_ALIAS {
+                    self.push_message(ClientMessage::SelectAliasedEntity { id_alias });
+                } else {
+                    self.push_message(ClientMessage::SelectEntity { id });
+                }
+            }
+            self.push_message(ClientMessage::UpdateProperties {
+                id,
+                id_alias: (id_alias != NO_ID_ALIAS).then_some(id_alias),
+                detail_level: level,
+            });
+        }
         false
     }
 
@@ -989,6 +1483,95 @@ impl Witness {
         cache.update_priority(&entity, origin);
     }
 
+    /// `Witness::addReferencePosition` — makes sure the bundle carries a
+    /// reference position, either the client's own sequence or a fresh
+    /// grid-aligned one. Returns whether a message was added.
+    fn add_reference_position(&mut self) -> bool {
+        let self_entity = self
+            .entities
+            .get(&self.entity_id)
+            .cloned()
+            .expect("witness's own entity registered");
+
+        // Fast path: client-controlled witness which has sent us a
+        // reference position at some point.
+        if self_entity.controlled_by_self && self.has_reference_position {
+            self.push_message(ClientMessage::RelativePositionReference {
+                sequence_number: self.reference_seq_num,
+            });
+            return true;
+        }
+
+        // Clear out any now-useless client-supplied reference position.
+        self.has_reference_position = false;
+
+        // The witness is either server-controlled, or newly client-controlled
+        // and hasn't sent us a reference position to use. So we choose one.
+        self.reference_position = (
+            self_entity.position.0.round(),
+            self_entity.position.1.round(),
+            self_entity.position.2.round(),
+        );
+
+        if self_entity.vehicle_id.is_some() || self_entity.controlled_by_self {
+            self.push_message(ClientMessage::RelativePosition {
+                position: self.reference_position,
+            });
+            return true;
+        }
+        false
+    }
+
+    /// `Witness::addDetailedPlayerPosition` — the witness's own projection,
+    /// ahead of the observed entities. Skipped for non-volatile or
+    /// client-controlled entities, and for unchanged positions inside the
+    /// resend window.
+    fn add_detailed_player_position(&mut self, is_reference_position: bool) {
+        let entity = self
+            .entities
+            .get(&self.entity_id)
+            .cloned()
+            .expect("witness's own entity registered");
+
+        // Non-volatile or witness-controlled entity: don't send the position.
+        if !entity.volatile.has_volatile(0.0) || entity.controlled_by_self {
+            return;
+        }
+
+        // Check that we're allowed to skip an unchanged player position
+        // update.
+        let has_sent_player_position = self.last_sent_reliable_game_time != 0;
+        let always_skip_unchanged = self.max_time_between_player_updates_in_ticks == -1;
+        let time_since_last_send = self.time.wrapping_sub(self.last_sent_reliable_game_time);
+        let last_send_was_recent_enough = always_skip_unchanged
+            || time_since_last_send <= self.max_time_between_player_updates_in_ticks as u32;
+        let direction = (entity.yaw, entity.pitch, entity.roll);
+        let should_skip_unchanged_player_position = has_sent_player_position
+            && last_send_was_recent_enough
+            && entity.position == self.last_sent_reliable_position
+            && direction == self.last_sent_reliable_direction;
+
+        if !is_reference_position && should_skip_unchanged_player_position {
+            return;
+        }
+
+        self.push_message(ClientMessage::AvatarUpdatePlayerDetailed {
+            position: entity.position,
+            yaw: entity.yaw,
+            pitch: entity.pitch,
+            roll: entity.roll,
+        });
+
+        // The message is reliable (and so stamped) unless it is being used
+        // as the reference position.
+        let reliable = !is_reference_position && self.max_time_between_player_updates_in_ticks != 0;
+        if reliable {
+            self.last_sent_reliable_game_time = self.time;
+            self.last_sent_reliable_position = entity.position;
+            self.last_sent_reliable_direction = direction;
+        }
+    }
+
     /// `Witness::update` — the per-tick client update pass. Sends the vehicle
     /// stack first, then walks the priority queue under the packet budget:
     /// entries within `MAX_PRIORITY_DELTA` of the front's priority pop and
@@ -1005,8 +1588,12 @@ impl Witness {
             - self.bandwidth_deficit
             + self.bundle_bytes as i32;
 
-        // `addSpaceDataChanges` and the reference-position messages are not
-        // modelled; they only consume budget ahead of the entity updates.
+        // A reference position rides first (the client's own sequence, or a
+        // fresh grid-aligned one); the player's detailed projection doubles
+        // as the reference when no separate message went out.
+        let pushed_reference = self.add_reference_position();
+        let use_player_as_reference = !pushed_reference;
+        self.add_detailed_player_position(use_player_as_reference);
 
         let mut num_prioritised = 0usize;
 
@@ -1160,6 +1747,9 @@ impl Witness {
                 self.queue_push(id);
             }
         }
+
+        // `CellApp::instance().time()` advances between update passes.
+        self.time = self.time.wrapping_add(1);
     }
 
     /// One pass over the queue's current contents, exactly like the reference
@@ -1202,7 +1792,11 @@ mod tests {
 
     impl WitnessWorld {
         fn new() -> Self {
-            let mut witness = Witness::new(1, EntitySnapshot::new(1, 1, (0.0, 0.0, 0.0)));
+            let mut self_entity = EntitySnapshot::new(1, 1, (0.0, 0.0, 0.0));
+            // The fixtures watch other entities; the self projection has its
+            // own tests below.
+            self_entity.volatile = VolatileInfo::NONE;
+            let mut witness = Witness::new(1, self_entity);
             witness.upsert_entity(EntitySnapshot::new(2, 2, (10.0, 0.0, 0.0)));
             WitnessWorld { witness }
         }
@@ -1423,7 +2017,7 @@ mod tests {
 
         // A non-volatile entity gets no alias at all.
         let mut ground = EntitySnapshot::new(4, 2, (30.0, 0.0, 0.0));
-        ground.has_volatile = false;
+        ground.volatile = VolatileInfo::NONE;
         world.witness.upsert_entity(ground);
         world.enter(4);
         assert_eq!(
@@ -1712,7 +2306,7 @@ mod tests {
     fn a_very_distant_entity_clamps_its_priority_distance() {
         let mut world = WitnessWorld::new();
         let mut far = EntitySnapshot::new(2, 2, (1e20, 0.0, 0.0));
-        far.has_volatile = false;
+        far.volatile = VolatileInfo::NONE;
         world.witness.upsert_entity(far);
 
         world.witness.add_to_aoi(2, false);
@@ -2030,8 +2624,743 @@ mod tests {
         // still only fits the closest entity this tick.
         let ids = update_ids(&mut world);
         assert_eq!(ids, vec![2]);
-        // underspend carries no deficit
+        // A witness on a vehicle has to send its reference position first,
+        // and that 8 bytes pushes the update over the 27-byte packet.
+        assert_eq!(world.witness.bandwidth_deficit(), 6);
+    }
+
+    // ---- BW-08-03-04: position and property projections ----
+
+    /// Two seeded volatile entities, `witness.entities` style.
+    fn projection_world(self_position: (f32, f32, f32)) -> WitnessWorld {
+        let mut self_entity = EntitySnapshot::new(1, 1, self_position);
+        self_entity.volatile = VolatileInfo::NONE;
+        let mut witness = Witness::new(1, self_entity);
+        witness.set_witness_capacity(1_000_000, 10);
+        WitnessWorld { witness }
+    }
+
+    fn seed_observer(world: &mut WitnessWorld, entity: EntitySnapshot) {
+        world.witness.upsert_entity(entity.clone());
+        world
+            .witness
+            .aoi_map
+            .insert(entity.id, EntityCache::new(&entity));
+        world.witness.queue_push(entity.id);
+    }
+
+    fn first_entity_update(world: &mut WitnessWorld) -> ClientMessage {
+        world.witness.update();
+        world
+            .witness
+            .take_bundle()
+            .into_iter()
+            .find(|m| matches!(m, ClientMessage::EntityUpdate { .. }))
+            .expect("one entity update went out")
+    }
+
+    #[test]
+    fn two_witnesses_each_get_their_own_projection() {
+        let entity = EntitySnapshot::new(2, 1, (20.0, 0.0, 0.0));
+
+        // Witness A sits at the grid origin; the offset is 20.
+        let mut a = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut a, entity.clone());
+        match first_entity_update(&mut a) {
+            ClientMessage::EntityUpdate { id, pos, dir, .. } => {
+                assert_eq!(id, 2);
+                assert_eq!(
+                    pos,
+                    PosProjection::Relative {
+                        x: 20.0,
+                        y: 0.0,
+                        z: 0.0,
+                        on_ground: true
+                    }
+                );
+                assert_eq!(
+                    dir,
+                    DirProjection::YawPitchRoll {
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        roll: 0.0
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // Witness B sits at (15, 0, 0); the same entity projects to 5.
+        let mut b = projection_world((15.0, 0.0, 0.0));
+        seed_observer(&mut b, entity);
+        match first_entity_update(&mut b) {
+            ClientMessage::EntityUpdate { pos, .. } => assert_eq!(
+                pos,
+                PosProjection::Relative {
+                    x: 5.0,
+                    y: 0.0,
+                    z: 0.0,
+                    on_ground: true
+                }
+            ),
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_offset_beyond_the_packed_limits_falls_back_to_detailed() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        // packedXZScale keeps the packed form inside the 500m AoI, so 600m
+        // cannot be represented.
+        seed_observer(&mut world, EntitySnapshot::new(2, 1, (600.0, 0.0, 0.0)));
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Detailed {
+                        x: 600.0,
+                        y: 0.0,
+                        z: 0.0
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn direction_detail_shrinks_with_distance() {
+        // position ALWAYS; direction thresholds in metres
+        let thresholds =
+            VolatileInfo::from_thresholds(Some(-1.0), Some(10.0), Some(8.0), Some(5.0));
+
+        // 25 < every squared threshold: all three angles go out.
+        let mut near = EntitySnapshot::new(2, 1, (3.0, 0.0, 0.0));
+        near.volatile = thresholds;
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, near);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { dir, .. } => assert_eq!(
+                dir,
+                DirProjection::YawPitchRoll {
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    roll: 0.0
+                }
+            ),
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // 81 > 64 and > 25 but < 100: yaw only.
+        let mut mid = EntitySnapshot::new(3, 1, (9.0, 0.0, 0.0));
+        mid.volatile = thresholds;
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, mid);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { dir, .. } => {
+                assert_eq!(dir, DirProjection::Yaw { yaw: 0.0 });
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // 32 clears only the roll (25): yaw and pitch.
+        let mut mid_low = EntitySnapshot::new(5, 1, (4.0, 0.0, 4.0));
+        mid_low.volatile = thresholds;
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, mid_low);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { dir, .. } => {
+                assert_eq!(
+                    dir,
+                    DirProjection::YawPitch {
+                        yaw: 0.0,
+                        pitch: 0.0
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // 720000 clears everything: no direction at all.
+        let mut far = EntitySnapshot::new(6, 1, (600.0, 0.0, 600.0));
+        far.volatile = thresholds;
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, far);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { dir, pos, .. } => {
+                assert_eq!(dir, DirProjection::None);
+                // both offsets are past the 500m packed limit
+                assert!(matches!(pos, PosProjection::Detailed { .. }));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // A type that sends no position at all: pos drops, dir stays.
+        let mut ground = EntitySnapshot::new(4, 1, (3.0, 0.0, 0.0));
+        ground.volatile = VolatileInfo::from_thresholds(None, Some(5.0), Some(4.0), Some(3.0));
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, ground);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, dir, .. } => {
+                assert_eq!(pos, PosProjection::None);
+                assert!(matches!(dir, DirProjection::YawPitchRoll { .. }));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_airborne_entity_packs_three_axes() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut flyer = EntitySnapshot::new(2, 1, (6.0, 12.0, 8.0));
+        flyer.is_on_ground = false;
+        seed_observer(&mut world, flyer);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, bytes, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Relative {
+                        x: 6.0,
+                        y: 12.0,
+                        z: 8.0,
+                        on_ground: false
+                    }
+                );
+                // alias 4 + PackedXYZ 5 + YawPitchRoll 12
+                assert_eq!(bytes, 21);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_vehicle_passenger_projects_its_absolute_position() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut rider = EntitySnapshot::new(2, 1, (20.0, 0.0, 0.0));
+        rider.vehicle_id = Some(3);
+        seed_observer(&mut world, rider.clone());
+        // The cache already knows about the vehicle, so no SetVehicle rides.
+        world.witness.cache_mut(2).vehicle_change_num = rider.vehicle_change_num;
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Absolute {
+                        x: 20.0,
+                        y: 0.0,
+                        z: 0.0,
+                        on_ground: true
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_always_detailed_cache_projects_an_absolute_position() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let entity = EntitySnapshot::new(2, 1, (20.0, 0.0, 0.0));
+        seed_observer(&mut world, entity.clone());
+        world.witness.cache_mut(2).set_flag(IS_ALWAYS_DETAILED);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Detailed {
+                        x: 20.0,
+                        y: 0.0,
+                        z: 0.0
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // A prioritised vehicle is only detailed when the config asks for
+        // it; the default does not.
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut vehicle = EntitySnapshot::new(3, 1, (10.0, 0.0, 0.0));
+        vehicle.vehicle_id = Some(4);
+        seed_observer(&mut world, vehicle.clone());
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(3);
+        world.witness.upsert_entity(self_entity);
+        world.witness.cache_mut(3).vehicle_change_num = vehicle.vehicle_change_num;
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Absolute {
+                        x: 10.0,
+                        y: 0.0,
+                        z: 0.0,
+                        on_ground: true
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_self_projection_rides_ahead_of_the_updates() {
+        let mut self_entity = EntitySnapshot::new(1, 1, (3.0, 4.0, 5.0));
+        self_entity.yaw = 1.0;
+        self_entity.pitch = 0.5;
+        self_entity.roll = 0.25;
+        let mut world = WitnessWorld {
+            witness: Witness::new(1, self_entity.clone()),
+        };
+        world.witness.set_witness_capacity(1_000_000, 10);
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(2, 1, (10.0, 0.0, 0.0)));
+        let entity = world.witness.entity(2).cloned().unwrap();
+        world.witness.aoi_map.insert(2, EntityCache::new(&entity));
+        world.witness.queue_push(2);
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::AvatarUpdatePlayerDetailed {
+                position: (3.0, 4.0, 5.0),
+                yaw: 1.0,
+                pitch: 0.5,
+                roll: 0.25
+            })
+        );
+        assert!(matches!(
+            bundle.get(1),
+            Some(ClientMessage::EntityUpdate { id: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn an_unchanged_player_position_is_skipped_when_recent() {
+        let mut self_entity = EntitySnapshot::new(1, 1, (3.0, 0.0, 0.0));
+        self_entity.vehicle_id = Some(2); // a reference position rides anyway
+        let mut world = WitnessWorld {
+            witness: Witness::new(1, self_entity),
+        };
+        world.witness.set_max_time_between_player_updates(10);
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(matches!(
+            bundle.first(),
+            Some(ClientMessage::RelativePosition { .. })
+        ));
+        assert!(matches!(
+            bundle.get(1),
+            Some(ClientMessage::AvatarUpdatePlayerDetailed { .. })
+        ));
+
+        // The same tick's worth of budget: recent and unchanged, so the
+        // player position is not repeated.
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(
+            !bundle
+                .iter()
+                .any(|m| matches!(m, ClientMessage::AvatarUpdatePlayerDetailed { .. }))
+        );
+
+        // Moving reopens the tap.
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.position = (4.0, 0.0, 0.0);
+        world.witness.upsert_entity(self_entity);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(matches!(
+            bundle.get(1),
+            Some(ClientMessage::AvatarUpdatePlayerDetailed {
+                position: (4.0, 0.0, 0.0),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_client_controlled_witness_uses_the_client_reference() {
+        let mut self_entity = EntitySnapshot::new(1, 1, (0.0, 0.0, 0.0));
+        self_entity.controlled_by_self = true;
+        let mut world = WitnessWorld {
+            witness: Witness::new(1, self_entity),
+        };
+
+        // Before the client has ever sent a reference we pick one ourselves.
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::RelativePosition {
+                position: (0.0, 0.0, 0.0)
+            })
+        );
+        // And a client-controlled entity never gets its position repeated.
+        assert!(
+            !bundle
+                .iter()
+                .any(|m| matches!(m, ClientMessage::AvatarUpdatePlayerDetailed { .. }))
+        );
+
+        // Once the client supplies its sequence, only that rides.
+        world.witness.set_client_reference_sequence(7);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::RelativePositionReference { sequence_number: 7 })
+        );
+    }
+
+    #[test]
+    fn history_events_ride_the_projection_in_order() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut entity = EntitySnapshot::new(2, 1, (3.0, 0.0, 0.0));
+        entity.volatile = VolatileInfo::NONE; // the select rides first
+        entity.events = vec![
+            HistoryEvent {
+                number: 5,
+                level: HistoryLevel::Priority(10_000.0), // squared: 100m
+                payload_bytes: 6,
+            },
+            HistoryEvent {
+                number: 7,
+                level: HistoryLevel::Detail(1),
+                payload_bytes: 2,
+            },
+        ];
+        seed_observer(&mut world, entity.clone());
+        // the client knows this entity by alias
+        world.witness.cache_mut(2).id_alias = 5;
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::SelectAliasedEntity { id_alias: 5 })
+        );
+        match bundle.get(1) {
+            Some(ClientMessage::EntityUpdate {
+                id,
+                id_alias,
+                events,
+                bytes,
+                ..
+            }) => {
+                assert_eq!(*id, 2);
+                assert_eq!(*id_alias, Some(5));
+                assert_eq!(events, &[5, 7]);
+                // alias 1 + no position + no direction + (4+6) + (4+2)
+                assert_eq!(*bytes, 17);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // The same shape without an alias: the full id rides the select,
+        // and the detail increase does not repeat it.
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        entity.events = vec![entity.events[1]];
+        entity.lod_levels = 2;
+        entity.lod_thresholds = vec![
+            LodLevelThreshold {
+                low: -1.0,
+                high: 1600.0,
+            },
+            LodLevelThreshold {
+                low: 900.0,
+                high: 1600.0,
+            },
+        ];
+        seed_observer(&mut world, entity.clone());
+        world.witness.cache_mut(2).detail_level = 1;
+        world.witness.upsert_entity(entity);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(bundle.first(), Some(&ClientMessage::SelectEntity { id: 2 }));
+        assert_eq!(
+            bundle.get(1),
+            Some(&ClientMessage::EntityUpdate {
+                id: 2,
+                id_alias: None,
+                pos: PosProjection::None,
+                dir: DirProjection::None,
+                events: vec![7],
+                bytes: 10,
+            })
+        );
+        assert_eq!(
+            bundle.get(2),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: None,
+                detail_level: 0
+            })
+        );
+    }
+
+    #[test]
+    fn out_of_range_events_are_not_sent_but_the_number_still_advances() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, EntitySnapshot::new(2, 1, (3.0, 0.0, 0.0)));
+
+        // squared threshold 16: at distance 3 (9) the event goes out.
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.events = vec![HistoryEvent {
+            number: 5,
+            level: HistoryLevel::Priority(16.0),
+            payload_bytes: 4,
+        }];
+        entity.last_event_number = 5;
+        world.witness.upsert_entity(entity);
+
+        let sent = first_entity_update(&mut world);
+        match sent {
+            ClientMessage::EntityUpdate { events, .. } => assert_eq!(events, &[5]),
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // Step the entity past the threshold with a fresh event; the new
+        // one is suppressed, and the cache still catches up.
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.position = (5.0, 0.0, 0.0);
+        entity.events.push(HistoryEvent {
+            number: 6,
+            level: HistoryLevel::Priority(16.0),
+            payload_bytes: 4,
+        });
+        entity.last_event_number = 6;
+        world.witness.upsert_entity(entity);
+        let sent = first_entity_update(&mut world);
+        match sent {
+            ClientMessage::EntityUpdate { events, .. } => assert!(events.is_empty()),
+            other => panic!("unexpected message: {other:?}"),
+        }
+        let cache = world.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(cache.last_event_number(), 6);
+    }
+
+    #[test]
+    fn the_detail_level_transitions_stamp_and_resend() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut entity = EntitySnapshot::new(2, 1, (5.0, 0.0, 0.0));
+        entity.lod_levels = 2;
+        entity.lod_thresholds = vec![
+            LodLevelThreshold {
+                low: -1.0,
+                high: 1600.0, // 40m squared
+            },
+            LodLevelThreshold {
+                low: 900.0, // 30m squared
+                high: 1600.0,
+            },
+        ];
+        seed_observer(&mut world, entity);
+        // `addOuterDetailLevel` leaves entry one level below the outermost.
+        world.witness.cache_mut(2).detail_level = 1;
+        world.witness.cache_mut(2).id_alias = 7;
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.last(),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: Some(7),
+                detail_level: 0
+            })
+        );
+        assert_eq!(world.witness.aoi_map.get(&2).unwrap().detail_level(), 0);
+
+        // Move out past 40m: both levels stamp their events on the way up.
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.position = (50.0, 0.0, 0.0);
+        world.witness.upsert_entity(entity);
+        world.witness.update();
+        let cache = world.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(cache.detail_level(), 2);
+        let stamps = cache.lod_event_numbers();
+        assert_eq!(stamps[0], 0);
+        assert_eq!(stamps[1], 0);
+    }
+
+    #[test]
+    fn a_detail_increase_selects_the_entity_first() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut entity = EntitySnapshot::new(2, 1, (5.0, 0.0, 0.0));
+        entity.volatile = VolatileInfo::NONE; // no volatile select ahead
+        entity.lod_levels = 2;
+        entity.lod_thresholds = vec![
+            LodLevelThreshold {
+                low: -1.0,
+                high: 1600.0,
+            },
+            LodLevelThreshold {
+                low: 900.0,
+                high: 1600.0,
+            },
+        ];
+        seed_observer(&mut world, entity.clone());
+        world.witness.cache_mut(2).detail_level = 1;
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(matches!(
+            bundle.first(),
+            Some(ClientMessage::EntityUpdate { .. })
+        ));
+        assert_eq!(bundle.get(1), Some(&ClientMessage::SelectEntity { id: 2 }));
+        assert_eq!(
+            bundle.get(2),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: None,
+                detail_level: 0
+            })
+        );
+
+        // The aliased shape selects by alias instead.
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, entity.clone());
+        world.witness.cache_mut(2).detail_level = 1;
+        world.witness.cache_mut(2).id_alias = 7;
+        world.witness.upsert_entity(entity);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.get(1),
+            Some(&ClientMessage::SelectAliasedEntity { id_alias: 7 })
+        );
+        assert_eq!(
+            bundle.get(2),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: Some(7),
+                detail_level: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_coincident_scheme_projects_from_zero_priority() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut entity = EntitySnapshot::new(2, 1, (600.0, 0.0, 0.0));
+        entity.aoi_update_scheme_id = 1; // custom schemes are coincident
+        seed_observer(&mut world, entity);
+
+        // Coincident entities read as LoD priority 0, so even a 600m offset
+        // keeps every direction angle; the position itself is past the
+        // packed limits and goes out detailed.
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, dir, .. } => {
+                assert!(matches!(pos, PosProjection::Detailed { .. }));
+                assert_eq!(
+                    dir,
+                    DirProjection::YawPitchRoll {
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        roll: 0.0
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clearing_the_update_size_returns_to_the_computed_payload() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, EntitySnapshot::new(2, 1, (10.0, 0.0, 0.0)));
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        // The harness fix charges 25 regardless of the body.
+        world.witness.set_entity_update_bytes(25);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(matches!(
+            bundle.first(),
+            Some(ClientMessage::EntityUpdate { bytes: 25, .. })
+        ));
+
+        world.witness.clear_entity_update_bytes();
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        // The volatile number has not moved, so the second body is only the
+        // entity id.
+        assert!(matches!(
+            bundle.first(),
+            Some(ClientMessage::EntityUpdate { bytes: 4, .. })
+        ));
+        // two passes have run
+        assert_eq!(world.witness.time(), 3);
+    }
+
+    #[test]
+    fn the_budget_counts_the_real_payload() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, EntitySnapshot::new(2, 1, (10.0, 0.0, 0.0)));
+        world.witness.set_witness_capacity(4400, 10); // 27 bytes a tick
+        // No harness fix this time: a 19-byte update goes out, and the
+        // 8-byte headroom cannot fit a second one.
+        let ids = update_ids(&mut world);
+        assert_eq!(ids, vec![2]);
         assert_eq!(world.witness.bandwidth_deficit(), 0);
+        let cache = world.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(cache.priority(), 0.0);
+    }
+
+    #[test]
+    fn vehicle_changes_ride_updates() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut rider = EntitySnapshot::new(2, 1, (6.0, 0.0, 0.0));
+        rider.vehicle_change_num = 3;
+        seed_observer(&mut world, rider.clone());
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::SetVehicle {
+                passenger_id: 2,
+                vehicle_id: None
+            })
+        );
+        assert!(matches!(
+            bundle.get(1),
+            Some(ClientMessage::EntityUpdate { .. })
+        ));
+        // stamped, so the next pass does not repeat it
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(
+            !bundle
+                .iter()
+                .any(|m| matches!(m, ClientMessage::SetVehicle { .. }))
+        );
+    }
+
+    #[test]
+    fn volatile_info_thresholds_match_the_reference() {
+        let info = VolatileInfo::from_thresholds(Some(10.0), Some(10.0), Some(8.0), Some(5.0));
+        assert_eq!(info.position_priority, 100.0);
+        assert!(info.should_send_position());
+        // squared distance 100 clears the pitch (64) and roll (25) but not
+        // the yaw (100): yaw only.
+        assert_eq!(info.dir_type(100.0), 2);
+        assert_eq!(info.dir_type(101.0), 3);
+        // 20 sits under the roll's 25: every angle rides.
+        assert_eq!(info.dir_type(20.0), 0);
+        assert!(info.has_volatile(99.0));
+        assert!(!info.has_volatile(100.0));
+
+        // -1 means ALWAYS, no section means the axis is off.
+        let always = VolatileInfo::from_thresholds(Some(-1.0), Some(-1.0), Some(-1.0), Some(-1.0));
+        assert_eq!(always.position_priority, VOLATILE_ALWAYS);
+        assert!(always.has_volatile(0.0));
+        assert!(!VolatileInfo::NONE.has_volatile(0.0));
+        assert!(!VolatileInfo::NONE.should_send_position());
     }
 
     #[test]
