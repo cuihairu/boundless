@@ -21,6 +21,7 @@ pub mod error;
 pub mod lookup;
 pub mod namer;
 pub mod record;
+pub mod recovery;
 pub mod retry;
 pub mod storage;
 pub mod transaction;
@@ -46,6 +47,7 @@ pub use namer::{
     PARENTID_COLUMN_NAME, TABLE_NAME_PREFIX, TIMESTAMP_COLUMN_NAME, column_index_type,
 };
 pub use record::EntityRecord;
+pub use recovery::{TRANSACTION_ATTEMPTS, query_with_reconnect, retry_query, retry_transaction};
 pub use retry::{
     CR_CONN_HOST_ERROR, CR_CONNECTION_ERROR, CR_SERVER_GONE_ERROR, CR_SERVER_LOST, DatabaseFailure,
     ER_LOCK_DEADLOCK, ER_LOCK_WAIT_TIMEOUT, RetryTask, RunReport, failure_from_db_error,

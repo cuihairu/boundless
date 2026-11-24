@@ -107,10 +107,10 @@ impl DatabaseFailure {
 /// A [`DbError`] a backend raises for one of the transient conditions carries
 /// the same verdict as [`DatabaseFailure::Retryable`].
 pub fn failure_from_db_error(error: &DbError, message: &str) -> DatabaseFailure {
-    if error == &DbError::Retry {
-        DatabaseFailure::Retryable(message.to_owned())
-    } else {
-        DatabaseFailure::Fatal(message.to_owned())
+    match error {
+        DbError::Retry => DatabaseFailure::Retryable(message.to_owned()),
+        DbError::LostConnection => DatabaseFailure::LostConnection(message.to_owned()),
+        _ => DatabaseFailure::Fatal(message.to_owned()),
     }
 }
 
@@ -444,6 +444,10 @@ mod tests {
         assert_eq!(
             failure_from_db_error(&DbError::NotFound, "missing"),
             DatabaseFailure::Fatal("missing".to_owned())
+        );
+        assert_eq!(
+            failure_from_db_error(&DbError::LostConnection, "gone"),
+            DatabaseFailure::LostConnection("gone".to_owned())
         );
     }
 }

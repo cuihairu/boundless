@@ -22,6 +22,10 @@ pub enum DbError {
     /// unreachable): the caller may retry. Mirrors the reference `RETRY`
     /// status.
     Retry,
+    /// The backend connection dropped mid-operation — the `CR_SERVER_GONE`
+    /// family (`database_exception.cpp:39-44`). The statement may be re-run
+    /// once on a re-established connection, or reported as terminal.
+    LostConnection,
     /// A backend or contract failure with a human-readable message.
     Storage(String),
 }
@@ -32,6 +36,7 @@ impl fmt::Display for DbError {
             DbError::NotFound => write!(f, "entity not found"),
             DbError::AlreadyExists => write!(f, "entity already exists"),
             DbError::Retry => write!(f, "storage busy, retry"),
+            DbError::LostConnection => write!(f, "connection lost"),
             DbError::Storage(msg) => write!(f, "storage error: {msg}"),
         }
     }
@@ -48,6 +53,7 @@ mod tests {
         assert_eq!(DbError::NotFound.to_string(), "entity not found");
         assert_eq!(DbError::AlreadyExists.to_string(), "entity already exists");
         assert_eq!(DbError::Retry.to_string(), "storage busy, retry");
+        assert_eq!(DbError::LostConnection.to_string(), "connection lost");
         assert_eq!(
             DbError::Storage("disk full".into()).to_string(),
             "storage error: disk full"
