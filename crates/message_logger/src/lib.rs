@@ -21,6 +21,7 @@ pub mod blob_args;
 pub mod bsd_format;
 pub mod component_message;
 pub mod entry;
+pub mod file_logger;
 pub mod format_data;
 pub mod format_string;
 pub mod forwarding_handler;

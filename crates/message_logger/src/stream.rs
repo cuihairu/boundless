@@ -169,6 +169,11 @@ impl<'a> MemoryIStream<'a> {
             .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
     }
 
+    /// `tell()` — where the next read starts.
+    pub fn position(&self) -> usize {
+        self.offset
+    }
+
     /// `remainingLength()`.
     pub fn remaining(&self) -> usize {
         self.data.len() - self.offset

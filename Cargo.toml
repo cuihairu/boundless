@@ -68,7 +68,7 @@ python-host = { path = "crates/python-host" }
 # first consumer (BW-17-01-06).
 watcher = { path = "crates/watcher" }
 server-runtime = { path = "crates/server-runtime" }
-# client = { path = "crates/client" }  # re-add with first consumer
+client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
 # load = { path = "crates/load" }  # re-add with first consumer
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }
