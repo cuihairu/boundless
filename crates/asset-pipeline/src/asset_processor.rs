@@ -40,15 +40,18 @@ pub fn outside_chunk_identifier(position: Vector3, chunk_size: f32) -> String {
     let gridxs = grid_x as u16;
     let gridzs = grid_z as u16;
 
+    // The reference formats are "%01xxxx%01xxxx/sep/", "%02xxx%02xxx/sep/"
+    // and "%03xx%03xx/sep/" — 3, 2 and 1 literal x per side after the
+    // `%01x`/`%02x`/`%03x` fields.
     let mut identifier = String::new();
     if gridxs.wrapping_add(4096) >= 8192 || gridzs.wrapping_add(4096) >= 8192 {
         identifier += &format!("{:01x}xxx{:01x}xxx/sep/", gridxs >> 12, gridzs >> 12);
     }
     if gridxs.wrapping_add(256) >= 512 || gridzs.wrapping_add(256) >= 512 {
-        identifier += &format!("{:02x}xxx{:02x}xxx/sep/", gridxs >> 8, gridzs >> 8);
+        identifier += &format!("{:02x}xx{:02x}xx/sep/", gridxs >> 8, gridzs >> 8);
     }
     if gridxs.wrapping_add(16) >= 32 || gridzs.wrapping_add(16) >= 32 {
-        identifier += &format!("{:03x}xx{:03x}xx/sep/", gridxs >> 4, gridzs >> 4);
+        identifier += &format!("{:03x}x{:03x}x/sep/", gridxs >> 4, gridzs >> 4);
     }
     identifier += &format!("{:04x}{:04x}o", gridxs, gridzs);
     identifier
@@ -277,12 +280,12 @@ mod tests {
 
         assert_eq!(at(0.0, 0.0), "00000000o");
         assert_eq!(at(250.0, 250.0), "00020002o");
-        // x grid 16 trips the third level.
-        assert_eq!(at(1650.0, 20.0), "001xx000xx/sep/00100000o");
+        // x grid 16 trips the third level ("%03xx%03xx/sep/").
+        assert_eq!(at(1650.0, 20.0), "001x000x/sep/00100000o");
         // x grid 4096 trips all three levels.
         assert_eq!(
             at(409_600.0, 20.0),
-            "1xxx0xxx/sep/10xxx00xxx/sep/100xx000xx/sep/10000000o"
+            "1xxx0xxx/sep/10xx00xx/sep/100x000x/sep/10000000o"
         );
         // Negative grids truncate into the u16 top.
         assert_eq!(at(-100.0, -100.0), "ffffffffo");
