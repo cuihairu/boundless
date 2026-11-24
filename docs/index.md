@@ -19,6 +19,10 @@ starts here.
 | Connect a client or an engine | [Client SDK](/guide/client-sdk) and [Engine integration](/guide/engine-integration) |
 | See which processes exist and what is wired | [Process topology](/architecture/process-topology) |
 | Check a version, platform or engine target | [Compatibility matrix](/architecture/compatibility-matrix) |
+| Understand the reliable-UDP wire protocol | [Mercury protocol](/architecture/mercury-protocol) |
+| Follow a definition from XML to a live entity | [Entity pipeline](/architecture/entity-pipeline) |
+| See how an entity row reaches the database | [Database model](/architecture/database-model) |
+| Understand resource path resolution | [Resource system](/architecture/resource-system) |
 | Look up a config key or a CLI flag | [Configuration reference](/reference/configuration) and [CLI reference](/reference/cli) |
 | See what each crate exports | [Script and SDK API](/reference/api) |
 | Plan a MySQL to PostgreSQL migration | [Database migration and recovery](/operations/database) |
@@ -68,12 +72,12 @@ and, where a page describes a target that is not implemented yet, names the
 | Mercury message layer and RPC | Implemented (`BW-02-02`) | `crates/mercury/src/{interfaces,interface_table,interface_element,request_manager,reply_order}.rs` |
 | Mercury channel lifecycle and retransmission | Partial (`BW-02-03-01..03`: packet/bundle codec, channel registration, acks and send window); `BW-02-03-04..07` pending | `crates/mercury/src/{udp_channel,channel_map,unacked_packet,udp_bundle}.rs` |
 | bwmachined message contracts | Types only, no consumer yet | `crates/contracts/src/machined.rs` |
-| CPython host and object bridge | Implemented (**BW-03-01/02**); script modules and role APIs pending (**BW-03-03/04**) | `crates/python-host/src/` (`interpreter`, `binding`, `wrapper`, `gil`, …) |
+| CPython host and object bridge | Implemented (**BW-03**); watcher/log/BWConfig script faces recorded `Pending` in the crate manifest | `crates/python-host/src/` (`interpreter`, `binding`, `wrapper`, `gil`, …, `manifest`) |
 | Entity definition compilation and data streams | Implemented (**BW-04-01..04**) | `crates/entitydef/src/` |
 | Shared test framework and layering checker | Implemented (**BW-16-01**, **BW-18-01/02**) | `crates/test-support/src/{harness,clock,multiproc,layering}.rs` |
-| PostgreSQL persistence | Not implemented | `todo.md` BW-09-06 |
+| Persistence contract and PostgreSQL mapping | Implemented for backend selection, schema init, dry-run and upgrade planning (`BW-09-06-01..03`, `BW-09-07-01..03`); write, delete, lookup and DBID allocation pending | `crates/db/`, `crates/db-postgres/`, `todo.md` BW-09-06-04..11 |
 | FantasyDemo examples | Not implemented | `todo.md` BW-14 |
-| Bots load testing | Not implemented | `todo.md` BW-17 |
+| Bots load testing | Implemented for the bot runtime, fleet control and the four scenarios (**BW-17-01**, **BW-17-02**); metrics and remaining workflows pending | `crates/load/src/`, `todo.md` BW-17 |
 | Client SDK and engine bindings | Not implemented | `todo.md` BW-21 |
 
 ::: warning No logo or design assets

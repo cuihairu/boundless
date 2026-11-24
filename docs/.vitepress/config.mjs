@@ -68,6 +68,15 @@ const architectureSidebar = [
     ]
   },
   {
+    text: "Subsystems",
+    items: [
+      { text: "Mercury protocol", link: "/architecture/mercury-protocol" },
+      { text: "Entity pipeline", link: "/architecture/entity-pipeline" },
+      { text: "Database model", link: "/architecture/database-model" },
+      { text: "Resource system", link: "/architecture/resource-system" }
+    ]
+  },
+  {
     text: "Compatibility",
     items: [
       { text: "Compatibility matrix", link: "/architecture/compatibility-matrix" }
