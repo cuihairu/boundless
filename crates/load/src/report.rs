@@ -174,6 +174,98 @@ impl LatencyStats {
     }
 }
 
+/// BW-17-03-04: the bandwidth and resource usage of one run.
+///
+/// The acceptance asks the report to state the metric definitions (the
+/// 口径) and the sampling period (采样周期), so the section carries them
+/// explicitly alongside the figures: bandwidth is total bytes over the
+/// whole run (not a rate - the sampling period multiplies out), CPU is
+/// the load generator's own process as permille of one core with one
+/// sample per period, and memory is the peak resident set in bytes. The
+/// reference bots have no resource recorder - this is the port's own
+/// accounting of its generator, defined by the documentation item.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResourceStats {
+    sampling_period_millis: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
+    cpu_permille_sorted: Vec<u64>,
+    peak_rss_bytes: u64,
+}
+
+/// The metric definitions the section states, in the order the JSON
+/// carries them (`definitions` object).
+const CPU_DEFINITION: &str =
+    "load-generator process CPU, permille of one core, one sample per period";
+const BANDWIDTH_DEFINITION: &str = "total bytes over the whole run, bot transport summed";
+const RSS_DEFINITION: &str = "load-generator process peak resident set, bytes";
+
+impl ResourceStats {
+    /// Reduce one run's recordings: the observation period every sample
+    /// was taken on, the transport totals, the CPU samples and the peak
+    /// resident set.
+    pub fn from_run(
+        sampling_period_millis: u64,
+        bytes_sent: u64,
+        bytes_received: u64,
+        cpu_permille: &[u64],
+        peak_rss_bytes: u64,
+    ) -> Self {
+        let mut cpu_permille_sorted = cpu_permille.to_vec();
+        cpu_permille_sorted.sort_unstable();
+        Self {
+            sampling_period_millis,
+            bytes_sent,
+            bytes_received,
+            cpu_permille_sorted,
+            peak_rss_bytes,
+        }
+    }
+
+    /// The period every CPU sample was taken on, in milliseconds.
+    pub fn sampling_period_millis(&self) -> u64 {
+        self.sampling_period_millis
+    }
+
+    /// Mean CPU over the samples, permille of one core; 0 with no
+    /// samples.
+    pub fn cpu_mean_permille(&self) -> u64 {
+        if self.cpu_permille_sorted.is_empty() {
+            0
+        } else {
+            let total: u64 = self.cpu_permille_sorted.iter().sum();
+            total / self.cpu_permille_sorted.len() as u64
+        }
+    }
+
+    /// Peak CPU sample, permille of one core; 0 with no samples.
+    pub fn cpu_peak_permille(&self) -> u64 {
+        self.cpu_permille_sorted.last().copied().unwrap_or(0)
+    }
+
+    /// The machine-readable section under the report's `resource` key:
+    /// the figures, the sampling period, and the metric definitions.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "sampling_period_millis": self.sampling_period_millis,
+            "bandwidth": {
+                "sent_bytes": self.bytes_sent,
+                "received_bytes": self.bytes_received,
+            },
+            "cpu": {
+                "mean_permille": self.cpu_mean_permille(),
+                "peak_permille": self.cpu_peak_permille(),
+            },
+            "peak_rss_bytes": self.peak_rss_bytes,
+            "definitions": {
+                "bandwidth": BANDWIDTH_DEFINITION,
+                "cpu": CPU_DEFINITION,
+                "rss": RSS_DEFINITION,
+            },
+        })
+    }
+}
+
 /// The traceable envelope of one scenario run: who ran, against what, and
 /// with which fixed seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +292,9 @@ pub struct ScenarioReport {
     /// The latency/timeout section (BW-17-03-03); `None` while a run has
     /// recorded nothing.
     pub latency: Option<LatencyStats>,
+    /// The bandwidth/resource section (BW-17-03-04); `None` while a run
+    /// has recorded nothing.
+    pub resource: Option<ResourceStats>,
 }
 
 impl ScenarioReport {
@@ -221,6 +316,7 @@ impl ScenarioReport {
             total_seconds: stages.total().as_secs(),
             login: None,
             latency: None,
+            resource: None,
         }
     }
 
@@ -242,6 +338,7 @@ impl ScenarioReport {
             },
             "login": self.login.as_ref().map(LoginStats::to_json),
             "latency": self.latency.as_ref().map(LatencyStats::to_json),
+            "resource": self.resource.as_ref().map(ResourceStats::to_json),
         })
     }
 
@@ -427,6 +524,47 @@ mod tests {
     }
 
     #[test]
+    fn the_section_states_the_definitions_and_the_period() {
+        // The acceptance: the metric definitions and the sampling period
+        // are part of the document, not folklore.
+        let stats = ResourceStats::from_run(1000, 4096, 8192, &[500, 700], 1 << 20);
+        assert_eq!(stats.sampling_period_millis(), 1000);
+        let section = stats.to_json();
+        assert_eq!(section["sampling_period_millis"], 1000);
+        assert_eq!(section["definitions"]["cpu"], CPU_DEFINITION);
+        assert_eq!(section["definitions"]["bandwidth"], BANDWIDTH_DEFINITION);
+        assert_eq!(section["definitions"]["rss"], RSS_DEFINITION);
+        assert_eq!(section["cpu"]["mean_permille"], 600);
+        assert_eq!(section["cpu"]["peak_permille"], 700);
+        assert_eq!(section["bandwidth"]["sent_bytes"], 4096);
+        assert_eq!(section["bandwidth"]["received_bytes"], 8192);
+        assert_eq!(section["peak_rss_bytes"], 1 << 20);
+    }
+
+    #[test]
+    fn cpu_samples_sort_for_the_peak_and_mean() {
+        // Input order is irrelevant; an empty sample set reads zero.
+        let stats = ResourceStats::from_run(500, 0, 0, &[900, 100], 0);
+        assert_eq!(stats.cpu_mean_permille(), 500);
+        assert_eq!(stats.cpu_peak_permille(), 900);
+        let empty = ResourceStats::from_run(500, 0, 0, &[], 0);
+        assert_eq!(empty.cpu_mean_permille(), 0);
+        assert_eq!(empty.cpu_peak_permille(), 0);
+    }
+
+    #[test]
+    fn the_report_carries_the_resource_section_when_recorded() {
+        let mut completed = report();
+        completed.resource = Some(ResourceStats::from_run(1000, 1, 2, &[1], 3));
+        let value = completed.to_json();
+        assert_eq!(value["resource"]["sampling_period_millis"], 1000);
+        assert_eq!(value["resource"]["peak_rss_bytes"], 3);
+
+        let bare = report().to_json();
+        assert!(bare["resource"].is_null());
+    }
+
+    #[test]
     fn a_report_can_be_built_directly() {
         // A caller that recorded its own run states the envelope fields
         // itself; the rendering is the same document.
@@ -442,6 +580,7 @@ mod tests {
             total_seconds: 0,
             login: None,
             latency: None,
+            resource: None,
         };
         let value = report.to_json();
         assert_eq!(value["version"], "9.9.9");
