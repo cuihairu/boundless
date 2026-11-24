@@ -21,6 +21,7 @@
 //! and [`foundation`] for the id vocabulary.
 
 pub mod accounts;
+pub mod backup;
 pub mod dry_run;
 pub mod import_mysql;
 pub mod json;
@@ -30,6 +31,7 @@ pub mod store;
 pub mod upgrade;
 
 pub use accounts::{AccountRow, account_table_ddl};
+pub use backup::{DbBackup, EntityTypeBackup, export_backup, restore_backup};
 pub use import_mysql::{ImportReport, MySqlEntityRow, import_accounts, import_entities};
 pub use schema::{ColumnKind, EntitySchema, column_name, entity_table_name, quote_ident};
 pub use schema_init::{CURRENT_VERSION, OLDEST_SUPPORTED_VERSION};
