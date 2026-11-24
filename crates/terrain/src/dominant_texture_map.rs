@@ -110,6 +110,21 @@ pub fn is_zip_block(data: &[u8]) -> bool {
         && u32::from_le_bytes(data[4..8].try_into().unwrap()) == ZIP_MAGIC2
 }
 
+/// `BinaryBlock::compress` (`binary_block.cpp:289-340`, default level 6):
+/// `COMPRESSED_MAGIC1`, `COMPRESSED_MAGIC2`, the uncompressed size, then
+/// the zlib stream.
+pub fn zip_compress(data: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut out = Vec::with_capacity(data.len() + ZIP_HEADER_SIZE + 64);
+    out.extend_from_slice(&ZIP_MAGIC1.to_le_bytes());
+    out.extend_from_slice(&ZIP_MAGIC2.to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    let mut z = flate2::write::ZlibEncoder::new(&mut out, flate2::Compression::new(6));
+    z.write_all(data).expect("zlib compress cannot fail here");
+    drop(z);
+    out
+}
+
 /// `BinaryBlock::decompress` (`binary_block.cpp:350-393`): the third header
 /// word is the uncompressed size, the rest is a zlib stream. The reference
 /// `MF_ASSERT`s `uncompress == Z_OK` — a corrupt or overlong stream panics
@@ -162,12 +177,24 @@ impl U8Image {
         self.data.copy_from_slice(&bytes[..n]);
     }
 
+    /// Clamping `set` like the reference image (`image.ipp:1676-1689`).
+    pub fn set(&mut self, x: i32, y: i32, value: u8) {
+        let x = x.clamp(0, self.width as i32 - 1) as u32;
+        let y = y.clamp(0, self.height as i32 - 1) as u32;
+        self.data[(y * self.width + x) as usize] = value;
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// The packed image bytes (`image().copyTo` walks the same buffer).
+    pub fn image_data(&self) -> &[u8] {
+        &self.data
     }
 }
 
@@ -292,7 +319,67 @@ impl DominantTextureMap2 {
     pub fn texture_names(&self) -> &[String] {
         &self.texture_names
     }
+
+    /// `DominantTextureMap2::save`
+    /// (`dominant_texture_map2.cpp:214-272`, `EDITOR_ENABLED`): header
+    /// (always `VERSION_ZIP`), a fixed-width NUL-padded name table where
+    /// every entry is `textureNameSize` wide, then the zlib-compressed
+    /// image (`BinaryBlock::compress`, `canZip(false)` on the wrapper).
+    ///
+    /// The name width is the longest name; `strncpy` zero-fills the tail,
+    /// so a zero length cannot happen without empty names — the reference
+    /// errors out first (`:232-237`) and the port mirrors that as `Err`.
+    pub fn save(&self) -> Result<Vec<u8>, DominantSaveError> {
+        let num_textures = self.texture_names.len() as u32;
+        let texture_name_size = self
+            .texture_names
+            .iter()
+            .map(|name| name.len() as u32)
+            .max()
+            .unwrap_or(0);
+        if texture_name_size == 0 || self.image.image_data().is_empty() {
+            return Err(DominantSaveError);
+        }
+
+        let mut out = Vec::with_capacity(
+            DOMINANT_HEADER_SIZE
+                + (texture_name_size as usize * num_textures as usize)
+                + self.image.image_data().len(),
+        );
+        out.extend_from_slice(&DOMINANT_MAGIC.to_le_bytes());
+        out.extend_from_slice(&DOMINANT_VERSION_ZIP.to_le_bytes());
+        out.extend_from_slice(&num_textures.to_le_bytes());
+        out.extend_from_slice(&texture_name_size.to_le_bytes());
+        out.extend_from_slice(&self.image.width().to_le_bytes());
+        out.extend_from_slice(&self.image.height().to_le_bytes());
+        // pad_[2] never written by the reference either (ZeroMemory'd
+        // buffer semantics: the vector was value-initialised to 0).
+        out.extend_from_slice(&[0u8; 8]);
+
+        for name in &self.texture_names {
+            let start = out.len();
+            out.resize(start + texture_name_size as usize, 0);
+            let bytes = name.as_bytes();
+            out[start..start + bytes.len()].copy_from_slice(bytes);
+        }
+
+        out.extend_from_slice(&zip_compress(self.image.image_data()));
+        Ok(out)
+    }
 }
+
+/// `DominantTextureMap2::save` failure (`dominant_texture_map2.cpp:232-237`):
+/// "Failed to save dominant texture map: empty texture names and/or image".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DominantSaveError;
+
+impl core::fmt::Display for DominantSaveError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Failed to save dominant texture map: empty texture names and/or image\n")
+    }
+}
+
+impl std::error::Error for DominantSaveError {}
 
 #[cfg(test)]
 mod tests {

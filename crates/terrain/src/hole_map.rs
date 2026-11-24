@@ -175,6 +175,14 @@ impl BoolImage {
         self.height
     }
 
+    /// The packed bytes `image_.copyTo` walks (`rawDataSize` rows of
+    /// `rawRowSize`; an unallocated image has no bytes — the save face
+    /// never reaches it with one, and the reference would read through a
+    /// null pointer there).
+    pub fn raw(&self) -> &[u8] {
+        self.data.as_deref().unwrap_or(&[])
+    }
+
     /// `getRawRow(y)` (`image.ipp:1658-1663`): the top is the only clamp —
     /// `y >= height - 1` snaps to the last row.
     fn get_raw_row_mut(&mut self, y: u32) -> &mut [u8] {
@@ -190,7 +198,8 @@ impl BoolImage {
 }
 
 /// Reader face of `TerrainHoleMap2` (the server build; the client-only
-/// DXT1 texture face and `save` are not ported — registered boundary).
+/// DXT1 texture face is not ported — registered boundary). The `EDITOR`
+/// save face lives at [`TerrainHoleMap2::save`].
 #[derive(Debug, Clone)]
 pub struct TerrainHoleMap2 {
     block_size: f32,
@@ -319,6 +328,23 @@ impl TerrainHoleMap2 {
         self.all_holes = false;
         self.no_holes = true;
         self.image.clear();
+    }
+
+    /// `TerrainHoleMap2::save` (`terrain_hole_map2.cpp:303-331`,
+    /// `EDITOR_ENABLED`): the 16-byte `HolesHeader` (version 1, written
+    /// here and never read back) followed by the packed image bytes, the
+    /// whole thing going through `BinaryBlock::compress` (`canZip(false)`
+    /// on the wrapper). The reference wraps the copy in a read-only
+    /// `lock`/`unlock` pair; that pairing is bookkeeping the port's
+    /// callers already own, so the save reads the image directly.
+    pub fn save(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(HOLES_HEADER_SIZE + self.image.raw().len());
+        out.extend_from_slice(&HOLES_MAGIC.to_le_bytes());
+        out.extend_from_slice(&self.image.width().to_le_bytes());
+        out.extend_from_slice(&self.image.height().to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(self.image.raw());
+        crate::dominant_texture_map::zip_compress(&out)
     }
 
     /// `load(dataSection)` (`terrain_hole_map2.cpp:345-411`), server face.
