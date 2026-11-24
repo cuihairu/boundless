@@ -18,6 +18,7 @@ pub mod account;
 pub mod buffered_entity_tasks;
 pub mod connection;
 pub mod error;
+pub mod lock_recovery;
 pub mod log_on;
 pub mod record;
 pub mod retry;
@@ -31,6 +32,10 @@ pub use buffered_entity_tasks::{
 };
 pub use connection::StorageConnection;
 pub use error::DbError;
+pub use lock_recovery::{
+    LockClient, LockedConnection, NamedLock, generate_lock_name, is_lost_connection,
+    should_reconnect_and_retry, should_retry, transaction_should_retry,
+};
 pub use log_on::LogOnRecord;
 pub use record::EntityRecord;
 pub use retry::{Completion, run_with_retry};
