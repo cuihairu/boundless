@@ -35,6 +35,20 @@ pub const DEFAULT_AOI_RADIUS: f32 = 500.0;
 /// `CellAppConfig::witnessUpdateDeltaGrowthThrottle` default: 1 + 1/8.
 pub const WITNESS_UPDATE_DELTA_GROWTH_THROTTLE: f64 = 1.0 + 1.0 / 8.0;
 
+/// `CellAppConfig::witnessUpdateMaxPriorityDelta` default (`witness.cpp`).
+pub const MAX_PRIORITY_DELTA: f64 = 5.0;
+
+/// `UDP_OVERHEAD` (`basictypes.hpp`).
+pub const UDP_OVERHEAD: i32 = 28;
+
+/// `NETWORK_BITS_PER_BYTE` (`basictypes.hpp`).
+pub const NETWORK_BITS_PER_BYTE: i32 = 8;
+
+/// Stand-in encoded size of one entity update while BW-08-03-04 has not yet
+/// brought the real property payloads (the reference writes variable-length
+/// position/property data here).
+pub const DEFAULT_ENTITY_UPDATE_BYTES: usize = 100;
+
 // Flag bits, verbatim from `entity_cache.hpp` `enum // Flags bits`.
 pub const ENTER_PENDING: u16 = 1 << 0;
 pub const REQUEST_PENDING: u16 = 1 << 1;
@@ -159,6 +173,12 @@ pub fn default_aoi_scheme() -> AoIUpdateScheme {
     AoIUpdateScheme::init(1.0, 101.0, DEFAULT_AOI_RADIUS)
 }
 
+/// `ServerUtil::bpsToPacketSize` — bits per second to payload bytes per
+/// packet, minus the UDP/IP header overhead (`lib/server/util.hpp`).
+pub fn bps_to_packet_size(bits_per_second: i32, update_hertz: i32) -> i32 {
+    bits_per_second / (NETWORK_BITS_PER_BYTE * update_hertz) - UDP_OVERHEAD
+}
+
 /// `AoIUpdateSchemes::apply` — scheme 0 is the default; custom schemes come
 /// with bw.xml and are treated as coincident until BW-08-03-03 needs them.
 fn scheme_for(id: u8) -> AoIUpdateScheme {
@@ -209,6 +229,22 @@ pub enum ClientMessage {
         pitch: f32,
         roll: f32,
     },
+    /// One prioritised entity update from `Witness::sendQueueElement`. The
+    /// property/position body is BW-08-03-04; `bytes` is what it charged to
+    /// this tick's packet budget.
+    EntityUpdate { id: EntityId, bytes: usize },
+}
+
+impl ClientMessage {
+    /// Encoded size on the wire — what `Mercury::Bundle::size` would report.
+    pub fn wire_size(&self) -> usize {
+        match self {
+            ClientMessage::EntityUpdate { bytes, .. } => *bytes,
+            // The hand-written payloads of this module are small and fixed;
+            // only the per-update cost feeds the 03-03 budget gates.
+            _ => 8,
+        }
+    }
 }
 
 /// Port of `EntityCache` — what the Witness remembers about one observed
@@ -426,6 +462,18 @@ pub struct Witness {
     is_in_aoi_offload: bool,
     aoi_radius: f32,
     aoi_hyst: f32,
+    /// `maxPacketSize_` — payload bytes per tick, 0 until the proxy tells us
+    /// the client's rate via `setWitnessCapacity`.
+    max_packet_size: i32,
+    /// `bandwidthDeficit_` — bytes we overshot last tick, paid back now.
+    bandwidth_deficit: i32,
+    /// `CellApp::emergencyThrottle()` snapshot for this tick.
+    emergency_throttle: f32,
+    /// Encoded size charged per entity update (harness face; the real
+    /// payloads arrive with BW-08-03-04).
+    update_bytes: usize,
+    /// Running `Mercury::Bundle::size` for the budget gates.
+    bundle_bytes: usize,
 }
 
 impl Witness {
@@ -444,6 +492,11 @@ impl Witness {
             is_in_aoi_offload: false,
             aoi_radius: DEFAULT_AOI_RADIUS,
             aoi_hyst: 5.0,
+            max_packet_size: 0,
+            bandwidth_deficit: 0,
+            emergency_throttle: 1.0,
+            update_bytes: DEFAULT_ENTITY_UPDATE_BYTES,
+            bundle_bytes: 0,
         }
     }
 
@@ -476,6 +529,40 @@ impl Witness {
         self.aoi_hyst
     }
 
+    /// `Witness::setWitnessCapacity` — the proxy reports the client's rate;
+    /// a zero hertz leaves the packet size untouched.
+    pub fn set_witness_capacity(&mut self, bits_per_second: i32, update_hertz: i32) {
+        // a zero hertz leaves the packet size untouched
+        self.max_packet_size = if update_hertz != 0 {
+            bps_to_packet_size(bits_per_second, update_hertz)
+        } else {
+            self.max_packet_size
+        };
+    }
+
+    pub fn max_packet_size(&self) -> i32 {
+        self.max_packet_size
+    }
+
+    /// `CellApp::emergencyThrottle()` stand-in — the harness pins it per tick.
+    pub fn set_emergency_throttle(&mut self, throttle: f32) {
+        self.emergency_throttle = throttle;
+    }
+
+    /// Harness face for the encoded update size.
+    pub fn set_entity_update_bytes(&mut self, bytes: usize) {
+        self.update_bytes = bytes;
+    }
+
+    /// `Mercury::Bundle::size` readback.
+    pub fn bundle_size(&self) -> usize {
+        self.bundle_bytes
+    }
+
+    pub fn bandwidth_deficit(&self) -> i32 {
+        self.bandwidth_deficit
+    }
+
     /// `bundle()` — inspect queued messages without consuming them.
     pub fn bundle(&self) -> &[ClientMessage] {
         &self.bundle
@@ -483,6 +570,7 @@ impl Witness {
 
     /// Send everything queued and clear the bundle.
     pub fn take_bundle(&mut self) -> Vec<ClientMessage> {
+        self.bundle_bytes = 0;
         std::mem::take(&mut self.bundle)
     }
 
@@ -674,6 +762,13 @@ impl Witness {
         NO_ID_ALIAS
     }
 
+    /// Queue a client message, keeping the budget's byte count in step with
+    /// `Mercury::Bundle::size`.
+    fn push_message(&mut self, message: ClientMessage) {
+        self.bundle_bytes += message.wire_size();
+        self.bundle.push(message);
+    }
+
     /// `Witness::sendEnter` — hand out the alias, park the cache on
     /// REQUEST_PENDING and address the client.
     fn send_enter(&mut self, id: EntityId) {
@@ -688,12 +783,12 @@ impl Witness {
         cache.set_vehicle_change_num(entity.vehicle_change_num);
 
         match entity.vehicle_id {
-            Some(vehicle_id) => self.bundle.push(ClientMessage::EnterAoIOnVehicle {
+            Some(vehicle_id) => self.push_message(ClientMessage::EnterAoIOnVehicle {
                 id,
                 vehicle_id,
                 id_alias: alias,
             }),
-            None => self.bundle.push(ClientMessage::EnterAoI {
+            None => self.push_message(ClientMessage::EnterAoI {
                 id,
                 id_alias: alias,
             }),
@@ -718,7 +813,7 @@ impl Witness {
         // record is stale.
         let cached_num = self.cache_mut(id).vehicle_change_num();
         if cached_num != entity.vehicle_change_num {
-            self.bundle.push(ClientMessage::SetVehicle {
+            self.push_message(ClientMessage::SetVehicle {
                 passenger_id: id,
                 vehicle_id: entity.vehicle_id,
             });
@@ -746,7 +841,7 @@ impl Witness {
                 roll,
             }
         };
-        self.bundle.push(message);
+        self.push_message(message);
 
         // `addOuterDetailLevel` — created one level below outermost.
         self.cache_mut(id).add_outer_detail_level(&entity);
@@ -765,7 +860,7 @@ impl Witness {
 
         if !self.cache_mut(id).has_flag(ENTER_PENDING) {
             let stamps = self.cache_mut(id).leave_aoi_stamps(&entity);
-            self.bundle.push(ClientMessage::LeaveAoI {
+            self.push_message(ClientMessage::LeaveAoI {
                 id,
                 lod_event_numbers: stamps,
             });
@@ -785,17 +880,15 @@ impl Witness {
         }
     }
 
-    /// `Witness::handleStateChange` — the update pass walks the queue and
-    /// dispatches every non-updatable cache through here. Returns true when
-    /// the slot was vacated (the reference's swap-pop: the queue's last
-    /// element lands in the slot and is handled in the same sweep).
-    fn handle_state_change(&mut self, slot: usize, origin: (f32, f32, f32)) -> bool {
-        let id = self.entity_queue[slot];
+    /// `Witness::handleStateChange` — dispatch one cache's pending flags.
+    /// Returns true when the entry leaves the queue: deletions and enter
+    /// sends take it out (deletions drop the cache from the map too), while
+    /// withheld and create-pending caches stay queued.
+    fn apply_state_change(&mut self, id: EntityId, origin: (f32, f32, f32)) -> bool {
         assert!(!self.cache_mut(id).has_flag(REQUEST_PENDING));
 
         if self.cache_mut(id).has_flag(GONE) {
             self.delete_from_client(id);
-            self.entity_queue.swap_remove(slot);
             self.aoi_map.remove(&id);
             true
         } else if self.cache_mut(id).has_flag(WITHHELD) {
@@ -810,7 +903,6 @@ impl Witness {
         } else if self.cache_mut(id).has_flag(ENTER_PENDING) {
             self.send_enter(id);
             // Enter-pending caches rejoin the queue via requestEntityUpdate.
-            self.entity_queue.swap_remove(slot);
             true
         } else if self.cache_mut(id).has_flag(CREATE_PENDING) {
             self.send_create(id);
@@ -824,10 +916,249 @@ impl Witness {
             self.delete_from_client(id);
             self.cache_mut(id).set_flag(ENTER_PENDING);
             self.send_enter(id);
-            self.entity_queue.swap_remove(slot);
             true
         } else {
             unreachable!("queued cache with no pending state");
+        }
+    }
+
+    /// The queue's heap front: minimum priority, ties broken by entity id so
+    /// the send sequence stays deterministic. The reference's std heap leaves
+    /// ties unspecified.
+    fn queue_front(&self) -> Option<EntityId> {
+        self.entity_queue.iter().copied().min_by_key(|id| {
+            let prio = self.aoi_map.get(id).map(|c| c.priority());
+            (prio.unwrap_or(f64::INFINITY).to_bits(), *id)
+        })
+    }
+
+    /// `std::pop_heap` — take the front out of the queue.
+    fn queue_pop(&mut self) -> Option<EntityId> {
+        let front = self.queue_front()?;
+        let index = self
+            .entity_queue
+            .iter()
+            .position(|id| *id == front)
+            .expect("front still queued");
+        self.entity_queue.swap_remove(index);
+        Some(front)
+    }
+
+    /// `std::push_heap` / `std::make_heap` — (re)join the queue.
+    fn queue_push(&mut self, id: EntityId) {
+        self.entity_queue.push(id);
+    }
+
+    /// `Witness::sendQueueElement` — one prioritised entity update. The
+    /// LoD distance still feeds the payload selection in BW-08-03-04; here it
+    /// only charges this tick's budget. Returns whether a reliable relative
+    /// position went out (never, until 03-04).
+    fn send_queue_element(&mut self, id: EntityId) -> bool {
+        let bytes = self.update_bytes;
+        self.push_message(ClientMessage::EntityUpdate { id, bytes });
+        false
+    }
+
+    /// Returns and clears the PRIORITISED marker of a queued cache.
+    fn drop_prioritised_flag(&mut self, id: &EntityId) -> bool {
+        match self.aoi_map.get_mut(id) {
+            Some(cache) if cache.has_flag(PRIORITISED) => {
+                cache.clear_flag(PRIORITISED);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A prioritised vehicle that also popped inside the window restarts
+    /// from the tick's starting priority so it is not starved behind its own
+    /// pre-send.
+    fn restart_prioritised_from(
+        &mut self,
+        id: EntityId,
+        starting_priority: f64,
+        origin: (f32, f32, f32),
+    ) {
+        let cache = self
+            .aoi_map
+            .get_mut(&id)
+            .expect("prioritised cache present");
+        cache.set_priority(starting_priority);
+        cache.clear_flag(PRIORITISED);
+        let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+        cache.update_priority(&entity, origin);
+    }
+
+    /// `Witness::update` — the per-tick client update pass. Sends the vehicle
+    /// stack first, then walks the priority queue under the packet budget:
+    /// entries within `MAX_PRIORITY_DELTA` of the front's priority pop and
+    /// update until the budget or the window runs out. Deletions and
+    /// enter/create handshakes ride the same pass.
+    pub fn update(&mut self) {
+        let origin = self
+            .entities
+            .get(&self.entity_id)
+            .map(|e| e.position)
+            .expect("witness's own entity registered");
+
+        let desired_packet_size = (self.max_packet_size as f32 * self.emergency_throttle) as i32
+            - self.bandwidth_deficit
+            + self.bundle_bytes as i32;
+
+        // `addSpaceDataChanges` and the reference-position messages are not
+        // modelled; they only consume budget ahead of the entity updates.
+
+        let mut num_prioritised = 0usize;
+
+        // Send the vehicle stack first, ahead of priority order.
+        let mut vehicle = self
+            .entities
+            .get(&self.entity_id)
+            .and_then(|e| e.vehicle_id);
+        while let Some(id) = vehicle {
+            let Some(cache) = self.aoi_map.get_mut(&id) else {
+                self.warnings.push(format!(
+                    "Witness::update: witness {} trying to prioritise entity {id} outside its AoI",
+                    self.entity_id
+                ));
+                break;
+            };
+            let entity_destroyed = self.entities.get(&id).map(|e| e.destroyed);
+            if !cache.is_updatable()
+                || cache.has_flag(REQUEST_PENDING)
+                || entity_destroyed == Some(true)
+            {
+                vehicle = self.entities.get(&id).and_then(|e| e.vehicle_id);
+                continue;
+            }
+            assert!(!cache.has_flag(PRIORITISED));
+            cache.set_flag(PRIORITISED);
+            num_prioritised += 1;
+            self.send_queue_element(id);
+            vehicle = self.entities.get(&id).and_then(|e| e.vehicle_id);
+        }
+
+        let starting_priority = self
+            .queue_front()
+            .and_then(|id| self.aoi_map.get(&id))
+            .map(|c| c.priority())
+            .unwrap_or(0.0);
+
+        // Entities at a distance are never sent at full rate: only the
+        // window [front, front + MAX_PRIORITY_DELTA) is walked this tick.
+        let max_priority = starting_priority + MAX_PRIORITY_DELTA;
+
+        // Popped entries, in pop order — [queueEnd, entityQueue_.end()) in
+        // the reference.
+        let mut popped: Vec<(EntityId, bool)> = Vec::new();
+
+        while let Some(id) = self.queue_front() {
+            let front_priority = self.aoi_map.get(&id).map(|c| c.priority()).unwrap_or(0.0);
+            if front_priority >= max_priority || self.bundle_bytes as i32 >= desired_packet_size - 2
+            {
+                break;
+            }
+            self.queue_pop();
+            let was_prioritised = self
+                .aoi_map
+                .get(&id)
+                .map(|c| c.has_flag(PRIORITISED))
+                .unwrap_or(false);
+
+            // A destroyed entity still held open by a manual add drops out
+            // here rather than being sent.
+            let destroyed = self.entities.get(&id).map(|e| e.destroyed);
+            let gone = self.aoi_map.get(&id).map(|c| c.has_flag(GONE));
+            if destroyed == Some(true) && gone == Some(false) {
+                assert!(
+                    self.aoi_map
+                        .get(&id)
+                        .map(|c| c.has_flag(MANUALLY_ADDED))
+                        .unwrap_or(false)
+                );
+                self.remove_from_aoi(id, true);
+            }
+
+            let cache = self
+                .aoi_map
+                .get(&id)
+                .expect("queued cache present in AoI map");
+            let survives = if !cache.is_updatable() {
+                !self.apply_state_change(id, origin)
+            } else {
+                if !was_prioritised {
+                    self.send_queue_element(id);
+                    let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+                    self.cache_mut(id).update_priority(&entity, origin);
+                }
+                true
+            };
+
+            // Prioritised (vehicle) entries were sent before the loop; they
+            // only restart from the tick's starting priority here.
+            if was_prioritised {
+                self.restart_prioritised_from(id, starting_priority, origin);
+                num_prioritised -= 1;
+            }
+
+            if survives {
+                popped.push((id, was_prioritised));
+            }
+        }
+
+        // Pay back any budget overshoot next tick.
+        self.bandwidth_deficit = (self.bundle_bytes as i32 - desired_packet_size).max(0);
+        if self.bandwidth_deficit > self.max_packet_size {
+            self.warnings.push(format!(
+                "Witness::update: witness {} has a bandwidth deficit of {} bytes",
+                self.entity_id, self.bandwidth_deficit
+            ));
+            self.bandwidth_deficit = self.max_packet_size;
+        }
+
+        if self.entity_queue.is_empty() && num_prioritised == 0 {
+            // We sent everything: next tick starts everyone from zero, in
+            // order of closeness. The popped entries stay queued (the
+            // reference make-heaps the whole vector here).
+            for (id, _) in &popped {
+                let cache = self
+                    .aoi_map
+                    .get_mut(id)
+                    .expect("requeued cache present in AoI map");
+                cache.set_priority(0.0);
+                self.queue_push(*id);
+            }
+        } else {
+            let earliest_priority = self
+                .queue_front()
+                .and_then(|id| self.aoi_map.get(&id))
+                .map(|c| c.priority())
+                .unwrap_or(0.0);
+
+            // Vehicles that stayed queued had their update go out before the
+            // loop; drop the marker so they are prioritised once.
+            let mut vehicle = self
+                .entities
+                .get(&self.entity_id)
+                .and_then(|e| e.vehicle_id);
+            while let Some(id) = vehicle {
+                num_prioritised -= self.drop_prioritised_flag(&id) as usize;
+                vehicle = self.entities.get(&id).and_then(|e| e.vehicle_id);
+            }
+            debug_assert_eq!(num_prioritised, 0);
+
+            // Push the sent entries back, never "in the past": an entity that
+            // should have gone out twice in one tick waits for the next one.
+            for (id, _) in popped {
+                if let Some(cache) = self
+                    .aoi_map
+                    .get_mut(&id)
+                    .filter(|cache| cache.priority() < earliest_priority)
+                {
+                    cache.set_priority(earliest_priority);
+                }
+                self.queue_push(id);
+            }
         }
     }
 
@@ -850,8 +1181,9 @@ impl Witness {
                 .aoi_map
                 .get(&id)
                 .expect("queued cache present in AoI map");
-            if !cache.is_updatable() && self.handle_state_change(i, origin) {
-                // slot vacated: the swapped-in occupant is up next
+            if !cache.is_updatable() && self.apply_state_change(id, origin) {
+                // the reference swap-pops the vacated slot
+                self.entity_queue.swap_remove(i);
             } else {
                 i += 1;
             }
@@ -1421,6 +1753,319 @@ mod tests {
         let cache = world.witness.aoi_map.get(&2).expect("cache after add");
         assert_eq!(cache.lod_priority(&entity, (0.0, 0.0, 0.0)), 100.0);
         assert_eq!(world.witness.entity_id(), 1);
+    }
+
+    /// Three observers at 10/50/100m: scheme deltas 3, 11, 21. One 25-byte
+    /// update fits a 30-byte packet, so each tick sends exactly one. The
+    /// caches are seeded already-updatable (the enter handshake already ran)
+    /// so the pass goes straight to the prioritised updates.
+    fn prioritised_world() -> WitnessWorld {
+        let mut world = WitnessWorld::new();
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(3, 2, (50.0, 0.0, 0.0)));
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(4, 2, (100.0, 0.0, 0.0)));
+        for id in [2, 3, 4] {
+            let entity = world.witness.entity(id).cloned().unwrap();
+            world.witness.aoi_map.insert(id, EntityCache::new(&entity));
+            world.witness.queue_push(id);
+        }
+        // 4400 bps at 10 Hz -> 4400/80 - 28 = 27 payload bytes per tick: a
+        // 25-byte update goes out, then the gate shuts for the tick.
+        world.witness.set_witness_capacity(4400, 10);
+        world.witness.set_entity_update_bytes(25);
+        world
+    }
+
+    fn update_ids(world: &mut WitnessWorld) -> Vec<EntityId> {
+        world.witness.update();
+        world
+            .witness
+            .take_bundle()
+            .into_iter()
+            .filter_map(|m| match m {
+                ClientMessage::EntityUpdate { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn updates_go_out_in_priority_order_within_the_delta_window() {
+        let mut world = prioritised_world();
+
+        // Everyone starts at zero, so the first three ticks hand out the
+        // entities round-robin in id order.
+        let mut sequence = Vec::new();
+        for _ in 0..3 {
+            sequence.extend(update_ids(&mut world));
+        }
+        assert_eq!(sequence, vec![2, 3, 4]);
+
+        // Priorities now read 3/11/21. The window only reaches three past
+        // the closest, so entity 2 keeps the channel until its accumulated
+        // debt crosses entity 3's, and so on: closest-first round robin.
+        // Traced by hand against the reference rules: within the window the
+        // closest entity (lowest id on ties) keeps the channel until its
+        // accumulated debt crosses a neighbour's, and a sent entity clamps
+        // up to the earliest queued priority so it never repeats "in past".
+        let mut rest = Vec::new();
+        for _ in 0..10 {
+            rest.extend(update_ids(&mut world));
+        }
+        assert_eq!(rest, vec![2, 2, 3, 2, 2, 4, 3, 2, 2, 3]);
+    }
+
+    #[test]
+    fn an_emptied_queue_resets_priorities_to_zero() {
+        let mut world = prioritised_world();
+        // A fat packet lets the whole queue drain in one tick.
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        for id in [2, 3, 4] {
+            world.witness.cache_mut(id).set_priority(40.0 + id as f64);
+        }
+        update_ids(&mut world);
+        for id in [2, 3, 4] {
+            assert_eq!(world.witness.cache_priority(id), Some(0.0));
+        }
+    }
+
+    #[test]
+    fn a_sent_entity_is_clamped_to_the_earliest_queued_priority() {
+        let mut world = prioritised_world();
+
+        update_ids(&mut world);
+        assert_eq!(world.witness.cache_priority(2), Some(3.0));
+
+        // The queue never emptied, so entity 2 (sent this tick at 3.0) may
+        // not sit "in the past" next to the two unsent zeros: it clamps up.
+        assert_eq!(world.witness.cache_priority(3), Some(0.0));
+        assert_eq!(world.witness.cache_priority(4), Some(0.0));
+    }
+
+    #[test]
+    fn prioritised_vehicles_go_first_and_keep_their_debt() {
+        let mut world = prioritised_world();
+        world.witness.set_witness_capacity(1_000_000, 10);
+        world.witness.set_entity_update_bytes(25);
+
+        // Entity 5 rides as our vehicle with a big priority debt; entity 2
+        // is fresh. Give 5 a cache and a queue slot without an enter.
+        let rider = EntitySnapshot::new(5, 2, (5.0, 0.0, 0.0));
+        world.witness.upsert_entity(rider.clone());
+        world.witness.aoi_map.insert(5, EntityCache::new(&rider));
+        world.witness.cache_mut(5).set_priority(50.0);
+        world.witness.queue_push(5);
+
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(5);
+        world.witness.upsert_entity(self_entity);
+
+        // The vehicle goes out first regardless of its 50.0 debt; the rest
+        // of the (fat-packet) queue follows in id order at zero.
+        let ids = update_ids(&mut world);
+        assert_eq!(ids, vec![5, 2, 3, 4]);
+
+        // The vehicle was prioritised once; its marker cleared and its debt
+        // untouched (it never entered the delta window).
+        assert!(!world.witness.aoi_map.get(&5).unwrap().has_flag(PRIORITISED));
+        assert_eq!(world.witness.cache_priority(5), Some(50.0));
+    }
+
+    #[test]
+    fn a_prioritised_vehicle_inside_the_window_restarts_from_the_front() {
+        let mut world = prioritised_world();
+        world.witness.set_witness_capacity(1_000_000, 10);
+        world.witness.set_entity_update_bytes(25);
+
+        // Same vehicle as the debt test, but with no priority debt: it sits
+        // inside the delta window, so the pop loop reaches it too.
+        let rider = EntitySnapshot::new(5, 2, (5.0, 0.0, 0.0));
+        world.witness.upsert_entity(rider.clone());
+        world.witness.aoi_map.insert(5, EntityCache::new(&rider));
+        world.witness.queue_push(5);
+
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(5);
+        world.witness.upsert_entity(self_entity);
+
+        // Sent once from the stack; the later pop does not resend, it
+        // restarts from the front's priority and drops the marker.
+        assert_eq!(update_ids(&mut world), vec![5, 2, 3, 4]);
+        let cache = world.witness.aoi_map.get(&5).unwrap();
+        assert!(!cache.has_flag(PRIORITISED));
+        // the queue emptied this tick, so the emptied-queue reset zeroes
+        // every popped entry, the vehicle included
+        assert_eq!(world.witness.cache_priority(5), Some(0.0));
+    }
+
+    #[test]
+    fn the_budget_gates_and_carries_a_deficit() {
+        let mut world = WitnessWorld::new();
+        // 4240 bps at 10 Hz -> 4240/80 - 28 = 25 payload bytes per tick.
+        world.witness.set_witness_capacity(4240, 10);
+        world.witness.set_entity_update_bytes(10);
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(3, 2, (0.0, 0.0, 0.0)));
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(4, 2, (0.0, 0.0, 0.0)));
+        for id in [2, 3, 4] {
+            world.witness.aoi_map.insert(
+                id,
+                EntityCache::new(&EntitySnapshot::new(id, 2, (0.0, 0.0, 0.0))),
+            );
+            world.witness.queue_push(id);
+        }
+
+        // Gate closes at 23 bytes: two updates fit, the third would be 30.
+        assert_eq!(update_ids(&mut world).len(), 3);
+        assert_eq!(world.witness.bandwidth_deficit(), 5);
+        assert_eq!(world.witness.max_packet_size(), 25);
+
+        // The deficit shrinks next tick's budget to 20, closing the gate
+        // after two updates instead of three.
+        assert_eq!(update_ids(&mut world).len(), 2);
+        assert_eq!(world.witness.bandwidth_deficit(), 0);
+    }
+
+    #[test]
+    fn an_oversized_deficit_caps_at_the_packet_size() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(4240, 10);
+        world.witness.set_entity_update_bytes(200);
+        world.witness.aoi_map.insert(
+            2,
+            EntityCache::new(&EntitySnapshot::new(2, 2, (0.0, 0.0, 0.0))),
+        );
+        world.witness.queue_push(2);
+
+        // One 200-byte update against a 25-byte packet: the deficit caps at
+        // one full packet with a warning.
+        update_ids(&mut world);
+        assert_eq!(world.witness.bandwidth_deficit(), 25);
+        assert!(world.witness.warnings().last().unwrap().contains("deficit"));
+    }
+
+    #[test]
+    fn the_emergency_throttle_shrinks_the_budget() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(4240, 10);
+        world.witness.set_entity_update_bytes(10);
+        for id in [2, 3, 4] {
+            world.witness.aoi_map.insert(
+                id,
+                EntityCache::new(&EntitySnapshot::new(id, 2, (0.0, 0.0, 0.0))),
+            );
+            world.witness.queue_push(id);
+        }
+
+        world.witness.set_emergency_throttle(0.5);
+        // desired = 12, gate closes at 10: one update only.
+        assert_eq!(update_ids(&mut world).len(), 1);
+    }
+
+    #[test]
+    fn state_handshakes_ride_the_update_pass() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        world.witness.add_to_aoi(2, false);
+        // the enterAoI handshake rides the pass; no entity update yet
+        assert!(update_ids(&mut world).is_empty());
+        assert!(
+            !world
+                .witness
+                .aoi_map
+                .get(&2)
+                .unwrap()
+                .has_flag(ENTER_PENDING)
+        );
+        world.take();
+
+        world.witness.request_entity_update(2, &[]);
+        world.witness.update();
+        assert!(matches!(
+            world.witness.bundle().first(),
+            Some(ClientMessage::CreateEntity { .. })
+        ));
+        assert!(world.witness.bundle_size() > 0);
+        world.take();
+    }
+
+    #[test]
+    fn a_destroyed_manual_entity_is_dropped_inside_the_pass() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        world.witness.add_to_aoi(2, true);
+        let mut dead = world.witness.entity(2).cloned().unwrap();
+        dead.destroyed = true;
+        world.witness.upsert_entity(dead);
+
+        world.witness.update();
+        assert!(world.witness.bundle().is_empty());
+        assert!(!world.witness.aoi_ids().contains(&2));
+    }
+
+    #[test]
+    fn an_unupdatable_vehicle_is_skipped_in_the_stack() {
+        let mut world = prioritised_world();
+
+        let rider = EntitySnapshot::new(5, 2, (5.0, 0.0, 0.0));
+        world.witness.upsert_entity(rider.clone());
+        world.witness.aoi_map.insert(5, EntityCache::new(&rider));
+        world.witness.cache_mut(5).set_flag(WITHHELD);
+        world.witness.queue_push(5);
+
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(5);
+        world.witness.upsert_entity(self_entity);
+
+        // The withheld vehicle is not sent from the stack; the budget
+        // still only fits the closest entity this tick.
+        let ids = update_ids(&mut world);
+        assert_eq!(ids, vec![2]);
+        // underspend carries no deficit
+        assert_eq!(world.witness.bandwidth_deficit(), 0);
+    }
+
+    #[test]
+    fn a_vehicle_outside_the_aoi_is_reported_once() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(9);
+        world.witness.upsert_entity(self_entity);
+
+        world.witness.update();
+        assert!(
+            world
+                .witness
+                .warnings()
+                .last()
+                .unwrap()
+                .contains("outside its AoI")
+        );
+    }
+
+    #[test]
+    fn bps_to_packet_size_matches_the_reference() {
+        assert_eq!(bps_to_packet_size(4640, 10), 30);
+        assert_eq!(bps_to_packet_size(4240, 10), 25);
+        // 8 bits per byte, 28 bytes of UDP/IP overhead.
+        assert_eq!(bps_to_packet_size(8000, 10), 100 - 28);
+
+        // a zero hertz leaves the packet size untouched
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(4400, 10);
+        world.witness.set_witness_capacity(9999, 0);
+        assert_eq!(world.witness.max_packet_size(), 27);
     }
 
     #[test]
