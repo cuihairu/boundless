@@ -2,6 +2,7 @@
 //! (`lib/physics2/worldtri.hpp`, `lib/physics2/bsp.cpp`).
 
 pub mod bsp;
+pub mod world_polygon;
 pub mod world_triangle;
 
 pub use bsp::{
@@ -9,6 +10,7 @@ pub use bsp::{
     BSP_FILE_LEGACY_VERSION, BSP_FILE_MAGIC, BSP_NODE_PACKED_SIZE, BSPNODE_TOLERANCE, BspLoadError,
     BspNode, BspTree, CollisionVisitor, OFFSET_32BIT_NULL, PLANE_EQ_SIZE, bsp_version,
 };
+pub use world_polygon::WorldPolygon;
 pub use world_triangle::{
     BW_TRIANGLE_NOCOLLIDE, TRIANGLE_BLENDED, TRIANGLE_CAMERANOCOLLIDE, TRIANGLE_COLLISIONFLAG_MASK,
     TRIANGLE_DOUBLESIDED, TRIANGLE_MATERIALKIND_MASK, TRIANGLE_MATERIALKIND_SHIFT,

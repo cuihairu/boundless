@@ -859,10 +859,225 @@ impl BspTree {
 
         None
     }
+
+    /// `BSPNode::intersectsThisNode(triangle, ppHitTriangle)`
+    /// (`bsp.cpp:191-220`): static overlap scan of the node's own run
+    /// then shared run, skipping `TRIANGLE_NOT_IN_BSP` candidates. The
+    /// reference writes the INPUT triangle (never the candidate) to
+    /// `*ppHitTriangle`, so the boolean carries all the information — the
+    /// port returns it directly.
+    fn intersects_this_node_triangle(&self, node: &BspNode, triangle: &WorldTriangle) -> bool {
+        for candidate in self
+            .node_triangles(node)
+            .iter()
+            .chain(self.node_shared_triangles(node))
+        {
+            if candidate.collision_flags() != TRIANGLE_NOT_IN_BSP
+                && candidate.intersects_triangle(triangle)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `BSPNode::intersectsThisNode(triangle, translation, pVisitor)`
+    /// (`bsp.cpp:164-190`): translated-prism scan of the node's runs. The
+    /// visitor is consulted with the candidate and a `0.0` dist; a
+    /// rejected visit keeps scanning (no dist is kept or restored on this
+    /// face).
+    fn intersects_this_node_sweep(
+        &self,
+        node: &BspNode,
+        triangle: &WorldTriangle,
+        translation: Vector3,
+        mut visitor: Option<&mut (dyn CollisionVisitor + '_)>,
+    ) -> bool {
+        for candidate in self
+            .node_triangles(node)
+            .iter()
+            .chain(self.node_shared_triangles(node))
+        {
+            if candidate.collision_flags() != TRIANGLE_NOT_IN_BSP
+                && candidate.intersects_swept(triangle, translation)
+                && match visitor.as_deref_mut() {
+                    None => true,
+                    Some(v) => v.visit(candidate, 0.0),
+                }
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `BSPNode::intersects(triangle, ppHitTriangle)` (`bsp.cpp:308-365`):
+    /// the recursive overlap walk; the side holding the FIRST vertex
+    /// (`d0`) is descended first, the node's own run is scanned only when
+    /// the triangle straddles the partition plane within tolerance.
+    fn intersects_triangle_node(&self, node: &BspNode, triangle: &WorldTriangle) -> bool {
+        if node.front.is_none() && node.back.is_none() {
+            return self.intersects_this_node_triangle(node, triangle);
+        }
+
+        let d0 = node.plane_eq.distance_to(&triangle.v0());
+        let d1 = node.plane_eq.distance_to(&triangle.v1());
+        let d2 = node.plane_eq.distance_to(&triangle.v2());
+
+        let min = min3(d0, d1, d2);
+        let max = max3(d0, d1, d2);
+
+        // Check the side with the first point of the triangle first.
+        if d0 < 0.0 {
+            if let Some(back) = node.back
+                && min < BSPNODE_TOLERANCE
+                && self.intersects_triangle_node(&self.nodes[back], triangle)
+            {
+                return true;
+            }
+
+            if min < BSPNODE_TOLERANCE
+                && max > -BSPNODE_TOLERANCE
+                && self.intersects_this_node_triangle(node, triangle)
+            {
+                return true;
+            }
+
+            if let Some(front) = node.front
+                && max > -BSPNODE_TOLERANCE
+                && self.intersects_triangle_node(&self.nodes[front], triangle)
+            {
+                return true;
+            }
+        } else {
+            if let Some(front) = node.front
+                && max > -BSPNODE_TOLERANCE
+                && self.intersects_triangle_node(&self.nodes[front], triangle)
+            {
+                return true;
+            }
+
+            if min < BSPNODE_TOLERANCE
+                && max > -BSPNODE_TOLERANCE
+                && self.intersects_this_node_triangle(node, triangle)
+            {
+                return true;
+            }
+
+            if let Some(back) = node.back
+                && min < BSPNODE_TOLERANCE
+                && self.intersects_triangle_node(&self.nodes[back], triangle)
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// `BSPNode::intersects(triangle, translation, pVisitor)`
+    /// (`bsp.cpp:372-425`): the prism walk — the swept volume crossed
+    /// with the node's plane decides which subtrees are entered (own run
+    /// first, then back, then front).
+    fn intersects_sweep_node(
+        &self,
+        node: &BspNode,
+        triangle: &WorldTriangle,
+        translation: Vector3,
+        visitor: Option<&mut (dyn CollisionVisitor + '_)>,
+    ) -> bool {
+        // If we're not partitioned it's easy.
+        if node.front.is_none() && node.back.is_none() {
+            return self.intersects_this_node_sweep(node, triangle, translation, visitor);
+        }
+
+        // See if the volume crosses this plane.
+        let d_a0 = node.plane_eq.distance_to(&triangle.v0());
+        let d_a1 = node.plane_eq.distance_to(&triangle.v1());
+        let d_a2 = node.plane_eq.distance_to(&triangle.v2());
+        let d_b0 = node.plane_eq.distance_to(&(triangle.v0() + translation));
+        let d_b1 = node.plane_eq.distance_to(&(triangle.v1() + translation));
+        let d_b2 = node.plane_eq.distance_to(&(triangle.v2() + translation));
+
+        let min_a = min3(d_a0, d_a1, d_a2);
+        let min_b = min3(d_b0, d_b1, d_b2);
+        let max_a = max3(d_a0, d_a1, d_a2);
+        let max_b = max3(d_b0, d_b1, d_b2);
+        // std::min/std::max: the first argument wins ties.
+        let min = if min_b < min_a { min_b } else { min_a };
+        let max = if max_b > max_a { max_b } else { max_a };
+
+        let mut visitor = visitor;
+
+        if min < BSPNODE_TOLERANCE
+            && max > -BSPNODE_TOLERANCE
+            && self.intersects_this_node_sweep(node, triangle, translation, visitor.as_deref_mut())
+        {
+            return true;
+        }
+
+        if let Some(back) = node.back
+            && min < BSPNODE_TOLERANCE
+            && self.intersects_sweep_node(
+                &self.nodes[back],
+                triangle,
+                translation,
+                visitor.as_deref_mut(),
+            )
+        {
+            return true;
+        }
+
+        if let Some(front) = node.front
+            && max > -BSPNODE_TOLERANCE
+            && self.intersects_sweep_node(&self.nodes[front], triangle, translation, visitor)
+        {
+            return true;
+        }
+
+        false
+    }
+
+    /// `BSPTree::intersects(triangle, ppHitTriangle)`
+    /// (`bsp.cpp:1811-1814`): whether the input triangle overlaps any
+    /// triangle assigned to the tree.
+    pub fn intersects_triangle(&self, triangle: &WorldTriangle) -> bool {
+        self.intersects_triangle_node(self.root(), triangle)
+    }
+
+    /// `BSPTree::intersects(triangle, translation, pVisitor)`
+    /// (`bsp.cpp:2013-2016`): whether the prism swept by `triangle` along
+    /// `translation` intersects any triangle in the tree.
+    pub fn intersects_sweep(
+        &self,
+        triangle: &WorldTriangle,
+        translation: Vector3,
+        visitor: Option<&mut dyn CollisionVisitor>,
+    ) -> bool {
+        self.intersects_sweep_node(self.root(), triangle, translation, visitor)
+    }
 }
 
 /// `BSPNODE_TOLERANCE` (`bsp.cpp:85`).
 pub const BSPNODE_TOLERANCE: f32 = 0.01;
+
+/// `min3` (`bsp.cpp:283-291`): the reference ternary chain, kept verbatim.
+fn min3(a: f32, b: f32, c: f32) -> f32 {
+    if a < b {
+        if a < c { a } else { c }
+    } else {
+        if b < c { b } else { c }
+    }
+}
+
+/// `max3` (`bsp.cpp:293-299`): the reference ternary chain, kept verbatim.
+fn max3(a: f32, b: f32, c: f32) -> f32 {
+    if a > b {
+        if a > c { a } else { c }
+    } else {
+        if b > c { b } else { c }
+    }
+}
 
 /// `CollisionVisitor` (`bsp.hpp:22-31`): receives every accepted hit
 /// triangle in a node scan; returning false rejects the hit (the walk
@@ -1764,5 +1979,104 @@ mod tests {
         let tree = BspTree::load(&b).expect("loads");
         assert!(tree.node_triangles(tree.root()).is_empty());
         assert_eq!(tree.node_shared_triangles(tree.root()).count(), 0);
+    }
+
+    #[test]
+    fn the_prism_walk_hits_the_translated_face() {
+        let tree = BspTree::load(&ray_blob([0, 0])).expect("loads");
+
+        // A z=3 triangle swept down by 4: the prism crosses the root's
+        // z=1 plane. The root has no own run; the walk scans the back
+        // leaf first (own run, then back, then front) and its tB — whose
+        // slice the prism covers — confirms the hit.
+        let tri = WorldTriangle::new(v(0.0, 0.0, 3.0), v(1.0, 0.0, 3.0), v(0.0, 1.0, 3.0), 0x0005);
+        assert!(tree.intersects_sweep(&tri, v(0.0, 0.0, -4.0), None));
+
+        // The same triangle swept away above the tree: the back and front
+        // leaves both refuse.
+        assert!(!tree.intersects_sweep(&tri, v(0.0, 0.0, 10.0), None));
+
+        // A visitor sees the accepted TREE candidate (tB, flags 0 — the
+        // input triangle's own flags are irrelevant here) with the
+        // reference's constant 0.0 dist.
+        let mut visitor = CountingVisitor::accepting();
+        assert!(tree.intersects_sweep(&tri, v(0.0, 0.0, -4.0), Some(&mut visitor)));
+        assert_eq!(visitor.seen, vec![(0, 0.0f32.to_bits())]);
+
+        // A rejecting visitor keeps scanning: the back leaf's tB and then
+        // the front leaf's tA are offered before the walk answers MISS.
+        let mut rejecting = CountingVisitor::rejecting();
+        assert!(!tree.intersects_sweep(&tri, v(0.0, 0.0, -4.0), Some(&mut rejecting)));
+        assert_eq!(
+            rejecting.seen,
+            vec![(0, 0.0f32.to_bits()), (0, 0.0f32.to_bits())]
+        );
+    }
+
+    #[test]
+    fn the_prism_walk_walks_windows_on_the_way_down() {
+        let tree = BspTree::load(&ray_blob([0, 0])).expect("loads");
+
+        // Prism z 0.5..1.5 straddles the root's plane but reaches neither
+        // tA (z=2) nor tB (z=0): the back leaf (min < TOL) and the front
+        // leaf (max > -TOL) are both entered and both miss.
+        let tri = WorldTriangle::new(v(0.2, 0.2, 1.5), v(0.7, 0.2, 1.5), v(0.2, 0.7, 1.5), 0);
+        assert!(!tree.intersects_sweep(&tri, v(0.0, 0.0, -1.0), None));
+
+        // Swept down to z=-0.7 the prism covers tB's plane: the back leaf
+        // (entered before the front one) confirms the hit.
+        assert!(tree.intersects_sweep(&tri, v(0.0, 0.0, -2.2), None));
+    }
+
+    #[test]
+    fn the_static_overlap_walk_descends_the_first_vertex_side_first() {
+        let tree = BspTree::load(&ray_blob([0, 0])).expect("loads");
+
+        // A triangle hanging below the root's plane (d0 < 0) with a single
+        // vertex above: the back subtree (tB) is descended BEFORE the
+        // front side or the root's own run, and it confirms the overlap.
+        let low = WorldTriangle::new(v(0.2, 0.2, -1.0), v(0.5, 0.2, -1.0), v(0.2, 0.5, 1.0), 0);
+        assert!(tree.intersects_triangle(&low));
+
+        // A triangle entirely above the root's plane only ever reaches
+        // the front subtree and the root's own run (both tA) — and misses.
+        let above = WorldTriangle::new(v(0.2, 0.2, 3.0), v(0.5, 0.2, 3.0), v(0.2, 0.5, 5.0), 0);
+        assert!(!tree.intersects_triangle(&above));
+
+        // A triangle straddling the root's plane but overlapping nothing
+        // (x far outside both triangles) is answered MISS.
+        let outside = WorldTriangle::new(v(5.0, 5.0, -1.0), v(5.5, 5.0, -1.0), v(5.0, 5.5, 1.0), 0);
+        assert!(!tree.intersects_triangle(&outside));
+    }
+
+    #[test]
+    fn not_in_bsp_triangles_are_skipped_by_the_sweeps() {
+        // tA is NOT_IN_BSP: the prism sweep skips it in the root's own run
+        // and the front leaf, then confirms tB through the back leaf.
+        let tree = BspTree::load(&ray_blob([TRIANGLE_NOT_IN_BSP, 0])).expect("loads");
+        let tri = WorldTriangle::new(v(0.0, 0.0, 3.0), v(1.0, 0.0, 3.0), v(0.0, 1.0, 3.0), 0);
+        assert!(tree.intersects_sweep(&tri, v(0.0, 0.0, -4.0), None));
+        // The static overlap walk skips the skipped triangle the same way:
+        // a triangle overlapping tA's spot above the plane finds nothing.
+        let high = WorldTriangle::new(v(0.2, 0.2, 3.0), v(0.5, 0.2, 3.0), v(0.2, 0.5, 5.0), 0);
+        assert!(!tree.intersects_triangle(&high));
+
+        // tB is NOT_IN_BSP: a prism entirely behind the root's plane has
+        // its only candidate skipped and the sweep misses.
+        let tree = BspTree::load(&ray_blob([0, TRIANGLE_NOT_IN_BSP])).expect("loads");
+        let low = WorldTriangle::new(v(0.2, 0.2, -0.5), v(0.7, 0.2, -0.5), v(0.2, 0.7, -0.5), 0);
+        assert!(!tree.intersects_sweep(&low, v(0.0, 0.0, -0.5), None));
+    }
+
+    #[test]
+    fn min3_and_max3_follow_the_reference_ternary_chains() {
+        assert_eq!(min3(1.0, 2.0, 3.0), 1.0);
+        assert_eq!(min3(2.0, 1.0, 3.0), 1.0);
+        assert_eq!(min3(3.0, 2.0, 1.0), 1.0);
+        assert_eq!(min3(2.0, 2.0, 2.0), 2.0);
+        assert_eq!(max3(1.0, 2.0, 3.0), 3.0);
+        assert_eq!(max3(3.0, 2.0, 1.0), 3.0);
+        assert_eq!(max3(2.0, 3.0, 1.0), 3.0);
+        assert_eq!(max3(2.0, 2.0, 2.0), 2.0);
     }
 }

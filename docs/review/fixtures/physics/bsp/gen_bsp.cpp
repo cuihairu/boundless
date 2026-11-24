@@ -137,6 +137,58 @@ static void ray_probe(const char* tag, BSPTree* tree,
     }
 }
 
+// BW-10-03-06: CollisionVisitor that logs every visit (dist bits and the
+// candidate's flags) and counts them; the accepting instance stops the
+// walk at the first candidate, the rejecting one lets it keep scanning.
+class ProbeVisitor : public CollisionVisitor
+{
+public:
+    ProbeVisitor(const char* tag, bool accept) : tag_(tag), accept_(accept), visits_(0) {}
+    bool visit(const WorldTriangle& hitTriangle, float dist)
+    {
+        printf("%s VST %08x %04x\n", tag_, bits(dist), hitTriangle.flags());
+        ++visits_;
+        return accept_;
+    }
+    unsigned visits() const { return visits_; }
+
+private:
+    const char* tag_;
+    bool accept_;
+    unsigned visits_;
+};
+
+// BSPTree::intersects(triangle, ppHitTriangle) (bsp.cpp:1811-1814).
+static void static_probe(const char* tag, BSPTree* tree, const WorldTriangle& t)
+{
+    const WorldTriangle* pHit = NULL;
+    const bool r = tree->intersects(t, &pHit);
+    printf("%s STC %s\n", tag, r ? "HIT" : "MISS");
+}
+
+// BSPTree::intersects(triangle, translation, pVisitor)
+// (bsp.cpp:2013-2016). The VST lines land immediately before this line.
+static void sweep_probe(const char* tag, BSPTree* tree, const WorldTriangle& t,
+    const Vector3& offset, bool accept)
+{
+    ProbeVisitor v(tag, accept);
+    const bool r = tree->intersects(t, offset, &v);
+    printf("%s SWP %s %u\n", tag, r ? "HIT" : "MISS", v.visits());
+}
+
+// WorldTriangle::intersects(triangle) (worldtri.cpp:109-196).
+static void tri_probe(const char* tag, const WorldTriangle& a, const WorldTriangle& b)
+{
+    printf("%s TRI %s\n", tag, a.intersects(b) ? "HIT" : "MISS");
+}
+
+// WorldTriangle::intersects(triangle, offset) (worldtri.cpp:295-486).
+static void tri_sweep_probe(const char* tag, const WorldTriangle& a,
+    const WorldTriangle& b, const Vector3& offset)
+{
+    printf("%s TSW %s\n", tag, a.intersects(b, offset) ? "HIT" : "MISS");
+}
+
 static void write_file(const std::string& path, const void* data, size_t len)
 {
     FILE* f = fopen(path.c_str(), "wb");
@@ -211,6 +263,19 @@ int main(int argc, char* argv[])
     ray_probe("BT", built, Vector3(1, 2, 3), Vector3(1, -1, 0), 1.f);
     ray_probe("BT", built, Vector3(1, 2, 3), Vector3(1, -1, 0), 0.4f);
     ray_probe("BT", built, Vector3(1, 0.5f, -3), Vector3(1, 0.5f, 3), 1.f);
+    // Overlap: a broad slab through tetra A, and one far away. Sweeps:
+    // down through tetra A (accepting stops at the first candidate,
+    // rejecting enumerates them all), and the same prism pushed above
+    // the tree.
+    static_probe("BT", built, WorldTriangle(Vector3(-1, 0.2f, 2.5f), Vector3(3, 0.4f, 2.5f),
+        Vector3(1, 0.6f, -1.5f), 0));
+    static_probe("BT", built, WorldTriangle(Vector3(100, 0, 0), Vector3(101, 0, 0),
+        Vector3(100, 1, 0), 0));
+    WorldTriangle sweepTri(Vector3(-0.5f, -0.5f, 3), Vector3(2.5f, -0.5f, 3),
+        Vector3(-0.5f, 2.5f, 3), 0);
+    sweep_probe("BT", built, sweepTri, Vector3(0, 0, -4.5f), true);
+    sweep_probe("BT", built, sweepTri, Vector3(0, 0, 10), true);
+    sweep_probe("BT", built, sweepTri, Vector3(0, 0, -4.5f), false);
     printf("BT RESULT OK\n");
 
     // --- 2. the crafted legacy blob ------------------------------------
@@ -279,7 +344,65 @@ int main(int argc, char* argv[])
     ray_probe("LG", legacyTree, Vector3(2.5f, 0.5f, 3), Vector3(2.5f, 0.5f, -3), 1.f);
     ray_probe("LG", legacyTree, Vector3(0.5f, 2.5f, -1), Vector3(0.5f, 2.5f, 4), 1.f);
     ray_probe("LG", legacyTree, Vector3(0.5f, 0.5f, 0.9f), Vector3(0.5f, 0.5f, -1), 1.f);
+    // Overlap: the flat fin's z=1 crossing segment covers t1's footprint
+    // (x in [0, 0.5] at y=0.5), so the static walk answers HIT. Sweeps:
+    // a tilted prism straight up (efficient path), and the fin shoved
+    // along its own plane-normal-ish axes (brute path).
+    WorldTriangle fin(Vector3(-1, 0.5f, -0.5f), Vector3(2, 0.5f, -0.5f), Vector3(0.5f, 0.5f, 2), 0);
+    static_probe("LG", legacyTree, fin);
+    WorldTriangle tilt(Vector3(-1, 0.5f, -0.5f), Vector3(2, 0.5f, -0.5f), Vector3(0.5f, 2.5f, 2), 0);
+    sweep_probe("LG", legacyTree, tilt, Vector3(0, 0, 3), true);
+    sweep_probe("LG", legacyTree, fin, Vector3(0, 0, -3), true);
+    sweep_probe("LG", legacyTree, fin, Vector3(0, 3, 0), true);
     printf("LG RESULT OK\n");
+
+    // --- 2b. the WorldTriangle overlap faces, standalone ---------------
+    // The tri-tri walk (worldtri.cpp:109-196) and the swept prism
+    // (worldtri.cpp:295-486) against a ground triangle: crossing, far,
+    // coplanar-degenerate, the Y- and Z-dominant projection picks, the
+    // b-only-coplanar reject and the degenerate third distance.
+    WorldTriangle wa(Vector3(0, 0, 0), Vector3(2, 0, 0), Vector3(2, 2, 0), 0);
+    tri_probe("WT", wa, WorldTriangle(Vector3(1, 0.5f, -1), Vector3(1, 0.5f, 1), Vector3(3, 2, 1), 0));
+    tri_probe("WT", wa, WorldTriangle(Vector3(10, 10, -1), Vector3(10, 10, 1), Vector3(12, 12, 1), 0));
+    tri_probe("WT", wa, WorldTriangle(Vector3(0.5, 0, 0), Vector3(1.5, 0, 0), Vector3(0.5, 1, 0), 0));
+    tri_probe("WT", WorldTriangle(Vector3(0, 0, 0), Vector3(2, 0, 0), Vector3(0, 2, 0), 0),
+        WorldTriangle(Vector3(0.5, 0.5f, -1), Vector3(1.5, 0.5f, 1), Vector3(1.5, 1.5f, 1), 0));
+    tri_probe("WT", WorldTriangle(Vector3(0, -1, 0), Vector3(0, 1, 0), Vector3(0, 0, -2), 0),
+        WorldTriangle(Vector3(-1, 0.2f, 0), Vector3(1, 0.2f, -2), Vector3(-1, 1.2f, -3), 0));
+    tri_probe("WT", WorldTriangle(Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0), 0),
+        WorldTriangle(Vector3(-10, -10, 0.0003f), Vector3(10, 0, -0.0003f), Vector3(0, 10, 0), 0));
+    tri_probe("WT", WorldTriangle(Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0), 0),
+        WorldTriangle(Vector3(0.5, 0.5f, 0), Vector3(1.5, 0.5f, 0), Vector3(0.5, 1.5f, -1), 0));
+    // Sweeps: the end cap exactly on the plane (all fractions 1), the
+    // start cap coplanar, a prism straddling the plane (brute), a
+    // parallel slide (brute), the zero offset against the identical
+    // triangle, back-facing caps (the flip branch), the far-cap stop,
+    // the Y-dominant projection and the two segment rejects.
+    WorldTriangle wb(Vector3(0.5, 0.5f, 1), Vector3(1.5, 0.5f, 1), Vector3(0.5, 1.5f, 1), 0);
+    tri_sweep_probe("WT", wa, wb, Vector3(0, 0, -1));
+    WorldTriangle wb0(Vector3(0.5, 0.5f, 0), Vector3(1.5, 0.5f, 0), Vector3(0.5, 1.5f, 0), 0);
+    tri_sweep_probe("WT", wa, wb0, Vector3(0, 0, -1));
+    tri_sweep_probe("WT", wa, WorldTriangle(Vector3(0.3, 0.3f, -1), Vector3(1.5, 0.2f, 1),
+        Vector3(0.2, 1.5f, -1), 0), Vector3(0, 0, 0.5f));
+    tri_sweep_probe("WT", wa, WorldTriangle(Vector3(0.5, 0.5f, 0.3), Vector3(2, 0.5f, 0.3),
+        Vector3(0.5, 2, 0.3), 0), Vector3(1, 0, 0));
+    tri_sweep_probe("WT", wa, wa, Vector3(0, 0, 0));
+    tri_sweep_probe("WT", wa, WorldTriangle(Vector3(0.5, 0.1f, 0), Vector3(1.5, 0.1f, 1),
+        Vector3(0.5, 0.9f, 1), 0), Vector3(1, 0, 0));
+    tri_sweep_probe("WT", wa, WorldTriangle(Vector3(-5, 0.2f, 0), Vector3(-6, 0.2f, 1),
+        Vector3(-5, 0.8f, 1), 0), Vector3(1, 0, 0));
+    tri_sweep_probe("WT", WorldTriangle(Vector3(0, 0, 0), Vector3(1, 0, 1), Vector3(0, 0, -1), 0),
+        WorldTriangle(Vector3(0.2, 2, 0.2), Vector3(0.7, 2, 0.2), Vector3(0.2, 2, 0.7), 0),
+        Vector3(0, -2.5f, 0));
+    tri_sweep_probe("WT", WorldTriangle(Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0), 0),
+        WorldTriangle(Vector3(5, 5, 1), Vector3(6, 5, 1), Vector3(5, 6, 1), 0), Vector3(0, 0, -1.5f));
+    tri_sweep_probe("WT", WorldTriangle(Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(0, 1, 0), 0),
+        WorldTriangle(Vector3(5, 0.4f, 1), Vector3(4, 0.4f, 1), Vector3(5, 1.4f, 1), 0),
+        Vector3(0, 0, -1.5f));
+    tri_sweep_probe("WT", WorldTriangle(Vector3(0, 0, 0), Vector3(10, 0, 0), Vector3(0, 10, 0), 0),
+        WorldTriangle(Vector3(-2, -1, 1), Vector3(-4, -3, 1), Vector3(1, -4, 1), 0),
+        Vector3(0, 0, -1.5f));
+    printf("WT RESULT OK\n");
 
     // --- 3. the real asset's bsp2 child (bytes only) --------------------
     // The .primitives container is read with the original BinSection
@@ -333,6 +456,14 @@ int main(int argc, char* argv[])
     ray_probe("UC", ucTree, Vector3(0, 0, 3), Vector3(0, 0, -3), 1.f);
     ray_probe("UC", ucTree, Vector3(3, 0, 0), Vector3(-3, 0, 0), 1.f);
     ray_probe("UC", ucTree, Vector3(5, 5, 6), Vector3(5, 5, -6), 1.f);
+    // Sweeps down through the cube, the end cap exactly touching the
+    // top plane, and a horizontal slab crossing the cube's sides.
+    sweep_probe("UC", ucTree, WorldTriangle(Vector3(-1, -1, 3), Vector3(2, -1, 3),
+        Vector3(-1, 2, 3), 0), Vector3(0, 0, -4), true);
+    sweep_probe("UC", ucTree, WorldTriangle(Vector3(-1, -1, 2), Vector3(2, -1, 2),
+        Vector3(-1, 2, 2), 0), Vector3(0, 0, -1), true);
+    static_probe("UC", ucTree, WorldTriangle(Vector3(-2, -0.2f, 0.5), Vector3(2, -0.2f, 0.5),
+        Vector3(0, 2, 0.5), 0));
     printf("UC RESULT OK\n");
     delete ucTree;
 
