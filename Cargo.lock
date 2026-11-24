@@ -667,6 +667,7 @@ version = "0.1.0"
 dependencies = [
  "foundation",
  "resources",
+ "watcher",
 ]
 
 [[package]]

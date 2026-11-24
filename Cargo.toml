@@ -48,6 +48,7 @@ blowfish = "0.9"
 foundation = { path = "crates/foundation" }
 platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
+watcher = { path = "crates/watcher" }
 mercury = { path = "crates/mercury" }
 contracts = { path = "crates/contracts" }
 entitydef = { path = "crates/entitydef" }

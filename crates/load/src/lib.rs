@@ -14,6 +14,7 @@ pub mod hurricane;
 pub mod patrol;
 pub mod scenario;
 pub mod steady;
+pub mod watchers;
 
 pub use bot::{
     Behaviour, Bot, BotView, ConnState, Directive, FD_PER_BOT, MATH_PI, MovementController,
@@ -26,3 +27,4 @@ pub use hurricane::{HurricaneLedger, run_login_hurricane};
 pub use patrol::{Graph, GraphTraverser, Graphs, PatrolFactory, PatrolRandom};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
 pub use steady::{SteadyLedger, SteadyTrack, run_steady_movement};
+pub use watchers::{FleetCommandWatcher, register_fleet_commands};
