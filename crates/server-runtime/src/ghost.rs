@@ -10,12 +10,13 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use foundation::math::Vector3;
+use foundation::stream::BinaryStream;
 
 use crate::cellappmgr::{Addr, Rect, SpaceId};
 use crate::controllers::Controllers;
 use crate::entity_creator::PropValue;
 use crate::entity_dispatch::EntityId;
-use crate::real_entity::{EntityMailBoxRef, Haunt, RealEntity};
+use crate::real_entity::{EntityCallbackBuffer, EntityMailBoxRef, Haunt, RealEntity};
 use crate::space::CellInfoRecord;
 use crate::witness::VolatileInfo;
 
@@ -1325,6 +1326,11 @@ pub struct OnloadPayload {
     /// The haunt list: every app holding a ghost, plus the source itself
     /// when it was not already haunted (`!isAlreadyHaunted`).
     pub haunt_addrs: Vec<Addr>,
+    /// `Entity::writeRealControllersToStream` (`entity.cpp:2204`): the
+    /// `Controllers::writeRealsToStream` encoding — the id counter, then
+    /// each real-domain controller's id, type/user arg for real-only
+    /// ones, and its live state.
+    pub real_controllers: Vec<u8>,
 }
 
 /// `Cell::offloadEntity` -> `Entity::offload` -> `convertRealToGhost`
@@ -1340,6 +1346,8 @@ pub struct OnloadPayload {
 pub fn convert_real_to_ghost(
     real: &mut RealEntity,
     view: &GhostedEntityView,
+    controllers: &mut Controllers,
+    callbacks: &mut EntityCallbackBuffer,
     destination: Addr,
     own_addr: Addr,
     space_id: SpaceId,
@@ -1347,12 +1355,22 @@ pub fn convert_real_to_ghost(
     time: u32,
     channels: &mut BTreeMap<Addr, GhostChannel>,
 ) -> (OnloadPayload, GhostRecord) {
+    // `Entity::callbacksPermitted( false )` (`entity.cpp:2021`): script
+    // callbacks fired during the switch queue and replay once it is done.
+    callbacks.enter_buffered_section();
+
     // `writeOffloadData`: the haunt list, plus us when we are not already
     // haunted (`isAlreadyHaunted` = our own address in the list).
     let mut haunt_addrs: Vec<Addr> = real.haunts.iter().map(|h| h.addr).collect();
     if !haunt_addrs.contains(&own_addr) {
         haunt_addrs.push(own_addr);
     }
+
+    // `Entity::writeRealControllersToStream` inside `writeOffloadData`
+    // (`real_entity.cpp:563`): the controllers stream their live state
+    // while they are still running.
+    let mut controller_stream = BinaryStream::new();
+    controllers.write_reals_to_stream(&mut controller_stream);
 
     let payload = OnloadPayload {
         entity_id: real.id,
@@ -1364,11 +1382,16 @@ pub fn convert_real_to_ghost(
         space_id,
         is_teleport,
         haunt_addrs,
+        real_controllers: controller_stream.as_bytes().to_vec(),
     };
 
     // `RealEntity::destroy(&pChannel->addr())`: every haunt except the
-    // destination learns where the real is going.
+    // destination learns where the real is going. The real part then dies
+    // — its destructor stops the real controllers (`real_entity.cpp:252`)
+    // after their state went onto the stream: real-only ones are erased,
+    // both-domain ghost halves keep running.
     offload_sign_off(real, destination, channels);
+    controllers.stop_reals(false);
 
     // The ghost keeps the ghost-level view. It routes to the destination
     // right away and still expects that app's `ghostSetReal`.
@@ -1397,6 +1420,7 @@ pub fn convert_real_to_ghost(
         aoi_update_scheme_id: view.aoi_update_scheme_id,
         creation_time: time,
     };
+    callbacks.leave_buffered_section(&|_id| false);
     (payload, record)
 }
 
@@ -1423,16 +1447,34 @@ impl GhostHost {
     /// `bad_haunt_addr` is the failed-teleport face: the source address
     /// (`pBadHauntAddr`) whose haunt entry is skipped because no ghost
     /// was ever created on this app.
+    #[allow(clippy::too_many_arguments)]
     pub fn receive_onload(
         &mut self,
         payload: OnloadPayload,
+        entity_controllers: &mut Controllers,
+        callbacks: &mut EntityCallbackBuffer,
         local_space_id: SpaceId,
         bad_haunt_addr: Option<Addr>,
         channels: &mut BTreeMap<Addr, GhostChannel>,
         own_addr: Addr,
         time: u32,
     ) -> Option<OnloadOutcome> {
+        // `Entity::callbacksPermitted( false )` (`entity.cpp:4761`).
+        callbacks.enter_buffered_section();
+
         let record = self.ghosts.remove(&payload.entity_id)?;
+
+        // The ghost's controller halves are the entity's own in the
+        // reference (`pControllers_`); move them in before the stream is
+        // read — `readRealsFromStream` looks them up by id.
+        entity_controllers.merge_ghost_halves(record.controllers);
+
+        // `Entity::readRealControllersFromStream` inside `readOffloadData`
+        // (`real_entity.cpp:415`): the streamed controllers are built
+        // now, started only after the entity is real.
+        let mut controller_stream = BinaryStream::from_slice(&payload.real_controllers);
+        let controllers_read = entity_controllers.read_reals_from_stream(&mut controller_stream);
+        debug_assert!(controllers_read.is_ok(), "onload controller stream");
 
         // `convertGhostToReal`'s first line.
         let num_times_real_offloaded = record.num_times_real_offloaded + 1;
@@ -1463,6 +1505,20 @@ impl GhostHost {
             time,
             &context,
         );
+
+        // `Entity::startRealControllers` (`entity.cpp:4856`): now that
+        // the entity is real, the streamed controllers resume — not as
+        // their initial start, so their state carries over.
+        entity_controllers.start_reals();
+
+        // `convertGhostToReal`'s tail (`entity.cpp:4786-4795`):
+        // `onEnteredCell` runs buffered at high priority, ahead of
+        // everything queued during the switch.
+        callbacks.enable_high_priority_buffering();
+        callbacks.callback(payload.entity_id, "onEnteredCell", false);
+        callbacks.disable_high_priority_buffering();
+
+        callbacks.leave_buffered_section(&|_id| false);
         Some(OnloadOutcome {
             real,
             are_we_haunted,
@@ -1521,6 +1577,8 @@ pub struct GhostedEntityView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controllers::{Controller, ControllerEvent, DOMAIN_GHOST_AND_REAL, DOMAIN_REAL};
+    use crate::real_entity::BufferedScriptCallback;
 
     const APP_A: Addr = (1, 1);
     const APP_B: Addr = (2, 2);
@@ -2919,6 +2977,9 @@ mod tests {
         let mut host_a = GhostHost::default();
         let mut host_b = hold_host(10, 0);
         let (_cells, mut channels, _config) = checker_world();
+        let mut controllers = Controllers::new();
+        let mut entity_controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
         let (mut real, view) = ghosted_real(10, 140.0);
         real.haunts = vec![Haunt {
             addr: APP_B,
@@ -2927,8 +2988,18 @@ mod tests {
 
         // A offloads to B: the payload streams, the ghost replaces the
         // real on A.
-        let (payload, record) =
-            convert_real_to_ghost(&mut real, &view, APP_B, APP_A, 7, false, 300, &mut channels);
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
         host_a.ghosts.insert(10, record);
 
         // The payload carries the real-only state and the haunt list —
@@ -2948,7 +3019,16 @@ mod tests {
 
         // B loads: the ghost record becomes the one real.
         let outcome = host_b
-            .receive_onload(payload, 7, None, &mut channels, APP_B, 300)
+            .receive_onload(
+                payload,
+                &mut entity_controllers,
+                &mut callbacks,
+                7,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
             .unwrap();
         assert!(host_b.ghosts.is_empty());
         assert!(outcome.are_we_haunted);
@@ -2980,6 +3060,8 @@ mod tests {
     #[test]
     fn an_offloading_real_signs_off_its_other_ghosts() {
         let (_cells, mut channels, _config) = checker_world();
+        let mut controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
         let (mut real, view) = ghosted_real(10, 50.0);
         real.haunts = vec![
             Haunt {
@@ -2992,8 +3074,18 @@ mod tests {
             },
         ];
 
-        let (payload, record) =
-            convert_real_to_ghost(&mut real, &view, APP_C, APP_A, 7, false, 300, &mut channels);
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_C,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
 
         // The destination (C) is skipped; B learns where the real went.
         assert_eq!(
@@ -3026,20 +3118,42 @@ mod tests {
         let mut host_a = GhostHost::default();
         let mut host_b = hold_host(10, 0);
         let (_cells, mut channels, _config) = checker_world();
+        let mut controllers = Controllers::new();
+        let mut entity_controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
         let (mut real, view) = ghosted_real(10, 140.0);
         real.haunts = vec![Haunt {
             addr: APP_B,
             creation_time: 100,
         }];
 
-        let (payload, record) =
-            convert_real_to_ghost(&mut real, &view, APP_B, APP_A, 7, true, 300, &mut channels);
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            APP_A,
+            7,
+            true,
+            300,
+            &mut channels,
+        );
         host_a.ghosts.insert(10, record);
 
         // Same space, but a teleport: no re-haunt — the source ghost is
         // deleted instead.
         let outcome = host_b
-            .receive_onload(payload, 7, None, &mut channels, APP_B, 300)
+            .receive_onload(
+                payload,
+                &mut entity_controllers,
+                &mut callbacks,
+                7,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
             .unwrap();
         assert_eq!(
             channels[&APP_A].out,
@@ -3057,20 +3171,42 @@ mod tests {
         let mut host_a = GhostHost::default();
         let mut host_b = hold_host(10, 0);
         let (_cells, mut channels, _config) = checker_world();
+        let mut controllers = Controllers::new();
+        let mut entity_controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
         let (mut real, view) = ghosted_real(10, 140.0);
         real.haunts = vec![Haunt {
             addr: APP_B,
             creation_time: 100,
         }];
 
-        let (payload, record) =
-            convert_real_to_ghost(&mut real, &view, APP_B, APP_A, 7, false, 300, &mut channels);
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
         host_a.ghosts.insert(10, record);
 
         // Not a teleport, but the local space differs: the ghosts of the
         // old space go.
         let outcome = host_b
-            .receive_onload(payload, 9, None, &mut channels, APP_B, 300)
+            .receive_onload(
+                payload,
+                &mut entity_controllers,
+                &mut callbacks,
+                9,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
             .unwrap();
         assert_eq!(
             channels[&APP_A].out,
@@ -3095,13 +3231,203 @@ mod tests {
             space_id: 7,
             is_teleport: false,
             haunt_addrs: vec![APP_A],
+            real_controllers: Vec::new(),
         };
 
         assert!(
             host_b
-                .receive_onload(payload, 7, None, &mut channels, APP_B, 300)
+                .receive_onload(
+                    payload,
+                    &mut Controllers::new(),
+                    &mut EntityCallbackBuffer::new(),
+                    7,
+                    None,
+                    &mut channels,
+                    APP_B,
+                    300,
+                )
                 .is_none()
         );
         assert!(host_b.buffer.is_empty());
+    }
+
+    #[test]
+    fn the_offloaded_controllers_resume_on_the_destination() {
+        let (_cells, mut channels, _config) = checker_world();
+        let mut host_a = GhostHost::default();
+        let mut host_b = hold_host(10, 0);
+        // The destination's ghost already holds the both-domain half —
+        // the ghostControllerCreate the source sent when it was added.
+        let record_controllers = &mut host_b.ghosts.get_mut(&10).unwrap().controllers;
+        record_controllers.create_ghost(3, 9, 42, vec![1]);
+        // The both-domain class arrives with its full domain
+        // (`Controller::create` builds the registered class, not a bare
+        // ghost), so the real half can resume after the onload.
+        record_controllers.controller_mut(3).unwrap().domain = DOMAIN_GHOST_AND_REAL;
+
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+
+        // Source: a real-only movement controller with live state, and a
+        // both-domain one whose ghost half the far side holds.
+        let mut controllers = Controllers::new();
+        let mut movement = Controller::new(7, DOMAIN_REAL);
+        movement.real_state = vec![4, 5, 6];
+        controllers.add_controller(movement, 11, 10, &[], &mut Vec::new());
+        let mut both = Controller::new(9, DOMAIN_GHOST_AND_REAL);
+        both.exclusive_id = 3;
+        both.ghost_state = vec![1];
+        both.real_state = vec![2, 3];
+        controllers.add_controller(both, 42, 10, &[], &mut Vec::new());
+        let mut callbacks = EntityCallbackBuffer::new();
+
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
+        host_a.ghosts.insert(10, record);
+
+        // The real part died: the real-only controller is gone, the
+        // both-domain ghost half keeps running.
+        assert_eq!(controllers.len(), 1);
+        assert_eq!(controllers.ids(), vec![3]);
+        assert!(controllers.history.contains(&ControllerEvent::StopReal {
+            id: 1,
+            final_stop: false,
+        }));
+
+        // Onload on B: the ghost half merges, the stream reals read in,
+        // then everything restarts — not as initial starts, so the
+        // carried state keeps the movement going.
+        let mut entity_controllers = Controllers::new();
+        let outcome = host_b
+            .receive_onload(
+                payload,
+                &mut entity_controllers,
+                &mut callbacks,
+                7,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
+            .unwrap();
+        assert!(outcome.are_we_haunted);
+
+        assert_eq!(entity_controllers.ids(), vec![1, 3]);
+        assert_eq!(
+            entity_controllers.controller(1).unwrap().real_state,
+            vec![4, 5, 6]
+        );
+        assert_eq!(entity_controllers.controller(1).unwrap().user_arg, 11);
+        // The surviving ghost half took the fresh real payload and kept
+        // its ghost state.
+        assert_eq!(
+            entity_controllers.controller(3).unwrap().real_state,
+            vec![2, 3]
+        );
+        assert_eq!(
+            entity_controllers.controller(3).unwrap().ghost_state,
+            vec![1]
+        );
+        // Both halves resumed, neither as an initial start.
+        let resumed: Vec<ControllerEvent> = entity_controllers
+            .history
+            .iter()
+            .filter(|event| matches!(event, ControllerEvent::StartReal { initial: false, .. }))
+            .cloned()
+            .collect();
+        assert_eq!(
+            resumed,
+            vec![
+                ControllerEvent::StartReal {
+                    id: 1,
+                    initial: false
+                },
+                ControllerEvent::StartReal {
+                    id: 3,
+                    initial: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_switch_buffers_callbacks_and_replays_them_once() {
+        let (_cells, mut channels, _config) = checker_world();
+        let mut host_b = hold_host(10, 0);
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+        let mut controllers = Controllers::new();
+
+        // Source app: an outer buffered section holds a queued callback
+        // across the conversion.
+        let mut source_callbacks = EntityCallbackBuffer::new();
+        source_callbacks.enter_buffered_section();
+        source_callbacks.store_callback(10, "onLeavingCell");
+
+        let (payload, _record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut source_callbacks,
+            APP_B,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
+
+        // The conversion's own section closed; the outer one still holds
+        // — nothing replayed yet, nothing lost.
+        assert!(!source_callbacks.callbacks_permitted());
+        assert!(source_callbacks.executed().is_empty());
+        source_callbacks.leave_buffered_section(&|_id| false);
+        assert_eq!(
+            source_callbacks.executed(),
+            [BufferedScriptCallback {
+                entity_id: 10,
+                method: "onLeavingCell".to_string(),
+            }]
+        );
+
+        // Destination app: onEnteredCell fires buffered at high priority
+        // and replays once when the section ends.
+        let mut dest_callbacks = EntityCallbackBuffer::new();
+        host_b
+            .receive_onload(
+                payload,
+                &mut Controllers::new(),
+                &mut dest_callbacks,
+                7,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
+            .unwrap();
+        assert!(dest_callbacks.callbacks_permitted());
+        assert_eq!(
+            dest_callbacks.executed(),
+            [BufferedScriptCallback {
+                entity_id: 10,
+                method: "onEnteredCell".to_string(),
+            }]
+        );
     }
 }

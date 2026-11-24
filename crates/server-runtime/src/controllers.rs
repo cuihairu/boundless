@@ -618,6 +618,20 @@ impl Controllers {
         }
     }
 
+    /// The onload handover bridge: the reference holds ONE `pControllers_`
+    /// container for the entity across its ghost and real lives; the port
+    /// keeps the ghost record's own, so its ghost-domain halves move into
+    /// the entity container before the streamed reals are read
+    /// (`readRealsFromStream` finds them by id). Keep-the-original on an
+    /// id clash.
+    pub fn merge_ghost_halves(&mut self, other: Controllers) {
+        for (id, controller) in other.container {
+            if controller.in_domain(DOMAIN_GHOST) {
+                self.container.entry(id).or_insert(controller);
+            }
+        }
+    }
+
     /// The receiving half of the offload: controllers already here as
     /// ghosts keep their records and take the fresh real payload;
     /// real-only ones are constructed from the stream. `startReal` is
