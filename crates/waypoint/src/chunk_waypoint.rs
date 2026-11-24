@@ -58,6 +58,32 @@ impl Edge {
     }
 }
 
+/// `closestPointOnLineSegment` (`chunk_waypoint.cpp:21-46`, anonymous
+/// namespace): the projection when it lands within the segment, the nearer
+/// endpoint otherwise.
+fn closest_point_on_line_segment(start: Vector2, end: Vector2, point: &mut Vector2) {
+    let dir = Vector2::new(end.x - start.x, end.y - start.y);
+    let project = Vector2::new(point.x - start.x, point.y - start.y);
+    let length = (dir.x * dir.x + dir.y * dir.y).sqrt();
+
+    // dir.normalise()
+    let norm = if length > 0.0 {
+        Vector2::new(dir.x / length, dir.y / length)
+    } else {
+        dir
+    };
+
+    let dot = project.x * norm.x + project.y * norm.y;
+
+    if (0.0..=length).contains(&dot) {
+        *point = Vector2::new(start.x + norm.x * dot, start.y + norm.y * dot);
+    } else if dot < 0.0 {
+        *point = start;
+    } else {
+        *point = end;
+    }
+}
+
 /// `ChunkWaypoint` (`chunk_waypoint.hpp:32-131`): one navpoly of the set.
 #[derive(Debug, Default)]
 pub struct ChunkWaypoint {
@@ -145,6 +171,90 @@ impl ChunkWaypoint {
         self.edge_start as usize..(self.edge_start + self.edge_count) as usize
     }
 
+    /// `clip` (`chunk_waypoint.cpp:217-318`): the point is pulled into the
+    /// polygon. A point outside the winding test snaps to the closest
+    /// point on the closest edge segment; the height always lands on
+    /// `maxHeight_` (the trailing `makeMaxHeight`).
+    ///
+    /// Registered boundary: the reference then validates the point against
+    /// the chunk bounding box and, when it falls outside, nudges it in from
+    /// the first non-chunk-adjacent edge midpoint; that needs the chunk
+    /// face, and the fixture/identity mapping keeps every probe point
+    /// inside it, so the port models the box as unbounded.
+    pub fn clip(
+        &self,
+        edges: &[Edge],
+        provider: &dyn ChunkWaypointVertexProvider,
+        point: &mut Vector3,
+    ) {
+        let edge_count = self.edge_count as usize;
+        let run_start = self.edge_start as usize;
+        let back = *provider.vertex_by_index(edges[run_start + edge_count - 1].vertex_index);
+
+        let mut outside_at = None;
+        let mut prev = back;
+        for i in 0..edge_count {
+            let this = *provider.vertex_by_index(edges[run_start + i].vertex_index);
+
+            let edge_vec = Vector2::new(this.x - prev.x, this.y - prev.y);
+            let point_vec = Vector2::new(point.x - prev.x, point.z - prev.y);
+
+            // `edgeVec.crossProduct( pointVec ) > 0.f` — the sign mirror of
+            // containsProjection's `c > -0.01` inside test.
+            if edge_vec.x * point_vec.y - edge_vec.y * point_vec.x > 0.0 {
+                outside_at = Some(i);
+                break;
+            }
+
+            prev = this;
+        }
+
+        if outside_at.is_some() {
+            let p2d = Vector2::new(point.x, point.z);
+            let mut p2d_best = p2d;
+            let mut best_dist_squared = f32::MAX;
+            let mut prev = back;
+
+            for i in 0..edge_count {
+                let now = *provider.vertex_by_index(edges[run_start + i].vertex_index);
+                let mut temp = p2d;
+                closest_point_on_line_segment(prev, now, &mut temp);
+
+                let dist_squared =
+                    (temp.x - p2d.x) * (temp.x - p2d.x) + (temp.y - p2d.y) * (temp.y - p2d.y);
+                if dist_squared < best_dist_squared {
+                    best_dist_squared = dist_squared;
+                    p2d_best = temp;
+                }
+
+                prev = now;
+            }
+
+            point.x = p2d_best.x;
+            point.z = p2d_best.y;
+        }
+
+        self.make_max_height(point);
+    }
+
+    /// `distanceSquared` (`chunk_waypoint.cpp:174-195`): the squared
+    /// distance from the point to the waypoint — the point clipped into
+    /// the polygon, with its height clamped into the min/max band instead
+    /// of just `maxHeight_` (`clipPoint.y = Math::clamp( minHeight_,
+    /// point.y, maxHeight_ )`; the clamp reads the original point).
+    pub fn distance_squared(
+        &self,
+        edges: &[Edge],
+        provider: &dyn ChunkWaypointVertexProvider,
+        point: Vector3,
+    ) -> f32 {
+        let mut clip_point = point;
+        self.clip(edges, provider, &mut clip_point);
+        clip_point.y = point.y.max(self.min_height).min(self.max_height);
+        let d = point - clip_point;
+        d.x * d.x + d.y * d.y + d.z * d.z
+    }
+
     /// `calcCentre` (`chunk_waypoint.cpp:365-387`): the length-weighted
     /// average of the edge midpoints,
     /// `centre += (end + start) / 2 * length; centre /= totalLength`.
@@ -191,11 +301,13 @@ mod tests {
     }
 
     fn square_provider() -> Table {
+        // The engine's clockwise x-z winding (the truth fixture's cycle,
+        // started at a different corner) — the winding tests accept it.
         Table(vec![
             Vector2::new(0.0, 0.0),
-            Vector2::new(2.0, 0.0),
-            Vector2::new(2.0, 2.0),
             Vector2::new(0.0, 2.0),
+            Vector2::new(2.0, 2.0),
+            Vector2::new(2.0, 0.0),
         ])
     }
 
@@ -320,7 +432,83 @@ mod tests {
     #[test]
     fn the_vertex_provider_asserts_out_of_range_indices() {
         let provider = square_provider();
-        assert_eq!(*provider.vertex_by_index(3), Vector2::new(0.0, 2.0));
+        assert_eq!(*provider.vertex_by_index(3), Vector2::new(2.0, 0.0));
         assert!(std::panic::catch_unwind(|| provider.vertex_by_index(4)).is_err());
+    }
+
+    #[test]
+    fn the_distance_of_an_interior_point_in_the_band_is_zero() {
+        let provider = square_provider();
+        let wp = square_waypoint(&provider);
+        let edges: Vec<Edge> = (0..4)
+            .map(|v| Edge {
+                vertex_index: v,
+                neighbour: 0,
+            })
+            .collect();
+
+        // Inside the projection, height inside 0..1: the clip is identity.
+        assert_eq!(
+            wp.distance_squared(&edges, &provider, Vector3::new(1.0, 0.7, 1.0)),
+            0.0
+        );
+        // Still zero at the band's edges — the clamp keeps both ends.
+        assert_eq!(
+            wp.distance_squared(&edges, &provider, Vector3::new(1.9, 0.0, 0.1)),
+            0.0
+        );
+        assert_eq!(
+            wp.distance_squared(&edges, &provider, Vector3::new(1.9, 1.0, 0.1)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn the_distance_clamps_the_height_into_the_band() {
+        let provider = square_provider();
+        let wp = square_waypoint(&provider);
+        let edges: Vec<Edge> = (0..4)
+            .map(|v| Edge {
+                vertex_index: v,
+                neighbour: 0,
+            })
+            .collect();
+
+        // Under the band: the x-z clip is identity, the y term is
+        // (minHeight - y) squared — 0.5 below the floor.
+        assert_eq!(
+            wp.distance_squared(&edges, &provider, Vector3::new(1.0, -0.5, 1.0)),
+            0.25
+        );
+        // Over the band: (y - maxHeight) squared — 2 above the roof.
+        assert_eq!(
+            wp.distance_squared(&edges, &provider, Vector3::new(1.0, 3.0, 1.0)),
+            4.0
+        );
+    }
+
+    #[test]
+    fn the_distance_outside_the_polygon_measures_the_clip() {
+        let provider = square_provider();
+        let wp = square_waypoint(&provider);
+        let edges: Vec<Edge> = (0..4)
+            .map(|v| Edge {
+                vertex_index: v,
+                neighbour: 0,
+            })
+            .collect();
+
+        // East of the square: the clip lands on the x = 2 edge, height in
+        // band — (3 - 2) squared.
+        assert_eq!(
+            wp.distance_squared(&edges, &provider, Vector3::new(3.0, 0.5, 1.0)),
+            1.0
+        );
+        // Diagonally outside: the clip lands on the corner (2, 0) —
+        // (3 - 2) squared + (1 - 0) squared.
+        assert_eq!(
+            wp.distance_squared(&edges, &provider, Vector3::new(3.0, 0.5, -1.0)),
+            2.0
+        );
     }
 }

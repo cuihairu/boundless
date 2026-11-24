@@ -92,10 +92,10 @@ impl Default for NavigatorFindResult {
 /// Registered boundary: the reference first tries the `GirthGrids`
 /// acceleration (a 12x12 grid built per set for outside chunks only, with
 /// `findMatchOrLower` plus an ever-widening ring search and the
-/// `s_visitedWaypoints_` bookkeeping). That structure exists purely as a
-/// cache of the same answer — it needs the chunk's local bounding box and
-/// `Clip`-based `distanceSquared`, which are the chunk/search lane's faces
-/// (BW-10-04-04). It returns the same result as this search.
+/// `s_visitedWaypoints_` bookkeeping). That structure is purely a cache of
+/// the same answer and needs the chunk's local bounding box to build
+/// (BW-10-04-04 landed the clip-based `distanceSquared` it measures with;
+/// the grid itself stays out).
 pub fn find_by_girth(
     sets: &[Rc<ChunkWaypointSetData>],
     point: Vector3,

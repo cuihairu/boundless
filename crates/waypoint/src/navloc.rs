@@ -73,6 +73,39 @@ impl NavLoc {
         }
     }
 
+    /// Direct construction from a resolved set/waypoint/point — the part
+    /// `NavLoc`'s private fields play in `ChunkWaypointState`'s
+    /// constructors and `ChunkWaypointState::getAdjacency`, which the
+    /// reference reaches through its `friend class ChunkWaypointState`
+    /// clause. Waypoint -1 with a set is the goal-only state
+    /// (`ChunkWaypointState(dstSet, dstPoint)`). Public so the replay
+    /// harness can rebuild the reference probes' already-resolved
+    /// locations; the find-based `from_guess` stays the primary face.
+    pub fn from_parts(
+        set: Rc<ChunkWaypointSetData>,
+        waypoint: WaypointIndex,
+        point: Vector3,
+    ) -> Self {
+        Self {
+            p_set: Some(set),
+            waypoint,
+            point,
+            grid_size: 0.0,
+        }
+    }
+
+    /// `NavLoc::clip()` (`navloc.cpp:183-215`): the stored point is pulled
+    /// into the located waypoint. The chunk mapping is the identity here
+    /// (registered).
+    pub(crate) fn clip_in_place(&mut self) {
+        if let Some(set) = &self.p_set
+            && self.waypoint >= 0
+        {
+            let wp = &set.waypoints()[self.waypoint as usize];
+            wp.clip(set.edges(), set.as_ref(), &mut self.point);
+        }
+    }
+
     /// `valid()` (`navloc.hpp:35-36`): the set is present. The reference's
     /// `pSet_->chunk()` test needs the chunk mounting and is registered.
     pub fn valid(&self) -> bool {

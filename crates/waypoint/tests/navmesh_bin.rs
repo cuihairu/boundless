@@ -17,7 +17,17 @@
 //!   FINDIGN probes).
 
 use foundation::math::{Vector2, Vector3};
-use waypoint::{ChunkWaypointVertexProvider, almost_equal, find_by_girth, parse_world_navmesh};
+use std::rc::Rc;
+
+/// The probe table row: a name plus the fixed start/end points.
+type Probe = (&'static str, (f32, f32, f32), (f32, f32, f32));
+/// One probe's parsed truth: the resolved src/dst waypoints, then the
+/// per-step (x, y, z, waypoint) lines as the log printed them.
+type PathTruth = (String, i32, i32, Vec<(f64, f64, f64, i32)>);
+use waypoint::{
+    AStar, ChunkWaypointState, ChunkWaypointVertexProvider, NavLoc, almost_equal, find_by_girth,
+    parse_world_navmesh,
+};
 
 const FIXTURE_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -624,5 +634,170 @@ fn the_reference_girth_ignore_height_probes_are_answered() {
             "GIRTHFINDIGN {}",
             line.girth
         );
+    }
+}
+
+/// The `PATHBEGIN`/`PATH`/`PATHEND` truth lines: the original `AStar` over
+/// the original `ChunkWaypointState` (`astar.ipp` + `astar.hpp`), driven by
+/// genuine `NavLoc(Chunk*, point, girth)` constructors inside a real
+/// `ChunkSpace`/`Chunk`/`ChunkNavigator` assembly, for six fixed start/end
+/// pairs. The generator's freelist destructs each recycled search state
+/// twice (`free()` runs `~IntState` eagerly, the list destructor `delete`s
+/// it again), so the fixture pins the set alive; the answers are unaffected.
+#[test]
+fn the_reference_path_probes_are_replayed_point_by_point() {
+    // The probe table, the same constants as gen_waypoints.cpp's block.
+    let probes: [Probe; 6] = [
+        ("AC", (0.5, 0.5, 0.5), (3.5, 0.5, 1.5)),
+        ("AB", (0.5, 0.5, 0.5), (3.5, 0.5, 3.0)),
+        ("BA", (3.5, 0.5, 3.0), (0.5, 0.5, 0.5)),
+        ("CB", (3.5, 0.5, 0.5), (3.0, 0.5, 2.5)),
+        ("AA", (0.5, 0.5, 0.5), (1.5, 0.5, 1.5)),
+        ("BC", (3.0, 0.5, 2.5), (3.5, 0.5, 0.5)),
+    ];
+
+    // Parse the truth: PATHBEGIN opens a probe, PATH steps accumulate.
+    let mut truth: Vec<PathTruth> = Vec::new();
+    for line in truth_lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        match f[0] {
+            "PATHBEGIN" => truth.push((
+                f[1].to_owned(),
+                f[2].parse().expect("src wp"),
+                f[3].parse().expect("dst wp"),
+                Vec::new(),
+            )),
+            "PATH" => truth.last_mut().expect("PATH after PATHBEGIN").3.push((
+                f[2].parse().expect("x"),
+                f[3].parse().expect("y"),
+                f[4].parse().expect("z"),
+                f[5].parse().expect("wp"),
+            )),
+            _ => {}
+        }
+    }
+    assert_eq!(truth.len(), probes.len(), "every probe has truth lines");
+    assert!(
+        truth.iter().all(|(_, _, _, steps)| !steps.is_empty()),
+        "every probe found a path"
+    );
+
+    let blob = fixture_bytes("world_navmesh.bin");
+    let owned: Vec<Rc<_>> = parse_world_navmesh(&blob)
+        .expect("decode")
+        .into_iter()
+        .map(Rc::new)
+        .collect();
+    let set = Rc::clone(&owned[0]);
+
+    for (name, src_at, dst_at) in probes {
+        let &(_, src_wp, dst_wp, ref steps) =
+            truth.iter().find(|(n, ..)| n == name).expect("probe");
+        // The reference NavLoc ctor lifts the point by 0.01 before the
+        // search; the crossing math consumes the lifted goal point.
+        let src_point = Vector3::new(src_at.0, src_at.1 + 0.01, src_at.2);
+        let dst_point = Vector3::new(dst_at.0, dst_at.1 + 0.01, dst_at.2);
+        let src_state = ChunkWaypointState::from_navloc(&NavLoc::from_parts(
+            Rc::clone(&set),
+            src_wp,
+            src_point,
+        ));
+        let dst_state = ChunkWaypointState::from_navloc(&NavLoc::from_parts(
+            Rc::clone(&set),
+            dst_wp,
+            dst_point,
+        ));
+
+        let mut astar = AStar::default();
+        assert!(
+            astar.search(&src_state, &dst_state, -1.0),
+            "search {}",
+            name
+        );
+
+        let path = astar.path();
+        assert_eq!(path.len(), steps.len(), "path length {}", name);
+        for (i, step) in steps.iter().enumerate() {
+            let p = path[i].nav_loc().point();
+            assert_eq!(
+                path[i].nav_loc().waypoint(),
+                step.3,
+                "PATH {} step {} waypoint",
+                name,
+                i
+            );
+            assert!(
+                (p.x as f64 - step.0).abs() <= 1e-6
+                    && (p.y as f64 - step.1).abs() <= 1e-6
+                    && (p.z as f64 - step.2).abs() <= 1e-6,
+                "PATH {} step {} point ({:.6},{:.6},{:.6}) vs ({},{},{})",
+                name,
+                i,
+                p.x,
+                p.y,
+                p.z,
+                step.0,
+                step.1,
+                step.2
+            );
+        }
+    }
+}
+
+/// The `PATHBEGIN <name> <srcwp> <dstwp>` truth lines: the waypoint indices
+/// the reference `NavLoc( Chunk*, point, girth )` constructor resolved for
+/// each probe point — the exact containment pass first, then the
+/// clip-measured `findClosest` fallback (`chunk_navigator.cpp`'s wpSets_
+/// half). Pins the `distanceSquared` upgrade against the engine's choices.
+#[test]
+fn the_reference_probe_waypoints_resolve_through_find_and_find_closest() {
+    // The probe table, the same constants as gen_waypoints.cpp's block.
+    let probes: [Probe; 6] = [
+        ("AC", (0.5, 0.5, 0.5), (3.5, 0.5, 1.5)),
+        ("AB", (0.5, 0.5, 0.5), (3.5, 0.5, 3.0)),
+        ("BA", (3.5, 0.5, 3.0), (0.5, 0.5, 0.5)),
+        ("CB", (3.5, 0.5, 0.5), (3.0, 0.5, 2.5)),
+        ("AA", (0.5, 0.5, 0.5), (1.5, 0.5, 1.5)),
+        ("BC", (3.0, 0.5, 2.5), (3.5, 0.5, 0.5)),
+    ];
+
+    let mut begins: Vec<(String, i32, i32)> = Vec::new();
+    for line in truth_lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f[0] == "PATHBEGIN" {
+            begins.push((
+                f[1].to_owned(),
+                f[2].parse().expect("src wp"),
+                f[3].parse().expect("dst wp"),
+            ));
+        }
+    }
+    assert_eq!(begins.len(), probes.len(), "every probe has a PATHBEGIN");
+
+    let blob = fixture_bytes("world_navmesh.bin");
+    let owned: Vec<Rc<_>> = parse_world_navmesh(&blob)
+        .expect("decode")
+        .into_iter()
+        .map(Rc::new)
+        .collect();
+    let set = Rc::clone(&owned[0]);
+
+    // The constructor's resolution over the single girth-matching set:
+    // the height-honouring containment first, the closest-waypoint
+    // fallback second, with the same +0.01 lift the ctor applies.
+    let resolve = |at: (f32, f32, f32)| -> i32 {
+        let point = Vector3::new(at.0, at.1 + 0.01, at.2);
+        let found = set.find(point, false);
+        if found >= 0 {
+            return found;
+        }
+        let mut best = f32::MAX;
+        set.find_closest(point, &mut best)
+    };
+
+    for (name, src_at, dst_at) in probes {
+        let &(_, src_wp, dst_wp) = begins.iter().find(|(n, ..)| n == name).expect("probe");
+        assert_eq!(resolve(src_at), src_wp, "PATHBEGIN {} src", name);
+        assert_eq!(resolve(dst_at), dst_wp, "PATHBEGIN {} dst", name);
     }
 }

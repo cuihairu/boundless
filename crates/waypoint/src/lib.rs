@@ -8,11 +8,14 @@
 //! wrapper around them (`navmeshFactory`'s population registry and
 //! `ChunkWaypointSet`) is the chunk lane's face and stays out of this port.
 
+mod astar;
 mod chunk_waypoint;
 mod chunk_waypoint_set_data;
+mod chunk_waypoint_state;
 mod girth;
 mod navloc;
 
+pub use astar::AStar;
 pub use chunk_waypoint::{
     ADJACENT_RANGE_END, ADJACENT_RANGE_START, ChunkWaypoint, ChunkWaypointVertexProvider, Edge,
     HEIGHT_RANGE_TOLERANCE, OTHER_CHUNK,
@@ -20,6 +23,7 @@ pub use chunk_waypoint::{
 pub use chunk_waypoint_set_data::{
     ChunkWaypointSetData, NAVPOLY_ELEMENT_SIZE, NavmeshDecodeError, parse_world_navmesh,
 };
+pub use chunk_waypoint_state::{ChunkWaypointState, ChunkWaypointStateSearchData};
 pub use girth::{GIRTH_EPSILON, NavigatorFindResult, almost_equal, find_by_girth};
 pub use navloc::NavLoc;
 
