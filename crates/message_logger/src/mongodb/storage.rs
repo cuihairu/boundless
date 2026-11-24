@@ -985,10 +985,7 @@ mod tests {
                 pid: 4321,
                 component_name: "cellapp".to_string(),
             },
-            Address {
-                ip: 0x7f00_0001,
-                port: 30001,
-            },
+            Address::new(0x7f00_0001, 30001),
         )
     }
 
@@ -1255,10 +1252,7 @@ mod tests {
             pid: 4321,
             component_name: constants::BW_TOOLS_COMPONENT_NAME.to_string(),
         };
-        let address = Address {
-            ip: 0x7f00_0001,
-            port: 30001,
-        };
+        let address = Address::new(0x7f00_0001, 30001);
         let bytes = wire_message(
             &info_header("Tools"),
             constants::BW_TOOLS_SERVER_START_MSG,
@@ -1289,10 +1283,7 @@ mod tests {
         assert_eq!(storage.handle_timeout(), AddLogMessageResult::Success);
         drain(&mut storage);
 
-        let address = Address {
-            ip: 0x7f00_0001,
-            port: 30001,
-        };
+        let address = Address::new(0x7f00_0001, 30001);
         assert_eq!(storage.get_app_id(&address), 0);
 
         assert!(storage.set_app_instance_id(&address, 42));

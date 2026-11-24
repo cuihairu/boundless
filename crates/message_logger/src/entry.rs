@@ -115,6 +115,10 @@ impl LogEntry {
     /// The on-disk record size: the struct's aligned size (`sizeof`).
     pub const DISK_SIZE: usize = 48;
 
+    /// The packed record size the user segment files carry:
+    /// 10 + 4 + 2 + 1 + 1 + 4 + 4 + 2 + 4 + 2.
+    pub const PACKED_SIZE: usize = 34;
+
     /// The little-endian 48-byte struct image the entries file carries.
     /// Holes and trailing padding are zeroed — the reference leaves them
     /// uninitialized, so the reader must never give them meaning.
