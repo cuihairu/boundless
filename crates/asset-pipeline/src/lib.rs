@@ -35,7 +35,14 @@
 //! - [`generic_conversion_rule`] — the `asset_rules.xml`-backed rule
 //!   (`compiler/generic_conversion_rule.cpp`);
 //! - [`task_processor`] — the single-threaded task driver
-//!   (`conversion/task_processor.cpp`).
+//!   (`conversion/task_processor.cpp`);
+//! - [`jit_compiler`] — the on-demand compiler: reverse-dependency
+//!   tracking, on-asset requests and modification re-queues
+//!   (`tools/jit_compiler/jit_compiler.cpp`);
+//! - [`plugin_loader`] — the plugin registry and loader that registers
+//!   converters (`tools/plugin_system/plugin_loader.cpp`);
+//! - [`task_store`] — the JIT compiler's task bookkeeping
+//!   (`tools/jit_compiler/task_store.cpp`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -52,5 +59,8 @@ pub mod dependency_list;
 pub mod generic_conversion_rule;
 pub mod hash64;
 pub mod hierarchical_config;
+pub mod jit_compiler;
+pub mod plugin_loader;
 pub mod task_finder;
 pub mod task_processor;
+pub mod task_store;

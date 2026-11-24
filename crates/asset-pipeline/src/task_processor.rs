@@ -113,17 +113,16 @@ impl TaskProcessor {
         }
 
         // The converter map is indexed by id; an unknown id fails the task.
-        let converter_info = match self
-            .converter_map
-            .borrow()
-            .get(&task.borrow().converter_id)
-            .cloned()
-        {
+        // (The id is read first: a match scrutinee temporary would hold the
+        // task borrow through the arms and poison the `None` arm's
+        // `borrow_mut`.)
+        let converter_id = task.borrow().converter_id;
+        let converter_info = match self.converter_map.borrow().get(&converter_id).cloned() {
             Some(info) => info,
             None => {
                 eprintln!(
                     "FAILED: No converter registered for id {} ({})",
-                    task.borrow().converter_id,
+                    converter_id,
                     task.borrow().source
                 );
                 task.borrow_mut().status = ConversionStatus::Failed;
