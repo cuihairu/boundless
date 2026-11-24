@@ -413,6 +413,10 @@ pub struct PostgresStorage {
     /// would be holding as an open `MySqlTransaction`
     /// (`transaction.cpp:15-23` keeps `inTransaction` on the connection).
     in_transaction: bool,
+    /// Whether this connection was flagged as lost, the reference's
+    /// `sql_.hasLostConnection( true )` — set when rolling back finds the
+    /// connection already gone (transaction.cpp:41-47).
+    connection_lost: bool,
 }
 
 impl std::fmt::Debug for PostgresStorage {
@@ -429,6 +433,7 @@ impl PostgresStorage {
             client: RefCell::new(client),
             schemas: HashMap::new(),
             in_transaction: false,
+            connection_lost: false,
         })
     }
 
@@ -475,6 +480,54 @@ impl PostgresStorage {
     /// Whether a transaction is open on this connection.
     pub fn in_transaction(&self) -> bool {
         self.in_transaction
+    }
+
+    /// Rolls the open transaction back (`transaction.cpp:29-51`), the
+    /// reference's destructor doing the work: nothing it made is visible to
+    /// the other connections, which keep reading the values that stood
+    /// there. The connection stops being inside a transaction whatever
+    /// happens (`inTransaction( false )` runs after the rollback, so it
+    /// clears even when the rollback itself failed).
+    ///
+    /// When the rollback finds the connection already gone the failure is
+    /// swallowed and the connection is flagged instead
+    /// (`transaction.cpp:41-47`).
+    pub fn rollback_transaction(&mut self) -> Result<(), DbError> {
+        if !self.in_transaction {
+            // The reference's destructor rolls back only a transaction it
+            // is inside (`if (!committed_ …)`), so there is nothing to
+            // roll back.
+            return Err(DbError::Storage(
+                "there is no transaction to roll back".into(),
+            ));
+        }
+        match self.client.borrow_mut().execute("ROLLBACK", &[]) {
+            Ok(_) => {}
+            // `catch (DatabaseException & e) { if (e.isLostConnection())
+            // sql_.hasLostConnection( true ); }` (transaction.cpp:41-47).
+            // A closed client and an I/O failure are both connection-level
+            // (the reference's `CR_*` codes); a `ROLLBACK` carries no
+            // parameters, so any server-reported error is a real SQL
+            // failure and the other arm reports it.
+            Err(error) if error.is_closed() || error.as_db_error().is_none() => {
+                self.connection_lost = true;
+            }
+            Err(error) => {
+                // Every other rollback failure escapes the reference's
+                // destructor as a DatabaseException, which terminate()
+                // would turn into an abort — so the port reports it.
+                self.in_transaction = false;
+                return Err(map_db_error(error));
+            }
+        }
+        self.in_transaction = false;
+        Ok(())
+    }
+
+    /// Whether this connection was flagged as lost, the reference's
+    /// `sql_.hasLostConnection( true )`.
+    pub fn connection_lost(&self) -> bool {
+        self.connection_lost
     }
 
     /// The underlying client, for the schema tools (BW-09-07).
