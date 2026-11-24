@@ -8,7 +8,9 @@
 //! [`chunk_placer`] the WorldEditor object placement/transform face
 //! (`tools/worldeditor/editor/chunk_item_placer.cpp`) with its snapping
 //! maths ([`snaps`]) and the undo/redo engine ([`undoredo`],
-//! `tools/common/undoredo.cpp`).
+//! `tools/common/undoredo.cpp`). [`space_publish`] carries the
+//! WorldEditor resource browsing (the `IChunkWalker` family) and space
+//! publishing faces (`SpaceRecreator`/`SpaceSettings`).
 
 pub mod boundary;
 pub mod chunk;
@@ -18,6 +20,7 @@ pub mod identifier;
 pub mod mapping;
 pub mod snaps;
 pub mod space;
+pub mod space_publish;
 pub mod undoredo;
 
 pub use boundary::{ChunkBoundary, Portal, PortalTarget, create_boundaries, form_boundaries};
@@ -36,6 +39,12 @@ pub use identifier::{
 };
 pub use mapping::{DEFAULT_GRID_SIZE, GeometryMapping, GridBounds};
 pub use space::ChunkSpace;
+pub use space_publish::{
+    BoundedChunkWalker, CacheChunkWalker, ChunkWalker, FileChunkWalker, LinearChunkWalker,
+    SPACE_RECREATOR_BLANK_TEXTURE, SPACE_SETTING_FILE_NAME, SourceSpace, SourceSpaceBounds,
+    SpaceInformation, SpaceRecreator, SpaceSettings, TerrainInfo, bias_grid, chunk_id,
+    grid_from_thumbnail_file_name, normalise_terrain_block_blends, offset_grid,
+};
 pub use undoredo::{
     Barrier, ExistenceOperation, MatrixOperation, UndoOperation, UndoRedo, operations_equal,
 };

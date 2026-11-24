@@ -22,6 +22,7 @@ pub mod editor_block;
 pub mod height_map;
 pub mod hole_map;
 pub mod png;
+pub mod settings;
 
 pub use dominant_texture_map::{
     DOMINANT_HEADER_SIZE, DOMINANT_MAGIC, DOMINANT_VERSION_ZIP, DominantLoadError,
@@ -46,3 +47,4 @@ pub use hole_map::{
     BoolImage, HOLES_HEADER_SIZE, HOLES_MAGIC, HoleLoadError, HolesHeader, TerrainHoleMap2,
 };
 pub use png::{PngError, PngImage, compress_png, decompress_png};
+pub use settings::{DEFAULT_BLOCK_SIZE, TERRAIN1_VERSION, TERRAIN2_VERSION, TerrainSettings};
