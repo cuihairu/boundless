@@ -1981,7 +1981,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-03-01 输出机器可读场景结果**。**验收** 版本、拓扑和种子可追溯。（commit 7b7dfb6）
   - 证据：`crates/load/src/report.rs`——`ScenarioReport` 信封+`to_json`/`to_json_string` 机器可读文档（schema 标签 `boundless-load-report/1` 稳定钉死）：**版本/拓扑/种子三字段经 JSON 往返逐字可溯**（验收），场景名/并发/执行器阶段表（warmup/ramp/steady/total 秒）同文携带（steady=duration−ramp 语义沿用 BW-17-02-02 已钉执行器）；文档契约源=docs/operations/load-testing.md Reports 节（参考 bots 无报告层——唯一进程外口径是 watcher 树，故本文档为本移植自有交付、由文档项定义）；4 测（往返/阶段拷贝/schema 稳定/直构渲染）；llvm-cov report.rs 100.00%（32/32）；load 116 测绿；clippy 零提及；rustfmt 过。卡点原文「无实测结果则无可输出」不成立：验收写的是可追溯字段而非实测数字，测量节（03-02/03/04）按交付逐项补进同一文档。
   - 卡点（无实测结果）：需先由 BW-17-01 bot 跑出场景结果再汇总；版本/拓扑/种子可追溯属报告层，无运行数据则无结果可输出。
-- [x] **BW-17-03-02 聚合登录成功率及在线数**。**验收** 用已知输入核对统计。（commit <HASH>）
+- [x] **BW-17-03-02 聚合登录成功率及在线数**。**验收** 用已知输入核对统计。（commit 4793a9e）
   - 证据：`crates/load/src/report.rs` 增 `LoginStats`（`from_run(&[bool], &[u64])`：每登录尝试一记录+每观测 tick 一在线数采样）——成功率=成功/尝试（零尝试 0.0）、在线峰值=采样最大、在线均值=采样均值（零采样 0.0），全部为固定算术定义；**验收（已知输入核对）**：`[true,false,true,true]`×`[1,5,2]` → 率 0.75、峰值 5、均值 8/3 逐字断言，另有空输入/全败/全成界与 JSON 节渲染（率/峰值同值落 JSON）；`ScenarioReport.login` 增可选节（未记录=JSON null 而非 0——未运行与全败是不同文档），5 新测共 15 报告测；llvm-cov report.rs 100.00%（71/71）；load 120 测绿；clippy 零提及；rustfmt 过。卡点原文同 03-01 不成立：验收即「用已知输入核对」。
 - [ ] **BW-17-03-03 聚合延迟分位数与超时**。**验收** 固定样本验证 p95/p99。
   - 卡点（无实测结果）：p95/p99 需固定样本延迟数据（同 03-01 卡点）。
