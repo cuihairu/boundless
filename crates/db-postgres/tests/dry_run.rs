@@ -8,7 +8,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use db_postgres::{dry_run, PostgresStorage};
+use db_postgres::{PostgresStorage, dry_run};
 
 static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -91,12 +91,16 @@ fn a_fresh_database_is_reported_and_left_unchanged() {
         // The plan is the whole initialisation: eleven tables, two
         // indexes, the version seed.
         assert_eq!(missing.len(), 14);
-        assert!(missing
-            .iter()
-            .any(|statement| statement.contains("\"bigworldInfo\"")));
-        assert!(missing
-            .iter()
-            .any(|statement| statement.contains("\"bigworldLogOnMapping\"")));
+        assert!(
+            missing
+                .iter()
+                .any(|statement| statement.contains("\"bigworldInfo\""))
+        );
+        assert!(
+            missing
+                .iter()
+                .any(|statement| statement.contains("\"bigworldLogOnMapping\""))
+        );
 
         // The report carries the reference's `DRYRUN:` prefix.
         let lines = dry_run::dry_run_lines(&missing);
@@ -155,15 +159,19 @@ fn a_partially_initialised_database_reports_its_gaps() {
         // The version table's CREATE is not in the plan; the other ten
         // tables, both indexes and the seed are.
         assert_eq!(missing.len(), 10 + 2 + 1);
-        assert!(!missing
-            .iter()
-            .any(|statement| statement.contains("CREATE TABLE IF NOT EXISTS \"bigworldInfo\"")));
+        assert!(
+            !missing
+                .iter()
+                .any(|statement| statement.contains("CREATE TABLE IF NOT EXISTS \"bigworldInfo\""))
+        );
         assert!(missing
             .iter()
             .any(|statement| statement.contains("CREATE TABLE IF NOT EXISTS \"bigworldNewID\"")));
-        assert!(missing
-            .iter()
-            .any(|statement| statement.starts_with("INSERT INTO \"bigworldInfo\"")));
+        assert!(
+            missing
+                .iter()
+                .any(|statement| statement.starts_with("INSERT INTO \"bigworldInfo\""))
+        );
 
         // Applying the gap plan finishes the initialisation.
         db_postgres::schema_init::apply(&mut storage.client_mut(), &missing).unwrap();
@@ -171,8 +179,10 @@ fn a_partially_initialised_database_reports_its_gaps() {
             db_postgres::schema_init::read_version(&mut storage.client_mut()).unwrap(),
             Some(db_postgres::CURRENT_VERSION)
         );
-        assert!(dry_run::plan_missing_schema(&mut storage.client_mut())
-            .unwrap()
-            .is_empty());
+        assert!(
+            dry_run::plan_missing_schema(&mut storage.client_mut())
+                .unwrap()
+                .is_empty()
+        );
     });
 }

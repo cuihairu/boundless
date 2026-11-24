@@ -17,8 +17,8 @@
 //! private database (the fixed tables included), dropped when the case
 //! finishes.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
 
 use db::{EntityKey, EntityStorage};

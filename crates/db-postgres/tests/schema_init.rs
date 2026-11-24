@@ -9,7 +9,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use db::EntityKey;
-use db_postgres::{EntitySchema, PostgresStorage, CURRENT_VERSION};
+use db_postgres::{CURRENT_VERSION, EntitySchema, PostgresStorage};
 use entitydef::value::PropertyValue;
 
 static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);

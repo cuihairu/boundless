@@ -375,9 +375,11 @@ fn a_delete_only_takes_its_own_row() {
             EntityStorage::get_entity(storage, &other).expect("read"),
             None
         );
-        assert!(EntityStorage::get_entity(storage, &key)
-            .expect("read")
-            .is_some());
+        assert!(
+            EntityStorage::get_entity(storage, &key)
+                .expect("read")
+                .is_some()
+        );
     });
 }
 

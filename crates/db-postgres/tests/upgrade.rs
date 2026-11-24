@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use db::{EntityKey, EntityRecord};
-use db_postgres::{upgrade, EntitySchema, PostgresStorage};
+use db_postgres::{EntitySchema, PostgresStorage, upgrade};
 use entitydef::value::PropertyValue;
 
 static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -147,10 +147,12 @@ fn an_old_sample_upgrades_and_stays_readable() {
         assert_eq!(back, new_record);
 
         // And the old sample is still there, alongside it.
-        assert!(storage
-            .get_entity(&new_schema(), &account_key(1))
-            .unwrap()
-            .is_some());
+        assert!(
+            storage
+                .get_entity(&new_schema(), &account_key(1))
+                .unwrap()
+                .is_some()
+        );
     });
 }
 

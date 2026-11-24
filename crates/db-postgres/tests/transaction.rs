@@ -221,10 +221,12 @@ fn a_group_of_writes_becomes_visible_together_with_the_commit() {
         register_thing(&mut reader, 3);
         register_counter(&mut reader, 4);
 
-        assert!(reader
-            .all_entities()
-            .expect("a fresh database lists nothing")
-            .is_empty());
+        assert!(
+            reader
+                .all_entities()
+                .expect("a fresh database lists nothing")
+                .is_empty()
+        );
 
         storage.begin_transaction().expect("the transaction opens");
         let (key, values) = name(PENDING_DATABASE_ID, "inside");
