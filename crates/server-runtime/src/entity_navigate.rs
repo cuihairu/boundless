@@ -1,7 +1,8 @@
 //! `server/cellapp/entity_navigate.{hpp,cpp}` and the mesh half of
 //! `server/cellapp/navmesh_navigation_system.cpp` (BW-10-06-01): the
-//! `Entity.navigate` script face — the `-1` max-search resolution, the
-//! real/vehicle refusals, the exclusive movement controller creation —
+//! `Entity.navigate`/`navigateStep`/`canNavigateTo` script faces — the
+//! `-1` max-search resolution, the real/vehicle refusals, the exclusive
+//! movement controller creation, the read-only reachability probe —
 //! over [`MeshNavigator`], the [`Navigator`] boundary implemented on
 //! `waypoint`'s two-level search. `MeshNavigator` is the
 //! `NavmeshEntityNavigationSystem` faces the controller touches:
@@ -231,6 +232,30 @@ impl NavigateStepFailure {
             NavigateStepFailure::SourceUnresolved => "Could not resolve source position.",
             NavigateStepFailure::DestinationUnresolved => "Could not resolve destination position.",
             NavigateStepFailure::NoPath => "No path found.",
+        }
+    }
+}
+
+/// The `canNavigateTo` failure faces — the reference's `PyErr` results
+/// (`entity_navigate.cpp:966-970`, `navmesh_navigation_system.cpp:434-441`).
+/// Unresolved endpoints answer `None`, not an error, on this face.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanNavigateFailure {
+    /// `PyExc_TypeError`.
+    NotReal,
+    /// `!entity_.pChunkSpace()`.
+    NoSpace,
+}
+
+impl CanNavigateFailure {
+    /// The reference's error text.
+    pub fn message(&self) -> &'static str {
+        match self {
+            CanNavigateFailure::NotReal => "This method can only be called on a real entity.",
+            CanNavigateFailure::NoSpace => {
+                "NavmeshEntityNavigationSystem::canNavigateTo(): \
+                 Physical space of entity does not support navigation queries"
+            }
         }
     }
 }
@@ -476,6 +501,98 @@ impl EntityNavigate {
             self.navigate_step = Some(controller);
             Ok(id)
         }
+    }
+
+    /// `EntityNavigate::canNavigateTo` (`entity_navigate.cpp:957-976`) and
+    /// the `NavmeshEntityNavigationSystem::canNavigateTo` body
+    /// (`navmesh_navigation_system.cpp:431-518`): resolve the `-1` search
+    /// limit, refuse non-real entities — the reference has **no** vehicle
+    /// refusal on this face — then resolve both navlocs like `navigateStep`
+    /// (source through `createPathNavLoc`, destination through the bare
+    /// space constructor clipped after its check). Unresolved endpoints
+    /// answer `None` here, not an error. The same-waypoint shortcut
+    /// answers the clipped destination with the **source** height raise;
+    /// otherwise a `findPath` probe on the read-only cache face decides —
+    /// found answers the clipped destination with the **destination**
+    /// height raise, unfound answers `None`. The reference's
+    /// `navigator().clearCache()` before the probe stays commented out.
+    #[allow(clippy::too_many_arguments)]
+    pub fn can_navigate_to(
+        &self,
+        state: &EntityState,
+        navigator: &MeshNavigator,
+        dst_position: Vector3,
+        max_search_distance: f32,
+        girth: f32,
+        max_aoi_radius: f32,
+        chunk_space: bool,
+    ) -> Result<Option<Vector3>, CanNavigateFailure> {
+        // isEqual( maxSearchDistance, -1.f ) — resolved before the
+        // refusal, as in navigate()/navigateStep().
+        let max_search_distance = if max_search_distance == -1.0 {
+            max_aoi_radius
+        } else {
+            max_search_distance
+        };
+
+        if !self.is_real {
+            return Err(CanNavigateFailure::NotReal);
+        }
+
+        // ToDo in the reference: change when navigation system supports
+        // non-grid spaces.
+        if !chunk_space {
+            return Err(CanNavigateFailure::NoSpace);
+        }
+
+        // figure out the source navloc
+        let src = navigator.navloc_at(state.position, girth);
+
+        // complain if invalid — silently, on this face
+        if !src.valid() {
+            return Ok(None);
+        }
+
+        // figure out the dest navloc, then clip it — the reference's
+        // destination-invalid arm is unreachable like its navigateStep
+        // twin: both endpoints resolve through the same girth filter, so
+        // a valid source implies a valid destination.
+        let mut dst = navigator.navloc_unclipped(dst_position, girth);
+        if !dst.valid() {
+            return Ok(None);
+        }
+        dst.clip();
+
+        // if they are the same waypoint it is easy
+        if src.waypoints_equal(&dst) {
+            let mut wp = dst.point();
+            src.make_max_height(&mut wp);
+            return Ok(Some(wp));
+        }
+
+        // Need to clear navigation cache. It is possible that when a door
+        // was open and a search from srcLoc -> dstLoc was stored, which is
+        // still there. The door may now be closed. — the reference keeps
+        // the clearCache call commented out.
+        let mut way = NavLoc::new();
+        let mut passed_activated_portal = false;
+        let found = navigator.navigator.find_path(
+            &src,
+            &dst,
+            max_search_distance,
+            /* block_non_permissive: */ true,
+            &mut way,
+            &mut passed_activated_portal,
+            CacheState::ReadCache,
+        );
+
+        if !found {
+            return Ok(None);
+        }
+
+        let mut wp = dst.point();
+        dst.make_max_height(&mut wp);
+        Ok(Some(wp))
     }
 }
 
@@ -1261,5 +1378,211 @@ mod tests {
             )
             .expect("the fresh step resolves");
         assert_eq!(id, 9);
+    }
+
+    /// The canNavigateTo refusals: a ghost is refused, a non-chunk space is
+    /// refused, and — unlike navigate/navigateStep — a mounted entity is
+    /// **not** (the reference has no vehicle check on this face).
+    #[test]
+    fn can_navigate_to_refuses_the_non_real_face_but_not_a_mounted_entity() {
+        let navigator = mesh_navigator("slope");
+        let state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        let ghost = EntityNavigate::default();
+        let err = ghost
+            .can_navigate_to(
+                &state,
+                &navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect_err("a ghost cannot navigate");
+        assert_eq!(err, CanNavigateFailure::NotReal);
+        assert_eq!(
+            err.message(),
+            "This method can only be called on a real entity."
+        );
+
+        // A non-chunk (delegate) space refuses before any mesh work.
+        let extra = real_entity();
+        let err = extra
+            .can_navigate_to(
+                &state,
+                &navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                false,
+            )
+            .expect_err("a delegate space cannot navigate");
+        assert_eq!(err, CanNavigateFailure::NoSpace);
+        assert_eq!(
+            err.message(),
+            "NavmeshEntityNavigationSystem::canNavigateTo(): \
+             Physical space of entity does not support navigation queries"
+        );
+
+        // The mounted entity walks straight through — no vehicle refusal
+        // on this face.
+        let mounted = EntityNavigate {
+            is_real: true,
+            on_vehicle: true,
+            navigation_system: NavmeshEntityNavigationSystem,
+            navigate_step: None,
+        };
+        let answer = mounted
+            .can_navigate_to(
+                &state,
+                &navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect("the reference has no vehicle check here");
+        assert_eq!(answer, Some(Vector3::new(7.0, 3.5, 7.0)));
+    }
+
+    /// BW-10-06-03 acceptance (可达样本) — over the slope asset the
+    /// reachable route answers the clipped destination; the read-only
+    /// cache face still fills an empty cache and then answers a binding
+    /// search limit from the hit (the local hit path ignores the limit),
+    /// while a mismatched pair searches into a scratch cache and leaves
+    /// the stored path untouched.
+    #[test]
+    fn a_reachable_destination_answers_the_clipped_point() {
+        let mut navigator = mesh_navigator("slope");
+        let extra = real_entity();
+
+        // The same-waypoint shortcut needs no path search, so nothing is
+        // cached.
+        let state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+        let answer = extra
+            .can_navigate_to(
+                &state,
+                &navigator,
+                Vector3::new(2.0, 0.5, 2.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect("the shortcut face");
+        assert_eq!(answer, Some(Vector3::new(2.0, 1.5, 2.0)));
+        assert!(navigator.cached_waypoint_path().is_empty());
+
+        // The wp1 → wp0 route answers the clipped destination.
+        let answer = extra
+            .can_navigate_to(
+                &state,
+                &navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect("the route resolves");
+        assert_eq!(answer, Some(Vector3::new(7.0, 3.5, 7.0)));
+
+        // ReadCache still fills an empty cache — only a *mismatched* one
+        // is protected.
+        let cached = navigator.cached_waypoint_path();
+        assert!(!cached.is_empty());
+
+        // The same pair with a search limit that binds a fresh search is
+        // still answered — from the cache hit, which ignores the limit.
+        let answer = extra
+            .can_navigate_to(
+                &state,
+                &navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect("the cache hit ignores the limit");
+        assert_eq!(answer, Some(Vector3::new(7.0, 3.5, 7.0)));
+
+        // A mismatched pair searches into a scratch cache: the reverse
+        // route answers, and the stored path stays exactly as it was.
+        let reversed = EntityState::new(7, Vector3::new(7.0, 3.0, 7.0), Direction3D::default(), 0);
+        let answer = extra
+            .can_navigate_to(
+                &reversed,
+                &navigator,
+                Vector3::new(1.0, 0.5, 1.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect("the reverse route resolves");
+        assert_eq!(answer, Some(Vector3::new(1.0, 1.5, 1.0)));
+        assert_eq!(navigator.cached_waypoint_path(), cached);
+    }
+
+    /// BW-10-06-03 acceptance (不可达样本) — the cross-layer shell pair,
+    /// an unmatched girth (the source answers None silently on this
+    /// face), and a binding search limit with no cache to lean on all
+    /// answer None.
+    #[test]
+    fn an_unreachable_destination_answers_none() {
+        let extra = real_entity();
+
+        // The shell's floor and bridge layers carry no inter-set adjacency.
+        let shell = mesh_navigator("shell");
+        let floor = EntityState::new(7, Vector3::new(2.5, 0.5, 4.5), Direction3D::default(), 0);
+        let answer = extra
+            .can_navigate_to(
+                &floor,
+                &shell,
+                Vector3::new(3.0, 1.5, 3.5),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect("the face itself works");
+        assert_eq!(answer, None);
+
+        // A girth no record matches: the source is unresolved and the
+        // face answers None instead of raising.
+        let slope = mesh_navigator("slope");
+        let state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+        let answer = extra
+            .can_navigate_to(
+                &state,
+                &slope,
+                Vector3::new(7.0, 3.0, 7.0),
+                -1.0,
+                0.5,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect("the face itself works");
+        assert_eq!(answer, None);
+
+        // A binding search limit with no cache to lean on: the
+        // destination state sits 8.9 m from the start, so the AStar skips
+        // it.
+        let answer = extra
+            .can_navigate_to(
+                &state,
+                &slope,
+                Vector3::new(7.0, 3.0, 7.0),
+                1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+                true,
+            )
+            .expect("the face itself works");
+        assert_eq!(answer, None);
     }
 }
