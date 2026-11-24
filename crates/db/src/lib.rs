@@ -31,6 +31,7 @@ pub mod record;
 pub mod recovery;
 pub mod retry;
 pub mod secondary;
+pub mod snapshot_helper;
 pub mod storage;
 pub mod sync_db;
 pub mod transaction;
@@ -89,6 +90,11 @@ pub use retry::{
 pub use secondary::{
     SecondaryDatabase, SecondaryRow, SecondaryTable, StreamKind, StreamPropDef, StreamTypeDef,
     blob_to_values, values_to_blob,
+};
+pub use snapshot_helper::{
+    CONFIG_SECTION, ConnectFailure, FAILURE, LVCREATE, LVREMOVE, SUCCESS, SnapshotConfig,
+    SnapshotConfigReader, SnapshotOps, acquire_snapshot, parse_snapshot_path, release_snapshot,
+    run, validate_config,
 };
 pub use storage::{
     BaseMailbox, CheckOut, EntityKey, EntityStorage, EntityStorageImage, MemoryConnection,
