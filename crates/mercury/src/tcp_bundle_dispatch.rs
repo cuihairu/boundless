@@ -221,7 +221,7 @@ pub fn dispatch_messages(
         // (tcp_bundle_processor.cpp:178-185).
         match p_message_filter {
             Some(filter) => {
-                filter.filter_message(source, &mut header, &mut stream, handler.as_ref())
+                filter.filter_message(source, &mut header, &mut stream, &handler)
             }
             None => handler.handle_message(source, &mut header, &mut stream),
         }
@@ -346,7 +346,7 @@ mod tests {
             src_addr: &Address,
             header: &mut UnpackedMessageHeader,
             data: &mut BinaryStream,
-            handler: &dyn InputMessageHandler,
+            handler: &Rc<dyn InputMessageHandler>,
         ) {
             self.intercepted
                 .borrow_mut()
@@ -364,7 +364,7 @@ mod tests {
             _src_addr: &Address,
             _header: &mut UnpackedMessageHeader,
             _data: &mut BinaryStream,
-            _handler: &dyn InputMessageHandler,
+            _handler: &Rc<dyn InputMessageHandler>,
         ) {
         }
     }

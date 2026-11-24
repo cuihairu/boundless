@@ -13,12 +13,13 @@ pub mod encryption_filter;
 pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod event_dispatcher;
+pub mod fragmented_bundle;
 pub mod frequent_tasks;
 pub mod interface_element;
 pub mod interface_minder;
 pub mod interface_table;
 pub mod interfaces;
-pub mod fragmented_bundle;
+pub mod message_filter;
 pub mod message_framing;
 pub mod misc;
 #[cfg(target_os = "linux")]
@@ -37,6 +38,8 @@ pub mod packet_receiver;
 #[cfg(target_os = "linux")]
 pub mod poller;
 
+pub mod rate_limit_config;
+pub mod rate_limit_message_filter;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;
