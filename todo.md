@@ -1162,7 +1162,12 @@
 覆盖客户端流式数据下载、回放头、压缩块、tick 写入和完成回调。与 Cell 采集及客户端回放读取联验。
 
 - [x] **BW-07-05-01 分块发送客户端资源** `(548e9de)`。**验收** 块顺序和完成回调吻合。
-- [ ] **BW-07-05-02 写入回放头及元数据**。**验收** 原版读取器可解析。
+- [x] **BW-07-05-02 写入回放头及元数据**（`7ac6b2a`）。**验收** 原版读取器可解析。
+  - **参考对齐**：`connection/replay_header.ipp:13-42`（version→digest→`uint8(gameUpdateFrequency)`→timestamp→8 字节 nonce→`reportedSignatureLength`，签名随后，`uint32(numTicks)` 在签名之外）、`replay_metadata.cpp:52-74`（`streamSize`(u32)+打包键值对+签名）、`replay_header.cpp:210-297`（`streamSize`/`signatureLengthFieldOffset`=33/`numTicksFieldOffset`/`checkSufficientLength`）、`replay_metadata.cpp:203-266`（`streamSize` 记账、`checkSufficientLength`、`calculateStringPackedSize`、`swap`）、签名链按 `checksum_stream.cpp:222-360` 的 `MD5SumScheme` 语义与 `baseapp/replay_data_file_writer.cpp:69-76` 的「头部签名先注入、再签元数据」。
+  - **模型**：新增 `crates/server-runtime/src/replay_recording.rs`（`lib.rs` 已声明）：`ReplaySignatureScheme` 接口（`signature_size`/`sign`/`verify`/`reset`/`read_blob`）+ `Md5Signature`（16 字节 MD5）；`ReplayHeader::new/to_bytes` 与 `stream_size`/`expected_length`/`is_complete`/`num_ticks_field_offset`；`ReplayMetaData::new/add/has_key/get/clear/swap/iter/stream_size/to_bytes` + `expected_length`/`is_complete`。
+  - **验收测试**：`tests` 16 条，与 `lib/network/unit_test/test_replay_header.cpp`、`test_replay_metadata.cpp` 逐场景对位（往返、篡改检测、版本不符先于签名校验、未验证签名原样回传、`checkSufficientLength` 精确/差一字节/过短、`numTicksFieldOffset`、集合语义与 `swap`、超限块拒绝、空块 4+16 字节）。解码侧为独立实现，按原版读取顺序（`replay_header.cpp:140-204`、`replay_metadata.cpp:76-145`）逐字段断言字节偏移：version@0、digest@4、freq@20、timestamp@21、nonce@25、sigLen@33、signature@35、numTicks@51。
+  - **登记差异**：① 原版版本号按 `subpatch, patch, minor, major` 写出（`client_server_protocol_version.hpp:135-139`），2.9.0.0 = 字节 `[0,0,9,2]`；`crates/client/src/replay.rs:44` 的 `CURRENT_VERSION`/`parse_header`（`:221-225`）按 `(2,9,0,0)` 读四字节，顺序相反，会拒绝原版可解析的头部——本项按原版字节序写，client 侧读取顺序待该车道修正。② `calculateStringPackedSize`（`<256 ? 1 : 3`，`replay_metadata.cpp:248-253`）与 `writePackedInt`（`>=255` 走 `0xFF`+3 字节，`binary_stream.hpp:254-268`）在 255 字节处自相矛盾；本项两侧各按原版语义实现，`a_long_pair_carries_a_too_small_stream_size` 锁定后果（`streamSize` 字段比实际 body 少 1 字节、块不可读），未代为修补。③ 生产用的 `ReplayChecksumScheme`（SHA256 链 + 椭圆曲线，`connection/replay_checksum_scheme.cpp`）未移植，与 `client::replay` 的接口式建模口径一致，`Md5Signature` 即原版单测所用方案。
+  - **门禁**：本模块 fmt 干净、clippy 无新增告警（余下 5 条全在既有 `server_app.rs`，非本项）、`cargo test -p server-runtime` 944 过、workspace 102 个 test result 全绿、llvm-cov 98.18% 行 / 100% 函数 / 99.57% 区域。
 - [ ] **BW-07-05-03 写入压缩 Tick 块**。**验收** 已知事件序列可无损读取。
 - [ ] **BW-07-05-04 处理结束和失败**。**验收** 文件关闭与回调次数符合基线。
 
