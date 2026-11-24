@@ -1,5 +1,6 @@
 //! `lib/waypoint/astar.{hpp,ipp}` — the generic A* over waypoint states,
-//! instantiated here for `ChunkWaypointState`.
+//! instantiated for `ChunkWaypointState` (the waypoint graph) and
+//! `ChunkWPSetState` (the portal connections).
 //!
 //! Registered boundaries (allocation faces, same answers):
 //! - the reference `open_` is a `BW::set<IntState*>` iterated in pointer
@@ -8,34 +9,49 @@
 //!   insertion-ordered rather than address-ordered — the reference order is
 //!   allocation-dependent and not part of the contract.
 //! - the `IntStateHash` (257 bins over `ext.hash()`) becomes a `HashMap`
-//!   keyed by the set pointer and waypoint — the same identity pair its
-//!   `ext.compare` checks.
+//!   keyed by the state's `search_key` — the same identity its `compare`
+//!   checks.
 //! - the `StateScopedFreeList` (alloc/free/placement-new reuse) becomes an
 //!   arena `Vec`; each search state is destroyed exactly once there.
 
-use super::WaypointIndex;
-use super::chunk_waypoint_state::{ChunkWaypointState, ChunkWaypointStateSearchData};
 use super::girth::almost_equal;
 use std::collections::HashMap;
+use std::fmt::Debug;
 
-/// The close-set key: the set identity plus the waypoint, exactly the pair
-/// `ChunkWaypointState::compare` and `hash` derive from the location. The
-/// null-set arm mirrors the reference's hashing of a null pointer; the
-/// search never reaches it (`get_adjacency` only answers true for states
-/// sitting on a set).
-fn search_key(state: &ChunkWaypointState) -> (usize, WaypointIndex) {
-    match state.nav_loc().p_set() {
-        Some(set) => (
-            std::rc::Rc::as_ptr(set) as usize,
-            state.nav_loc().waypoint(),
-        ),
-        None => (0, state.nav_loc().waypoint()),
-    }
+/// The state contract the reference's `AStar` template reads off `State`
+/// (`astar.hpp:36-56`): `Default` plays the freelist's placement-new,
+/// `search_key` the hash, `compare` the pointer-equality loop guard.
+pub trait AStarState: Clone + Default + Debug {
+    /// `SearchData` — the per-search bookkeeping `getAdjacency` writes.
+    type SearchData: Default;
+    /// The close-set identity (`IntStateHash` over `ext.hash()`).
+    type Key: Eq + std::hash::Hash;
+
+    /// `hash()`.
+    fn search_key(&self) -> Self::Key;
+    /// `compare()` (only `== 0` is consumed).
+    fn compare(&self, other: &Self) -> i64;
+    /// `isGoal()`.
+    fn is_goal(&self, goal: &Self) -> bool;
+    /// `distanceToGoal()`.
+    fn distance_to_goal(&self, goal: &Self) -> f32;
+    /// `distanceFromParent()`.
+    fn distance_from_parent(&self) -> f32;
+    /// `adjacenciesEnd() - adjacenciesBegin()`.
+    fn adjacency_count(&self) -> usize;
+    /// `getAdjacency()`.
+    fn get_adjacency(
+        &self,
+        index: usize,
+        neigh: &mut Self,
+        goal: &Self,
+        search_data: &mut Self::SearchData,
+    ) -> bool;
 }
 
 /// `cmp_f` (`astar.hpp:220-231`): the min-f scan's better-than test; f ties
 /// within the almostEqual epsilon prefer the larger g.
-fn cmp_f(a: &AStarNode, b: &AStarNode) -> bool {
+fn cmp_f<S: AStarState>(a: &AStarNode<S>, b: &AStarNode<S>) -> bool {
     if almost_equal(a.f, b.f) {
         a.g > b.g
     } else {
@@ -49,44 +65,39 @@ fn cmp_f(a: &AStarNode, b: &AStarNode) -> bool {
 /// `h` is never read back (`f` carries it); the port collects the path
 /// through the parent chain, so neither is modelled.
 #[derive(Debug, Default)]
-struct AStarNode {
-    ext: ChunkWaypointState,
+struct AStarNode<S: AStarState> {
+    ext: S,
     g: f32,
     f: f32,
     parent: Option<usize>,
 }
 
-/// `AStar<ChunkWaypointState, ChunkWaypointState::SearchData>`
-/// (`astar.hpp:36-56`): the search over the waypoint graph.
+/// `AStar<State, State::SearchData>` (`astar.hpp:36-56`): the search over
+/// the state's adjacency graph.
 #[derive(Debug, Default)]
-pub struct AStar {
+pub struct AStar<S: AStarState> {
     /// The `StateScopedFreeList` arena.
-    nodes: Vec<AStarNode>,
+    nodes: Vec<AStarNode<S>>,
     /// The open set — states not yet fully expanded.
     open: Vec<usize>,
     /// The close set — every state encountered so far.
-    close: HashMap<(usize, WaypointIndex), usize>,
+    close: HashMap<S::Key, usize>,
     /// `start_`: the initial node, the path's first entry.
     start: Option<usize>,
     /// `searchData_`: the edge connections recorded while expanding.
-    search_data: ChunkWaypointStateSearchData,
+    search_data: S::SearchData,
     /// The path in start-to-goal order once a search succeeded.
-    path: Vec<ChunkWaypointState>,
+    path: Vec<S>,
 }
 
-impl AStar {
+impl<S: AStarState> AStar<S> {
     /// `AStar::search` (`astar.ipp:37-197`).
-    pub fn search(
-        &mut self,
-        start: &ChunkWaypointState,
-        goal: &ChunkWaypointState,
-        max_distance: f32,
-    ) -> bool {
+    pub fn search(&mut self, start: &S, goal: &S, max_distance: f32) -> bool {
         // "Ensure that recalling this doesn't recycle old data"
         self.nodes.clear();
         self.open.clear();
         self.close.clear();
-        self.search_data = ChunkWaypointStateSearchData::default();
+        self.search_data = S::SearchData::default();
         self.path.clear();
 
         let check_max_dist = max_distance > 0.0;
@@ -103,7 +114,7 @@ impl AStar {
         self.open.push(start_index);
 
         let start_state = start.clone();
-        let mut scratch = ChunkWaypointState::default();
+        let mut scratch = S::default();
 
         while !self.open.is_empty() {
             // Grab the one with the smallest total cost (the reference's
@@ -161,7 +172,7 @@ impl AStar {
                 let g = self.nodes[current].g + scratch.distance_from_parent();
                 let f = g + scratch.distance_to_goal(goal);
 
-                let key = search_key(&scratch);
+                let key = scratch.search_key();
                 let adjacency = match self.close.get(&key) {
                     Some(&dup) => {
                         // Already visited: keep it when the old cost wins.
@@ -219,17 +230,17 @@ impl AStar {
 
     /// `first()` (`astar.ipp:208-217`): the path's first state, or `None`
     /// when no search succeeded.
-    pub fn first(&self) -> Option<&ChunkWaypointState> {
+    pub fn first(&self) -> Option<&S> {
         self.path.first()
     }
 
     /// The whole path in start-to-goal order (`first()` + `next()` walks).
-    pub fn path(&self) -> &[ChunkWaypointState] {
+    pub fn path(&self) -> &[S] {
         &self.path
     }
 
     /// `searchData_`: the connections recorded while expanding.
-    pub fn search_data(&self) -> &ChunkWaypointStateSearchData {
+    pub fn search_data(&self) -> &S::SearchData {
         &self.search_data
     }
 }
@@ -238,6 +249,7 @@ impl AStar {
 mod tests {
     use super::*;
     use crate::chunk_waypoint_set_data::{ChunkWaypointSetData, parse_world_navmesh};
+    use crate::chunk_waypoint_state::ChunkWaypointState;
     use crate::navloc::NavLoc;
     use foundation::math::Vector3;
     use std::rc::Rc;
@@ -437,12 +449,12 @@ mod tests {
     fn the_f_tie_prefers_the_deeper_state() {
         // `cmp_f` (`astar.hpp:220-231`): f ties within the almostEqual
         // epsilon prefer the larger g, distinct f values compare plainly.
-        let shallow = AStarNode {
+        let shallow = AStarNode::<ChunkWaypointState> {
             f: 1.0,
             g: 0.5,
             ..AStarNode::default()
         };
-        let deep = AStarNode {
+        let deep = AStarNode::<ChunkWaypointState> {
             f: 1.0 + 1e-6,
             g: 2.0,
             ..AStarNode::default()
@@ -450,7 +462,7 @@ mod tests {
         assert!(cmp_f(&deep, &shallow), "the tied pair takes the larger g");
         assert!(!cmp_f(&shallow, &deep));
 
-        let far = AStarNode {
+        let far = AStarNode::<ChunkWaypointState> {
             f: 5.0,
             ..AStarNode::default()
         };
