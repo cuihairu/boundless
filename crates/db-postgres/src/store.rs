@@ -41,14 +41,23 @@ fn error_message(error: &postgres::Error) -> String {
 }
 
 pub fn map_db_error(error: postgres::Error) -> DbError {
+    // The lock conditions are the retryable ones
+    // (`database_exception.cpp:35-40`: `ER_LOCK_DEADLOCK` and
+    // `ER_LOCK_WAIT_TIMEOUT`; retry.rs:96-98). PostgreSQL spells them
+    // 40P01 `deadlock_detected` and 55P03 `lock_not_available`.
+    let is_retryable_lock = error.code().is_some_and(|code| {
+        *code == SqlState::T_R_DEADLOCK_DETECTED || *code == SqlState::LOCK_NOT_AVAILABLE
+    });
     let is_duplicate = error
         .code()
         .is_some_and(|code| *code == SqlState::UNIQUE_VIOLATION);
-    if is_duplicate {
-        DbError::DuplicateAccount
-    } else {
-        DbError::Storage(error_message(&error))
+    if is_retryable_lock {
+        return DbError::Retry;
     }
+    if is_duplicate {
+        return DbError::DuplicateAccount;
+    }
+    DbError::Storage(error_message(&error))
 }
 
 /// Maps a backend error on an *entity* table. Entity tables carry no other
