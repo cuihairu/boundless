@@ -25,6 +25,7 @@ pub mod record;
 pub mod recovery;
 pub mod retry;
 pub mod storage;
+pub mod sync_db;
 pub mod transaction;
 pub mod xml;
 
