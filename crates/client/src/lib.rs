@@ -60,6 +60,7 @@
 pub mod avatar_filter;
 pub mod bw_random;
 pub mod camera;
+pub mod conditional_integrations;
 pub mod data_download;
 pub mod device;
 pub mod flora;
