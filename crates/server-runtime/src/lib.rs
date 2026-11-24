@@ -34,6 +34,7 @@ pub mod mailbox_call;
 pub mod movement;
 pub mod navigation_controller;
 pub mod offloaded_backup;
+pub mod passengers;
 pub mod pending_logins;
 pub mod proxy_client;
 pub mod proxy_logoff;
