@@ -1625,7 +1625,7 @@
 
 覆盖原版 profiler 帧和计数器、`_bw_profile` Python 模块及输出、网络模拟接口和可控时间。内部采集与性能分析交付见 BW-23，测试夹具与故障注入框架见 BW-18。
 
-- [ ] **BW-12-03-01 移植帧和计数器兼容层**。**验收** 同负载下关键字段与原版吻合。
+- [x] **BW-12-03-01 移植帧和计数器兼容层**。**验收** 同负载下关键字段与原版吻合。`5209e29` crates/profiler 落地 cstdmf/profiler.hpp/cpp/ipp 帧与计数器兼容层：ProfileEntry 双缓冲池（96 字节定长名 strncpy 截断+补零、entryCount 钳制、frameNumber 撕裂守卫）、tick 换缓冲+endOfFrameTimeStamp+profileFrameNumber 递增（激活首 tick 只挂牌不交换）、processEntries 逐行移植（帧标识符仅 entryCount>1 才取首条→单条帧整帧跳过、帧号不符/线程 -1/类别掩码三重丢弃、DisplayEntry 层级 inclusive/child/idle 周期账目（idle 全跨度双记+父传播+非 idle 扣除）、错配 END 与空栈 END 忽略、未闭合段钳到帧末（idle 只填 idle 字段）、栈深 64 溢出跳过存储但配对平衡、MAX_STACK_DEPTH/dStack/dChildTails/dHeads 刮擦结构、frame_ 先增后写 history[frame%512]（首帧落槽 1）、doRemoveThreads 收尾）、线程注册表（96 槽 Dead Thread/Deleted、TLS 槽位移除不清、重复注册仅重钉+摘除待删标记、首空槽 break 扫描、active 时移除延迟到帧末）、enable 挂起/立即停语义+watcherEnabled、LevelCounter（0 不发条、fetch_add/sub 后值、可负、inactive 仍动水位）、类别表（服务器构建 C++/Python/All、tick 时点捕获 final 掩码、prev/next 环走、invalid 名忽略）、init 预算公式按钉死 C 布局 128/160 字节推导（128MB→399457/199728）、freeze/hitchFreeze/setForceJsonDump(count 停靠 15)/dump state 字段（jsonDump 写文件面归 BW-12-03-03）；35 测试全绿，llvm-cov 行覆盖 99.22%（1411 行缺 11，余为单锁移植下不可达的并发钳制臂）；新 crate 已补登 workspace members + layer registry DOMAIN 层（test-support 593 测全绿）。
 - [ ] **BW-12-03-02 复现 _bw_profile 启停接口**。**验收** 导入、状态和回调对照。
 - [ ] **BW-12-03-03 复现原版 JSON dump**。**验收** 固定事件产物兼容。
 - [ ] **BW-12-03-04 复核原版网络模拟及可控时间入口**。**验收** 测试夹具可调用。
