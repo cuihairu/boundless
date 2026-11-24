@@ -24,3 +24,10 @@ resources = { workspace = true }
 # BW-16-02-03 backend-isolation proof: the postgresql driver is exercised
 # from outside its own crate.
 db-postgres = { workspace = true }
+
+# Performance baselines (perf-bench batch 1): the update-loop dispatch bench.
+criterion = "0.8"
+
+[[bench]]
+name = "tick"
+harness = false

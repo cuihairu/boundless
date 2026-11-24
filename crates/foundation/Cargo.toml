@@ -14,3 +14,18 @@ no-default-features = true
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
+# Performance baselines (perf-bench batch 1): criterion micro benches in
+# benches/ (math, time queue, stream codec).
+criterion = "0.8"
+
+[[bench]]
+name = "math"
+harness = false
+
+[[bench]]
+name = "time_queue"
+harness = false
+
+[[bench]]
+name = "stream"
+harness = false
