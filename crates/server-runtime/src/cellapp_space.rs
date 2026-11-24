@@ -303,6 +303,13 @@ pub struct Entity {
     /// and repeat destroys are inert until `setToInitialState` (the
     /// revive) clears it.
     pub in_destroy: bool,
+    /// `pRangeListNode_`: this entity's node in its space's range list
+    /// (`None` while no space holds it — the reference's node lives as
+    /// long as the entity, the port's arena owns its slot).
+    pub range_node: Option<crate::cellapp_range_list::NodeId>,
+    /// `triggers_` (`entity.hpp`): this entity's own range triggers,
+    /// sorted by range, largest first.
+    pub range_triggers: Vec<crate::cellapp_range_list::TriggerId>,
 }
 
 impl Entity {
@@ -337,6 +344,8 @@ impl Entity {
             accel_sample: [0.0; 3],
             accel_sample_time: 0,
             accel_velocity: [0.0; 3],
+            range_node: None,
+            range_triggers: Vec::new(),
         }
     }
 }
@@ -1186,6 +1195,27 @@ impl Space {
         entity.borrow_mut().removal_handle = NO_SPACE_REMOVAL_HANDLE;
         self.entities.pop();
 
+        // `pEntity->removeFromRangeList( rangeList_, appealRadiusList_ )`
+        // — after the bookkeeping (the reference's comment: the removal
+        // can set off triggers that call back into add/removeEntity), the
+        // entity's own triggers go first (each remove fires the leaves
+        // inside its still-live bounds), then the entity node exits
+        // through `f32::MAX` (firing the leaves of every trigger that
+        // watched it). The appeal-radius face is the AoI lane's.
+        let (range_node, range_triggers) = {
+            let borrowed = entity.borrow();
+            (borrowed.range_node, borrowed.range_triggers.clone())
+        };
+        if let (Some(node), Some(list)) = (range_node, cell_app.range_lists.get_mut(&self.id)) {
+            for &trigger in &range_triggers {
+                list.trigger_remove(trigger);
+            }
+            list.entity_remove(node);
+            let mut borrowed = entity.borrow_mut();
+            borrowed.range_node = None;
+            borrowed.range_triggers.clear();
+        }
+
         self.check_for_shut_down(cell_app);
     }
 
@@ -1575,6 +1605,12 @@ pub struct CellApp {
     /// (`~Entity`'s `shouldReturnID_` face): the cell-only entity ids
     /// handed back — a recorded no-op while `MF_ID_RECYCLING` is off.
     pub returned_entity_ids: Vec<u32>,
+    /// Each space's `rangeList_` (`space.hpp:212`): the arena of nodes
+    /// every entity and trigger bound of the space lives on. Held on the
+    /// CellApp rather than the `Space` itself — this port's spaces are
+    /// deliberately external (the position-write funnel cannot reach
+    /// per-space data), the passengers' state is the standing precedent.
+    pub range_lists: BTreeMap<SpaceId, crate::cellapp_range_list::RangeList>,
 }
 
 impl Default for CellApp {
@@ -1620,6 +1656,7 @@ impl Default for CellApp {
             script_errors: Vec::new(),
             cell_entity_lost_sends: Vec::new(),
             returned_entity_ids: Vec::new(),
+            range_lists: BTreeMap::new(),
             should_navigation_drop_position: false,
             navigation_max_climb: 0.65,
             navigation_max_slope_gradient: 1.0,
@@ -3615,5 +3652,66 @@ mod tests {
             "only clear() severs the mapping factory"
         );
         assert!(space.space_data.is_empty(), "the data face went with it");
+    }
+
+    /// The reference's `Space::removeEntity` ordering: the entity's own
+    /// triggers come down first (the contract-to-zero firing the leave
+    /// for everything inside), then the node itself sweeps out through
+    /// the maximum Z.
+    #[test]
+    fn remove_entity_tears_down_the_range_trigger_before_the_node() {
+        use crate::cellapp_range_list::{
+            FLAG_LOWER_AOI_TRIGGER, FLAG_NO_TRIGGERS, FLAG_UPPER_AOI_TRIGGER, TriggerTarget,
+        };
+
+        let (mut app, mut space, _cell) = fixture(3, 0);
+
+        let central = entity(10, true);
+        space.add_entity(Rc::clone(&central));
+        let central_node = app
+            .range_lists
+            .entry(3)
+            .or_default()
+            .add_entity_node(Rc::clone(&central));
+        central.borrow_mut().range_node = Some(central_node);
+
+        let watchee = entity(11, true);
+        watchee.borrow_mut().position = [2.0, 0.0, 0.0];
+        space.add_entity(Rc::clone(&watchee));
+        let watchee_node = app
+            .range_lists
+            .entry(3)
+            .or_default()
+            .add_entity_node(Rc::clone(&watchee));
+        watchee.borrow_mut().range_node = Some(watchee_node);
+
+        // The witness trigger on the central entity, with the watchee
+        // inside its area.
+        let events: Rc<RefCell<Vec<(u32, bool)>>> = Rc::new(RefCell::new(Vec::new()));
+        let list = app.range_lists.get_mut(&3).expect("space 3");
+        let trigger = list.create_trigger(
+            central_node,
+            5.0,
+            FLAG_LOWER_AOI_TRIGGER,
+            FLAG_UPPER_AOI_TRIGGER,
+            FLAG_NO_TRIGGERS,
+            FLAG_NO_TRIGGERS,
+            TriggerTarget::Recorder(Rc::clone(&events)),
+        );
+        list.trigger_insert(trigger);
+        list.entity_add_trigger(&central, trigger);
+        assert_eq!(*events.borrow(), vec![(11u32, true)]);
+
+        space.remove_entity(&central, &mut app);
+        assert_eq!(
+            *events.borrow(),
+            vec![(11, true), (11, false)],
+            "the trigger contracts to a point on the way down"
+        );
+        assert!(central.borrow().range_node.is_none());
+        assert!(central.borrow().range_triggers.is_empty());
+        assert!(app.range_lists.get(&3).expect("space 3").is_sorted());
+        // The chains hold the watchee's node and the tail terminator.
+        assert_eq!(app.range_lists.get(&3).expect("space 3").x_order().len(), 2);
     }
 }

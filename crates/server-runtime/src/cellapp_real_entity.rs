@@ -1112,6 +1112,17 @@ impl CellApp {
         // `pSpace_->addEntity( this )`.
         space.add_entity(Rc::clone(&entity_rc));
 
+        // `Space::addEntity`'s `addToRangeList` tail (`entity.cpp:2406`):
+        // the node enters its space's range list — the plain add, the
+        // appeal-radius face is the AoI lane's. (The reference's node is
+        // born in the Entity ctor; the port's arena slot is born here.)
+        let range_node = self
+            .range_lists
+            .entry(space_id)
+            .or_default()
+            .add_entity_node(Rc::clone(&entity_rc));
+        entity_rc.borrow_mut().range_node = Some(range_node);
+
         // `RealEntity::init` (CREATE_REAL_FROM_INIT): the Witness byte.
         // readBasePropertiesExposedForReplay is the recording face and
         // updateGlobalPosition/checkChunkCrossing are the chunk domain's.

@@ -337,6 +337,9 @@ impl CellApp {
         entity_rc: &Rc<RefCell<Entity>>,
         should_update_ghosts: bool,
     ) -> bool {
+        // The pre-write global position — the range-list shuffle's
+        // `oldPosition`.
+        let old_position = entity_rc.borrow().position;
         let (entity, vehicle, local, local_direction, limbo) = {
             let limbo = is_in_limbo(self, entity_rc);
             let borrowed = entity_rc.borrow();
@@ -379,13 +382,13 @@ impl CellApp {
             if is_real && should_update_ghosts {
                 // `updateInternalsForNewPositionOfReal`: the ghost haunts
                 // are the AoI lane; `newPosition` samples the velocity;
-                // the internals tail walks the passengers.
+                // the internals run the shuffle and walk the passengers.
                 self.real_new_position(entity_rc);
-                self.entity_position_changed_internals(entity_rc);
+                self.entity_position_changed_internals(entity_rc, old_position);
             } else {
                 // `updateInternalsForNewPosition`: the shuffle is the AoI
                 // lane; the tail walks the passengers.
-                self.entity_position_changed_internals(entity_rc);
+                self.entity_position_changed_internals(entity_rc, old_position);
             }
         }
         in_global_coords
@@ -419,15 +422,50 @@ impl CellApp {
         }
     }
 
-    /// `Entity::updateInternalsForNewPosition`'s tail
-    /// (`entity.cpp:4021`): a vehicle that just moved walks its riders.
-    pub(crate) fn entity_position_changed_internals(&mut self, entity_rc: &Rc<RefCell<Entity>>) {
+    /// `Entity::updateInternalsForNewPosition`
+    /// (`entity.cpp:3960`): the leading triggers expand, the entity node
+    /// shuffles through its space's range list, the trailing triggers
+    /// contract (the reference's `callbacksPermitted( false )` guard
+    /// means no trigger may be added, deleted or modified across the
+    /// events — the port's event targets are recorders, keeping that
+    /// contract by construction); then the tail (`entity.cpp:4021`) —
+    /// a vehicle that just moved walks its riders.
+    pub(crate) fn entity_position_changed_internals(
+        &mut self,
+        entity_rc: &Rc<RefCell<Entity>>,
+        old_position: [f32; 3],
+    ) {
+        let (range_node, range_triggers, space_id) = {
+            let borrowed = entity_rc.borrow();
+            (
+                borrowed.range_node,
+                borrowed.range_triggers.clone(),
+                borrowed.space_id,
+            )
+        };
+        if let Some(node) = range_node {
+            self.shuffle_range_face(node, &range_triggers, space_id, old_position);
+        }
         let is_vehicle = {
             let borrowed = entity_rc.borrow();
             self.passengers_state.contains_key(&borrowed.id)
         };
         if is_vehicle {
             self.vehicle_position_changed(entity_rc);
+        }
+    }
+
+    /// The range face of the internals: the leading triggers expand,
+    /// the node shuffles, the trailing triggers contract.
+    fn shuffle_range_face(
+        &mut self,
+        node: crate::cellapp_range_list::NodeId,
+        range_triggers: &[crate::cellapp_range_list::TriggerId],
+        space_id: crate::cellappmgr::SpaceId,
+        old_position: [f32; 3],
+    ) {
+        if let Some(list) = self.range_lists.get_mut(&space_id) {
+            list.shuffle_entity(node, range_triggers, old_position[0], old_position[2]);
         }
     }
 
@@ -850,9 +888,11 @@ impl CellApp {
         }
         self.update_local_position(entity_rc);
         // `updateInternalsForNewPositionOfReal` — the ghost haunts are
-        // the AoI lane; the sampler and the passenger walk run here.
+        // the AoI lane; the sampler and the shuffle and the passenger
+        // walk run here (`current` is the pre-write global position —
+        // the shuffle's `oldPosition`).
         self.real_new_position(entity_rc);
-        self.entity_position_changed_internals(entity_rc);
+        self.entity_position_changed_internals(entity_rc, current);
         // `pReal_->sendPhysicsCorrection()`
         self.physics_corrections.push(entity);
     }

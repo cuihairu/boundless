@@ -711,6 +711,9 @@ impl CellApp {
     ) {
         let local_yaw = normalise_angle(direction.x);
         let local_pitch = normalise_angle(direction.y);
+        // The pre-write global position — the range-list shuffle's
+        // `oldPosition` (`updateGlobalPosition`'s argument face).
+        let old_position = entity_rc.borrow().position;
         {
             let mut entity = entity_rc.borrow_mut();
             entity.local_position = [position.x, position.y, position.z];
@@ -733,7 +736,7 @@ impl CellApp {
             }
         }
         self.real_new_position(entity_rc);
-        self.entity_position_changed_internals(entity_rc);
+        self.entity_position_changed_internals(entity_rc, old_position);
     }
 
     /// `RealEntity::newPosition` (`real_entity.cpp:831`): re-derive the
