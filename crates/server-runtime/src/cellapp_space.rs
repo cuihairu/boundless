@@ -34,6 +34,53 @@ pub const NO_SPACE_REMOVAL_HANDLE: usize = usize::MAX;
 /// `uint16(-1)`: the "delete this entry" key.
 pub const NO_SPACE_DATA_KEY: u16 = u16::MAX;
 
+/// `SPACE_DATA_TOD_KEY` (`common/space_data_types.hpp`): the time-of-day
+/// payload, a `SpaceData_ToDData` of two floats.
+pub const SPACE_DATA_TOD_KEY: u16 = 0;
+
+/// `SPACE_DATA_MAPPING_KEY_CLIENT_SERVER`: the geometry-mapping entry —
+/// the payload is a `SpaceData_MappingData` (a float matrix) followed by
+/// the resource path. Mounting and unloading a physical space is driven
+/// from this key.
+pub const SPACE_DATA_MAPPING_KEY_CLIENT_SERVER: u16 = 1;
+
+/// `SPACE_DATA_MAPPING_KEY_CLIENT_ONLY`: client-only geometry — the
+/// reference's server branch is commented out and does nothing.
+pub const SPACE_DATA_MAPPING_KEY_CLIENT_ONLY: u16 = 2;
+
+/// `SPACE_DATA_FIRST_USER_KEY`.
+pub const SPACE_DATA_FIRST_USER_KEY: u16 = 256;
+
+/// `SPACE_DATA_FINAL_USER_KEY`.
+pub const SPACE_DATA_FINAL_USER_KEY: u16 = 32767;
+
+/// `SPACE_DATA_FIRST_CELL_ONLY_KEY`: keys from here up never reach the
+/// clients, so they are kept out of `recentData_` and out of the
+/// recently-deleted guard.
+pub const SPACE_DATA_FIRST_CELL_ONLY_KEY: u16 = 16384;
+
+/// `SPACE_DATA_FIRST_NON_USER_CELL_ONLY_KEY`.
+pub const SPACE_DATA_FIRST_NON_USER_CELL_ONLY_KEY: u16 = SPACE_DATA_FINAL_USER_KEY + 1;
+
+/// `SPACE_DATA_RECORDING`: the recording name entry.
+pub const SPACE_DATA_RECORDING: u16 = SPACE_DATA_FIRST_NON_USER_CELL_ONLY_KEY;
+
+/// `SPACE_DATA_ARTIFICIAL_LOAD`: the artificial-load payload, one float.
+pub const SPACE_DATA_ARTIFICIAL_LOAD: u16 = SPACE_DATA_FIRST_NON_USER_CELL_ONLY_KEY + 1;
+
+/// `SPACE_DATA_SERVER_LOAD_BOUNDS`.
+pub const SPACE_DATA_SERVER_LOAD_BOUNDS: u16 = SPACE_DATA_FIRST_NON_USER_CELL_ONLY_KEY + 2;
+
+/// `sizeof( SpaceData_MappingData )`: the `matrix[4][4]` that precedes the
+/// path bytes in a geometry-mapping entry.
+pub const SPACE_DATA_MAPPING_MATRIX_LEN: usize = 64;
+
+/// `sizeof( SpaceData_ToDData )`.
+pub const SPACE_DATA_TOD_LEN: usize = 8;
+
+/// `sizeof( SpaceData_ArtificialLoad )`.
+pub const SPACE_DATA_ARTIFICIAL_LOAD_LEN: usize = 4;
+
 /// A stored space-data value (`SpaceDataMapping::DataValue`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataValue {
@@ -201,6 +248,410 @@ impl Entity {
     }
 }
 
+/// `Space::UpdateCellAppMgr`: whether `spaceDataEntry` forwards the entry
+/// to the CellAppMgr itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateCellAppMgr {
+    /// `UPDATE_CELL_APP_MGR`: forward it (the default).
+    Update,
+    /// `DONT_UPDATE_CELL_APP_MGR`: it arrived from the manager or a peer.
+    DontUpdate,
+}
+
+/// `Space::DataEffected`: whether `spaceDataEntry` must still act on the
+/// entry (load geometry, set the time of day) or that already happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataEffected {
+    /// `ALREADY_EFFECTED`.
+    AlreadyEffected,
+    /// `NEED_TO_EFFECT` (the default).
+    NeedToEffect,
+}
+
+/// `ISpaceWorldFactory` — the game-delegate world factory, recording the
+/// calls a [`PhysicalDelegateSpace`] makes into it so the mount and the
+/// unmount stay observable after the space itself is gone.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpaceWorldFactory {
+    /// `LoadWorld` calls.
+    pub loaded: Vec<String>,
+    /// `RemoveWorld` calls.
+    pub removed: Vec<String>,
+    /// `CreateWorldInstance` calls.
+    pub created: Vec<String>,
+    /// `RemoveWorldInstance` calls.
+    pub removed_instances: Vec<String>,
+    /// `CancelLoadingWorld` calls.
+    pub cancelled: Vec<String>,
+    /// `CreateSpacePhysicsDelegate` calls.
+    pub physics_delegates_created: u32,
+    /// `RemoveSpacePhysicsDelegate` calls — the per-space physics delegate
+    /// is released only in the physical space's destructor.
+    pub physics_delegates_removed: u32,
+    /// The paths `IsLoadingWorldFailed` reports true for.
+    pub failed: Vec<String>,
+}
+
+impl SpaceWorldFactory {
+    /// `CreateSpacePhysicsDelegate`.
+    pub fn create_physics_delegate(&mut self) {
+        self.physics_delegates_created += 1;
+    }
+
+    /// `RemoveSpacePhysicsDelegate`.
+    pub fn remove_physics_delegate(&mut self) {
+        self.physics_delegates_removed += 1;
+    }
+
+    /// `LoadWorld`.
+    pub fn load_world(&mut self, path: &str) {
+        self.loaded.push(path.to_string());
+    }
+
+    /// `CreateWorldInstance`: succeeds once the world's resources are in —
+    /// a path marked failed never succeeds.
+    pub fn create_world_instance(&mut self, path: &str) -> bool {
+        self.created.push(path.to_string());
+        !self.failed.iter().any(|failed| failed == path)
+    }
+
+    /// `RemoveWorld`.
+    pub fn remove_world(&mut self, path: &str) {
+        self.removed.push(path.to_string());
+    }
+
+    /// `RemoveWorldInstance`.
+    pub fn remove_world_instance(&mut self, path: &str) {
+        self.removed_instances.push(path.to_string());
+    }
+
+    /// `CancelLoadingWorld`.
+    pub fn cancel_loading_world(&mut self, path: &str) {
+        self.cancelled.push(path.to_string());
+    }
+
+    /// `IsLoadingWorldFailed`.
+    pub fn is_loading_world_failed(&self, path: &str) -> bool {
+        self.failed.iter().any(|failed| failed == path)
+    }
+
+    /// A test seam: mark a path's load as failed.
+    pub fn fail_world(&mut self, path: &str) {
+        self.failed.push(path.to_string());
+    }
+}
+
+/// A geometry mapping of the chunk backend — one `EdgeGeometryMappings`
+/// entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeometryMapping {
+    /// The resource path of the mapping.
+    pub path: String,
+    /// `addMappingAsync` is still in flight: the mapping only becomes
+    /// loaded when a [`PhysicalSpace::update`] tick advances it.
+    pub pending: bool,
+}
+
+/// `ChunkSpace` — only the faces the unmount touches. The real `ChunkSpace`
+/// lives with the chunk lane; what carries over here is the tag, the raw
+/// mapping-factory back-reference into the owning backend, and `clear()`'s
+/// mark.
+#[derive(Debug)]
+pub struct ChunkSpace {
+    /// The `ChunkSpace( id )` tag.
+    pub id: SpaceId,
+    /// `pMappingFactory_ != NULL`: the raw, non-owning back-reference into
+    /// the owning `PhysicalChunkSpace`, which only `clear()` severs
+    /// (`physical_chunk_space.cpp:184`).
+    pub mapping_factory_attached: bool,
+    /// `cleared_`.
+    pub cleared: bool,
+}
+
+/// `PhysicalChunkSpace` (`physical_chunk_space.cpp`): chunked geometry
+/// through a `ChunkSpace` this backend owns.
+#[derive(Debug)]
+pub struct PhysicalChunkSpace {
+    /// The `ChunkSpace` created in the constructor and pointed at this
+    /// backend's mapping factory (`:63-69`).
+    pub chunk_space: ChunkSpace,
+    /// `geometryMappings_`: one entry per `SpaceEntryID`.
+    pub mappings: BTreeMap<u32, GeometryMapping>,
+}
+
+impl PhysicalChunkSpace {
+    /// `PhysicalChunkSpace( id, mapper )`.
+    pub fn new(id: SpaceId) -> Self {
+        Self {
+            chunk_space: ChunkSpace {
+                id,
+                mapping_factory_attached: true,
+                cleared: false,
+            },
+            mappings: BTreeMap::new(),
+        }
+    }
+
+    /// `loadResource` → `addMappingAsync`: the mapping arrives pending.
+    /// The matrix (the entry's `SpaceData_MappingData`) positions the
+    /// mapping and belongs to the chunk lane, so it is not carried here.
+    pub fn load_resource(&mut self, entry_id: u32, path: &str) {
+        self.mappings.insert(
+            entry_id,
+            GeometryMapping {
+                path: path.to_string(),
+                pending: true,
+            },
+        );
+    }
+
+    /// `unloadResource` → `delMapping`.
+    pub fn unload_resource(&mut self, entry_id: u32) {
+        self.mappings.remove(&entry_id);
+    }
+
+    /// `update` → `tickLoading`: pending mappings advance unless the tick
+    /// is unload-only. The return stands in for `anyColumnsLoaded`:
+    /// whether any mounted mapping is loaded.
+    pub fn update(&mut self, unload_only: bool) -> bool {
+        if !unload_only {
+            for mapping in self.mappings.values_mut() {
+                mapping.pending = false;
+            }
+        }
+        self.mappings.values().any(|mapping| !mapping.pending)
+    }
+
+    /// `isFullyUnloaded`: no mappings left.
+    pub fn is_fully_unloaded(&self) -> bool {
+        self.mappings.is_empty()
+    }
+
+    /// `reuse` (`:172-175`): the mappings drain through the chunk space's
+    /// own `clear()` — the mapping factory stays attached.
+    pub fn reuse(&mut self) {
+        self.mappings.clear();
+        self.chunk_space.cleared = true;
+    }
+
+    /// `clear` (`:181-185`): the mappings drain **and** the
+    /// mapping-factory back-reference is severed.
+    pub fn clear(&mut self) {
+        self.mappings.clear();
+        self.chunk_space.cleared = true;
+        self.chunk_space.mapping_factory_attached = false;
+    }
+}
+
+/// `PhysicalDelegateSpace` (`physical_delegate_space.cpp`): worlds through
+/// the game-delegate factory.
+#[derive(Debug)]
+pub struct PhysicalDelegateSpace {
+    /// `id_`.
+    pub id: SpaceId,
+    /// `paths_`: the mounted world resources, one per `SpaceEntryID`.
+    pub paths: BTreeMap<u32, String>,
+    /// `worlds_`: the materialised instances (holding the path once
+    /// `CreateWorldInstance` succeeded).
+    pub worlds: BTreeMap<u32, String>,
+    /// The factory every call goes through — shared with the holder, so
+    /// the releases survive the space.
+    factory: Rc<RefCell<SpaceWorldFactory>>,
+}
+
+impl PhysicalDelegateSpace {
+    /// `PhysicalDelegateSpace( id )`: the per-space physics delegate is
+    /// created here and released only in the destructor (`:14-30`).
+    pub fn new(id: SpaceId, factory: Rc<RefCell<SpaceWorldFactory>>) -> Self {
+        factory.borrow_mut().create_physics_delegate();
+        Self {
+            id,
+            paths: BTreeMap::new(),
+            worlds: BTreeMap::new(),
+            factory,
+        }
+    }
+
+    /// `loadResource` (`:57-74`): an entry that already carries a path is
+    /// reused with an INFO and no factory call; otherwise the world's
+    /// resources are loaded and the path recorded.
+    pub fn load_resource(&mut self, entry_id: u32, path: &str) {
+        if self.paths.contains_key(&entry_id) {
+            return; // "Reusing mapping %s for entry id %s"
+        }
+        self.factory.borrow_mut().load_world(path);
+        self.paths.insert(entry_id, path.to_string());
+    }
+
+    /// `unloadResource` (`:79-106`): an unknown entry only logs; otherwise
+    /// the world instance goes first, then the world's resources.
+    pub fn unload_resource(&mut self, entry_id: u32) {
+        let Some(path) = self.paths.remove(&entry_id) else {
+            return; // "Cannot find mapping for entry id %s"
+        };
+        if self.worlds.remove(&entry_id).is_some() {
+            self.factory.borrow_mut().remove_world_instance(&path);
+        }
+        self.factory.borrow_mut().remove_world(&path);
+    }
+
+    /// `update` (`:112-158`): materialise a world instance for every path
+    /// not yet loaded; a failed load erases the path and ends this pass.
+    /// Always returns false — the reference's load balancing is a TODO.
+    pub fn update(&mut self, _unload_only: bool) -> bool {
+        for id in self.paths.keys().copied().collect::<Vec<u32>>() {
+            if self.worlds.contains_key(&id) {
+                continue;
+            }
+            let path = self.paths[&id].clone();
+            let mut factory = self.factory.borrow_mut();
+            if factory.create_world_instance(&path) {
+                self.worlds.insert(id, path);
+            } else {
+                // CreateWorldInstance returned NULL. A failed load drops
+                // the path and ends this pass — the healthy path waits for
+                // the next update, like the reference's break out of a
+                // modified paths_ map; a world still loading retries on
+                // the next update.
+                debug_assert!(factory.is_loading_world_failed(&path));
+                self.paths.remove(&id);
+                return false;
+            }
+        }
+        false
+    }
+
+    /// `isFullyUnloaded`: no paths left.
+    pub fn is_fully_unloaded(&self) -> bool {
+        self.paths.is_empty()
+    }
+
+    /// `reuse` (`:267-270`): a plain `clear()`.
+    pub fn reuse(&mut self) {
+        self.clear();
+    }
+
+    /// `clear` (`:276-298`): cancel the in-flight loads, remove every
+    /// world instance, then every world's resources. Idempotent.
+    pub fn clear(&mut self) {
+        for (id, path) in &self.paths {
+            if !self.worlds.contains_key(id) {
+                self.factory.borrow_mut().cancel_loading_world(path);
+            }
+        }
+        for (_, path) in std::mem::take(&mut self.worlds) {
+            self.factory.borrow_mut().remove_world_instance(&path);
+        }
+        for (_, path) in std::mem::take(&mut self.paths) {
+            self.factory.borrow_mut().remove_world(&path);
+        }
+    }
+}
+
+impl PhysicalSpace {
+    /// The chunk backend, when this is one.
+    pub fn as_chunk(&self) -> Option<&PhysicalChunkSpace> {
+        match self {
+            PhysicalSpace::Chunk(chunk) => Some(chunk),
+            PhysicalSpace::Delegate(_) => None,
+        }
+    }
+
+    /// The delegate backend, when this is one.
+    pub fn as_delegate(&self) -> Option<&PhysicalDelegateSpace> {
+        match self {
+            PhysicalSpace::Chunk(_) => None,
+            PhysicalSpace::Delegate(space) => Some(space),
+        }
+    }
+
+    /// The backend dispatch `Space` drives: `loadResource`.
+    pub fn load_resource(&mut self, entry_id: u32, path: &str) {
+        match self {
+            PhysicalSpace::Chunk(chunk) => chunk.load_resource(entry_id, path),
+            PhysicalSpace::Delegate(space) => space.load_resource(entry_id, path),
+        }
+    }
+
+    /// `unloadResource`.
+    pub fn unload_resource(&mut self, entry_id: u32) {
+        match self {
+            PhysicalSpace::Chunk(chunk) => chunk.unload_resource(entry_id),
+            PhysicalSpace::Delegate(space) => space.unload_resource(entry_id),
+        }
+    }
+
+    /// `update( rect, unloadOnly )`.
+    pub fn update(&mut self, unload_only: bool) -> bool {
+        match self {
+            PhysicalSpace::Chunk(chunk) => chunk.update(unload_only),
+            PhysicalSpace::Delegate(space) => space.update(unload_only),
+        }
+    }
+
+    /// `isFullyUnloaded`.
+    pub fn is_fully_unloaded(&self) -> bool {
+        match self {
+            PhysicalSpace::Chunk(chunk) => chunk.is_fully_unloaded(),
+            PhysicalSpace::Delegate(space) => space.is_fully_unloaded(),
+        }
+    }
+
+    /// `reuse`.
+    pub fn reuse(&mut self) {
+        match self {
+            PhysicalSpace::Chunk(chunk) => chunk.reuse(),
+            PhysicalSpace::Delegate(space) => space.reuse(),
+        }
+    }
+
+    /// `clear`.
+    pub fn clear(&mut self) {
+        match self {
+            PhysicalSpace::Chunk(chunk) => chunk.clear(),
+            PhysicalSpace::Delegate(space) => space.clear(),
+        }
+    }
+}
+
+/// `IPhysicalSpace`: the geometry backend a [`Space`] mounts. The reference
+/// picks the implementation in the `Space` constructor — a
+/// `PhysicalDelegateSpace` when a game delegate is installed, a
+/// `PhysicalChunkSpace` otherwise (`space.cpp:79-86`).
+#[derive(Debug)]
+pub enum PhysicalSpace {
+    /// The chunked backend.
+    Chunk(PhysicalChunkSpace),
+    /// The game-delegate backend.
+    Delegate(PhysicalDelegateSpace),
+}
+
+/// `PhysicalSpacePtr`: `SmartPointer< IPhysicalSpace >`. The `Space` that
+/// mounted the backend is its only holder, so releasing that one reference
+/// at `~Space` destroys the backend.
+pub type PhysicalSpacePtr = Rc<RefCell<PhysicalSpace>>;
+
+impl Drop for PhysicalSpace {
+    fn drop(&mut self) {
+        match self {
+            // `~EdgeGeometryMappings` asserts the mappings were drained
+            // (`edge_geometry_mappings.cpp:26-30`) — which is what makes
+            // the explicit `clear()` in `~Space` mandatory.
+            PhysicalSpace::Chunk(chunk) => debug_assert!(
+                chunk.mappings.is_empty(),
+                "the chunk backend died with mappings still attached"
+            ),
+            // `~PhysicalDelegateSpace` (`:44-49`): `clear()` again
+            // (idempotent), then the per-space physics delegate — created
+            // at mount — is released, and only here.
+            PhysicalSpace::Delegate(space) => {
+                space.clear();
+                space.factory.borrow_mut().remove_physics_delegate();
+            }
+        }
+    }
+}
+
 /// `Space` (`space.cpp`): one space of the world as the CellApp holds it.
 #[derive(Debug)]
 pub struct Space {
@@ -225,15 +676,49 @@ pub struct Space {
     pub game_seconds_per_second: f32,
     /// `spaceDataMapping_`.
     pub space_data: SpaceDataMapping,
-    /// `recentData_`: the `(entryID, key)` deletions recorded since the
-    /// last reuse, most recent last.
+    /// `recentData_`: the `(entryID, key)` entries recorded since the last
+    /// reuse — user-visible keys only, adds and revocations alike, most
+    /// recent last.
     pub recent_data: Vec<(u32, u16)>,
+    /// `pPhysicalSpace_`: the mounted geometry backend. The space is its
+    /// only holder; [`Space::destroy`] releases that one reference.
+    physical: Option<PhysicalSpacePtr>,
+    /// `shouldCheckLoadBounds_`, set by `onNewGeometryMapping`.
+    pub should_check_load_bounds: bool,
+    /// `lastMappedGeometry_`.
+    pub last_mapped_geometry: String,
+    /// `artificialMinLoad_`.
+    pub artificial_min_load: f32,
 }
 
 impl Space {
-    /// `Space( SpaceID id )`: no cell, no entities, no timer, and the data
-    /// faces at the constructor's own defaults.
+    /// `Space( SpaceID id )`: no cell, no entities, no timer, the data
+    /// faces at the constructor's own defaults, and a `PhysicalChunkSpace`
+    /// mounted — the reference's no-game-delegate branch
+    /// (`space.cpp:83-86`).
     pub fn new(id: SpaceId) -> Self {
+        Self::with_physical(
+            id,
+            PhysicalSpacePtr::new(RefCell::new(PhysicalSpace::Chunk(PhysicalChunkSpace::new(
+                id,
+            )))),
+        )
+    }
+
+    /// The reference's game-delegate branch (`space.cpp:79-82`): a
+    /// `PhysicalDelegateSpace` over the given world factory.
+    pub fn new_delegate(id: SpaceId, factory: Rc<RefCell<SpaceWorldFactory>>) -> Self {
+        Self::with_physical(
+            id,
+            PhysicalSpacePtr::new(RefCell::new(PhysicalSpace::Delegate(
+                PhysicalDelegateSpace::new(id, factory),
+            ))),
+        )
+    }
+
+    /// `MF_ASSERT( pPhysicalSpace_ )` done: the constructed space over the
+    /// backend the caller mounted.
+    pub fn with_physical(id: SpaceId, physical: PhysicalSpacePtr) -> Self {
         Self {
             id,
             cell: None,
@@ -246,11 +731,53 @@ impl Space {
             game_seconds_per_second: 0.0,
             space_data: SpaceDataMapping::default(),
             recent_data: Vec::new(),
+            physical: Some(physical),
+            should_check_load_bounds: false,
+            last_mapped_geometry: String::new(),
+            artificial_min_load: 0.0,
         }
     }
 
-    /// `Space::reuse`: the space data faces reset and the cell-info tree
-    /// is deleted — the cell and the entities stay where they are.
+    /// `setLastMappedGeometry`.
+    pub fn set_last_mapped_geometry(&mut self, geometry: String) {
+        self.last_mapped_geometry = geometry;
+    }
+
+    /// `pPhysicalSpace()`: the mounted backend. The accessor hands out a
+    /// clone of the pointer, like the reference's by-value
+    /// `SmartPointer` return — the space stays the only *persistent*
+    /// holder.
+    pub fn physical(&self) -> Option<PhysicalSpacePtr> {
+        self.physical.clone()
+    }
+
+    /// `isFullyUnloaded` (`space.cpp:1230`): nothing in the space and the
+    /// backend fully drained — the gate `deleteOldSpaces` deletes through.
+    pub fn is_fully_unloaded(&self) -> bool {
+        if !self.entities.is_empty() {
+            return false;
+        }
+        match &self.physical {
+            Some(physical) => physical.borrow().is_fully_unloaded(),
+            None => true,
+        }
+    }
+
+    /// `chunkTick`'s physical half (`space.cpp:1140`): the update rect is
+    /// driven around the cell while there is one — with no cell the tick
+    /// runs unload-only, so nothing new loads and the mounted resources
+    /// drain.
+    pub fn chunk_tick(&mut self) -> bool {
+        let unload_only = self.cell.is_none();
+        match &self.physical {
+            Some(physical) => physical.borrow_mut().update(unload_only),
+            None => false,
+        }
+    }
+
+    /// `Space::reuse`: the space data faces reset, the cell-info tree is
+    /// deleted, and the mounted backend reuses (`space.cpp:156`) — the
+    /// cell and the entities stay where they are.
     pub fn reuse(&mut self) {
         self.beg_data_seq = 0;
         self.end_data_seq = 0;
@@ -259,6 +786,9 @@ impl Space {
         self.cells.clear();
         self.space_data.clear();
         self.recent_data.clear();
+        if let Some(physical) = &self.physical {
+            physical.borrow_mut().reuse();
+        }
     }
 
     /// `updateGeometry` (`space.cpp:885`): every cell of the old tree is
@@ -321,8 +851,9 @@ impl Space {
 
     /// `allSpaceData` / `readDataFromStream`: the manager's full space-data
     /// payload, each entry of it going through [`Space::space_data_entry`]
-    /// without touching the manager. An empty payload leaves the mapping
-    /// untouched (the reference only reads it when `remainingLength() > 0`).
+    /// without touching the manager and still needing to be effected. An
+    /// empty payload leaves the mapping untouched (the reference only
+    /// reads it when `remainingLength() > 0`).
     pub fn read_data_from_stream(
         &mut self,
         cell_app: &mut CellApp,
@@ -332,42 +863,147 @@ impl Space {
             return;
         }
         for (entry_id, key, data) in entries {
-            self.space_data_entry(cell_app, entry_id, key, data, false);
+            self.space_data_entry(
+                cell_app,
+                entry_id,
+                key,
+                data,
+                UpdateCellAppMgr::DontUpdate,
+                DataEffected::NeedToEffect,
+            );
         }
     }
 
-    /// `Space::spaceDataEntry`: an entry arriving for this space — either
-    /// reported to the CellAppMgr (with the replay record) or stored
-    /// locally after the reference's recently-deleted guard. Returns
-    /// false when that guard trips.
+    /// `Space::spaceDataEntry` (`space.cpp:675`): an entry arriving for
+    /// this space. The manager-bound branch only sends the message — both
+    /// branches fall through to the mapping itself, so a forwarded entry
+    /// is stored here too. The re-add guard and `recent_data` cover
+    /// user-visible keys only (`< SPACE_DATA_FIRST_CELL_ONLY_KEY`; the
+    /// delete key `uint16(-1)` is above every user key), a refused add or
+    /// a delete of nothing ("attempted to add or delete entry twice!")
+    /// returns false, and a `NEED_TO_EFFECT` call acts on the effective
+    /// key: the geometry entry mounts into / unloads from the physical
+    /// space, the time-of-day and artificial-load payloads land in their
+    /// fields.
     pub fn space_data_entry(
         &mut self,
         cell_app: &mut CellApp,
         entry_id: u32,
         key: u16,
         data: Vec<u8>,
-        to_mgr: bool,
+        action: UpdateCellAppMgr,
+        effected: DataEffected,
     ) -> bool {
-        if to_mgr {
+        if action == UpdateCellAppMgr::Update {
             // `b << id_ << entryID << key`, the value blob only when the
-            // key is set.
+            // key is set; the replay record belongs to the replay face.
             cell_app.space_data_updates.push((self.id, entry_id, key));
-            return true;
-        }
-
-        if key != NO_SPACE_DATA_KEY {
+        } else if key < SPACE_DATA_FIRST_CELL_ONLY_KEY {
             // make sure we are not trying to add back a recently deleted
             // key
             if self.recently_deleted(&entry_id, NO_SPACE_DATA_KEY) {
                 cell_app.rejected_readds.push(entry_id);
                 return false;
             }
-            self.space_data.add_data_entry(entry_id, key, data);
+        }
+
+        let mut has_been_added = false;
+        let mut effective_key = NO_SPACE_DATA_KEY;
+        if key != NO_SPACE_DATA_KEY {
+            has_been_added = self.space_data.add_data_entry(entry_id, key, data.clone());
+            if has_been_added {
+                effective_key = key;
+            }
         } else {
+            let (removed, old_value) = self.space_data.del_data_entry_value(entry_id);
+            if removed {
+                effective_key = old_value.key;
+            }
+        }
+
+        // see if the chunk space already has this one — if it was not new
+        // then effectiveKey is -1
+        if effective_key == NO_SPACE_DATA_KEY {
+            // "Attempted to add or delete entry twice!"
+            return false;
+        }
+
+        // see if this is data that can be sent to the client; `rde.time`
+        // is the CellApp's clock, which the client-sync face carries.
+        if effective_key < SPACE_DATA_FIRST_CELL_ONLY_KEY {
             self.recent_data.push((entry_id, key));
-            self.space_data.del_data_entry_value(entry_id);
+            self.end_data_seq += 1;
+        }
+
+        // effect this change unless that has already been done
+        if effected == DataEffected::NeedToEffect {
+            match effective_key {
+                SPACE_DATA_TOD_KEY => match self.space_data.data_retrieve_first(SPACE_DATA_TOD_KEY)
+                {
+                    Some(value) if value.data.len() >= SPACE_DATA_TOD_LEN => {
+                        self.initial_time_of_day =
+                            f32::from_le_bytes(value.data[0..4].try_into().expect("4 bytes"));
+                        self.game_seconds_per_second =
+                            f32::from_le_bytes(value.data[4..8].try_into().expect("4 bytes"));
+                    }
+                    _ => {
+                        self.initial_time_of_day = -1.0;
+                        self.game_seconds_per_second = 0.0;
+                    }
+                },
+                SPACE_DATA_ARTIFICIAL_LOAD => {
+                    match self
+                        .space_data
+                        .data_retrieve_first(SPACE_DATA_ARTIFICIAL_LOAD)
+                    {
+                        Some(value) if value.data.len() >= SPACE_DATA_ARTIFICIAL_LOAD_LEN => {
+                            self.artificial_min_load =
+                                f32::from_le_bytes(value.data[0..4].try_into().expect("4 bytes"));
+                        }
+                        _ => self.artificial_min_load = 0.0,
+                    }
+                }
+                SPACE_DATA_MAPPING_KEY_CLIENT_SERVER => {
+                    if has_been_added {
+                        // see if this mapping is being added
+                        assert!(
+                            data.len() >= SPACE_DATA_MAPPING_MATRIX_LEN,
+                            "a geometry payload is shorter than SpaceData_MappingData"
+                        );
+                        let path = String::from_utf8_lossy(&data[SPACE_DATA_MAPPING_MATRIX_LEN..]);
+                        self.mount_resource(entry_id, &path);
+                        // Someone else has mapped a geometry. If we thought
+                        // we had the last mapped geometry then clear it.
+                        self.last_mapped_geometry.clear();
+                    }
+                    // ok it's being removed then
+                    else {
+                        self.unmount_resource(entry_id);
+                    }
+                }
+                // SPACE_DATA_RECORDING lands in `Cell::startRecording` —
+                // the recording face; CLIENT_ONLY does nothing on the
+                // server.
+                _ => {}
+            }
         }
         true
+    }
+
+    /// The geometry half of a `SPACE_DATA_MAPPING_KEY_CLIENT_SERVER` add:
+    /// `pPhysicalSpace_->loadResource(...)` plus `onNewGeometryMapping`.
+    fn mount_resource(&mut self, entry_id: u32, path: &str) {
+        if let Some(physical) = &self.physical {
+            physical.borrow_mut().load_resource(entry_id, path);
+        }
+        self.should_check_load_bounds = true;
+    }
+
+    /// `pPhysicalSpace_->unloadResource( entryID )`.
+    fn unmount_resource(&mut self, entry_id: u32) {
+        if let Some(physical) = &self.physical {
+            physical.borrow_mut().unload_resource(entry_id);
+        }
     }
 
     /// The `recentData_` scan: was this entry deleted with `key == -1`,
@@ -552,6 +1188,35 @@ impl Space {
         self.timer_armed_at = None;
         reclaimed
     }
+
+    /// The full `~Space` face (`space.cpp:95-133`): the ghosts go, the
+    /// shutdown timer is cancelled, the tree is deleted, and — line 132 —
+    /// the physical space is `clear()`ed before the space releases its
+    /// reference to it. That release is what drops the reference count of
+    /// the sole holder to zero and destroys the backend.
+    pub fn destroy(&mut self) -> EntityReclaim {
+        let reclaimed = self.reclaim_entities();
+        if let Some(physical) = self.physical.take() {
+            physical.borrow_mut().clear();
+        }
+        reclaimed
+    }
+}
+
+/// `Spaces::deleteOldSpaces` (`spaces.cpp:86-105`), the game tick's reaper:
+/// a space without a cell that has fully unloaded is erased from the
+/// container and destroyed — the only place the container lets a `Space`
+/// die. Returns the spaces it deleted.
+pub fn delete_old_spaces(spaces: &mut BTreeMap<SpaceId, Space>) -> Vec<SpaceId> {
+    let gone: Vec<SpaceId> = spaces
+        .iter()
+        .filter(|(_, space)| space.cell.is_none() && space.is_fully_unloaded())
+        .map(|(id, _)| *id)
+        .collect();
+    for id in &gone {
+        spaces.remove(id).expect("just measured").destroy();
+    }
+    gone
 }
 
 /// What [`Space::reclaim_entities`] did — the `~Space` bookkeeping made
@@ -615,6 +1280,18 @@ pub struct TopologyReport {
     pub requested_shut_down: bool,
 }
 
+/// `~Space`'s tail as a safety net: a `Space` that dies without going
+/// through [`Space::destroy`] still clears its backend before the
+/// reference count drops — the reference's line 132, which is what lets
+/// `~EdgeGeometryMappings` assert the mappings were drained.
+impl Drop for Space {
+    fn drop(&mut self) {
+        if let Some(physical) = self.physical.take() {
+            physical.borrow_mut().clear();
+        }
+    }
+}
+
 /// The manager's own ledger of what it created and assigned — the side
 /// [`CellApp::add_cell`]'s delivery must agree with.
 #[derive(Clone, Debug, Default)]
@@ -660,7 +1337,7 @@ impl MgrLedger {
 
 /// The CellApp state the shutdown decision reads (`CellApp::instance()` +
 /// its dispatcher + config), recording what the Space said to it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CellApp {
     /// `CellApp::instance().hasStarted()`.
     started: bool,
@@ -687,6 +1364,33 @@ pub struct CellApp {
     pub space_data_updates: Vec<(SpaceId, u32, u16)>,
     /// The `spaceDataEntry` refusals: a re-add of a recently deleted entry.
     pub rejected_readds: Vec<u32>,
+    /// `IGameDelegate::instance() != NULL`: which physical-space backend a
+    /// created space mounts.
+    pub use_game_delegate: bool,
+    /// The game-delegate world factory the delegate backend calls into.
+    pub world_factory: Rc<RefCell<SpaceWorldFactory>>,
+}
+
+impl Default for CellApp {
+    /// A fresh CellApp: not started, nothing broken, chunk backend.
+    fn default() -> Self {
+        Self {
+            started: false,
+            use_default_space: false,
+            broken: false,
+            address: 0,
+            cells: Vec::new(),
+            shut_down_requests: Vec::new(),
+            destroyed_cell_nodes: Vec::new(),
+            first_cell_deliveries: Vec::new(),
+            failed_adds: Vec::new(),
+            created_spaces: Vec::new(),
+            space_data_updates: Vec::new(),
+            rejected_readds: Vec::new(),
+            use_game_delegate: false,
+            world_factory: Rc::new(RefCell::new(SpaceWorldFactory::default())),
+        }
+    }
 }
 
 impl CellApp {
@@ -781,9 +1485,17 @@ impl CellApp {
             }
             None => {
                 self.created_spaces.push(request.space_id);
-                spaces
-                    .entry(request.space_id)
-                    .or_insert_with(|| Space::new(request.space_id))
+                // `Spaces::create` → `new Space( id )`, mounting whichever
+                // backend the game-delegate flag picks.
+                let delegate_mode = self.use_game_delegate;
+                let factory = Rc::clone(&self.world_factory);
+                spaces.entry(request.space_id).or_insert_with(|| {
+                    if delegate_mode {
+                        Space::new_delegate(request.space_id, factory)
+                    } else {
+                        Space::new(request.space_id)
+                    }
+                })
             }
         };
 
@@ -1146,7 +1858,7 @@ mod tests {
                 cells: tree.clone(),
                 is_first_cell: false,
                 is_from_db: false,
-                space_data: vec![(7u32, 1u16, vec![0u8]), (8, 2, vec![1])],
+                space_data: vec![(7u32, 300u16, vec![0u8]), (8, 2, vec![1])],
             },
         );
         assert_eq!(
@@ -1177,7 +1889,7 @@ mod tests {
                 cells: tree,
                 is_first_cell: false,
                 is_from_db: false,
-                space_data: vec![(7, 1, vec![0]), (8, 2, vec![1])],
+                space_data: vec![(7, 300, vec![0]), (8, 2, vec![1])],
             },
         );
         assert!(outcome.cell_registered);
@@ -1206,7 +1918,7 @@ mod tests {
         let first = app.add_cell(
             &mut spaces,
             request(vec![
-                (1u32, 1u16, vec![0u8]),
+                (1u32, 300u16, vec![0u8]),
                 (2, 2, vec![1]),
                 (3, 3, vec![2]),
             ]),
@@ -1484,11 +2196,11 @@ mod tests {
         spaces_a
             .get_mut(&5)
             .expect("space")
-            .read_data_from_stream(&mut app, vec![(7, 1, vec![10]), (8, 2, vec![20])]);
+            .read_data_from_stream(&mut app, vec![(7, 300, vec![10]), (8, 301, vec![20])]);
         spaces_b
             .get_mut(&6)
             .expect("space")
-            .read_data_from_stream(&mut app_b, vec![(9, 1, vec![30])]);
+            .read_data_from_stream(&mut app_b, vec![(9, 300, vec![30])]);
 
         let a = spaces_a.get(&5).expect("space");
         let b = spaces_b.get(&6).expect("space");
@@ -1497,7 +2209,7 @@ mod tests {
         assert_eq!(
             a.space_data.data_retrieve_specific(7),
             DataValue {
-                key: 1,
+                key: 300,
                 data: vec![10]
             }
         );
@@ -1509,7 +2221,7 @@ mod tests {
         assert_eq!(
             b.space_data.data_retrieve_specific(9),
             DataValue {
-                key: 1,
+                key: 300,
                 data: vec![30]
             }
         );
@@ -1519,8 +2231,8 @@ mod tests {
             "no leaking in"
         );
         assert_eq!(
-            a.space_data.data_retrieve_first(1).map(|v| v.key),
-            Some(1u16),
+            a.space_data.data_retrieve_first(300).map(|v| v.key),
+            Some(300u16),
             "the first entry carrying the key"
         );
         let ids: Vec<_> = a.space_data.entries().map(|(id, _)| id).collect();
@@ -1585,33 +2297,73 @@ mod tests {
     }
 
     /// An entry deleted with `key == -1` may not be added back until the
-    /// next reuse — the reference's recently-deleted guard.
+    /// next reuse — the reference's recently-deleted guard. Both the add
+    /// and the revocation of a user-visible entry land in `recentData_`.
     #[test]
     fn a_recently_deleted_entry_cannot_be_added_back() {
         let mut app = CellApp::new();
         app.start();
         let mut space = Space::new(5);
-        assert!(space.space_data_entry(&mut app, 7, 1, vec![10], false));
-        assert!(space.space_data_entry(&mut app, 7, NO_SPACE_DATA_KEY, vec![], false));
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            300,
+            vec![10],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
         assert!(space.space_data.is_empty());
-        assert_eq!(space.recent_data, vec![(7u32, NO_SPACE_DATA_KEY)]);
+        assert_eq!(
+            space.recent_data,
+            vec![(7u32, 300), (7u32, NO_SPACE_DATA_KEY)]
+        );
+        assert_eq!(space.end_data_seq, 2, "both sides of the entry count");
 
         assert!(
-            !space.space_data_entry(&mut app, 7, 1, vec![20], false),
+            !space.space_data_entry(
+                &mut app,
+                7,
+                300,
+                vec![20],
+                UpdateCellAppMgr::DontUpdate,
+                DataEffected::NeedToEffect
+            ),
             "a re-add after deletion is refused"
         );
         assert_eq!(app.rejected_readds, vec![7]);
         assert!(space.space_data.is_empty());
 
         // A different entry id is not refused.
-        assert!(space.space_data_entry(&mut app, 8, 1, vec![30], false));
+        assert!(space.space_data_entry(
+            &mut app,
+            8,
+            300,
+            vec![30],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
         assert_eq!(space.space_data.size(), 1);
 
         // `Space::reuse` drops the recent deletions, so the entry may
         // come back.
         space.reuse();
         assert!(space.recent_data.is_empty());
-        assert!(space.space_data_entry(&mut app, 7, 1, vec![40], false));
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            300,
+            vec![40],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
         assert_eq!(app.rejected_readds, vec![7], "the refusal was not repeated");
     }
 
@@ -1704,24 +2456,42 @@ mod tests {
         assert_eq!(app.cells.len(), 1, "a going cell is not destroyed");
     }
 
-    /// An entry headed for the CellAppMgr is not stored locally, and a
-    /// cellless space's own cell is never "going".
+    /// An entry headed for the CellAppMgr is sent *and* stored — both
+    /// branches fall through to the mapping — and a cellless space's own
+    /// cell is never "going".
     #[test]
-    fn a_manager_bound_entry_is_sent_and_a_cellless_space_has_no_own_cell() {
+    fn a_manager_bound_entry_is_sent_and_also_stored() {
         let mut app = CellApp::new();
         app.start();
         let mut space = Space::new(5);
 
-        assert!(space.space_data_entry(&mut app, 7, 1, vec![10], true));
-        assert_eq!(app.space_data_updates, vec![(5u32, 7, 1)]);
-        assert!(
-            space.space_data.is_empty(),
-            "a manager-bound entry is not stored locally"
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            300,
+            vec![10],
+            UpdateCellAppMgr::Update,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(app.space_data_updates, vec![(5u32, 7, 300)]);
+        assert_eq!(
+            space.space_data.size(),
+            1,
+            "the forwarded entry is stored here too"
         );
-        assert!(space.space_data_entry(&mut app, 8, NO_SPACE_DATA_KEY, vec![], true));
+        // A forwarded revocation erases the local entry as well.
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::Update,
+            DataEffected::NeedToEffect
+        ));
+        assert!(space.space_data.is_empty());
         assert_eq!(
             app.space_data_updates.last().copied(),
-            Some((5, 8, NO_SPACE_DATA_KEY))
+            Some((5, 7, NO_SPACE_DATA_KEY))
         );
 
         // A space without a cell is not a single-cell space, so a topology
@@ -1735,5 +2505,872 @@ mod tests {
             "not single-cell, so it re-checked"
         );
         assert!(!report.requested_shut_down, "no cell means no single cell");
+    }
+
+    /// A geometry entry's wire payload: the `SpaceData_MappingData` matrix
+    /// and the path that follows it.
+    fn geometry_payload(path: &str) -> Vec<u8> {
+        let mut payload = vec![0u8; SPACE_DATA_MAPPING_MATRIX_LEN];
+        payload.extend_from_slice(path.as_bytes());
+        payload
+    }
+
+    /// The mount: a constructed space carries a chunk backend, the space
+    /// is its only holder, and destroying the space releases that one
+    /// reference.
+    #[test]
+    fn the_mounted_backend_is_the_space_s_only_reference() {
+        let mut space = Space::new(5);
+        let physical = space.physical().expect("a chunk backend is mounted");
+        assert!(
+            physical.borrow().as_delegate().is_none(),
+            "the default mount is not the delegate backend"
+        );
+        assert_eq!(
+            Rc::strong_count(&physical),
+            2,
+            "the space holds the only other reference"
+        );
+        let weak = Rc::downgrade(&physical);
+        drop(physical);
+
+        space.destroy();
+        assert!(weak.upgrade().is_none(), "the reference was released");
+    }
+
+    /// A geometry entry mounts into the physical space as a pending
+    /// mapping; a tick around the cell loads it, while a cellless space's
+    /// tick is unload-only and leaves it pending.
+    #[test]
+    fn mapping_data_mounts_geometry_and_a_tick_loads_it() {
+        let (mut app, mut space, _cell) = fixture(7, 0);
+        space.set_last_mapped_geometry("old".to_string());
+
+        assert!(space.space_data_entry(
+            &mut app,
+            3,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("spaces/sets"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(space.should_check_load_bounds, "onNewGeometryMapping ran");
+        assert!(
+            space.last_mapped_geometry.is_empty(),
+            "someone else mapped a geometry, so ours is not the last"
+        );
+        let physical = space.physical().expect("mounted");
+        {
+            let borrowed = physical.borrow();
+            let chunk = borrowed
+                .as_chunk()
+                .expect("the default mount is the chunk backend");
+            assert_eq!(
+                chunk.mappings.get(&3).map(|m| m.path.as_str()),
+                Some("spaces/sets")
+            );
+            assert!(
+                chunk.mappings[&3].pending,
+                "addMappingAsync is still in flight"
+            );
+        }
+
+        assert!(space.chunk_tick(), "the tick loads around the cell");
+        assert!(
+            physical.borrow_mut().update(false),
+            "the loaded mapping is still mounted"
+        );
+        assert!(
+            !physical
+                .borrow()
+                .as_chunk()
+                .expect("chunk backend")
+                .mappings[&3]
+                .pending
+        );
+
+        // A space with no cell is already unload-only.
+        let mut bare = Space::new(8);
+        assert!(bare.space_data_entry(
+            &mut app,
+            3,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("spaces/sets"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(!bare.chunk_tick(), "no cell, so the tick only unloads");
+        let bare_physical = bare.physical().expect("mounted");
+        assert!(
+            bare_physical
+                .borrow()
+                .as_chunk()
+                .expect("chunk backend")
+                .mappings[&3]
+                .pending,
+            "unload-only does not advance the mapping"
+        );
+    }
+
+    /// Revoking the geometry entry unloads it from the physical space, and
+    /// the space is fully unloaded again.
+    #[test]
+    fn revoking_the_mapping_unmounts_it() {
+        let (mut app, mut space, _cell) = fixture(7, 0);
+        assert!(space.space_data_entry(
+            &mut app,
+            3,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("spaces/sets"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(!space.is_fully_unloaded(), "the mapping is mounted");
+
+        assert!(space.space_data_entry(
+            &mut app,
+            3,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(
+            space
+                .physical()
+                .expect("mounted")
+                .borrow()
+                .as_chunk()
+                .is_none_or(|chunk| chunk.mappings.is_empty())
+        );
+        assert!(space.is_fully_unloaded(), "nothing is mounted any more");
+    }
+
+    /// The acceptance face: the occupant leaves, the manager's message
+    /// takes the cell, the mounted geometry is revoked, and the reaper —
+    /// `pCell() == NULL && isFullyUnloaded()` — deletes the space, whose
+    /// death releases its reference to the backend.
+    #[test]
+    fn the_reaper_reclaims_a_drained_space_and_releases_the_reference() {
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.start();
+        let mut spaces = BTreeMap::new();
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 7,
+                cells: vec![cell_info(7, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+        let physical = spaces.get(&7).expect("space").physical().expect("mounted");
+        let weak = Rc::downgrade(&physical);
+        drop(physical);
+
+        let space = spaces.get_mut(&7).expect("space");
+        let occupant = entity(1, true);
+        space.add_entity(occupant.clone());
+        assert!(
+            !space.is_fully_unloaded(),
+            "an occupant keeps the space from being fully unloaded"
+        );
+        assert!(space.space_data_entry(
+            &mut app,
+            3,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("spaces/sets"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(!space.is_fully_unloaded());
+
+        // The occupant leaves: the space asks for its shutdown, the
+        // manager answers, one timer width runs, and the cell goes.
+        space.remove_entity(&occupant, &mut app);
+        assert_eq!(app.shut_down_requests, vec![7]);
+        assert!(space.shut_down_space(0));
+        assert!(space.tick(SHUTDOWN_SPACE_DELAY_US, &mut app));
+        assert!(space.cell().is_none());
+        assert_eq!(app.destroyed_cell_nodes, vec![CellInfoNode(0)]);
+
+        // Revoking the mapping drains the backend; with no cell the tick
+        // is unload-only, so nothing new mounts.
+        assert!(space.space_data_entry(
+            &mut app,
+            3,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(!space.chunk_tick(), "unload-only loads nothing");
+        assert!(space.is_fully_unloaded());
+
+        let deleted = delete_old_spaces(&mut spaces);
+        assert_eq!(deleted, vec![7]);
+        assert!(spaces.is_empty());
+        assert!(weak.upgrade().is_none(), "the reference was released");
+    }
+
+    /// The delegate backend: the mount builds a physics delegate, the
+    /// worlds materialise on ticks, and tearing the space down releases
+    /// everything through the factory — the physics delegate only in the
+    /// destructor.
+    #[test]
+    fn the_delegate_backend_releases_every_reference() {
+        let factory = Rc::new(RefCell::new(SpaceWorldFactory::default()));
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.use_game_delegate = true;
+        app.world_factory = Rc::clone(&factory);
+        app.start();
+        let mut spaces = BTreeMap::new();
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 9,
+                cells: vec![cell_info(9, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+        assert_eq!(
+            factory.borrow().physics_delegates_created,
+            1,
+            "the mount built the physics delegate"
+        );
+        let physical = spaces.get(&9).expect("space").physical().expect("mounted");
+        let weak = Rc::downgrade(&physical);
+
+        let space = spaces.get_mut(&9).expect("space");
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/islands"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(factory.borrow().loaded, vec!["worlds/islands".to_string()]);
+
+        // The loading tick materialises the world; a second finds it
+        // loaded and asks no more. The delegate tick never reports new
+        // columns (the reference's load balancing is a TODO).
+        assert!(!space.chunk_tick());
+        assert!(!space.chunk_tick());
+        assert_eq!(factory.borrow().created, vec!["worlds/islands".to_string()]);
+        {
+            let borrowed = physical.borrow();
+            let delegate = borrowed
+                .as_delegate()
+                .expect("a delegate-mode CellApp mounts the delegate backend");
+            assert_eq!(
+                delegate.worlds.get(&4).map(String::as_str),
+                Some("worlds/islands")
+            );
+        }
+
+        // A world whose load will never finish: the path mounts but the
+        // world never materialises, so the space is never fully unloaded.
+        assert!(space.space_data_entry(
+            &mut app,
+            5,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/broken"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(factory.borrow().loaded.len(), 2);
+
+        // The delivered shutdown chain takes the cell away.
+        assert!(space.check_for_shut_down(&mut app));
+        assert!(space.shut_down_space(0));
+        assert!(space.tick(SHUTDOWN_SPACE_DELAY_US, &mut app));
+        assert!(space.cell().is_none());
+
+        // Revoking the loaded world drains it, but the broken path holds
+        // the space — the reaper refuses.
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(!space.is_fully_unloaded());
+
+        // The reaper refuses: the broken path holds the space.
+        assert!(
+            !spaces.get(&9).expect("space").is_fully_unloaded(),
+            "the broken path holds the space"
+        );
+        assert!(delete_old_spaces(&mut spaces).is_empty());
+
+        // Our pointer goes back; only the space's reference remains.
+        drop(physical);
+
+        // The destructor path clears what is left: the in-flight load is
+        // cancelled, the world resources removed, and the physics delegate
+        // — created at mount — released only here.
+        spaces.get_mut(&9).expect("space").destroy();
+        assert!(weak.upgrade().is_none(), "the reference was released");
+        let history = factory.borrow();
+        assert_eq!(
+            history.removed_instances,
+            vec!["worlds/islands".to_string()]
+        );
+        assert_eq!(
+            history.removed,
+            vec!["worlds/islands".to_string(), "worlds/broken".to_string()]
+        );
+        assert_eq!(
+            history.cancelled,
+            vec!["worlds/broken".to_string()],
+            "the not-yet-loaded path was cancelled"
+        );
+        assert_eq!(
+            history.physics_delegates_removed, 1,
+            "the physics delegate is released only in the destructor"
+        );
+    }
+
+    /// Tearing a still-mounted delegate space down — the `~CellApp` road:
+    /// the in-flight load is cancelled, the loaded world is removed as an
+    /// instance and as a resource, and the dead space reports unloaded and
+    /// tickless because its backend is already gone.
+    #[test]
+    fn a_delegate_clear_cancels_and_drains_a_mounted_backend() {
+        let factory = Rc::new(RefCell::new(SpaceWorldFactory::default()));
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.use_game_delegate = true;
+        app.world_factory = Rc::clone(&factory);
+        app.start();
+        let mut spaces = BTreeMap::new();
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 9,
+                cells: vec![cell_info(9, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+        let physical = spaces.get(&9).expect("space").physical().expect("mounted");
+        let weak = Rc::downgrade(&physical);
+        assert!(
+            physical.borrow().as_chunk().is_none(),
+            "the delegate mode never mounts the chunk backend"
+        );
+
+        let space = spaces.get_mut(&9).expect("space");
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/islands"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(!space.chunk_tick());
+        // A path that never materialises: it stays an in-flight load.
+        assert!(space.space_data_entry(
+            &mut app,
+            5,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/broken"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+
+        space.destroy();
+        assert!(
+            spaces.get(&9).expect("space").is_fully_unloaded(),
+            "a destroyed space is fully unloaded"
+        );
+        assert!(
+            !spaces.get_mut(&9).expect("space").chunk_tick(),
+            "a destroyed space has nothing to tick"
+        );
+        drop(physical);
+        assert!(weak.upgrade().is_none(), "the reference was released");
+
+        let history = factory.borrow();
+        assert_eq!(
+            history.cancelled,
+            vec!["worlds/broken".to_string()],
+            "only the in-flight load was cancelled"
+        );
+        assert_eq!(
+            history.removed_instances,
+            vec!["worlds/islands".to_string()]
+        );
+        assert_eq!(
+            history.removed,
+            vec!["worlds/islands".to_string(), "worlds/broken".to_string()]
+        );
+        assert_eq!(history.physics_delegates_removed, 1);
+    }
+
+    /// The delegate entry faces: re-adding a mounted entry reuses its path,
+    /// revoking an entry that never mounted is a no-op, revoking a path
+    /// whose world never materialised removes no instance, and `reuse`
+    /// clears through the factory.
+    #[test]
+    fn a_delegate_reuses_mounted_paths_and_ignores_unknown_unloads() {
+        let factory = Rc::new(RefCell::new(SpaceWorldFactory::default()));
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.use_game_delegate = true;
+        app.world_factory = Rc::clone(&factory);
+        app.start();
+        let mut spaces = BTreeMap::new();
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 9,
+                cells: vec![cell_info(9, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+        let physical = spaces.get(&9).expect("space").physical().expect("mounted");
+
+        let space = spaces.get_mut(&9).expect("space");
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/one"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        // The Space-level re-add of a live entry is refused (the mapping
+        // already has it); the backend's own reuse face drives directly.
+        assert!(!space.space_data_entry(
+            &mut app,
+            4,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/two"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(factory.borrow().loaded, vec!["worlds/one".to_string()]);
+        {
+            let mut borrowed = physical.borrow_mut();
+            borrowed.load_resource(4, "worlds/two");
+            assert_eq!(
+                borrowed
+                    .as_delegate()
+                    .expect("the delegate backend")
+                    .paths
+                    .get(&4)
+                    .map(String::as_str),
+                Some("worlds/one"),
+                "the mounted path is reused"
+            );
+        }
+        assert_eq!(factory.borrow().loaded, vec!["worlds/one".to_string()]);
+
+        // A mapping recorded without being effected: revoking it later
+        // finds nothing mounted in the backend.
+        assert!(space.space_data_entry(
+            &mut app,
+            6,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/ghost"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::AlreadyEffected
+        ));
+        assert_eq!(factory.borrow().loaded.len(), 1);
+        assert!(space.space_data_entry(
+            &mut app,
+            6,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(factory.borrow().removed.len(), 0);
+
+        // Revoking the mounted entry before its world materialised: no
+        // instance to remove, but the resources go.
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(factory.borrow().removed, vec!["worlds/one".to_string()]);
+        assert!(factory.borrow().removed_instances.is_empty());
+
+        // `reuse` clears through the same factory face.
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/three"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        space.reuse();
+        assert!(space.is_fully_unloaded());
+        let borrowed = physical.borrow();
+        let delegate = borrowed.as_delegate().expect("the delegate backend");
+        assert!(delegate.paths.is_empty());
+        assert!(delegate.worlds.is_empty());
+        assert_eq!(
+            factory.borrow().removed,
+            vec!["worlds/one".to_string(), "worlds/three".to_string()]
+        );
+    }
+
+    /// A world whose load fails is dropped from the backend on the next
+    /// tick, and the space is fully unloaded again.
+    #[test]
+    fn a_failed_delegate_load_is_erased_on_the_tick() {
+        let factory = Rc::new(RefCell::new(SpaceWorldFactory::default()));
+        factory.borrow_mut().fail_world("worlds/broken");
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.use_game_delegate = true;
+        app.world_factory = Rc::clone(&factory);
+        app.start();
+        let mut spaces = BTreeMap::new();
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 9,
+                cells: vec![cell_info(9, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+        let physical = spaces.get(&9).expect("space").physical().expect("mounted");
+
+        let space = spaces.get_mut(&9).expect("space");
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/broken"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        // A healthy path behind the broken one: the failing pass ends at
+        // the break, so the healthy world waits for the next update.
+        assert!(space.space_data_entry(
+            &mut app,
+            5,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("worlds/late"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(!space.is_fully_unloaded());
+        assert!(!space.chunk_tick());
+        assert_eq!(factory.borrow().created, vec!["worlds/broken".to_string()]);
+        assert!(
+            !space.is_fully_unloaded(),
+            "the healthy path survives the failing pass"
+        );
+        assert!(!space.chunk_tick());
+        assert_eq!(
+            factory.borrow().created,
+            vec!["worlds/broken".to_string(), "worlds/late".to_string()]
+        );
+        {
+            let borrowed = physical.borrow();
+            let delegate = borrowed.as_delegate().expect("the delegate backend");
+            assert!(
+                !delegate.paths.contains_key(&4),
+                "the failed path was erased"
+            );
+            assert!(delegate.worlds.contains_key(&5));
+        }
+        assert!(
+            !space.is_fully_unloaded(),
+            "the healthy world still holds the space"
+        );
+
+        // Revoking the entry whose load failed settles the mapping; the
+        // backend has nothing of its own to remove for it.
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(factory.borrow().removed.is_empty());
+        drop(physical);
+        spaces.get_mut(&9).expect("space").destroy();
+        assert_eq!(factory.borrow().removed, vec!["worlds/late".to_string()]);
+        assert_eq!(
+            factory.borrow().removed_instances,
+            vec!["worlds/late".to_string()]
+        );
+        assert_eq!(factory.borrow().physics_delegates_removed, 1);
+    }
+
+    /// A space whose backend is already gone - torn down before the
+    /// reaper deleted it - still settles its mapping but touches nothing:
+    /// mounts, revokes, `reuse` and a second teardown are all no-ops.
+    #[test]
+    fn a_torn_down_space_ignores_later_space_data() {
+        let mut app = CellApp::new();
+        app.start();
+        let mut space = Space::new(5);
+        space.destroy();
+
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("spaces/sets"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(space.physical().is_none());
+        assert!(space.space_data_entry(
+            &mut app,
+            4,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        space.reuse();
+        space.destroy();
+        assert!(space.is_fully_unloaded());
+    }
+
+    /// A truncated artificial-load payload parses as the default of zero.
+    #[test]
+    fn a_truncated_artificial_load_parses_as_zero() {
+        let mut app = CellApp::new();
+        app.start();
+        let mut space = Space::new(5);
+
+        let mut short = Vec::new();
+        short.extend_from_slice(&7u16.to_le_bytes());
+        assert!(space.space_data_entry(
+            &mut app,
+            11,
+            SPACE_DATA_ARTIFICIAL_LOAD,
+            short,
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(space.artificial_min_load, 0.0);
+    }
+
+    /// The time-of-day and artificial-load entries land in their fields;
+    /// `ALREADY_EFFECTED` keeps the entry without acting on it.
+    #[test]
+    fn time_of_day_and_artificial_load_land_in_the_space() {
+        let mut app = CellApp::new();
+        app.start();
+        let mut space = Space::new(5);
+
+        let mut tod = Vec::new();
+        tod.extend_from_slice(&0.25f32.to_le_bytes());
+        tod.extend_from_slice(&2.0f32.to_le_bytes());
+        assert!(space.space_data_entry(
+            &mut app,
+            1,
+            SPACE_DATA_TOD_KEY,
+            tod,
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(space.initial_time_of_day, 0.25);
+        assert_eq!(space.game_seconds_per_second, 2.0);
+
+        // The effect reads the *first* entry carrying the key: revoke it
+        // and a short payload next in line resets to the defaults.
+        assert!(space.space_data_entry(
+            &mut app,
+            1,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(space.initial_time_of_day, -1.0);
+        assert_eq!(space.game_seconds_per_second, 0.0);
+
+        let load = 7.5f32.to_le_bytes().to_vec();
+        assert!(space.space_data_entry(
+            &mut app,
+            3,
+            SPACE_DATA_ARTIFICIAL_LOAD,
+            load,
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert_eq!(space.artificial_min_load, 7.5);
+
+        // ALREADY_EFFECTED: the entry stands, the effect is skipped.
+        let mut tod2 = Vec::new();
+        tod2.extend_from_slice(&0.75f32.to_le_bytes());
+        tod2.extend_from_slice(&3.0f32.to_le_bytes());
+        assert!(space.space_data_entry(
+            &mut app,
+            5,
+            SPACE_DATA_TOD_KEY,
+            tod2,
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::AlreadyEffected
+        ));
+        assert_eq!(space.initial_time_of_day, -1.0, "the effect was skipped");
+        assert_eq!(
+            space.space_data.data_retrieve_specific(5).data.len(),
+            8,
+            "the entry stands"
+        );
+    }
+
+    /// A duplicate add and a delete of nothing are both refused — the
+    /// effective key stays unset ("attempted to add or delete entry
+    /// twice!") — and neither is the recently-deleted guard.
+    #[test]
+    fn a_refused_duplicate_or_missing_delete_returns_false() {
+        let mut app = CellApp::new();
+        app.start();
+        let mut space = Space::new(5);
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            300,
+            vec![10],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+
+        assert!(
+            !space.space_data_entry(
+                &mut app,
+                7,
+                301,
+                vec![20],
+                UpdateCellAppMgr::DontUpdate,
+                DataEffected::NeedToEffect
+            ),
+            "the id already stands"
+        );
+        assert_eq!(
+            space.space_data.data_retrieve_specific(7),
+            DataValue {
+                key: 300,
+                data: vec![10]
+            },
+            "the first entry is untouched"
+        );
+        assert!(
+            !space.space_data_entry(
+                &mut app,
+                9,
+                NO_SPACE_DATA_KEY,
+                vec![],
+                UpdateCellAppMgr::DontUpdate,
+                DataEffected::NeedToEffect
+            ),
+            "there is nothing to delete"
+        );
+        assert!(
+            app.rejected_readds.is_empty(),
+            "the guard was not the refuser"
+        );
+        assert_eq!(space.end_data_seq, 1, "the refused calls recorded nothing");
+
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(space.space_data.is_empty());
+    }
+
+    /// Cell-only keys are outside `recentData_` and the re-add guard: a
+    /// deleted cell-only entry may be added straight back.
+    #[test]
+    fn a_cell_only_entry_skips_the_recent_guard() {
+        let mut app = CellApp::new();
+        app.start();
+        let mut space = Space::new(5);
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            20000,
+            vec![10],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            NO_SPACE_DATA_KEY,
+            vec![],
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+        assert!(
+            space.recent_data.is_empty(),
+            "cell-only entries stay out of recentData_"
+        );
+        assert_eq!(space.end_data_seq, 0);
+
+        assert!(
+            space.space_data_entry(
+                &mut app,
+                7,
+                20001,
+                vec![20],
+                UpdateCellAppMgr::DontUpdate,
+                DataEffected::NeedToEffect
+            ),
+            "no guard on cell-only keys"
+        );
+        assert_eq!(space.space_data.data_retrieve_specific(7).key, 20001);
+    }
+
+    /// `Space::reuse` reuses the mounted backend: the mappings drain, the
+    /// clear is marked, and — unlike `clear()` — the mapping factory stays
+    /// attached.
+    #[test]
+    fn reuse_drains_the_mounted_backend_but_keeps_its_factory() {
+        let (mut app, mut space, _cell) = fixture(7, 0);
+        assert!(space.space_data_entry(
+            &mut app,
+            3,
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            geometry_payload("spaces/sets"),
+            UpdateCellAppMgr::DontUpdate,
+            DataEffected::NeedToEffect
+        ));
+
+        space.reuse();
+        let physical = space.physical().expect("mounted");
+        let borrowed = physical.borrow();
+        let chunk = borrowed
+            .as_chunk()
+            .expect("the default mount is the chunk backend");
+        assert!(chunk.mappings.is_empty(), "reuse drained the mappings");
+        assert!(chunk.chunk_space.cleared);
+        assert!(
+            chunk.chunk_space.mapping_factory_attached,
+            "only clear() severs the mapping factory"
+        );
+        assert!(space.space_data.is_empty(), "the data face went with it");
     }
 }
