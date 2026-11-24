@@ -23,6 +23,7 @@ pub mod log_on;
 pub mod record;
 pub mod retry;
 pub mod schema;
+pub mod secondary_database;
 pub mod storage;
 pub mod transaction;
 pub mod xml_database;
@@ -42,6 +43,9 @@ pub use record::EntityRecord;
 pub use retry::{Completion, run_with_retry};
 pub use schema::{
     BoundAttribute, EntitySchema, IndexType, MySqlType, Namer, TableDescription, UserTypeBindings,
+};
+pub use secondary_database::{
+    CHECKSUM_TABLE_NAME, SecondaryDatabase, SecondaryRow, SecondaryTable,
 };
 pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity, load_entity_by_name};
 pub use transaction::{StorageTransaction, run_transactional};

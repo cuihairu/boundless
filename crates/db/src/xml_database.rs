@@ -1227,7 +1227,7 @@ impl EntityStorage for XmlDatabase {
 // ----------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use entitydef::INVALID_ENTITY_TYPE_ID;
     use entitydef::data_description::DataDescription;
@@ -1275,7 +1275,7 @@ mod tests {
     /// int) and one cell Avatar variant is impossible — one name, one type.
     /// Here: Avatar is base-only, Guard lives on a cell (the cell script
     /// exists) and carries an identifier too.
-    fn defs() -> EntityDescriptionMap {
+    pub(crate) fn defs() -> EntityDescriptionMap {
         let avatar_props = &format!(
             "<Properties> \
                  <name> <Type> STRING </Type>{PERSISTENT_FLAGS} <Identifier> true </Identifier> </name> \
@@ -1324,7 +1324,7 @@ mod tests {
 
     /// An Avatar record stream: the persistent properties in visit order,
     /// then the game time (a base-only type carries no cell payload).
-    fn avatar_stream(hp: i64, game_time: i64) -> BinaryStream {
+    pub(crate) fn avatar_stream(hp: i64, game_time: i64) -> BinaryStream {
         let mut stream = BinaryStream::new();
         let _ = stream.write_string(&format!("avatar-{hp}")); // name (STRING)
         stream.write_i32(hp as i32); // hp (INT32)

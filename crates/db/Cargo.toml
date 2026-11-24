@@ -10,3 +10,4 @@ foundation = { workspace = true }
 entitydef = { workspace = true }
 resources = { workspace = true }
 md-5 = { workspace = true }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
