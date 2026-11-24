@@ -14,10 +14,10 @@
 use std::collections::BTreeMap;
 
 use entitydef::entity_map::EntityDescriptionMap;
-use foundation::ids::{DatabaseId, EntityTypeId, INVALID_ENTITY_TYPE_ID};
+use foundation::ids::{EntityTypeId, INVALID_ENTITY_TYPE_ID};
 use resources::datasection::DataSection;
 
-use crate::account::AccountLogOnStatus;
+use crate::account::AccountLogOn;
 use crate::storage::EntityKey;
 
 /// The `billingSystem/` block of bw.xml, read with the reference's
@@ -89,7 +89,7 @@ pub enum EntityKeyOutcome {
     },
     /// The account is rejected (`onGetEntityKeyForAccountFailure`).
     Failure {
-        status: AccountLogOnStatus,
+        status: AccountLogOn,
         error_msg: String,
     },
 }
@@ -269,7 +269,7 @@ impl BillingSystem for XmlBillingSystem {
                 }
             } else {
                 EntityKeyOutcome::Failure {
-                    status: AccountLogOnStatus::RejectedInvalidPassword,
+                    status: AccountLogOn::RejectedInvalidPassword,
                     error_msg: String::new(),
                 }
             }
@@ -282,7 +282,7 @@ impl BillingSystem for XmlBillingSystem {
             }
         } else {
             EntityKeyOutcome::Failure {
-                status: AccountLogOnStatus::RejectedNoSuchUser,
+                status: AccountLogOn::RejectedNoSuchUser,
                 error_msg: String::new(),
             }
         }
@@ -315,7 +315,7 @@ impl BillingSystem for XmlBillingSystem {
         self.logon_map.insert(
             username.to_string(),
             LogOnMapping {
-                entity_key: key.clone(),
+                entity_key: key,
                 password: password.to_string(),
             },
         );
@@ -347,15 +347,15 @@ impl BillingSystem for XmlBillingSystem {
             item.add_child("entityID");
         }
         for index in 0..item.count_children() {
-            if let Some(child) = item.child_mut(index) {
-                if child.section_name() == "entityID" {
-                    child.set_int64(key.db_id);
-                    break;
-                }
+            if let Some(child) = item.child_mut(index)
+                && child.section_name() == "entityID"
+            {
+                child.set_int64(key.db_id);
+                break;
             }
         }
 
-        SetEntityKeyOutcome::Success(key.clone())
+        SetEntityKeyOutcome::Success(key)
     }
 
     fn is_okay(&self) -> bool {
@@ -404,6 +404,34 @@ mod tests {
              <type> Nobody </type> </item> \
      </root>";
 
+    /// The `billingSystem/` block keeps the defaults for missing children
+    /// (`BWConfig::get( path, default )`).
+    #[test]
+    fn the_billing_config_block_reads_with_defaults() {
+        let empty = parse("root", b"<root/>").expect("parse");
+        let config = BillingConfig::from_section(&empty);
+        assert!(!config.should_accept_unknown_users);
+        assert!(!config.should_remember_unknown_users);
+        assert!(!config.authenticate_via_base_entity);
+        assert_eq!(config.entity_type_for_unknown_users, "");
+
+        let full = parse(
+            "root",
+            b"<root> \
+               <shouldAcceptUnknownUsers> true </shouldAcceptUnknownUsers> \
+               <shouldRememberUnknownUsers> TRUE </shouldRememberUnknownUsers> \
+               <authenticateViaBaseEntity> false </authenticateViaBaseEntity> \
+               <entityTypeForUnknownUsers> Nobody </entityTypeForUnknownUsers> \
+             </root>",
+        )
+        .expect("parse");
+        let config = BillingConfig::from_section(&full);
+        assert!(config.should_accept_unknown_users);
+        assert!(config.should_remember_unknown_users);
+        assert!(!config.authenticate_via_base_entity);
+        assert_eq!(config.entity_type_for_unknown_users, "Nobody");
+    }
+
     #[test]
     fn a_legal_account_matches_to_its_mapped_key() {
         let (_database, mut system, avatar) = fixture(LOGON_MAP);
@@ -446,7 +474,7 @@ mod tests {
         assert_eq!(
             system.get_entity_key_for_account("moe", "wrong"),
             EntityKeyOutcome::Failure {
-                status: AccountLogOnStatus::RejectedInvalidPassword,
+                status: AccountLogOn::RejectedInvalidPassword,
                 error_msg: String::new(),
             }
         );
@@ -454,7 +482,7 @@ mod tests {
         assert_eq!(
             system.get_entity_key_for_account("badtype", "pw3"),
             EntityKeyOutcome::Failure {
-                status: AccountLogOnStatus::RejectedNoSuchUser,
+                status: AccountLogOn::RejectedNoSuchUser,
                 error_msg: String::new(),
             }
         );
@@ -537,7 +565,7 @@ mod tests {
         assert_eq!(
             system.get_entity_key_for_account("moe", "secret"),
             EntityKeyOutcome::Failure {
-                status: AccountLogOnStatus::RejectedInvalidPassword,
+                status: AccountLogOn::RejectedInvalidPassword,
                 error_msg: String::new(),
             }
         );

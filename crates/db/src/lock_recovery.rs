@@ -136,12 +136,10 @@ impl<C: LockClient> NamedLock<C> {
         let Some(mut client) = self.client.take() else {
             return false;
         };
-        if !client.has_lost_connection() {
-            if !client.release_named_lock(&self.lock_name) {
-                eprintln!(
-                    "WARNING: NamedLock::unlock: Was unable to successfully unlock. Forgetting connection."
-                );
-            }
+        if !client.has_lost_connection() && !client.release_named_lock(&self.lock_name) {
+            eprintln!(
+                "WARNING: NamedLock::unlock: Was unable to successfully unlock. Forgetting connection."
+            );
         }
         true
     }
@@ -258,8 +256,7 @@ impl<T: LockClient> Drop for LockedConnection<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::DbError;
-    use crate::retry::{Completion, run_with_retry};
+    use crate::retry::{DatabaseFailure, RetryTask, RunReport, run_with_retry};
     use std::cell::RefCell;
     use std::collections::HashSet;
     use std::rc::Rc;
@@ -612,47 +609,71 @@ mod tests {
         assert_eq!(shared.borrow().release_attempts, 0);
     }
 
+    /// One transaction attempt, driven the way the retry loop drives a task
+    /// (`transaction.cpp:57-60`).
+    struct TransactionTask {
+        error_number: i32,
+        attempts: u32,
+        fatal: Vec<String>,
+        completed: Vec<bool>,
+    }
+
+    impl RetryTask for TransactionTask {
+        fn perform_background(&mut self) -> Result<(), DatabaseFailure> {
+            self.attempts += 1;
+            // A deadlock inside a transaction rolls it back and runs it
+            // again (`transaction.cpp:57-60`), so it feeds the retry loop.
+            if self.attempts < 3 && transaction_should_retry(self.error_number) {
+                return Err(DatabaseFailure::Retryable("deadlock".into()));
+            }
+            // A lock wait timeout is not retried in a transaction
+            // (`transaction.cpp:57-60`): the error is terminal.
+            if self.attempts < 3 && !transaction_should_retry(self.error_number) {
+                return Err(DatabaseFailure::Fatal("lock wait timed out".into()));
+            }
+            Ok(())
+        }
+
+        fn on_exception(&mut self, failure: &DatabaseFailure) {
+            self.fatal.push(failure.message().to_owned());
+        }
+
+        fn complete(&mut self, succeeded: bool) {
+            self.completed.push(succeeded);
+        }
+    }
+
+    fn transaction_task(error_number: i32) -> TransactionTask {
+        TransactionTask {
+            error_number,
+            attempts: 0,
+            fatal: Vec::new(),
+            completed: Vec::new(),
+        }
+    }
+
     /// The acceptance for the whole item, 结果可重试且状态一致: a lock
     /// conflict re-runs the operation and it completes once, while an
     /// error the transaction does not retry is terminal.
     #[test]
     fn a_lock_conflict_retries_and_an_unretriable_one_is_terminal() {
-        // A deadlock inside a transaction is retried
-        // (`transaction.cpp:57-60`), so it feeds the retry loop.
-        let mut completion = Completion::new();
-        let mut attempts = 0u32;
-        let error_number = codes::ER_LOCK_DEADLOCK;
-        let (count, outcome) = run_with_retry(|| {
-            attempts += 1;
-            if attempts < 3 && transaction_should_retry(error_number) {
-                return Err(DbError::Retry);
-            }
-            Ok(7)
-        });
-        completion.complete(outcome);
+        let mut task = transaction_task(codes::ER_LOCK_DEADLOCK);
+        let report = run_with_retry(&mut task, &mut |_tried: &mut RunReport| true);
 
-        assert_eq!(count, 3, "the deadlock re-ran twice");
-        assert_eq!(attempts, 3);
-        assert_eq!(completion.completions(), 1, "one completion");
-        assert_eq!(completion.outcome(), Some(&Ok(7)));
+        assert_eq!(report.attempts, 3, "the deadlock re-ran twice");
+        assert_eq!(task.attempts, 3);
+        assert_eq!(task.completed, vec![true], "one completion");
+        assert!(task.fatal.is_empty());
 
         // A lock wait timeout is not retried in a transaction: terminal.
-        let mut completion: Completion<i32> = Completion::new();
-        let mut attempts = 0u32;
-        let error_number = codes::ER_LOCK_WAIT_TIMEOUT;
-        let (count, outcome) = run_with_retry(|| {
-            attempts += 1;
-            // A lock wait timeout is not retried in a transaction
-            // (`transaction.cpp:57-60`): the error is terminal.
-            assert!(!transaction_should_retry(error_number));
-            Err(DbError::Storage("lock wait timed out".into()))
-        });
-        completion.complete(outcome);
+        let mut task = transaction_task(codes::ER_LOCK_WAIT_TIMEOUT);
+        assert!(!transaction_should_retry(task.error_number));
+        let report = run_with_retry(&mut task, &mut |_tried: &mut RunReport| true);
 
-        assert_eq!(count, 1, "an unretriable error does not re-run");
-        assert_eq!(attempts, 1);
-        assert_eq!(completion.completions(), 1);
-        assert!(completion.outcome().unwrap().is_err());
+        assert_eq!(report.attempts, 1, "an unretriable error does not re-run");
+        assert_eq!(task.attempts, 1);
+        assert_eq!(task.completed, vec![false], "one failed completion");
+        assert_eq!(task.fatal, ["lock wait timed out".to_string()]);
     }
 
     // --- helpers -----------------------------------------------------

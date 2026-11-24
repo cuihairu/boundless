@@ -16,16 +16,20 @@
 
 pub mod account;
 pub mod auto_load_recovery;
+pub mod billing;
 pub mod buffered;
+pub mod buffered_entity_tasks;
 pub mod charset;
 pub mod config;
 pub mod error;
+pub mod lock_recovery;
 pub mod log_on;
 pub mod lookup;
 pub mod namer;
 pub mod record;
 pub mod recovery;
 pub mod retry;
+pub mod schema;
 pub mod secondary_database;
 pub mod storage;
 pub mod transaction;
