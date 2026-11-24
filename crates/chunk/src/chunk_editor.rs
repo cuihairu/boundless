@@ -26,10 +26,12 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use foundation::math::{Vector2, Vector3};
 use resources::datasection::DataSection;
 use resources::file_system::FileType;
 use resources::multi_file_system::MultiFileSystem;
 
+use crate::boundary::{Portal, PortalTarget};
 use crate::chunk::Chunk;
 
 /// The `LocaliseUTF8` keys the three save guards report. The english `.res`
@@ -283,6 +285,158 @@ impl UnsavedChunks {
         for id in identifiers {
             self.chunks.remove(id);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BW-13-03-02: portal editing
+// ---------------------------------------------------------------------------
+
+/// One editable portal record — the field surface `EditorChunkPortal`
+/// exposes to the property panel and scripts (`editor_chunk_portal.hpp:46-60`:
+/// `label`, `internal`, `permissive`, `chunk`, `points`, `uAxis`; the
+/// draw-only `triFlags` and the read-only geometry getters stay out).
+/// Points keep the reference's plane-space 2D u/v storage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortalEdit {
+    /// The portal section's own string value (`setLabel` assigns
+    /// `pPortal_->label`; `Portal::from_section` reads it back as the value).
+    pub label: String,
+    pub internal: bool,
+    pub permissive: bool,
+    /// The `<chunk>` target: a named chunk, one of the special spellings
+    /// (`heaven`/`earth`/`invasive`/`extern`) or empty for none.
+    pub chunk: String,
+    pub points: Vec<Vector2>,
+    pub u_axis: Vector3,
+}
+
+/// The child coordinates of the index'th `<portal>` — every `<boundary>`'s
+/// `<portal>` children in document order, the enumeration
+/// [`PortalEdit::read_all`] and [`apply_portal_edit`] share.
+fn portal_coordinates(visual: &DataSection, index: usize) -> Option<(usize, usize)> {
+    let mut seen = 0;
+    for b in 0..visual.count_children() {
+        let Some(boundary) = visual.open_child(b) else {
+            continue;
+        };
+        if boundary.section_name() != "boundary" {
+            continue;
+        }
+        for p in 0..boundary.count_children() {
+            let Some(portal) = boundary.open_child(p) else {
+                continue;
+            };
+            if portal.section_name() == "portal" {
+                if seen == index {
+                    return Some((b, p));
+                }
+                seen += 1;
+            }
+        }
+    }
+    None
+}
+
+impl PortalEdit {
+    /// Read every portal of a shell visual into editable records. The
+    /// boundary copies inside a chunk section are transient — `Chunk::load`
+    /// copies them out of the visual (`chunk.cpp:831-839`) and
+    /// `EditorChunkCache::edSave` deletes them before writing (`edSave`'s
+    /// `deleteSections("boundary")`) — so the visual is the only durable
+    /// home a portal edit has.
+    pub fn read_all(visual: &DataSection) -> Vec<PortalEdit> {
+        let mut out = Vec::new();
+        for b in 0..visual.count_children() {
+            let Some(boundary) = visual.open_child(b) else {
+                continue;
+            };
+            if boundary.section_name() != "boundary" {
+                continue;
+            }
+            for p in 0..boundary.count_children() {
+                let Some(portal) = boundary.open_child(p) else {
+                    continue;
+                };
+                if portal.section_name() != "portal" {
+                    continue;
+                }
+                out.push(Self::from_section(portal));
+            }
+        }
+        out
+    }
+
+    /// The parse the record's fields mirror (`Portal::from_section`,
+    /// `chunk_boundary.cpp:358-475`).
+    fn from_section(portal: &DataSection) -> PortalEdit {
+        let mut points = Vec::new();
+        for p in 0..portal.count_children() {
+            if let Some(child) = portal.open_child(p)
+                && child.section_name() == "point"
+            {
+                let v = child.as_vector3(Vector3::ZERO);
+                points.push(Vector2::new(v.x, v.y));
+            }
+        }
+        PortalEdit {
+            label: portal.as_string().to_string(),
+            internal: portal
+                .find_child("internal")
+                .is_some_and(|s| s.as_bool(false)),
+            permissive: !portal
+                .find_child("permissive")
+                .is_some_and(|s| !s.as_bool(true)),
+            chunk: portal.read_string("chunk", ""),
+            points,
+            u_axis: portal.read_vector3("uAxis", Vector3::ZERO),
+        }
+    }
+}
+
+/// Apply an edit to the index'th portal of a shell visual — the write side
+/// of `EditorChunkPortal`'s setters: `setLabel` reassigns the label, the
+/// flag/target/geometry setters land in the portal section the chunk later
+/// re-reads on load. The `<point>` children are rewritten in place. Returns
+/// false when there is no portal at `index`.
+pub fn apply_portal_edit(visual: &mut DataSection, index: usize, edit: &PortalEdit) -> bool {
+    let Some((boundary_at, portal_at)) = portal_coordinates(visual, index) else {
+        return false;
+    };
+    let Some(boundary) = visual.child_mut(boundary_at) else {
+        return false;
+    };
+    let Some(portal) = boundary.child_mut(portal_at) else {
+        return false;
+    };
+    portal.set_string(&edit.label);
+    portal.write_bool("internal", edit.internal);
+    portal.write_bool("permissive", edit.permissive);
+    portal.write_string("chunk", &edit.chunk);
+    portal.write_vector3("uAxis", edit.u_axis);
+    while portal.del_child("point") {}
+    for point in &edit.points {
+        let child = portal.add_child("point");
+        child.set_vector3(Vector3::new(point.x, point.y, 0.0));
+    }
+    true
+}
+
+/// `EditorChunkPortal::getX/getY/getZ`/`centre`
+/// (`editor_chunk_portal.cpp:1041-1100`): the world-space centre is the
+/// local centre through the owning chunk's transform.
+pub fn portal_world_centre(chunk: &Chunk, portal: &Portal) -> Vector3 {
+    chunk.transform.apply_point(&portal.lcentre)
+}
+
+/// `EditorChunkPortal::getExtern`/`getInvasive`
+/// (`editor_chunk_portal.cpp:968-995`): the string spelling the property
+/// panel shows.
+pub fn portal_extern(portal: &Portal) -> &'static str {
+    if matches!(portal.target, PortalTarget::Extern) {
+        "True"
+    } else {
+        "False"
     }
 }
 
@@ -775,5 +929,252 @@ mod tests {
         // The save path branches on outside-ness; pin the predicate used.
         assert!(is_outside_chunk("00010000o"));
         assert!(!is_outside_chunk("00010000i"));
+    }
+
+    // ---- BW-13-03-02: chunk and portal editing ----
+
+    /// A shell visual for an inside chunk: four wall boundaries, the +x
+    /// wall carrying one portal to `portal_chunk`. The label is the
+    /// portal's own string value, exactly how `Portal::from_section` and
+    /// `setLabel` treat it.
+    fn visual_xml(portal_chunk: &str, label: &str) -> String {
+        format!(
+            r#"
+            <shell_a.visual>
+                <boundary><normal>-1 0 0</normal><d>0</d></boundary>
+                <boundary><normal>1 0 0</normal><d>10</d>
+                    <portal>
+                        {label}
+                        <chunk>{portal_chunk}</chunk>
+                        <uAxis>0 1 0</uAxis>
+                        <point>0 0 0</point>
+                        <point>10 0 0</point>
+                        <point>10 10 0</point>
+                        <point>0 10 0</point>
+                    </portal>
+                </boundary>
+                <boundary><normal>0 -1 0</normal><d>0</d></boundary>
+                <boundary><normal>0 1 0</normal><d>10</d></boundary>
+            </shell_a.visual>"#
+        )
+    }
+
+    fn chunk_xml() -> &'static str {
+        r#"
+            <00000000i.chunk>
+                <transform>
+                    <row0>1 0 0</row0>
+                    <row1>0 1 0</row1>
+                    <row2>0 0 1</row2>
+                    <row3>5 10 15</row3>
+                </transform>
+                <shell><resource>shell_a.model</resource></shell>
+            </00000000i.chunk>"#
+    }
+
+    fn resolver(visual: &DataSection) -> impl Fn(&str) -> Option<DataSection> + '_ {
+        move |name: &str| {
+            if name == "shell_a.visual" {
+                Some(visual.clone())
+            } else {
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn portal_edit_round_trips_through_the_visual() {
+        let mut visual =
+            datasection::parse("shell_a.visual", visual_xml("00000001i", "door").as_bytes())
+                .unwrap();
+        // Only the shell visual resolves; anything else is a miss.
+        assert!(resolver(&visual)("nope.visual").is_none());
+        let edits = PortalEdit::read_all(&visual);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].label, "door");
+        assert!(!edits[0].internal);
+        assert!(edits[0].permissive);
+        assert_eq!(edits[0].chunk, "00000001i");
+        assert_eq!(edits[0].u_axis, Vector3::new(0.0, 1.0, 0.0));
+        assert_eq!(edits[0].points.len(), 4);
+
+        // The edit: relabel, forbid passage, shrink the opening.
+        let edit = PortalEdit {
+            label: "doorway".to_string(),
+            internal: false,
+            permissive: false,
+            chunk: "00000002i".to_string(),
+            points: vec![
+                Vector2::new(2.0, 0.0),
+                Vector2::new(8.0, 0.0),
+                Vector2::new(8.0, 6.0),
+                Vector2::new(2.0, 6.0),
+            ],
+            u_axis: edits[0].u_axis,
+        };
+        assert!(apply_portal_edit(&mut visual, 0, &edit));
+        let edits = PortalEdit::read_all(&visual);
+        assert_eq!(edits[0].label, "doorway");
+        assert!(!edits[0].permissive);
+        assert_eq!(edits[0].chunk, "00000002i");
+        assert_eq!(edits[0].points.len(), 4);
+        assert_eq!(edits[0].points[0], Vector2::new(2.0, 0.0));
+
+        // The re-derived portal on load picks up the target and the moved
+        // centre (the u/v average through the plane basis).
+        let boundaries = crate::boundary::create_boundaries_from_shell(
+            &datasection::parse("chunk", chunk_xml().as_bytes()).unwrap(),
+            &resolver(&visual),
+        );
+        let moved = boundaries[1].unbound_portals[0].clone();
+        assert_eq!(moved.target, PortalTarget::Chunk("00000002i".into()));
+        assert_eq!(moved.lcentre, Vector3::new(10.0, 5.0, 3.0));
+
+        // Out-of-range edits are refused.
+        let mut scratch = visual.clone();
+        assert!(!apply_portal_edit(&mut scratch, 1, &edit));
+    }
+
+    #[test]
+    fn internal_flag_edit_moves_a_boundary_out_of_bounds() {
+        let visual =
+            datasection::parse("shell_a.visual", visual_xml("00000001i", "door").as_bytes())
+                .unwrap();
+        let resolve = resolver(&visual);
+
+        // Baseline adjacency: four boundaries, the portal wall is a joint
+        // and a bound (non-internal portal).
+        let section = datasection::parse("chunk", chunk_xml().as_bytes()).unwrap();
+        let (boundaries, joints, bounds, good) =
+            crate::boundary::form_boundaries("00000000i", &section, &identity_mapping(), &resolve);
+        assert!(good);
+        assert_eq!(boundaries.len(), 4);
+        assert_eq!(joints, vec![1]);
+        assert_eq!(bounds, vec![0, 1, 2, 3]);
+
+        // The edit: mark the portal wall internal — still a joint, no
+        // longer a bound (chunk.cpp's convexity rule: only non-internal
+        // first portals make a boundary a bound).
+        let mut edited_visual = visual.clone();
+        let mut edit = PortalEdit::read_all(&edited_visual).remove(0);
+        edit.internal = true;
+        assert!(apply_portal_edit(&mut edited_visual, 0, &edit));
+        let resolve = resolver(&edited_visual);
+        let (_, joints, bounds, _) =
+            crate::boundary::form_boundaries("00000000i", &section, &identity_mapping(), &resolve);
+        assert_eq!(joints, vec![1]);
+        assert_eq!(
+            bounds,
+            vec![0, 2, 3],
+            "the internal wall left the bounds set"
+        );
+    }
+
+    #[test]
+    fn retarget_edit_moves_the_adjacency_to_the_new_neighbour() {
+        let visual =
+            datasection::parse("shell_a.visual", visual_xml("00000001i", "door").as_bytes())
+                .unwrap();
+        let resolve = resolver(&visual);
+        let section = datasection::parse("chunk", chunk_xml().as_bytes()).unwrap();
+        let (boundaries, _, _, _) =
+            crate::boundary::form_boundaries("00000000i", &section, &identity_mapping(), &resolve);
+        assert_eq!(
+            boundaries[1].unbound_portals[0].target,
+            PortalTarget::Chunk("00000001i".into())
+        );
+
+        // Retarget to the chunk across the wall.
+        let mut edited_visual = visual.clone();
+        let mut edit = PortalEdit::read_all(&edited_visual).remove(0);
+        edit.chunk = "00000009i".to_string();
+        assert!(apply_portal_edit(&mut edited_visual, 0, &edit));
+        {
+            // Scoped: the resolver's opaque type may hold drop glue, so the
+            // borrow would otherwise outlive the next mutation below.
+            let resolve = resolver(&edited_visual);
+            let (boundaries, joints, _, _) = crate::boundary::form_boundaries(
+                "00000000i",
+                &section,
+                &identity_mapping(),
+                &resolve,
+            );
+            assert_eq!(
+                joints,
+                vec![1],
+                "the wall keeps connecting through the portal"
+            );
+            assert_eq!(
+                boundaries[1].unbound_portals[0].target,
+                PortalTarget::Chunk("00000009i".into())
+            );
+        }
+
+        // Emptying the target disconnects it: the portal stays a joint
+        // candidate but carries no neighbour.
+        let mut edit = PortalEdit::read_all(&edited_visual).remove(0);
+        edit.chunk = String::new();
+        assert!(apply_portal_edit(&mut edited_visual, 0, &edit));
+        let resolve = resolver(&edited_visual);
+        let (boundaries, _, _, _) =
+            crate::boundary::form_boundaries("00000000i", &section, &identity_mapping(), &resolve);
+        assert_eq!(
+            boundaries[1].unbound_portals[0].target,
+            PortalTarget::Nothing
+        );
+    }
+
+    #[test]
+    fn saving_a_chunk_writes_no_boundary_sections() {
+        // `EditorChunkPortal::edSave` is a no-op ("portals are saved with
+        // the chunk") and edSave deletes the boundary copies outright:
+        // they are transient runtime copies of the shell visual's
+        // boundaries (chunk.cpp:831-839).
+        let (_root, file_system) = fixture("portalsave");
+        let mapping = identity_mapping();
+        let xml = r#"
+            <00000000i.chunk>
+                <transform><row3>0 0 0</row3></transform>
+                <shell><resource>shell_a.model</resource></shell>
+                <boundary><normal>1 0 0</normal><d>5</d>
+                    <portal><chunk>00000001i</chunk><uAxis>0 1 0</uAxis></portal>
+                </boundary>
+            </00000000i.chunk>"#;
+        write_xml(&file_system, "space/00000000i.chunk", xml);
+        let (chunk, mut section) = open_chunk(&file_system, &mapping, "00000000i");
+        assert!(
+            editing_cache()
+                .ed_save(&chunk, Some(&mut section), &file_system)
+                .is_ok()
+        );
+        let bytes = file_system.read_file("space/00000000i.chunk").unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!text.contains("<boundary>"));
+        assert!(text.contains("<shell>"), "the rest of the chunk survives");
+    }
+
+    #[test]
+    fn portal_world_centre_and_extern_face() {
+        let visual =
+            datasection::parse("shell_a.visual", visual_xml("00000001i", "door").as_bytes())
+                .unwrap();
+        let resolve = resolver(&visual);
+        let section = datasection::parse("chunk", chunk_xml().as_bytes()).unwrap();
+        let mut chunk = Chunk::new("00000000i", &identity_mapping(), &Matrix::identity());
+        chunk.load(&section, &Matrix::identity(), &resolve);
+        let (boundaries, _, _, _) =
+            crate::boundary::form_boundaries("00000000i", &section, &identity_mapping(), &resolve);
+        let portal = &boundaries[1].unbound_portals[0];
+
+        // lcentre (10, 5, 5) through the chunk transform (5, 10, 15).
+        assert_eq!(
+            portal_world_centre(&chunk, portal),
+            Vector3::new(15.0, 15.0, 20.0)
+        );
+        // The property-panel spelling of the extern face.
+        assert_eq!(portal_extern(portal), "False");
+        let mut ext = portal.clone();
+        ext.target = PortalTarget::Extern;
+        assert_eq!(portal_extern(&ext), "True");
     }
 }
