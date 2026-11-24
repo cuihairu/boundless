@@ -20,6 +20,9 @@
 //! BW-10-04-06/07 add the navigator faces on the same truth: the
 //! findPath probes (FP) and the maxSearchDistance sweep (DOK/DPNONE, plus
 //! DCACHE — a changed limit on one navigator).
+//!
+//! BW-10-04-08 adds the cache lifecycle (EOK/ENONE/ECLEAR, then EHDR/EWP
+//! decoding the rebuilt-B resource for E10).
 
 use foundation::math::Vector3;
 use std::rc::Rc;
@@ -883,4 +886,163 @@ fn a_changed_limit_on_the_same_navigator_always_researches() {
     // DCACHENONE 3 0.3000.
     let (found, _) = answer(0.3);
     assert!(!found, "DCACHENONE 3");
+}
+
+/// The E10 variant set: chunk B rebuilt without the z = 1/2 split — one
+/// waypoint over the whole strip, the fixture's `EHDR`/`EWP` lines
+/// (version 0, girth 0.6, one waypoint, four chunk-boundary edges, centre
+/// (0.5, 0.5)).
+fn variant_b_bytes() -> Vec<u8> {
+    let mut b = Vec::new();
+    let put_f = |b: &mut Vec<u8>, v: f32| b.extend_from_slice(&v.to_le_bytes());
+    let put_i = |b: &mut Vec<u8>, v: i32| b.extend_from_slice(&v.to_le_bytes());
+    let third = 1.0f32 / 3.0;
+    let two_thirds = 2.0f32 / 3.0;
+    put_i(&mut b, 0);
+    put_f(&mut b, 0.6);
+    put_i(&mut b, 1);
+    put_i(&mut b, 4);
+    put_f(&mut b, 0.2);
+    put_f(&mut b, 0.6);
+    put_i(&mut b, 4);
+    for (x, z) in [
+        (third, 0.0),
+        (third, 1.0),
+        (two_thirds, 1.0),
+        (two_thirds, 0.0),
+    ] {
+        put_f(&mut b, x);
+        put_f(&mut b, z);
+        put_i(&mut b, 65535); // no neighbour
+    }
+    b
+}
+
+/// The `EOK`/`ENONE`/`ECLEAR` lines: the cache lifecycle on ONE
+/// `Navigator` — serve, invalidate, re-path. What the truth pins:
+/// - E2 serves at 0.25 although a fresh search refuses (`DPNONE BB
+///   0.2500`) — cache hits skip the maxSearchDistance filter entirely;
+/// - E3 fails right after `clearCachedWayPath()` — the public
+///   invalidation face forces a fresh (failing) search;
+/// - E5 serves with a different dst point on the same waypoint —
+///   `waypointsEqual` keys on set identity + waypoint index only, so
+///   points don't key the cache and next is the new dst itself;
+/// - E6 re-paths when the destination moves to another waypoint —
+///   `matches` refuses the changed destination;
+/// - E8 fails the exact query E2 answered OK — the cross-set E7 wiped
+///   both caches in its shell-bypass arm, so a portal-crossing query
+///   invalidates the cached way path;
+/// - E10 succeeds at 0.25 where the old geometry refused: the rebuilt B
+///   is a different set object, the stale cached states never match (set
+///   pointer identity), and the search re-runs over the new resource —
+///   next names waypoint 0 on the variant set (a served-stale answer
+///   would name world 1's B).
+#[test]
+fn the_cache_lifecycle_serves_invalidates_and_repaths() {
+    let (sets, _) = wired_world();
+    let a = sets[0].clone();
+    let b = sets[1].clone();
+    let c = sets[2].clone();
+
+    let navigator = Navigator::default();
+    let answer = |src: &NavLoc, dst: &NavLoc, limit: f32| {
+        let mut next = NavLoc::new();
+        let mut passed_activated_portal = false;
+        let found = navigator.find_path(
+            src,
+            dst,
+            limit,
+            false,
+            &mut next,
+            &mut passed_activated_portal,
+            CacheState::ReadWriteCache,
+        );
+        (found, next, passed_activated_portal)
+    };
+
+    let bb_src = loc(&b, 0, 0.5, 0.41, 0.25);
+    let bb_dst = loc(&b, 1, 0.5, 0.41, 0.75);
+
+    // EOK E1 -1.0000: the way path lands in the cache.
+    let (found, next, _) = answer(&bb_src, &bb_dst, -1.0);
+    assert!(found, "E1");
+    assert!(point_near(next.point(), 0.5, 0.41, 0.75), "E1");
+    assert_eq!(next.waypoint(), 1, "E1");
+
+    // EOK E2 0.2500: the cache serves — a fresh search would refuse
+    // (DPNONE BB 0.2500 in the D sweep).
+    let (found, next, _) = answer(&bb_src, &bb_dst, 0.25);
+    assert!(found, "E2: the cached path ignores the limit");
+    assert!(point_near(next.point(), 0.5, 0.41, 0.75), "E2");
+
+    // ECLEAR + ENONE E3 0.2500: the public invalidation face.
+    navigator.clear_cached_way_path();
+    let (found, next, _) = answer(&bb_src, &bb_dst, 0.25);
+    assert!(!found, "E3: clearCachedWayPath re-searches");
+    assert!(
+        next.point().y == 0.0,
+        "E3: the untouched next stays invalid"
+    );
+
+    // EOK E4 -1.0000: searched and cached again.
+    let (found, _, _) = answer(&bb_src, &bb_dst, -1.0);
+    assert!(found, "E4");
+
+    // EOK E5 0.2500: same set + waypoint, new point — the cache serves
+    // and next is the new dst itself (z 0.7, not the cached 0.75).
+    let e5_dst = loc(&b, 1, 0.5, 0.41, 0.7);
+    let (found, next, _) = answer(&bb_src, &e5_dst, 0.25);
+    assert!(found, "E5");
+    assert!(point_near(next.point(), 0.5, 0.41, 0.7), "E5");
+    assert_eq!(next.waypoint(), 1, "E5");
+
+    // EOK E6 -1.0000: the destination moved into wp0 — matches refuses
+    // the changed destination and the fresh search re-paths onto it.
+    let e6_dst = loc(&b, 0, 0.5, 0.41, 0.3);
+    let (found, next, _) = answer(&bb_src, &e6_dst, -1.0);
+    assert!(found, "E6");
+    assert!(point_near(next.point(), 0.5, 0.41, 0.3), "E6");
+    assert_eq!(next.waypoint(), 0, "E6");
+
+    // EOK E7 -1.0000: the AC cross-set query — its shell-bypass arm
+    // wipes BOTH caches before re-searching.
+    let ac_src = loc(&a, 0, 0.15, 0.41, 0.4);
+    let ac_dst = loc(&c, 0, 0.85, 0.41, 0.5);
+    let (found, next, act) = answer(&ac_src, &ac_dst, -1.0);
+    assert!(found, "E7");
+    assert!(point_near(next.point(), 1.0 / 3.0, 0.6, 0.426190), "E7");
+    assert!(!act, "E7: the act flag");
+
+    // ENONE E8 0.2500: the portal-crossing query invalidated the way
+    // path cache — the very query E2 answered OK.
+    let (found, next, _) = answer(&bb_src, &bb_dst, 0.25);
+    assert!(!found, "E8: the cross-set query wiped the cache");
+    assert!(
+        next.point().y == 0.0,
+        "E8: the untouched next stays invalid"
+    );
+
+    // EOK E9 -1.0000: re-prime, the way path is back in the cache.
+    let (found, _, _) = answer(&bb_src, &bb_dst, -1.0);
+    assert!(found, "E9");
+
+    // EOK E10 0.2500: the same BB coordinates over the rebuilt resource.
+    let variant = Rc::new(
+        parse_world_navmesh(&variant_b_bytes())
+            .expect("the variant decodes")
+            .remove(0),
+    );
+    let v_src = loc(&variant, 0, 0.5, 0.41, 0.25);
+    let v_dst = loc(&variant, 0, 0.5, 0.41, 0.75);
+    let (found, next, _) = answer(&v_src, &v_dst, 0.25);
+    assert!(
+        found,
+        "E10: the stale cache refuses, the new resource answers"
+    );
+    assert!(point_near(next.point(), 0.5, 0.41, 0.75), "E10");
+    assert_eq!(next.waypoint(), 0, "E10: the variant's single waypoint");
+    assert!(
+        Rc::ptr_eq(next.p_set().unwrap(), &variant),
+        "E10: next names the variant set — a served-stale answer would name world 1's B"
+    );
 }

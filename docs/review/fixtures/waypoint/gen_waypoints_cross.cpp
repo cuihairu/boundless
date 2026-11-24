@@ -34,6 +34,11 @@
 //   DCACHEOK/DCACHENONE                   a changed limit on one Navigator
 //                                         (the shell-boundary bypass makes
 //                                         every call re-search)
+//   ECLEAR/EOK/ENONE                      the cache lifecycle on ONE
+//                                         Navigator: serve, invalidate,
+//                                         re-path (E1-E8), then the same
+//                                         query over a rebuilt resource
+//                                         (EHDR/EWP decode it, E10)
 
 #include <cmath>
 #include <cstdio>
@@ -380,11 +385,13 @@ int main()
             pWay[s]->bind();
         }
 
-        // set identity helper: pointer -> index
-        ChunkWaypointSet* wayPtr[3];
+        // set identity helper: pointer -> index (slot 3 fills in with the
+        // rebuilt-B resource at the E section)
+        ChunkWaypointSet* wayPtr[4];
         for (int s = 0; s < 3; ++s) wayPtr[s] = pWay[s].get();
+        wayPtr[3] = NULL;
         auto setIdxOf = [&](ChunkWaypointSet* p) -> int {
-            for (int s = 0; s < 3; ++s)
+            for (int s = 0; s < 4; ++s)
                 if (p == wayPtr[s]) return s;
             return -1;
         };
@@ -759,6 +766,195 @@ int main()
                 {
                     printf("DCACHENONE %d %.4f\n", int(m), limits[m]);
                 }
+            }
+        }
+
+        // ---- the cache lifecycle on one Navigator: serve, invalidate,
+        // re-path ----
+        // Rows E1-E8 share ONE Navigator; everything but E7 is the same-set
+        // BB query (wp0 (0.5,0.4,0.25) -> wp1 (0.5,0.4,0.75), fresh-search
+        // threshold 0.3140|0.3141 per the D sweep above):
+        //   E1 -1    OK    the way path lands in the cache
+        //   E2 0.25  OK    the cache serves; a fresh search would refuse
+        //                  (DPNONE BB 0.2500 above) — cache hits skip the
+        //                  maxSearchDistance filter entirely
+        //   E3 0.25  NONE  after clearCachedWayPath(): the public
+        //                  invalidation face forces a fresh failing search
+        //   E4 -1    OK    searched and cached again
+        //   E5 0.25  OK    dst (0.5,0.4,7/10): same set + waypoint, new
+        //                  point — waypointsEqual keys on set identity and
+        //                  waypoint index only, so the cache serves and
+        //                  next is the new dst itself
+        //   E6 -1    OK    dst (0.5,0.4,0.3) lands in wp0: matches()
+        //                  refuses the changed destination and the fresh
+        //                  search re-paths (src waypoint == dst waypoint)
+        //   E7 -1    OK    the AC cross-set query re-searches the set path
+        //                  and its shell-bypass arm wipes BOTH caches
+        //   E8 0.25  NONE  the portal-crossing query invalidated the way
+        //                  path cache — the same query E2 answered OK
+        //   E9 -1    OK    re-prime: the way path is back in the cache
+        //   E10 0.25 OK    the resource changed under the Navigator: the
+        //                  rebuilt B (no z = 1/2 split, one waypoint) is a
+        //                  different set object, so the stale cached states
+        //                  never match (waypointsEqual compares set
+        //                  pointers) and the search re-runs over the new
+        //                  resource — the same 0.25 limit that fails the
+        //                  old geometry now succeeds, and the set column
+        //                  answers 3 (a served-stale answer would say 1)
+        Navigator eNavigator;
+        {
+            struct EProbe
+            {
+                const char* name;
+                int         srcChunk;
+                int         dstChunk;
+                Vector3     src;
+                Vector3     dst;
+                float       limit;
+            };
+            const EProbe steps[] = {
+                { "E1", 1, 1, Vector3(0.5f, 0.4f, 0.25f),
+                  Vector3(0.5f, 0.4f, 0.75f), -1.f },
+                { "E2", 1, 1, Vector3(0.5f, 0.4f, 0.25f),
+                  Vector3(0.5f, 0.4f, 0.75f), 0.25f },
+                { "E3", 1, 1, Vector3(0.5f, 0.4f, 0.25f),
+                  Vector3(0.5f, 0.4f, 0.75f), 0.25f },
+                { "E4", 1, 1, Vector3(0.5f, 0.4f, 0.25f),
+                  Vector3(0.5f, 0.4f, 0.75f), -1.f },
+                { "E5", 1, 1, Vector3(0.5f, 0.4f, 0.25f),
+                  Vector3(0.5f, 0.4f, 0.7f), 0.25f },
+                { "E6", 1, 1, Vector3(0.5f, 0.4f, 0.25f),
+                  Vector3(0.5f, 0.4f, 0.3f), -1.f },
+                { "E7", 0, 2, Vector3(0.15f, 0.4f, 0.4f),
+                  Vector3(0.85f, 0.4f, 0.5f), -1.f },
+                { "E8", 1, 1, Vector3(0.5f, 0.4f, 0.25f),
+                  Vector3(0.5f, 0.4f, 0.75f), 0.25f },
+                { "E9", 1, 1, Vector3(0.5f, 0.4f, 0.25f),
+                  Vector3(0.5f, 0.4f, 0.75f), -1.f },
+            };
+            for (size_t m = 0; m < sizeof(steps) / sizeof(steps[0]); ++m)
+            {
+                if (m == 2)
+                {
+                    // between E2 and E3: the public invalidation face
+                    eNavigator.clearCachedWayPath();
+                    printf("ECLEAR\n");
+                }
+                NavLoc src(pChunk[steps[m].srcChunk], steps[m].src, 0.6f);
+                NavLoc dst(pChunk[steps[m].dstChunk], steps[m].dst, 0.6f);
+                NavLoc next;
+                bool  passedActivatedPortal = false;
+                if (eNavigator.findPath(src, dst, steps[m].limit, false, next,
+                        passedActivatedPortal))
+                {
+                    printf("EOK %s %.4f %.6f %.6f %.6f %d %d %d\n",
+                           steps[m].name, steps[m].limit, next.point().x,
+                           next.point().y, next.point().z,
+                           int(next.waypoint()),
+                           setIdxOf(next.pSet().get()),
+                           passedActivatedPortal ? 1 : 0);
+                }
+                else
+                {
+                    printf("ENONE %s %.4f\n", steps[m].name, steps[m].limit);
+                }
+            }
+        }
+
+        // ---- E10: the same query over a rebuilt resource ----
+        // The variant view rebuilds chunk B un-split (one waypoint over the
+        // whole strip). asBinary runs in memory — the pinned
+        // world_navmesh_cross.bin on disk stays world 1's — the decode
+        // walks the same record layout, and the set mounts on its own
+        // chunk like the others. eNavigator keeps E1-E9's cache, whose
+        // destination still names world 1's (B, wp1).
+        {
+            CrossView varView;
+            varView.addPoly(LO, HI, 0,
+                {
+                    { 0.f,       0.f, 0, true },
+                    { 0.f,       1.f, 0, true },
+                    { 1.f / 3.f, 1.f, 0, true },
+                    { 1.f / 3.f, 0.f, 0, true },
+                });
+            varView.addPoly(LO, HI, 1,
+                {
+                    // poly B whole, CW — no z = 1/2 split
+                    { 1.f / 3.f, 0.f, 0, true },
+                    { 1.f / 3.f, 1.f, 0, true },
+                    { 2.f / 3.f, 1.f, 0, true },
+                    { 2.f / 3.f, 0.f, 0, true },
+                });
+            varView.addPoly(LO, HI, 2,
+                {
+                    { 2.f / 3.f, 0.f, 0, true },
+                    { 2.f / 3.f, 1.f, 0, true },
+                    { 1.f,       1.f, 0, true },
+                    { 1.f,       0.f, 0, true },
+                });
+            BinaryPtr varBlob = varView.asBinary(Matrix::identity, 0.f);
+            const char* vdata = varBlob->cdata();
+
+            // decode set 1 only, skipping set 0's record the way the
+            // navmeshFactory walk does
+            const char* vptr = vdata;
+            {
+                int32_t swps  = *(const int32_t*)(vptr + 8);
+                int32_t sedge = *(const int32_t*)(vptr + 12);
+                vptr += 16;
+                vptr += swps * 12;
+                vptr += sedge * 12;
+            }
+            int32_t version  = *(const int32_t*)vptr; vptr += 4;
+            float   girth    = *(const float*)vptr;   vptr += 4;
+            int32_t numWps   = *(const int32_t*)vptr; vptr += 4;
+            int32_t numEdges = *(const int32_t*)vptr; vptr += 4;
+            printf("EHDR version %d girth %.6f waypoints %d edges %d\n",
+                   version, girth, numWps, numEdges);
+
+            ChunkWaypointSetDataPtr pVarData =
+                new ChunkWaypointSetData(2 /* base: set 0 has one wp */);
+            pVarData->girth(0.6f);
+            vptr = pVarData->readWaypointSet(vptr, numWps, numEdges);
+            const ChunkWaypoints& vwps = pVarData->waypoints();
+            for (size_t i = 0; i < vwps.size(); ++i)
+            {
+                printf("EWP %d minh %.6f maxh %.6f edges %d centre %.6f %.6f\n",
+                       int(i), vwps[i].minHeight_, vwps[i].maxHeight_,
+                       int(vwps[i].edgeCount_), vwps[i].centre_.x,
+                       vwps[i].centre_.y);
+            }
+
+            // the FNF warning goes to stderr unbuffered; flush stdout so it
+            // lands on its own line instead of inside a buffered print
+            fflush(stdout);
+            Chunk* pChunkV =
+                new Chunk("chunkBV", pMapping, Matrix::identity, localBB);
+            pChunkV->load(NULL);
+            ChunkWaypointSetPtr pWayV = new ChunkWaypointSet(pVarData);
+            pWayV->chunk(pChunkV);
+            ChunkNavigator::instance(*pChunkV).add(pWayV.get());
+            // the freelist double-destruct pin, same as the world-1 sets
+            for (int pin = 0; pin < 512; ++pin)
+            {
+                pWayV->incRef();
+            }
+            wayPtr[3] = pWayV.get();
+
+            NavLoc vsrc(pChunkV, Vector3(0.5f, 0.4f, 0.25f), 0.6f);
+            NavLoc vdst(pChunkV, Vector3(0.5f, 0.4f, 0.75f), 0.6f);
+            NavLoc vnext;
+            bool   vact = false;
+            if (eNavigator.findPath(vsrc, vdst, 0.25f, false, vnext, vact))
+            {
+                printf("EOK E10 0.2500 %.6f %.6f %.6f %d %d %d\n",
+                       vnext.point().x, vnext.point().y, vnext.point().z,
+                       int(vnext.waypoint()), setIdxOf(vnext.pSet().get()),
+                       vact ? 1 : 0);
+            }
+            else
+            {
+                printf("ENONE E10 0.2500\n");
             }
         }
     }
