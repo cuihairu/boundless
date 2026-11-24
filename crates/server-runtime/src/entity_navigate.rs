@@ -26,8 +26,8 @@ use waypoint::{
 use crate::controllers::ControllerId;
 use crate::entity_dispatch::EntityId;
 use crate::movement::{
-    AccelerateToPointController, EntityState, FACING_MAX, MoveToEntityController,
-    MoveToPointController, NavigateStepController,
+    AccelerateAlongPathController, AccelerateToPointController, EntityState, FACING_MAX,
+    MoveToEntityController, MoveToPointController, NavigateStepController,
 };
 use crate::navigation_controller::{NavigationController, Navigator};
 
@@ -246,6 +246,33 @@ impl AccelerateToPointFailure {
             AccelerateToPointFailure::NotReal => "This method can only be called on a real entity.",
             // The reference's own typo.
             AccelerateToPointFailure::BadFacing => "Facing must one of the value 0, 1 or 2",
+        }
+    }
+}
+
+/// The `accelerateAlongPath` failure faces — the reference's `PyErr`
+/// results (`entity_navigate.cpp`, the accelerate faces). The checks run
+/// real → empty waypoints → facing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccelerateAlongPathFailure {
+    /// `PyExc_TypeError`.
+    NotReal,
+    /// `PyExc_TypeError` — an empty waypoint list.
+    EmptyWaypoints,
+    /// `PyExc_TypeError` — the facing int outside `0..FACING_MAX`.
+    BadFacing,
+}
+
+impl AccelerateAlongPathFailure {
+    /// The reference's error text.
+    pub fn message(&self) -> &'static str {
+        match self {
+            AccelerateAlongPathFailure::NotReal => {
+                "This method can only be called on a real entity."
+            }
+            AccelerateAlongPathFailure::EmptyWaypoints => "Waypoints must not be empty.",
+            // The reference's own typo.
+            AccelerateAlongPathFailure::BadFacing => "Facing must one of the value 0, 1 or 2",
         }
     }
 }
@@ -1121,6 +1148,51 @@ impl EntityNavigate {
             max_speed,
             facing,
             stop_at_destination,
+            hertz,
+        ))
+    }
+
+    /// `EntityNavigate::accelerateAlongPath`
+    /// (`entity_navigate.cpp:343-379`): refuse non-real entities, then
+    /// an empty waypoint list ("Waypoints must not be empty."), then the
+    /// facing int (the verbatim "must one of" typo), and hand back the
+    /// path controller. The reference asserts non-empty again inside the
+    /// controller constructor (`MF_ASSERT( !waypoints_.empty() )`) —
+    /// unreachable through this face. Intermediate waypoints are cruised
+    /// through with no callback; only the last one stops and fires
+    /// `onMove`. **No vehicle check**.
+    #[allow(clippy::too_many_arguments)]
+    pub fn accelerate_along_path(
+        &self,
+        waypoints: Vec<Vector3>,
+        acceleration: f32,
+        max_speed: f32,
+        int_facing: i32,
+        user_arg: i32,
+        controller_id: ControllerId,
+        hertz: f32,
+    ) -> Result<AccelerateAlongPathController, AccelerateAlongPathFailure> {
+        if !self.is_real {
+            return Err(AccelerateAlongPathFailure::NotReal);
+        }
+
+        if waypoints.is_empty() {
+            return Err(AccelerateAlongPathFailure::EmptyWaypoints);
+        }
+
+        let facing = if (0..FACING_MAX as i32).contains(&int_facing) {
+            int_facing as u8
+        } else {
+            return Err(AccelerateAlongPathFailure::BadFacing);
+        };
+
+        Ok(AccelerateAlongPathController::new(
+            controller_id,
+            user_arg,
+            waypoints,
+            acceleration,
+            max_speed,
+            facing,
             hertz,
         ))
     }
@@ -3425,6 +3497,99 @@ mod tests {
             )
             .expect_err("a ghost is refused");
         assert_eq!(err, AccelerateToPointFailure::NotReal);
+        assert_eq!(
+            err.message(),
+            "This method can only be called on a real entity."
+        );
+    }
+
+    #[test]
+    fn accelerate_along_path_cruises_corners_and_stops_at_the_end() {
+        let navigate = real_entity();
+        let mut controller = navigate
+            .accelerate_along_path(
+                vec![
+                    Vector3::new(1.0, 0.0, 0.0),
+                    Vector3::new(2.0, 0.0, 0.0),
+                    Vector3::new(5.0, 0.0, 0.0),
+                ],
+                2.0,
+                2.0,
+                FACING_VELOCITY as i32,
+                3,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("a real entity gets the controller");
+        assert_eq!(controller.id, 5);
+        assert_eq!(controller.user_arg, 3);
+        assert_eq!(controller.progress, 0);
+
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log = Vec::new();
+
+        let mut ticks = 0;
+        let mut corner_ticks = Vec::new();
+        let mut last_progress = 0;
+        loop {
+            ticks += 1;
+            if controller.update(&mut state, ticks, &mut log) {
+                break;
+            }
+            assert!(ticks < 400, "must arrive");
+            if controller.progress != last_progress {
+                corner_ticks.push((ticks, state.position.x, log.len()));
+                last_progress = controller.progress;
+            }
+        }
+
+        // The corners pass silently: the walk snaps through the
+        // intermediate waypoints with no callback (no braking pause —
+        // `stop=false` keeps the desired speed at the cap).
+        assert_eq!(controller.progress, 3);
+        assert_eq!(corner_ticks[0], (14, 1.0, 0));
+        assert_eq!(corner_ticks[1], (22, 2.0, 0));
+        // ...and the destination leg lands one `onMove`, snapped onto
+        // the last waypoint with the velocity settled to zero.
+        assert_eq!(state.position, Vector3::new(5.0, 0.0, 0.0));
+        assert_eq!(state.velocity, Vector3::ZERO);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].method, "onMove");
+    }
+
+    #[test]
+    fn accelerate_along_path_refuses_in_reference_order() {
+        let navigate = real_entity();
+
+        // An empty list is refused even before the facing is validated.
+        let err = navigate
+            .accelerate_along_path(Vec::new(), 2.0, 2.0, 7, 0, 5, DEFAULT_GAME_UPDATE_HERTZ)
+            .expect_err("empty waypoints are refused");
+        assert_eq!(err, AccelerateAlongPathFailure::EmptyWaypoints);
+        assert_eq!(err.message(), "Waypoints must not be empty.");
+
+        // Facing 3 on a non-empty list.
+        let err = navigate
+            .accelerate_along_path(
+                vec![Vector3::new(1.0, 0.0, 0.0)],
+                2.0,
+                2.0,
+                3,
+                0,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect_err("facing 3 is out of range");
+        assert_eq!(err, AccelerateAlongPathFailure::BadFacing);
+        assert_eq!(err.message(), "Facing must one of the value 0, 1 or 2");
+
+        // Ghost wins over everything.
+        let mut navigate = real_entity();
+        navigate.is_real = false;
+        let err = navigate
+            .accelerate_along_path(Vec::new(), 2.0, 2.0, 3, 0, 5, DEFAULT_GAME_UPDATE_HERTZ)
+            .expect_err("a ghost is refused");
+        assert_eq!(err, AccelerateAlongPathFailure::NotReal);
         assert_eq!(
             err.message(),
             "This method can only be called on a real entity."
