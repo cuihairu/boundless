@@ -72,6 +72,7 @@ pub mod topology;
 pub mod timer_controller;
 
 pub mod watcher;
+pub mod web_session;
 pub mod witness;
 // The time queue is cstdmf and lives in foundation; re-exported under the
 // historical `timers` name so `crate::timers::…` paths keep working.
