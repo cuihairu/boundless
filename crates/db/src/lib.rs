@@ -18,6 +18,7 @@ pub mod account;
 pub mod buffered;
 pub mod charset;
 pub mod config;
+pub mod consolidate_tool;
 pub mod dry_run;
 pub mod error;
 pub mod lookup;
