@@ -105,6 +105,34 @@ pub trait WebEntityQueries {
     fn web_get_player_info(&self) -> Result<PlayerInfo, WebError>;
     /// `entity.webGetGoldAndInventory()` (`Inventory.php:41`).
     fn web_get_gold_and_inventory(&self) -> Result<GoldAndInventory, WebError>;
+    /// `Avatar.webCreateAuction(array("itemSerial" => ..., "expiry" => ...,
+    /// "startBid" => ..., "buyout" => ...))`, answered with the auction
+    /// id (`Inventory.php:109`) - the auction workflow's submission leg
+    /// lives in [`crate::web_auctions`].
+    fn web_create_auction(&mut self, request: AuctionSubmission) -> Result<u64, WebError>;
+    /// `Avatar.webBidOnAuction(array("auctionID" => ..., "isBuyingOut"
+    /// => ..., "bidAmount" => ...))`, answered with a status message
+    /// (`SearchAuctions.php:68`, `:106`).
+    fn web_bid_on_auction(&mut self, request: BidSubmission) -> Result<String, WebError>;
+}
+
+/// The `webCreateAuction` arguments (`Inventory.php:109-113`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuctionSubmission {
+    pub item_serial: u64,
+    /// Seconds until the auction expires.
+    pub expiry: u64,
+    pub start_bid: u64,
+    /// `-1` when no buyout price was given (`Inventory.php:97`).
+    pub buyout: i64,
+}
+
+/// The `webBidOnAuction` arguments (`SearchAuctions.php:63-66`, `:103-105`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BidSubmission {
+    pub auction_id: u64,
+    pub is_buyout: bool,
+    pub bid_amount: u64,
 }
 
 /// One `webGetCharacterList` entry (`Characters.php:122-137` reads
@@ -116,10 +144,14 @@ pub struct CharacterSummary {
     pub char_class: String,
 }
 
-/// The `webGetPlayerInfo` reply (`Character.php:50-59`).
+/// The `webGetPlayerInfo` reply (`Character.php:50-59`); the auction
+/// pages additionally read `databaseID`
+/// (`PlayerAuctions.php:43`, `SearchAuctions.php:449`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerInfo {
     pub char_class: String,
+    /// The reply's `databaseID`.
+    pub database_id: u32,
     pub player_name: String,
     pub health: i32,
     pub max_health: i32,
@@ -153,14 +185,14 @@ pub struct GoldAndInventory {
 
 /// `Page.php:152-161` with no `additionalInfo`: the exception message
 /// lands in the session flash.
-fn add_error_msg(session: &mut WebSession, message: String) {
+pub(crate) fn add_error_msg(session: &mut WebSession, message: String) {
     let mut messages = session.take_flash(FLASH_KEY_ERR_MSGS).unwrap_or_default();
     messages.push(message);
     session.set_flash(FLASH_KEY_ERR_MSGS, messages);
 }
 
 /// `Page.php:174-177`.
-fn add_status_msg(session: &mut WebSession, message: String) {
+pub(crate) fn add_status_msg(session: &mut WebSession, message: String) {
     let mut messages = session
         .take_flash(FLASH_KEY_STATUS_MSGS)
         .unwrap_or_default();
@@ -397,6 +429,12 @@ impl ItemTypeManager {
     pub fn get(&self, id: u32) -> Option<&ItemType> {
         self.item_types.get(&id)
     }
+
+    /// The registered item type ids, ascending
+    /// (`SearchAuctions.php:134` iterates them).
+    pub fn item_type_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.item_types.keys().copied()
+    }
 }
 
 /// `Items.php:90-206`: the page-load registrations, verbatim.
@@ -621,7 +659,7 @@ impl ItemViewerInfo {
 
 /// PHP's implicit numeric-string array-key coercion for `$_REQUEST`
 /// serials (`Inventory.php:122`, `:151`).
-fn coerce_serial(raw: &str) -> Option<u64> {
+pub(crate) fn coerce_serial(raw: &str) -> Option<u64> {
     raw.parse::<u64>().ok()
 }
 
@@ -633,6 +671,10 @@ pub struct InventoryRender {
     /// One row per unlocked item, in reply order - locked rows
     /// (`lockHandle != -1`) are skipped (`Inventory.php:177-181`).
     pub rows: Vec<InventoryRow>,
+    /// The serial-keyed item map (`Inventory.php:59`), which the
+    /// auction action arm reads
+    /// (`Inventory.php:122` - see [`crate::web_auctions`]).
+    pub items: BTreeMap<u64, InventoryItem>,
     /// The optional `view_item` viewer (`Inventory.php:147-153`).
     pub viewer: Option<ItemViewerInfo>,
 }
@@ -714,6 +756,7 @@ pub fn inventory_page(
     Ok(InventoryRender {
         gold_line: format!("Gold: {}", reply.gold_pieces),
         rows,
+        items,
         viewer,
     })
 }
@@ -788,6 +831,14 @@ mod tests {
 
         fn web_get_gold_and_inventory(&self) -> Result<GoldAndInventory, WebError> {
             self.inventory.clone().map_err(WebError)
+        }
+
+        fn web_create_auction(&mut self, _request: AuctionSubmission) -> Result<u64, WebError> {
+            Ok(0)
+        }
+
+        fn web_bid_on_auction(&mut self, _request: BidSubmission) -> Result<String, WebError> {
+            Ok(String::new())
         }
     }
 
@@ -1153,6 +1204,7 @@ mod tests {
         #[allow(clippy::approx_constant)]
         PlayerInfo {
             char_class: "ranger".to_string(),
+            database_id: 42,
             player_name: "Syra".to_string(),
             health: 50,
             max_health: 100,

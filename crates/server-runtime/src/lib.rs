@@ -81,6 +81,7 @@ pub mod timer_controller;
 pub mod vision;
 
 pub mod watcher;
+pub mod web_auctions;
 pub mod web_pages;
 pub mod web_session;
 pub mod witness;
