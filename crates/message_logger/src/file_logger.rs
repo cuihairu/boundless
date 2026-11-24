@@ -71,6 +71,7 @@ pub const DEFAULT_SEGMENT_SIZE_BYTES: u32 = 100 << 20;
 /// The metadata value tags (`LogMetaData::MessageLoggerValueType`,
 /// `log_meta_data.cpp:13-19`), streamed as four-byte `int`s.
 pub(crate) mod mlvt {
+
     pub const JSON_STRING: u32 = b'j' as u32;
     pub const INT: u32 = b'i' as u32;
     pub const UNSIGNED_INT: u32 = b'u' as u32;
@@ -140,6 +141,7 @@ pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
 }
+
 
 /// The current wall clock as epoch seconds, for live suffixes.
 fn now_epoch_secs() -> i64 {

@@ -64,6 +64,9 @@ db = { path = "crates/db" }
 db-postgres = { path = "crates/db-postgres" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
+# The watcher path tree (BW-12-01); load's bots command callables are its
+# first consumer (BW-17-01-06).
+watcher = { path = "crates/watcher" }
 server-runtime = { path = "crates/server-runtime" }
 client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
 # load = { path = "crates/load" }  # re-add with first consumer

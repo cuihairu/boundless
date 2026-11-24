@@ -23,6 +23,7 @@ md-5 = { workspace = true }
 # client reader declares.
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 
+
 # mercury: the dispatcher's network pass is `mercury::poller::EventPoller`
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }

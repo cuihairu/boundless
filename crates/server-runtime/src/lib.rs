@@ -48,6 +48,7 @@ pub mod real_entity;
 pub mod range_list;
 pub mod relogon;
 pub mod replay_recording;
+
 pub mod replay_write;
 pub mod reviver;
 pub mod script_timers;
@@ -74,6 +75,7 @@ pub mod topology;
 pub mod timer_controller;
 
 pub mod watcher;
+pub mod web_session;
 pub mod witness;
 // The time queue is cstdmf and lives in foundation; re-exported under the
 // historical `timers` name so `crate::timers::…` paths keep working.

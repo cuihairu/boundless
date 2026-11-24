@@ -1000,6 +1000,8 @@ version = "0.1.0"
 dependencies = [
  "foundation",
  "resources",
+ "serde_json",
+ "watcher",
 ]
 
 [[package]]
@@ -1909,10 +1911,14 @@ dependencies = [
  "foundation",
  "libc",
 <<<<<<< HEAD
+<<<<<<< HEAD
  "md-5 0.10.6",
 =======
  "md-5",
 >>>>>>> origin/lane/bw15-platform
+=======
+ "md-5 0.10.6",
+>>>>>>> origin/lane/bw16-18
  "mercury",
  "platform",
  "resources",

@@ -5,11 +5,16 @@
 //! the fixed input a run is driven by (seed, account pool, concurrency shape)
 //! and the metrics the results are aggregated into.
 
+pub mod beeline;
 pub mod bot;
 pub mod dense;
 pub mod executor;
 pub mod fleet;
+
+pub mod bot_watchers;
 pub mod hurricane;
+pub mod patrol;
+pub mod report;
 pub mod scenario;
 pub mod steady;
 
