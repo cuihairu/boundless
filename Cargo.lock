@@ -587,6 +587,7 @@ dependencies = [
  "db",
  "entitydef",
  "foundation",
+ "mercury",
  "postgres",
  "serde_json",
 ]

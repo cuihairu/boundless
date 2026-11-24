@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use db::{EntityKey, EntityRecord};
-use db_postgres::{EntitySchema, PostgresStorage, upgrade};
+use db_postgres::{upgrade, EntitySchema, PostgresStorage};
 use entitydef::value::PropertyValue;
 
 static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -107,9 +107,9 @@ fn an_old_sample_upgrades_and_stays_readable() {
         storage.put_entity(&old_schema(), &old_record).unwrap();
 
         // The update plan and its application.
-        let plan = upgrade::plan_schema_update(storage.client_mut(), &new_schema()).unwrap();
+        let plan = upgrade::plan_schema_update(&mut storage.client_mut(), &new_schema()).unwrap();
         assert_eq!(plan.len(), 3, "three new columns expected: {plan:?}");
-        upgrade::apply_schema_update(storage.client_mut(), &plan).unwrap();
+        upgrade::apply_schema_update(&mut storage.client_mut(), &plan).unwrap();
 
         // The old row reads back under the new schema: its own name in
         // the old column, the neutral unset values in the new ones.
@@ -124,7 +124,7 @@ fn an_old_sample_upgrades_and_stays_readable() {
 
         // The plan is now empty: the table is current.
         assert!(
-            upgrade::plan_schema_update(storage.client_mut(), &new_schema())
+            upgrade::plan_schema_update(&mut storage.client_mut(), &new_schema())
                 .unwrap()
                 .is_empty()
         );
@@ -147,12 +147,10 @@ fn an_old_sample_upgrades_and_stays_readable() {
         assert_eq!(back, new_record);
 
         // And the old sample is still there, alongside it.
-        assert!(
-            storage
-                .get_entity(&new_schema(), &account_key(1))
-                .unwrap()
-                .is_some()
-        );
+        assert!(storage
+            .get_entity(&new_schema(), &account_key(1))
+            .unwrap()
+            .is_some());
     });
 }
 
@@ -160,14 +158,14 @@ fn an_old_sample_upgrades_and_stays_readable() {
 fn a_missing_table_plans_a_create() {
     with_fresh_db(|storage| {
         // The table does not exist at all: the plan is the create.
-        let plan = upgrade::plan_schema_update(storage.client_mut(), &new_schema()).unwrap();
+        let plan = upgrade::plan_schema_update(&mut storage.client_mut(), &new_schema()).unwrap();
         assert_eq!(plan.len(), 1);
         assert!(plan[0].starts_with("CREATE TABLE IF NOT EXISTS \"tbl_Account\""));
-        upgrade::apply_schema_update(storage.client_mut(), &plan).unwrap();
+        upgrade::apply_schema_update(&mut storage.client_mut(), &plan).unwrap();
 
         // After the create the plan is empty.
         assert!(
-            upgrade::plan_schema_update(storage.client_mut(), &new_schema())
+            upgrade::plan_schema_update(&mut storage.client_mut(), &new_schema())
                 .unwrap()
                 .is_empty()
         );
@@ -178,7 +176,7 @@ fn a_missing_table_plans_a_create() {
 fn an_unchanged_table_plans_nothing() {
     with_fresh_db(|storage| {
         storage.create_entity_table(&new_schema()).unwrap();
-        let plan = upgrade::plan_schema_update(storage.client_mut(), &new_schema()).unwrap();
+        let plan = upgrade::plan_schema_update(&mut storage.client_mut(), &new_schema()).unwrap();
         assert!(plan.is_empty());
     });
 }
