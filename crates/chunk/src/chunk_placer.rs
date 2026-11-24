@@ -384,35 +384,13 @@ impl ItemFactory for SectionItemFactory {
 }
 
 // -----------------------------------------------------------------------------
-// Undo records (the ops the placement path pushes; the UndoRedo engine is
-// BW-13-03-05)
-// -----------------------------------------------------------------------------
-
-/// The two operations the placement/transform path pushes.
-#[derive(Debug, Clone, PartialEq)]
-pub enum UndoOp {
-    /// `ChunkItemExistenceOperation` (`chunk_item_placer.hpp:12-39`):
-    /// creation pushes `old_chunk = None`, the one-per-chunk replacement
-    /// pushes the replaced item's chunk.
-    Existence {
-        item: usize,
-        old_chunk: Option<String>,
-    },
-    /// `ChunkItemMatrixOperation` (`item_properties.cpp:80-164`).
-    Matrix {
-        item: usize,
-        old_chunk: Option<String>,
-        old_pose: Matrix,
-    },
-}
-
-// -----------------------------------------------------------------------------
 // EditorWorld (the WorldManager/ChunkSpace state the faces share)
 // -----------------------------------------------------------------------------
 
 /// The headless editor world: the chunk space, the live items, the selection
-/// state and the trace lists the acceptance compares.
-#[derive(Debug, Clone)]
+/// state and the trace lists the acceptance compares. (`Clone` is gone: the
+/// undo machinery owns non-cloneable operation boxes.)
+#[derive(Debug)]
 pub struct EditorWorld {
     pub space: ChunkSpace,
     pub items: Vec<EditorItem>,
@@ -442,8 +420,9 @@ pub struct EditorWorld {
     pub errors: Vec<String>,
     /// `WorldManager::changedChunk`'s set.
     pub changed_chunks: BTreeSet<String>,
-    pub undo_ops: Vec<UndoOp>,
-    /// `UndoRedo::barrier` names in order.
+    /// The `UndoRedo` engine (`tools/common/undoredo.cpp`, BW-13-03-05).
+    pub undoredo: crate::undoredo::UndoRedo,
+    /// `UndoRedo::barrier` names in order (every call, skipped ones too).
     pub undo_barriers: Vec<String>,
 }
 
@@ -465,7 +444,7 @@ impl EditorWorld {
             commentary: Vec::new(),
             errors: Vec::new(),
             changed_chunks: BTreeSet::new(),
-            undo_ops: Vec::new(),
+            undoredo: crate::undoredo::UndoRedo::new(),
             undo_barriers: Vec::new(),
         }
     }
@@ -711,8 +690,7 @@ impl EditorWorld {
             && let Some(&first) = items.first()
         {
             let description = self.items[first].description.clone();
-            self.undo_barriers
-                .push(format!("GIZMO/UNDO/MOVE_PROPERTY {}", description));
+            self.barrier(format!("GIZMO/UNDO/MOVE_PROPERTY {}", description), false);
         }
     }
 
@@ -855,10 +833,10 @@ impl EditorWorld {
             // ERROR_MSG + an existence undo for the replaced item, then retry
             let error = result.error.clone();
             self.add_error(error);
-            self.undo_ops.push(UndoOp::Existence {
+            self.undo_add(Box::new(crate::undoredo::ExistenceOperation {
                 item: first,
                 old_chunk: Some(chunk_id.clone()),
-            });
+            }));
             self.remove_from_selected(first);
             result = self.load_item(factory, &chunk_id, section);
         }
@@ -1047,17 +1025,20 @@ impl EditorWorld {
         }
 
         // ok, everyone's happy then. so add an undo which deletes it
-        self.undo_ops.push(UndoOp::Existence {
+        self.undo_add(Box::new(crate::undoredo::ExistenceOperation {
             item,
             old_chunk: None,
-        });
+        }));
 
         self.set_selection(&[item], true);
         let description = self.items[item].description.clone();
-        self.undo_barriers.push(format!(
-            "WORLDEDITOR/WORLDEDITOR/CHUNK/CHUNK_ITEM_PLACER/CREATE_ASSET:{}",
-            description
-        ));
+        self.barrier(
+            format!(
+                "WORLDEDITOR/WORLDEDITOR/CHUNK/CHUNK_ITEM_PLACER/CREATE_ASSET:{}",
+                description
+            ),
+            false,
+        );
 
         // and that's it then. return a group that contains it
         CreateOutcome::Placed { item }
@@ -1227,20 +1208,19 @@ impl ChunkItemMatrix {
         }
 
         // add the undo operation for it
-        world.undo_ops.push(UndoOp::Matrix {
+        world.undo_add(Box::new(crate::undoredo::MatrixOperation {
             item: self.item,
             old_chunk: self.orig_chunk.clone(),
             old_pose: self.orig_pose,
-        });
+            replaced: None,
+        }));
         world.items[self.item].post_modifies += 1;
 
         world.needs_defer_selection_add_undo_barrier(add_undo_barrier);
         if add_undo_barrier && !world.has_pending_selections() {
             // set the barrier with a meaningful name
             let description = world.items[self.item].description.clone();
-            world
-                .undo_barriers
-                .push(format!("GIZMO/UNDO/MOVE_PROPERTY {}", description));
+            world.barrier(format!("GIZMO/UNDO/MOVE_PROPERTY {}", description), false);
         }
         ok_to_commit
     }
@@ -1341,7 +1321,14 @@ mod tests {
     use crate::boundary::{ChunkBoundary, Portal, PortalTarget};
     use crate::chunk::Chunk;
     use crate::mapping::{GeometryMapping, GridBounds};
+    use crate::undoredo::{ExistenceOperation, MatrixOperation};
     use foundation::math::PlaneEq;
+
+    /// The most recently closed undo barrier (`undo_list` back minus the
+    /// always-open seed/next entry).
+    fn closed_barrier(world: &EditorWorld) -> &crate::undoredo::Barrier {
+        &world.undoredo.undo_list[world.undoredo.undo_list.len() - 2]
+    }
 
     fn chunk_portal(target: &str) -> Portal {
         Portal {
@@ -1498,13 +1485,15 @@ mod tests {
         assert_eq!(world.items[item].chunk_binds, 1);
         assert_eq!(world.items[item].post_creates, 1);
         assert!(world.changed_chunks.contains("00010000o"));
-        assert_eq!(
-            world.undo_ops,
-            vec![UndoOp::Existence {
-                item,
-                old_chunk: None
-            }]
-        );
+        // the creation trace ends in one closed barrier holding one
+        // existence undo (plus the open seed/new entry)
+        assert_eq!(world.undoredo.undo_list.len(), 2);
+        let op = closed_barrier(&world).ops[0]
+            .as_any()
+            .downcast_ref::<ExistenceOperation>()
+            .unwrap();
+        assert_eq!(op.item, item);
+        assert_eq!(op.old_chunk, None);
         assert_eq!(world.selected, vec![item]);
     }
 
@@ -1665,6 +1654,8 @@ mod tests {
             section: &DataSection,
         ) -> FactoryResult {
             if let Some(existing) = self.existing.take() {
+                // the reference factory removes the old one from its chunk
+                world.items[existing].chunk = None;
                 return FactoryResult {
                     succeeded: true,
                     item: Some(existing),
@@ -1704,13 +1695,12 @@ mod tests {
         assert_ne!(item, existing);
         // the replacement pushed an existence undo for the replaced item and
         // pulled it out of the selection first
-        assert_eq!(
-            world.undo_ops[0],
-            UndoOp::Existence {
-                item: existing,
-                old_chunk: Some("00000000o".to_string())
-            }
-        );
+        let op = closed_barrier(&world).ops[0]
+            .as_any()
+            .downcast_ref::<ExistenceOperation>()
+            .unwrap();
+        assert_eq!(op.item, existing);
+        assert_eq!(op.old_chunk, Some("00000000o".to_string()));
         assert_eq!(world.errors[0], "The old ambient light was removed");
         assert!(
             world
@@ -1757,7 +1747,7 @@ mod tests {
                 "WorldEditor.createChunkItem() Couldn't create Chunk Item".to_string()
             )
         );
-        assert!(world.undo_ops.is_empty());
+        assert!(!world.undoredo.can_undo());
     }
 
     #[test]
@@ -2311,7 +2301,7 @@ mod tests {
             world.items[item].transform.apply_to_origin(),
             Vector3::new(10.0, 0.0, 10.0)
         );
-        assert!(world.undo_ops.is_empty());
+        assert!(!world.undoredo.can_undo());
         assert!(!proxy.has_changed(&world));
     }
 
@@ -2336,14 +2326,15 @@ mod tests {
 
         assert_eq!(world.items[item].chunk.as_deref(), Some("00010000o"));
         assert_eq!(world.items[item].post_modifies, 1);
-        assert_eq!(
-            world.undo_ops,
-            vec![UndoOp::Matrix {
-                item,
-                old_chunk: Some("00000000o".to_string()),
-                old_pose: start,
-            }]
-        );
+        assert_eq!(closed_barrier(&world).ops.len(), 1);
+        let op = closed_barrier(&world).ops[0]
+            .as_any()
+            .downcast_ref::<MatrixOperation>()
+            .unwrap();
+        assert_eq!(op.item, item);
+        assert_eq!(op.old_chunk, Some("00000000o".to_string()));
+        assert_eq!(op.old_pose, start);
+        assert_eq!(op.replaced, None);
         assert_eq!(
             world.undo_barriers,
             vec![format!(
@@ -2383,7 +2374,7 @@ mod tests {
             Vector3::new(10.0, 0.0, 10.0)
         );
         // the undo op is pushed regardless (the reference unconditionally adds)
-        assert_eq!(world.undo_ops.len(), 1);
+        assert_eq!(closed_barrier(&world).ops.len(), 1);
         assert_eq!(world.undo_barriers.len(), 1);
     }
 
@@ -2425,6 +2416,282 @@ mod tests {
             )]
         );
         assert_eq!(world.selected, vec![b]);
+    }
+
+    // ---- undo and redo (tools/common/undoredo.cpp) ----
+
+    /// The acceptance's object snapshot: chunk membership plus the pose.
+    fn pose_snapshot(world: &EditorWorld, item: usize) -> (Option<String>, Matrix) {
+        (world.items[item].chunk.clone(), world.items[item].transform)
+    }
+
+    #[test]
+    fn move_undo_redo_round_trip_restores_both_snapshots() {
+        let mut world = grid_world();
+        let section = model_section("abc.model");
+        let item = world
+            .load_item(&mut SectionItemFactory, "00000000o", &section)
+            .item
+            .unwrap();
+        let mut start = Matrix::identity();
+        start.set_translate(10.0, 0.0, 10.0);
+        world.items[item].transform = start;
+        let before = pose_snapshot(&world, item);
+
+        let mut proxy = matrix_proxy(item, &world);
+        proxy.record_state(&world);
+        let mut moved = Matrix::identity();
+        moved.set_translate(120.0, 0.0, 10.0);
+        proxy.set_matrix(&mut world, &moved);
+        assert!(proxy.commit_state(&mut world, false, true));
+        let after_move = pose_snapshot(&world, item);
+        assert_eq!(after_move.0.as_deref(), Some("00010000o"));
+        assert!(world.can_undo());
+        assert!(!world.can_redo());
+
+        world.undo();
+        // the pre-move snapshot matches again
+        assert_eq!(pose_snapshot(&world, item), before);
+        assert!(!world.can_undo());
+        assert!(world.can_redo());
+        assert!(world.redo_info(0).starts_with("GIZMO/UNDO/MOVE_PROPERTY"));
+        // the restore notified the chunk it went back to
+        assert!(world.changed_chunks.contains("00000000o"));
+
+        world.redo();
+        // and the moved snapshot matches the original move exactly
+        assert_eq!(pose_snapshot(&world, item), after_move);
+        assert!(world.can_undo());
+        assert!(!world.can_redo());
+        assert!(world.undo_info(0).starts_with("GIZMO/UNDO/MOVE_PROPERTY"));
+    }
+
+    #[test]
+    fn creation_undo_redo_round_trip_restores_the_snapshot() {
+        let mut world = grid_world();
+        let mut pose = Matrix::identity();
+        pose.set_translate(30.0, 0.0, 30.0);
+        let mut rng = || 0u32;
+        let mut opts = options(1, &mut rng);
+        let outcome = world.create_chunk_item(
+            &mut SectionItemFactory,
+            &model_section("abc.model"),
+            &pose,
+            &mut opts,
+        );
+        let item = match outcome {
+            CreateOutcome::Placed { item } => item,
+            other => panic!("expected placement, got {:?}", other),
+        };
+        let created = pose_snapshot(&world, item);
+        assert_eq!(world.items[item].post_creates, 1);
+        assert_eq!(world.selection_events, vec![(item, true)]);
+
+        world.undo();
+        // the item is gone: unbound, deleted, deselected
+        assert_eq!(world.items[item].chunk, None);
+        assert_eq!(world.items[item].pre_deletes, 1);
+        assert_eq!(world.items[item].post_creates, 1);
+        assert_eq!(world.selected, Vec::<usize>::new());
+        // the deletion notified the chunk it lived in
+        assert!(world.changed_chunks.contains("00000000o"));
+
+        world.redo();
+        // the created snapshot matches again, with the re-create callbacks
+        assert_eq!(pose_snapshot(&world, item), created);
+        assert_eq!(world.items[item].post_creates, 2);
+        assert_eq!(world.selected, vec![item]);
+        assert_eq!(
+            world.selection_events,
+            vec![(item, true), (item, false), (item, true)]
+        );
+    }
+
+    #[test]
+    fn an_undeleteable_creation_cannot_be_undone() {
+        let mut world = grid_world();
+        let mut pose = Matrix::identity();
+        pose.set_translate(30.0, 0.0, 30.0);
+        let mut rng = || 0u32;
+        let mut opts = options(1, &mut rng);
+        let outcome = world.create_chunk_item(
+            &mut SectionItemFactory,
+            &model_section("abc.model"),
+            &pose,
+            &mut opts,
+        );
+        let item = match outcome {
+            CreateOutcome::Placed { item } => item,
+            other => panic!("expected placement, got {:?}", other),
+        };
+        world.items[item].can_delete = false;
+
+        world.undo();
+        // the removal branch bailed out on `edCanDelete`
+        assert!(world.items[item].chunk.is_some());
+        assert_eq!(world.items[item].pre_deletes, 0);
+        assert_eq!(world.selected, vec![item]);
+        // nothing landed on the redo list
+        assert!(world.undoredo.redo_list[0].ops.is_empty());
+    }
+
+    #[test]
+    fn replacement_undo_restores_the_replaced_item() {
+        let mut world = grid_world();
+        let existing = world
+            .load_item(
+                &mut SectionItemFactory,
+                "00000000o",
+                &model_section("old.model"),
+            )
+            .item
+            .unwrap();
+        world.selected.push(existing);
+        world.items[existing].is_selected = true;
+
+        let mut pose = Matrix::identity();
+        pose.set_translate(1.0, 0.0, 1.0);
+        let mut rng = || 0u32;
+        let mut opts = options(1, &mut rng);
+        let mut factory = ReplacingFactory {
+            existing: Some(existing),
+        };
+        let outcome =
+            world.create_chunk_item(&mut factory, &model_section("new.model"), &pose, &mut opts);
+        let item = match outcome {
+            CreateOutcome::Placed { item } => item,
+            other => panic!("expected placement, got {:?}", other),
+        };
+        // the factory removed the old one from its chunk
+        assert_eq!(world.items[existing].chunk, None);
+
+        world.undo();
+        // the walk ran the barrier backwards: the created item is removed,
+        // the replaced one is back in its chunk and re-selected
+        assert_eq!(world.items[item].chunk, None);
+        assert_eq!(
+            pose_snapshot(&world, existing).0.as_deref(),
+            Some("00000000o")
+        );
+        assert_eq!(world.items[existing].post_creates, 1);
+        assert_eq!(world.selected, vec![existing]);
+        assert_eq!(
+            world.selection_events,
+            vec![
+                (existing, false),
+                (item, true),
+                (item, false),
+                (existing, true)
+            ]
+        );
+    }
+
+    #[test]
+    fn matrix_undo_on_an_unbound_item_only_records_the_inverse() {
+        let mut world = grid_world();
+        let section = model_section("abc.model");
+        let item = world
+            .load_item(&mut SectionItemFactory, "00000000o", &section)
+            .item
+            .unwrap();
+        // the vlo-reference face: the item has no resident chunk
+        world.items[item].chunk = None;
+
+        world.undo_add(Box::new(MatrixOperation {
+            item,
+            old_chunk: Some("00000000o".to_string()),
+            old_pose: Matrix::identity(),
+            replaced: None,
+        }));
+        world.barrier("MOVE", false);
+        world.undo();
+
+        // the safety check skipped every chunk touch
+        assert_eq!(world.items[item].chunk, None);
+        assert_eq!(world.items[item].transform, Matrix::identity());
+        assert_eq!(world.changed_chunks.len(), 0);
+        // but the inverse landed on the redo entry
+        assert_eq!(world.undoredo.redo_list[0].ops.len(), 1);
+    }
+
+    #[test]
+    fn matrix_undo_with_a_replaced_item_throws_the_mover_away() {
+        let mut world = grid_world();
+        let section = model_section("abc.model");
+        let mover = world
+            .load_item(&mut SectionItemFactory, "00000000o", &section)
+            .item
+            .unwrap();
+        let other = world
+            .load_item(&mut SectionItemFactory, "00000000o", &section)
+            .item
+            .unwrap();
+        world.items[mover].chunk = Some("00010000o".to_string());
+        let mut moved_pose = Matrix::identity();
+        moved_pose.set_translate(5.0, 0.0, 5.0);
+        world.items[mover].transform = moved_pose;
+
+        // the reference constructor accepts a replaced item; the port pins
+        // its undo face directly
+        world.undo_add(Box::new(MatrixOperation {
+            item: mover,
+            old_chunk: Some("00000000o".to_string()),
+            old_pose: Matrix::identity(),
+            replaced: Some(other),
+        }));
+        world.barrier("REPLACE", false);
+        world.undo();
+
+        // the mover went back to the old chunk and pose, then the replaced
+        // branch threw it away
+        assert_eq!(world.items[mover].pre_deletes, 1);
+        assert_eq!(world.items[mover].chunk, None);
+        assert_eq!(world.items[mover].transform, Matrix::identity());
+        // the replaced item is restored
+        assert_eq!(world.items[other].chunk.as_deref(), Some("00000000o"));
+        assert_eq!(world.items[other].transform, Matrix::identity());
+    }
+
+    #[test]
+    fn undo_info_names_the_editor_barriers_in_order() {
+        let mut world = grid_world();
+        let mut pose = Matrix::identity();
+        pose.set_translate(30.0, 0.0, 30.0);
+        let mut rng = || 0u32;
+        let mut opts = options(1, &mut rng);
+        let outcome = world.create_chunk_item(
+            &mut SectionItemFactory,
+            &model_section("abc.model"),
+            &pose,
+            &mut opts,
+        );
+        let item = match outcome {
+            CreateOutcome::Placed { item } => item,
+            other => panic!("expected placement, got {:?}", other),
+        };
+        let mut proxy = matrix_proxy(item, &world);
+        proxy.record_state(&world);
+        let mut moved = Matrix::identity();
+        moved.set_translate(20.0, 0.0, 20.0);
+        proxy.set_matrix(&mut world, &moved);
+        proxy.commit_state(&mut world, false, true);
+
+        assert!(world.undo_info(0).starts_with("GIZMO/UNDO/MOVE_PROPERTY"));
+        assert!(
+            world
+                .undo_info(1)
+                .starts_with("WORLDEDITOR/WORLDEDITOR/CHUNK/CHUNK_ITEM_PLACER/CREATE_ASSET")
+        );
+        assert_eq!(world.undo_info(2), "");
+
+        world.undo();
+        assert!(world.redo_info(0).starts_with("GIZMO/UNDO/MOVE_PROPERTY"));
+        assert_eq!(world.redo_info(1), "");
+        assert!(
+            world
+                .undo_info(0)
+                .starts_with("WORLDEDITOR/WORLDEDITOR/CHUNK/CHUNK_ITEM_PLACER/CREATE_ASSET")
+        );
     }
 
     // ---- selection (world_manager.cpp) ----

@@ -7,7 +7,8 @@
 //! same chunk face (`tools/worldeditor/world/editor_chunk_cache.cpp`), and
 //! [`chunk_placer`] the WorldEditor object placement/transform face
 //! (`tools/worldeditor/editor/chunk_item_placer.cpp`) with its snapping
-//! maths ([`snaps`]).
+//! maths ([`snaps`]) and the undo/redo engine ([`undoredo`],
+//! `tools/common/undoredo.cpp`).
 
 pub mod boundary;
 pub mod chunk;
@@ -17,6 +18,7 @@ pub mod identifier;
 pub mod mapping;
 pub mod snaps;
 pub mod space;
+pub mod undoredo;
 
 pub use boundary::{ChunkBoundary, Portal, PortalTarget, create_boundaries, form_boundaries};
 pub use chunk::{Chunk, ChunkItem};
@@ -26,7 +28,7 @@ pub use chunk_editor::{
 };
 pub use chunk_placer::{
     AccessorDataProxy, ChunkItemMatrix, CreateOutcome, EditorItem, EditorWorld, FactoryResult,
-    ItemFactory, PlacementOptions, PlacementPresets, SectionItemFactory, UndoOp,
+    ItemFactory, PlacementOptions, PlacementPresets, SectionItemFactory,
     chunk_item_position_property_length,
 };
 pub use identifier::{
@@ -34,3 +36,6 @@ pub use identifier::{
 };
 pub use mapping::{DEFAULT_GRID_SIZE, GeometryMapping, GridBounds};
 pub use space::ChunkSpace;
+pub use undoredo::{
+    Barrier, ExistenceOperation, MatrixOperation, UndoOperation, UndoRedo, operations_equal,
+};
