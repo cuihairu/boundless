@@ -1385,7 +1385,7 @@
 
 对齐 `lib/waypoint/` 的 NavLoc 定位、waypoint set 邻接、按 girth 选路、局部与跨 Chunk 搜索、路径缓存及 Portal 限制。用相同资源比较路径点、不可达、搜索距离上限和缓存失效。
 
-- [ ] **BW-10-04-01 解码 waypoint set 和邻接**。**验收** 旧图节点与连接正确恢复。
+- [x] **BW-10-04-01 解码 waypoint set 和邻接**。**验收** 旧图节点与连接正确恢复。→ 249fc4c（新 crate crates/waypoint：chunk_waypoint.rs Edge 邻接三编码/两访问器+ChunkWaypoint 共享边数组 (edge_start,count)+calc_centre 长度加权中点平均+顶点供给面；chunk_waypoint_set_data.rs 两游标 read_waypoint_set（12B 控制流+盲 pEdgeData 护栏+VertexIndices 位模式去重+65535 溢出打印后继续）、parse_world_navmesh 多图循环 baseIndex 1 起累加、absolute_edge_index。验收回放原版引擎夹具 260B world_navmesh.bin 逐行对拍 gen_waypoints.log HDR/SET/WP/EDGE/ADJ/CHUNKBOUND/VISTA 全中，两 girth 集 4 节点 15 边、顶点去重 6/4、baseIndex 1→4。样本非手造：gen_waypoints.cpp 驱动原版 asBinary 写出器+原版 readWaypointSet 读者（--start-group 链接组+直接编译 waypoint_view.cpp）。边界登记 9 条见 docs/review/bw10-04-01-navmesh-decode.md。waypoint 12 lib+2 integration 绿；llvm-cov 两文件均 100%；clippy 0/fmt 0/check --workspace 过。）
 - [ ] **BW-10-04-02 实现 NavLoc 定位与投影**。**验收** 多层位置和边界与原版一致。
 - [ ] **BW-10-04-03 按 girth 选择路径**。**验收** 窄门对不同角色返回正确可达性。
 - [ ] **BW-10-04-04 实现 Chunk 内搜索**。**验收** 固定起终点路径点逐点比对。
