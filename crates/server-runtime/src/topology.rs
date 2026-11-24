@@ -10,11 +10,13 @@
 //! codes. The three-platform half of the acceptance stays open with the
 //! Windows `CreateProcess` backend (BW-15-03).
 //!
-//! The stop path reuses the role entry's own: the quit set is held
-//! (`Blocker`) so `sigwaitinfo` retrieves the first arrival
-//! (`SignalProcessor::wait_for_signals`), and the topology's children
-//! each receive the same `SIGTERM` an operator would send them -- each
-//! role's `app::run` then shuts down with exit 0.
+//! The stop path reuses the role entry's own: each child receives the
+//! same signal machined commands for a controlled shutdown -- SIGUSR1
+//! (`SignalMessage::setControlledShutdown`,
+//! `machine_guard.hpp:714`) -- and each role's `app::run` walks its
+//! controlled-stop arm into the shutdown tail with exit 0. The drop
+//! path takes the vocabulary's kill signal instead (SIGINT, `setKill`
+//! `machine_guard.hpp:715`).
 
 use crate::signals::{Blocker, Set, SignalProcessor};
 use platform::process::{Child, ExitStatus};
@@ -100,23 +102,27 @@ impl Topology {
         Ok(None)
     }
 
-    /// Stop the topology: signal every child with `SIGTERM`, then reap
-    /// each one with `waitpid`. The signal reaches all children before
-    /// the first wait, so the topology shuts down as a group; the report
-    /// holds each entry's decoded exit status in start order. A child
-    /// that already exited on its own is still signalled and reaped the
-    /// same way -- the wait reports its real status; a child a probe
-    /// already reaped reports the remembered status instead.
+    /// Stop the topology: signal every child with the controlled-stop
+    /// signal (SIGUSR1, the `setControlledShutdown` vocabulary
+    /// `machine_guard.hpp:714`), then reap each one with `waitpid`.
+    /// The signal reaches all children before the first wait, so the
+    /// topology shuts down as a group; the report holds each entry's
+    /// decoded exit status in start order. A child that already exited
+    /// on its own is still signalled and reaped the same way -- the wait
+    /// reports its real status; a child a probe already reaped reports
+    /// the remembered status instead.
     ///
     /// A `kill` failure (the child is already reaped) does not skip the
     /// wait; a `wait` failure on one child still reaps the rest and
     /// surfaces the first error afterwards.
     pub fn stop(mut self) -> io::Result<Vec<(String, ExitStatus)>> {
         for entry in &self.children {
-            // The stop signal, the same one an operator sends a role.
-            // A probed child is already reaped: nothing to signal.
+            // The controlled-stop signal: what machined commands for a
+            // managed shutdown, and what `app::run`'s SIGUSR1 arm walks
+            // into the shutdown tail. A probed child is already reaped:
+            // nothing to signal.
             if entry.probed.is_none() {
-                let _ = entry.child.signal(platform::signals::SIGTERM);
+                let _ = entry.child.signal(platform::signals::SIGUSR1);
             }
         }
         let mut report: Vec<(String, ExitStatus)> = Vec::with_capacity(self.children.len());
@@ -146,10 +152,11 @@ impl Topology {
     }
 
     /// The wiring face of BW-15-01-03: hold the quit set, wait for one
-    /// arrival (`SignalProcessor::wait_for_signals`, the same clean
-    /// stop the role entry takes), then [`stop`](Topology::stop) the
-    /// topology. The returned report is the exit codes collected on the
-    /// way down.
+    /// arrival (`SignalProcessor::wait_for_signals`, the supervisor's
+    /// own end -- the roles end through their `app::run` arms instead),
+    /// then [`stop`](Topology::stop) the topology with the controlled
+    /// stop. The returned report is the exit codes collected on the way
+    /// down.
     ///
     /// Unix only, like the whole stop path: the signal wait is the
     /// POSIX spelling; the Windows console-control stop is BW-15-03.
@@ -172,13 +179,16 @@ impl Topology {
 
 impl Drop for Topology {
     /// A topology dropped without `stop` still signals and reaps every
-    /// child: the reference machine does not leave server processes
-    /// behind when its own process ends, so neither does the port.
-    /// Best effort only -- there is nowhere left to report an error.
+    /// child, on the kill signal (`setKill`, `machine_guard.hpp:715`
+    /// SIGINT): the supervisor is ending without a managed shutdown, so
+    /// the children are told to die, not to run their shutdown tails.
+    /// The reference machine does not leave server processes behind when
+    /// its own process ends, so neither does the port. Best effort only
+    /// -- there is nowhere left to report an error.
     fn drop(&mut self) {
         for entry in &self.children {
             if entry.probed.is_none() {
-                let _ = entry.child.signal(platform::signals::SIGTERM);
+                let _ = entry.child.signal(platform::signals::SIGINT);
             }
         }
         for ChildEntry {
@@ -277,7 +287,7 @@ mod tests {
         for (name, status) in &report {
             // The stop signal killed them, not an exit code.
             assert_eq!(status.code, None, "{name} exited on its own");
-            assert_eq!(status.signal, Some(platform::signals::SIGTERM), "{name}");
+            assert_eq!(status.signal, Some(platform::signals::SIGUSR1), "{name}");
         }
         // The report keeps the start order.
         assert_eq!(report[0].0, "baseapp");
@@ -329,7 +339,7 @@ mod tests {
         assert_eq!(report[0].0, "reviver");
         assert_eq!(report[0].1.code, Some(0));
         assert_eq!(report[1].0, "baseappmgr");
-        assert_eq!(report[1].1.signal, Some(platform::signals::SIGTERM));
+        assert_eq!(report[1].1.signal, Some(platform::signals::SIGUSR1));
     }
 
     #[test]
@@ -442,6 +452,8 @@ mod tests {
         let report = handle.join().expect("run thread");
         assert_eq!(report.len(), 1);
         assert_eq!(report[0].0, "baseapp");
-        assert_eq!(report[0].1.signal, Some(platform::signals::SIGTERM));
+        // The supervisor's own end is the quit signal; the child's end
+        // is the controlled stop the stop path commands.
+        assert_eq!(report[0].1.signal, Some(platform::signals::SIGUSR1));
     }
 }

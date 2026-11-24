@@ -1,14 +1,29 @@
-//! BW-00-03-05 minimal process lifecycle: validate the requested role and
-//! bring it up, keeping `main` free of role logic.
+//! BW-00-03-05 process lifecycle: validate the requested role and run it
+//! through the reference's `bwMainT` loop, keeping `main` free of role
+//! logic.
 //!
-//! Full init chains (bw.xml, network interfaces) arrive with BW-01-04;
-//! signal handling is wired here at the minimal level (BW-15-02-01): the
-//! process blocks the quit signals and shuts down when one arrives. This
+//! The loop is the reference's shape (`lib/server/bwservice.hpp:108-146`):
+//! a `Dispatcher`, a `SignalProcessor` registered as its frequent task,
+//! three signal faces -- SIGINT dies through the base re-raise
+//! (`server_app.cpp:556-570`), SIGQUIT takes the immediate CRITICAL slot
+//! (`entity_app.cpp:91,131-138`), and SIGUSR1 is the controlled stop
+//! (`machine_guard.hpp:714` `setControlledShutdown` -> `shutDown`
+//! `breakProcessing`, `server_app.cpp:542-546`) -- and then
+//! `processUntilBreak` into the shutdown tail. The quit signals are not
+//! blocked: the `sigwait` entry this module once carried was the minimal
+//! entry's documented deviation, and the full loop replaces it.
+//!
+//! `bw.xml`/resource init happens in `main` (the reference's
+//! `BIGWORLD_MAIN` half); the Mercury interface construction and its
+//! `prepareForShutdown` body join with BW-02-02, and the per-role apps
+//! (`doBWMainT`'s `SERVER_APP`) arrive with their role clusters. This
 //! module fixes the role set, the startup contract and the shutdown
 //! contract.
 
 #[cfg(unix)]
-use crate::signals::{Blocker, Set, SignalProcessor};
+use crate::server_app::{base_on_signalled, entity_app_quit_signal};
+#[cfg(unix)]
+use crate::signals::{SignalDispatchTask, SignalHandlerFn, SignalProcessor};
 
 /// Server processes of this BigWorld revision (`server/*/` directories),
 /// in canonical order.
@@ -22,6 +37,36 @@ pub const KNOWN_ROLES: &[&str] = &[
     "loginapp",
     "reviver",
 ];
+
+/// Each role's reference `appName()` -- the strings the header macros
+/// pass (`SERVER_APP_HEADER( BaseApp, baseApp )` `server_app.hpp:41,45`,
+/// `MANAGER_APP_HEADER( BaseAppMgr, baseAppMgr )` `baseappmgr.hpp:210`,
+/// `ENTITY_APP_HEADER( CellApp, cellApp )` `cellapp.hpp:94`, and the
+/// same macros in `cellappmgr.hpp:60`, `dbappmgr.hpp:50`,
+/// `dbapp.hpp`, `loginapp.hpp`, `reviver.hpp`). The startup line, the
+/// `"%s has shut down."` tail (`bwservice.hpp:145`) and the SIGQUIT
+/// CRITICAL text all carry it.
+#[cfg(unix)]
+const ROLE_APP_NAMES: &[(&str, &str)] = &[
+    ("baseapp", "BaseApp"),
+    ("baseappmgr", "BaseAppMgr"),
+    ("cellapp", "CellApp"),
+    ("cellappmgr", "CellAppMgr"),
+    ("dbapp", "DBApp"),
+    ("dbappmgr", "DBAppMgr"),
+    ("loginapp", "LoginApp"),
+    ("reviver", "Reviver"),
+];
+
+/// The reference `appName()` for a validated role.
+#[cfg(unix)]
+fn reference_app_name(role: &str) -> &'static str {
+    ROLE_APP_NAMES
+        .iter()
+        .find(|(name_role, _)| *name_role == role)
+        .map(|(_, app_name)| *app_name)
+        .expect("a validated role has a reference app name")
+}
 
 /// Why `run` refused to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,55 +125,105 @@ fn parse_budget(text: &str) -> Option<std::time::Duration> {
         .map(std::time::Duration::from_secs)
 }
 
-/// Runs the server process for `role`: validate, announce startup, block
-/// the quit signals, and shut down cleanly when one arrives.
+/// Runs the server process for `role`: validate, build the dispatcher and
+/// its signal faces, run the reference's loop, and shut down on the
+/// controlled stop.
 ///
-/// The reference starts each process with a startup log line naming the
-/// app, and its `server_app.cpp` prints `"%s has shut down."` from
-/// `fini()`; the minimal entry keeps both observable contracts. The
-/// wait is the reference's `SignalProcessor::waitForSignals`
-/// (`TableSynchroniser::run`) path: the quit signals are held
-/// (`pthread_sigmask`) so `sigwaitinfo` can retrieve them, and the first
-/// arrival is the shutdown -- the minimal server has no tick loop yet.
+/// This is the generic `bwMainT` body (`bwservice.hpp:108-146`) with the
+/// role apps flattened away: the dispatcher, the `SignalProcessor` as its
+/// frequent task (`bwservice.hpp:127`), the signal faces each init
+/// chain registers (`ServerApp::init` SIGINT `server_app.cpp:240`,
+/// `EntityApp::init` SIGQUIT `entity_app.cpp:91`, the controlled-stop
+/// SIGUSR1 `loginapp.cpp:432` pattern), `processUntilBreak`
+/// (`server_app.cpp:258`), and the shutdown tail
+/// (`bwservice.hpp:145`). `runApp`'s `fini()` and
+/// `interface_.prepareForShutdown()` walk is the tail contract; the
+/// Mercury interface itself joins with BW-02-02.
 ///
 /// Signal handling is the POSIX spelling, so a non-unix entry keeps the
 /// startup smoke only; the Windows stop path (console control events)
 /// arrives with BW-15-03.
 pub fn run(role: &str) -> Result<(), AppError> {
     validate_role(role)?;
-    eprintln!("[{role}] starting (boundless minimal entry)");
+    eprintln!("[{role}] starting");
 
     #[cfg(unix)]
     {
-        let mut processor = SignalProcessor::new();
-        let set = Set::quit();
-        let _blocker = Blocker::new(&set);
-        eprintln!("[{role}] running");
+        let app_name = reference_app_name(role);
+
+        // Mercury::EventDispatcher dispatcher; (bwservice.hpp:110)
+        let mut dispatcher = crate::dispatcher::Dispatcher::new();
+
+        // SignalProcessor signalProcessor( dispatcher ); the constructor's
+        // `dispatcher_.addFrequentTask( this )` (bwservice.hpp:127,
+        // signal_processor.cpp:94-103) is the binding: the loop's frequent
+        // pass is where pending signals surface and their handlers run.
+        let processor = std::rc::Rc::new(std::cell::RefCell::new(SignalProcessor::new()));
+        dispatcher.add_frequent_task(SignalDispatchTask::new_task(&processor));
+
+        // ServerApp::init: enableSignalHandler( SIGINT ) -- the forwarded
+        // signal reaches `onSignalled`, whose base arm resets the
+        // disposition and re-raises, killing the process under the
+        // dispatch Blocker (server_app.cpp:240, 556-570). The generic role
+        // has no override, so the base arm is the whole face.
+        processor.borrow_mut().add_signal_handler(
+            libc::SIGINT,
+            std::rc::Rc::new(std::cell::RefCell::new(SignalHandlerFn(base_on_signalled))),
+        );
+
+        // EntityApp::init: enableSignalHandler( SIGQUIT ) -- SIGQUIT takes
+        // the single immediate slot and the CRITICAL text plus the abort
+        // run straight from signal context (entity_app.cpp:91,
+        // signal_processor.cpp:158-159, 306-308).
+        processor
+            .borrow_mut()
+            .add_quit_handler(std::sync::Arc::new(move |_| {
+                entity_app_quit_signal(app_name)
+            }));
+
+        // The controlled stop: machined's setControlledShutdown signals
+        // SIGUSR1 (machine_guard.hpp:714) and `ServerApp::shutDown`
+        // logs then breaks the dispatcher (server_app.cpp:542-546).
+        // loginapp registers the signal the same way (loginapp.cpp:432);
+        // the other roles receive the stop through their manager messages,
+        // whose wiring belongs to the role clusters. The generic entry
+        // takes the base arm for every role.
+        let break_flag = dispatcher.break_flag();
+        processor.borrow_mut().add_signal_handler(
+            libc::SIGUSR1,
+            std::rc::Rc::new(std::cell::RefCell::new(SignalHandlerFn(move |_| {
+                eprintln!("ServerApp::shutDown: shutting down");
+                break_flag.set(true);
+            }))),
+        );
+
+        // INFO_MSG( "---- %s is running ----\n" ) (server_app.cpp:278)
+        eprintln!("---- {app_name} is running ----");
 
         // The lane that starts the server with a budget targets the main
-        // thread: it holds the quit set blocked, so the signal becomes
-        // pending there and `wait_for_signals` consumes it, which is the
-        // same clean stop an operator signal takes.
+        // thread with the controlled-stop signal: the same clean stop an
+        // operator's machined would command, and the stop the loop drains
+        // through its frequent pass.
         if let Some(budget) = ci_runners_budget() {
             let main = platform::signals::thread_self();
             let _ = std::thread::Builder::new()
                 .name("runners-timeout".into())
                 .spawn(move || {
                     std::thread::sleep(budget);
-                    let _ = platform::signals::thread_kill(main, platform::signals::SIGTERM);
+                    let _ = platform::signals::thread_kill(main, libc::SIGUSR1);
                 });
         }
 
-        let sig = processor.wait_for_signals(&set);
-        if sig < 0 {
-            // `sigwaitinfo` failed for a reason other than `EINTR`
-            // (which it retries); nothing was delivered, so end the run
-            // rather than spin. `wait_for_signals` already dispatched a
-            // signal when one arrived, printing
-            // `SignalProcessor::dispatchSignal: <name>`.
-            eprintln!("[{role}] signal wait ended without a signal");
-        }
-        eprintln!("[{role}] has shut down.");
+        // doBWMainT -> runApp -> run: mainDispatcher_.processUntilBreak()
+        // (server_app.cpp:255-262). SIGTERM has no face here -- like the
+        // reference, the default disposition takes the process.
+        dispatcher.process_until_break();
+
+        // runApp's tail walks fini() then interface_.prepareForShutdown()
+        // (server_app.cpp:286-288); the base faces are no-ops until the
+        // Mercury interface joins, and then:
+        // INFO_MSG( "%s has shut down.\n", appName ) (bwservice.hpp:145)
+        eprintln!("{app_name} has shut down.");
     }
 
     #[cfg(not(unix))]
@@ -197,5 +292,38 @@ mod tests {
         assert_eq!(parse_budget("2.5"), None);
         assert_eq!(parse_budget("soon"), None);
         assert_eq!(parse_budget("-3"), None);
+    }
+
+    /// The app-name table covers exactly the known roles, in order, with
+    /// the header macros' strings.
+    #[cfg(unix)]
+    #[test]
+    fn reference_app_names_cover_the_known_roles() {
+        let names: Vec<&str> = ROLE_APP_NAMES.iter().map(|(role, _)| *role).collect();
+        assert_eq!(names, KNOWN_ROLES, "one app name per role, in order");
+        for (role, app_name) in ROLE_APP_NAMES {
+            assert_eq!(validate_role(role), Ok(()));
+            assert_eq!(reference_app_name(role), *app_name);
+        }
+    }
+
+    /// The loop is the acceptance: the dispatcher runs its frequent pass,
+    /// the pass drains the pending SIGUSR1 into the controlled-stop arm,
+    /// and the break unwinds into the shutdown tail. The signal is raised
+    /// from a helper thread once the loop is up (`run`'s own setup takes
+    /// microseconds; the kicker waits well past that, because an early
+    /// SIGUSR1 would hit the default disposition and kill the test).
+    #[cfg(unix)]
+    #[test]
+    fn the_controlled_signal_ends_the_dispatch_loop() {
+        let _guard = crate::signals::disposition_guard();
+        let kicker = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGUSR1);
+            }
+        });
+        run("dbapp").expect("the controlled stop ends the loop");
+        kicker.join().expect("the kicker joins");
     }
 }

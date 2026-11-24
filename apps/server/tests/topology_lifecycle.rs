@@ -1,18 +1,22 @@
 //! BW-15-02-01: the full topology starts and closes under one signal.
 //! The acceptance is the topology's start/close contract: every role
-//! runs as a child of one supervisor, and a single stop signal closes
-//! the whole topology with every role exiting `0`.
+//! runs as a child of one supervisor, and a single stop closes the whole
+//! topology with every role exiting `0`.
 //!
 //! `server_runtime::topology::Topology::run` is the supervisor wiring
 //! (BW-15-01-03: signal -> kill children -> wait/reap); the report it
 //! returns carries each role's exit code, which is the observable the
-//! acceptance names ("拓扑能够启动和关闭").
+//! acceptance names ("拓扑能够启动和关闭"). The stop it commands is the
+//! controlled shutdown (SIGUSR1, `machine_guard.hpp:714`
+//! `setControlledShutdown`), so each role ends through its own
+//! `app::run` arm and exits `0`.
 //!
 //! Linux only: the stop readiness is polled from each child's
-//! `/proc/<pid>/status` `SigBlk` mask (a role holds its quit set from
-//! `Blocker::new` until it exits), and the stop signal is thread-directed
-//! so it cannot take a parallel test thread's default disposition.
-//! Other platforms run the in-crate unit faces instead.
+//! `/proc/<pid>/status` `SigCgt` mask (a role has its SIGUSR1 handler
+//! caught before it prints the running line), and the supervisor's stop
+//! signal is thread-directed so it cannot take a parallel test thread's
+//! default disposition. Other platforms run the in-crate unit faces
+//! instead.
 
 #![cfg(target_os = "linux")]
 
@@ -21,7 +25,7 @@ use std::ffi::OsString;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use platform::signals::{SIGTERM, thread_kill, thread_self};
+use platform::signals::{SIGTERM, SIGUSR1, thread_kill, thread_self};
 use server_runtime::signals::{Blocker, Set};
 
 /// The reference roles (`server/*/`), in canonical order.
@@ -79,16 +83,15 @@ fn the_full_topology_starts_and_closes_on_one_signal() {
     );
 
     // The supervisor waits in its own thread; the watchdog only fires
-    // once every child can take the stop signal through its clean-stop
-    // path, so the stop is never a default disposition racing the
-    // child's startup.
+    // once every child has caught the controlled-stop signal, so the
+    // stop is never a default disposition racing the child's startup.
     let handle = thread::spawn(move || {
         let _early = Blocker::new(&Set::quit());
         let target = thread_self();
         let watch = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
-                let ready = pids.iter().all(|(_, pid)| safe_for_the_stop_signal(*pid));
+                let ready = pids.iter().all(|(_, pid)| catches_the_stop_signal(*pid));
                 if ready || Instant::now() > deadline {
                     break;
                 }
@@ -115,43 +118,22 @@ fn the_full_topology_starts_and_closes_on_one_signal() {
     }
 }
 
-/// Whether `pid` can take the stop signal through its clean-stop path:
-/// either it holds its quit set (`SigBlk` carries the `SIGTERM` bit --
-/// the signal then pends until the role's `sigwaitinfo` consumes it),
-/// or it is already parked in that wait (`wchan` names `sigtimedwait`).
-///
-/// Inside `sigwaitinfo` the kernel's transient mask reads clear in
-/// `/proc/<pid>/status`, so the mask bit alone is not the whole truth;
-/// both faces together are exactly the states in which a `SIGTERM`
-/// cannot take the default disposition.
-fn safe_for_the_stop_signal(pid: i32) -> bool {
-    blocks_sigterm(pid) || waits_in_sigtimedwait(pid)
-}
-
-/// Whether `pid`'s `SigBlk` mask holds `SIGTERM`: the role processes
-/// block their quit set (`Blocker::new` in `app::run`) from startup
-/// until they enter their wait.
-fn blocks_sigterm(pid: i32) -> bool {
+/// Whether `pid` can take the controlled stop through its clean-stop
+/// path: its `SigCgt` mask carries the `SIGUSR1` bit, meaning the role's
+/// `app::run` has installed the controlled-stop handler. That install
+/// happens before the running line prints, so a stop from here on walks
+/// the handler arm instead of the default disposition.
+fn catches_the_stop_signal(pid: i32) -> bool {
     let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
         return false;
     };
     for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("SigBlk:") {
+        if let Some(rest) = line.strip_prefix("SigCgt:") {
             let Ok(mask) = u64::from_str_radix(rest.trim(), 16) else {
                 return false;
             };
-            return mask & (1 << (SIGTERM - 1)) != 0;
+            return mask & (1 << (SIGUSR1 - 1)) != 0;
         }
     }
     false
-}
-
-/// Whether `pid` is parked in `sigwaitinfo` (`wchan` names the kernel's
-/// timed-signal wait): the role is then consuming its quit signals
-/// directly, so a `SIGTERM` arrives as a consumed signal, not a
-/// disposition.
-fn waits_in_sigtimedwait(pid: i32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/wchan"))
-        .map(|wchan| wchan.contains("sigtimedwait"))
-        .unwrap_or(false)
 }
