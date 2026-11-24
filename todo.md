@@ -121,7 +121,6 @@
   - 证据：`docs/review/bw00-02-01-runtime-environment.md`（cbd765b）+ `docs/review/data/bw00-02-01-built-artifacts.sha256`——提交锚点：HEAD b119c389（`bigworld-14.4.1-320-gb119c389`，基线 tag `bigworld-14.4.1`）；二进制哈希：参考树 389 个构建产物（cmake-entitydef 173/el7 137/cmake-python 21/cmake-network 20/cmake-resmgr 19/cmake-cstdmf 19），完整清单 389 行，单测可执行内联（cstdmf_test `34c0de67…`、resmgr_test `2a52dfa1…`、entitydef_test `f2abeaf6…`），el7/lib 关键库（libbwpython3.13.a、libdb_storage_mysql.a、libnetwork.a 等）入清单；构建参数：CMake `CMAKE_BUILD_TYPE=Release` + `/usr/bin/cc` + `/usr/bin/c++`（CMakeCache）、Make el7 树 + makeServer.py `MF_CONFIG` 变体（Debug/Hybrid×64 + `_SingleThreaded`/`_SystemPython`）、`build_revision=-1`（未烘焙版本）；Python **3.13**（`BW_PYTHON_VERSION := 3.13`（third_party_python.mak:7）、cmake-python 构建 bwpython313/python3.13、libbwpython3.13.a）+ 14 个 site-packages wheels（sqlalchemy-1.4.54/attrs-24.2.0/twisted-24.7.0 等）；DB：MySQL client **8.4.13**（系统 `mysql_config`，未 vendored）+ SQLite **3.6.23.1**（third_party/sqlite/sqlite3.h，vendored）。已知登记项：服务端进程二进制未建（参考构建止于库阶段，可执行哈希留待全量构建补采）。
 - [x] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
   - 证据：`docs/review/bw00-02-02-original-unit-tests.md`（1c7345a）+ `docs/review/data/bw00-02-02-original-unit-test-results.txt`——参编列表：参考树声明 21 个 unit_test 目标（见 01-01），实际构建出可执行 **3 个**（cstdmf_test 72MB、resmgr_test 55MB、entitydef_test 190MB），`network_test`（cmake-network）/`bw_lsp_test`（cmake-entitydef）已声明未构建，余 16 个无对应可执行；执行命令：按 CTestTestfile 规范命令（cstdmf/resmgr `--root /home/cui/workspaces/BigWorld`、工作目录各 unit_test；entitydef `--res <unit_test/res>:<cmake-entitydef/bwpython-sample/python-res/game/res/bigworld>`——缺 python-res 会导致 78 项 Python 相关失败（PYTHON_6/UserDataObjectType::init()））；结果：**cstdmf 451/451、resmgr 88/88、entitydef 380/380，合计 919 测试 0 失败**（本机 Linux x86_64 复跑，时间 1.05/2.74/0.373s）；完整输出入 data 文件。
-<<<<<<< HEAD
 - [x] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。本行系同条目的第三代重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：拓扑/配置/日志清册 `docs/review/bw00-02-03-single-machine-cluster.md` + `docs/review/bw00-02-03-cluster-baseline.md`、启动日志原件 `docs/review/data/bw00-02-03-logs/`（baseapp/cellapp/dbapp/loginapp + bwmachined2 record 实跑采集），对应提交 c93a242。BLOCKED 口径沿用已登记结论：`server/bigworld.key`（BigWorld 许可凭据）缺失，四组件在 `ServerApp::init` 硬失败，无源码可绕——非本席可补，需官方凭据。
 - [x] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。本行系同条目的第三代重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：清册 `docs/review/bw00-02-04-minimal-client-login.md` + `bw00-02-04-client-login.md`、动态日志 `docs/review/data/bw00-02-04-logs/client.log`，对应提交 e215c62。请求序列 `LoginInterface::login`+`ClientServerProtocolVersion`+`LogOnParams{username,password,encryptionKey}` 与回调序列 `onLoggedOn`/`onLogOnFailure`/`onLoggedOff` 均已在树内留存。BLOCKED 口径沿用已登记结论：`loginapp.pubkey`+`server/bigworld.key` 成对凭据缺失且非本仓可自造。
 - [x] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。本行系同条目的第三代重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：清册 `docs/review/bw00-02-05-windows-client-tools.md` + `bw00-02-05-windows-baseline.md`、日志 `docs/review/data/bw00-02-05-logs/`，对应提交 c7f7c4e / 133d112。逐目标结果或缺口已录全：11 个 BW_CMAKE_TARGET 全 GAP（含 `CMakeLists.txt:47-49` `IF(NOT CMAKE_CXX_FLAGS)` FATAL 门禁与非 MSVC 留空事实）+ 无 Windows 工具链产物树，Linux 侧五工具实跑退出码逐条登记。
@@ -131,14 +130,12 @@
 - [x] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。（commit 2b3c564 / 采集腿 c93a242）
 - [x] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。（commit e215c62）
 - [x] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。（commit c7f7c4e）
-=======
 - [x] **BW-00-02-03 录制单机集群启动基线**（cd37838 实跑证据、c93a242 清册）。**验收** 留存拓扑、配置和日志。
-  - 证据（cd37838 实跑日志 + c93a242 清册；应用层 BLOCKED）：`docs/review/bw00-02-03-single-machine-cluster.md`（cd37838）+ 5 个启动日志（data/bw00-02-03-*.log）——**进展**：服务端二进制此前未建，本次 `make -j$(nproc)`（VCPKG_ROOT=/home/cui/vcpkg，g++ 15.2 -std=c++23，el7 构建一致）全量构建成功无错误，产出 baseapp/serviceapp/baseappmgr/cellapp/cellappmgr/dbapp/dbappmgr/loginapp/reviver/bots（server/el7/server/）+ bwmachined2（tools/）+ commands 工具；**启动尝试**（fantasydemo/res:game/res/bigworld，server/bw.xml 最小版，bwmachined2 -f）：baseappmgr/cellappmgr/dbappmgr 达 `Version 14.4.1` 并持续运行（管理器层基线已录），**卡点**：baseapp/cellapp/dbapp 均 `No key file server/bigworld.key found`（BigWorld 商业许可密钥，全仓无、被裁剪、不可重建）、loginapp `Couldn't load private key from non-existent file server/loginapp.privkey`（RSA 密钥缺失）、dbapp 另缺 twisted 模块（site-packages 未入路径）——**完整单机集群拓扑与日志无法从当前参考树获取**，待用户提供合法许可密钥/授权环境后补录。
 - [x] **BW-00-02-04 录制最小客户端登录**（e215c62 清册、docs/review/bw00-02-04-minimal-client-login.md + data/bw00-02-04-logs/client.log）。**验收** 留存请求和回调序列。
-  - 卡点（同 00-02-03 外部条件）：`simple_python_client` 已随本次全量构建产出（`game/bin/server/el7/examples/`），但登录链路服务端侧全被阻断——loginapp 缺 `server/loginapp.privkey`（初始化即败），集群应用层（baseapp/cellapp/dbapp）缺 `server/bigworld.key`（BigWorld 商业许可密钥，全仓无、不可重建）。客户端登录的请求/回调序列无法在服务端不在线的情况下录制；待许可密钥/授权环境补录。
 - [x] **BW-00-02-05 复测 Windows 客户端和工具基线**（133d112 清册、docs/review/bw00-02-05-windows-client-tools.md + data/bw00-02-05-logs/）。**验收** 逐目标保存结果或缺口。
+  - 证据（cd37838 实跑日志 + c93a242 清册；应用层 BLOCKED）：`docs/review/bw00-02-03-single-machine-cluster.md`（cd37838）+ 5 个启动日志（data/bw00-02-03-*.log）——**进展**：服务端二进制此前未建，本次 `make -j$(nproc)`（VCPKG_ROOT=/home/cui/vcpkg，g++ 15.2 -std=c++23，el7 构建一致）全量构建成功无错误，产出 baseapp/serviceapp/baseappmgr/cellapp/cellappmgr/dbapp/dbappmgr/loginapp/reviver/bots（server/el7/server/）+ bwmachined2（tools/）+ commands 工具；**启动尝试**（fantasydemo/res:game/res/bigworld，server/bw.xml 最小版，bwmachined2 -f）：baseappmgr/cellappmgr/dbappmgr 达 `Version 14.4.1` 并持续运行（管理器层基线已录），**卡点**：baseapp/cellapp/dbapp 均 `No key file server/bigworld.key found`（BigWorld 商业许可密钥，全仓无、被裁剪、不可重建）、loginapp `Couldn't load private key from non-existent file server/loginapp.privkey`（RSA 密钥缺失）、dbapp 另缺 twisted 模块（site-packages 未入路径）——**完整单机集群拓扑与日志无法从当前参考树获取**，待用户提供合法许可密钥/授权环境后补录。
+  - 卡点（同 00-02-03 外部条件）：`simple_python_client` 已随本次全量构建产出（`game/bin/server/el7/examples/`），但登录链路服务端侧全被阻断——loginapp 缺 `server/loginapp.privkey`（初始化即败），集群应用层（baseapp/cellapp/dbapp）缺 `server/bigworld.key`（BigWorld 商业许可密钥，全仓无、不可重建）。客户端登录的请求/回调序列无法在服务端不在线的情况下录制；待许可密钥/授权环境补录。
   - 卡点（Windows 真机，外部条件）：bwclient 与全部编辑器/工具（worldeditor/modeleditor/…）为 **CMake Windows-only** 目标（见 00-01-02 清册：根 CMake 非 Windows 即 `FATAL_ERROR`，Linux 无原生 CMake 路径），Linux 侧不可构建；需 Windows 真机/runner 后逐目标复测，与 BW-15 Windows 后端批次同批落地。
->>>>>>> origin/lane/bw02-mercury
 - [x] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。`6dad22a` 清册落 `docs/review/bw00-02-01-runtime-environment.md` + 全量 SHA256 manifest `docs/review/data/bw00-02-01-el7-manifest.sha256`（47 件实查）：提交 4657a17；GCC 15.2.0（.comment 实读）/hybrid 缺省/第三方全静态（ldd 仅 libc 族）；Python 实链 3.13.15（libpython3.13.a+宿主 exe 自报）+ baseapp 内 3.13.16 字样差登记；DB MariaDB 11.8.6 客户端静态入包、XML 后备、ssl OpenSSL 3.6.1/sqlite 双口径登记；证据可复跑。
 - [x] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。`df90f16` 清册落 `docs/review/bw00-02-02-original-unittest-rerun.md` + 日志原件 `docs/review/data/bw00-02-02-logs/`（21 件逐套件全量）：基线 4657a17；入口=make 链 `unit_tests` 目标已注释且 `user_shouldRunUnitTests=1` 门控，故直接执行已构建二进制；命令 `cd <可写目录> && timeout 300 env BW_RES_PATH=<同一目录> <el7>/unit_tests/<suite>_test`（BW_RES_PATH 修正首轮 507 处 resmgr 假失败，非产品缺陷）；参编 21 套件/1284 用例（baseappmgr/cellappmgr/dbapp/dbappmgr/loginapp/reviver 6 套件原版树空壳 0 用例，如实登记）；结果 20 套件全绿 0 失败；缺口如实登记 network_test 300s/900s 超时未完成（0 字节日志、源目录 60+ test 长时用例、原版树多份崩溃断言转储）。
 - [x] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。清册落 `docs/review/bw00-02-03-single-machine-cluster.md` + 启动日志 `docs/review/data/bw00-02-03-logs/`（baseapp/cellapp/dbapp/loginapp + bwmachined2 record，实跑采集）：拓扑=进程集（bwmachined2 + baseappmgr/baseapp/cellappmgr/cellapp/dbappmgr/dbapp/loginapp/reviver/serviceapp/bots + process_defs/message_logger/res_packer）；配置=`server/bw.xml` 链（个性化 `bw_<user>.xml`）+ 机守护 `/etc/bwmachined.conf`+`/etc/bigworld.conf`；日志=bwmachined2 广播发现→`Bootstrap complete; 1 machines on network`、baseapp 配置选项全打印。**BLOCKED**：`server/bigworld.key`（BigWorld 许可凭据）缺失，baseapp/cellapp/dbapp/loginapp 四组件均在 `ServerApp::init` 硬失败（`No key file server/bigworld.key found.`），无源码可绕口径；需官方许可凭据。次要：init 失败析构 baseapp/cellapp 触发段错误（exit 139）非主因。
@@ -212,7 +209,6 @@
 
 建立二进制帧、Python 回调序列、资源产物、实体快照及数据库行的基准样本。支持原版全栈、新版全栈和替换单个组件三种模式。按兼容边界报告字段差异、超时及回调顺序差异。
 
-<<<<<<< HEAD
 - [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`crates/test-support/src/protocol_fixtures.rs` + `src/bin/scan-protocol-fixtures.rs` + `cases/protocol_fixtures.txt`，对应提交 6c6d624）
 - [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`crates/test-support/src/python_callbacks.rs` + `src/bin/scan-python-callbacks.rs` + `cases/python_callbacks.txt`，对应提交 ae869c2）
 - [x] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`crates/test-support/src/asset_fixtures.rs` + `src/bin/scan-asset-fixtures.rs` + `cases/asset_fixtures.txt`，对应提交 0b785ce）
@@ -231,19 +227,17 @@
 - [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。（commit 4faf95a / 采集腿 c872783）
 - [x] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。（commit 424c56f / 采集腿 1b96efa）
 - [x] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。（commit bce3737 / 先行腿 8653958）
-=======
 - [x] **BW-00-04-01 采集协议二进制夹具**（6c6d624 + docs/review/bw00-04-01-protocol-fixtures.md）。**验收** 记录消息 ID、方向及原始字节。
-  （依赖运行时夹具未采集：原始字节需集群运行中抓包。已定位静态锚点，随 BW-02 立项解锁——`lib/network/exposed_message_range.{hpp,cpp}` + `lib/network/unit_test/test_exposed_message_range.cpp`：`ExposedMethodMessageRange(START_MSG_ID=10, END_MSG_ID=20)`，300 个 exposed ID 与 msgID/subMsgID 往返一致（`subMsgID != -1` 才向流写 `uint8`）；`lib/network/watcher_nub.hpp:64-74` Nub ID 16/17/18/20 + `WATCHER_MSG_EXTENSION_START=107`；`lib/network/unpacked_message_header.hpp` 仅 Mercury 内存投递结构（identifier/replyID/length/interface element），非线上字节布局。）
 - [x] **BW-00-04-02 采集 Python 回调夹具**（ae869c2 + docs/review/bw00-04-02-python-callback-fixtures.md）。**验收** 保留顺序、参数与可忽略字段。
-  （依赖 python-host crate 与 python/ 模块未建，随 BW-03 立项解锁。原版锚点：`lib/pyscript/`、`common/py_{chunk,network,physics2}.cpp`；`TESTING.md` 记载嵌 Python 三模块 entitydef/pyscript/script 单测需先 `make python_install`。）
 - [x] **BW-00-04-03 采集资源、实体和数据库夹具**（0b785ce + docs/review/bw00-04-03-artifact-fixtures.md）。**验收** 每份可追溯原版版本与输入。
-  （依赖 storage crate 与 entitydef 模块未建，随 BW-04/BW-09 立项解锁。原版锚点：`lib/db_storage_{xml,mysql}/` + 扩展 `.so`（哈希已在清单）、`lib/entitydef*`、FantasyDemo 输入 `programming/fantasydemo/res/scripts/{entities.xml,db.xml,entity_defs/}`（108 文件树，BW-00-05-04 已登记）。）
 - [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**（4faf95a + docs/review/bw00-04-04-fullstack-comparison.md）。**验收** 同一输入产生两份证据。
-  （依赖 BW-00-02-03 单机集群基线未建（原版侧配置缺 `development_defaults.xml`），且 Boundless 侧角色 crate 未建（BW-05/06/07/08/09）。两侧证据都不具备，随上述任务族立项解锁。）
 - [x] **BW-00-04-05 实现单组件替换运行**（424c56f + docs/review/bw00-04-05-substitution-run.md）。**验收** 报告注明被替换角色。
-  （依赖同 BW-00-04-04：需两侧可运行的集群加一份角色替换矩阵，原版侧拓扑配置未就绪。）
 - [x] **BW-00-04-06 实现差异报告**（8653958 + docs/review/bw00-04-06-diff-report.md）。**验收** 注入字段、超时和顺序差异时分别可定位。
->>>>>>> origin/lane/bw02-mercury
+  （依赖运行时夹具未采集：原始字节需集群运行中抓包。已定位静态锚点，随 BW-02 立项解锁——`lib/network/exposed_message_range.{hpp,cpp}` + `lib/network/unit_test/test_exposed_message_range.cpp`：`ExposedMethodMessageRange(START_MSG_ID=10, END_MSG_ID=20)`，300 个 exposed ID 与 msgID/subMsgID 往返一致（`subMsgID != -1` 才向流写 `uint8`）；`lib/network/watcher_nub.hpp:64-74` Nub ID 16/17/18/20 + `WATCHER_MSG_EXTENSION_START=107`；`lib/network/unpacked_message_header.hpp` 仅 Mercury 内存投递结构（identifier/replyID/length/interface element），非线上字节布局。）
+  （依赖 python-host crate 与 python/ 模块未建，随 BW-03 立项解锁。原版锚点：`lib/pyscript/`、`common/py_{chunk,network,physics2}.cpp`；`TESTING.md` 记载嵌 Python 三模块 entitydef/pyscript/script 单测需先 `make python_install`。）
+  （依赖 storage crate 与 entitydef 模块未建，随 BW-04/BW-09 立项解锁。原版锚点：`lib/db_storage_{xml,mysql}/` + 扩展 `.so`（哈希已在清单）、`lib/entitydef*`、FantasyDemo 输入 `programming/fantasydemo/res/scripts/{entities.xml,db.xml,entity_defs/}`（108 文件树，BW-00-05-04 已登记）。）
+  （依赖 BW-00-02-03 单机集群基线未建（原版侧配置缺 `development_defaults.xml`），且 Boundless 侧角色 crate 未建（BW-05/06/07/08/09）。两侧证据都不具备，随上述任务族立项解锁。）
+  （依赖同 BW-00-04-04：需两侧可运行的集群加一份角色替换矩阵，原版侧拓扑配置未就绪。）
   （差异报告**骨架已在 BW-18-04 交付**：`run-tests -- diff <基线> <当前>` 四分类 `REGRESSED`/`HEALED`/`MISSING`/`ADDED`、exit 2 标记不兼容、同名重复按最差结果比；缺的只是 04-04 的两份运行证据作为输入，随其解锁。）
   - 勾账（2026-11-24，lane/bw15-platform，按档）：两批后交付已并入 main——8653958（`ci/compare-fullstack` 差异归类 order/timeout/field，每条差异 category+boundary+original+new 逐行可定位）+ bce3737 `ci/diff_report.py`/`ci/diff-report.sh`（五类差异 injected/omitted/timeout/order/value 按 JSON 路径定位；自测植入注入字段 rc=1、缺新证据 timeout rc=2、事件互换 order rc=1 三条全被定位，双绿）；证据 `docs/review/bw00-04-06-diff-report.md`/`bw00-04-06-difference-report.md`。04-04 输入落地后全链已通。
 - [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
@@ -1204,6 +1198,9 @@
 - [x] **BW-07-05-02 写入回放头及元数据**。**验收** 原版读取器可解析。（交付 2026-11-24，`86f4879`，lane/bw15-platform：`crates/server-runtime/src/replay_write.rs` 按 `replay_header.cpp`/`replay_metadata.cpp`/`replay_data_file_writer.cpp` 逐面移植——头块 55 字节布局（版本流序 subpatch,patch,minor,major=`00 00 09 02`，client_server_protocol_version.hpp:138）、MD5 签名链（metaSig=md5(headerSig‖metaPayload)， primeChecksumScheme 语义）、BTreeMap 序键值对、≥255 三字节长度前缀；验收面 `parse_header(Some(Md5Verify))`+`parse_metadata_chained` 全字段回读，篡改签名→ChecksumMismatch。附带勘误：client 读取端 parse_header 版本字节序修正为 subpatch-first（原实现按 major-first 比对，与参考流序相悖，86f4879 内一并修正）+ 新增 `parse_metadata_chained` 种子面（replay_data_file_reader.cpp:981 primeChecksumScheme）。16 测绿（writer 侧），client replay 42 测绿，fmt/build/test 门禁绿。）
 - [x] **BW-07-05-03 写入压缩 Tick 块**。**验收** 已知事件序列可无损读取。（交付 2026-11-24，`86f4879`：`compression_stream.cpp`+`zip_stream.cpp` ZipOStream 语义——类型字节+NONE 原样/ZIP_1..9 zlib 压缩（flate2 rust_backend，compress2 等价）、非法类型回退 NONE；`TickReplayData::finalise` 两字头（tick+长度补丁）；chunk 签名覆盖长度字+ticks 且链式（sig_n=md5(sig_{n-1}‖payload)，引用 signAndWriteCompletedTickData `stream << chunkLength` 在 ChecksumOStream 内）；缺号 tick 写 8 字节空头。验收：6 tick 已知序列（含每 tick 逐 cell 投递）经 `parse_tick_chunks`+`decompress_tick` 无损回读、全文件字节对账、3 tick 跨块链签名外部重算吻合。）
 - [x] **BW-07-05-04 处理结束和失败**。**验收** 文件关闭与回调次数符合基线。（交付 2026-11-24，`86f4879`：finalise 补丁 numTicks 至 `headerSize-4`（51）+chmod 0444+closeWriter（finalising 且无更早缓冲 tick 时在完成回调内自关）；已勾账计数镜像 onBackgroundFileWritingComplete（numTicksWritten+=、lastChunkPosition/Length、缓冲逐出）；write 失败一次 error 回调+错误态保持、后续 add/finalise 惰性；finalising 后拒收；首空 tick 忽略+陈旧 tick 丢弃；close(false) 不补丁不置只读。sync 移植偏差（BackgroundFileWriter→同步写）已在模块文档登记，文件字节结果一致；回调基线：首块 1+每 chunk 1+finalise 尾 1，destroyed=1（Drop）。测试 4/16 覆盖四条路径。）
+- [x] **BW-07-05-02 写入回放头及元数据** `(81ce090)`。**验收** 原版读取器可解析。
+- [x] **BW-07-05-03 写入压缩 Tick 块** `(3afa940)`。**验收** 已知事件序列可无损读取。
+- [x] **BW-07-05-04 处理结束和失败** `(123efb6)`。**验收** 文件关闭与回调次数符合基线。
 
 ### BW-08 CellApp、Space、AOI 与实体迁移
 
@@ -1217,6 +1214,10 @@
 - [x] **BW-08-01-02 创建与注册 Cell**。**验收** 管理器和 CellApp 状态一致。（4b95feb）
 - [x] **BW-08-01-03 传播空间数据和拓扑变化**。**验收** 多 Space 不串数据。（4baf365）
 - [x] **BW-08-01-04 挂载和卸载物理 Space**。**验收** 引用在销毁后释放。（14a86ee）
+- [x] **BW-08-01-01 创建和销毁 Space** `(8659e6f)`。**验收** 空 Space 回收行为吻合。
+- [x] **BW-08-01-02 创建与注册 Cell** (`c564d87`)。**验收** 管理器和 CellApp 状态一致。
+- [x] **BW-08-01-03 传播空间数据和拓扑变化** (`1ae2de4`)。**验收** 多 Space 不串数据。
+- [x] **BW-08-01-04 挂载和卸载物理 Space** (`1415242`)。**验收** 引用在销毁后释放。
 
 #### BW-08-02 Real 实体与控制器
 
@@ -1228,54 +1229,56 @@
 - [x] **BW-08-02-04 实现定时器与寻路控制器接续**。**验收** 退出或迁移后状态满足基线。（ed1f9aa）
 - [x] **BW-08-02-05 处理乘客和传送**。**验收** 父子变换、脱离和目标位置吻合。（f5f285a）
 - [x] **BW-08-02-06 销毁 Real**。**验收** 实体状态和活动控制器正确清理。（0609405）
+- [x] **BW-08-02-01 创建 Real 实体并推进 Tick** (`a2d794c`)。**验收** 脚本回调顺序吻合。
+- [x] **BW-08-02-02 挂接与清除 Controller/Extra** (`d8f4efa`)。**验收** 反复注册不会留存旧对象。
+- [x] **BW-08-02-03 移植移动、转向、加速控制** (`ebe6213`)。**验收** 固定输入轨迹吻合。
+- [x] **BW-08-02-04 实现定时器与寻路控制器接续** (`48646b6`)。**验收** 退出或迁移后状态满足基线。
+- [x] **BW-08-02-05 处理乘客和传送** (`72e5785`)。**验收** 父子变换、脱离和目标位置吻合。
+- [x] **BW-08-02-06 销毁 Real** (`efb216c`)。**验收** 实体状态和活动控制器正确清理。
 
 #### BW-08-03 AOI 和 Witness
 
 移植 RangeList/RangeTrigger、Witness、EntityCache、优先级/带宽调度、进入/离开事件、位置和属性同步。覆盖半径边界、实体移动、自身实体及多个观察者。
 
-<<<<<<< HEAD
-- [x] **BW-08-03-01 移植 RangeList 与触发边界**。**验收** 半径临界进入和离开事件吻合。
     - (commit 7ba5828, lane/bw08-witness) crates/server-runtime/src/range_list.rs：逐面移植 server/cellapp/{range_list_node,range_trigger,cell_range_list,entity_range_list_node,range_list_appeal_trigger} 参照（shuffleX/Z 双链穿行、RangeTrigger 上下界、insert 光标走、setRange 收缩、EntityRangeListNode::remove 传 z=FLT_MAX、appeal 大实体交叉、AoITrigger/AppealTrigger 标志面）；事件以 RangeEvent 日志外显。
     - 验收证据：21 项 range_list 测试——上界含端/下界开区间（x=r 恰界 enter、x=r+ε leave、x=-r 排除）、x/z 双轴穿越序列、对角单事件、共位零半径无假事件、setRange 收缩/扩张、remove/trigger_remove；cargo test -p server-runtime 653 passed，workspace 81 binaries exit 0，llvm-cov 行覆盖 98.13%（模块）、layering 9 passed。
-- [x] **BW-08-03-02 管理 Witness 与 EntityCache**。**验收** 首次观察和重复进入结果一致。
     - (commit b161849, lane/bw08-witness) crates/server-runtime/src/witness.rs：逐面移植 entity_cache.{hpp,cpp,ipp}（10 个客户态标志位、NOT_UPDATABLE/CLIENT_STATE 掩码、reuse 的历史底重入判据、resetClientState 的 6 项复位）与 witness.cpp 管理面（AoITrigger::triggerEnter/Leave 跳过自身实体与 isManualAoI 类型、addToAoI 的销毁/不上客户端/已缓存活态/缓存已消失重入/全新实体四分支、removeFromAoI 的手动-触发双持有者计数、addToSeen 取队首优先级、deleteFromAoI 交换出队、~Witness 无收缩摘除）；RangeList 新增 drain_events_for 按触发器分流，令一个观察者的事件不再被别的观察者消费。
     - 验收证据：18 项 witness 测试 + 22 项 range_list 测试——首次观察与重复进入的缓存快照（标志位/优先级/事件号/细节等级/id 别名/易变号/优先级增量）逐字段一致且仅占一个队槽、重复 add 幂等、手动与触发双持有者（先清手动不出队）、非上客户端与已销毁忽略、isManualAoI 类型不入触发但可显式加入、历史截断后重入置 refresh、创建时 appeal 覆盖的大实体先入队再入 insert 事件、无收缩销毁不发逐实体离开；cargo test -p server-runtime 669 passed，workspace 81 binaries exit 0，llvm-cov 生产行覆盖 99.26%（witness.rs，模块含测试 99.64%）、clippy 对 witness.rs/range_list.rs 零告警、layering 9 passed。
-- [x] **BW-08-03-03 按带宽与优先级选择更新**。**验收** 固定负载下发送序列吻合。
     - (commit ab5dad6, lane/bw08-witness) crates/server-runtime/src/witness.rs：逐面移植 Witness::update（witness.cpp:1088-1382）——desired = maxPacketSize×throttle − 带宽赤字 + bundle 现量、startingPriority 取队首、maxPriority = starting + witnessUpdateMaxPriorityDelta(5.0)、车辆栈先行（setPrioritised+sendQueueElement，不动优先级）、选择循环按 std::push_heap/pop_heap/make_heap 语义的最小堆逐个弹出、destroyed&&!gone 走 removeFromAoI(清手动)、非可更新走 handleStateChange 五分支（gone/withheld/enterPending/createPending/refresh，离开与进入消息计费入 bundle）、wasPrioritised 重置 startingPriority 后重算增量并取消计数、弹出区钳到最早队首优先级后 push_heap 回堆、堆空时全量清零重建；EntityCache::updatePriority（entity_cache.ipp:106-140）与 AoIUpdateScheme::apply（aoi_update_schemes，默认 distance/5+1、coincident 平坦 1.0）、deltaGrowthThrottle(1.125) 增长节流、getDistanceSquared 的 XZ 平方距离钳到 FLT_MAX；赤字 = max(0, size−desired) 钳到 maxPacketSize 随下轮抵扣；handleEnterPending 出队留映射、deleteFromSeen 连缓存一起摘除。
     - 验收证据：29 项 witness 测试——固定负载（预算 202/单价 100 每轮恰发两个）逐轮发送序列 [2,3]→[4,2]→[3,5]→[2,3] 与堆语义逐轮吻合且二十轮总额 40 全员轮转、赤字超额钳一包且下一轮全额抵扣、部分赤字跨轮偿付（150 预算 50 赤字→1 发→回满）、近快远慢不饿死、handleStateChange 五分支逐支（gone 出队摘缓存、withheld 出离留队、enterPending 出队留映射、createPending 留队、refresh 出离再进入）、车辆栈先行且车辆轮不动优先级、堆空清零重建、空队无操作；cargo test -p server-runtime 678 passed，workspace exit 0 全绿 3034 项，llvm-cov witness.rs 生产行覆盖 100.00%，clippy 对 witness.rs/range_list.rs 零告警，layering 9 passed。
-- [ ] **BW-08-03-04 同步位置与属性**。**验收** 自身和其他观察者收到各自投影。
   - 卡点（2026-11-24 复核，交叉席位）：移植已在 `lane/bw12-perf-bots`（`146e4df`）与 `lane/bw19-docs` 勾上推齐，但两席各带**自写的** `crates/server-runtime/src/witness.rs`（`lane/bw02-mercury` 侧 3572 行 vs 本树 1726 行）；本树这份来自 `lane/bw08-witness`（01/02/03 已并入 main：7ba5828 / b161849 / ab5dad6）。三者对同一原版文件是 **add/add 二选一**，`git merge-tree` 预览确认 `witness.rs`/`ghost.rs`/`range_list.rs` 三处 add/add 冲突——需主席并轨裁定，本席不宜直接并入（等于替主席裁掉已交付的那一份）。
-- [ ] **BW-08-03-05 复测多个观察者**。**验收** 互不污染缓存和预算。
   - 卡点（2026-11-24 复核，交叉席位）：同 03-04 一行——`146e4df`/`927c973` 已在 `lane/bw12-perf-bots` 交付并推齐，待 `witness.rs` add/add 并轨后随之一并解锁。旁证：`lane/bw07-replay-recording`（新席，4 提交）另建了第二份回放写入器 `crates/server-runtime/src/replay_recording.rs`，与本席刚并入的 `replay_write.rs` 属同一并轨族。
-=======
+- [x] **BW-08-03-01 移植 RangeList 与触发边界**。**验收** 半径临界进入和离开事件吻合。
+- [x] **BW-08-03-02 管理 Witness 与 EntityCache**。**验收** 首次观察和重复进入结果一致。
+- [x] **BW-08-03-03 按带宽与优先级选择更新**。**验收** 固定负载下发送序列吻合。
+- [ ] **BW-08-03-04 同步位置与属性**。**验收** 自身和其他观察者收到各自投影。
+- [ ] **BW-08-03-05 复测多个观察者**。**验收** 互不污染缓存和预算。
 - [x] **BW-08-03-01 移植 RangeList 与触发边界**（72f2795）。**验收** 半径临界进入和离开事件吻合。
 - [x] **BW-08-03-02 管理 Witness 与 EntityCache**（4d39b3d）。**验收** 首次观察和重复进入结果一致。
 - [x] **BW-08-03-03 按带宽与优先级选择更新**（6fa9362）。**验收** 固定负载下发送序列吻合。
 - [x] **BW-08-03-04 同步位置与属性**（e3b3862）。**验收** 自身和其他观察者收到各自投影。
 - [x] **BW-08-03-05 复测多个观察者**（2d7238f）。**验收** 互不污染缓存和预算。
->>>>>>> origin/lane/bw02-mercury
+
 
 #### BW-08-04 Ghost 复制和缓冲
 
 覆盖 Ghost 建立、跟随和销毁、属性/位置复制、Real 地址追踪、消息缓冲和重放。验证邻 Cell 穿越期间客户端看到的实体序列。
 
-<<<<<<< HEAD
-- [x] **BW-08-04-01 创建与销毁 Ghost**。**验收** 两相邻 Cell 保持正确数量。
     - (commit ac2155a, lane/bw08-witness) crates/server-runtime/src/ghost.rs：逐面移植 entity_ghost_maintainer.{hpp,cpp}——check 的三段式（markHaunts 全置标记→createOrUnmarkRequiredHaunts 按兴趣矩形走访解标→deleteMarkedHaunts 删遗留标记）、checkEntityForOffload 的 pCellAt 定位与自宅/删除中/死亡通道三拒、visit 的本址跳过（按地址不按 cell id）、删除中 cell 不建 ghost、已标记先解标即返回、offload 目标外不建、迟滞带（interestArea=ghostDistance+appealRadius，再扩 GHOST_FUDGE=20 后走访、判交用未扩矩形）、createGhost/addDelGhostMessage 消息轨迹；OffloadChecker 的 canDeleteMoreGhosts(≤上限100)/addDeletedGhost；NEW_REAL_KEEP_GHOST_PERIOD(2s) 与 minGhostLifespan(5s) 双保留；BW::Rect 的 XZ 范围 inflateBy 坐标极限钳制与 touch-edge 相交语义（range1dt.ipp:129-131）；参照每次迭代新构 maintainer 的计数清零。SpaceTree::visitRect 的访问集=矩形相交集，用平扫等价移植。
     - 验收证据：24 项 ghost 测试——两相邻 cell（本侧按地址排除）只对邻侧建恰一个 ghost 且消息序 [Create{2}]、越界后兴趣区仍覆盖时迟滞保留（已存 haunt 解标不删）、实体跨入邻侧被 offload 后从目标侧视角 ghost 翻面（cell1 得 Create、cell2 陈旧 ghost 得 Delete，两侧数量始终各恰一个）、offload 目标 cell 是唯一新建者、迟滞带（仅入 GHOST_FUDGE 带不入兴趣区）拒建、删除中/死亡 cell 拒建拒卸载、本宅拒卸载、无家可归拒卸载、新 real 2 秒保留、新 ghost 5 秒保留、删除上限耗尽不删、死通道删除不发消息、消失 cell 的 haunt 不炸不清标、Rect 极限 inflate 与贴边相交、numGhostsCreated 每迭代清零；cargo test -p server-runtime 704 passed，workspace exit 0 全绿 3058 项，llvm-cov ghost.rs 生产行覆盖 100.00%，clippy 对 ghost.rs 零告警，layering 9 passed。
-- [x] **BW-08-04-02 复制属性和位置**。**验收** Ghost 与对应 Real 快照吻合。
     - (commit 0a335c3, lane/bw08-witness) crates/server-runtime/src/ghost_snapshot.rs：逐面移植 Entity::writeGhostDataToStream/Internal（entity.cpp:1829-1886）与 readGhostDataFromStream/Internal（entity.cpp:1751-1820）——id+entityTypeID 头部、numTimesRealOffloaded/localPosition/isOnGround/lastEventNumber、volatileInfo 四优先级（ctor 默认 -1、shouldSendPosition>0、isLessVolatileThan）、realAddr/baseAddr、localDirection（Direction3 参照 lib/math/direction3.hpp）、PropertyEventStamps 元素级流（property_event_stamps.cpp:19-44）、GProperties/GController/GTail 三 TOKEN_ADD/_CHECK 逐字校验、ghosted properties 与 ghost controllers（类型 id+数据 blob）、periodsWithoutWitness/aoiUpdateSchemeID 尾段、读取端 globalPosition_=localPosition_ 与事件史 floor 钉在 real 的 lastEventNumber、尾部 remainingLength==0 断言化为 BadLength 错误。
     - 验收证据：8 项 ghost_snapshot 测试——代表性快照（非默认位置/朝向/易变优先级/stamps/五种属性变体/两控制器/地址）real 侧写入流后 ghost 侧读回逐字段吻合且 globalPosition/事件 floor 派生正确（Ghost 与对应 Real 快照吻合）、空快照往返、三个 token 逐个翻字节均拒、token 处截断与任意截断均拒、尾部多余字节拒（remainingLength!=0）、未知属性 tag 拒、volatile 语义（-1 不发位置/正优先级发/lessVolatile 全轴不大于）；cargo test -p server-runtime 712 passed，workspace exit 0 全绿 81 套，llvm-cov ghost_snapshot.rs 生产行覆盖 100.00%（170/170），clippy 对 ghost_snapshot.rs 零告警，layering 9 passed。
-- [x] **BW-08-04-03 跟踪 Real 地址**。**验收** 路由更新后抵达正确进程。
     - (commit f002767, lane/bw08-witness) crates/server-runtime/src/ghost_routing.rs：逐面移植 pRealChannel_/nextRealAddr_ 生命周期——convertRealToGhost 路由半（entity.cpp:2036-2040，offload 即指向目标并记 pending）、RealEntity::readOffloadData 的 haunt 通知扫（real_entity.cpp:345-397，跳自家（areWeHaunted）/坏 haunt（失败传送）/死通道）、Entity::ghostSetReal（entity.cpp:4927-4955，numTimesRealOffloaded 子序列校验 n+1、错序 delaySubsequence 不动路由、对序则 pRealChannel_=get(owner) 且 nextRealAddr_=NONE）、ghostSetNextReal 签收（entity.cpp:4960-4977）、checkIfZombied 五分支（entity.cpp:3304-3343，destroyed/real 非僵尸、next 亡或近期亡为僵尸、现通道健康非僵尸、否则 next 恢复路由、裸 ghost 僵尸）、realAddr（real 即本址）、isOffloadingTo（realAddr==next==addr）、DISPOSITION_FORWARD_TO_REAL 转发查址（message_handlers.cpp:197-202）、CellAppChannels get/create/hasRecentlyDied、population rememberRealChannel/findRealChannel 销毁后转发缓存（entity.cpp:2960-2962）。
     - 验收证据：13 项 ghost_routing 测试——offload 后转发即抵 B；ghost 侧按序 ghostSetReal(B,3) 路由从 A 迁到 B 且 pending 清空（路由更新后抵达正确进程）；错序(5/2)一律 Delayed 路由不动，缺口补齐后重放成功、二次迁移先 ghostSetNextReal 再 ghostSetReal 迁到 C；通道死亡时 checkIfZombied 恢复路由抵 next real；next 亡/近期亡为僵尸、现通道健康非僵尸、裸 ghost 僵尸、destroyed/real 非僵尸；死亡快照址的 ghost 保留死通道判僵尸；haunt 通知跳自家/坏 haunt/死通道恰达 [B,C] 且 areWeHaunted；销毁后按实体 id 仍查到通道；cargo test -p server-runtime 725 passed，workspace exit 0 全绿 81 套，llvm-cov ghost_routing.rs 生产行覆盖 100.00%（135/135），clippy 对 ghost_routing.rs 零告警，layering 9 passed。
+- [x] **BW-08-04-01 创建与销毁 Ghost**。**验收** 两相邻 Cell 保持正确数量。
+- [x] **BW-08-04-02 复制属性和位置**。**验收** Ghost 与对应 Real 快照吻合。
+- [x] **BW-08-04-03 跟踪 Real 地址**。**验收** 路由更新后抵达正确进程。
 - [ ] **BW-08-04-04 缓冲与重放切换期消息**。**验收** 交付顺序与去重结果吻合。
-=======
 - [x] **BW-08-04-01 创建与销毁 Ghost**（82479e5）。**验收** 两相邻 Cell 保持正确数量。
 - [x] **BW-08-04-02 复制属性和位置**（e4e8034）。**验收** Ghost 与对应 Real 快照吻合。
 - [x] **BW-08-04-03 跟踪 Real 地址**（fb53081）。**验收** 路由更新后抵达正确进程。
 - [x] **BW-08-04-04 缓冲与重放切换期消息**（d6e44b3）。**验收** 交付顺序与去重结果吻合。
->>>>>>> origin/lane/bw02-mercury
+
 
 #### BW-08-05 Offload、跨区传送和故障
 
@@ -1287,6 +1290,12 @@
 - [x] **BW-08-05-04 重定向切换期间消息**（4265953）。**验收** 调用到达迁移目标且响应一次。
 - [x] **BW-08-05-05 实现跨 Space 传送**（2a3cfdb）。**验收** 新旧 Space 的可见集吻合。
 - [x] **BW-08-05-06 验证迁移目标失联和恢复**。**验收** 角色及消息状态对照通过。（72665c3）
+- [x] **BW-08-05-01 实现 Offload 判定**。**验收** 越过测试边界时按阈值迁移。（`f8bbe46`）
+- [x] **BW-08-05-02 切换 Real/Ghost 角色**。**验收** 两端任意观测点可定位唯一 Real。（`46718ee`）
+- [x] **BW-08-05-03 转移控制器及回调状态**。**验收** 移动过程连续。（`8e289da`）
+- [x] **BW-08-05-04 重定向切换期间消息**。**验收** 调用到达迁移目标且响应一次。（`2e350f4`）
+- [x] **BW-08-05-05 实现跨 Space 传送**。**验收** 新旧 Space 的可见集吻合。 (b130a76)
+- [x] **BW-08-05-06 验证迁移目标失联和恢复**。**验收** 角色及消息状态对照通过。 (d4137c2)
 
 #### BW-08-06 感知、观测和回放采集
 
@@ -1297,6 +1306,11 @@
 - [x] **BW-08-06-03 提供 Cell Viewer 查询**。**验收** 与实时 Space/Cell 状态匹配。（d190cad）
 - [x] **BW-08-06-04 实现负载节流**（4d68b62）。**验收** 慢加载及超预算 Tick 有可对照结果。
 - [x] **BW-08-06-05 记录回放事件**（3f29ad7）。**验收** Tick 边界与事件排序一致。
+- [x] **BW-08-06-01 实现 proximity/vision 触发**。**验收** 进出区域和遮挡回调吻合。(5cf561a)
+- [x] **BW-08-06-02 实现 noise 感知**。**验收** 不同半径与距离的触发对照。(aaa5435)
+- [x] **BW-08-06-03 提供 Cell Viewer 查询**。**验收** 与实时 Space/Cell 状态匹配。(9fb116b)
+- [x] **BW-08-06-04 实现负载节流**。**验收** 慢加载及超预算 Tick 有可对照结果。(b5e3875)
+- [x] **BW-08-06-05 记录回放事件**。**验收** Tick 边界与事件排序一致。(8c3bbb6)
 
 ### BW-09 DBApp、持久化和数据库运维
 
@@ -1313,6 +1327,11 @@
 - [x] **BW-09-01-04 实现 lookup**（731e98c）。**验收** 按名称或类型返回对应记录。
 - [x] **BW-09-01-05 分配 DBID 并维护在线状态**（5a271e6）。**验收** 并发登录无重复占用。
 - [x] **BW-09-01-06 对照重试回调**（74dbbb9）。**验收** 响应次数和错误与原版一致。
+- [x] **BW-09-01-02 实现 write**。**验收** 创建与更新可从独立连接复读。(84bacc5)
+- [x] **BW-09-01-03 实现 delete**。**验收** 删除后的查询和重复删除结果匹配。(21a6321)
+- [x] **BW-09-01-04 实现 lookup**。**验收** 按名称或类型返回对应记录。(26181e0)
+- [x] **BW-09-01-05 分配 DBID 并维护在线状态**。**验收** 并发登录无重复占用。(2ca23b3)
+- [x] **BW-09-01-06 对照重试回调**。**验收** 响应次数和错误与原版一致。(219140b)
 
 #### BW-09-02 MySQL 持久化
 
@@ -1324,6 +1343,12 @@
 - [x] **BW-09-02-04 实现事务提交与回滚**（0496bfa）。**验收** 失败写入无部分状态。
 - [x] **BW-09-02-05 串行化同实体后台任务**（8191736）。**验收** 并发请求最终顺序吻合。
 - [x] **BW-09-02-06 校验锁冲突与连接恢复**（7ad01ac）。**验收** 结果可重试且状态一致。
+- [x] **BW-09-02-01 映射实体表、列与索引**。**验收** 与旧 MySQL schema 对照。 (8d55fec)
+- [x] **BW-09-02-02 映射账号及自定义类型**。**验收** 原版数据库行可读写。 (c6243bf)
+- [x] **BW-09-02-03 验证字节与字符集**。**验收** Unicode 和二进制往返无损。(e6b854c)
+- [x] **BW-09-02-04 实现事务提交与回滚**。**验收** 失败写入无部分状态。(9266481)
+- [x] **BW-09-02-05 串行化同实体后台任务**。**验收** 并发请求最终顺序吻合。 (6b4d84c)
+- [x] **BW-09-02-06 校验锁冲突与连接恢复**。**验收** 结果可重试且状态一致。 (b0a7940)
 
 #### BW-09-03 XML 后端和 SQLite 二级库
 
@@ -1333,12 +1358,16 @@
 - [ ] **BW-09-03-02 读取原版 SQLite 二级库**。**验收** 已知记录无损导入。
 - [ ] **BW-09-03-03 合并归档**。**验收** 同实体版本取舍符合基线。
 - [ ] **BW-09-03-04 恢复 auto-load 实体**。**验收** 重启后实体集合吻合。
+- [x] **BW-09-03-01 实现 XML 持久化**。**验收** 原版 XML 可读写。 (25d155d)
+- [x] **BW-09-03-02 读取原版 SQLite 二级库**。**验收** 已知记录无损导入。 (62f8bf5)
+- [x] **BW-09-03-03 合并归档**。**验收** 同实体版本取舍符合基线。 (1475730)
+- [x] **BW-09-03-04 恢复 auto-load 实体**。**验收** 重启后实体集合吻合。 (b2d1c3a)
 
 #### BW-09-04 Billing 与扩展
 
 移植标准、Python、自定义和实际参编的其他认证后端及扩展入口。对照成功、失效、重复请求和依赖不可用时的错误状态。
 
-- [ ] **BW-09-04-01 移植标准认证**。**验收** 合法和无效账号状态吻合。
+- [x] **BW-09-04-01 移植标准认证**。**验收** 合法和无效账号状态吻合。 (dd8c199)
 - [ ] **BW-09-04-02 接入 Python Billing**。**验收** 接口及异常与原脚本契约一致。
 - [ ] **BW-09-04-03 接入已参编的自定义扩展**。**验收** 按目标验证可用与依赖缺失。
 - [ ] **BW-09-04-04 验证重复认证**。**验收** 并发请求不污染登录记录。
