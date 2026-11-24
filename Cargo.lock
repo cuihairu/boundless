@@ -137,6 +137,7 @@ dependencies = [
 name = "bots"
 version = "0.1.0"
 dependencies = [
+ "foundation",
  "libc",
  "resources",
  "server-runtime",

@@ -11,6 +11,9 @@ repository.workspace = true
 # The `BWConfig` chain the options read from (`BWConfig::update`, the
 # same reader `ServerAppConfig` uses).
 server-runtime = { workspace = true }
+# The math vectors and the timer queue the tick slice and the
+# movement faces run on (`Vector3`, `DispatcherTimers`).
+foundation = { workspace = true }
 # The fixture-facing resource init the tests share with the pipeline
 # tests (`BwResource::init_paths`).
 resources = { workspace = true }
