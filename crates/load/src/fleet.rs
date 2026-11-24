@@ -155,6 +155,28 @@ impl Default for FleetSettings {
     }
 }
 
+impl FleetSettings {
+    /// The fleet face of a read `BotsConfig` (`bots_config.{hpp,cpp}`): the
+    /// `MainApp` builds its fleet from exactly those options, and this is
+    /// where the reference's option list meets the port's fleet.
+    pub fn from_bots_config(config: &crate::bots_config::BotsConfig) -> Self {
+        Self {
+            username: config.username(),
+            password: config.password(),
+            tag: config.tag(),
+            transport: match config.transport() {
+                1 => Transport::Tcp,
+                2 => Transport::WebSockets,
+                _ => Transport::Udp,
+            },
+            should_use_random_name: config.should_use_random_name(),
+            controller_type: config.controller_type(),
+            controller_data: config.controller_data(),
+            log_on_retry_period: config.log_on_retry_period(),
+        }
+    }
+}
+
 /// The `MainApp` fleet: the bots list, the log-on retry queue and the
 /// round-robin tick cursor.
 pub struct Fleet {
@@ -784,5 +806,39 @@ mod tests {
         other.add_bots(8);
         let other_speeds: Vec<f32> = other.bots().iter().map(|bot| bot.speed()).collect();
         assert_ne!(speeds, other_speeds);
+    }
+
+    /// A read `BotsConfig` feeds the fleet: the defaults agree with the
+    /// defaults the reference's options carry, and a configured chain wins.
+    #[test]
+    fn a_bots_config_feeds_the_fleet_settings() {
+        assert_eq!(
+            FleetSettings::from_bots_config(&crate::bots_config::BotsConfig::new()),
+            FleetSettings::default()
+        );
+
+        let section = resources::datasection::parse(
+            "root",
+            b"<root><bots><username>LoadBot</username><password>secret</password>\
+              <tag>Load</tag><shouldUseTCP>true</shouldUseTCP>\
+              <shouldUseWebSockets>true</shouldUseWebSockets>\
+              <shouldUseRandomName>false</shouldUseRandomName>\
+              <controllerType>Beeline</controllerType>\
+              <controllerData>server/bots/other.bwp</controllerData>\
+              <logOnRetryPeriod>2.5</logOnRetryPeriod></bots></root>",
+        )
+        .unwrap();
+        let mut config = crate::bots_config::BotsConfig::new();
+        config.init(&[section], &mut Vec::new());
+
+        let settings = FleetSettings::from_bots_config(&config);
+        assert_eq!(settings.username, "LoadBot");
+        assert_eq!(settings.password, "secret");
+        assert_eq!(settings.tag, "Load");
+        assert_eq!(settings.transport, Transport::WebSockets);
+        assert!(!settings.should_use_random_name);
+        assert_eq!(settings.controller_type, "Beeline");
+        assert_eq!(settings.controller_data, "server/bots/other.bwp");
+        assert_eq!(settings.log_on_retry_period, 2.5);
     }
 }
