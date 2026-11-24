@@ -14,8 +14,12 @@ use crate::stream::MemoryIStream;
 /// (`MESSAGE_LOGGER_VERSION_64BIT`, `log_string_interpolator.cpp:22`).
 const MESSAGE_LOGGER_VERSION_64BIT: u8 = 7;
 
+/// The `fileOffset` a handler carries until it is written to the strings
+/// file (`FORMAT_STRING_EOF_MARKER`, `log_string_interpolator.cpp:26`).
+pub const FORMAT_STRING_EOF_MARKER: u32 = 0xffff_ffff;
+
 /// One conversion token, as the reference's runtime `FormatData`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormatData {
     /// The conversion character (`d`/`u`/`x`/`f`/`e`/`g`/`s`/`c`/`p`).
     pub type_char: char,
@@ -98,6 +102,9 @@ pub struct LogStringInterpolator {
     string_offsets: Vec<(usize, usize)>,
     /// Each conversion token, in order.
     fmt_data: Vec<FormatData>,
+    /// Where the serialized handler sits in the strings file; the marker
+    /// until written (`fileOffset_`).
+    file_offset: u32,
     /// False when `handleFormatString` rejected the format.
     is_ok: bool,
 }
@@ -110,6 +117,7 @@ impl LogStringInterpolator {
             components: Vec::new(),
             string_offsets: Vec::new(),
             fmt_data: Vec::new(),
+            file_offset: FORMAT_STRING_EOF_MARKER,
             is_ok: false,
         };
         interpolator.is_ok = handle_format_string(format, &mut interpolator);
@@ -124,6 +132,110 @@ impl LogStringInterpolator {
     /// Whether the format string parsed cleanly.
     pub fn is_ok(&self) -> bool {
         self.is_ok
+    }
+
+    /// `fileOffset()`: the offset this handler occupies in the strings
+    /// file, or the marker when not yet written.
+    pub fn file_offset(&self) -> u32 {
+        self.file_offset
+    }
+
+    /// The parsed pieces — the serialized form's contents.
+    pub fn pieces(&self) -> (&[u8], &[(usize, usize)], &[FormatData]) {
+        (&self.components, &self.string_offsets, &self.fmt_data)
+    }
+
+    /// `LogStringInterpolator::write` (`log_string_interpolator.cpp:89-105`):
+    /// serialize the parsed pieces into the strings file — the format
+    /// string, the components, the literal offsets, the token data — each
+    /// vector as a `uint32` count then its elements. Records the offset
+    /// this handler now occupies and refuses a second write, the way the
+    /// reference's `fileOffset_` guard does.
+    pub fn write_to(&mut self, out: &mut crate::stream::MemoryOStream) -> bool {
+        if self.file_offset != FORMAT_STRING_EOF_MARKER {
+            return false;
+        }
+        self.file_offset = out.size() as u32;
+
+        out.write_string(&self.format_string);
+
+        out.write_u32(self.components.len() as u32);
+        for component in &self.components {
+            out.write_u8(*component);
+        }
+
+        out.write_u32(self.string_offsets.len() as u32);
+        for (start, end) in &self.string_offsets {
+            // `StringOffset` holds `uint16`s (`string_offset.hpp`).
+            out.write_u16(*start as u16);
+            out.write_u16(*end as u16);
+        }
+
+        out.write_u32(self.fmt_data.len() as u32);
+        for fd in &self.fmt_data {
+            // `FormatData` (`format_data.hpp`): the type byte, the packed
+            // 4+4-bit cflags/vflags byte, the radix, then three `int`s.
+            out.write_u8(fd.type_char as u8);
+            out.write_u8(((fd.cflags as u8) & 0x0f) | (((fd.vflags as u8) & 0x0f) << 4));
+            out.write_u8(fd.base);
+            out.write_u32(fd.min as u32);
+            out.write_u32(fd.max as u32);
+            out.write_u32(fd.flags as u32);
+        }
+        true
+    }
+
+    /// `LogStringInterpolator::read` (`log_string_interpolator.cpp:111-119`):
+    /// parse a serialized handler back out of the strings file, recording
+    /// where it sits as the first thing it does (`fileOffset_ =
+    /// fileStream.tell()`).
+    pub fn read_from(stream: &mut crate::stream::MemoryIStream) -> Option<Self> {
+        let file_offset = stream.position() as u32;
+        let format_string = stream.read_string();
+        let count = stream.read_u32()? as usize;
+        let mut components = Vec::with_capacity(count);
+        for _ in 0..count {
+            components.push(stream.read_u8()?);
+        }
+
+        let count = stream.read_u32()? as usize;
+        let mut string_offsets = Vec::with_capacity(count);
+        for _ in 0..count {
+            let start = stream.read_u16()?;
+            let end = stream.read_u16()?;
+            string_offsets.push((start as usize, end as usize));
+        }
+
+        let count = stream.read_u32()? as usize;
+        let mut fmt_data = Vec::with_capacity(count);
+        for _ in 0..count {
+            let type_char = stream.read_u8()? as char;
+            let packed = stream.read_u8()?;
+            let cflags = (packed & 0x0f) as i32;
+            let vflags = ((packed >> 4) & 0x0f) as i32;
+            let base = stream.read_u8()?;
+            let min = stream.read_u32()? as i32;
+            let max = stream.read_u32()? as i32;
+            let flags = stream.read_u32()? as i32;
+            fmt_data.push(FormatData {
+                type_char,
+                cflags,
+                base,
+                min,
+                max,
+                flags,
+                vflags,
+            });
+        }
+
+        Some(Self {
+            format_string,
+            components,
+            string_offsets,
+            fmt_data,
+            file_offset,
+            is_ok: true,
+        })
     }
 
     /// `interpolate( handler, inputStream, version )`
@@ -254,6 +366,85 @@ impl LogStringInterpolator {
 
         handler.on_parse_complete();
         true
+    }
+
+    /// `streamToLog( writer, inputStream, version )`
+    /// (`log_string_interpolator.cpp:157-168`): the same walk as
+    /// [`interpolate`](Self::interpolate), but the handler is the args-file
+    /// writer — every decoded argument lands in `out` in the encoding the
+    /// read side walks back: `uint16` variable widths, `d` SHORT as
+    /// `int16`, `d` LONG as 64-bit (the write side upgrades 32-bit clients,
+    /// `log_string_interpolator.cpp:236-249`), the default width as 32-bit,
+    /// floats as eight bytes, strings packed, pointers as `int64`, chars as
+    /// one byte. False when the stream ran short.
+    pub fn stream_to_log(
+        &self,
+        stream: &mut MemoryIStream,
+        version: u8,
+        out: &mut crate::stream::MemoryOStream,
+    ) -> bool {
+        let mut args_writer = ArgsWriter { out, good: true };
+        let ok = self.interpolate(stream, version, &mut args_writer);
+        ok && args_writer.good
+    }
+}
+
+/// `LogStringWriter` (`log_string_writer.{hpp,cpp}`): the write half of the
+/// handler seam — every callback re-encodes its argument into the args
+/// file. The C++ handler is typed per conversion (`onInt<IntType>` picks
+/// the width from the read type); the port re-derives the same widths from
+/// the token's length modifier.
+struct ArgsWriter<'a> {
+    out: &'a mut crate::stream::MemoryOStream,
+    good: bool,
+}
+
+impl InterpolationHandler for ArgsWriter<'_> {
+    fn on_min_width(&mut self, width: i16, _fd: &mut FormatData) {
+        self.out.write_u16(width as u16);
+    }
+
+    fn on_max_width(&mut self, width: i16, _fd: &mut FormatData) {
+        self.out.write_u16(width as u16);
+    }
+
+    fn on_int(&mut self, value: i64, fd: &FormatData) {
+        use crate::format_string::conv_flags;
+        match fd.cflags {
+            // `onInt( int16 )` / `onInt( uint16 )`.
+            conv_flags::DP_C_SHORT => {
+                self.out.write_u16(value as u16);
+            }
+            // `onInt( int64 )` / `onInt( uint64 )` — LONG and LLONG both
+            // write eight bytes.
+            conv_flags::DP_C_LONG | conv_flags::DP_C_LLONG => {
+                self.out.write_u64(value as u64);
+            }
+            // `onInt( int32 )` / `onInt( uint32 )`.
+            _ => {
+                self.out.write_u32(value as u32);
+            }
+        };
+    }
+
+    fn on_float(&mut self, value: f64, _fd: &FormatData) {
+        self.out.write_u64(value.to_bits());
+    }
+
+    fn on_string(&mut self, value: &str, _fd: &FormatData) {
+        self.out.write_string(value);
+    }
+
+    fn on_pointer(&mut self, value: i64, _fd: &FormatData) {
+        self.out.write_u64(value as u64);
+    }
+
+    fn on_char(&mut self, value: u8, _fd: &FormatData) {
+        self.out.write_u8(value);
+    }
+
+    fn on_error(&mut self) {
+        self.good = false;
     }
 }
 
