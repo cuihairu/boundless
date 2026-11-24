@@ -8,7 +8,7 @@
 //! the grid coordinates, inside chunks read a `<transform>` and `<boundingBox>`
 //! from the section.
 
-use foundation::math::{BoundBox, Matrix, Vector3};
+use foundation::math::{BoundBox, Matrix, PlaneEq, Vector3};
 use resources::datasection::DataSection;
 
 use crate::boundary::{ChunkBoundary, form_boundaries};
@@ -87,6 +87,10 @@ pub struct Chunk {
     /// `removable_` (`chunk.cpp:190`, default true): a marked or locked
     /// chunk refuses `ChunkSpace::unloadChunk` (`chunk_space.cpp:1270`).
     pub removable: bool,
+    /// `focusCount_`: how the space tracks whether this chunk's hull is in
+    /// the focus grid; `completed()` is `focussed()` over it
+    /// (`chunk.hpp:183,186`).
+    pub focus_count: u32,
 }
 
 impl Chunk {
@@ -136,7 +140,41 @@ impl Chunk {
             is_loaded: false,
             is_bound: false,
             removable: true,
+            focus_count: 0,
         }
+    }
+
+    /// `Chunk::centre` — `centre_` is `boundingBox_.centre()`
+    /// (`chunk.cpp:217,238,388,3327,3410`).
+    pub fn centre(&self) -> Vector3 {
+        self.bounding_box.centre()
+    }
+
+    /// `Chunk::volume` (`chunk.cpp:3506-3512`): the bounding box volume.
+    pub fn volume(&self) -> f32 {
+        let v = self.bounding_box.max - self.bounding_box.min;
+        v.x * v.y * v.z
+    }
+
+    /// `completed()` (`chunk.hpp:183`): `updateCompleted` sets it to
+    /// `focussed()` (`chunk.cpp:1466-1468`).
+    pub fn completed(&self) -> bool {
+        self.focus_count > 0
+    }
+
+    /// The world-space hull border `Chunk::focus` builds (`chunk.cpp:1547-
+    /// 1553`): every boundary plane carried by `bounds_`, transformed by
+    /// the chunk transform.
+    pub fn focus_border(&self) -> Vec<PlaneEq> {
+        let mut border = Vec::with_capacity(self.bounds.len());
+        for bound in &self.bounds {
+            let peq = &self.boundaries[*bound].plane;
+            // we need to apply our transform to the plane
+            let ndtr = self.transform.apply_point(&(*peq.normal() * peq.d()));
+            let ntr = self.transform.apply_vector(peq.normal());
+            border.push(PlaneEq::new(ntr, ntr.dot_product(&ndtr)));
+        }
+        border
     }
 
     /// `Chunk::unload` (`chunk.cpp:914-980`): return the chunk to its

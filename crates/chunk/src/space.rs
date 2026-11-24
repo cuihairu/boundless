@@ -30,6 +30,7 @@ use resources::datasection::DataSection;
 
 use crate::boundary::PortalTarget;
 use crate::chunk::Chunk;
+use crate::column::{Column, ColumnGrid};
 use crate::identifier::is_outside_chunk;
 use crate::mapping::GeometryMapping;
 
@@ -40,6 +41,8 @@ const MAX_WORTHY_CHUNKS: usize = 50;
 /// `ChunkSpace`: the chunk map and the streaming state of one space. The
 /// reference keeps this in `ChunkSpace::ChunkMap` plus the manager's scan
 /// state; the port stores the loaded chunks and the bind-order trace.
+/// BW-10-01-05 adds the focus grid (`ServerChunkSpace::currentFocus_`) and
+/// the blurred-chunk list it refocuses from.
 #[derive(Debug, Clone)]
 pub struct ChunkSpace {
     pub id: u16,
@@ -48,16 +51,25 @@ pub struct ChunkSpace {
     chunks: BTreeMap<String, Chunk>,
     /// The order identifiers became bound — the BW-10-01-03 acceptance trace.
     bind_order: Vec<String>,
+    /// `currentFocus_` (`server_chunk_space.hpp:114`).
+    focus: ColumnGrid,
+    /// `blurred_` (`base_chunk_space.hpp`): bound chunks whose hulls are
+    /// not in the focus grid yet.
+    blurred: Vec<String>,
 }
 
 impl ChunkSpace {
     pub fn new(id: u16, mappings: Vec<GeometryMapping>) -> Self {
-        Self {
+        let mut space = Self {
             id,
             mappings,
             chunks: BTreeMap::new(),
             bind_order: Vec::new(),
-        }
+            focus: ColumnGrid::new(),
+            blurred: Vec::new(),
+        };
+        space.recalc_grid_bounds();
+        space
     }
 
     /// The space's grid size (`ChunkSpace::gridSize`), from its mapping.
@@ -256,6 +268,9 @@ impl ChunkSpace {
         let chunk = self.chunks.get_mut(identifier).unwrap();
         chunk.is_bound = true;
         self.bind_order.push(identifier.to_string());
+        // `pSpace_->noticeChunk( this )` (`chunk.cpp:1072`): the chunk may
+        // be focussed now
+        self.notice_chunk(identifier);
 
         // Two-way: each neighbour whose portal we bound gets its matching
         // portal bound too (`Chunk::bind(Chunk*)`, chunk.cpp:1741-1774).
@@ -321,10 +336,15 @@ impl ChunkSpace {
     /// the connection cannot silently rebind; without it the target names
     /// survive and a later `bind` reconnects without re-reading anything.
     ///
-    /// The reference's focus-grid eviction (`ignoreChunk`), exit-portal
-    /// item removal and lender/borrower release have no port-side objects
-    /// and stay registered (see `docs/review/bw10-01-chunk-load.md`).
+    /// The reference's exit-portal item removal and lender/borrower
+    /// release have no port-side objects and stay registered (see
+    /// `docs/review/bw10-01-chunk-load.md`); the focus-grid eviction is
+    /// ported (`ignoreChunk`, BW-10-01-05).
     pub fn unbind(&mut self, identifier: &str, cut: bool) {
+        // `pSpace_->ignoreChunk( this ); focusCount_ = 0; updateCompleted()`
+        // (`chunk.cpp:1332-1337`): nothing of this chunk may stay findable
+        // in the focus grid
+        self.ignore_chunk(identifier);
         // Decide immutably which bound portals move back, what their
         // targets become, and what each neighbour must do.
         struct Move {
@@ -423,6 +443,7 @@ impl ChunkSpace {
                 boundary.bound_portals = kept;
             }
             chunk.is_bound = false;
+            chunk.focus_count = 0;
         }
 
         // and let the neighbours know we're offline
@@ -512,6 +533,299 @@ impl ChunkSpace {
             .into_iter()
             .filter(|id| self.unload_chunk(id))
             .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // BW-10-01-05: the focus grid and the point queries over it
+    // ------------------------------------------------------------------
+
+    /// `ChunkSpace::recalcGridBounds` (`chunk_space.cpp:1077-1127`): the
+    /// focus window spans the mappings' local grid bounds; columns dropped
+    /// by the resize smudge their chunks (`~Column` deletes the
+    /// `HullChunk` holdings, each of which smudges its chunk,
+    /// `base_chunk_space.cpp:41-43`).
+    pub fn recalc_grid_bounds(&mut self) {
+        let (min_x, min_z, max_x, max_z) = if self.mappings.is_empty() {
+            (0, 0, 0, 0)
+        } else {
+            let mut min_x = i32::MAX;
+            let mut min_z = i32::MAX;
+            let mut max_x = i32::MIN;
+            let mut max_z = i32::MIN;
+            for m in &self.mappings {
+                min_x = min_x.min(m.bounds.min_l_grid_x);
+                min_z = min_z.min(m.bounds.min_l_grid_y);
+                max_x = max_x.max(m.bounds.max_l_grid_x);
+                max_z = max_z.max(m.bounds.max_l_grid_y);
+            }
+            (min_x, min_z, max_x, max_z)
+        };
+        let mut dropped = Vec::new();
+        self.focus.rect(
+            min_x,
+            min_z,
+            max_x - min_x + 1,
+            max_z - min_z + 1,
+            &mut dropped,
+        );
+        self.release_dropped_columns(dropped);
+    }
+
+    /// The `~Column` face (`base_chunk_space.cpp:393-411`): every held
+    /// `HullChunk` smudges its chunk — the focus count drops and a bound
+    /// chunk joins the blurred list.
+    fn release_dropped_columns(&mut self, dropped: Vec<Column>) {
+        for column in dropped {
+            for id in column.holdings() {
+                self.smudge_chunk(id);
+            }
+        }
+    }
+
+    /// `Chunk::smudge` (`chunk.cpp:1619-1638`): a non-zero focus count
+    /// drops to zero and the (bound) chunk joins the blurred list.
+    pub fn smudge_chunk(&mut self, identifier: &str) {
+        if self.chunk(identifier).is_some_and(|c| c.focus_count != 0) {
+            if let Some(c) = self.chunks.get_mut(identifier) {
+                c.focus_count = 0;
+            }
+            self.blurred_chunk(identifier);
+        }
+    }
+
+    /// `BaseChunkSpace::blurredChunk` (`base_chunk_space.cpp:718-726`):
+    /// but only if it's bound.
+    pub fn blurred_chunk(&mut self, identifier: &str) {
+        if self.chunk(identifier).is_some_and(|c| c.is_bound) {
+            self.blurred.push(identifier.to_string());
+        }
+    }
+
+    /// `BaseChunkSpace::removeFromBlurred` (`base_chunk_space.cpp:729-744`).
+    pub fn remove_from_blurred(&mut self, identifier: &str) -> bool {
+        if let Some(pos) = self.blurred.iter().position(|s| s == identifier) {
+            self.blurred.remove(pos);
+            return true;
+        }
+        false
+    }
+
+    /// The chunks waiting to be (re)focussed.
+    pub fn blurred_chunks(&self) -> &[String] {
+        &self.blurred
+    }
+
+    /// The focus grid window (`xBegin/zBegin/xEnd/zEnd`).
+    pub fn focus_span(&self) -> (i32, i32, i32, i32) {
+        self.focus.span()
+    }
+
+    /// `ChunkSpace::noticeChunk` (`chunk_space.cpp:1356-1371`): the chunk
+    /// is now bound and may be focussed.
+    pub fn notice_chunk(&mut self, identifier: &str) {
+        self.blurred_chunk(identifier);
+    }
+
+    /// The grid cell of a chunk centre — the reference computes it with an
+    /// int truncation plus a manual negative adjust
+    /// (`server_chunk_space.cpp:55-58`, `chunk_space.cpp:1320-1321`).
+    fn centre_grid(&self, centre: f32) -> i32 {
+        let mut n = (centre / self.grid_size()) as i32;
+        if centre < 0.0 {
+            n -= 1;
+        }
+        n
+    }
+
+    /// `ChunkSpace::column(point, canCreate)` (`chunk_space.cpp:776-803`):
+    /// the column at the point, or None when out of the focus span (or not
+    /// created and `can_create` is false).
+    pub fn column(&mut self, point: &Vector3, can_create: bool) -> Option<&mut Column> {
+        let x = self.point_to_grid(point.x);
+        let z = self.point_to_grid(point.z);
+        // check range
+        if !self.focus.in_span(x, z) {
+            return None;
+        }
+        // create if willing and able
+        if can_create && self.focus.get(x, z).is_none() {
+            self.focus.set(x, z, Some(Column::new()));
+        }
+        self.focus.get_mut(x, z)
+    }
+
+    /// `Chunk::focus` (`chunk.cpp:1536-1618`): build the chunk's world
+    /// border, add it to the column(s) it overlaps — the chunk centre for
+    /// an outside chunk, the eight bounding-box corners for an inside one —
+    /// and set the focus count to one.
+    pub fn focus_chunk(&mut self, identifier: &str) {
+        let Some(chunk) = self.chunks.get(identifier) else {
+            return;
+        };
+        let border = chunk.focus_border();
+        let is_outside = chunk.is_outside;
+        let centre = chunk.centre();
+        let bounding_box = chunk.bounding_box;
+
+        // find what columns we need to add to (z is needless I know)
+        let mut cells: Vec<(i32, i32)> = Vec::new();
+        if is_outside {
+            cells.push((self.point_to_grid(centre.x), self.point_to_grid(centre.z)));
+        } else {
+            for i in 0..8 {
+                let pt = Vector3::new(
+                    if i & 1 != 0 {
+                        bounding_box.max.x
+                    } else {
+                        bounding_box.min.x
+                    },
+                    if i & 2 != 0 {
+                        bounding_box.max.y
+                    } else {
+                        bounding_box.min.y
+                    },
+                    if i & 4 != 0 {
+                        bounding_box.max.z
+                    } else {
+                        bounding_box.min.z
+                    },
+                );
+                let cell = (self.point_to_grid(pt.x), self.point_to_grid(pt.z));
+                if !cells.contains(&cell) {
+                    cells.push(cell);
+                }
+            }
+        }
+
+        // and add it to all of them (the reference asserts each one)
+        for (x, z) in cells {
+            if !self.focus.in_span(x, z) {
+                continue;
+            }
+            if self.focus.get(x, z).is_none() {
+                self.focus.set(x, z, Some(Column::new()));
+            }
+            if let Some(column) = self.focus.get_mut(x, z) {
+                column.add_chunk(&border, self.chunks.get(identifier).unwrap());
+            }
+        }
+
+        // focus any current caches — no port-side caches, registered
+
+        // and set our focus count to one (`chunk.cpp:1604-1606`)
+        if let Some(chunk) = self.chunks.get_mut(identifier) {
+            chunk.focus_count = 1;
+        }
+    }
+
+    /// `ServerChunkSpace::focus` (`server_chunk_space.cpp:50-113`): focus
+    /// every blurred chunk — shut the columns that have already seen it,
+    /// refocus it, then mark the neighbourhood as having seen it again.
+    pub fn focus(&mut self) {
+        while !self.blurred.is_empty() {
+            let identifier = self.blurred.remove(0);
+
+            // find out where it is in the focus grid; a chunk missing from
+            // the map is a stale blur entry the port skips (the reference
+            // walks a raw pointer)
+            let Some(chunk) = self.chunks.get(&identifier) else {
+                continue;
+            };
+            let centre = chunk.centre();
+            let nx = self.centre_grid(centre.x);
+            let nz = self.centre_grid(centre.z);
+
+            // see if this chunk is new to (nx,nz) and adjacent columns,
+            // close them if it isn't
+            for x in nx - 1..=nx + 1 {
+                for z in nz - 1..=nz + 1 {
+                    if let Some(column) = self.focus.get_mut(x, z) {
+                        column.shut_if_seen(&identifier);
+                    }
+                }
+            }
+
+            // do the actual focussing work
+            self.focus_chunk(&identifier);
+
+            // open all the columns, and mark them as having seen this chunk
+            for x in nx - 1..=nx + 1 {
+                for z in nz - 1..=nz + 1 {
+                    if let Some(column) = self.focus.get_mut(x, z) {
+                        column.open_and_see(&identifier);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `ChunkSpace::ignoreChunk` (`chunk_space.cpp:1306-1353`): the chunk
+    /// is about to be disposed — delete the columns of its 3×3 focus
+    /// neighbourhood (deleting, not marking stale, so nothing of this
+    /// chunk stays findable in the focus grid) and take it out of the
+    /// blurred list.
+    pub fn ignore_chunk(&mut self, identifier: &str) {
+        // can't ignore unbound chunks
+        if !self.chunk(identifier).is_some_and(|c| c.is_bound) {
+            // ERROR_MSG "Attempted to ignore offline chunk"
+            return;
+        }
+
+        let centre = self.chunk(identifier).unwrap().centre();
+        let nx = self.centre_grid(centre.x);
+        let nz = self.centre_grid(centre.z);
+
+        for x in nx - 1..=nx + 1 {
+            for z in nz - 1..=nz + 1 {
+                if self.focus.in_span(x, z) {
+                    let dropped = self.focus.set(x, z, None);
+                    self.release_dropped_columns(dropped.into_iter().collect());
+                }
+            }
+        }
+
+        self.remove_from_blurred(identifier);
+    }
+
+    /// `ChunkSpace::findOutsideChunkFromPoint` (`chunk_space.cpp:714-734`):
+    /// the last-resort outside-chunk lookup, with the small +y fudge the
+    /// reference adds to dodge bounding-box edge floating point.
+    pub fn find_outside_chunk_from_point(&self, point: &Vector3) -> Option<String> {
+        let mut pt = *point;
+        pt.y += 0.0001;
+        let column = self.column_at(&pt)?;
+        column.outside_chunk().map(|id| id.to_string())
+    }
+
+    /// `ChunkSpace::findChunkFromPoint` (`chunk_space.cpp:736-755`): the
+    /// column-level query — outside chunk first, then larger hull volumes.
+    pub fn find_chunk_from_point(&self, point: &Vector3) -> Option<String> {
+        let mut pt = *point;
+        pt.y += 0.0001;
+        let column = self.column_at(&pt)?;
+        column.find_chunk(&pt, &self.chunks)
+    }
+
+    /// `ChunkSpace::findChunkFromPointExact` (`chunk_space.cpp:757-768`):
+    /// the query result only counts when the chunk is completed — loaded,
+    /// bound and still focussed (`chunk.hpp:183,186`).
+    pub fn find_chunk_from_point_exact(&self, point: &Vector3) -> Option<String> {
+        let result = self.find_chunk_from_point(point)?;
+        match self.chunk(&result) {
+            Some(chunk) if chunk.completed() => Some(result),
+            _ => None,
+        }
+    }
+
+    /// `column(pt, false)` (`chunk_space.cpp:788-802`): the read-only
+    /// column lookup.
+    fn column_at(&self, point: &Vector3) -> Option<&Column> {
+        let x = self.point_to_grid(point.x);
+        let z = self.point_to_grid(point.z);
+        if !self.focus.in_span(x, z) {
+            return None;
+        }
+        self.focus.get(x, z)
     }
 
     /// Load and bind every candidate in scan order, returning the bind
@@ -1134,5 +1448,279 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    // ------------------------------------------------------------------
+    // BW-10-01-05: the focus grid and its point queries
+    // ------------------------------------------------------------------
+
+    fn grid_mapping(min_x: i32, min_z: i32, max_x: i32, max_z: i32) -> GeometryMapping {
+        GeometryMapping::new(
+            "space/",
+            100.0,
+            GridBounds {
+                min_l_grid_x: min_x,
+                min_l_grid_y: min_z,
+                max_l_grid_x: max_x,
+                max_l_grid_y: max_z,
+                min_grid_x: min_x,
+                min_grid_y: min_z,
+                max_grid_x: max_x,
+                max_grid_y: max_z,
+            },
+            false,
+        )
+    }
+
+    fn add_outside_chunk(space: &mut ChunkSpace, mapping: &GeometryMapping, id: &str) {
+        let mut chunk = Chunk::new(id, mapping, &Matrix::identity());
+        chunk.is_loaded = true;
+        space.add_chunk(chunk);
+    }
+
+    /// An inside chunk with a box shell around (10,0,10)-(20,10,20): six
+    /// inward boundary planes indexed by `bounds`, the input `Chunk::focus`
+    /// folds into its columns' hull trees.
+    fn shell_chunk(mapping: &GeometryMapping) -> Chunk {
+        let mut chunk = Chunk::new("00000000i", mapping, &Matrix::identity());
+        let min = Vector3::new(10.0, 0.0, 10.0);
+        let max = Vector3::new(20.0, 10.0, 20.0);
+        chunk.bounding_box = foundation::math::BoundBox::new(min, max);
+        chunk.boundaries = [
+            (Vector3::new(1.0, 0.0, 0.0), min.x),
+            (Vector3::new(-1.0, 0.0, 0.0), -max.x),
+            (Vector3::new(0.0, 1.0, 0.0), min.y),
+            (Vector3::new(0.0, -1.0, 0.0), -max.y),
+            (Vector3::new(0.0, 0.0, 1.0), min.z),
+            (Vector3::new(0.0, 0.0, -1.0), -max.z),
+        ]
+        .iter()
+        .map(|(n, d)| ChunkBoundary {
+            plane: PlaneEq::new(*n, *d),
+            bound_portals: Vec::new(),
+            unbound_portals: Vec::new(),
+        })
+        .collect();
+        chunk.bounds = (0..6).collect();
+        chunk.is_loaded = true;
+        chunk
+    }
+
+    /// BW-10-01-05 acceptance: cross-chunk and empty-region queries return
+    /// the right sets — one answer per outside-chunk column, the shell hull
+    /// inside it, and nothing where no chunk was focussed.
+    #[test]
+    fn the_focus_grid_answers_cross_chunk_and_empty_region_queries() {
+        let mapping = identity_mapping();
+        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+        assert_eq!(space.focus_span(), (0, 0, 2, 2));
+
+        add_outside_chunk(&mut space, &mapping, "00000000o");
+        add_outside_chunk(&mut space, &mapping, "00010000o");
+        space.add_chunk(shell_chunk(&mapping));
+        for id in ["00000000o", "00010000o", "00000000i"] {
+            assert!(space.bind(id));
+        }
+
+        // nothing is findable before the blurred list is focussed
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            None
+        );
+        assert_eq!(
+            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            None
+        );
+
+        space.focus();
+        assert!(space.blurred_chunks().is_empty());
+
+        // cross-chunk: one answer per outside chunk's own column
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            Some("00000000o".to_string())
+        );
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(150.0, 0.0, 50.0)),
+            Some("00010000o".to_string())
+        );
+        assert_eq!(
+            space.find_outside_chunk_from_point(&Vector3::new(150.0, 0.0, 50.0)),
+            Some("00010000o".to_string())
+        );
+        // inside the shell the hull result wins over the column's outside
+        // chunk; elsewhere in the same column it does not
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(15.0, 5.0, 15.0)),
+            Some("00000000i".to_string())
+        );
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(90.0, 0.0, 90.0)),
+            Some("00000000o".to_string())
+        );
+        // an in-span column no chunk was focussed into: the empty region
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(150.0, 0.0, 150.0)),
+            None
+        );
+        assert_eq!(
+            space.find_outside_chunk_from_point(&Vector3::new(150.0, 0.0, 150.0)),
+            None
+        );
+        // beyond the mappings' grid bounds there is not even a column
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(250.0, 0.0, 50.0)),
+            None
+        );
+        // completed gating: focussed chunks answer the exact query
+        assert_eq!(
+            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            Some("00000000o".to_string())
+        );
+        assert_eq!(
+            space.find_chunk_from_point_exact(&Vector3::new(15.0, 5.0, 15.0)),
+            Some("00000000i".to_string())
+        );
+    }
+
+    /// Unbinding deletes the ignored chunk's columns, smudges the co-held
+    /// neighbours onto the blurred list, and the next `focus` rebuilds them.
+    #[test]
+    fn unbinding_blurs_and_a_refocus_rebuilds_the_neighbourhood() {
+        let mapping = identity_mapping();
+        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+        add_outside_chunk(&mut space, &mapping, "00000000o");
+        add_outside_chunk(&mut space, &mapping, "00010000o");
+        assert!(space.bind("00000000o"));
+        assert!(space.bind("00010000o"));
+        space.focus();
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            Some("00000000o".to_string())
+        );
+
+        space.unbind("00000000o", false);
+        assert!(!space.chunk("00000000o").unwrap().completed());
+        // the neighbour was smudged off its (deleted) column
+        assert_eq!(
+            space.blurred_chunks().first().map(String::as_str),
+            Some("00010000o")
+        );
+        // and the ignored chunk's own column is gone
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            None
+        );
+
+        // the smudged neighbour refocuses
+        space.focus();
+        assert!(space.blurred_chunks().is_empty());
+        assert!(space.chunk("00010000o").unwrap().completed());
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(150.0, 0.0, 50.0)),
+            Some("00010000o".to_string())
+        );
+    }
+
+    /// `smudge` blurs a still-bound chunk without touching the columns: the
+    /// plain query still answers from the stale hull while the exact one
+    /// refuses the un-completed chunk, until the next focus rebuilds it.
+    #[test]
+    fn smudge_blurs_but_keeps_the_hull_findable() {
+        let mapping = identity_mapping();
+        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+        add_outside_chunk(&mut space, &mapping, "00000000o");
+        assert!(space.bind("00000000o"));
+        space.focus();
+        assert_eq!(
+            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            Some("00000000o".to_string())
+        );
+
+        space.smudge_chunk("00000000o");
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            Some("00000000o".to_string())
+        );
+        assert_eq!(
+            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            None
+        );
+        // a second smudge of an already-unfocussed chunk does nothing
+        space.smudge_chunk("00000000o");
+        assert_eq!(
+            space.blurred_chunks().first().map(String::as_str),
+            Some("00000000o")
+        );
+        // an unknown or unbound chunk never joins the blurred list
+        space.blurred_chunk("no-such-chunk");
+        assert_eq!(space.blurred_chunks().len(), 1);
+        // a missing chunk is a no-op focus
+        space.focus_chunk("no-such-chunk");
+
+        space.focus();
+        assert_eq!(
+            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            Some("00000000o".to_string())
+        );
+    }
+
+    /// The focus window follows the mappings' grid bounds; shrinking it
+    /// drops the outside columns and smudges the chunks they held
+    /// (`~Column` deletes the hull holdings, each of which smudges its
+    /// chunk). A chunk centred at a negative cell exercises the manual
+    /// negative adjust of the reference's centre-to-grid arithmetic.
+    #[test]
+    fn shrinking_the_grid_drops_and_smudges() {
+        let mapping = grid_mapping(-1, 0, 0, 0);
+        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+        assert_eq!(space.focus_span(), (-1, 0, 2, 1));
+
+        let id = mapping.outside_chunk_identifier(-1, 0, false);
+        add_outside_chunk(&mut space, &mapping, &id);
+        assert!(space.bind(&id));
+        space.focus();
+
+        // the chunk centred at (-50, ·, 50) lives in cell (-1, 0)
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(-50.0, 0.0, 50.0)),
+            Some(id.clone())
+        );
+
+        // shrink the window to cell (0,0): the chunk's column drops and
+        // smudges it onto the blurred list
+        space.mappings[0] = grid_mapping(0, 0, 0, 0);
+        space.recalc_grid_bounds();
+        assert_eq!(space.focus_span(), (0, 0, 1, 1));
+        assert_eq!(
+            space.blurred_chunks().first().map(String::as_str),
+            Some(id.as_str())
+        );
+        assert_eq!(
+            space.find_chunk_from_point(&Vector3::new(-50.0, 0.0, 50.0)),
+            None
+        );
+    }
+
+    /// `column(pt, true)` creates the column when willing and able; out of
+    /// the focus span it always refuses. An empty mapping set still sizes a
+    /// 1×1 window.
+    #[test]
+    fn column_creates_on_demand_and_refuses_out_of_span() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        assert!(space.column(&Vector3::new(10.0, 0.0, 10.0), true).is_some());
+        assert!(
+            space
+                .column(&Vector3::new(10.0, 0.0, 10.0), false)
+                .is_some()
+        );
+        assert!(
+            space
+                .column(&Vector3::new(250.0, 0.0, 10.0), true)
+                .is_none()
+        );
+
+        let empty = ChunkSpace::new(9, vec![]);
+        assert_eq!(empty.focus_span(), (0, 0, 1, 1));
     }
 }

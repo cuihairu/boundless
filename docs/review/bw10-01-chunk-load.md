@@ -1,6 +1,6 @@
 # BW-10-01 Chunk 加载与空间索引 — 复核证据
 
-- **任务编号**: BW-10-01-01..04（lane `lane/bw10-terrain`，todo.md 行 1428-1434）
+- **任务编号**: BW-10-01-01..05（lane `lane/bw10-terrain`，todo.md 行 1428-1435）
 - **原版构建目标/源码**:
   - 标识/坐标: `programming/bigworld/lib/chunk/chunk_format.hpp`（`ChunkFormat::outsideChunkIdentifier`）、`programming/bigworld/lib/chunk/chunk_terrain.cpp`（`outsideChunkIDToGrid`、`charToHex`）、`programming/bigworld/lib/chunk/geometry_mapping.cpp`（`gridFromChunkName`、`HexLookup`、`gatherChunks`、`GeometryMapping`）、`programming/bigworld/lib/chunk/chunk.cpp`（`isOutsideChunk`、`Chunk::load`、`loadInclude`、`readMooMatrix`）、`programming/bigworld/lib/chunk/base_chunk_space.hpp`（`DEFAULT_GRID_RESOLUTION`、`MIN/MAX_CHUNK_HEIGHT`）。
   - 边界/Portal: `programming/bigworld/lib/chunk/chunk_boundary.cpp` / `chunk_boundary.hpp`、`programming/bigworld/lib/chunk/portal.cpp`。
@@ -25,7 +25,7 @@
   - llvm-cov 0.9.1：全 crate 行覆盖 99.29%、`space.rs` 99.15%、`chunk.rs` 98.81%、`mapping.rs` 99.16%、`boundary.rs` 99.56%、`identifier.rs` 100%。
   - clippy `-D warnings`（scoped `-p chunk --all-targets`）0 findings；`cargo fmt -p chunk --check` 0 漂移。
 - **证据链接**: `crates/chunk/src/{identifier,mapping,chunk,boundary,space}.rs`、`crates/chunk/tests/space.rs`、`docs/review/fixtures/chunk_space/`。
-- **状态**: 01-01..03 已交付；01-04 卸载面已交付（见下节），待 push 复核。
+- **状态**: 01-01..03 已交付；01-04 卸载面已交付；01-05 空间索引已交付（见末节）。
 
 ## 夹具来源登记（BW-10-01-01）
 
@@ -112,3 +112,54 @@ lib 侧（`space.rs`）新增 8 项，集成侧不动：
 - **`notifyCachesOfBind` / `updateCompleted`**（1455、1337）无移植侧缓存与完成态，登记。
 - **`loading()` 卫兵**（1279）：同步装载器没有装载中状态，`unload_chunk` 只判 `removable`/`is_loaded`。
 - `removable` 字段为移植侧新增（对应 `chunk.cpp:190` 的 `removable_(true)` 默认值与 `chunk_space.cpp:1269` 的卫兵）。
+
+## BW-10-01-05 派生痕迹
+
+空间索引 = 焦点网格（focus grid）+ 凸包树（hull tree）+ 点查询。参照源码行号以本版为准：
+
+| 移植 | 参照 | 行 |
+| --- | --- | --- |
+| `LineEq` | `lib/math/lineeq.hpp/.ipp` | 全文 |
+| `Portal2D::combine/contains/setDefaults` | `lib/math/portal2d.cpp` | 89-183 / 255-274 / 47-62 |
+| `PlaneEq::basis/param/project/intersect/isInFrontOf(Exact)` | `lib/math/planeeq.cpp/.ipp` | 92-115 / 122-152 / 24-76 / 197-214 |
+| `HullTree`（arena + mark 链） | `lib/physics2/hulltree.cpp` | 63-70 / 107-274 / 280-467 / 475-499 |
+| `Column` / `ColumnGrid` | `lib/chunk/base_chunk_space.cpp`、`server_chunk_space.hpp/.cpp` | 377-600 / 626-652 / 718-744；34-90 / 50-113 / 143-176 |
+| `Chunk::centre/volume/completed/focus_border` | `lib/chunk/chunk.cpp` | 217,238,388 / 3506-3512 / 1466-1468,183,186 / 1547-1553 |
+| `ChunkSpace` 焦点面与点查询 | `chunk_space.cpp`、`server_chunk_space.cpp` | 714-810 / 1306-1371；50-113 |
+| 列删除→smudge | `base_chunk_space.cpp` | 393-411（`~Column`）+ 41-43（`~HullChunk`） |
+
+### 语义逐条
+
+- **`LineEq`（lineeq.hpp/.ipp）**：法向 `(v0.y-v1.y, v1.x-v0.x)` 归一化、`d = n·v0`；`intersect = (other.d − d·(on·n))/(on×n)`、`param(t) = (n.x·d+n.y·t, n.y·d−n.x·t)`、`project`、`isMinCutter = n×cn > 0`、`isParallel = |n×on| < 0.001`、`isInFrontOf = n·p > d`。
+- **`PlaneEq` 扩展**：`basis` 取 `|n|` 最大轴为主（`>` 链向低索引收敛）、xdir 解平面方程、ydir = n×xdir；`param(0,0)` = `n·d/|n|²`；`intersect` 按 planeeq.cpp:24-76 全链（近平行→零线哨兵，`almostZero(lenSq, 0.0001)`）；`isInFrontOf` 带 `almostEqual` 0.0004 ε，`isInFrontOfExact` 无 ε。
+- **`Portal2D`**：`combine` 逐边剪裁（PORTAL_EPSILON=1e-10 跳微小边、交点 clamp01 插入、`inside` 首位回绕、尾部过滤 outside==0）；**多边形回绕方向按参考 `setDefaults`（(-1,1),(1,1),(1,-1),(-1,-1)）顺时针（y-up）**——`n=(seg.y,−seg.x)` 内半平面只对该序成立；`contains` 全边 `>=` 判内。HullTree 的 outline 是普通 `addPoint` 列表，不经过 `combine`——`Portal2D` 作为补充面保留并注册。
+- **`HullTree`**：
+  - 参考 mark 链（哨兵 `(HullTree*)1`）移植为 per-`add` 的 `MarkState`（marked/in_chain/chain 三平行数组，节点新建时 `grow`），调用结束全部清零——与参考「每次 add 后所有 visited 节点 marked_ 归零」不变量一致。
+  - **split block（hulltree.cpp:345-394）在参考中被注释掉（死代码）**：跨越 divider 的 outline 以完整副本传给两个孩子（`inFront = outline; outBack = outline;`）。移植保留 pass-through——移植死算法会改变结果。
+  - 标记位：1=back、2=front、256/512=「此侧永不标」门、65536=本 hull 新节点；coplanar 臂（any_side 全假）按 `sameDir` 标 `BACK<<sameDir`、异侧清位+上锁、`|MARK_NEW` 后返回；guess 臂（单侧 + 非新节点）按 `pointingSameWay != anySide[1]` 决定「另一侧可能仍在内（标 back）」或「证明不在内（清 back+上锁）」；递归臂先清标再上锁，新孩子 `FRONT|NEW`。
+  - outline 剪裁逐字：平行同向 `param(0)` 在前 → 忽略；被完全截断 → min=1/max=-1/break；`min >= max` 跳过；**只推 max 端**（min 端参考中注释掉）。
+  - `testPoint` 单路径下降，逐节点取所在侧 tags 链接，参考头插序 → 移植末尾 `reverse`。
+- **`Column`**：`addChunk` 先查 `shutTo_`；室外块进 `pOutsideChunk_` 槽，**新块只在静态对象数严格更多时替换**，holdings 无论替换与否都记原加入块；室内块进 hull 树。`findChunk` 从 `pOutsideChunk_` 起步，链上首个结果必胜（`pResult == pOutsideChunk_` 含 NULL==NULL），此后严格更大 volume 才替换；`findChunkExcluding` 同走法外加 `boundingBox.intersects(point)`（= port 半开 `contains`，boundbox.ipp:303-307）与 `pNot` 过滤。`openAndSee`（非 shutTo 才记 seen）/`shutIfSeen`（seen 含才 shut）逐字。
+- **焦点流程**：`bind` 尾部 `noticeChunk`（= `blurredChunk`，仅绑定的块入列，chunk.cpp:1072）；`focus()`（server_chunk_space.cpp:50-113）逐个 blurred：3×3 `shutIfSeen` → `focus_chunk`（`Chunk::focus`：室外块按 centre 单格、室内块按 8 个 bbox 角去重多格；每格缺列即建、`add_chunk`、`focusCount_=1`，chunk.cpp:1536-1618）→ 3×3 `openAndSee`。`ignoreChunk`（chunk_space.cpp:1306-1353）对 3×3 邻域**删除列**（非标陈旧），持块经 `~HullChunk { pChunk_->smudge(); }`（base_chunk_space.cpp:41-43）模糊化——**故「列删除→smudge 持块」是忠实行为而非分歧**（01-04 节登记的「ignoreChunk 无移植面」自本项起失效）。`Chunk::smudge`（chunk.cpp:1619-1638）：`focusCount_ != 0` 才清零并入 blurred。
+- **查询**（chunk_space.cpp:714-810）：`findOutsideChunkFromPoint`/`findChunkFromPoint` 先 `pt.y += 0.0001` 再 `column(pt,false)`；`findChunkFromPointExact` 对结果再过 `completed()`（`focussed()` = `focusCount_ > 0`，chunk.hpp:183/186）。
+- **`recalcGridBounds`**（chunk_space.cpp:1077-1127 + server_chunk_space.cpp:143-176）：窗口取 mappings 本地格矩形包络，缩窗掉出的列按 `~Column` 语义 smudge 持块。
+- **centre→格**（server_chunk_space.cpp:55-58）：`int(cen/gridSize)` 截断后 `cen < 0` 手工 −1（= floor）。
+
+### 测试
+
+- foundation：`lineeq` 7 项、`portal2d` 9 项（默认四边形/含边/重叠剪裁/不相交失败/微小边跳过/空剪剪刀不剪/erase）、`plane` +3 项（basis 单位且在面内 + param/project 往返、intersect 双面含线 + 自交零线、isInFrontOfExact 无 ε）。
+- `hulltree` 9 项：空树、单 hull 内/外两侧、双 hull 重叠区双答、同 hull 二入（coplanar 臂）、平行同向截断、不相交不漏、divider ε 点、反向共面标 back 臂。
+- `column` 8 项：室外进空列+点查询、大者替换/小者失手（holdings 3 条）、室内外共列（壳内 hull 胜/壳外室外胜）、excluding 的 pNot/bbox/无室外列回退、volume 偏好 + 陈旧 id 跳过、seen/shutTo 记账、网格窗移动与丢列。
+- `space` +5 项：**验收主测** `the_focus_grid_answers_cross_chunk_and_empty_region_queries`（两室外块+一壳块 bind→focus 后：跨列各自命中、壳内 hull 胜、空白列/窗外 None、exact 完成门控）+ 聚焦前全 None；`unbinding_blurs_and_a_refocus_rebuilds_the_neighbourhood`（unbind 删列→邻居 smudge 入 blurred→refocus 重建）；`smudge_blurs_but_keeps_the_hull_findable`（plain 仍答/exact 拒答/二次 smudge 无操作/缺失块静默）；`shrinking_the_grid_drops_and_smudges`（负格 centre_grid 手工 −1、缩窗丢列+smudge）；`column_creates_on_demand_and_refuses_out_of_span`（含空 mappings 1×1 窗）。
+- 覆盖率（llvm-cov 0.9.1，DA:0 计）：`lineeq.rs`/`plane.rs`/`portal2d.rs` 100%、`hulltree.rs` 99.67%、`space.rs` 98.97%、`column.rs` 98.88%（余未覆盖为防御性死臂：current 只会持有 map 内 id、`if let` 恒真的闭括号区域）。
+- 门禁：`cargo test -p chunk`（53 lib + 9 集成）+ `-p foundation`（236）+ `-p test-support`（593）全绿；fmt scoped check 0 漂移；clippy `-D warnings` scoped 0 findings；`cargo check --workspace` 绿。
+
+### 登记边界（本项）
+
+- **障碍树**（`Column` 构造的 `pObstacleTree_`）无移植侧对象（BW-10-03 碰撞域），列只带 hull 树。
+- **`jogForeignItems`**（室外列已有室外块时室内块加入会挪其外来物品）无物品嵌套面——登记。
+- **焦点缓存刷新**（`Chunk::focus` 1608-1612 的 `focusCache_` 面）无缓存对象——登记。
+- **stale-id 跳过**：参考列存裸 `Chunk*`，失效指针直接解引用；移植存标识并在 map 缺失时跳过（findChunk/findChunkExcluding/focus 的 blurred 陈旧项）。
+- **ERROR_MSG 降级静默**：`ignoreChunk` 对未绑定块参考打 "Attempted to ignore offline chunk"（1329-1331），移植无声返回；`focus_chunk` 列缺失参考 `MF_ASSERT`（网格窗口应覆盖一切聚焦块），移植跳过。
+- **`combine` 卫兵**：空 `pt1` 参考 `points_.front()` 越界读、剪空集参考 `inside[0]` 越界读，移植分别返回 pt2 自身计数 / false（HullTree 不经此路径）。
+- **`std::sort` 确定性 tie-break、同步装载序**等沿袭 01-03 的登记不变。
