@@ -32,6 +32,7 @@ pub mod loginapp;
 pub mod machined;
 pub mod mailbox_call;
 pub mod movement;
+pub mod navigation_controller;
 pub mod offloaded_backup;
 pub mod pending_logins;
 pub mod proxy_client;
@@ -53,6 +54,7 @@ pub mod task_manager;
 pub mod tick;
 pub mod time_and_move;
 pub mod timekeeper;
+pub mod timer_controller;
 // The time queue is cstdmf and lives in foundation; re-exported under the
 // historical `timers` name so `crate::timers::…` paths keep working.
 pub use foundation::time_queue as timers;
