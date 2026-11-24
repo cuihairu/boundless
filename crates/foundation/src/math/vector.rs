@@ -237,6 +237,36 @@ impl Vector3 {
     }
 }
 
+impl std::ops::Add for Vector2 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+
+impl std::ops::Sub for Vector2 {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        Self::new(self.x - rhs.x, self.y - rhs.y)
+    }
+}
+
+impl std::ops::Mul<f32> for Vector2 {
+    type Output = Self;
+    fn mul(self, s: f32) -> Self {
+        Self::new(self.x * s, self.y * s)
+    }
+}
+
+impl std::ops::Div<f32> for Vector2 {
+    type Output = Self;
+    /// Reference divides via a reciprocal multiply
+    /// (`vector2.ipp:221-226`).
+    fn div(self, s: f32) -> Self {
+        self * (1.0f32 / s)
+    }
+}
+
 impl std::ops::Add for Vector3 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
@@ -573,5 +603,26 @@ mod tests {
             "distanceSquared uses lengthSquared of the delta"
         );
         assert_eq!(Vector3::ZERO.distance_squared(&Vector3::ZERO), 0.0);
+    }
+
+    #[test]
+    fn vector2_operators_follow_the_reference_forms() {
+        // operator+ (vector2.hpp:69): componentwise.
+        let sum = Vector2::new(1.0, 2.0) + Vector2::new(3.0, -4.0);
+        assert_eq!(sum, Vector2::new(4.0, -2.0));
+        // operator- componentwise.
+        assert_eq!(
+            Vector2::new(3.0, -4.0) - Vector2::new(1.0, 2.0),
+            Vector2::new(2.0, -6.0)
+        );
+        // operator* componentwise scale.
+        assert_eq!(Vector2::new(1.0, -2.0) * 2.0, Vector2::new(2.0, -4.0));
+        // operator/= (vector2.ipp:221-226): a reciprocal multiply, not a
+        // per-component division — pinned by the 3.0 case (1/3 rounds the
+        // same here, but the operation shape is pinned anyway).
+        let q = Vector2::new(3.0, 6.0) / 3.0;
+        assert_eq!(q, Vector2::new(1.0, 2.0));
+        let manual = Vector2::new(3.0, 6.0) * (1.0f32 / 3.0);
+        assert_eq!(q, manual);
     }
 }
