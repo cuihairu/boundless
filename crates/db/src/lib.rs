@@ -35,6 +35,7 @@ pub mod snapshot_helper;
 pub mod storage;
 pub mod sync_db;
 pub mod transaction;
+pub mod transfer_db;
 pub mod xml;
 
 pub use account::{
@@ -109,4 +110,9 @@ pub use sync_db::{
     special_table_statements, string_blob_type_name,
 };
 pub use transaction::{EntityTransaction, StagedWrite};
+pub use transfer_db::{
+    APP_NAME, ChildRuns, ConsolidateLink, RSYNC, SendToAddressError, SnapshotPlan, TcpLink,
+    TransferCommands, atoi_prefix, consolidate, convert_address, parse_send_to_address,
+    transfer_primary, transfer_secondary, transfer_to,
+};
 pub use xml::{XmlDatabase, XmlKind, XmlPropDef, XmlSection, XmlTypeDef};

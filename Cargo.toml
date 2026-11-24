@@ -45,7 +45,7 @@ blowfish = "0.9"
 # The secondary database reader (BW-09-03-02): the reference links sqlite3
 # directly (`server/baseapp/sqlite_database.cpp`); `bundled` keeps the file
 # format pinned regardless of the host's libsqlite3.
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
