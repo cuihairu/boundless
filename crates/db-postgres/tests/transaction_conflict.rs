@@ -244,15 +244,19 @@ fn a_lock_wait_timeout_reports_retry_and_the_retry_lands_once() {
         thread::scope(|scope| {
             scope.spawn(move || {
                 let mut other = side(conninfo);
-                other
-                    .client_mut()
-                    .execute("SET lock_timeout = '200ms'", &[])
-                    .expect("the lock timeout is set");
                 holder_ready_rx
                     .recv_timeout(std::time::Duration::from_secs(2))
                     .expect("the holder takes the row");
                 let updated = counter(1, 300);
                 other.begin_transaction().expect("the transaction opens");
+                // The 200ms budget is scoped to this attempt only (`SET
+                // LOCAL` reverts when the transaction ends), so the
+                // retried attempt below waits the way the reference's
+                // would — as long as the write actually needs.
+                other
+                    .client_mut()
+                    .execute("SET LOCAL lock_timeout = '200ms'", &[])
+                    .expect("the attempt timeout is set");
                 // The holder still owns the row: the write waits 200ms and
                 // comes back as the retryable lock condition.
                 let error = EntityStorage::put_entity(&mut other, &updated.0, &updated.1, false)

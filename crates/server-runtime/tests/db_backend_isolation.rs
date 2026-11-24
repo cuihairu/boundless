@@ -92,7 +92,11 @@ fn the_postgres_driver_stands_alone() {
     let err =
         PostgresStorage::connect("host=127.0.0.1 port=1 dbname=bigworld user=bigworld password=")
             .unwrap_err();
-    assert!(matches!(err, DbError::Storage(_)), "own failure: {err}");
+    // The reference's `isLostConnection` family covers the connect-time
+    // failures too (`CR_CONN_HOST_ERROR`, database_exception.cpp:43-53):
+    // with no server listening the failure is the contract's
+    // lost-connection outcome.
+    assert_eq!(err, DbError::LostConnection);
     // The memory backend keeps serving while the postgres one is down.
     let store = MemoryStorage::new();
     assert_eq!(

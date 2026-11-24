@@ -8,7 +8,7 @@
 //! ("id") DO UPDATE` replaces the row, and `get_entity` reads the columns
 //! back in the schema's visit order, one [`PropertyValue`] per column.
 
-use std::cell::{RefCell, RefMut};
+use std::cell::{Cell, RefCell, RefMut};
 use std::collections::HashMap;
 
 use db::{BaseMailbox, CheckOut, DbError, EntityKey, EntityRecord, EntityStorage};
@@ -56,6 +56,14 @@ pub fn map_db_error(error: postgres::Error) -> DbError {
     }
     if is_duplicate {
         return DbError::DuplicateAccount;
+    }
+    // The connection-level family — `DatabaseException::isLostConnection`
+    // (`database_exception.cpp:43-53`, the four `CR_*` codes): a closed
+    // client or a bare I/O failure, neither of which carries a server
+    // error. `DbError::LostConnection` is what the reconnect leg of
+    // BW-09-06-09 answers to.
+    if error.is_closed() || error.as_db_error().is_none() {
+        return DbError::LostConnection;
     }
     DbError::Storage(error_message(&error))
 }
@@ -410,7 +418,11 @@ fn decode_row(
 /// The client sits in a `RefCell` because the storage contract
 /// (`EntityStorage`) reads through `&self` — the shared shape of the
 /// in-memory and XML backends — while `postgres::Client` runs its
-/// statements through `&mut self`.
+/// statements through `&mut self`. The two state flags are `Cell`s for
+/// the same reason: the reconnect leg of a statement that died on a lost
+/// connection replaces the client and clears the flags from a `&self`
+/// read path, the way the reference's `MySql` carries all of this on one
+/// shared object (`wrapper.hpp:89-111`).
 pub struct PostgresStorage {
     client: RefCell<Client>,
     /// The entity types this connection knows: `EntityTypeId -> table
@@ -421,11 +433,15 @@ pub struct PostgresStorage {
     /// Whether this connection is inside a transaction the reference
     /// would be holding as an open `MySqlTransaction`
     /// (`transaction.cpp:15-23` keeps `inTransaction` on the connection).
-    in_transaction: bool,
+    in_transaction: Cell<bool>,
     /// Whether this connection was flagged as lost, the reference's
-    /// `sql_.hasLostConnection( true )` — set when rolling back finds the
-    /// connection already gone (transaction.cpp:41-47).
-    connection_lost: bool,
+    /// `sql_.hasLostConnection( true )` — set whenever a statement fails
+    /// at the connection level (`MySql::throwError`,
+    /// wrapper.cpp:294-299).
+    connection_lost: Cell<bool>,
+    /// The stored connection string, `connectInfo_`
+    /// (`wrapper.hpp:111`) — [`PostgresStorage::reconnect`] re-runs it.
+    conninfo: String,
 }
 
 impl std::fmt::Debug for PostgresStorage {
@@ -441,8 +457,9 @@ impl PostgresStorage {
         Ok(Self {
             client: RefCell::new(client),
             schemas: HashMap::new(),
-            in_transaction: false,
-            connection_lost: false,
+            in_transaction: Cell::new(false),
+            connection_lost: Cell::new(false),
+            conninfo: conninfo.to_string(),
         })
     }
 
@@ -456,39 +473,35 @@ impl PostgresStorage {
         // The reference only ever has one transaction per connection
         // (the constructor sets `inTransaction`), so a second begin is
         // refused rather than left to PostgreSQL's warning-and-no-op.
-        if self.in_transaction {
+        if self.in_transaction.get() {
             return Err(DbError::Storage(
                 "the connection already has a transaction open".into(),
             ));
         }
-        self.client
-            .borrow_mut()
-            .execute("START TRANSACTION", &[])
+        self.run_with_reconnect(|client| client.execute("START TRANSACTION", &[]))
             .map_err(map_db_error)?;
         // `inTransaction(true)` is set last in the reference: a failing
         // execute leaves the connection outside any transaction
         // (transaction.cpp:19-22).
-        self.in_transaction = true;
+        self.in_transaction.set(true);
         Ok(())
     }
 
     /// Commits the open transaction (`transaction.cpp:66-71`): the writes
     /// this connection has made are visible from the other connections.
     pub fn commit_transaction(&mut self) -> Result<(), DbError> {
-        if !self.in_transaction {
+        if !self.in_transaction.get() {
             return Err(DbError::Storage("there is no transaction to commit".into()));
         }
-        self.client
-            .borrow_mut()
-            .execute("COMMIT", &[])
+        self.run_with_reconnect(|client| client.execute("COMMIT", &[]))
             .map_err(map_db_error)?;
-        self.in_transaction = false;
+        self.in_transaction.set(false);
         Ok(())
     }
 
     /// Whether a transaction is open on this connection.
     pub fn in_transaction(&self) -> bool {
-        self.in_transaction
+        self.in_transaction.get()
     }
 
     /// Rolls the open transaction back (`transaction.cpp:29-51`), the
@@ -502,7 +515,7 @@ impl PostgresStorage {
     /// swallowed and the connection is flagged instead
     /// (`transaction.cpp:41-47`).
     pub fn rollback_transaction(&mut self) -> Result<(), DbError> {
-        if !self.in_transaction {
+        if !self.in_transaction.get() {
             // The reference's destructor rolls back only a transaction it
             // is inside (`if (!committed_ …)`), so there is nothing to
             // roll back.
@@ -519,29 +532,89 @@ impl PostgresStorage {
             // parameters, so any server-reported error is a real SQL
             // failure and the other arm reports it.
             Err(error) if error.is_closed() || error.as_db_error().is_none() => {
-                self.connection_lost = true;
+                self.connection_lost.set(true);
             }
             Err(error) => {
                 // Every other rollback failure escapes the reference's
                 // destructor as a DatabaseException, which terminate()
                 // would turn into an abort — so the port reports it.
-                self.in_transaction = false;
+                self.in_transaction.set(false);
                 return Err(map_db_error(error));
             }
         }
-        self.in_transaction = false;
+        self.in_transaction.set(false);
         Ok(())
     }
 
     /// Whether this connection was flagged as lost, the reference's
     /// `sql_.hasLostConnection( true )`.
     pub fn connection_lost(&self) -> bool {
-        self.connection_lost
+        self.connection_lost.get()
+    }
+
+    /// Re-establishes the connection with the stored connection string —
+    /// the reference's `MySql::reconnect()`/`reconnectTo`
+    /// (`wrapper.hpp:64-67`, wrapper.cpp:74-91): close, connect again,
+    /// and report whether the new connection answers (the port's
+    /// `Client::connect` performs the whole handshake, which is what the
+    /// reference's final `ping()` checks). `MySql::connect` clears
+    /// `hasLostConnection` on every new connection (wrapper.cpp:94-97),
+    /// and the old connection's transaction — if any was still open —
+    /// died with it, so the fresh connection starts clean.
+    pub fn reconnect(&self) -> bool {
+        match Client::connect(&self.conninfo, postgres::NoTls) {
+            Ok(client) => {
+                drop(self.client.replace(client));
+                self.connection_lost.set(false);
+                self.in_transaction.set(false);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// The underlying client, for the schema tools (BW-09-07).
     pub fn client_mut(&mut self) -> RefMut<'_, Client> {
         self.client.borrow_mut()
+    }
+
+    /// Runs one statement with the reference's reconnect leg
+    /// (`MySql::realQuery`, wrapper.cpp:306-332): when the statement dies
+    /// because the connection dropped — the port's connection-level
+    /// family — and this connection is outside a transaction, the
+    /// connection is re-established and the very same statement runs
+    /// once more. Inside a transaction the loss is terminal: the aborted
+    /// work cannot be re-sent on the new connection, so the error
+    /// propagates (`MySqlTransaction`'s destructor skips its `ROLLBACK`
+    /// for the same reason, transaction.cpp:41-47). A failed reconnect
+    /// leaves the original error standing (`wrapper.cpp:327-330`).
+    fn run_with_reconnect<T>(
+        &self,
+        mut op: impl FnMut(&mut Client) -> Result<T, postgres::Error>,
+    ) -> Result<T, postgres::Error> {
+        let first = op(&mut self.client.borrow_mut());
+        // `MySql::throwError` flags the connection whenever the failure
+        // is connection-level, whatever runs next (wrapper.cpp:294-299).
+        let at_connection_level = match &first {
+            Err(error) => error.is_closed() || error.as_db_error().is_none(),
+            Ok(_) => false,
+        };
+        if at_connection_level {
+            self.connection_lost.set(true);
+        }
+        match first {
+            Err(error)
+                if (error.is_closed() || error.as_db_error().is_none())
+                    && !self.in_transaction.get() =>
+            {
+                if self.reconnect() {
+                    op(&mut self.client.borrow_mut())
+                } else {
+                    Err(error)
+                }
+            }
+            outcome => outcome,
+        }
     }
 
     /// Registers an entity type with this connection: the contract
@@ -568,10 +641,10 @@ impl PostgresStorage {
     /// the mixed-case reference names would fold without the quotes.
     fn bump_identity(&mut self, schema: &EntitySchema, id: DatabaseId) -> Result<(), DbError> {
         let table = quote_ident(&entity_table_name(&schema.type_name));
-        self.client
-            .borrow_mut()
-            .execute(bump_identity_sql().as_str(), &[&table, &id])
-            .map_err(map_db_error)?;
+        self.run_with_reconnect(|client| {
+            client.execute(bump_identity_sql().as_str(), &[&table, &id])
+        })
+        .map_err(map_db_error)?;
         Ok(())
     }
 
@@ -586,9 +659,8 @@ impl PostgresStorage {
         key: &EntityKey,
         mailbox: &BaseMailbox,
     ) -> Result<(), DbError> {
-        self.client
-            .borrow_mut()
-            .execute(
+        self.run_with_reconnect(|client| {
+            client.execute(
                 add_logon_sql().as_str(),
                 &[
                     &key.db_id,
@@ -599,7 +671,8 @@ impl PostgresStorage {
                     &stored_salt(mailbox.addr.salt),
                 ],
             )
-            .map_err(map_db_error)?;
+        })
+        .map_err(map_db_error)?;
         Ok(())
     }
 
@@ -607,9 +680,7 @@ impl PostgresStorage {
     /// part of a `sync_db` run; the fixed tables and the dry-run report
     /// join with the BW-09-07 items).
     pub fn create_entity_table(&mut self, schema: &EntitySchema) -> Result<(), DbError> {
-        self.client
-            .borrow_mut()
-            .execute(schema.create_table_ddl().as_str(), &[])
+        self.run_with_reconnect(|client| client.execute(schema.create_table_ddl().as_str(), &[]))
             .map_err(map_db_error)?;
         Ok(())
     }
@@ -625,9 +696,7 @@ impl PostgresStorage {
         let sql = put_entity_sql(schema);
         let (params, nested_texts) = put_entity_params(schema, record, true)?;
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
-        self.client
-            .borrow_mut()
-            .execute(sql.as_str(), &refs)
+        self.run_with_reconnect(|client| client.execute(sql.as_str(), &refs))
             .map_err(map_db_error)?;
         drop(nested_texts);
         Ok(())
@@ -647,9 +716,7 @@ impl PostgresStorage {
         let (params, nested_texts) = put_entity_params(schema, record, false)?;
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
         let row = self
-            .client
-            .borrow_mut()
-            .query_one(sql.as_str(), &refs)
+            .run_with_reconnect(|client| client.query_one(sql.as_str(), &refs))
             .map_err(map_db_error)?;
         drop(nested_texts);
         Ok(row.get::<_, i64>(0))
@@ -666,9 +733,9 @@ impl PostgresStorage {
             return Ok(None);
         }
         let row = self
-            .client
-            .borrow_mut()
-            .query_opt(get_entity_sql(schema).as_str(), &[&key.db_id])
+            .run_with_reconnect(|client| {
+                client.query_opt(get_entity_sql(schema).as_str(), &[&key.db_id])
+            })
             .map_err(map_db_error)?;
         let Some(row) = row else {
             return Ok(None);
@@ -725,9 +792,7 @@ impl EntityStorage for PostgresStorage {
             let (params, nested_texts) = put_entity_params(&schema, &record, true)?;
             self.bump_identity(&schema, key.db_id)?;
             let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
-            self.client
-                .borrow_mut()
-                .execute(sql.as_str(), &refs)
+            self.run_with_reconnect(|client| client.execute(sql.as_str(), &refs))
                 .map_err(map_entity_db_error)?;
             drop(nested_texts);
             return Ok(key.db_id);
@@ -738,9 +803,7 @@ impl EntityStorage for PostgresStorage {
         // instead, so the existence check runs first.
         let exists_sql = row_exists_sql(&schema);
         let found = self
-            .client
-            .borrow_mut()
-            .query_opt(exists_sql.as_str(), &[&key.db_id])
+            .run_with_reconnect(|client| client.query_opt(exists_sql.as_str(), &[&key.db_id]))
             .map_err(map_db_error)?;
         if found.is_none() {
             return Err(DbError::NotFound);
@@ -759,9 +822,7 @@ impl EntityStorage for PostgresStorage {
             quote_ident(ID_COLUMN)
         );
         let deleted = self
-            .client
-            .borrow_mut()
-            .execute(sql.as_str(), &[&key.db_id])
+            .run_with_reconnect(|client| client.execute(sql.as_str(), &[&key.db_id]))
             .map_err(map_db_error)?;
         if deleted == 0 {
             // `deleteWithID` fails without touching the log-on record
@@ -770,24 +831,24 @@ impl EntityStorage for PostgresStorage {
         }
         // On success the log-on record goes with the row
         // (del_entity_task.cpp:76).
-        self.client
-            .borrow_mut()
-            .execute(
+        self.run_with_reconnect(|client| {
+            client.execute(
                 remove_logon_sql().as_str(),
                 &[&key.db_id, &(key.type_id as i32)],
             )
-            .map_err(map_db_error)?;
+        })
+        .map_err(map_db_error)?;
         Ok(())
     }
 
     fn logon_of(&self, key: &EntityKey) -> Result<Option<BaseMailbox>, DbError> {
         let row = self
-            .client
-            .borrow_mut()
-            .query_opt(
-                get_logon_sql().as_str(),
-                &[&key.db_id, &(key.type_id as i32)],
-            )
+            .run_with_reconnect(|client| {
+                client.query_opt(
+                    get_logon_sql().as_str(),
+                    &[&key.db_id, &(key.type_id as i32)],
+                )
+            })
             .map_err(map_db_error)?;
         let Some(row) = row else {
             return Ok(None);
@@ -812,9 +873,7 @@ impl EntityStorage for PostgresStorage {
         };
         let exists_sql = row_exists_sql(&schema);
         let found = self
-            .client
-            .borrow_mut()
-            .query_opt(exists_sql.as_str(), &[&key.db_id])
+            .run_with_reconnect(|client| client.query_opt(exists_sql.as_str(), &[&key.db_id]))
             .map_err(map_db_error)?;
         if found.is_none() {
             return Err(DbError::NotFound);
@@ -830,13 +889,13 @@ impl EntityStorage for PostgresStorage {
     fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError> {
         // removeLogOnRecord deletes unconditionally
         // (entity_type_mapping.cpp:533-535).
-        self.client
-            .borrow_mut()
-            .execute(
+        self.run_with_reconnect(|client| {
+            client.execute(
                 remove_logon_sql().as_str(),
                 &[&key.db_id, &(key.type_id as i32)],
             )
-            .map_err(map_db_error)?;
+        })
+        .map_err(map_db_error)?;
         Ok(())
     }
 
@@ -853,9 +912,7 @@ impl EntityStorage for PostgresStorage {
         for (type_id, schema) in &entries {
             let sql = select_all_entity_sql(schema);
             let rows = self
-                .client
-                .borrow_mut()
-                .query(sql.as_str(), &[])
+                .run_with_reconnect(|client| client.query(sql.as_str(), &[]))
                 .map_err(map_db_error)?;
             for row in &rows {
                 let key = EntityKey {
