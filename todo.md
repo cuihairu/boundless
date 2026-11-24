@@ -1502,7 +1502,7 @@
     余片 = 门户两臂（determineEdgesAdjacentToOtherChunks /
     extendThroughUnboundPortals）+ readTGA + per-girth 工作流环。
 - [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。→ bbfb5ef（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory/readWaypointSet/NavLoc/AStar 脸，资产=原版生成器终流（slope 136B md5 30bd31c2…、shell 152B md5 d8b63279…，经 gen_generate 尾部无 stdout 的 fwrite 落盘，cmp 证 log 逐字节不变）；truth 85 行：LOAD 1+2 记录、24 对 CONTAINS/FIND、7 路径全吻合含 S1 两步穿越态收尾与 shell 跨层 X1 真 PATHNONE；测试 gen_navmesh_paths.rs 3 条逐点重放 1e-6；waypoint 104/104、workspace 4419/0、fmt/clippy 绿、crate 覆盖全 ≥98.32%；证据 docs/review/bw10-05-05-old-navmesh-reading.md）
-- [ ] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。
+- [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。→ 0684f78（端口终流写盘 <tmp>/bw10-05-06/*.navmesh，fnv 钉住 slope 136B 3a23247435af66a6 / shell 152B e01640188f0c6115，md5 与 05-05 原版资产逐字节同（30bd31c2…/d8b63279…）；未改动已提交 gen_navpaths.cpp 重编译后在产物目录跑原版目标，stdout 对照 gen_navpaths.log 逐字节全等（LOG-IDENTICAL，1+2 记录 + 24 层探针 + 7 路径含 X1 PATHNONE + RESULT OK）；waypoint-gen 68/68、workspace 4420/0、fmt/clippy 绿、roundtrip.rs 63 行 100%；证据 docs/review/bw10-05-06-new-artifact-roundtrip.md）
 
 #### BW-10-06 CellApp 与 Python 寻路
 
