@@ -28,6 +28,10 @@ flate2 = { version = "1.1.11", default-features = false, features = ["rust_backe
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
+# The navigation mesh: `MeshNavigator` (BW-10-06-01) implements the
+# navigation controller's `Navigator` boundary over waypoint's two-level
+# search — the same downward-edge pattern as db/mercury.
+waypoint = { workspace = true }
 
 [dev-dependencies]
 # BW-16-02-03 backend-isolation proof: the postgresql driver is exercised

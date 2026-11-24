@@ -1911,6 +1911,7 @@ dependencies = [
  "platform",
  "resources",
  "sha2 0.10.9",
+ "waypoint",
 ]
 
 [[package]]

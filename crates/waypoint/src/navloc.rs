@@ -98,9 +98,16 @@ impl NavLoc {
         }
     }
 
-    /// `NavLoc::clip()` (`navloc.cpp:183-215`): the stored point is pulled
-    /// into the located waypoint. The chunk mapping is the identity here
-    /// (registered).
+    /// `NavLoc::clip()` (`navloc.cpp:183-215`): the public face the
+    /// navigation system calls — `createPathNavLoc` and the navigation
+    /// controller's destination clip. The stored point is pulled into
+    /// the located waypoint.
+    pub fn clip(&mut self) {
+        self.clip_in_place();
+    }
+
+    /// The stored point is pulled into the located waypoint. The chunk
+    /// mapping is the identity here (registered).
     pub(crate) fn clip_in_place(&mut self) {
         if let Some(set) = &self.p_set
             && self.waypoint >= 0
@@ -315,6 +322,25 @@ mod tests {
         // registered out of this lane).
         let loc = NavLoc::from_guess(&lower, Rc::clone(&set), 1.5, Vector3::new(9.0, 0.5, 9.0));
         assert_eq!(loc.waypoint(), -1);
+    }
+
+    #[test]
+    fn clip_pulls_the_stored_point_into_the_waypoint() {
+        let set = sample_set();
+        let mut loc = NavLoc {
+            p_set: Some(Rc::clone(&set)),
+            waypoint: 0,
+            point: Vector3::new(1.0, 0.25, 1.0),
+            grid_size: 0.0,
+        };
+        loc.clip();
+        // `x`/`z` already sit inside wp0; `y` rises to its maxHeight.
+        assert_eq!(loc.point(), Vector3::new(1.0, 1.0, 1.0));
+
+        // An invalid location clips to nothing.
+        let mut none = NavLoc::new();
+        none.clip();
+        assert_eq!(none.point(), Vector3::new(0.0, 0.0, 0.0));
     }
 
     #[test]

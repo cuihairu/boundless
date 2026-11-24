@@ -25,6 +25,7 @@ pub mod emergency_throttle;
 pub mod entity_creator;
 pub mod entity_destroy;
 pub mod entity_dispatch;
+pub mod entity_navigate;
 pub mod ghost;
 pub mod ghost_routing;
 pub mod ghost_snapshot;
@@ -50,9 +51,9 @@ pub mod range_list;
 pub mod real_entity;
 
 pub mod relogon;
+pub mod replay_data;
 pub mod replay_recording;
 pub mod replay_write;
-pub mod replay_data;
 pub mod reviver;
 pub mod script_timers;
 pub mod server_app;
