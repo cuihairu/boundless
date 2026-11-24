@@ -254,6 +254,14 @@ pub struct Entity {
     /// `extras_`: the `EntityExtra` slot array, indexed by eeid. Empty
     /// until an extra is touched or the slots are sized to the registry.
     pub extras: Vec<Option<crate::cellapp_real_entity::ExtraSlot>>,
+    /// `RealEntity::velocity_`: the sampled velocity
+    /// (`RealEntity::newPosition`), read by the acceleration controllers.
+    pub velocity: [f32; 3],
+    /// `RealEntity::positionSample_`: where the velocity sampler last
+    /// took a position (`owner.position()` at construction).
+    pub position_sample: [f32; 3],
+    /// `RealEntity::positionSampleTime_`: the game tick of that sample.
+    pub position_sample_time: u32,
 }
 
 impl Entity {
@@ -274,6 +282,9 @@ impl Entity {
             has_witness: false,
             controllers: crate::cellapp_real_entity::Controllers::default(),
             extras: Vec::new(),
+            velocity: [0.0; 3],
+            position_sample: [0.0; 3],
+            position_sample_time: 0,
         }
     }
 }
@@ -1444,6 +1455,32 @@ pub struct CellApp {
     pub extra_drops: Rc<RefCell<Vec<(u32, usize, u64)>>>,
     /// Which instance a slot's next touch constructs.
     pub next_extra_generation: u64,
+    /// The `Updatables` registry (`CellApp::registerForUpdate`): the
+    /// movement-family controllers that drive every tick, in
+    /// registration order. A slot vacated mid-pass stays `None` until the
+    /// pass ends (the reference's in-update hole), so the pass iterates
+    /// the size it started with.
+    pub updatable_controllers: Vec<Option<(u32, crate::cellapp_real_entity::ControllerId)>>,
+    /// `Updatables::inUpdate_`: whether a pass is running; removals
+    /// during it punch holes instead of swapping.
+    pub in_movement_update: bool,
+    /// The deterministic replacement of the reference's libc `rand()`
+    /// (a xorshift64* stream): `MoveToEntityController::recalcOffset`
+    /// draws its angle from it. The reference seeds libc `rand()` from
+    /// the clock in `main`; the port fixes the stream for reproducible
+    /// trajectories.
+    pub movement_rng: u64,
+    /// The `PyErr_SetString` faces of the controller script factories
+    /// (e.g. `YawRotatorController::New`'s velocity check): the rejected
+    /// `(entity, message)` ledger.
+    pub script_errors: Vec<(u32, &'static str)>,
+    /// `CellAppConfig::shouldNavigationDropPosition` (default false).
+    pub should_navigation_drop_position: bool,
+    /// `CellAppConfig::navigationMaxClimb` (0.65).
+    pub navigation_max_climb: f32,
+    /// `CellAppConfig::navigationMaxSlopeGradient`
+    /// (`tan(deg2rad(navigationMaxSlope))`, 45° default → 1.0).
+    pub navigation_max_slope_gradient: f32,
 }
 
 impl Default for CellApp {
@@ -1483,6 +1520,13 @@ impl Default for CellApp {
             extra_types: Vec::new(),
             extra_drops: Rc::new(RefCell::new(Vec::new())),
             next_extra_generation: 0,
+            updatable_controllers: Vec::new(),
+            in_movement_update: false,
+            movement_rng: 0x9E37_79B9_7F4A_7C15,
+            script_errors: Vec::new(),
+            should_navigation_drop_position: false,
+            navigation_max_climb: 0.65,
+            navigation_max_slope_gradient: 1.0,
         }
     }
 }

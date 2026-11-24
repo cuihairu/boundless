@@ -211,10 +211,24 @@ impl EntityScript {
 // Section: controllers (controllers.cpp, timer_controller.cpp)
 // ---------------------------------------------------------------------------
 
-/// `Controller`: what the controller is. BW-08-02-01 models the timer kind;
-/// the movement family is BW-08-02-03 (its concrete kinds hang off the
-/// exclusive variant here).
+/// `BaseAccelerationController::Facing` (`base_acceleration_controller.hpp`):
+/// which way the acceleration families face the entity while it moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccelerationFacing {
+    /// `FACING_NONE`: the controller leaves the direction alone.
+    None,
+    /// `FACING_VELOCITY`: face along the new velocity.
+    Velocity,
+    /// `FACING_ACCELERATION`: face along the acceleration vector.
+    Acceleration,
+}
+
+/// `Controller`: what the controller is. BW-08-02-01 models the timer kind;
+/// BW-08-02-03 adds the four movement-family kinds
+/// (`move_controller.cpp` / `turn_controller.cpp` /
+/// `base_acceleration_controller.cpp` /
+/// `accelerate_to_point_controller.cpp`).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ControllerKind {
     /// `TimerController`: `start_` is the absolute game tick of the next
     /// expiry, `interval_` the repeat in ticks (0 = single shot).
@@ -224,19 +238,162 @@ pub enum ControllerKind {
         /// The repeat interval in ticks; 0 for a single shot.
         interval: u32,
     },
-    /// The exclusive-category families (movement, accelerate, navigation,
-    /// turn, face): `category` is the id `Controller::getExclusiveID`
-    /// minted for the type's category — always above the mask, so the
-    /// plain allocator can never hand out the same id. Their drive
-    /// mechanics are BW-08-02-03/04.
+    /// The exclusive-category families whose concrete drive mechanics a
+    /// later ticket owns (navigation is BW-08-02-04): `category` is the id
+    /// `Controller::getExclusiveID` minted for the type's category —
+    /// always above the mask, so the plain allocator can never hand out
+    /// the same id. Attaching it hangs inert: no updatable, no queue.
     Exclusive {
         /// The `getExclusiveID` id of the controller type's category.
         category: ControllerId,
     },
+    /// `MoveToPointController`: walk toward `destination` at a constant
+    /// `metres_per_tick` (`MoveController::metresPerTick_` = velocity /
+    /// updateHertz, frozen at construction).
+    MoveToPoint {
+        /// `destination_`, world space.
+        destination: [f32; 3],
+        /// `metresPerTick_`.
+        metres_per_tick: f32,
+        /// `faceMovement_`.
+        face_movement: bool,
+        /// `moveVertically_`.
+        move_vertically: bool,
+    },
+    /// `MoveToEntityController`: walk toward `target` until within
+    /// `range`, orbiting it at a fixed random `offset` around the target.
+    /// `resolved`/`offset` are the controller's own runtime state: the
+    /// reference resolves `destEntityID_` to a pointer and recalcs the
+    /// offset exactly once, on the first update.
+    MoveToEntity {
+        /// `destEntityID_`.
+        target: u32,
+        /// `range_`.
+        range: f32,
+        /// `metresPerTick_`.
+        metres_per_tick: f32,
+        /// `faceMovement_`.
+        face_movement: bool,
+        /// `moveVertically_`.
+        move_vertically: bool,
+        /// `offset_` in the target's x/z plane; recalculated once.
+        offset: [f32; 2],
+        /// Whether the lazy resolve + `recalcOffset` already ran.
+        resolved: bool,
+    },
+    /// `YawRotatorController`: turn toward `target_yaw` at
+    /// `radians_per_tick` (velocity / updateHertz, frozen at
+    /// construction; `startReal` negates it when the anti-clockwise way
+    /// is shorter).
+    YawRotator {
+        /// `targetYaw_`, normalised at construction.
+        target_yaw: f32,
+        /// `radiansPerTick_`, sign-flipped by `startReal` if needed.
+        radians_per_tick: f32,
+    },
+    /// `AccelerateToPointController`: accelerate toward `destination`
+    /// under the shared `BaseAccelerationController` motion laws.
+    AccelerateToPoint {
+        /// `destination_`, world space.
+        destination: [f32; 3],
+        /// `acceleration_`, units/second².
+        acceleration: f32,
+        /// `maxSpeed_`.
+        max_speed: f32,
+        /// `facing_`.
+        facing: AccelerationFacing,
+        /// `stopAtDestination_`.
+        stop_at_destination: bool,
+    },
+}
+
+/// The category string every movement-family controller registers under
+/// (`IMPLEMENT_EXCLUSIVE_CONTROLLER_TYPE`'s last argument) — they all
+/// share one exclusive id and replace each other.
+pub const MOVEMENT_CATEGORY: &str = "Movement";
+
+impl ControllerKind {
+    /// A `MoveToPointController` construction (`MoveController`'s ctor:
+    /// `metresPerTick_ = velocity / updateHertz`).
+    pub fn move_to_point(
+        destination: [f32; 3],
+        velocity: f32,
+        face_movement: bool,
+        move_vertically: bool,
+        hertz: u32,
+    ) -> Self {
+        Self::MoveToPoint {
+            destination,
+            metres_per_tick: velocity / hertz as f32,
+            face_movement,
+            move_vertically,
+        }
+    }
+
+    /// A `MoveToEntityController` construction.
+    pub fn move_to_entity(
+        target: u32,
+        range: f32,
+        velocity: f32,
+        face_movement: bool,
+        move_vertically: bool,
+        hertz: u32,
+    ) -> Self {
+        Self::MoveToEntity {
+            target,
+            range,
+            metres_per_tick: velocity / hertz as f32,
+            face_movement,
+            move_vertically,
+            offset: [0.0, 0.0],
+            resolved: false,
+        }
+    }
+
+    /// A `YawRotatorController` construction: `radiansPerTick_ = velocity
+    /// / updateHertz`, `targetYaw_ = Angle(targetYaw)` (normalised).
+    pub fn yaw_rotator(target_yaw: f32, velocity: f32, hertz: u32) -> Self {
+        Self::YawRotator {
+            target_yaw: foundation::math::angle::normalise(target_yaw),
+            radians_per_tick: velocity / hertz as f32,
+        }
+    }
+
+    /// An `AccelerateToPointController` construction (its parameters are
+    /// stored raw; the per-tick division happens on every move).
+    pub fn accelerate_to_point(
+        destination: [f32; 3],
+        acceleration: f32,
+        max_speed: f32,
+        facing: AccelerationFacing,
+        stop_at_destination: bool,
+    ) -> Self {
+        Self::AccelerateToPoint {
+            destination,
+            acceleration,
+            max_speed,
+            facing,
+            stop_at_destination,
+        }
+    }
+
+    /// The controller type's exclusive category
+    /// (`IMPLEMENT_EXCLUSIVE_CONTROLLER_TYPE`'s argument): timers have
+    /// none; a pre-resolved `Exclusive` carries only its id; the movement
+    /// families all register as `"Movement"`.
+    pub fn exclusive_category(&self) -> Option<&'static str> {
+        match self {
+            ControllerKind::MoveToPoint { .. }
+            | ControllerKind::MoveToEntity { .. }
+            | ControllerKind::YawRotator { .. }
+            | ControllerKind::AccelerateToPoint { .. } => Some(MOVEMENT_CATEGORY),
+            _ => None,
+        }
+    }
 }
 
 /// `Controller`: the kind and the `userArg_` the script passed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Controller {
     /// What the controller is.
     pub kind: ControllerKind,
@@ -245,13 +402,15 @@ pub struct Controller {
 }
 
 impl Controller {
-    /// `Controller::exclusiveID()`: the base (timers) returns 0 — the
-    /// plain `nextControllerID` path; an exclusive-category controller
-    /// returns its category's id above the mask.
-    pub fn exclusive_id(&self) -> ControllerId {
+    /// `Controller::exclusiveID()` for the kinds that carry a resolved
+    /// id: the base (timers) and the movement families answer 0 — the
+    /// plain `nextControllerID` path unless the category resolves on the
+    /// app; a pre-resolved `Exclusive` returns its category's id above
+    /// the mask.
+    pub fn presolved_exclusive_id(&self) -> ControllerId {
         match &self.kind {
-            ControllerKind::Timer { .. } => 0,
             ControllerKind::Exclusive { category } => *category,
+            _ => 0,
         }
     }
 
@@ -299,12 +458,13 @@ impl Controllers {
     }
 
     /// `Controllers::addController` (`controllers.cpp:277`): refuse over
-    /// `absoluteMax` with 0, warn over `expectedMax`, allocate (the timer
-    /// family has no exclusive id), insert and report the id so the caller
-    /// performs `startReal( true )`.
+    /// `absoluteMax` with 0, warn over `expectedMax`, allocate under the
+    /// caller-resolved exclusive id and insert, reporting the id so the
+    /// caller performs `startReal( true )`.
     pub fn add_controller(
         &mut self,
         controller: Controller,
+        exclusive: ControllerId,
         expected_max: usize,
         absolute_max: usize,
     ) -> ControllerId {
@@ -323,12 +483,13 @@ impl Controllers {
         // incumbent of that id first — "if another movement controller
         // already exists, stop it now before adding the new one" — and
         // inserts under that same id, so a repeated registration never
-        // leaves the old object behind. Timers take the plain next id.
-        let id = match controller.exclusive_id() {
+        // leaves the old object behind. Timers (and any family without a
+        // resolved id) take the plain next id.
+        let id = match exclusive {
             0 => self.next_controller_id(),
-            exclusive => {
-                self.del_controller(exclusive, false);
-                exclusive
+            resolved => {
+                self.del_controller(resolved, false);
+                resolved
             }
         };
         self.container.insert(id, controller);
@@ -718,6 +879,11 @@ impl CellApp {
             let port = u16::from_le_bytes(stream[offset..offset + 2].try_into().expect("2 bytes"));
             offset += 2;
             entity.base_addr = Some((ip, port));
+            // `RealEntity`'s ctor seeds the velocity sampler from the
+            // owner's position (`positionSample_( owner.position() )`), so
+            // the first sampled window is the streamed position, not the
+            // origin.
+            entity.position_sample = entity.position;
         }
 
         // `pSpace_->addEntity( this )`.
@@ -796,16 +962,58 @@ impl CellApp {
         let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
             return 0;
         };
+        // Resolve the controller type's exclusive id on the app: the
+        // movement families mint (or reuse) their category's id here —
+        // `IMPLEMENT_EXCLUSIVE_CONTROLLER_TYPE` hardcodes the category
+        // string per type, so the same string always answers the same id.
+        let mut exclusive = controller.presolved_exclusive_id();
+        if let (0, Some(category)) = (exclusive, controller.kind.exclusive_category()) {
+            exclusive = self.get_exclusive_id(category);
+        }
+        // The incumbent deletion inside addController must also stop the
+        // old controller's updatable drive (its stopReal face).
+        if exclusive != 0 {
+            self.deregister_updatable(entity, exclusive);
+        }
         let id = entity_rc.borrow_mut().controllers.add_controller(
             controller,
+            exclusive,
             self.expected_max_controllers,
             self.absolute_max_controllers,
         );
         if id == 0 {
             return 0;
         }
-        self.start_timer_controller(&entity_rc, id, true);
+        self.start_real_controller(&entity_rc, id, true);
         id
+    }
+
+    /// `Controller::startReal` dispatch (`controllers.cpp:477`): each
+    /// family arms its own drive — timers join the `TimeQueue`, the
+    /// movement families join the `Updatables` registry, and the
+    /// pre-resolved `Exclusive` placeholder hangs inert.
+    pub fn start_real_controller(
+        &mut self,
+        entity_rc: &Rc<RefCell<Entity>>,
+        id: ControllerId,
+        is_initial_start: bool,
+    ) {
+        let kind = entity_rc
+            .borrow()
+            .controllers
+            .container
+            .get(&id)
+            .map(|c| c.kind);
+        let Some(kind) = kind else {
+            return;
+        };
+        match kind {
+            ControllerKind::Timer { .. } => {
+                self.start_timer_controller(entity_rc, id, is_initial_start)
+            }
+            ControllerKind::Exclusive { .. } => {}
+            _ => self.start_movement_controller(entity_rc, id, kind),
+        }
     }
 
     /// `TimerController::startReal( isInitialStart )`: arm the queue
@@ -875,6 +1083,9 @@ impl CellApp {
             // delController's warn-on-failure WARNING counted.
             return false;
         }
+        // The updatable half of `stopReal`: a movement controller leaves
+        // the per-tick registry with its container entry.
+        self.deregister_updatable(entity, id);
         // TimerController::stopReal( true ): cancelling fires the queue's
         // release, whose on_release records a Release event the next tick
         // drains (the controller is already gone by then, exactly like the
@@ -887,9 +1098,12 @@ impl CellApp {
 
     /// `EntityApp::advanceTime` + `callTimers`
     /// (`lib/server/entity_app.cpp:157`): bump the game time, run the
-    /// queue, then replay the router events in order.
+    /// updatables pass (`ServerApp::advanceTime`'s `callUpdatables` — the
+    /// movement families drive here), then the queue, then replay the
+    /// router events in order.
     pub fn advance_tick(&mut self) {
         self.time += 1;
+        self.run_movement_pass();
         self.time_queue.process(self.time);
         let events = std::mem::take(&mut *self.router_events.borrow_mut());
         for event in events {
@@ -1073,7 +1287,7 @@ pub fn start_real_controllers(app: &mut CellApp, entity_rc: &Rc<RefCell<Entity>>
         .copied()
         .collect();
     for id in ids {
-        app.start_timer_controller(entity_rc, id, false);
+        app.start_real_controller(entity_rc, id, false);
     }
 }
 
@@ -1550,7 +1764,7 @@ mod tests {
             },
             user_arg: 0,
         };
-        assert_eq!(timer.exclusive_id(), 0);
+        assert_eq!(timer.presolved_exclusive_id(), 0);
         assert_eq!(timer.domain(), DOMAIN_REAL);
         assert_eq!(controllers.next_controller_id(), 1);
         assert_eq!(controllers.next_controller_id(), 2);
