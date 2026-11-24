@@ -26,6 +26,7 @@ use crate::packet::flags;
 use crate::packet_filter::PacketFilter;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
 use crate::poller::EventPoller;
+use crate::rate_limiter::RateLimiter;
 use crate::request_manager::RequestManager;
 use crate::udp_bundle::UdpBundle;
 use crate::udp_channel::{
@@ -96,6 +97,11 @@ pub struct NetworkInterface {
     /// `shouldUseChecksums_`: whether outbound packets carry a checksum
     /// footer (packet_sender.hpp). Off by default, as the reference's.
     should_use_checksums: Cell<bool>,
+    /// The configured rate limiting (`rateLimitPeriod_`, the two per-period
+    /// budgets and their over-budget averages, network_interface.cpp:99-105).
+    /// It lives with the interface's dispatcher: its period timer is armed on
+    /// it, and `process_packet`'s first arm asks it about every datagram.
+    rate_limiter: Rc<RateLimiter>,
     /// `pOffChannelFilter_` (network_interface.hpp:328): the filter given
     /// first say over off-channel datagrams (`PacketReceiver::processPacket`,
     /// packet_receiver.cpp:493). `None` until one is installed; the BaseApp
@@ -131,6 +137,10 @@ impl NetworkInterface {
         interface_type: InterfaceType,
         dispatcher: Rc<EventDispatcher>,
     ) -> Rc<NetworkInterface> {
+        // The rate limiting rides on the interface's own dispatcher: its
+        // period timer is armed there, so it must exist before the
+        // interface is put together.
+        let rate_limiter = RateLimiter::new(Rc::clone(&dispatcher));
         let interface = NetworkInterface {
             udp_socket: RefCell::new(Endpoint::new()),
             address: RefCell::new(NONE),
@@ -147,6 +157,7 @@ impl NetworkInterface {
             self_weak: RefCell::new(Weak::new()),
             seq_num_allocator: RefCell::new(SeqNumAllocator::new(1)),
             should_use_checksums: Cell::new(false),
+            rate_limiter,
             off_channel_filter: RefCell::new(None),
         };
         let shared = Rc::new(interface);
@@ -555,6 +566,54 @@ impl NetworkInterface {
         }
     }
 
+    /// `rateLimitPeriod()` (network_interface.cpp:929): the configured
+    /// rate-limiting period in seconds. Zero means no rate limiting.
+    pub fn rate_limit_period(&self) -> f32 {
+        self.rate_limiter.rate_limit_period()
+    }
+
+    /// `rateLimitPeriod( period )` (network_interface.cpp:936): the budget
+    /// period, in seconds. Setting it clears the running counters, and a
+    /// positive period arms the recurring timer that samples the over-budget
+    /// counts and resets them; zero leaves rate limiting off.
+    pub fn set_rate_limit_period(&self, period: f32) {
+        RateLimiter::set_rate_limit_period(&self.rate_limiter, period);
+    }
+
+    /// `perIPAddressRateLimit()` (network_interface.hpp:245): the budget
+    /// every source IP may spend per period, counted with the port zeroed.
+    pub fn per_ip_address_rate_limit(&self) -> u32 {
+        self.rate_limiter.per_ip_address_rate_limit()
+    }
+
+    /// `perIPAddressRateLimit( limit )` (network_interface.hpp:247).
+    pub fn set_per_ip_address_rate_limit(&self, limit_per_period: u32) {
+        self.rate_limiter
+            .set_per_ip_address_rate_limit(limit_per_period);
+    }
+
+    /// `perIPAddressPortRateLimit()` (network_interface.hpp:252): the budget
+    /// every source address may spend per period.
+    pub fn per_ip_address_port_rate_limit(&self) -> u32 {
+        self.rate_limiter.per_ip_address_port_rate_limit()
+    }
+
+    /// `perIPAddressPortRateLimit( limit )` (network_interface.hpp:257).
+    pub fn set_per_ip_address_port_rate_limit(&self, limit_per_period: u32) {
+        self.rate_limiter
+            .set_per_ip_address_port_rate_limit(limit_per_period);
+    }
+
+    /// `rateLimit/stats/perIPAddressAverage` and
+    /// `.../perIPAddressPortAverage` (network_interface.cpp:1207-1228): the
+    /// two running averages of the over-budget counts, the per-IP one first.
+    pub fn rate_limit_averages(&self) -> (f32, f32) {
+        (
+            self.rate_limiter.ip_address_rate_limit_average(),
+            self.rate_limiter.ip_address_port_rate_limit_average(),
+        )
+    }
+
     /// The `PacketReceiver::processPacket` routing target: on-channel
     /// packets with a live channel go to that channel's receive dispatch,
     /// everything else to the interface's off-channel filter (when one is
@@ -564,6 +623,20 @@ impl NetworkInterface {
     /// drop: the sink is the message-dispatch seam, and the channel map's
     /// condemned-handling covers the destroyed-channel case elsewhere.
     pub fn process_packet(&self, addr: &Address, packet: &mut Packet) -> Reason {
+        // `processPacket` (packet_receiver.cpp:445-455): the rate limiting
+        // speaks before anything else, and it does not distinguish internal
+        // from external interfaces -- a rate-limited address is answered
+        // with REASON_GENERAL_NETWORK, and its datagram never reaches a
+        // channel, even a registered one.
+        if self.rate_limiter.increment_and_check_rate_limit(addr) {
+            if self.verbose.get() {
+                eprintln!(
+                    "PacketReceiver::processPacket( {} ): Ignoring packet from rate-limited address",
+                    addr.c_str()
+                );
+            }
+            return Reason::GeneralNetwork;
+        }
         if packet.has_flags(flags::ON_CHANNEL)
             && let Some(channel) = self.find_channel(*addr, false)
         {
@@ -1536,6 +1609,196 @@ mod tests {
         assert!(
             Rc::ptr_eq(&channel, &after),
             "the failed attempt left no residual new session"
+        );
+    }
+
+    /// An interface for the rate-limiting paths: a pinned clock, so the
+    /// period timer can be advanced, a dispatcher, so those timers can be
+    /// run, and a recording sink, so a delivered packet is observable.
+    fn limited_interface() -> (
+        Rc<NetworkInterface>,
+        Rc<EventDispatcher>,
+        Rc<std::cell::Cell<u64>>,
+        Rc<RecordingSink>,
+    ) {
+        let clock = Rc::new(std::cell::Cell::new(1_000_000u64));
+        let clock_cell = Rc::clone(&clock);
+        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || {
+            clock_cell.get()
+        })));
+        let dispatcher_ref = Rc::clone(&dispatcher);
+        let interface = NetworkInterface::new_with_dispatcher(InterfaceType::External, dispatcher);
+        let sink = Rc::new(RecordingSink::default());
+        interface.set_packet_sink(Some(sink.clone()));
+        (interface, dispatcher_ref, clock, sink)
+    }
+
+    /// The five-sample bias the reference arms both averages with
+    /// (network_interface.cpp:99-105).
+    fn rate_limit_bias() -> f32 {
+        foundation::math::ema::Ema::calculate_bias_from_num_samples(5.0, 0.95)
+    }
+
+    /// Rate limiting starts off: with no period and no budgets every
+    /// datagram is accepted and both averages sit at zero
+    /// (network_interface.cpp:970, the `isZero` guard).
+    #[test]
+    fn rate_limiting_starts_disabled() {
+        let (interface, _dispatcher, _clock, sink) = limited_interface();
+
+        assert_eq!(interface.rate_limit_period(), 0.0);
+        assert_eq!(interface.per_ip_address_rate_limit(), 0);
+        assert_eq!(interface.per_ip_address_port_rate_limit(), 0);
+
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        for _ in 0..8 {
+            let mut packet = Packet::new();
+            assert_eq!(
+                interface.process_packet(&addr, &mut packet),
+                Reason::Success
+            );
+        }
+        assert_eq!(sink.packets.borrow().len(), 8);
+        assert_eq!(interface.rate_limit_averages(), (0.0, 0.0));
+    }
+
+    /// The acceptance boundary: a source IP may spend exactly its budget in
+    /// one period, and the packet that crosses it is answered with
+    /// REASON_GENERAL_NETWORK. The reference compares `++count > limit`, so
+    /// exactly `limit` packets pass (network_interface.cpp:970-988).
+    #[test]
+    fn the_per_ip_address_limit_drops_the_packet_over_the_boundary() {
+        let (interface, _dispatcher, _clock, sink) = limited_interface();
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_rate_limit(3);
+
+        let ports = [9u16, 10, 11, 12];
+        for (index, port) in ports.iter().enumerate() {
+            let mut packet = Packet::new();
+            let addr = Address::new(LOOPBACK, socket::htons(*port));
+            let reason = interface.process_packet(&addr, &mut packet);
+            if index < 3 {
+                assert_eq!(reason, Reason::Success, "port {index} is inside the budget");
+            } else {
+                assert_eq!(
+                    reason,
+                    Reason::GeneralNetwork,
+                    "the fourth packet crosses the budget"
+                );
+            }
+        }
+        assert_eq!(
+            sink.packets.borrow().len(),
+            3,
+            "only the three inside packets reached the sink"
+        );
+        // Nothing has been sampled yet: the average folds in when the
+        // period expires.
+        assert_eq!(interface.rate_limit_averages(), (0.0, 0.0));
+    }
+
+    /// The per-address budget counts each source address separately: one
+    /// address crossing its budget does not touch another address's
+    /// (network_interface.cpp:990-1003).
+    #[test]
+    fn the_per_ip_address_port_limit_counts_each_address_separately() {
+        let (interface, _dispatcher, _clock, _sink) = limited_interface();
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_port_rate_limit(2);
+
+        let busy = Address::new(LOOPBACK, socket::htons(9));
+        for index in 0..3 {
+            let mut packet = Packet::new();
+            let reason = interface.process_packet(&busy, &mut packet);
+            if index < 2 {
+                assert_eq!(reason, Reason::Success, "index {index} is inside");
+            } else {
+                assert_eq!(reason, Reason::GeneralNetwork, "the third is over");
+            }
+        }
+
+        let other = Address::new(LOOPBACK, socket::htons(10));
+        let mut packet = Packet::new();
+        assert_eq!(
+            interface.process_packet(&other, &mut packet),
+            Reason::Success,
+            "the other address keeps its own budget"
+        );
+    }
+
+    /// When the period expires the counters are cleared and the refused
+    /// address is admitted again, and the over-budget counts of the period
+    /// that just ended are folded into the per-IP average
+    /// (network_interface.cpp:540-546).
+    #[test]
+    fn the_period_expiry_clears_the_counts_and_samples_the_average() {
+        let (interface, dispatcher, clock, _sink) = limited_interface();
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_rate_limit(1);
+
+        let addr = Address::new(LOOPBACK, socket::htons(9));
+        let mut first = Packet::new();
+        assert_eq!(interface.process_packet(&addr, &mut first), Reason::Success);
+        let mut second = Packet::new();
+        assert_eq!(
+            interface.process_packet(&addr, &mut second),
+            Reason::GeneralNetwork
+        );
+        let mut third = Packet::new();
+        assert_eq!(
+            interface.process_packet(&addr, &mut third),
+            Reason::GeneralNetwork
+        );
+
+        clock.set(clock.get() + 1_000_000);
+        dispatcher.process_timers();
+
+        let mut fresh = Packet::new();
+        assert_eq!(
+            interface.process_packet(&addr, &mut fresh),
+            Reason::Success,
+            "the cleared budget admits the address again"
+        );
+        assert_eq!(
+            interface.rate_limit_averages().0,
+            (1.0 - rate_limit_bias()) * 2.0,
+            "the two over-budget counts of the period were sampled"
+        );
+    }
+
+    /// Rate limiting speaks before the channel lookup: a datagram from a
+    /// rate-limited address never reaches even a channel that is
+    /// registered for it (packet_receiver.cpp:445-455 precedes the channel
+    /// arm at :471).
+    #[test]
+    fn a_channelled_address_is_limited_before_its_channel_is_found() {
+        let (interface, _dispatcher, _clock, _sink) = limited_interface();
+        interface.set_rate_limit_period(1.0);
+        interface.set_per_ip_address_rate_limit(1);
+
+        let port = socket::htons(7788);
+        let address = Address::new(LOOPBACK, port);
+        let _channel = UdpChannel::new(
+            &interface,
+            address,
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        let mut first = Packet::new();
+        first.set_flags(flags::ON_CHANNEL);
+        assert_ne!(
+            interface.process_packet(&address, &mut first),
+            Reason::GeneralNetwork,
+            "the first packet is inside the budget"
+        );
+        let mut second = Packet::new();
+        second.set_flags(flags::ON_CHANNEL);
+        assert_eq!(
+            interface.process_packet(&address, &mut second),
+            Reason::GeneralNetwork,
+            "the second is refused before the channel is found"
         );
     }
 }
