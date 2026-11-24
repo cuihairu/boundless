@@ -187,6 +187,23 @@ impl Set {
         self.is_clear = self.is_clear();
     }
 
+    /// The quit set every server process holds: `SIGTERM`/`SIGINT`/
+    /// `SIGQUIT`, the signals whose first arrival ends the run. Both
+    /// holders build it the same way: the role entry (`app::run`) and
+    /// the topology supervisor (`topology::run_topology`), so a stop
+    /// reaches whichever thread is holding the wait.
+    pub fn quit() -> Self {
+        let mut set = Set::empty();
+        for sig in [
+            platform::signals::SIGTERM,
+            platform::signals::SIGINT,
+            platform::signals::SIGQUIT,
+        ] {
+            set.set(sig);
+        }
+        set
+    }
+
     pub fn set(&mut self, signal: i32) {
         unsafe {
             libc::sigaddset(&mut self.raw, signal);

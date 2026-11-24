@@ -9,6 +9,7 @@ members = [
     "crates/entitydef",
     "crates/chunk",
     "crates/db",
+    "crates/db-postgres",
     "crates/python-host",
     "crates/python-module",
     "crates/server-runtime",
@@ -42,6 +43,11 @@ sha2 = "0.10"
 # OpenSSL's `BF_set_key`/`BF_ecb_encrypt`; this crate is the standard Blowfish
 # (wire-tested against Eric Young's published vectors in the unit tests).
 blowfish = "0.9"
+# PostgreSQL wire client for the BW-09-06 storage backend (sync libpq
+# conventions; JSONB columns carry the nested property values).
+postgres = "0.19"
+# JSON encoding for the JSONB columns (the nested PropertyValue codec).
+serde_json = "1"
 
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
@@ -51,6 +57,8 @@ resources = { path = "crates/resources" }
 mercury = { path = "crates/mercury" }
 contracts = { path = "crates/contracts" }
 entitydef = { path = "crates/entitydef" }
+db = { path = "crates/db" }
+db-postgres = { path = "crates/db-postgres" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
