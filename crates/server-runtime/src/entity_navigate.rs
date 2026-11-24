@@ -82,6 +82,58 @@ impl MeshNavigator {
         loc.clip();
         loc
     }
+
+    /// `NavmeshEntityNavigationSystem::getNavigatePosition`
+    /// (`navmesh_navigation_system.cpp:550-629`) with the
+    /// activated-portal flag exposed — `getStopPoint`'s per-hop query.
+    /// The `Navigator` trait's `navigate_position` is this method with
+    /// the flag dropped.
+    fn navigate_position_portal(
+        &mut self,
+        source: Vector3,
+        destination: Vector3,
+        max_distance: f32,
+        girth: f32,
+        passed_activated_portal: &mut bool,
+    ) -> Option<Vector3> {
+        let src = self.navloc_at(source, girth);
+        let dst = self.navloc_at(destination, girth);
+        assert!(
+            src.valid() && dst.valid(),
+            "reference MF_ASSERTs the endpoints are valid"
+        );
+
+        // if they are the same waypoint it is easy
+        if src.waypoints_equal(&dst) {
+            let mut wp = dst.point();
+            src.make_max_height(&mut wp);
+            return Some(wp);
+        }
+
+        let mut way = NavLoc::new();
+        if !self.navigator.find_path(
+            &src,
+            &dst,
+            max_distance,
+            true,
+            &mut way,
+            passed_activated_portal,
+            CacheState::ReadWriteCache,
+        ) {
+            return None;
+        }
+
+        // calculate the way world position, and ensure it is not too far
+        // away; the height raise comes from the source when the hop is
+        // only semi-valid.
+        let mut wp = way.point();
+        let dst_y = wp.y;
+        let way_point = way.waypoint();
+        let height_loc = if way_point < 0 { &src } else { &way };
+        height_loc.make_max_height(&mut wp);
+        wp.y = wp.y.max(dst_y);
+        Some(wp)
+    }
 }
 
 impl Navigator for MeshNavigator {
@@ -111,44 +163,14 @@ impl Navigator for MeshNavigator {
         max_distance: f32,
         girth: f32,
     ) -> Option<Vector3> {
-        let src = self.navloc_at(source, girth);
-        let dst = self.navloc_at(destination, girth);
-        assert!(
-            src.valid() && dst.valid(),
-            "reference MF_ASSERTs the endpoints are valid"
-        );
-
-        // if they are the same waypoint it is easy
-        if src.waypoints_equal(&dst) {
-            let mut wp = dst.point();
-            src.make_max_height(&mut wp);
-            return Some(wp);
-        }
-
-        let mut way = NavLoc::new();
         let mut passed_activated_portal = false;
-        if !self.navigator.find_path(
-            &src,
-            &dst,
+        self.navigate_position_portal(
+            source,
+            destination,
             max_distance,
-            true,
-            &mut way,
+            girth,
             &mut passed_activated_portal,
-            CacheState::ReadWriteCache,
-        ) {
-            return None;
-        }
-
-        // calculate the way world position, and ensure it is not too far
-        // away; the height raise comes from the source when the hop is
-        // only semi-valid.
-        let mut wp = way.point();
-        let dst_y = wp.y;
-        let way_point = way.waypoint();
-        let height_loc = if way_point < 0 { &src } else { &way };
-        height_loc.make_max_height(&mut wp);
-        wp.y = wp.y.max(dst_y);
-        Some(wp)
+        )
     }
 
     /// `NavLoc::pSet()`: the identity of the waypoint set containing
@@ -797,6 +819,225 @@ impl EntityNavigate {
         // never prepended even when the first point differs.
         Ok((warnings, path))
     }
+
+    /// `EntityNavigate::getStopPoint` (`entity_navigate.cpp:681-692`) over
+    /// the system face (`navmesh_navigation_system.cpp:112-324`): walk the
+    /// route one hop at a time and answer the point to stop at before the
+    /// first activated portal (a portal a chunk item — e.g. a door — has
+    /// claimed), `None` when no route exists at all. The reference's
+    /// `!pChunkSpace` check after a valid `createPathNavLoc` is dead (the
+    /// space lookup already dereferenced the space), the far-portal arm's
+    /// "Programmer logic error." fires only when `skippedFirstPoint` is
+    /// set without `ignoreFirstStopPoint` (the flag is only ever set
+    /// under that flag), and the mid-walk "Source location not valid."
+    /// cannot fire on mesh-resolved hop targets — all three are not
+    /// ported (registered). The 500-hop safety count only trips on a walk
+    /// that never converges (`SafetyCountExceeded`, defensively
+    /// unreachable).
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_stop_point(
+        &self,
+        state: &EntityState,
+        navigator: &mut MeshNavigator,
+        destination: Vector3,
+        ignore_first_stop_point: bool,
+        max_search_distance: f32,
+        girth: f32,
+        stop_dist: f32,
+        near_portal_dist: f32,
+        max_aoi_radius: f32,
+    ) -> Result<Option<(Vector3, bool)>, GetStopPointFailure> {
+        let source = state.position;
+        if !self.is_real {
+            return Err(GetStopPointFailure::NotReal);
+        }
+
+        // isEqual( maxSearchDistance, -1.f ) — the script face swaps in
+        // maxAoIRadius before the system face sees it.
+        let max_search_distance = if max_search_distance == -1.0 {
+            max_aoi_radius
+        } else {
+            max_search_distance
+        };
+
+        // Determine the source and dest NavLocs (both through
+        // createPathNavLoc, so both clipped; note the reference's source
+        // message has no trailing period and its destination one does).
+        let src_loc = navigator.navloc_at(source, girth);
+        if !src_loc.valid() {
+            return Err(GetStopPointFailure::SourceUnresolved);
+        }
+        let dst_loc = navigator.navloc_at(destination, girth);
+        if !dst_loc.valid() {
+            return Err(GetStopPointFailure::DestinationUnresolved);
+        }
+
+        // Prepare jump over waypoint path. The entity's navigator cache
+        // is not cleared (the reference's clearCache stays commented out).
+        let mut position = source;
+        let mut step_points = vec![position];
+        let mut safety_count = 500i32;
+        let mut skipped_first_point = false;
+        while ((position.x - destination.x).abs() > 0.01
+            || (position.z - destination.z).abs() > 0.01)
+            && {
+                safety_count -= 1;
+                safety_count > 0
+            }
+        {
+            let mut passed_activated_portal = false;
+            let Some(next) = navigator.navigate_position_portal(
+                position,
+                destination,
+                max_search_distance,
+                girth,
+                &mut passed_activated_portal,
+            ) else {
+                return Ok(None);
+            };
+            position = next;
+            step_points.push(position);
+
+            if passed_activated_portal {
+                // We've changed chunks. Calculate distance travelled from
+                // start (the x/z plane only).
+                let mut dist = 0.0;
+                for pair in step_points.windows(2) {
+                    dist += ((pair[1].x - pair[0].x) * (pair[1].x - pair[0].x)
+                        + (pair[1].z - pair[0].z) * (pair[1].z - pair[0].z))
+                        .sqrt();
+                }
+
+                // If starting point is a long way away, then we definitely
+                // want to stop at this portal.
+                if dist > near_portal_dist {
+                    // But if we're told to skip the first point, and we
+                    // haven't yet, then this is a problem.
+                    if !skipped_first_point && ignore_first_stop_point {
+                        return Err(GetStopPointFailure::IgnoreFirstTooFar);
+                    }
+
+                    // This is the portal we want to stop at. Find the
+                    // position stopDist back from the portal.
+                    let mut back_dist = 0.0;
+                    let mut prev_back_dist = 0.0;
+                    let mut last_length = 0.0;
+                    let mut i = step_points.len() - 1;
+                    while i > 0 {
+                        last_length = ((step_points[i].x - step_points[i - 1].x)
+                            * (step_points[i].x - step_points[i - 1].x)
+                            + (step_points[i].z - step_points[i - 1].z)
+                                * (step_points[i].z - step_points[i - 1].z))
+                            .sqrt();
+                        back_dist += last_length;
+                        if back_dist > stop_dist {
+                            break;
+                        }
+                        prev_back_dist = back_dist;
+                        i -= 1;
+                    }
+
+                    // Will never happen but check anyway — a stop distance
+                    // longer than the whole walk can trip it. The `i == 0`
+                    // fence covers the exact-equal case where the
+                    // reference's signed loop lands on `stepPoints[-1]`
+                    // (an out-of-bounds read) instead.
+                    if back_dist < stop_dist || i == 0 {
+                        return Err(GetStopPointFailure::StopDistTooLong);
+                    }
+
+                    let prop = (stop_dist - prev_back_dist) / last_length;
+                    let dx = step_points[i - 1].x - step_points[i].x;
+                    let dz = step_points[i - 1].z - step_points[i].z;
+                    let length = (dx * dx + dz * dz).sqrt();
+                    let mut stop_position = step_points[i];
+                    stop_position.x += dx / length * prop;
+                    stop_position.z += dz / length * prop;
+                    return Ok(Some((stop_position, false)));
+                }
+                // Otherwise starting point is close to this portal: if
+                // we're not ignoring the first portal, answer the start
+                // point; otherwise continue around the loop and note the
+                // skip.
+                else if !ignore_first_stop_point {
+                    return Ok(Some((source, false)));
+                } else {
+                    // sanity check.
+                    if skipped_first_point {
+                        return Err(GetStopPointFailure::SecondClosePortal);
+                    }
+
+                    // Continue around loop, but note that we've skipped
+                    // first point.
+                    skipped_first_point = true;
+                }
+            }
+        }
+
+        if safety_count <= 0 {
+            return Err(GetStopPointFailure::SafetyCountExceeded);
+        }
+
+        // No doors encountered: the answer is the destination as given —
+        // the raw input vector, its `y` untouched by any height raise.
+        Ok(Some((destination, true)))
+    }
+}
+
+/// The `getStopPoint` failure face (`entity_navigate.cpp:681-692`,
+/// `navmesh_navigation_system.cpp:112-324`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GetStopPointFailure {
+    /// `PyExc_TypeError` — the system face refuses ghosts.
+    NotReal,
+    /// `PyExc_ValueError` — the source position resolves to no waypoint
+    /// ("Could not resolve source position", no trailing period).
+    SourceUnresolved,
+    /// `PyExc_ValueError` — the destination resolves to no waypoint
+    /// ("Could not resolve destination position.", with the period).
+    DestinationUnresolved,
+    /// `PyExc_ValueError` — the first portal sits past `nearPortalDist`
+    /// while `ignoreFirstStopPoint` was set.
+    IgnoreFirstTooFar,
+    /// `PyExc_AssertionError` — "Programmer logic error (1).": the stop
+    /// distance out-runs the whole walked chain.
+    StopDistTooLong,
+    /// `PyExc_AssertionError` — "Programmer logic error (2).": a second
+    /// close portal while the first was already skipped.
+    SecondClosePortal,
+    /// `PyExc_ValueError` — the walk never converged within 500 hops.
+    SafetyCountExceeded,
+}
+
+impl GetStopPointFailure {
+    /// The reference's error text.
+    pub fn message(&self) -> &'static str {
+        match self {
+            GetStopPointFailure::NotReal => {
+                "NavmeshEntityNavigationSystem::getStopPoint(): \
+                 This method can only be called on a real entity."
+            }
+            GetStopPointFailure::SourceUnresolved => {
+                "NavmeshEntityNavigationSystem::getStopPoint(): \
+                 Could not resolve source position"
+            }
+            GetStopPointFailure::DestinationUnresolved => {
+                "NavmeshEntityNavigationSystem::getStopPoint(): \
+                 Could not resolve destination position."
+            }
+            GetStopPointFailure::IgnoreFirstTooFar => {
+                "Entity.getStopPoint: told to ignore first portal, but \
+                 further than nearPortalDist away from it."
+            }
+            GetStopPointFailure::StopDistTooLong => {
+                "Entity.getStopPoint: Programmer logic error (1)."
+            }
+            GetStopPointFailure::SecondClosePortal => {
+                "Entity.getStopPoint: Programmer logic error (2)."
+            }
+            GetStopPointFailure::SafetyCountExceeded => "Safety count exceeded.",
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -805,6 +1046,7 @@ impl EntityNavigate {
 mod tests {
     use super::*;
     use crate::movement::{DEFAULT_GAME_UPDATE_HERTZ, Direction3D, EntityState, ScriptCallback};
+    use waypoint::Portal;
 
     /// `CellAppConfig::maxAoIRadius()` stand-in.
     const MAX_AOI_RADIUS: f32 = 450.0;
@@ -860,6 +1102,53 @@ mod tests {
             .map(Rc::new)
             .collect();
         MeshNavigator::new(sets, GRID_SIZE)
+    }
+
+    /// One unit-square single-waypoint record at `origin_x` — the
+    /// waypoint crate's `one_set` template (`navigator.rs` tests) with
+    /// its vertices translated, so several sets can mount in one space
+    /// without overlapping.
+    fn square_set(origin_x: f32) -> Rc<ChunkWaypointSetData> {
+        let mut b = Vec::new();
+        let put_f = |b: &mut Vec<u8>, v: f32| b.extend_from_slice(&v.to_le_bytes());
+        let put_i = |b: &mut Vec<u8>, v: i32| b.extend_from_slice(&v.to_le_bytes());
+        put_i(&mut b, 0);
+        put_f(&mut b, 0.6);
+        put_i(&mut b, 1);
+        put_i(&mut b, 4);
+        put_f(&mut b, 0.2);
+        put_f(&mut b, 0.6);
+        put_i(&mut b, 4);
+        for (x, z) in [(0.0f32, 0.0f32), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)] {
+            put_f(&mut b, x + origin_x);
+            put_f(&mut b, z);
+            put_i(&mut b, 65535);
+        }
+        Rc::new(waypoint::parse_world_navmesh(&b).expect("decode").remove(0))
+    }
+
+    /// `sets` disjoint square sets wired in a chain, each pair through a
+    /// permissive item-carrying portal (`has_chunk_item` — an activated
+    /// portal in the reference's terms) with distinct chunk identities so
+    /// the hop crosses a shell boundary. Each set's entry label points
+    /// at its neighbour's centre.
+    fn portal_chain(sets: usize) -> MeshNavigator {
+        let ids: Vec<Rc<ChunkWaypointSetData>> =
+            (0..sets).map(|k| square_set(2.0 * k as f32)).collect();
+        for (index, pair) in ids.windows(2).enumerate() {
+            let (a, b) = (&pair[0], &pair[1]);
+            a.set_chunk_identity(index);
+            b.set_chunk_identity(index + 1);
+            let portal = Rc::new(Portal {
+                permissive: true,
+                has_chunk_item: true,
+            });
+            let in_b = Vector3::new(2.0 * (index + 1) as f32 + 0.5, 0.6, 0.5);
+            let in_a = Vector3::new(2.0 * index as f32 + 0.5, 0.6, 0.5);
+            a.connect(Rc::clone(b), portal.clone(), 2, 0, in_b);
+            b.connect(Rc::clone(a), portal, 0, 0, in_a);
+        }
+        MeshNavigator::new(ids, GRID_SIZE)
     }
 
     fn real_entity() -> EntityNavigate {
@@ -2263,6 +2552,298 @@ mod tests {
         assert_eq!(
             path,
             vec![Vector3::new(3.0, 3.5, 3.0), Vector3::new(7.0, 3.5, 7.0)]
+        );
+    }
+
+    /// BW-10-06-06 acceptance (同一位置、方向和停止距离输入返回原版停止点)
+    /// — a far activated portal answers the stopDist back-off along the
+    /// walked chain: the single hop lands on the destination set's
+    /// boundary-crossing point (2.0, 0.6, 0.5) with the flag raised, and
+    /// the answer is one stop-distance back from it.
+    #[test]
+    fn the_stop_point_backs_off_the_activated_portal() {
+        let extra = real_entity();
+        let state = EntityState::new(7, Vector3::new(0.4, 0.4, 0.5), Direction3D::default(), 0);
+        let mut navigator = portal_chain(2);
+        let (stop_point, reached) = extra
+            .get_stop_point(
+                &state,
+                &mut navigator,
+                Vector3::new(2.8, 0.4, 0.5),
+                false,
+                -1.0,
+                0.6,
+                1.0,
+                1.8,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the portal back-off resolves")
+            .expect("a stop point was answered");
+        assert!(!reached);
+        let d = |a: f32, b: f32| (a - b).abs();
+        assert!(
+            d(stop_point.x, 2.3833332) < 1e-6
+                && d(stop_point.y, 0.6) < 1e-6
+                && d(stop_point.z, 0.5) < 1e-6,
+            "stop point at {stop_point:?}"
+        );
+    }
+
+    /// A portal close enough that the walk barely started answers the
+    /// start point unless the first portal is ignored — and an ignored
+    /// close portal walks on to the destination, echoing the raw input
+    /// vector (its `y` untouched by any height raise).
+    #[test]
+    fn a_close_portal_answers_the_start_unless_it_is_ignored() {
+        let extra = real_entity();
+        let state = EntityState::new(7, Vector3::new(0.4, 0.4, 0.5), Direction3D::default(), 0);
+
+        let mut navigator = portal_chain(2);
+        let (stop_point, reached) = extra
+            .get_stop_point(
+                &state,
+                &mut navigator,
+                Vector3::new(2.8, 0.4, 0.5),
+                false,
+                -1.0,
+                0.6,
+                1.0,
+                2.5,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the close portal resolves")
+            .expect("a stop point was answered");
+        assert!(!reached);
+        assert_eq!(stop_point, state.position, "the start point is answered");
+
+        let mut navigator = portal_chain(2);
+        let (stop_point, reached) = extra
+            .get_stop_point(
+                &state,
+                &mut navigator,
+                Vector3::new(2.8, 0.4, 0.5),
+                true,
+                -1.0,
+                0.6,
+                1.0,
+                2.5,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the ignored close portal walks on")
+            .expect("a stop point was answered");
+        assert!(reached);
+        assert_eq!(
+            stop_point,
+            Vector3::new(2.8, 0.4, 0.5),
+            "the raw destination, y untouched"
+        );
+    }
+
+    /// A stop distance that out-runs the walked chain trips the
+    /// reference's defensive "Programmer logic error (1)." (the walk-back
+    /// reaches the chain's head without passing stopDist; the reference
+    /// reads `stepPoints[-1]` on the exact-equal case — the port fences
+    /// both into the same error).
+    #[test]
+    fn a_stop_distance_past_the_chain_raises_the_first_logic_error() {
+        let extra = real_entity();
+        let state = EntityState::new(7, Vector3::new(0.4, 0.4, 0.5), Direction3D::default(), 0);
+        let mut navigator = portal_chain(3);
+        let err = extra
+            .get_stop_point(
+                &state,
+                &mut navigator,
+                Vector3::new(4.8, 0.4, 0.5),
+                false,
+                -1.0,
+                0.6,
+                2.0,
+                1.0,
+                MAX_AOI_RADIUS,
+            )
+            .expect_err("stopDist 2.0 past the 1.6 hop");
+        assert_eq!(err, GetStopPointFailure::StopDistTooLong);
+        assert_eq!(
+            err.message(),
+            "Entity.getStopPoint: Programmer logic error (1)."
+        );
+    }
+
+    /// Ignoring the first portal when it sits past nearPortalDist is the
+    /// reference's ValueError; a second close portal after a skipped one
+    /// trips the defensive "Programmer logic error (2)." sanity check.
+    #[test]
+    fn the_ignore_first_and_second_close_portal_refusals() {
+        let extra = real_entity();
+        let state = EntityState::new(7, Vector3::new(0.4, 0.4, 0.5), Direction3D::default(), 0);
+
+        let mut navigator = portal_chain(3);
+        let err = extra
+            .get_stop_point(
+                &state,
+                &mut navigator,
+                Vector3::new(4.8, 0.4, 0.5),
+                true,
+                -1.0,
+                0.6,
+                2.0,
+                1.0,
+                MAX_AOI_RADIUS,
+            )
+            .expect_err("the first portal is past nearPortalDist");
+        assert_eq!(err, GetStopPointFailure::IgnoreFirstTooFar);
+        assert_eq!(
+            err.message(),
+            "Entity.getStopPoint: told to ignore first portal, but further \
+             than nearPortalDist away from it."
+        );
+
+        // Both hops stay under nearPortalDist (1.6 and 4.4 against 6.0),
+        // so the first portal is skipped and the second close one trips
+        // the sanity check.
+        let mut navigator = portal_chain(3);
+        let err = extra
+            .get_stop_point(
+                &state,
+                &mut navigator,
+                Vector3::new(4.8, 0.4, 0.5),
+                true,
+                -1.0,
+                0.6,
+                2.0,
+                6.0,
+                MAX_AOI_RADIUS,
+            )
+            .expect_err("the second close portal trips the sanity check");
+        assert_eq!(err, GetStopPointFailure::SecondClosePortal);
+        assert_eq!(
+            err.message(),
+            "Entity.getStopPoint: Programmer logic error (2)."
+        );
+    }
+
+    /// A skipped close portal keeps walking: the second crossing sits far
+    /// enough out that the walk-back straddles onto the first segment —
+    /// the only face here where `prevBackDist` carries a length.
+    #[test]
+    fn a_straddling_stop_distance_lands_on_an_earlier_segment() {
+        let extra = real_entity();
+        let state = EntityState::new(7, Vector3::new(0.4, 0.4, 0.5), Direction3D::default(), 0);
+        let mut navigator = portal_chain(3);
+        let (stop_point, reached) = extra
+            .get_stop_point(
+                &state,
+                &mut navigator,
+                Vector3::new(4.8, 0.4, 0.5),
+                true,
+                100.0,
+                0.6,
+                3.5,
+                3.0,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the straddling walk-back resolves")
+            .expect("a stop point was answered");
+        assert!(!reached);
+        // Chain (0.4,0.5) -> (2.0,0.5) -> (4.8,0.5): seg2 2.8 accumulates
+        // prevBackDist 2.8, seg1 breaks past stopDist 3.5, prop
+        // (3.5-2.8)/1.6 lands 0.4375 before the crossing.
+        let d = |a: f32, b: f32| (a - b).abs();
+        assert!(
+            d(stop_point.x, 1.5625) < 1e-6 && d(stop_point.y, 0.6) < 1e-6,
+            "stop point at {stop_point:?}"
+        );
+    }
+
+    /// A space without doors answers `(destination, true)` verbatim; the
+    /// disconnected shell layers answer `None`; a ghost is refused by the
+    /// system face and a girth no record matches cannot resolve its
+    /// source.
+    #[test]
+    fn the_doorless_and_unroutable_answers() {
+        let extra = real_entity();
+        let mut slope = mesh_navigator("slope");
+        let slope_state =
+            EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+        let (stop_point, reached) = extra
+            .get_stop_point(
+                &slope_state,
+                &mut slope,
+                Vector3::new(7.0, 3.0, 7.0),
+                false,
+                -1.0,
+                GIRTH,
+                1.5,
+                1.8,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the doorless slope resolves")
+            .expect("a stop point was answered");
+        assert!(reached);
+        assert_eq!(
+            stop_point,
+            Vector3::new(7.0, 3.0, 7.0),
+            "the raw destination, y untouched"
+        );
+
+        let mut shell = mesh_navigator("shell");
+        let floor_state =
+            EntityState::new(7, Vector3::new(2.5, 0.5, 4.5), Direction3D::default(), 0);
+        let answer = extra
+            .get_stop_point(
+                &floor_state,
+                &mut shell,
+                Vector3::new(3.0, 1.5, 3.5),
+                false,
+                -1.0,
+                GIRTH,
+                1.5,
+                1.8,
+                MAX_AOI_RADIUS,
+            )
+            .expect("no route is not an error");
+        assert_eq!(answer, None);
+
+        let ghost = EntityNavigate::default();
+        let mut navigator = portal_chain(2);
+        let err = ghost
+            .get_stop_point(
+                &floor_state,
+                &mut navigator,
+                Vector3::new(2.8, 0.4, 0.5),
+                false,
+                -1.0,
+                0.6,
+                1.0,
+                1.8,
+                MAX_AOI_RADIUS,
+            )
+            .expect_err("a ghost is refused");
+        assert_eq!(err, GetStopPointFailure::NotReal);
+        assert_eq!(
+            err.message(),
+            "NavmeshEntityNavigationSystem::getStopPoint(): \
+             This method can only be called on a real entity."
+        );
+
+        let mut slope = mesh_navigator("slope");
+        let err = extra
+            .get_stop_point(
+                &slope_state,
+                &mut slope,
+                Vector3::new(7.0, 3.0, 7.0),
+                false,
+                -1.0,
+                0.5,
+                1.5,
+                1.8,
+                MAX_AOI_RADIUS,
+            )
+            .expect_err("girth 0.5 matches no record");
+        assert_eq!(err, GetStopPointFailure::SourceUnresolved);
+        assert_eq!(
+            err.message(),
+            "NavmeshEntityNavigationSystem::getStopPoint(): Could not resolve source position"
         );
     }
 }
