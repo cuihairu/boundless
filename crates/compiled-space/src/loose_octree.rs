@@ -11,7 +11,7 @@
 //! eight slots (`loose_octree.ipp:551-566`).
 
 use crate::binary_format::Stream;
-use foundation::math::{BoundBox, Vector3};
+use foundation::math::{BoundBox, ConvexHull, RayIntersectionType, Vector3};
 
 /// Node indices are `uint16` with the top bit reserved for the leaf flag
 /// (`loose_octree.hpp:33-44`).
@@ -538,6 +538,97 @@ impl DynamicLooseOctree {
         }
 
         // Batch translation of node references into data references.
+        for reference in data_references.iter_mut() {
+            *reference = self.data_references[*reference as usize];
+        }
+        data_references
+    }
+
+    /// The hull walk (`LooseOctree::intersect(const ConvexHull&, ...)`,
+    /// `loose_octree.ipp:391-410` + the generic walk at 576-628): each
+    /// node's bound is offered to the hull together with the parent's
+    /// plane-flag state; the hull clears the flags of planes the bound is
+    /// fully inside, and children inherit the reduced set (the reference's
+    /// disable-planes-for-children optimisation, kept verbatim).
+    pub fn intersect_hull(&self, hull: &ConvexHull) -> Vec<NodeDataReference> {
+        let mut data_references = Vec::new();
+        if self.empty() {
+            return data_references;
+        }
+
+        // Stack entries are (nodeRef, u16 plane-flag state) pairs — the
+        // reference `NodeEntry` bitfield (`loose_octree.ipp:511-521`).
+        let mut stack = vec![(ROOT_NODE, !0u16)];
+        while let Some((node_ref, mut state)) = stack.pop() {
+            let cur_node = child_index_from_reference(node_ref) as usize;
+            let node_bound = &self.bounds[cur_node];
+            if !hull.intersects_box_flags(node_bound, &mut state) {
+                continue;
+            }
+
+            if is_leaf_ref(node_ref) {
+                data_references.push(cur_node as NodeDataReference);
+            } else {
+                // Dynamic storage has sparse children: skip invalid slots
+                // and keep scanning (`pushValidChildren` dynamic
+                // specialisation, `loose_octree.ipp:556-568`).
+                for child_ref in self.nodes[cur_node].child.iter() {
+                    if *child_ref != INVALID_NODE {
+                        stack.push((*child_ref, state));
+                    }
+                }
+            }
+        }
+
+        for reference in data_references.iter_mut() {
+            *reference = self.data_references[*reference as usize];
+        }
+        data_references
+    }
+
+    /// The ray-segment walk (`LooseOctree::intersect(const Vector3&,
+    /// const Vector3&, ...)`, `loose_octree.ipp:413-460`): a node recurses
+    /// when the segment starts inside its bound (`ORIGIN_INSIDE`) or the
+    /// bound is hit closer than the segment length.
+    pub fn intersect_ray_segment(&self, start: &Vector3, stop: &Vector3) -> Vec<NodeDataReference> {
+        let ray_dir = *stop - *start;
+        let end_ray_dist_sqr = ray_dir.length_squared();
+
+        let mut data_references = Vec::new();
+        if self.empty() {
+            return data_references;
+        }
+
+        // The ray shape never touches the state (`defaultState` 0).
+        let mut stack = vec![(ROOT_NODE, 0u16)];
+        while let Some((node_ref, state)) = stack.pop() {
+            let cur_node = child_index_from_reference(node_ref) as usize;
+            let node_bound = &self.bounds[cur_node];
+
+            let mut hit_point = Vector3::ZERO;
+            let include_node = match node_bound.intersects_ray_hit(start, &ray_dir, &mut hit_point)
+            {
+                RayIntersectionType::OriginInside => true,
+                RayIntersectionType::Intersection => {
+                    (hit_point - *start).length_squared() < end_ray_dist_sqr
+                }
+                RayIntersectionType::NoIntersection => false,
+            };
+            if !include_node {
+                continue;
+            }
+
+            if is_leaf_ref(node_ref) {
+                data_references.push(cur_node as NodeDataReference);
+            } else {
+                for child_ref in self.nodes[cur_node].child.iter() {
+                    if *child_ref != INVALID_NODE {
+                        stack.push((*child_ref, state));
+                    }
+                }
+            }
+        }
+
         for reference in data_references.iter_mut() {
             *reference = self.data_references[*reference as usize];
         }

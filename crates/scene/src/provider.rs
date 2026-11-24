@@ -7,10 +7,10 @@
 //! keeps the reference's asserts (add-once, scene must be null on add,
 //! add/remove order) and dispatch order verbatim. The reference's
 //! `getView` returns an erased `void*`; the port's `SceneViewRef` carries
-//! the typed faces (tick first; the collision/intersect faces arrive with
-//! the query projections). Views are stored twice — once for the
-//! iteration face (`ISceneView`), once for the typed fetch face — because
-//! `Rc<RefCell<dyn ISceneView>>` cannot downcast to a concrete view.
+//! the typed faces (tick, collision, intersect). Views are stored twice —
+//! once for the iteration face (`ISceneView`), once for the typed fetch
+//! face — because `Rc<RefCell<dyn ISceneView>>` cannot downcast to a
+//! concrete view.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -18,7 +18,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::tick_view::{ITickSceneProvider, TickSceneView};
+use crate::collision_operation::CollisionOperation;
+use crate::collision_scene_view::{CollisionSceneView, ICollisionSceneViewProvider};
+use crate::intersect_scene_view::{IIntersectSceneViewProvider, IntersectSceneView};
+use crate::object_change_scene_view::ObjectChangeSceneView;
+use crate::tick_view::{ITickSceneListener, ITickSceneProvider, TickOperation, TickSceneView};
 use crate::type_system::{RuntimeTypeID, object_operation_runtime_id, scene_view_runtime_id};
 
 /// The `Scene*` stand-in: a process-unique non-zero token (0 is reserved
@@ -38,10 +42,24 @@ pub fn tick_provider_view_id() -> RuntimeTypeID {
     scene_view_runtime_id::<dyn ITickSceneProvider>()
 }
 
+/// The collision view's interface key
+/// (`getSceneViewRuntimeID<ICollisionSceneViewProvider>()`).
+pub fn collision_provider_view_id() -> RuntimeTypeID {
+    scene_view_runtime_id::<dyn ICollisionSceneViewProvider>()
+}
+
+/// The intersect view's interface key
+/// (`getSceneViewRuntimeID<IIntersectSceneViewProvider>()`).
+pub fn intersect_provider_view_id() -> RuntimeTypeID {
+    scene_view_runtime_id::<dyn IIntersectSceneViewProvider>()
+}
+
 /// `SceneProvider::getView`'s erased `void*` result, carrying the typed
 /// faces a view may collect.
 pub enum SceneViewRef {
     Tick(Rc<dyn ITickSceneProvider>),
+    Collision(Rc<dyn ICollisionSceneViewProvider>),
+    Intersect(Rc<dyn IIntersectSceneViewProvider>),
 }
 
 /// `SceneProvider::exposeView<Target>(pHost, typeID, outInterface)`
@@ -55,6 +73,47 @@ pub fn expose_tick_view(
     if out.is_none() && type_id == tick_provider_view_id() {
         *out = Some(SceneViewRef::Tick(host));
     }
+}
+
+/// The collision view's expose face (same contract).
+pub fn expose_collision_view(
+    host: Rc<dyn ICollisionSceneViewProvider>,
+    type_id: RuntimeTypeID,
+    out: &mut Option<SceneViewRef>,
+) {
+    if out.is_none() && type_id == collision_provider_view_id() {
+        *out = Some(SceneViewRef::Collision(host));
+    }
+}
+
+/// The intersect view's expose face (same contract).
+pub fn expose_intersect_view(
+    host: Rc<dyn IIntersectSceneViewProvider>,
+    type_id: RuntimeTypeID,
+    out: &mut Option<SceneViewRef>,
+) {
+    if out.is_none() && type_id == intersect_provider_view_id() {
+        *out = Some(SceneViewRef::Intersect(host));
+    }
+}
+
+/// The faces a provider needs from its scene, materialized by
+/// [`Scene::add_provider`] and handed to the provider through
+/// [`SceneProvider::on_scene_bound`].
+///
+/// The reference's `DynamicSceneProvider::onSetScene` pulls these from the
+/// scene through the `Scene*` it receives (`pNewScene->getView<...>()`,
+/// `getObjectOperation<...>()`); the port cannot re-enter the scene while
+/// the provider's `RefCell` is mutably borrowed, so the scene pushes them
+/// instead. Materialization happens *before* the provider joins the scene
+/// collection, which reproduces the reference's effective order — the
+/// pull-time view walk misses the new provider because `addProvider`
+/// appends it only after `onSetScene` returns.
+pub struct SceneBoundFaces {
+    pub tick_view: Rc<RefCell<TickSceneView>>,
+    pub tick_operation: Rc<RefCell<TickOperation>>,
+    pub collision_operation: Rc<RefCell<CollisionOperation>>,
+    pub object_change_view: Rc<RefCell<ObjectChangeSceneView>>,
 }
 
 /// `SceneProvider` (`scene_provider.hpp:13-51`). The reference stores
@@ -75,6 +134,23 @@ pub trait SceneProvider {
     /// `getView(typeID) -> void*` (`scene_provider.cpp:79-83`): the base
     /// answers null.
     fn get_view(&self, type_id: RuntimeTypeID) -> Option<SceneViewRef>;
+
+    /// The provider's tick-listener face — the reference registers
+    /// `this` with `TickSceneView::addListener` inside `onSetScene` and
+    /// removes it on the null scene; the port hands the face to the scene
+    /// (registered adaptation: the token-only unbind cannot reach the old
+    /// view, so [`Scene::remove_provider`] performs the removal).
+    fn tick_listener(&self) -> Option<Rc<RefCell<dyn ITickSceneListener>>> {
+        None
+    }
+
+    /// `onSetScene`'s pull side, answered by the scene instead of pulled:
+    /// fires after the faces are materialized and before the provider
+    /// joins the collection.
+    fn on_scene_bound(&mut self, _faces: &SceneBoundFaces) {}
+
+    /// The null-scene half of `onSetScene` (dropping stored faces).
+    fn on_scene_unbound(&mut self) {}
 }
 
 /// The `SceneProvider::pScene_` face (`scene_provider.hpp:50`) as an
@@ -155,6 +231,11 @@ impl Scene {
     /// `addProvider` (`scene_provider.cpp` → `scene.cpp:28-47`): the
     /// provider must be new to this scene and currently unbound; it is
     /// bound first, appended, and every existing view is notified.
+    ///
+    /// The reference's provider pulls its views/operations inside
+    /// `onSetScene`; the port materializes the [`SceneBoundFaces`] here —
+    /// before the push, so the views' provider walks miss this provider —
+    /// and hands them over through `on_scene_bound`.
     pub fn add_provider(&mut self, provider: Rc<RefCell<dyn SceneProvider>>) {
         assert!(
             !self.providers.iter().any(|p| Rc::ptr_eq(p, &provider)),
@@ -167,6 +248,21 @@ impl Scene {
 
         provider.borrow_mut().set_scene(Some(self.token));
 
+        let faces = SceneBoundFaces {
+            tick_view: self.get_view::<TickSceneView>(),
+            tick_operation: self.get_object_operation::<TickOperation>(),
+            collision_operation: self.get_object_operation::<CollisionOperation>(),
+            object_change_view: self.get_view::<ObjectChangeSceneView>(),
+        };
+        provider.borrow_mut().on_scene_bound(&faces);
+
+        // The tick-listener registration the reference performs inside
+        // onSetScene (`pTickScene->addListener(this)`).
+        let listener = provider.borrow().tick_listener();
+        if let Some(listener) = listener {
+            faces.tick_view.borrow_mut().add_listener(listener);
+        }
+
         self.providers.push(provider.clone());
 
         // Notify every existing scene interface.
@@ -176,7 +272,8 @@ impl Scene {
     }
 
     /// `removeProvider` (`scene.cpp:50-71`): views first, then the
-    /// collection, then the unbind.
+    /// collection, then the tick-listener face (the port-scene stand-in
+    /// for the provider's own `removeListener`), then the unbind.
     pub fn remove_provider(&mut self, provider: &Rc<RefCell<dyn SceneProvider>>) {
         for view in &self.views {
             view.borrow_mut().remove_scene_provider(provider);
@@ -184,9 +281,16 @@ impl Scene {
 
         self.providers.retain(|p| !Rc::ptr_eq(p, provider));
 
+        let listener = provider.borrow().tick_listener();
+        if let Some(listener) = listener {
+            let tick_view = self.get_view::<TickSceneView>();
+            tick_view.borrow_mut().remove_listener(&listener);
+        }
+
         let current = provider.borrow().scene();
         assert!(current == Some(self.token) || current.is_none());
         provider.borrow_mut().set_scene(None);
+        provider.borrow_mut().on_scene_unbound();
     }
 
     /// `getView<InterfaceType>` (`scene.hpp:23-41` + `createView` at
@@ -265,10 +369,64 @@ impl ISceneView for TickSceneView {
     }
 }
 
+/// The collision view's ask-and-collect face.
+impl ISceneView for CollisionSceneView {
+    fn scene(&self) -> Option<SceneToken> {
+        CollisionSceneView::scene(self)
+    }
+
+    fn set_scene(&mut self, scene: Option<SceneToken>) {
+        CollisionSceneView::set_scene(self, scene);
+    }
+
+    fn add_scene_provider(&mut self, provider: &Rc<RefCell<dyn SceneProvider>>) {
+        let asked = provider.borrow().get_view(collision_provider_view_id());
+        if let Some(SceneViewRef::Collision(face)) = asked {
+            self.add_provider(face);
+        }
+    }
+
+    fn remove_scene_provider(&mut self, provider: &Rc<RefCell<dyn SceneProvider>>) {
+        let asked = provider.borrow().get_view(collision_provider_view_id());
+        if let Some(SceneViewRef::Collision(face)) = asked {
+            self.remove_provider(&face);
+        }
+    }
+}
+
+/// The intersect view's ask-and-collect face.
+impl ISceneView for IntersectSceneView {
+    fn scene(&self) -> Option<SceneToken> {
+        IntersectSceneView::scene(self)
+    }
+
+    fn set_scene(&mut self, scene: Option<SceneToken>) {
+        IntersectSceneView::set_scene(self, scene);
+    }
+
+    fn add_scene_provider(&mut self, provider: &Rc<RefCell<dyn SceneProvider>>) {
+        let asked = provider.borrow().get_view(intersect_provider_view_id());
+        if let Some(SceneViewRef::Intersect(face)) = asked {
+            self.add_provider(face);
+        }
+    }
+
+    fn remove_scene_provider(&mut self, provider: &Rc<RefCell<dyn SceneProvider>>) {
+        let asked = provider.borrow().get_view(intersect_provider_view_id());
+        if let Some(SceneViewRef::Intersect(face)) = asked {
+            self.remove_provider(&face);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::IntersectionSet;
+    use crate::scene_intersect_context::SceneIntersectContext;
     use crate::tick_view::TickOperation;
+    use foundation::math::{ConvexHull, Vector3};
+    use physics::{CollisionState, SweepParams, WorldTriangle};
     use std::cell::Cell;
 
     struct TickFace {
@@ -512,5 +670,258 @@ mod tests {
         let erased = scene.views[0].clone();
         assert_eq!(erased.borrow().scene(), Some(scene.token()));
         erased.borrow_mut().on_set_scene(None, None);
+    }
+
+    /// A provider supporting the tick face plus both query faces and a
+    /// tick listener — the dynamic-scene-provider shape.
+    struct CollisionFace {
+        stops: Cell<bool>,
+    }
+
+    impl ICollisionSceneViewProvider for CollisionFace {
+        fn collide_ray(
+            &self,
+            _source: &Vector3,
+            _extent: &Vector3,
+            _sp: &SweepParams,
+            _state: &mut CollisionState,
+        ) -> bool {
+            self.stops.get()
+        }
+
+        fn collide_prism(
+            &self,
+            _source: &WorldTriangle,
+            _extent: &Vector3,
+            _sp: &SweepParams,
+            _state: &mut CollisionState,
+        ) -> bool {
+            false
+        }
+    }
+
+    struct IntersectFace;
+
+    impl IIntersectSceneViewProvider for IntersectFace {
+        fn intersect(
+            &self,
+            _context: &SceneIntersectContext,
+            _hull: &ConvexHull,
+            _intersection: &mut IntersectionSet,
+        ) -> usize {
+            1
+        }
+    }
+
+    #[derive(Default)]
+    struct ListenerFace {
+        events: RefCell<Vec<&'static str>>,
+    }
+
+    impl ITickSceneListener for ListenerFace {
+        fn on_pre_tick(&mut self) {
+            self.events.borrow_mut().push("pre");
+        }
+        fn on_post_tick(&mut self) {
+            self.events.borrow_mut().push("post");
+        }
+    }
+
+    /// A provider exposing all three faces plus a tick listener, logging
+    /// its bind/unbind hooks.
+    struct FullProvider {
+        scene_ref: ProviderSceneRef,
+        tick_face: Rc<TickFace>,
+        collision_face: Rc<CollisionFace>,
+        intersect_face: Rc<IntersectFace>,
+        listener: Rc<RefCell<ListenerFace>>,
+        hooks: RefCell<Vec<&'static str>>,
+    }
+
+    impl FullProvider {
+        fn new() -> Rc<RefCell<Self>> {
+            Rc::new(RefCell::new(Self {
+                scene_ref: ProviderSceneRef::default(),
+                tick_face: Rc::new(TickFace {
+                    ticks: Cell::new(0),
+                }),
+                collision_face: Rc::new(CollisionFace {
+                    stops: Cell::new(false),
+                }),
+                intersect_face: Rc::new(IntersectFace),
+                listener: Rc::new(RefCell::new(ListenerFace::default())),
+                hooks: RefCell::new(Vec::new()),
+            }))
+        }
+    }
+
+    impl SceneProvider for FullProvider {
+        fn scene(&self) -> Option<SceneToken> {
+            self.scene_ref.scene()
+        }
+
+        fn set_scene(&mut self, scene: Option<SceneToken>) {
+            let old = self.scene_ref.replace(scene);
+            self.on_set_scene(old, scene);
+        }
+
+        fn get_view(&self, type_id: RuntimeTypeID) -> Option<SceneViewRef> {
+            let mut out = None;
+            expose_tick_view(self.tick_face.clone(), type_id, &mut out);
+            expose_collision_view(self.collision_face.clone(), type_id, &mut out);
+            expose_intersect_view(self.intersect_face.clone(), type_id, &mut out);
+            out
+        }
+
+        fn tick_listener(&self) -> Option<Rc<RefCell<dyn ITickSceneListener>>> {
+            Some(self.listener.clone())
+        }
+
+        fn on_scene_bound(&mut self, _faces: &SceneBoundFaces) {
+            self.hooks.borrow_mut().push("bound");
+        }
+
+        fn on_scene_unbound(&mut self) {
+            self.hooks.borrow_mut().push("unbound");
+        }
+    }
+
+    fn as_full(p: &Rc<RefCell<FullProvider>>) -> Rc<RefCell<dyn SceneProvider>> {
+        p.clone()
+    }
+
+    #[test]
+    fn the_query_views_and_listener_wire_through_the_scene() {
+        let mut scene = Scene::new();
+        let provider = FullProvider::new();
+        let mute = MuteProvider::new();
+
+        scene.add_provider(as_full(&provider));
+        scene.add_provider(as_mute(&mute));
+        assert_eq!(
+            *provider.borrow().hooks.borrow(),
+            ["bound"],
+            "on_scene_bound fired at bind"
+        );
+
+        // The listener joined the tick view and frames the provider tick.
+        let tick_view = scene.get_view::<TickSceneView>();
+        tick_view.borrow_mut().tick(0.2);
+        assert_eq!(
+            *provider.borrow().listener.borrow().events.borrow(),
+            ["pre", "post"]
+        );
+
+        // Both query views collect the provider face: these views are not
+        // part of the bound faces, so their creation still walks the
+        // registered providers.
+        let collision_view = scene.get_view::<CollisionSceneView>();
+        assert_eq!(collision_view.borrow().providers_len(), 1);
+        let intersect_view = scene.get_view::<IntersectSceneView>();
+        assert_eq!(intersect_view.borrow().providers_len(), 1);
+
+        struct NopCallback;
+        impl physics::CollisionCallback for NopCallback {}
+        let dist = collision_view.borrow().collide_ray(
+            &Vector3::ZERO,
+            &Vector3::new(0.0, 0.0, 10.0),
+            &mut NopCallback,
+        );
+        assert_eq!(dist, -1.0, "a passing face leaves the initial dist");
+
+        // A stopping face ends the view walk through the trait wiring.
+        provider.borrow().collision_face.stops.set(true);
+        let dist = collision_view.borrow().collide_ray(
+            &Vector3::ZERO,
+            &Vector3::new(0.0, 0.0, 10.0),
+            &mut NopCallback,
+        );
+        assert_eq!(dist, -1.0, "the face stops without touching the state");
+
+        // The prism and intersect faces run through their views too.
+        let triangle = WorldTriangle::new(
+            Vector3::new(-1.0, -1.0, 0.0),
+            Vector3::new(1.0, -1.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0,
+        );
+        let prism_dist = collision_view.borrow().collide_prism(
+            &triangle,
+            &Vector3::new(0.0, 0.0, 4.0),
+            &mut NopCallback,
+        );
+        assert_eq!(prism_dist, -1.0);
+        let hull = ConvexHull::new(vec![]);
+        let context = SceneIntersectContext::new(None);
+        let mut intersection = IntersectionSet::new();
+        let total = intersect_view
+            .borrow()
+            .intersect(&context, &hull, &mut intersection);
+        assert_eq!(total, 1, "the intersect face answered through the view");
+
+        // The erased view faces route through the trait impls.
+        let as_erased: Rc<RefCell<dyn ISceneView>> = collision_view.clone();
+        assert_eq!(as_erased.borrow().scene(), Some(scene.token()));
+        as_erased.borrow_mut().set_scene(None);
+        as_erased.borrow_mut().on_set_scene(None, None);
+        let intersect_erased: Rc<RefCell<dyn ISceneView>> = intersect_view.clone();
+        assert_eq!(intersect_erased.borrow().scene(), Some(scene.token()));
+
+        // The expose faces: a mismatched id fills nothing, a match fills,
+        // and an already-filled out stays untouched.
+        let face: Rc<dyn ICollisionSceneViewProvider> = Rc::new(CollisionFace {
+            stops: Cell::new(false),
+        });
+        let mut out = None;
+        expose_collision_view(face, tick_provider_view_id(), &mut out);
+        assert!(out.is_none(), "a different interface id gets nothing");
+        expose_collision_view(
+            Rc::new(CollisionFace {
+                stops: Cell::new(false),
+            }),
+            collision_provider_view_id(),
+            &mut out,
+        );
+        assert!(matches!(out, Some(SceneViewRef::Collision(_))));
+        expose_collision_view(
+            Rc::new(CollisionFace {
+                stops: Cell::new(false),
+            }),
+            collision_provider_view_id(),
+            &mut out,
+        );
+        assert!(
+            matches!(out, Some(SceneViewRef::Collision(_))),
+            "an already-filled out stays untouched"
+        );
+
+        let hull_face: Rc<dyn IIntersectSceneViewProvider> = Rc::new(IntersectFace);
+        let mut hull_out = None;
+        expose_intersect_view(
+            hull_face.clone(),
+            collision_provider_view_id(),
+            &mut hull_out,
+        );
+        assert!(hull_out.is_none());
+        expose_intersect_view(hull_face, intersect_provider_view_id(), &mut hull_out);
+        assert!(matches!(hull_out, Some(SceneViewRef::Intersect(_))));
+
+        // Unbind: the views lose the face, the listener leaves the tick
+        // view and on_scene_unbound fires.
+        scene.remove_provider(&as_full(&provider));
+        scene.remove_provider(&as_mute(&mute));
+        assert_eq!(
+            *provider.borrow().hooks.borrow(),
+            ["bound", "unbound"],
+            "on_scene_unbound fired at unbind"
+        );
+        assert_eq!(collision_view.borrow().providers_len(), 0);
+        assert_eq!(intersect_view.borrow().providers_len(), 0);
+        tick_view.borrow_mut().tick(0.2);
+        assert_eq!(
+            *provider.borrow().listener.borrow().events.borrow(),
+            ["pre", "post"],
+            "the listener left the tick view"
+        );
     }
 }

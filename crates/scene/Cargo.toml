@@ -8,3 +8,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+foundation = { workspace = true }
+physics = { path = "../physics" }

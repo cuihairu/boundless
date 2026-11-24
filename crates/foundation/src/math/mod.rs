@@ -6,6 +6,7 @@
 
 pub mod angle;
 pub mod boundbox;
+pub mod convex_hull;
 pub mod ema;
 pub mod matrix;
 pub mod plane;
@@ -14,7 +15,8 @@ pub mod sphere;
 pub mod vector;
 
 pub use angle::{MATH_PI, normalise as normalise_angle};
-pub use boundbox::BoundBox;
+pub use boundbox::{BoundBox, RayIntersectionType};
+pub use convex_hull::ConvexHull;
 pub use ema::{AccumulatingEma, Accumulator, Ema};
 pub use matrix::Matrix;
 pub use plane::PlaneEq;

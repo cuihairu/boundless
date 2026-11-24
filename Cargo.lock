@@ -377,6 +377,7 @@ name = "compiled-space"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "physics",
  "scene",
 ]
 
@@ -1826,6 +1827,10 @@ dependencies = [
 [[package]]
 name = "scene"
 version = "0.1.0"
+dependencies = [
+ "foundation",
+ "physics",
+]
 
 [[package]]
 name = "scoped-tls"
