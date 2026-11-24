@@ -1985,6 +1985,7 @@ dependencies = [
  "md-5 0.10.6",
  "mercury",
  "platform",
+ "regex",
  "resources",
  "sha2 0.10.9",
 ]

@@ -11,8 +11,8 @@
 //!   registered verbatim (ids 2..7, 9, 17 - id 8 does not exist).
 //! - `Inventory.php`: `webGetGoldAndInventory`, the unlocked-item rows
 //!   in serial order and the `view_item` detail pane. The
-//!   `action:auction` branch is the BW-14-03-04 workflow and is not
-//!   ported here.
+//!   `action:auction` branch is the BW-14-03-04 workflow
+//!   ([`crate::web_auction`]).
 //! - `ItemViewer.php` / `ViewItem.php`: the item detail pane and the
 //!   legacy standalone view page (whose `$GLOBALS['BW_ITEM_TYPES']`
 //!   registry `Items.php` never defines - the reference page therefore
@@ -341,6 +341,8 @@ pub struct PlayerInfo {
     pub health: i64,
     pub max_health: i64,
     pub frags: i64,
+    /// `res["databaseID"]` - the auction pages key on it.
+    pub database_id: i64,
     /// `res["position"]` - `(x, y, z)`.
     pub position: [f64; 3],
     /// `res["direction"]` - read as `(roll, pitch, yaw)`
@@ -387,6 +389,19 @@ pub trait AccountEntity {
 pub trait PlayerEntity {
     /// `webGetPlayerInfo()` (`Character.php:32`).
     fn web_get_player_info(&mut self) -> Result<PlayerInfo, EntityError>;
+    /// `webGetGoldAndInventory()` - the auction pages read the gold
+    /// off the player entity too (`SearchAuctions.php:248`,
+    /// `PlayerAuctions.php:55`).
+    fn web_get_gold_and_inventory(&mut self) -> Result<GoldAndInventory, EntityError>;
+    /// `webBidOnAuction(array("auctionID" => ..., "isBuyingOut" => ...,
+    /// "bidAmount" => ...))` (`SearchAuctions.php:50-77`), answered with
+    /// the server's `status` string.
+    fn web_bid_on_auction(
+        &mut self,
+        auction_id: i64,
+        is_buying_out: bool,
+        bid_amount: i64,
+    ) -> Result<String, EntityError>;
 }
 
 /// The Inventory page's `RemoteEntity` face (the BW-14-03-04 auction
@@ -394,6 +409,22 @@ pub trait PlayerEntity {
 pub trait InventoryEntity {
     /// `webGetGoldAndInventory()` (`Inventory.php:64`).
     fn web_get_gold_and_inventory(&mut self) -> Result<GoldAndInventory, EntityError>;
+    /// `webCreateAuction(array("itemSerial" => ..., "expiry" => ...,
+    /// "startBid" => ..., "buyout" => ...))` (`Inventory.php:115-120`),
+    /// answered with the created auction's id.
+    fn web_create_auction(
+        &mut self,
+        item_serial: i64,
+        expiry: i64,
+        start_bid: i64,
+        buyout: i64,
+    ) -> Result<AuctionCreated, EntityError>;
+}
+
+/// The `webCreateAuction` reply's `auctionID`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuctionCreated {
+    pub auction_id: i64,
 }
 
 /// The page's message arrays (`errorMsgs` / `statusMsgs`).
@@ -407,7 +438,7 @@ pub struct PageState {
 /// (`AuthenticatedPage.php:125-149`): the cross-request flash
 /// variables move into the page arrays, and the login page's
 /// `err_msgs` variable is unregistered on the no-auth-error path.
-fn pull_page_messages(session: &mut WebSession) -> PageState {
+pub(crate) fn pull_page_messages(session: &mut WebSession) -> PageState {
     let state = PageState {
         error_msgs: session.take_flash("errorMsgs").unwrap_or_default(),
         status_msgs: session.take_flash("statusMsgs").unwrap_or_default(),
@@ -416,10 +447,16 @@ fn pull_page_messages(session: &mut WebSession) -> PageState {
     state
 }
 
+/// `Page::addErrorMsg` (`Page.php:169-172`): the page array only - no
+/// session write.
+pub(crate) fn add_error_msg(state: &mut PageState, message: &str) {
+    state.error_msgs.push(message.to_string());
+}
+
 /// `Page::addExceptionMsg` (`Page.php:152-161`): the composed message
 /// joins the page's `errorMsgs` and is appended to the `err_msgs`
 /// flash the login page consumes.
-fn add_exception_msg(
+pub(crate) fn add_exception_msg(
     state: &mut PageState,
     session: &mut WebSession,
     message: &str,
@@ -436,7 +473,7 @@ fn add_exception_msg(
 /// `XHTMLMPPage::setRedirect`'s message persistence
 /// (`AuthenticatedPage.php:184-190`): non-empty page arrays are
 /// written back to the session so the next request renders them.
-fn persist_redirect(state: &PageState, session: &mut WebSession) {
+pub(crate) fn persist_redirect(state: &PageState, session: &mut WebSession) {
     if !state.error_msgs.is_empty() {
         session.set_flash("errorMsgs", state.error_msgs.clone());
     }
@@ -628,12 +665,16 @@ pub enum CharacterOutcome {
     },
 }
 
-/// The Inventory page's `$_REQUEST` keys the query path reads. The
-/// BW-14-03-04 auction keys join this struct.
+/// The Inventory page's `$_REQUEST` keys. `action` carries the matched
+/// `action:(.*)` submit-button key (`Inventory.php:79-87`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct InventoryParams {
     pub view_item: Option<String>,
     pub item_select: Option<String>,
+    pub action: Option<String>,
+    pub auction_bid_price: Option<String>,
+    pub auction_buyout: Option<String>,
+    pub auction_expiry: Option<String>,
 }
 
 /// A rendered inventory row (`Inventory.php:191-212`): unlocked items
@@ -689,6 +730,72 @@ pub fn run_inventory_page(
         .map(|item| (item.serial, item))
         .collect();
 
+    // The action dispatch (`Inventory.php:79-131`); the auction case is
+    // the BW-14-03-04 workflow. Its early-return paths leave the
+    // renderBody data intact - only the created auction redirects.
+    let mut redirect: Option<String> = None;
+    if params.action.as_deref() == Some("auction") {
+        // `!isset($_REQUEST['item_select'])` - unset, not falsy
+        // (`Inventory.php:90-95`).
+        let mut selected = true;
+        if params.item_select.is_none() {
+            state
+                .status_msgs
+                .push("No item selected for auctioning.".to_string());
+            selected = false;
+        }
+        if selected {
+            let serial = php_int_cast(params.item_select.as_deref().unwrap_or_default());
+            // The bid price: unset or <= 0 rejects
+            // (`Inventory.php:99-103`).
+            let bid_price = params.auction_bid_price.as_deref().map(php_int_cast);
+            if bid_price.is_none_or(|price| price <= 0) {
+                add_error_msg(&mut state, "Invalid starting bid price.");
+            } else {
+                // The buyout: unset or <= 0 becomes the -1 sentinel
+                // (`Inventory.php:105-109`).
+                let buyout = params
+                    .auction_buyout
+                    .as_deref()
+                    .map(php_int_cast)
+                    .filter(|buyout| *buyout > 0)
+                    .unwrap_or(-1);
+                // The expiry: unset or <= 0 rejects
+                // (`Inventory.php:111-116`).
+                let expiry = params.auction_expiry.as_deref().map(php_int_cast);
+                if expiry.is_none_or(|expiry| expiry <= 0) {
+                    add_error_msg(&mut state, "Invalid expiry time.");
+                } else {
+                    match entity.web_create_auction(
+                        serial,
+                        expiry.unwrap(),
+                        bid_price.unwrap(),
+                        buyout,
+                    ) {
+                        Err(err) => add_exception_msg(&mut state, session, &err.0, None),
+                        Ok(created) => {
+                            // The item's registry name; an unknown type
+                            // renders empty (the reference's null
+                            // lookup).
+                            let item_name = items
+                                .get(&serial)
+                                .and_then(|item| item_type(item.item_type))
+                                .map(|info| info.name)
+                                .unwrap_or("");
+                            state
+                                .status_msgs
+                                .push(format!("Auction of {item_name} created."));
+                            redirect = Some(format!(
+                                "PlayerAuctions.php?auction_id={}",
+                                created.auction_id
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // The rows: locked items (`lockHandle != -1`) are skipped
     // (`Inventory.php:186-190`).
     let mut row_num = 0usize;
@@ -738,6 +845,10 @@ pub fn run_inventory_page(
     });
 
     let inventory_is_empty = rows.is_empty();
+    if let Some(url) = redirect {
+        persist_redirect(&state, session);
+        return InventoryOutcome::Redirect { url, state };
+    }
     InventoryOutcome::Rendered {
         view: InventoryView {
             gold_pieces: inventory.gold_pieces,
@@ -754,6 +865,12 @@ pub fn run_inventory_page(
 #[derive(Debug, Clone, PartialEq)]
 pub enum InventoryOutcome {
     DisconnectRedirect {
+        state: PageState,
+    },
+    /// A created auction redirects to the player's auction page
+    /// (`Inventory.php:123-126`).
+    Redirect {
+        url: String,
         state: PageState,
     },
     Rendered {
@@ -1282,6 +1399,7 @@ mod tests {
             health: 87,
             max_health: 100,
             frags: 12,
+            database_id: 1001,
             position: [1.0, 2.0, 3.0],
             direction: [0.5, 1.0, 1.5],
             online: true,
@@ -1295,6 +1413,19 @@ mod tests {
     impl PlayerEntity for StubPlayer {
         fn web_get_player_info(&mut self) -> Result<PlayerInfo, EntityError> {
             self.reply.clone()
+        }
+
+        fn web_get_gold_and_inventory(&mut self) -> Result<GoldAndInventory, EntityError> {
+            unreachable!("the character pages never read gold");
+        }
+
+        fn web_bid_on_auction(
+            &mut self,
+            _auction_id: i64,
+            _is_buying_out: bool,
+            _bid_amount: i64,
+        ) -> Result<String, EntityError> {
+            unreachable!("the character page never bids");
         }
     }
 
@@ -1442,11 +1573,26 @@ mod tests {
 
     struct StubInventory {
         reply: Result<GoldAndInventory, EntityError>,
+        create_reply: Result<AuctionCreated, EntityError>,
+        create_calls: RefCell<Vec<(i64, i64, i64, i64)>>,
     }
 
     impl InventoryEntity for StubInventory {
         fn web_get_gold_and_inventory(&mut self) -> Result<GoldAndInventory, EntityError> {
             self.reply.clone()
+        }
+
+        fn web_create_auction(
+            &mut self,
+            item_serial: i64,
+            expiry: i64,
+            start_bid: i64,
+            buyout: i64,
+        ) -> Result<AuctionCreated, EntityError> {
+            self.create_calls
+                .borrow_mut()
+                .push((item_serial, expiry, start_bid, buyout));
+            self.create_reply.clone()
         }
     }
 
@@ -1488,6 +1634,8 @@ mod tests {
         let mut session = logged_in_session("Avatar");
         let mut entity = StubInventory {
             reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
         };
         let outcome = run_inventory_page(&mut session, &InventoryParams::default(), &mut entity);
         let (view, state) = inventory_page_of(outcome);
@@ -1512,6 +1660,8 @@ mod tests {
         let mut session = logged_in_session("Avatar");
         let mut entity = StubInventory {
             reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
         };
         let outcome = run_inventory_page(
             &mut session,
@@ -1534,7 +1684,11 @@ mod tests {
         for item in &mut reply.inventory_items {
             item.lock_handle = 0;
         }
-        let mut entity = StubInventory { reply: Ok(reply) };
+        let mut entity = StubInventory {
+            reply: Ok(reply),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
+        };
         let outcome = run_inventory_page(&mut session, &InventoryParams::default(), &mut entity);
         let view = inventory_view_of(outcome);
         assert!(view.rows.is_empty());
@@ -1548,6 +1702,8 @@ mod tests {
         let mut session = logged_in_session("Avatar");
         let mut entity = StubInventory {
             reply: Err(EntityError("webGetGoldAndInventory failed".to_string())),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
         };
         let outcome = run_inventory_page(&mut session, &InventoryParams::default(), &mut entity);
         assert_eq!(
@@ -1570,6 +1726,8 @@ mod tests {
         let mut session = logged_in_session("Avatar");
         let mut entity = StubInventory {
             reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
         };
         let outcome = run_inventory_page(
             &mut session,
@@ -1601,6 +1759,8 @@ mod tests {
         let mut session = logged_in_session("Avatar");
         let mut entity = StubInventory {
             reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
         };
         let outcome = run_inventory_page(
             &mut session,
@@ -1625,6 +1785,8 @@ mod tests {
         let mut session = logged_in_session("Avatar");
         let mut entity = StubInventory {
             reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
         };
         let outcome = run_inventory_page(
             &mut session,
@@ -1645,6 +1807,8 @@ mod tests {
         let mut session = logged_in_session("Avatar");
         let mut entity = StubInventory {
             reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
         };
         let outcome = run_inventory_page(
             &mut session,
@@ -1869,6 +2033,180 @@ mod tests {
         assert_eq!(
             format_direction(&[0.0, 0.0, 1.0]),
             "(yaw=57.3, pitch=0.0, roll=0.0) [deg]"
+        );
+    }
+    #[test]
+    fn an_auction_creation_redirects_to_the_new_auction() {
+        let mut session = logged_in_session("Avatar");
+        let mut entity = StubInventory {
+            reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
+        };
+        let params = InventoryParams {
+            action: Some("auction".to_string()),
+            item_select: Some("5".to_string()),
+            auction_bid_price: Some("5".to_string()),
+            auction_buyout: Some("10".to_string()),
+            auction_expiry: Some("3600".to_string()),
+            ..Default::default()
+        };
+        let outcome = run_inventory_page(&mut session, &params, &mut entity);
+        match outcome {
+            InventoryOutcome::Redirect { url, state } => {
+                assert_eq!(url, "PlayerAuctions.php?auction_id=42");
+                assert_eq!(
+                    state.status_msgs,
+                    vec!["Auction of Staff of Serpents created.".to_string()]
+                );
+            }
+            other => panic!("expected the auction redirect, got {other:?}"),
+        }
+        assert_eq!(*entity.create_calls.borrow(), vec![(5, 3600, 5, 10)]);
+        // The status rides the redirect into the session.
+        assert_eq!(
+            session.take_flash("statusMsgs"),
+            Some(vec!["Auction of Staff of Serpents created.".to_string()])
+        );
+    }
+
+    #[test]
+    fn an_auction_without_a_selection_only_reports_it() {
+        let mut session = logged_in_session("Avatar");
+        let mut entity = StubInventory {
+            reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
+        };
+        let params = InventoryParams {
+            action: Some("auction".to_string()),
+            ..Default::default()
+        };
+        let outcome = run_inventory_page(&mut session, &params, &mut entity);
+        let (_, state) = inventory_page_of(outcome);
+        assert_eq!(
+            state.status_msgs,
+            vec!["No item selected for auctioning.".to_string()]
+        );
+        assert!(entity.create_calls.borrow().is_empty());
+        assert!(session.take_flash("statusMsgs").is_none());
+    }
+
+    #[test]
+    fn an_auction_without_a_price_reports_it_page_only() {
+        let mut session = logged_in_session("Avatar");
+        let mut entity = StubInventory {
+            reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
+        };
+        let params = InventoryParams {
+            action: Some("auction".to_string()),
+            item_select: Some("5".to_string()),
+            ..Default::default()
+        };
+        let outcome = run_inventory_page(&mut session, &params, &mut entity);
+        let (_, state) = inventory_page_of(outcome);
+        assert_eq!(
+            state.error_msgs,
+            vec!["Invalid starting bid price.".to_string()]
+        );
+        assert!(entity.create_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_auction_without_an_expiry_reports_it() {
+        let mut session = logged_in_session("Avatar");
+        let mut entity = StubInventory {
+            reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
+        };
+        let params = InventoryParams {
+            action: Some("auction".to_string()),
+            item_select: Some("5".to_string()),
+            auction_bid_price: Some("5".to_string()),
+            ..Default::default()
+        };
+        let outcome = run_inventory_page(&mut session, &params, &mut entity);
+        let (_, state) = inventory_page_of(outcome);
+        assert_eq!(state.error_msgs, vec!["Invalid expiry time.".to_string()]);
+        assert!(entity.create_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_unset_buyout_rides_the_sentinel() {
+        let mut session = logged_in_session("Avatar");
+        let mut entity = StubInventory {
+            reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
+        };
+        let params = InventoryParams {
+            action: Some("auction".to_string()),
+            item_select: Some("5".to_string()),
+            auction_bid_price: Some("5".to_string()),
+            auction_expiry: Some("60".to_string()),
+            ..Default::default()
+        };
+        let outcome = run_inventory_page(&mut session, &params, &mut entity);
+        match outcome {
+            InventoryOutcome::Redirect { .. } => {}
+            other => panic!("expected the auction redirect, got {other:?}"),
+        }
+        assert_eq!(*entity.create_calls.borrow(), vec![(5, 60, 5, -1)]);
+    }
+
+    #[test]
+    fn a_failing_auction_creation_reports_the_exception_twice() {
+        let mut session = logged_in_session("Avatar");
+        let mut entity = StubInventory {
+            reply: Ok(inventory_reply()),
+            create_reply: Err(EntityError("create boom".to_string())),
+            create_calls: RefCell::new(Vec::new()),
+        };
+        let params = InventoryParams {
+            action: Some("auction".to_string()),
+            item_select: Some("5".to_string()),
+            auction_bid_price: Some("5".to_string()),
+            auction_expiry: Some("60".to_string()),
+            ..Default::default()
+        };
+        let outcome = run_inventory_page(&mut session, &params, &mut entity);
+        let (_, state) = inventory_page_of(outcome);
+        assert_eq!(state.error_msgs, vec!["create boom".to_string()]);
+        assert_eq!(
+            session.take_flash("err_msgs"),
+            Some(vec!["create boom".to_string()])
+        );
+        assert!(session.take_flash("statusMsgs").is_none());
+    }
+
+    #[test]
+    fn an_unknown_selected_item_renders_an_empty_name() {
+        let mut session = logged_in_session("Avatar");
+        let mut entity = StubInventory {
+            reply: Ok(inventory_reply()),
+            create_reply: Ok(AuctionCreated { auction_id: 42 }),
+            create_calls: RefCell::new(Vec::new()),
+        };
+        let params = InventoryParams {
+            action: Some("auction".to_string()),
+            item_select: Some("11".to_string()),
+            auction_bid_price: Some("5".to_string()),
+            auction_expiry: Some("60".to_string()),
+            ..Default::default()
+        };
+        let outcome = run_inventory_page(&mut session, &params, &mut entity);
+        match outcome {
+            InventoryOutcome::Redirect { url, .. } => {
+                assert_eq!(url, "PlayerAuctions.php?auction_id=42");
+            }
+            other => panic!("expected the auction redirect, got {other:?}"),
+        }
+        assert_eq!(
+            session.take_flash("statusMsgs"),
+            Some(vec!["Auction of  created.".to_string()])
         );
     }
 }

@@ -82,6 +82,7 @@ pub mod vision;
 pub mod watcher;
 pub mod web_character;
 pub mod web_session;
+pub mod web_auction;
 pub mod witness;
 // The time queue is cstdmf and lives in foundation; re-exported under the
 // historical `timers` name so `crate::timers::…` paths keep working.

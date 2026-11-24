@@ -29,6 +29,10 @@ flate2 = { version = "1.1.11", default-features = false, features = ["rust_backe
 mercury = { workspace = true }
 resources = { workspace = true }
 
+# The auction pages' `eregi` criteria matching (BW-14-03-04) is POSIX
+# ERE; the regex crate covers the same common forms.
+regex = { workspace = true }
+
 [dev-dependencies]
 # BW-16-02-03 backend-isolation proof: the postgresql driver is exercised
 # from outside its own crate.
