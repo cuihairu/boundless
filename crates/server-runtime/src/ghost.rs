@@ -1526,6 +1526,88 @@ impl GhostHost {
     }
 }
 
+/// A call re-addressed to the real's address
+/// (`Entity::forwardMessageToReal`, `entity.cpp:2281-2308`): the entity
+/// id heads the body again; a request carries its reply id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForwardedCall {
+    /// The address the message now heads to — during an offload, the
+    /// migration target.
+    pub to: Addr,
+    pub entity_id: EntityId,
+    pub message_id: u8,
+    pub body: Vec<u8>,
+    /// `REPLY_ID_NONE` for a one-way message.
+    pub reply_id: Option<u32>,
+}
+
+/// The reply half (`ReplyForwarder`, `entity.cpp:2234-2261`): the
+/// target's response comes back through this app to the original caller,
+/// once — the forwarder is consumed by its own forward.
+#[derive(Debug, Default)]
+pub struct ReplyForwarders {
+    pending: BTreeMap<u32, Addr>,
+    forwarded: Vec<(u32, Addr, Vec<u8>)>,
+}
+
+impl ReplyForwarders {
+    /// `bundle.startRequest( ie, new ReplyForwarder( srcAddr, replyID ) )`.
+    pub fn register(&mut self, reply_id: u32, src_addr: Addr) {
+        self.pending.insert(reply_id, src_addr);
+    }
+
+    /// `ReplyForwarder::handleMessage`: the response rides back to the
+    /// original caller. A second response — or one for a request that
+    /// was never forwarded — finds no forwarder and is refused.
+    pub fn forward_reply(&mut self, reply_id: u32, payload: Vec<u8>) -> Option<Addr> {
+        let src_addr = self.pending.remove(&reply_id)?;
+        self.forwarded.push((reply_id, src_addr, payload));
+        Some(src_addr)
+    }
+
+    /// The responses forwarded so far, in order.
+    pub fn forwarded(&self) -> &[(u32, Addr, Vec<u8>)] {
+        &self.forwarded
+    }
+
+    /// Nothing in flight and nothing forwarded.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.forwarded.is_empty()
+    }
+}
+
+/// The switch-window redirect (`message_handlers.cpp:184-216`,
+/// `DISPOSITION_FORWARD_TO_REAL`): a REAL_ONLY message for an entity we
+/// hold only as a ghost is re-addressed to the real's address — during
+/// an offload, the migration target. A request registers its reply
+/// forwarder before the message leaves. Returns `None` with nothing
+/// registered when there is no routing record — the population's
+/// `findRealChannel` miss turns the forward into the unknown-entity
+/// failure.
+pub fn forward_message_to_real(
+    ghosts: &BTreeMap<EntityId, GhostRecord>,
+    forwarders: &mut ReplyForwarders,
+    src_addr: Addr,
+    entity_id: EntityId,
+    message_id: u8,
+    body: Vec<u8>,
+    reply_id: Option<u32>,
+) -> Option<ForwardedCall> {
+    // `pEntity ? pEntity->pRealChannel() : population().findRealChannel(
+    // entityID)` — a NULL channel turns the forward into the failure.
+    let real_addr = ghosts.get(&entity_id)?.real_addr;
+    if let Some(reply_id) = reply_id {
+        forwarders.register(reply_id, src_addr);
+    }
+    Some(ForwardedCall {
+        to: real_addr,
+        entity_id,
+        message_id,
+        body,
+        reply_id,
+    })
+}
+
 // -----------------------------------------------------------------------------
 // Section: the entity view
 // -----------------------------------------------------------------------------
@@ -3429,5 +3511,86 @@ mod tests {
                 method: "onEnteredCell".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn a_call_mid_switch_reaches_the_target_and_responds_once() {
+        // The routed handover state: A holds the ghost pointing at B.
+        let mut host_a = hold_host(10, 0);
+        assert_eq!(
+            host_a.receive_ghost_set_real(10, 1, APP_B),
+            GhostSetRealOutcome::Relocated
+        );
+        let mut forwarders = ReplyForwarders::default();
+
+        // A mailbox call arrives at A mid-switch: it is re-addressed to
+        // the migration target, its reply forwarder registered first.
+        let call = forward_message_to_real(
+            &host_a.ghosts,
+            &mut forwarders,
+            (7, 7),
+            10,
+            42,
+            b"do it".to_vec(),
+            Some(9),
+        )
+        .unwrap();
+        assert_eq!(call.to, APP_B);
+        assert_eq!(call.entity_id, 10);
+        assert_eq!(call.message_id, 42);
+        assert_eq!(call.body, b"do it");
+        assert_eq!(call.reply_id, Some(9));
+
+        // The target's response rides back to the original caller — and
+        // only once: the forwarder is consumed.
+        assert_eq!(forwarders.forward_reply(9, b"done".to_vec()), Some((7, 7)));
+        assert_eq!(forwarders.forwarded(), [(9, (7, 7), b"done".to_vec())]);
+        assert_eq!(forwarders.forward_reply(9, b"dup".to_vec()), None);
+        assert_eq!(forwarders.forwarded().len(), 1);
+    }
+
+    #[test]
+    fn a_one_way_call_needs_no_reply_forwarder() {
+        let mut host_a = hold_host(10, 0);
+        host_a.receive_ghost_set_real(10, 1, APP_B);
+        let mut forwarders = ReplyForwarders::default();
+
+        let call = forward_message_to_real(
+            &host_a.ghosts,
+            &mut forwarders,
+            (7, 7),
+            10,
+            42,
+            b"fire and forget".to_vec(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(call.to, APP_B);
+        assert_eq!(call.reply_id, None);
+        // No forwarder was registered — a stray response finds nothing.
+        assert_eq!(forwarders.forward_reply(5, b"stray".to_vec()), None);
+        assert!(forwarders.is_empty());
+    }
+
+    #[test]
+    fn a_call_for_an_unknown_entity_fails_and_registers_nothing() {
+        let host_a = GhostHost::default();
+        let mut forwarders = ReplyForwarders::default();
+
+        assert!(
+            forward_message_to_real(
+                &host_a.ghosts,
+                &mut forwarders,
+                (7, 7),
+                10,
+                42,
+                b"lost".to_vec(),
+                Some(9),
+            )
+            .is_none()
+        );
+        // The forward became the unknown-entity failure: no forwarder
+        // ever went out.
+        assert!(forwarders.is_empty());
     }
 }
