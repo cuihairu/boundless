@@ -2053,3 +2053,5 @@ impl WaypointGenerator {
 
 #[cfg(test)]
 mod artifacts;
+#[cfg(test)]
+mod roundtrip;
