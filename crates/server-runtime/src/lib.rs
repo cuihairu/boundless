@@ -21,6 +21,7 @@ pub mod dispatcher;
 pub mod entity_creator;
 pub mod entity_dispatch;
 pub mod ghost;
+pub mod ghost_routing;
 pub mod ghost_snapshot;
 pub mod global_bases;
 pub mod headless_client;
