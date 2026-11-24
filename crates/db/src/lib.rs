@@ -17,6 +17,7 @@
 pub mod account;
 pub mod buffered;
 pub mod charset;
+pub mod consolidate;
 pub mod error;
 pub mod lookup;
 pub mod namer;
@@ -37,6 +38,9 @@ pub use buffered::{Admission, BufferedEntityTasks, EntityTask};
 pub use charset::{
     CharsetWidths, utf8_byte_length_for, utf8_char_length, utf8_char_offsets,
     utf8_truncate_to_chars,
+};
+pub use consolidate::{
+    ConsolidationOutcome, ConsolidationQueue, ConsolidationReport, consolidate_database,
 };
 pub use error::DbError;
 pub use lookup::{

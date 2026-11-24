@@ -96,7 +96,7 @@ mod tests {
     use std::rc::Rc;
 
     use entitydef::value::PropertyValue;
-    use foundation::ids::{DatabaseId, PENDING_DATABASE_ID};
+    use foundation::ids::{DatabaseId, GameTime, PENDING_DATABASE_ID};
     use mercury::endpoint::Address;
 
     use crate::error::DbError;
@@ -212,6 +212,22 @@ mod tests {
 
         fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError> {
             self.inner.all_entities()
+        }
+
+        fn game_time_of(&self, key: &EntityKey) -> Result<Option<GameTime>, DbError> {
+            self.inner.game_time_of(key)
+        }
+
+        fn put_consolidated(
+            &mut self,
+            key: &EntityKey,
+            values: &[PropertyValue],
+            game_time: GameTime,
+        ) -> Result<(), DbError> {
+            if let Some(error) = self.script.borrow_mut().pop() {
+                return Err(error);
+            }
+            self.inner.put_consolidated(key, values, game_time)
         }
     }
 
@@ -469,5 +485,27 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(attempts.get(), 1);
         assert_eq!(flaky.all_entities().expect("the store lists").len(), 2);
+    }
+
+    #[test]
+    fn the_consolidation_face_scripts_errors_like_the_put_face() {
+        // A scripted error surfaces on the consolidation put; once the
+        // script runs dry the inner storage takes over.
+        let mut flaky = FlakyStorage::wrap(seeded_store(), vec![DbError::LostConnection]);
+        assert_eq!(
+            flaky.put_consolidated(&key(3, 1), &values("newer"), 300),
+            Err(DbError::LostConnection)
+        );
+        flaky
+            .put_consolidated(&key(3, 1), &values("newer"), 300)
+            .expect("the dry script puts");
+        assert_eq!(
+            flaky.game_time_of(&key(3, 1)).expect("the time reads"),
+            Some(300)
+        );
+        assert_eq!(
+            flaky.game_time_of(&key(3, 99)).expect("the time reads"),
+            None
+        );
     }
 }

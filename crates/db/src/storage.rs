@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use entitydef::value::PropertyValue;
-use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
+use foundation::ids::{DatabaseId, EntityTypeId, GameTime, PENDING_DATABASE_ID};
 use mercury::endpoint::Address;
 
 use crate::error::DbError;
@@ -131,6 +131,29 @@ pub trait EntityStorage {
     /// backend hands everything over and the lookup operations filter,
     /// which keeps the contract synchronous and backend-free.
     fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError>;
+
+    /// `EntityTypeMapping::hasNewerRecord`'s read half
+    /// (`entity_type_mapping.cpp:242-249`): the row's stored `gameTime`.
+    /// `None` means "no newer information" — either there is no row or,
+    /// as in the XML backend, no stored time at all (`xml_database.cpp:648-650`
+    /// reads the consolidation game time off the stream and discards it:
+    /// "Used in MySQL only"). The arbitration treats `None` as writable.
+    fn game_time_of(&self, key: &EntityKey) -> Result<Option<GameTime>, DbError>;
+
+    /// The consolidator's write (`ConsolidateEntityTask`): refresh the
+    /// row's values and its `gameTime` in one statement, leaving the
+    /// auto-load state and the logon record alone
+    /// (`UPDATE_AUTO_LOAD_RETAIN`, no mailbox). A missing row is
+    /// [`DbError::NotFound`] — the reference's update-missed-row path
+    /// (`put_entity_task.cpp:82-90`) logs and reports success, which the
+    /// consolidation caller folds into a "not consolidated" outcome
+    /// rather than an error.
+    fn put_consolidated(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        game_time: GameTime,
+    ) -> Result<(), DbError>;
 }
 
 /// The DBApp load: fetch the record for `key`, or [`DbError::NotFound`]
@@ -144,6 +167,10 @@ pub fn load_entity(storage: &impl EntityStorage, key: &EntityKey) -> Result<Enti
 pub(crate) struct MemoryInner {
     entities: HashMap<EntityKey, EntityRecord>,
     logons: HashMap<EntityKey, BaseMailbox>,
+    /// The `fm_gameTime` column: the consolidator's arbitration time,
+    /// written by [`MemoryInner::put_consolidated`] and otherwise absent
+    /// (the DBApp save path's meta-property face is a later item).
+    game_times: HashMap<EntityKey, GameTime>,
 }
 
 impl MemoryInner {
@@ -205,8 +232,10 @@ impl MemoryInner {
     /// reference's `isOK=false`.
     fn del(&mut self, key: &EntityKey) -> Result<(), DbError> {
         // The reference delEntity removes the logon record with the row
-        // (`xml_database.cpp:805-811`, `del_entity_task.cpp`).
+        // (`xml_database.cpp:805-811`, `del_entity_task.cpp`); the row's
+        // gameTime column goes with it.
         self.logons.remove(key);
+        self.game_times.remove(key);
         self.entities
             .remove(key)
             .map(|_| ())
@@ -233,6 +262,24 @@ impl MemoryInner {
 
     fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError> {
         self.logons.remove(key);
+        Ok(())
+    }
+
+    /// The consolidation write: the `UPDATE` refreshes the row's values
+    /// and sets `fm_gameTime` (`entity_type_mapping.cpp:683-699` with
+    /// `pushGameTime`). Only an existing row updates; a missing row is
+    /// [`DbError::NotFound`].
+    fn put_consolidated(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        game_time: GameTime,
+    ) -> Result<(), DbError> {
+        {
+            let record = self.entities.get_mut(key).ok_or(DbError::NotFound)?;
+            record.values = values.to_vec();
+        }
+        self.game_times.insert(*key, game_time);
         Ok(())
     }
 }
@@ -318,6 +365,21 @@ impl EntityStorage for MemoryStorage {
         records.sort_by_key(|r| (r.type_id, r.db_id));
         Ok(records)
     }
+
+    fn game_time_of(&self, key: &EntityKey) -> Result<Option<GameTime>, DbError> {
+        Ok(self.inner.borrow().game_times.get(key).copied())
+    }
+
+    fn put_consolidated(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        game_time: GameTime,
+    ) -> Result<(), DbError> {
+        self.inner
+            .borrow_mut()
+            .put_consolidated(key, values, game_time)
+    }
 }
 
 /// A connection to a [`MemoryStorage`]: the read/write face a caller
@@ -363,6 +425,21 @@ impl EntityStorage for MemoryConnection {
             self.inner.borrow().entities.values().cloned().collect();
         records.sort_by_key(|r| (r.type_id, r.db_id));
         Ok(records)
+    }
+
+    fn game_time_of(&self, key: &EntityKey) -> Result<Option<GameTime>, DbError> {
+        Ok(self.inner.borrow().game_times.get(key).copied())
+    }
+
+    fn put_consolidated(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        game_time: GameTime,
+    ) -> Result<(), DbError> {
+        self.inner
+            .borrow_mut()
+            .put_consolidated(key, values, game_time)
     }
 }
 

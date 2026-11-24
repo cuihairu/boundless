@@ -49,7 +49,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use entitydef::value::PropertyValue;
-use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
+use foundation::ids::{DatabaseId, EntityTypeId, GameTime, PENDING_DATABASE_ID};
 
 use crate::error::DbError;
 use crate::record::EntityRecord;
@@ -1183,6 +1183,24 @@ impl EntityStorage for XmlDatabase {
             .collect();
         records.sort_by_key(|record| (record.type_id, record.db_id));
         Ok(records)
+    }
+
+    fn game_time_of(&self, _key: &EntityKey) -> Result<Option<GameTime>, DbError> {
+        // The XML database has no per-entity gameTime: the reference reads
+        // the consolidation game time off the put stream and discards it
+        // ("Used in MySQL only", xml_database.cpp:648-650), so there is
+        // never a stored time to compare and no record is ever "newer".
+        Ok(None)
+    }
+
+    fn put_consolidated(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        _game_time: GameTime,
+    ) -> Result<(), DbError> {
+        // Same discarded-stream face: the write is a plain put.
+        self.put_entity(key, values, false).map(|_| ())
     }
 }
 
