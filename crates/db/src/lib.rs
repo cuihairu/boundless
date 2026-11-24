@@ -15,6 +15,7 @@
 //! BW-09-05 operational tools.
 
 pub mod account;
+pub mod buffered;
 pub mod charset;
 pub mod error;
 pub mod lookup;
@@ -29,6 +30,7 @@ pub use account::{
     ENTITY_TYPES_TABLE, INFO_TABLE, IS_PASSWORD_HASHED_COLUMN, LOG_ON_MAPPING_TABLE,
     LOG_ON_NAME_COLUMN, PASSWORD_COLUMN, UserTypeBinding, bind_user_type, check_password,
 };
+pub use buffered::{Admission, BufferedEntityTasks, EntityTask};
 pub use charset::{
     CharsetWidths, utf8_byte_length_for, utf8_char_length, utf8_char_offsets,
     utf8_truncate_to_chars,
