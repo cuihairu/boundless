@@ -33,6 +33,12 @@ pub mod registry;
 pub mod stream;
 pub mod user_components;
 
+/// The conditional MongoDB backend (`HAS_MONGODB_SUPPORT`): compiled only
+/// with `--features mongodb`, like the reference builds it only after the
+/// CMake probe finds the legacy driver.
+#[cfg(feature = "mongodb")]
+pub mod mongodb;
+
 /// The protocol version this port speaks
 /// (`MESSAGE_LOGGER_VERSION`, `logger_message_forwarder.hpp:63`).
 pub const MESSAGE_LOGGER_VERSION: u8 = 10;

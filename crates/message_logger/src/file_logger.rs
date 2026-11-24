@@ -70,7 +70,7 @@ pub const DEFAULT_SEGMENT_SIZE_BYTES: u32 = 100 << 20;
 
 /// The metadata value tags (`LogMetaData::MessageLoggerValueType`,
 /// `log_meta_data.cpp:13-19`), streamed as four-byte `int`s.
-mod mlvt {
+pub(crate) mod mlvt {
     pub const JSON_STRING: u32 = b'j' as u32;
     pub const INT: u32 = b'i' as u32;
     pub const UNSIGNED_INT: u32 = b'u' as u32;
@@ -107,6 +107,38 @@ pub fn format_suffix(epoch_secs: i64) -> String {
     let mth = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if mth <= 2 { y + 1 } else { y };
     format!("{y:04}-{mth:02}-{d:02}-{h:02}:{m:02}:{s:02}")
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date
+/// (Howard Hinnant's algorithm, the inverse half of [`format_suffix`]). The
+/// MongoDB backend needs it to turn a collection's `YYYYMMDDHHMMSS` suffix
+/// back into a timestamp (`timegm`, `user_log_writer.cpp:677-697`).
+pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// `(year, month, day)` for days since 1970-01-01 — civil-from-days, the
+/// other half of [`days_from_civil`]. The MongoDB expiry check walks a
+/// collection's `YYYYMMDDHHMMSS` suffix through this pair
+/// (`timegm`, `user_log_writer.cpp:675-691`).
+pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 /// The current wall clock as epoch seconds, for live suffixes.

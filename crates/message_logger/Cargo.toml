@@ -9,3 +9,9 @@ repository.workspace = true
 
 [dependencies]
 regex.workspace = true
+
+[features]
+default = []
+# `HAS_MONGODB_SUPPORT`: the legacy-driver backend under `mongodb/`, behind
+# the same probe the reference's CMake makes.
+mongodb = []
