@@ -29,6 +29,7 @@ pub mod snapshot;
 pub mod storage;
 pub mod sync_db;
 pub mod transaction;
+pub mod transfer_db;
 pub mod xml;
 
 pub use config::{DatabaseConfig, PostgresConnection, StorageBackend};
