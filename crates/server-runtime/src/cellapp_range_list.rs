@@ -68,6 +68,10 @@ pub type TriggerId = u32;
 pub enum TriggerTarget {
     /// Every enter/leave appends `(entity, entering)`.
     Recorder(Rc<RefCell<Vec<(u32, bool)>>>),
+    /// The witness's AoI trigger (`Witness::triggerEnter`): the same
+    /// `(entity, entering)` tuples, drained by the witness's
+    /// `addToAoI`/`removeFromAoI`.
+    AoI(Rc<RefCell<Vec<(u32, bool)>>>),
 }
 
 /// One node of the range lists — the reference's `RangeListNode` and its
@@ -903,19 +907,25 @@ impl RangeList {
 
     fn trigger_enter(&mut self, trigger: TriggerId, entity: &Rc<RefCell<Entity>>) {
         let id = entity.borrow().id;
-        let TriggerTarget::Recorder(events) = &self.triggers[trigger as usize]
+        let events = match &self.triggers[trigger as usize]
             .as_ref()
             .expect("live trigger")
-            .target;
+            .target
+        {
+            TriggerTarget::Recorder(events) | TriggerTarget::AoI(events) => events,
+        };
         events.borrow_mut().push((id, true));
     }
 
     fn trigger_leave(&mut self, trigger: TriggerId, entity: &Rc<RefCell<Entity>>) {
         let id = entity.borrow().id;
-        let TriggerTarget::Recorder(events) = &self.triggers[trigger as usize]
+        let events = match &self.triggers[trigger as usize]
             .as_ref()
             .expect("live trigger")
-            .target;
+            .target
+        {
+            TriggerTarget::Recorder(events) | TriggerTarget::AoI(events) => events,
+        };
         events.borrow_mut().push((id, false));
     }
 

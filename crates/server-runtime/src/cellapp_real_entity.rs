@@ -1130,6 +1130,13 @@ impl CellApp {
         entity_rc.borrow_mut().has_witness = witness == b'W';
         // Anything other than 'W'/'-' is the ERROR "Illegal Witness
         // indicator"; the build carries on without a witness either way.
+        if entity_rc.borrow().has_witness {
+            // `Witness::Witness` + its `AoITrigger`: the AoI observes
+            // from the first tick the entity is real. Its initial
+            // crossings queue up until the witness's next pump.
+            self.add_witness(space_id, id)
+                .expect("the witness entity is on the space's range list");
+        }
 
         if is_restore {
             // The offload tail the creation head precedes: the
@@ -1508,6 +1515,10 @@ impl CellApp {
         // reference defers the ghost-domain controllers to the ghost
         // half; this port's destroyed entry has no ghost half, so the
         // teardown runs every face now.
+        // The witness dies (`~RealEntity`): the trigger leaves the
+        // range list without contracting — the offload face owns the
+        // leaves.
+        self.remove_witness(entity);
         entity_rc.borrow_mut().has_witness = false;
         let ids: Vec<ControllerId> = entity_rc
             .borrow()

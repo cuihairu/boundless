@@ -254,6 +254,14 @@ pub struct Entity {
     pub is_on_ground: bool,
     /// `lastEventNumber_`.
     pub last_event_number: u32,
+    /// `lastTrimmedEventNumber()`: the oldest event the client-facing
+    /// history still holds; a witness cache re-entering with a stamp
+    /// older than this takes the refresh path (`EntityCache::reuse`).
+    pub last_trimmed_event_number: u32,
+    /// `volatileUpdateNumber()`: the volatile update counter the
+    /// witness caches restamp from on reset (their `lastVolatile` is
+    /// this minus one).
+    pub volatile_update_number: u16,
     /// `baseAddr_`: the base's internal address, when the stream carried one.
     pub base_addr: Option<(u32, u16)>,
     /// The Witness indicator byte `RealEntity::init` read (`'W'`/`'-'`).
@@ -328,6 +336,8 @@ impl Entity {
             direction: [0.0; 3],
             is_on_ground: false,
             last_event_number: 0,
+            last_trimmed_event_number: 0,
+            volatile_update_number: 0,
             base_addr: None,
             has_witness: false,
             controllers: crate::cellapp_real_entity::Controllers::default(),
@@ -1611,6 +1621,22 @@ pub struct CellApp {
     /// deliberately external (the position-write funnel cannot reach
     /// per-space data), the passengers' state is the standing precedent.
     pub range_lists: BTreeMap<SpaceId, crate::cellapp_range_list::RangeList>,
+    /// The witnesses, by the entity whose client they serve (the
+    /// reference keeps one `Witness*` per real entity with a witness —
+    /// `Entity::pWitness()`), BW-08-03.
+    pub witnesses: BTreeMap<u32, crate::cellapp_witness::Witness>,
+    /// `CellAppConfig::aoiUpdateSchemes()`.
+    pub aoi_schemes: crate::cellapp_witness::AoIUpdateSchemes,
+    /// The per-type description faces the witness reads
+    /// (`EntityDescription::canBeOnClient` and friends).
+    pub entity_type_faces: BTreeMap<u32, crate::cellapp_witness::EntityTypeDef>,
+    /// `Entity::propertyEventStamps()`, per entity: the client-server
+    /// properties and their change stamps.
+    pub entity_properties: BTreeMap<u32, Vec<crate::cellapp_witness::ClientProperty>>,
+    /// The witness WARNING/INFO faces, in delivery order.
+    pub witness_warnings: Vec<crate::cellapp_witness::WitnessNote>,
+    /// The witness ERROR/CRITICAL faces, in delivery order.
+    pub witness_errors: Vec<crate::cellapp_witness::WitnessNote>,
 }
 
 impl Default for CellApp {
@@ -1669,6 +1695,12 @@ impl Default for CellApp {
             passenger_warnings: Vec::new(),
             population_observers: BTreeMap::new(),
             physics_corrections: Vec::new(),
+            witnesses: BTreeMap::new(),
+            aoi_schemes: crate::cellapp_witness::AoIUpdateSchemes::default(),
+            entity_type_faces: BTreeMap::new(),
+            entity_properties: BTreeMap::new(),
+            witness_warnings: Vec::new(),
+            witness_errors: Vec::new(),
         }
     }
 }
