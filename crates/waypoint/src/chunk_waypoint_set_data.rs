@@ -213,6 +213,34 @@ impl ChunkWaypointSetData {
         best_waypoint
     }
 
+    /// `ChunkWaypointSetData::find(chunk, point, bestDistanceSquared)`
+    /// (`chunk_waypoint_set_data.cpp:626-647`): the closest waypoint, with
+    /// `bestDistanceSquared` handed in as the search bound and handed back
+    /// as the winner's distance. The reference measures the distance with
+    /// `ChunkWaypoint::distanceSquared`, which clips the point into the
+    /// polygon and clamps its height into the range.
+    ///
+    /// Registered boundary: `clip` is the chunk search lane's face
+    /// (BW-10-04-04), so the port clamps the height into the range and
+    /// measures from the waypoint centre instead of the clipped point.
+    /// The clipped point always sits inside the polygon, so the ordering
+    /// by distance is unchanged for a point outside every waypoint.
+    pub fn find_closest(&self, point: Vector3, best_distance_squared: &mut f32) -> WaypointIndex {
+        let mut best_waypoint = -1;
+        for (i, wp) in self.waypoints.iter().enumerate() {
+            let clamped_y = point.y.max(wp.min_height).min(wp.max_height);
+            let dx = point.x - wp.centre.x;
+            let dy = clamped_y - point.y;
+            let dz = point.z - wp.centre.y;
+            let distance_squared = dx * dx + dy * dy + dz * dz;
+            if *best_distance_squared > distance_squared {
+                *best_distance_squared = distance_squared;
+                best_waypoint = i as WaypointIndex;
+            }
+        }
+        best_waypoint
+    }
+
     /// A waypoint's `DependentArray` slice of the shared edge array.
     pub fn waypoint_edges(&self, waypoint: usize) -> &[Edge] {
         &self.edges[self.waypoints[waypoint].edge_range()]
@@ -661,5 +689,32 @@ mod tests {
         // The last vertex wrapped to index 0; its predecessor kept 65535.
         assert_eq!(sets[0].edges()[unique - 1].vertex_index, 0);
         assert_eq!(sets[0].edges()[unique - 2].vertex_index, 65535);
+    }
+
+    #[test]
+    fn the_closest_search_keeps_the_nearest_waypoint() {
+        let blob = sample_set();
+        let mut set = ChunkWaypointSetData::new(1);
+        set.read_waypoint_set(&blob[16..], 2, 5)
+            .expect("the sample decodes");
+        set.set_girth(0.6);
+
+        // The point sits on the near waypoint's centre, so the second
+        // waypoint (the far segment) must not take over the best.
+        let point = Vector3::new(1.0, 0.7, 1.0);
+        let (c0, c1) = (set.waypoints()[0].centre, set.waypoints()[1].centre);
+        let (d0, d1) = (
+            (point.x - c0.x).powi(2) + (point.z - c0.y).powi(2),
+            (point.x - c1.x).powi(2) + (point.z - c1.y).powi(2),
+        );
+        assert!(d0 < d1, "the fixture puts the point on waypoint 0");
+
+        let mut best = f32::MAX;
+        assert_eq!(set.find_closest(point, &mut best), 0, "the nearer wins");
+        assert_eq!(best, d0);
+
+        // A best already better than any waypoint rules all of them out.
+        let mut best = d0;
+        assert_eq!(set.find_closest(point, &mut best), -1, "nothing qualifies");
     }
 }

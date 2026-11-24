@@ -17,7 +17,7 @@
 //!   FINDIGN probes).
 
 use foundation::math::{Vector2, Vector3};
-use waypoint::{ChunkWaypointVertexProvider, parse_world_navmesh};
+use waypoint::{ChunkWaypointVertexProvider, almost_equal, find_by_girth, parse_world_navmesh};
 
 const FIXTURE_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -87,6 +87,37 @@ struct FindLine {
     answer: i32,
 }
 
+/// The `GIRTHMATCH` truth lines: the two girths the reference compared and
+/// its `almostEqual` answer.
+#[derive(Clone, Debug)]
+struct GirthMatchLine {
+    a: f32,
+    b: f32,
+    answer: bool,
+}
+
+/// The `GIRTHFIND` truth lines: the searched girth, the set girth probed,
+/// the probe point, the matcher's answer and the set's own search answer
+/// (`-99` is the generator's "no search at all" sentinel for a
+/// girth-mismatching set).
+/// The `GIRTHFINDIGN` truth lines: the searched girth, the probe point and the
+/// set's `find(point, true)` answer.
+#[derive(Clone, Debug)]
+struct GirthFindIgnoreLine {
+    girth: f32,
+    point: Vector3,
+    answer: i32,
+}
+
+#[derive(Clone, Debug)]
+struct GirthFindLine {
+    search_girth: f32,
+    set_girth: f32,
+    point: Vector3,
+    matched: bool,
+    answer: i32,
+}
+
 struct Truth {
     headers: [(i32, f32, usize, usize); 2],
     set_counts: [(usize, i32); 2],
@@ -98,6 +129,9 @@ struct Truth {
     contains: Vec<ContainsLine>,
     proj: Vec<ProjLine>,
     find: Vec<FindLine>,
+    girth_match: Vec<GirthMatchLine>,
+    girth_find: Vec<GirthFindLine>,
+    girth_find_ignore: Vec<GirthFindIgnoreLine>,
 }
 
 fn parse_truth(lines: &[String]) -> Truth {
@@ -111,6 +145,9 @@ fn parse_truth(lines: &[String]) -> Truth {
     let mut contains = Vec::new();
     let mut proj = Vec::new();
     let mut find = Vec::new();
+    let mut girth_match = Vec::new();
+    let mut girth_find = Vec::new();
+    let mut girth_find_ignore = Vec::new();
     let mut hdr_seen = 0;
     let mut set_seen = 0;
     let mut adj_seen = 0;
@@ -211,6 +248,40 @@ fn parse_truth(lines: &[String]) -> Truth {
                     answer: f[4].parse().unwrap(),
                 });
             }
+            "GIRTHMATCH" => {
+                // "GIRTHMATCH <a> <b> <0/1>"
+                girth_match.push(GirthMatchLine {
+                    a: f[1].parse().unwrap(),
+                    b: f[2].parse().unwrap(),
+                    answer: f[3].parse::<u8>().unwrap() != 0,
+                });
+            }
+            "GIRTHFIND" => {
+                // "GIRTHFIND <searchGirth> <setGirth> <x> <y> <z> <matched> <idx>"
+                girth_find.push(GirthFindLine {
+                    search_girth: f[1].parse().unwrap(),
+                    set_girth: f[2].parse().unwrap(),
+                    point: Vector3::new(
+                        f[3].parse().unwrap(),
+                        f[4].parse().unwrap(),
+                        f[5].parse().unwrap(),
+                    ),
+                    matched: f[6].parse::<u8>().unwrap() != 0,
+                    answer: f[7].parse().unwrap(),
+                });
+            }
+            "GIRTHFINDIGN" => {
+                // "GIRTHFINDIGN <girth> <x> <y> <z> <idx>"
+                girth_find_ignore.push(GirthFindIgnoreLine {
+                    girth: f[1].parse().unwrap(),
+                    point: Vector3::new(
+                        f[2].parse().unwrap(),
+                        f[3].parse().unwrap(),
+                        f[4].parse().unwrap(),
+                    ),
+                    answer: f[5].parse().unwrap(),
+                });
+            }
             _ => {}
         }
     }
@@ -226,6 +297,18 @@ fn parse_truth(lines: &[String]) -> Truth {
     assert!(!proj.is_empty(), "the projection probes must be present");
     assert!(!find.is_empty(), "the find probes must be present");
     assert!(
+        !girth_match.is_empty(),
+        "the girth match probes must be present"
+    );
+    assert!(
+        !girth_find.is_empty(),
+        "the girth find probes must be present"
+    );
+    assert!(
+        !girth_find_ignore.is_empty(),
+        "the girth find ignore-height probes must be present"
+    );
+    assert!(
         lines.last().unwrap().starts_with("RESULT OK"),
         "truth ends OK"
     );
@@ -240,6 +323,9 @@ fn parse_truth(lines: &[String]) -> Truth {
         contains,
         proj,
         find,
+        girth_match,
+        girth_find,
+        girth_find_ignore,
     }
 }
 
@@ -464,6 +550,79 @@ fn the_reference_find_probes_pick_the_right_layer() {
             "FIND {:?} ignore_height={} answer",
             line.point,
             line.ignore_height
+        );
+    }
+}
+
+#[test]
+fn the_reference_girth_probes_are_answered() {
+    let blob = fixture_bytes("world_navmesh.bin");
+    let truth = parse_truth(&truth_lines());
+    let sets = parse_world_navmesh(&blob).expect("the fixture decodes");
+    let owned: Vec<std::rc::Rc<_>> = sets.into_iter().map(std::rc::Rc::new).collect();
+
+    // GIRTHMATCH: the girth window is the reference almostEqual, with its
+    // default epsilon of 0.0004.
+    for line in &truth.girth_match {
+        assert_eq!(
+            almost_equal(line.a, line.b),
+            line.answer,
+            "GIRTHMATCH {} {}",
+            line.a,
+            line.b
+        );
+    }
+
+    // GIRTHFIND: the matcher decides whether the set is searched at all,
+    // and the same point answers differently per girth — set 0 owns the
+    // chain at girth 0.6 while set 1 holds only the far quad at girth 1.0.
+    for line in &truth.girth_find {
+        assert_eq!(
+            almost_equal(line.search_girth, line.set_girth),
+            line.matched,
+            "GIRTHFIND match {} {}",
+            line.search_girth,
+            line.set_girth
+        );
+        if !line.matched {
+            assert_eq!(line.answer, -99, "a non-matching set is never searched");
+            continue;
+        }
+        let slot = if (line.set_girth - 0.6).abs() < 0.5 {
+            0
+        } else {
+            1
+        };
+        assert_eq!(
+            find_by_girth(&owned[slot..slot + 1], line.point, line.set_girth, false).waypoint(),
+            line.answer,
+            "GIRTHFIND {} {}",
+            line.search_girth,
+            line.set_girth
+        );
+    }
+}
+
+#[test]
+fn the_reference_girth_ignore_height_probes_are_answered() {
+    let blob = fixture_bytes("world_navmesh.bin");
+    let truth = parse_truth(&truth_lines());
+    let owned: Vec<std::rc::Rc<_>> = parse_world_navmesh(&blob)
+        .expect("the fixture decodes")
+        .into_iter()
+        .map(std::rc::Rc::new)
+        .collect();
+
+    // The height-free search over the far quad answers -1 where the narrow
+    // set answers the best height fit: same point, different girth, different
+    // reachability.
+    for line in &truth.girth_find_ignore {
+        let slot = if (line.girth - 0.6).abs() < 0.5 { 0 } else { 1 };
+        assert_eq!(
+            find_by_girth(&owned[slot..slot + 1], line.point, line.girth, true).waypoint(),
+            line.answer,
+            "GIRTHFINDIGN {}",
+            line.girth
         );
     }
 }

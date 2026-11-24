@@ -10,6 +10,7 @@
 
 mod chunk_waypoint;
 mod chunk_waypoint_set_data;
+mod girth;
 mod navloc;
 
 pub use chunk_waypoint::{
@@ -19,6 +20,7 @@ pub use chunk_waypoint::{
 pub use chunk_waypoint_set_data::{
     ChunkWaypointSetData, NAVPOLY_ELEMENT_SIZE, NavmeshDecodeError, parse_world_navmesh,
 };
+pub use girth::{GIRTH_EPSILON, NavigatorFindResult, almost_equal, find_by_girth};
 pub use navloc::NavLoc;
 
 /// `EdgeIndex` (`chunk_waypoint.hpp:25`).

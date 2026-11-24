@@ -300,6 +300,49 @@ int main()
         printf("FINDIGN 2.5 1.05 1 %d\n", setA.find(GeoSpaceVector3(2.5f, 1.05f, 1.f), true));
         printf("FINDIGN 1 1 1 %d\n", setA.find(GeoSpaceVector3(1.f, 1.f, 1.f), true));
 
+
+        // ---- BW-10-04-03: the girth match window ----
+        // The set's girth is the only thing ChunkNavigator::find filters on
+        // before searching (almostEqual, epsilon 0.0004f). Probe the
+        // matcher straight off the reference helper and show the second set
+        // (girth 1.0) answering the same point that set 0 (girth 0.6) owns.
+        printf("GIRTHMATCH %.3f %.3f %d\n", 0.6f, 0.6f, almostEqual(0.6f, 0.6f));
+        printf("GIRTHMATCH %.3f %.3f %d\n", 0.6f, 1.0f, almostEqual(0.6f, 1.0f));
+        printf("GIRTHMATCH %.3f %.3f %d\n", 0.6f, 0.6004f, almostEqual(0.6f, 0.6004f));
+        printf("GIRTHMATCH %.3f %.3f %d\n", 0.6f, 0.6003f, almostEqual(0.6f, 0.6003f));
+        printf("GIRTHMATCH %.3f %.3f %d\n", 1.0f, 1.0f, almostEqual(1.0f, 1.0f));
+
+        // The girth filter picks the set: the same point over A's footprint
+        // answers in set 0 at girth 0.6 and answers -1 at girth 1.0, where
+        // only the lone quad D (10..12) is loaded.
+        ChunkWaypointSetData* pSets[2] = { pSetA, pSetB };
+        const float girths[2] = { 0.6f, 1.0f };
+        const float probeX = 1.f;
+        const float probeY = 1.f;
+        const float probeZ = 1.f;
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            for (int other = 0; other < 2; ++other)
+            {
+                printf("GIRTHFIND %.3f %.3f %.6f %.6f %.6f %d %d\n",
+                       girths[slot], girths[other], probeX, probeY, probeZ,
+                       almostEqual(girths[slot], girths[other]),
+                       other == slot
+                           ? pSets[other]->find(GeoSpaceVector3(probeX, probeY, probeZ))
+                           : -99);
+            }
+        }
+
+        // And the ignoreHeight form of the same search at the doorway
+        // height, where nothing is in the height band but the projection
+        // still matches.
+        for (int slot = 0; slot < 2; ++slot)
+        {
+            printf("GIRTHFINDIGN %.3f %.6f %.6f %.6f %d\n",
+                   girths[slot], 2.5f, 5.f, 1.f,
+                   pSets[slot]->find(GeoSpaceVector3(2.5f, 5.f, 1.f), true));
+        }
+
         printf("RESULT OK\n");
     }
 
