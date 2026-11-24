@@ -1,0 +1,31 @@
+WARNING: [ResMgr] The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res" (from BW_RES_PATH env variable).
+INFO: [DataDescription] Highest exposed counts:
+INFO: [DataDescription] 	ClientAvatar: client top-level property count = 5. Efficient to 97 (limit is 256)
+INFO: [DataDescription] 	ClientAvatar: client method count = 2. Efficient to 99 (limit is 25344)
+INFO: [DataDescription] 	ClientAvatar: base method count = 1. Efficient to 121 (limit is 30976)
+INFO: [DataDescription] 	Guard: cell method count = 0. Efficient to 122 (limit is 31232)
+INFO: [DataDescription] 
+INFO: [Network] NetworkInterface::recreateListeningSocket: bound to all interfaces with default route interface on ens18 ( 192.168.5.188:54388 )
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:54388
+TRACE: SmartServerConnection::logOnTo: transport = UDP
+TRACE: [Connection] ServerConnection::logOnBegin: Using server: 192.168.5.188:20013, transport: UDP, username: MyAccount 
+DEBUG: LoginHandler::start: LoginApp@192.168.5.188:20013 over UDP (# requests: 10, retry interval: 1.0s, timeout interval: 8.0s)
+DEBUG: LoginRequest::onTransportConnect: Attempt #1 to LoginApp 192.168.5.188:20013;  took 0.0s, time left = 8.0s
+TRACE: LoginHandler::sendNextRequest: From 192.168.5.188:54388, attempt #1 / 10 to LoginApp 192.168.5.188:20013
+Press Ctrl-C to quit
+Server is 192.168.5.188:20013
+Username is MyAccount
+TRACE: LoginRequest::handleMessage: Attempt #1: Received reply from 192.168.5.188:20013 (after 0.1s)
+DEBUG: LoginHandler::onLoginAppLoginSuccess: BaseApp@192.168.5.188:52918 over UDP (# requests: 10, retry interval:1.0s, timeout interval: 8.0s)
+DEBUG: LoginRequest::onTransportConnect: Attempt #1 to BaseApp 192.168.5.188:52918;  took 0.0s, time left = 8.0s
+TRACE: LoginHandler::sendNextRequest: From 192.168.5.188:54388, attempt #1 / 10 to BaseApp 192.168.5.188:52918
+TRACE: LoginRequest::handleMessage: Attempt #1: Received reply from 192.168.5.188:52918 (after 0.1s)
+DEBUG: LoginHandler::onBaseAppLoginSuccess: Got reply from BaseApp channel udp:192.168.5.188:52918
+DEBUG: [Connection] ServerConnection::logOn: status==LOGGED_ON
+DEBUG: [Connection] ServerConnection::logOn: from: 192.168.5.188:54388
+DEBUG: [Connection] ServerConnection::logOn: to:   192.168.5.188:52918
+DEBUG: [Connection] ServerConnection::enableEntities: Enabling entities
+Connected to 192.168.5.188:52918
