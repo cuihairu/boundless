@@ -1459,7 +1459,8 @@
   - 证据：`create_boundaries` 复刻室外六面合成（right/left/bottom/top/back/front 逐字转写 plane/uAxis/points/邻居目标，含 min/max 边 extern 卫兵与 min/maxLGridX/Y 判定），集成测试钉死 (0,0)/(17,0)/(17,1) 的邻居目标、六 plane、u/v 轴、lcentre 与四点环；室内块经 shell `.visual`（后备 `.static.visual`）读 `<boundary>`，`hut_shell.visual` 验证 earth 生而绑定/heaven 未绑、winding 反序修正、`inside` 投影语义与 joints/bounds 分类；`form_boundaries` 的 good≥4/零法向/分类逻辑与 chunk.cpp:856-908 一致；顺带补 `PlaneEq::new(normal,d)`。详见 docs/review/bw10-01-chunk-load.md 的 BW-10-01-02 节。commit `623d309`。
 - [x] **BW-10-01-03 装载相邻 Chunk**。**验收** 流式进出时绑定序列吻合。
   - 证据：`ChunkSpace::scan` 复刻 `ChunkManager::scan`（GridComp 平方半径序、maxLoadPath 世界距离断、inWorldBounds 过滤、find-or-create、MAX_WORTHY_CHUNKS=50 截断，同层 tie-break 登记为确定性分歧）；`bind`/`bind_back` 复刻 `bindPortals` + `Chunk::bind(Chunk*)`（heaven 即绑、目标已绑才连、双向对移、centre=transform∘lcentre，extern/invasive 解析登记为 BW-10-02 缺口）。夹具绑定序列 `[00000000o,00000001o,00010000o,00010001o]` 钉死，缺文件块拒载、未装载拒绑、重入幂等均有测。llvm-cov 全 crate 行 98.62%。详见 docs/review/bw10-01-chunk-load.md 的 BW-10-01-03 节。commit `934a268`。
-- [ ] **BW-10-01-04 卸载 Chunk 及场景对象**。**验收** 查询结果和资源释放符合基线。
+- [x] **BW-10-01-04 卸载 Chunk 及场景对象**。**验收** 查询结果和资源释放符合基线。
+  - 证据: `Chunk::removable`+`ChunkSpace::{unbind,unload_chunk,unload_farthest,unbind_portal,unbind_back}`+`intersects_with_bias`(chunk.cpp:914-984/1292-1458/2083-2136、chunk_boundary.cpp:185-191、chunk_manager.cpp:92-95/2085/2236-2366、boundbox.ipp:313-317);夹具集成两例(最远卸载+资源释放+重载重绑、cut 语义=室内 INVASIVE/室外 Nothing 双侧扁平化+heaven 室外保持)+lib 单测五例(尾插序/internal 逐出 joints/滞回+偏置+覆盖+可移除+单趟 1 上限/半开偏置/未覆盖壳);space.rs 99.54%(强制 cut 腿 BW-10-02 前不可达,登记),全 crate ≥98.75%,chunk 29+11 绿,workspace 4729/0;证据与登记见 docs/review/bw10-01-chunk-load.md BW-10-01-04 节,commit b57e4b9
 - [ ] **BW-10-01-05 实现空间索引**。**验收** 跨 Chunk 与空白区查询返回正确集合。
 
 #### BW-10-02 编译空间和场景查询
