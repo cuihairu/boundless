@@ -958,4 +958,59 @@ mod tests {
         assert_eq!(names(&left), names(&right));
         assert_eq!(names(&left), vec!["Bot_1_0", "Bot_2_0"]);
     }
+
+    /// The restart baseline (BW-12-04-04): an in-place cluster restart —
+    /// tear the fleet down, rebuild it — reproduces the same shaped fleet
+    /// every time, with the random-name counter continuing where it left
+    /// off (`nextBotID_` is a `MainApp` field, not a per-batch one,
+    /// main_app.cpp:413), and a fresh-process restart from the same seed
+    /// reproduces the original build exactly.
+    #[test]
+    fn the_restart_rebuilds_the_same_fleet() {
+        let config = crate::bots_config::BotsConfig::new();
+        let build = |fleet: &mut Fleet| {
+            fleet.add_bots(7);
+        };
+        let active = |fleet: &Fleet| -> Vec<(String, f32)> {
+            fleet
+                .bots()
+                .iter()
+                .map(|bot| (bot.user_name().to_string(), bot.speed()))
+                .collect()
+        };
+
+        // The original run and the fresh-process restart agree exactly.
+        let mut original = Fleet::with_bots_config(&config, "0", 1024, 31337);
+        build(&mut original);
+        let mut fresh = Fleet::with_bots_config(&config, "0", 1024, 31337);
+        build(&mut fresh);
+        assert_eq!(active(&original), active(&fresh));
+        let first_names: Vec<&str> = original.bots().iter().map(|bot| bot.user_name()).collect();
+        assert_eq!(
+            first_names,
+            (1..=7).map(|n| format!("Bot_{n}_0")).collect::<Vec<_>>()
+        );
+
+        // The in-place restart keeps the name counter going and redraws
+        // the speeds from the same stream, and a second fleet running the
+        // identical restart lands on the identical second generation.
+        let mut restarted = Fleet::with_bots_config(&config, "0", 1024, 31337);
+        build(&mut restarted);
+        restarted.del_bots(restarted.len() as i32);
+        assert!(restarted.is_empty());
+        build(&mut restarted);
+
+        let mut replay = Fleet::with_bots_config(&config, "0", 1024, 31337);
+        build(&mut replay);
+        replay.del_bots(replay.len() as i32);
+        build(&mut replay);
+
+        assert_eq!(active(&restarted), active(&replay));
+        assert_eq!(restarted.len(), 7);
+        let second_names: Vec<&str> = restarted.bots().iter().map(|bot| bot.user_name()).collect();
+        assert_eq!(
+            second_names,
+            (8..=14).map(|n| format!("Bot_{n}_0")).collect::<Vec<_>>()
+        );
+    }
 }
