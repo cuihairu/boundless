@@ -141,7 +141,7 @@ pub fn load_entity(storage: &impl EntityStorage, key: &EntityKey) -> Result<Enti
 
 /// The shared rows and checkouts of an in-memory database.
 #[derive(Debug, Default, Clone)]
-struct MemoryInner {
+pub(crate) struct MemoryInner {
     entities: HashMap<EntityKey, EntityRecord>,
     logons: HashMap<EntityKey, BaseMailbox>,
 }
@@ -842,10 +842,36 @@ mod tests {
     }
 }
 
-/// A point-in-time image of an in-memory database's rows and checkouts, used
-/// to roll a transaction back when there is no server to send `ROLLBACK` to.
+/// A point-in-time image of a database's state, used to roll a transaction
+/// back when there is no server to send `ROLLBACK` to. One image kind per
+/// backend: the in-memory rows and checkouts, or the XML database
+/// document.
 #[derive(Clone, Debug)]
-pub struct StorageImage(MemoryInner);
+pub struct StorageImage(StorageImageInner);
+
+#[derive(Clone, Debug)]
+pub(crate) enum StorageImageInner {
+    Memory(MemoryInner),
+    Xml(crate::xml::XmlDatabase),
+}
+
+impl StorageImage {
+    pub(crate) fn of_memory(inner: MemoryInner) -> Self {
+        Self(StorageImageInner::Memory(inner))
+    }
+
+    pub(crate) fn of_xml(database: crate::xml::XmlDatabase) -> Self {
+        Self(StorageImageInner::Xml(database))
+    }
+
+    /// The XML database the image carries.
+    pub(crate) fn as_xml(&self) -> &crate::xml::XmlDatabase {
+        match &self.0 {
+            StorageImageInner::Xml(database) => database,
+            StorageImageInner::Memory(_) => unreachable!("an xml backend restored a memory image"),
+        }
+    }
+}
 
 /// Storage that can be rolled back to an [`StorageImage`].
 pub trait EntityStorageImage: EntityStorage {
@@ -857,20 +883,26 @@ pub trait EntityStorageImage: EntityStorage {
 
 impl EntityStorageImage for MemoryStorage {
     fn image(&self) -> StorageImage {
-        StorageImage(self.inner.borrow().clone())
+        StorageImage::of_memory(self.inner.borrow().clone())
     }
 
     fn restore_image(&mut self, image: &StorageImage) {
-        *self.inner.borrow_mut() = image.0.clone();
+        let StorageImageInner::Memory(inner) = &image.0 else {
+            unreachable!("a memory backend restored an xml image")
+        };
+        *self.inner.borrow_mut() = inner.clone();
     }
 }
 
 impl EntityStorageImage for MemoryConnection {
     fn image(&self) -> StorageImage {
-        StorageImage(self.inner.borrow().clone())
+        StorageImage::of_memory(self.inner.borrow().clone())
     }
 
     fn restore_image(&mut self, image: &StorageImage) {
-        *self.inner.borrow_mut() = image.0.clone();
+        let StorageImageInner::Memory(inner) = &image.0 else {
+            unreachable!("a memory backend restored an xml image")
+        };
+        *self.inner.borrow_mut() = inner.clone();
     }
 }

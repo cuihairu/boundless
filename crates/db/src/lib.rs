@@ -25,6 +25,7 @@ pub mod recovery;
 pub mod retry;
 pub mod storage;
 pub mod transaction;
+pub mod xml;
 
 pub use account::{
     AccountLogOn, AccountRow, BIGWORLD_ID_COLUMN, ENTITY_ID_COLUMN, ENTITY_TYPE_COLUMN,
@@ -58,3 +59,4 @@ pub use storage::{
     MemoryStorage, StorageImage, load_entity,
 };
 pub use transaction::{EntityTransaction, StagedWrite};
+pub use xml::{XmlDatabase, XmlKind, XmlPropDef, XmlSection, XmlTypeDef};
