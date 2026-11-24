@@ -1522,7 +1522,7 @@
 
 覆盖原版 profiler 帧和计数器、`_bw_profile` Python 模块及输出、网络模拟接口和可控时间。内部采集与性能分析交付见 BW-23，测试夹具与故障注入框架见 BW-18。
 
-- [ ] **BW-12-03-01 移植帧和计数器兼容层**。**验收** 同负载下关键字段与原版吻合。
+- [x] **BW-12-03-01 移植帧和计数器兼容层**。**验收** 同负载下关键字段与原版吻合。`1d8e9cc` 新建 crates/foundation/src/profiler_frame.rs（2793 行）移植 lib/cstdmf/profiler.cpp 的对外兼容面：ProfileEntry 事件四型（Start/StartIdle/End/Counter）+Category(CPP/GPU/Python/All) 双缓冲池（容量=memorySize/(sizeof(ProfileEntry)*2+sizeof(DisplayEntry)/2)，当前缓冲入队、tick 切换）；process_entries 构建 DisplayEntry 父/兄/子 arena 树+四模式 top_entries（Hierarchical 树/SortByTime/NumCalls/Name 扁平+`SORT_BY_NAME` 需 csv 门或独占开启的集簇坍缩——指针比较移植为槽位恒不等）；HierNode 聚合树（"All Threads" 根+hier_find_child 延伸+toggle_children/depth/next 遍历）；get_statistics 六标签文本报告（线程可见性+树折叠双门）；线程槽表（MAXIMUM_NUMBER_OF_THREADS=96，addThisThread 首空槽即断+重注册怪癖、removeThread 活跃期挂 threadsToRemove_ 延迟+槽改名 "Deleted"）；MAX_STACK_DEPTH=64 深度钳制（空闲臂只写 idle 周期、父收 numInclusiveCycles_ 非空闲子）+E0382 池写后写式；ScopedFrameSection RAII+ProfilerLevelCounter（EVENT_COUNTER 携带运行级、amt==0 no-op）；watcher 面 enabled/sortMode（Off/CpuGpu/Graphs 返 ""、未知串忽略）；categories 三槽遍历。**范围界**：JSON dump=03-03、CSV history/_bw_profile 启停=03-02、网络模拟=03-04，不与 foundation::profiler（BW-23-01-01 内部采集）重复。关键怪癖逐条钉死：entryCount>1 帧号门（profiler.cpp:1535，单条目帧作未完成写丢弃）、开条目钳制臂（:1718-1771 逐字）、tick 空 buffer 仍耗 isPendingActive_、enable(false) 即清当前 buffer。40 测试（Pinned 时钟 1e6 stamps/s=1 stamp 1ms、load_frame=outer{inner;inner} 100 stamps/段），foundation 253 全绿，llvm-cov DA 1711/1717=99.65%（余 6 行分类：1005-1008 参照式死合并臂、895 幻影闭括号、1079 hier 游标 lockstep 防御 break），workspace 82 suites EXIT=0。
 - [ ] **BW-12-03-02 复现 _bw_profile 启停接口**。**验收** 导入、状态和回调对照。
 - [ ] **BW-12-03-03 复现原版 JSON dump**。**验收** 固定事件产物兼容。
 - [ ] **BW-12-03-04 复核原版网络模拟及可控时间入口**。**验收** 测试夹具可调用。
