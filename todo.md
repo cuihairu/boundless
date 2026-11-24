@@ -1521,7 +1521,7 @@
 - [x] **BW-10-06-11 实现 accelerateAlongPath**。**验收** 多段路径拐点的减速与终点行为与原版一致。 → a1ac603（accelerateAlongPath 脚本脸:real→empty→facing 三查序+empty 文本逐字+typo 逐字;拐点无减速无回调 tick14/22 实证;末点制动吸附 onMove;99.58%）
 - [x] **BW-10-06-12 实现 accelerateToEntity**。**验收** 目标移动及销毁时的控制器结果与原版一致。 → dcd527a（accelerateToEntity 脚本脸:两查序 real→facing+Failure=alias 共享 accel 点脸两拒;close_enough 量 raw 目标先于迈步;销毁 onMoveFailure;恒 stop-at-destination;99.60%）
 - [x] **BW-10-06-13 取消活动寻路控制器**。**验收** 取消后下一 tick 停止推进，回调序列与原版一致。 → 4402d7f（cancelNavigationController：py_cancel 参数解析脸 + exclusive 类别 id 即控制器 id）
-- [ ] **BW-10-06-14 迁移活动寻路控制器**。**验收** 移动中穿越 Cell 边界后，目标位置和回调次数与原版一致。
+- [x] **BW-10-06-14 迁移活动寻路控制器**。**验收** 移动中穿越 Cell 边界后，目标位置和回调次数与原版一致。 → b0916c1（migrate_real_controllers：write→read(不 startReal)→startReal 序；stopRealControllers 在 ~RealEntity 不在 offload 路径；到达 tick 34=对照）
 
 #### BW-10-07 地图端到端验收
 
