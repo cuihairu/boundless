@@ -1290,9 +1290,12 @@
 
 作为 Boundless 新增的 DBApp 主存储后端，与 MySQL、XML 共用存储接口，通过配置选择。实现实体/账号字段映射、DBID 分配、索引与约束、事务、并发锁和连接恢复。复用存储契约测试，覆盖创建、装载、更新、删除、账号重登、auto-load 和二级库归档合并。以原版 MySQL 路径的实体状态、错误语义与回调结果作为行为基准。
 
-- [ ] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
-- [ ] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。
-- [ ] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。
+- [x] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
+  - 证据：`crates/db/src/config.rs` + `crates/server-runtime/src/dbapp.rs`（0ea3eaf）——后端选择对齐原版 `lib/db/db_config.cpp` 的 `<dbMgr><db><type>` 字符串选项（默认 `xml`，本端口引擎名 `xml`/`mysql`/`postgresql`）；`StorageBackend::from_config_name` 对未知名走 `DbError::UnknownBackend`，Display 文本即 `server/dbapp/dbapp.cpp` 的 "Failed to create database of type: %s"；`DbApp::init_from_type_name("postgresql")` 启动后 `engine_report()` == `"Database engine = postgresql"`（`dbapp.cpp:427` `DBENGINE_INFO_MSG("Database engine = %s\n")` 逐字对齐）。`<db/postgresql>` 子节 `PostgresConnection{host,port=5432,database,username,password}` 供后续连接使用。**验收**：3 测覆盖默认 xml / postgresql 报告行 / 未知名失败；db+server-runtime 646 测绿，新文件 llvm-cov 行覆盖 100%（config.rs 76/76、dbapp.rs 32/32、error.rs 21/21）。
+- [x] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。
+  - 证据：新 crate `crates/db-postgres`（4e8ba87）——schema 对齐 `lib/db_storage_mysql/mappings/` 的 namer 规则（`TABLE_NAME_PREFIX "tbl"` 与 `buildColumnName("sm", name)`，namer.cpp 的 buildName 加下划线、correctName 把 `.` 换 `__`）：`EntitySchema` 从定义顺序推列，`ColumnKind::of_value` 一形态一列（Int/Uint→BIGINT、Float→DOUBLE PRECISION、String→TEXT 承载 Unicode、Blob→BYTEA、Vector→REAL[]、嵌套→JSONB），`create_table_ddl` 生成 `CREATE TABLE IF NOT EXISTS "tbl_<Type>"`（PostgreSQL 标识符需引号否则小写折叠）。嵌套值走 `json.rs` 的 tag 编码（`{"i"}`/`{"u"}` 保持 Int/Uint 形态分离、fixed dict 字段用 `[name, value]` 对保序、float 非有限值走 `"nan"/"inf"/"-inf"` 标记串）。`PostgresStorage.put_entity` 即参考的 `REPLACE INTO` 语义 `INSERT ... ON CONFLICT ("id") DO UPDATE`，`get_entity` 按列序读回 `Ok(None)` 表示缺行。**验收**：`tests/round_trip.rs` 对本地 PG18 真跑（`BOUNDLESS_PG_URL`/`CI_STORE_PG_*`/unix socket 三级回退，无服务器则按仓内惯例跳过并提示），9 列覆盖 Unicode 控制字符/astral 平面、全 256 字节 blob、负数与 u64 宽值、NaN/±Inf、混合序列、非排序 fixed dict、邮箱往返——3 测全绿；lib+集成 24 测绿；llvm-cov 行覆盖 json 305/305、schema 153/153、store 262/262 全 100%。顺带修掉 `map_db_error` 丢消息的问题（PG 的 `to_string()` 只有 "db error"，正文在 source 链，现拼全链）。
+- [x] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。
+  - 证据：`crates/db-postgres/src/accounts.rs`（e68158f）——表名与列名逐字沿用 `mysql_synchronise.cpp` 的固定表 `bigworldLogOnMapping(logOnName VARBINARY, password VARBINARY, entityType INT, entityID BIGINT)`，PostgreSQL 下 `VARBINARY→BYTEA`、唯一约束即 `logOnName` 主键（PDK 在表本身而非事后索引）。`put_account` 用裸 `INSERT`（不像实体表那样 upsert，否则重复名会静默改挂到别的实体）；唯一键冲突经 `SqlState::UNIQUE_VIOLATION` 映射为合同值 `DbError::DuplicateAccount`（文案 "account already exists"，对应 `get+set_entity_key_for_account_task.cpp` 的账号语义），其余错误仍为 `Storage`。`get_account` 按名字取回，缺行 `Ok(None)`=参考的 "no such user"。**验收**：`tests/accounts.rs` 真跑本地 PG18——同名第二次写入返回 `DuplicateAccount`、首行未被拒绝的写入改动、异名可插、非 UTF-8 名字字节级区分、entityType/entityID 全范围往返——4 测绿；accounts.rs llvm-cov 行 74/74 100%；工作区 3032 测绿。
 - [ ] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。
 - [ ] **BW-09-06-05 实现实体读写删查**。**验收** 共用存储契约用例通过。
 - [ ] **BW-09-06-06 提交 PostgreSQL 事务**。**验收** 已提交的实体更新可从另一连接读回。
@@ -1306,9 +1309,12 @@
 
 提供建库、schema 同步与 dry-run、备份恢复和现有 MySQL 数据导入。用原版样本核对实体 ID、账号关联、二进制字段、默认值和下一个可分配 DBID。验证迁移失败时的状态和重试行为。
 
-- [ ] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。
-- [ ] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。
-- [ ] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。
+- [x] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。
+  - 证据：`crates/db-postgres/src/schema_init.rs`（e71ccdc）——`plan()` 逐句移植 `sync_db/mysql_synchronise.cpp createSpecialBigWorldTables`：11 张固定表 `bigworldInfo/bigworldEntityTypes/bigworldLogOns/bigworldLogOnMapping/bigworldNewID/bigworldUsedIDs/bigworldGameTime/bigworldSpaces/bigworldSpaceData/bigworldSecondaryDatabases/bigworldEntityDefsChecksum` + 2 个索引，全部 `CREATE TABLE IF NOT EXISTS`（幂等）；类型宽度按 PG 无无符号口径换算（INT UNSIGNED→BIGINT、INT→INTEGER、SMALLINT UNSIGNED→INTEGER、BOOL→BOOLEAN DEFAULT FALSE、CHAR(255)→VARCHAR(255)、VARBINARY/BLOB→BYTEA、AUTO_INCREMENT→BIGSERIAL）；主键逐一对齐（`PRIMARY KEY(typeID, databaseID)`、logOnName 主键、bigworldSpaces id UNIQUE）。版本种子走 `getBigWorldDBVersion`（table_inspector.cpp:300-315）语义：空表插 `DBAPP_CURRENT_VERSION=9`（versions.hpp），`WHERE NOT EXISTS` 守卫。`apply()` 顺序执行 plan。**验收**：`tests/schema_init.rs` 对本地 PG18 真跑——空库 0 表→apply 后 11 表全在、版本读回 9、实体表可建可写可读（DBApp 启动口径）、二次 apply 不变（版本行仍 1）；2 测绿，schema_init.rs llvm-cov 行 182/182 100%；工作区 3039 测绿。
+- [x] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。
+  - 证据：`crates/db-postgres/src/dry_run.rs`（022bee4）——读语句判据逐条对齐 `sync_db/mysql_dry_run_wrapper.cpp isReadOnlyStatement`（SELECT/SHOW/EXPLAIN 可执行，带 `FOR UPDATE`/`LOCK IN SHARE MODE` 的 SELECT 不算读），报告行格式沿用 `DRYRUN:\t%s;`。`plan_missing_schema` 只读巡检（pg_tables/pg_indexes/版本行，全走 SELECT）产出缺失清单：空库报全量 14 句（11 表+2 索引+版本种子），已初始化库报空；种子条件含"表不存在"（plan 应用后表即在，种子随后有效）。**验收**：`tests/dry_run.rs` 对本地 PG18 真跑——空库 dry-run 后 pg_tables 计数仍 0、版本表仍不存在（库未变），报告 14 行 `DRYRUN:` 前缀，把报告的语句 apply 即达目标态（11 表、版本 9）；部分初始化库只报缺口（10 表+2 索引+种子），补齐后再次巡检为空；3 测绿，dry_run.rs llvm-cov 行 99/99 100%；工作区 3045 测绿。
+- [x] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。
+  - 证据：`crates/db-postgres/src/upgrade.rs`（9aacde0）——`plan_schema_update`/`apply_schema_update` 沿 `sync_db/mysql_synchronise.cpp syncAllEntityTables` 语义：表不存在→整表 `CREATE TABLE IF NOT EXISTS`；表已在→对 `information_schema.columns` 差集逐列 `ALTER TABLE ... ADD COLUMN <type> NOT NULL DEFAULT <中性值>`，绝不删列改列，旧行全部保留。中性默认按列型给（Int/Uint→0、Float→0.0、String→''、Blob→''::BYTEA、Vector→ARRAY[]::REAL[]、Nested→'{"d":null}'::JSONB，与 json.rs 解码的未置位形状一致）。**验收**：`tests/upgrade.rs` 对本地 PG18 真跑——旧样本库（`tbl_Account` 仅 sm_name 一列、含一行 Unicode 旧档案）经 plan（3 句 ALTER）+apply 后：旧行读回 sm_name 原值、新列全为中性值（Int 0、Sequence 未置位、Vector 空），新定义整记录（Unicode/Uint/嵌套/Vector）往返精确相等，二次 plan 为空；表缺失时 plan 即整表 CREATE、apply 后 plan 亦空；无变化表 plan 为空。3 测绿，upgrade.rs llvm-cov 行 95/95 100%（crate 全文件行 1169/1169 100%）；工作区 3050 测绿。
 - [ ] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。
 - [ ] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。
 - [ ] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。
