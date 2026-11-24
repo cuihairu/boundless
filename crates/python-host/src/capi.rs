@@ -197,8 +197,15 @@ pub struct PyTypeSpec {
     pub slots: *mut PyTypeSlot,
 }
 
+/// `Py_tp_dealloc` (`typeslots.h`).
+pub const Py_tp_dealloc: c_int = 52;
 /// `Py_tp_getattro` (`typeslots.h`).
 pub const Py_tp_getattro: c_int = 58;
+/// `Py_tp_free` (`typeslots.h`).
+pub const Py_tp_free: c_int = 74;
+/// `Py_TPFLAGS_HAVE_GC` (`object.h`): the type's instances are collector
+/// tracked and their teardown must untrack before freeing.
+pub const Py_TPFLAGS_HAVE_GC: std::os::raw::c_ulong = 1 << 14;
 /// `Py_tp_setattro` (`typeslots.h`).
 pub const Py_tp_setattro: c_int = 69;
 /// `Py_tp_doc` (`typeslots.h`).
@@ -353,6 +360,7 @@ unsafe extern "C" {
     pub fn PyErr_Clear();
     pub fn PyErr_Occurred() -> *mut PyObject;
     pub fn PyErr_PrintEx(skip: c_int);
+    pub fn PyErr_Print();
     pub fn PyErr_Fetch(
         type_: *mut *mut PyObject,
         value: *mut *mut PyObject,
@@ -393,10 +401,14 @@ unsafe extern "C" {
     pub fn PyCapsule_IsValid(capsule: *mut PyObject, name: *const c_char) -> c_int;
     pub static mut PyExc_TypeError: *mut PyObject;
     pub static mut PyExc_IndexError: *mut PyObject;
+    pub static mut PyExc_ValueError: *mut PyObject;
     pub fn PyIndex_Check(obj: *mut PyObject) -> c_int;
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
+    pub fn PyType_GetFlags(type_: *mut PyTypeObject) -> std::os::raw::c_ulong;
+    pub fn PyType_GetSlot(type_: *mut PyTypeObject, slot: c_int) -> *mut std::os::raw::c_void;
+    pub fn PyObject_GC_UnTrack(obj: *mut PyObject);
     pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
     pub fn PyObject_GenericGetAttr(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericSetAttr(
@@ -406,6 +418,10 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyLong_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyLong_AsLong(obj: *mut PyObject) -> std::os::raw::c_long;
+    pub fn PyLong_FromLongLong(value: i64) -> *mut PyObject;
+    pub fn PyErr_Format(exception: *mut PyObject, format: *const c_char, ...) -> *mut PyObject;
+    pub fn PyTuple_Pack(count: PySsize, ...) -> *mut PyObject;
+    pub fn PyObject_CallObject(callable: *mut PyObject, args: *mut PyObject) -> *mut PyObject;
 }
 
 #[cfg(test)]

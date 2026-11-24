@@ -82,6 +82,8 @@ pub struct TypeSpec {
     sequence: Option<SequenceHandlers>,
     /// Extra bytes of instance body the allocated objects carry.
     instance_size: usize,
+    /// The instance teardown, or the interpreter's generic one when absent.
+    dealloc: Option<DeallocFunction>,
 }
 
 impl TypeSpec {
@@ -93,6 +95,7 @@ impl TypeSpec {
             methods: Vec::new(),
             sequence: None,
             instance_size: 0,
+            dealloc: None,
         }
     }
 
@@ -150,7 +153,20 @@ impl TypeSpec {
         self.instance_size = bytes;
         self
     }
+
+    /// Own the instance teardown: the handler releases the state block the
+    /// instance body points into, frees the allocation and drops the type's
+    /// own reference. Without it the interpreter's generic teardown runs,
+    /// which cannot reach native state.
+    #[must_use]
+    pub fn dealloc(mut self, handler: DeallocFunction) -> Self {
+        self.dealloc = Some(handler);
+        self
+    }
 }
+
+/// `tp_dealloc`: the instance teardown a type may own (`destructor`).
+pub type DeallocFunction = unsafe extern "C" fn(*mut capi::PyObject);
 
 /// One name's type object, the registry the static `s_type_` declarations
 /// stand in for: the name maps to the type object, and the type object maps
@@ -553,6 +569,12 @@ pub fn create_type(spec: &TypeSpec) -> Result<PyRef, BindError> {
                 pfunc: default_repr as *mut std::os::raw::c_void,
             },
             capi::PyTypeSlot {
+                slot: capi::Py_tp_dealloc,
+                pfunc: spec.dealloc.map_or(std::ptr::null_mut(), |handler| {
+                    handler as *mut std::os::raw::c_void
+                }),
+            },
+            capi::PyTypeSlot {
                 slot: capi::Py_sq_length,
                 pfunc: spec
                     .sequence
@@ -675,6 +697,37 @@ pub unsafe fn instantiate(type_object: &PyRef) -> Option<PyRef> {
     // type objects.
     let instance = unsafe { capi::PyType_GenericAlloc(type_object.as_ptr().cast(), 0) };
     PyRef::from_owned(instance)
+}
+
+/// The instance teardown every `dealloc` handler ends with: untrack the
+/// object when the type collects garbage, free through the type's own
+/// `tp_free`, and drop the type reference the allocation took. Freeing a
+/// tracked instance with the raw allocator leaves the collector's list
+/// pointing into released memory, and the next collection walks it.
+///
+/// # Safety
+///
+/// `object` must be an instance this module's `create_type` built, and the
+/// handler's own teardown of the state block must have run first.
+pub unsafe fn free_instance(object: *mut capi::PyObject) {
+    // SAFETY: the caller holds a live instance of this module's type.
+    let type_ = unsafe { capi::Py_TYPE(object) };
+    // SAFETY: the flags read is a C API call on the live type.
+    if unsafe { capi::PyType_GetFlags(type_) } & capi::Py_TPFLAGS_HAVE_GC != 0 {
+        // Untracking an untracked object is a no-op, so this stays correct
+        // for either allocator the type ended up with.
+        // SAFETY: the object is live and tracked.
+        unsafe { capi::PyObject_GC_UnTrack(object) };
+    }
+    // SAFETY: `tp_free` is the teardown paired with the allocation.
+    let free = unsafe { capi::PyType_GetSlot(type_, capi::Py_tp_free) };
+    // SAFETY: the slot holds the type's free function.
+    let free: unsafe extern "C" fn(*mut capi::PyObject) =
+        unsafe { std::mem::transmute::<*mut std::os::raw::c_void, _>(free) };
+    // SAFETY: the object is live and its state is already released.
+    unsafe { free(object) };
+    // SAFETY: the type reference `PyType_GenericAlloc` took.
+    unsafe { capi::dec_ref(type_.cast()) };
 }
 
 /// `Interpreter::fini`'s step for this module: release the registry's
