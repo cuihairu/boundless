@@ -1514,7 +1514,7 @@
 - [x] **BW-10-06-04 实现 navigateFollow**。**验收** 目标移动后跟随轨迹对照。→ df0f88d（navigateFollow 全在脚本脸=navigateStep 薄包装：目标四查（非 Entity/已销毁/异空间/ε=0.0004 几乎零限长）后偏移 totalYaw=目标 yaw+angle（sin 进 x、cos 进 z）再委托 navigateStep 透传拒绝与 id；本脸不查 real/载具；出界点层选择钉死：contains 层带 ±0.1、find_closest 距离含 y 钳制、d² 平手先遍历 wp0 胜（y 3.0 解析回 wp1、3.5 才 wp0）；3 测试两段跟随同 id 双 onMove，server-runtime 1139、workspace 4439/0、entity_navigate.rs 99.63%）
 - [x] **BW-10-06-05 实现 navigatePathPoints**。**验收** 成功路径与无路径错误对照。 → 045a5b0（findFullPath 脸:ghost 只警告不拒+穿越点保留终点追加+同 waypoint 起点进表+scratch 缓存+无路径 ValueError 逐字;99.67%）
 - [x] **BW-10-06-06 实现 getStopPoint**。**验收** 同一位置、方向和停止距离输入返回原版停止点。 → 54ec362（getNavigatePosition 带 flag 同体实现:远/近门户两臂+跨段回退 prevBackDist+ignore 首个/第二次近门户两报错+无门答原始 destination 不抬 y+hop 落边界穿越点非 entry label;99.47%）
-- [ ] **BW-10-06-07 实现 waySetPathLength**。**验收** 跨两个 waypoint set 的路径长度返回值与原版一致。
+- [x] **BW-10-06-07 实现 waySetPathLength**。**验收** 跨两个 waypoint set 的路径长度返回值与原版一致。 → 347d7bc（脚本脸 isRealToScript 一查:ghost 不抛答 0 带错误文本;系统面 getWaySetPathSize;跨两 set 答 2、同 set 不建 way-set path 答 0;夹具 girth 0.6 踩明;99.48%）
 - [ ] **BW-10-06-08 实现 moveToPoint**。**验收** 逐 tick 对照位置、终点容差和到达回调。
 - [ ] **BW-10-06-09 实现 moveToEntity**。**验收** 目标实体移动时，跟随结果和停止条件与原版一致。
 - [ ] **BW-10-06-10 实现 accelerateToPoint**。**验收** 逐 tick 比较速度、位置和到达结果。
