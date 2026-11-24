@@ -65,7 +65,9 @@
 //! - [`texture_converter`] — the texture → `.dds`/`.c.dds` converter
 //!   (`tools/asset_pipeline/converters/texture_converter/`);
 //! - [`texformat_converter`] — the `.texformat` normaliser
-//!   (`tools/asset_pipeline/converters/texformat_converter/`).
+//!   (`tools/asset_pipeline/converters/texformat_converter/`);
+//! - [`effect_converter`] — the `.fx` → `.fxo` converter behind the D3DX
+//!   compile seam (`tools/asset_pipeline/converters/effect_converter/`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -81,6 +83,7 @@ pub mod converter_info;
 pub mod converter_map;
 pub mod dependency;
 pub mod dependency_list;
+pub mod effect_converter;
 pub mod generic_conversion_rule;
 pub mod hash64;
 pub mod hierarchical_config;
