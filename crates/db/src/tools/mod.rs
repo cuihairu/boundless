@@ -8,4 +8,5 @@
 //! double records is the reviewable artifact the acceptance clauses ask for.
 
 pub mod dry_run;
+pub mod snapshot_helper;
 pub mod sync_db;
