@@ -42,6 +42,17 @@
 //! real face and drops it; the restore face (`Entity::startRealControllers`
 //! → `Controllers::startReals`) restarts with `isInitialStart` false,
 //! clamping a stale start to the current time.
+//!
+//! The attach/clear faces (`Entity.addController` / `Entity.cancel`)
+//! handle the exclusive families too (`controller.cpp:498`): a category
+//! mints an id above `EXCLUSIVE_CONTROLLER_ID_MASK` so it can never
+//! collide with the plain allocator, and a repeated registration of the
+//! same category deletes the incumbent before inserting — "repeated
+//! registration will not leave the old object behind". Entity extras
+//! (`entity_extra.hpp`) hang off the entity the same way: each type
+//! registers for a slot index (eeid), the slot is lazily constructed on
+//! touch and answered as-is while alive, and `clear` deletes it safe-when
+//! absent — every deletion lands in the destruction ledger the tests read.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -201,7 +212,8 @@ impl EntityScript {
 // ---------------------------------------------------------------------------
 
 /// `Controller`: what the controller is. BW-08-02-01 models the timer kind;
-/// the movement family is BW-08-02-03.
+/// the movement family is BW-08-02-03 (its concrete kinds hang off the
+/// exclusive variant here).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControllerKind {
     /// `TimerController`: `start_` is the absolute game tick of the next
@@ -211,6 +223,15 @@ pub enum ControllerKind {
         start: u32,
         /// The repeat interval in ticks; 0 for a single shot.
         interval: u32,
+    },
+    /// The exclusive-category families (movement, accelerate, navigation,
+    /// turn, face): `category` is the id `Controller::getExclusiveID`
+    /// minted for the type's category — always above the mask, so the
+    /// plain allocator can never hand out the same id. Their drive
+    /// mechanics are BW-08-02-03/04.
+    Exclusive {
+        /// The `getExclusiveID` id of the controller type's category.
+        category: ControllerId,
     },
 }
 
@@ -224,11 +245,13 @@ pub struct Controller {
 }
 
 impl Controller {
-    /// `Controller::exclusiveID()`: the base returns 0 (the plain
-    /// `nextControllerID` path); the movement family overrides this.
+    /// `Controller::exclusiveID()`: the base (timers) returns 0 — the
+    /// plain `nextControllerID` path; an exclusive-category controller
+    /// returns its category's id above the mask.
     pub fn exclusive_id(&self) -> ControllerId {
         match &self.kind {
             ControllerKind::Timer { .. } => 0,
+            ControllerKind::Exclusive { category } => *category,
         }
     }
 
@@ -256,6 +279,9 @@ pub struct Controllers {
     /// The `Could not find controller id = %d.` WARNINGs (only the
     /// warn-on-failure face counts).
     pub failed_dels: usize,
+    /// The successful `delController` calls — the exclusive replacement's
+    /// incumbent deletion is one of these.
+    pub dels: usize,
 }
 
 impl Controllers {
@@ -292,21 +318,31 @@ impl Controllers {
             self.over_expected_adds += 1;
         }
 
-        // The reference first consults pController->exclusiveID() and
-        // deletes the incumbent when it is nonzero; only the movement
-        // family claims exclusive ids (BW-08-02-03). Timers take the
-        // plain next id.
-        debug_assert_eq!(controller.exclusive_id(), 0);
-        let id = self.next_controller_id();
+        // The reference first consults pController->exclusiveID(): a
+        // nonzero id (the exclusive families above the mask) deletes the
+        // incumbent of that id first — "if another movement controller
+        // already exists, stop it now before adding the new one" — and
+        // inserts under that same id, so a repeated registration never
+        // leaves the old object behind. Timers take the plain next id.
+        let id = match controller.exclusive_id() {
+            0 => self.next_controller_id(),
+            exclusive => {
+                self.del_controller(exclusive, false);
+                exclusive
+            }
+        };
         self.container.insert(id, controller);
         id
     }
 
     /// `Controllers::delController`: whether the id was attached. A miss
-    /// with `warn_on_failure` counts the WARNING.
+    /// with `warn_on_failure` counts the WARNING; every hit counts a del.
     pub fn del_controller(&mut self, id: ControllerId, warn_on_failure: bool) -> bool {
         match self.container.remove(&id) {
-            Some(_) => true,
+            Some(_) => {
+                self.dels += 1;
+                true
+            }
             None => {
                 if warn_on_failure {
                     // WARNING "Could not find controller id = %d."
@@ -324,7 +360,11 @@ impl Controllers {
         let Some(controller) = self.container.get_mut(&id) else {
             return;
         };
-        let ControllerKind::Timer { start, interval } = controller.kind;
+        let ControllerKind::Timer { start, interval } = controller.kind else {
+            // Only timer controllers step their start on expiry; the
+            // exclusive families drive themselves (BW-08-02-03).
+            return;
+        };
         controller.kind = ControllerKind::Timer {
             start: start.wrapping_add(interval),
             interval,
@@ -615,7 +655,9 @@ impl CellApp {
                 debug_assert!(snapshot.destroyed);
                 debug_assert_eq!(snapshot.type_id, type_id);
                 drop(snapshot);
-                // `setToInitialState( id, this )`.
+                // `setToInitialState( id, this )`: the wholesale reset —
+                // a new Controllers object and every extra slot cleared
+                // (the old extras delete as the reset replaces them).
                 let mut reborn = Entity::new(id, true);
                 reborn.type_id = type_id;
                 *revived.borrow_mut() = reborn;
@@ -742,6 +784,15 @@ impl CellApp {
             },
             user_arg,
         };
+        self.attach_controller(entity, controller)
+    }
+
+    /// The generic `Entity.addController` attach face: the script factory
+    /// builds the controller, `Controllers::addController` attaches it —
+    /// an exclusive category replaces its incumbent — and
+    /// `startReal( true )` runs. `addTimer` is this face specialized to
+    /// timers; the movement factories are the exclusive callers.
+    pub fn attach_controller(&mut self, entity: u32, controller: Controller) -> ControllerId {
         let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
             return 0;
         };
@@ -771,7 +822,12 @@ impl CellApp {
             let Some(controller) = entity.controllers.container.get_mut(&id) else {
                 return;
             };
-            let ControllerKind::Timer { start, interval } = controller.kind;
+            let ControllerKind::Timer { start, interval } = controller.kind else {
+                // The exclusive families arm their own drive timer inside
+                // their startReal (BW-08-02-03); there is nothing on the
+                // time queue for them yet.
+                return;
+            };
             let start = if is_initial_start || start >= self.time {
                 start
             } else {
@@ -888,7 +944,121 @@ impl CellApp {
         for id in ids {
             self.cancel_controller(entity, id);
         }
-        entity_rc.borrow_mut().destroyed = true;
+        let mut borrowed = entity_rc.borrow_mut();
+        // Entity::destroy: "Get rid of any entity extras (for the first
+        // time)" — every live extra deletes and its slot clears.
+        // (~Entity deletes them a second time with a debug assert that
+        // none came back; one wipe is the observable face here.)
+        borrowed.extras = Vec::new();
+        borrowed.destroyed = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Section: entity extras (entity_extra.hpp, entity.cpp:7531)
+// ---------------------------------------------------------------------------
+
+/// One live `EntityExtra` instance (`entity_extra.hpp`): the base holds
+/// its entity backlink and the slot knows its own coordinates, so the
+/// deletion is recorded when the instance drops — the observable face of
+/// the reference's merciless `delete pExtra`.
+#[derive(Clone, Debug)]
+pub struct ExtraSlot {
+    /// The slot index this instance occupies (its eeid).
+    pub eeid: usize,
+    /// The entity id the instance is attached to (`entity_`).
+    pub entity: u32,
+    /// Which instance of this slot this is: every touch after a clear
+    /// constructs a new one, and a repeated registration leaves no old
+    /// object behind.
+    pub generation: u64,
+    /// The shared destruction ledger the Drop feeds
+    /// `(entity, eeid, generation)` into.
+    drops: Rc<RefCell<Vec<(u32, usize, u64)>>>,
+}
+
+impl Drop for ExtraSlot {
+    fn drop(&mut self) {
+        self.drops
+            .borrow_mut()
+            .push((self.entity, self.eeid, self.generation));
+    }
+}
+
+impl CellApp {
+    /// `Controller::getExclusiveID` (`controller.cpp:498`): the exclusive
+    /// category registry. A category new to the registry mints
+    /// `EXCLUSIVE_CONTROLLER_ID_MASK + size + 1` — always above the mask,
+    /// so `nextControllerID` (which stays masked) can never collide —
+    /// and a known category answers its existing id.
+    pub fn get_exclusive_id(&mut self, category: &'static str) -> ControllerId {
+        if let Some(id) = self.exclusive_ids.get(category) {
+            return *id;
+        }
+        let id = EXCLUSIVE_CONTROLLER_ID_MASK + self.exclusive_ids.len() as u16 + 1;
+        self.exclusive_ids.insert(category, id);
+        id
+    }
+
+    /// `Entity::registerEntityExtra` (`entity.cpp:7531`): register a type
+    /// of entity extra; the returned eeid is the slot index. The
+    /// reference demands every type be registered before the first
+    /// entity is created.
+    pub fn register_entity_extra(&mut self, name: &'static str) -> usize {
+        self.extra_types.push(name);
+        self.extra_types.len() - 1
+    }
+
+    /// `EntityExtra::Instance<Derived>::operator()` (`entity_extra.hpp`):
+    /// touch — lazily construct the instance in its slot. An instance
+    /// already there is answered as is, so repeated registration never
+    /// constructs a second object; a touched-back slot constructs a new
+    /// one with a fresh generation.
+    pub fn touch_extra(&mut self, entity: u32, eeid: usize) -> Option<u64> {
+        if eeid >= self.extra_types.len() {
+            return None; // the reference registers every type up front
+        }
+        let entity_rc = self.entity_population.get(&entity).cloned()?;
+        let mut borrowed = entity_rc.borrow_mut();
+        if borrowed.extras.len() <= eeid {
+            borrowed.extras.resize(eeid + 1, None);
+        }
+        if let Some(slot) = borrowed.extras[eeid].as_ref() {
+            return Some(slot.generation);
+        }
+        let generation = self.next_extra_generation;
+        self.next_extra_generation += 1;
+        borrowed.extras[eeid] = Some(ExtraSlot {
+            eeid,
+            entity,
+            generation,
+            drops: Rc::clone(&self.extra_drops),
+        });
+        Some(generation)
+    }
+
+    /// `EntityExtra::Instance<Derived>::exists`: a live instance — a slot
+    /// that was merely sized (or already cleared) is not one.
+    pub fn extra_exists(&self, entity: u32, eeid: usize) -> bool {
+        self.entity_population.get(&entity).is_some_and(|existing| {
+            existing
+                .borrow()
+                .extras
+                .get(eeid)
+                .is_some_and(|slot| slot.is_some())
+        })
+    }
+
+    /// `EntityExtra::Instance<Derived>::clear`: delete the instance and
+    /// clear the slot — safe when absent.
+    pub fn clear_extra(&mut self, entity: u32, eeid: usize) {
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return;
+        };
+        let mut borrowed = entity_rc.borrow_mut();
+        if eeid < borrowed.extras.len() {
+            borrowed.extras[eeid] = None; // the Drop records the deletion
+        }
     }
 }
 
@@ -1596,5 +1766,215 @@ mod tests {
         // The first leave does not flush; only the last one does.
         assert!(!buffer.leave_section());
         assert!(buffer.leave_section());
+    }
+
+    #[test]
+    fn exclusive_ids_allocate_above_the_mask() {
+        let mut app = app_with_type(vec![], &[]);
+        // `getExclusiveID`: a new category mints
+        // MASK + size + 1, above the exclusive mask.
+        assert_eq!(app.get_exclusive_id("Movement"), 0x7fff + 1);
+        assert_eq!(app.get_exclusive_id("Navigation"), 0x7fff + 2);
+        // A known category answers its existing id.
+        assert_eq!(app.get_exclusive_id("Movement"), 0x7fff + 1);
+    }
+
+    #[test]
+    fn re_registering_an_exclusive_controller_replaces_the_incumbent() {
+        let mut app = app_with_type(vec![], &[]);
+        app.entity_population
+            .insert(77, Rc::new(RefCell::new(Entity::new(77, true))));
+        let movement = app.get_exclusive_id("Movement");
+
+        let first = app.attach_controller(
+            77,
+            Controller {
+                kind: ControllerKind::Exclusive { category: movement },
+                user_arg: 1,
+            },
+        );
+        assert_eq!(first, movement);
+        let second = app.attach_controller(
+            77,
+            Controller {
+                kind: ControllerKind::Exclusive { category: movement },
+                user_arg: 2,
+            },
+        );
+        // The same category: the same id, one entry — the incumbent was
+        // deleted (silently, warnOnFailure false) before the insert.
+        assert_eq!(second, movement);
+        let entity = app.entity_population[&77].borrow();
+        assert_eq!(entity.controllers.container.len(), 1);
+        assert_eq!(entity.controllers.container[&movement].user_arg, 2);
+        assert_eq!(entity.controllers.dels, 1);
+        assert_eq!(entity.controllers.failed_dels, 0);
+        // The plain allocator never ran for the exclusive ids.
+        assert_eq!(entity.controllers.last_allocated_id, 0);
+    }
+
+    #[test]
+    fn attaching_an_exclusive_controller_starts_no_drive_timer() {
+        let mut app = app_with_type(vec![], &[]);
+        app.entity_population
+            .insert(77, Rc::new(RefCell::new(Entity::new(77, true))));
+        let movement = app.get_exclusive_id("Movement");
+        let id = app.attach_controller(
+            77,
+            Controller {
+                kind: ControllerKind::Exclusive { category: movement },
+                user_arg: 0,
+            },
+        );
+        // The exclusive families arm their own drive timer in BW-08-02-03;
+        // attaching one records the controller but nothing on the queue.
+        let entity = app.entity_population[&77].borrow();
+        assert!(!entity.controllers.handles.contains_key(&id));
+        drop(entity);
+        // The expiry bookkeeping is a timer face: it leaves an exclusive
+        // controller alone.
+        app.entity_population[&77]
+            .borrow_mut()
+            .controllers
+            .advance_timer_start(id);
+        app.advance_tick();
+        assert!(app.script_calls.is_empty());
+        // An unknown entity refuses the attach too.
+        assert_eq!(
+            app.attach_controller(
+                12345,
+                Controller {
+                    kind: ControllerKind::Timer {
+                        start: 1,
+                        interval: 0
+                    },
+                    user_arg: 0
+                }
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn re_touching_an_extra_keeps_the_same_instance() {
+        let mut app = app_with_type(vec![], &[]);
+        let eeid = app.register_entity_extra("PassengerExtra");
+        assert_eq!(eeid, 0);
+        app.entity_population
+            .insert(77, Rc::new(RefCell::new(Entity::new(77, true))));
+
+        // Nothing touched yet: no instance, though the entity is known.
+        assert!(!app.extra_exists(77, eeid));
+        // `operator()`: the first touch constructs; the second answers
+        // the same instance.
+        assert_eq!(app.touch_extra(77, eeid), Some(0));
+        assert_eq!(app.touch_extra(77, eeid), Some(0));
+        assert!(app.extra_exists(77, eeid));
+        assert!(app.extra_drops.borrow().is_empty());
+        // An eeid with no registered type has no slot to touch, nor
+        // does an unknown entity.
+        assert_eq!(app.touch_extra(77, 4), None);
+        assert_eq!(app.touch_extra(12345, eeid), None);
+        assert!(!app.extra_exists(12345, eeid));
+    }
+
+    #[test]
+    fn clearing_an_extra_deletes_the_old_object() {
+        let mut app = app_with_type(vec![], &[]);
+        let eeid = app.register_entity_extra("PassengerExtra");
+        app.entity_population
+            .insert(77, Rc::new(RefCell::new(Entity::new(77, true))));
+        assert_eq!(app.touch_extra(77, eeid), Some(0));
+
+        app.clear_extra(77, eeid);
+        // The deletion landed in the ledger.
+        assert_eq!(*app.extra_drops.borrow(), vec![(77, eeid, 0)]);
+        assert!(!app.extra_exists(77, eeid));
+        // Instance::clear is safe when absent: no second drop.
+        app.clear_extra(77, eeid);
+        assert_eq!(app.extra_drops.borrow().len(), 1);
+        // Clearing an eeid the entity has no slot for, or an unknown
+        // entity, is inert.
+        app.clear_extra(77, 4);
+        app.clear_extra(12345, eeid);
+        assert_eq!(app.extra_drops.borrow().len(), 1);
+        // A fresh touch constructs a NEW instance — the old object is
+        // not left behind.
+        assert_eq!(app.touch_extra(77, eeid), Some(1));
+        assert!(app.extra_exists(77, eeid));
+    }
+
+    #[test]
+    fn destroying_the_entity_clears_extras_and_controllers() {
+        let mut app = app_with_type(
+            vec![InitAction::AddTimer {
+                start: 0.1,
+                repeat: 0.0,
+                user_arg: 7,
+            }],
+            &[],
+        );
+        let eeid = app.register_entity_extra("PassengerExtra");
+        let mut spaces = spaces_with();
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+        assert_eq!(app.add_timer(77, 2.0, 0.0, 0), 2);
+        assert_eq!(app.touch_extra(77, eeid), Some(0));
+
+        app.destroy_entity(77);
+        let entity = app.entity_population[&77].borrow();
+        assert!(entity.destroyed);
+        assert!(entity.controllers.container.is_empty());
+        assert!(entity.extras.is_empty());
+        drop(entity);
+        // The extra's destruction was recorded exactly once.
+        assert_eq!(*app.extra_drops.borrow(), vec![(77, eeid, 0)]);
+        assert!(!app.extra_exists(77, eeid));
+    }
+
+    #[test]
+    fn reviving_the_entity_wipes_extras_and_controllers() {
+        let mut app = app_with_type(
+            vec![InitAction::AddTimer {
+                start: 0.1,
+                repeat: 0.0,
+                user_arg: 7,
+            }],
+            &[],
+        );
+        let eeid = app.register_entity_extra("PassengerExtra");
+        let mut spaces = spaces_with();
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+        assert_eq!(app.touch_extra(77, eeid), Some(0));
+
+        // The half-built face (`setDestroyed` only — initReal's failure
+        // path never reaches destroy()): the extras and controllers stay
+        // in the population (the reference's decRef drops only the local
+        // ref).
+        app.entity_population[&77].borrow_mut().destroyed = true;
+        assert!(app.extra_exists(77, eeid));
+        assert!(app.extra_drops.borrow().is_empty());
+
+        // The revival's `setToInitialState` wipes both: the old extra
+        // deletes, and the init runs on a fresh Controllers object.
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+        assert_eq!(*app.extra_drops.borrow(), vec![(77, eeid, 0)]);
+        assert!(!app.extra_exists(77, eeid));
+        let entity = app.entity_population[&77].borrow();
+        assert_eq!(
+            entity.controllers.container[&1].kind,
+            ControllerKind::Timer {
+                start: 1,
+                interval: 0
+            }
+        );
     }
 }

@@ -251,6 +251,9 @@ pub struct Entity {
     pub has_witness: bool,
     /// `pControllers_`: the entity's attached controllers.
     pub controllers: crate::cellapp_real_entity::Controllers,
+    /// `extras_`: the `EntityExtra` slot array, indexed by eeid. Empty
+    /// until an extra is touched or the slots are sized to the registry.
+    pub extras: Vec<Option<crate::cellapp_real_entity::ExtraSlot>>,
 }
 
 impl Entity {
@@ -270,6 +273,7 @@ impl Entity {
             base_addr: None,
             has_witness: false,
             controllers: crate::cellapp_real_entity::Controllers::default(),
+            extras: Vec::new(),
         }
     }
 }
@@ -1428,6 +1432,18 @@ pub struct CellApp {
     pub expected_max_controllers: usize,
     /// `CellAppConfig::absoluteMaxControllers` (50).
     pub absolute_max_controllers: usize,
+    /// `Controller::s_exclusiveIDs`: the exclusive categories seen so far
+    /// (`getExclusiveID`); their ids sit above the mask.
+    pub exclusive_ids: BTreeMap<&'static str, u16>,
+    /// `Entity::s_entityExtraInfo`: the entity-extra type registry; the
+    /// index a type registers at is its eeid.
+    pub extra_types: Vec<&'static str>,
+    /// The `EntityExtra` destruction ledger: `(entity, eeid, generation)`
+    /// per deleted instance — the observable face of the reference's
+    /// `delete pExtra`.
+    pub extra_drops: Rc<RefCell<Vec<(u32, usize, u64)>>>,
+    /// Which instance a slot's next touch constructs.
+    pub next_extra_generation: u64,
 }
 
 impl Default for CellApp {
@@ -1463,6 +1479,10 @@ impl Default for CellApp {
             id_pool: crate::entity_creator::IdPool::new(10, 30, 100, 130),
             expected_max_controllers: 25,
             absolute_max_controllers: 50,
+            exclusive_ids: BTreeMap::new(),
+            extra_types: Vec::new(),
+            extra_drops: Rc::new(RefCell::new(Vec::new())),
+            next_extra_generation: 0,
         }
     }
 }
