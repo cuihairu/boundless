@@ -10,6 +10,7 @@ members = [
     "crates/chunk",
     "crates/compiled-space",
     "crates/terrain",
+    "crates/physics",
     "crates/db",
     "crates/python-host",
     "crates/python-module",
