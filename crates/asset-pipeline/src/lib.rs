@@ -73,3 +73,4 @@ pub mod task_finder;
 pub mod task_processor;
 pub mod task_store;
 pub mod vertex_format;
+pub mod visual_processor;

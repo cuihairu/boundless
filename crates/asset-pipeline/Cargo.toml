@@ -8,5 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+foundation = { workspace = true }
 regex = { workspace = true }
 resources = { workspace = true }
