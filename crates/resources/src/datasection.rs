@@ -832,6 +832,31 @@ impl DataSection {
         }
     }
 
+    /// `DataSection::readBool` (`datasection.cpp:407-416`).
+    pub fn read_bool(&self, path: &str, default: bool) -> bool {
+        match self.open_section(path) {
+            Some(section) => section.as_bool(default),
+            None => default,
+        }
+    }
+
+    /// `DataSection::readInt` (`datasection.cpp:430-439`).
+    pub fn read_int(&self, path: &str, default: i32) -> i32 {
+        match self.open_section(path) {
+            Some(section) => section.as_int(default),
+            None => default,
+        }
+    }
+
+    /// `DataSection::readFloat` (`datasection.cpp`): the float twin of
+    /// [`DataSection::read_int`].
+    pub fn read_float(&self, path: &str, default: f32) -> f32 {
+        match self.open_section(path) {
+            Some(section) => section.as_float(default),
+            None => default,
+        }
+    }
+
     /// The `makeNewSection = true` half of [`DataSection::open_section`]:
     /// missing intermediate and leaf tags are appended (`newSection`).
     fn open_or_make(&mut self, path: &str) -> Option<&mut DataSection> {
@@ -870,6 +895,40 @@ impl DataSection {
         match self.open_or_make(path) {
             Some(section) => {
                 section.set_string(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeBool` (`datasection.cpp:788-797`).
+    pub fn write_bool(&mut self, path: &str, value: bool) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_bool(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeInt` (`datasection.cpp:809-818`).
+    pub fn write_int(&mut self, path: &str, value: i32) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_int(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `DataSection::writeFloat` (`datasection.cpp`): the float twin of
+    /// [`DataSection::write_int`].
+    pub fn write_float(&mut self, path: &str, value: f32) -> bool {
+        match self.open_or_make(path) {
+            Some(section) => {
+                section.set_float(value);
                 true
             }
             None => false,

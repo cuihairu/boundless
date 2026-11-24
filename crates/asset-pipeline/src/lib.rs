@@ -56,7 +56,16 @@
 //! - [`hierarchical_config_converter`] — the rule-tree baker
 //!   (`tools/asset_pipeline/converters/hierarchical_config_converter/`);
 //! - [`bsp_converter`] — the BSP collision-tree upgrader and its discovery
-//!   rule (`tools/asset_pipeline/converters/bsp_converter/`).
+//!   rule (`tools/asset_pipeline/converters/bsp_converter/`);
+//! - [`texture_detail_level`] — the per-texture conversion settings and the
+//!   D3DFMT name table (`lib/moo/texture_detail_level*`,
+//!   `format_name_map.cpp`);
+//! - [`convert_texture_tool`] — the texture pixel-work seam and its
+//!   device-free TGA→DDS face (`lib/moo/convert_texture_tool.*`);
+//! - [`texture_converter`] — the texture → `.dds`/`.c.dds` converter
+//!   (`tools/asset_pipeline/converters/texture_converter/`);
+//! - [`texformat_converter`] — the `.texformat` normaliser
+//!   (`tools/asset_pipeline/converters/texformat_converter/`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -66,6 +75,7 @@ pub mod compiler;
 pub mod content_addressable_cache;
 pub mod conversion_rule;
 pub mod conversion_task;
+pub mod convert_texture_tool;
 pub mod converter;
 pub mod converter_info;
 pub mod converter_map;
@@ -83,5 +93,8 @@ pub mod space_converter;
 pub mod task_finder;
 pub mod task_processor;
 pub mod task_store;
+pub mod texformat_converter;
+pub mod texture_converter;
+pub mod texture_detail_level;
 pub mod vertex_format;
 pub mod visual_processor;
