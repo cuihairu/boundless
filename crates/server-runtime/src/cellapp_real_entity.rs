@@ -185,6 +185,28 @@ pub enum InitAction {
     },
 }
 
+/// What a scripted callback body does when invoked — the port's fixture
+/// for method bodies other than `__init__` (whose fixture is
+/// [`InitAction`]). The NavigateStepController drive loop depends on the
+/// script's `onMove` re-entering the navigation API, so the fixture has
+/// to be able to say that.
+#[derive(Clone, Copy, Debug)]
+pub enum MethodAction {
+    /// `self.navigateStep(destination, velocity, maxMoveDistance, ...)` —
+    /// the re-navigation that chains the walk across waypoints.
+    NavigateStep {
+        /// The point the script asks to navigate toward.
+        destination: [f32; 3],
+        /// Metres per second.
+        velocity: f32,
+        /// The per-call movement cap.
+        max_move_distance: f32,
+    },
+    /// `self.cancel("Movement")` — the script cancels the movement
+    /// category, taking the running controller down.
+    CancelMovement,
+}
+
 /// An entity type's script fixture: the methods it defines and what its
 /// `__init__` does. The reference reads both off the generated Python type.
 #[derive(Clone, Debug, Default)]
@@ -193,6 +215,8 @@ pub struct EntityScript {
     pub methods: BTreeSet<&'static str>,
     /// What the scripted `__init__` runs, in order.
     pub init_actions: Vec<InitAction>,
+    /// What the scripted callback bodies run, by method name.
+    pub method_actions: BTreeMap<&'static str, Vec<MethodAction>>,
 }
 
 impl EntityScript {
@@ -203,6 +227,19 @@ impl EntityScript {
         Self {
             methods,
             init_actions,
+            method_actions: BTreeMap::new(),
+        }
+    }
+
+    /// A script with the given methods and callback bodies.
+    pub fn with_methods(
+        methods: BTreeSet<&'static str>,
+        method_actions: BTreeMap<&'static str, Vec<MethodAction>>,
+    ) -> Self {
+        Self {
+            methods,
+            init_actions: Vec::new(),
+            method_actions,
         }
     }
 }
@@ -227,8 +264,12 @@ pub enum AccelerationFacing {
 /// BW-08-02-03 adds the four movement-family kinds
 /// (`move_controller.cpp` / `turn_controller.cpp` /
 /// `base_acceleration_controller.cpp` /
-/// `accelerate_to_point_controller.cpp`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// `accelerate_to_point_controller.cpp`); BW-08-02-04 adds the
+/// navigation pair (`move_controller.cpp`'s `NavigateStepController` and
+/// `navigation_controller.cpp`'s `NavigationController`). Not `Copy`:
+/// the full-path navigation controller carries a waypoint path and the
+/// resolved destination navloc, exactly like the reference's heap state.
+#[derive(Clone, Debug, PartialEq)]
 pub enum ControllerKind {
     /// `TimerController`: `start_` is the absolute game tick of the next
     /// expiry, `interval_` the repeat in ticks (0 = single shot).
@@ -305,6 +346,50 @@ pub enum ControllerKind {
         /// `stopAtDestination_`.
         stop_at_destination: bool,
     },
+    /// `NavigateStepController` (`move_controller.cpp:286`): the
+    /// navigateStep walk — a `MoveController` toward `destination_`
+    /// driven by a per-update tick budget, re-aimed by the script's
+    /// `onMove`. The third `MoveController` parameter is the reference
+    /// constructor's hardcoded `moveVertically = false`.
+    NavigateStep {
+        /// `destination_`; the invalid sentinel is `(FLT_MAX)×3`.
+        destination: [f32; 3],
+        /// `metresPerTick_` (velocity / updateHertz).
+        metres_per_tick: f32,
+        /// `faceMovement_`.
+        face_movement: bool,
+        /// `moveVertically_`, always false from the script factory.
+        move_vertically: bool,
+    },
+    /// `NavigationController` (`navigation_controller.cpp`): the full
+    /// `Entity.navigate` walk along a resolved waypoint path. The runtime
+    /// state (`nextPosition_`, `path_`, `currentNode_`, `pDstLoc_`) is
+    /// the controller's own; only `closeEnough_` is neither streamed nor
+    /// re-derived (the read face reconstructs the constructor default).
+    Navigation {
+        /// `destination_`, adjusted by `startReal`'s `dstLoc.clip()`.
+        destination: [f32; 3],
+        /// `metresPerTick_`.
+        metres_per_tick: f32,
+        /// `faceMovement_`.
+        face_movement: bool,
+        /// `maxDistance_` (the -1 → maxAoIRadius substitution already
+        /// applied at construction).
+        max_distance: f32,
+        /// `girth_`.
+        girth: f32,
+        /// `closeEnough_`.
+        close_enough: f32,
+        /// `nextPosition_`.
+        next_position: [f32; 3],
+        /// `path_`: the traversal-distributor waypoints.
+        path: Vec<[f32; 3]>,
+        /// `currentNode_`: the index of the *next* path entry.
+        current_node: usize,
+        /// `pDstLoc_`: the destination navloc, `None` when the reference's
+        /// resolution failed (`valid()` false).
+        dst_loc: Option<crate::cellapp_navigate::NavLoc>,
+    },
 }
 
 /// The category string every movement-family controller registers under
@@ -377,16 +462,68 @@ impl ControllerKind {
         }
     }
 
+    /// A `NavigateStepController` construction
+    /// (`MoveController(velocity, faceMovement, false)`).
+    pub fn navigate_step(
+        destination: [f32; 3],
+        velocity: f32,
+        face_movement: bool,
+        hertz: u32,
+    ) -> Self {
+        Self::NavigateStep {
+            destination,
+            metres_per_tick: velocity / hertz as f32,
+            face_movement,
+            move_vertically: false,
+        }
+    }
+
+    /// A `NavigationController` construction: `metresPerTick_` is
+    /// velocity / updateHertz and the `-1` `maxDistance` becomes
+    /// `maxAoIRadius` here (the ctor's `isEqual(maxDistance_, -1.f)`
+    /// substitution).
+    #[allow(clippy::too_many_arguments)]
+    pub fn navigation(
+        destination: [f32; 3],
+        velocity: f32,
+        face_movement: bool,
+        max_distance: f32,
+        girth: f32,
+        close_enough: f32,
+        hertz: u32,
+        max_aoi_radius: f32,
+    ) -> Self {
+        let max_distance = if max_distance == -1.0 {
+            max_aoi_radius
+        } else {
+            max_distance
+        };
+        Self::Navigation {
+            destination,
+            metres_per_tick: velocity / hertz as f32,
+            face_movement,
+            max_distance,
+            girth,
+            close_enough,
+            next_position: [0.0; 3],
+            path: Vec::new(),
+            current_node: 0,
+            dst_loc: None,
+        }
+    }
+
     /// The controller type's exclusive category
     /// (`IMPLEMENT_EXCLUSIVE_CONTROLLER_TYPE`'s argument): timers have
     /// none; a pre-resolved `Exclusive` carries only its id; the movement
-    /// families all register as `"Movement"`.
+    /// families — navigation included — all register as `"Movement"`.
     pub fn exclusive_category(&self) -> Option<&'static str> {
         match self {
             ControllerKind::MoveToPoint { .. }
             | ControllerKind::MoveToEntity { .. }
             | ControllerKind::YawRotator { .. }
-            | ControllerKind::AccelerateToPoint { .. } => Some(MOVEMENT_CATEGORY),
+            | ControllerKind::AccelerateToPoint { .. }
+            | ControllerKind::NavigateStep { .. }
+            | ControllerKind::Navigation { .. } => Some(MOVEMENT_CATEGORY),
             _ => None,
         }
     }
@@ -723,8 +860,9 @@ impl CellApp {
         true
     }
 
-    /// The call actually happening: record it, and for `__init__` run the
-    /// script fixture's actions — the script body.
+    /// The call actually happening: record it, and run the script
+    /// fixture's actions — `__init__`'s body, then the invoked method's
+    /// body.
     fn run_callback(
         &mut self,
         entity: u32,
@@ -736,24 +874,58 @@ impl CellApp {
             name,
             timer,
         });
-        if name != "__init__" {
-            return;
-        }
-        let actions = self.init_actions_of(entity);
-        for action in actions {
-            match action {
-                InitAction::Callback(callback_name) => {
-                    self.entity_callback(entity, callback_name, true, None);
-                }
-                InitAction::AddTimer {
-                    start,
-                    repeat,
-                    user_arg,
-                } => {
-                    self.add_timer(entity, start, repeat, user_arg);
+        if name == "__init__" {
+            let actions = self.init_actions_of(entity);
+            for action in actions {
+                match action {
+                    InitAction::Callback(callback_name) => {
+                        self.entity_callback(entity, callback_name, true, None);
+                    }
+                    InitAction::AddTimer {
+                        start,
+                        repeat,
+                        user_arg,
+                    } => {
+                        self.add_timer(entity, start, repeat, user_arg);
+                    }
                 }
             }
         }
+        let actions = self.method_actions_of(entity, name);
+        for action in actions {
+            match action {
+                MethodAction::NavigateStep {
+                    destination,
+                    velocity,
+                    max_move_distance,
+                } => {
+                    self.navigate_step(
+                        entity,
+                        destination,
+                        velocity,
+                        max_move_distance,
+                        -1.0,
+                        true,
+                        0.5,
+                        0,
+                    );
+                }
+                MethodAction::CancelMovement => {
+                    let movement = self.get_exclusive_id(MOVEMENT_CATEGORY);
+                    self.cancel_controller(entity, movement);
+                }
+            }
+        }
+    }
+
+    /// The callback body of `entity`'s scripted `name` method.
+    fn method_actions_of(&self, entity: u32, name: &'static str) -> Vec<MethodAction> {
+        self.entity_population
+            .get(&entity)
+            .and_then(|e| self.entity_scripts.get(&e.borrow().type_id))
+            .and_then(|script| script.method_actions.get(name))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The `__init__` actions of `entity`'s type.
@@ -777,6 +949,35 @@ impl CellApp {
         spaces: &mut BTreeMap<SpaceId, Space>,
         space_id: SpaceId,
         stream: &[u8],
+    ) -> CreateRealOutcome {
+        self.build_real_entity(spaces, space_id, stream, false)
+    }
+
+    /// The onload/offload reply face (`Entity::initReal` with
+    /// `isRestore`, entity.cpp:1486): the same creation stream the
+    /// `create` face reads, followed by the offloaded controller block
+    /// — `readRealDataFromStreamForOnloadInternal`'s
+    /// `readRealControllersFromStream` + the `startRealControllers` that
+    /// follows "now that pReal_ has been set" — with `callScriptInit`
+    /// answering `onRestore` instead of `__init__`.
+    pub fn restore_real_entity(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        space_id: SpaceId,
+        stream: &[u8],
+    ) -> CreateRealOutcome {
+        self.build_real_entity(spaces, space_id, stream, true)
+    }
+
+    /// `build_real_entity`: the shared `initReal` body; the `is_restore`
+    /// flag swaps the init callback for `onRestore` and replays the
+    /// trailing controller block.
+    fn build_real_entity(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        space_id: SpaceId,
+        stream: &[u8],
+        is_restore: bool,
     ) -> CreateRealOutcome {
         if stream.len() < CREATE_HEAD_LEN {
             return CreateRealOutcome::BadStream;
@@ -818,10 +1019,13 @@ impl CellApp {
                 drop(snapshot);
                 // `setToInitialState( id, this )`: the wholesale reset —
                 // a new Controllers object and every extra slot cleared
-                // (the old extras delete as the reset replaces them).
+                // (the old extras delete as the reset replaces them), so
+                // the app-level navigate state dies with them.
                 let mut reborn = Entity::new(id, true);
                 reborn.type_id = type_id;
                 *revived.borrow_mut() = reborn;
+                self.navigate_step_controllers.remove(&id);
+                self.navigators.remove(&id);
                 revived
             }
             None => {
@@ -897,18 +1101,36 @@ impl CellApp {
         // Anything other than 'W'/'-' is the ERROR "Illegal Witness
         // indicator"; the build carries on without a witness either way.
 
-        // `callScriptInit( isRestore=false )` inside high-priority
-        // buffering ("we do not yet want to replay any queued callback").
+        if is_restore {
+            // The offload tail the creation head precedes: the
+            // controller block, read back without starting anything —
+            // `startRealControllers` waits until the entity is real.
+            let controllers = stream.get(offset + 1..).unwrap_or(&[]);
+            self.read_real_controllers_from_stream(id, controllers);
+        }
+
+        // `callScriptInit( isRestore )` inside high-priority buffering
+        // ("we do not yet want to replay any queued callback"): `__init__`
+        // on the create face, `onRestore` on the restore face.
         self.callback_buffer.enable_high_priority();
-        self.entity_callback(id, "__init__", true, None);
+        let init_name = if is_restore { "onRestore" } else { "__init__" };
+        self.entity_callback(id, init_name, true, None);
         self.callback_buffer.disable_high_priority();
 
         // `Cell::addRealEntity( shouldSendNow=false )`: the currentCell
         // send waits so it rides the same bundle as the backup.
         self.current_cell_sends.push((id, space_id));
 
+        if is_restore {
+            // `if (isRestore) this->startRealControllers()` — the
+            // restored controllers arm their drives against the entity
+            // that just became real.
+            start_real_controllers(self, &entity_rc);
+        }
+
         // The caller's `Entity::callbacksPermitted( true )`: the last
-        // section closes and the buffered calls run — `__init__` first.
+        // section closes and the buffered calls run — `__init__` (or
+        // `onRestore`) first.
         self.callbacks_permitted(true);
 
         CreateRealOutcome::Created(id)
@@ -1003,7 +1225,7 @@ impl CellApp {
             .controllers
             .container
             .get(&id)
-            .map(|c| c.kind);
+            .map(|c| c.kind.clone());
         let Some(kind) = kind else {
             return;
         };
@@ -1012,6 +1234,27 @@ impl CellApp {
                 self.start_timer_controller(entity_rc, id, is_initial_start)
             }
             ControllerKind::Exclusive { .. } => {}
+            ControllerKind::NavigateStep { .. } => {
+                self.start_navigate_step_controller(entity_rc, id, kind)
+            }
+            ControllerKind::Navigation {
+                close_enough,
+                destination,
+                metres_per_tick,
+                face_movement,
+                max_distance,
+                girth,
+                ..
+            } => self.start_full_navigation_controller(
+                entity_rc,
+                id,
+                close_enough,
+                destination,
+                metres_per_tick,
+                face_movement,
+                max_distance,
+                girth,
+            ),
             _ => self.start_movement_controller(entity_rc, id, kind),
         }
     }
@@ -1086,6 +1329,9 @@ impl CellApp {
         // The updatable half of `stopReal`: a movement controller leaves
         // the per-tick registry with its container entry.
         self.deregister_updatable(entity, id);
+        // NavigateStepController::stopReal: deregister the entity's
+        // navigate-step pointer when it names this controller.
+        crate::cellapp_navigate::deregister_navigate_step(self, entity, id);
         // TimerController::stopReal( true ): cancelling fires the queue's
         // release, whose on_release records a Release event the next tick
         // drains (the controller is already gone by then, exactly like the
@@ -1162,9 +1408,14 @@ impl CellApp {
         // Entity::destroy: "Get rid of any entity extras (for the first
         // time)" — every live extra deletes and its slot clears.
         // (~Entity deletes them a second time with a debug assert that
-        // none came back; one wipe is the observable face here.)
+        // none came back; one wipe is the observable face here.) The
+        // EntityNavigate extra dies with the entity, so its nav system
+        // and the navigate-step pointer go too.
         borrowed.extras = Vec::new();
         borrowed.destroyed = true;
+        drop(borrowed);
+        self.navigate_step_controllers.remove(&entity);
+        self.navigators.remove(&entity);
     }
 }
 

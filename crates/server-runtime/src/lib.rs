@@ -10,6 +10,7 @@ pub mod baseappmgr;
 pub mod billing;
 pub mod cell_data;
 pub mod cellapp_movement;
+pub mod cellapp_navigate;
 pub mod cellapp_real_entity;
 pub mod cellapp_space;
 pub mod cellappmgr;

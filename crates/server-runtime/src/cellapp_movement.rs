@@ -206,7 +206,11 @@ impl CellApp {
 
     /// `CellApp::registerForUpdate` (`server_app.cpp`): the controller
     /// joins the per-tick pass at the end of the registry.
-    fn register_updatable(&mut self, entity: u32, id: crate::cellapp_real_entity::ControllerId) {
+    pub(crate) fn register_updatable(
+        &mut self,
+        entity: u32,
+        id: crate::cellapp_real_entity::ControllerId,
+    ) {
         self.updatable_controllers.push(Some((entity, id)));
     }
 
@@ -331,7 +335,7 @@ impl CellApp {
     /// budget (the navigation families spend it across waypoints,
     /// BW-08-02-04; these families pass none).
     #[allow(clippy::too_many_arguments)]
-    fn move_towards(
+    pub(crate) fn move_towards(
         &mut self,
         entity_rc: &Rc<RefCell<Entity>>,
         metres_per_tick: f32,
@@ -690,7 +694,7 @@ impl CellApp {
             .controllers
             .container
             .get(&id)
-            .map(|controller| controller.kind);
+            .map(|controller| controller.kind.clone());
         let Some(kind) = kind else {
             return;
         };
@@ -750,6 +754,22 @@ impl CellApp {
                 if self.accelerate_move(&entity_rc, a, ms, f, stop, destination) {
                     self.finish_movement_callback(&entity_rc, entity, id, "onMove");
                 }
+            }
+            ControllerKind::NavigateStep {
+                metres_per_tick,
+                face_movement,
+                move_vertically,
+                ..
+            } => self.update_navigate_step(
+                &entity_rc,
+                entity,
+                id,
+                metres_per_tick,
+                face_movement,
+                move_vertically,
+            ),
+            ControllerKind::Navigation { .. } => {
+                self.update_navigation_controller(&entity_rc, entity, id)
             }
             // Only the timer drives and the exclusive placeholders reach
             // the registry dispatch without a movement family behind

@@ -1481,6 +1481,22 @@ pub struct CellApp {
     /// `CellAppConfig::navigationMaxSlopeGradient`
     /// (`tan(deg2rad(navigationMaxSlope))`, 45° default → 1.0).
     pub navigation_max_slope_gradient: f32,
+    /// `CellAppConfig::maxAoIRadius` (`DEFAULT_AOI_RADIUS`, 500) — the
+    /// `-1` max-search-distance substitution the navigation script
+    /// factories make.
+    pub max_aoi_radius: f32,
+    /// `EntityNavigate::pNavigateStepController_`, by entity: the
+    /// navigate-step controller currently registered on the extra.
+    pub navigate_step_controllers: BTreeMap<u32, crate::cellapp_real_entity::ControllerId>,
+    /// `NavmeshEntityNavigationSystem`'s query stack, by entity (`Entity`
+    /// owns its `EntityNavigate` extra, which owns the system). An
+    /// absent entry is the reference's `!pChunkSpace()` face: navigation
+    /// queries are unsupported there.
+    pub navigators: BTreeMap<u32, crate::cellapp_navigate::NavigatorHandle>,
+    /// The navigation-family WARNINGs: the unsupported-space `startReal`
+    /// refusal, the `closeEnough` ctor complaint and the
+    /// NavigateStepController 100-loop bail.
+    pub navigation_warnings: Vec<(u32, String)>,
 }
 
 impl Default for CellApp {
@@ -1527,6 +1543,10 @@ impl Default for CellApp {
             should_navigation_drop_position: false,
             navigation_max_climb: 0.65,
             navigation_max_slope_gradient: 1.0,
+            max_aoi_radius: 500.0,
+            navigate_step_controllers: BTreeMap::new(),
+            navigators: BTreeMap::new(),
+            navigation_warnings: Vec::new(),
         }
     }
 }
