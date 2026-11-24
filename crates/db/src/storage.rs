@@ -68,6 +68,20 @@ pub trait EntityStorage {
         values: &[PropertyValue],
         put_explicit_id: bool,
     ) -> Result<DatabaseId, DbError>;
+
+    /// `IDatabase::delEntity` (`idatabase.hpp`): remove the row for
+    /// `key`. Both reference backends delete by id and report a missing
+    /// row as failure (`xml_database.cpp:811-816` `deleteEntity` returns
+    /// false, `del_entity_task.cpp` `deleteWithID` → `setFailure`), so a
+    /// missing row — including a repeated delete — is
+    /// [`DbError::NotFound`], and a successful delete leaves nothing to
+    /// query.
+    ///
+    /// The name-resolution leg (`key.db_id == 0` resolves via the
+    /// identifier property) joins BW-09-01-04; the logon-record,
+    /// auto-load and active-set cleanups are the online-state face
+    /// (BW-09-01-05).
+    fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError>;
 }
 
 /// The DBApp load: fetch the record for `key`, or [`DbError::NotFound`]
@@ -135,6 +149,16 @@ impl MemoryInner {
         self.entities.insert(*key, record);
         Ok(key.db_id)
     }
+
+    /// The `delEntity` leg (`xml_database.cpp:824-854`): find the row,
+    /// and only an existing row deletes — a missing row is the
+    /// reference's `isOK=false`.
+    fn del(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.entities
+            .remove(key)
+            .map(|_| ())
+            .ok_or(DbError::NotFound)
+    }
 }
 
 /// An in-memory database. Cloning it yields another handle to the same
@@ -195,6 +219,10 @@ impl EntityStorage for MemoryStorage {
     ) -> Result<DatabaseId, DbError> {
         self.inner.borrow_mut().put(key, values, put_explicit_id)
     }
+
+    fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.inner.borrow_mut().del(key)
+    }
 }
 
 /// A connection to a [`MemoryStorage`]: the read/write face a caller
@@ -217,6 +245,10 @@ impl EntityStorage for MemoryConnection {
         put_explicit_id: bool,
     ) -> Result<DatabaseId, DbError> {
         self.inner.borrow_mut().put(key, values, put_explicit_id)
+    }
+
+    fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        self.inner.borrow_mut().del(key)
     }
 }
 
@@ -458,6 +490,88 @@ mod tests {
                 .expect("row exists")
                 .values,
             vec![PropertyValue::Int(3)]
+        );
+    }
+
+    #[test]
+    fn a_deleted_row_stops_matching_and_a_repeat_delete_matches_that() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 1001,
+        };
+
+        store.del_entity(&key).expect("first delete succeeds");
+        // The query after the delete matches: the row is gone.
+        assert_eq!(store.get_entity(&key).expect("read"), None);
+        assert_eq!(store.len(), 0);
+        let err = load_entity(&store, &key).expect_err("load after delete");
+        assert_eq!(err, DbError::NotFound);
+
+        // And a repeated delete matches the reference's isOK=false.
+        let err = store.del_entity(&key).expect_err("repeat delete");
+        assert_eq!(err, DbError::NotFound);
+    }
+
+    #[test]
+    fn a_delete_through_one_connection_is_visible_from_the_others() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+        let mut deleter = store.connection();
+        let reader = store.connection();
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 1001,
+        };
+
+        deleter.del_entity(&key).expect("delete through connection");
+        assert_eq!(reader.get_entity(&key).expect("read"), None);
+        assert_eq!(store.get_entity(&key).expect("read"), None);
+    }
+
+    #[test]
+    fn a_delete_only_takes_its_own_row() {
+        let mut store = MemoryStorage::new();
+        store.insert(record(1001));
+        let mut other = record(1002);
+        other.type_id = 4;
+        store.insert(other.clone());
+
+        // A type mismatch is a different entity: not deleted.
+        let err = store
+            .del_entity(&EntityKey {
+                type_id: 4,
+                db_id: 1001,
+            })
+            .expect_err("type-scoped delete misses");
+        assert_eq!(err, DbError::NotFound);
+        assert_eq!(
+            store
+                .get_entity(&EntityKey {
+                    type_id: 3,
+                    db_id: 1001,
+                })
+                .expect("read")
+                .expect("row still there"),
+            record(1001)
+        );
+
+        store
+            .del_entity(&EntityKey {
+                type_id: 4,
+                db_id: 1002,
+            })
+            .expect("delete the type-4 row");
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store
+                .get_entity(&EntityKey {
+                    type_id: 4,
+                    db_id: 1002
+                })
+                .expect("read"),
+            None
         );
     }
 
