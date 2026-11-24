@@ -17,6 +17,7 @@
 pub mod account;
 pub mod auto_load;
 pub mod billing;
+pub mod billing_creator;
 pub mod buffered;
 pub mod charset;
 pub mod consolidate;
@@ -43,6 +44,10 @@ pub use auto_load::{
 pub use billing::{
     AccountLookup, BillingConfig, GetEntityKeyOutcome, SetEntityKeyOutcome, XmlBillingSystem,
     XmlLogOnEntry, XmlLogOnEntryWrite, XmlLogOnMapping,
+};
+pub use billing_creator::{
+    ACCOUNT_TYPE_NAME, CreatedBillingSystem, CreationFailure, CustomBillingSystem,
+    DEFAULT_BILLING_TYPE, RegisteredCreator,
 };
 pub use buffered::{Admission, BufferedEntityTasks, EntityTask};
 pub use charset::{
