@@ -72,7 +72,10 @@
 //!   PyScript seam (`tools/assetprocessor/`);
 //! - [`offline_processor`] — the offline tool's command surface, cluster
 //!   sharding, chunk gathering, `.cdata` invalidation and its two
-//!   commands (`tools/offline_processor/`, `lib/chunk/chunk_processor_manager.cpp`).
+//!   commands (`tools/offline_processor/`, `lib/chunk/chunk_processor_manager.cpp`);
+//! - [`res_packer`] — the release packer: the packer registry and its six
+//!   packers, the `PackedSection::convert` face and both command-line
+//!   modes (`tools/res_packer/`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -99,6 +102,7 @@ pub mod offline_processor;
 pub mod plugin_loader;
 pub mod primitive_file_structs;
 pub mod primitive_processor;
+pub mod res_packer;
 pub mod space_converter;
 pub mod task_finder;
 pub mod task_processor;
