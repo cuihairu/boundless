@@ -65,3 +65,61 @@
 - 集成测试 `streaming_scan_loads_the_grid_nearest_first` 钉死 (0,0) 相机、半径 200 的候选序（含越界单元格剔除与二次扫描幂等）；`streaming_bind_sequence_connects_neighbours` 钉死绑定序列 `[00000000o,00000001o,00010000o,00010001o]`、双向连接（left/front/back 对移）、exter extern 保持未绑定、`centre=transform∘lcentre` 与重入幂等；`inside_chunk_binds_to_a_bound_outside_chunk` 钉死室内块外部 portal 绑定到已绑定室外块、未装载邻居保持未绑定、未装载/缺失块拒绝绑定；`space_map_accessors_track_created_chunks` 覆盖 `find_chunk_by_grid`/`add_chunk`/`chunk_mut`/`chunks`/缺失文件与未装载拒绝。
 - lib 单测补 `bind_back` 双 portal 只移首个、混合 joint 保留 extern 未绑定、`MAX_WORTHY_CHUNKS` 截断（>50 格扫描）。
 - 覆盖率（llvm-cov 0.9.1，`cargo llvm-cov -p chunk --summary-only`）: `space.rs` 行 97.85%、全 crate 行 98.62%（≥98% 纪律通过；剩余未覆盖行为控制流闭括号记录条目）。
+
+## BW-10-01-04 派生痕迹（卸载 Chunk 及场景对象）
+
+- **验收**: 查询结果和资源释放符合基线（todo.md 行 1462）。
+- `Chunk::removable`（`chunk.rs`，`removable_` 默认 true，`chunk.cpp:190`）：
+  上闸/锁定块对卸载趟拒绝（`chunk_manager.cpp:2241`）；`Chunk::new` 默认置 true。
+- `ChunkSpace::unbind`（`chunk.cpp:1292-1458` `Chunk::unbind(bool cut)`）：
+  逐 joint 边界的 **bound** portal 活下标遍历（摘除后同下标继续，幸存 portal 才前移）：
+  ① 室内块 heaven → 自解绑；② 其余非 chunk 目标（室外 heaven/earth/extern/invasive）
+  一律 `!p.hasChunk()` continue **保持绑定**——室外块 heaven 在 unbind 后仍 bound
+  是基线怪癖，测试钉死；③ chunk 连接：cut 时目标重写（`!isOutside && pChunk->isOutside`
+  → INVASIVE 壳提示，否则 NULL/Nothing），`unbindPortal` 摘除，再递归
+  `pOnlineChunk->unbind(this, cut)`，且 **室外块切室内邻居时强制 cut=true**；
+  终置 `is_bound=false`。缺失块返 false。
+- `unbind_portal`（`chunk_boundary.cpp:185-191`）：摘除的 portal **压到 unbound 列表尾部**
+  ——位置即后续 bind 的首配位，lib 单测钉死 `[extern, …]` 尾插序。
+- `unbind_back`（`chunk.cpp:2083-2136` `Chunk::unbind(Chunk*, bool)`）：反向链只找
+  joints 边界里**首个**指向 requester 的 bound portal；cut 时目标重写同上 + **internal 特例**
+  ——`if (pit->internal)` 整条边界**逐出 joints**（`joints_.erase(bit)`）而 portal
+  原地保持 bound（边界成孤儿但列表不动），lib 单测钉死两腿分岔；
+  找不到/缺 owner 静默（参照为 ERROR——port 经公共面链接恒对称，同 01-03 bind_back 缺 owner 先例，登记）。
+- `unload_chunk`（`chunk.cpp:914-984` `Chunk::unload`）：**先查 bound**（照旧拒绝，
+  参照 ERROR→端口返 false）、`!loaded` 静默无操作；释放=清 items/`bounds_`/`joints_`，
+  **boundaries_ 不清**（块仍被空间任命，重载经 `form_boundaries` 重形边界）；
+  `loaded_=false`。绑定中卸载与未装载卸载两拒绝腿集成测试钉死。
+- `unload_farthest`（`chunk_manager.cpp:2236-2366` scan() 的卸载切片）：
+  相机**格角** `(gridToPoint(cameraGridX), 0, gridToPoint(cameraGridY))`（非相机点）；
+  每趟至多 `MAX_UNLOAD_CHUNKS=1`（非编辑器档，`chunk_manager.cpp:92-95`）；
+  候选门序：bound+removable → 原点平面距离² `≤ minUnloadPath²` 跳过（滞回）→
+  室内块被**已装载**覆盖室外块罩住则跳过（`outsideChunkIdentifier(pos)` checkBounds=true 腿）→
+  `AABB::intersects(cameraGridPos, CAMERA_NEARBY_WIRED_BIAS=20)`（`boundbox.ipp:313-317`
+  逐轴 `v ≥ min−bias && v < max+bias` 半开）跳过；中选者 `unbind(false)+unload`，
+  **块留在 map**（仍由 chunk space 任命）。室内壳被未装载覆盖块罩住时不拦——独立单测钉死。
+  - **登记分歧**: ① 参考 load 与 unload 同在 `scan()` 一趟，port 保持 01-03 的同步双面
+  （`scan` 管装载候选、`unload_farthest` 管卸载候选），测试分别驱动；
+  ② 参考 `ChunkMap` 迭代桶内逆序，port 钉 BTreeMap 标识序（同 01-03 tie-break 类）；
+  ③ 重叠壳在装检查（`ChunkOverlappers`，BW-10-02 场景适配面）trivially 通过；
+  ④ 参照 `Chunk::unbind` 找不到反向 portal 走 ERROR，port 静默（见上）。
+  ⑤ 强制 cut 递归腿（室外→室内 `(true, Some(false)) => true`）在当前公共面不可达
+  （室外块边界永不指向室内块——invasive 解析归 BW-10-02），space.rs 该行未覆盖，
+  余 644/647=99.54%。
+- 集成测试 `unloading_farthest_releases_chunks_and_a_reload_rebinds`：
+  四绑定块 + 相机 (50,0,50)/滞回 50 → 首趟卸 `00000001o`（资源清空、boundaries 六条
+  与 heaven 绑定保留、留 map、`find_chunk_by_grid` 仍命中）、邻居 `00000000o` b5/
+  `00010001o` b0 双向退回 unbound 且目标原样；次趟卸 `00010000o`；滞回放宽 200 后空趟；
+  重载+重绑恢复双向连接、对象集回归、`bind_order` 追加至 5。
+  `unbind_cut_marks_inside_shells_invasive_and_flattens_outside_links`：室内块 cut=true
+  → +x 出口 INVASIVE、heaven 退绑、earth 保持；室外块 cut=true → 两侧 chunk portal
+  扁平化 Nothing（heaven/earth 保持 bound）、未绑定 portal 不改写、邻居仍 bound。
+- lib 单测：`unbind_portal` 尾插序、`unbind_back` internal/normal/invasive 三腿 +
+  静默无操作、滞回/偏置/覆盖/可移除/单趟上限、`intersects_with_bias` 半开边界、
+  未覆盖室内壳随趟卸载。
+- 覆盖率（llvm-cov 0.9.1，`cargo clean -p chunk` 后逐行 max 合并）: `space.rs`
+  644/647=99.54%、`chunk.rs` 237/240=98.75%、`boundary.rs` 454/456=99.56%、
+  `identifier.rs` 100%、`mapping.rs` 118/119=99.16%——≥98% 纪律全过。
+  `cargo test -p chunk` 29 lib + 11 集成全绿；`cargo test --workspace`
+  **4729 passed / 0 failed（exit 0）**；fmt 包级 `--check` 0 漂移；clippy
+  `-p chunk --lib --tests` 0 chunk 侧告警。
