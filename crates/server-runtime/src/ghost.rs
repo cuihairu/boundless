@@ -1608,6 +1608,204 @@ pub fn forward_message_to_real(
     })
 }
 
+/// The `onloadTeleportedEntity` message (`real_entity.cpp:1315-1325` +
+/// `writeRealDataToStream`): the nearby entity's id, the create-ghost
+/// body for the destination's copy, and the offload body for the onload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TeleportedEntityPayload {
+    /// `bundle << nearbyMBRef.id` — who we teleport near to.
+    pub nearby_id: EntityId,
+    /// `writeGhostDataToStream` — the destination's copy starts from
+    /// this. It carries the SOURCE's space id; the destination replaces
+    /// it with its own before dispatching the create.
+    pub create: GhostCreatePayload,
+    /// `writeRealDataToStream` — the offload body (`teleportFailure` is
+    /// always false from the sender).
+    pub onload: OnloadPayload,
+}
+
+/// What `CellApp::onloadTeleportedEntity` produced when the nearby
+/// entity exists here.
+pub struct TeleportLoadOutcome {
+    /// The create dispatched for the destination's copy — carrying THIS
+    /// space's id (the destination's overwrite).
+    pub create: GhostCreatePayload,
+    /// The onload result: the real and its haunt pass.
+    pub onload: OnloadOutcome,
+    /// The nearby entity the script asked to teleport near
+    /// (`onTeleportSuccess`'s argument).
+    pub nearby_id: EntityId,
+}
+
+/// The bounce back to the originator when the nearby entity does not
+/// exist here: the offload body returns with `teleportFailure` set
+/// (`cellapp.cpp:2186-2203`) — nothing was dispatched.
+pub struct TeleportFailureBounce {
+    /// The teleported entity.
+    pub entity_id: EntityId,
+    /// The offload body, sent back on the originator's channel.
+    pub onload: OnloadPayload,
+}
+
+/// The two ways `CellApp::onloadTeleportedEntity` can go.
+pub enum TeleportLoad {
+    /// Nearby existed: the ghost was created with our space id and the
+    /// onload turned it into the real.
+    Loaded(TeleportLoadOutcome),
+    /// Nearby missing: the offload body bounces back with
+    /// `teleportFailure` true; the originator runs its failure path.
+    FailedNearbyMissing(TeleportFailureBounce),
+}
+
+/// The cross-space teleport send face (`RealEntity::teleport`,
+/// `real_entity.cpp:1186-1345`): every existing ghost is deleted first —
+/// they are recreated on the destination, and a teleport failure must
+/// not leave stale copies — `onLeavingCell` fires, the destination is
+/// haunted anew, and the `onloadTeleportedEntity` message carries the
+/// ghost data plus the offload body (`offloadEntity( isTeleport )`, the
+/// 05-02 face). The view's snapshot is the teleport target already
+/// (`localPosition_ = position`, `real_entity.cpp:1279`). Returns the
+/// message payload, the ghost record the source keeps, and the
+/// addresses the delGhosts went to.
+#[allow(clippy::too_many_arguments)]
+pub fn teleport_entity_to_space(
+    real: &mut RealEntity,
+    view: &GhostedEntityView,
+    controllers: &mut Controllers,
+    callbacks: &mut EntityCallbackBuffer,
+    own_addr: Addr,
+    space_id: SpaceId,
+    destination: Addr,
+    nearby_id: EntityId,
+    time: u32,
+    channels: &mut BTreeMap<Addr, GhostChannel>,
+) -> (TeleportedEntityPayload, GhostRecord, Vec<Addr>) {
+    // Delete all ghosts first (`real_entity.cpp:1288-1300`).
+    let mut del_addrs = Vec::new();
+    for haunt in real.haunts.drain(..) {
+        if let Some(channel) = channels.get_mut(&haunt.addr) {
+            channel
+                .out
+                .push(GhostMessage::DelGhost { entity_id: real.id });
+        }
+        del_addrs.push(haunt.addr);
+    }
+
+    // `onLeavingCell`, before the message is built
+    // (`real_entity.cpp:1307`).
+    callbacks.callback(real.id, "onLeavingCell", false);
+
+    // Re-add haunt for the destination (`real_entity.cpp:1316`).
+    real.haunts = vec![Haunt {
+        addr: destination,
+        creation_time: time,
+    }];
+
+    let create = GhostCreatePayload {
+        space_id,
+        entity_id: view.entity_id,
+        entity_type_id: view.entity_type_id,
+        num_times_real_offloaded: view.num_times_real_offloaded,
+        position: view.position,
+        is_on_ground: view.is_on_ground,
+        last_event_number: view.last_event_number,
+        volatile: view.volatile,
+        real_addr: own_addr,
+        base_addr: view.base_addr,
+        direction: view.direction,
+        property_event_stamps: view.property_event_stamps.clone(),
+        ghost_properties: view.ghost_properties.clone(),
+        ghost_controllers: view.ghost_controllers.clone(),
+        periods_without_witness: view.periods_without_witness,
+        aoi_update_scheme_id: view.aoi_update_scheme_id,
+    };
+
+    // `offloadEntity( isTeleport: true )` — the offload body's haunt
+    // list is just the re-added destination plus ourselves.
+    let (onload, record) = convert_real_to_ghost(
+        real,
+        view,
+        controllers,
+        callbacks,
+        destination,
+        own_addr,
+        space_id,
+        true,
+        time,
+        channels,
+    );
+
+    (
+        TeleportedEntityPayload {
+            nearby_id,
+            create,
+            onload,
+        },
+        record,
+        del_addrs,
+    )
+}
+
+impl GhostHost {
+    /// `CellApp::onloadTeleportedEntity` (`cellapp.cpp:2108-2196`): the
+    /// create dispatches with THIS space's id (the destination's
+    /// overwrite of the streamed one), a same-app teleport destroys the
+    /// local copy first, and the onload turns the fresh ghost into the
+    /// real. `nearby_exists` is the caller's `findEntity(nearbyID)`: a
+    /// miss discards the stream and bounces the offload body back with
+    /// `teleportFailure` true.
+    #[allow(clippy::too_many_arguments)]
+    pub fn receive_onload_teleported_entity(
+        &mut self,
+        src: Addr,
+        nearby_exists: bool,
+        payload: TeleportedEntityPayload,
+        entity_controllers: &mut Controllers,
+        callbacks: &mut EntityCallbackBuffer,
+        local_space_id: SpaceId,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        own_addr: Addr,
+        time: u32,
+    ) -> TeleportLoad {
+        if !nearby_exists {
+            return TeleportLoad::FailedNearbyMissing(TeleportFailureBounce {
+                entity_id: payload.onload.entity_id,
+                onload: payload.onload,
+            });
+        }
+
+        let mut create = payload.create;
+        create.space_id = local_space_id;
+
+        // Same-app teleport: the local copy goes before the fresh
+        // create, which would otherwise be buffered
+        // (`cellapp.cpp:2145-2153`).
+        if src == own_addr && self.ghosts.contains_key(&create.entity_id) {
+            self.receive_del_ghost(create.entity_id, time);
+        }
+
+        let _ = self.receive_create_ghost(src, create.clone(), time);
+
+        let onload = self
+            .receive_onload(
+                payload.onload,
+                entity_controllers,
+                callbacks,
+                local_space_id,
+                None,
+                channels,
+                own_addr,
+                time,
+            )
+            .expect("create ghost dispatched above");
+        TeleportLoad::Loaded(TeleportLoadOutcome {
+            create,
+            onload,
+            nearby_id: payload.nearby_id,
+        })
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Section: the entity view
 // -----------------------------------------------------------------------------
@@ -3547,6 +3745,228 @@ mod tests {
         assert_eq!(forwarders.forwarded(), [(9, (7, 7), b"done".to_vec())]);
         assert_eq!(forwarders.forward_reply(9, b"dup".to_vec()), None);
         assert_eq!(forwarders.forwarded().len(), 1);
+    }
+
+    // -- BW-08-05-05: the cross-space teleport ---------------------------
+
+    /// A host that accepts the full view payload (2 ghost properties, 2
+    /// event stamps).
+    fn loadable_host() -> GhostHost {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 2,
+                num_event_stamped_properties: 2,
+            },
+        );
+        host
+    }
+
+    #[test]
+    fn a_cross_space_teleport_matches_the_visible_sets() {
+        // Old space 7: the real on A with haunts on B and C.
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, mut view) = ghosted_real(10, 140.0);
+        real.haunts = vec![
+            Haunt {
+                addr: APP_B,
+                creation_time: 100,
+            },
+            Haunt {
+                addr: APP_C,
+                creation_time: 150,
+            },
+        ];
+        // The teleport target: B's half, new space 9 (`localPosition_ =
+        // position` before the bodies stream).
+        view.position = Vector3::new(140.0, 0.0, 50.0);
+        let mut controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+
+        // The script teleports to B's space, near entity 11.
+        let (payload, record, del_addrs) = teleport_entity_to_space(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_A,
+            7,
+            APP_B,
+            11,
+            300,
+            &mut channels,
+        );
+
+        // Old space cleared: delGhost went to every haunt.
+        assert_eq!(del_addrs, vec![APP_B, APP_C]);
+        assert_eq!(
+            channels[&APP_B].out[0],
+            GhostMessage::DelGhost { entity_id: 10 }
+        );
+        assert_eq!(
+            channels[&APP_C].out[0],
+            GhostMessage::DelGhost { entity_id: 10 }
+        );
+        // The create carries the SOURCE's space id; the onload body's
+        // haunt list is the re-added destination plus ourselves.
+        assert_eq!(payload.create.space_id, 7);
+        assert_eq!(payload.create.position, Vector3::new(140.0, 0.0, 50.0));
+        assert_eq!(payload.nearby_id, 11);
+        assert!(payload.onload.is_teleport);
+        assert_eq!(payload.onload.haunt_addrs, vec![APP_B, APP_A]);
+        // onLeavingCell fired on the way out.
+        assert_eq!(
+            callbacks.executed(),
+            [BufferedScriptCallback {
+                entity_id: 10,
+                method: "onLeavingCell".to_string(),
+            }]
+        );
+
+        // The source keeps the ghost pointing at the migration target.
+        let mut host_a = GhostHost::default();
+        host_a.ghosts.insert(10, record);
+        assert_eq!(host_a.ghosts[&10].real_addr, APP_B);
+
+        // Destination B: the ghost dispatches with the NEW space id and
+        // the onload loads it into the one real.
+        let mut host_b = loadable_host();
+        let mut entity_controllers = Controllers::new();
+        let mut dest_callbacks = EntityCallbackBuffer::new();
+        let outcome = match host_b.receive_onload_teleported_entity(
+            APP_A,
+            true,
+            payload,
+            &mut entity_controllers,
+            &mut dest_callbacks,
+            9,
+            &mut channels,
+            APP_B,
+            300,
+        ) {
+            TeleportLoad::Loaded(outcome) => outcome,
+            TeleportLoad::FailedNearbyMissing(_) => {
+                panic!("nearby entity 11 exists")
+            }
+        };
+        assert_eq!(outcome.create.space_id, 9);
+        assert!(host_b.ghosts.is_empty());
+        assert!(outcome.onload.are_we_haunted);
+        assert_eq!(outcome.onload.real.id, 10);
+        assert_eq!(outcome.nearby_id, 11);
+
+        // The haunt pass ran as a teleport: the source's offload ghost
+        // is deleted — the old space keeps nothing of this entity.
+        assert_eq!(
+            channels[&APP_A].out,
+            vec![GhostMessage::DelGhost { entity_id: 10 }]
+        );
+        assert!(host_a.receive_del_ghost(10, 300));
+        assert!(host_a.ghosts.is_empty());
+
+        // New space visible set: the real at B, no ghosts anywhere —
+        // new-space ghosts come from B's own maintainer next check.
+        assert_eq!(outcome.onload.real.id, 10);
+        assert!(host_a.ghosts.is_empty() && host_b.ghosts.is_empty());
+    }
+
+    #[test]
+    fn a_teleport_without_the_nearby_entity_bounces_back() {
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+        let mut controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+
+        let (payload, _record, _dels) = teleport_entity_to_space(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_A,
+            7,
+            APP_B,
+            11,
+            300,
+            &mut channels,
+        );
+        let sent_before = channels[&APP_B].out.len();
+
+        // Entity 11 does not live on B: nothing dispatches, the offload
+        // body bounces with the failure flag.
+        let mut host_b = loadable_host();
+        let bounce = match host_b.receive_onload_teleported_entity(
+            APP_A,
+            false,
+            payload,
+            &mut Controllers::new(),
+            &mut EntityCallbackBuffer::new(),
+            9,
+            &mut channels,
+            APP_B,
+            300,
+        ) {
+            TeleportLoad::FailedNearbyMissing(bounce) => bounce,
+            TeleportLoad::Loaded(_) => panic!("nearby entity 11 is missing"),
+        };
+        assert_eq!(bounce.entity_id, 10);
+        assert_eq!(bounce.onload.entity_id, 10);
+        assert!(host_b.ghosts.is_empty());
+        // Nothing new went out for the failed load.
+        assert_eq!(channels[&APP_B].out.len(), sent_before);
+    }
+
+    #[test]
+    fn a_same_app_teleport_replaces_the_local_copy() {
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        let mut controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+
+        let (payload, _record, _dels) = teleport_entity_to_space(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            7,
+            APP_B,
+            11,
+            300,
+            &mut channels,
+        );
+
+        // A stale ghost of this entity is already on B (a previous
+        // life). Without the pre-destroy the fresh create would be
+        // buffered and the onload would find nothing.
+        let mut host_b = loadable_host();
+        assert_eq!(
+            host_b.receive_create_ghost(APP_A, payload.create.clone(), 200),
+            GhostCreateOutcome::Created
+        );
+
+        let outcome = match host_b.receive_onload_teleported_entity(
+            APP_B,
+            true,
+            payload,
+            &mut Controllers::new(),
+            &mut EntityCallbackBuffer::new(),
+            7,
+            &mut channels,
+            APP_B,
+            300,
+        ) {
+            TeleportLoad::Loaded(outcome) => outcome,
+            TeleportLoad::FailedNearbyMissing(_) => {
+                panic!("nearby entity 11 exists")
+            }
+        };
+        assert_eq!(outcome.onload.real.id, 10);
+        assert!(host_b.ghosts.is_empty());
     }
 
     #[test]
