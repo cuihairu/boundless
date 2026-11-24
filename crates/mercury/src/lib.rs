@@ -40,6 +40,7 @@ pub mod poller;
 
 pub mod rate_limit_config;
 pub mod rate_limit_message_filter;
+pub mod rate_limiter;
 pub mod reply_order;
 pub mod request;
 pub mod request_manager;
