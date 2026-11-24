@@ -23,6 +23,9 @@ pub mod dispatcher;
 pub mod entity_creator;
 pub mod entity_destroy;
 pub mod entity_dispatch;
+pub mod ghost;
+pub mod ghost_routing;
+pub mod ghost_snapshot;
 pub mod global_bases;
 pub mod headless_client;
 pub mod log_on_records;
@@ -41,6 +44,8 @@ pub mod pending_logins;
 pub mod proxy_client;
 pub mod proxy_logoff;
 pub mod real_entity;
+
+pub mod range_list;
 pub mod relogon;
 pub mod reviver;
 pub mod script_timers;
@@ -65,6 +70,8 @@ pub mod timekeeper;
 pub mod topology;
 
 pub mod timer_controller;
+
+pub mod witness;
 // The time queue is cstdmf and lives in foundation; re-exported under the
 // historical `timers` name so `crate::timers::…` paths keep working.
 pub use foundation::time_queue as timers;
