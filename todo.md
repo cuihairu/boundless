@@ -1956,8 +1956,11 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 
 输出机器可读结果，按场景汇总登录成功率、在线数、延迟分位数、tick 超时、带宽及资源使用。短场景进 PR smoke，容量和长稳场景进入定时或手动任务，结合测得的基线设阈值。
 
-- [ ] **BW-17-03-01 输出机器可读场景结果**。**验收** 版本、拓扑和种子可追溯。
-  - 卡点（无实测结果）：需先由 BW-17-01 bot 跑出场景结果再汇总；版本/拓扑/种子可追溯属报告层，无运行数据则无结果可输出。
+- [x] **BW-17-03-01 输出机器可读场景结果**。**验收** 版本、拓扑和种子可追溯。（bedaf5b）
+  - 模型落点：`crates/load/src/report.rs`（bedaf5b）——`ScenarioReport{scenario,generator,topology,seed,values}` + `ReportValue{Int,Float,Str,List}` 树：信封三要素——`generator="load <CARGO_PKG_VERSION>"`（哪个生成器构建产出）、`topology`（跑的对端，交付面="offline"，字段即证）、`seed`（场景 fixed_seed）；结果载荷 `Vec<ReportEntry>` 逐键记录（洪峰 per_second/refused 等账本值）。序列化 `to_json` 手写确定性 writer（workspace 无 JSON 依赖）：字段序固定、f32/f64 取 Rust 最短可逆形、非有限浮点→`null`（JSON 无 NaN）、串转义含 `\u00xx` 控制符、同 seed 两跑字节全等可 diff；`REPORT_SCHEMA=1` 标签供旧报告可解析；`write_json` 落盘逐字节回读。docs 面：`docs/operations/load-testing.md` 报告契约段（版本/拓扑/种子三行）实装并刷新「今日可跑」+ 陈旧告警（"no bot runtime code anywhere" 已不实——crates/load 载 bot 运行时面，仅缺 apps/bots 独立进程）。
+  - 验收（版本、拓扑和种子可追溯）：`a_sample_scenario_run_produces_a_traceable_report`（真实洪峰跑批→报告全文逐字节 golden、`"seed": 161803`/`"topology": "offline"`/`"generator": "load <ver>"` 三标量可 grep）→ `the_report_is_deterministic_across_runs`（同 seed 两跑全等）→ `strings_escape_the_json_specials`（quote/backslash/nl/cr/tab/\u0007）→ `floats_render_shortest_and_non_finite_becomes_null`（2.5/1.0/NaN/−∞）→ `lists_and_empty_payloads_render_compactly`（空表/混型表/values 空对象）→ `write_json_round_trips_through_a_file`。
+  - 测试与覆盖：`cargo test -p load` 110 过 0 挂（新增 6）；`cargo test --workspace` 3105 过 0 挂；clippy 0 错；rustfmt 过；llvm-cov report.rs 零缺行=100%。
+  - 卡点解除注：原卡点「需先由 BW-17-01 bot 跑出场景结果」随 BW-17-01（2ee059a..fb53f28）与 02-03/04/05（c71d7b2/9e03e4c/7ce12df）交付失效——账本即确定性实测结果，报告信封包裹之。
 - [ ] **BW-17-03-02 聚合登录成功率及在线数**。**验收** 用已知输入核对统计。
   - 卡点（无实测结果）：成功率/在线数需实测登录数据核对（同 03-01 卡点）。
 - [ ] **BW-17-03-03 聚合延迟分位数与超时**。**验收** 固定样本验证 p95/p99。
