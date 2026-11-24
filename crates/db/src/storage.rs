@@ -140,7 +140,7 @@ pub fn load_entity(storage: &impl EntityStorage, key: &EntityKey) -> Result<Enti
 }
 
 /// The shared rows and checkouts of an in-memory database.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct MemoryInner {
     entities: HashMap<EntityKey, EntityRecord>,
     logons: HashMap<EntityKey, BaseMailbox>,
@@ -839,5 +839,38 @@ mod tests {
             db_id: PENDING_DATABASE_ID,
         });
         assert_eq!(found.expect("pending id is a valid map key"), Some(rec));
+    }
+}
+
+/// A point-in-time image of an in-memory database's rows and checkouts, used
+/// to roll a transaction back when there is no server to send `ROLLBACK` to.
+#[derive(Clone, Debug)]
+pub struct StorageImage(MemoryInner);
+
+/// Storage that can be rolled back to an [`StorageImage`].
+pub trait EntityStorageImage: EntityStorage {
+    /// The database as it stands.
+    fn image(&self) -> StorageImage;
+    /// Put the database back the way it stood in `image`.
+    fn restore_image(&mut self, image: &StorageImage);
+}
+
+impl EntityStorageImage for MemoryStorage {
+    fn image(&self) -> StorageImage {
+        StorageImage(self.inner.borrow().clone())
+    }
+
+    fn restore_image(&mut self, image: &StorageImage) {
+        *self.inner.borrow_mut() = image.0.clone();
+    }
+}
+
+impl EntityStorageImage for MemoryConnection {
+    fn image(&self) -> StorageImage {
+        StorageImage(self.inner.borrow().clone())
+    }
+
+    fn restore_image(&mut self, image: &StorageImage) {
+        *self.inner.borrow_mut() = image.0.clone();
     }
 }

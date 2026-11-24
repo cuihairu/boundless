@@ -22,6 +22,7 @@ pub mod namer;
 pub mod record;
 pub mod retry;
 pub mod storage;
+pub mod transaction;
 
 pub use account::{
     AccountLogOn, AccountRow, BIGWORLD_ID_COLUMN, ENTITY_ID_COLUMN, ENTITY_TYPE_COLUMN,
@@ -49,5 +50,7 @@ pub use retry::{
     run_with_retry,
 };
 pub use storage::{
-    BaseMailbox, CheckOut, EntityKey, EntityStorage, MemoryConnection, MemoryStorage, load_entity,
+    BaseMailbox, CheckOut, EntityKey, EntityStorage, EntityStorageImage, MemoryConnection,
+    MemoryStorage, StorageImage, load_entity,
 };
+pub use transaction::{EntityTransaction, StagedWrite};
