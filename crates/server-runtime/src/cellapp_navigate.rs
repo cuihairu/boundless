@@ -2667,7 +2667,7 @@ mod tests {
         app.navigate_step(77, [1.0, 0.0, 0.0], 10.0, 100.0, -1.0, true, 0.5, 0);
         assert!(app.navigate_step_controllers.contains_key(&77));
 
-        app.destroy_entity(77);
+        app.destroy_entity(&mut spaces, 77);
         assert!(!app.navigate_step_controllers.contains_key(&77));
         assert!(!app.navigators.contains_key(&77));
     }

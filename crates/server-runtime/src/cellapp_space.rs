@@ -194,6 +194,11 @@ pub struct CellInfo {
 pub struct CellInfoNode(usize);
 
 impl CellInfoNode {
+    /// The first tree identity (`pCellInfoTree_`'s root).
+    pub fn first() -> Self {
+        CellInfoNode(0)
+    }
+
     /// The next tree identity.
     pub fn next(value: CellInfoNode) -> Self {
         CellInfoNode(value.0 + 1)
@@ -231,6 +236,10 @@ pub struct Entity {
     /// `removalHandle_`: the index this entity sits at in its space's
     /// entity list, or [`NO_SPACE_REMOVAL_HANDLE`] when none holds it.
     pub removal_handle: usize,
+    /// The id of the space holding this entity (`pCell_->space().id()` on
+    /// the reference). Written by [`Space::add_entity`]; only read while
+    /// the removal handle says a space holds it.
+    pub space_id: SpaceId,
     /// `isReal()`.
     pub is_real: bool,
     /// `isDestroyed()`.
@@ -290,6 +299,10 @@ pub struct Entity {
     pub accel_sample_time: u32,
     /// `BaseAccelerationController::currVelocity_` (local space).
     pub accel_velocity: [f32; 3],
+    /// `inDestroy_` (`entity.cpp:2898`): the destroy latch — reentrant
+    /// and repeat destroys are inert until `setToInitialState` (the
+    /// revive) clears it.
+    pub in_destroy: bool,
 }
 
 impl Entity {
@@ -299,8 +312,10 @@ impl Entity {
         Self {
             id,
             removal_handle: NO_SPACE_REMOVAL_HANDLE,
+            space_id: 0,
             is_real,
             destroyed: false,
+            in_destroy: false,
             type_id: 0,
             position: [0.0; 3],
             direction: [0.0; 3],
@@ -1147,7 +1162,10 @@ impl Space {
             "addEntity on an entity a space still holds"
         );
         let handle = self.entities.len();
-        entity.borrow_mut().removal_handle = handle;
+        let mut borrowed = entity.borrow_mut();
+        borrowed.removal_handle = handle;
+        borrowed.space_id = self.id;
+        drop(borrowed);
         self.entities.push(entity);
     }
 
@@ -1549,6 +1567,14 @@ pub struct CellApp {
     /// `RealEntity::sendPhysicsCorrection`: the entity ids a correction
     /// went out for (board/alight on a client-controlled entity).
     pub physics_corrections: Vec<u32>,
+    /// `BaseAppIntInterface::cellEntityLost` sends recorded by destroy
+    /// (`sendCellEntityLostToBase`): the base entities told that their
+    /// cell half is gone.
+    pub cell_entity_lost_sends: Vec<u32>,
+    /// `idClient().putUsedID` calls recorded by destroy
+    /// (`~Entity`'s `shouldReturnID_` face): the cell-only entity ids
+    /// handed back — a recorded no-op while `MF_ID_RECYCLING` is off.
+    pub returned_entity_ids: Vec<u32>,
 }
 
 impl Default for CellApp {
@@ -1592,6 +1618,8 @@ impl Default for CellApp {
             in_movement_update: false,
             movement_rng: 0x9E37_79B9_7F4A_7C15,
             script_errors: Vec::new(),
+            cell_entity_lost_sends: Vec::new(),
+            returned_entity_ids: Vec::new(),
             should_navigation_drop_position: false,
             navigation_max_climb: 0.65,
             navigation_max_slope_gradient: 1.0,

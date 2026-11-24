@@ -58,7 +58,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use crate::cellapp_space::{CellApp, Entity, Space};
+use crate::cellapp_space::{CellApp, Entity, NO_SPACE_REMOVAL_HANDLE, Space};
 use crate::cellappmgr::SpaceId;
 use crate::timers::{TimerHandle, TimerHandler};
 
@@ -1434,10 +1434,70 @@ impl CellApp {
     /// It stays in the population — that is what `Space::newEntity`'s
     /// revival picks up. The full destroy chain (ghosts, AoI, space
     /// removal) is BW-08-02-06.
-    pub fn destroy_entity(&mut self, entity: u32) {
+    ///
+    /// `Entity::destroy` (`entity.cpp:2896`), the real face: the
+    /// `inDestroy_` latch, the `onDestroy` callback while everything is
+    /// still live ("Moved to after the onDestroy call" is why
+    /// `setDestroyed` runs below it), the base notification, the flag,
+    /// the cell's entity list, then the real half's teardown — the
+    /// witness and the controllers (`stopReals( isDestroyed() )`), the
+    /// extras (a destroyed vehicle alights every rider), and the
+    /// cell-only id return (`~Entity`'s `shouldReturnID_` face; a
+    /// recorded no-op while `MF_ID_RECYCLING` is off). The reference's
+    /// ghost half (`convertRealToGhost`) is the ghost cluster's face —
+    /// this port's destroyed entry stays in the population for revival,
+    /// the wholesale reset the revive already runs.
+    pub fn destroy_entity(&mut self, spaces: &mut BTreeMap<SpaceId, Space>, entity: u32) {
         let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
             return;
         };
+        {
+            let mut borrowed = entity_rc.borrow_mut();
+            // `if (inDestroy_) return;` — reentrant and repeat destroys
+            // are inert; only `setToInitialState` (the revive's
+            // wholesale reset) clears the latch.
+            if borrowed.in_destroy {
+                return;
+            }
+            borrowed.in_destroy = true;
+        }
+        let has_base = entity_rc.borrow().base_addr.is_some();
+
+        // `this->callback( "onDestroy" )`: the script sees the entity
+        // with its controllers, extras and cell slot all intact.
+        self.entity_callback(entity, "onDestroy", true, None);
+
+        // `if (this->hasBase()) this->sendCellEntityLostToBase()` — the
+        // CELL_DATA notification rides the real's channel; the
+        // ungraceful ERROR fallback is the channel stack's face.
+        if has_base {
+            self.cell_entity_lost_sends.push(entity);
+        }
+
+        // `this->setDestroyed()` — after the callback.
+        entity_rc.borrow_mut().destroyed = true;
+
+        // `this->cell().entityDestroyed( this )`: off the cell's entity
+        // list — an emptied single-cell space asks for its shutdown.
+        // (A half-built entry never took a cell slot.)
+        let in_space = {
+            let borrowed = entity_rc.borrow();
+            borrowed.removal_handle != NO_SPACE_REMOVAL_HANDLE
+        };
+        if in_space {
+            let space_id = entity_rc.borrow().space_id;
+            if let Some(space) = spaces.get_mut(&space_id) {
+                space.remove_entity(&entity_rc, self);
+            }
+        }
+
+        // `convertRealToGhost` → `destroyReal` → `~RealEntity`: the
+        // witness dies, then `stopReals( isDestroyed() )`. The port's
+        // `cancel_controller` is the stop and the delete in one — the
+        // reference defers the ghost-domain controllers to the ghost
+        // half; this port's destroyed entry has no ghost half, so the
+        // teardown runs every face now.
+        entity_rc.borrow_mut().has_witness = false;
         let ids: Vec<ControllerId> = entity_rc
             .borrow()
             .controllers
@@ -1459,10 +1519,16 @@ impl CellApp {
         // EntityNavigate extra dies with the entity, so its nav system
         // and the navigate-step pointer go too.
         borrowed.extras = Vec::new();
-        borrowed.destroyed = true;
         drop(borrowed);
         self.navigate_step_controllers.remove(&entity);
         self.navigators.remove(&entity);
+
+        // `if (!this->hasBase()) shouldReturnID_ = true` → `~Entity`:
+        // `idClient().putUsedID( id )` — the cell-only id goes back
+        // (the base's entities let the base take care of it).
+        if !has_base {
+            self.returned_entity_ids.push(entity);
+        }
     }
 }
 
@@ -1596,7 +1662,7 @@ pub fn start_real_controllers(app: &mut CellApp, entity_rc: &Rc<RefCell<Entity>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cellapp_space::NO_SPACE_REMOVAL_HANDLE;
+    use crate::cellapp_space::{Cell, CellInfo, CellInfoNode, NO_SPACE_REMOVAL_HANDLE};
 
     const SID: SpaceId = 3;
     const TYPE: u32 = 7;
@@ -1823,7 +1889,7 @@ mod tests {
             CreateRealOutcome::Created(77)
         );
         app.add_timer(77, 5.0, 5.0, 0);
-        app.destroy_entity(12345); // unknown entity: inert
+        app.destroy_entity(&mut spaces, 12345); // unknown entity: inert
 
         // The reference's full destroy also drops the space residency.
         let rc = app.entity_population[&77].clone();
@@ -1831,7 +1897,7 @@ mod tests {
             .get_mut(&SID)
             .expect("space")
             .remove_entity(&rc, &mut app);
-        app.destroy_entity(77); // stops every real controller
+        app.destroy_entity(&mut spaces, 77); // stops every real controller
         assert!(rc.borrow().destroyed);
 
         assert_eq!(
@@ -1900,7 +1966,7 @@ mod tests {
         // with the WARNING face.
         app.callbacks_permitted(false);
         assert!(app.entity_callback(77, "later", true, None));
-        app.destroy_entity(77);
+        app.destroy_entity(&mut spaces, 77);
         app.callbacks_permitted(true);
         let names: Vec<&'static str> = app.script_calls.iter().map(|call| call.name).collect();
         assert!(!names.contains(&"later"));
@@ -2435,7 +2501,7 @@ mod tests {
         assert_eq!(app.add_timer(77, 2.0, 0.0, 0), 2);
         assert_eq!(app.touch_extra(77, eeid), Some(0));
 
-        app.destroy_entity(77);
+        app.destroy_entity(&mut spaces, 77);
         let entity = app.entity_population[&77].borrow();
         assert!(entity.destroyed);
         assert!(entity.controllers.container.is_empty());
@@ -2488,5 +2554,182 @@ mod tests {
                 interval: 0
             }
         );
+    }
+
+    /// `Entity::destroy`'s ordering face: `onDestroy` runs while the
+    /// entity is still whole — controllers, extras and the cell slot all
+    /// intact — and the teardown faces only follow it.
+    #[test]
+    fn on_destroy_runs_while_the_entity_is_still_whole() {
+        let mut app = app_with_type(vec![], &["onDestroy"]);
+        let mut spaces = spaces_with();
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+        assert_eq!(app.add_timer(77, 2.0, 0.0, 0), 1);
+        let eeid = app.register_entity_extra("PassengerExtra");
+        assert_eq!(app.touch_extra(77, eeid), Some(0));
+
+        app.destroy_entity(&mut spaces, 77);
+
+        // The script saw the whole entity: its call is the last recorded.
+        assert_eq!(app.script_calls.last().map(|c| c.name), Some("onDestroy"));
+        // Then the teardown: destroyed, empty, off the slot ledger.
+        let entity = app.entity_population[&77].borrow();
+        assert!(entity.destroyed);
+        assert!(entity.controllers.container.is_empty());
+        assert!(entity.extras.is_empty());
+        assert_eq!(*app.extra_drops.borrow(), vec![(77, eeid, 0)]);
+    }
+
+    /// `inDestroy_`'s latch: a repeat destroy is inert, and only the
+    /// revive's wholesale reset (`setToInitialState` → fresh `Entity`)
+    /// revives the latch so a later destroy runs again.
+    #[test]
+    fn the_in_destroy_latch_makes_repeats_inert() {
+        let mut app = app_with_type(vec![], &["onDestroy"]);
+        let mut spaces = spaces_with();
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+
+        // First destroy: the full face, and the latch stays armed.
+        app.destroy_entity(&mut spaces, 77);
+        {
+            let entity = app.entity_population[&77].borrow();
+            assert!(entity.destroyed);
+            assert!(entity.in_destroy);
+        }
+        assert_eq!(app.script_calls.len(), 2); // __init__, onDestroy
+
+        // A repeat destroy is inert — no second onDestroy, no further
+        // base notification.
+        app.destroy_entity(&mut spaces, 77);
+        assert_eq!(app.script_calls.len(), 2);
+        assert_eq!(app.cell_entity_lost_sends, vec![77]);
+
+        // The revive's `setToInitialState` is `Entity::new`: the latch
+        // clears with everything else.
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+        assert!(!app.entity_population[&77].borrow().in_destroy);
+
+        // The third destroy runs the whole face again.
+        app.destroy_entity(&mut spaces, 77);
+        assert_eq!(app.script_calls.len(), 4); // + __init__, onDestroy
+        assert_eq!(app.cell_entity_lost_sends, vec![77, 77]);
+    }
+
+    /// `hasBase()` splits the tail: a based entity tells its base the
+    /// cell entity is lost, while a cell-only entity hands its id back
+    /// (`shouldReturnID_` → `~Entity`'s `putUsedID`).
+    #[test]
+    fn a_based_entity_notifies_its_base_while_a_cell_only_one_returns_its_id() {
+        let mut app = app_with_type(vec![], &[]);
+        let mut spaces = spaces_with();
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+        app.destroy_entity(&mut spaces, 77);
+        assert_eq!(app.cell_entity_lost_sends, vec![77]);
+        assert!(app.returned_entity_ids.is_empty());
+
+        // A cell-only entity: the base address is gone by destroy time.
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(78, TYPE, b'-')),
+            CreateRealOutcome::Created(78)
+        );
+        app.entity_population[&78].borrow_mut().base_addr = None;
+        app.destroy_entity(&mut spaces, 78);
+        assert_eq!(app.cell_entity_lost_sends, vec![77]);
+        assert_eq!(app.returned_entity_ids, vec![78]);
+    }
+
+    /// `cell().entityDestroyed(this)`: the entity leaves its space's
+    /// list, and an emptied single-cell space of a started CellApp asks
+    /// the manager for its shutdown — the same chain a manual removal
+    /// drives.
+    #[test]
+    fn destroy_takes_the_entity_off_its_space_and_asks_for_shutdown() {
+        let mut app = CellApp::with_address(10);
+        app.entity_scripts
+            .insert(TYPE, EntityScript::with_init(vec![]));
+        let mut spaces = spaces_with();
+        app.start();
+        let cell = Rc::new(RefCell::new(Cell {
+            info: CellInfo {
+                space_id: SID,
+                app_addr: 10,
+                node: CellInfoNode::first(),
+            },
+            space_gone_count: 0,
+            reuse_count: 0,
+        }));
+        {
+            let space = spaces.get_mut(&SID).expect("fixture space");
+            space.update_geometry(&mut app, vec![cell.borrow().info.clone()]);
+            space.set_cell(cell);
+        }
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+        assert_eq!(spaces[&SID].num_entities(), 1);
+
+        app.destroy_entity(&mut spaces, 77);
+
+        assert!(spaces[&SID].entities().is_empty());
+        let entity = app.entity_population[&77].borrow();
+        assert_eq!(entity.removal_handle, NO_SPACE_REMOVAL_HANDLE);
+        assert_eq!(entity.space_id, SID);
+        drop(entity);
+        assert_eq!(app.shut_down_requests, vec![SID]);
+    }
+
+    /// `~RealEntity`'s witness deletion: the real half's `Witness` dies
+    /// with it, whether or not a base ever takes the entity over.
+    #[test]
+    fn destroy_clears_the_witness() {
+        let mut app = app_with_type(vec![], &[]);
+        let mut spaces = spaces_with();
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'W')),
+            CreateRealOutcome::Created(77)
+        );
+        assert!(app.entity_population[&77].borrow().has_witness);
+
+        app.destroy_entity(&mut spaces, 77);
+
+        assert!(!app.entity_population[&77].borrow().has_witness);
+    }
+
+    /// The `cell().entityDestroyed` face when the space itself is no
+    /// longer in the app's map: the entity-state teardown carries on
+    /// without the removal — the reference holds the cell pointer, the
+    /// port looks the space up by id.
+    #[test]
+    fn destroy_without_its_space_still_runs_the_teardown() {
+        let mut app = app_with_type(vec![], &[]);
+        let mut spaces = spaces_with();
+        assert_eq!(
+            app.create_real_entity(&mut spaces, SID, &create_stream(77, TYPE, b'-')),
+            CreateRealOutcome::Created(77)
+        );
+        spaces.remove(&SID);
+
+        app.destroy_entity(&mut spaces, 77);
+
+        let entity = app.entity_population[&77].borrow();
+        assert!(entity.destroyed);
+        assert!(entity.controllers.container.is_empty());
+        assert_eq!(entity.removal_handle, 0, "the stale handle stays");
+        drop(entity);
+        assert_eq!(app.cell_entity_lost_sends, vec![77]);
+        assert!(app.shut_down_requests.is_empty());
     }
 }

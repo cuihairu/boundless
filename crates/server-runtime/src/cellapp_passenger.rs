@@ -459,11 +459,14 @@ impl CellApp {
             self.script_errors.push((entity, "Already on a vehicle"));
             return false;
         }
-        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
-            // Unreachable behind `is_real_to_script`; the reference holds
-            // the entity reference for the whole call.
-            return false;
-        };
+        // The population entry `is_real_to_script` approved: it holds for
+        // the whole call, exactly as the reference's borrowed entity
+        // reference does.
+        let entity_rc = self
+            .entity_population
+            .get(&entity)
+            .cloned()
+            .expect("is_real_to_script above");
         let Some(vehicle_rc) = self.entity_population.get(&vehicle_id).cloned() else {
             // WARNING_MSG( "%u is trying to board non-existent entity %u\n" )
             self.passenger_warnings.push((
@@ -770,9 +773,14 @@ impl CellApp {
                     next,
                     "Passengers::~Passengers: PassengerExtra does not exist".to_string(),
                 ));
-                if let Some(state) = self.passengers_state.get_mut(&vehicle) {
-                    state.passengers.pop();
-                }
+                // `passengers_.pop()` — the in_destructor latch taken on
+                // entry keeps the state alive for the whole walk; the
+                // lookup only re-borrows across the mutable calls.
+                let state = self
+                    .passengers_state
+                    .get_mut(&vehicle)
+                    .expect("the in_destructor latch holds the state");
+                state.passengers.pop();
             }
         }
         // The destructor completed: the app-side state goes with it, and
@@ -934,7 +942,7 @@ mod tests {
         ADD_ENTITY_DATA_IS_ON_GROUND, AccelerationFacing, CreateRealOutcome, DOMAIN_GHOST,
         EntityScript,
     };
-    use crate::cellapp_space::Space;
+    use crate::cellapp_space::{NO_SPACE_REMOVAL_HANDLE, Space};
     use crate::cellappmgr::SpaceId;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -1256,7 +1264,7 @@ mod tests {
         assert!(app.board_vehicle(12, 10, false));
         let drops_before = app.extra_drops.borrow().len();
 
-        app.destroy_entity(10);
+        app.destroy_entity(&mut spaces, 10);
 
         for rider in [11, 12] {
             let borrowed = app.entity_population[&rider].borrow();
@@ -1671,7 +1679,7 @@ mod tests {
         assert_eq!(app.physics_corrections, vec![11]);
 
         // Destroyed by the callback face: nothing else runs.
-        app.destroy_entity(11);
+        app.destroy_entity(&mut spaces, 11);
         app.on_teleport_success(&rider_rc, Some(10));
         assert!(
             app.destroyed_callbacks
@@ -1716,5 +1724,220 @@ mod tests {
         assert!(app.passenger_controllers.is_empty());
         let passenger_eeid = app.passenger_extra_eeid();
         assert!(!app.extra_exists(11, passenger_eeid));
+    }
+
+    /// `Entity::updateGlobalPosition`'s ghost faces: an unmounted ghost
+    /// copies its local face out and still walks the internals; a limbo
+    /// one warns and skips everything.
+    #[test]
+    fn update_global_position_faces_the_ghost_and_the_limbo() {
+        let mut app = plain_app();
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 11, [1.0, 0.0, 0.0]);
+        app.entity_population[&11].borrow_mut().is_real = false;
+        let rider_rc = app.entity_population[&11].clone();
+
+        // The unmounted ghost: the global face takes the local write.
+        assert!(app.update_global_position(&rider_rc, true));
+        assert_eq!(position_of(&app, 11), [1.0, 0.0, 0.0]);
+        assert_eq!(app.physics_corrections, Vec::new());
+
+        // A real unmounted entity asking for the ghost update runs the
+        // real internals tail (the sampler and the passenger walk).
+        app.entity_population[&11].borrow_mut().is_real = true;
+        assert!(app.update_global_position(&rider_rc, true));
+        assert_eq!(position_of(&app, 11), [1.0, 0.0, 0.0]);
+
+        // Now a limbo ghost: vehicle none, extra and controller map live.
+        let eeid = app.passenger_extra_eeid();
+        assert_eq!(app.touch_extra(11, eeid), Some(0));
+        app.passenger_controllers.insert(11, 1);
+        assert!(!app.update_global_position(&rider_rc, false));
+        assert!(app.passenger_warnings.iter().any(|(entity, text)| *entity == 11
+            && text == "Entity::updateGlobalPosition(11): Not updating position since entity is in limbo"));
+    }
+
+    /// `set_vehicle`'s KeepGlobalPosition ghost face: an entity the
+    /// range list never took (a ghost fresh off the create) keeps its
+    /// local face and recomputes the global one from the vehicle frame.
+    #[test]
+    fn a_ghost_set_vehicle_recomputes_only_the_global_face() {
+        let mut app = plain_app();
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 10, [10.0, 0.0, 5.0]);
+        app.entity_population[&10].borrow_mut().direction[0] = VEHICLE_YAW;
+        create(&mut app, &mut spaces, 11, [1.0, 0.0, 0.0]);
+        // Take 11 off the range list: the ghost-just-created shape. The
+        // vehicle's Passengers instance is the rider flow's precondition.
+        app.entity_population[&11].borrow_mut().removal_handle = NO_SPACE_REMOVAL_HANDLE;
+        let vehicle_rc = app.entity_population[&10].clone();
+        app.passengers_instance(&vehicle_rc);
+        let rider_rc = app.entity_population[&11].clone();
+
+        app.set_vehicle(&rider_rc, Some(10), SetVehicleParam::KeepGlobalPosition);
+
+        assert_eq!(app.entity_population[&11].borrow().vehicle, Some(10));
+        assert_eq!(local_of(&app, 11), [1.0, 0.0, 0.0]);
+        let expected = passengers_transform(&app, 10).apply_point(&v([1.0, 0.0, 0.0]));
+        almost_at(position_of(&app, 11), [expected.x, expected.y, expected.z]);
+
+        // Unlinking a ghost the list never took: no local face to
+        // resolve, the global face just stays where it lies.
+        app.entity_population[&11].borrow_mut().removal_handle = NO_SPACE_REMOVAL_HANDLE;
+        app.set_vehicle(&rider_rc, None, SetVehicleParam::KeepGlobalPosition);
+        assert_eq!(app.entity_population[&11].borrow().vehicle, None);
+        assert_eq!(local_of(&app, 11), [1.0, 0.0, 0.0]);
+    }
+
+    /// The client-facing correction faces: a controlled rider's board
+    /// and alight both send the physics correction, a ghost alight is
+    /// refused, and the guard race fails the alight without one.
+    #[test]
+    fn the_client_facing_board_and_alight_faces_correct_the_physics() {
+        let mut app = plain_app();
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 10, [10.0, 0.0, 5.0]);
+        app.entity_population[&10].borrow_mut().direction[0] = VEHICLE_YAW;
+        create(&mut app, &mut spaces, 11, [1.0, 0.0, 0.0]);
+        app.entity_population[&11].borrow_mut().controlled_by = 1;
+        assert!(app.board_vehicle(11, 10, true));
+        assert_eq!(app.physics_corrections, vec![11]);
+        assert!(app.alight_vehicle(11, true));
+        assert_eq!(app.physics_corrections, vec![11, 11]);
+
+        // The guard race: the marker the extra named is already gone.
+        create(&mut app, &mut spaces, 12, [2.0, 0.0, 0.0]);
+        app.entity_population[&12].borrow_mut().controlled_by = 1;
+        assert!(app.board_vehicle(12, 10, true));
+        app.passenger_controllers.remove(&12);
+        let race_controller = *app.entity_population[&12]
+            .borrow()
+            .controllers
+            .container
+            .keys()
+            .next()
+            .expect("the boarding marker");
+        app.entity_population[&12]
+            .borrow_mut()
+            .controllers
+            .container
+            .remove(&race_controller);
+        app.passenger_controllers.insert(12, race_controller);
+        assert!(!app.alight_vehicle(12, true));
+        assert_eq!(
+            app.script_errors.last().map(|e| e.1),
+            Some("Failed to delete the passenger controller")
+        );
+        // The failed alight sent nothing further.
+        assert_eq!(app.physics_corrections, vec![11, 11, 12]);
+    }
+
+    /// `PassengerExtra::alightVehicle`'s ghost refusal: a limbo ghost
+    /// holds a controller but is no longer real to the script.
+    #[test]
+    fn a_ghost_alight_is_refused() {
+        let mut app = plain_app();
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 10, [10.0, 0.0, 5.0]);
+        app.entity_population[&10].borrow_mut().direction[0] = VEHICLE_YAW;
+        create(&mut app, &mut spaces, 11, [1.0, 0.0, 0.0]);
+        assert!(app.board_vehicle(11, 10, false));
+        // The ghost flavour rides the limbo face: still holding the
+        // marker, no longer real.
+        app.entity_population[&11].borrow_mut().is_real = false;
+
+        assert!(!app.alight_vehicle(11, false));
+        assert_eq!(
+            app.script_errors.last().map(|e| e.1),
+            Some("This method may only be called on a real")
+        );
+        assert_eq!(app.entity_population[&11].borrow().vehicle, Some(10));
+    }
+
+    /// `PassengerController::stop`'s missing-state face: with the
+    /// vehicle's app-side state already gone, the rider still releases
+    /// the link and returns to global coordinates.
+    #[test]
+    fn a_missing_passengers_state_entry_still_releases_the_rider() {
+        let (mut app, _spaces) = boarded_scene();
+        app.entity_population[&11].borrow_mut().controlled_by = 1;
+        app.passengers_state.remove(&10);
+
+        assert!(app.alight_vehicle(11, true));
+        assert_eq!(app.entity_population[&11].borrow().vehicle, None);
+        assert_eq!(local_of(&app, 11), position_of(&app, 11));
+        assert_eq!(app.physics_corrections, vec![11]);
+        assert!(app.passenger_controllers.is_empty());
+    }
+
+    /// `~Passengers`' stale-rider face: a rider that left the population
+    /// before the vehicle's walk reaches it stops the walk in place.
+    #[test]
+    fn a_rider_gone_from_the_population_stops_the_passengers_walk() {
+        let mut app = plain_app();
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 10, [10.0, 0.0, 5.0]);
+        app.entity_population[&10].borrow_mut().direction[0] = VEHICLE_YAW;
+        create(&mut app, &mut spaces, 11, [1.0, 0.0, 0.0]);
+        create(&mut app, &mut spaces, 12, [2.0, 0.0, 0.0]);
+        assert!(app.board_vehicle(11, 10, false));
+        assert!(app.board_vehicle(12, 10, false));
+        // 11 rides at the list head and is gone from the population.
+        app.entity_population.remove(&11);
+
+        app.vehicle_destroyed(10);
+
+        assert!(!app.passengers_state.contains_key(&10));
+        // The tail rider 12 released through the normal alight chain;
+        // the walk stopped at the head rider 11, whose controller entry
+        // never got its release.
+        assert_eq!(app.entity_population[&12].borrow().vehicle, None);
+        assert!(app.passenger_controllers.contains_key(&11));
+    }
+
+    /// `PassengerExtra::relocated`'s marker-less face: a real limbo
+    /// entity whose controllers hold no passenger marker only takes the
+    /// INFO warning — there is no vehicle id to fall off.
+    #[test]
+    fn a_relocated_limbo_rider_without_a_marker_only_warns() {
+        let mut app = plain_app();
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 11, [1.0, 0.0, 0.0]);
+        let eeid = app.passenger_extra_eeid();
+        assert_eq!(app.touch_extra(11, eeid), Some(0));
+        app.add_timer(11, 2.0, 0.0, 0);
+        app.passenger_controllers.insert(11, 1);
+        let rider_rc = app.entity_population[&11].clone();
+
+        app.relocate_entity_extras(&rider_rc);
+
+        assert!(app.passenger_warnings.iter().any(|(entity, text)| *entity == 11
+            && text == "PassengerExtra::relocated(11): Getting off our vehicle since we have just been onloaded into a cell where it does not exist"));
+        assert!(
+            !app.entity_population[&11]
+                .borrow()
+                .controllers
+                .container
+                .is_empty(),
+            "no marker, no alight"
+        );
+    }
+
+    /// `setAndDropGlobalPositionAndDirection` on a space that supports
+    /// the drop point: no warning rides along.
+    #[test]
+    fn a_supported_drop_point_warns_nothing() {
+        let mut app = plain_app();
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 11, [1.0, 0.0, 0.0]);
+        let rider_rc = app.entity_population[&11].clone();
+
+        app.set_and_drop_global_position_and_direction(
+            &rider_rc,
+            v([50.0, 0.0, 0.0]),
+            v([0.0, 0.0, 0.0]),
+        );
+        almost_at(position_of(&app, 11), [50.0, 0.0, 0.0]);
+        assert!(app.passenger_warnings.is_empty());
     }
 }

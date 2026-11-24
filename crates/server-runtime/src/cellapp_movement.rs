@@ -1496,7 +1496,7 @@ mod tests {
         let walked = app.entity_population[&77].borrow().position;
         assert!(walked[0] > 0.0);
 
-        app.destroy_entity(78);
+        app.destroy_entity(&mut spaces, 78);
         app.advance_tick();
         let entity = app.entity_population[&77].borrow();
         assert_eq!(entity.position, walked);
@@ -1716,7 +1716,7 @@ mod tests {
             },
         );
         assert_eq!(app.updatable_controllers.len(), 1);
-        app.destroy_entity(77);
+        app.destroy_entity(&mut spaces, 77);
         assert_eq!(app.updatable_controllers, Vec::new());
         assert!(app.entity_population[&77].borrow().destroyed);
     }
@@ -2255,5 +2255,68 @@ mod tests {
                 .container
                 .is_empty()
         );
+    }
+
+    /// `BaseAccelerationController::startReal`'s mounted seeding: a
+    /// drive started on a vehicle restarts the sampler at the rider's
+    /// local position, at this tick, at rest.
+    #[test]
+    fn starting_an_acceleration_drive_while_mounted_seeds_the_sampler_local() {
+        let mut app = app_with(&[]);
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 10, [10.0, 0.0, 5.0]);
+        app.entity_population[&10].borrow_mut().direction[0] = MATH_PI / 2.0;
+        create(&mut app, &mut spaces, 77, [1.0, 0.0, 0.0]);
+        assert!(app.board_vehicle(77, 10, false));
+        app.advance_tick();
+
+        app.attach_controller(
+            77,
+            Controller {
+                kind: ControllerKind::accelerate_to_point(
+                    [5.0, 0.0, 0.0],
+                    2.0,
+                    4.0,
+                    AccelerationFacing::None,
+                    true,
+                ),
+                user_arg: 0,
+            },
+        );
+
+        let rider = app.entity_population[&77].borrow();
+        assert_eq!(rider.accel_vehicle, Some(10));
+        assert_eq!(rider.accel_sample, rider.local_position);
+        assert_eq!(rider.accel_sample_time, app.time);
+        assert_eq!(rider.accel_velocity, [0.0; 3]);
+    }
+
+    /// The funnel's mounted face: a rider's local write derives the
+    /// global position and yaw from the vehicle frame.
+    #[test]
+    fn a_riders_funnel_write_derives_the_global_frame_from_the_vehicle() {
+        let mut app = app_with(&[]);
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 10, [10.0, 0.0, 5.0]);
+        app.entity_population[&10].borrow_mut().direction[0] = MATH_PI / 2.0;
+        create(&mut app, &mut spaces, 77, [1.0, 0.0, 0.0]);
+        assert!(app.board_vehicle(77, 10, false));
+        let rider_rc = app.entity_population[&77].clone();
+
+        app.set_entity_position_and_direction(
+            &rider_rc,
+            Vector3::new(2.0, 0.0, 0.0),
+            Vector3::new(0.5, 0.0, 0.0),
+        );
+
+        assert_eq!(rider_rc.borrow().local_position, [2.0, 0.0, 0.0]);
+        let expected = crate::cellapp_passenger::passengers_transform(&app, 10)
+            .apply_point(&Vector3::new(2.0, 0.0, 0.0));
+        let rider = rider_rc.borrow();
+        assert!((rider.position[0] - expected.x).abs() < 1e-4);
+        assert!((rider.position[1] - expected.y).abs() < 1e-4);
+        assert!((rider.position[2] - expected.z).abs() < 1e-4);
+        let yaw = crate::cellapp_passenger::vehicle_yaw(&app, 10);
+        assert!((rider.direction[0] - normalise_angle(0.5 + yaw)).abs() < 1e-4);
     }
 }
