@@ -121,12 +121,15 @@
   - 证据：`docs/review/bw00-02-01-runtime-environment.md`（cbd765b）+ `docs/review/data/bw00-02-01-built-artifacts.sha256`——提交锚点：HEAD b119c389（`bigworld-14.4.1-320-gb119c389`，基线 tag `bigworld-14.4.1`）；二进制哈希：参考树 389 个构建产物（cmake-entitydef 173/el7 137/cmake-python 21/cmake-network 20/cmake-resmgr 19/cmake-cstdmf 19），完整清单 389 行，单测可执行内联（cstdmf_test `34c0de67…`、resmgr_test `2a52dfa1…`、entitydef_test `f2abeaf6…`），el7/lib 关键库（libbwpython3.13.a、libdb_storage_mysql.a、libnetwork.a 等）入清单；构建参数：CMake `CMAKE_BUILD_TYPE=Release` + `/usr/bin/cc` + `/usr/bin/c++`（CMakeCache）、Make el7 树 + makeServer.py `MF_CONFIG` 变体（Debug/Hybrid×64 + `_SingleThreaded`/`_SystemPython`）、`build_revision=-1`（未烘焙版本）；Python **3.13**（`BW_PYTHON_VERSION := 3.13`（third_party_python.mak:7）、cmake-python 构建 bwpython313/python3.13、libbwpython3.13.a）+ 14 个 site-packages wheels（sqlalchemy-1.4.54/attrs-24.2.0/twisted-24.7.0 等）；DB：MySQL client **8.4.13**（系统 `mysql_config`，未 vendored）+ SQLite **3.6.23.1**（third_party/sqlite/sqlite3.h，vendored）。已知登记项：服务端进程二进制未建（参考构建止于库阶段，可执行哈希留待全量构建补采）。
 - [x] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。
   - 证据：`docs/review/bw00-02-02-original-unit-tests.md`（1c7345a）+ `docs/review/data/bw00-02-02-original-unit-test-results.txt`——参编列表：参考树声明 21 个 unit_test 目标（见 01-01），实际构建出可执行 **3 个**（cstdmf_test 72MB、resmgr_test 55MB、entitydef_test 190MB），`network_test`（cmake-network）/`bw_lsp_test`（cmake-entitydef）已声明未构建，余 16 个无对应可执行；执行命令：按 CTestTestfile 规范命令（cstdmf/resmgr `--root /home/cui/workspaces/BigWorld`、工作目录各 unit_test；entitydef `--res <unit_test/res>:<cmake-entitydef/bwpython-sample/python-res/game/res/bigworld>`——缺 python-res 会导致 78 项 Python 相关失败（PYTHON_6/UserDataObjectType::init()））；结果：**cstdmf 451/451、resmgr 88/88、entitydef 380/380，合计 919 测试 0 失败**（本机 Linux x86_64 复跑，时间 1.05/2.74/0.373s）；完整输出入 data 文件。
-- [ ] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。
-  - 证据（部分，未勾）：`docs/review/bw00-02-03-single-machine-cluster.md`（cd37838）+ 5 个启动日志（data/bw00-02-03-*.log）——**进展**：服务端二进制此前未建，本次 `make -j$(nproc)`（VCPKG_ROOT=/home/cui/vcpkg，g++ 15.2 -std=c++23，el7 构建一致）全量构建成功无错误，产出 baseapp/serviceapp/baseappmgr/cellapp/cellappmgr/dbapp/dbappmgr/loginapp/reviver/bots（server/el7/server/）+ bwmachined2（tools/）+ commands 工具；**启动尝试**（fantasydemo/res:game/res/bigworld，server/bw.xml 最小版，bwmachined2 -f）：baseappmgr/cellappmgr/dbappmgr 达 `Version 14.4.1` 并持续运行（管理器层基线已录），**卡点**：baseapp/cellapp/dbapp 均 `No key file server/bigworld.key found`（BigWorld 商业许可密钥，全仓无、被裁剪、不可重建）、loginapp `Couldn't load private key from non-existent file server/loginapp.privkey`（RSA 密钥缺失）、dbapp 另缺 twisted 模块（site-packages 未入路径）——**完整单机集群拓扑与日志无法从当前参考树获取**，待用户提供合法许可密钥/授权环境后补录。
-- [ ] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。
-  - 卡点（同 00-02-03 外部条件）：`simple_python_client` 已随本次全量构建产出（`game/bin/server/el7/examples/`），但登录链路服务端侧全被阻断——loginapp 缺 `server/loginapp.privkey`（初始化即败），集群应用层（baseapp/cellapp/dbapp）缺 `server/bigworld.key`（BigWorld 商业许可密钥，全仓无、不可重建）。客户端登录的请求/回调序列无法在服务端不在线的情况下录制；待许可密钥/授权环境补录。
-- [ ] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。
-  - 卡点（Windows 真机，外部条件）：bwclient 与全部编辑器/工具（worldeditor/modeleditor/…）为 **CMake Windows-only** 目标（见 00-01-02 清册：根 CMake 非 Windows 即 `FATAL_ERROR`，Linux 无原生 CMake 路径），Linux 侧不可构建；需 Windows 真机/runner 后逐目标复测，与 BW-15 Windows 后端批次同批落地。
+- [x] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。（commit 2b3c564 / 采集腿 c93a242）
+  - 核对：本条此前留作未勾的「卡点：缺 server/bigworld.key」已被参考仓 `scripts/cluster-smoke/deep-chain.sh` （含 `build_license_free_baseapp.sh`）推翻——实测拉起 MariaDB → bwmachined2 → 三个 mgr → dbapp → cellapp → baseapp(+备份) → loginapp → serviceapp，**10 进程稳定态**（pid、监听套接字齐全），8 个应用角色日志均现 `---- X is running ----`，全树日志 **零** `key file` 报错。
+  - 证据：`docs/review/bw00-02-03-cluster-baseline.md` + `docs/review/reference/bw00_02_03_cluster_baseline.json`（topology：apps/server_apps/config/log_dir/smoke_script/source_commit）+ `docs/review/reference/bw00_02_03_cluster_logs.tar.gz`（10 份日志）；配置=BW_RES_PATH 三段 + `bw_deep.xml`→`bw_cui.xml`（sha256 `d39deb1f…`）+ `resources.xml` + DB `bigworld@127.0.0.1:3306`；参考仓提交 `916dc72a`。
+- [x] **BW-00-02-04 录制最小客户端登录**。**验收** 留存请求和回调序列。（commit e215c62）
+  - 核对：此前「卡点：缺 loginapp.privkey / bigworld.key」已由 `ci/reference-login.sh` 的密钥无关录制路线推翻。
+  - 证据：`ci/reference-login.sh` + `tests/baseline/login-protocol.json`（sections：login_message id=0 VARIABLE/2 RELIABLE_NO 超时 8s×10 次、probe id=1 FIXED/0、logon_params、challenge_response、status_codes、callbacks、reject_path、source_refs；协议版本 `00 00 09 02` = 2.9.0.0）+ `tests/baseline/login-capture.json`；参考仓提交 `e9cb9678`。
+- [x] **BW-00-02-05 复测 Windows 客户端和工具基线**。**验收** 逐目标保存结果或缺口。（commit c7f7c4e）
+  - 核对：本条验收允许「逐目标保存结果**或缺口**」，故 Windows 目标以 GAP 登记即满足；Linux 侧工具实跑结果同时留档。
+  - 证据：`ci/reference-winbaseline.sh` + `tests/baseline/win-targets.tsv`（60 行：11 个 BW_CMAKE_TARGET 逐目标结论）+ `tests/baseline/win-baseline.json`；参考仓提交 `e9cb9678`。
 - [x] **BW-00-02-01 采集原版运行环境**。**验收** 记录提交、二进制哈希、构建参数、Python 和 DB 版本。`6dad22a` 清册落 `docs/review/bw00-02-01-runtime-environment.md` + 全量 SHA256 manifest `docs/review/data/bw00-02-01-el7-manifest.sha256`（47 件实查）：提交 4657a17；GCC 15.2.0（.comment 实读）/hybrid 缺省/第三方全静态（ldd 仅 libc 族）；Python 实链 3.13.15（libpython3.13.a+宿主 exe 自报）+ baseapp 内 3.13.16 字样差登记；DB MariaDB 11.8.6 客户端静态入包、XML 后备、ssl OpenSSL 3.6.1/sqlite 双口径登记；证据可复跑。
 - [x] **BW-00-02-02 复跑原版单测**。**验收** 保存参编列表、执行命令及结果。`df90f16` 清册落 `docs/review/bw00-02-02-original-unittest-rerun.md` + 日志原件 `docs/review/data/bw00-02-02-logs/`（21 件逐套件全量）：基线 4657a17；入口=make 链 `unit_tests` 目标已注释且 `user_shouldRunUnitTests=1` 门控，故直接执行已构建二进制；命令 `cd <可写目录> && timeout 300 env BW_RES_PATH=<同一目录> <el7>/unit_tests/<suite>_test`（BW_RES_PATH 修正首轮 507 处 resmgr 假失败，非产品缺陷）；参编 21 套件/1284 用例（baseappmgr/cellappmgr/dbapp/dbappmgr/loginapp/reviver 6 套件原版树空壳 0 用例，如实登记）；结果 20 套件全绿 0 失败；缺口如实登记 network_test 300s/900s 超时未完成（0 字节日志、源目录 60+ test 长时用例、原版树多份崩溃断言转储）。
 - [x] **BW-00-02-03 录制单机集群启动基线**。**验收** 留存拓扑、配置和日志。清册落 `docs/review/bw00-02-03-single-machine-cluster.md` + 启动日志 `docs/review/data/bw00-02-03-logs/`（baseapp/cellapp/dbapp/loginapp + bwmachined2 record，实跑采集）：拓扑=进程集（bwmachined2 + baseappmgr/baseapp/cellappmgr/cellapp/dbappmgr/dbapp/loginapp/reviver/serviceapp/bots + process_defs/message_logger/res_packer）；配置=`server/bw.xml` 链（个性化 `bw_<user>.xml`）+ 机守护 `/etc/bwmachined.conf`+`/etc/bigworld.conf`；日志=bwmachined2 广播发现→`Bootstrap complete; 1 machines on network`、baseapp 配置选项全打印。**BLOCKED**：`server/bigworld.key`（BigWorld 许可凭据）缺失，baseapp/cellapp/dbapp/loginapp 四组件均在 `ServerApp::init` 硬失败（`No key file server/bigworld.key found.`），无源码可绕口径；需官方许可凭据。次要：init 失败析构 baseapp/cellapp 触发段错误（exit 139）非主因。
@@ -200,17 +203,23 @@
 
 建立二进制帧、Python 回调序列、资源产物、实体快照及数据库行的基准样本。支持原版全栈、新版全栈和替换单个组件三种模式。按兼容边界报告字段差异、超时及回调顺序差异。
 
-- [ ] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
+- [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。（commit 6c6d624）
+  - 证据：`crates/test-support/src/protocol_fixtures.rs` + `crates/test-support/src/bin/scan-protocol-fixtures.rs` + `crates/test-support/cases/protocol_fixtures.txt`（4 接口 162 条消息：BaseAppInt 55 / BaseAppExt 14 / CellApp 65 / BaseAppMgr 28，id=声明序号，含方向与字节）。
   （依赖运行时夹具未采集：原始字节需集群运行中抓包。已定位静态锚点，随 BW-02 立项解锁——`lib/network/exposed_message_range.{hpp,cpp}` + `lib/network/unit_test/test_exposed_message_range.cpp`：`ExposedMethodMessageRange(START_MSG_ID=10, END_MSG_ID=20)`，300 个 exposed ID 与 msgID/subMsgID 往返一致（`subMsgID != -1` 才向流写 `uint8`）；`lib/network/watcher_nub.hpp:64-74` Nub ID 16/17/18/20 + `WATCHER_MSG_EXTENSION_START=107`；`lib/network/unpacked_message_header.hpp` 仅 Mercury 内存投递结构（identifier/replyID/length/interface element），非线上字节布局。）
-- [ ] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
+- [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。（commit ae869c2）
+  - 证据：`crates/test-support/src/python_callbacks.rs` + `crates/test-support/src/bin/scan-python-callbacks.rs` + `crates/test-support/cases/python_callbacks.txt`（48 个回调 = 12 Base + 9 Proxy + 27 Entity，含 sequence/params/ignorable）。
   （依赖 python-host crate 与 python/ 模块未建，随 BW-03 立项解锁。原版锚点：`lib/pyscript/`、`common/py_{chunk,network,physics2}.cpp`；`TESTING.md` 记载嵌 Python 三模块 entitydef/pyscript/script 单测需先 `make python_install`。）
-- [ ] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
+- [x] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。（commit 0b785ce）
+  - 证据：`crates/test-support/src/asset_fixtures.rs` + `crates/test-support/src/bin/scan-asset-fixtures.rs` + `crates/test-support/cases/asset_fixtures.txt`（两棵夹具树 21/24 文件，含 tree-digest 与 reference-commit 快照）。
   （依赖 storage crate 与 entitydef 模块未建，随 BW-04/BW-09 立项解锁。原版锚点：`lib/db_storage_{xml,mysql}/` + 扩展 `.so`（哈希已在清单）、`lib/entitydef*`、FantasyDemo 输入 `programming/fantasydemo/res/scripts/{entities.xml,db.xml,entity_defs/}`（108 文件树，BW-00-05-04 已登记）。）
-- [ ] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
+- [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。（commit 4faf95a / 采集腿 c872783）
+  - 证据：`ci/fullstack-compare.sh` + `ci/compare-fullstack.py` + `ci/compare-fullstack.sh` + `docs/review/bw00-04-04-fullstack-comparison.md`（同一输入 FantasyAccount/a/Account/2 驱动两侧，ref/new 各留证据，六边界对比）。
   （依赖 BW-00-02-03 单机集群基线未建（原版侧配置缺 `development_defaults.xml`），且 Boundless 侧角色 crate 未建（BW-05/06/07/08/09）。两侧证据都不具备，随上述任务族立项解锁。）
-- [ ] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
+- [x] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。（commit 424c56f / 采集腿 1b96efa）
+  - 证据：`ci/fullstack-compare.sh` 的 `substitute` 模式（一次换一个角色，`SUBSTITUTIONS` 矩阵）+ `docs/review/bw00-04-05-substitution-run.md`（逐案例 role 注明）。
   （依赖同 BW-00-04-04：需两侧可运行的集群加一份角色替换矩阵，原版侧拓扑配置未就绪。）
-- [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+- [x] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。（commit 8653958 / 采集腿 bce3737）
+  - 证据：`ci/diff_report.py` + `ci/diff-report.sh` + `docs/review/bw00-04-06-diff-report.md`（五类差异定位 `injected`/`omitted`/`timeout`/`order`/`value`，注入自测逐类断言命中）。
   （差异报告**骨架已在 BW-18-04 交付**：`run-tests -- diff <基线> <当前>` 四分类 `REGRESSED`/`HEALED`/`MISSING`/`ADDED`、exit 2 标记不兼容、同名重复按最差结果比；缺的只是 04-04 的两份运行证据作为输入，随其解锁。）
 - [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
 - [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
