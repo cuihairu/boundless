@@ -16,6 +16,7 @@
 
 pub mod error;
 pub mod lookup;
+pub mod namer;
 pub mod record;
 pub mod retry;
 pub mod storage;
@@ -24,6 +25,11 @@ pub use error::DbError;
 pub use lookup::{
     EntityDefIndex, LookUpEntitiesCriteria, LookUpEntitiesFilter, LookupDefs,
     get_database_id_from_name, lookup_entities, lookup_entity_by_name,
+};
+pub use namer::{
+    COMPONENT_NAME_SEPARATOR, ColumnIndexType, DEFAULT_SEQUENCE_COLUMN_NAME,
+    DEFAULT_SEQUENCE_TABLE_NAME, GAME_TIME_COLUMN_NAME, ID_COLUMN_NAME, Indexing, Namer,
+    PARENTID_COLUMN_NAME, TABLE_NAME_PREFIX, TIMESTAMP_COLUMN_NAME, column_index_type,
 };
 pub use record::EntityRecord;
 pub use retry::{
