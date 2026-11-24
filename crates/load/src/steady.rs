@@ -9,9 +9,7 @@
 //! period, and the circle law is pure float math off the client clock — the
 //! recorded trajectory reproduces bit for bit.
 
-use std::time::Duration;
-
-use crate::bot::{FD_PER_BOT, TICK_FREQUENCY, TICK_PERIOD};
+use crate::bot::{FD_PER_BOT, TICK_PERIOD};
 use crate::fleet::Fleet;
 use crate::scenario::Scenario;
 
@@ -96,6 +94,8 @@ pub fn run_steady_movement(scenario: &Scenario, fd_limit: i32, seed: u64) -> Ste
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::scenario::AccountPool;
 
@@ -181,7 +181,7 @@ mod tests {
         let speed = track.speed;
         let period = 10.0 * speed / 7.0;
         // Warmup 1s + one load tick = 11 mini-ticks of client clock.
-        let client_time = (11.0 as f32) * TICK_PERIOD;
+        let client_time = 11.0_f32 * TICK_PERIOD;
         let angle = client_time * 2.0 * std::f32::consts::PI / period;
         let expected_x = 10.0 * angle.sin();
         let expected_z = 10.0 * angle.cos();

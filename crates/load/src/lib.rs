@@ -10,6 +10,8 @@ pub mod bot;
 pub mod dense;
 pub mod executor;
 pub mod fleet;
+
+pub mod bot_watchers;
 pub mod hurricane;
 pub mod patrol;
 pub mod scenario;
