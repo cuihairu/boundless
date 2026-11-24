@@ -15,7 +15,7 @@ use crate::cellappmgr::{Addr, Rect, SpaceId};
 use crate::controllers::Controllers;
 use crate::entity_creator::PropValue;
 use crate::entity_dispatch::EntityId;
-use crate::real_entity::{Haunt, RealEntity};
+use crate::real_entity::{EntityMailBoxRef, Haunt, RealEntity};
 use crate::space::CellInfoRecord;
 use crate::witness::VolatileInfo;
 
@@ -1295,6 +1295,182 @@ pub fn onload_notify_haunts(
 }
 
 // -----------------------------------------------------------------------------
+// Section: the role switch (`entity.cpp` offload/onload)
+// -----------------------------------------------------------------------------
+
+/// The `onload` message body — `Entity::writeRealDataToStream`
+/// (`entity.cpp:2080-2135`) plus `RealEntity::writeOffloadData`
+/// (`real_entity.cpp:430-470`), distilled to the fields the port models.
+/// The ghost-level state is not re-sent: the destination already holds it
+/// as a ghost.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnloadPayload {
+    /// `data << id_`.
+    pub entity_id: EntityId,
+    /// `data << entityTypeID()`.
+    pub entity_type_id: u16,
+    /// The real-only properties (`propCountGhost ..
+    /// propCountGhostPlusReal`).
+    pub real_properties: Vec<PropValue>,
+    /// `writeOffloadData`: `velocity_`.
+    pub velocity: Vector3,
+    /// `shouldAutoBackup_`.
+    pub should_auto_backup: u8,
+    /// `controlledBy_`.
+    pub controlled_by: EntityMailBoxRef,
+    /// The space the entity came from — a change drives the haunt pass.
+    pub space_id: SpaceId,
+    /// `isTeleport`.
+    pub is_teleport: bool,
+    /// The haunt list: every app holding a ghost, plus the source itself
+    /// when it was not already haunted (`!isAlreadyHaunted`).
+    pub haunt_addrs: Vec<Addr>,
+}
+
+/// `Cell::offloadEntity` -> `Entity::offload` -> `convertRealToGhost`
+/// (`cell.cpp:193-218`, `entity.cpp:1978-2104`): build the `onload`
+/// payload for the destination, sign off the other haunts
+/// (`RealEntity::destroy`'s pass), and leave a ghost behind pointing at
+/// the destination until its `ghostSetReal` confirms the handover
+/// (`pRealChannel_ = pChannel`, `nextRealAddr_ = pChannel->addr()`).
+/// Returns the payload to send and the ghost record to install — the
+/// real part is consumed: its haunts travel in the payload and the
+/// destination's haunt pass rebuilds them there.
+#[allow(clippy::too_many_arguments)]
+pub fn convert_real_to_ghost(
+    real: &mut RealEntity,
+    view: &GhostedEntityView,
+    destination: Addr,
+    own_addr: Addr,
+    space_id: SpaceId,
+    is_teleport: bool,
+    time: u32,
+    channels: &mut BTreeMap<Addr, GhostChannel>,
+) -> (OnloadPayload, GhostRecord) {
+    // `writeOffloadData`: the haunt list, plus us when we are not already
+    // haunted (`isAlreadyHaunted` = our own address in the list).
+    let mut haunt_addrs: Vec<Addr> = real.haunts.iter().map(|h| h.addr).collect();
+    if !haunt_addrs.contains(&own_addr) {
+        haunt_addrs.push(own_addr);
+    }
+
+    let payload = OnloadPayload {
+        entity_id: real.id,
+        entity_type_id: view.entity_type_id,
+        real_properties: view.real_properties.clone(),
+        velocity: real.velocity,
+        should_auto_backup: real.should_auto_backup,
+        controlled_by: real.controlled_by.clone(),
+        space_id,
+        is_teleport,
+        haunt_addrs,
+    };
+
+    // `RealEntity::destroy(&pChannel->addr())`: every haunt except the
+    // destination learns where the real is going.
+    offload_sign_off(real, destination, channels);
+
+    // The ghost keeps the ghost-level view. It routes to the destination
+    // right away and still expects that app's `ghostSetReal`.
+    let mut controllers = Controllers::new();
+    for seed in &view.ghost_controllers {
+        controllers.create_ghost(seed.id, seed.type_id, seed.user_arg, seed.payload.clone());
+    }
+    real.haunts.clear();
+    let record = GhostRecord {
+        entity_id: real.id,
+        entity_type_id: view.entity_type_id,
+        num_times_real_offloaded: view.num_times_real_offloaded,
+        position: view.position,
+        is_on_ground: view.is_on_ground,
+        last_event_number: view.last_event_number,
+        volatile: view.volatile,
+        real_addr: destination,
+        next_real_addr: Some(destination),
+        base_addr: view.base_addr,
+        direction: view.direction,
+        property_event_stamps: view.property_event_stamps.clone(),
+        last_trimmed_event_number: view.last_event_number,
+        ghost_properties: view.ghost_properties.clone(),
+        controllers,
+        periods_without_witness: view.periods_without_witness,
+        aoi_update_scheme_id: view.aoi_update_scheme_id,
+        creation_time: time,
+    };
+    (payload, record)
+}
+
+/// What `Entity::onload` produced: the one real for this entity, and
+/// whether this app was itself in the haunt list — the reference's
+/// `MF_ASSERT( areWeHaunted )` (the offload destination ghosts the entity
+/// before the move, so it always is).
+pub struct OnloadOutcome {
+    /// The real created from the ghost.
+    pub real: RealEntity,
+    /// Our own address was in the haunt list.
+    pub are_we_haunted: bool,
+}
+
+impl GhostHost {
+    /// `Entity::onload` -> `convertGhostToReal`
+    /// (`entity.cpp:4656-4790`): the ghost becomes the one real —
+    /// `numTimesRealOffloaded_` increments first — and the haunt pass
+    /// (`readOffloadData`) re-points the other ghosts, or deletes them
+    /// across a space change or teleport. Returns `None` when no ghost is
+    /// here to load: the reference routes `onload` to an entity, and
+    /// without one the message has nowhere to land.
+    ///
+    /// `bad_haunt_addr` is the failed-teleport face: the source address
+    /// (`pBadHauntAddr`) whose haunt entry is skipped because no ghost
+    /// was ever created on this app.
+    pub fn receive_onload(
+        &mut self,
+        payload: OnloadPayload,
+        local_space_id: SpaceId,
+        bad_haunt_addr: Option<Addr>,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        own_addr: Addr,
+        time: u32,
+    ) -> Option<OnloadOutcome> {
+        let record = self.ghosts.remove(&payload.entity_id)?;
+
+        // `convertGhostToReal`'s first line.
+        let num_times_real_offloaded = record.num_times_real_offloaded + 1;
+
+        // `readRealDataFromStreamForOnload`: the ghost keeps its
+        // snapshot; the stream adds the real-only state on top.
+        let mut real = RealEntity::new(
+            payload.entity_id,
+            record.base_addr,
+            record.position,
+            time,
+            payload.should_auto_backup,
+        );
+        real.velocity = payload.velocity;
+        real.controlled_by = payload.controlled_by;
+
+        let context = OnloadHauntContext {
+            has_changed_space: payload.space_id != local_space_id,
+            is_teleported: payload.is_teleport,
+            bad_haunt_addr,
+        };
+        let are_we_haunted = onload_notify_haunts(
+            &mut real,
+            &payload.haunt_addrs,
+            channels,
+            own_addr,
+            num_times_real_offloaded,
+            time,
+            &context,
+        );
+        Some(OnloadOutcome {
+            real,
+            are_we_haunted,
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Section: the entity view
 // -----------------------------------------------------------------------------
 
@@ -1327,6 +1503,9 @@ pub struct GhostedEntityView {
     pub property_event_stamps: Vec<i32>,
     /// The ghosted properties (`propCountGhost` leading values).
     pub ghost_properties: Vec<PropValue>,
+    /// The real-only properties (`propCountGhost ..
+    /// propCountGhostPlusReal`) — the `onload` stream's extra payload.
+    pub real_properties: Vec<PropValue>,
     /// The ghost-domain controllers (`writeGhostsToStream`).
     pub ghost_controllers: Vec<GhostControllerSeed>,
     /// `periodsWithoutWitness()`.
@@ -1444,6 +1623,7 @@ mod tests {
             direction: Vector3::new(1.5, 0.25, -0.5),
             property_event_stamps: vec![7, 13],
             ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+            real_properties: vec![PropValue::Int(99)],
             ghost_controllers: vec![GhostControllerSeed {
                 id: 3,
                 type_id: 9,
@@ -2728,5 +2908,200 @@ mod tests {
         assert_eq!(seconds_to_ticks(0.01, 0, 10.0), 0);
         // The lower bound floors a sub-tick result up.
         assert_eq!(seconds_to_ticks(0.01, 1, 10.0), 1);
+    }
+
+    // -- BW-08-05-02: the role switch ------------------------------------
+
+    #[test]
+    fn an_offload_switches_roles_with_one_real_left_on_both_ends() {
+        // Destination B already ghosts the entity — the checker's rule —
+        // so the handover starts with B haunted.
+        let mut host_a = GhostHost::default();
+        let mut host_b = hold_host(10, 0);
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+
+        // A offloads to B: the payload streams, the ghost replaces the
+        // real on A.
+        let (payload, record) =
+            convert_real_to_ghost(&mut real, &view, APP_B, APP_A, 7, false, 300, &mut channels);
+        host_a.ghosts.insert(10, record);
+
+        // The payload carries the real-only state and the haunt list —
+        // B's haunt plus ourselves (we were not haunted).
+        assert_eq!(payload.entity_id, 10);
+        assert_eq!(payload.entity_type_id, 4);
+        assert_eq!(payload.real_properties, vec![PropValue::Int(99)]);
+        assert_eq!(payload.space_id, 7);
+        assert!(!payload.is_teleport);
+        assert_eq!(payload.haunt_addrs, vec![APP_B, APP_A]);
+        // The destination is skipped in the sign-off: nothing for B yet.
+        assert!(channels[&APP_B].out.is_empty());
+        // A's ghost points at B right away and still expects B's
+        // `ghostSetReal`.
+        assert_eq!(host_a.ghosts[&10].real_addr, APP_B);
+        assert_eq!(host_a.ghosts[&10].next_real_addr, Some(APP_B));
+
+        // B loads: the ghost record becomes the one real.
+        let outcome = host_b
+            .receive_onload(payload, 7, None, &mut channels, APP_B, 300)
+            .unwrap();
+        assert!(host_b.ghosts.is_empty());
+        assert!(outcome.are_we_haunted);
+        assert_eq!(outcome.real.id, 10);
+        assert_eq!(outcome.real.base_addr, (9, 9));
+        // The ghost snapshot carries over: the real sits where the ghost
+        // sat (`readRealDataFromStreamForOnload` keeps the ghost state).
+        assert_eq!(outcome.real.position_sample, Vector3::ZERO);
+
+        // The haunt pass re-pointed A's ghost with the new count.
+        assert_eq!(
+            channels[&APP_A].out,
+            vec![GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_B,
+            })]
+        );
+
+        // A applies it: from both ends exactly one real, at B.
+        assert_eq!(
+            host_a.receive_ghost_set_real(10, 1, APP_B),
+            GhostSetRealOutcome::Relocated
+        );
+        assert_eq!(host_a.ghosts[&10].real_addr, APP_B);
+        assert_eq!(host_a.ghosts[&10].next_real_addr, None);
+    }
+
+    #[test]
+    fn an_offloading_real_signs_off_its_other_ghosts() {
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, view) = ghosted_real(10, 50.0);
+        real.haunts = vec![
+            Haunt {
+                addr: APP_B,
+                creation_time: 100,
+            },
+            Haunt {
+                addr: APP_C,
+                creation_time: 150,
+            },
+        ];
+
+        let (payload, record) =
+            convert_real_to_ghost(&mut real, &view, APP_C, APP_A, 7, false, 300, &mut channels);
+
+        // The destination (C) is skipped; B learns where the real went.
+        assert_eq!(
+            channels[&APP_B].out,
+            vec![GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: 10,
+                next_real_addr: APP_C,
+            })]
+        );
+        assert!(channels[&APP_C].out.is_empty());
+        // The payload carries every haunt plus ourselves (not haunted).
+        assert_eq!(payload.haunt_addrs, vec![APP_B, APP_C, APP_A]);
+        // The real part is consumed: no haunts left behind.
+        assert!(real.haunts.is_empty());
+        // The leftover ghost keeps the ghost-level view and the offload
+        // count.
+        assert_eq!(record.num_times_real_offloaded, 0);
+        assert_eq!(record.real_addr, APP_C);
+        assert_eq!(record.next_real_addr, Some(APP_C));
+        assert_eq!(record.creation_time, 300);
+        assert_eq!(
+            record.ghost_properties,
+            vec![PropValue::Int(5), PropValue::Str("hi".to_string())]
+        );
+        assert_eq!(record.controllers.len(), 1);
+    }
+
+    #[test]
+    fn a_teleport_onload_deletes_the_far_ghost_instead_of_re_haunting() {
+        let mut host_a = GhostHost::default();
+        let mut host_b = hold_host(10, 0);
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+
+        let (payload, record) =
+            convert_real_to_ghost(&mut real, &view, APP_B, APP_A, 7, true, 300, &mut channels);
+        host_a.ghosts.insert(10, record);
+
+        // Same space, but a teleport: no re-haunt — the source ghost is
+        // deleted instead.
+        let outcome = host_b
+            .receive_onload(payload, 7, None, &mut channels, APP_B, 300)
+            .unwrap();
+        assert_eq!(
+            channels[&APP_A].out,
+            vec![GhostMessage::DelGhost { entity_id: 10 }]
+        );
+        assert!(outcome.real.haunts.is_empty());
+
+        // A processes the deletion; nobody holds a ghost any more.
+        assert!(host_a.receive_del_ghost(10, 300));
+        assert!(host_a.ghosts.is_empty());
+    }
+
+    #[test]
+    fn a_cross_space_onload_also_deletes_instead_of_re_haunting() {
+        let mut host_a = GhostHost::default();
+        let mut host_b = hold_host(10, 0);
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+
+        let (payload, record) =
+            convert_real_to_ghost(&mut real, &view, APP_B, APP_A, 7, false, 300, &mut channels);
+        host_a.ghosts.insert(10, record);
+
+        // Not a teleport, but the local space differs: the ghosts of the
+        // old space go.
+        let outcome = host_b
+            .receive_onload(payload, 9, None, &mut channels, APP_B, 300)
+            .unwrap();
+        assert_eq!(
+            channels[&APP_A].out,
+            vec![GhostMessage::DelGhost { entity_id: 10 }]
+        );
+        assert!(outcome.real.haunts.is_empty());
+        assert!(host_a.receive_del_ghost(10, 300));
+        assert!(host_a.ghosts.is_empty());
+    }
+
+    #[test]
+    fn an_onload_without_a_ghost_has_nothing_to_load() {
+        let mut host_b = GhostHost::default();
+        let (_cells, mut channels, _config) = checker_world();
+        let payload = OnloadPayload {
+            entity_id: 10,
+            entity_type_id: 4,
+            real_properties: Vec::new(),
+            velocity: Vector3::ZERO,
+            should_auto_backup: 0,
+            controlled_by: EntityMailBoxRef::empty(),
+            space_id: 7,
+            is_teleport: false,
+            haunt_addrs: vec![APP_A],
+        };
+
+        assert!(
+            host_b
+                .receive_onload(payload, 7, None, &mut channels, APP_B, 300)
+                .is_none()
+        );
+        assert!(host_b.buffer.is_empty());
     }
 }
