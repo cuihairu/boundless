@@ -566,8 +566,6 @@ impl NetworkInterface {
         }
     }
 
-    /// The `PacketReceiver::processPacket` routing target: on-channel
-    /// packets with a live channel go to that channel's receive dispatch,
     /// `rateLimitPeriod()` (network_interface.cpp:929): the configured
     /// rate-limiting period in seconds. Zero means no rate limiting.
     pub fn rate_limit_period(&self) -> f32 {

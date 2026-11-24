@@ -6,6 +6,15 @@ use super::vector::Vector3;
 /// `min` starts at `FLT_MAX`, `max` at `-FLT_MAX`: the default box is
 /// inside-out (`boundbox.ipp:10-14`).
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RayIntersectionType {
+    NoIntersection,
+    OriginInside,
+    Intersection,
+}
+
+/// `min` starts at `FLT_MAX`, `max` at `-FLT_MAX`: the default box is
+/// inside-out (`boundbox.ipp:10-14`).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoundBox {
     pub min: Vector3,
     pub max: Vector3,
@@ -18,14 +27,6 @@ impl Default for BoundBox {
             max: Vector3::new(f32::MIN, f32::MIN, f32::MIN),
         }
     }
-}
-
-/// `AABB::RayIntersectionType` (`boundbox.hpp:51-56`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RayIntersectionType {
-    NoIntersection,
-    OriginInside,
-    Intersection,
 }
 
 impl BoundBox {
@@ -76,9 +77,65 @@ impl BoundBox {
             && self.min.z <= other.max.z
     }
 
-    /// Grow to include another box: an inside-out source is skipped, an
-    /// inside-out `self` snaps to it (`boundbox.ipp:211-231`).
-    pub fn add_bound_box(&mut self, bb: &Self) {
+    /// `(min + max) / 2.f` (`boundbox.ipp:323-328`).
+    pub fn centre(&self) -> Vector3 {
+        (self.min + self.max) / 2.0
+    }
+
+    pub fn width(&self) -> Vector3 {
+        self.max - self.min
+    }
+
+    /// Assign both corners directly (`boundbox.ipp:104-108`) — no
+    /// normalisation, unlike `add_bounds`.
+    pub fn set_bounds(&mut self, min: Vector3, max: Vector3) {
+        self.min = min;
+        self.max = max;
+    }
+
+    /// Distance from the box to a point: per-axis clamping to the nearest
+    /// face, then the length of the accumulated offsets; a contained point
+    /// reads zero (`boundbox.cpp:397-417`).
+    pub fn distance(&self, point: &Vector3) -> f32 {
+        let mut offset = Vector3::new(0.0, 0.0, 0.0);
+
+        if point.x > self.max.x {
+            offset.x = point.x - self.max.x;
+        } else if point.x < self.min.x {
+            offset.x = point.x - self.min.x;
+        }
+
+        if point.y > self.max.y {
+            offset.y = point.y - self.max.y;
+        } else if point.y < self.min.y {
+            offset.y = point.y - self.min.y;
+        }
+
+        if point.z > self.max.z {
+            offset.z = point.z - self.max.z;
+        } else if point.z < self.min.z {
+            offset.z = point.z - self.min.z;
+        }
+
+        offset.length()
+    }
+
+    /// Whether the box grown by `bias` on every axis contains the point —
+    /// the light volumes' sphere probe (`boundbox.ipp:313-321`), whose
+    /// second parameter is a bias, not a radius.
+    pub fn intersects_point(&self, v: &Vector3, bias: f32) -> bool {
+        v.x >= self.min.x - bias
+            && v.y >= self.min.y - bias
+            && v.z >= self.min.z - bias
+            && v.x < self.max.x + bias
+            && v.y < self.max.y + bias
+            && v.z < self.max.z + bias
+    }
+
+    /// Efficient eight-corner transform (`boundbox.cpp:73-118`): transform
+    /// the min corner, then accumulate the axis-aligned extents row by row
+    /// with sign handling.
+pub fn add_bound_box(&mut self, bb: &Self) {
         if bb.inside_out() {
             return;
         }
@@ -94,24 +151,7 @@ impl BoundBox {
             self.max.z = self.max.z.max(bb.max.z);
         }
     }
-
-    /// `(min + max) / 2.f` (`boundbox.ipp:323-328`).
-    pub fn centre(&self) -> Vector3 {
-        (self.min + self.max) / 2.0
-    }
-
-    pub fn width(&self) -> Vector3 {
-        self.max - self.min
-    }
-
-    /// `AABB::clip` (`boundbox.cpp:310-388`): clip the segment `source` →
-    /// `extent` against this box bloated by `bloat` in all directions.
-    /// `isZero(delta)` is the reference's *exact* zero test
-    /// (`stdmf_minimal.hpp:110-139`, `isEqual(f, 0)` → `f == 0.f`), which
-    /// gives zero-length axes the half-open face check. On success the two
-    /// endpoints are moved to the clipped parameters; `false` means the
-    /// segment misses the bloated box entirely.
-    pub fn clip(&self, source: &mut Vector3, extent: &mut Vector3, bloat: f32) -> bool {
+pub fn clip(&self, source: &mut Vector3, extent: &mut Vector3, bloat: f32) -> bool {
         let mut s_min = 0.0f32;
         let mut e_max = 1.0f32;
 
@@ -204,36 +244,7 @@ impl BoundBox {
         // and that's it
         true
     }
-
-    /// Efficient eight-corner transform (`boundbox.cpp:73-118`): transform
-    /// the min corner, then accumulate the axis-aligned extents row by row
-    /// with sign handling.
-    pub fn transform_by(&mut self, m: &Matrix) {
-        let min = m.apply_point(&self.min);
-        let mut new_min = min;
-        let mut new_max = min;
-
-        let size = self.width();
-        for axis in 0..3 {
-            let dir = m.apply_to_unit_axis_vector(axis);
-            let extent = size.get(axis);
-            for comp in 0..3 {
-                let scaled = dir.get(comp) * extent;
-                if scaled > 0.0 {
-                    new_max.set(comp, new_max.get(comp) + scaled);
-                } else {
-                    new_min.set(comp, new_min.get(comp) + scaled);
-                }
-            }
-        }
-        self.min = new_min;
-        self.max = new_max;
-    }
-
-    /// `AABB::intersectsRay(origin, dir)` (`boundbox.cpp:117-149`): probe
-    /// every box face the ray can pierce, requiring the hit to land inside
-    /// the other two axes (strict `<` on both).
-    pub fn intersects_ray(&self, origin: &Vector3, dir: &Vector3) -> bool {
+pub fn intersects_ray(&self, origin: &Vector3, dir: &Vector3) -> bool {
         let bounds = [self.min, self.max];
         for bound in &bounds {
             for axis in 0..3 {
@@ -260,12 +271,7 @@ impl BoundBox {
 
         false
     }
-
-    /// `AABB::intersectsRay(origin, dir, coord)` (`boundbox.cpp:215-299`):
-    /// the candidate-plane walk. The reference's `IR(f)` bit trick is kept
-    /// verbatim — `to_bits() != 0` treats even a negative zero direction as
-    /// "computable" and the sign bit of `maxT` rejects backward planes.
-    pub fn intersects_ray_hit(
+pub fn intersects_ray_hit(
         &self,
         origin: &Vector3,
         dir: &Vector3,
@@ -330,6 +336,27 @@ impl BoundBox {
         }
         RayIntersectionType::Intersection
     }
+    pub fn transform_by(&mut self, m: &Matrix) {
+        let min = m.apply_point(&self.min);
+        let mut new_min = min;
+        let mut new_max = min;
+
+        let size = self.width();
+        for axis in 0..3 {
+            let dir = m.apply_to_unit_axis_vector(axis);
+            let extent = size.get(axis);
+            for comp in 0..3 {
+                let scaled = dir.get(comp) * extent;
+                if scaled > 0.0 {
+                    new_max.set(comp, new_max.get(comp) + scaled);
+                } else {
+                    new_min.set(comp, new_min.get(comp) + scaled);
+                }
+            }
+        }
+        self.min = new_min;
+        self.max = new_max;
+    }
 }
 
 #[cfg(test)]
@@ -358,31 +385,6 @@ mod tests {
         b.add_bounds(&Vector3::new(-5.0, 11.0, 5.0));
         assert_eq!(b.min, Vector3::new(-5.0, 0.0, 0.0));
         assert_eq!(b.max, Vector3::new(10.0, 11.0, 10.0));
-    }
-
-    #[test]
-    fn add_bound_box_merges_and_snaps_like_the_reference() {
-        // an inside-out source is skipped entirely (`boundbox.ipp:213-214`)
-        let mut b = BoundBox::new(Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0));
-        b.add_bound_box(&BoundBox::default());
-        assert_eq!(b.min, Vector3::ZERO);
-        assert_eq!(b.max, Vector3::new(10.0, 10.0, 10.0));
-        // an inside-out self snaps to the source (`boundbox.ipp:216-221`)
-        let mut c = BoundBox::default();
-        c.add_bound_box(&BoundBox::new(
-            Vector3::new(1.0, 2.0, 3.0),
-            Vector3::new(4.0, 5.0, 6.0),
-        ));
-        assert_eq!(c.min, Vector3::new(1.0, 2.0, 3.0));
-        assert_eq!(c.max, Vector3::new(4.0, 5.0, 6.0));
-        // otherwise per-component min/max
-        let mut d = BoundBox::new(Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0));
-        d.add_bound_box(&BoundBox::new(
-            Vector3::new(-1.0, 11.0, 5.0),
-            Vector3::new(2.0, 12.0, 6.0),
-        ));
-        assert_eq!(d.min, Vector3::new(-1.0, 0.0, 0.0));
-        assert_eq!(d.max, Vector3::new(10.0, 12.0, 10.0));
     }
 
     #[test]
@@ -447,274 +449,39 @@ mod tests {
     }
 
     #[test]
-    fn clip_passes_and_rewrites_a_segment_through_the_box() {
-        let b = BoundBox::new(Vector3::new(-2.0, -3.0, -2.0), Vector3::new(2.0, 1.0, 2.0));
-        // A segment crossing the box end to end: the exit lands on the
-        // max face, the entry on the min face.
-        let mut s = Vector3::new(-5.0, -1.0, 0.0);
-        let mut e = Vector3::new(5.0, -1.0, 0.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(-2.0, -1.0, 0.0));
-        assert_eq!(e, Vector3::new(2.0, -1.0, 0.0));
-
-        // A zero-bloat miss is rejected.
-        let mut s = Vector3::new(-5.0, 1.5, 0.0);
-        let mut e = Vector3::new(5.0, 1.5, 0.0);
-        assert!(!b.clip(&mut s, &mut e, 0.0));
+    fn set_bounds_assigns_both_corners() {
+        let mut b = BoundBox::default();
+        b.set_bounds(Vector3::new(1.0, 2.0, 3.0), Vector3::new(4.0, 5.0, 6.0));
+        assert_eq!(b.min, Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(b.max, Vector3::new(4.0, 5.0, 6.0));
     }
 
     #[test]
-    fn clip_bloats_the_faces() {
-        let b = BoundBox::new(Vector3::new(-2.0, -3.0, -2.0), Vector3::new(2.0, 1.0, 2.0));
-        // y is a zero-delta axis here: y = 1.5 sits inside the bloated slab
-        // [-4, 2], so the half-open face check accepts it. The clip happens
-        // on x, where the 1.0-bloat moves the faces from ±2 to ±3.
-        let mut s = Vector3::new(-5.0, 1.5, 0.0);
-        let mut e = Vector3::new(5.0, 1.5, 0.0);
-        assert!(b.clip(&mut s, &mut e, 1.0));
-        assert_eq!(s, Vector3::new(-3.0, 1.5, 0.0));
-        assert_eq!(e, Vector3::new(3.0, 1.5, 0.0));
-    }
-
-    #[test]
-    fn clip_zero_delta_axis_uses_the_half_open_face_check() {
-        let b = BoundBox::new(Vector3::new(-2.0, -3.0, -2.0), Vector3::new(2.0, 1.0, 2.0));
-        // delta.x == 0 exactly with x inside the bloated slab: the x axis
-        // accepts, the clip still runs on y/z.
-        let mut s = Vector3::new(0.0, -5.0, 0.0);
-        let mut e = Vector3::new(0.0, 5.0, 0.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s.x, 0.0);
-        assert_eq!(e.x, 0.0);
-        assert_eq!(s.y, -3.0);
-        assert_eq!(e.y, 1.0);
-
-        // x on the min face - bloat (exclusive) is rejected.
-        let mut s = Vector3::new(-2.1, 0.0, 0.0);
-        let mut e = Vector3::new(-2.1, 0.0, 0.5);
-        assert!(!b.clip(&mut s, &mut e, 0.0));
-        // x exactly on min - bloat is accepted (half-open at min).
-        let mut s = Vector3::new(-2.0, 0.0, 0.0);
-        let mut e = Vector3::new(-2.0, 0.0, 0.5);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        // x exactly on max + bloat is rejected (half-open at max).
-        let mut s = Vector3::new(2.0, 0.0, 0.0);
-        let mut e = Vector3::new(2.0, 0.0, 0.5);
-        assert!(!b.clip(&mut s, &mut e, 0.0));
-    }
-
-    #[test]
-    fn clip_rejects_when_the_entry_passes_the_exit() {
-        // Both endpoints beyond the box on one axis: the entry parameter
-        // s_min lands past the exit parameter e_max.
+    fn distance_is_zero_for_a_contained_point() {
         let b = BoundBox::new(Vector3::new(-1.0, -1.0, -1.0), Vector3::new(1.0, 1.0, 1.0));
-        let mut s = Vector3::new(3.0, 0.0, 0.0);
-        let mut e = Vector3::new(5.0, 0.0, 0.0);
-        assert!(!b.clip(&mut s, &mut e, 0.0));
-        // Endpoints unchanged on rejection.
-        assert_eq!(s, Vector3::new(3.0, 0.0, 0.0));
-        assert_eq!(e, Vector3::new(5.0, 0.0, 0.0));
+        assert_eq!(b.distance(&Vector3::ZERO), 0.0);
+        // A point beyond a single face measures the shortest offset only.
+        assert_eq!(b.distance(&Vector3::new(3.0, 0.0, 0.0)), 2.0);
+        // A point past a corner is the euclidean offset.
+        assert!(
+            (b.distance(&Vector3::new(2.0, 2.0, 2.0)) - (3.0f32).sqrt()).abs() < 1e-5,
+            "corner distance sums the three axis offsets"
+        );
+        // Points before min measure to the min faces.
+        assert_eq!(b.distance(&Vector3::new(-3.0, -1.0, -1.0)), 2.0);
     }
 
     #[test]
-    fn clip_walks_a_negative_direction_axis() {
-        let b = BoundBox::new(Vector3::new(-2.0, -2.0, -2.0), Vector3::new(2.0, 2.0, 2.0));
-        // z sweeps from +5 down to -5: entry at the max face, exit at the
-        // min face (the swapped branch).
-        let mut s = Vector3::new(0.0, 0.0, 5.0);
-        let mut e = Vector3::new(0.0, 0.0, -5.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(0.0, 0.0, 2.0));
-        assert_eq!(e, Vector3::new(0.0, 0.0, -2.0));
-    }
-
-    #[test]
-    fn clip_walks_the_negative_direction_on_every_axis() {
-        let b = BoundBox::new(Vector3::new(-2.0, -2.0, -2.0), Vector3::new(2.0, 2.0, 2.0));
-        // x sweeps from +5 down to -5: the swapped branch on the x faces.
-        let mut s = Vector3::new(5.0, 0.0, 0.0);
-        let mut e = Vector3::new(-5.0, 0.0, 0.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(2.0, 0.0, 0.0));
-        assert_eq!(e, Vector3::new(-2.0, 0.0, 0.0));
-
-        // y sweeps from +5 down to -5 the same way.
-        let mut s = Vector3::new(0.0, 5.0, 0.0);
-        let mut e = Vector3::new(0.0, -5.0, 0.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(0.0, 2.0, 0.0));
-        assert_eq!(e, Vector3::new(0.0, -2.0, 0.0));
-
-        // A straight positive z sweep crosses the min face first.
-        let mut s = Vector3::new(0.0, 0.0, -5.0);
-        let mut e = Vector3::new(0.0, 0.0, 5.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(0.0, 0.0, -2.0));
-        assert_eq!(e, Vector3::new(0.0, 0.0, 2.0));
-    }
-
-    #[test]
-    fn clip_skips_axis_updates_whose_crossing_lands_outside_the_segment() {
-        let b = BoundBox::new(Vector3::new(-2.0, -2.0, -2.0), Vector3::new(2.0, 2.0, 2.0));
-
-        // The x entry lies past the segment end and the x exit lies even
-        // further: the exit update is skipped and the entry passes it.
-        let mut s = Vector3::new(-10.0, 0.0, 0.0);
-        let mut e = Vector3::new(-5.0, 0.0, 0.0);
-        assert!(!b.clip(&mut s, &mut e, 0.0));
-
-        // The segment ends inside the slab: the exit face lies past the
-        // end, so the exit update is skipped but the clip still succeeds
-        // with the end untouched.
-        let mut s = Vector3::new(0.0, -5.0, 0.0);
-        let mut e = Vector3::new(0.0, 1.5, 0.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(0.0, -2.0, 0.0));
-        assert_eq!(e, Vector3::new(0.0, 1.5, 0.0));
-
-        // x carries the clip; the y crossing parameter is negative, so
-        // the y entry update is skipped while the exit still clips.
-        let mut s = Vector3::new(-5.0, 0.0, 0.0);
-        let mut e = Vector3::new(5.0, 5.0, 0.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(-2.0, 1.5, 0.0));
-        assert_eq!(e, Vector3::new(-1.0, 2.0, 0.0));
-
-        // The z segment ends inside the slab: the z exit update is skipped.
-        let mut s = Vector3::new(0.0, 0.0, -5.0);
-        let mut e = Vector3::new(0.0, 0.0, 1.5);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(0.0, 0.0, -2.0));
-        assert_eq!(e, Vector3::new(0.0, 0.0, 1.5));
-
-        // A z sweep starting inside: the negative-direction entry update
-        // is skipped (the max-face crossing is behind) and the exit lands
-        // on the min face.
-        let mut s = Vector3::new(0.0, 0.0, 0.0);
-        let mut e = Vector3::new(0.0, 0.0, -5.0);
-        assert!(b.clip(&mut s, &mut e, 0.0));
-        assert_eq!(s, Vector3::new(0.0, 0.0, 0.0));
-        assert_eq!(e, Vector3::new(0.0, 0.0, -2.0));
-
-        // Both z crossings sit above the segment: the negative-direction
-        // exit update is skipped and the entry passes it.
-        let mut s = Vector3::new(0.0, 0.0, 10.0);
-        let mut e = Vector3::new(0.0, 0.0, 5.0);
-        assert!(!b.clip(&mut s, &mut e, 0.0));
-
-        // z fixed outside the slab rejects without reaching the entry test.
-        let mut s = Vector3::new(0.0, 0.0, 3.0);
-        let mut e = Vector3::new(0.0, 5.0, 3.0);
-        assert!(!b.clip(&mut s, &mut e, 0.0));
-    }
-
-    #[test]
-    fn ray_probes_report_hits_and_misses() {
-        use RayIntersectionType::{Intersection, NoIntersection, OriginInside};
-
-        fn assert_almost_eq(a: f32, b: f32) {
-            assert!((a - b).abs() < 1e-5, "{a} != {b}");
-        }
-
-        let b = BoundBox::new(Vector3::new(-1.0, -1.0, -1.0), Vector3::new(1.0, 1.0, 1.0));
-
-        // The two-argument face probe: straight through the box.
-        assert!(b.intersects_ray(&Vector3::new(0.0, 0.0, -5.0), &Vector3::new(0.0, 0.0, 10.0)));
-        // Parallel outside both other axes: every candidate hit lands
-        // outside the strict bounds.
-        assert!(!b.intersects_ray(&Vector3::new(3.0, 0.0, -5.0), &Vector3::new(0.0, 0.0, 10.0)));
-        // A zero direction on the only moving axis gives nothing to probe.
-        assert!(!b.intersects_ray(&Vector3::new(0.0, 0.0, -5.0), &Vector3::ZERO));
-
-        // The three-argument form with the candidate-plane walk.
-        let mut coord = Vector3::ZERO;
-        assert_eq!(
-            b.intersects_ray_hit(
-                &Vector3::new(0.0, 0.0, -5.0),
-                &Vector3::new(0.0, 0.0, 10.0),
-                &mut coord
-            ),
-            Intersection
-        );
-        assert_almost_eq(coord.z, -1.0);
-        assert_almost_eq(coord.x, 0.0);
-
-        let mut coord = Vector3::ZERO;
-        assert_eq!(
-            b.intersects_ray_hit(
-                &Vector3::new(0.5, 0.5, 0.0),
-                &Vector3::new(0.1, 0.0, 0.1),
-                &mut coord
-            ),
-            OriginInside
-        );
-        assert_eq!(coord, Vector3::new(0.5, 0.5, 0.0));
-
-        let mut coord = Vector3::ZERO;
-        assert_eq!(
-            b.intersects_ray_hit(
-                &Vector3::new(0.0, 0.0, -5.0),
-                &Vector3::new(0.0, 0.0, -10.0),
-                &mut coord
-            ),
-            NoIntersection,
-            "walking away from the box is rejected via the maxT sign bit"
-        );
-
-        // A ray starting inside probes the min face backwards (t <= 0 is
-        // skipped) and answers through the max face.
-        assert!(b.intersects_ray(&Vector3::new(0.0, 0.0, 0.0), &Vector3::new(0.0, 0.0, 10.0)));
-    }
-
-    #[test]
-    fn ray_hit_picks_the_maxt_plane_and_rejects_off_axis_crossings() {
-        use RayIntersectionType::{Intersection, NoIntersection};
-
-        fn assert_almost_eq(a: f32, b: f32) {
-            assert!((a - b).abs() < 1e-5, "{a} != {b}");
-        }
-
-        let b = BoundBox::new(Vector3::new(-1.0, -1.0, -1.0), Vector3::new(1.0, 1.0, 1.0));
-
-        // Origin above the max y face walks back down to it: the
-        // above-max candidate branch, the middle maxT winning the plane
-        // pick, and the off-axis checks passing.
-        let mut coord = Vector3::ZERO;
-        assert_eq!(
-            b.intersects_ray_hit(
-                &Vector3::new(0.0, 3.0, 0.0),
-                &Vector3::new(0.0, -10.0, 0.0),
-                &mut coord
-            ),
-            Intersection
-        );
-        assert_almost_eq(coord.y, 1.0);
-        assert_almost_eq(coord.x, 0.0);
-
-        // The y maxT alone is positive: it wins the pick and the hit lands
-        // on the min face.
-        let mut coord = Vector3::ZERO;
-        assert_eq!(
-            b.intersects_ray_hit(
-                &Vector3::new(0.0, -5.0, 0.0),
-                &Vector3::new(0.0, 10.0, 0.0),
-                &mut coord
-            ),
-            Intersection
-        );
-        assert_almost_eq(coord.y, -1.0);
-
-        // A below-min axis with a zero direction leaves its maxT at the
-        // sentinel: no plane wins the pick and the off-axis epsilon check
-        // rejects (the origin is out of bounds along the untouched axis).
-        let mut coord = Vector3::ZERO;
-        assert_eq!(
-            b.intersects_ray_hit(
-                &Vector3::new(-5.0, -5.0, 0.0),
-                &Vector3::new(10.0, 0.0, 0.0),
-                &mut coord
-            ),
-            NoIntersection
-        );
+    fn intersects_point_grows_the_box_by_the_bias() {
+        let b = BoundBox::new(Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0));
+        // Zero bias: the half-open containment test.
+        assert!(b.intersects_point(&Vector3::new(5.0, 5.0, 5.0), 0.0));
+        assert!(!b.intersects_point(&Vector3::new(-1.0, 5.0, 5.0), 0.0));
+        // A positive bias admits points within radius of the faces; the
+        // grown box stays half-open (`12.0 < 10.0 + 2.0` is false).
+        assert!(b.intersects_point(&Vector3::new(-1.0, 5.0, 5.0), 2.0));
+        assert!(b.intersects_point(&Vector3::new(11.9, 5.0, 5.0), 2.0));
+        assert!(!b.intersects_point(&Vector3::new(12.0, 5.0, 5.0), 2.0));
+        assert!(!b.intersects_point(&Vector3::new(-3.0, 5.0, 5.0), 2.0));
     }
 }

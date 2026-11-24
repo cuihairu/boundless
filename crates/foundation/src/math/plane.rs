@@ -79,6 +79,40 @@ impl PlaneEq {
     pub fn distance_to(&self, point: &Vector3) -> f32 {
         self.normal.dot_product(point) - self.d
     }
+
+    /// `basis(xdir, ydir)` (`planeeq.cpp:92-115`): the parameterised in-plane
+    /// x/y directions. The x direction zeroes the smaller of the two minor
+    /// axes, solves the largest-axis component to land on the plane, and the
+    /// y direction crosses normal × xdir; both are normalised.
+    pub fn basis(&self) -> (Vector3, Vector3) {
+        let fabses = [
+            self.normal.x.abs(),
+            self.normal.y.abs(),
+            self.normal.z.abs(),
+        ];
+        let bi = if fabses[0] > fabses[1] {
+            if fabses[0] > fabses[2] { 0 } else { 2 }
+        } else if fabses[1] > fabses[2] {
+            1
+        } else {
+            2
+        };
+        // biMoreL = {1,2,0}, biLessL = {2,0,1} (`planeeq.cpp:85-86`).
+        let bi_more = (bi + 1) % 3;
+        let bi_less = (bi + 2) % 3;
+
+        let mut xdir = Vector3::new(0.0, 0.0, 0.0);
+        xdir.set(bi_less, 0.0);
+        xdir.set(bi_more, 1.0);
+        xdir.set(bi, -self.normal.get(bi_more) / self.normal.get(bi));
+
+        let mut ydir = Vector3::new(0.0, 0.0, 0.0);
+        ydir = ydir.cross_product(&self.normal, &xdir);
+
+        xdir.normalise();
+        ydir.normalise();
+        (xdir, ydir)
+    }
 }
 
 #[cfg(test)]
@@ -159,5 +193,25 @@ mod tests {
         assert_almost_eq(hit.x, 3.0);
         assert_almost_eq(hit.y, 4.0);
         assert_almost_eq(hit.z, 5.0);
+    }
+
+    #[test]
+    fn basis_is_two_orthonormal_in_plane_directions() {
+        // The z-normal plane through the origin: the largest axis is z, so
+        // xdir solves -nz/nz * nz = -1 on z with x at 1 — xdir = (1, 0, -1)
+        // before the normalise, ydir = normal × xdir.
+        let plane = PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 0.0);
+        let (xdir, ydir) = plane.basis();
+        assert_almost_eq(xdir.length(), 1.0);
+        assert_almost_eq(ydir.length(), 1.0);
+        assert_almost_eq(xdir.dot_product(&ydir), 0.0);
+        assert_almost_eq(xdir.dot_product(plane.normal()), 0.0);
+        assert_almost_eq(ydir.dot_product(plane.normal()), 0.0);
+
+        // The x-normal plane: biMoreL[0] puts the 1 on y and the zero on z.
+        let x_plane = PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 3.0);
+        let (xdir, _ydir) = x_plane.basis();
+        assert_almost_eq(xdir.z, 0.0);
+        assert_almost_eq(xdir.dot_product(&Vector3::new(1.0, 0.0, 0.0)), 0.0);
     }
 }

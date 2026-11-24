@@ -343,7 +343,7 @@ impl Channel {
 
     /// The local transform this channel produces at `frame`, or `None` for
     /// channel kinds that carry no pose.
-    fn result(&self, frame: f32) -> Option<Matrix> {
+    pub fn result(&self, frame: f32) -> Option<Matrix> {
         match self {
             Channel::Discrete { keys, .. } => {
                 if keys.is_empty() {
