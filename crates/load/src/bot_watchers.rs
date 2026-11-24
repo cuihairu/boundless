@@ -35,8 +35,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use watcher::stream::{
+    MODE_READ_ONLY, MODE_READ_WRITE, MemoryIStream, StreamValue, TYPE_TUPLE,
     calculate_packed_int_size, stream_to_value, stream_to_value_type, value_to_stream,
-    MemoryIStream, StreamValue, MODE_READ_ONLY, MODE_READ_WRITE, TYPE_TUPLE,
 };
 use watcher::{
     CallableWatcher, DataType, ExposeHint, Mode, Watcher, WatcherPathRequestV2, WatcherValue,
@@ -416,7 +416,7 @@ pub fn register_command_watchers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use watcher::stream::{MemoryOStream, MODE_CALLABLE, TYPE_INT, TYPE_STRING, TYPE_UNKNOWN};
+    use watcher::stream::{MODE_CALLABLE, MemoryOStream, TYPE_INT, TYPE_STRING, TYPE_UNKNOWN};
 
     /// A fleet with the default FD budget and room to grow.
     fn fleet() -> Rc<RefCell<Fleet>> {
@@ -872,5 +872,74 @@ mod tests {
         let mut watcher = BotCallableWatcher::add_bots(fleet);
         watcher.set_comment("Retitled".to_string());
         assert_eq!(watcher.comment(), "Retitled");
+    }
+
+    /// Drive a payload into a watcher instance the way the packet layer
+    /// does, without touching the global root: the same bytes two
+    /// separate stacks must be able to replay.
+    fn drive_into(watcher: &RefCell<BotCallableWatcher>, payload: Vec<u8>) -> bool {
+        let mut request = WatcherPathRequestV2::new("command/addBots");
+        assert!(request.set_packet_data(payload));
+        watcher.borrow_mut().set_from_stream("", &mut request)
+    }
+
+    /// The batch add/remove acceptance through the wire (BW-12-04-02):
+    /// the same packed command payloads — a legacy bare add, a protocol 2
+    /// add, a protocol 2 delete, another legacy add — driven into two
+    /// separately built fleet/watcher stacks leave the same active set,
+    /// names in order, tags and seed-drawn speeds included.
+    #[test]
+    fn the_same_wire_commands_produce_the_same_active_set() {
+        let build = || {
+            let fleet = Rc::new(RefCell::new(Fleet::with_seed("0", 1024, 4242)));
+            (
+                Rc::new(RefCell::new(BotCallableWatcher::add_bots(Rc::clone(
+                    &fleet,
+                )))),
+                Rc::new(RefCell::new(BotCallableWatcher::del_bots(Rc::clone(
+                    &fleet,
+                )))),
+                fleet,
+            )
+        };
+        let (add_left, del_left, fleet_left) = build();
+        let (add_right, del_right, fleet_right) = build();
+
+        let commands: [(
+            &RefCell<BotCallableWatcher>,
+            &RefCell<BotCallableWatcher>,
+            Vec<u8>,
+        ); 4] = [
+            // legacy bare add: 2 (Bot_1, Bot_2)
+            (&add_left, &add_right, int_parameter(2)),
+            // protocol 2 call: add 2 (Bot_3, Bot_4)
+            (&add_left, &add_right, call_payload(1, &int_parameter(2))),
+            // protocol 2 call: delete 3 (Bot_1..Bot_3)
+            (&del_left, &del_right, call_payload(1, &int_parameter(3))),
+            // legacy bare add: 1 (Bot_5)
+            (&add_left, &add_right, int_parameter(1)),
+        ];
+        for (left_watcher, right_watcher, payload) in commands {
+            assert!(drive_into(left_watcher, payload.clone()));
+            assert!(drive_into(right_watcher, payload));
+        }
+
+        let active = |fleet: &Fleet| -> Vec<(String, String, f32)> {
+            fleet
+                .bots()
+                .iter()
+                .map(|bot| {
+                    (
+                        bot.user_name().to_string(),
+                        bot.tag().to_string(),
+                        bot.speed(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(active(&fleet_left.borrow()), active(&fleet_right.borrow()));
+        let binding = fleet_left.borrow();
+        let names: Vec<&str> = binding.bots().iter().map(|bot| bot.user_name()).collect();
+        assert_eq!(names, vec!["Bot_4_0", "Bot_5_0"]);
     }
 }

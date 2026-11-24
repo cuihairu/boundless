@@ -239,6 +239,22 @@ impl Fleet {
         }
     }
 
+    /// A fleet whose settings come from a read `BotsConfig` — the
+    /// composition the load driver uses: the option list of
+    /// `bots_config.{hpp,cpp}` decides the fleet face
+    /// (`FleetSettings::from_bots_config`), while `appID_`, the seeded
+    /// speed draw and the empty lists stay `with_seed`'s.
+    pub fn with_bots_config(
+        config: &crate::bots_config::BotsConfig,
+        app_id: &str,
+        fd_limit: i32,
+        seed: u64,
+    ) -> Self {
+        let mut fleet = Self::with_seed(app_id, fd_limit, seed);
+        fleet.settings = FleetSettings::from_bots_config(config);
+        fleet
+    }
+
     /// The movement-controller registry the settings' controller type
     /// resolves against.
     pub fn registry_mut(&mut self) -> &mut ControllerRegistry {
@@ -840,5 +856,106 @@ mod tests {
         assert_eq!(settings.controller_type, "Beeline");
         assert_eq!(settings.controller_data, "server/bots/other.bwp");
         assert_eq!(settings.log_on_retry_period, 2.5);
+
+        // TCP without websockets derives the plain TCP transport.
+        let section = resources::datasection::parse(
+            "root",
+            b"<root><bots><shouldUseTCP>true</shouldUseTCP></bots></root>",
+        )
+        .unwrap();
+        let mut config = crate::bots_config::BotsConfig::new();
+        config.init(&[section], &mut Vec::new());
+        assert_eq!(
+            FleetSettings::from_bots_config(&config).transport,
+            Transport::Tcp
+        );
+    }
+
+    /// The batch add/remove acceptance (BW-12-04-02): the same command
+    /// script against two identically configured, identically seeded
+    /// fleets leaves the same active set — same names in the same order,
+    /// same tags, same speeds — including across adds, named adds,
+    /// front removals, tagged removals and out-of-range counts.
+    #[test]
+    fn the_same_commands_produce_the_same_active_set() {
+        let config = crate::bots_config::BotsConfig::new();
+
+        // add three (Bot_1..Bot_3), a Load-tagged named and random batch
+        // (Alice, Bot_4), remove the two front bots, drop every Default
+        // tag (Bot_3), then top up (Bot_5, Bot_6). Out-of-range and
+        // negative counts are the reference's no-ops.
+        let script = |fleet: &mut Fleet| {
+            fleet.add_bots(3);
+            fleet.settings_mut().tag = "Load".to_string();
+            fleet.add_bots_with_name(&[("Alice", "pw")]);
+            fleet.add_bots(1);
+            fleet.settings_mut().tag = "Default".to_string();
+            fleet.del_bots(2);
+            fleet.del_tagged_entities("Default");
+            fleet.add_bots(2);
+            fleet.add_bots(-2);
+            fleet.del_bots(-7);
+            fleet.del_bots(0);
+        };
+
+        let mut left = Fleet::with_bots_config(&config, "0", 1024, 777);
+        script(&mut left);
+        let mut right = Fleet::with_bots_config(&config, "0", 1024, 777);
+        script(&mut right);
+
+        let active = |fleet: &Fleet| -> Vec<(String, String, f32)> {
+            fleet
+                .bots()
+                .iter()
+                .map(|bot| {
+                    (
+                        bot.user_name().to_string(),
+                        bot.tag().to_string(),
+                        bot.speed(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(active(&left), active(&right));
+        // The script's expected shape: the named and random Load bots
+        // survive their slots, the Default tags only exist on the top-up.
+        let names: Vec<&str> = left.bots().iter().map(|bot| bot.user_name()).collect();
+        assert_eq!(names, vec!["Alice", "Bot_4_0", "Bot_5_0", "Bot_6_0"]);
+        assert_eq!(left.bots()[0].tag(), "Load");
+        assert_eq!(left.bots()[1].tag(), "Load");
+        assert_eq!(left.bots()[2].tag(), "Default");
+    }
+
+    /// The file-descriptor budget refuses the same bots on both fleets:
+    /// with room for exactly two, `addBots 5` stops both fleets after the
+    /// same two bots and the active sets stay identical
+    /// (`add_bot_with_name`, main_app.cpp:382-389).
+    #[test]
+    fn the_fd_budget_refuses_the_same_bots_on_both_fleets() {
+        let config = crate::bots_config::BotsConfig::new();
+
+        let mut left = Fleet::with_bots_config(&config, "0", 1024, 99);
+        let mut right = Fleet::with_bots_config(&config, "0", 1024, 99);
+
+        // The port's documented seam: the FD sample is the caller's to
+        // keep fresh, so the test models the environment growing by
+        // FD_PER_BOT per accepted bot the way `numFileDescriptorsOpen()`
+        // would.
+        for fleet in [&mut left, &mut right] {
+            let mut fd_open = 1024 - 2 * FD_PER_BOT;
+            for _ in 0..5 {
+                fleet.set_fd_open(fd_open);
+                fleet.add_bots(1);
+                fd_open += FD_PER_BOT;
+            }
+        }
+
+        assert_eq!(left.len(), 2);
+        assert_eq!(right.len(), 2);
+        fn names(fleet: &Fleet) -> Vec<&str> {
+            fleet.bots().iter().map(|bot| bot.user_name()).collect()
+        }
+        assert_eq!(names(&left), names(&right));
+        assert_eq!(names(&left), vec!["Bot_1_0", "Bot_2_0"]);
     }
 }
