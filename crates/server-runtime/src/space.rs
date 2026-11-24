@@ -93,7 +93,9 @@
 //!   plain fields it resets; `lastMappedGeometry_` and
 //!   `artificialMinLoad_` survive it, exactly as the reference leaves them;
 
+use std::cell::{Ref, RefMut};
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use crate::cellappmgr::{Addr, Rect, SpaceId};
 use crate::space_data::{
@@ -286,6 +288,13 @@ impl PhysicalSpace {
         }
     }
 }
+
+/// `PhysicalSpacePtr` (`space.hpp:30`): the backend lives behind a
+/// reference-counted handle, copied by [`Space::p_physical_space`] the way
+/// `Space::pPhysicalSpace()` hands out a `SmartPointer` copy
+/// (a viewer's transient grab, `cell_viewer_connection.cpp:232`). Dropping
+/// the last handle releases the backend — the BW-08-01-04 acceptance.
+pub type PhysicalSpaceHandle = Rc<std::cell::RefCell<PhysicalSpace>>;
 
 // -----------------------------------------------------------------------------
 // Section: Entity slots
@@ -528,7 +537,8 @@ pub struct SpaceScriptEvent {
 pub struct Space {
     id: SpaceId,
     cell: Option<Cell>,
-    physical: PhysicalSpace,
+    /// `pPhysicalSpace_` (`space.hpp:205`).
+    physical: PhysicalSpaceHandle,
     /// `cellInfos_` (`space.hpp:186`): the CellAppMgr's cells of this space,
     /// mirrored, keyed by the owning app's address.
     cell_infos: BTreeMap<Addr, CellInfoRecord>,
@@ -569,7 +579,7 @@ impl Space {
         Self {
             id,
             cell: None,
-            physical: if delegate_mode {
+            physical: Rc::new(std::cell::RefCell::new(if delegate_mode {
                 PhysicalSpace::Delegate {
                     paths: BTreeMap::new(),
                 }
@@ -577,7 +587,7 @@ impl Space {
                 PhysicalSpace::Chunk {
                     mappings: BTreeMap::new(),
                 }
-            },
+            })),
             cell_infos: BTreeMap::new(),
             tree_root: None,
             space_data_mapping: SpaceDataMapping::new(),
@@ -659,14 +669,20 @@ impl Space {
         }
     }
 
+    /// `Space::pPhysicalSpace()` (`space.hpp:67`): a copy of the
+    /// `PhysicalSpacePtr` — one reference bump on the backend.
+    pub fn p_physical_space(&self) -> PhysicalSpaceHandle {
+        Rc::clone(&self.physical)
+    }
+
     /// The physical backend, read-only.
-    pub fn physical(&self) -> &PhysicalSpace {
-        &self.physical
+    pub fn physical(&self) -> Ref<'_, PhysicalSpace> {
+        self.physical.borrow()
     }
 
     /// The physical backend, mutable (the chunk-loading lane drives it).
-    pub fn physical_mut(&mut self) -> &mut PhysicalSpace {
-        &mut self.physical
+    pub fn physical_mut(&self) -> RefMut<'_, PhysicalSpace> {
+        self.physical.borrow_mut()
     }
 
     /// `Space::numEntities`.
@@ -858,7 +874,7 @@ impl Space {
         if !self.entities.is_empty() {
             return false;
         }
-        self.physical.is_fully_unloaded()
+        self.physical.borrow().is_fully_unloaded()
     }
 
     /// `Space::reuse` (`space.cpp:128-145`): the state a recycled space
@@ -874,7 +890,7 @@ impl Space {
         self.tree_root = None;
         // space.cpp:155
         self.space_data_mapping.clear();
-        self.physical.reuse();
+        self.physical.borrow_mut().reuse();
     }
 
     /// Record a recent data entry (the `recentData_` push the data handlers
@@ -1135,13 +1151,13 @@ impl Space {
                     } else {
                         String::new()
                     };
-                    self.physical.load_resource(entry_id, &path);
+                    self.physical.borrow_mut().load_resource(entry_id, &path);
                     self.should_check_load_bounds = true;
                     // Someone else mapped a geometry: our last-mapped mark
                     // cannot be the last any more.
                     self.last_mapped_geometry.clear();
                 } else {
-                    self.physical.unload_resource(entry_id);
+                    self.physical.borrow_mut().unload_resource(entry_id);
                 }
             }
             // `SPACE_DATA_RECORDING` starts a replay recording
@@ -1251,7 +1267,7 @@ impl Space {
         self.shutting_down = false;
         // space.cpp:126-130 — the cell-info tree goes with the space.
         self.tree_root = None;
-        self.physical.clear();
+        self.physical.borrow_mut().clear();
         teardown
     }
 }
@@ -1765,8 +1781,8 @@ mod tests {
         assert_eq!(chunk.id(), 7);
         assert!(!chunk.has_cell());
         assert_eq!(
-            chunk.physical(),
-            &PhysicalSpace::Chunk {
+            *chunk.physical(),
+            PhysicalSpace::Chunk {
                 mappings: BTreeMap::new()
             }
         );
@@ -1778,8 +1794,8 @@ mod tests {
 
         let delegate = Space::new(8, true);
         assert_eq!(
-            delegate.physical(),
-            &PhysicalSpace::Delegate {
+            *delegate.physical(),
+            PhysicalSpace::Delegate {
                 paths: BTreeMap::new()
             }
         );
@@ -1843,7 +1859,7 @@ mod tests {
         spaces.create(9, false);
         {
             let space = spaces.find_mut(9).unwrap();
-            if let PhysicalSpace::Chunk { mappings } = space.physical_mut() {
+            if let PhysicalSpace::Chunk { mappings } = &mut *space.physical_mut() {
                 mappings.insert((1, 5000), "space.center".to_owned());
             }
             assert!(!space.is_fully_unloaded());
@@ -1853,24 +1869,115 @@ mod tests {
 
         // The mapping unloading releases the space.
         let space = spaces.find_mut(9).unwrap();
-        if let PhysicalSpace::Chunk { mappings } = space.physical_mut() {
+        if let PhysicalSpace::Chunk { mappings } = &mut *space.physical_mut() {
             mappings.clear();
         }
         assert!(space.is_fully_unloaded());
     }
 
     /// The delegate backend is unloaded when its paths are
-    /// (`physical_delegate_space.cpp:258-261`).
+    /// (`physical_delegate_space.cpp:258-261`); the backend's own
+    /// load/unload resource faces mount and unmount world resources.
     #[test]
     fn the_delegate_backend_unloads_with_its_paths() {
-        let mut space = Space::new(4, true);
+        let space = Space::new(4, true);
         assert!(space.is_fully_unloaded());
-        if let PhysicalSpace::Delegate { paths } = space.physical_mut() {
-            paths.insert((1, 5000), "worlds/a".to_owned());
+        space.physical_mut().load_resource((1, 5000), "worlds/a");
+        if let PhysicalSpace::Delegate { paths } = &*space.physical() {
+            assert_eq!(paths.get(&(1, 5000)).map(String::as_str), Some("worlds/a"));
         }
+        assert!(!space.is_fully_unloaded());
+        space.physical_mut().unload_resource((1, 5000));
+        assert!(space.is_fully_unloaded());
+        space.physical_mut().load_resource((1, 5001), "worlds/b");
         assert!(!space.is_fully_unloaded());
         space.physical_mut().clear();
         assert!(space.is_fully_unloaded());
+    }
+
+    /// BW-08-01-04 — 引用在销毁后释放. The `SmartPointer<IPhysicalSpace>`
+    /// face: `Space::pPhysicalSpace()` hands out counted copies; a viewer's
+    /// transient grab keeps the backend alive across the space's
+    /// destruction, the `~Space` clear runs under that hold, and the
+    /// backend itself is released only when the last reference drops.
+    #[test]
+    fn physical_space_reference_is_released_after_destruction() {
+        let mut space = Space::new(7, false);
+        let weak = Rc::downgrade(&space.p_physical_space());
+
+        // Mount one geometry through the space-data mapping face
+        // (`space.cpp:834-835`) and a second straight through the backend,
+        // then unmount the first (`space.cpp:849`) — the 挂载/卸载 pair.
+        let mut out = SpaceOutbound::default();
+        let matrix_path_payload = {
+            let mut payload = vec![0u8; 64];
+            payload.extend_from_slice(b"space.center");
+            payload
+        };
+        assert!(space.space_data_entry(
+            (9, 100),
+            SPACE_DATA_MAPPING_KEY_CLIENT_SERVER,
+            &matrix_path_payload,
+            true,
+            false,
+            0,
+            &mut out
+        ));
+        space
+            .p_physical_space()
+            .borrow_mut()
+            .load_resource((9, 200), "space.extra");
+        assert!(!space.is_fully_unloaded());
+        assert!(space.space_data_entry((9, 100), NO_KEY, &[], false, false, 0, &mut out));
+        match &*space.physical() {
+            PhysicalSpace::Chunk { mappings } => {
+                assert_eq!(mappings.len(), 1, "only the straight mount remains");
+                assert!(mappings.contains_key(&(9, 200)));
+            }
+            PhysicalSpace::Delegate { .. } => unreachable!("chunk backend"),
+        }
+
+        // The viewer's counted copy (`cell_viewer_connection.cpp:232`).
+        let viewer = space.p_physical_space();
+        assert_eq!(Rc::strong_count(&viewer), 2, "space + viewer");
+
+        // ~Space: the clear runs while the viewer still holds the backend.
+        let teardown = space.destroy();
+        assert_eq!(teardown, SpaceTeardown::default());
+        assert!(
+            viewer.borrow().is_fully_unloaded(),
+            "the clear ran under the hold"
+        );
+
+        // The space drops its reference; the viewer's keeps it alive.
+        drop(space);
+        assert!(weak.upgrade().is_some(), "viewer copy holds the backend");
+
+        // The last reference releases it.
+        drop(viewer);
+        assert!(
+            weak.upgrade().is_none(),
+            "reference released after destruction"
+        );
+    }
+
+    /// The `Spaces` map's erase path releases the backend the same way:
+    /// `deleteOldSpaces`'s erase + `delete` drops the space and its
+    /// `pPhysicalSpace_` with it.
+    #[test]
+    fn spaces_map_erase_releases_the_physical_reference() {
+        let mut spaces = Spaces::new();
+        spaces.create(3, false);
+        let weak = {
+            let space = spaces.find_mut(3).unwrap();
+            let handle = space.p_physical_space();
+            let weak = Rc::downgrade(&handle);
+            drop(handle);
+            assert!(weak.upgrade().is_some(), "the space holds the backend");
+            weak
+        };
+        assert_eq!(spaces.delete_old_spaces(), vec![3]);
+        assert!(weak.upgrade().is_none(), "the erase released the backend");
     }
 
     /// `Space::removeEntity` (`space.cpp:314-345`): the swap-pop order and
@@ -2069,7 +2176,7 @@ mod tests {
         space.advance_data_seq(5, 9);
         space.initial_time_of_day = 0.25;
         space.game_seconds_per_second = 2.0;
-        if let PhysicalSpace::Chunk { mappings } = space.physical_mut() {
+        if let PhysicalSpace::Chunk { mappings } = &mut *space.physical_mut() {
             mappings.insert((1, 5000), "space.center".to_owned());
         }
 
@@ -2080,8 +2187,8 @@ mod tests {
         assert_eq!(space.initial_time_of_day(), -1.0);
         assert_eq!(space.game_seconds_per_second(), 0.0);
         assert_eq!(
-            space.physical(),
-            &PhysicalSpace::Chunk {
+            *space.physical(),
+            PhysicalSpace::Chunk {
                 mappings: BTreeMap::new()
             }
         );
@@ -2145,8 +2252,8 @@ mod tests {
         // The timer is cancelled and the physical space cleared.
         assert!(!space.is_shutting_down());
         assert_eq!(
-            space.physical(),
-            &PhysicalSpace::Chunk {
+            *space.physical(),
+            PhysicalSpace::Chunk {
                 mappings: BTreeMap::new()
             }
         );
@@ -2916,7 +3023,7 @@ mod tests {
             100,
             &mut out
         ));
-        let loaded = match space.physical() {
+        let loaded = match &*space.physical() {
             PhysicalSpace::Chunk { mappings } => mappings.get(&(1, 5000)).cloned(),
             _ => panic!("the chunk backend is the default"),
         };
@@ -2925,7 +3032,7 @@ mod tests {
         assert_eq!(space.last_mapped_geometry(), "");
 
         assert!(space.space_data((1, 5000), NO_KEY, b"", 100, &mut out));
-        let unloaded = match space.physical() {
+        let unloaded = match &*space.physical() {
             PhysicalSpace::Chunk { mappings } => mappings.is_empty(),
             _ => panic!("the chunk backend is the default"),
         };
