@@ -69,7 +69,10 @@
 //! - [`effect_converter`] — the `.fx` → `.fxo` converter behind the D3DX
 //!   compile seam (`tools/asset_pipeline/converters/effect_converter/`);
 //! - [`asset_processor`] — the `_AssetProcessor` tool functions behind the
-//!   PyScript seam (`tools/assetprocessor/`).
+//!   PyScript seam (`tools/assetprocessor/`);
+//! - [`offline_processor`] — the offline tool's command surface, cluster
+//!   sharding, chunk gathering, `.cdata` invalidation and its two
+//!   commands (`tools/offline_processor/`, `lib/chunk/chunk_processor_manager.cpp`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -92,6 +95,7 @@ pub mod hash64;
 pub mod hierarchical_config;
 pub mod hierarchical_config_converter;
 pub mod jit_compiler;
+pub mod offline_processor;
 pub mod plugin_loader;
 pub mod primitive_file_structs;
 pub mod primitive_processor;
