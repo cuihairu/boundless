@@ -17,3 +17,7 @@ sha2 = { workspace = true }  # the signal syscalls land here (BW-16-02-01)
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
+# Replay tick compression (BW-07-05-03): the reference's `ZipOStream`
+# (`lib/network/zip_stream.cpp`). rust_backend keeps it pure Rust
+# (miniz_oxide), so the workspace gate needs no system zlib.
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
