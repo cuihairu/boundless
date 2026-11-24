@@ -56,6 +56,7 @@ use std::cell::Cell;
 use std::collections::{hash_map::DefaultHasher, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::LazyLock;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
@@ -361,6 +362,21 @@ pub fn this_thread_id() -> u64 {
         };
     }
     ID.with(|id| *id)
+}
+
+/// The reference's `g_profiler` definition (`profiler.cpp:27`): the one
+/// profiler instance the whole process shares. Every consumer — the
+/// `_bw_profile` module (`server/tools/bw_profile/bw_profile.cpp`), the
+/// watchers, the JSON dump writer — records into and reads from this
+/// object; the reference exports the instance itself and this port hands
+/// out the same `&'static` handle over the port's mutex shape (see the
+/// port shape note at the crate top).
+static G_PROFILER: LazyLock<Profiler> = LazyLock::new(Profiler::default);
+
+/// The process-global profiler: the reference's `g_profiler`
+/// (`profiler.cpp:27`).
+pub fn global() -> &'static Profiler {
+    &G_PROFILER
 }
 
 // The reference's `tls_ThreadIndex_` (`profiler.cpp:32`): the recording
@@ -2160,7 +2176,7 @@ mod tests {
         // Covers the default clock path and Default.
         let profiler = Profiler::default();
         assert!(profiler.init(16 * 336, 2));
-        assert!(profiler.watcher_enabled() == false);
+        assert!(!profiler.watcher_enabled());
         // Pre-init guards on a fresh instance: nothing may panic.
         let bare = Profiler::new();
         bare.remove_thread(this_thread_id());

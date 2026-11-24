@@ -17,6 +17,7 @@
 
 pub mod billing;
 pub mod binding;
+pub mod bw_profile;
 pub mod capi;
 pub mod gil;
 pub mod import_paths;

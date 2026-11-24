@@ -1670,6 +1670,8 @@ name = "python-host"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "libc",
+ "profiler",
  "resources",
 ]
 

@@ -71,6 +71,10 @@ python-host = { path = "crates/python-host" }
 # The watcher path tree (BW-12-01); load's bots command callables are its
 # first consumer (BW-17-01-06).
 watcher = { path = "crates/watcher" }
+# The profiler frame and counter compatibility layer (BW-12-03-01); the
+# `_bw_profile` module (BW-12-03-02) records through its `g_profiler`
+# global.
+profiler = { path = "crates/profiler" }
 server-runtime = { path = "crates/server-runtime" }
 client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
 # load = { path = "crates/load" }  # re-add with first consumer
