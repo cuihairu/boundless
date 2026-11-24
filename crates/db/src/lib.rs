@@ -15,9 +15,14 @@
 //! BW-09-05 operational tools.
 
 pub mod error;
+pub mod lookup;
 pub mod record;
 pub mod storage;
 
 pub use error::DbError;
+pub use lookup::{
+    EntityDefIndex, LookUpEntitiesCriteria, LookUpEntitiesFilter, LookupDefs,
+    get_database_id_from_name, lookup_entities, lookup_entity_by_name,
+};
 pub use record::EntityRecord;
 pub use storage::{EntityKey, EntityStorage, MemoryConnection, MemoryStorage, load_entity};

@@ -82,6 +82,13 @@ pub trait EntityStorage {
     /// auto-load and active-set cleanups are the online-state face
     /// (BW-09-01-05).
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError>;
+
+    /// Every stored record, in a deterministic order
+    /// `(type_id, db_id)`. The reference queries per type with SQL
+    /// (`entity_type_mapping.cpp` builds the SELECT); the in-memory
+    /// backend hands everything over and the lookup operations filter,
+    /// which keeps the contract synchronous and backend-free.
+    fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError>;
 }
 
 /// The DBApp load: fetch the record for `key`, or [`DbError::NotFound`]
@@ -223,6 +230,13 @@ impl EntityStorage for MemoryStorage {
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
         self.inner.borrow_mut().del(key)
     }
+
+    fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError> {
+        let mut records: Vec<EntityRecord> =
+            self.inner.borrow().entities.values().cloned().collect();
+        records.sort_by_key(|r| (r.type_id, r.db_id));
+        Ok(records)
+    }
 }
 
 /// A connection to a [`MemoryStorage`]: the read/write face a caller
@@ -249,6 +263,13 @@ impl EntityStorage for MemoryConnection {
 
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
         self.inner.borrow_mut().del(key)
+    }
+
+    fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError> {
+        let mut records: Vec<EntityRecord> =
+            self.inner.borrow().entities.values().cloned().collect();
+        records.sort_by_key(|r| (r.type_id, r.db_id));
+        Ok(records)
     }
 }
 
