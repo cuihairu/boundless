@@ -873,7 +873,8 @@
   - 实现：`crates/mercury/src/misc.rs` 增 `SessionKey`（basictypes.hpp:171，u32 别名）+ `regenerate_session_key`（proxy.cpp:562 语义：时间戳取值、零则再取，端口收敛为单次取值的结果）；`crates/mercury/src/block_cipher.rs` 增 `KeyedXorCipher` 测试替身（参考无此物——真 `SymmetricBlockCipher` 是 Blowfish，未移植；替身按 key 逐字节 XOR，使「错 key」产生会话过滤解不开的密文，身份 `NullCipher` 区分不了 key）；`network_interface` 增验收测试：持错 key 的一端对已建信道（`set_encryption` 装好会话密码）发来合法成帧但错 key 的包 → 信道过滤以会话密码解密得废 magic → `REASON_CORRUPTATED_PACKET` 回归、sink 零投递、已建信道原样在册（`Rc::ptr_eq` 同一信道，失败尝试既不毁会话也不建新会话）——传输层「无残留已建立会话」。
   - 语义边界：baseapp 侧 `BaseApp::authenticate`（baseapp.cpp:3020，错 key → CHEAT + breakBundleLoop）、`PendingLogins` 过期清除（pending_logins.cpp:73，30 秒队列）依赖尚不存在的 baseapp/proxy 层，待该层落地时接 `SessionKey`/`set_encryption` seam；端口层面失败状态 = 过滤链的 `Reason` 返回（CorruptedPacket/GeneralNetwork），与 02-05-02 同一链路。
   - 测试：+3（misc 1：session key 非零取值；block_cipher 1：keyed 替身区分 key 且自逆；network_interface 1：**验收** 错 key 拒收+零投递+无残留会话）。mercury 350 绿（+3），workspace 1810 绿+2 环境性红（同 02-05-02 口径）；clippy 净；fmt 净。
-- [ ] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。
+- [x] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。 — `6702961`（+勾账 `3dc225e`，均在 origin/main）
+  - 主席合并 `f2ef112` 曾把 `pub mod rate_limiter;` 从 lib.rs 解掉致孤儿（完整 10 测端口从未编译），`6702961` 恢复声明并接线 `NetworkInterface`（字段 + 六个转发访问器 + `process_packet` 首臂先于信道查找），+5 接收路径边界测试；本席 2026-11-24 在 origin/main@`e16e751` 脱离工作树复测 **mercury 380/380 绿、rate_limit 面 24 测绿**（含 ip/地址双预算共享、周期清零重臂、超预算计入均值、零周期禁用、Drop 取消计时器），合并损失未复发，勾属实。
 
 ### BW-03 CPython 嵌入和脚本 API
 
