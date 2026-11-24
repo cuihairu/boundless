@@ -53,6 +53,12 @@ impl MeshNavigator {
         }
     }
 
+    /// `navigator().getWaySetPathSize()` (`navigator.cpp:368-371`): the
+    /// number of waypoint sets in the last cached way-set path.
+    pub fn way_set_path_size(&self) -> usize {
+        self.navigator.get_way_set_path_size()
+    }
+
     /// `navigator_.createPathNavLoc( pChunkSpace, point, girth )` —
     /// `NavLoc( pChunkSpace, point, girth )` (`navloc.cpp:31-58`) plus the
     /// clip: the set is picked with the girth filter over the raw point
@@ -981,6 +987,28 @@ impl EntityNavigate {
         // No doors encountered: the answer is the destination as given —
         // the raw input vector, its `y` untouched by any height raise.
         Ok(Some((destination, true)))
+    }
+
+    /// `EntityNavigate::waySetPathLength` (`entity_navigate.cpp:987-1005`)
+    /// over the system face (`navmesh_navigation_system.cpp:536-541`):
+    /// the length of the most recently determined navigation path "in
+    /// chunks" — `navigator_.getWaySetPathSize()`, the number of waypoint
+    /// sets in the last cached way-set path. A ghost does not raise: the
+    /// reference logs the error and answers `0`, modelled as the warning
+    /// plus the zero answer (the `navigate_path_points` plumbing).
+    pub fn way_set_path_length(&self, navigator: &MeshNavigator) -> (usize, Vec<&'static str>) {
+        let mut warnings = Vec::new();
+        // TODO: Move this to RealEntity if it ever supports script
+        // extensions.
+        if !self.is_real {
+            warnings.push(
+                "EntityNavigate::waySetPathLength: \
+                 This method can only be called on a real entity.",
+            );
+            return (0, warnings);
+        }
+
+        (navigator.way_set_path_size(), warnings)
     }
 }
 
@@ -2844,6 +2872,67 @@ mod tests {
         assert_eq!(
             err.message(),
             "NavmeshEntityNavigationSystem::getStopPoint(): Could not resolve source position"
+        );
+    }
+
+    #[test]
+    fn the_way_set_path_length_counts_the_last_paths_sets() {
+        let navigate = real_entity();
+        let mut navigator = portal_chain(2);
+        assert_eq!(navigate.way_set_path_length(&navigator).0, 0, "fresh cache");
+
+        // The acceptance case: a route crossing two waypoint sets (A then
+        // B) leaves a two-set way-set path cached.
+        let hop = navigator.navigate_position(
+            Vector3::new(0.4, 0.4, 0.5),
+            Vector3::new(2.8, 0.4, 0.5),
+            -1.0,
+            0.6,
+        );
+        assert_eq!(hop, Some(Vector3::new(2.8, 0.6, 0.5)));
+        assert_eq!(navigate.way_set_path_length(&navigator).0, 2, "A then B");
+
+        navigator.clear_cached_paths();
+        assert_eq!(
+            navigate.way_set_path_length(&navigator).0,
+            0,
+            "cleared for sanity"
+        );
+    }
+
+    #[test]
+    fn a_same_set_route_never_builds_a_way_set_path() {
+        let navigate = real_entity();
+        let mut slope = mesh_navigator("slope");
+
+        // `searchNextWaypoint` only runs the set-level A* when the ends
+        // live in different sets — a same-set route leaves the way-set
+        // cache untouched (0), while the waypoint path itself is cached.
+        let hop = slope.navigate_position(
+            Vector3::new(1.0, 0.5, 1.0),
+            Vector3::new(7.0, 3.0, 7.0),
+            -1.0,
+            GIRTH,
+        );
+        assert_eq!(hop, Some(Vector3::new(7.0, 3.5, 7.0)));
+        assert_eq!(navigate.way_set_path_length(&slope).0, 0);
+        assert_eq!(slope.cached_waypoint_path().len(), 1);
+    }
+
+    #[test]
+    fn way_set_path_length_refuses_a_ghost_with_zero() {
+        let mut navigate = real_entity();
+        navigate.is_real = false;
+        let navigator = portal_chain(2);
+
+        let (answer, warnings) = navigate.way_set_path_length(&navigator);
+        assert_eq!(answer, 0);
+        assert_eq!(
+            warnings,
+            vec![
+                "EntityNavigate::waySetPathLength: \
+                 This method can only be called on a real entity."
+            ]
         );
     }
 }
