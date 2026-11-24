@@ -23,6 +23,7 @@ pub mod consolidate;
 pub mod error;
 pub mod lookup;
 pub mod namer;
+pub mod py_billing;
 pub mod record;
 pub mod recovery;
 pub mod retry;
@@ -61,6 +62,7 @@ pub use namer::{
     DEFAULT_SEQUENCE_TABLE_NAME, GAME_TIME_COLUMN_NAME, ID_COLUMN_NAME, Indexing, Namer,
     PARENTID_COLUMN_NAME, TABLE_NAME_PREFIX, TIMESTAMP_COLUMN_NAME, column_index_type,
 };
+pub use py_billing::{PyBillingResponse, PyBillingSystem};
 pub use record::EntityRecord;
 pub use recovery::{TRANSACTION_ATTEMPTS, query_with_reconnect, retry_query, retry_transaction};
 pub use retry::{

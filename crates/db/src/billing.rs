@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use foundation::ids::{DatabaseId, EntityTypeId, INVALID_ENTITY_TYPE_ID};
 
-use crate::account::{AccountLogOn, AccountRow, check_password};
+use crate::account::{AccountLogOn, AccountRow, check_password, log_on_status};
 use crate::storage::EntityKey;
 
 /// The `BillingSystem` constructor's configuration
@@ -131,8 +131,11 @@ pub enum GetEntityKeyOutcome {
     },
     /// `onGetEntityKeyForAccountFailure`: rejected.
     Failure {
-        /// The `LogOnStatus` the reference reports.
-        status: AccountLogOn,
+        /// The numeric `LogOnStatus` value the reference reports —
+        /// [`crate::account::log_on_status`] holds the table. The script
+        /// face reports statuses this crate has no name for, so the
+        /// outcome carries the raw value.
+        status: i32,
         /// `errorMsg` — always empty for the standard systems.
         error_msg: String,
     },
@@ -222,7 +225,7 @@ pub fn dispatch_get(
             }
         }
         other => GetEntityKeyOutcome::Failure {
-            status: other,
+            status: other.value(),
             error_msg: String::new(),
         },
     }
@@ -377,7 +380,7 @@ impl XmlBillingSystem {
                 data_for_base_entity: String::new(),
             },
             Some(_) => GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedInvalidPassword,
+                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
                 error_msg: String::new(),
             },
             None if config.should_accept_unknown_users => GetEntityKeyOutcome::CreateNew {
@@ -387,7 +390,7 @@ impl XmlBillingSystem {
                 data_for_base_entity: String::new(),
             },
             None => GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedNoSuchUser,
+                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
                 error_msg: String::new(),
             },
         }
@@ -487,14 +490,14 @@ mod tests {
         assert_eq!(
             get_entity_key_for_account(&config, Some(&found), "hero", false, "wrong"),
             GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedInvalidPassword,
+                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
                 error_msg: String::new(),
             }
         );
         assert_eq!(
             get_entity_key_for_account(&config, None, "ghost", false, "anything"),
             GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedNoSuchUser,
+                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
                 error_msg: String::new(),
             }
         );
@@ -527,7 +530,7 @@ mod tests {
         assert_eq!(
             get_entity_key_for_account(&config, Some(&hashed), "hero", true, "password"),
             GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedInvalidPassword,
+                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
                 error_msg: String::new(),
             }
         );
@@ -572,7 +575,7 @@ mod tests {
         assert_eq!(
             get_entity_key_for_account(&strict, None, "stranger", false, "x"),
             GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedNoSuchUser,
+                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
                 error_msg: String::new(),
             }
         );
@@ -628,7 +631,7 @@ mod tests {
         assert_eq!(
             dispatch_get(AccountLogOn::RejectedDbGeneralFailure, None, &config),
             GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedDbGeneralFailure,
+                status: log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE,
                 error_msg: String::new(),
             }
         );
@@ -721,14 +724,14 @@ mod tests {
         assert_eq!(
             system.get_entity_key_for_account(&strict, "hero", "bad"),
             GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedInvalidPassword,
+                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
                 error_msg: String::new(),
             }
         );
         assert_eq!(
             system.get_entity_key_for_account(&strict, "ghost", "x"),
             GetEntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedNoSuchUser,
+                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
                 error_msg: String::new(),
             }
         );

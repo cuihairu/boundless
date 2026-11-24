@@ -53,6 +53,49 @@ pub enum AccountLogOn {
     RejectedDbGeneralFailure,
 }
 
+impl AccountLogOn {
+    /// The numeric `LogOnStatus` this state rides as
+    /// ([`log_on_status`] holds the value table).
+    pub fn value(self) -> i32 {
+        match self {
+            Self::LoggedOn => log_on_status::LOGGED_ON,
+            Self::RejectedNoSuchUser => log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
+            Self::RejectedInvalidPassword => log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
+            Self::RejectedDbGeneralFailure => log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE,
+        }
+    }
+}
+
+/// The numeric `LogOnStatus::Status` values
+/// (`connection/log_on_status.hpp:15-70`).
+///
+/// These are what ride to the client on a rejection, and
+/// [`crate::billing::PyBillingResponse::failure`] takes one as an int —
+/// the constants here cover the states this crate names; the full table
+/// lives in the header.
+pub mod log_on_status {
+    /// `NOT_SET` — no status yet; "okay" to `failure`'s validator.
+    pub const NOT_SET: i32 = 0;
+    /// `LOGGED_ON` — the attempt succeeded; also "okay" to the validator.
+    pub const LOGGED_ON: i32 = 1;
+    /// `LOGIN_REJECTED_NO_SUCH_USER`.
+    pub const LOGIN_REJECTED_NO_SUCH_USER: i32 = 67;
+    /// `LOGIN_REJECTED_INVALID_PASSWORD`.
+    pub const LOGIN_REJECTED_INVALID_PASSWORD: i32 = 68;
+    /// `LOGIN_REJECTED_ALREADY_LOGGED_IN`.
+    pub const LOGIN_REJECTED_ALREADY_LOGGED_IN: i32 = 69;
+    /// `LOGIN_REJECTED_BAD_DIGEST`.
+    pub const LOGIN_REJECTED_BAD_DIGEST: i32 = 70;
+    /// `LOGIN_REJECTED_DB_GENERAL_FAILURE`.
+    pub const LOGIN_REJECTED_DB_GENERAL_FAILURE: i32 = 71;
+
+    /// `LogOnStatus::okay` (`log_on_status.hpp:104-109`): the attempt
+    /// succeeded or is still pending — never a legal failure code.
+    pub fn okay(value: i32) -> bool {
+        value == NOT_SET || value == LOGGED_ON
+    }
+}
+
 /// One `bigworldLogOnMapping` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRow {
@@ -197,5 +240,29 @@ mod tests {
                 "Unable to bind USER_TYPE property 'route' to database.".to_owned()
             )
         );
+    }
+
+    /// The numeric status each lookup state rides as, and the okay
+    /// predicate the failure validator shares.
+    #[test]
+    fn lookup_states_carry_the_reference_status_values() {
+        assert_eq!(AccountLogOn::LoggedOn.value(), log_on_status::LOGGED_ON);
+        assert_eq!(
+            AccountLogOn::RejectedNoSuchUser.value(),
+            log_on_status::LOGIN_REJECTED_NO_SUCH_USER
+        );
+        assert_eq!(
+            AccountLogOn::RejectedInvalidPassword.value(),
+            log_on_status::LOGIN_REJECTED_INVALID_PASSWORD
+        );
+        assert_eq!(
+            AccountLogOn::RejectedDbGeneralFailure.value(),
+            log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE
+        );
+        assert!(log_on_status::okay(log_on_status::NOT_SET));
+        assert!(log_on_status::okay(log_on_status::LOGGED_ON));
+        assert!(!log_on_status::okay(
+            log_on_status::LOGIN_REJECTED_NO_SUCH_USER
+        ));
     }
 }
