@@ -223,4 +223,42 @@ mod tests {
         let config = environment.load_config();
         assert!(!config.is_bad(&environment.resource()));
     }
+
+    /// Both `reference_tree` arms delegate to the process-wide reader.
+    /// Comparing the two instead of pinning a value keeps the test
+    /// environment-independent: `BW_REFERENCE` is a process-global, and no
+    /// test in this crate mutates the process environment.
+    #[test]
+    fn the_reference_tree_delegates_to_the_process_reader() {
+        let environment = Environment::new("delegate");
+
+        assert_eq!(
+            environment.reference_tree(),
+            reference_tree(),
+            "the environment's view and the process reader agree"
+        );
+    }
+
+    /// `keep` leaves the root behind so a failing run can be inspected,
+    /// instead of the drop-driven cleanup removing the evidence.
+    #[test]
+    fn keep_leaves_the_root_behind_for_inspection() {
+        let mut environment = Environment::new("kept-root");
+        environment.add_res_text("scripts/probe.py", "VALUE = 1");
+        environment.keep();
+
+        assert!(
+            environment.root().exists(),
+            "a kept environment stays readable"
+        );
+        assert_eq!(
+            environment.res_read("scripts/probe.py"),
+            b"VALUE = 1",
+            "the contents survive the keep"
+        );
+        // Drop the evidence the test itself created: `keep` only exists so a
+        // *failing* run can be inspected.
+        let root = environment.root().to_path_buf();
+        std::fs::remove_dir_all(&root).expect("remove the kept root");
+    }
 }
