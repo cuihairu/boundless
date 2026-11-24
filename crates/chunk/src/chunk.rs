@@ -84,6 +84,9 @@ pub struct Chunk {
     pub is_loaded: bool,
     /// `isBound_` (`chunk.cpp:1069`): the chunk's portals were bound.
     pub is_bound: bool,
+    /// `removable_` (`chunk.cpp:190`): wired and locked chunks refuse the
+    /// unload pass (`chunk_manager.cpp:2241`).
+    pub removable: bool,
 }
 
 impl Chunk {
@@ -132,6 +135,7 @@ impl Chunk {
             boundaries: Vec::new(),
             is_loaded: false,
             is_bound: false,
+            removable: true,
         }
     }
 
