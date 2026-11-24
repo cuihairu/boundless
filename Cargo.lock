@@ -1908,6 +1908,7 @@ dependencies = [
  "libc",
  "md-5 0.10.6",
  "mercury",
+ "physics",
  "platform",
  "resources",
  "sha2 0.10.9",
