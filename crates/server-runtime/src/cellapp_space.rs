@@ -31,6 +31,104 @@ pub const SHUTDOWN_SPACE_TIMER: &str = "ShutdownSpace";
 /// `NO_SPACE_REMOVAL_HANDLE`: an entity no space holds.
 pub const NO_SPACE_REMOVAL_HANDLE: usize = usize::MAX;
 
+/// `uint16(-1)`: the "delete this entry" key.
+pub const NO_SPACE_DATA_KEY: u16 = u16::MAX;
+
+/// A stored space-data value (`SpaceDataMapping::DataValue`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataValue {
+    /// The entry's key, or [`NO_SPACE_DATA_KEY`] for a deleted entry.
+    pub key: u16,
+    /// The entry's payload.
+    pub data: Vec<u8>,
+}
+
+impl DataValue {
+    /// The deleted form of the value.
+    pub fn none() -> Self {
+        Self {
+            key: NO_SPACE_DATA_KEY,
+            data: Vec::new(),
+        }
+    }
+
+    /// `valid()`: an entry that still names a key.
+    pub fn valid(&self) -> bool {
+        self.key != NO_SPACE_DATA_KEY
+    }
+}
+
+/// `SpaceDataMapping` (`lib/network/space_data_mapping.cpp`): the one
+/// entry per `SpaceEntryID` a space holds.
+#[derive(Clone, Debug, Default)]
+pub struct SpaceDataMapping {
+    entries: BTreeMap<u32, DataValue>,
+}
+
+impl SpaceDataMapping {
+    /// `clear()`.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// `addDataEntry`: the entry is added only when it is novel — an id
+    /// the space already holds stays untouched and the call reports false.
+    pub fn add_data_entry(&mut self, entry_id: u32, key: u16, data: Vec<u8>) -> bool {
+        if self.entries.contains_key(&entry_id) {
+            return false;
+        }
+        self.entries.insert(entry_id, DataValue { key, data });
+        true
+    }
+
+    /// `delDataEntry( id )`.
+    pub fn del_data_entry(&mut self, entry_id: u32) -> bool {
+        self.entries.remove(&entry_id).is_some()
+    }
+
+    /// `delDataEntry( id, oldValue )`: the deleted value comes back, or
+    /// the invalid form when there was no such entry.
+    pub fn del_data_entry_value(&mut self, entry_id: u32) -> (bool, DataValue) {
+        match self.entries.remove(&entry_id) {
+            Some(value) => (true, value),
+            None => (false, DataValue::none()),
+        }
+    }
+
+    /// `dataRetrieveSpecific`: the entry, or the invalid form.
+    pub fn data_retrieve_specific(&self, entry_id: u32) -> DataValue {
+        self.entries
+            .get(&entry_id)
+            .cloned()
+            .unwrap_or_else(DataValue::none)
+    }
+
+    /// `dataRetrieveSpecificPtr`: the entry's value, or nothing.
+    pub fn data_retrieve_specific_ptr(&self, entry_id: u32) -> Option<&DataValue> {
+        self.entries.get(&entry_id)
+    }
+
+    /// `dataRetrieveFirst`: the first entry carrying that key, or nothing.
+    pub fn data_retrieve_first(&self, key: u16) -> Option<&DataValue> {
+        self.entries.values().find(|value| value.key == key)
+    }
+
+    /// `size`.
+    pub fn size(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// No entries at all.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// `begin`/`end`: the entries in order.
+    pub fn entries(&self) -> impl Iterator<Item = (u32, &DataValue)> + '_ {
+        self.entries.iter().map(|(id, value)| (*id, value))
+    }
+}
+
 /// One cell of a Space (`CellInfo` in the space's tree).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CellInfo {
@@ -125,8 +223,11 @@ pub struct Space {
     pub initial_time_of_day: f32,
     /// `gameSecondsPerSecond_`.
     pub game_seconds_per_second: f32,
-    /// The entry count of `spaceDataMapping_`.
-    pub space_data_entries: usize,
+    /// `spaceDataMapping_`.
+    pub space_data: SpaceDataMapping,
+    /// `recentData_`: the `(entryID, key)` deletions recorded since the
+    /// last reuse, most recent last.
+    pub recent_data: Vec<(u32, u16)>,
 }
 
 impl Space {
@@ -143,7 +244,8 @@ impl Space {
             end_data_seq: 0,
             initial_time_of_day: -1.0,
             game_seconds_per_second: 0.0,
-            space_data_entries: 0,
+            space_data: SpaceDataMapping::default(),
+            recent_data: Vec::new(),
         }
     }
 
@@ -155,12 +257,57 @@ impl Space {
         self.initial_time_of_day = -1.0;
         self.game_seconds_per_second = 0.0;
         self.cells.clear();
-        self.space_data_entries = 0;
+        self.space_data.clear();
+        self.recent_data.clear();
     }
 
-    /// `updateGeometry`: the manager's tree becomes this space's cells.
-    pub fn update_geometry(&mut self, cells: Vec<CellInfo>) {
-        self.cells = cells;
+    /// `updateGeometry` (`space.cpp:885`): every cell of the old tree is
+    /// marked for deletion, the tree is rebuilt from the message, the marks
+    /// are resolved, the space's own cell is either announced as going or
+    /// checked off, and a space that collapsed from several cells to one
+    /// gets another chance at the shutdown. The wire `readTree` (bounds,
+    /// portals) is not decoded here — the tree arrives already parsed as
+    /// [`CellInfo`].
+    pub fn update_geometry(
+        &mut self,
+        cell_app: &mut CellApp,
+        tree: Vec<CellInfo>,
+    ) -> TopologyReport {
+        let mut report = TopologyReport::default();
+        let was_multicell = !self.has_single_cell();
+
+        // Every old cell is marked; the rebuilt tree is read from the
+        // message, and the marks are resolved against it.
+        let old = self.cells.clone();
+        self.cells = tree;
+        let deleted: Vec<CellInfo> = old
+            .iter()
+            .filter(|info| {
+                !self
+                    .cells
+                    .iter()
+                    .any(|kept| kept.node == info.node && kept.app_addr == info.app_addr)
+            })
+            .cloned()
+            .collect();
+        report.deleted = deleted.iter().map(|info| info.node).collect();
+
+        let own_gone = match self.cell() {
+            Some(cell) => {
+                let node = cell.borrow().info.node;
+                deleted.iter().any(|info| info.node == node)
+            }
+            None => false,
+        };
+        report.own_cell_gone = own_gone;
+        report.cell_checked_off = self.cell().is_some() && !own_gone;
+
+        // see if we want to expressly shut down this space now
+        if was_multicell {
+            report.checked_for_shut_down = true;
+            report.requested_shut_down = self.check_for_shut_down(cell_app);
+        }
+        report
     }
 
     /// `findCell( address )`: the tree's cell assigned to this CellApp,
@@ -172,13 +319,64 @@ impl Space {
             .cloned()
     }
 
-    /// `allSpaceData`: the manager's full space-data payload replaces
-    /// whatever the space held. An empty payload leaves it untouched (the
-    /// reference only reads it when `remainingLength() > 0`).
-    pub fn receive_all_space_data(&mut self, count: usize) {
-        if count > 0 {
-            self.space_data_entries = count;
+    /// `allSpaceData` / `readDataFromStream`: the manager's full space-data
+    /// payload, each entry of it going through [`Space::space_data_entry`]
+    /// without touching the manager. An empty payload leaves the mapping
+    /// untouched (the reference only reads it when `remainingLength() > 0`).
+    pub fn read_data_from_stream(
+        &mut self,
+        cell_app: &mut CellApp,
+        entries: Vec<(u32, u16, Vec<u8>)>,
+    ) {
+        if entries.is_empty() {
+            return;
         }
+        for (entry_id, key, data) in entries {
+            self.space_data_entry(cell_app, entry_id, key, data, false);
+        }
+    }
+
+    /// `Space::spaceDataEntry`: an entry arriving for this space — either
+    /// reported to the CellAppMgr (with the replay record) or stored
+    /// locally after the reference's recently-deleted guard. Returns
+    /// false when that guard trips.
+    pub fn space_data_entry(
+        &mut self,
+        cell_app: &mut CellApp,
+        entry_id: u32,
+        key: u16,
+        data: Vec<u8>,
+        to_mgr: bool,
+    ) -> bool {
+        if to_mgr {
+            // `b << id_ << entryID << key`, the value blob only when the
+            // key is set.
+            cell_app.space_data_updates.push((self.id, entry_id, key));
+            return true;
+        }
+
+        if key != NO_SPACE_DATA_KEY {
+            // make sure we are not trying to add back a recently deleted
+            // key
+            if self.recently_deleted(&entry_id, NO_SPACE_DATA_KEY) {
+                cell_app.rejected_readds.push(entry_id);
+                return false;
+            }
+            self.space_data.add_data_entry(entry_id, key, data);
+        } else {
+            self.recent_data.push((entry_id, key));
+            self.space_data.del_data_entry_value(entry_id);
+        }
+        true
+    }
+
+    /// The `recentData_` scan: was this entry deleted with `key == -1`,
+    /// and has nothing newer been recorded since?
+    fn recently_deleted(&self, entry_id: &u32, key: u16) -> bool {
+        self.recent_data
+            .iter()
+            .rev()
+            .any(|(id, recorded_key)| id == entry_id && *recorded_key == key)
     }
 
     /// `numEntities`.
@@ -377,9 +575,10 @@ pub struct AddCellRequest {
     pub is_first_cell: bool,
     /// `isFromDB`.
     pub is_from_db: bool,
-    /// The `allSpaceData` entry count; zero means the message carried no
-    /// space data at all (`remainingLength() == 0`).
-    pub space_data_count: usize,
+    /// The `allSpaceData` payload: `(entryID, key, value)` entries. Empty
+    /// means the message carried no space data at all
+    /// (`remainingLength() == 0`).
+    pub space_data: Vec<(u32, u16, Vec<u8>)>,
 }
 
 /// What `CellApp::addCell` did — the reference's branch matrix made
@@ -398,6 +597,22 @@ pub struct AddCellOutcome {
     pub first_cell_delivered: bool,
     /// The CRITICAL path: no cell of this space belongs to this CellApp.
     pub no_cell_here: bool,
+}
+
+/// What [`Space::update_geometry`] reported — the reference's
+/// `updateGeometry` bookkeeping made observable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TopologyReport {
+    /// The cells the new tree stopped carrying.
+    pub deleted: Vec<CellInfoNode>,
+    /// This CellApp's own cell was among them.
+    pub own_cell_gone: bool,
+    /// `pCell_->checkOffloadsAndGhosts()` ran (the own cell stays).
+    pub cell_checked_off: bool,
+    /// `wasMulticell` held, so the space re-checked the shutdown.
+    pub checked_for_shut_down: bool,
+    /// That re-check asked for the shutdown.
+    pub requested_shut_down: bool,
 }
 
 /// The manager's own ledger of what it created and assigned — the side
@@ -468,6 +683,10 @@ pub struct CellApp {
     pub failed_adds: Vec<SpaceId>,
     /// The `Spaces::create` calls.
     pub created_spaces: Vec<SpaceId>,
+    /// The `updateSpaceData` messages the spaces sent to the CellAppMgr.
+    pub space_data_updates: Vec<(SpaceId, u32, u16)>,
+    /// The `spaceDataEntry` refusals: a re-add of a recently deleted entry.
+    pub rejected_readds: Vec<u32>,
 }
 
 impl CellApp {
@@ -568,7 +787,9 @@ impl CellApp {
             }
         };
 
-        space.update_geometry(request.cells);
+        // `pSpace->updateGeometry(data)`: the marks, the rebuilt tree and the
+        // re-check of the shutdown are all part of that call.
+        space.update_geometry(self, request.cells);
         let info = match space.find_cell_info(self.address) {
             Some(info) => info,
             None => {
@@ -601,7 +822,7 @@ impl CellApp {
             }
         }
 
-        space.receive_all_space_data(request.space_data_count);
+        space.read_data_from_stream(self, request.space_data);
 
         // The first cell in the first space.
         if request.is_first_cell && self.use_default_space && request.space_id == 1 {
@@ -641,7 +862,7 @@ mod tests {
             reuse_count: 0,
         }));
         let mut space = Space::new(id);
-        space.update_geometry(vec![cell_info(id, node)]);
+        space.update_geometry(&mut cell_app, vec![cell_info(id, node)]);
         space.set_cell(cell.clone());
         (cell_app, space, cell)
     }
@@ -766,7 +987,7 @@ mod tests {
             space_gone_count: 0,
             reuse_count: 0,
         }));
-        not_started.update_geometry(vec![cell_info(3, 1)]);
+        not_started.update_geometry(&mut unstarted_app, vec![cell_info(3, 1)]);
         not_started.set_cell(cell);
         let e = entity(2, true);
         not_started.add_entity(e.clone());
@@ -925,7 +1146,7 @@ mod tests {
                 cells: tree.clone(),
                 is_first_cell: false,
                 is_from_db: false,
-                space_data_count: 2,
+                space_data: vec![(7u32, 1u16, vec![0u8]), (8, 2, vec![1])],
             },
         );
         assert_eq!(
@@ -940,7 +1161,7 @@ mod tests {
         assert_eq!(app10.cells[0].borrow().info.node, CellInfoNode(0));
         let space = app10.find_space(&spaces10, 5).expect("space");
         assert_eq!(space.num_cells(), 2);
-        assert_eq!(space.space_data_entries, 2, "the payload was carried");
+        assert_eq!(space.space_data.size(), 2, "the payload was carried");
         assert_eq!(
             app10.find_cell(&spaces10, 5).map(|c| c.borrow().info.node),
             Some(CellInfoNode(0))
@@ -956,7 +1177,7 @@ mod tests {
                 cells: tree,
                 is_first_cell: false,
                 is_from_db: false,
-                space_data_count: 2,
+                space_data: vec![(7, 1, vec![0]), (8, 2, vec![1])],
             },
         );
         assert!(outcome.cell_registered);
@@ -975,15 +1196,27 @@ mod tests {
         let mut spaces = BTreeMap::new();
         let mut app = CellApp::with_address(APP_ADDR);
         app.start();
-        let request = |space_data_count| AddCellRequest {
+        let request = |space_data| AddCellRequest {
             space_id: 5,
             cells: tree.clone(),
             is_first_cell: false,
             is_from_db: false,
-            space_data_count,
+            space_data,
         };
-        let first = app.add_cell(&mut spaces, request(3));
+        let first = app.add_cell(
+            &mut spaces,
+            request(vec![
+                (1u32, 1u16, vec![0u8]),
+                (2, 2, vec![1]),
+                (3, 3, vec![2]),
+            ]),
+        );
         assert!(first.cell_registered && !first.space_reused);
+        assert_eq!(
+            spaces.get(&5).expect("space").space_data.size(),
+            3,
+            "every payload entry landed"
+        );
 
         // Dirt the data faces and put an entity in, then let the manager
         // re-add the cell.
@@ -995,7 +1228,7 @@ mod tests {
             space.game_seconds_per_second = 2.0;
             space.add_entity(entity(1, true));
         }
-        let second = app.add_cell(&mut spaces, request(0));
+        let second = app.add_cell(&mut spaces, request(vec![]));
         assert_eq!(
             second,
             AddCellOutcome {
@@ -1013,7 +1246,8 @@ mod tests {
         );
         assert_eq!(space.game_seconds_per_second, 0.0);
         assert_eq!(
-            space.space_data_entries, 0,
+            space.space_data.size(),
+            0,
             "an empty payload leaves the count at reuse's zero"
         );
         assert_eq!(space.num_entities(), 1, "reuse keeps the entities");
@@ -1045,7 +1279,7 @@ mod tests {
                 }],
                 is_first_cell: false,
                 is_from_db: false,
-                space_data_count: 0,
+                space_data: vec![],
             },
         );
         assert_eq!(
@@ -1081,7 +1315,7 @@ mod tests {
                 cells: tree.clone(),
                 is_first_cell: true,
                 is_from_db: true,
-                space_data_count: 0,
+                space_data: vec![],
             },
         );
         assert!(outcome.first_cell_delivered);
@@ -1095,7 +1329,7 @@ mod tests {
                 cells: tree.clone(),
                 is_first_cell: false,
                 is_from_db: true,
-                space_data_count: 0,
+                space_data: vec![],
             },
         );
         assert!(!outcome.first_cell_delivered);
@@ -1108,7 +1342,7 @@ mod tests {
                 cells: vec![cell_info(2, 1)],
                 is_first_cell: true,
                 is_from_db: false,
-                space_data_count: 0,
+                space_data: vec![],
             },
         );
         assert!(!outcome.first_cell_delivered);
@@ -1125,7 +1359,7 @@ mod tests {
                 cells: tree,
                 is_first_cell: true,
                 is_from_db: true,
-                space_data_count: 0,
+                space_data: vec![],
             },
         );
         assert!(!outcome.first_cell_delivered);
@@ -1152,7 +1386,7 @@ mod tests {
                 cells: vec![cell_info(5, 0)],
                 is_first_cell: false,
                 is_from_db: false,
-                space_data_count: 0,
+                space_data: vec![],
             },
         );
         assert!(mgr.agrees_with(&app, &spaces));
@@ -1196,7 +1430,7 @@ mod tests {
                 cells: vec![cell_info(5, 0)],
                 is_first_cell: false,
                 is_from_db: false,
-                space_data_count: 0,
+                space_data: vec![],
             },
         );
 
@@ -1214,5 +1448,292 @@ mod tests {
             assignments: vec![(5, APP_ADDR, CellInfoNode(1))],
         };
         assert!(!stranger.agrees_with(&app, &spaces));
+    }
+
+    /// The acceptance face: entries land in their own space and nowhere
+    /// else — the same entry id and key on another space is a different
+    /// entry.
+    #[test]
+    fn space_data_does_not_leak_between_spaces() {
+        let mut spaces_a = BTreeMap::new();
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.start();
+        app.add_cell(
+            &mut spaces_a,
+            AddCellRequest {
+                space_id: 5,
+                cells: vec![cell_info(5, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+        let (mut spaces_b, mut app_b) = (BTreeMap::new(), CellApp::with_address(APP_ADDR));
+        app_b.start();
+        app_b.add_cell(
+            &mut spaces_b,
+            AddCellRequest {
+                space_id: 6,
+                cells: vec![cell_info(6, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+
+        spaces_a
+            .get_mut(&5)
+            .expect("space")
+            .read_data_from_stream(&mut app, vec![(7, 1, vec![10]), (8, 2, vec![20])]);
+        spaces_b
+            .get_mut(&6)
+            .expect("space")
+            .read_data_from_stream(&mut app_b, vec![(9, 1, vec![30])]);
+
+        let a = spaces_a.get(&5).expect("space");
+        let b = spaces_b.get(&6).expect("space");
+        assert_eq!(a.space_data.size(), 2, "only this space's two entries");
+        assert_eq!(b.space_data.size(), 1, "only this space's one entry");
+        assert_eq!(
+            a.space_data.data_retrieve_specific(7),
+            DataValue {
+                key: 1,
+                data: vec![10]
+            }
+        );
+        assert_eq!(
+            a.space_data.data_retrieve_specific(9),
+            DataValue::none(),
+            "no leaking in"
+        );
+        assert_eq!(
+            b.space_data.data_retrieve_specific(9),
+            DataValue {
+                key: 1,
+                data: vec![30]
+            }
+        );
+        assert_eq!(
+            b.space_data.data_retrieve_specific(7),
+            DataValue::none(),
+            "no leaking in"
+        );
+        assert_eq!(
+            a.space_data.data_retrieve_first(1).map(|v| v.key),
+            Some(1u16),
+            "the first entry carrying the key"
+        );
+        let ids: Vec<_> = a.space_data.entries().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec![7u32, 8]);
+    }
+
+    /// `addDataEntry`'s novel-only rule and the whole retrieval surface.
+    #[test]
+    fn an_entry_is_added_only_when_novel() {
+        let mut mapping = SpaceDataMapping::default();
+        assert!(mapping.add_data_entry(7, 1, vec![10]));
+        assert!(
+            !mapping.add_data_entry(7, 2, vec![20]),
+            "the id already stands"
+        );
+        assert_eq!(
+            mapping.data_retrieve_specific(7),
+            DataValue {
+                key: 1,
+                data: vec![10]
+            }
+        );
+        assert_eq!(
+            mapping.data_retrieve_specific_ptr(7).unwrap().data,
+            vec![10]
+        );
+        assert!(mapping.data_retrieve_specific_ptr(8).is_none());
+        assert_eq!(mapping.data_retrieve_first(1).unwrap().key, 1);
+        assert!(mapping.data_retrieve_first(9).is_none());
+        assert_eq!(mapping.size(), 1);
+
+        let (deleted, old) = mapping.del_data_entry_value(7);
+        assert!(deleted);
+        assert_eq!(
+            old,
+            DataValue {
+                key: 1,
+                data: vec![10]
+            }
+        );
+        assert!(!mapping.del_data_entry(8), "no such entry");
+        assert_eq!(mapping.size(), 0);
+
+        // Deleting nothing reports nothing, with the invalid value.
+        let (gone, missing) = mapping.del_data_entry_value(8);
+        assert!(!gone);
+        assert_eq!(missing, DataValue::none());
+
+        // `Space::reuse` clears the mapping wholesale.
+        mapping.add_data_entry(9, 3, vec![30]);
+        mapping.clear();
+        assert!(mapping.entries().next().is_none());
+        assert_eq!(DataValue::none(), DataValue::none());
+        assert!(!DataValue::none().valid());
+        assert!(
+            DataValue {
+                key: 1,
+                data: vec![]
+            }
+            .valid()
+        );
+    }
+
+    /// An entry deleted with `key == -1` may not be added back until the
+    /// next reuse — the reference's recently-deleted guard.
+    #[test]
+    fn a_recently_deleted_entry_cannot_be_added_back() {
+        let mut app = CellApp::new();
+        app.start();
+        let mut space = Space::new(5);
+        assert!(space.space_data_entry(&mut app, 7, 1, vec![10], false));
+        assert!(space.space_data_entry(&mut app, 7, NO_SPACE_DATA_KEY, vec![], false));
+        assert!(space.space_data.is_empty());
+        assert_eq!(space.recent_data, vec![(7u32, NO_SPACE_DATA_KEY)]);
+
+        assert!(
+            !space.space_data_entry(&mut app, 7, 1, vec![20], false),
+            "a re-add after deletion is refused"
+        );
+        assert_eq!(app.rejected_readds, vec![7]);
+        assert!(space.space_data.is_empty());
+
+        // A different entry id is not refused.
+        assert!(space.space_data_entry(&mut app, 8, 1, vec![30], false));
+        assert_eq!(space.space_data.size(), 1);
+
+        // `Space::reuse` drops the recent deletions, so the entry may
+        // come back.
+        space.reuse();
+        assert!(space.recent_data.is_empty());
+        assert!(space.space_data_entry(&mut app, 7, 1, vec![40], false));
+        assert_eq!(app.rejected_readds, vec![7], "the refusal was not repeated");
+    }
+
+    /// A topology change that collapses a space to one cell gives it the
+    /// shutdown when the space is empty.
+    #[test]
+    fn a_topology_change_to_one_cell_asks_for_the_shut_down() {
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.start();
+        let mut spaces = BTreeMap::new();
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 5,
+                cells: vec![cell_info(5, 0), cell_info(5, 1)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+        // The delivery itself re-checked the shutdown and found a
+        // two-cell space, so nothing was asked for.
+        assert!(
+            app.shut_down_requests.is_empty(),
+            "a two-cell delivery does not reclaim"
+        );
+        assert!(app.destroyed_cell_nodes.is_empty());
+
+        let report = spaces
+            .get_mut(&5)
+            .expect("space")
+            .update_geometry(&mut app, vec![cell_info(5, 0)]);
+        assert_eq!(report.deleted, vec![CellInfoNode(1)]);
+        assert!(!report.own_cell_gone);
+        assert!(report.cell_checked_off);
+        assert!(report.checked_for_shut_down);
+        assert!(report.requested_shut_down, "a collapsed empty space asked");
+        assert_eq!(app.shut_down_requests, vec![5]);
+        assert_eq!(app.cells.len(), 1, "our own cell was not destroyed");
+
+        // A single-cell space's change re-checks nothing.
+        let report = spaces
+            .get_mut(&5)
+            .expect("space")
+            .update_geometry(&mut app, vec![cell_info(5, 0)]);
+        assert!(report.deleted.is_empty());
+        assert!(!report.checked_for_shut_down, "single-cell, so no re-check");
+    }
+
+    /// A topology change that keeps several cells re-checks the shutdown
+    /// and finds it refused, and a change that drops our own cell reports
+    /// it as going without destroying it.
+    #[test]
+    fn a_topology_change_that_keeps_the_cells_checks_the_offloads() {
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.start();
+        let mut spaces = BTreeMap::new();
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 5,
+                cells: vec![cell_info(5, 0), cell_info(5, 1)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data: vec![],
+            },
+        );
+
+        // Drop node 1, keep our node 0, add node 2: still two cells.
+        let report = spaces
+            .get_mut(&5)
+            .expect("space")
+            .update_geometry(&mut app, vec![cell_info(5, 0), cell_info(5, 2)]);
+        assert_eq!(report.deleted, vec![CellInfoNode(1)]);
+        assert!(!report.own_cell_gone);
+        assert!(report.cell_checked_off);
+        assert!(report.checked_for_shut_down);
+        assert!(!report.requested_shut_down, "still multi-cell, not empty");
+
+        // Now drop our own cell: it is going, not destroyed.
+        let report = spaces
+            .get_mut(&5)
+            .expect("space")
+            .update_geometry(&mut app, vec![cell_info(5, 2)]);
+        assert_eq!(report.deleted, vec![CellInfoNode(0)]);
+        assert!(report.own_cell_gone);
+        assert!(!report.cell_checked_off, "nothing to check off");
+        assert!(report.checked_for_shut_down);
+        assert!(!report.requested_shut_down);
+        assert_eq!(app.cells.len(), 1, "a going cell is not destroyed");
+    }
+
+    /// An entry headed for the CellAppMgr is not stored locally, and a
+    /// cellless space's own cell is never "going".
+    #[test]
+    fn a_manager_bound_entry_is_sent_and_a_cellless_space_has_no_own_cell() {
+        let mut app = CellApp::new();
+        app.start();
+        let mut space = Space::new(5);
+
+        assert!(space.space_data_entry(&mut app, 7, 1, vec![10], true));
+        assert_eq!(app.space_data_updates, vec![(5u32, 7, 1)]);
+        assert!(
+            space.space_data.is_empty(),
+            "a manager-bound entry is not stored locally"
+        );
+        assert!(space.space_data_entry(&mut app, 8, NO_SPACE_DATA_KEY, vec![], true));
+        assert_eq!(
+            app.space_data_updates.last().copied(),
+            Some((5, 8, NO_SPACE_DATA_KEY))
+        );
+
+        // A space without a cell is not a single-cell space, so a topology
+        // change re-checks the shutdown and nothing is going.
+        let report = space.update_geometry(&mut app, vec![cell_info(5, 0)]);
+        assert!(report.deleted.is_empty());
+        assert!(!report.own_cell_gone);
+        assert!(!report.cell_checked_off);
+        assert!(
+            report.checked_for_shut_down,
+            "not single-cell, so it re-checked"
+        );
+        assert!(!report.requested_shut_down, "no cell means no single cell");
     }
 }
