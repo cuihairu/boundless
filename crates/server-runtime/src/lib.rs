@@ -35,6 +35,7 @@ pub mod machined;
 pub mod mailbox_call;
 pub mod movement;
 pub mod navigation_controller;
+pub mod noise;
 pub mod offloaded_backup;
 pub mod passengers;
 pub mod pending_logins;
