@@ -18,6 +18,7 @@
 
 pub mod asset_list;
 pub mod binary_format;
+pub mod dynamic_scene;
 pub mod loose_octree;
 pub mod settings;
 pub mod static_scene;
@@ -32,6 +33,11 @@ pub use asset_list::{
 pub use binary_format::{
     BinaryFormat, FORMAT_MAGIC, FORMAT_VERSION, Header, MAX_SECTIONS, OpenError, SectionHeader,
     Stream,
+};
+pub use dynamic_scene::{
+    DEFAULT_HANDLE_GROW_BY, DEFAULT_METERS_PER_NODE, DynamicObjectHandle, DynamicObjectId,
+    DynamicObjectStorageInfo, DynamicSceneProvider, HANDLE_GENERATION_BITS, HANDLE_INDEX_BITS,
+    HANDLE_INVALID_INDEX, HandleTable, MAX_OCTREE_DEPTH,
 };
 pub use loose_octree::{
     CONFIGURATION_SIZE as OCTREE_CONFIGURATION_SIZE, Configuration as OctreeConfiguration,

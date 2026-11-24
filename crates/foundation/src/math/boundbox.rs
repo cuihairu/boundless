@@ -68,6 +68,25 @@ impl BoundBox {
             && self.min.z <= other.max.z
     }
 
+    /// Grow to include another box: an inside-out source is skipped, an
+    /// inside-out `self` snaps to it (`boundbox.ipp:211-231`).
+    pub fn add_bound_box(&mut self, bb: &Self) {
+        if bb.inside_out() {
+            return;
+        }
+        if self.inside_out() {
+            self.min = bb.min;
+            self.max = bb.max;
+        } else {
+            self.min.x = self.min.x.min(bb.min.x);
+            self.min.y = self.min.y.min(bb.min.y);
+            self.min.z = self.min.z.min(bb.min.z);
+            self.max.x = self.max.x.max(bb.max.x);
+            self.max.y = self.max.y.max(bb.max.y);
+            self.max.z = self.max.z.max(bb.max.z);
+        }
+    }
+
     /// `(min + max) / 2.f` (`boundbox.ipp:323-328`).
     pub fn centre(&self) -> Vector3 {
         (self.min + self.max) / 2.0
@@ -129,6 +148,31 @@ mod tests {
         b.add_bounds(&Vector3::new(-5.0, 11.0, 5.0));
         assert_eq!(b.min, Vector3::new(-5.0, 0.0, 0.0));
         assert_eq!(b.max, Vector3::new(10.0, 11.0, 10.0));
+    }
+
+    #[test]
+    fn add_bound_box_merges_and_snaps_like_the_reference() {
+        // an inside-out source is skipped entirely (`boundbox.ipp:213-214`)
+        let mut b = BoundBox::new(Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0));
+        b.add_bound_box(&BoundBox::default());
+        assert_eq!(b.min, Vector3::ZERO);
+        assert_eq!(b.max, Vector3::new(10.0, 10.0, 10.0));
+        // an inside-out self snaps to the source (`boundbox.ipp:216-221`)
+        let mut c = BoundBox::default();
+        c.add_bound_box(&BoundBox::new(
+            Vector3::new(1.0, 2.0, 3.0),
+            Vector3::new(4.0, 5.0, 6.0),
+        ));
+        assert_eq!(c.min, Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(c.max, Vector3::new(4.0, 5.0, 6.0));
+        // otherwise per-component min/max
+        let mut d = BoundBox::new(Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0));
+        d.add_bound_box(&BoundBox::new(
+            Vector3::new(-1.0, 11.0, 5.0),
+            Vector3::new(2.0, 12.0, 6.0),
+        ));
+        assert_eq!(d.min, Vector3::new(-1.0, 0.0, 0.0));
+        assert_eq!(d.max, Vector3::new(10.0, 12.0, 10.0));
     }
 
     #[test]
