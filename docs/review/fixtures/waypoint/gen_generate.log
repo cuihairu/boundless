@@ -1,0 +1,228 @@
+FILL 0 count 72
+SCENE slope count 72
+GENERATED polys 2 sets 0
+  P 0 set 0 minh 1.5 maxh 3.5 vc 6
+  V 0 0 x 7.00 z 0.00 adj 0 chunk 0
+  V 1 0 x 3.00 z 0.00 adj 0 chunk 0
+  V 2 0 x 3.00 z 0.00 adj 2 chunk 0
+  V 3 0 x 3.00 z 8.00 adj 0 chunk 0
+  V 4 0 x 3.00 z 8.00 adj 0 chunk 0
+  V 5 0 x 7.00 z 8.00 adj 0 chunk 0
+  P 1 set 0 minh 0.0 maxh 1.5 vc 6
+  V 0 0 x 3.00 z 0.00 adj 0 chunk 0
+  V 1 0 x 3.00 z 0.00 adj 0 chunk 0
+  V 2 0 x 0.00 z 0.00 adj 0 chunk 0
+  V 3 0 x 0.00 z 8.00 adj 0 chunk 0
+  V 4 0 x 3.00 z 8.00 adj 0 chunk 0
+  V 5 0 x 3.00 z 8.00 adj 1 chunk 0
+GENASBIN bytes 184 fnv 92d674f4a42fa41e
+HX 0000 00000000cdcc4c3f020000000c000000
+HX 0010 0000c03f000060400600000000000000
+HX 0020 0000c03f060000000000e04000000000
+HX 0030 ffffffff0000404000000000ffffffff
+HX 0040 00004040000000000100000000004040
+HX 0050 00000041ffffffff0000404000000041
+HX 0060 ffffffff0000e04000000041ffffffff
+HX 0070 0000404000000000ffffffff00004040
+HX 0080 00000000ffffffff0000000000000000
+HX 0090 ffffffff0000000000000041ffffffff
+HX 00a0 0000404000000041ffffffff00004040
+HX 00b0 0000004100000000
+R 0 version 0 girth 0.8 nwp 2 ne 12
+  P 0 minh 1.5 maxh 3.5 vc 6
+  P 1 minh 0.0 maxh 1.5 vc 6
+  V 0 x 7.0 z 0.0 adj -1
+  V 1 x 3.0 z 0.0 adj -1
+  V 2 x 3.0 z 0.0 adj 1
+  V 3 x 3.0 z 8.0 adj -1
+  V 4 x 3.0 z 8.0 adj -1
+  V 5 x 7.0 z 8.0 adj -1
+  V 6 x 3.0 z 0.0 adj -1
+  V 7 x 3.0 z 0.0 adj -1
+  V 8 x 0.0 z 0.0 adj -1
+  V 9 x 0.0 z 8.0 adj -1
+  V 10 x 3.0 z 8.0 adj -1
+  V 11 x 3.0 z 8.0 adj 0
+STREAMLINED polys 2 sets 0
+  P 0 set 0 minh 1.5 maxh 3.5 vc 4
+  V 0 0 x 7.00 z 0.00 adj 0 chunk 0
+  V 1 0 x 3.00 z 0.00 adj 2 chunk 0
+  V 2 0 x 3.00 z 8.00 adj 0 chunk 0
+  V 3 0 x 7.00 z 8.00 adj 0 chunk 0
+  P 1 set 0 minh 0.0 maxh 1.5 vc 4
+  V 0 0 x 3.00 z 0.00 adj 0 chunk 0
+  V 1 0 x 0.00 z 0.00 adj 0 chunk 0
+  V 2 0 x 0.00 z 8.00 adj 0 chunk 0
+  V 3 0 x 3.00 z 8.00 adj 1 chunk 0
+SETMEM polys 2 sets 1
+  P 0 set 1 minh 1.5 maxh 3.5 vc 4
+  V 0 0 x 7.00 z 0.00 adj 0 chunk 0
+  V 1 0 x 3.00 z 0.00 adj 2 chunk 0
+  V 2 0 x 3.00 z 8.00 adj 0 chunk 0
+  V 3 0 x 7.00 z 8.00 adj 0 chunk 0
+  P 1 set 1 minh 0.0 maxh 1.5 vc 4
+  V 0 0 x 3.00 z 0.00 adj 0 chunk 0
+  V 1 0 x 0.00 z 0.00 adj 0 chunk 0
+  V 2 0 x 0.00 z 8.00 adj 0 chunk 0
+  V 3 0 x 3.00 z 8.00 adj 1 chunk 0
+slope bytes 136 fnv 3a23247435af66a6
+HX 0000 00000000cdcc4c3f0200000008000000
+HX 0010 0000c03f000060400400000000000000
+HX 0020 0000c03f040000000000e04000000000
+HX 0030 ffffffff000040400000000001000000
+HX 0040 0000404000000041ffffffff0000e040
+HX 0050 00000041ffffffff0000404000000000
+HX 0060 ffffffff0000000000000000ffffffff
+HX 0070 0000000000000041ffffffff00004040
+HX 0080 0000004100000000
+R 0 version 0 girth 0.8 nwp 2 ne 8
+  P 0 minh 1.5 maxh 3.5 vc 4
+  P 1 minh 0.0 maxh 1.5 vc 4
+  V 0 x 7.0 z 0.0 adj -1
+  V 1 x 3.0 z 0.0 adj 1
+  V 2 x 3.0 z 8.0 adj -1
+  V 3 x 7.0 z 8.0 adj -1
+  V 4 x 3.0 z 0.0 adj -1
+  V 5 x 0.0 z 0.0 adj -1
+  V 6 x 0.0 z 8.0 adj -1
+  V 7 x 3.0 z 8.0 adj 0
+FILL 0 count 21
+FILL 1 count 6
+FILL 2 count 12
+SCENE shell count 39
+GENERATED polys 6 sets 0
+  P 0 set 0 minh 0.0 maxh 0.0 vc 4
+  V 0 0 x 0.00 z 6.00 adj 0 chunk 0
+  V 1 0 x 0.00 z 8.00 adj 0 chunk 0
+  V 2 0 x 2.00 z 8.00 adj 2 chunk 0
+  V 3 0 x 1.00 z 7.00 adj 0 chunk 0
+  P 1 set 0 minh 0.0 maxh 0.0 vc 5
+  V 0 0 x 2.00 z 7.00 adj 0 chunk 0
+  V 1 0 x 1.00 z 7.00 adj 1 chunk 0
+  V 2 0 x 2.00 z 8.00 adj 0 chunk 0
+  V 3 0 x 4.00 z 8.00 adj 0 chunk 0
+  V 4 0 x 4.00 z 7.00 adj 0 chunk 0
+  P 2 set 0 minh 0.0 maxh 0.0 vc 3
+  V 0 0 x 1.00 z 0.00 adj 0 chunk 0
+  V 1 0 x 0.00 z 0.00 adj 0 chunk 0
+  V 2 0 x 0.00 z 1.00 adj 0 chunk 0
+  P 3 set 0 minh 0.0 maxh 0.0 vc 0
+  P 4 set 0 minh 0.5 maxh 0.5 vc 4
+  V 0 0 x 4.00 z 2.00 adj 0 chunk 0
+  V 1 0 x 2.00 z 2.00 adj 0 chunk 0
+  V 2 0 x 2.00 z 5.00 adj 0 chunk 0
+  V 3 0 x 4.00 z 5.00 adj 0 chunk 0
+  P 5 set 0 minh 1.5 maxh 1.5 vc 4
+  V 0 0 x 4.00 z 3.00 adj 0 chunk 0
+  V 1 0 x 2.00 z 3.00 adj 0 chunk 0
+  V 2 0 x 2.00 z 4.00 adj 0 chunk 0
+  V 3 0 x 4.00 z 4.00 adj 0 chunk 0
+GENASBIN bytes 328 fnv 988ecf841c555b54
+HX 0000 00000000cdcc4c3f0600000014000000
+HX 0010 00000000000000000400000000000000
+HX 0020 00000000050000000000000000000000
+HX 0030 03000000000000000000000000000000
+HX 0040 0000003f0000003f040000000000c03f
+HX 0050 0000c03f04000000000000000000c040
+HX 0060 ffffffff0000000000000041ffffffff
+HX 0070 0000004000000041010000000000803f
+HX 0080 0000e040ffffffff000000400000e040
+HX 0090 ffffffff0000803f0000e04000000000
+HX 00a0 0000004000000041ffffffff00008040
+HX 00b0 00000041ffffffff000080400000e040
+HX 00c0 ffffffff0000803f00000000ffffffff
+HX 00d0 0000000000000000ffffffff00000000
+HX 00e0 0000803fffffffff0000804000000040
+HX 00f0 ffffffff0000004000000040ffffffff
+HX 0100 000000400000a040ffffffff00008040
+HX 0110 0000a040ffffffff0000804000004040
+HX 0120 ffffffff0000004000004040ffffffff
+HX 0130 0000004000008040ffffffff00008040
+HX 0140 00008040ffffffff
+R 0 version 0 girth 0.8 nwp 6 ne 20
+  P 0 minh 0.0 maxh 0.0 vc 4
+  P 1 minh 0.0 maxh 0.0 vc 5
+  P 2 minh 0.0 maxh 0.0 vc 3
+  P 3 minh 0.0 maxh 0.0 vc 0
+  P 4 minh 0.5 maxh 0.5 vc 4
+  P 5 minh 1.5 maxh 1.5 vc 4
+  V 0 x 0.0 z 6.0 adj -1
+  V 1 x 0.0 z 8.0 adj -1
+  V 2 x 2.0 z 8.0 adj 1
+  V 3 x 1.0 z 7.0 adj -1
+  V 4 x 2.0 z 7.0 adj -1
+  V 5 x 1.0 z 7.0 adj 0
+  V 6 x 2.0 z 8.0 adj -1
+  V 7 x 4.0 z 8.0 adj -1
+  V 8 x 4.0 z 7.0 adj -1
+  V 9 x 1.0 z 0.0 adj -1
+  V 10 x 0.0 z 0.0 adj -1
+  V 11 x 0.0 z 1.0 adj -1
+  V 12 x 4.0 z 2.0 adj -1
+  V 13 x 2.0 z 2.0 adj -1
+  V 14 x 2.0 z 5.0 adj -1
+  V 15 x 4.0 z 5.0 adj -1
+  V 16 x 4.0 z 3.0 adj -1
+  V 17 x 2.0 z 3.0 adj -1
+  V 18 x 2.0 z 4.0 adj -1
+  V 19 x 4.0 z 4.0 adj -1
+STREAMLINED polys 5 sets 0
+  P 0 set 0 minh 0.0 maxh 0.0 vc 4
+  V 0 0 x 0.00 z 6.00 adj 0 chunk 0
+  V 1 0 x 0.00 z 8.00 adj 0 chunk 0
+  V 2 0 x 2.00 z 8.00 adj 2 chunk 0
+  V 3 0 x 1.00 z 7.00 adj 0 chunk 0
+  P 1 set 0 minh 0.0 maxh 0.0 vc 5
+  V 0 0 x 2.00 z 7.00 adj 0 chunk 0
+  V 1 0 x 1.00 z 7.00 adj 1 chunk 0
+  V 2 0 x 2.00 z 8.00 adj 0 chunk 0
+  V 3 0 x 4.00 z 8.00 adj 0 chunk 0
+  V 4 0 x 4.00 z 7.00 adj 0 chunk 0
+  P 2 set 0 minh 0.0 maxh 0.0 vc 3
+  V 0 0 x 1.00 z 0.00 adj 0 chunk 0
+  V 1 0 x 0.00 z 0.00 adj 0 chunk 0
+  V 2 0 x 0.00 z 1.00 adj 0 chunk 0
+  P 3 set 0 minh 0.5 maxh 0.5 vc 4
+  V 0 0 x 4.00 z 2.00 adj 0 chunk 0
+  V 1 0 x 2.00 z 2.00 adj 0 chunk 0
+  V 2 0 x 2.00 z 5.00 adj 0 chunk 0
+  V 3 0 x 4.00 z 5.00 adj 0 chunk 0
+  P 4 set 0 minh 1.5 maxh 1.5 vc 4
+  V 0 0 x 4.00 z 3.00 adj 0 chunk 0
+  V 1 0 x 2.00 z 3.00 adj 0 chunk 0
+  V 2 0 x 2.00 z 4.00 adj 0 chunk 0
+  V 3 0 x 4.00 z 4.00 adj 0 chunk 0
+SETMEM polys 2 sets 2
+  P 0 set 1 minh 0.5 maxh 0.5 vc 4
+  V 0 0 x 4.00 z 2.00 adj 0 chunk 0
+  V 1 0 x 2.00 z 2.00 adj 0 chunk 0
+  V 2 0 x 2.00 z 5.00 adj 0 chunk 0
+  V 3 0 x 4.00 z 5.00 adj 0 chunk 0
+  P 1 set 2 minh 1.5 maxh 1.5 vc 4
+  V 0 0 x 4.00 z 3.00 adj 0 chunk 0
+  V 1 0 x 2.00 z 3.00 adj 0 chunk 0
+  V 2 0 x 2.00 z 4.00 adj 0 chunk 0
+  V 3 0 x 4.00 z 4.00 adj 0 chunk 0
+shell bytes 152 fnv e01640188f0c6115
+HX 0000 00000000cdcc4c3f0100000004000000
+HX 0010 0000003f0000003f0400000000008040
+HX 0020 00000040ffffffff0000004000000040
+HX 0030 ffffffff000000400000a040ffffffff
+HX 0040 000080400000a040ffffffff00000000
+HX 0050 cdcc4c3f01000000040000000000c03f
+HX 0060 0000c03f040000000000804000004040
+HX 0070 ffffffff0000004000004040ffffffff
+HX 0080 0000004000008040ffffffff00008040
+HX 0090 00008040ffffffff
+R 0 version 0 girth 0.8 nwp 1 ne 4
+  P 0 minh 0.5 maxh 0.5 vc 4
+  V 0 x 4.0 z 2.0 adj -1
+  V 1 x 2.0 z 2.0 adj -1
+  V 2 x 2.0 z 5.0 adj -1
+  V 3 x 4.0 z 5.0 adj -1
+R 1 version 0 girth 0.8 nwp 1 ne 4
+  P 0 minh 1.5 maxh 1.5 vc 4
+  V 0 x 4.0 z 3.0 adj -1
+  V 1 x 2.0 z 3.0 adj -1
+  V 2 x 2.0 z 4.0 adj -1
+  V 3 x 4.0 z 4.0 adj -1

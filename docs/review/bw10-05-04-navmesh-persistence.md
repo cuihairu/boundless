@@ -4,9 +4,12 @@
 
 **分片状态**：本片交付工作流的**保存臂**——记录流写入器
 `IWaypointView::asBinary` 与 `saveOut` 的旧记录合并算术（todo 不勾，
-05-04 仍开）。余片：`WaypointGenerator` BSP 多边形化
-（generate / determineEdgesAdjacentToOtherChunks / streamline /
-extendThroughUnboundPortals / calculateSetMembership，3040 行）与
+05-04 仍开）。分片二（见下）已交付 `WaypointGenerator` BSP 多边形化
+主体（generate / generatePoints / generatePolygons /
+generateAdjacencies / joinPolygons / streamline /
+calculateSetMembership）。余片：门户两臂
+（determineEdgesAdjacentToOtherChunks /
+extendThroughUnboundPortals）、`readTGA` 读入侧与
 `tools/common/navmesh_processor.cpp` 的 per-girth 工作流环。
 BW-10-05-03 Recast 移植范围仍挂起待用户拍板。
 
@@ -135,3 +138,140 @@ g++ -std=c++14 -O2 -o /tmp/viewstub/gen_view \
 （stderr 走原版 INFO_MSG；stdout 才是 log。`cmp` 验证
 `/tmp/viewstub/waypoint_generator/waypoint_view.cpp` 与参照逐字节一致。）
 产物二进制不入库。
+
+---
+
+# 分片二：WaypointGenerator BSP 多边形化（generate → streamline → set）
+
+## 产物对照（验收面）
+
+参照 harness `docs/review/fixtures/waypoint/gen_generate.cpp`：**未改动**
+的原版 `waypoint_flood.cpp` + `waypoint_generator.cpp` +
+`waypoint_view.cpp`（`cmp` 逐字节验证一致）全链路驱动——原版 flood 灌
+05-02 两场景（slope 0.5 步进斜坡；shell 室内外壳 + 室内地坪 + 室内桥），
+网格 memcpy 进原版 `WaypointGenerator`，跑 `init → generate() →
+asBinary → streamline() → calculateSetMembership() → asBinary`，倾倒
+`GENERATED/GENASBIN/STREAMLINED/SETMEM` 与最终记录流（`HX` 每 16 字节
+一行）进 `docs/review/fixtures/waypoint/gen_generate.log`（228 行，已
+提交）。Rust 侧 `generator/artifacts.rs` 同场景同倾倒格式重跑，**逐行
+全等**：slope 终流 136 字节 fnv `3a23247435af66a6`；shell 终流 152 字节
+fnv `e01640188f0c6115`（两记录 girth 0.8，nwp 1 ne 4 各一）。
+
+| 阶段 | slope | shell |
+|---|---|---|
+| FILL | 1 种子 72 格 | 3 种子 21/6/12 格（SCENE 39） |
+| GENERATED | 2 片（vc 6+6，streamline 前含重复顶点） | 6 片（**P3 vc 0 空片**） |
+| GENASBIN | 184 B fnv `92d674f4a42fa41e` | 328 B fnv `988ecf841c555b54` |
+| STREAMLINED | 2 片 vc 4+4 | 5 片（空片被剔） |
+| SETMEM | 2 片 1 集合 | 2 片 2 集合（0.5 地坪 set 1、1.5 桥 set 2；3 片 set 0 被物理剔除） |
+| 终流 | 136 B fnv `3a23247435af66a6` | 152 B fnv `e01640188f0c6115` |
+
+asBinary 邻接重映射同分片一口径：slope 互惠对 `V2 adj 1`（P0→P1，
+`indexMap[2]=1`）↔ `V11 adj 0`（P1→P0，`indexMap[1]=0`），其余无邻
+顶点输出 -1。
+
+## 参照源码
+
+| 参照 | 位置 |
+|---|---|
+| `PointDef`/`EdgeDef` 排序梯 + `nearlySame`/`ptNearEnough` | waypoint_generator.cpp:39-186 |
+| `init`/`generate`/`initBSP`/`nodesSame` | waypoint_generator.cpp:339-476 |
+| `processNode`（og 直用 `hgtGrids_[og][ptindex+dx[a]+dy[a]]`，窗口 `h∈[y1,y2]`） | waypoint_generator.cpp:477-702（558-568） |
+| `doBestHorizontalSplit` | waypoint_generator.cpp:703-805 |
+| `averageHeight`/`findDispoints`/`calcSplitValue`/`splitNode` | waypoint_generator.cpp:806-1159 |
+| `refineNodeEdges`/`reduceNodeHeight` | waypoint_generator.cpp:1160-1281 |
+| `calcEdge`/`generatePoints`/`generatePolygons` | waypoint_generator.cpp:1407-1704 |
+| `generateAdjacencies`（高度**重叠**过滤，非包含） | waypoint_generator.cpp:1705-1795（1769-1770） |
+| `isConvexJoint`/`findPolygonVertex`/`fixupAdjacencies`/`joinPolygon`/`joinPolygons` | waypoint_generator.cpp:2064-2369 |
+| `streamline`（剔空片 `polygons_.erase`） | waypoint_generator.cpp:2733-2826（~2752） |
+| `calculateSetMembership`（尾段剔 set 0 片） | waypoint_generator.cpp:2827-3040（~3001） |
+| `AdjGridElt::angle` 原值存邻居槽号 | waypoint_flood.hpp:17-22 |
+
+## 移植面
+
+| 参照 | Rust |
+|---|---|
+| `WaypointGenerator` + 全管线 | `generator::WaypointGenerator`（`generator.rs`，2056 行） |
+| `SplitDef`（`ph`/`se` union） | `SplitDef.ph` 单字段 + `VERTICAL_SPLIT = 8`（union 两视读同内存） |
+| `processNode` 显式索引栈 | `process_node`（`generator.rs:548`） |
+| `BSPNode` 指针树 | `BspNode` Vec 池 + 子索引 |
+| `generateAdjacencies` | `generate_adjacencies`（`generator.rs:1486`） |
+| `joinPolygon(s)`/`fixupAdjacencies`/`isConvexJoint`/`findPolygonVertex` | `join_polygon`（`generator.rs:1573`）等四件 |
+| `streamline` / `calculateSetMembership` | `streamline` / `calculate_set_membership`（`generator.rs:1821`） |
+| `asBinary` | 复用分片一 `view::as_binary`（generator 自实现 `NavView`） |
+| `readTGA`（:252）/门户两臂（:2370/:2628）/per-girth 工作流环 | 未移植（余片） |
+
+## 测试与门禁
+
+- `cargo test -p waypoint-gen`：**67 通过 / 0 失败**（43 旧 + 24 新：
+  产物全等对照 + 管线单元/怪癖测试——join 合并修复与跳过臂、
+  split 上限行走、refine 退化扫描回退、孤立格与零深度节点跳过、
+  moat 场景、set 成员重访、比较器失败报告等）。
+- 覆盖（llvm-cov 0.9.1，`--lcov` DA 计数）：`generator.rs` **99.31%**
+  （1291/1300；9 行 DA:0 = 100/721/801/803/827/829/847/848/1478，全部
+  为体已覆盖的嵌套控制流收尾 `}`——bw08 已档的 llvm-cov 永零区）；
+  `generator/artifacts.rs` **100%**（602/602）；`flood.rs` 99.19% 不变
+  （05-02 基线）；`flood/artifacts.rs` 95.65%→**100%** 与
+  `view/artifacts.rs` 98.18%→**100%**（真值比较器提函数 +
+  `should_panic` 探针，行为覆盖非死码豁免）。
+- `cargo test --workspace`：**4416 通过 / 0 失败**；`cargo fmt --check`
+  绿；`cargo clippy -p waypoint-gen --all-targets -- -D warnings` 绿。
+
+## 登记边界
+
+- **`og` 原值怪癖**：`AdjGridElt::angle` 存的是邻居的**槽号原值**
+  （非编码角度），`processNode` 直接 `hgtGrids_[og][ptindex+dx[a]+dy[a]]`
+  索引（waypoint_generator.cpp:558-568）。0 = 无邻；flood 灌层自
+  MAX_HEIGHTS-1（15）向下分配槽，故 0 槽永不撞真层。手写测试网格须按
+  此约定落层（artifacts 测试把可行高度放槽 1、angle 写 1）。
+- **邻接高度过滤是重叠不是包含**：`generateAdjacencies` 仅当
+  `maxHeight < minHeight || minHeight > maxHeight` 才 continue
+  （waypoint_generator.cpp:1769-1770），即高度区间有交即候选。
+- **`ptNearEnough` 高度窗 +1.5/−0.5**（waypoint_generator.cpp:143）：
+  种子落点与多边形高差出窗即不中标（shell 里 y=10 种子落点够不到
+  0.0 地面片，故 SETMEM 仅剩两片）。
+- **空片读 v0 = release UB**：`joinPolygon` 对 `vertexCount == 0` 的
+  多边形读 v0（waypoint_generator.cpp:2126 起）；shell 场景真造出一片
+  vc 0（GENERATED P3）且原样进 GENASBIN（nwp 6）。Rust 侧守卫为
+  (0,0) 顶点，登记不改（真产物可含空片）。
+- **streamline 剔空片**：vc 0 多边形在 streamline 丢弃
+  （`polygons_.erase`，shell 6→5）。
+- **`calculateSetMembership` 尾段剔 set 0 片**：集合指派完成后 set 0
+  多边形 `polygons_.erase` 物理剔除（shell 5→2）；无 frontier → 最大
+  bbox 单集合；未互惠邻接清零。
+- **joinPolygon 顶点角语义**：顶点 angle = 它**闭合**的那条边方向
+  （南 6/东 0/北 2/西 4），`v.adj` = 自 v 起边的对面多边形；同角连段
+  = 一条合并段，`singleAdjacency` 要求整段所有顶点同 adj>0。
+- **`doBestHorizontalSplit` 调用约定**：调用方已弹出索引，栈到达时为
+  空；落空（bestSplit < 0）时子节点 `waypoint=false`、不回压。
+- **死列行为**：不可行列使 `calcSplitValue` 落空 → 节点不成为
+  waypoint（gap 列不产多边形）；空节点 `averageHeight = (0.0, 0)`。
+- **MF_ASSERT**：release 语义（harness 用 `-D_RELEASE` 编译），同
+  分片一。
+
+## Harness 复现
+
+```sh
+BW=/home/cui/workspaces/BigWorld/programming/bigworld
+mkdir -p /tmp/genstub/{cstdmf,resmgr,chunk,waypoint_generator}
+cp $BW/lib/waypoint_generator/waypoint_{flood,generator,view}.{hpp,cpp} \
+  /tmp/genstub/waypoint_generator/
+# 影子桩同分片一 /tmp/viewstub，另需 05-02 的
+# cstdmf/{bw_set,bgtask_manager}.hpp 桩与 flood 补丁（见
+# docs/review/bw10-05-02-flood-generation.md 的 Harness 复现）
+g++ -std=c++14 -O2 -o /tmp/genstub/gen_generate \
+  docs/review/fixtures/waypoint/gen_generate.cpp \
+  /tmp/genstub/waypoint_generator/waypoint_flood.cpp \
+  /tmp/genstub/waypoint_generator/waypoint_generator.cpp \
+  /tmp/genstub/waypoint_generator/waypoint_view.cpp \
+  -I /tmp/genstub -I /tmp/genstub/waypoint_generator -I $BW/lib \
+  -DCODE_INLINE -D_RELEASE -DHANDLE=void* -DINVALID_HANDLE_VALUE=NULL \
+  -DBW_GUARD= \
+  $BW/build/el7/lib/libcstdmf.a $BW/build/el7/lib/libmath.a -lpthread
+/tmp/genstub/gen_generate 2>/dev/null \
+  > docs/review/fixtures/waypoint/gen_generate.log
+```
+
+（stderr 走原版 INFO_MSG；stdout 才是 log。`cmp` 验证
+`/tmp/genstub/waypoint_generator/` 三对源文件与参照逐字节一致。
+产物二进制不入库。）

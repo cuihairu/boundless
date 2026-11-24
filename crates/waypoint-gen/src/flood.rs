@@ -1019,8 +1019,8 @@ impl WaypointFlood {
 }
 
 #[cfg(test)]
-mod artifacts;
+pub(crate) mod artifacts;
 #[cfg(test)]
 mod covers;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

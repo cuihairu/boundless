@@ -18,7 +18,7 @@ fn slab_scene() -> FieldPhysics {
 }
 
 /// `slopeScene`: eight 0.5-step slabs covering `x` in `[0,8)`.
-fn slope_scene() -> FieldPhysics {
+pub(crate) fn slope_scene() -> FieldPhysics {
     let mut physics = slab_scene();
     for i in 0..8 {
         let i = i as f32;
@@ -30,7 +30,7 @@ fn slope_scene() -> FieldPhysics {
 /// `shellScene`: outdoor ground strips, a sealed room at floor 0.5
 /// (unclimbable 3.0 walls), and an indoor bridge at 1.5 that stacks
 /// second height layers over the floor.
-fn shell_scene() -> FieldPhysics {
+pub(crate) fn shell_scene() -> FieldPhysics {
     let mut physics = slab_scene();
     physics.slabs.push(Slab(-100.0, -100.0, 0.5, 100.0, 0.0));
     physics.slabs.push(Slab(6.5, -100.0, 100.0, 100.0, 0.0));
@@ -47,7 +47,7 @@ fn shell_scene() -> FieldPhysics {
 
 /// The chunk clip of `runScene`: shell cells own `x <= 3.5`, so the
 /// east column leaves boundary points behind.
-fn clipped_chunk() -> Bounds {
+pub(crate) fn clipped_chunk() -> Bounds {
     Bounds {
         owns_box: (-100.0, -100.0, 3.5, 100.0),
         space: (-100.0, 100.0, -100.0, 100.0),
@@ -148,8 +148,14 @@ fn the_reference_harness_scenes_reproduce_the_truth_log() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/review/fixtures/waypoint/gen_flood.log"
     ));
-    if out != truth {
-        for (n, (ours, theirs)) in out.lines().zip(truth.lines()).enumerate() {
+    assert_matches_truth(&out, truth);
+}
+
+/// The truth-log comparator: per-line equality with a first-mismatch
+/// report, then a length report.
+fn assert_matches_truth(ours: &str, truth: &str) {
+    if ours != truth {
+        for (n, (ours, theirs)) in ours.lines().zip(truth.lines()).enumerate() {
             if ours != theirs {
                 panic!(
                     "first mismatch at log line {}:\n  ours:   {ours}\n  truth:  {theirs}",
@@ -159,8 +165,20 @@ fn the_reference_harness_scenes_reproduce_the_truth_log() {
         }
         panic!(
             "line counts differ: ours {} truth {}",
-            out.lines().count(),
+            ours.lines().count(),
             truth.lines().count()
         );
     }
+}
+
+#[test]
+#[should_panic(expected = "first mismatch at log line 2")]
+fn the_truth_comparator_reports_the_first_mismatching_line() {
+    assert_matches_truth("A\nB\n", "A\nC\n");
+}
+
+#[test]
+#[should_panic(expected = "line counts differ: ours 2 truth 1")]
+fn the_truth_comparator_reports_line_count_differences() {
+    assert_matches_truth("A\nB\n", "A\n");
 }

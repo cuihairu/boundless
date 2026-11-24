@@ -10,9 +10,11 @@
 //! [`FloodChunk`].
 
 pub mod flood;
+pub mod generator;
 pub mod view;
 
 pub use flood::{AdjGridElt, FloodChunk, FloodPhysics, FloodProgress, MAX_HEIGHTS, WaypointFlood};
+pub use generator::WaypointGenerator;
 pub use view::{
     ADJ_ANOTHER_CHUNK, NAV_POLY_EDGE_ELT_SIZE, NAV_POLY_ELT_SIZE, NAV_POLY_SET_ELT_SIZE, NavVertex,
     NavView, as_binary, save_out_records,

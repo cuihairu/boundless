@@ -303,8 +303,14 @@ fn the_reference_harness_scene_reproduces_the_truth_log() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/review/fixtures/waypoint/gen_view.log"
     ));
-    if out != truth {
-        for (n, (ours, theirs)) in out.lines().zip(truth.lines()).enumerate() {
+    assert_matches_truth(&out, truth);
+}
+
+/// The truth-log comparator: per-line equality with a first-mismatch
+/// report, then a length report.
+fn assert_matches_truth(ours: &str, truth: &str) {
+    if ours != truth {
+        for (n, (ours, theirs)) in ours.lines().zip(truth.lines()).enumerate() {
             if ours != theirs {
                 panic!(
                     "first mismatch at log line {}:\n  ours:   {ours}\n  truth:  {theirs}",
@@ -314,10 +320,22 @@ fn the_reference_harness_scene_reproduces_the_truth_log() {
         }
         panic!(
             "line counts differ: ours {} truth {}",
-            out.lines().count(),
+            ours.lines().count(),
             truth.lines().count()
         );
     }
+}
+
+#[test]
+#[should_panic(expected = "first mismatch at log line 2")]
+fn the_view_truth_comparator_reports_the_first_mismatching_line() {
+    assert_matches_truth("A\nB\n", "A\nC\n");
+}
+
+#[test]
+#[should_panic(expected = "line counts differ: ours 2 truth 1")]
+fn the_view_truth_comparator_reports_line_count_differences() {
+    assert_matches_truth("A\nB\n", "A\n");
 }
 
 #[test]
