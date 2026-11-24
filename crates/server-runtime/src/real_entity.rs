@@ -842,6 +842,36 @@ impl CellEntities {
         self.population.mark_destroyed(id);
         true
     }
+
+    /// `Cell::entityDestroyed` (`cell.cpp:287-312`): the two refusal
+    /// guards — destroying a living entity is murder, and the call is
+    /// only for reals — then the removal from the real set and the
+    /// collection.
+    pub fn entity_destroyed(&mut self, id: EntityId) -> Result<(), &'static str> {
+        if !self.population.is_destroyed(id) {
+            return Err("Cell::entityDestroyed: someone tried to murder a living entity");
+        }
+        if !self.reals.contains_key(&id) {
+            return Err("Cell::entityDestroyed: called on ghost entity");
+        }
+        if self.reals.remove(&id).is_none() {
+            return Err("Cell::entityDestroyed: failed to remove entity");
+        }
+        self.collection.remove(id);
+        Ok(())
+    }
+
+    /// `Entity::convertRealToGhost`'s record face for the destroy branch
+    /// (`entity.cpp:3039-3048`): the real record leaves, the entity lives
+    /// on as a ghost. The collection slot goes with it — a demoted entity
+    /// holds no cell slot.
+    pub fn convert_real_to_ghost(&mut self, id: EntityId) -> bool {
+        if self.reals.remove(&id).is_none() {
+            return false;
+        }
+        self.collection.remove(id);
+        true
+    }
 }
 
 // -----------------------------------------------------------------------------
