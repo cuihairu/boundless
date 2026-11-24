@@ -13,8 +13,8 @@
 //! absent.
 
 use db::{
-    load_entity, DatabaseConfig, DbError, EntityKey, EntityRecord, EntityStorage, MemoryStorage,
-    StorageBackend,
+    DatabaseConfig, DbError, EntityKey, EntityRecord, EntityStorage, MemoryStorage, StorageBackend,
+    load_entity,
 };
 use db_postgres::PostgresStorage;
 use server_runtime::dbapp::DbApp;

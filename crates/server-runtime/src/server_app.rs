@@ -750,7 +750,7 @@ mod tests {
             ran: Cell::new(false),
         };
         assert_eq!(ServerApp::app_name(&app), "bareapp");
-        assert_eq!(run_app(&mut app, &[]), true);
+        assert!(run_app(&mut app, &[]));
         assert!(app.ran.get());
 
         // The base shutDown: the INFO line only; the override breaks the
@@ -926,7 +926,7 @@ mod tests {
         let _blocker = Blocker::new(&blocked);
 
         base_on_signalled(libc::SIGINT);
-        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL);
         assert!(
             kernel_pending_signals() & (1 << libc::SIGINT) != 0,
             "the re-raised SIGINT waits blocked"
@@ -960,7 +960,7 @@ mod tests {
         base_on_signalled(libc::SIGTERM);
         base_on_signalled(libc::SIGUSR2);
         assert_eq!(kernel_pending_signals(), before);
-        assert_eq!(disposition_of(libc::SIGTERM), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGTERM), libc::SIG_DFL);
 
         // The trait default routes straight into the base arm.
         struct BareSignalApp;
@@ -1146,7 +1146,7 @@ mod tests {
         processor.dispatch();
 
         assert_eq!(*log.borrow(), ["onSignalled SIGINT"]);
-        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL);
         assert!(
             kernel_pending_signals() & (1 << libc::SIGINT) != 0,
             "the routed re-raise parks blocked"
@@ -1215,7 +1215,7 @@ mod tests {
             "breaker",
         ))));
 
-        assert_eq!(base_run(&mut app, &mut dispatcher), true);
+        assert!(base_run(&mut app, &mut dispatcher));
         assert!(app.completed.get());
     }
 
