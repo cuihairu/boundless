@@ -26,8 +26,8 @@ use waypoint::{
 use crate::controllers::ControllerId;
 use crate::entity_dispatch::EntityId;
 use crate::movement::{
-    AccelerateAlongPathController, AccelerateToPointController, EntityState, FACING_MAX,
-    MoveToEntityController, MoveToPointController, NavigateStepController,
+    AccelerateAlongPathController, AccelerateToEntityController, AccelerateToPointController,
+    EntityState, FACING_MAX, MoveToEntityController, MoveToPointController, NavigateStepController,
 };
 use crate::navigation_controller::{NavigationController, Navigator};
 
@@ -249,6 +249,12 @@ impl AccelerateToPointFailure {
         }
     }
 }
+
+/// The `accelerateToEntity` face shares the `accelerateToPoint`
+/// refusals — the same two checks (`isRealToScript`, then the facing
+/// int) with the same texts (`entity_navigate.cpp`, the accelerate
+/// faces).
+pub type AccelerateToEntityFailure = AccelerateToPointFailure;
 
 /// The `accelerateAlongPath` failure faces — the reference's `PyErr`
 /// results (`entity_navigate.cpp`, the accelerate faces). The checks run
@@ -1193,6 +1199,49 @@ impl EntityNavigate {
             acceleration,
             max_speed,
             facing,
+            hertz,
+        ))
+    }
+
+    /// `EntityNavigate::accelerateToEntity`
+    /// (`entity_navigate.cpp:421-456`): refuse non-real entities,
+    /// validate the facing int (the verbatim "must one of" typo), and
+    /// hand back the chasing controller for the caller's
+    /// `entity_.addController( pController, userArg )`. Same two checks
+    /// as `accelerate_to_point` — no vehicle check, no range validation.
+    /// The target's position (or its destruction) is resolved per tick
+    /// by the caller; the controller picks its full-range offset bearing
+    /// on the first update and always stops at the destination.
+    #[allow(clippy::too_many_arguments)]
+    pub fn accelerate_to_entity(
+        &self,
+        dest_entity_id: EntityId,
+        acceleration: f32,
+        max_speed: f32,
+        range: f32,
+        int_facing: i32,
+        user_arg: i32,
+        controller_id: ControllerId,
+        hertz: f32,
+    ) -> Result<AccelerateToEntityController, AccelerateToEntityFailure> {
+        if !self.is_real {
+            return Err(AccelerateToEntityFailure::NotReal);
+        }
+
+        let facing = if (0..FACING_MAX as i32).contains(&int_facing) {
+            int_facing as u8
+        } else {
+            return Err(AccelerateToEntityFailure::BadFacing);
+        };
+
+        Ok(AccelerateToEntityController::new(
+            controller_id,
+            user_arg,
+            dest_entity_id,
+            acceleration,
+            max_speed,
+            facing,
+            range,
             hertz,
         ))
     }
@@ -3590,6 +3639,105 @@ mod tests {
             .accelerate_along_path(Vec::new(), 2.0, 2.0, 3, 0, 5, DEFAULT_GAME_UPDATE_HERTZ)
             .expect_err("a ghost is refused");
         assert_eq!(err, AccelerateAlongPathFailure::NotReal);
+        assert_eq!(
+            err.message(),
+            "This method can only be called on a real entity."
+        );
+    }
+
+    #[test]
+    fn accelerate_to_entity_chases_a_moving_target_into_range() {
+        let navigate = real_entity();
+        let mut controller = navigate
+            .accelerate_to_entity(
+                42,
+                2.0,
+                2.0,
+                1.0,
+                FACING_VELOCITY as i32,
+                7,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("a real entity gets the controller");
+        assert_eq!(controller.id, 5);
+        assert_eq!(controller.user_arg, 7);
+        assert_eq!(controller.dest_entity_id, 42);
+        assert!((controller.range - 1.0).abs() < 1e-6);
+
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log = Vec::new();
+
+        // The target relocates mid-chase; the walk retargets toward
+        // target + offset and stops once the entity itself is inside
+        // range of the raw target.
+        let mut target = Vector3::new(5.0, 0.0, 0.0);
+        let mut ticks = 0;
+        loop {
+            ticks += 1;
+            if controller.update(&mut state, Some(target), 0, ticks, &mut log) {
+                break;
+            }
+            assert!(ticks < 400, "must arrive");
+            if ticks == 20 {
+                target = Vector3::new(10.0, 0.0, 0.0);
+            }
+        }
+
+        let remaining = (target - state.position).length();
+        assert!(remaining < controller.range, "stopped inside range");
+        assert!(
+            (state.position.x - 9.2).abs() < 1e-4,
+            "stopped at {}",
+            state.position.x
+        );
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].method, "onMove");
+    }
+
+    #[test]
+    fn a_destroyed_target_fails_and_the_refusals_hold_the_line() {
+        let navigate = real_entity();
+        let mut controller = navigate
+            .accelerate_to_entity(
+                42,
+                2.0,
+                2.0,
+                1.0,
+                FACING_VELOCITY as i32,
+                3,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("a real entity gets the controller");
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log = Vec::new();
+
+        // The target is destroyed before the first update.
+        assert!(controller.update(&mut state, None, 0, 1, &mut log));
+        assert_eq!(state.position, Vector3::ZERO);
+        assert_eq!(
+            log,
+            vec![ScriptCallback {
+                entity_id: 7,
+                method: "onMoveFailure",
+                controller_id: 5,
+                user_arg: 3,
+            }]
+        );
+
+        let err = navigate
+            .accelerate_to_entity(42, 2.0, 2.0, 1.0, 3, 0, 5, DEFAULT_GAME_UPDATE_HERTZ)
+            .expect_err("facing 3 is out of range");
+        assert_eq!(err, AccelerateToEntityFailure::BadFacing);
+        assert_eq!(err.message(), "Facing must one of the value 0, 1 or 2");
+
+        let mut navigate = real_entity();
+        navigate.is_real = false;
+        let err = navigate
+            .accelerate_to_entity(42, 2.0, 2.0, 1.0, 3, 0, 5, DEFAULT_GAME_UPDATE_HERTZ)
+            .expect_err("a ghost is refused");
+        assert_eq!(err, AccelerateToEntityFailure::NotReal);
         assert_eq!(
             err.message(),
             "This method can only be called on a real entity."
