@@ -877,6 +877,70 @@ impl RangeListWorld {
         self.bound_mut(lower).range = olr;
     }
 
+    /// `RangeTrigger` construction for the script triggers
+    /// (`proximity_controller.cpp:24-30`, `vision_controller.cpp:22-32`):
+    /// both bounds want entity crossings and make nothing. The trigger is
+    /// inserted (the initial shuffles fire any enters) and registered on
+    /// its entity.
+    pub fn add_script_trigger(&mut self, entity_id: u32, range: f32) -> TriggerRef {
+        let central = self.entity_nodes[&entity_id];
+        let trigger = self.triggers.len();
+        let upper = self.new_bound_node(trigger, range, FLAG_ENTITY_TRIGGER, FLAG_NO_TRIGGERS);
+        // RangeTrigger's ctor ORs FLAG_IS_LOWER_BOUND into the lower
+        // bound's makes flags (which also gives it the lower-bound order).
+        let lower = self.new_bound_node(trigger, -range, FLAG_ENTITY_TRIGGER, FLAG_IS_LOWER_BOUND);
+        let (x, z) = self.entity_position(central);
+        self.triggers.push(RangeTriggerData {
+            central,
+            upper,
+            lower,
+            old_entity_x: x,
+            old_entity_z: z,
+        });
+        self.trigger_insert(trigger);
+        self.add_trigger(entity_id, trigger);
+        trigger
+    }
+
+    /// The script trigger destruction (`proximity_controller.cpp:37-41`,
+    /// `vision_controller.cpp:34-46`): `Entity::delTrigger` then the
+    /// contracting `RangeTrigger::remove` — the contraction fires the
+    /// leave events.
+    pub fn remove_script_trigger(&mut self, entity_id: u32, trigger: TriggerRef) {
+        self.del_trigger(entity_id, trigger);
+        self.trigger_remove(trigger);
+    }
+
+    /// Whether the entity is on this app (`CellApp::findEntity` for the
+    /// onload reconciliation paths).
+    pub fn has_entity(&self, entity_id: u32) -> bool {
+        self.entity_nodes.contains_key(&entity_id)
+    }
+
+    /// The trapped set: the entity ids between the trigger's bounds in x
+    /// order, inside its z range, other than the central entity
+    /// (`ProximityController::writeRealToStream`'s walk,
+    /// `proximity_controller.cpp:311-345`).
+    pub fn entities_between(&self, trigger: TriggerRef) -> Vec<u32> {
+        let t = &self.triggers[trigger];
+        let (central, upper, lower) = (t.central, t.upper, t.lower);
+        let mut out = Vec::new();
+        let mut cursor = self.nodes[lower].next_x;
+        while let Some(node) = cursor {
+            if node == upper {
+                break;
+            }
+            if let NodeKind::Entity { entity_id, .. } = self.nodes[node].kind
+                && node != central
+                && self.contains_in_z(trigger, node)
+            {
+                out.push(entity_id);
+            }
+            cursor = self.nodes[node].next_x;
+        }
+        out
+    }
+
     /// `RangeTrigger::removeWithoutContracting`.
     pub fn remove_trigger_without_contracting(&mut self, trigger: TriggerRef) {
         let (upper, lower) = {
