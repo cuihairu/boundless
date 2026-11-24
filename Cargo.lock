@@ -1437,6 +1437,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrain"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+]
+
+[[package]]
 name = "test-support"
 version = "0.1.0"
 dependencies = [
