@@ -882,7 +882,14 @@
   - 实现：`crates/mercury/src/misc.rs` 增 `SessionKey`（basictypes.hpp:171，u32 别名）+ `regenerate_session_key`（proxy.cpp:562 语义：时间戳取值、零则再取，端口收敛为单次取值的结果）；`crates/mercury/src/block_cipher.rs` 增 `KeyedXorCipher` 测试替身（参考无此物——真 `SymmetricBlockCipher` 是 Blowfish，未移植；替身按 key 逐字节 XOR，使「错 key」产生会话过滤解不开的密文，身份 `NullCipher` 区分不了 key）；`network_interface` 增验收测试：持错 key 的一端对已建信道（`set_encryption` 装好会话密码）发来合法成帧但错 key 的包 → 信道过滤以会话密码解密得废 magic → `REASON_CORRUPTATED_PACKET` 回归、sink 零投递、已建信道原样在册（`Rc::ptr_eq` 同一信道，失败尝试既不毁会话也不建新会话）——传输层「无残留已建立会话」。
   - 语义边界：baseapp 侧 `BaseApp::authenticate`（baseapp.cpp:3020，错 key → CHEAT + breakBundleLoop）、`PendingLogins` 过期清除（pending_logins.cpp:73，30 秒队列）依赖尚不存在的 baseapp/proxy 层，待该层落地时接 `SessionKey`/`set_encryption` seam；端口层面失败状态 = 过滤链的 `Reason` 返回（CorruptedPacket/GeneralNetwork），与 02-05-02 同一链路。
   - 测试：+3（misc 1：session key 非零取值；block_cipher 1：keyed 替身区分 key 且自逆；network_interface 1：**验收** 错 key 拒收+零投递+无残留会话）。mercury 350 绿（+3），workspace 1810 绿+2 环境性红（同 02-05-02 口径）；clippy 净；fmt 净。
-- [ ] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。
+- [x] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。 — `6702961`
+  - 核对：本行为陈旧未勾副本，权威证据是上方同票号的 `[x]` 行（ba5fc38 交付、`6702961` 恢复）。
+  - 回归：`f2ef112`（`merge: land lane/bw20-28`）把 `network_interface.rs` 解到 1541 行（合并前 main 侧 `3cb67c1` 为 3346 行），内嵌限流字段与 `process_packet` 首臂一并丢失，`lib.rs` 的 `pub mod rate_limiter;` 随之撤掉——`rate_limiter.rs` 沦为孤儿模块（`RateLimiter` 全仓零引用、不参与编译、自带 10 个验收测试从未运行）。
+  - 恢复（`6702961`）：`lib.rs` 加回 `pub mod rate_limiter;`；`network_interface.rs` 按权威行的原设计接回——持 `Rc<RateLimiter>`（构造期以 `RateLimiter::new(dispatcher.clone())` 建，周期计时器落在接口自己的 dispatcher 上）、六个转发访问器 + `rate_limit_averages`、`process_packet` 首臂（先于通道查找）咨询限流器，超限 verbose 打印后返回 `Reason::GeneralNetwork`。
+  - 验收测试（接收路径级 5 条，pinned clock 驱动周期计时器）：`rate_limiting_starts_disabled`（默认 0/0/0，8 包全过、平均器 0）、`the_per_ip_address_limit_drops_the_packet_over_the_boundary`（限 3，同 IP 四端口前三 `Success` 第四 `GeneralNetwork`，sink 恰 3）、`the_per_ip_address_port_limit_counts_each_address_separately`、`the_period_expiry_clears_the_counts_and_samples_the_average`（到期后地址重新通过，per-IP 平均器恰 `(1-bias)*2`，bias 用 `calculate_bias_from_num_samples(5.0, 0.95)` 自算）、`a_channelled_address_is_limited_before_its_channel_is_found`（已注册通道的第二包同样被丢）。
+  - 测试与覆盖：mercury **380 通过 / 0 失败**（恢复前 366，+5 接口级 +9 限流器单测）；workspace **exit 0，3757 通过 / 0 失败**；clippy 0 finding（仅工作区既有 `asset-pipeline`/`blowfish` manifest 提示）；rustfmt `--edition 2024 --check` 0 差异；行覆盖 `network_interface.rs` **98.81%**（999/1011）、`rate_limiter.rs` **99.57%**（234/235）。
+  - 证据：`docs/review/bw02-05-04-configured-rate-limiting.md`（新增「回归与恢复（2026-11-24）」节，含门禁表）。
+  - 同次合并另丢的七个 `pub` 面（`interface_table` / `set_interface_table` / `fragmented_bundles` / `receive_stats` / `p_off_channel_filter` / `set_p_off_channel_filter` / `process_filtered_packet`，对应 BW-02-02 / BW-02-03 / BW-02-04-03 的已勾条目）待另立项恢复；`is_dead` / `send_bundle` / `set_should_use_checksums` 已搬到 `recently_dead_channels` / `udp_channel` / `packet_sender`，属正常落位。
 
 ### BW-03 CPython 嵌入和脚本 API
 
