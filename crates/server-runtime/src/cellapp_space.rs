@@ -17,6 +17,7 @@
 //! live dispatcher pass, which keeps the one-second delay observable.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::cellappmgr::SpaceId;
@@ -35,6 +36,8 @@ pub const NO_SPACE_REMOVAL_HANDLE: usize = usize::MAX;
 pub struct CellInfo {
     /// The space this cell partitions.
     pub space_id: SpaceId,
+    /// The CellApp this cell is assigned to (`CellApp::interface().address()`).
+    pub app_addr: u32,
     /// The cell's tree identity.
     pub node: CellInfoNode,
 }
@@ -60,6 +63,17 @@ pub struct Cell {
     pub info: CellInfo,
     /// How many `onSpaceGone` deliveries this cell has had.
     pub space_gone_count: u32,
+    /// How many `Cell::reuse` deliveries this cell has had ("Cell did not
+    /// fully remove; reusing.").
+    pub reuse_count: u32,
+}
+
+impl Cell {
+    /// `Cell::reuse`: the cell did not fully remove before the manager
+    /// re-added it; the same cell object carries on.
+    pub fn reuse(&mut self) {
+        self.reuse_count += 1;
+    }
 }
 
 /// `Entity`: the space's own entry for one of its entities — the removal
@@ -103,10 +117,21 @@ pub struct Space {
     /// When the `ShutdownSpace` timer was armed, or `None` while it is
     /// unset — `shuttingDownTimerHandle_.isSet()`.
     timer_armed_at: Option<u64>,
+    /// `begDataSeq_`.
+    pub beg_data_seq: u64,
+    /// `endDataSeq_`.
+    pub end_data_seq: u64,
+    /// `initialTimeOfDay_`, the reference's `-1.f` unset sentinel.
+    pub initial_time_of_day: f32,
+    /// `gameSecondsPerSecond_`.
+    pub game_seconds_per_second: f32,
+    /// The entry count of `spaceDataMapping_`.
+    pub space_data_entries: usize,
 }
 
 impl Space {
-    /// `Space( SpaceID id )`: no cell, no entities, no timer.
+    /// `Space( SpaceID id )`: no cell, no entities, no timer, and the data
+    /// faces at the constructor's own defaults.
     pub fn new(id: SpaceId) -> Self {
         Self {
             id,
@@ -114,6 +139,45 @@ impl Space {
             cells: Vec::new(),
             entities: Vec::new(),
             timer_armed_at: None,
+            beg_data_seq: 0,
+            end_data_seq: 0,
+            initial_time_of_day: -1.0,
+            game_seconds_per_second: 0.0,
+            space_data_entries: 0,
+        }
+    }
+
+    /// `Space::reuse`: the space data faces reset and the cell-info tree
+    /// is deleted — the cell and the entities stay where they are.
+    pub fn reuse(&mut self) {
+        self.beg_data_seq = 0;
+        self.end_data_seq = 0;
+        self.initial_time_of_day = -1.0;
+        self.game_seconds_per_second = 0.0;
+        self.cells.clear();
+        self.space_data_entries = 0;
+    }
+
+    /// `updateGeometry`: the manager's tree becomes this space's cells.
+    pub fn update_geometry(&mut self, cells: Vec<CellInfo>) {
+        self.cells = cells;
+    }
+
+    /// `findCell( address )`: the tree's cell assigned to this CellApp,
+    /// if any.
+    pub fn find_cell_info(&self, app_addr: u32) -> Option<CellInfo> {
+        self.cells
+            .iter()
+            .find(|info| info.app_addr == app_addr)
+            .cloned()
+    }
+
+    /// `allSpaceData`: the manager's full space-data payload replaces
+    /// whatever the space held. An empty payload leaves it untouched (the
+    /// reference only reads it when `remainingLength() > 0`).
+    pub fn receive_all_space_data(&mut self, count: usize) {
+        if count > 0 {
+            self.space_data_entries = count;
         }
     }
 
@@ -137,12 +201,10 @@ impl Space {
         self.cell.as_ref()
     }
 
-    /// `pCell( Cell * )`: install the cell. With exactly one cell its info
-    /// is the tree root — the shape [`Space::has_single_cell`] recognises.
+    /// `pCell( Cell * )`: install the cell — nothing else; the cell-info
+    /// tree is the manager's, delivered by [`Space::update_geometry`].
     pub fn set_cell(&mut self, cell: Rc<RefCell<Cell>>) {
-        let info = cell.borrow().info.clone();
         self.cell = Some(cell);
-        self.cells = vec![info];
     }
 
     /// `cellInfos_` gaining another cell: a multi-cell space never
@@ -304,6 +366,83 @@ pub struct EntityReclaim {
     pub warning_real: Vec<u32>,
 }
 
+/// The `CellApp::addCell` message's payload, decoded from the manager.
+#[derive(Clone, Debug)]
+pub struct AddCellRequest {
+    /// The space the manager is adding a cell of.
+    pub space_id: SpaceId,
+    /// The `updateGeometry` payload: the space's tree cells.
+    pub cells: Vec<CellInfo>,
+    /// `isFirstCell`.
+    pub is_first_cell: bool,
+    /// `isFromDB`.
+    pub is_from_db: bool,
+    /// The `allSpaceData` entry count; zero means the message carried no
+    /// space data at all (`remainingLength() == 0`).
+    pub space_data_count: usize,
+}
+
+/// What `CellApp::addCell` did — the reference's branch matrix made
+/// observable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AddCellOutcome {
+    /// An existing space was found and re-used ("Re-using space %d").
+    pub space_reused: bool,
+    /// An undestroyed cell was re-used ("Cell did not fully remove;
+    /// reusing.").
+    pub cell_reused: bool,
+    /// A new cell was built and added to `cells_`.
+    pub cell_registered: bool,
+    /// `onGetFirstCell( isFromDB )` fired — the first cell of the default
+    /// space.
+    pub first_cell_delivered: bool,
+    /// The CRITICAL path: no cell of this space belongs to this CellApp.
+    pub no_cell_here: bool,
+}
+
+/// The manager's own ledger of what it created and assigned — the side
+/// [`CellApp::add_cell`]'s delivery must agree with.
+#[derive(Clone, Debug, Default)]
+pub struct MgrLedger {
+    /// The spaces the manager created.
+    pub spaces: Vec<SpaceId>,
+    /// The cells it assigned: `(space, CellApp address, tree node)`.
+    pub assignments: Vec<(SpaceId, u32, CellInfoNode)>,
+}
+
+impl MgrLedger {
+    /// The manager and this CellApp agree about what they hold each other
+    /// to: every space the ledger created exists here, every assignment
+    /// addressed to this CellApp is registered here or already destroyed,
+    /// and this CellApp holds no cell the ledger never assigned to it.
+    pub fn agrees_with(&self, app: &CellApp, spaces: &BTreeMap<SpaceId, Space>) -> bool {
+        if !self.spaces.iter().all(|id| spaces.contains_key(id)) {
+            return false;
+        }
+        for (id, addr, node) in &self.assignments {
+            if *addr != app.address {
+                continue;
+            }
+            let registered = spaces
+                .get(id)
+                .and_then(|space| space.cell().cloned())
+                .map(|cell| cell.borrow().info.node == *node)
+                .unwrap_or(false);
+            if !registered && !app.destroyed_cell_nodes.contains(node) {
+                return false;
+            }
+        }
+        app.cells.iter().all(|cell| {
+            let borrowed = cell.borrow();
+            self.assignments.iter().any(|(space_id, addr, node)| {
+                *addr == app.address
+                    && *node == borrowed.info.node
+                    && *space_id == borrowed.info.space_id
+            })
+        })
+    }
+}
+
 /// The CellApp state the shutdown decision reads (`CellApp::instance()` +
 /// its dispatcher + config), recording what the Space said to it.
 #[derive(Debug, Default)]
@@ -314,11 +453,21 @@ pub struct CellApp {
     use_default_space: bool,
     /// `mainDispatcher().processingBroken()`.
     broken: bool,
+    /// `interface_.address()`: who this CellApp is on the internal network.
+    pub address: u32,
+    /// `cells_`: every cell this CellApp holds, in registration order.
+    pub cells: Vec<Rc<RefCell<Cell>>>,
     /// The `shutDownSpace` requests the spaces sent (the CellAppMgr half
     /// of the round trip).
     pub shut_down_requests: Vec<SpaceId>,
     /// The `destroyCell` calls, by cell's tree identity.
     pub destroyed_cell_nodes: Vec<CellInfoNode>,
+    /// The `onGetFirstCell( isFromDB )` deliveries.
+    pub first_cell_deliveries: Vec<bool>,
+    /// The CRITICAL `addCell` deliveries: no cell of that space is ours.
+    pub failed_adds: Vec<SpaceId>,
+    /// The `Spaces::create` calls.
+    pub created_spaces: Vec<SpaceId>,
 }
 
 impl CellApp {
@@ -360,10 +509,106 @@ impl CellApp {
         self.shut_down_requests.push(space_id);
     }
 
+    /// A fresh CellApp at `address`: not started, nothing broken, no cells.
+    pub fn with_address(address: u32) -> Self {
+        Self {
+            address,
+            ..Self::default()
+        }
+    }
+
     /// `CellApp::destroyCell`: the cell goes away; the space clears its
-    /// own `pCell_` (the reference's destructed cell does it).
+    /// own `pCell_` (the reference's destructed cell does it) and the
+    /// `cells_` registry forgets it.
     pub fn destroy_cell(&mut self, cell: &Rc<RefCell<Cell>>) {
-        self.destroyed_cell_nodes.push(cell.borrow().info.node);
+        let node = cell.borrow().info.node;
+        self.destroyed_cell_nodes.push(node);
+        self.cells.retain(|held| held.borrow().info.node != node);
+    }
+
+    /// `CellApp::findSpace`.
+    pub fn find_space<'a>(
+        &self,
+        spaces: &'a BTreeMap<SpaceId, Space>,
+        id: SpaceId,
+    ) -> Option<&'a Space> {
+        spaces.get(&id)
+    }
+
+    /// `CellApp::findCell( SpaceID )`: the space's own cell.
+    pub fn find_cell(
+        &self,
+        spaces: &BTreeMap<SpaceId, Space>,
+        id: SpaceId,
+    ) -> Option<Rc<RefCell<Cell>>> {
+        spaces.get(&id).and_then(|space| space.cell().cloned())
+    }
+
+    /// `CellApp::addCell`: the manager's message adding a cell of
+    /// `space_id` to this CellApp — find or create the space, re-use it,
+    /// read the tree, then find, re-use or build the cell that is ours,
+    /// and finally carry the space data and the first-cell event.
+    pub fn add_cell(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        request: AddCellRequest,
+    ) -> AddCellOutcome {
+        let mut outcome = AddCellOutcome::default();
+        let space = match spaces.get_mut(&request.space_id) {
+            Some(space) => {
+                outcome.space_reused = true;
+                space.reuse();
+                space
+            }
+            None => {
+                self.created_spaces.push(request.space_id);
+                spaces
+                    .entry(request.space_id)
+                    .or_insert_with(|| Space::new(request.space_id))
+            }
+        };
+
+        space.update_geometry(request.cells);
+        let info = match space.find_cell_info(self.address) {
+            Some(info) => info,
+            None => {
+                outcome.no_cell_here = true;
+                self.failed_adds.push(request.space_id);
+                return outcome;
+            }
+        };
+
+        let existing = space.cell().cloned();
+        match existing {
+            Some(cell) => {
+                assert_eq!(
+                    info.node,
+                    cell.borrow().info.node,
+                    "the re-added cell is not the one that did not fully remove"
+                );
+                cell.borrow_mut().reuse();
+                outcome.cell_reused = true;
+            }
+            None => {
+                let cell = Rc::new(RefCell::new(Cell {
+                    info: info.clone(),
+                    space_gone_count: 0,
+                    reuse_count: 0,
+                }));
+                space.set_cell(cell.clone());
+                self.cells.push(cell);
+                outcome.cell_registered = true;
+            }
+        }
+
+        space.receive_all_space_data(request.space_data_count);
+
+        // The first cell in the first space.
+        if request.is_first_cell && self.use_default_space && request.space_id == 1 {
+            self.first_cell_deliveries.push(request.is_from_db);
+            outcome.first_cell_delivered = true;
+        }
+        outcome
     }
 }
 
@@ -371,22 +616,32 @@ impl CellApp {
 mod tests {
     use super::*;
 
+    /// The test CellApp's own address on the internal network.
+    const APP_ADDR: u32 = 10;
+
     fn entity(id: u32, real: bool) -> Rc<RefCell<Entity>> {
         Rc::new(RefCell::new(Entity::new(id, real)))
     }
 
+    fn cell_info(space_id: SpaceId, node: usize) -> CellInfo {
+        CellInfo {
+            space_id,
+            app_addr: APP_ADDR,
+            node: CellInfoNode(node),
+        }
+    }
+
     /// A started CellApp, a single-cell space, and the cell it holds.
     fn fixture(id: SpaceId, node: usize) -> (CellApp, Space, Rc<RefCell<Cell>>) {
-        let mut cell_app = CellApp::new();
+        let mut cell_app = CellApp::with_address(APP_ADDR);
         cell_app.start();
         let cell = Rc::new(RefCell::new(Cell {
-            info: CellInfo {
-                space_id: id,
-                node: CellInfoNode(node),
-            },
+            info: cell_info(id, node),
             space_gone_count: 0,
+            reuse_count: 0,
         }));
         let mut space = Space::new(id);
+        space.update_geometry(vec![cell_info(id, node)]);
         space.set_cell(cell.clone());
         (cell_app, space, cell)
     }
@@ -494,6 +749,7 @@ mod tests {
         assert!(!app.use_default_space());
         multi.add_cell(CellInfo {
             space_id: 2,
+            app_addr: APP_ADDR,
             node: CellInfoNode::next(CellInfoNode(0)),
         });
         let e = entity(1, true);
@@ -506,12 +762,11 @@ mod tests {
         let mut unstarted_app = CellApp::new();
         let mut not_started = Space::new(3);
         let cell = Rc::new(RefCell::new(Cell {
-            info: CellInfo {
-                space_id: 3,
-                node: CellInfoNode(1),
-            },
+            info: cell_info(3, 1),
             space_gone_count: 0,
+            reuse_count: 0,
         }));
+        not_started.update_geometry(vec![cell_info(3, 1)]);
         not_started.set_cell(cell);
         let e = entity(2, true);
         not_started.add_entity(e.clone());
@@ -571,6 +826,7 @@ mod tests {
         let (mut app, mut space, cell) = fixture(5, 0);
         space.add_cell(CellInfo {
             space_id: 5,
+            app_addr: APP_ADDR,
             node: CellInfoNode::next(CellInfoNode(0)),
         });
         assert!(space.shut_down_space(0));
@@ -634,5 +890,329 @@ mod tests {
             !empty.tick(10_000_000, &mut app2),
             "and it never fires again"
         );
+    }
+
+    /// The acceptance face: the manager's `addCell` delivery leaves the
+    /// manager and each CellApp agreeing — the space exists where the
+    /// manager created it, and each assigned cell is registered on its own
+    /// CellApp.
+    #[test]
+    fn add_cell_registers_the_cells_the_manager_assigned() {
+        let mgr = MgrLedger {
+            spaces: vec![5],
+            assignments: vec![(5, 10, CellInfoNode(0)), (5, 11, CellInfoNode(1))],
+        };
+        let tree = vec![
+            CellInfo {
+                space_id: 5,
+                app_addr: 10,
+                node: CellInfoNode(0),
+            },
+            CellInfo {
+                space_id: 5,
+                app_addr: 11,
+                node: CellInfoNode(1),
+            },
+        ];
+
+        let mut spaces10 = BTreeMap::new();
+        let mut app10 = CellApp::with_address(10);
+        app10.start();
+        let outcome = app10.add_cell(
+            &mut spaces10,
+            AddCellRequest {
+                space_id: 5,
+                cells: tree.clone(),
+                is_first_cell: false,
+                is_from_db: false,
+                space_data_count: 2,
+            },
+        );
+        assert_eq!(
+            outcome,
+            AddCellOutcome {
+                cell_registered: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(app10.created_spaces, vec![5u32]);
+        assert_eq!(app10.cells.len(), 1);
+        assert_eq!(app10.cells[0].borrow().info.node, CellInfoNode(0));
+        let space = app10.find_space(&spaces10, 5).expect("space");
+        assert_eq!(space.num_cells(), 2);
+        assert_eq!(space.space_data_entries, 2, "the payload was carried");
+        assert_eq!(
+            app10.find_cell(&spaces10, 5).map(|c| c.borrow().info.node),
+            Some(CellInfoNode(0))
+        );
+
+        let mut spaces11 = BTreeMap::new();
+        let mut app11 = CellApp::with_address(11);
+        app11.start();
+        let outcome = app11.add_cell(
+            &mut spaces11,
+            AddCellRequest {
+                space_id: 5,
+                cells: tree,
+                is_first_cell: false,
+                is_from_db: false,
+                space_data_count: 2,
+            },
+        );
+        assert!(outcome.cell_registered);
+        assert_eq!(app11.cells[0].borrow().info.node, CellInfoNode(1));
+
+        assert!(mgr.agrees_with(&app10, &spaces10));
+        assert!(mgr.agrees_with(&app11, &spaces11));
+    }
+
+    /// The manager re-adding a cell it had added before re-uses the space
+    /// and the cell: the data faces reset, the entities stay, and no
+    /// duplicate registration appears.
+    #[test]
+    fn a_second_add_cell_reuses_the_space_and_the_cell() {
+        let tree = vec![cell_info(5, 0)];
+        let mut spaces = BTreeMap::new();
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.start();
+        let request = |space_data_count| AddCellRequest {
+            space_id: 5,
+            cells: tree.clone(),
+            is_first_cell: false,
+            is_from_db: false,
+            space_data_count,
+        };
+        let first = app.add_cell(&mut spaces, request(3));
+        assert!(first.cell_registered && !first.space_reused);
+
+        // Dirt the data faces and put an entity in, then let the manager
+        // re-add the cell.
+        {
+            let space = spaces.get_mut(&5).expect("space");
+            space.beg_data_seq = 7;
+            space.end_data_seq = 9;
+            space.initial_time_of_day = 0.5;
+            space.game_seconds_per_second = 2.0;
+            space.add_entity(entity(1, true));
+        }
+        let second = app.add_cell(&mut spaces, request(0));
+        assert_eq!(
+            second,
+            AddCellOutcome {
+                space_reused: true,
+                cell_reused: true,
+                ..Default::default()
+            }
+        );
+        let space = spaces.get(&5).expect("space");
+        assert_eq!(space.beg_data_seq, 0, "reuse reset the data sequence");
+        assert_eq!(space.end_data_seq, 0);
+        assert_eq!(
+            space.initial_time_of_day, -1.0,
+            "reuse reset the time of day"
+        );
+        assert_eq!(space.game_seconds_per_second, 0.0);
+        assert_eq!(
+            space.space_data_entries, 0,
+            "an empty payload leaves the count at reuse's zero"
+        );
+        assert_eq!(space.num_entities(), 1, "reuse keeps the entities");
+        assert_eq!(
+            space.num_cells(),
+            1,
+            "the restored tree replaced the cleared one"
+        );
+        assert_eq!(app.cells.len(), 1, "no duplicate registration");
+        assert_eq!(app.cells[0].borrow().reuse_count, 1);
+        assert_eq!(app.created_spaces, vec![5u32], "the space was created once");
+    }
+
+    /// A space none of whose cells belong to this CellApp takes the
+    /// CRITICAL path: the space is still created, but nothing registers.
+    #[test]
+    fn an_add_cell_without_our_cell_is_the_critical_path() {
+        let mut spaces = BTreeMap::new();
+        let mut app = CellApp::with_address(10);
+        app.start();
+        let outcome = app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 5,
+                cells: vec![CellInfo {
+                    space_id: 5,
+                    app_addr: 11,
+                    node: CellInfoNode(0),
+                }],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data_count: 0,
+            },
+        );
+        assert_eq!(
+            outcome,
+            AddCellOutcome {
+                no_cell_here: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(app.failed_adds, vec![5u32]);
+        assert!(app.cells.is_empty());
+        assert!(
+            app.find_space(&spaces, 5).is_some(),
+            "the space is created before the failure"
+        );
+        assert!(app.find_cell(&spaces, 5).is_none());
+    }
+
+    /// Only the first cell of the default space on a useDefaultSpace
+    /// CellApp fires `onGetFirstCell`, with its `isFromDB`.
+    #[test]
+    fn the_first_cell_of_the_default_space_starts_the_app() {
+        let mut spaces = BTreeMap::new();
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.start();
+        app.set_use_default_space(true);
+        let tree = vec![cell_info(1, 0)];
+
+        let outcome = app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 1,
+                cells: tree.clone(),
+                is_first_cell: true,
+                is_from_db: true,
+                space_data_count: 0,
+            },
+        );
+        assert!(outcome.first_cell_delivered);
+        assert_eq!(app.first_cell_deliveries, vec![true]);
+
+        // Not the first cell: no delivery.
+        let outcome = app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 1,
+                cells: tree.clone(),
+                is_first_cell: false,
+                is_from_db: true,
+                space_data_count: 0,
+            },
+        );
+        assert!(!outcome.first_cell_delivered);
+
+        // First cell of another space: still no delivery.
+        let outcome = app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 2,
+                cells: vec![cell_info(2, 1)],
+                is_first_cell: true,
+                is_from_db: false,
+                space_data_count: 0,
+            },
+        );
+        assert!(!outcome.first_cell_delivered);
+        assert_eq!(app.first_cell_deliveries.len(), 1);
+
+        // useDefaultSpace off: no delivery either.
+        let mut plain_spaces = BTreeMap::new();
+        let mut plain = CellApp::with_address(APP_ADDR);
+        plain.start();
+        let outcome = plain.add_cell(
+            &mut plain_spaces,
+            AddCellRequest {
+                space_id: 1,
+                cells: tree,
+                is_first_cell: true,
+                is_from_db: true,
+                space_data_count: 0,
+            },
+        );
+        assert!(!outcome.first_cell_delivered);
+        assert!(plain.first_cell_deliveries.is_empty());
+    }
+
+    /// Destroying the cell through the empty-space chain keeps the manager
+    /// and the CellApp agreeing: the registry forgets the cell, the space
+    /// outlives it, and the ledger still matches through its destroyed
+    /// cells.
+    #[test]
+    fn destroying_the_cell_leaves_manager_and_cellapp_agreeing() {
+        let mut spaces = BTreeMap::new();
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.start();
+        let mgr = MgrLedger {
+            spaces: vec![5],
+            assignments: vec![(5, APP_ADDR, CellInfoNode(0))],
+        };
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 5,
+                cells: vec![cell_info(5, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data_count: 0,
+            },
+        );
+        assert!(mgr.agrees_with(&app, &spaces));
+
+        // The 01-01 chain empties the space; the timer width destroys the
+        // cell.
+        {
+            let space = spaces.get_mut(&5).expect("space");
+            space.add_entity(entity(1, true));
+            let e = space.entities()[0].clone();
+            space.remove_entity(&e, &mut app);
+            space.shut_down_space(0);
+            space.tick(1_000_000, &mut app);
+        }
+
+        assert!(app.cells.is_empty(), "cells_ forgot the destroyed cell");
+        assert_eq!(app.destroyed_cell_nodes, vec![CellInfoNode(0)]);
+        assert!(app.find_cell(&spaces, 5).is_none());
+        assert!(
+            app.find_space(&spaces, 5).is_some(),
+            "the space outlives its cell"
+        );
+        assert!(
+            mgr.agrees_with(&app, &spaces),
+            "destroyed cells still count as agreement"
+        );
+    }
+
+    /// The ledger refuses to agree with a CellApp that does not hold a
+    /// space the manager created, or that lacks a cell the manager
+    /// assigned to it.
+    #[test]
+    fn the_ledger_refuses_a_cellapp_that_disagrees() {
+        let mut spaces = BTreeMap::new();
+        let mut app = CellApp::with_address(APP_ADDR);
+        app.start();
+        app.add_cell(
+            &mut spaces,
+            AddCellRequest {
+                space_id: 5,
+                cells: vec![cell_info(5, 0)],
+                is_first_cell: false,
+                is_from_db: false,
+                space_data_count: 0,
+            },
+        );
+
+        // A ledger naming a space this CellApp does not hold disagrees.
+        let unknown_space = MgrLedger {
+            spaces: vec![6],
+            assignments: vec![],
+        };
+        assert!(!unknown_space.agrees_with(&app, &spaces));
+
+        // A ledger assigning this CellApp a cell it neither holds nor has
+        // destroyed disagrees.
+        let stranger = MgrLedger {
+            spaces: vec![5],
+            assignments: vec![(5, APP_ADDR, CellInfoNode(1))],
+        };
+        assert!(!stranger.agrees_with(&app, &spaces));
     }
 }
