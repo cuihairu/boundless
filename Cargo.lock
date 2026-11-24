@@ -1906,6 +1906,7 @@ dependencies = [
  "db-postgres",
  "foundation",
  "libc",
+ "md-5 0.10.6",
  "mercury",
  "platform",
  "resources",
