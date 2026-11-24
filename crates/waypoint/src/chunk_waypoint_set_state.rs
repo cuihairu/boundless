@@ -109,6 +109,14 @@ impl ChunkWPSetState {
     }
 }
 
+#[cfg(test)]
+impl ChunkWPSetState {
+    /// Plants the shell flag for the path classes' unit tests.
+    pub fn set_passed_shell_boundary_for_test(&mut self, value: bool) {
+        self.passed_shell_boundary = value;
+    }
+}
+
 impl AStarState for ChunkWPSetState {
     type SearchData = ();
     type Key = usize;

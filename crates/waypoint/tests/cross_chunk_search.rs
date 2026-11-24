@@ -20,8 +20,8 @@
 use foundation::math::Vector3;
 use std::rc::Rc;
 use waypoint::{
-    AStar, ChunkWPSetState, ChunkWaypointState, NavLoc, Portal, WaypointNeighbourIterator,
-    parse_world_navmesh,
+    AStar, CacheState, ChunkWPSetState, ChunkWaypointState, NavLoc, Navigator, Portal,
+    WaypointNeighbourIterator, parse_world_navmesh,
 };
 
 const FIXTURE_DIR: &str = concat!(
@@ -378,4 +378,229 @@ fn the_set_level_search_matches_the_portal_access_order() {
     assert!(point_near(path[1].position(), 0.85, 0.41, 0.5));
     let hop0 = b.connection_portal(path[1].p_set().unwrap()).unwrap();
     assert!(Rc::ptr_eq(&hop0, p2), "BC0 portal is 2");
+}
+
+/// One `findPath` probe: the two endpoints' sets, waypoints and points,
+/// plus the non-permissive block flag.
+struct Probe<'a> {
+    src_set: &'a Rc<waypoint::ChunkWaypointSetData>,
+    src_wp: i32,
+    src: Vector3,
+    dst_set: &'a Rc<waypoint::ChunkWaypointSetData>,
+    dst_wp: i32,
+    dst: Vector3,
+    block: bool,
+}
+
+/// The findPath probes (`FPBEGIN`/`FPOK`/`FPNONE`/`FPEND`): the original
+/// navigator's answer over the same wired world, with the acceptance pair
+/// (AC0, its repeat) and the closed-portal failures (AC1/CA1/AB1).
+#[test]
+fn the_navigator_answers_the_reference_findpath_probes() {
+    let (sets, _) = wired_world();
+    let [a, b, c] = [&sets[0], &sets[1], &sets[2]];
+    let third = 1.0f32 / 3.0;
+    let two_thirds = 2.0f32 / 3.0;
+
+    // AC0, AC0R (the cache hit), AC1, CA0, CA1, AB0, AB1, CB0, CB1, AA0.
+    let probes = [
+        Probe {
+            src_set: a,
+            src_wp: 0,
+            src: Vector3::new(0.15, 0.41, 0.4),
+            dst_set: c,
+            dst_wp: 0,
+            dst: Vector3::new(0.85, 0.41, 0.5),
+            block: false,
+        },
+        Probe {
+            src_set: a,
+            src_wp: 0,
+            src: Vector3::new(0.15, 0.41, 0.4),
+            dst_set: c,
+            dst_wp: 0,
+            dst: Vector3::new(0.85, 0.41, 0.5),
+            block: false,
+        },
+        Probe {
+            src_set: a,
+            src_wp: 0,
+            src: Vector3::new(0.15, 0.41, 0.4),
+            dst_set: c,
+            dst_wp: 0,
+            dst: Vector3::new(0.85, 0.41, 0.5),
+            block: true,
+        },
+        Probe {
+            src_set: c,
+            src_wp: 0,
+            src: Vector3::new(0.85, 0.41, 0.6),
+            dst_set: a,
+            dst_wp: 0,
+            dst: Vector3::new(0.15, 0.41, 0.4),
+            block: false,
+        },
+        Probe {
+            src_set: c,
+            src_wp: 0,
+            src: Vector3::new(0.85, 0.41, 0.6),
+            dst_set: a,
+            dst_wp: 0,
+            dst: Vector3::new(0.15, 0.41, 0.4),
+            block: true,
+        },
+        Probe {
+            src_set: a,
+            src_wp: 0,
+            src: Vector3::new(0.15, 0.41, 0.4),
+            dst_set: b,
+            dst_wp: 0,
+            dst: Vector3::new(0.5, 0.41, 0.25),
+            block: false,
+        },
+        Probe {
+            src_set: a,
+            src_wp: 0,
+            src: Vector3::new(0.15, 0.41, 0.4),
+            dst_set: b,
+            dst_wp: 0,
+            dst: Vector3::new(0.5, 0.41, 0.25),
+            block: true,
+        },
+        Probe {
+            src_set: c,
+            src_wp: 0,
+            src: Vector3::new(0.85, 0.41, 0.5),
+            dst_set: b,
+            dst_wp: 1,
+            dst: Vector3::new(0.5, 0.41, 0.75),
+            block: false,
+        },
+        Probe {
+            src_set: c,
+            src_wp: 0,
+            src: Vector3::new(0.85, 0.41, 0.5),
+            dst_set: b,
+            dst_wp: 1,
+            dst: Vector3::new(0.5, 0.41, 0.75),
+            block: true,
+        },
+        Probe {
+            src_set: a,
+            src_wp: 0,
+            src: Vector3::new(0.15, 0.41, 0.4),
+            dst_set: a,
+            dst_wp: 0,
+            dst: Vector3::new(0.2, 0.41, 0.6),
+            block: false,
+        },
+    ];
+
+    let navigator = Navigator::default();
+    let answers: Vec<_> = probes
+        .iter()
+        .map(|probe| {
+            let src = loc(
+                probe.src_set,
+                probe.src_wp,
+                probe.src.x,
+                probe.src.y,
+                probe.src.z,
+            );
+            let dst = loc(
+                probe.dst_set,
+                probe.dst_wp,
+                probe.dst.x,
+                probe.dst.y,
+                probe.dst.z,
+            );
+            let mut next = NavLoc::new();
+            let mut passed_activated_portal = false;
+            let found = navigator.find_path(
+                &src,
+                &dst,
+                1_000_000.0,
+                probe.block,
+                &mut next,
+                &mut passed_activated_portal,
+                CacheState::ReadWriteCache,
+            );
+            (found, next, passed_activated_portal, dst)
+        })
+        .collect();
+
+    // FPOK AC0 0.333333 0.600000 0.426190 0 1 0 — and AC0R answers the
+    // same, off the cached path.
+    for (index, (found, next, act, _)) in [&answers[0], &answers[1]].into_iter().enumerate() {
+        assert!(*found, "FPOK AC0 (probe {index})");
+        assert!(
+            point_near(next.point(), third, 0.6, 0.426190),
+            "{:?}",
+            next.point()
+        );
+        assert_eq!(next.waypoint(), 0);
+        assert!(Rc::ptr_eq(next.p_set().unwrap(), b));
+        assert!(!*act, "the reference's act flag stays 0");
+    }
+
+    // FPNONE AC1 / CA1 / AB1: blocking the non-permissive portals seals the
+    // only routes off A.
+    for (index, (found, next, _act, _dst)) in [&answers[2], &answers[4], &answers[6]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(!found, "FPNONE (probe {index})");
+        assert!(next.point().y == 0.0, "the untouched next stays invalid");
+    }
+
+    // FPOK CA0 0.666667 0.600000 0.500000 0 1 0 — the mirror crossing.
+    let (found, next, act, _) = &answers[3];
+    assert!(*found, "FPOK CA0");
+    assert!(
+        point_near(next.point(), two_thirds, 0.6, 0.5),
+        "{:?}",
+        next.point()
+    );
+    assert_eq!(next.waypoint(), 0);
+    assert!(Rc::ptr_eq(next.p_set().unwrap(), b));
+    assert!(!*act);
+
+    // FPOK AB0 0.500000 0.410000 0.250000 0 1 0: the destination itself is
+    // the next waypoint along.
+    let (found, next, act, _) = &answers[5];
+    assert!(*found, "FPOK AB0");
+    assert!(
+        point_near(next.point(), 0.5, 0.41, 0.25),
+        "{:?}",
+        next.point()
+    );
+    assert_eq!(next.waypoint(), 0);
+    assert!(Rc::ptr_eq(next.p_set().unwrap(), b));
+    assert!(!*act);
+
+    // FPOK CB0 / CB1: the permissive B|C pair is not blocked, so both
+    // answer.
+    for index in [7usize, 8] {
+        let (found, next, act, _) = &answers[index];
+        assert!(*found, "FPOK CB{index}");
+        assert!(
+            point_near(next.point(), two_thirds, 0.6, 0.5),
+            "{:?}",
+            next.point()
+        );
+        assert_eq!(next.waypoint(), 0);
+        assert!(Rc::ptr_eq(next.p_set().unwrap(), b));
+        assert!(!*act);
+    }
+
+    // FPOK AA0 0.200000 0.410000 0.600000 0 0 0: one set, the destination.
+    let (found, next, _act, dst) = &answers[9];
+    assert!(*found, "FPOK AA0");
+    assert!(Rc::ptr_eq(next.p_set().unwrap(), a));
+    assert!(point_near(
+        next.point(),
+        dst.point().x,
+        dst.point().y,
+        dst.point().z
+    ));
 }

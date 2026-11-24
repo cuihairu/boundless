@@ -246,6 +246,14 @@ impl<S: AStarState> AStar<S> {
 }
 
 #[cfg(test)]
+impl<S: AStarState> AStar<S> {
+    /// Plants a finished search result for the path classes' unit tests.
+    pub fn set_path_for_test(&mut self, path: Vec<S>) {
+        self.path = path;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::chunk_waypoint_set_data::{ChunkWaypointSetData, parse_world_navmesh};

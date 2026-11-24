@@ -13,9 +13,14 @@ mod chunk_waypoint;
 mod chunk_waypoint_set;
 mod chunk_waypoint_set_data;
 mod chunk_waypoint_set_state;
+mod chunk_waypoint_set_state_path;
 mod chunk_waypoint_state;
+mod chunk_waypoint_state_path;
 mod girth;
+mod navigator;
+mod navigator_cache;
 mod navloc;
+mod search_path_base;
 
 pub use astar::{AStar, AStarState};
 pub use chunk_waypoint::{
@@ -27,9 +32,14 @@ pub use chunk_waypoint_set_data::{
     ChunkWaypointSetData, NAVPOLY_ELEMENT_SIZE, NavmeshDecodeError, parse_world_navmesh,
 };
 pub use chunk_waypoint_set_state::ChunkWPSetState;
+pub use chunk_waypoint_set_state_path::ChunkWaypointSetStatePath;
 pub use chunk_waypoint_state::{ChunkWaypointState, ChunkWaypointStateSearchData};
+pub use chunk_waypoint_state_path::ChunkWaypointStatePath;
 pub use girth::{GIRTH_EPSILON, NavigatorFindResult, almost_equal, find_by_girth};
+pub use navigator::{CacheState, Navigator};
+pub use navigator_cache::NavigatorCache;
 pub use navloc::NavLoc;
+pub use search_path_base::SearchPathBase;
 
 /// `EdgeIndex` (`chunk_waypoint.hpp:25`).
 pub type EdgeIndex = u16;

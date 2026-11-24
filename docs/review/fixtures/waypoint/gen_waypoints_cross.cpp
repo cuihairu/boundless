@@ -50,6 +50,7 @@
 #include "waypoint/chunk_waypoint_state.hpp"
 #include "waypoint/navloc.hpp"
 #include "waypoint/chunk_navigator.hpp"
+#include "waypoint/navigator.hpp"
 #include "waypoint/astar.hpp"
 
 #include "chunk/chunk.hpp"
@@ -561,6 +562,67 @@ int main()
                     printf("SETSEARCHNONE %s\n", probes[p].name);
                 }
                 printf("SETSEARCHEND %s\n", probes[p].name);
+            }
+        }
+
+        // ---- the original navigator's findPath: the unreachable face ----
+        {
+            struct FindProbe
+            {
+                const char* name;
+                Vector3     src;
+                Vector3     dst;
+                int         blockNonPermissive;
+            };
+            const FindProbe probes[] = {
+                // AC0 then its exact repeat exercises the cache-hit arm
+                // (findWayPath + moveStateAlongPath).
+                { "AC0",  Vector3(0.15f, 0.4f, 0.4f), Vector3(0.85f, 0.4f, 0.5f), 0 },
+                { "AC0R", Vector3(0.15f, 0.4f, 0.4f), Vector3(0.85f, 0.4f, 0.5f), 0 },
+                { "AC1",  Vector3(0.15f, 0.4f, 0.4f), Vector3(0.85f, 0.4f, 0.5f), 1 },
+                { "CA0",  Vector3(0.85f, 0.4f, 0.6f), Vector3(0.15f, 0.4f, 0.4f), 0 },
+                { "CA1",  Vector3(0.85f, 0.4f, 0.6f), Vector3(0.15f, 0.4f, 0.4f), 1 },
+                { "AB0",  Vector3(0.15f, 0.4f, 0.4f), Vector3(0.50f, 0.4f, 0.25f), 0 },
+                { "AB1",  Vector3(0.15f, 0.4f, 0.4f), Vector3(0.50f, 0.4f, 0.25f), 1 },
+                { "CB0",  Vector3(0.85f, 0.4f, 0.5f), Vector3(0.50f, 0.4f, 0.75f), 0 },
+                { "CB1",  Vector3(0.85f, 0.4f, 0.5f), Vector3(0.50f, 0.4f, 0.75f), 1 },
+                { "AA0",  Vector3(0.15f, 0.4f, 0.4f), Vector3(0.20f, 0.4f, 0.6f), 0 },
+            };
+            Navigator navigator;
+            for (size_t p = 0; p < sizeof(probes) / sizeof(probes[0]); ++p)
+            {
+                int srcChunk, dstChunk;
+                if (probes[p].src.x < 1.f / 3.f)       srcChunk = 0;
+                else if (probes[p].src.x < 2.f / 3.f)  srcChunk = 1;
+                else                                   srcChunk = 2;
+                if (probes[p].dst.x < 1.f / 3.f)       dstChunk = 0;
+                else if (probes[p].dst.x < 2.f / 3.f)  dstChunk = 1;
+                else                                   dstChunk = 2;
+
+                NavLoc src(pChunk[srcChunk], probes[p].src, 0.6f);
+                NavLoc dst(pChunk[dstChunk], probes[p].dst, 0.6f);
+                printf("FPBEGIN %s %d %d %d\n", probes[p].name,
+                       int(src.waypoint()), int(dst.waypoint()),
+                       probes[p].blockNonPermissive);
+
+                NavLoc next;
+                bool passedActivatedPortal = false;
+                if (navigator.findPath(src, dst, 1000000.f,
+                        probes[p].blockNonPermissive != 0, next,
+                        passedActivatedPortal))
+                {
+                    printf("FPOK %s %.6f %.6f %.6f %d %d %d\n",
+                           probes[p].name,
+                           next.point().x, next.point().y, next.point().z,
+                           int(next.waypoint()),
+                           setIdxOf(next.pSet().get()),
+                           passedActivatedPortal ? 1 : 0);
+                }
+                else
+                {
+                    printf("FPNONE %s\n", probes[p].name);
+                }
+                printf("FPEND %s\n", probes[p].name);
             }
         }
     }
