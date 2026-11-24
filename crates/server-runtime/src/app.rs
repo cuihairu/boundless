@@ -101,14 +101,7 @@ pub fn run(role: &str) -> Result<(), AppError> {
     #[cfg(unix)]
     {
         let mut processor = SignalProcessor::new();
-        let mut set = Set::empty();
-        for sig in [
-            platform::signals::SIGTERM,
-            platform::signals::SIGINT,
-            platform::signals::SIGQUIT,
-        ] {
-            set.set(sig);
-        }
+        let set = Set::quit();
         let _blocker = Blocker::new(&set);
         eprintln!("[{role}] running");
 
