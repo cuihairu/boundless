@@ -410,3 +410,130 @@ fn a_low_import_does_not_pull_the_allocation_seat_back_down() {
         }
     });
 }
+
+/// 验收 (BW-09-07-07): a batch that fails part-way leaves the landed
+/// rows intact, and the next execution completes the migration without
+/// duplicating anything — the landed rows are skipped as they stand, the
+/// rest land once.
+#[test]
+fn a_failing_batch_leaves_the_landed_rows_intact_and_the_rerun_never_duplicates() {
+    with_fresh_db(|storage, _connect| {
+        let schema = hero_schema(storage, 4);
+        let good = hero(7, "warrior", 3, &[1]);
+        // A row the schema rejects: the batch aborts after the landed row.
+        let broken = MySqlEntityRow {
+            db_id: 8,
+            values: vec![PropertyValue::String("bad".to_string())],
+        };
+        let tail = hero(9, "mage", 9, &[2]);
+
+        let err = import_entities(storage, 4, &schema, &[good.clone(), broken, tail.clone()])
+            .expect_err("the broken row aborts the batch");
+        assert!(matches!(err, DbError::Storage(_)), "{err:?}");
+
+        // The failure state: the landed row stands with its own values,
+        // nothing after it exists.
+        let key = EntityKey {
+            type_id: 4,
+            db_id: 7,
+        };
+        let found = EntityStorage::get_entity(storage, &key)
+            .expect("the landed row reads back")
+            .expect("the landed row exists");
+        assert_eq!(found.values, good.values, "the landed row is intact");
+        for absent in [8, 9] {
+            assert_eq!(
+                EntityStorage::get_entity(
+                    storage,
+                    &EntityKey {
+                        type_id: 4,
+                        db_id: absent,
+                    },
+                )
+                .expect("the read runs"),
+                None,
+                "row {absent} never landed"
+            );
+        }
+
+        // The next execution: the fixed batch. The landed row is skipped
+        // as it stands, the rest land — three rows total, row 7 untouched.
+        let fixed = hero(8, "healer", 5, &[3]);
+        assert_eq!(
+            import_entities(
+                storage,
+                4,
+                &schema,
+                &[good.clone(), fixed.clone(), tail.clone()]
+            )
+            .expect("the rerun completes"),
+            db_postgres::ImportReport {
+                written: 2,
+                skipped: 1
+            }
+        );
+        let found = EntityStorage::get_entity(storage, &key)
+            .expect("the row reads back")
+            .expect("the row exists");
+        assert_eq!(
+            found.values, good.values,
+            "the rerun did not duplicate or overwrite"
+        );
+        for (db_id, name) in [(8, "healer"), (9, "mage")] {
+            let found = EntityStorage::get_entity(storage, &EntityKey { type_id: 4, db_id })
+                .expect("the read runs")
+                .unwrap_or_else(|| panic!("row {db_id} must exist"));
+            assert_eq!(found.values[0], PropertyValue::String(name.to_string()));
+        }
+    });
+}
+
+/// The account mapping rides the same contract: a batch aborted by a
+/// moved mapping leaves the landed rows put, and the next execution
+/// skips them all — the unique log-on key never duplicates and never
+/// moves silently.
+#[test]
+fn the_account_rerun_lands_the_rest_without_moving_the_mapping() {
+    with_fresh_db(|storage, _connect| {
+        let held = account(b"hero", b"pw", 7);
+        storage
+            .put_account(&held)
+            .expect("the pre-existing mapping lands");
+        let fresh = account(b"scout", b"pw2", 8);
+        // The same name mapped elsewhere: the batch aborts after the
+        // fresh row landed.
+        let moved = account(b"hero", b"pw", 99);
+        assert_eq!(
+            import_accounts(storage, &[fresh.clone(), moved])
+                .expect_err("the moved mapping aborts the batch"),
+            DbError::DuplicateAccount
+        );
+        assert_eq!(
+            storage.get_account(b"hero").expect("the mapping read runs"),
+            Some(held.clone()),
+            "the aborted pass left the mapping alone"
+        );
+
+        // The next execution over the whole set: everything already
+        // stands, everything skipped, nothing duplicated.
+        assert_eq!(
+            import_accounts(storage, &[fresh, held.clone()]).expect("the rerun runs"),
+            db_postgres::ImportReport {
+                written: 0,
+                skipped: 2
+            }
+        );
+        assert_eq!(
+            storage.get_account(b"hero").expect("the mapping read runs"),
+            Some(held),
+            "the mapping never moved"
+        );
+        assert_eq!(
+            storage
+                .get_account(b"scout")
+                .expect("the mapping read runs"),
+            Some(account(b"scout", b"pw2", 8)),
+            "the landed row stands once"
+        );
+    });
+}
