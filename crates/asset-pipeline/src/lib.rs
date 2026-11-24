@@ -42,7 +42,13 @@
 //! - [`plugin_loader`] — the plugin registry and loader that registers
 //!   converters (`tools/plugin_system/plugin_loader.cpp`);
 //! - [`task_store`] — the JIT compiler's task bookkeeping
-//!   (`tools/jit_compiler/task_store.cpp`).
+//!   (`tools/jit_compiler/task_store.cpp`);
+//! - [`vertex_format`] — vertex formats and the conversion matrix behind
+//!   them (`moo/vertex_format.*`, `moo/vertex_format_conversions.*`);
+//! - [`primitive_file_structs`] — the on-disk primitive headers
+//!   (`moo/primitive_file_structs.hpp`);
+//! - [`primitive_processor`] — the `.primitives` → `.processed` converter
+//!   (`tools/asset_pipeline/converters/primitive_processor/`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -61,6 +67,9 @@ pub mod hash64;
 pub mod hierarchical_config;
 pub mod jit_compiler;
 pub mod plugin_loader;
+pub mod primitive_file_structs;
+pub mod primitive_processor;
 pub mod task_finder;
 pub mod task_processor;
 pub mod task_store;
+pub mod vertex_format;
