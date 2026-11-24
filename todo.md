@@ -1961,8 +1961,11 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（版本、拓扑和种子可追溯）：`a_sample_scenario_run_produces_a_traceable_report`（真实洪峰跑批→报告全文逐字节 golden、`"seed": 161803`/`"topology": "offline"`/`"generator": "load <ver>"` 三标量可 grep）→ `the_report_is_deterministic_across_runs`（同 seed 两跑全等）→ `strings_escape_the_json_specials`（quote/backslash/nl/cr/tab/\u0007）→ `floats_render_shortest_and_non_finite_becomes_null`（2.5/1.0/NaN/−∞）→ `lists_and_empty_payloads_render_compactly`（空表/混型表/values 空对象）→ `write_json_round_trips_through_a_file`。
   - 测试与覆盖：`cargo test -p load` 110 过 0 挂（新增 6）；`cargo test --workspace` 3105 过 0 挂；clippy 0 错；rustfmt 过；llvm-cov report.rs 零缺行=100%。
   - 卡点解除注：原卡点「需先由 BW-17-01 bot 跑出场景结果」随 BW-17-01（2ee059a..fb53f28）与 02-03/04/05（c71d7b2/9e03e4c/7ce12df）交付失效——账本即确定性实测结果，报告信封包裹之。
-- [ ] **BW-17-03-02 聚合登录成功率及在线数**。**验收** 用已知输入核对统计。
-  - 卡点（无实测结果）：成功率/在线数需实测登录数据核对（同 03-01 卡点）。
+- [x] **BW-17-03-02 聚合登录成功率及在线数**。**验收** 用已知输入核对统计。（db8dcec）
+  - 模型落点：`crates/load/src/metrics.rs`（db8dcec）——纯统计面：`LoginAggregate::from_hurricane(&HurricaneLedger)`（attempts=Σper_second 含重试重登、admitted=names.len()、refused=预算拒收——**不入分母**（那些 bot 从未发送）、success_rate=admitted/attempts、零发送报 0.0 不虚报 100%）；`HurricaneLedger` 增 `online: Vec<u32>`（每秒边界车队规模在线序列，run 循环逐秒 push，c71d7b2 账本加性扩展）；`online_summary(&[u32])->OnlineSummary{peak,final_count}`；`report_entries()/online_report_entries()` 渲进 BW-17-03-01 信封。离线面注：每次发送即转 LoggingIn 故 rate 恒 1.0，字段留给活服务端喂登入失败后拉低。
+  - 验收（用已知输入核对统计）：`known_inputs_produce_hand_computed_login_statistics`（手搓账本 per_second[3,2,4]/names 5/refused 7 → attempts 9、rate=5/9 精确、refused 不入分母）→ `a_sendless_run_reports_zero_rate` → `an_offline_run_converts_every_send_and_tracks_the_online_series`（真实洪峰跑批 rate=1.0、在线序列 `vec![0,0,5,10,12,12,12,12,12,12]` 逐秒、peak/final=12）→ `an_empty_online_series_sums_to_zeroes` → `the_aggregates_render_into_the_report_envelope`（统计进 JSON 信封逐键核对、rate 最短形 0.5555555555555556）。
+  - 测试与覆盖：`cargo test -p load` 115 过 0 挂（新增 5）；clippy 0 错；rustfmt 过；llvm-cov metrics.rs/hurricane.rs 零缺行=100%。
+  - 卡点解除注：同 03-01——账本即确定性实测输入，统计核对属报告层纯数学。
 - [ ] **BW-17-03-03 聚合延迟分位数与超时**。**验收** 固定样本验证 p95/p99。
   - 卡点（无实测结果）：p95/p99 需固定样本延迟数据（同 03-01 卡点）。
 - [ ] **BW-17-03-04 聚合带宽与资源使用**。**验收** 报告指标口径和采样周期。
