@@ -598,4 +598,33 @@ mod tests {
             Err(PngError::Corrupt("row filter"))
         ));
     }
+
+    #[test]
+    fn paeth_predictor_picks_each_neighbour() {
+        // Row 0 = [0,0,0,0, 151,0,0,0]. Row 1 byte 4: a = 150 (decoded
+        // left), b = 151 (up), c = 0 (upper-left) -> p = 301 and pb = 150
+        // is strictly the smallest distance, so the b predictor wins.
+        let stream = [
+            0, 0, 0, 0, 0, 151, 0, 0, 0, // row 0: none
+            4, 150, 0, 0, 0, 105, 0, 0, 0, // row 1: paeth
+        ];
+        let img = decompress_png(&png_with_filtered_rows(&stream)).expect("decode");
+        assert_eq!(
+            img.data,
+            [[0, 0, 0, 0, 151, 0, 0, 0], [150, 0, 0, 0, 0, 0, 0, 0]].concat()
+        );
+
+        // Row 0 = [150,0,0,0, 200,0,0,0]. Row 1 byte 4: a = 100, b = 200,
+        // c = 150 -> p = 150 and pc = 0 is strictly the smallest distance,
+        // so the c predictor wins.
+        let stream = [
+            0, 150, 0, 0, 0, 200, 0, 0, 0, // row 0: none
+            4, 206, 0, 0, 0, 106, 0, 0, 0, // row 1: paeth
+        ];
+        let img = decompress_png(&png_with_filtered_rows(&stream)).expect("decode");
+        assert_eq!(
+            img.data,
+            [[150, 0, 0, 0, 200, 0, 0, 0], [100, 0, 0, 0, 0, 0, 0, 0]].concat()
+        );
+    }
 }

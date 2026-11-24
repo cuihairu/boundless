@@ -3,12 +3,15 @@
 //! - the height map: `HeightMapHeader` container, the three load branches of
 //!   `TerrainHeightMap2::loadHeightMap`, and the grid/interpolated height
 //!   queries (`height_map`),
+//! - the hole map: `HolesHeader`, the packed `Moo::Image<bool>` face, and
+//!   the `holeAt` queries (`hole_map`),
 //! - the PNG payload decoder for the two image shapes the terrain faces
 //!   produce (`png`).
 //!
 //! Reference quirks are ported on purpose and cited at each site.
 
 pub mod height_map;
+pub mod hole_map;
 pub mod png;
 
 pub use height_map::{
@@ -16,5 +19,8 @@ pub use height_map::{
     HEIGHT_MAP_MAGIC, HEIGHT_MAP_VERSION_ABS_FLOAT, HEIGHT_MAP_VERSION_ABS_QFLOAT,
     HEIGHT_MAP_VERSION_REL_UINT16, HEIGHT_MAP_VERSION_REL_UINT16_PNG, HeightMapHeader, LoadError,
     QUANTISATION_LEVEL, TerrainHeightMap2, quantise, unquantise,
+};
+pub use hole_map::{
+    BoolImage, HOLES_HEADER_SIZE, HOLES_MAGIC, HoleLoadError, HolesHeader, TerrainHoleMap2,
 };
 pub use png::{PngError, PngImage, decompress_png};
