@@ -46,7 +46,9 @@ use std::rc::Rc;
 use foundation::math::{Vector3, almost_zero};
 use foundation::stream::BinaryStream;
 
-use crate::cellapp_real_entity::{AccelerationFacing, Controller, ControllerId, ControllerKind};
+use crate::cellapp_real_entity::{
+    AccelerationFacing, Controller, ControllerId, ControllerKind, DOMAIN_REAL,
+};
 use crate::cellapp_space::{CellApp, Entity};
 
 /// `stdmf.hpp:616`'s default `almostZero` band.
@@ -74,6 +76,8 @@ const CONTROLLER_TYPE_ACCELERATE_TO_POINT: u32 = 5;
 const CONTROLLER_TYPE_NAVIGATE_STEP: u32 = 6;
 const CONTROLLER_TYPE_NAVIGATION: u32 = 7;
 const CONTROLLER_TYPE_EXCLUSIVE: u32 = 8;
+/// `PassengerController` (`passenger_controller.cpp`'s type).
+const CONTROLLER_TYPE_PASSENGER: u32 = 9;
 
 /// `NavLoc` (`lib/waypoint/navloc.hpp`) at the resolution this cluster
 /// needs: which waypoint set (the port's stand-in for the
@@ -320,6 +324,7 @@ fn controller_type_code(kind: &ControllerKind) -> u32 {
         ControllerKind::AccelerateToPoint { .. } => CONTROLLER_TYPE_ACCELERATE_TO_POINT,
         ControllerKind::NavigateStep { .. } => CONTROLLER_TYPE_NAVIGATE_STEP,
         ControllerKind::Navigation { .. } => CONTROLLER_TYPE_NAVIGATION,
+        ControllerKind::Passenger { .. } => CONTROLLER_TYPE_PASSENGER,
     }
 }
 
@@ -418,6 +423,9 @@ fn write_controller_payload(
             stream.write_f32(*max_distance);
             stream.write_f32(*girth);
         }
+        // `PassengerController::writeRealToStream` — a zero-byte payload
+        // (`CONTROLLER_DECLARE_GHOST_ONLY` carries no fields).
+        ControllerKind::Passenger { .. } => {}
     }
 }
 
@@ -569,13 +577,8 @@ impl CellApp {
         self.navigate_step_controllers.insert(entity, id);
     }
 
-    /// `EntityNavigate::isRealToScript`: the entity is live and real.
-    fn is_real_to_script(&self, entity: u32) -> bool {
-        self.entity_population.get(&entity).is_some_and(|rc| {
-            let borrowed = rc.borrow();
-            borrowed.is_real && !borrowed.destroyed
-        })
-    }
+    // `EntityNavigate::isRealToScript` lives on the shared script-entry
+    // gate: [`CellApp::is_real_to_script`].
 
     /// `EntityNavigate::navigateStep` +
     /// `NavmeshEntityNavigationSystem::navigateStep`
@@ -1181,15 +1184,27 @@ impl CellApp {
     /// `Controllers::writeRealsToStream` (`controllers.cpp:174`): the
     /// offload block — `lastAllocatedID_`, the count of real-domain
     /// controllers, then per controller (in id order, the reference's
-    /// map iteration) `id`, `type`, `userArg` and the payload.
+    /// map iteration) `id`, `type`, `userArg` and the payload. The
+    /// `domain()` gate keeps ghost-only kinds (`PassengerController`)
+    /// out of the real block.
     pub fn write_real_controllers_to_stream(&self, entity: u32) -> Option<Vec<u8>> {
         let entity_rc = self.entity_population.get(&entity)?;
         let borrowed = entity_rc.borrow();
         let mut stream = BinaryStream::new();
         stream.write_u32(borrowed.controllers.last_allocated_id as u32);
-        stream.write_u32(borrowed.controllers.container.len() as u32);
+        stream.write_u32(
+            borrowed
+                .controllers
+                .container
+                .values()
+                .filter(|controller| controller.domain() & DOMAIN_REAL != 0)
+                .count() as u32,
+        );
         let velocity = borrowed.velocity;
         for (cid, controller) in &borrowed.controllers.container {
+            if controller.domain() & DOMAIN_REAL == 0 {
+                continue;
+            }
             stream.write_u32(*cid as u32);
             stream.write_u32(controller_type_code(&controller.kind));
             stream.write_i32(controller.user_arg);
@@ -3068,6 +3083,46 @@ mod tests {
         assert!(matches!(
             borrowed.controllers.container[&navigation].kind,
             ControllerKind::Exclusive { .. }
+        ));
+    }
+
+    #[test]
+    fn the_passenger_marker_carries_a_zero_byte_payload() {
+        // The ghost-only marker: the port's stable code, and nothing on
+        // the wire (`PassengerController::writeRealToStream`).
+        let kind = ControllerKind::Passenger { vehicle_id: 10 };
+        assert_eq!(controller_type_code(&kind), CONTROLLER_TYPE_PASSENGER);
+        let mut stream = BinaryStream::new();
+        write_controller_payload(&mut stream, &kind, [0.0; 3]);
+        assert!(stream.as_bytes().is_empty());
+    }
+
+    #[test]
+    fn the_passenger_marker_never_streams_in_the_real_block() {
+        let mut app = app_with(plain_script(&[]));
+        let mut spaces = spaces_with();
+        create(&mut app, &mut spaces, 10, [0.0, 0.0, 0.0]);
+        create(&mut app, &mut spaces, 11, [1.0, 0.0, 0.0]);
+        assert!(app.board_vehicle(11, 10, false));
+        // A real-domain controller alongside the ghost marker: only the
+        // real one counts and streams.
+        app.add_timer(11, 0.0, 0.0, 0);
+        let data = app.write_real_controllers_to_stream(11).unwrap();
+        let count = u32::from_le_bytes(data[4..8].try_into().expect("count"));
+        assert_eq!(count, 1, "the ghost-domain passenger marker never streams");
+        // The single entry is the timer.
+        let type_code = u32::from_le_bytes(data[12..16].try_into().expect("type"));
+        assert_eq!(type_code, CONTROLLER_TYPE_TIMER);
+        // And the restore round-trip brings back exactly the timer.
+        let mut restored = app_with(plain_script(&[]));
+        let mut restored_spaces = spaces_with();
+        create(&mut restored, &mut restored_spaces, 11, [1.0, 0.0, 0.0]);
+        assert!(restored.read_real_controllers_from_stream(11, &data));
+        let borrowed = restored.entity_population[&11].borrow();
+        assert_eq!(borrowed.controllers.container.len(), 1);
+        assert!(matches!(
+            borrowed.controllers.container.values().next().unwrap().kind,
+            ControllerKind::Timer { .. }
         ));
     }
 }

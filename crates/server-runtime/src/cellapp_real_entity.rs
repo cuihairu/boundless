@@ -390,6 +390,15 @@ pub enum ControllerKind {
         /// resolution failed (`valid()` false).
         dst_loc: Option<crate::cellapp_navigate::NavLoc>,
     },
+    /// `PassengerController` (`passenger_controller.cpp`): the
+    /// ghost-domain membership marker a boarding entity attaches. It
+    /// drives nothing — start/stop maintain the vehicle link — and the
+    /// real offload stream skips it (`Controller::domain()` without
+    /// `DOMAIN_REAL`).
+    Passenger {
+        /// `vehicleID_`.
+        vehicle_id: u32,
+    },
 }
 
 /// The category string every movement-family controller registers under
@@ -551,9 +560,14 @@ impl Controller {
         }
     }
 
-    /// `Controller::domain()`.
+    /// `Controller::domain()`: the `PassengerController` is
+    /// `DOMAIN_GHOST` (its `CONTROLLER_DECLARE_GHOST_ONLY`), every other
+    /// ported kind is real.
     pub fn domain(&self) -> u8 {
-        DOMAIN_REAL
+        match self.kind {
+            ControllerKind::Passenger { .. } => DOMAIN_GHOST,
+            _ => DOMAIN_REAL,
+        }
     }
 }
 
@@ -1075,6 +1089,11 @@ impl CellApp {
                 read_f32(&direction[4..8]),
                 read_f32(&direction[8..12]),
             ];
+            // `initReal` reads `localPosition_`/`localDirection_` first;
+            // the global frame takes them over until a vehicle mounts
+            // (`updateLocalPosition`'s unmounted copy).
+            entity.local_position = entity.position;
+            entity.local_direction = entity.direction;
             offset += 12;
             entity.last_event_number = read_u32(&stream[offset..offset + 4]);
             offset += 4;
@@ -1126,12 +1145,20 @@ impl CellApp {
             // restored controllers arm their drives against the entity
             // that just became real.
             start_real_controllers(self, &entity_rc);
+            // `Entity::relocated()` — the extras notification tail; a
+            // real passenger still limbo after its restore alights.
+            self.relocate_entity_extras(&entity_rc);
         }
 
         // The caller's `Entity::callbacksPermitted( true )`: the last
         // section closes and the buffered calls run — `__init__` (or
         // `onRestore`) first.
         self.callbacks_permitted(true);
+
+        // `Entity::population().onEntityAdd( ... )` — the population
+        // notification. The observers are the passenger controllers that
+        // went limbo waiting for this vehicle.
+        self.entity_entered_population(id);
 
         CreateRealOutcome::Created(id)
     }
@@ -1255,6 +1282,11 @@ impl CellApp {
                 max_distance,
                 girth,
             ),
+            // The ghost-domain face: `addController`'s dispatch starts
+            // the ghost half for `CONTROLLER_DECLARE_GHOST_ONLY` kinds.
+            ControllerKind::Passenger { vehicle_id } => {
+                self.passenger_start(entity_rc, id, vehicle_id)
+            }
             _ => self.start_movement_controller(entity_rc, id, kind),
         }
     }
@@ -1315,6 +1347,12 @@ impl CellApp {
         let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
             return false;
         };
+        let kind = entity_rc
+            .borrow()
+            .controllers
+            .container
+            .get(&id)
+            .map(|c| c.kind.clone());
         let mut armed = entity_rc
             .borrow_mut()
             .controllers
@@ -1325,6 +1363,12 @@ impl CellApp {
         if !removed {
             // delController's warn-on-failure WARNING counted.
             return false;
+        }
+        // The ghost-domain half of `stop`: the passenger marker runs its
+        // stop face while the controller is still in reach (the
+        // reference's `PassengerController::stopGhost`).
+        if let Some(ControllerKind::Passenger { vehicle_id }) = kind {
+            self.passenger_stop(&entity_rc, id, vehicle_id);
         }
         // The updatable half of `stopReal`: a movement controller leaves
         // the per-tick registry with its container entry.
@@ -1404,6 +1448,9 @@ impl CellApp {
         for id in ids {
             self.cancel_controller(entity, id);
         }
+        // `~Passengers` (`passengers.cpp:36`): a destroyed vehicle
+        // alights every rider before the extras wipe takes the slot.
+        self.vehicle_destroyed(entity);
         let mut borrowed = entity_rc.borrow_mut();
         // Entity::destroy: "Get rid of any entity extras (for the first
         // time)" — every live extra deletes and its slot clears.

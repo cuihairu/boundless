@@ -262,6 +262,34 @@ pub struct Entity {
     pub position_sample: [f32; 3],
     /// `RealEntity::positionSampleTime_`: the game tick of that sample.
     pub position_sample_time: u32,
+    /// `pVehicle_` (`entity.cpp:7606`): the vehicle this entity rides,
+    /// when any. `None` is also the alighted-with-`KEEP_GLOBAL_POSITION`
+    /// state — the limbo face keeps it `None` with the passenger extra
+    /// and controller still live.
+    pub vehicle: Option<u32>,
+    /// `vehicleChangeNum_`: bumped on every vehicle change (the witness
+    /// dedups its vehicleChanged sends against it, BW-08-03).
+    pub vehicle_change_num: u32,
+    /// `localPosition_`: this entity's position in its vehicle's frame,
+    /// or in the global frame when unmounted (the invariant
+    /// `updateLocalPosition`/`updateGlobalPosition` maintain).
+    pub local_position: [f32; 3],
+    /// `localDirection_`: yaw, pitch, roll in the same frame.
+    pub local_direction: [f32; 3],
+    /// `RealEntity::controlledByRef().id`: the client controlling this
+    /// entity, when any — the face `sendPhysicsCorrection` gates on.
+    pub controlled_by: u32,
+    /// `BaseAccelerationController::pVehicle_`: the vehicle the
+    /// acceleration controller's velocity sampler last saw (the
+    /// entity can carry at most one — the family is exclusive).
+    pub accel_vehicle: Option<u32>,
+    /// `BaseAccelerationController::positionSample_` (the controller's
+    /// own, in local space — distinct from the RealEntity sample).
+    pub accel_sample: [f32; 3],
+    /// `BaseAccelerationController::positionSampleTime_`.
+    pub accel_sample_time: u32,
+    /// `BaseAccelerationController::currVelocity_` (local space).
+    pub accel_velocity: [f32; 3],
 }
 
 impl Entity {
@@ -285,6 +313,15 @@ impl Entity {
             velocity: [0.0; 3],
             position_sample: [0.0; 3],
             position_sample_time: 0,
+            vehicle: None,
+            vehicle_change_num: 0,
+            local_position: [0.0; 3],
+            local_direction: [0.0; 3],
+            controlled_by: 0,
+            accel_vehicle: None,
+            accel_sample: [0.0; 3],
+            accel_sample_time: 0,
+            accel_velocity: [0.0; 3],
         }
     }
 }
@@ -1497,6 +1534,21 @@ pub struct CellApp {
     /// refusal, the `closeEnough` ctor complaint and the
     /// NavigateStepController 100-loop bail.
     pub navigation_warnings: Vec<(u32, String)>,
+    /// Per-vehicle `Passengers` extra state (BW-08-02-05): the rider
+    /// list and the global-to-child transform.
+    pub passengers_state: BTreeMap<u32, crate::cellapp_passenger::PassengersState>,
+    /// `PassengerExtra::pController_` by passenger: the controller id
+    /// riding the extra (`None`-as-absent — a cleared extra leaves no
+    /// entry).
+    pub passenger_controllers: BTreeMap<u32, crate::cellapp_real_entity::ControllerId>,
+    /// The passenger-family WARNING/ERROR/INFO/DEBUG/CRITICAL texts.
+    pub passenger_warnings: Vec<(u32, String)>,
+    /// `EntityPopulation` observers (`entity_population.cpp`): the ids
+    /// waiting on a vehicle id to enter the population (the limbo face).
+    pub population_observers: BTreeMap<u32, Vec<u32>>,
+    /// `RealEntity::sendPhysicsCorrection`: the entity ids a correction
+    /// went out for (board/alight on a client-controlled entity).
+    pub physics_corrections: Vec<u32>,
 }
 
 impl Default for CellApp {
@@ -1547,6 +1599,11 @@ impl Default for CellApp {
             navigate_step_controllers: BTreeMap::new(),
             navigators: BTreeMap::new(),
             navigation_warnings: Vec::new(),
+            passengers_state: BTreeMap::new(),
+            passenger_controllers: BTreeMap::new(),
+            passenger_warnings: Vec::new(),
+            population_observers: BTreeMap::new(),
+            physics_corrections: Vec::new(),
         }
     }
 }

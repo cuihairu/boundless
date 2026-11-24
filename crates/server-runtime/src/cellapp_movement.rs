@@ -253,6 +253,27 @@ impl CellApp {
         {
             self.start_yaw_rotator(entity_rc, id, target_yaw, radians_per_tick);
         }
+        if let ControllerKind::AccelerateToPoint { .. } = kind {
+            self.start_acceleration_controller(entity_rc);
+        }
+    }
+
+    /// `BaseAccelerationController::startReal`
+    /// (`base_acceleration_controller.cpp:131`) after the registration:
+    /// seed the vehicle the sampler compares against, and restart the
+    /// sample at the local position when already mounted.
+    fn start_acceleration_controller(&mut self, entity_rc: &Rc<RefCell<Entity>>) {
+        let (vehicle, local) = {
+            let entity = entity_rc.borrow();
+            (entity.vehicle, entity.local_position)
+        };
+        let mut entity = entity_rc.borrow_mut();
+        entity.accel_vehicle = vehicle;
+        if vehicle.is_some() {
+            entity.accel_sample = local;
+            entity.accel_sample_time = self.time;
+            entity.accel_velocity = [0.0; 3];
+        }
     }
 
     /// `YawRotatorController::startReal`'s body after the registration:
@@ -544,14 +565,20 @@ impl CellApp {
     ) -> bool {
         let destination = Vector3::new(destination[0], destination[1], destination[2]);
         let current_velocity = self.refresh_current_velocity(entity_rc);
+        // The acceleration family works in the local frame
+        // (`move` reads `localPosition`/`localDirection`).
         let (position, direction) = {
             let entity = entity_rc.borrow();
             (
-                Vector3::new(entity.position[0], entity.position[1], entity.position[2]),
                 Vector3::new(
-                    entity.direction[0],
-                    entity.direction[1],
-                    entity.direction[2],
+                    entity.local_position[0],
+                    entity.local_position[1],
+                    entity.local_position[2],
+                ),
+                Vector3::new(
+                    entity.local_direction[0],
+                    entity.local_direction[1],
+                    entity.local_direction[2],
                 ),
             )
         };
@@ -615,40 +642,113 @@ impl CellApp {
         }
     }
 
-    /// `BaseAccelerationController::refreshCurrentVelocity`'s unmounted
-    /// face: `currVelocity_ = pReal()->velocity()` — the entity's
-    /// sampled velocity. The per-vehicle sampling branches are
-    /// BW-08-02-05.
-    fn refresh_current_velocity(&mut self, entity_rc: &Rc<RefCell<Entity>>) -> Vector3 {
-        let entity = entity_rc.borrow();
-        Vector3::new(entity.velocity[0], entity.velocity[1], entity.velocity[2])
+    /// `BaseAccelerationController::refreshCurrentVelocity`
+    /// (`base_acceleration_controller.cpp:150`): the unmounted face
+    /// answers the entity's real sample; a same-vehicle face integrates
+    /// the local delta after more than one tick of separation; a changed
+    /// vehicle restarts the sample with a zero velocity.
+    pub(crate) fn refresh_current_velocity(&mut self, entity_rc: &Rc<RefCell<Entity>>) -> Vector3 {
+        let vehicle = entity_rc.borrow().vehicle;
+        let changed_vehicle = entity_rc.borrow().accel_vehicle != vehicle;
+        if changed_vehicle {
+            entity_rc.borrow_mut().accel_vehicle = vehicle;
+        }
+        match vehicle {
+            None => {
+                let entity = entity_rc.borrow();
+                Vector3::new(entity.velocity[0], entity.velocity[1], entity.velocity[2])
+            }
+            Some(_) if !changed_vehicle => {
+                let now = self.time;
+                let (sample_time, sample) = {
+                    let entity = entity_rc.borrow();
+                    (entity.accel_sample_time, entity.accel_sample)
+                };
+                let mut velocity = entity_rc.borrow().accel_velocity;
+                let duration = now.wrapping_sub(sample_time);
+                if duration > 1 {
+                    let time_inverse = self.update_hertz as f32 / duration as f32;
+                    let local = entity_rc.borrow().local_position;
+                    velocity = [
+                        (local[0] - sample[0]) * time_inverse,
+                        (local[1] - sample[1]) * time_inverse,
+                        (local[2] - sample[2]) * time_inverse,
+                    ];
+                    // `currVelocity_` is the controller member: the
+                    // integrated answer persists for the shorter-gap
+                    // refreshes.
+                    let mut entity = entity_rc.borrow_mut();
+                    entity.accel_velocity = velocity;
+                    entity.accel_sample = local;
+                    entity.accel_sample_time = now;
+                }
+                Vector3::new(velocity[0], velocity[1], velocity[2])
+            }
+            Some(_) => {
+                let local = entity_rc.borrow().local_position;
+                let mut entity = entity_rc.borrow_mut();
+                entity.accel_sample = local;
+                entity.accel_sample_time = self.time;
+                entity.accel_velocity = [0.0; 3];
+                Vector3::new(0.0, 0.0, 0.0)
+            }
+        }
     }
 
-    /// `RealEntity::setPositionAndDirection` + `newPosition`
-    /// (`real_entity.cpp:831`): store the position (direction yaw/pitch
-    /// normalising through the `Angle` assignment), then re-derive the
-    /// sampled velocity — but only after a full tick of separation
-    /// (`dur > 1`), keeping the older sample otherwise.
+    /// `Entity::setPositionAndDirection` + `updateGlobalPosition` +
+    /// `RealEntity::newPosition` merged, the port's one position funnel:
+    /// the write is the local face (direction yaw/pitch normalising
+    /// through the `Angle` assignment); an unmounted entity copies the
+    /// local face out, a mounted one derives the global face from the
+    /// vehicle frame (the reference's mounted face rewrites only the
+    /// yaw); then the real internals sample the velocity and walk the
+    /// passengers.
     pub fn set_entity_position_and_direction(
         &mut self,
         entity_rc: &Rc<RefCell<Entity>>,
         position: Vector3,
         direction: Vector3,
     ) {
+        let local_yaw = normalise_angle(direction.x);
+        let local_pitch = normalise_angle(direction.y);
+        {
+            let mut entity = entity_rc.borrow_mut();
+            entity.local_position = [position.x, position.y, position.z];
+            entity.local_direction = [local_yaw, local_pitch, direction.z];
+        }
+        let vehicle = entity_rc.borrow().vehicle;
+        match vehicle {
+            None => {
+                let mut entity = entity_rc.borrow_mut();
+                entity.position = entity.local_position;
+                entity.direction = entity.local_direction;
+            }
+            Some(vehicle) => {
+                let transform = crate::cellapp_passenger::passengers_transform(self, vehicle);
+                let yaw = crate::cellapp_passenger::vehicle_yaw(self, vehicle);
+                let global = transform.apply_point(&position);
+                let mut entity = entity_rc.borrow_mut();
+                entity.position = [global.x, global.y, global.z];
+                entity.direction[0] = normalise_angle(local_yaw + yaw);
+            }
+        }
+        self.real_new_position(entity_rc);
+        self.entity_position_changed_internals(entity_rc);
+    }
+
+    /// `RealEntity::newPosition` (`real_entity.cpp:831`): re-derive the
+    /// sampled velocity from the global face — but only after a full
+    /// tick of separation (`dur > 1`), keeping the older sample
+    /// otherwise.
+    pub(crate) fn real_new_position(&mut self, entity_rc: &Rc<RefCell<Entity>>) {
         let mut entity = entity_rc.borrow_mut();
-        entity.position = [position.x, position.y, position.z];
-        entity.direction = [
-            normalise_angle(direction.x),
-            normalise_angle(direction.y),
-            direction.z,
-        ];
         let duration = self.time.wrapping_sub(entity.position_sample_time);
         if duration > 1 {
             let time_inverse = self.update_hertz as f32 / duration as f32;
             entity.velocity = [
-                (position.x - entity.position_sample[0]) * time_inverse,
-                (position.y - entity.position_sample[1]) * time_inverse,
-                (position.z - entity.position_sample[2]) * time_inverse,
+                (entity.position[0] - entity.position_sample[0]) * time_inverse,
+                (entity.position[1] - entity.position_sample[1]) * time_inverse,
+                (entity.position[2] - entity.position_sample[2]) * time_inverse,
             ];
             entity.position_sample = entity.position;
             entity.position_sample_time = self.time;
@@ -771,13 +871,16 @@ impl CellApp {
             ControllerKind::Navigation { .. } => {
                 self.update_navigation_controller(&entity_rc, entity, id)
             }
-            // Only the timer drives and the exclusive placeholders reach
-            // the registry dispatch without a movement family behind
-            // them; both hang inert by contract.
+            // Only the timer drives, the exclusive placeholders and the
+            // ghost-domain passenger markers reach the registry dispatch
+            // without a movement family behind them; all hang inert by
+            // contract.
             inert_kind => {
                 debug_assert!(matches!(
                     inert_kind,
-                    ControllerKind::Timer { .. } | ControllerKind::Exclusive { .. }
+                    ControllerKind::Timer { .. }
+                        | ControllerKind::Exclusive { .. }
+                        | ControllerKind::Passenger { .. }
                 ));
             }
         }
@@ -1523,7 +1626,11 @@ mod tests {
         let mut app = app_with(&["onMove"]);
         let mut spaces = spaces_with();
         create(&mut app, &mut spaces, 77, [0.0, 0.0, 0.0]);
-        app.entity_population[&77].borrow_mut().direction[0] = 0.25;
+        {
+            let mut entity = app.entity_population[&77].borrow_mut();
+            entity.direction[0] = 0.25;
+            entity.local_direction[0] = 0.25;
+        }
 
         // FACING_ACCELERATION turns along the acceleration vector from
         // the first tick.
@@ -1550,7 +1657,11 @@ mod tests {
         let mut quiet = app_with(&["onMove"]);
         let mut quiet_spaces = spaces_with();
         create(&mut quiet, &mut quiet_spaces, 77, [0.0, 0.0, 0.0]);
-        quiet.entity_population[&77].borrow_mut().direction[0] = 0.25;
+        {
+            let mut entity = quiet.entity_population[&77].borrow_mut();
+            entity.direction[0] = 0.25;
+            entity.local_direction[0] = 0.25;
+        }
         quiet.attach_controller(
             77,
             Controller {
