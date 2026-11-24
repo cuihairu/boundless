@@ -373,6 +373,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "compiled-space"
+version = "0.1.0"
+dependencies = [
+ "foundation",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1453,6 +1460,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "physics"
+version = "0.1.0"
+dependencies = [
+ "foundation",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2047,6 +2061,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "terrain"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
 ]
 
 [[package]]

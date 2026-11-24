@@ -125,7 +125,7 @@ fn logon_statuses_from_source(text: &str) -> Vec<String> {
                 .unwrap_or("")
                 .trim()
                 .trim_end_matches(',');
-            if id.is_empty() || !id.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
+            if id.is_empty() || !id.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                 None
             } else {
                 Some(id.to_string())

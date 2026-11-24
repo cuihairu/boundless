@@ -1,0 +1,6 @@
+<visual>
+	<boundingBox>
+		<min> -1.0 -1.0 -1.0 </min>
+		<max> 1.0 1.0 1.0 </max>
+	</boundingBox>
+</visual>

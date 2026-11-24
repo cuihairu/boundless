@@ -221,7 +221,7 @@ impl Set {
     /// `isClear`. The reference leans on the "dodgy" `sigisemptyset`
     /// feature; libc does not expose it, so the scan spells it out.
     pub fn is_clear(&self) -> bool {
-        (SIGMIN..=SIGMAX).all(|sig_num| self.is_set(sig_num) == false)
+        (SIGMIN..=SIGMAX).all(|sig_num| !self.is_set(sig_num))
     }
 
     pub fn is_set(&self, signal: i32) -> bool {
@@ -289,13 +289,17 @@ pub fn disposition_of(sig_num: i32) -> usize {
     }
 }
 
+/// One registration entry: the signal number, the registration id and the
+/// handler, kept in registration order (the reference's multimap keeps
+/// insertion order within a signal).
+type HandlerEntry = (i32, HandlerId, Rc<RefCell<dyn SignalHandler>>);
+
 /// `SignalProcessor`: registration + the dispatch drain. The global
 /// signal/quit-handler state is shared exactly like the reference's
 /// singleton; instances manage the main-thread registration table.
 pub struct SignalProcessor {
-    /// `(signal, id, handler)` in registration order (the reference's
-    /// multimap keeps insertion order within a signal).
-    handlers: Vec<(i32, HandlerId, Rc<RefCell<dyn SignalHandler>>)>,
+    /// `(signal, id, handler)` in registration order.
+    handlers: Vec<HandlerEntry>,
     /// Whether this instance installed the `SIGQUIT` slot.
     quit_installed: bool,
 }
@@ -647,7 +651,7 @@ mod tests {
         assert_eq!(counter_b.load(Ordering::SeqCst), 1);
 
         processor.set_default_signal_handler(libc::SIGUSR1);
-        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
     }
 
     /// `Blocker`: a blocked raise never reaches the C handler; the
@@ -759,11 +763,11 @@ mod tests {
         processor.dispatch();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
         assert_eq!(counter_b.load(Ordering::SeqCst), 2);
-        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
+        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
 
         // Last handler out: back to SIG_DFL; a stale removal is a no-op.
         assert!(processor.clear_signal_handler(libc::SIGUSR1, id_b));
-        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
         assert!(!processor.clear_signal_handler(libc::SIGUSR1, id_b));
     }
 
@@ -790,8 +794,8 @@ mod tests {
 
         processor.clear_handler_everywhere(id_a);
         // SIGUSR2 lost its last handler -> SIG_DFL; SIGUSR1 still has one.
-        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL as usize);
-        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL);
+        assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
 
         // The removed handler gets no more deliveries: raising SIGUSR1
         // (whose remaining handler is the kept one) leaves `counter`
@@ -819,7 +823,7 @@ mod tests {
         }
 
         processor.ignore_signal(libc::SIGUSR2);
-        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_IGN as usize);
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_IGN);
         // The pending bitset is shared process state that a sibling test may
         // have dirtied, so assert the ignored raise added nothing rather
         // than that the world was quiet.
@@ -836,7 +840,7 @@ mod tests {
 
         // Restore for the rest of the suite.
         processor.set_default_signal_handler(libc::SIGUSR2);
-        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGUSR2), libc::SIG_DFL);
     }
 
     /// `Drop` resets every handled signal to the default disposition.
@@ -849,9 +853,9 @@ mod tests {
                 libc::SIGUSR1,
                 counting_handler(Arc::new(AtomicUsize::new(0))),
             );
-            assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
+            assert_ne!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
         }
-        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGUSR1), libc::SIG_DFL);
     }
 
     /// `waitForSignals`: sigwaitinfo consumes a signal that arrived

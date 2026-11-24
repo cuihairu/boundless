@@ -10,6 +10,7 @@ pub mod ema;
 pub mod matrix;
 pub mod plane;
 pub mod quaternion;
+pub mod sphere;
 pub mod vector;
 
 pub use angle::{MATH_PI, normalise as normalise_angle};
@@ -18,4 +19,5 @@ pub use ema::{AccumulatingEma, Accumulator, Ema};
 pub use matrix::Matrix;
 pub use plane::PlaneEq;
 pub use quaternion::Quaternion;
+pub use sphere::Sphere;
 pub use vector::{Vector2, Vector3, Vector4, almost_zero, clamp};

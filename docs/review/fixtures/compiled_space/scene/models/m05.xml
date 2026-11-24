@@ -1,0 +1,9 @@
+<model>
+	<resource> models/box_b.model </resource>
+	<transform>
+		<row0> 2 0 0 </row0>
+		<row1> 0 1 0 </row1>
+		<row2> 0 0 2 </row2>
+		<row3> 40 6 40 </row3>
+	</transform>
+</model>
