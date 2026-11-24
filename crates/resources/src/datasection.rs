@@ -492,6 +492,18 @@ impl DataSection {
         self.children.get_mut(index)
     }
 
+    /// Drop the child at `index` (`XMLSection::delChild` deletes one child).
+    pub fn remove_child_at(&mut self, index: usize) {
+        if index < self.children.len() {
+            self.children.remove(index);
+        }
+    }
+
+    /// Drop every child (`XMLSection::delChildren`).
+    pub fn clear_children(&mut self) {
+        self.children.clear();
+    }
+
     pub fn is_attribute(&self) -> bool {
         self.is_attribute
     }
@@ -2098,5 +2110,23 @@ mod tests {
         // The empty path writes the section's own value.
         assert!(doc.write_string("", "root value"));
         assert_eq!(doc.as_string(), "root value");
+    }
+
+    #[test]
+    fn remove_child_at_and_clear_children_drop_the_children() {
+        let mut doc = parse_doc("<r><a/><b>keep</b><c/></r>");
+        assert_eq!(doc.count_children(), 3);
+        doc.remove_child_at(1);
+        assert_eq!(doc.count_children(), 2);
+        assert_eq!(doc.find_child("b"), None);
+        assert_eq!(doc.open_child(1).unwrap().section_name(), "c");
+        // An out-of-range index drops nothing.
+        doc.remove_child_at(99);
+        assert_eq!(doc.count_children(), 2);
+
+        let mut cleared = parse_doc("<r><a/><b/><c/></r>");
+        cleared.clear_children();
+        assert_eq!(cleared.count_children(), 0);
+        assert!(cleared.write_to_string().contains("<a/>") == false);
     }
 }

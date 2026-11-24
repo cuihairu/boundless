@@ -25,6 +25,7 @@ pub mod retry;
 pub mod schema;
 pub mod storage;
 pub mod transaction;
+pub mod xml_database;
 
 pub use account::{AccountLogOnStatus, AccountRow, AccountStore, hash_password};
 pub use buffered_entity_tasks::{
@@ -44,3 +45,8 @@ pub use schema::{
 };
 pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity, load_entity_by_name};
 pub use transaction::{StorageTransaction, run_transactional};
+pub use xml_database::{
+    AutoLoadUpdate, CellPose, DATABASE_AUTO_LOAD_ENTITIES_SECTION,
+    DATABASE_AUTO_LOAD_SPACE_DATA_SECTION, DATABASE_DATA_DOMAINS, DATABASE_INFO_SECTION,
+    DATABASE_LOGONMAPPING_SECTION, GetOutcome, XmlDatabase,
+};
