@@ -15,7 +15,7 @@ described on
 have not landed (BW-09-01-03..04), and neither have the shared write-path
 cases: transactions, concurrent writes, reconnect, relogin
 (BW-09-06-05..10), so the migration steps below remain *targets* tracked
-by `todo.md` ids; the recovery step runs (below).
+by `todo.md` ids; the import-calibration and recovery steps run (below).
 :::
 
 ## Backends
@@ -59,6 +59,14 @@ would do before doing it is not operable.
 
 DBID allocation itself is BW-09-06-04: concurrent creation must not repeat an
 id, and the sequence must survive a restart.
+
+The calibration step has landed (`crates/db-postgres`, BW-09-07-06): after an
+import writes explicit ids, `PostgresStorage::calibrate_dbid_allocation`
+moves the table's sequence to `max(id) + 1` without consuming a value —
+repeatedly, so a retried migration burns no id — and an import that brought
+no rows calibrates back to the start value. The reference never needs this
+step (its `AUTO_INCREMENT` state travels inside the copied datadir), so the
+calibration is part of the port's import contract.
 
 ### Correctness contract for writes
 
