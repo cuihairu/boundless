@@ -1518,7 +1518,7 @@
 - [x] **BW-10-06-08 实现 moveToPoint**。**验收** 逐 tick 对照位置、终点容差和到达回调。 → cc15de4（moveToPoint 脚本脸:无载具检查+无前缀 TypeError 共享文本;逐 tick 0.3 步进 34 拍吸附+近点首拍吸附+onMove 回调;控制器本体 BW-08 已交付;99.51%）
 - [x] **BW-10-06-09 实现 moveToEntity**。**验收** 目标实体移动时，跟随结果和停止条件与原版一致。 → ec2cfc4（moveToEntity 脚本脸:同 moveToPoint 无载具+无前缀 TypeError;停止条件量 raw 目标非偏移接近点;offset 首拍整 range;close_enough 原位精确朝向+onMove;None 目标 onMoveFailure;99.53%）
 - [x] **BW-10-06-10 实现 accelerateToPoint**。**验收** 逐 tick 比较速度、位置和到达结果。 → a41fa63（accelerateToPoint 脚本脸:real 先于 facing 校验+Facing 越界逐字 typo;控制器本体 BW-08 已交付;采样速度滞后一拍双步 ramp;39 拍到达 onMove;99.56%）
-- [ ] **BW-10-06-11 实现 accelerateAlongPath**。**验收** 多段路径拐点的减速与终点行为与原版一致。
+- [x] **BW-10-06-11 实现 accelerateAlongPath**。**验收** 多段路径拐点的减速与终点行为与原版一致。 → a1ac603（accelerateAlongPath 脚本脸:real→empty→facing 三查序+empty 文本逐字+typo 逐字;拐点无减速无回调 tick14/22 实证;末点制动吸附 onMove;99.58%）
 - [ ] **BW-10-06-12 实现 accelerateToEntity**。**验收** 目标移动及销毁时的控制器结果与原版一致。
 - [ ] **BW-10-06-13 取消活动寻路控制器**。**验收** 取消后下一 tick 停止推进，回调序列与原版一致。
 - [ ] **BW-10-06-14 迁移活动寻路控制器**。**验收** 移动中穿越 Cell 边界后，目标位置和回调次数与原版一致。
