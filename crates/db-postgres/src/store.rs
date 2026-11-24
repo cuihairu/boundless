@@ -191,6 +191,17 @@ fn value_params(values: &[PropertyValue]) -> Result<(Vec<PutParam>, Vec<String>)
     Ok((params, nested_texts))
 }
 
+/// The next value a sequence's state implies: a used sequence continues
+/// past `last_value`, and one never used starts at its start value —
+/// which `last_value` already reports, with `is_called` false.
+fn next_from_sequence_state(last_value: i64, is_called: bool) -> i64 {
+    if is_called {
+        last_value + 1
+    } else {
+        last_value
+    }
+}
+
 /// The create statement (`insertNew`, `utils.cpp:48-76`): the property
 /// columns only, the id column left out of the column list, and the
 /// server's allocation read back. A table with no properties inserts
@@ -375,6 +386,36 @@ impl PostgresStorage {
         Ok(row.get::<_, i64>(0))
     }
 
+    /// The next DBID the table's sequence would hand out, read without
+    /// consuming a value — the export/import tools report the
+    /// allocation state with it (BW-09-07-04/-06). The sequence is
+    /// found through `pg_get_serial_sequence`, whose name arguments are
+    /// parsed like identifiers: the table name must arrive already
+    /// quoted ([`EntitySchema::quoted_table`]), because an unquoted
+    /// name folds to lower case and would miss the reference's
+    /// mixed-case tables.
+    pub fn next_allocatable_id(&mut self, schema: &EntitySchema) -> Result<DatabaseId, DbError> {
+        let row = self
+            .client
+            .query_one(
+                "SELECT pg_get_serial_sequence($1, 'id')",
+                &[&schema.quoted_table()],
+            )
+            .map_err(map_db_error)?;
+        let sequence: String = row.get(0);
+        let row = self
+            .client
+            .query_one(
+                format!("SELECT last_value, is_called FROM {sequence}").as_str(),
+                &[],
+            )
+            .map_err(map_db_error)?;
+        Ok(next_from_sequence_state(
+            row.get::<_, i64>(0),
+            row.get::<_, bool>(1),
+        ))
+    }
+
     /// Reads an entity row back: `Ok(None)` is the reference's "row
     /// missing" outcome, not a failure.
     pub fn get_entity(
@@ -535,6 +576,14 @@ mod tests {
         let (params, nested) = put_entity_params(&schema, &nested_record).unwrap();
         assert_eq!(params.len(), 2);
         assert_eq!(nested, vec!["{\"d\":null}".to_string()]);
+    }
+
+    #[test]
+    fn the_next_allocatable_id_reads_the_sequence_state() {
+        // A used sequence continues past its last value; a fresh one
+        // starts at its start value, which is what the state reports.
+        assert_eq!(next_from_sequence_state(7, true), 8);
+        assert_eq!(next_from_sequence_state(1, false), 1);
     }
 
     #[test]
