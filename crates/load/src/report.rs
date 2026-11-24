@@ -23,6 +23,88 @@ use crate::executor::Executor;
 /// field layout.
 pub const REPORT_SCHEMA: &str = "boundless-load-report/1";
 
+/// BW-17-03-02: the login success rate and online count of one run.
+///
+/// The aggregator consumes what the bot fleet records - one outcome per
+/// log-on attempt and one bot-count sample per observation tick - and
+/// reduces them to the two figures the report contract names. The
+/// acceptance is verification against known inputs, so every rule here is
+/// a fixed arithmetic definition: the rate is successes over attempts
+/// (0.0 when nothing was attempted), the online peak is the maximum
+/// sample and the online average is the mean of the samples (0.0 with no
+/// samples).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LoginStats {
+    attempts: u64,
+    successes: u64,
+    online_peak: u64,
+    online_total: u64,
+    online_samples: u64,
+}
+
+impl LoginStats {
+    /// Reduce one run's recordings: a flag per log-on attempt and one
+    /// bot-count sample per observation tick.
+    pub fn from_run(attempts: &[bool], online: &[u64]) -> Self {
+        let mut stats = Self {
+            attempts: attempts.len() as u64,
+            successes: attempts.iter().filter(|ok| **ok).count() as u64,
+            ..Self::default()
+        };
+        for sample in online {
+            stats.online_peak = stats.online_peak.max(*sample);
+            stats.online_total += sample;
+            stats.online_samples += 1;
+        }
+        stats
+    }
+
+    /// Attempted log-ons.
+    pub fn attempts(&self) -> u64 {
+        self.attempts
+    }
+
+    /// Log-ons that succeeded.
+    pub fn successes(&self) -> u64 {
+        self.successes
+    }
+
+    /// Successes over attempts; 0.0 when nothing was attempted.
+    pub fn success_rate(&self) -> f64 {
+        if self.attempts == 0 {
+            0.0
+        } else {
+            self.successes as f64 / self.attempts as f64
+        }
+    }
+
+    /// The largest simultaneous bot count observed.
+    pub fn online_peak(&self) -> u64 {
+        self.online_peak
+    }
+
+    /// The mean bot count over the observation ticks; 0.0 with no
+    /// samples.
+    pub fn online_average(&self) -> f64 {
+        if self.online_samples == 0 {
+            0.0
+        } else {
+            self.online_total as f64 / self.online_samples as f64
+        }
+    }
+
+    /// The machine-readable section under the report's `login` key.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "attempts": self.attempts,
+            "successes": self.successes,
+            "success_rate": self.success_rate(),
+            "online_peak": self.online_peak,
+            "online_average": self.online_average(),
+        })
+    }
+}
+
 /// The traceable envelope of one scenario run: who ran, against what, and
 /// with which fixed seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +125,9 @@ pub struct ScenarioReport {
     pub ramp_seconds: u64,
     pub steady_seconds: u64,
     pub total_seconds: u64,
+    /// The login/online section (BW-17-03-02); `None` while a run has
+    /// recorded nothing.
+    pub login: Option<LoginStats>,
 }
 
 impl ScenarioReport {
@@ -62,6 +147,7 @@ impl ScenarioReport {
             ramp_seconds: stages.ramp().as_secs(),
             steady_seconds: stages.steady().as_secs(),
             total_seconds: stages.total().as_secs(),
+            login: None,
         }
     }
 
@@ -81,6 +167,7 @@ impl ScenarioReport {
                 "steady_seconds": self.steady_seconds,
                 "total_seconds": self.total_seconds,
             },
+            "login": self.login.as_ref().map(LoginStats::to_json),
         })
     }
 
@@ -156,6 +243,60 @@ mod tests {
     }
 
     #[test]
+    fn known_inputs_verify_the_statistics() {
+        // The acceptance: aggregation against known inputs. Three of four
+        // log-ons succeed; the bot counts run 1, 5, 2.
+        let stats = LoginStats::from_run(&[true, false, true, true], &[1, 5, 2]);
+        assert_eq!(stats.attempts(), 4);
+        assert_eq!(stats.successes(), 3);
+        assert!((stats.success_rate() - 0.75).abs() < 1e-9);
+        assert_eq!(stats.online_peak(), 5);
+        assert!((stats.online_average() - 8.0 / 3.0).abs() < 1e-9);
+
+        // The section renders the same figures.
+        let section = stats.to_json();
+        assert_eq!(section["attempts"], 4);
+        assert_eq!(section["successes"], 3);
+        assert_eq!(section["success_rate"], 0.75);
+        assert_eq!(section["online_peak"], 5);
+    }
+
+    #[test]
+    fn empty_recordings_aggregate_to_zero() {
+        // No attempts -> rate 0.0; no samples -> peak 0, average 0.0.
+        let stats = LoginStats::from_run(&[], &[]);
+        assert_eq!(stats.success_rate(), 0.0);
+        assert_eq!(stats.online_peak(), 0);
+        assert_eq!(stats.online_average(), 0.0);
+        assert_eq!(stats.to_json()["success_rate"], 0.0);
+    }
+
+    #[test]
+    fn all_failure_and_all_success_bounds() {
+        let failed = LoginStats::from_run(&[false, false], &[0]);
+        assert_eq!(failed.success_rate(), 0.0);
+        let succeeded = LoginStats::from_run(&[true, true], &[2]);
+        assert_eq!(succeeded.success_rate(), 1.0);
+        assert_eq!(succeeded.online_peak(), 2);
+        assert_eq!(succeeded.online_average(), 2.0);
+    }
+
+    #[test]
+    fn the_report_carries_the_login_section_when_recorded() {
+        // A completed run's envelope renders the login section; a bare
+        // one leaves it absent (null), not zero - an unrecorded run and a
+        // failed run are different documents.
+        let mut completed = report();
+        completed.login = Some(LoginStats::from_run(&[true, true], &[2, 2]));
+        let value = completed.to_json();
+        assert_eq!(value["login"]["success_rate"], 1.0);
+        assert_eq!(value["login"]["online_peak"], 2);
+
+        let bare = report().to_json();
+        assert!(bare["login"].is_null());
+    }
+
+    #[test]
     fn a_report_can_be_built_directly() {
         // A caller that recorded its own run states the envelope fields
         // itself; the rendering is the same document.
@@ -169,6 +310,7 @@ mod tests {
             ramp_seconds: 0,
             steady_seconds: 0,
             total_seconds: 0,
+            login: None,
         };
         let value = report.to_json();
         assert_eq!(value["version"], "9.9.9");
