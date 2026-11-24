@@ -114,6 +114,9 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 name = "asset-pipeline"
 version = "0.1.0"
 dependencies = [
+ "compiled-space",
+ "foundation",
+ "physics",
  "regex",
  "resources",
 ]
@@ -299,6 +302,7 @@ version = "0.1.0"
 dependencies = [
  "foundation",
  "resources",
+ "terrain",
 ]
 
 [[package]]
@@ -2169,6 +2173,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "flate2",
+ "resources",
 ]
 
 [[package]]

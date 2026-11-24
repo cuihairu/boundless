@@ -136,6 +136,25 @@ impl TaskFinder {
             .expect("a non-root file with no matching rule yields a FAILED task")
     }
 
+    /// `getTask( filename, bRoot = true )`: the *root* task for `filename`;
+    /// `None` when no rule claims it as a root (the reference's `NULL`
+    /// return, used by `JITCompiler::onResourceModified` when a file is
+    /// added and a new root task may be needed).
+    pub fn get_root_task(&self, filename: &str) -> Option<TaskHandle> {
+        self.get_task_inner(filename, true)
+    }
+
+    /// `getTask( filename )` by identity only: the task the finder already
+    /// knows for `filename`, bypassing the iteration-exclusion guard and the
+    /// root/non-root rule choice. The JIT compiler uses this to re-resolve a
+    /// handle from its source path (the reference holds `ConversionTask*`
+    /// pointers directly; the finder's source-path cache *is* the task
+    /// identity table).
+    pub fn get_cached_task(&self, filename: &str) -> TaskHandle {
+        self.get_task_inner(filename, false)
+            .expect("a task recorded by the pipeline resolves from its source path")
+    }
+
     /// `getTask( filename, bRoot )`: the task for `filename` when it has a
     /// matching rule; `None` for a root file with no rule (the reference's
     /// `NULL`). Created tasks are cached by source path.

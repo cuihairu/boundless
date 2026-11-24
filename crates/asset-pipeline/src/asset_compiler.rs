@@ -270,6 +270,44 @@ impl AssetCompiler {
         debug_assert!(previous.is_none(), "duplicate converter id registered");
     }
 
+    /// `converterMap_.find( id )`: the registry record for `type_id` (the
+    /// lookup face the plugins, rules and processor share).
+    pub fn converter_info(&self, type_id: u64) -> Option<ConverterInfo> {
+        self.converter_map.borrow().get(&type_id).cloned()
+    }
+
+    /// The queue-reorder block of `JITCompiler::onAssetRequested`
+    /// (jit_compiler.cpp:323-344): a queued task is pulled out (back to
+    /// `NEW`) and pushed to the *front*; a `NEW` task is queued at the front.
+    /// Returns `true` when the task now sits at the front of the queue.
+    pub fn pull_task_to_front(&self, task: &TaskHandle) -> bool {
+        let mut pulled = false;
+        if task.borrow().status == ConversionStatus::Queued {
+            let mut queue = self.task_queue.borrow_mut();
+            if let Some(pos) = queue.iter().position(|q| Rc::ptr_eq(q, task)) {
+                queue.remove(pos);
+                pulled = true;
+            }
+        }
+        if pulled {
+            // No longer in the queue: back to `NEW` so it can be requeued.
+            task.borrow_mut().status = ConversionStatus::New;
+        }
+        if task.borrow().status == ConversionStatus::New {
+            self.task_queue.borrow_mut().push_front(task.clone());
+            task.borrow_mut().status = ConversionStatus::Queued;
+            return true;
+        }
+        false
+    }
+
+    /// Drop a file's cached content hash (the reference's
+    /// `BWResource::purge`-adjacent invalidation the JIT's `purgeResource`
+    /// performs so a modified file is re-hashed).
+    pub fn purge_file_hash(&self, path: &str) {
+        self.file_hashes.borrow_mut().remove(path);
+    }
+
     /// Cache configuration for the `AssetCompilerOptions` (`setCachePath`,
     /// `setReadFromCache`, `setWriteToCache`).
     pub fn set_cache_path(&mut self, cache_path: impl Into<String>) {
@@ -308,6 +346,20 @@ impl AssetCompiler {
     /// `taskFinder.findTasks( directory )`: discover and queue root tasks.
     pub fn find_tasks(&self, directory: &str) {
         self.task_finder.find_tasks(self, directory);
+    }
+
+    /// The finder's task for `file` by source path (identity lookup). The
+    /// JIT compiler re-resolves a task handle from its source path (the
+    /// reference holds `ConversionTask*` pointers straight from the
+    /// reverse-dependency maps).
+    pub fn get_cached_task(&self, file: &str) -> TaskHandle {
+        self.task_finder.get_cached_task(file)
+    }
+
+    /// The root task for `file` (`taskFinder.getTask( file, true )`);
+    /// `None` when no rule claims it as a root.
+    pub fn get_root_task(&self, file: &str) -> Option<TaskHandle> {
+        self.task_finder.get_root_task(file)
     }
 
     /// `taskQueue_.empty()`.

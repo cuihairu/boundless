@@ -458,6 +458,13 @@ impl Animation {
         &self.channels
     }
 
+    /// `AnimationInfo::restoreChannels`' write face
+    /// (`mutant_animations.cpp:112-128`): the editor swaps the channel list
+    /// back in after its blend-restore scratch has been applied.
+    pub fn set_channels(&mut self, channels: Vec<Channel>) {
+        self.channels = channels;
+    }
+
     /// Bind each channel to a skeleton node index by identifier, mirroring
     /// `Animation::Animation(anim, root)`'s `root->find(identifier)`: a
     /// channel whose identifier is absent from the tree is nodeless — in the

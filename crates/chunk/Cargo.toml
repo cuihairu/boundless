@@ -12,3 +12,6 @@ foundation = { workspace = true }
 # Chunk files are XML DataSections on a resource search path (BW-01-03), so the
 # section reader is needed here.
 resources = { workspace = true }
+# Space publishing writes terrain blocks per chunk (BW-13-03-06, the
+# WorldEditor SpaceRecreator face); the terrain crate carries that block.
+terrain = { workspace = true }

@@ -75,6 +75,7 @@ client = { path = "crates/client" }  # replay_write round-trips through its read
 # load = { path = "crates/load" }  # re-add with first consumer
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }
+terrain = { path = "crates/terrain" }
 # plugin-host = { path = "crates/plugin-host" }  # re-add with first consumer
 
 [profile.release]

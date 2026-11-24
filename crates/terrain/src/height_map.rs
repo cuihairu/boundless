@@ -40,7 +40,7 @@ pub const DEFAULT_VISIBLE_OFFSET: u32 = 2;
 pub const QUANTISATION_LEVEL: f32 = 0.001;
 
 /// `height_map_compress.cpp:16` — 'qpng'.
-const QUANTISED_PNG_VERSION: u32 = 0x71706e67;
+pub const QUANTISED_PNG_VERSION: u32 = 0x71706e67;
 
 /// `HeightMapHeader` (`terrain_data.hpp:22-42`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,6 +109,19 @@ impl core::fmt::Display for LoadError {
         }
     }
 }
+
+/// `create` failure — the reference fills `*error` with "Height map size
+/// is not a power of two." (`terrain_height_map2.cpp:100-104`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeightCreateError;
+
+impl core::fmt::Display for HeightCreateError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Height map size is not a power of two.")
+    }
+}
+
+impl std::error::Error for HeightCreateError {}
 
 /// `quantise` (`height_map_compress.cpp:32-35`): millimetre grid, rounding
 /// away from zero on the halves (the C cast truncates toward zero).
@@ -252,6 +265,104 @@ impl TerrainHeightMap2 {
     /// belong to the resource layer, which hands over decompressed blocks.
     pub fn load(&mut self, data: &[u8]) -> Result<(), LoadError> {
         self.load_height_map(data)
+    }
+
+    /// `TerrainHeightMap2::create` (`terrain_height_map2.cpp:96-116`): the
+    /// size must be a power of two (else "Height map size is not a power
+    /// of two."), the invisible border is added on both sides plus the
+    /// final pole, and the internal dimensions and spacings refresh.
+    pub fn create(&mut self, size: u32) -> Result<(), HeightCreateError> {
+        if !size.is_power_of_two() {
+            return Err(HeightCreateError);
+        }
+        let size = size + self.internal_visible_offset() * 2 + 1;
+        self.min_height = 0.0;
+        self.max_height = 0.0;
+        self.poles_width = size;
+        self.poles_height = size;
+        self.heights = vec![0.0; size as usize * size as usize];
+        self.refresh_internal_dimensions();
+        Ok(())
+    }
+
+    /// The three-argument constructor
+    /// `TerrainHeightMap2(blockSize, size, lodLevel)`
+    /// (`terrain_height_map2.cpp:61-96`): unlike [`Self::create`] the
+    /// image is `size + visibleOffset * 2` on a side — no extra pole —
+    /// which is exactly the shape the vertex-lod saves hand it.
+    pub fn with_size(block_size: f32, size: u32, lod_level: u32) -> Self {
+        let mut map = Self::new(block_size, lod_level);
+        let size = size + map.internal_visible_offset() * 2;
+        map.min_height = 0.0;
+        map.max_height = 0.0;
+        map.poles_width = size;
+        map.poles_height = size;
+        map.heights = vec![0.0; size as usize * size as usize];
+        map.refresh_internal_dimensions();
+        map
+    }
+
+    /// The funnel write (`terrain_set_height_functor.cpp:191-201`): the
+    /// brush iterates full-image pole coordinates — `TerrainMap::iterator`
+    /// (`terrain_map.hpp:150-155`) indexes the underlying image directly —
+    /// and `pole.set(...)` replaces or increments the height. The relative
+    /// form adds to the existing pole; the visited-dedup bookkeeping is
+    /// the funnel's own state.
+    pub fn set_pole(&mut self, x: i32, z: i32, height: f32) {
+        let x = x.clamp(0, self.poles_width as i32 - 1) as u32;
+        let z = z.clamp(0, self.poles_height as i32 - 1) as u32;
+        self.heights[(z * self.poles_width + x) as usize] = height;
+    }
+
+    /// The relative funnel write (`pole.set(pole.get() + height_)`).
+    pub fn add_pole(&mut self, x: i32, z: i32, height: f32) {
+        let x = x.clamp(0, self.poles_width as i32 - 1) as u32;
+        let z = z.clamp(0, self.poles_height as i32 - 1) as u32;
+        self.heights[(z * self.poles_width + x) as usize] += height;
+    }
+
+    /// The full pole image, row-major over `width() * height()`
+    /// (`image().copyTo` walks exactly this buffer).
+    pub fn image_data(&self) -> &[f32] {
+        &self.heights
+    }
+
+    /// `TerrainHeightMap2::save` (`terrain_height_map2.cpp:281-330`,
+    /// `EDITOR_ENABLED`): the real min/max are recomputed from the whole
+    /// image first (so repeated save cycles cannot lose precision through
+    /// the quantised payload), then the header goes out as
+    /// `COMPRESS_RAW`/`VERSION_ABS_QFLOAT` with the quantised-PNG body.
+    pub fn save(&self) -> Vec<u8> {
+        let mut real_min = f32::MAX;
+        let mut real_max = f32::MIN;
+        for &h in &self.heights {
+            real_min = real_min.min(h);
+            real_max = real_max.max(h);
+        }
+
+        // `quantisedPNGCompress` (`height_map_compress.cpp:146-176`):
+        // millimetre-quantised int32 per pixel, one 32bpp PNG, the 'qpng'
+        // word glued in front.
+        let width = self.poles_width;
+        let mut quantised = Vec::with_capacity(self.heights.len() * 4 + 4);
+        quantised.extend_from_slice(&QUANTISED_PNG_VERSION.to_le_bytes());
+        for &h in &self.heights {
+            quantised.extend_from_slice(&quantise(h).to_le_bytes());
+        }
+        let png = png::compress_png(width, self.poles_height, 32, &quantised[4..]);
+
+        let mut out = Vec::with_capacity(HEIGHT_MAP_HEADER_SIZE + 4 + png.len());
+        out.extend_from_slice(&HEIGHT_MAP_MAGIC.to_le_bytes());
+        out.extend_from_slice(&width.to_le_bytes());
+        out.extend_from_slice(&self.poles_height.to_le_bytes());
+        out.extend_from_slice(&HEIGHT_MAP_COMPRESS_RAW.to_le_bytes());
+        out.extend_from_slice(&HEIGHT_MAP_VERSION_ABS_QFLOAT.to_le_bytes());
+        out.extend_from_slice(&real_min.to_le_bytes());
+        out.extend_from_slice(&real_max.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&quantised[..4]);
+        out.extend_from_slice(&png);
+        out
     }
 
     /// `TerrainHeightMap2::loadHeightMap` (`terrain_height_map2.cpp:377-532`).
@@ -773,5 +884,64 @@ mod tests {
             }
         }
         ihdr_png(w, h, 8, 6, &raw)
+    }
+}
+
+#[cfg(test)]
+mod editor_save_tests {
+    use super::*;
+
+    /// The editor save face and its neighbours: create, the funnel
+    /// writes, and the accessors the lod downsample and the interpolated
+    /// query sit on.
+    #[test]
+    fn create_and_funnel_faces_agree_with_the_reference_geometry() {
+        // create() rejects a non-power-of-two size with the message.
+        let mut map = TerrainHeightMap2::new(100.0, 0);
+        assert_eq!(map.create(63), Err(HeightCreateError));
+        assert_eq!(
+            HeightCreateError.to_string(),
+            "Height map size is not a power of two."
+        );
+
+        map.create(64).unwrap();
+        // 64 vertices + 2*2 pole skirt + 1 = the 69-pole image; the +1
+        // pole row makes vertices answer 65.
+        assert_eq!(map.poles_width(), 69);
+        assert_eq!(map.poles_height(), 69);
+        assert_eq!(map.vertices_width(), 65);
+        assert_eq!(map.vertices_height(), 65);
+        assert_eq!(map.x_visible_offset(), 2);
+        assert_eq!(map.z_visible_offset(), 2);
+        assert_eq!(map.internal_visible_offset(), 2);
+        assert_eq!(map.spacing_x(), 100.0 / 64.0);
+        assert_eq!(map.spacing_z(), 100.0 / 64.0);
+
+        // The funnel writes land on full-image pole coordinates.
+        map.set_pole(34, 34, 12.5);
+        map.add_pole(36, 36, 2.0);
+        map.add_pole(36, 36, 5.0);
+        assert_eq!(map.image_data()[34 * 69 + 34], 12.5);
+        assert_eq!(map.image_data()[36 * 69 + 36], 7.0);
+        // Writes clamp to the image, like the reference iterator.
+        map.set_pole(-5, 200, 1.0);
+        assert_eq!(map.image_data()[68 * 69], 1.0);
+    }
+
+    /// The three-argument constructor face the lod downsample uses: no
+    /// pole skirt (+1) and offset 0 above lod 0.
+    #[test]
+    fn the_lod_constructor_takes_the_size_without_the_plus_one() {
+        let map = TerrainHeightMap2::with_size(100.0, 33, 1);
+        assert_eq!(map.poles_width(), 33);
+        assert_eq!(map.internal_visible_offset(), 0);
+        assert_eq!(map.lod_level(), 1);
+    }
+
+    /// A header shorter than the 32 fixed bytes reports truncation.
+    #[test]
+    fn a_short_header_reports_truncation() {
+        let mut map = TerrainHeightMap2::new(100.0, 0);
+        assert_eq!(map.load(&[0u8; 8]), Err(LoadError::Truncated));
     }
 }
