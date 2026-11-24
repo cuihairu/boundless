@@ -1,0 +1,17 @@
+# server side, loginapp.log lines around the logon (run 2026-11-24)
+40:WARNING: [Config] ServerAppConfig::init: loginApp/challengeType not read from bw.xml chain. Using default ()
+86:INFO: [Config]   loginApp/challengeType             = 
+122:INFO: CuckooCycleLoginChallengeFactory::configure: Easiness: 50.000
+123:INFO: DelayLoginChallengeFactory::configure: Duration 1.000s
+125:DEBUG: LoginApp::finishInit: id 1 (DBApp Alpha: 192.168.5.188:45986)
+126:INFO: LoginApp::notifyDBAppAlpha: 192.168.5.188:45986
+127:INFO: LoginApp::login: Attempt from 127.0.0.1:55396
+128:INFO: LoginApp::login: Logging in user 'MyAccount' (127.0.0.1:55396)
+
+# server side, baseapp.log entity lifecycle for that session
+162:INFO: Base::Base(1): ClientAvatar
+163:INFO: ClientAvatar.__init__: {'prop1': 1} 0
+169:INFO: ClientAvatar.onEntitiesEnabled: 1
+171:TRACE: Proxy::onClientDeath: Client id 1 has disconnected (Requested by client)
+173:INFO: ClientAvatar.onClientDeath: 1
+176:INFO: Base::~Base(1): ClientAvatar

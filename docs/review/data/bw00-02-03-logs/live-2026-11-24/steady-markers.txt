@@ -1,0 +1,27 @@
+# steady-state markers ('---- <Role> is running ----') per process log, run 2026-11-24
+bwmachined2.log    
+dbappmgr.log        DBAppMgr is running
+cellappmgr.log      CellAppMgr is running
+baseappmgr.log      BaseAppMgr is running
+dbapp.log           DBApp is running
+cellapp.log         CellApp is running
+baseapp.log         BaseApp is running
+baseapp2.log        BaseApp is running
+loginapp.log        LoginApp is running
+serviceapp.log      ServiceApp is running
+
+# interface discovery across the plane
+Found interface BaseAppMgrInterface
+Found interface CellAppMgrInterface
+Found interface DBAppMgrInterface
+
+# version/config line per app (BWConfig banner)
+INFO: [Config] ---- BaseAppMgr Version: 14.4.1. Config: hybrid. Built: 00:38:03 Nov 23 2026. UID: 1000. User: cui. PID: 147751 ----
+INFO: [Config] ---- BaseApp    Version: 14.4.1. Config: hybrid. Built: 01:38:00 Nov 23 2026. UID: 1000. User: cui. PID: 149488 ----
+INFO: [Config] ---- CellAppMgr Version: 14.4.1. Config: hybrid. Built: 00:38:03 Nov 23 2026. UID: 1000. User: cui. PID: 147747 ----
+INFO: [Config] ---- DBApp      Version: 14.4.1. Config: hybrid. Built: 01:07:00 Nov 23 2026. UID: 1000. User: cui. PID: 147801 ----
+INFO: [Config] ---- DBAppMgr   Version: 14.4.1. Config: hybrid. Built: 00:38:11 Nov 23 2026. UID: 1000. User: cui. PID: 147744 ----
+INFO: [Config] ---- ServiceApp Version: 14.4.1. Config: hybrid. Built: 01:38:00 Nov 23 2026. UID: 1000. User: cui. PID: 149736 ----
+INFO: [Config] ---- CellApp    Version: 14.4.1. Config: hybrid. Built: 01:07:00 Nov 23 2026. UID: 1000. User: cui. PID: 148397 ----
+INFO: [Config] ---- LoginApp   Version: 14.4.1. Config: hybrid. Built: 00:38:18 Nov 23 2026. UID: 1000. User: cui. PID: 149580 ----
+INFO: [Config] ---- BaseApp    Version: 14.4.1. Config: hybrid. Built: 01:38:00 Nov 23 2026. UID: 1000. User: cui. PID: 149064 ----

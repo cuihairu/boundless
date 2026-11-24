@@ -1,0 +1,17 @@
+# single-machine cluster topology, captured 2026-11-24T21:16:43+0800
+# harness: /home/cui/workspaces/BigWorld/scripts/cluster-smoke/deep-chain.sh
+# BW_RES_PATH=<example res>:<game/res/bigworld>:<cluster-smoke/res>
+
+PID        PPID     ELAPSED  UID      ROLE
+147680     147678   473      1000     bwmachined2
+147744     147743   471      1000     dbappmgr
+147747     147746   471      1000     cellappmgr
+147751     147749   471      1000     baseappmgr
+147801     147800   468      1000     dbapp
+148397     148396   465      1000     cellapp
+149064     149063   462      1000     baseapp
+149488     149487   459      1000     baseapp
+149580     149579   456      1000     loginapp
+149736     149733   453      1000     serviceapp
+
+# machined pidfile: 
