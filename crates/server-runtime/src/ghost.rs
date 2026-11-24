@@ -4134,4 +4134,212 @@ mod tests {
         // ever went out.
         assert!(forwarders.is_empty());
     }
+
+    /// A create payload naming `real_addr` as the real's app.
+    fn create_payload(entity_id: EntityId, real_addr: Addr) -> GhostCreatePayload {
+        GhostCreatePayload {
+            space_id: 7,
+            entity_id,
+            entity_type_id: 4,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        }
+    }
+
+    /// Reshapes the held ghost into the mid-offload state where the
+    /// migration target signed its own death warrant: the record routes
+    /// to `addr` and still waits on `addr`'s confirmation.
+    fn stranded_on(mut host: GhostHost, entity_id: EntityId, addr: Addr) -> GhostHost {
+        assert_eq!(
+            host.receive_ghost_set_real(entity_id, 1, addr),
+            GhostSetRealOutcome::Relocated
+        );
+        assert!(host.receive_ghost_set_next_real(entity_id, addr, 100));
+        host
+    }
+
+    #[test]
+    fn a_dead_migration_target_zombies_only_the_stranded() {
+        let mut host = stranded_on(hold_host(10, 0), 10, APP_B);
+        // 20 rides a healthy real on C.
+        assert_eq!(
+            host.receive_create_ghost(APP_B, create_payload(20, APP_C), 100),
+            GhostCreateOutcome::Created
+        );
+        // 30's real already handed over to a next real elsewhere: the
+        // handover survives the old real's death.
+        assert_eq!(
+            host.receive_create_ghost(APP_B, create_payload(30, APP_B), 100),
+            GhostCreateOutcome::Created
+        );
+        assert!(host.receive_ghost_set_next_real(30, (6, 6), 100));
+        // 40's next real recently died elsewhere: zombie by history,
+        // even though its current real is healthy.
+        assert_eq!(
+            host.receive_create_ghost(APP_C, create_payload(40, APP_C), 100),
+            GhostCreateOutcome::Created
+        );
+        assert!(host.receive_ghost_set_next_real(40, APP_D, 100));
+
+        let mut channels = BTreeMap::new();
+        let recently_dead = |addr: Addr| addr == APP_D;
+        let destroyed = host.handle_cell_app_death(APP_B, &recently_dead, &mut channels, 150);
+
+        // 10 is stranded on the dead target and 40's next real is dead:
+        // both zombies. 20 rides a healthy real; 30 recovers onto its
+        // next real (`pRealChannel_ = get(nextRealAddr_)` — the get
+        // creates the channel).
+        assert_eq!(destroyed, vec![10, 40]);
+        let survivors: Vec<EntityId> = host.ghosts.keys().copied().collect();
+        assert_eq!(survivors, vec![20, 30]);
+        assert_eq!(host.ghosts[&30].real_addr, (6, 6));
+        assert_eq!(host.ghosts[&30].next_real_addr, Some((6, 6)));
+        assert!(channels.contains_key(&(6, 6)));
+    }
+
+    #[test]
+    fn a_revived_ghost_re_zombies_until_its_lifespan_ends() {
+        let mut host = stranded_on(hold_host(10, 0), 10, APP_B);
+        // A buffered create is waiting to replay the ghost's next life.
+        assert_eq!(
+            host.receive_create_ghost(APP_B, create_payload(10, APP_B), 100),
+            GhostCreateOutcome::Buffered
+        );
+
+        let mut channels = BTreeMap::new();
+        let recently_dead = |_addr: Addr| false;
+        let destroyed = host.handle_cell_app_death(APP_B, &recently_dead, &mut channels, 150);
+
+        // The buffered lifespan revives the ghost on the dead real, and
+        // the revived copy re-zombies — destroyed until its queues are
+        // spent (the reference's do-while).
+        assert_eq!(destroyed, vec![10, 10]);
+        assert!(!host.ghosts.contains_key(&10));
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_revival_from_a_live_real_ends_the_zombie_walk() {
+        let mut host = stranded_on(hold_host(10, 0), 10, APP_B);
+        // The next real signed on elsewhere and its create is still
+        // queued behind the dead app's messages.
+        assert_eq!(
+            host.receive_create_ghost(APP_B, create_payload(10, APP_C), 100),
+            GhostCreateOutcome::Buffered
+        );
+
+        let mut channels = BTreeMap::new();
+        let recently_dead = |_addr: Addr| false;
+        let destroyed = host.handle_cell_app_death(APP_B, &recently_dead, &mut channels, 150);
+
+        // The first destroy replays the queued create: the revived
+        // record names a live real, so the walk stops and the ghost
+        // survives on the new routing.
+        assert_eq!(destroyed, vec![10]);
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_restored_real_re_establishes_the_visible_set() {
+        let mut host = stranded_on(hold_host(10, 0), 10, APP_B);
+
+        // A real on this app still watches the dying app through one
+        // haunt; the death walk clears exactly that one.
+        let mut real = RealEntity::new(50, (9, 9), Vector3::ZERO, 0, 0);
+        real.haunts = vec![
+            Haunt {
+                addr: APP_B,
+                creation_time: 5,
+            },
+            Haunt {
+                addr: (6, 6),
+                creation_time: 6,
+            },
+        ];
+        assert_eq!(reals_clear_dead_haunts(&mut real, APP_B), 1);
+        assert_eq!(
+            real.haunts,
+            vec![Haunt {
+                addr: (6, 6),
+                creation_time: 6,
+            }]
+        );
+        assert_eq!(reals_clear_dead_haunts(&mut real, APP_B), 0);
+
+        let mut channels = BTreeMap::new();
+        let recently_dead = |_addr: Addr| false;
+        let destroyed = host.handle_cell_app_death(APP_B, &recently_dead, &mut channels, 150);
+        assert_eq!(destroyed, vec![10]);
+
+        // The base restores the real elsewhere; its maintainer check
+        // re-creates the ghost here against the restored real address.
+        assert_eq!(
+            host.receive_create_ghost(APP_C, create_payload(10, APP_C), 200),
+            GhostCreateOutcome::Created
+        );
+
+        // Roles line up: one ghost routed to the restored real, and no
+        // stranded queue left from the dead app.
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert_eq!(host.ghosts.len(), 1);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_real_or_destroyed_entity_is_never_a_zombie() {
+        let host = hold_host(10, 0);
+        let mut channels = BTreeMap::new();
+        let recently_dead = |_addr: Addr| false;
+        let mut record = host.ghosts[&10].clone();
+
+        // Reals and already-destroyed entities never zombie.
+        assert_eq!(
+            check_if_zombied(
+                &mut record,
+                true,
+                false,
+                APP_B,
+                &recently_dead,
+                &mut channels
+            ),
+            ZombieVerdict::NotZombied
+        );
+        assert_eq!(
+            check_if_zombied(
+                &mut record,
+                false,
+                true,
+                APP_B,
+                &recently_dead,
+                &mut channels
+            ),
+            ZombieVerdict::NotZombied
+        );
+
+        // A healthy current real answers the same, without re-pointing.
+        assert_eq!(
+            check_if_zombied(
+                &mut record,
+                false,
+                false,
+                APP_B,
+                &recently_dead,
+                &mut channels
+            ),
+            ZombieVerdict::NotZombied
+        );
+        assert_eq!(record.real_addr, APP_A);
+    }
 }
