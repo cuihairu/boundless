@@ -591,6 +591,25 @@ impl Controllers {
         }
     }
 
+    /// The cell-boundary handover: `RealEntity::writeOffloadData` streams
+    /// the real controllers while they are still registered
+    /// (`real_entity.cpp:501-566`), the receiving side
+    /// `readRealControllersFromStream` reads them back **without**
+    /// starting them (`controllers.cpp:118-121` — the `startReal` there is
+    /// deliberately commented out), and only
+    /// `Entity::startRealControllers` (`entity.cpp:4867`, "now that
+    /// `pReal_` has been set") starts them. Nothing else happens to a
+    /// moving controller in between: no callback fires on the boundary, so
+    /// the walk resumes toward the very same destination it had.
+    pub fn migrate_real_controllers(&mut self, destination: &mut Controllers) {
+        let mut stream = BinaryStream::new();
+        self.write_reals_to_stream(&mut stream);
+        destination
+            .read_reals_from_stream(&mut stream)
+            .expect("our own bytes round-trip");
+        destination.start_reals();
+    }
+
     /// `Controllers::createGhost` (`controllers.cpp:186-205`), the
     /// ghost-side receiver of `ghostControllerCreate`. Insertion is
     /// keep-the-original: a repeated create for a live id leaves the old

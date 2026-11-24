@@ -1331,12 +1331,13 @@ impl GetStopPointFailure {
 mod tests {
     use super::*;
     use crate::controllers::{
-        CancelArg, Controller, Controllers, DOMAIN_REAL, ExclusiveControllerIds,
+        CancelArg, Controller, ControllerEvent, Controllers, DOMAIN_REAL, ExclusiveControllerIds,
     };
     use crate::movement::{
         DEFAULT_GAME_UPDATE_HERTZ, Direction3D, EntityState, FACING_NONE, FACING_VELOCITY,
-        ScriptCallback,
+        MoveToPointController, ScriptCallback,
     };
+    use foundation::stream::BinaryStream;
     use waypoint::Portal;
 
     /// `CellAppConfig::maxAoIRadius()` stand-in.
@@ -3892,6 +3893,141 @@ mod tests {
         assert_eq!(
             outcome.warnings,
             vec!["Entity.cancel(7): Cancelling an unknown controller ID 99\n"]
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // TDD: BW-10-06-14 迁移活动寻路控制器
+    // -------------------------------------------------------------------
+
+    /// Crossing a cell boundary with an active walk: `writeOffloadData`
+    /// streams the controller while it is still registered
+    /// (`real_entity.cpp:501-566`), the destination reads it back without
+    /// starting it (`controllers.cpp:118-121`) and only
+    /// `startRealControllers` (`entity.cpp:4867`) restarts it. The
+    /// destination position and the callback count come out as if the walk
+    /// had never left the cell.
+    #[test]
+    fn migrating_the_active_walk_keeps_its_destination_and_callbacks() {
+        let navigate = real_entity();
+        let mut controller = navigate
+            .move_to_point(
+                Vector3::new(10.0, 0.0, 0.0),
+                3.0,
+                9,
+                true,
+                false,
+                1,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("a real entity gets the controller");
+
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log: Vec<ScriptCallback> = Vec::new();
+
+        // Ten ticks in the first cell; nothing is logged mid-walk.
+        for now in 1..=10 {
+            assert!(!controller.update(&mut state, now, &mut log));
+        }
+        assert!(log.is_empty(), "no callback before the boundary");
+        let mid_walk = state.position;
+
+        // The record the leaving cell hands over carries the walk's real
+        // state: metres per tick, the two movement flags, the destination.
+        let mut leaving = Controllers::new();
+        let mut out = Vec::new();
+        assert_eq!(
+            leaving.add_controller(Controller::new(7, DOMAIN_REAL), 9, 7, &[], &mut out,),
+            1
+        );
+        let mut payload = BinaryStream::new();
+        controller.write_real_to_stream(&mut payload);
+        leaving.controller_mut(1).expect("registered").real_state = payload.as_bytes().to_vec();
+
+        let mut arriving = Controllers::new();
+        leaving.migrate_real_controllers(&mut arriving);
+
+        // The handover itself stops nothing: the leaving cell keeps its
+        // record (`stopRealControllers` belongs to the real's destructor,
+        // real_entity.cpp:250), and the arriving cell rebuilt the
+        // real-only controller fresh and started it as non-initial.
+        assert!(leaving.controller(1).is_some());
+        let transferred = arriving
+            .controller(1)
+            .expect("the walk arrived with the entity");
+        assert_eq!(transferred.user_arg, 9);
+        assert_eq!(transferred.domain, DOMAIN_REAL);
+        assert_eq!(
+            arriving.history.last(),
+            Some(&ControllerEvent::StartReal {
+                id: 1,
+                initial: false,
+            })
+        );
+
+        // The destination position crossed the boundary intact.
+        let mut resumed = MoveToPointController::new(
+            1,
+            9,
+            Vector3::ZERO,
+            3.0,
+            true,
+            false,
+            DEFAULT_GAME_UPDATE_HERTZ,
+        );
+        let mut reader = BinaryStream::from_slice(&transferred.real_state);
+        resumed.read_real_from_stream(&mut reader).unwrap();
+        assert_eq!(
+            resumed.destination,
+            Vector3::new(10.0, 0.0, 0.0),
+            "the target position is unchanged"
+        );
+        assert!((resumed.core.metres_per_tick - 0.3).abs() < 1e-6);
+        assert!(resumed.core.face_movement);
+        assert!(!resumed.core.move_vertically);
+
+        // The boundary moved no entity: the position is the entity's, not
+        // the controller's, so the walk continues from where it left.
+        assert_eq!(state.position, mid_walk);
+
+        // The uninterrupted control walk, for the arrival tick.
+        let mut control = navigate
+            .move_to_point(
+                Vector3::new(10.0, 0.0, 0.0),
+                3.0,
+                9,
+                true,
+                false,
+                1,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("the control walk");
+        let mut control_state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut control_log: Vec<ScriptCallback> = Vec::new();
+        let mut control_ticks = 0;
+        while !control.update(&mut control_state, control_ticks + 1, &mut control_log) {
+            control_ticks += 1;
+        }
+        control_ticks += 1;
+
+        // No callback fired on the boundary, and the walk still arrives
+        // on the tick the uninterrupted one does.
+        let mut now = 10;
+        while !resumed.update(&mut state, now + 1, &mut log) {
+            now += 1;
+        }
+        now += 1;
+        assert_eq!(now, control_ticks, "the walk arrived as it would have");
+        assert_eq!(state.position, control_state.position);
+        assert_eq!(log.len(), control_log.len(), "one callback, not two");
+        assert_eq!(
+            log,
+            vec![ScriptCallback {
+                entity_id: 7,
+                method: "onMove",
+                controller_id: 1,
+                user_arg: 9,
+            }]
         );
     }
 }
