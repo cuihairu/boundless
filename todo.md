@@ -1348,7 +1348,8 @@
 
 覆盖高度、洞、材质、碰撞三角形、BSP、空间树、射线/扫掠及 Portal 状态。对照边界点、重叠面、不同材质和坐标系。
 
-- [ ] **BW-10-03-01 读取 Terrain2 高度图**。**验收** 格点和插值坐标吻合。
+- [x] **BW-10-03-01 读取 Terrain2 高度图**。**验收** 格点和插值坐标吻合。
+  - 证据：参照 `/home/cui/workspaces/BigWorld/programming/bigworld/lib/`（terrain_data.hpp HeightMapHeader 32B、terrain2/terrain_height_map2.{hpp,cpp} load+loadHeightMap 三分支 377-532、heightAt(float,float) 奇偶对角三角插值 702-763、height_map_compress.cpp 量化、terrain_height_map.hpp DEFAULT_UNIT_SCALE/convertHeight2Float、moo/png.cpp、moo/image.ipp get 钳制）。新 crate `crates/terrain`：height_map + png（仅地形两形状 RGBA8/GRAY16 最小解码）。逐句移植：v3 REL_UINT16_PNG 头 min/max 按 `*(int32*)&float` 位重释作偏移（cpp:395-396/424）+16 位 PNG 无 png_set_swap 的 LE 怪癖、v4 ABS_QFLOAT='qpng' 标记(LE u32, 文件字节 gnpq)+RGBA 毫米 int32、v2 原版即拒（Invalid format 原文）、三分支 min/max 反序交换、lod&gt;0 边框塌缩 offset=0、width()=poles 维、internalBlocks=poles−2·off−1、quantise 毫米格±0.5 截断/unquantise f32 1-ulp、插值 override 非基类双三次（(xOff^zOff)&amp;1 选对角+四顶点公式逐式照抄）、Truncated=OOB 处登记分歧。边界登记：写端 compressHeightMap 不移植、BinaryBlock 解压属资源层、v3 无原版写端（legacy 只读）。**样本非手造**：gen_height_map.cpp 以 el7 预编译库链原版 compressHeightMap（libpng）产两夹具（qfloat 3530B md5 4b8c8d85…/absfloat 8132B md5 32bd3624…），原版 load+heightAt 打印真值 8 MAP/164 GRID/882 INTERP（gen_height_map.log）。验收直接测试化：tests/height_map_bin.rs 逐行重放全部真值（GRID 1e-6 打印舍入容差、INTERP 1e-4）——1046 探针全过=「格点和插值坐标吻合」；量化/绝对同源图逐点 ≤5.1e-4+min/max 位相等。lib 19+集成 4 全绿；llvm-cov 行覆盖 height_map.rs 460/460=100.00%、png.rs 373/377=98.94%；clippy -D warnings 0、fmt 0 漂移。详见 docs/review/bw10-03-01-height-map.md。commit `8f167e6`。
 - [ ] **BW-10-03-02 读取地形洞**。**验收** 洞内外查询对照。
 - [ ] **BW-10-03-03 查询主材质和碰撞标志**。**验收** 同一点返回相同标识。
 - [ ] **BW-10-03-04 读取 BSP 与碰撞三角形**。**验收** 原版场景可查询。
