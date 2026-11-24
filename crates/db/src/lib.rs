@@ -22,6 +22,7 @@ pub mod buffered;
 pub mod charset;
 pub mod consolidate;
 pub mod error;
+pub mod log_on_records;
 pub mod lookup;
 pub mod namer;
 pub mod py_billing;
@@ -58,6 +59,9 @@ pub use consolidate::{
     ConsolidationOutcome, ConsolidationQueue, ConsolidationReport, consolidate_database,
 };
 pub use error::DbError;
+pub use log_on_records::{
+    LOGIN_IN_PROGRESS_MSG, LogOnRecordsCache, RELOGIN_IN_PROGRESS_MSG, RelogonVerdict,
+};
 pub use lookup::{
     EntityDefIndex, LookUpEntitiesCriteria, LookUpEntitiesFilter, LookupDefs,
     get_database_id_from_name, lookup_entities, lookup_entity_by_name,
