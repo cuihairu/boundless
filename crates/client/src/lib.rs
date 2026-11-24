@@ -69,6 +69,7 @@ pub mod libc_rand;
 pub mod lighting;
 pub mod local_entity;
 pub mod material;
+pub mod minimap;
 pub mod movement_filter;
 pub mod particle_system;
 pub mod perlin;
