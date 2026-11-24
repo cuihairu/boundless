@@ -1,0 +1,11 @@
+    PID    PPID                  STARTED CMD
+2729221 2729219 Tue Nov 24 17:03:57 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2 -f -p /tmp/bwmachined.pid
+2729340 2729339 Tue Nov 24 17:03:59 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/dbappmgr
+2729344 2729342 Tue Nov 24 17:03:59 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/cellappmgr
+2729348 2729346 Tue Nov 24 17:03:59 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseappmgr
+2729514 2729512 Tue Nov 24 17:04:02 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/dbapp
+2729742 2729741 Tue Nov 24 17:04:05 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/cellapp
+2729846 2729844 Tue Nov 24 17:04:08 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseapp
+2729957 2729956 Tue Nov 24 17:04:11 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/baseapp
+2730070 2730069 Tue Nov 24 17:04:14 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/loginapp
+2730163 2730162 Tue Nov 24 17:04:17 2026 /home/cui/workspaces/BigWorld/game/bin/server/el7/server/serviceapp

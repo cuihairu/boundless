@@ -1,0 +1,156 @@
+WARNING: [ResMgr] The use of the BW_RES_PATH environment variable is deprecated post 1.8.1
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/game/res/bigworld" (from BW_RES_PATH env variable).
+INFO: [ResMgr] Added res path: "/home/cui/workspaces/BigWorld/scripts/cluster-smoke/res" (from BW_RES_PATH env variable).
+INFO: [Config] BWConfig::init: Adding server/bw_cui.xml
+INFO: [Network] NetworkInterface::recreateListeningSocket: Querying BWMachined for interface
+WARNING: [Network] NetworkInterface::recreateListeningSocket: No address received from machined so binding to all interfaces.
+INFO: [Network] NetworkInterface::recreateListeningSocket: address 192.168.5.188:60331
+INFO: [Network] WatcherNub::init: listeningInterface = '192.168.5.188', listeningPort = 0
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Finding loggers ...
+TRACE: [Network] LoggerMessageForwarder::LoggerMessageForwarder: Total # loggers on network: 0
+ERROR: [CStdMF] DirectoryWatcher::addChild: tried to replace existing watcher filterThreshold
+INFO: [Config] ---- DBApp      Version: 14.4.1. Config: hybrid. Built: 01:07:00 Nov 23 2026. UID: 1000. User: cui. PID: 2729514 ----
+INFO: [Config] Server coding: Intel(R) Core(TM) i9-10880H CPU @ 2.30GHz x14 with 48207120kB RAM
+INFO: [Config] Resource path (1 of 3): /home/cui/workspaces/BigWorld/programming/bigworld/examples/client_integration/python/simple/res
+INFO: [Config] Resource path (2 of 3): /home/cui/workspaces/BigWorld/game/res/bigworld
+INFO: [Config] Resource path (3 of 3): /home/cui/workspaces/BigWorld/scripts/cluster-smoke/res
+WARNING: [Config] ServerAppConfig::init: desiredBaseApps not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: desiredCellApps not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: desiredServiceApps not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: dbApp/dumpEntityDescription not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: dbApp/maxConcurrentEntityLoaders not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: dbApp/numDBLockRetries not read from bw.xml chain. Using default (30)
+WARNING: [Config] ServerAppConfig::init: dbApp/shouldCacheLogOnRecords not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: dbApp/shouldDelayLookUpSend not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: loginConditions/dbApp/maxLoad not read from bw.xml chain. Using default (1)
+WARNING: [Config] ServerAppConfig::init: loginConditions/overloadTolerancePeriod not read from bw.xml chain. Using default (5)
+WARNING: [Config] ServerAppConfig::init: serverMode not read from bw.xml chain. Using default (standalone)
+WARNING: [Config] ServerAppConfig::init: production not read from bw.xml chain. Using default (true)
+WARNING: [Config] ServerAppConfig::init: timeSyncPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: useDefaultSpace not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxOpenFileDescriptors not read from bw.xml chain. Using default (-1)
+WARNING: [Config] ServerAppConfig::init: channelTimeoutPeriod not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: allowInteractiveDebugging not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: maxSharedDataValueSize not read from bw.xml chain. Using default (10240)
+WARNING: [Config] ServerAppConfig::init: maxMgrRegisterStagger not read from bw.xml chain. Using default (0)
+WARNING: [Config] ServerAppConfig::init: numStartupRetries not read from bw.xml chain. Using default (60)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/enabled not read from bw.xml chain. Using default (false)
+WARNING: [Config] ServerAppConfig::init: hitchDetection/threshold not read from bw.xml chain. Using default (1.5)
+WARNING: [Config] ServerAppConfig::init: profilerJsonDumpDirectory not read from bw.xml chain. Using default ()
+WARNING: [Config] ServerAppConfig::init: profilerMaxThreads not read from bw.xml chain. Using default (96)
+INFO: [Config] Configuration options (from server/bw.xml):
+INFO: [Config]   desiredBaseApps                    = 1
+INFO: [Config]   desiredCellApps                    = 1
+INFO: [Config]   desiredServiceApps                 = 1
+INFO: [Config]   dbApp/dumpEntityDescription        = 0
+INFO: [Config]   dbApp/maxConcurrentEntityLoaders   = 5
+INFO: [Config]   dbApp/numDBLockRetries             = 30
+INFO: [Config]   dbApp/shouldCacheLogOnRecords      = false
+INFO: [Config]   dbApp/shouldDelayLookUpSend        = false
+INFO: [Config]   loginConditions/dbApp/maxLoad      = 1
+INFO: [Config]   loginConditions/overloadTolerancePeriod = 5
+INFO: [Config]   gameUpdateHertz                    = 10
+INFO: [Config]   personality                        = egclient4 (default: BWPersonality)
+INFO: [Config]   serverMode                         = standalone
+INFO: [Config]   production                         = true
+INFO: [Config]   timeSyncPeriod                     = 60
+INFO: [Config]   useDefaultSpace                    = false
+INFO: [Config]   maxOpenFileDescriptors             = -1
+INFO: [Config]   channelTimeoutPeriod               = 60
+INFO: [Config]   allowInteractiveDebugging          = false
+INFO: [Config]   maxSharedDataValueSize             = 10240
+INFO: [Config]   maxMgrRegisterStagger              = 0
+INFO: [Config]   numStartupRetries                  = 60
+INFO: [Config]   hitchDetection/enabled             = false
+INFO: [Config]   hitchDetection/threshold           = 1.5
+INFO: [Config]   profilerJsonDumpDirectory          = 
+INFO: [Config]   profilerMaxThreads                 = 96
+TRACE: [CStdMF] ProfilerSystem: 12mb memory used.
+DEBUG: DBApp::initNetwork
+INFO: [ProcessIP] Address = 192.168.5.188:60331
+DEBUG: DBApp::initBaseAppMgr
+DEBUG: [Network] IFindInterfaceHandler::onProcessStatsMessage: Found interface BaseAppMgrInterface at 192.168.5.188:39627
+INFO: [ProcessIP] DBApp::initBaseAppMgr: BaseAppMgr at udp:192.168.5.188:39627
+DEBUG: DBApp::initScriptINFO: [Server] ServerApp::init: Run from bwmachined = false
+ERROR: Personality::import: Failed to import personality moduleegclient4
+ERROR: ModuleNotFoundError: No module named 'egclient4'
+WARNING: [Server] ScriptApp::initPersonality: No personality script 'egclient4.py'
+DEBUG: DBApp::initEntityDefs
+INFO: [DataDescription] Highest exposed counts:
+INFO: [DataDescription] 	ClientAvatar: client top-level property count = 5. Efficient to 97 (limit is 256)
+INFO: [DataDescription] 	ClientAvatar: client method count = 2. Efficient to 99 (limit is 25344)
+INFO: [DataDescription] 	ClientAvatar: base method count = 1. Efficient to 121 (limit is 30976)
+INFO: [DataDescription] 	Guard: cell method count = 0. Efficient to 122 (limit is 31232)
+INFO: [DataDescription] 
+INFO: DBApp::initEntityDefs: Expected digest is 2190C88D54E86906A59405B3B3ABF83D
+INFO: DBApp::initExtensions
+TRACE: PluginLibrary: Loading extension /home/cui/workspaces/BigWorld/game/bin/server/el7/server/dbapp-extensions/bwengine_mysql.so
+TRACE: PluginLibrary: Loading extension /home/cui/workspaces/BigWorld/game/bin/server/el7/server/dbapp-extensions/bwengine_xml.so
+TRACE: PluginLibrary: Finished loading extensions
+DEBUG: DBApp::initDatabaseCreation
+INFO: [DBEngine] Database engine = mysql
+INFO: [DBEngine] DatabaseEngineCreator::createInstance: Created database interface: mysql
+DEBUG: DBApp::initDBAppMgrAsync
+DEBUG: [Network] IFindInterfaceHandler::onProcessStatsMessage: Found interface DBAppMgrInterface at 192.168.5.188:42038
+INFO: [Server] ---- DBApp is running ----
+INFO: [Config] DBApp ID = 1 (out of 1)
+INFO: [Config] Alpha = true (Performing reset of game server state)
+DEBUG: DBApp::initAppIDRegistration
+INFO: Python server is running on port 51975
+DEBUG: DBApp::initDatabaseStartup
+INFO: [DBEngine] 	MySql: Configured MySQL server: 127.0.0.1:3306 (bigworld)
+INFO: [Config] MySql::connect: max_allowed_packet = 16777216
+INFO: [DBEngine] 	MySql: syncTablesToDefs = True.
+INFO: [DBEngine] 	MySql: Number of connections = 5.
+DEBUG: DBApp::initBirthDeathListeners
+DEBUG: DBApp::initWatchers
+DEBUG: DBApp::initConfig
+DEBUG: DBApp::initReviver
+INFO: [Server] ReviverSubject::init: msTimeout_ = 200
+DEBUG: DBApp::initGameSpecific
+DEBUG: DBApp::initDBAppAlpha: Performing resetting of game server state
+DEBUG: DBApp::initAcquireDBLock
+DEBUG: DBApp::initBillingSystem
+INFO: 	shouldAcceptUnknownUsers = True
+INFO: 	shouldRememberUnknownUsers = False
+INFO: 	authenticateViaBaseEntity = False
+INFO: 	entityTypeForUnknownUsers = ClientAvatar
+INFO: [Billing] Using billing system: standard
+DEBUG: DBApp::initResetGameServerState
+DEBUG: DBApp::initSecondaryDBsAsync
+INFO: [SecondaryDB] DBApp::initSecondaryDBPrefix: "cui_20261124_170404"
+DEBUG: DBApp::initBaseAppMgrInitData
+DEBUG: DBApp::initDatabaseResetGameServerState
+DEBUG: DBApp::initWaitForAppsToBecomeReadyAsync
+INFO: DBApp::handleStatusCheck: baseApps = 0/1. cellApps = 0/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 0/1. cellApps = 0/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 0/1. cellApps = 0/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 0/1. cellApps = 0/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 0/1. cellApps = 0/1, serviceApps = 0/1
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:51881
+INFO: DBApp::getIDs: fetching 2400 id's for 192.168.5.188:51881
+INFO: DBApp::handleStatusCheck: baseApps = 1/1. cellApps = 0/1, serviceApps = 0/1
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:37178
+INFO: DBApp::getIDs: fetching 2400 id's for 192.168.5.188:37178
+INFO: DBApp::handleStatusCheck: baseApps = 1/1. cellApps = 1/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 1/1. cellApps = 1/1, serviceApps = 0/1
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:48514
+INFO: DBApp::getIDs: fetching 2400 id's for 192.168.5.188:48514
+INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1
+INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 0/1
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:47611
+INFO: DBApp::getIDs: fetching 2400 id's for 192.168.5.188:47611
+INFO: DBApp::handleStatusCheck: baseApps = 2/1. cellApps = 1/1, serviceApps = 1/1
+DEBUG: DBApp::initScriptAppReady
+DEBUG: DBApp::initSendSpaceData
+INFO: [DBEngine] MySqlDatabase::getSpacesData: numSpaces = 0
+DEBUG: DBApp::initEntityAutoLoadingAsync
+DEBUG: DBApp::initNotifyServerStartup: didAutoLoad = false
+DEBUG: DBApp::onInitCompleted
+INFO: ChannelMap::find: Creating anonymous channel to 192.168.5.188:56380

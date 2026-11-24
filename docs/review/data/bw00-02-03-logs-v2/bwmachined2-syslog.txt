@@ -1,0 +1,29 @@
+Nov 24 17:03:55 coding ./bwmachined2[1134457]: Couldn't write process state to /var/run/bwmachined.state: Permission denied
+Nov 24 17:03:55 coding ./bwmachined2[1134457]: select returned 4 - Interrupted system call
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Kernel version 7.0 detected: Using extended stats from /proc/stats
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: --- BWMachined start ---
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Starting user map flush
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Finished user map flush
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Global config file /etc/bwmachined.conf doesn't exist
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Broadcast discovery receipt from 192.168.5.188.
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Confirmed 192.168.5.188 (ens18) as default broadcast route interface.
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Listening for requests
+Nov 24 17:03:57 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Bootstrap complete; 1 machines on network
+Nov 24 17:04:00 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added cellappmgr (WATCHER_NUB) (pid:2729344) for uid:1000 (debug: at index 0)
+Nov 24 17:04:00 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added BaseAppMgrInterface (SERVER_COMPONENT) (pid:2729348) for uid:1000 (debug: at index 1)
+Nov 24 17:04:01 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added CellAppMgrInterface (SERVER_COMPONENT) (pid:2729344) for uid:1000 (debug: at index 2)
+Nov 24 17:04:01 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added baseappmgr (WATCHER_NUB) (pid:2729348) for uid:1000 (debug: at index 3)
+Nov 24 17:04:02 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added DBAppMgrInterface (SERVER_COMPONENT) (pid:2729340) for uid:1000 (debug: at index 4)
+Nov 24 17:04:02 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added dbappmgr (WATCHER_NUB) (pid:2729340) for uid:1000 (debug: at index 5)
+Nov 24 17:04:03 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added DBAppInterface (SERVER_COMPONENT) (pid:2729514) for uid:1000 (debug: at index 6)
+Nov 24 17:04:04 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added dbapp01 (WATCHER_NUB) (pid:2729514) for uid:1000 (debug: at index 7)
+Nov 24 17:04:09 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added BaseAppIntInterface (SERVER_COMPONENT) (pid:2729846) for uid:1000 (debug: at index 8)
+Nov 24 17:04:10 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added baseapp01 (WATCHER_NUB) (pid:2729846) for uid:1000 (debug: at index 9)
+Nov 24 17:04:10 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added CellAppInterface (SERVER_COMPONENT) (pid:2729742) for uid:1000 (debug: at index 10)
+Nov 24 17:04:10 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added cellapp01 (WATCHER_NUB) (pid:2729742) for uid:1000 (debug: at index 11)
+Nov 24 17:04:12 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added BaseAppIntInterface (SERVER_COMPONENT) (pid:2729957) for uid:1000 (debug: at index 12)
+Nov 24 17:04:13 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added baseapp02 (WATCHER_NUB) (pid:2729957) for uid:1000 (debug: at index 13)
+Nov 24 17:04:15 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added LoginIntInterface (SERVER_COMPONENT) (pid:2730070) for uid:1000 (debug: at index 14)
+Nov 24 17:04:15 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added loginapp (WATCHER_NUB) (pid:2730070) for uid:1000 (debug: at index 15)
+Nov 24 17:04:19 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added ServiceAppInterface (SERVER_COMPONENT) (pid:2730163) for uid:1000 (debug: at index 16)
+Nov 24 17:04:19 coding /home/cui/workspaces/BigWorld/game/bin/server/el7/tools/bwmachined2[2729221]: Added serviceapp01 (WATCHER_NUB) (pid:2730163) for uid:1000 (debug: at index 17)
