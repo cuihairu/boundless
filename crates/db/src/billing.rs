@@ -15,9 +15,10 @@ use std::collections::BTreeMap;
 
 use entitydef::entity_map::EntityDescriptionMap;
 use foundation::ids::{EntityTypeId, INVALID_ENTITY_TYPE_ID};
+use mercury::endpoint::Address;
 use resources::datasection::DataSection;
 
-use crate::account::AccountLogOn;
+use crate::log_on_status::{LogOnStatus, codes};
 use crate::storage::EntityKey;
 
 /// The `billingSystem/` block of bw.xml, read with the reference's
@@ -89,7 +90,7 @@ pub enum EntityKeyOutcome {
     },
     /// The account is rejected (`onGetEntityKeyForAccountFailure`).
     Failure {
-        status: AccountLogOn,
+        status: LogOnStatus,
         error_msg: String,
     },
 }
@@ -109,7 +110,15 @@ pub enum SetEntityKeyOutcome {
 /// (`BillingSystem`, `db_storage/billing_system.hpp:87-125`).
 pub trait BillingSystem {
     /// Turn login credentials into the entity key associated with them.
-    fn get_entity_key_for_account(&mut self, logon_name: &str, password: &str) -> EntityKeyOutcome;
+    /// `clientAddr` is the address the logon request came from
+    /// (`getEntityKeyForAccount`, `db_storage/billing_system.hpp:104-107`);
+    /// the DBApp's authenticate path always passes `Mercury::Address(0, 0)`.
+    fn get_entity_key_for_account(
+        &mut self,
+        logon_name: &str,
+        password: &str,
+        client_addr: Address,
+    ) -> EntityKeyOutcome;
 
     /// Set the mapping between credentials and an entity.
     fn set_entity_key_for_account(
@@ -247,7 +256,12 @@ impl XmlBillingSystem {
 impl BillingSystem for XmlBillingSystem {
     /// `XMLBillingSystem::getEntityKeyForAccount`,
     /// `xml_billing_system.cpp:79-116`.
-    fn get_entity_key_for_account(&mut self, logon_name: &str, password: &str) -> EntityKeyOutcome {
+    fn get_entity_key_for_account(
+        &mut self,
+        logon_name: &str,
+        password: &str,
+        _client_addr: Address,
+    ) -> EntityKeyOutcome {
         if self.base.config.authenticate_via_base_entity {
             return EntityKeyOutcome::LoadFromUsername {
                 entity_type: self.base.entity_type_id_for_unknown_users,
@@ -269,7 +283,7 @@ impl BillingSystem for XmlBillingSystem {
                 }
             } else {
                 EntityKeyOutcome::Failure {
-                    status: AccountLogOn::RejectedInvalidPassword,
+                    status: LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
                     error_msg: String::new(),
                 }
             }
@@ -282,7 +296,7 @@ impl BillingSystem for XmlBillingSystem {
             }
         } else {
             EntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedNoSuchUser,
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_NO_SUCH_USER),
                 error_msg: String::new(),
             }
         }
@@ -371,6 +385,11 @@ mod tests {
     use foundation::stream::BinaryStream;
     use resources::datasection::parse;
 
+    /// The DBApp's authenticate path always passes the zero address.
+    fn addr() -> Address {
+        Address::new(0, 0)
+    }
+
     /// A database holding one named Avatar (id 1) and a LogOnMapping
     /// section with a by-id row, a by-name row and an invalid-type row.
     fn fixture(logon_xml: &str) -> (XmlDatabase, XmlBillingSystem, u16) {
@@ -437,7 +456,7 @@ mod tests {
         let (_database, mut system, avatar) = fixture(LOGON_MAP);
 
         assert_eq!(
-            system.get_entity_key_for_account("moe", "secret"),
+            system.get_entity_key_for_account("moe", "secret", addr()),
             EntityKeyOutcome::Success {
                 key: EntityKey {
                     type_id: avatar,
@@ -455,7 +474,7 @@ mod tests {
         let _ = database;
 
         assert_eq!(
-            system.get_entity_key_for_account("byname", "pw2"),
+            system.get_entity_key_for_account("byname", "pw2", addr()),
             EntityKeyOutcome::Success {
                 key: EntityKey {
                     type_id: avatar,
@@ -472,17 +491,17 @@ mod tests {
         let (_database, mut system, _avatar) = fixture(LOGON_MAP);
 
         assert_eq!(
-            system.get_entity_key_for_account("moe", "wrong"),
+            system.get_entity_key_for_account("moe", "wrong", addr()),
             EntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedInvalidPassword,
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
                 error_msg: String::new(),
             }
         );
         // The bad-type row was ignored at init, so it is an unknown user.
         assert_eq!(
-            system.get_entity_key_for_account("badtype", "pw3"),
+            system.get_entity_key_for_account("badtype", "pw3", addr()),
             EntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedNoSuchUser,
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_NO_SUCH_USER),
                 error_msg: String::new(),
             }
         );
@@ -503,7 +522,7 @@ mod tests {
         };
         let mut accepting = XmlBillingSystem::new(section, config, defs(), &empty_db());
         assert_eq!(
-            accepting.get_entity_key_for_account("stranger", "pw"),
+            accepting.get_entity_key_for_account("stranger", "pw", addr()),
             EntityKeyOutcome::CreateNew {
                 entity_type: avatar,
                 should_remember: true,
@@ -527,7 +546,7 @@ mod tests {
         // The password rides as the base entity's data
         // (`xml_billing_system.cpp:83-91`).
         assert_eq!(
-            system.get_entity_key_for_account("whoever", "their-password"),
+            system.get_entity_key_for_account("whoever", "their-password", addr()),
             EntityKeyOutcome::LoadFromUsername {
                 entity_type: 0,
                 username: "whoever".to_string(),
@@ -555,7 +574,7 @@ mod tests {
         );
         assert_eq!(system.logon_section_child_count(), children_before);
         assert_eq!(
-            system.get_entity_key_for_account("moe", "rotated"),
+            system.get_entity_key_for_account("moe", "rotated", addr()),
             EntityKeyOutcome::Success {
                 key,
                 data_for_client: String::new(),
@@ -563,9 +582,9 @@ mod tests {
             }
         );
         assert_eq!(
-            system.get_entity_key_for_account("moe", "secret"),
+            system.get_entity_key_for_account("moe", "secret", addr()),
             EntityKeyOutcome::Failure {
-                status: AccountLogOn::RejectedInvalidPassword,
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
                 error_msg: String::new(),
             }
         );
