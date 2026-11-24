@@ -75,7 +75,11 @@
 //!   commands (`tools/offline_processor/`, `lib/chunk/chunk_processor_manager.cpp`);
 //! - [`res_packer`] — the release packer: the packer registry and its six
 //!   packers, the `PackedSection::convert` face and both command-line
-//!   modes (`tools/res_packer/`).
+//!   modes (`tools/res_packer/`);
+//! - [`resource_checker`] — the `VisualChecker` that judges a `.visual`
+//!   against `visual_rules.xml` (size, triangle count, hierarchy depth,
+//!   portals, hard points, texture names)
+//!   (`tools/resourcechecker/visual_checker.*`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -103,6 +107,7 @@ pub mod plugin_loader;
 pub mod primitive_file_structs;
 pub mod primitive_processor;
 pub mod res_packer;
+pub mod resource_checker;
 pub mod space_converter;
 pub mod task_finder;
 pub mod task_processor;
