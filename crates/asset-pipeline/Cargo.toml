@@ -11,3 +11,6 @@ repository.workspace = true
 foundation = { workspace = true }
 regex = { workspace = true }
 resources = { workspace = true }
+
+[dev-dependencies]
+compiled-space = { path = "../compiled-space" }

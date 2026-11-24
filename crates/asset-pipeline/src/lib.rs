@@ -48,7 +48,11 @@
 //! - [`primitive_file_structs`] — the on-disk primitive headers
 //!   (`moo/primitive_file_structs.hpp`);
 //! - [`primitive_processor`] — the `.primitives` → `.processed` converter
-//!   (`tools/asset_pipeline/converters/primitive_processor/`).
+//!   (`tools/asset_pipeline/converters/primitive_processor/`);
+//! - [`space_converter`] — the space → `space.bin` converter and the
+//!   compiled-space writer faces behind it
+//!   (`tools/asset_pipeline/converters/space_converter/`,
+//!   `lib/compiled_space/binary_writers/`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -69,6 +73,7 @@ pub mod jit_compiler;
 pub mod plugin_loader;
 pub mod primitive_file_structs;
 pub mod primitive_processor;
+pub mod space_converter;
 pub mod task_finder;
 pub mod task_processor;
 pub mod task_store;
