@@ -219,7 +219,6 @@ impl SecondaryDatabase {
         self.conn
             .query_row(&sql, [], |row| row.get(0))
             .map_err(|e| DbError::Storage(format!("could not count '{table}': {e}")))
-            .map(|n: i64| n as i64)
     }
 
     /// The game time of the first row, or 0 for an empty table
@@ -262,12 +261,12 @@ impl ConsolidatedTimes {
     /// replaces the record, so the first of two equal times wins
     /// (`primary_database_update_queue.cpp:69-75`).
     pub fn admits(&mut self, key: &EntityKey, time: u32) -> bool {
-        if let Some(&latest) = self.times.get(key) {
-            if time < latest {
-                return false;
-            }
+        if let Some(&latest) = self.times.get(key)
+            && time < latest
+        {
+            return false;
         }
-        self.times.insert(key.clone(), time);
+        self.times.insert(*key, time);
         true
     }
 

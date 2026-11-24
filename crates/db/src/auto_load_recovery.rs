@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn a_restart_recovers_the_same_entity_set() {
-        let (mut database, recovered) = restart(&seeded_path("restart-set"));
+        let (database, recovered) = restart(&seeded_path("restart-set"));
 
         assert_eq!(
             recovered,
@@ -266,6 +266,7 @@ mod tests {
         for db_id in 1..=6 {
             loader.add_entity(0, db_id);
         }
+        assert_eq!(loader.pending(), 6);
         let mut loaded = Vec::new();
         loader.start(&mut |type_id, db_id| {
             loaded.push((type_id, db_id));
@@ -284,7 +285,7 @@ mod tests {
     #[test]
     fn the_recovered_database_answers_lookups_by_name() {
         // Post-restart world: the entity is back under its identifier.
-        let (mut database, recovered) = restart(&seeded_path("restart-name"));
+        let (database, recovered) = restart(&seeded_path("restart-name"));
 
         let avatar = defs().name_to_index("Avatar").unwrap();
         assert_eq!(recovered, vec![(avatar, 1), (avatar, 2)]);
