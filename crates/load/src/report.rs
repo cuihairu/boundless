@@ -105,6 +105,75 @@ impl LoginStats {
     }
 }
 
+/// BW-17-03-03: the latency percentiles and tick timeouts of one run.
+///
+/// The aggregator sorts one latency sample per observation (milliseconds)
+/// and answers the report contract's percentiles with the nearest-rank
+/// definition: for `n` samples the p-th percentile is the
+/// `ceil(p/100 * n)`-th smallest. The acceptance is verification against a
+/// fixed sample, so the definition is pinned by that test. A timeout is
+/// not a latency - it is counted, never averaged in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LatencyStats {
+    sorted: Vec<u64>,
+    timeouts: u64,
+}
+
+impl LatencyStats {
+    /// Reduce one run's recordings: a millisecond latency per observation
+    /// and the count of ticks that timed out.
+    pub fn from_run(samples: &[u64], timeouts: u64) -> Self {
+        let mut sorted = samples.to_vec();
+        sorted.sort_unstable();
+        Self { sorted, timeouts }
+    }
+
+    /// The observed samples, smallest first.
+    pub fn samples(&self) -> &[u64] {
+        &self.sorted
+    }
+
+    /// Ticks that timed out; excluded from the percentile sample.
+    pub fn timeouts(&self) -> u64 {
+        self.timeouts
+    }
+
+    /// The `p`-th percentile (0.0-1.0) under the nearest-rank definition:
+    /// the `ceil(p * n)`-th smallest sample. 0.0 with no samples; `p`
+    /// outside 0.0-1.0 reads as its clamped value, so p95 is a convenient
+    /// spelling of 0.95.
+    pub fn percentile(&self, p: f64) -> f64 {
+        if self.sorted.is_empty() {
+            return 0.0;
+        }
+        let p = p.clamp(0.0, 1.0);
+        let n = self.sorted.len();
+        let rank = ((p * n as f64).ceil() as usize).max(1);
+        self.sorted[rank - 1] as f64
+    }
+
+    /// The 95th percentile in milliseconds.
+    pub fn p95(&self) -> f64 {
+        self.percentile(0.95)
+    }
+
+    /// The 99th percentile in milliseconds.
+    pub fn p99(&self) -> f64 {
+        self.percentile(0.99)
+    }
+
+    /// The machine-readable section under the report's `latency` key.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "samples": self.sorted.len(),
+            "p95_millis": self.p95(),
+            "p99_millis": self.p99(),
+            "max_millis": self.sorted.last().copied().unwrap_or(0),
+            "timeouts": self.timeouts,
+        })
+    }
+}
+
 /// The traceable envelope of one scenario run: who ran, against what, and
 /// with which fixed seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +197,9 @@ pub struct ScenarioReport {
     /// The login/online section (BW-17-03-02); `None` while a run has
     /// recorded nothing.
     pub login: Option<LoginStats>,
+    /// The latency/timeout section (BW-17-03-03); `None` while a run has
+    /// recorded nothing.
+    pub latency: Option<LatencyStats>,
 }
 
 impl ScenarioReport {
@@ -148,6 +220,7 @@ impl ScenarioReport {
             steady_seconds: stages.steady().as_secs(),
             total_seconds: stages.total().as_secs(),
             login: None,
+            latency: None,
         }
     }
 
@@ -168,6 +241,7 @@ impl ScenarioReport {
                 "total_seconds": self.total_seconds,
             },
             "login": self.login.as_ref().map(LoginStats::to_json),
+            "latency": self.latency.as_ref().map(LatencyStats::to_json),
         })
     }
 
@@ -297,6 +371,62 @@ mod tests {
     }
 
     #[test]
+    fn the_fixed_sample_pins_the_percentiles() {
+        // The acceptance: 100 samples of i*10 ms - p95 is the 95th
+        // smallest (950), p99 the 99th (990) under the nearest-rank
+        // definition.
+        let samples: Vec<u64> = (1..=100).map(|i| i * 10).collect();
+        let stats = LatencyStats::from_run(&samples, 0);
+        assert_eq!(stats.p95(), 950.0);
+        assert_eq!(stats.p99(), 990.0);
+        assert_eq!(stats.to_json()["p95_millis"], 950.0);
+        assert_eq!(stats.to_json()["p99_millis"], 990.0);
+        assert_eq!(stats.to_json()["max_millis"], 1000);
+        assert_eq!(stats.to_json()["samples"], 100);
+    }
+
+    #[test]
+    fn the_nearest_rank_rounds_up_to_the_smallest_covers() {
+        // Three samples [10,20,30]: ceil(0.95*3) = 3 -> the 30ms tail
+        // covers the 95th percentile; the median rank is exact.
+        let stats = LatencyStats::from_run(&[30, 10, 20], 0);
+        assert_eq!(stats.percentile(0.95), 30.0);
+        assert_eq!(stats.percentile(0.5), 20.0);
+        // The input order is irrelevant - the sample sorts.
+        assert_eq!(stats.samples(), &[10, 20, 30]);
+    }
+
+    #[test]
+    fn timeouts_are_counted_not_averaged_in() {
+        // A timeout never joins the latency sample; it only counts.
+        let stats = LatencyStats::from_run(&[10, 20], 7);
+        assert_eq!(stats.timeouts(), 7);
+        assert_eq!(stats.samples().len(), 2);
+        assert_eq!(stats.to_json()["timeouts"], 7);
+        assert_eq!(stats.to_json()["samples"], 2);
+    }
+
+    #[test]
+    fn an_empty_latency_section_reads_zero() {
+        let stats = LatencyStats::from_run(&[], 0);
+        assert_eq!(stats.p95(), 0.0);
+        assert_eq!(stats.p99(), 0.0);
+        assert_eq!(stats.to_json()["max_millis"], 0);
+    }
+
+    #[test]
+    fn the_report_carries_the_latency_section_when_recorded() {
+        let mut completed = report();
+        completed.latency = Some(LatencyStats::from_run(&[10, 20], 1));
+        let value = completed.to_json();
+        assert_eq!(value["latency"]["p95_millis"], 20.0);
+        assert_eq!(value["latency"]["timeouts"], 1);
+
+        let bare = report().to_json();
+        assert!(bare["latency"].is_null());
+    }
+
+    #[test]
     fn a_report_can_be_built_directly() {
         // A caller that recorded its own run states the envelope fields
         // itself; the rendering is the same document.
@@ -311,6 +441,7 @@ mod tests {
             steady_seconds: 0,
             total_seconds: 0,
             login: None,
+            latency: None,
         };
         let value = report.to_json();
         assert_eq!(value["version"], "9.9.9");
