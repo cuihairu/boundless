@@ -65,7 +65,7 @@ db-postgres = { path = "crates/db-postgres" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
 server-runtime = { path = "crates/server-runtime" }
-# client = { path = "crates/client" }  # re-add with first consumer
+client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
 # load = { path = "crates/load" }  # re-add with first consumer
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }

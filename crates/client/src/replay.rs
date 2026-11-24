@@ -40,7 +40,14 @@
 //! the decompressed tick data (`replay_controller.cpp:1001-1062`).
 
 /// The current client-server protocol version (2.9.0.0,
-/// `client_server_protocol_version.hpp:51-54`).
+/// `client_server_protocol_version.hpp:51-54`), as
+/// `(major, minor, patch, subpatch)`.
+///
+/// On the wire the four bytes stream **subpatch first** —
+/// `stream << subpatch_ << patch_ << minor_ << major_`
+/// (`client_server_protocol_version.hpp:138`), so 2.9.0.0 reads
+/// `00 00 09 02`, the same order the login payload carries
+/// (`ClientServerProtocolVersion` in the login interface, BW-00-04-01).
 pub const CURRENT_VERSION: (u8, u8, u8, u8) = (2, 9, 0, 0);
 
 /// `ReplayHeader::NONCE_SIZE` (`replay_header.hpp:30`).
@@ -216,12 +223,16 @@ pub fn parse_header(
 ) -> Result<(ReplayHeader, usize), ReplayError> {
     let mut c = Cursor::new(data);
 
-    let version = (
+    // The four bytes stream subpatch, patch, minor, major
+    // (`client_server_protocol_version.hpp:138`); the tuple is
+    // (major, minor, patch, subpatch).
+    let (subpatch, patch, minor, major) = (
         c.u8().ok_or(ReplayError::InsufficientHeader)?,
         c.u8().ok_or(ReplayError::InsufficientHeader)?,
         c.u8().ok_or(ReplayError::InsufficientHeader)?,
         c.u8().ok_or(ReplayError::InsufficientHeader)?,
     );
+    let version = (major, minor, patch, subpatch);
     if version != CURRENT_VERSION {
         return Err(ReplayError::VersionMismatch);
     }
@@ -314,6 +325,28 @@ pub fn parse_metadata(
         },
         c.pos,
     ))
+}
+
+/// `ReplayDataFileReader::primeChecksumScheme` + `readMetaData`
+/// (`replay_data_file_reader.cpp:665-690`, `:981-994`): the metadata
+/// signature chains off the header's — the reader resets the scheme and
+/// feeds the previous signature in before the payload is summed, so the
+/// signature covers `previous signature || streamSize || collection`.
+/// Like [`parse_metadata`], with the seeding.
+pub fn parse_metadata_chained(
+    data: &[u8],
+    signature_length: usize,
+    scheme: &dyn ChecksumScheme,
+    previous_signature: &[u8],
+) -> Result<(ReplayMetaData, usize), ReplayError> {
+    let (metadata, consumed) = parse_metadata(data, signature_length, None)?;
+    let payload_len = consumed - signature_length;
+    let mut seeded = previous_signature.to_vec();
+    seeded.extend_from_slice(&data[..payload_len]);
+    if scheme.stream_size() != signature_length || !scheme.verify(&seeded, &metadata.signature) {
+        return Err(ReplayError::ChecksumMismatch);
+    }
+    Ok((metadata, consumed))
 }
 
 /// A no-op checksum scheme for tests: an empty signature, always verified.
@@ -1176,7 +1209,9 @@ mod tests {
         num_ticks: u32,
     ) -> Vec<u8> {
         let mut b = Vec::new();
-        b.extend_from_slice(&[version.0, version.1, version.2, version.3]);
+        // Subpatch, patch, minor, major — the wire order
+        // (`client_server_protocol_version.hpp:138`).
+        b.extend_from_slice(&[version.3, version.2, version.1, version.0]);
         b.extend_from_slice(&digest);
         b.push(freq);
         b.extend_from_slice(&timestamp.to_le_bytes());
