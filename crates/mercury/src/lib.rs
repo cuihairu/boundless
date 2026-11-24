@@ -31,6 +31,8 @@ pub mod packet;
 pub mod packet_filter;
 #[cfg(target_os = "linux")]
 pub mod packet_receiver;
+#[cfg(target_os = "linux")]
+pub mod packet_sender;
 
 /// The event poller (BW-02-01-02). Linux only, because the reference's
 /// `EPoller` backend is what `EventPoller::create()` picks under
