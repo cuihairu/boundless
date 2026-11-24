@@ -23,6 +23,7 @@
 use super::astar::AStar;
 use super::chunk_waypoint_set_state::ChunkWPSetState;
 use super::chunk_waypoint_state::ChunkWaypointState;
+use super::chunk_waypoint_state_path::ChunkWaypointStatePath;
 use super::navigator_cache::NavigatorCache;
 use super::navloc::NavLoc;
 use super::search_path_base::SearchPathBase;
@@ -51,6 +52,19 @@ fn same_set(a: &NavLoc, b: &NavLoc) -> bool {
         (Some(a), Some(b)) => Rc::ptr_eq(a, b),
         (None, None) => true,
         _ => false,
+    }
+}
+
+/// `addWaypointPathPoints` (`navigator.cpp:26-47`, anonymous namespace):
+/// the state path's points, sans the start state. The reference copies
+/// the path and pops it while valid; the index walk below yields the
+/// same `pNext` sequence (`reverse_path[len-2]` down to
+/// `reverse_path[0]`).
+fn add_waypoint_path_points(path: &ChunkWaypointStatePath, waypoint_path: &mut Vec<Vector3>) {
+    // No need to add the start point.
+    for index in (0..path.reverse_path().len().saturating_sub(1)).rev() {
+        // Add the intermediate points and the destination
+        waypoint_path.push(path.reverse_path()[index].nav_loc().point());
     }
 }
 
@@ -255,6 +269,89 @@ impl Navigator {
             }
         }
         true
+    }
+
+    /// `Navigator::findFullPath` (`navigator.cpp:177-235`): the whole
+    /// route's points, walking `searchNextWaypoint` hop by hop over a
+    /// scratch cache — the entity's own navigator cache is not clobbered
+    /// ("We don't clobber the entity's current navigator cache, so we use
+    /// our internal one"). The reference takes the space and resolves
+    /// both endpoints through the bare space constructor itself; the
+    /// port's `Navigator` has no space, so the caller hands the same
+    /// unclipped navlocs in (the clips stay here, behind the validity
+    /// check, as in the reference). The reference's `ChunkWPSetState
+    /// dstSetState( dst )` local is written and never read — not ported
+    /// (registered).
+    ///
+    /// Each hop appends the cached state chain's points (the start
+    /// state's is skipped — except on a single-state walk, where `init`'s
+    /// padding makes the pushed state the source's own) and the
+    /// destination's point once the chain's far end equals the
+    /// destination waypoint. The goal check lands on the state crossing
+    /// into the destination's waypoint, so the chain's far end is the
+    /// boundary-crossing point, not the destination point — a
+    /// one-transition route answers the crossing point then the
+    /// destination (`findPath`'s "Use dst as point" replacement does not
+    /// happen here), and a same-waypoint query answers the source then
+    /// the destination.
+    pub fn find_full_path(
+        &self,
+        src: &NavLoc,
+        dst: &NavLoc,
+        max_search_distance: f32,
+        block_non_permissive: bool,
+        waypoint_path: &mut Vec<Vector3>,
+    ) -> bool {
+        let mut ok = false;
+        let mut src = src.clone();
+        let mut dst = dst.clone();
+
+        if src.valid() && dst.valid() {
+            src.clip();
+            dst.clip();
+            waypoint_path.clear();
+
+            let mut cache = NavigatorCache::default();
+
+            let mut current = src.clone();
+            let mut done = false;
+            while !done {
+                if self.search_next_waypoint(
+                    &mut cache,
+                    &current,
+                    &dst,
+                    max_search_distance,
+                    block_non_permissive,
+                    None,
+                ) {
+                    // We found a way through the current chunk, add the
+                    // points in the cache.
+                    add_waypoint_path_points(cache.way_path(), waypoint_path);
+
+                    // Need to resolve the waypoint path destination's
+                    // waypoint index. The reference re-builds the navloc
+                    // from the state through the copy constructor with
+                    // the state's own point — a clone, observably.
+                    current = cache
+                        .way_path()
+                        .p_dest()
+                        .expect("valid path")
+                        .nav_loc()
+                        .clone();
+
+                    if current.waypoints_equal(&dst) {
+                        waypoint_path.push(dst.point());
+                        done = true;
+                        ok = true;
+                    }
+                } else {
+                    waypoint_path.clear();
+                    done = true;
+                }
+            }
+        }
+
+        ok
     }
 
     /// `Navigator::searchNextWaypointSet` (`navigator.cpp:538-571`).

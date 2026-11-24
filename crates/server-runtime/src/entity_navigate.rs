@@ -312,6 +312,23 @@ impl NavigateFollowFailure {
     }
 }
 
+/// The `navigatePathPoints` failure face
+/// (`navmesh_navigation_system.cpp:24-52`, `Util::navigatePathPoints`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigatePathPointsFailure {
+    /// `PyExc_ValueError` — `findFullPath` answered false.
+    PathNotFound,
+}
+
+impl NavigatePathPointsFailure {
+    /// The reference's error text.
+    pub fn message(&self) -> &'static str {
+        match self {
+            NavigatePathPointsFailure::PathNotFound => "Full navigation path could not be found",
+        }
+    }
+}
+
 /// The `NavmeshEntityNavigationSystem` (`navmesh_navigation_system.hpp`):
 /// the entity-bound system face `EntityNavigate` reaches through
 /// `navigationSystem()`.
@@ -723,6 +740,62 @@ impl EntityNavigate {
             now,
         )
         .map_err(NavigateFollowFailure::NavigateStep)
+    }
+
+    /// `EntityNavigate::navigatePathPoints` (`entity_navigate.cpp:1025-1040`)
+    /// over the system face (`navmesh_navigation_system.cpp:521-530`) and
+    /// `Util::navigatePathPoints` (`navmesh_navigation_system.cpp:24-52`):
+    /// the whole route's points from the entity's position to the
+    /// destination. A ghost is only **warned** about and continues
+    /// (unlike every other face here); the `-1` limit resolves after the
+    /// warning, as in the reference. The source goes through
+    /// `createPathNavLoc` — the reference's "Don't clip the source point"
+    /// comment predates `createPathNavLoc`'s clip; the clipped point is
+    /// what `Util` re-resolves, along with the destination, through
+    /// `findFullPath`'s own bare constructor. `checkFirstPosition` is
+    /// false from this face, so the source is never prepended. The full
+    /// search rides a scratch cache — the navigator's own caches are not
+    /// touched.
+    pub fn navigate_path_points(
+        &self,
+        state: &EntityState,
+        navigator: &MeshNavigator,
+        dst_position: Vector3,
+        max_search_distance: f32,
+        girth: f32,
+        max_aoi_radius: f32,
+    ) -> Result<(Vec<&'static str>, Vec<Vector3>), NavigatePathPointsFailure> {
+        let mut warnings = Vec::new();
+        if !self.is_real {
+            warnings.push("EntityNavigate::navigatePathPoints: This method was called on a ghost.");
+        }
+
+        // isEqual( maxSearchDistance, -1.f ) — after the warning, before
+        // any mesh work, as in the reference.
+        let max_search_distance = if max_search_distance == -1.0 {
+            max_aoi_radius
+        } else {
+            max_search_distance
+        };
+
+        let src_loc = navigator.navloc_at(state.position, girth);
+
+        let mut path = Vec::new();
+        let found = navigator.navigator.find_full_path(
+            &navigator.navloc_unclipped(src_loc.point(), girth),
+            &navigator.navloc_unclipped(dst_position, girth),
+            max_search_distance,
+            /* block_non_permissive: */ true,
+            &mut path,
+        );
+
+        if !found {
+            return Err(NavigatePathPointsFailure::PathNotFound);
+        }
+
+        // checkFirstPosition is false from this face, so the source is
+        // never prepended even when the first point differs.
+        Ok((warnings, path))
     }
 }
 
@@ -2038,6 +2111,158 @@ mod tests {
                 && (destination.z - 1.0).abs() < 1e-6,
             "offset at {:?}",
             destination
+        );
+    }
+
+    /// BW-10-06-05 acceptance (成功路径) — over the slope asset the full
+    /// route answers its points: a one-transition route answers the
+    /// boundary-crossing point then the destination (the goal state is
+    /// the crossing into the destination's waypoint, and the loop
+    /// appends `dst.point()` after the chain — `findPath`'s "Use dst as
+    /// point" replacement does not happen here), and a same-waypoint
+    /// query answers the source then the destination (the single-state
+    /// walk is padded by `init`, so the point that rides along is the
+    /// source's own). The search rides a scratch cache, so the
+    /// navigator's own caches stay untouched.
+    #[test]
+    fn a_full_route_answers_its_points() {
+        let mut navigator = mesh_navigator("slope");
+        let extra = real_entity();
+        let state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        let (warnings, path) = extra
+            .navigate_path_points(
+                &state,
+                &navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the route resolves");
+        assert!(warnings.is_empty());
+        assert_eq!(
+            path,
+            vec![Vector3::new(3.0, 3.5, 3.0), Vector3::new(7.0, 3.5, 7.0)],
+            "the crossing point, then the destination"
+        );
+
+        // Same waypoint: the padded single-state walk pushes the source's
+        // own point, then the destination's.
+        let (warnings, path) = extra
+            .navigate_path_points(
+                &state,
+                &navigator,
+                Vector3::new(2.0, 0.5, 2.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the same-waypoint route resolves");
+        assert!(warnings.is_empty());
+        assert_eq!(
+            path,
+            vec![Vector3::new(1.0, 1.5, 1.0), Vector3::new(2.0, 1.5, 2.0)]
+        );
+
+        // An explicit search limit rides the same route: -1 is only the
+        // sentinel that swaps in maxAoIRadius.
+        let (warnings, path) = extra
+            .navigate_path_points(
+                &state,
+                &navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                100.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the explicit-limit route resolves");
+        assert!(warnings.is_empty());
+        assert_eq!(
+            path,
+            vec![Vector3::new(3.0, 3.5, 3.0), Vector3::new(7.0, 3.5, 7.0)]
+        );
+
+        // The full search never touched the navigator's caches.
+        assert!(navigator.cached_waypoint_path().is_empty());
+    }
+
+    /// BW-10-06-05 acceptance (无路径错误对照) — the cross-layer shell
+    /// pair, a delegate space's empty navmesh, and a girth no record
+    /// matches all answer the full-path error; a ghost is warned but
+    /// still answered.
+    #[test]
+    fn navigate_path_points_reports_the_no_path_error() {
+        let extra = real_entity();
+
+        // The shell's floor and bridge layers carry no inter-set
+        // adjacency.
+        let shell = mesh_navigator("shell");
+        let floor = EntityState::new(7, Vector3::new(2.5, 0.5, 4.5), Direction3D::default(), 0);
+        let err = extra
+            .navigate_path_points(
+                &floor,
+                &shell,
+                Vector3::new(3.0, 1.5, 3.5),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+            )
+            .expect_err("the layers are disconnected");
+        assert_eq!(err, NavigatePathPointsFailure::PathNotFound);
+        assert_eq!(err.message(), "Full navigation path could not be found");
+
+        // A delegate space has no navmesh records: both endpoints resolve
+        // invalid, so the full search is refused.
+        let delegate = MeshNavigator::new(Vec::new(), GRID_SIZE);
+        let err = extra
+            .navigate_path_points(
+                &floor,
+                &delegate,
+                Vector3::new(3.0, 1.5, 3.5),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+            )
+            .expect_err("a delegate space cannot navigate");
+        assert_eq!(err, NavigatePathPointsFailure::PathNotFound);
+
+        // A girth no record matches: the source resolves invalid through
+        // the empty girth filter.
+        let slope = mesh_navigator("slope");
+        let state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+        let err = extra
+            .navigate_path_points(
+                &state,
+                &slope,
+                Vector3::new(7.0, 3.0, 7.0),
+                -1.0,
+                0.5,
+                MAX_AOI_RADIUS,
+            )
+            .expect_err("the girth matches no record");
+        assert_eq!(err, NavigatePathPointsFailure::PathNotFound);
+
+        // A ghost is warned and still answered — the only face here
+        // without a refusal.
+        let ghost = EntityNavigate::default();
+        let (warnings, path) = ghost
+            .navigate_path_points(
+                &state,
+                &slope,
+                Vector3::new(7.0, 3.0, 7.0),
+                -1.0,
+                GIRTH,
+                MAX_AOI_RADIUS,
+            )
+            .expect("the ghost is only warned");
+        assert_eq!(
+            warnings,
+            vec!["EntityNavigate::navigatePathPoints: This method was called on a ghost."]
+        );
+        assert_eq!(
+            path,
+            vec![Vector3::new(3.0, 3.5, 3.0), Vector3::new(7.0, 3.5, 7.0)]
         );
     }
 }
