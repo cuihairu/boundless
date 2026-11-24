@@ -17,6 +17,7 @@ pub mod cluster_shutdown;
 pub mod config;
 pub mod controllers;
 pub mod controller_extra;
+pub mod custom_billing;
 pub mod data_download;
 pub mod db_login;
 pub mod dbapp;
