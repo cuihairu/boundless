@@ -31,6 +31,7 @@ pub mod recovery;
 pub mod retry;
 pub mod secondary;
 pub mod storage;
+pub mod sync_db;
 pub mod transaction;
 pub mod xml;
 
@@ -69,7 +70,8 @@ pub use lookup::{
 pub use namer::{
     COMPONENT_NAME_SEPARATOR, ColumnIndexType, DEFAULT_SEQUENCE_COLUMN_NAME,
     DEFAULT_SEQUENCE_TABLE_NAME, GAME_TIME_COLUMN_NAME, ID_COLUMN_NAME, Indexing, Namer,
-    PARENTID_COLUMN_NAME, TABLE_NAME_PREFIX, TIMESTAMP_COLUMN_NAME, column_index_type,
+    PARENTID_COLUMN_NAME, PARENTID_INDEX_NAME, TABLE_NAME_PREFIX, TIMESTAMP_COLUMN_NAME,
+    column_index_type,
 };
 pub use py_billing::{PyBillingResponse, PyBillingSystem};
 pub use record::EntityRecord;
@@ -86,6 +88,14 @@ pub use secondary::{
 pub use storage::{
     BaseMailbox, CheckOut, EntityKey, EntityStorage, EntityStorageImage, MemoryConnection,
     MemoryStorage, StorageImage, load_entity,
+};
+pub use sync_db::{
+    AlterTableBuilder, ColumnDiff, ColumnInfo, ColumnType, DBAPP_CURRENT_VERSION, EngineSupport,
+    FieldType, InspectionReport, MAX_TEXT_BLOB_INDEX_LENGTH, MYSQL_ENGINE_TYPE, SyncError,
+    SyncPlanRequest, SyncRefusal, SyncStep, TableAction, TablePlan, convert_charset_statement,
+    create_entity_table_statement, create_index_for, create_index_statement, generate_index_name,
+    inspect, plan_statements, plan_sync, plan_table_statements, remove_index_statement,
+    special_table_statements, string_blob_type_name,
 };
 pub use transaction::{EntityTransaction, StagedWrite};
 pub use xml::{XmlDatabase, XmlKind, XmlPropDef, XmlSection, XmlTypeDef};
