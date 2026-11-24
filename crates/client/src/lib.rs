@@ -74,6 +74,7 @@ pub mod particle_system;
 pub mod perlin;
 pub mod picker;
 pub mod player;
+pub mod post_processing;
 pub mod render;
 pub mod replay;
 pub mod settings;
