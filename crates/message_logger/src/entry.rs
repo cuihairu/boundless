@@ -113,6 +113,64 @@ impl LogEntry {
             metadata_len: 0,
         }
     }
+
+    /// Record the format-arguments blob placement
+    /// (`UserSegmentWriter::addEntry`, `user_segment_writer.cpp:74-87`).
+    pub fn set_args(&mut self, offset: u32, len: u16) {
+        self.args_offset = offset;
+        self.args_len = len;
+    }
+
+    /// Record the metadata blob placement
+    /// (`user_segment_writer.cpp:124`).
+    pub fn set_metadata(&mut self, offset: u32, len: u16) {
+        self.metadata_offset = offset;
+        self.metadata_len = len;
+    }
+
+    /// The 34-byte on-disk record the segment files hold — little-endian
+    /// scalars in the packed field order.
+    pub fn to_bytes(&self) -> [u8; Self::PACKED_SIZE] {
+        let mut out = [0u8; Self::PACKED_SIZE];
+        out[0..8].copy_from_slice(&self.time.secs.to_le_bytes());
+        out[8..10].copy_from_slice(&self.time.msecs.to_le_bytes());
+        out[10..14].copy_from_slice(&self.user_component_id.to_le_bytes());
+        out[14..16].copy_from_slice(&self.category_id.to_le_bytes());
+        out[16] = self.message_source.to_byte();
+        out[17] = self.message_priority;
+        out[18..22].copy_from_slice(&self.string_offset.to_le_bytes());
+        out[22..26].copy_from_slice(&self.args_offset.to_le_bytes());
+        out[26..28].copy_from_slice(&self.args_len.to_le_bytes());
+        out[28..32].copy_from_slice(&self.metadata_offset.to_le_bytes());
+        out[32..34].copy_from_slice(&self.metadata_len.to_le_bytes());
+        out
+    }
+
+    /// Parse a 34-byte record — the read face for original samples.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::PACKED_SIZE {
+            return None;
+        }
+        let read_u16 = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        let read_u32 = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        Some(Self {
+            time: LogTime {
+                secs: i64::from_le_bytes(bytes[0..8].try_into().ok()?),
+                msecs: read_u16(8),
+            },
+            user_component_id: read_u32(10),
+            category_id: read_u16(14),
+            message_source: MessageSource::from_byte(bytes[16]),
+            message_priority: bytes[17],
+            string_offset: read_u32(18),
+            args_offset: read_u32(22),
+            args_len: read_u16(26),
+            metadata_offset: read_u32(28),
+            metadata_len: read_u16(32),
+        })
+    }
 }
 
 #[cfg(test)]
