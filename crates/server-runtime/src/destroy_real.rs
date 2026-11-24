@@ -14,9 +14,9 @@
 //! entity is marked destroyed, every active controller and extra is cleared,
 //! and the entity is no longer in its space.
 
+use crate::cellappmgr::SpaceId;
 use crate::controller_extra::{Controllers, EntityExtras};
-use crate::real_entity::EntityId;
-use crate::space::SpaceId;
+use crate::entity_dispatch::EntityId;
 
 /// A destroy-lifecycle event, in the order it happened
 /// (`Entity::destroy`, `entity.cpp:2896`).
