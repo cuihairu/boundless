@@ -67,10 +67,13 @@
 //! - [`texformat_converter`] — the `.texformat` normaliser
 //!   (`tools/asset_pipeline/converters/texformat_converter/`);
 //! - [`effect_converter`] — the `.fx` → `.fxo` converter behind the D3DX
-//!   compile seam (`tools/asset_pipeline/converters/effect_converter/`).
+//!   compile seam (`tools/asset_pipeline/converters/effect_converter/`);
+//! - [`asset_processor`] — the `_AssetProcessor` tool functions behind the
+//!   PyScript seam (`tools/assetprocessor/`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
+pub mod asset_processor;
 pub mod batch_compiler;
 pub mod bsp_converter;
 pub mod compiler;

@@ -79,6 +79,11 @@ impl EffectMacroSetting {
     pub fn active_option(&self) -> &str {
         &self.options[self.active]
     }
+
+    /// One option's value by index.
+    pub fn option_value(&self, index: usize) -> &str {
+        &self.options[index]
+    }
 }
 
 /// `EffectMacroSetting::updateManagerInfix` + `EffectCompiler::fxoInfix`:
@@ -321,45 +326,138 @@ impl Converter for EffectConverter {
 }
 
 impl EffectConverter {
-    /// The compile-tail container write: erase the old file, build the zip
-    /// (`effect`, `hash`, one `depends` per include with its `name` and
-    /// `hash` children) and save it.
+    /// The compile-tail container write.
     fn write_fxo(&self, outputfile: &str, payload: &[u8], includes: &[String]) -> bool {
-        // The compile tail stores the digest of what it just produced.
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         payload.hash(&mut hasher);
         let hash = format!("{:016x}", hasher.finish());
-
-        let mut fs = match ZipFileSystem::open("", ZipFileSystem::empty_archive()) {
-            Some(fs) => fs,
-            None => return false,
-        };
-        fs.write_to_structure("effect", payload.to_vec());
-        fs.write_to_structure("hash", hash.into_bytes());
-        for include in includes {
-            fs.write_to_structure("depends/name", include.clone().into_bytes());
-            let dep_hash = self
-                .compiler_face
-                .hash_resource(include)
-                .unwrap_or_default();
-            fs.write_to_structure("depends/hash", dep_hash.into_bytes());
-        }
-        self.resource
-            .file_system()
-            .write_file(outputfile, &fs.create_zip())
+        write_fxo_container(
+            &self.resource,
+            outputfile,
+            payload,
+            &hash,
+            includes,
+            &*self.compiler_face,
+        )
     }
+}
+
+/// The compile-tail container write: erase the old file, build the zip
+/// (`effect`, `hash`, one `depends` per include with its `name` and `hash`
+/// children) and save it.
+pub fn write_fxo_container(
+    resource: &BwResource,
+    outputfile: &str,
+    payload: &[u8],
+    hash: &str,
+    includes: &[String],
+    face: &dyn EffectCompilerFace,
+) -> bool {
+    let mut fs = match ZipFileSystem::open("", ZipFileSystem::empty_archive()) {
+        Some(fs) => fs,
+        None => return false,
+    };
+    fs.write_to_structure("effect", payload.to_vec());
+    fs.write_to_structure("hash", hash.as_bytes().to_vec());
+    for include in includes {
+        fs.write_to_structure("depends/name", include.clone().into_bytes());
+        let dep_hash = face.hash_resource(include).unwrap_or_default();
+        fs.write_to_structure("depends/hash", dep_hash.into_bytes());
+    }
+    resource
+        .file_system()
+        .write_file(outputfile, &fs.create_zip())
+}
+
+/// Open an fxo's zip container (the zip sniff inside `open_section` is the
+/// resources crate's open later task).
+fn open_fxo(resource: &BwResource, fxo_name: &str) -> Option<ZipFileSystem> {
+    let raw = resource.file_system().read_file(fxo_name)?;
+    ZipFileSystem::open("", raw)
 }
 
 /// `Moo::EffectHelpers::loadEffectBinary`: read the effect's fxo and hand
 /// back its `effect` binary child. The reference walks the section tree
 /// (`openSection(fxoName).readBinary("effect")`); the port opens the
-/// container through the zip face (the zip sniff inside `open_section` is
-/// the resources crate's open later task).
+/// container through the zip face.
 pub fn load_effect_binary(resource: &BwResource, resource_id: &str) -> Option<Vec<u8>> {
-    let fxo_name = fxo_name(resource_id, "");
-    let raw = resource.file_system().read_file(&fxo_name)?;
-    let zip = ZipFileSystem::open("", raw)?;
+    let zip = open_fxo(resource, &fxo_name(resource_id, ""))?;
     zip.read_file("effect")
+}
+
+/// `Moo::EffectCompiler::checkModified`: does the effect need a rebuild?
+///
+/// The reference's paths, in order: no source hash (`.fx` unreadable) →
+/// `false` whether or not the fxo exists (the runtime falls back to the
+/// fxo); no fxo → `true`; no `hash` child → `true`; stored digest mismatch
+/// → `true`; no `effect` child → `true`; any include's stored hash mismatch
+/// → `true`; else `false`.
+pub fn check_modified(
+    resource: &BwResource,
+    face: &dyn EffectCompilerFace,
+    resource_id: &str,
+    fxo_infix: &str,
+) -> bool {
+    let Some(res_digest) = face.hash_resource(resource_id) else {
+        // If the .fx doesn't exist, whether the fxo exists or not the
+        // answer stays "not modified".
+        return false;
+    };
+
+    let fxo_name = fxo_name(resource_id, fxo_infix);
+    let Some(zip) = open_fxo(resource, &fxo_name) else {
+        return true; // fxo doesn't exist, build it.
+    };
+
+    let Some(stored_hash) = zip.read_file("hash") else {
+        return true; // must be an old fxo, rebuild it.
+    };
+    let Ok(stored_hash) = String::from_utf8(stored_hash) else {
+        return true; // bad data, rebuild it.
+    };
+    if stored_hash != res_digest {
+        return true; // hash digest mismatch, rebuild it.
+    }
+
+    if zip.read_file("effect").is_none() {
+        return true; // force recompile for old file
+    }
+
+    // The dependencies: the `depends` directory lists `name`/`hash` pairs
+    // (repeat rows carry the duplicate encoding's ` <n>` suffix). Reads go
+    // by position — `read_file` resolves duplicates to the last row.
+    let Some(listing) = zip.read_directory("depends") else {
+        return false;
+    };
+    for (index, name_entry) in listing.iter().enumerate() {
+        if !name_entry.starts_with("name") {
+            continue;
+        }
+        let suffix = &name_entry["name".len()..];
+        let Some(hash_index) = listing
+            .iter()
+            .position(|entry| *entry == format!("hash{suffix}"))
+        else {
+            return true;
+        };
+        let Some(dep_name) = zip.read_file_at("depends", index) else {
+            return true;
+        };
+        let Ok(dep_name) = String::from_utf8(dep_name) else {
+            return true;
+        };
+        let Some(dep_hash) = zip.read_file_at("depends", hash_index) else {
+            return true;
+        };
+        let Ok(dep_hash) = String::from_utf8(dep_hash) else {
+            return true;
+        };
+        match face.hash_resource(&dep_name) {
+            Some(current) if current == dep_hash => {}
+            _ => return true,
+        }
+    }
+    false
 }
 
 #[cfg(test)]
