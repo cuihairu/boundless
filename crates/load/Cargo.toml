@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The resource sampler scales `/proc/self/stat` clock ticks through
+# `_SC_CLK_TCK` (BW-17-03-04).
+libc = { workspace = true }
 # The bot movement faces carry Vector3 positions, ported from the same
 # `lib/math/` scalar path the reference builds.
 foundation = { workspace = true }
