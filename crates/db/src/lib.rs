@@ -21,6 +21,7 @@ pub mod billing_creator;
 pub mod buffered;
 pub mod charset;
 pub mod consolidate;
+pub mod dry_run;
 pub mod error;
 pub mod log_on_records;
 pub mod lookup;
@@ -58,6 +59,10 @@ pub use charset::{
 };
 pub use consolidate::{
     ConsolidationOutcome, ConsolidationQueue, ConsolidationReport, consolidate_database,
+};
+pub use dry_run::{
+    DRY_RUN_PREFIX, DryRunSyncReport, DryRunWrapper, INVALID_STATEMENT_MSG, dry_run_statements,
+    dry_run_steps, is_read_only_statement,
 };
 pub use error::DbError;
 pub use log_on_records::{
