@@ -222,7 +222,8 @@ impl Cell {
 }
 
 /// `Entity`: the space's own entry for one of its entities — the removal
-/// handle bookkeeping and the real/ghost flag the destructor turns on.
+/// handle bookkeeping, the real/ghost flag the destructor turns on, and the
+/// creation state `Entity::initReal` streamed in (`entity.cpp`).
 #[derive(Clone, Debug)]
 pub struct Entity {
     /// The entity id.
@@ -234,16 +235,41 @@ pub struct Entity {
     pub is_real: bool,
     /// `isDestroyed()`.
     pub destroyed: bool,
+    /// `entityTypeID_`: the def type this entity was created as.
+    pub type_id: u32,
+    /// `localPosition_` as created (`initReal` reads it first).
+    pub position: [f32; 3],
+    /// `localDirection_`: yaw, pitch, roll.
+    pub direction: [f32; 3],
+    /// `isOnGround_`, from the `AddEntityData` flag.
+    pub is_on_ground: bool,
+    /// `lastEventNumber_`.
+    pub last_event_number: u32,
+    /// `baseAddr_`: the base's internal address, when the stream carried one.
+    pub base_addr: Option<(u32, u16)>,
+    /// The Witness indicator byte `RealEntity::init` read (`'W'`/`'-'`).
+    pub has_witness: bool,
+    /// `pControllers_`: the entity's attached controllers.
+    pub controllers: crate::cellapp_real_entity::Controllers,
 }
 
 impl Entity {
-    /// An entity no space holds yet, with the handle reset.
+    /// An entity no space holds yet, with the handle reset and the real
+    /// state at its defaults (`setToInitialState`).
     pub fn new(id: u32, is_real: bool) -> Self {
         Self {
             id,
             removal_handle: NO_SPACE_REMOVAL_HANDLE,
             is_real,
             destroyed: false,
+            type_id: 0,
+            position: [0.0; 3],
+            direction: [0.0; 3],
+            is_on_ground: false,
+            last_event_number: 0,
+            base_addr: None,
+            has_witness: false,
+            controllers: crate::cellapp_real_entity::Controllers::default(),
         }
     }
 }
@@ -1369,6 +1395,39 @@ pub struct CellApp {
     pub use_game_delegate: bool,
     /// The game-delegate world factory the delegate backend calls into.
     pub world_factory: Rc<RefCell<SpaceWorldFactory>>,
+    /// `Entity::population()`: every entity id this process knows, including
+    /// destroyed entries awaiting revival.
+    pub entity_population: BTreeMap<u32, Rc<RefCell<Entity>>>,
+    /// The entity-type script registry (`EntityType::getType`): which types
+    /// can be on a cell and what their scripts define.
+    pub entity_scripts: BTreeMap<u32, crate::cellapp_real_entity::EntityScript>,
+    /// `Entity::s_callbackBuffer_`: the buffered script callbacks.
+    pub callback_buffer: crate::cellapp_real_entity::CallbackBuffer,
+    /// The script calls, in the order the reference would have made them.
+    pub script_calls: Vec<crate::cellapp_real_entity::ScriptCall>,
+    /// `Entity::callback` failures where the method was expected
+    /// (`okIfFnNull` false).
+    pub missing_callbacks: Vec<(u32, &'static str)>,
+    /// The ERROR `to a destroyed entity` deliveries.
+    pub destroyed_callbacks: Vec<(u32, &'static str)>,
+    /// The WARNING `%s %u already exists!` creations.
+    pub duplicate_creates: Vec<u32>,
+    /// `Cell::addRealEntity`'s delayed `currentCell` sends.
+    pub current_cell_sends: Vec<(u32, SpaceId)>,
+    /// `time_`: the game time in ticks.
+    pub time: u32,
+    /// `ServerAppConfig::updateHertz()` (default 10).
+    pub update_hertz: u32,
+    /// The game-tick `TimeQueue` the controllers add to.
+    pub time_queue: crate::timers::TimeQueue,
+    /// The router events the queue produced on the last process.
+    pub router_events: Rc<RefCell<Vec<crate::cellapp_real_entity::RouterEvent>>>,
+    /// The `IDClient` pool entity ids are allocated from.
+    pub id_pool: crate::entity_creator::IdPool,
+    /// `CellAppConfig::expectedMaxControllers` (25).
+    pub expected_max_controllers: usize,
+    /// `CellAppConfig::absoluteMaxControllers` (50).
+    pub absolute_max_controllers: usize,
 }
 
 impl Default for CellApp {
@@ -1389,6 +1448,21 @@ impl Default for CellApp {
             rejected_readds: Vec::new(),
             use_game_delegate: false,
             world_factory: Rc::new(RefCell::new(SpaceWorldFactory::default())),
+            entity_population: BTreeMap::new(),
+            entity_scripts: BTreeMap::new(),
+            callback_buffer: crate::cellapp_real_entity::CallbackBuffer::default(),
+            script_calls: Vec::new(),
+            missing_callbacks: Vec::new(),
+            destroyed_callbacks: Vec::new(),
+            duplicate_creates: Vec::new(),
+            current_cell_sends: Vec::new(),
+            time: 0,
+            update_hertz: 10,
+            time_queue: crate::timers::TimeQueue::new(),
+            router_events: Rc::new(RefCell::new(Vec::new())),
+            id_pool: crate::entity_creator::IdPool::new(10, 30, 100, 130),
+            expected_max_controllers: 25,
+            absolute_max_controllers: 50,
         }
     }
 }
