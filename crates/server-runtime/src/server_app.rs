@@ -420,6 +420,34 @@ pub fn base_on_signalled(sig_num: i32) {
     }
 }
 
+/// `EntityApp::onSignalled`'s SIGQUIT arm (entity_app.cpp:131-138): the
+/// CRITICAL text naming the manager that presumably killed an
+/// unresponsive app, verbatim including the `ServiceApp` special case
+/// that reads "BaseApp" as the suspected killer.
+pub fn entity_app_quit_message(app_name: &str) -> String {
+    let suspected_manager = if app_name == "ServiceApp" {
+        "BaseApp"
+    } else {
+        app_name
+    };
+    format!(
+        "Received QUIT signal. This is likely caused by the \
+         {suspected_manager}Mgr killing this {app_name} because it has \
+         been unresponsive for too long. Look at the callstack from the \
+         core dump to find the likely cause."
+    )
+}
+
+/// The SIGQUIT arm end to end: the CRITICAL text, then the abort that is
+/// the core dump the reference's CRITICAL policy produces. Never returns;
+/// the reference runs this straight from signal context
+/// (`signal_processor.cpp:306-308`), so the caller is the immediate
+/// `SIGQUIT` slot and there is nothing after it.
+pub fn entity_app_quit_signal(app_name: &str) -> ! {
+    eprintln!("{}", entity_app_quit_message(app_name));
+    std::process::abort()
+}
+
 /// The base `ServerApp::run` body: `mainDispatcher_.processUntilBreak()`,
 /// then `onRunComplete()`, then success. Role apps that do not override
 /// `run` inherit exactly this.
@@ -750,7 +778,7 @@ mod tests {
             ran: Cell::new(false),
         };
         assert_eq!(ServerApp::app_name(&app), "bareapp");
-        assert_eq!(run_app(&mut app, &[]), true);
+        assert!(run_app(&mut app, &[]));
         assert!(app.ran.get());
 
         // The base shutDown: the INFO line only; the override breaks the
@@ -926,7 +954,7 @@ mod tests {
         let _blocker = Blocker::new(&blocked);
 
         base_on_signalled(libc::SIGINT);
-        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL);
         assert!(
             kernel_pending_signals() & (1 << libc::SIGINT) != 0,
             "the re-raised SIGINT waits blocked"
@@ -950,6 +978,34 @@ mod tests {
         }
     }
 
+    /// `EntityApp::onSignalled`'s SIGQUIT text, verbatim including the
+    /// `ServiceApp` special case that reads "BaseApp" as the suspected
+    /// killer (entity_app.cpp:131-138).
+    #[test]
+    fn entity_app_quit_message_is_the_reference_text() {
+        assert_eq!(
+            entity_app_quit_message("BaseApp"),
+            "Received QUIT signal. This is likely caused by the BaseAppMgr \
+             killing this BaseApp because it has been unresponsive for too \
+             long. Look at the callstack from the core dump to find the \
+             likely cause."
+        );
+        assert_eq!(
+            entity_app_quit_message("CellApp"),
+            "Received QUIT signal. This is likely caused by the CellAppMgr \
+             killing this CellApp because it has been unresponsive for too \
+             long. Look at the callstack from the core dump to find the \
+             likely cause."
+        );
+        assert_eq!(
+            entity_app_quit_message("ServiceApp"),
+            "Received QUIT signal. This is likely caused by the BaseAppMgr \
+             killing this ServiceApp because it has been unresponsive for \
+             too long. Look at the callstack from the core dump to find the \
+             likely cause."
+        );
+    }
+
     /// The default `on_signalled` (and the base arm for non-SIGINT
     /// signals) does nothing: the switch has no other arm.
     #[test]
@@ -960,7 +1016,7 @@ mod tests {
         base_on_signalled(libc::SIGTERM);
         base_on_signalled(libc::SIGUSR2);
         assert_eq!(kernel_pending_signals(), before);
-        assert_eq!(disposition_of(libc::SIGTERM), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGTERM), libc::SIG_DFL);
 
         // The trait default routes straight into the base arm.
         struct BareSignalApp;
@@ -1146,7 +1202,7 @@ mod tests {
         processor.dispatch();
 
         assert_eq!(*log.borrow(), ["onSignalled SIGINT"]);
-        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL as usize);
+        assert_eq!(disposition_of(libc::SIGINT), libc::SIG_DFL);
         assert!(
             kernel_pending_signals() & (1 << libc::SIGINT) != 0,
             "the routed re-raise parks blocked"
@@ -1215,7 +1271,7 @@ mod tests {
             "breaker",
         ))));
 
-        assert_eq!(base_run(&mut app, &mut dispatcher), true);
+        assert!(base_run(&mut app, &mut dispatcher));
         assert!(app.completed.get());
     }
 

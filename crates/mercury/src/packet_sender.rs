@@ -133,13 +133,16 @@ impl PacketLossParameters {
         self.loss_ratio
     }
 
-    /// `lossRatio( value )`: non-zero loss is its own warning.
+    /// `lossRatio( value )`: non-zero loss is its own warning. The
+    /// reference's message has no space after the colon: the C++
+    /// concatenates `"PacketLossParameters::lossRatio:"` with
+    /// `"Loss ratio set to %.2f\n"` (packet_loss_parameters.cpp:58-60).
     pub fn set_loss_ratio(&mut self, value: f32) {
         self.loss_ratio = value;
         self.drop_per_million = (value * 1_000_000.0).max(0.0) as u32;
         if value != 0.0 {
             eprintln!(
-                "PacketLossParameters::lossRatio: Loss ratio set to {:.2}",
+                "PacketLossParameters::lossRatio:Loss ratio set to {:.2}",
                 value
             );
         }
@@ -156,10 +159,19 @@ impl PacketLossParameters {
         self.min_latency
     }
 
-    /// `minLatency( value )`: seconds.
+    /// `minLatency( value )`: seconds. A non-zero value warns, quoting the
+    /// whole window in seconds while the reference's text says
+    /// "milliseconds" -- kept verbatim from the quirk
+    /// (packet_loss_parameters.cpp:88-92).
     pub fn set_min_latency(&mut self, value: f32) {
         self.min_latency = value;
         self.min_latency_million = (value * 1000.0).max(0.0) as i64;
+        if value != 0.0 {
+            eprintln!(
+                "PacketLossParameters::latencyMin: Latency enabled. In range from {:.2} to {:.2} milliseconds.",
+                self.min_latency, self.max_latency
+            );
+        }
     }
 
     /// `minLatencyMillion( value )` (packet_loss_parameters.cpp:106):
@@ -173,10 +185,17 @@ impl PacketLossParameters {
         self.max_latency
     }
 
-    /// `maxLatency( value )`: seconds.
+    /// `maxLatency( value )`: seconds. A non-zero value warns like the
+    /// minimum's does (packet_loss_parameters.cpp:116-120).
     pub fn set_max_latency(&mut self, value: f32) {
         self.max_latency = value;
         self.max_latency_million = (value * 1000.0).max(0.0) as i64;
+        if value != 0.0 {
+            eprintln!(
+                "PacketLossParameters::maxLatency: Latency enabled. In range from {:.2} to {:.2} milliseconds.",
+                self.min_latency, self.max_latency
+            );
+        }
     }
 
     /// `maxLatencyMillion( value )` (packet_loss_parameters.cpp:143).

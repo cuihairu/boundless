@@ -1,0 +1,13 @@
+[package]
+name = "profiler"
+description = "BW-12-03-01 profiler frame and counter compatibility layer (lib/cstdmf/profiler)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# `time`/`localtime_r` behind `createNewJsonDumpFile`'s wall-clock file name
+# (`profiler.cpp:1298-1299`).
+libc = { workspace = true }

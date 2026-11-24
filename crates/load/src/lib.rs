@@ -7,6 +7,7 @@
 
 pub mod beeline;
 pub mod bot;
+pub mod bots_config;
 pub mod dense;
 pub mod executor;
 pub mod fleet;
@@ -24,6 +25,7 @@ pub use bot::{
     Behaviour, Bot, BotView, ConnState, Directive, FD_PER_BOT, MATH_PI, MovementController,
     MovementFactory, NULL_ENTITY_ID, TICK_FREQUENCY, TICK_PERIOD, Transport, transport_from_config,
 };
+pub use bots_config::{BotsConfig, OptionEntry, Value as BotOptionValue, WatcherMode};
 pub use dense::{DenseAoiLedger, run_dense_aoi};
 pub use executor::{Executor, StageTimeline};
 pub use fleet::{ControllerRegistry, Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};

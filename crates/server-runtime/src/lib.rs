@@ -8,6 +8,7 @@ pub mod baseapp_continuation;
 pub mod baseapp_relogon;
 pub mod baseappmgr;
 pub mod billing;
+pub mod billing_creator;
 pub mod buffered_ghost;
 pub mod cell_data;
 pub mod cell_viewer;
@@ -88,6 +89,8 @@ pub mod timer_controller;
 pub mod topology;
 pub mod vision;
 pub mod watcher;
+pub mod web_auction;
+pub mod web_character;
 pub mod web_session;
 pub mod witness;
 // The time queue is cstdmf and lives in foundation; re-exported under the

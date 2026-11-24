@@ -1682,10 +1682,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "profiler"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "python-host"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "libc",
+ "profiler",
  "resources",
 ]
 
@@ -1996,12 +2005,14 @@ dependencies = [
  "criterion",
  "db",
  "db-postgres",
+ "entitydef",
  "flate2",
  "foundation",
  "libc",
  "md-5 0.10.6",
  "mercury",
  "platform",
+ "regex",
  "resources",
  "sha2 0.10.9",
 ]

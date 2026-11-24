@@ -454,6 +454,10 @@ impl Bot {
             if self.can_set_movement_controller() {
                 // Movement ordered by moveTo() takes precedence over
                 // movement by movement controller (client_app.cpp:470-496).
+                // The reference's gate here is `isPlayerMovable`
+                // (client_app.cpp:468, 682-696) — `canSetMovementController`
+                // plus `!isPhysicsCorrected`; the port has no physics face,
+                // so the two coincide.
                 let dest = self.dest;
                 if let Some(dest) = dest {
                     const CLOSE_ENOUGH: f32 = 1.0;
@@ -471,7 +475,13 @@ impl Bot {
                 }
             } else {
                 // Since we don't have control of the player, remove any
-                // destination (client_app.cpp:498-501).
+                // destination (client_app.cpp:498-501). The port's model
+                // cannot reach this arm: `in_world` already implies
+                // `can_set_movement_controller` (the reference's extra
+                // `!isPhysicsCorrected` and server-uncontrolled states
+                // have no face here), and `destroy` always clears the
+                // session it ends. The arm stays for the reference's
+                // shape.
                 self.dest = None;
             }
         }
@@ -482,6 +492,9 @@ impl Bot {
     /// `ClientApp::destroy` (client_app.cpp:514-550): idempotent — a
     /// destroyed bot refuses further work; the session is logged off, the
     /// controller reset (client_app.cpp:525) and the entities cleared.
+    /// The reference also calls the personality module's
+    /// `onClientAppDestroy` (client_app.cpp:528-536); the port has no
+    /// Python personality face, so that hook has no counterpart here.
     pub fn destroy(&mut self) {
         if self.destroyed {
             return;
@@ -1384,5 +1397,91 @@ mod tests {
 
         bot.destroy();
         assert_eq!(bot.add_timer(0.1, Box::new(Vec::new), false), -1);
+    }
+
+    /// The BW-12-04-03 acceptance: the same movement script leaves two
+    /// bots on the same trajectory — every tick's position and yaw
+    /// recorded and compared — whether or not the script gate is on,
+    /// because the movement block runs independently of
+    /// `shouldUseScripts` (client_app.cpp:458-501); and a delivered
+    /// log-off tears the movement faces down the way `clearAllEntities`
+    /// does: the disconnect tick returns the script's destroy decision,
+    /// and the next tick finds the destination gone.
+    #[test]
+    fn the_same_movement_script_yields_the_same_trajectory() {
+        let script = |bot: &mut Bot, trace: &mut Vec<(Vector3, f32)>| {
+            bot.snap_to(Vector3::new(0.0, 0.0, 0.0));
+            bot.move_to(Vector3::new(3.0, 0.0, 4.0));
+            for _ in 0..4 {
+                bot.tick(TICK_PERIOD);
+                trace.push((bot.position(), bot.yaw()));
+            }
+            bot.face_towards(Vector3::new(10.0, 0.0, 0.0));
+            trace.push((bot.position(), bot.yaw()));
+            bot.stop();
+            bot.snap_to(Vector3::new(0.0, 0.0, 0.0));
+            bot.move_to(Vector3::new(-4.0, 0.0, 3.0));
+            for _ in 0..5 {
+                bot.tick(TICK_PERIOD);
+                trace.push((bot.position(), bot.yaw()));
+            }
+        };
+
+        let mut scripted = Bot::new("b", "p", UDP, "t");
+        scripted.feed_log_on_result(1, 1);
+        scripted.tick(TICK_PERIOD);
+        let mut scripted_trace = Vec::new();
+        script(&mut scripted, &mut scripted_trace);
+
+        let mut gate_closed = Bot::new("b", "p", UDP, "t");
+        gate_closed.feed_log_on_result(1, 1);
+        gate_closed.tick(TICK_PERIOD);
+        gate_closed.set_scripts_enabled(false);
+        let mut gate_trace = Vec::new();
+        script(&mut gate_closed, &mut gate_trace);
+
+        assert_eq!(scripted_trace, gate_trace);
+        // The script actually moved the bots: they ended heading for
+        // (-4, 0, 3), still under way.
+        assert!(scripted.is_moving());
+        assert!((scripted.yaw() - (-4.0f32).atan2(3.0)).abs() < 1e-4);
+
+        // The log-off tears the session down: the logged-off event is
+        // delivered while the session is still online, so the disconnect
+        // tick hands back the destroy decision (client_app.cpp:448-452).
+        // The destination itself survives — with the player gone the
+        // whole movement block is skipped, and it is the fleet's removal
+        // (`destroy`/`pop`) that discards the bot.
+        scripted.feed_logged_off(Some(false));
+        assert!(!scripted.tick(TICK_PERIOD));
+        assert!(!scripted.is_dormant());
+        scripted.tick(TICK_PERIOD);
+        assert!(scripted.is_moving());
+    }
+
+    /// The private movement helpers carry the same in-world guard the
+    /// public faces do; an offline bot refuses both without moving.
+    #[test]
+    fn movement_helpers_refuse_an_out_of_world_bot() {
+        let mut bot = Bot::new("b", "p", UDP, "t");
+        bot.add_move(TICK_PERIOD);
+        bot.update_position(Vector3::new(1.0, 0.0, 1.0), 0.5);
+        assert_eq!(bot.position(), Vector3::new(0.0, 0.0, 0.0));
+        assert_eq!(bot.yaw(), 0.0);
+    }
+
+    /// `TimerRec`'s equality rides `cmp` — the same deadline and id are
+    /// equal whatever closure they carry.
+    #[test]
+    fn timer_recs_compare_by_deadline_and_id() {
+        let rec = |id: i32| TimerRec {
+            id,
+            interval: 0.2,
+            start_time: 0.1,
+            func: Box::new(Vec::new),
+            repeat: false,
+        };
+        assert!(rec(1) == rec(1));
+        assert!(rec(1) != rec(2));
     }
 }

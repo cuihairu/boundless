@@ -24,6 +24,7 @@ members = [
     "crates/plugin-host",
     "crates/watcher",
     "crates/message_logger",
+    "crates/profiler",
     "crates/client",
     "crates/load",
     "apps/bots",
@@ -70,6 +71,10 @@ db-postgres = { path = "crates/db-postgres" }
 scene = { path = "crates/scene" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
+# The profiler frame and counter compatibility layer (BW-12-03-01); the
+# `_bw_profile` module (BW-12-03-02) records through its `g_profiler`
+# global.
+profiler = { path = "crates/profiler" }
 server-runtime = { path = "crates/server-runtime" }
 client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
 # load = { path = "crates/load" }  # re-add with first consumer

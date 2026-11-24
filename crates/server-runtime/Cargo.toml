@@ -29,10 +29,18 @@ flate2 = { version = "1.1.11", default-features = false, features = ["rust_backe
 mercury = { workspace = true }
 resources = { workspace = true }
 
+# The auction pages' `eregi` criteria matching (BW-14-03-04) is POSIX
+# ERE; the regex crate covers the same common forms.
+regex = { workspace = true }
+
 [dev-dependencies]
 # BW-16-02-03 backend-isolation proof: the postgresql driver is exercised
 # from outside its own crate.
 db-postgres = { workspace = true }
+
+# The fantasydemo login acceptance (BW-14-01-02) parses the fixture's
+# entity defs; the DBApp storage def face is built from the parsed map.
+entitydef = { workspace = true }
 
 # Performance baselines (perf-bench batch 1): the update-loop dispatch bench.
 criterion = "0.8"

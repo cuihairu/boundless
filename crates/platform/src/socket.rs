@@ -65,12 +65,12 @@ pub const MSG_ERRQUEUE: i32 = libc::MSG_ERRQUEUE;
 pub const ECONNREFUSED: i32 = libc::ECONNREFUSED;
 /// `EAGAIN`/`EWOULDBLOCK`, the receive queue drained.
 pub const EAGAIN: i32 = libc::EAGAIN;
+/// `ENOBUFS`, the send queue is full.
+pub const ENOBUFS: i32 = libc::ENOBUFS;
 /// `EHOSTUNREACH`, no route to the named host.
 pub const EHOSTUNREACH: i32 = libc::EHOSTUNREACH;
 /// `EMSGSIZE`, the datagram exceeded the path or interface MTU.
 pub const EMSGSIZE: i32 = libc::EMSGSIZE;
-/// `ENOBUFS`, the kernel transmit queue is full (`basicSendSingleTry`).
-pub const ENOBUFS: i32 = libc::ENOBUFS;
 
 /// `htons`: host order to network order.
 pub fn htons(value: u16) -> u16 {

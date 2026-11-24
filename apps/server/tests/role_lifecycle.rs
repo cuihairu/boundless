@@ -1,13 +1,31 @@
-//! BW-15-02-01: each reference role starts and shuts down on a quit
-//! signal. The acceptance is the topology's start/close contract: a role
-//! that starts is a live process and returns `0` when the server stops.
+//! BW-15-02-01: each reference role starts and stops under the signal
+//! faces the reference's own init chains register. The acceptance is the
+//! topology's start/close contract: a role that starts is a live process,
+//! the controlled stop returns `0`, and the other signals take the same
+//! dispositions the reference gives them.
 //!
-//! `server_runtime::app` prints `[<role>] running` once it is waiting on
-//! the quit signals and `[<role>] has shut down.` on the way out. The
-//! signals go through `/bin/kill` so the test needs no `libc`
+//! The matrix (`server_runtime::app::run`, the generic `bwMainT` body):
+//!
+//! - SIGUSR1 is the controlled stop (`machine_guard.hpp:714`
+//!   `setControlledShutdown`): the handler logs
+//!   `ServerApp::shutDown: shutting down` (`server_app.cpp:542-546`),
+//!   breaks the loop, and the role exits `0` after the shutdown tail.
+//! - SIGINT is registered by `ServerApp::init` (`server_app.cpp:240`);
+//!   the base arm resets the disposition and re-raises
+//!   (`server_app.cpp:556-570`), so the process dies *on* SIGINT and the
+//!   shutdown tail never runs.
+//! - SIGQUIT is registered by `EntityApp::init` (`entity_app.cpp:91`)
+//!   into the immediate slot (`signal_processor.cpp:306-308`): the
+//!   CRITICAL text prints straight from signal context and the abort
+//!   surfaces as SIGABRT.
+//! - SIGTERM has no face -- like the reference, the default disposition
+//!   takes the process.
+//!
+//! The signals go through `/bin/kill` so the test needs no `libc`
 //! dev-dependency (which would churn `Cargo.lock`).
 
 use std::io::{BufRead, BufReader};
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -39,8 +57,8 @@ fn server_bin() -> std::path::PathBuf {
 }
 
 /// Spawn `role`, wait for the startup line, deliver `signal_name`
-/// (`"TERM"`, `"INT"`, `"QUIT"`), and return the exit status plus the
-/// full stderr.
+/// (`"USR1"`, `"INT"`, `"QUIT"`, `"TERM"`), and return the exit status
+/// plus the full stderr.
 fn start_and_stop(role: &str, signal_name: &str) -> (ExitStatus, String) {
     let mut child = Command::new(server_bin())
         .arg(role)
@@ -69,14 +87,16 @@ fn start_and_stop(role: &str, signal_name: &str) -> (ExitStatus, String) {
         }
     });
 
-    // Wait for the startup line, bounded. A timeout keeps polling: the
-    // child may simply be slow under load.
+    // Wait for the running line, bounded. It prints after every signal
+    // face is installed, so a signal delivered from here on is the
+    // face's to answer. A timeout keeps polling: the child may simply
+    // be slow under load.
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut started = false;
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => {
-                if line.contains("] running") {
+                if line.contains("is running") {
                     started = true;
                     break;
                 }
@@ -92,7 +112,7 @@ fn start_and_stop(role: &str, signal_name: &str) -> (ExitStatus, String) {
     if !started {
         let _ = child.kill();
         let _ = child.wait();
-        panic!("{role}: never reached 'running'");
+        panic!("{role}: never reached 'is running'");
     }
 
     // Ask for shutdown. `/bin/kill` wraps `kill(2)`; avoiding a libc
@@ -128,20 +148,24 @@ fn start_and_stop(role: &str, signal_name: &str) -> (ExitStatus, String) {
 }
 
 #[test]
-fn every_role_starts_and_shuts_down_on_sigterm() {
+fn every_role_starts_and_shuts_down_on_the_controlled_signal() {
     for role in ROLES {
-        let (status, stderr) = start_and_stop(role, "TERM");
+        let (status, stderr) = start_and_stop(role, "USR1");
         assert!(
             status.success(),
-            "{role}: non-zero exit after SIGTERM: {status:?}\n{stderr}"
+            "{role}: non-zero exit on the controlled stop: {status:?}\n{stderr}"
+        );
+        assert!(
+            stderr.contains("ServerApp::shutDown: shutting down"),
+            "{role}: missing the shutDown log:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("dispatchSignal: SIGUSR1"),
+            "{role}: missing the dispatch line:\n{stderr}"
         );
         assert!(
             stderr.contains("has shut down."),
             "{role}: missing the shutdown line:\n{stderr}"
-        );
-        assert!(
-            stderr.contains("dispatchSignal: SIGTERM"),
-            "{role}: missing the dispatch line:\n{stderr}"
         );
     }
 }
@@ -151,9 +175,10 @@ fn the_runners_lane_budget_stops_the_server_alone() {
     // `ci/runners.sh` starts each role with `CI_RUNNERS_TIMEOUT` and
     // sends nothing else: the process must come up and stop itself on
     // that budget, or the lane would hold the runner for the job
-    // timeout. The stop goes through the same clean path an operator
-    // signal takes. The wait is bounded, so a regression shows up as a
-    // failure rather than a hung lane.
+    // timeout. The budget targets the main thread with the controlled
+    // stop (SIGUSR1), so the stop goes through the same drain the
+    // operator's signal takes. The wait is bounded, so a regression
+    // shows up as a failure rather than a hung lane.
     let mut child = Command::new(server_bin())
         .arg("baseapp")
         .env("CI_RUNNERS_TIMEOUT", "1")
@@ -200,28 +225,79 @@ fn the_runners_lane_budget_stops_the_server_alone() {
         status.success(),
         "baseapp: non-zero exit on its own budget: {status:?}\n{stderr}"
     );
+    assert!(
+        stderr.contains("dispatchSignal: SIGUSR1"),
+        "the budget stop drains through the loop:\n{stderr}"
+    );
     assert!(stderr.contains("has shut down."), "{stderr}");
-    assert!(stderr.contains("dispatchSignal: SIGTERM"), "{stderr}");
 }
 
 #[test]
-fn sigint_and_sigquit_also_shut_down() {
-    // SIGINT and SIGQUIT are held and consumed the same way. The base
-    // reference re-raises SIGINT instead (ServerApp::onSignalled), so a
-    // clean exit here is the minimal entry's documented deviation: a dev
-    // server stops cleanly on Ctrl-C. The per-app SIGQUIT handler joins
-    // with the full ServerApp wiring.
-    for signal in ["INT", "QUIT"] {
-        let (status, stderr) = start_and_stop("baseapp", signal);
-        assert!(
-            status.success(),
-            "SIG{signal}: non-zero exit: {status:?}\n{stderr}"
-        );
-        assert!(
-            stderr.contains(&format!("dispatchSignal: SIG{signal}")),
-            "SIG{signal}: missing the dispatch line:\n{stderr}"
-        );
-    }
+fn sigint_dies_through_the_base_reraise() {
+    // `ServerApp::onSignalled`'s base arm resets the disposition and
+    // re-raises (server_app.cpp:556-570), so the process dies on the
+    // signal itself and the shutdown tail never runs.
+    let (status, stderr) = start_and_stop("baseapp", "INT");
+    assert_eq!(
+        status.signal(),
+        Some(2), // SIGINT
+        "SIGINT must kill the process as the reference re-raise does:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("dispatchSignal: SIGINT"),
+        "the drain logs the signal before the arm:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("has shut down."),
+        "SIGINT must not reach the shutdown tail:\n{stderr}"
+    );
+}
+
+#[test]
+fn sigquit_takes_the_critical_slot() {
+    // `EntityApp::onSignalled`'s SIGQUIT arm prints the CRITICAL text
+    // (the suspected manager for a `BaseApp` is the `BaseAppMgr`) and
+    // aborts, which surfaces as SIGABRT. The immediate slot runs before
+    // the drain, so no dispatch line and no shutdown tail.
+    let (status, stderr) = start_and_stop("baseapp", "QUIT");
+    assert_eq!(
+        status.signal(),
+        Some(6), // SIGABRT
+        "SIGQUIT must end in the CRITICAL abort:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Received QUIT signal."),
+        "missing the CRITICAL text:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("BaseAppMgr killing this BaseApp"),
+        "the CRITICAL text names the suspected manager:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("has shut down."),
+        "SIGQUIT must not reach the shutdown tail:\n{stderr}"
+    );
+}
+
+#[test]
+fn sigterm_takes_the_default_disposition() {
+    // The reference registers no SIGTERM face: the default disposition
+    // takes the process, with neither a dispatch line nor a shutdown
+    // tail.
+    let (status, stderr) = start_and_stop("baseapp", "TERM");
+    assert_eq!(
+        status.signal(),
+        Some(15), // SIGTERM
+        "SIGTERM must kill the process at the default disposition:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("dispatchSignal"),
+        "SIGTERM has no face, so the drain never sees it:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("has shut down."),
+        "SIGTERM must not reach the shutdown tail:\n{stderr}"
+    );
 }
 
 /// BW-14-04-03: on its first start the role initialises the resource roots
