@@ -1985,6 +1985,7 @@ dependencies = [
  "criterion",
  "db",
  "db-postgres",
+ "entitydef",
  "flate2",
  "foundation",
  "libc",

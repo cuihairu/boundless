@@ -34,6 +34,10 @@ resources = { workspace = true }
 # from outside its own crate.
 db-postgres = { workspace = true }
 
+# BW-14-01-02: the FantasyDemo run loads the tracked fixture definitions
+# (FsResolver/TypeContext) the same way `bwentity_load` does.
+entitydef = { workspace = true }
+
 # Performance baselines (perf-bench batch 1): the update-loop dispatch bench.
 criterion = "0.8"
 
