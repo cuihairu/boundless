@@ -122,3 +122,7 @@ mod particle_oracle_data;
 
 #[cfg(feature = "winit-backend")]
 pub mod app;
+
+pub mod particle;
+pub mod particle_editor;
+mod particle_oracle_data;
