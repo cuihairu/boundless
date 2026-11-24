@@ -13,6 +13,7 @@ pub mod cellappmgr;
 pub mod client_login;
 pub mod cluster_shutdown;
 pub mod config;
+pub mod controllers;
 pub mod data_download;
 pub mod db_login;
 pub mod dbapp;
@@ -20,6 +21,7 @@ pub mod dbappmgr;
 pub mod dead_cell_app;
 pub mod dispatcher;
 pub mod entity_creator;
+pub mod entity_destroy;
 pub mod entity_dispatch;
 pub mod global_bases;
 pub mod headless_client;
@@ -31,10 +33,14 @@ pub mod login_request;
 pub mod loginapp;
 pub mod machined;
 pub mod mailbox_call;
+pub mod movement;
+pub mod navigation_controller;
 pub mod offloaded_backup;
+pub mod passengers;
 pub mod pending_logins;
 pub mod proxy_client;
 pub mod proxy_logoff;
+pub mod real_entity;
 pub mod relogon;
 pub mod reviver;
 pub mod script_timers;
@@ -45,6 +51,8 @@ pub mod services_map;
 pub mod shared_data;
 pub mod shutdown;
 pub mod signals;
+pub mod space;
+pub mod space_data;
 pub mod task_manager;
 pub mod tick;
 pub mod time_and_move;
@@ -55,6 +63,8 @@ pub mod timekeeper;
 /// `CreateProcess` stop path is a separate BW-15-03 item.
 #[cfg(unix)]
 pub mod topology;
+
+pub mod timer_controller;
 // The time queue is cstdmf and lives in foundation; re-exported under the
 // historical `timers` name so `crate::timers::…` paths keep working.
 pub use foundation::time_queue as timers;
