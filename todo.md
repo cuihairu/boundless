@@ -1361,12 +1361,13 @@
 覆盖 XML 存储、BaseApp 二级库、归档整合、auto-load 和重启恢复。用原版生成的数据执行导入、读写、合并和恢复。
 
 - [x] **BW-09-03-01 实现 XML 持久化**（c72f218）。**验收** 原版 XML 可读写。
-- [ ] **BW-09-03-02 读取原版 SQLite 二级库**。**验收** 已知记录无损导入。
-  - 卡点（未勾）：下方同票号 `[x]` 行（`62f8bf5`）的代码在 main 上**是孤儿**——`crates/db/src/secondary_database.rs`（672 行）与它依赖的 `xml_database.rs`（2021 行）、`log_on.rs` 均未在 `crates/db/src/lib.rs` 声明，与 BW-02 mercury 18 孤儿同型的系统性合并丢失。2026-11-24 试整体声明实测撞**代差**：`EntityStorage` 现行 trait 面已无 `lookup_entity_by_name`/`lookup_entities`/`set_log_on_record`/`remove_log_on_record`/`log_on_record`，`put_entity` 参数数 3→4，且缺 `logon_of`/`check_out`/`check_in`/`all_entities`；`rusqlite`/`resources` 未入 `crates/db/Cargo.toml`，`EntityKey: Ord` 未实现。需按现行 trait 面重接后方能勾，实验已回滚。
-- [ ] **BW-09-03-03 合并归档**。**验收** 同实体版本取舍符合基线。
-  - 卡点（未勾）：同 03-02——`1475730` 的代码在 `secondary_database.rs` 同文件中（孤儿），与 03-02 同一重接工作一并不落地即不能勾。
-- [ ] **BW-09-03-04 恢复 auto-load 实体**。**验收** 重启后实体集合吻合。
-  - 卡点（未勾）：同 03-02——`b2d1c3a` 的代码 `auto_load_recovery.rs`（295 行）未声明，且它 import 的 `crate::xml_database` 同属孤儿链，随 03-02 的重接一并处理。
+- [x] **BW-09-03-02 读取原版 SQLite 二级库**。**验收** 已知记录无损导入。 (62f8bf5, 孤儿链复活 d54b9fd)
+  - 2026-11-25 复活：四模块（`auto_load_recovery`/`log_on`/`secondary_database`/`xml_database`）声明入 `crates/db/src/lib.rs`，`rusqlite 0.43 bundled` + `resources` 入 db Cargo.toml，`EntityKey` 加 `Ord`；`xml_database.rs` 按**嫁接非重放**接到现行 `EntityStorage` 面——旧 log-on 三元组（拒绝语义）由 `active_set` 占用面（`logon_of`/`check_out`/`check_in`/`all_entities`）顶替，`put_entity` 4 参，`lookup_entity_by_name`/`lookup_entities` 转固有查询，`DataSection::remove_child_at` 补位置删行。
+- [x] **BW-09-03-03 合并归档**。**验收** 同实体版本取舍符合基线。 (1475730, 孤儿链复活 d54b9fd)
+  - `admits` 严格过期落窗（`primary_database_update_queue.cpp:69-75`：等时首写胜）与 `read_table`/`count_rows`/`first_game_time` 错误臂随复活批测试锁死。
+- [x] **BW-09-03-04 恢复 auto-load 实体**。**验收** 重启后实体集合吻合。 (b2d1c3a, 孤儿链复活 d54b9fd)
+  - 复活批补 5 条守卫测：契约拒绝臂（未知类型/占用 id/跨型显式 id）、改名更新（缺省值回退+旧名释放）、按名删行、两段式 id 分配、非法 auto-load id 报告跳过、截断 cell 流拒绝、空归档空间零条目。
+  - 三行同批复核（d54b9fd 树）：db 173 测绿，workspace 109 suites 4298 绿，clippy/fmt 清；DA：secondary_database 98.21%、auto_load_recovery 98.70%、xml_database 97.93%（34 个 0 行全为已覆盖块的闭合括号伪迹或公共面不可达防御臂——datasection 按 lossy UTF-8 解析使 `value_from_section` 错误臂结构性不可达；`log_on.rs` 纯声明无 DA）。
 - [x] **BW-09-03-01 实现 XML 持久化**。**验收** 原版 XML 可读写。 (25d155d)
 - [x] **BW-09-03-02 读取原版 SQLite 二级库**。**验收** 已知记录无损导入。 (62f8bf5)
 - [x] **BW-09-03-03 合并归档**。**验收** 同实体版本取舍符合基线。 (1475730)
