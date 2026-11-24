@@ -1904,6 +1904,7 @@ dependencies = [
  "criterion",
  "db",
  "db-postgres",
+ "flate2",
  "foundation",
  "libc",
  "md-5 0.10.6",
