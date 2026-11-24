@@ -9,12 +9,13 @@ The read-side contract and the PostgreSQL schema lifecycle exist:
 `crates/db` (backend selection, error vocabulary, `get_entity` reads) and
 `crates/db-postgres` (entity schema mapping, the account table, schema
 initialisation, dry-run, incremental upgrade, the entity upsert and DBID
-allocation, BW-09-06-04) — described on
+allocation, backup export and restore, BW-09-06-04 and BW-09-07-04) —
+described on
 [the database model page](/architecture/database-model). Deletes and lookups
 have not landed (BW-09-01-03..04), and neither have the shared write-path
 cases: transactions, concurrent writes, reconnect, relogin
-(BW-09-06-05..10), so the procedures below remain *targets* tracked by
-`todo.md` ids.
+(BW-09-06-05..10), so the migration steps below remain *targets* tracked
+by `todo.md` ids; the recovery step runs (below).
 :::
 
 ## Backends
@@ -86,6 +87,22 @@ are identical":
 | Step | `todo.md` | What "done" means |
 | --- | --- | --- |
 | Export and restore a backup | BW-09-07-04 | an empty target database ends up with the same records |
+
+This step has landed (`crates/db-postgres/src/backup.rs`, BW-09-07-04), with
+the same external-program shape as the reference's `snapshot_helper`: an
+export runs `pg_dump` into a SQL file — the consistent image of the whole
+database, replacing the reference's LVM snapshot of the datadir — and a
+restore replays that file with `psql` into an *empty* database, stopping at
+the first failing statement, because a plain dump cannot merge into a
+database that already holds the tables. The reference has no restore tool at
+all (putting the datadir files back was an operator's job), so the restore
+contract is Boundless's own, and so is the record check: no reference code
+ever compares rows, only a schema digest.
+
+The dump carries every identity column's `setval`, so the allocation
+sequence travels with the records:
+`PostgresStorage::next_allocatable_id` reads the next DBID a restored
+table would hand out, without consuming a value.
 
 Against a restored copy, check the same set of values that BW-09-07 uses for
 import: entity ids, account links, binary fields, defaults, and the next
