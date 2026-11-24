@@ -10,6 +10,7 @@
 
 mod chunk_waypoint;
 mod chunk_waypoint_set_data;
+mod navloc;
 
 pub use chunk_waypoint::{
     ADJACENT_RANGE_END, ADJACENT_RANGE_START, ChunkWaypoint, ChunkWaypointVertexProvider, Edge,
@@ -18,6 +19,7 @@ pub use chunk_waypoint::{
 pub use chunk_waypoint_set_data::{
     ChunkWaypointSetData, NAVPOLY_ELEMENT_SIZE, NavmeshDecodeError, parse_world_navmesh,
 };
+pub use navloc::NavLoc;
 
 /// `EdgeIndex` (`chunk_waypoint.hpp:25`).
 pub type EdgeIndex = u16;

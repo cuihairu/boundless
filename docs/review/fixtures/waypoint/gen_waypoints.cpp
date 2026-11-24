@@ -11,7 +11,9 @@
 // The old graph: set 0 (girth 0.6) chains three polygons A-B-C with shared
 // corners (vertex dedup), one chunk-boundary edge (65535) and three vista
 // edges (negative adjacency -> top-bit flags); set 1 (girth 1.0) holds a
-// lone quad with two boundary and two vista edges.
+// lone quad with two boundary and two vista edges. The polygons run
+// CLOCKWISE in the x-z plane, like the engine's own navpolys — the
+// reference containsProjection rejects interior points of CCW polygons.
 
 #include <cmath>
 #include <cstdio>
@@ -130,37 +132,40 @@ int main()
     // Set 0 (girth 0.6): the A-B-C chain with shared corners.
     // Adjacency is the 1-based GLOBAL polygon id; the writer remaps it to
     // the 0-based local index (pos.indexMap[p+1] = pos.count++).
+    // Vertices run CLOCKWISE in the x-z plane — the reference
+    // containsProjection rejects interior points of CCW polygons, so the
+    // writer's order is reversed together with the edge adjacency lists.
     view.addPoly(0.f, 1.f, 0,
         {
-            // poly A (global 1)
-            { 0.f, 0.f, 2, false },  // -> B
-            { 2.f, 0.f, 2, false },  // -> B (shared corner with B)
-            { 2.f, 2.f, -5, false }, // vista, cover bits from ~5
+            // poly A (global 1), CW
             { 0.f, 2.f, 0, true },   // chunk boundary (65535)
+            { 2.f, 2.f, -5, false }, // vista, cover bits from ~5
+            { 2.f, 0.f, 2, false },  // -> B (shared corner with B)
+            { 0.f, 0.f, 2, false },  // -> B
         });
     view.addPoly(1.f, 1.f, 0,
         {
-            // poly B (global 2)
-            { 2.f, 0.f, 3, false },  // -> C
-            { 4.f, 0.f, 3, false },  // -> C (shared corner with C)
-            { 2.f, 2.f, 1, false },  // -> A (shared corner with A)
+            // poly B (global 2), CW
             { 2.f, 2.f, -2, false }, // vista
+            { 2.f, 2.f, 1, false },  // -> A (shared corner with A)
+            { 4.f, 0.f, 3, false },  // -> C (shared corner with C)
+            { 2.f, 0.f, 3, false },  // -> C
         });
     view.addPoly(2.f, 4.f, 0,
         {
-            // poly C (global 3)
-            { 2.f, 2.f, 2, false },  // -> B (shared corner)
-            { 4.f, 0.f, -7, false }, // vista
+            // poly C (global 3), CW
             { 4.f, 2.f, 0, true },   // chunk boundary
+            { 4.f, 0.f, -7, false }, // vista
+            { 2.f, 2.f, 2, false },  // -> B (shared vertex)
         });
 
-    // Set 1 (girth 1.0): the lone quad D (global 4).
+    // Set 1 (girth 1.0): the lone quad D (global 4), CW.
     view.addPoly(0.f, 2.f, 1,
         {
-            { 10.f, 10.f, 0, true },  // chunk boundary
-            { 12.f, 10.f, -1, false },// vista
-            { 12.f, 12.f, 0, true },  // chunk boundary
             { 10.f, 12.f, -3, false },// vista
+            { 12.f, 12.f, 0, true },  // chunk boundary
+            { 12.f, 10.f, -1, false },// vista
+            { 10.f, 10.f, 0, true },  // chunk boundary
         });
 
     // ---- original writer: version 0 multi-set record ----
@@ -241,15 +246,60 @@ int main()
         }
 
         // adjacency decode probes straight off the reference accessors
+        // (A: 0 boundary, 1 vista, 2-3 the B links; C: 0 boundary, 1 vista,
+        // 2 the B link)
         const ChunkWaypoint& wpA = wps[0];
-        printf("ADJ %d %d %d\n", 0, 0,
-               int(wpA.edges_[0].neighbouringWaypoint()));
         printf("ADJ %d %d %d\n", 0, 2,
                int(wpA.edges_[2].neighbouringWaypoint()));
-        printf("CHUNKBOUND %d %d %d\n", 0, 3,
-               int(wpA.edges_[3].adjacentToChunk()));
-        printf("VISTA %04X %04X %04X\n", wpA.edges_[2].neighbour_,
-               wps[1].edges_[3].neighbour_, wps[2].edges_[1].neighbour_);
+        printf("ADJ %d %d %d\n", 0, 0,
+               int(wpA.edges_[0].neighbouringWaypoint()));
+        printf("CHUNKBOUND %d %d %d\n", 0, 0,
+               int(wpA.edges_[0].adjacentToChunk()));
+        printf("VISTA %04X %04X %04X\n", wpA.edges_[1].neighbour_,
+               wps[1].edges_[0].neighbour_, wps[2].edges_[1].neighbour_);
+
+        // ---- BW-10-04-02: locate & project probes, straight off the
+        // reference objects ----
+        // CONTAINS <wp> <x> <y> <z> <0/1> — the height range and the
+        // projection containment in one call.
+        printf("CONTAINS 0 0 1 1 1 %d\n", wps[0].contains(setA, GeoSpaceVector3(1.f, 1.f, 1.f)) ? 1 : 0);
+        printf("CONTAINS 0 0 1 0.5 1 %d\n", wps[0].contains(setA, GeoSpaceVector3(1.f, 0.5f, 1.f)) ? 1 : 0);
+        printf("CONTAINS 0 0 1 1.95 1 %d\n", wps[0].contains(setA, GeoSpaceVector3(1.f, 1.95f, 1.f)) ? 1 : 0);
+        printf("CONTAINS 0 0 1 2.05 1 %d\n", wps[0].contains(setA, GeoSpaceVector3(1.f, 2.05f, 1.f)) ? 1 : 0);
+        printf("CONTAINS 0 1 2.5 1 1 %d\n", wps[1].contains(setA, GeoSpaceVector3(2.5f, 1.f, 1.f)) ? 1 : 0);
+        printf("CONTAINS 0 2 2.5 2.95 1 %d\n", wps[2].contains(setA, GeoSpaceVector3(2.5f, 2.95f, 1.f)) ? 1 : 0);
+        printf("CONTAINS 0 2 3.5 3 1 %d\n", wps[2].contains(setA, GeoSpaceVector3(3.5f, 3.f, 1.f)) ? 1 : 0);
+        // on the boundary edge (x = 0): the -0.01 fudge keeps it in.
+        printf("CONTAINS 0 0 0 0.5 1 %d\n", wps[0].contains(setA, GeoSpaceVector3(0.f, 0.5f, 1.f)) ? 1 : 0);
+        // a point outside every projection.
+        printf("CONTAINS 0 0 1 5 1 %d\n", wps[0].contains(setA, GeoSpaceVector3(1.f, 5.f, 1.f)) ? 1 : 0);
+        // set 1's quad D.
+        printf("CONTAINS 1 0 11 1 11 %d\n", wpsB[0].contains(setB, GeoSpaceVector3(11.f, 1.f, 11.f)) ? 1 : 0);
+        printf("CONTAINS 1 0 13 1 11 %d\n", wpsB[0].contains(setB, GeoSpaceVector3(13.f, 1.f, 11.f)) ? 1 : 0);
+
+        // CONTAINSPROJ <wp> <x> <z> <0/1> — the projection test alone.
+        printf("CONTAINSPROJ 0 0 1 1 %d\n", wps[0].containsProjection(setA, GeoSpaceVector3(1.f, 0.f, 1.f)) ? 1 : 0);
+        printf("CONTAINSPROJ 0 0 0.5 0.5 %d\n", wps[0].containsProjection(setA, GeoSpaceVector3(0.5f, 0.f, 0.5f)) ? 1 : 0);
+        printf("CONTAINSPROJ 0 0 3 1 %d\n", wps[0].containsProjection(setA, GeoSpaceVector3(3.f, 0.f, 1.f)) ? 1 : 0);
+
+        // FIND <x> <y> <z> <idx> — the containing waypoint, or -1.
+        printf("FIND 1 1 1 %d\n", setA.find(GeoSpaceVector3(1.f, 1.f, 1.f)));
+        printf("FIND 1 0.5 1 %d\n", setA.find(GeoSpaceVector3(1.f, 0.5f, 1.f)));
+        printf("FIND 1 1.95 1 %d\n", setA.find(GeoSpaceVector3(1.f, 1.95f, 1.f)));
+        printf("FIND 1 2.05 1 %d\n", setA.find(GeoSpaceVector3(1.f, 2.05f, 1.f)));
+        printf("FIND 2.5 1 1 %d\n", setA.find(GeoSpaceVector3(2.5f, 1.f, 1.f)));
+        printf("FIND 2.5 2.95 1 %d\n", setA.find(GeoSpaceVector3(2.5f, 2.95f, 1.f)));
+        printf("FIND 3.5 3 1 %d\n", setA.find(GeoSpaceVector3(3.5f, 3.f, 1.f)));
+        printf("FIND 0 0.5 1 %d\n", setA.find(GeoSpaceVector3(0.f, 0.5f, 1.f)));
+        printf("FIND 1 5 1 %d\n", setA.find(GeoSpaceVector3(1.f, 5.f, 1.f)));
+
+        // FINDIGN <x> <y> <z> <idx> — ignoreHeight true: the best height
+        // fit among the projection-containing waypoints.
+        printf("FINDIGN 1 5 1 %d\n", setA.find(GeoSpaceVector3(1.f, 5.f, 1.f), true));
+        printf("FINDIGN 2.5 5 1 %d\n", setA.find(GeoSpaceVector3(2.5f, 5.f, 1.f), true));
+        printf("FINDIGN 2.5 1.05 1 %d\n", setA.find(GeoSpaceVector3(2.5f, 1.05f, 1.f), true));
+        printf("FINDIGN 1 1 1 %d\n", setA.find(GeoSpaceVector3(1.f, 1.f, 1.f), true));
+
         printf("RESULT OK\n");
     }
 

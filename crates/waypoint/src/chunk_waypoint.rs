@@ -7,7 +7,7 @@
 //! `Vec<Edge>`.
 
 use super::{EdgeIndex, WaypointIndex};
-use foundation::math::Vector2;
+use foundation::math::{Vector2, Vector3};
 use std::cell::Cell;
 
 /// `ChunkWaypoint::Edge::adjacentRangeStart` (`chunk_waypoint.cpp:49`):
@@ -79,6 +79,66 @@ pub struct ChunkWaypoint {
 }
 
 impl ChunkWaypoint {
+    /// `contains` (`chunk_waypoint.cpp:105-122`): the point is in the
+    /// waypoint when its height sits within the min/max range (the
+    /// `HEIGHT_RANGE_TOLERANCE` band, the reference spells the literal
+    /// 0.1) **and** the projection test holds.
+    pub fn contains(
+        &self,
+        edges: &[Edge],
+        provider: &dyn ChunkWaypointVertexProvider,
+        point: Vector3,
+    ) -> bool {
+        if point.y < self.min_height - 0.1 {
+            return false;
+        }
+        if point.y > self.max_height + 0.1 {
+            return false;
+        }
+        self.contains_projection(edges, provider, point)
+    }
+
+    /// `containsProjection` (`chunk_waypoint.cpp:137-172`): the x-z
+    /// winding test — every edge must keep `c = xd*v - zd*u` above
+    /// `-0.01` ("a fudge factor to accommodate floating point error").
+    pub fn contains_projection(
+        &self,
+        edges: &[Edge],
+        provider: &dyn ChunkWaypointVertexProvider,
+        point: Vector3,
+    ) -> bool {
+        let edge_count = self.edge_count as usize;
+        let run_start = self.edge_start as usize;
+
+        let mut p_last = *provider.vertex_by_index(edges[run_start + edge_count - 1].vertex_index);
+
+        for i in 0..edge_count {
+            let this = *provider.vertex_by_index(edges[run_start + i].vertex_index);
+
+            let u = this.x - p_last.x;
+            let v = this.y - p_last.y;
+            let xd = point.x - p_last.x;
+            let zd = point.z - p_last.y;
+
+            let c = xd * v - zd * u;
+            if c <= -0.01 {
+                return false;
+            }
+
+            p_last = this;
+        }
+
+        true
+    }
+
+    /// `makeMaxHeight` (`chunk_waypoint.cpp:311-317`): the point is moved
+    /// to `maxHeight_`. The reference maps world↔waypoint space through
+    /// the chunk; the port's waypoint-space model is the identity mapping
+    /// (registered).
+    pub fn make_max_height(&self, point: &mut Vector3) {
+        point.y = self.max_height;
+    }
+
     /// The waypoint's edge run in the set's shared edge array (the
     /// `DependentArray` begin/end pair).
     pub fn edge_range(&self) -> std::ops::Range<usize> {

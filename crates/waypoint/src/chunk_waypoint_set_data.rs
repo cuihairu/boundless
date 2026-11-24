@@ -11,7 +11,7 @@
 
 use super::chunk_waypoint::{ChunkWaypoint, ChunkWaypointVertexProvider, Edge};
 use super::{EdgeIndex, WaypointIndex};
-use foundation::math::Vector2;
+use foundation::math::{Vector2, Vector3};
 use std::collections::HashMap;
 
 /// `NAVPOLY_ELEMENT_SIZE` (`chunk_waypoint_set_data.cpp:437-438`):
@@ -180,6 +180,37 @@ impl ChunkWaypointSetData {
     /// The set's shared edge array (`edges_`).
     pub fn edges(&self) -> &[Edge] {
         &self.edges
+    }
+
+    /// `ChunkWaypointSetData::find` (`chunk_waypoint_set_data.cpp:579-624`,
+    /// re-exported by `ChunkWaypointSet::find`): the waypoint containing
+    /// the point. With `ignore_height` set the height range is skipped and
+    /// the best height fit wins instead — the first waypoint whose range
+    /// straddles the point's height answers straight away.
+    pub fn find(&self, point: Vector3, ignore_height: bool) -> WaypointIndex {
+        let mut best_waypoint = -1;
+        let mut best_height_diff = f32::MAX;
+
+        for i in 0..self.waypoints.len() {
+            let wp = &self.waypoints[i];
+            if ignore_height {
+                if wp.contains_projection(&self.edges, self, point) {
+                    if point.y > wp.min_height - 0.1 && point.y < wp.max_height + 0.1 {
+                        return i as WaypointIndex;
+                    } else {
+                        // find the best fit
+                        let wp_avg_diff = (point.y - (wp.max_height + wp.min_height) / 2.0).abs();
+                        if best_height_diff > wp_avg_diff {
+                            best_height_diff = wp_avg_diff;
+                            best_waypoint = i as WaypointIndex;
+                        }
+                    }
+                }
+            } else if wp.contains(&self.edges, self, point) {
+                return i as WaypointIndex;
+            }
+        }
+        best_waypoint
     }
 
     /// A waypoint's `DependentArray` slice of the shared edge array.
@@ -494,6 +525,52 @@ mod tests {
             let _ = set.read_waypoint_set(&blob[16..], 2, 6);
         });
         assert!(short.is_err(), "reference MF_ASSERTs numEdges == 0");
+    }
+
+    #[test]
+    fn the_height_ignoring_search_answers_the_best_height_fit() {
+        // Two waypoints sharing the same x-z footprint at different heights
+        // and neither straddling the searched range: the best-fit branch
+        // answers the nearer average height, which is what the multi-layer
+        // locate keys on.
+        let mut b = Vec::new();
+        let put_f = |b: &mut Vec<u8>, v: f32| b.extend_from_slice(&v.to_le_bytes());
+        let put_i = |b: &mut Vec<u8>, v: i32| b.extend_from_slice(&v.to_le_bytes());
+        put_i(&mut b, 0);
+        put_f(&mut b, 0.6);
+        put_i(&mut b, 2);
+        put_i(&mut b, 8);
+        put_f(&mut b, 0.0);
+        put_f(&mut b, 1.0);
+        put_i(&mut b, 4);
+        put_f(&mut b, 3.0);
+        put_f(&mut b, 4.0);
+        put_i(&mut b, 4);
+        for _ in 0..2 {
+            for (x, y) in [(0.0f32, 0.0), (0.0, 2.0), (2.0, 2.0), (2.0, 0.0)] {
+                put_f(&mut b, x);
+                put_f(&mut b, y);
+                put_i(&mut b, 65535);
+            }
+        }
+        let mut sets = parse_world_navmesh(&b).expect("complete");
+        let set = sets.remove(0);
+
+        // Both projections contain the point and neither band straddles the
+        // searched height: the nearer average height wins, so a point above
+        // both layers answers the upper waypoint.
+        assert_eq!(set.find(Vector3::new(1.0, 10.0, 1.0), true), 1);
+        // ... and the lower average wins for a point below both.
+        assert_eq!(set.find(Vector3::new(1.0, -10.0, 1.0), true), 0);
+        // The upper band straddles, so it answers straight away.
+        assert_eq!(set.find(Vector3::new(1.0, 3.5, 1.0), true), 1);
+        // Nothing projects onto a point off the shared footprint.
+        assert_eq!(set.find(Vector3::new(9.0, 10.0, 9.0), true), -1);
+        // The height-honouring search answers the layer it is in and misses
+        // outside both bands.
+        assert_eq!(set.find(Vector3::new(1.0, 0.5, 1.0), false), 0);
+        assert_eq!(set.find(Vector3::new(1.0, 3.5, 1.0), false), 1);
+        assert_eq!(set.find(Vector3::new(1.0, 2.0, 1.0), false), -1);
     }
 
     #[test]
