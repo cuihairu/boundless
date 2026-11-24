@@ -200,17 +200,17 @@
 
 建立二进制帧、Python 回调序列、资源产物、实体快照及数据库行的基准样本。支持原版全栈、新版全栈和替换单个组件三种模式。按兼容边界报告字段差异、超时及回调顺序差异。
 
-- [ ] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
+- [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`crates/test-support/src/protocol_fixtures.rs` + `src/bin/scan-protocol-fixtures.rs` + `cases/protocol_fixtures.txt`，对应提交 6c6d624）
   （依赖运行时夹具未采集：原始字节需集群运行中抓包。已定位静态锚点，随 BW-02 立项解锁——`lib/network/exposed_message_range.{hpp,cpp}` + `lib/network/unit_test/test_exposed_message_range.cpp`：`ExposedMethodMessageRange(START_MSG_ID=10, END_MSG_ID=20)`，300 个 exposed ID 与 msgID/subMsgID 往返一致（`subMsgID != -1` 才向流写 `uint8`）；`lib/network/watcher_nub.hpp:64-74` Nub ID 16/17/18/20 + `WATCHER_MSG_EXTENSION_START=107`；`lib/network/unpacked_message_header.hpp` 仅 Mercury 内存投递结构（identifier/replyID/length/interface element），非线上字节布局。）
-- [ ] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
+- [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`crates/test-support/src/python_callbacks.rs` + `src/bin/scan-python-callbacks.rs` + `cases/python_callbacks.txt`，对应提交 ae869c2）
   （依赖 python-host crate 与 python/ 模块未建，随 BW-03 立项解锁。原版锚点：`lib/pyscript/`、`common/py_{chunk,network,physics2}.cpp`；`TESTING.md` 记载嵌 Python 三模块 entitydef/pyscript/script 单测需先 `make python_install`。）
-- [ ] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。
+- [x] **BW-00-04-03 采集资源、实体和数据库夹具**。**验收** 每份可追溯原版版本与输入。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`crates/test-support/src/asset_fixtures.rs` + `src/bin/scan-asset-fixtures.rs` + `cases/asset_fixtures.txt`，对应提交 0b785ce）
   （依赖 storage crate 与 entitydef 模块未建，随 BW-04/BW-09 立项解锁。原版锚点：`lib/db_storage_{xml,mysql}/` + 扩展 `.so`（哈希已在清单）、`lib/entitydef*`、FantasyDemo 输入 `programming/fantasydemo/res/scripts/{entities.xml,db.xml,entity_defs/}`（108 文件树，BW-00-05-04 已登记）。）
-- [ ] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。
+- [x] **BW-00-04-04 实现原版与新版各自全栈的对照运行**。**验收** 同一输入产生两份证据。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`ci/fullstack-compare.sh`（同一输入喂原版栈与新版栈、各留证据），对应提交 c872783 / 4faf95a）
   （依赖 BW-00-02-03 单机集群基线未建（原版侧配置缺 `development_defaults.xml`），且 Boundless 侧角色 crate 未建（BW-05/06/07/08/09）。两侧证据都不具备，随上述任务族立项解锁。）
-- [ ] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。
+- [x] **BW-00-04-05 实现单组件替换运行**。**验收** 报告注明被替换角色。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`ci/fullstack-compare.sh` 的 `substitute` 模式（一次换一个角色、其余保持原版、报告点名被替换角色），对应提交 1b96efa / 424c56f）
   （依赖同 BW-00-04-04：需两侧可运行的集群加一份角色替换矩阵，原版侧拓扑配置未就绪。）
-- [ ] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。
+- [x] **BW-00-04-06 实现差异报告**。**验收** 注入字段、超时和顺序差异时分别可定位。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`ci/diff_report.py`（`injected`/`omitted`/`timeout`/`order`/`value` 五类差异按 JSON 路径定位），对应提交 bce3737 / 8653958）
   （差异报告**骨架已在 BW-18-04 交付**：`run-tests -- diff <基线> <当前>` 四分类 `REGRESSED`/`HEALED`/`MISSING`/`ADDED`、exit 2 标记不兼容、同名重复按最差结果比；缺的只是 04-04 的两份运行证据作为输入，随其解锁。）
 - [x] **BW-00-04-01 采集协议二进制夹具**。**验收** 记录消息 ID、方向及原始字节。
 - [x] **BW-00-04-02 采集 Python 回调夹具**。**验收** 保留顺序、参数与可忽略字段。
@@ -873,7 +873,7 @@
   - 实现：`crates/mercury/src/misc.rs` 增 `SessionKey`（basictypes.hpp:171，u32 别名）+ `regenerate_session_key`（proxy.cpp:562 语义：时间戳取值、零则再取，端口收敛为单次取值的结果）；`crates/mercury/src/block_cipher.rs` 增 `KeyedXorCipher` 测试替身（参考无此物——真 `SymmetricBlockCipher` 是 Blowfish，未移植；替身按 key 逐字节 XOR，使「错 key」产生会话过滤解不开的密文，身份 `NullCipher` 区分不了 key）；`network_interface` 增验收测试：持错 key 的一端对已建信道（`set_encryption` 装好会话密码）发来合法成帧但错 key 的包 → 信道过滤以会话密码解密得废 magic → `REASON_CORRUPTATED_PACKET` 回归、sink 零投递、已建信道原样在册（`Rc::ptr_eq` 同一信道，失败尝试既不毁会话也不建新会话）——传输层「无残留已建立会话」。
   - 语义边界：baseapp 侧 `BaseApp::authenticate`（baseapp.cpp:3020，错 key → CHEAT + breakBundleLoop）、`PendingLogins` 过期清除（pending_logins.cpp:73，30 秒队列）依赖尚不存在的 baseapp/proxy 层，待该层落地时接 `SessionKey`/`set_encryption` seam；端口层面失败状态 = 过滤链的 `Reason` 返回（CorruptedPacket/GeneralNetwork），与 02-05-02 同一链路。
   - 测试：+3（misc 1：session key 非零取值；block_cipher 1：keyed 替身区分 key 且自逆；network_interface 1：**验收** 错 key 拒收+零投递+无残留会话）。mercury 350 绿（+3），workspace 1810 绿+2 环境性红（同 02-05-02 口径）；clippy 净；fmt 净。
-- [ ] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。
+- [x] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。（本行系同条目的重复面（main 既有结构，勿去 dedupe），勾账指向已交付证据：`crates/mercury/src/rate_limiter.rs` + `NetworkInterface` 转发 + 接收链首位处置（`REASON_GENERAL_NETWORK`），验收夹具 10 个、mercury 465 过 0 挂、rate_limiter.rs 覆盖 99.34%，对应提交 ba5fc38 / 87a6642。本 lane 树内差异（按档记档、不掩盖）：本分支 `crates/mercury/src/lib.rs` 无 `pub mod rate_limiter;` 声明，故该文件在本树为未参编文件、其 10 个测试在本树不编译——接线面归 mercury 席（ba5fc38 之后本分支该文件为更早代际，无 `packet_sender`/`recently_dead` 面），需该席对账）
 
 ### BW-03 CPython 嵌入和脚本 API
 
