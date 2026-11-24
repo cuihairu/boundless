@@ -882,7 +882,7 @@
   - 实现：`crates/mercury/src/misc.rs` 增 `SessionKey`（basictypes.hpp:171，u32 别名）+ `regenerate_session_key`（proxy.cpp:562 语义：时间戳取值、零则再取，端口收敛为单次取值的结果）；`crates/mercury/src/block_cipher.rs` 增 `KeyedXorCipher` 测试替身（参考无此物——真 `SymmetricBlockCipher` 是 Blowfish，未移植；替身按 key 逐字节 XOR，使「错 key」产生会话过滤解不开的密文，身份 `NullCipher` 区分不了 key）；`network_interface` 增验收测试：持错 key 的一端对已建信道（`set_encryption` 装好会话密码）发来合法成帧但错 key 的包 → 信道过滤以会话密码解密得废 magic → `REASON_CORRUPTATED_PACKET` 回归、sink 零投递、已建信道原样在册（`Rc::ptr_eq` 同一信道，失败尝试既不毁会话也不建新会话）——传输层「无残留已建立会话」。
   - 语义边界：baseapp 侧 `BaseApp::authenticate`（baseapp.cpp:3020，错 key → CHEAT + breakBundleLoop）、`PendingLogins` 过期清除（pending_logins.cpp:73，30 秒队列）依赖尚不存在的 baseapp/proxy 层，待该层落地时接 `SessionKey`/`set_encryption` seam；端口层面失败状态 = 过滤链的 `Reason` 返回（CorruptedPacket/GeneralNetwork），与 02-05-02 同一链路。
   - 测试：+3（misc 1：session key 非零取值；block_cipher 1：keyed 替身区分 key 且自逆；network_interface 1：**验收** 错 key 拒收+零投递+无残留会话）。mercury 350 绿（+3），workspace 1810 绿+2 环境性红（同 02-05-02 口径）；clippy 净；fmt 净。
-- [ ] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。
+- [x] **BW-02-05-04 实现配置限流**。**验收** 边界流量下的处置与原版吻合。（勾账 2026-11-24，lane/bw15-platform，按档：上方两条已勾交付即本项——证据行 849 全记录与 `87a6642` 均在 main；本行为首波陈旧副本翻勾。）
 
 ### BW-03 CPython 嵌入和脚本 API
 
@@ -1171,9 +1171,9 @@
 覆盖客户端流式数据下载、回放头、压缩块、tick 写入和完成回调。与 Cell 采集及客户端回放读取联验。
 
 - [x] **BW-07-05-01 分块发送客户端资源** `(548e9de)`。**验收** 块顺序和完成回调吻合。
-- [ ] **BW-07-05-02 写入回放头及元数据**。**验收** 原版读取器可解析。
-- [ ] **BW-07-05-03 写入压缩 Tick 块**。**验收** 已知事件序列可无损读取。
-- [ ] **BW-07-05-04 处理结束和失败**。**验收** 文件关闭与回调次数符合基线。
+- [x] **BW-07-05-02 写入回放头及元数据**。**验收** 原版读取器可解析。（交付 2026-11-24，`86f4879`，lane/bw15-platform：`crates/server-runtime/src/replay_write.rs` 按 `replay_header.cpp`/`replay_metadata.cpp`/`replay_data_file_writer.cpp` 逐面移植——头块 55 字节布局（版本流序 subpatch,patch,minor,major=`00 00 09 02`，client_server_protocol_version.hpp:138）、MD5 签名链（metaSig=md5(headerSig‖metaPayload)， primeChecksumScheme 语义）、BTreeMap 序键值对、≥255 三字节长度前缀；验收面 `parse_header(Some(Md5Verify))`+`parse_metadata_chained` 全字段回读，篡改签名→ChecksumMismatch。附带勘误：client 读取端 parse_header 版本字节序修正为 subpatch-first（原实现按 major-first 比对，与参考流序相悖，86f4879 内一并修正）+ 新增 `parse_metadata_chained` 种子面（replay_data_file_reader.cpp:981 primeChecksumScheme）。16 测绿（writer 侧），client replay 42 测绿，fmt/build/test 门禁绿。）
+- [x] **BW-07-05-03 写入压缩 Tick 块**。**验收** 已知事件序列可无损读取。（交付 2026-11-24，`86f4879`：`compression_stream.cpp`+`zip_stream.cpp` ZipOStream 语义——类型字节+NONE 原样/ZIP_1..9 zlib 压缩（flate2 rust_backend，compress2 等价）、非法类型回退 NONE；`TickReplayData::finalise` 两字头（tick+长度补丁）；chunk 签名覆盖长度字+ticks 且链式（sig_n=md5(sig_{n-1}‖payload)，引用 signAndWriteCompletedTickData `stream << chunkLength` 在 ChecksumOStream 内）；缺号 tick 写 8 字节空头。验收：6 tick 已知序列（含每 tick 逐 cell 投递）经 `parse_tick_chunks`+`decompress_tick` 无损回读、全文件字节对账、3 tick 跨块链签名外部重算吻合。）
+- [x] **BW-07-05-04 处理结束和失败**。**验收** 文件关闭与回调次数符合基线。（交付 2026-11-24，`86f4879`：finalise 补丁 numTicks 至 `headerSize-4`（51）+chmod 0444+closeWriter（finalising 且无更早缓冲 tick 时在完成回调内自关）；已勾账计数镜像 onBackgroundFileWritingComplete（numTicksWritten+=、lastChunkPosition/Length、缓冲逐出）；write 失败一次 error 回调+错误态保持、后续 add/finalise 惰性；finalising 后拒收；首空 tick 忽略+陈旧 tick 丢弃；close(false) 不补丁不置只读。sync 移植偏差（BackgroundFileWriter→同步写）已在模块文档登记，文件字节结果一致；回调基线：首块 1+每 chunk 1+finalise 尾 1，destroyed=1（Drop）。测试 4/16 覆盖四条路径。）
 
 ### BW-08 CellApp、Space、AOI 与实体迁移
 
