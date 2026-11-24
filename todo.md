@@ -1393,7 +1393,8 @@
 
 - [x] **BW-09-04-01 移植标准认证**。**验收** 合法和无效账号状态吻合。 (dd8c199, 孤儿链复活 a7b57a1)
   - 2026-11-25 复活：`billing.rs`（624 行）声明入 lib.rs，`AccountLogOnStatus`→`AccountLogOn`（account.rs 现行名，四变体集相同），未用 `DatabaseId` 导入清理，补 `BillingConfig::from_section` 缺省/全字段读测；DA 99.73%（余 1 个 0 行为闭合括号伪迹）。
-- [ ] **BW-09-04-02 接入 Python Billing**。**验收** 接口及异常与原脚本契约一致。
+- [x] **BW-09-04-02 接入 Python Billing**。**验收** 接口及异常与原脚本契约一致。 (2195fb7)
+  - 2026-11-25 交付：`py_billing.rs`（807 行 21 测，DA 100.00%）+ `log_on_status.rs`（53 DA 行 100.00%，i32 全码表 0..8/63/64..93/244..252/254/255 + okay/succeeded/fatal 谓词）+ `entity_map.rs::index_to_name`（getEntityDescription(typeID).name() 面）；`billing.rs` trait `get_entity_key_for_account` 加 `client_addr: Address`（参照签名）且 `Failure.status` `AccountLogOn`→`LogOnStatus`（71/67/68 全码对齐，billing.rs DA 99.74% 余 1 闭合括号伪迹）。契约逐字：ValueError 文本 `0 is an invalid database id`/`Invalid entity type '%s'\n`/`Response already sent`/`Invalid failure status %d`、析构兜底 71+`No response from script`、getMember 缺员 `No such method %s\n` 构造不挡、set 缺员/`setLoginMapping: Failed. username = %s\n`、failure(int) C++ enum cast 恒等故任何非 okay 整数放行（wire uint8 截断）。脚本面以注入闭包承载（db 层无 CPython，python-host 桥接落他席）。**注意：bw16-18 席（未并 lane，tip b40ee34）已平行交付同簇 py_billing+custom_billing——合并须择一清冲突。**
 - [ ] **BW-09-04-03 接入已参编的自定义扩展**。**验收** 按目标验证可用与依赖缺失。
 - [ ] **BW-09-04-04 验证重复认证**。**验收** 并发请求不污染登录记录。
 
