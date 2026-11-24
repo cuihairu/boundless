@@ -19,3 +19,11 @@ sha2 = { workspace = true }  # the signal syscalls land here (BW-16-02-01)
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
+
+[dev-dependencies]
+# Performance baselines (perf-bench batch 1): the update-loop dispatch bench.
+criterion = "0.8"
+
+[[bench]]
+name = "tick"
+harness = false
