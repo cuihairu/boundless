@@ -9,6 +9,7 @@ pub mod baseapp_relogon;
 pub mod baseappmgr;
 pub mod billing;
 pub mod cell_data;
+pub mod cell_viewer;
 pub mod cellappmgr;
 pub mod client_login;
 pub mod cluster_shutdown;
