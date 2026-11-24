@@ -1979,9 +1979,9 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——依赖 BW-08-01 cell 管理 + BW-10-02-01 compiled space + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
-  - 卡点（无 Bot 运行时）：恢复时长需真实断线/重连——依赖 BW-17-01 客户端连接层 + 活服务端；场景文件已备。
+  - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
 - [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
-  - 卡点（无 Bot 运行时）：负载生成器自身资源使用需压测进程实际运行——依赖 BW-17-01 + BW-12-04；场景 `long-stability.xml` 与计时已备。
+  - 卡点（活服务端）：负载生成器自身资源使用需压测进程实际运行——BW-12-04 bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots`，未并 main）交付，仍缺 BW-17-01 + 活服务端（`app::run` tick-loop）；场景 `long-stability.xml` 与计时已备。
 
 #### BW-17-03 指标和回归
 
