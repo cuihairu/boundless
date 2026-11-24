@@ -9,6 +9,11 @@
 //! chunk's unbound portals to the neighbour chunks that are already bound,
 //! two-way, exactly like `bindPortals` plus `Chunk::bind(Chunk*)`.
 //!
+//! BW-10-01-04 adds the unload half: `unbind` ports `Chunk::unbind` in both
+//! directions (portals walk back, targets cut to `INVASIVE`/`NULL`, internal
+//! joints erased) and `unload_chunk` ports `ChunkSpace::unloadChunk` with its
+//! `removable_`/`loaded_`/`isBound_` guards.
+//!
 //! Registered divergences (see `docs/review/bw10-01-chunk-load.md`): the
 //! within-equal-radius order of the reference `std::sort` is unspecified, so
 //! this port pins a deterministic tie-break (radius, then offset x, then z)
@@ -16,7 +21,7 @@
 //! sequence; `resolveExtern`/invasive portal resolution need the space column
 //! (`guessChunk`) and `ChunkOverlappers` belong to the scene-adaptation
 //! surface (BW-10-02); `gridToLocal` is the identity (transformed mappings
-//! are BW-10-02+); unload is BW-10-01-04.
+//! are BW-10-02+).
 
 use std::collections::BTreeMap;
 
@@ -25,6 +30,7 @@ use resources::datasection::DataSection;
 
 use crate::boundary::PortalTarget;
 use crate::chunk::Chunk;
+use crate::identifier::is_outside_chunk;
 use crate::mapping::GeometryMapping;
 
 /// `MAX_WORTHY_CHUNKS` (`chunk_manager.cpp:70`): a scan visits at most this
@@ -307,6 +313,207 @@ impl ChunkSpace {
         boundary.unbound_portals = kept;
     }
 
+    /// `Chunk::unbind(bool)` (`chunk.cpp:1305-1458`): move every connected
+    /// bound portal back to its boundary's unbound list and tell the online
+    /// neighbour to do the same, then drop `isBound_`. With `cut` the
+    /// portal targets are cleared on both sides — an inside chunk's portal
+    /// to an outside chunk becomes `INVASIVE`, everything else `NULL` — so
+    /// the connection cannot silently rebind; without it the target names
+    /// survive and a later `bind` reconnects without re-reading anything.
+    ///
+    /// The reference's focus-grid eviction (`ignoreChunk`), exit-portal
+    /// item removal and lender/borrower release have no port-side objects
+    /// and stay registered (see `docs/review/bw10-01-chunk-load.md`).
+    pub fn unbind(&mut self, identifier: &str, cut: bool) {
+        // Decide immutably which bound portals move back, what their
+        // targets become, and what each neighbour must do.
+        struct Move {
+            joint: usize,
+            portal: usize,
+            target: PortalTarget,
+        }
+        let mut moves: Vec<Move> = Vec::new();
+        struct Back {
+            other: String,
+            cut: bool,
+        }
+        let mut backs: Vec<Back> = Vec::new();
+        {
+            let Some(chunk) = self.chunks.get(identifier) else {
+                return;
+            };
+            for &ji in &chunk.joints {
+                for (pi, portal) in chunk.boundaries[ji].bound_portals.iter().enumerate() {
+                    match &portal.target {
+                        // A heavenly portal in an inside chunk unbinds
+                        // itself (in an outside chunk it has no chunk and
+                        // stays bound, like every other special target).
+                        PortalTarget::Heaven if !chunk.is_outside => {
+                            moves.push(Move {
+                                joint: ji,
+                                portal: pi,
+                                target: PortalTarget::Heaven,
+                            });
+                        }
+                        // don't unbind it if it's not a chunk
+                        target if !target.has_chunk() => {}
+                        PortalTarget::Chunk(other) => {
+                            // clear the chunk if we're cutting it off
+                            let target = if cut {
+                                if !chunk.is_outside && is_outside_chunk(other) {
+                                    PortalTarget::Invasive
+                                } else {
+                                    PortalTarget::Nothing
+                                }
+                            } else {
+                                portal.target.clone()
+                            };
+                            // always cut off an exit portal into an
+                            // outside chunk
+                            let back_cut = if chunk.is_outside && !is_outside_chunk(other) {
+                                true
+                            } else {
+                                cut
+                            };
+                            moves.push(Move {
+                                joint: ji,
+                                portal: pi,
+                                target,
+                            });
+                            backs.push(Back {
+                                other: other.clone(),
+                                cut: back_cut,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Move them back to the unbound lists (`ChunkBoundary::unbindPortal`,
+        // ascending bound index, which is the reference's `unbindPortal
+        // (i--)` append order).
+        if let Some(chunk) = self.chunks.get_mut(identifier) {
+            let mut touched: Vec<usize> = Vec::new();
+            for mv in &moves {
+                if !touched.contains(&mv.joint) {
+                    touched.push(mv.joint);
+                }
+            }
+            for ji in touched {
+                let joint_moves: Vec<(usize, PortalTarget)> = moves
+                    .iter()
+                    .filter(|m| m.joint == ji)
+                    .map(|m| (m.portal, m.target.clone()))
+                    .collect();
+                let boundary = &mut chunk.boundaries[ji];
+                let old = std::mem::take(&mut boundary.bound_portals);
+                let mut moved = Vec::new();
+                let mut kept = Vec::new();
+                for (i, mut portal) in old.into_iter().enumerate() {
+                    if let Some((_, target)) = joint_moves.iter().find(|(pi, _)| *pi == i) {
+                        portal.target = target.clone();
+                        moved.push(portal);
+                    } else {
+                        kept.push(portal);
+                    }
+                }
+                boundary.unbound_portals.extend(moved);
+                boundary.bound_portals = kept;
+            }
+            chunk.is_bound = false;
+        }
+
+        // and let the neighbours know we're offline
+        for back in backs {
+            self.unbind_back(&back.other, identifier, back.cut);
+        }
+    }
+
+    /// `Chunk::unbind(Chunk*, bool)` (`chunk.cpp:2083-2138`): in `owner`,
+    /// find the first bound portal pointing back at `requester`; with
+    /// `cut` clear its target — erasing the whole joint when the portal is
+    /// internal — otherwise move it to the unbound list. A missing owner
+    /// or a missing reverse portal is a logged no-op in the reference;
+    /// the port stays silent and registers the divergence.
+    fn unbind_back(&mut self, owner: &str, requester: &str, cut: bool) {
+        let Some(chunk) = self.chunks.get_mut(owner) else {
+            return;
+        };
+        for (joint_pos, &ji) in chunk.joints.iter().enumerate() {
+            let boundary = &mut chunk.boundaries[ji];
+            let Some(pi) = boundary
+                .bound_portals
+                .iter()
+                .position(|p| p.target == PortalTarget::Chunk(requester.to_string()))
+            else {
+                continue;
+            };
+            if cut {
+                // clear the link if we're cutting it out
+                boundary.bound_portals[pi].target =
+                    if !chunk.is_outside && is_outside_chunk(requester) {
+                        PortalTarget::Invasive
+                    } else {
+                        PortalTarget::Nothing
+                    };
+                // get rid of the whole boundary if this was an internal
+                // portal on a non-bounding plane
+                if boundary.bound_portals[pi].internal {
+                    chunk.joints.remove(joint_pos);
+                }
+            } else {
+                let portal = boundary.bound_portals.remove(pi);
+                boundary.unbound_portals.push(portal);
+            }
+            return;
+        }
+    }
+
+    /// `ChunkSpace::unloadChunk` (`chunk_space.cpp:1262-1296`): unbind then
+    /// unload one chunk. Unloaded or (here, never in-flight — the sync
+    /// loader has no loading state, registered) loading chunks answer
+    /// false; a non-removable chunk answers false. The chunk stays in the
+    /// map, appointed but unloaded.
+    pub fn unload_chunk(&mut self, identifier: &str) -> bool {
+        let Some(chunk) = self.chunks.get(identifier) else {
+            return false;
+        };
+
+        // Can only unload if chunk is removable
+        if !chunk.removable {
+            return false;
+        }
+
+        // Cannot unload if chunk is not loaded
+        if !chunk.is_loaded {
+            return false;
+        }
+
+        // Unbind, then unload
+        if chunk.is_bound {
+            self.unbind(identifier, false);
+        }
+
+        // Unload after unbind
+        let chunk = self.chunks.get_mut(identifier).unwrap();
+        chunk.unload();
+
+        true
+    }
+
+    /// `ChunkSpace::unloadChunks`
+    /// (`chunk_space.cpp:1204-1222, 1235-1246`): attempt to unbind and unload
+    /// every loaded chunk, map order, returning the identifiers that went.
+    pub fn unload_chunks(&mut self) -> Vec<String> {
+        let identifiers: Vec<String> = self.chunks.keys().cloned().collect();
+        identifiers
+            .into_iter()
+            .filter(|id| self.unload_chunk(id))
+            .collect()
+    }
+
     /// Load and bind every candidate in scan order, returning the bind
     /// sequence (the sync form of `checkLoadingChunks`' bind-in-finish-order,
     /// `chunk_manager.cpp:1862-1894`: a single-threaded loader finishes the
@@ -352,7 +559,8 @@ fn group_by_joint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::boundary::{ChunkBoundary, Portal};
+    use crate::boundary::{ChunkBoundary, Portal, PortalTarget};
+    use crate::chunk::ChunkItem;
     use crate::mapping::{GeometryMapping, GridBounds};
     use foundation::math::PlaneEq;
 
@@ -507,6 +715,424 @@ mod tests {
         assert_eq!(
             group_by_joint(Vec::new(), vec![(4, 1, "00000000i".to_string())]),
             vec![(4, vec!["00000000i".to_string()])]
+        );
+    }
+
+    /// Two loaded chunks, each holding one unbound face portal at the
+    /// other, plus a scene item each.
+    fn pair_of_chunks() -> (Chunk, Chunk) {
+        let item = |tag: &str| ChunkItem {
+            tag: tag.to_string(),
+            label: String::new(),
+            resource: Some("thing.model".to_string()),
+            position: None,
+            transform: Matrix::identity(),
+        };
+        let face = |target: &str| ChunkBoundary {
+            plane: PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 0.0),
+            bound_portals: Vec::new(),
+            unbound_portals: vec![face_portal(target)],
+        };
+        let mut a = Chunk::new("00000000o", &identity_mapping(), &Matrix::identity());
+        a.boundaries = vec![face("00000001o")];
+        a.joints = vec![0];
+        a.items = vec![item("model")];
+        a.is_loaded = true;
+        let mut b = Chunk::new("00000001o", &identity_mapping(), &Matrix::identity());
+        b.boundaries = vec![face("00000000o")];
+        b.joints = vec![0];
+        b.items = vec![item("light")];
+        b.is_loaded = true;
+        (a, b)
+    }
+
+    /// `ChunkSpace::unloadChunk` (`chunk_space.cpp:1262-1296`) unbinds
+    /// (portals back to unbound on BOTH sides, targets preserved) and then
+    /// releases the chunk's own state. The chunk stays appointed in the
+    /// map, and a fresh load plus bind restores the exact baseline.
+    #[test]
+    fn unload_chunk_unbinds_then_releases_and_a_rebind_restores_the_baseline() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let (a, b) = pair_of_chunks();
+        space.add_chunk(a);
+        space.add_chunk(b);
+        assert!(space.bind("00000000o"));
+        assert!(space.bind("00000001o"));
+        assert_eq!(space.bind_order(), ["00000000o", "00000001o"]);
+
+        assert!(space.unload_chunk("00000001o"));
+
+        // The unloaded chunk: everything the reference releases
+        // (chunk.cpp:914-980) is gone, but the object stays appointed.
+        let b = space.chunk("00000001o").unwrap();
+        assert!(!b.is_loaded);
+        assert!(!b.is_bound);
+        assert!(b.items.is_empty());
+        assert!(b.joints.is_empty() && b.bounds.is_empty());
+        assert!(b.boundaries.is_empty());
+        assert!(space.chunk("00000001o").is_some(), "still appointed");
+
+        // The neighbour keeps its own bind but the shared portal moved
+        // back to unbound, target preserved (`unbindPortal` without cut).
+        let a = space.chunk("00000000o").unwrap();
+        assert!(a.is_bound);
+        assert!(a.boundaries[0].bound_portals.is_empty());
+        assert_eq!(
+            a.boundaries[0].unbound_portals[0].target,
+            PortalTarget::Chunk("00000001o".into())
+        );
+
+        // Already unloaded: false, and the map keeps the husk.
+        assert!(!space.unload_chunk("00000001o"));
+
+        // A fresh load plus bind restores the exact query baseline.
+        let (a, b) = pair_of_chunks();
+        let restored = space.chunks.get_mut("00000001o").unwrap();
+        *restored = b;
+        assert!(space.bind("00000001o"));
+        assert_eq!(
+            space.chunk("00000001o").unwrap().boundaries[0]
+                .bound_portals
+                .len(),
+            1
+        );
+        assert_eq!(
+            space.chunk("00000000o").unwrap().boundaries[0]
+                .bound_portals
+                .len(),
+            1,
+            "the two-way reconnect"
+        );
+        let _ = a; // the pairing helper's other half
+    }
+
+    /// With `cut` the disconnect cannot silently rebind: both sides'
+    /// targets clear to `NULL` (outside to outside), so a later `bind`
+    /// finds nothing to connect (`chunk.cpp:1179-1190`).
+    #[test]
+    fn a_cut_unbind_clears_the_targets_so_nothing_rebinds() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let (a, b) = pair_of_chunks();
+        space.add_chunk(a);
+        space.add_chunk(b);
+        assert!(space.bind("00000000o"));
+        assert!(space.bind("00000001o"));
+
+        space.unbind("00000001o", true);
+
+        // The walking side moves its portal back (unbindPortal, target
+        // cleared); the neighbour's back link stays BOUND with a cleared
+        // target — the back arm only clears `pChunk`, it never moves the
+        // portal (`chunk.cpp:2099-2105`, `2124-2126`).
+        assert_eq!(
+            space.chunk("00000001o").unwrap().boundaries[0].unbound_portals[0].target,
+            PortalTarget::Nothing
+        );
+        assert_eq!(
+            space.chunk("00000000o").unwrap().boundaries[0].bound_portals[0].target,
+            PortalTarget::Nothing
+        );
+
+        // Rebinding connects nothing — the names are gone.
+        assert!(space.bind("00000001o"));
+        assert!(
+            space.chunk("00000001o").unwrap().boundaries[0]
+                .bound_portals
+                .is_empty()
+        );
+    }
+
+    /// An inside chunk cutting free of an outside neighbour marks its own
+    /// moved portal `INVASIVE` (`chunk.cpp:1437-1438`); the outside
+    /// neighbour's back link clears to `NULL`.
+    #[test]
+    fn an_inside_chunk_cutting_free_goes_invasive_the_outside_goes_null() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        // `b` faces the inside chunk, so binding the inside chunk two-way
+        // connects (its `bind_back` finds a portal aimed at "00000000i").
+        let mut b = Chunk::new("00000001o", &identity_mapping(), &Matrix::identity());
+        b.boundaries = vec![ChunkBoundary {
+            plane: PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 0.0),
+            bound_portals: Vec::new(),
+            unbound_portals: vec![face_portal("00000000i")],
+        }];
+        b.joints = vec![0];
+        b.is_loaded = true;
+        space.add_chunk(b);
+        assert!(space.bind("00000001o"));
+
+        let mut inside = Chunk::new("00000000i", &identity_mapping(), &Matrix::identity());
+        inside.boundaries = vec![ChunkBoundary {
+            plane: PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 0.0),
+            bound_portals: Vec::new(),
+            unbound_portals: vec![face_portal("00000001o")],
+        }];
+        inside.joints = vec![0];
+        inside.is_loaded = true;
+        space.add_chunk(inside);
+        assert!(space.bind("00000000i"));
+
+        space.unbind("00000000i", true);
+        assert_eq!(
+            space.chunk("00000000i").unwrap().boundaries[0].unbound_portals[0].target,
+            PortalTarget::Invasive
+        );
+        // The outside neighbour's back link stays bound, target cleared.
+        assert_eq!(
+            space.chunk("00000001o").unwrap().boundaries[0].bound_portals[0].target,
+            PortalTarget::Nothing
+        );
+    }
+
+    /// `unbind` from an *outside* chunk forces the neighbour's cut
+    /// (`chunk.cpp:1446-1450`): an exit portal into an inside chunk is always
+    /// cut off, even when the caller asked for a plain unbind. The outside
+    /// chunk's own portal keeps its target (`cut` false).
+    #[test]
+    fn an_outside_chunk_always_cuts_an_exit_portal_into_an_inside_neighbour() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let face = |target: &str| ChunkBoundary {
+            plane: PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 0.0),
+            bound_portals: Vec::new(),
+            unbound_portals: vec![face_portal(target)],
+        };
+        let mut inside = Chunk::new("00000000i", &identity_mapping(), &Matrix::identity());
+        inside.boundaries = vec![face("00000000o")];
+        inside.joints = vec![0];
+        inside.is_loaded = true;
+        space.add_chunk(inside);
+        let mut outside = Chunk::new("00000000o", &identity_mapping(), &Matrix::identity());
+        outside.boundaries = vec![face("00000000i")];
+        outside.joints = vec![0];
+        outside.is_loaded = true;
+        space.add_chunk(outside);
+        assert!(space.bind("00000000i"));
+        assert!(space.bind("00000000o"));
+
+        space.unbind("00000000o", false);
+
+        // The outside chunk's portal moved back with its target intact.
+        let boundary = &space.chunk("00000000o").unwrap().boundaries[0];
+        assert!(boundary.bound_portals.is_empty());
+        assert_eq!(
+            boundary.unbound_portals[0].target,
+            PortalTarget::Chunk("00000000i".into())
+        );
+        // The inside neighbour's back link was still cut: owner inside,
+        // requester outside, so the cleared target is INVASIVE.
+        assert_eq!(
+            space.chunk("00000000i").unwrap().boundaries[0].bound_portals[0].target,
+            PortalTarget::Invasive
+        );
+    }
+
+    /// A heavenly portal in an inside chunk unbinds itself
+    /// (`chunk.cpp:1420-1426`); in an outside chunk it has no chunk and
+    /// stays bound.
+    #[test]
+    fn a_heavenly_portal_unbinds_only_from_an_inside_chunk() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let mut inside = Chunk::new("00000000i", &identity_mapping(), &Matrix::identity());
+        inside.boundaries = vec![ChunkBoundary {
+            plane: PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 0.0),
+            bound_portals: Vec::new(),
+            unbound_portals: vec![face_portal("heaven")],
+        }];
+        inside.joints = vec![0];
+        inside.is_loaded = true;
+        space.add_chunk(inside);
+        assert!(space.bind("00000000i"));
+        space.unbind("00000000i", false);
+        assert_eq!(
+            space.chunk("00000000i").unwrap().boundaries[0]
+                .unbound_portals
+                .len(),
+            1,
+            "the heaven portal moved back"
+        );
+        assert!(
+            space.chunk("00000000i").unwrap().boundaries[0]
+                .bound_portals
+                .is_empty()
+        );
+
+        let mut outside = Chunk::new("00000002o", &identity_mapping(), &Matrix::identity());
+        outside.boundaries = vec![ChunkBoundary {
+            plane: PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 0.0),
+            bound_portals: Vec::new(),
+            unbound_portals: vec![face_portal("heaven")],
+        }];
+        outside.joints = vec![0];
+        outside.is_loaded = true;
+        space.add_chunk(outside);
+        assert!(space.bind("00000002o"));
+        space.unbind("00000002o", false);
+        assert_eq!(
+            space.chunk("00000002o").unwrap().boundaries[0]
+                .bound_portals
+                .len(),
+            1,
+            "the heaven portal stays bound outside"
+        );
+    }
+
+    /// A joint holds more portals than `unbind` moves: the reference walks
+    /// the bound list and only takes the portals it decides to release
+    /// (`chunk.cpp:1414-1451`), so an earth portal born bound sits through
+    /// the unbind untouched while the heaven portal leaves the list.
+    #[test]
+    fn a_joint_keeps_the_portals_unbind_does_not_release() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let mut inside = Chunk::new("00000000i", &identity_mapping(), &Matrix::identity());
+        inside.boundaries = vec![ChunkBoundary {
+            plane: PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 0.0),
+            bound_portals: vec![face_portal("earth")],
+            unbound_portals: vec![face_portal("heaven")],
+        }];
+        inside.joints = vec![0];
+        inside.is_loaded = true;
+        space.add_chunk(inside);
+        assert!(space.bind("00000000i"));
+        space.unbind("00000000i", false);
+
+        let boundary = &space.chunk("00000000i").unwrap().boundaries[0];
+        assert_eq!(
+            boundary.bound_portals.len(),
+            1,
+            "the earth portal stayed bound"
+        );
+        assert_eq!(boundary.bound_portals[0].target, PortalTarget::Earth);
+        assert_eq!(
+            boundary.unbound_portals.len(),
+            1,
+            "the heaven portal moved back"
+        );
+        assert_eq!(boundary.unbound_portals[0].target, PortalTarget::Heaven);
+    }
+
+    /// The back-link arm erases the whole joint when the reverse portal is
+    /// internal (`chunk.cpp:2107-2121`): the boundary leaves the joints
+    /// list with its portal still bound, target cleared.
+    #[test]
+    fn a_cut_internal_back_link_erases_the_joint() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let (a, mut b) = pair_of_chunks();
+        space.add_chunk(a);
+        b.boundaries[0].unbound_portals[0].internal = true;
+        space.add_chunk(b);
+        assert!(space.bind("00000000o"));
+        assert!(space.bind("00000001o"));
+
+        space.unbind("00000000o", true);
+
+        let b = space.chunk("00000001o").unwrap();
+        assert!(b.joints.is_empty(), "the internal joint left the list");
+        assert_eq!(b.boundaries.len(), 1, "the boundary itself stays");
+        assert_eq!(
+            b.boundaries[0].bound_portals[0].target,
+            PortalTarget::Nothing
+        );
+    }
+
+    /// The unload guards: non-removable refuses untouched, not-loaded
+    /// refuses, and `unloadChunks` answers exactly the loaded set in map
+    /// order (`chunk_space.cpp:1269-1293`, `1204-1246`).
+    #[test]
+    fn the_unload_guards_refuse_and_unload_chunks_answers_the_loaded_set() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let (a, mut b) = pair_of_chunks();
+        space.add_chunk(a);
+        b.removable = false;
+        b.is_loaded = false;
+        space.add_chunk(b);
+
+        assert!(!space.unload_chunk("00000001o"), "non-removable");
+        assert!(!space.unload_chunk("00000002o"), "not in the map");
+        assert_eq!(
+            space.chunk("00000001o").unwrap().items.len(),
+            1,
+            "the refusal leaves everything in place"
+        );
+
+        assert_eq!(space.unload_chunks(), vec!["00000000o".to_string()]);
+        assert!(!space.chunk("00000000o").unwrap().is_loaded);
+    }
+
+    /// `Chunk::unload` itself (`chunk.cpp:914-980`): a still-bound chunk
+    /// refuses (the reference errors out), an unloaded chunk is a no-op.
+    #[test]
+    fn a_direct_unload_refuses_bound_chunks_and_noops_unloaded_ones() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let (mut a, _) = pair_of_chunks();
+        space.add_chunk(a.clone());
+        assert!(space.bind("00000000o"));
+        a = space.chunks["00000000o"].clone();
+        a.unload();
+        assert!(a.is_loaded, "the bound refusal");
+        assert_eq!(a.items.len(), 1);
+
+        a.is_bound = false;
+        a.unload();
+        assert!(!a.is_loaded);
+        assert!(a.items.is_empty());
+        assert!(a.boundaries.is_empty());
+        a.unload();
+        assert!(!a.is_loaded, "the second unload is a no-op");
+    }
+
+    /// The port's guards for a missing neighbour: the reference's
+    /// `Chunk::unbind(Chunk*, bool)` reports one with
+    /// `ERROR_MSG("Chunk %s didn't find reverse portal to %s")`
+    /// (`chunk.cpp:2136-2137`) and otherwise dereferences the pointer it was
+    /// given, so a missing chunk would be a crash there. The port stays
+    /// silent instead; registered.
+    #[test]
+    fn a_missing_neighbour_is_a_silent_no_op_on_both_arms() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        // Unbinding an unknown chunk is a no-op.
+        space.unbind("99999999o", true);
+
+        let face_boundary = |target: &str| ChunkBoundary {
+            plane: PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 0.0),
+            bound_portals: Vec::new(),
+            unbound_portals: vec![face_portal(target)],
+        };
+        // `a` points at a chunk the space never got; the back call finds no
+        // owner. `b` is bound but has no portal back to `a`.
+        let mut a = Chunk::new("00000000o", &identity_mapping(), &Matrix::identity());
+        a.boundaries = vec![face_boundary("99999999o")];
+        a.joints = vec![0];
+        a.is_loaded = true;
+        a.is_bound = true;
+        a.boundaries[0].bound_portals = std::mem::take(&mut a.boundaries[0].unbound_portals);
+        space.add_chunk(a);
+
+        let mut b = Chunk::new("00000001o", &identity_mapping(), &Matrix::identity());
+        b.boundaries = vec![face_boundary("00000002o")];
+        b.joints = vec![0];
+        b.is_loaded = true;
+        b.is_bound = true;
+        b.boundaries[0].bound_portals = std::mem::take(&mut b.boundaries[0].unbound_portals);
+        space.add_chunk(b);
+
+        space.unbind("00000000o", true);
+        space.unbind("00000001o", true);
+
+        // Both unbound, and neither call touched a chunk that was absent.
+        assert!(!space.chunk("00000000o").unwrap().is_bound);
+        assert!(!space.chunk("00000001o").unwrap().is_bound);
+        // The unbound portal moved back on each side.
+        assert_eq!(
+            space.chunk("00000000o").unwrap().boundaries[0]
+                .unbound_portals
+                .len(),
+            1
+        );
+        assert_eq!(
+            space.chunk("00000001o").unwrap().boundaries[0]
+                .unbound_portals
+                .len(),
+            1
         );
     }
 }
