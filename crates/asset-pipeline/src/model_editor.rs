@@ -350,7 +350,7 @@ pub fn has_visibility_box(resource: &BwResource, model_path: &str) -> bool {
 /// container first, then the bare resource. Binary content only — an XML
 /// file is never a primitives container, and the reference's empty-binary
 /// fallback becomes the caller's empty container.
-fn primitives_file(resource: &BwResource, name: &str) -> Option<BinSection> {
+pub(crate) fn primitives_file(resource: &BwResource, name: &str) -> Option<BinSection> {
     for candidate in [format!("{name}.processed"), name.to_string()] {
         let Some(raw) = resource.file_system().read_file(&candidate) else {
             continue;
@@ -371,7 +371,7 @@ fn primitives_file(resource: &BwResource, name: &str) -> Option<BinSection> {
 /// `splitOldPrimitiveName` (`primitive_file.cpp`): split `file/part` at the
 /// last dot before the slash — except that a `.static` marker sitting
 /// between two dots is not taken off the file.
-fn split_old_primitive_name(resource_id: &str) -> (String, String) {
+pub(crate) fn split_old_primitive_name(resource_id: &str) -> (String, String) {
     let bytes = resource_id.as_bytes();
     let mut slash_pos = bytes.len() as i32 - 1;
     let mut dot_pos = slash_pos;
@@ -436,7 +436,7 @@ fn is_format_deprecated(
 }
 
 /// The children named `tag` — `DataSection::openSections`.
-fn open_sections<'a>(section: &'a DataSection, tag: &str) -> Vec<&'a DataSection> {
+pub(crate) fn open_sections<'a>(section: &'a DataSection, tag: &str) -> Vec<&'a DataSection> {
     (0..section.count_children())
         .filter_map(|index| section.open_child(index))
         .filter(|child| child.section_name() == tag)

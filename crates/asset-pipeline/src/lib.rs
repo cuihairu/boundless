@@ -83,7 +83,11 @@
 //! - [`model_editor`] — the ModelEditor's model open and save face: the
 //!   `ensureModelValid` judgement, the save/save-as flows and the metadata
 //!   block they refresh, against the `lib/model` read contract
-//!   (`tools/modeleditor_core/Models/`, `lib/gizmo/meta_data*`).
+//!   (`tools/modeleditor_core/Models/`, `lib/gizmo/meta_data*`);
+//! - [`material_editor`] — the ModelEditor's material editing face: the
+//!   material/dye/tint census, mfm instantiation and overloading, the
+//!   clean/property/naming/feed/flag moves and the shader gates
+//!   (`tools/modeleditor_core/Models/mutant_materials.cpp`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
@@ -106,6 +110,7 @@ pub mod hash64;
 pub mod hierarchical_config;
 pub mod hierarchical_config_converter;
 pub mod jit_compiler;
+pub mod material_editor;
 pub mod model_editor;
 pub mod offline_processor;
 pub mod plugin_loader;
