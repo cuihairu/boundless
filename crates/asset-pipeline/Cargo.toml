@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 foundation = { workspace = true }
+physics = { path = "../physics" }
 regex = { workspace = true }
 resources = { workspace = true }
 
