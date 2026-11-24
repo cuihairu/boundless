@@ -1508,7 +1508,7 @@
 
 沿 `entity_navigate.cpp`、`navmesh_navigation_system.cpp`、`navigation_controller.cpp` 对齐 `navigate`、`navigateStep`、`canNavigateTo`、`navigateFollow`、`navigatePathPoints`、`getStopPoint`、`waySetPathLength` 与移动/加速 API。核对轨迹、控制器取消、成功/失败回调和跨 Cell 迁移后的状态。
 
-- [ ] **BW-10-06-01 实现 navigate**。**验收** 固定路线到达时触发对应回调。
+- [x] **BW-10-06-01 实现 navigate**。**验收** 固定路线到达时触发对应回调。→ 9c3c086（entity_navigate.rs 移植 navigate 脸链：-1→maxAoIRadius 先于拒绝、ghost/vehicle 文本逐字、createController 丢 EnvironmentError 死臂；MeshNavigator 落 waypoint 两级搜索（createPathNavLoc+clip/getNavigatePosition 同 waypoint 短路+findPath hop 抬升/pSet/缓存脸），navloc.rs 补公开 clip() 薄封装；验收=slope 固定路线首跳穿越点 (3,3.5,3)、中途窗内到达 (6.677,3.5,6.677) 触发 onNavigate{7,4,42}，shell 跨层 onNavigateFailed、失配 girth 0.5 才触发 None/MF_ASSERT 探针（find-closest 兜底让远点仍合法）；server-runtime 1128/workspace 4426/0、fmt/clippy 绿（顺手清 style 债 a33c867）、entity_navigate.rs 99.47%+navloc.rs 100%；证据 docs/review/bw10-06-01-entity-navigate.md）
 - [ ] **BW-10-06-02 实现 navigateStep**。**验收** 单步目标、返回值与越界行为吻合。
 - [ ] **BW-10-06-03 实现 canNavigateTo**。**验收** 可达与不可达样本结果吻合。
 - [ ] **BW-10-06-04 实现 navigateFollow**。**验收** 目标移动后跟随轨迹对照。
