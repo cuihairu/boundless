@@ -1,0 +1,34 @@
+INFO: [Chunk] Registering factory for worldNavmesh
+INFO: [Chunk] Registering factory for overlapper
+INFO: [Chunk] Registering factory for model
+INFO: [Chunk] Registering factory for shell
+INFO: [Chunk] Registering factory for terrain
+WROTE ./world_navmesh.bin 260 bytes
+HDR0 version 0 girth 0.600000 waypoints 3 edges 11
+SET0 count 3 base 1
+WP 0 minh 0.000000 maxh 1.000000 edges 4 centre 1.000000 1.000000
+EDGE 0 0 0 0.000000 0.000000 0001
+EDGE 0 1 1 2.000000 0.000000 0001
+EDGE 0 2 2 2.000000 2.000000 FFFA
+EDGE 0 3 3 0.000000 2.000000 FFFF
+WP 1 minh 1.000000 maxh 1.000000 edges 4 centre 2.707107 0.707107
+EDGE 1 0 1 2.000000 0.000000 0002
+EDGE 1 1 4 4.000000 0.000000 0002
+EDGE 1 2 2 2.000000 2.000000 0000
+EDGE 1 3 2 2.000000 2.000000 FFFD
+WP 2 minh 2.000000 maxh 4.000000 edges 3 centre 3.292893 1.292893
+EDGE 2 0 2 2.000000 2.000000 0001
+EDGE 2 1 4 4.000000 0.000000 FFF8
+EDGE 2 2 5 4.000000 2.000000 FFFF
+HDR1 version 0 girth 1.000000 waypoints 1 edges 4
+SET1 count 1 base 4
+WP 0 minh 0.000000 maxh 2.000000 edges 4 centre 11.000000 11.000000
+EDGE 0 0 0 10.000000 10.000000 FFFF
+EDGE 0 1 1 12.000000 10.000000 FFFE
+EDGE 0 2 2 12.000000 12.000000 FFFF
+EDGE 0 3 3 10.000000 12.000000 FFFC
+ADJ 0 0 1
+ADJ 0 2 -1
+CHUNKBOUND 0 3 1
+VISTA FFFA FFFD FFF8
+RESULT OK

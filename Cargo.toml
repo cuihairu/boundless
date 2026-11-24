@@ -12,6 +12,7 @@ members = [
     "crates/scene",
     "crates/terrain",
     "crates/physics",
+    "crates/waypoint",
     "crates/db",
     "crates/db-postgres",
     "crates/python-host",
