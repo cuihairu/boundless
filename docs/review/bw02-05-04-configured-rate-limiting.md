@@ -146,7 +146,28 @@ cpp:102/105），端口直接复用 `foundation::math::ema` 的
 
 `f2ef112` 同时丢了 `interface_table` / `set_interface_table` /
 `fragmented_bundles` / `receive_stats` / `p_off_channel_filter` /
-`set_p_off_channel_filter` / `process_filtered_packet` 七个 `pub` 面
-（`is_dead`、`send_bundle`、`set_should_use_checksums` 已搬到
-`recently_dead_channels` / `udp_channel` / `packet_sender`，属正常落位）。
-它们分别对应 BW-02-02 / BW-02-03 / BW-02-04-03 的已勾条目，待另立项恢复。
+`set_p_off_channel_filter` / `process_filtered_packet` 七个 `pub` 面，
+分别对应 BW-02-02 / BW-02-03 / BW-02-04-03 的已勾条目，待另立项恢复。
+其中只有 `send_bundle` → `udp_channel.rs` 属正常落位；`is_dead` →
+`recently_dead_channels.rs` 与 `set_should_use_checksums` → `packet_sender.rs`
+**不是**落位——那两个文件自身就是孤儿（未声明、不参与编译），故这两面同样
+丢失。真实丢失面数为 **18**，不是 8。
+
+更大的事实：`crates/mercury/src/` 下有 **18 个孤儿 `.rs` 文件**（约 300 KB
+已交付代码）存在于磁盘却在 `lib.rs` 未声明，因此从不编译、自带测试从不
+运行：`encryption_stream_filter`、`exposed_message_range`、
+`initial_connection_filter`、`irregular_channels`、`message_frame`、
+`packet_receiver_stats`、`packet_sender`、`recently_dead_channels`、
+`reliable_order`、`symmetric_block_cipher`、`tcp_bundle_dispatch`、
+`tcp_channel_lifecycle`、`tcp_connection_header`、`tcp_frame`、`tcp_send`、
+`tcp_send_buffer`、`tcp_transport_tests`、`udp_bundle_processor`。
+即 docs-architecture 车道已登记的「mercury 19 孤儿模块」。
+
+排查法：把 `lib.rs` 的 `pub mod X;` 清单与 `src/` 下的 `.rs` 文件求差集。
+判定一个「搬家」是否真成立的唯一判据是定义它的模块**已声明**——
+`grep -rn 'fn is_dead' src/` 命中不等于可用，还得 `grep -n 'mod <name>' lib.rs`
+也为命中。
+
+全部恢复是一个项目（18 个模块、每个自带测试面，文件每模块约 +2500 行），
+不是单个 todo 条目；不要拆零恢复，`network_interface.rs` 会被撑到数千行且
+每步都要重跑全部门禁。
