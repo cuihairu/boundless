@@ -52,11 +52,16 @@
 //! - [`space_converter`] — the space → `space.bin` converter and the
 //!   compiled-space writer faces behind it
 //!   (`tools/asset_pipeline/converters/space_converter/`,
-//!   `lib/compiled_space/binary_writers/`).
+//!   `lib/compiled_space/binary_writers/`);
+//! - [`hierarchical_config_converter`] — the rule-tree baker
+//!   (`tools/asset_pipeline/converters/hierarchical_config_converter/`);
+//! - [`bsp_converter`] — the BSP collision-tree upgrader and its discovery
+//!   rule (`tools/asset_pipeline/converters/bsp_converter/`).
 
 pub mod asset_compiler;
 pub mod asset_compiler_options;
 pub mod batch_compiler;
+pub mod bsp_converter;
 pub mod compiler;
 pub mod content_addressable_cache;
 pub mod conversion_rule;
@@ -69,6 +74,7 @@ pub mod dependency_list;
 pub mod generic_conversion_rule;
 pub mod hash64;
 pub mod hierarchical_config;
+pub mod hierarchical_config_converter;
 pub mod jit_compiler;
 pub mod plugin_loader;
 pub mod primitive_file_structs;
