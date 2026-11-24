@@ -1516,7 +1516,7 @@
 - [x] **BW-10-06-06 实现 getStopPoint**。**验收** 同一位置、方向和停止距离输入返回原版停止点。 → 54ec362（getNavigatePosition 带 flag 同体实现:远/近门户两臂+跨段回退 prevBackDist+ignore 首个/第二次近门户两报错+无门答原始 destination 不抬 y+hop 落边界穿越点非 entry label;99.47%）
 - [x] **BW-10-06-07 实现 waySetPathLength**。**验收** 跨两个 waypoint set 的路径长度返回值与原版一致。 → 347d7bc（脚本脸 isRealToScript 一查:ghost 不抛答 0 带错误文本;系统面 getWaySetPathSize;跨两 set 答 2、同 set 不建 way-set path 答 0;夹具 girth 0.6 踩明;99.48%）
 - [x] **BW-10-06-08 实现 moveToPoint**。**验收** 逐 tick 对照位置、终点容差和到达回调。 → cc15de4（moveToPoint 脚本脸:无载具检查+无前缀 TypeError 共享文本;逐 tick 0.3 步进 34 拍吸附+近点首拍吸附+onMove 回调;控制器本体 BW-08 已交付;99.51%）
-- [ ] **BW-10-06-09 实现 moveToEntity**。**验收** 目标实体移动时，跟随结果和停止条件与原版一致。
+- [x] **BW-10-06-09 实现 moveToEntity**。**验收** 目标实体移动时，跟随结果和停止条件与原版一致。 → ec2cfc4（moveToEntity 脚本脸:同 moveToPoint 无载具+无前缀 TypeError;停止条件量 raw 目标非偏移接近点;offset 首拍整 range;close_enough 原位精确朝向+onMove;None 目标 onMoveFailure;99.53%）
 - [ ] **BW-10-06-10 实现 accelerateToPoint**。**验收** 逐 tick 比较速度、位置和到达结果。
 - [ ] **BW-10-06-11 实现 accelerateAlongPath**。**验收** 多段路径拐点的减速与终点行为与原版一致。
 - [ ] **BW-10-06-12 实现 accelerateToEntity**。**验收** 目标移动及销毁时的控制器结果与原版一致。
