@@ -1375,9 +1375,12 @@
 移植标准、Python、自定义和实际参编的其他认证后端及扩展入口。对照成功、失效、重复请求和依赖不可用时的错误状态。
 
 - [x] **BW-09-04-01 移植标准认证**。**验收** 合法和无效账号状态吻合。 (dd8c199)
-- [ ] **BW-09-04-02 接入 Python Billing**。**验收** 接口及异常与原脚本契约一致。
-- [ ] **BW-09-04-03 接入已参编的自定义扩展**。**验收** 按目标验证可用与依赖缺失。
-- [ ] **BW-09-04-04 验证重复认证**。**验收** 并发请求不污染登录记录。
+- [x] **BW-09-04-02 接入 Python Billing**。**验收** 接口及异常与原脚本契约一致。（commit b485576）
+  - 证据：`crates/server-runtime/src/py_billing.rs`（源码 `server/dbapp/py_billing_system.cpp:18-430`）。七个响应方法逐字段发回调；四条 `ValueError` 逐字同契约（零 dbID、已发送、未知类型带尾换行、failure 状态 0/1/上界外）；检查顺序钉死（dbID==0 先于已发送）；缺 get 方法、脚本异常、未发送三分支同落 `LOGIN_REJECTED_DB_GENERAL_FAILURE("No response from script")`。18 test 过；行覆盖 100.00%（431 DA/0 missed）。复核 `docs/review/bw09-04-billing-extensions.md`。
+- [x] **BW-09-04-03 接入已参编的自定义扩展**。**验收** 按目标验证可用与依赖缺失。（commit 419a00a）
+  - 证据：`crates/server-runtime/src/custom_billing.rs`（源码 `server/dbapp/custom_billing_system.cpp:21-115` + `lib/db_storage/billing_system_creator.cpp:38-79`）。编入集内按 `billingSystem/type` 分发；有 `Account` 定义→`Created` 且 is_okay，缺→`NotConfigured`（参照删除语义）；缺省类型名 `standard` 在仅编入 custom 的构建上 `NoSuchType`；空集 `NoCreatorsRegistered`；creator 造空 `CreatorFailed`。8 test 过；行覆盖 100.00%（137 DA/0 missed）。
+- [x] **BW-09-04-04 验证重复认证**。**验收** 并发请求不污染登录记录。（commit 06e01fa）
+  - 证据：`crates/server-runtime/src/relogon.rs` 新增 `concurrent_logins_for_one_account_leave_one_record`，交错走完 checkout 互斥→重复登录仲裁→第三次被拒不动 pending→base 拒绝保留原记录→等待销毁期旧实体登出重跑→重登后**恰一条**记录→登出后集合回空且 checkout/pending 全清。relogon 27 test 全过。
 
 #### BW-09-05 运维工具
 
