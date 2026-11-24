@@ -9,3 +9,4 @@ repository.workspace = true
 
 [dependencies]
 foundation = { workspace = true }
+scene = { workspace = true }

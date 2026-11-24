@@ -41,7 +41,8 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         "foundation" => Some(LAYER_FOUNDATION),
         "platform" => Some(LAYER_PLATFORM),
         "contracts" | "entitydef" | "mercury" | "python-host" | "resources" | "db"
-        | "db-postgres" | "asset-pipeline" | "plugin-host" | "chunk" | "load" | "compiled-space" | "physics" => {
+        | "db-postgres" | "asset-pipeline" | "plugin-host" | "chunk" | "load"
+        | "compiled-space" | "physics" | "scene" => {
             Some(LAYER_DOMAIN)
         }
         "server-runtime" => Some(LAYER_ROLE_RUNTIME),
@@ -592,6 +593,7 @@ mod tests {
             "plugin-host",
             "chunk",
             "physics",
+            "scene",
             "server-runtime",
             "boundless-server",
             "test-support",

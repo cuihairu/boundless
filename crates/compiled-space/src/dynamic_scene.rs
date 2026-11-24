@@ -3,16 +3,13 @@
 //! removable objects into a pair of dynamic loose octrees (collision and
 //! visibility) and answering spatial queries over the visibility tree.
 //!
-//! The reference object type (`BW::SceneObject`) and its scene views
-//! (object-change notifications, collision operations) belong to the
-//! scene-type-system face; they are not ported here. The provider keeps
-//! caller-supplied `DynamicObjectId` payloads in their place, so the
-//! acceptance face — query results after movement and removal — is
-//! testable without the full scene machinery.
-
-use std::collections::BTreeSet;
+//! Since BW-10-02-04 the stored objects are the real `scene::SceneObject`
+//! typed handles (the reference `objects_` collection, read back through
+//! `objectLookup_`); the object-change notifications and the
+//! collision/intersect view wiring remain unported (BW-10-02-05).
 
 use foundation::math::{BoundBox, Matrix, Vector3};
+use scene::SceneObject;
 
 use crate::loose_octree::{DynamicLooseOctree, INVALID_NODE, NodeIndex};
 
@@ -219,9 +216,6 @@ pub const MAX_OCTREE_DEPTH: u32 = 8;
 pub const INITIAL_WORLD_SIZE: f32 = 2000.0;
 pub const INITIAL_MAX_DEPTH: u32 = 1;
 
-/// Caller-supplied object identity standing in for `BW::SceneObject`.
-pub type DynamicObjectId = u32;
-
 /// `DynamicSceneProvider` (`lib/space/dynamic_scene_provider.hpp`): objects
 /// keyed by generational handles, double-buffered update state (writes land
 /// in the `latest_*` tables and only become queryable at `on_post_tick`),
@@ -233,7 +227,7 @@ pub type DynamicObjectId = u32;
 #[derive(Debug, Clone)]
 pub struct DynamicSceneProvider {
     dynamic_object_handles: HandleTable,
-    objects: Vec<DynamicObjectId>,
+    objects: Vec<SceneObject>,
     object_handles: Vec<DynamicObjectHandle>,
     object_lookup: Vec<usize>,
     object_collision_bbs: Vec<BoundBox>,
@@ -313,7 +307,7 @@ impl DynamicSceneProvider {
     /// object-change notification, which belongs to the scene views).
     pub fn add_object(
         &mut self,
-        object: DynamicObjectId,
+        object: SceneObject,
         world_xform: &Matrix,
         collision_bb: &BoundBox,
         visibility_bb: &BoundBox,
@@ -370,7 +364,7 @@ impl DynamicSceneProvider {
         }
 
         // Feed all the latest data into the core trees
-        let mut updated_objects: Vec<DynamicObjectId> =
+        let mut updated_objects: Vec<SceneObject> =
             Vec::with_capacity(self.num_dirty_objects as usize);
         for handle in self.object_handles.iter().copied() {
             let index = handle.index() as usize;
@@ -381,7 +375,7 @@ impl DynamicSceneProvider {
                 self.object_visibility_bbs[index] = self.latest_object_visibility_bbs[index];
                 self.object_world_xform[index] = self.latest_object_world_xform[index];
 
-                updated_objects.push(self.objects[self.object_lookup[index]]);
+                updated_objects.push(self.objects[self.object_lookup[index]].clone());
             }
         }
 
@@ -422,9 +416,12 @@ impl DynamicSceneProvider {
     /// The AABB face of `intersect` (`dynamic_scene_provider.cpp:449-495`,
     /// with an `AABB` in place of the `ConvexHull` the reference hull face
     /// uses): visibility-tree candidates filtered by each object's own
-    /// visibility bound. Returns the stored object ids.
-    pub fn query_region(&self, region: &BoundBox) -> BTreeSet<DynamicObjectId> {
-        let mut intersection = BTreeSet::new();
+    /// visibility bound. Each hit resolves through the reference chain
+    /// `objects_[objectLookup_[handle.index_]]` and is appended in tree
+    /// walk order — the reference appends into the intersection set with
+    /// no dedup (`intersection.insert`, cpp:479-482).
+    pub fn query_region(&self, region: &BoundBox) -> Vec<SceneObject> {
+        let mut intersection = Vec::new();
         for node_ref in self.visibility_tree.intersect_aabb(region) {
             let contents = &self.visibility_tree_contents[node_ref as usize];
             for handle in contents.iter().copied() {
@@ -435,11 +432,28 @@ impl DynamicSceneProvider {
                 }
 
                 if region.intersects(bb) {
-                    intersection.insert(self.objects[self.object_lookup[handle.index() as usize]]);
+                    let slot = self.object_lookup[handle.index() as usize];
+                    intersection.push(self.objects[slot].clone());
                 }
             }
         }
         intersection
+    }
+
+    /// Resolve a handle back to its registered scene object — the
+    /// reference read chain `objects_[objectLookup_[handle.index_]]`
+    /// (`dynamic_scene_provider.cpp:183`, `:289`, `:366`).
+    pub fn object(&self, handle: DynamicObjectHandle) -> SceneObject {
+        let index = handle.index() as usize;
+        assert!(
+            self.dynamic_object_handles.is_valid(handle),
+            "object() on an invalid handle"
+        );
+        assert!(
+            self.object_lookup[index] != usize::MAX,
+            "object() on a removed handle"
+        );
+        self.objects[self.object_lookup[index]].clone()
     }
 
     /// `resizeScene` (`dynamic_scene_provider.cpp:504-569`): depth from the
@@ -569,7 +583,7 @@ impl DynamicSceneProvider {
     /// `insertObject_internal` (`dynamic_scene_provider.cpp:572-600`).
     fn insert_object_internal(
         &mut self,
-        object: DynamicObjectId,
+        object: SceneObject,
         world_xform: &Matrix,
         collision_bb: &BoundBox,
         visibility_bb: &BoundBox,
@@ -660,7 +674,7 @@ impl DynamicSceneProvider {
         // Swap the position of the old object with the outgoing one.
         let removed_object_index = self.object_lookup[index];
         let last = self.objects.len() - 1;
-        self.objects[removed_object_index] = self.objects[last];
+        self.objects[removed_object_index] = self.objects[last].clone();
         let moved_object_handle = self.object_handles[last];
         self.object_handles[removed_object_index] = moved_object_handle;
 
@@ -689,6 +703,7 @@ fn log2ceil(x: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scene::SceneObjectFlags;
 
     fn xform(x: f32, y: f32, z: f32) -> Matrix {
         let mut m = Matrix::identity();
@@ -703,8 +718,23 @@ mod tests {
         )
     }
 
-    fn ids(values: &[DynamicObjectId]) -> BTreeSet<DynamicObjectId> {
-        values.iter().copied().collect()
+    /// The registered entity type for the test scene objects.
+    struct Entity;
+
+    fn entity(handle: u64) -> SceneObject {
+        SceneObject::typed::<Entity>(handle, SceneObjectFlags::new())
+    }
+
+    /// Resolve a query result to the registered entity handles, sorted for
+    /// comparison.
+    fn entity_ids(provider: &DynamicSceneProvider, region: &BoundBox) -> Vec<u64> {
+        let mut ids: Vec<u64> = provider
+            .query_region(region)
+            .iter()
+            .map(|object| object.handle())
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     #[test]
@@ -810,29 +840,29 @@ mod tests {
     fn added_objects_answer_region_queries() {
         let mut provider = DynamicSceneProvider::new();
         provider.add_object(
-            10,
+            entity(10),
             &xform(5.0, 0.0, 5.0),
             &bb([4.0, -1.0, 4.0], [6.0, 1.0, 6.0]),
             &bb([4.0, -1.0, 4.0], [6.0, 1.0, 6.0]),
         );
         provider.add_object(
-            11,
+            entity(11),
             &xform(-5.0, 0.0, -5.0),
             &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
             &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
         );
         provider.add_object(
-            12,
+            entity(12),
             &xform(5.0, 0.0, -5.0),
             &bb([4.0, -1.0, -6.0], [6.0, 1.0, -4.0]),
             &bb([4.0, -1.0, -6.0], [6.0, 1.0, -4.0]),
         );
 
         let whole = bb([-20.0, -20.0, -20.0], [20.0, 20.0, 20.0]);
-        assert_eq!(provider.query_region(&whole), ids(&[10, 11, 12]));
+        assert_eq!(entity_ids(&provider, &whole), [10, 11, 12]);
 
         let east = bb([0.0, -10.0, 0.0], [20.0, 10.0, 20.0]);
-        assert_eq!(provider.query_region(&east), ids(&[10]));
+        assert_eq!(entity_ids(&provider, &east), [10]);
 
         let miss = bb([100.0, 100.0, 100.0], [101.0, 101.0, 101.0]);
         assert!(provider.query_region(&miss).is_empty());
@@ -843,19 +873,19 @@ mod tests {
         // Acceptance: 移动和移除后查询结果匹配.
         let mut provider = DynamicSceneProvider::new();
         provider.add_object(
-            1,
+            entity(1),
             &xform(5.0, 0.0, 5.0),
             &bb([4.0, -1.0, 4.0], [6.0, 1.0, 6.0]),
             &bb([4.0, -1.0, 4.0], [6.0, 1.0, 6.0]),
         );
         let h_b = provider.add_object(
-            2,
+            entity(2),
             &xform(-5.0, 0.0, -5.0),
             &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
             &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
         );
         let h_c = provider.add_object(
-            3,
+            entity(3),
             &xform(15.0, 0.0, -5.0),
             &bb([14.0, -1.0, -6.0], [16.0, 1.0, -4.0]),
             &bb([14.0, -1.0, -6.0], [16.0, 1.0, -4.0]),
@@ -864,8 +894,8 @@ mod tests {
 
         let east = bb([10.0, -10.0, -10.0], [20.0, 10.0, 10.0]);
         let west = bb([-20.0, -10.0, -20.0], [0.0, 10.0, 0.0]);
-        assert_eq!(provider.query_region(&east), ids(&[3]));
-        assert_eq!(provider.query_region(&west), ids(&[2]));
+        assert_eq!(entity_ids(&provider, &east), [3]);
+        assert_eq!(entity_ids(&provider, &west), [2]);
 
         // Move b east; the commit happens at the post-tick rebuild.
         provider.update_object(
@@ -875,24 +905,24 @@ mod tests {
             &bb([14.0, -1.0, -6.0], [16.0, 1.0, -4.0]),
         );
         provider.on_post_tick();
-        assert_eq!(provider.query_region(&west), ids(&[]));
-        assert_eq!(provider.query_region(&east), ids(&[2, 3]));
+        assert!(provider.query_region(&west).is_empty());
+        assert_eq!(entity_ids(&provider, &east), [2, 3]);
 
         // Remove c; queries stop seeing it immediately.
         provider.remove_object(h_c);
-        assert_eq!(provider.query_region(&east), ids(&[2]));
-        assert_eq!(provider.query_region(&east), ids(&[2]), "repeat is stable");
+        assert_eq!(entity_ids(&provider, &east), [2]);
+        assert_eq!(entity_ids(&provider, &east), [2], "repeat is stable");
 
         // a was never touched.
         let south_east = bb([0.0, -10.0, 0.0], [20.0, 10.0, 20.0]);
-        assert_eq!(provider.query_region(&south_east), ids(&[1]));
+        assert_eq!(entity_ids(&provider, &south_east), [1]);
     }
 
     #[test]
     fn updates_stay_invisible_until_the_post_tick_rebuild() {
         let mut provider = DynamicSceneProvider::new();
         let h = provider.add_object(
-            7,
+            entity(7),
             &xform(-5.0, 0.0, -5.0),
             &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
             &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
@@ -906,33 +936,32 @@ mod tests {
         );
         let east = bb([0.0, -10.0, 0.0], [20.0, 10.0, 20.0]);
         let west = bb([-20.0, -10.0, -20.0], [0.0, 10.0, 0.0]);
-        assert_eq!(
-            provider.query_region(&east),
-            ids(&[]),
+        assert!(
+            provider.query_region(&east).is_empty(),
             "staged state is not queryable yet"
         );
-        assert_eq!(provider.query_region(&west), ids(&[7]));
+        assert_eq!(entity_ids(&provider, &west), [7]);
 
         provider.on_post_tick();
-        assert_eq!(provider.query_region(&east), ids(&[7]));
-        assert_eq!(provider.query_region(&west), ids(&[]));
+        assert_eq!(entity_ids(&provider, &east), [7]);
+        assert!(provider.query_region(&west).is_empty());
 
         // A clean tick is a no-op.
         provider.on_post_tick();
-        assert_eq!(provider.query_region(&east), ids(&[7]));
+        assert_eq!(entity_ids(&provider, &east), [7]);
     }
 
     #[test]
     fn an_update_then_remove_before_post_tick_is_absorbed() {
         let mut provider = DynamicSceneProvider::new();
         let h_a = provider.add_object(
-            1,
+            entity(1),
             &xform(-5.0, 0.0, -5.0),
             &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
             &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
         );
         provider.add_object(
-            2,
+            entity(2),
             &xform(5.0, 0.0, 5.0),
             &bb([4.0, -1.0, 4.0], [6.0, 1.0, 6.0]),
             &bb([4.0, -1.0, 4.0], [6.0, 1.0, 6.0]),
@@ -947,7 +976,7 @@ mod tests {
         provider.on_post_tick();
 
         let whole = bb([-20.0, -20.0, -20.0], [20.0, 20.0, 20.0]);
-        assert_eq!(provider.query_region(&whole), ids(&[2]));
+        assert_eq!(entity_ids(&provider, &whole), [2]);
         assert_eq!(provider.num_objects(), 1);
     }
 
@@ -955,7 +984,7 @@ mod tests {
     fn removed_handles_keep_pool_validity_and_indices_are_not_recycled() {
         let mut provider = DynamicSceneProvider::new();
         let h = provider.add_object(
-            5,
+            entity(5),
             &xform(0.0, 0.0, 0.0),
             &bb([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
             &bb([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
@@ -967,7 +996,7 @@ mod tests {
         assert_eq!(provider.num_objects(), 0);
 
         let next = provider.add_object(
-            6,
+            entity(6),
             &xform(0.0, 0.0, 0.0),
             &bb([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
             &bb([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
@@ -979,7 +1008,7 @@ mod tests {
         );
 
         let whole = bb([-20.0, -20.0, -20.0], [20.0, 20.0, 20.0]);
-        assert_eq!(provider.query_region(&whole), ids(&[6]));
+        assert_eq!(entity_ids(&provider, &whole), [6]);
     }
 
     #[test]
@@ -1001,7 +1030,7 @@ mod tests {
     fn inside_out_visibility_bounds_never_answer_queries() {
         let mut provider = DynamicSceneProvider::new();
         provider.add_object(
-            9,
+            entity(9),
             &xform(0.0, 0.0, 0.0),
             &bb([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
             &BoundBox::default(),
@@ -1015,13 +1044,13 @@ mod tests {
     fn resize_scene_rebuilds_with_the_reference_depth() {
         let mut provider = DynamicSceneProvider::new();
         provider.add_object(
-            1,
+            entity(1),
             &xform(45.0, 0.0, 45.0),
             &bb([44.0, -1.0, 44.0], [46.0, 1.0, 46.0]),
             &bb([44.0, -1.0, 44.0], [46.0, 1.0, 46.0]),
         );
         provider.add_object(
-            2,
+            entity(2),
             &xform(-45.0, 0.0, -45.0),
             &bb([-46.0, -1.0, -46.0], [-44.0, 1.0, -44.0]),
             &bb([-46.0, -1.0, -46.0], [-44.0, 1.0, -44.0]),
@@ -1034,9 +1063,9 @@ mod tests {
         assert_eq!(provider.visibility_tree.config.world_center, Vector3::ZERO);
 
         let whole = bb([-60.0, -60.0, -60.0], [60.0, 60.0, 60.0]);
-        assert_eq!(provider.query_region(&whole), ids(&[1, 2]));
+        assert_eq!(entity_ids(&provider, &whole), [1, 2]);
         let north_east = bb([40.0, -10.0, 40.0], [50.0, 10.0, 50.0]);
-        assert_eq!(provider.query_region(&north_east), ids(&[1]));
+        assert_eq!(entity_ids(&provider, &north_east), [1]);
     }
 
     #[test]
@@ -1044,7 +1073,7 @@ mod tests {
         let mut provider = DynamicSceneProvider::new();
         provider.set_partition_size_hint(50.0);
         provider.add_object(
-            1,
+            entity(1),
             &xform(0.0, 0.0, 0.0),
             &bb([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
             &bb([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
@@ -1053,7 +1082,7 @@ mod tests {
         provider.resize_scene(&bb([-50.0, -50.0, -50.0], [50.0, 50.0, 50.0]));
         assert_eq!(provider.visibility_tree.config.max_depth, 1);
         let whole = bb([-60.0, -60.0, -60.0], [60.0, 60.0, 60.0]);
-        assert_eq!(provider.query_region(&whole), ids(&[1]));
+        assert_eq!(entity_ids(&provider, &whole), [1]);
     }
 
     #[test]
@@ -1067,5 +1096,58 @@ mod tests {
         assert_eq!(log2ceil(8), 3);
         assert_eq!(log2ceil(9), 4);
         assert_eq!(log2ceil(1024), 10);
+    }
+
+    /// Acceptance: 实体可定位对应场景对象.
+    #[test]
+    fn an_entity_locates_its_scene_object_through_the_handle() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let mut provider = DynamicSceneProvider::new();
+
+        // The entity builds its typed presence and registers it.
+        let mut flags = SceneObjectFlags::new();
+        flags.set_is_dynamic(true);
+        let presence = SceneObject::typed::<Entity>(42, flags);
+        let handle = provider.add_object(
+            presence.clone(),
+            &xform(5.0, 0.0, 5.0),
+            &bb([4.0, -1.0, 4.0], [6.0, 1.0, 6.0]),
+            &bb([4.0, -1.0, 4.0], [6.0, 1.0, 6.0]),
+        );
+
+        // Resolution through objectLookup_ answers the same handle+type
+        // (equality ignores flags; both faces are checked separately).
+        let located = provider.object(handle);
+        assert_eq!(located, presence, "the handle resolves the entity object");
+        assert_eq!(located.handle(), 42);
+        assert!(located.is_type::<Entity>());
+        assert!(located.flags().is_dynamic(), "flags ride with the object");
+
+        // The spatial query answers the same scene object.
+        let whole = bb([-20.0, -20.0, -20.0], [20.0, 20.0, 20.0]);
+        let found = provider.query_region(&whole);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], presence);
+
+        // Movement keeps the mapping stable across the post-tick rebuild.
+        provider.update_object(
+            handle,
+            &xform(-5.0, 0.0, -5.0),
+            &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
+            &bb([-6.0, -1.0, -6.0], [-4.0, 1.0, -4.0]),
+        );
+        provider.on_post_tick();
+        assert_eq!(provider.object(handle), presence);
+
+        // Removal unresolves the handle (the table stays valid; resolution
+        // is an assert, as in the reference lookup chain).
+        provider.remove_object(handle);
+        assert!(provider.handle_is_valid(handle));
+        assert_eq!(provider.num_objects(), 0);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| provider.object(handle))).is_err(),
+            "a removed handle no longer resolves"
+        );
     }
 }
