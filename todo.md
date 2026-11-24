@@ -1966,8 +1966,11 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（用已知输入核对统计）：`known_inputs_produce_hand_computed_login_statistics`（手搓账本 per_second[3,2,4]/names 5/refused 7 → attempts 9、rate=5/9 精确、refused 不入分母）→ `a_sendless_run_reports_zero_rate` → `an_offline_run_converts_every_send_and_tracks_the_online_series`（真实洪峰跑批 rate=1.0、在线序列 `vec![0,0,5,10,12,12,12,12,12,12]` 逐秒、peak/final=12）→ `an_empty_online_series_sums_to_zeroes` → `the_aggregates_render_into_the_report_envelope`（统计进 JSON 信封逐键核对、rate 最短形 0.5555555555555556）。
   - 测试与覆盖：`cargo test -p load` 115 过 0 挂（新增 5）；clippy 0 错；rustfmt 过；llvm-cov metrics.rs/hurricane.rs 零缺行=100%。
   - 卡点解除注：同 03-01——账本即确定性实测输入，统计核对属报告层纯数学。
-- [ ] **BW-17-03-03 聚合延迟分位数与超时**。**验收** 固定样本验证 p95/p99。
-  - 卡点（无实测结果）：p95/p99 需固定样本延迟数据（同 03-01 卡点）。
+- [x] **BW-17-03-03 聚合延迟分位数与超时**。**验收** 固定样本验证 p95/p99。(5afaf6e)
+  - 模型落点：`crates/load/src/metrics.rs` 扩展——`nearest_rank_percentile(&[f64], p)`：最近秩法（升序排序后取 `ceil(p/100·n)` 1 起序统计量），非有限样本先剔除（NaN 不是延迟）、p 夹 [0,100]、空集 None；`LatencyAggregate::new(samples, timeout_threshold)`：p50/p95/p99 + 超时（≥阈值）计数与 rate（零样本 rate=0.0）；调用方缓冲不被重排（内部排序副本）；`report_entries()` 渲进 03-01 信封、无样本分位数以 `"n/a"` 占位。口径注：样本单位随采集面（活服务端接入后由连接层喂 RTT），分位数方法即本报告口径。
+  - 验收（固定样本验证 p95/p99）：`fixed_samples_verify_the_percentiles`（1..=100 百样本 → p50=50/p95=95/p99=99、p=0→1/p=100→100/p=500 夹取 100）→ `an_odd_sized_set_walks_the_ceil_rank`（7 样本 p50=40（ceil 3.5=4）、p95=p99=70（ceil 6.65=7））→ `one_sample_pins_every_percentile_and_empty_answers_none` → `unordered_and_non_finite_samples_are_handled`（乱序 [50,10,30,20,40] p50=30、阈值 45 超时 1 个 rate 0.2；NaN 剔除后 2 样本 p50=10）→ `aggregation_does_not_reorder_the_caller_samples` → `the_latency_statistics_render_into_the_report_envelope`（5 样本 p95=p99=200（ceil(0.95·5)=5）、超时 2/rate 0.4、空集 "n/a"）。
+  - 测试与覆盖：`cargo test -p load` 121 过 0 挂（新增 6）；clippy 0 错；rustfmt 过；llvm-cov metrics.rs 零缺行=100%。
+  - 卡点解除注：验收句即「固定样本验证」——统计核对属纯数学面，实测 RTT 由活服务端接入后经连接层供样。
 - [ ] **BW-17-03-04 聚合带宽与资源使用**。**验收** 报告指标口径和采样周期。
   - 卡点（无实测结果）：带宽/资源指标口径需实测采样（同 03-01 卡点）。
 - [ ] **BW-17-03-05 设置 PR smoke**。**验收** 低负载失败可复跑。
