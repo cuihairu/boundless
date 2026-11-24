@@ -16,6 +16,7 @@
 
 pub mod account;
 pub mod auto_load;
+pub mod billing;
 pub mod buffered;
 pub mod charset;
 pub mod consolidate;
@@ -37,6 +38,10 @@ pub use account::{
 };
 pub use auto_load::{
     DEFAULT_MAX_OUTSTANDING, EntityAutoLoader, PacedEntityAutoLoader, UpdateAutoLoad,
+};
+pub use billing::{
+    AccountLookup, BillingConfig, GetEntityKeyOutcome, SetEntityKeyOutcome, XmlBillingSystem,
+    XmlLogOnEntry, XmlLogOnEntryWrite, XmlLogOnMapping,
 };
 pub use buffered::{Admission, BufferedEntityTasks, EntityTask};
 pub use charset::{
