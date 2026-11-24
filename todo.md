@@ -1664,7 +1664,8 @@
 
 覆盖 `assetprocessor`、`offline_processor`、`res_packer`、`resourcechecker`、`navgen`。按原版构建入口验证命令行或图形工作流、错误和可被原版读取的产物。导航生成与运行时联验见 BW-10-05/07。
 
-- [ ] **BW-13-02-01 移植 assetprocessor 工作流**。**验收** 标准样本输出和错误可比。
+- [x] **BW-13-02-01 移植 assetprocessor 工作流**。**验收** 标准样本输出和错误可比。
+  - 证据：`crates/asset-pipeline/src/asset_processor.rs`（3ff8b41）—— `_AssetProcessor`（`tools/assetprocessor/asset_processor_script.cpp`）以纯函数面移植，PyScript 包装/窗口/DllMain 为接缝。可移植函数全数落地并给出标准样本：`outside_chunk_identifier`（chunk 格网数学含 u16 环窗三级 `/sep/` 前缀与 `%04x%04xo` 尾，样本 `"00000000o"`/`"00020002o"`/`"001xx000xx/sep/00100000o"`/三级全触 `"1xxx0xxx/sep/10xxx00xxx/sep/100xx000xx/sep/10000000o"`/负格网 `"ffffffffo"`/自定义分辨率）；`get_guid`（`%08X.%08X.%08X.%08X`，SplitMix64 时钟种子）；`decode_wide_string`（`!` 前缀字面量剥 bang、base64→UTF-16LE、坏值 `"error"`、奇尾字节丢弃）；`convert_base64_data_section` 原位替换；`convert_visual` 恒拒绝（Collada 不再支持——原版 NotImplementedError 怪癖）；shader 工作流：`get_shader_macros` 返回 `(name, 选项数)`、`compile_shader`/`shader_needs_recompile` 校验错误**逐字可比**（"compileShader macroCombination tuple is the wrong length. Must be len(getShaderMacros)." 等）、force/过期编译落 infix 名 fxo、成功消息 "Compilation successful."、`load_compiled_effect` 读回 `effect` 子。配套 `effect_converter.rs` 增 `check_modified`（`EffectCompiler::checkModified` 移植：源 hash 缺失→false 不论 fxo 在否、fxo 缺→true、hash 子缺/坏→true、摘要不等→true、effect 子缺→true、depends 逐 name/hash 对（重复行按位置 `read_file_at` 读——`read_file` 会解析到最后一行）不等→true）、`write_fxo_container` 共享化、`EffectMacroSetting::option_value` 访问器；fxo 存的 hash 改为**源摘要**（原版编译前 `hashResource(resourceID)`），与 checkModified 对齐。**留待**：`updateBSPVersion`（网格→BSP 再生成，等 physics 树构建面）与 `upgradeHardskinnedVertices`（Moo vertices 运行时面）注在模块头。131 asset-pipeline 测绿（125 既存+6 新），clippy/fmt 双清（workspace 两 unused-dep 警告系既存债）。
 - [ ] **BW-13-02-02 移植 offline_processor 工作流**。**验收** 输出可被原版消费。
 - [ ] **BW-13-02-03 移植 res_packer**。**验收** 打包前后资源可等价读回。
 - [ ] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。
