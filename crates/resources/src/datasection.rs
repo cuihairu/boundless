@@ -533,6 +533,18 @@ impl DataSection {
         self.children.clear();
     }
 
+    /// Remove the child at `index`, shifting the survivors down. `None`
+    /// when the index is out of range. The xml database's row slots move
+    /// by position (`delChild` on the child pointer, kept positional
+    /// here).
+    pub fn remove_child_at(&mut self, index: usize) -> Option<DataSection> {
+        if index < self.children.len() {
+            Some(self.children.remove(index))
+        } else {
+            None
+        }
+    }
+
     pub fn is_attribute(&self) -> bool {
         self.is_attribute
     }
