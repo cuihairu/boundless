@@ -738,6 +738,26 @@ impl NetworkInterface {
         }
     }
 
+    /// `PacketSender::sendRescheduledPacket` (packet_sender.cpp:241-258):
+    /// a packet returning from artificial latency. The owning channel's
+    /// filter, when fitted, gets it first; off-channel packets (and
+    /// channels without a filter) go straight out.
+    pub fn send_rescheduled_packet(
+        &self,
+        addr: &Address,
+        packet: &Rc<Packet>,
+        channel: Option<&ChannelPtr>,
+    ) {
+        let filter = channel.and_then(|c| c.borrow().p_filter());
+        let mut wire = (**packet).clone();
+        match filter {
+            Some(filter) => filter.send(addr, &mut wire, &|addr, packet| {
+                self.send_packet(addr, packet)
+            }),
+            None => self.send_packet(addr, &wire),
+        }
+    }
+
     /// `c_str`: the interface's label for messages.
     pub fn c_str(&self) -> String {
         self.address.borrow().c_str()
