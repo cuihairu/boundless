@@ -8,3 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# `time`/`localtime_r` behind `createNewJsonDumpFile`'s wall-clock file name
+# (`profiler.cpp:1298-1299`).
+libc = { workspace = true }

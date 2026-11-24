@@ -53,10 +53,10 @@
 //! stamps in, same key fields out) is deterministic.
 
 use std::cell::Cell;
-use std::collections::{hash_map::DefaultHasher, BTreeSet};
+use std::collections::{BTreeSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
@@ -324,6 +324,14 @@ struct Inner {
     json_output_file_path: String,
     json_dump_dir: String,
     json_dump_state: JsonDumpState,
+    /// `jsonDumpStartTime_` (`profiler.hpp:456`): the first entry's stamp of
+    /// the frame that opened the file; every dump `ts` is the offset from it.
+    json_dump_start_time: u64,
+    /// `jsonFileHasData_` (`profiler.hpp:457`): gates the comma separator
+    /// and persists across frames sharing one file.
+    json_file_has_data: bool,
+    /// `jsonOutputFile_` (`profiler.hpp:458`): the reference's raw `FILE*`.
+    json_output_file: Option<std::fs::File>,
     /// `eventCategories_`: a `BW::map` keyed by the category mask, so
     /// iteration is ascending by key; the server build registers "C++" and
     /// "Python" plus the "All" entry (`profiler.cpp:951-959`).
@@ -471,6 +479,9 @@ impl Profiler {
             json_output_file_path: String::new(),
             json_dump_dir: String::new(),
             json_dump_state: JsonDumpState::Inactive,
+            json_dump_start_time: 0,
+            json_file_has_data: false,
+            json_output_file: None,
             event_categories: Vec::new(),
             current_event_category: 0,
             final_event_category: 0,
@@ -1117,8 +1128,200 @@ fn do_remove_threads_locked(s: &mut Inner) {
 /// The reference's `Profiler::processEntries` (`profiler.cpp:1480-1789`):
 /// builds the per-thread display hierarchy from the closed frame buffer and
 /// advances the frame counter. See the crate docs for the ported quirks.
+/// The dump file name schema (`profiler.cpp:1308-1313`); the comment there
+/// warns the WebConsole depends on it, so the format is pinned verbatim.
+fn json_dump_file_path(dir: &str, executable_basename: &str, t: &libc::tm) -> String {
+    let (year, month, day) = (1900 + t.tm_year, t.tm_mon + 1, t.tm_mday);
+    let (hour, minute, second) = (t.tm_hour, t.tm_min, t.tm_sec);
+    format!(
+        "{dir}/{executable_basename}_profile_{year:04}{month:02}{day:02}_{hour:02}{minute:02}{second:02}.json"
+    )
+}
+
+/// `Profiler::jsonDump` (`profiler.cpp:1198-1243`). The reference's
+/// `PROFILER_SCOPED` self-instrumentation (jsonDump/jsonDump_open/
+/// jsonDump_close) is not carried — the port has no scoped-macro face, the
+/// same divergence as the rest of this layer. `fprintf` return values are
+/// ignored here exactly like the reference ignores them.
+fn json_dump(s: &mut Inner) {
+    s.json_dump_index += 1;
+
+    if s.json_dump_index == 1 {
+        // jsonDump_open: a still-open file from a previous run is closed
+        // with its final `]` before the new one is created
+        // (`profiler.cpp:1208-1213`).
+        if let Some(mut file) = s.json_output_file.take() {
+            let _ = std::io::Write::write_all(&mut file, b"]");
+        }
+
+        // The first entry of the frame being dumped anchors every `ts`
+        // (`profiler.cpp:1215`); an empty frame reads slot 0's stale stamp,
+        // faithfully.
+        s.json_dump_start_time = s.buffers[s.final_profile_entry_buffer].entries[0].time;
+
+        match create_new_json_dump_file(s) {
+            Some(file) => s.json_output_file = Some(file),
+            None => {
+                s.json_dump_index = 0;
+                s.do_json_dump = false;
+                s.json_dump_state = JsonDumpState::Failed;
+                return;
+            }
+        }
+
+        s.json_dump_state = JsonDumpState::Active;
+        s.json_file_has_data = false;
+        if let Some(file) = s.json_output_file.as_mut() {
+            let _ = std::io::Write::write_all(file, b"[");
+        }
+    }
+
+    write_json_entries(s);
+
+    if let Some(file) = s.json_output_file.as_mut() {
+        let _ = std::io::Write::flush(file);
+    }
+
+    if s.json_dump_index == s.json_dump_count {
+        stop_json_dump(s);
+    }
+}
+
+/// `Profiler::stopJsonDump` (`profiler.cpp:1249-1258`). The reference
+/// writes through the raw pointer without a null check — both call sites
+/// guard it, so the `take()` arm here is the documented port.
+fn stop_json_dump(s: &mut Inner) {
+    if let Some(mut file) = s.json_output_file.take() {
+        let _ = std::io::Write::write_all(&mut file, b"]");
+    }
+    s.json_dump_index = 0;
+    s.do_json_dump = false;
+    s.json_dump_state = JsonDumpState::Completed;
+}
+
+/// `Profiler::createNewJsonDumpFile` (`profiler.cpp:1296-1338`): wall-clock
+/// `time(NULL)` + `localtime` name the file (independent of the profiler's
+/// stamp clock). The INFO/ERROR message faces are debug-log faces this
+/// layer does not carry.
+fn create_new_json_dump_file(s: &mut Inner) -> Option<std::fs::File> {
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now, &mut tm) };
+    let basename = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+
+    let path = json_dump_file_path(&s.json_dump_dir, &basename, &tm);
+
+    match std::fs::File::create(&path) {
+        Ok(file) => {
+            s.json_output_file_path = path;
+            Some(file)
+        }
+        Err(_) => None,
+    }
+}
+
+/// `Profiler::writeJsonEntries` (`profiler.cpp:1370-1473`): one frame's
+/// thread-name meta events plus the raw entries, in Chrome Trace Event
+/// format. The whole frame is rendered into a string and written once; the
+/// per-thread entry stacks are balance tracking the reference runs while
+/// emitting (start pushes, matching end pops) with no output effect.
+fn write_json_entries(s: &mut Inner) {
+    let mut out = String::new();
+
+    // Thread-name meta events (`profiler.cpp:1382-1401`): one per
+    // registered slot, every frame.
+    for t in 0..s.max_num_threads {
+        if s.threads[t].thread != 0 {
+            if s.json_file_has_data {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"pid\":0,\"tid\":{t}, \"ph\": \"M\", \"name\":\"thread_name\",\"args\":{{\"name\": \"{}\"}} }} ",
+                s.threads[t].name
+            ));
+            s.json_file_has_data = true;
+        }
+    }
+
+    let final_buffer = &s.buffers[s.final_profile_entry_buffer];
+    let entry_count = final_buffer.entry_count;
+    let start_time = s.json_dump_start_time;
+    let stamps_per_second = s.stamps_per_second;
+    let mut entry_stacks: Vec<Vec<String>> = vec![Vec::new(); s.max_num_threads];
+
+    for entry in final_buffer.entries.iter().take(entry_count as usize) {
+        // Copy the face fields out so the entry borrow ends before the
+        // flag mutation below.
+        let (event, category, time, thread_idx, value) = (
+            entry.event,
+            entry.category,
+            entry.time,
+            entry.thread_idx,
+            entry.value,
+        );
+        let name = entry.name_str().to_owned();
+        if thread_idx == -1 {
+            continue;
+        }
+
+        if s.json_file_has_data {
+            out.push(',');
+        }
+
+        // `eventCategories_[entry->category_]` on the reference's BW::map
+        // default-constructs an empty string for an unregistered mask
+        // (`profiler.cpp:1421-1422`).
+        let category = s
+            .event_categories
+            .iter()
+            .find(|(mask, _)| *mask == category)
+            .map(|(_, name)| *name)
+            .unwrap_or("");
+        let ts = (time.wrapping_sub(start_time) as f64 / stamps_per_second * 1000000.0) as i32;
+
+        let event_string = match event {
+            EventType::Start | EventType::StartIdle => {
+                entry_stacks[thread_idx as usize].push(name.clone());
+                "B"
+            }
+            EventType::End => {
+                let stack = &mut entry_stacks[thread_idx as usize];
+                if stack.last().map(|top| top.as_str()) == Some(name.as_str()) {
+                    stack.pop();
+                }
+                "E"
+            }
+            EventType::Counter => "C",
+        };
+
+        out.push_str(&format!(
+            "{{ \"cat\":\"{category}\", \"pid\":0,\"tid\":{thread_idx}, \"ts\":{ts},\"ph\":\"{event_string}\",\"name\":\"{name}\""
+        ));
+        if event == EventType::Counter {
+            out.push_str(&format!(",\"args\":{{\"counter\": {value}}}}}"));
+        } else {
+            out.push('}');
+        }
+
+        s.json_file_has_data = true;
+    }
+
+    if let Some(file) = s.json_output_file.as_mut() {
+        let _ = std::io::Write::write_all(file, out.as_bytes());
+    }
+}
+
 fn process_entries(s: &mut Inner, clock: &dyn Fn() -> u64, profile_start: u64) {
-    // jsonDump()/stopJsonDump() hookup: BW-12-03-03 (dump writer face).
+    // The jsonDump hookup runs before the freeze bail-out, so a frozen
+    // profiler still dumps (`profiler.cpp:1485-1500`).
+    if s.do_json_dump || s.force_json_dump {
+        json_dump(s);
+    } else if s.json_output_file.is_some() {
+        stop_json_dump(s);
+    }
     if s.freeze_profiling {
         s.time_taken_for_profiling =
             stamps_to_ms(clock().wrapping_sub(profile_start), s.stamps_per_second);
@@ -1416,8 +1619,8 @@ impl<'a> ProfilerLevelCounter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A profiler with a microsecond stamp source (`stampsPerSecond` 1e6, so
     /// 1000 stamps == 1 ms) and a 96-slot thread table, over a shared
@@ -2243,5 +2446,348 @@ mod tests {
         assert_eq!(profiler.display_entry_count(), 64);
         assert_eq!(profiler.final_end_of_frame_time_stamp(), 2000);
         assert!(profiler.time_taken_for_profiling() >= 0.0);
+    }
+
+    // ==== BW-12-03-03: the JSON dump writer (`profiler.cpp:1198-1492`) ====
+
+    /// A raw entry with full control over category and thread slot.
+    fn raw_entry(
+        name: &str,
+        event: EventType,
+        time: u64,
+        category: i32,
+        thread_idx: i32,
+        frame_number: i32,
+    ) -> ProfileEntry {
+        let mut e = entry(name, event, time, thread_idx, frame_number);
+        e.category = category;
+        e
+    }
+
+    /// A writable scratch directory unique to this test run.
+    fn dump_dir(tag: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("bw120303-{}-{}", tag, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn the_json_dump_path_matches_the_reference_schema() {
+        // `"%s/%s_profile_%04d%02d%02d_%02d%02d%02d.json"`
+        // (`profiler.cpp:1308-1313`): the comment there warns the
+        // WebConsole depends on the schema.
+        let mut t: libc::tm = unsafe { std::mem::zeroed() };
+        t.tm_year = 126;
+        t.tm_mon = 10;
+        t.tm_mday = 25;
+        t.tm_hour = 14;
+        t.tm_min = 3;
+        t.tm_sec = 2;
+        assert_eq!(
+            json_dump_file_path("/tmp/d", "cellapp", &t),
+            "/tmp/d/cellapp_profile_20261125_140302.json"
+        );
+        let mut t: libc::tm = unsafe { std::mem::zeroed() };
+        t.tm_year = -913; // year 987 (tm_year is relative to 1900)
+        t.tm_mon = 0;
+        t.tm_mday = 2;
+        t.tm_hour = 3;
+        t.tm_min = 4;
+        t.tm_sec = 5;
+        assert_eq!(
+            json_dump_file_path("/tmp/d", "cellapp", &t),
+            "/tmp/d/cellapp_profile_09870102_030405.json"
+        );
+    }
+
+    /// Fixed events in, byte-exact Chrome Trace Event file out: the
+    /// thread meta line, B/E/C phases, the category map lookup and the
+    /// `ts` microsecond offsets all pinned verbatim
+    /// (`profiler.cpp:1382-1472`).
+    #[test]
+    fn json_dump_writes_the_reference_face_for_fixed_events() {
+        let (profiler, _stamp) = clocked();
+        assert!(profiler.init(128 * 1024 * 1024, 16));
+        profiler.enable(true);
+        profiler.tick(); // activation only
+        let dir = dump_dir("fixed");
+        profiler.set_json_dump_dir(&dir);
+        profiler.watcher_set_dump_profile(true);
+
+        // stamps_per_second is 1e6, so one stamp is one microsecond and
+        // `ts` is the raw offset from the frame's first entry stamp.
+        profiler.debug_inject_raw_entry(raw_entry(
+            "work",
+            EventType::Start,
+            1000,
+            CATEGORY_CPP,
+            0,
+            1,
+        ));
+        profiler.debug_inject_raw_entry(raw_entry(
+            "work",
+            EventType::End,
+            1500,
+            CATEGORY_PYTHON,
+            0,
+            1,
+        ));
+        profiler.debug_inject_raw_entry(raw_entry(
+            "idle",
+            EventType::StartIdle,
+            1600,
+            CATEGORY_ALL,
+            0,
+            1,
+        ));
+        profiler.debug_inject_raw_entry(raw_entry(
+            "fps",
+            EventType::Counter,
+            2000,
+            CATEGORY_CPP,
+            0,
+            1,
+        ));
+        profiler.tick();
+
+        let path = profiler.get_json_output_file_path();
+        assert!(path.starts_with(&format!("{dir}/")), "path: {path}");
+        assert!(path.ends_with(".json"), "path: {path}");
+        assert!(path.contains("_profile_"), "path: {path}");
+        // Default count is 1: the frame both opened and completed the file.
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Completed);
+        assert!(!profiler.watcher_get_dump_profile());
+
+        let basename = std::env::current_exe()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let name = path.rsplit('/').next().unwrap();
+        assert!(name.starts_with(&basename), "path: {path}");
+
+        let expected = "[\
+             {\"pid\":0,\"tid\":0, \"ph\": \"M\", \"name\":\"thread_name\",\"args\":{\"name\": \"MainThread\"} } ,\
+             { \"cat\":\"C++\", \"pid\":0,\"tid\":0, \"ts\":0,\"ph\":\"B\",\"name\":\"work\"}\
+             ,{ \"cat\":\"Python\", \"pid\":0,\"tid\":0, \"ts\":500,\"ph\":\"E\",\"name\":\"work\"}\
+             ,{ \"cat\":\"All\", \"pid\":0,\"tid\":0, \"ts\":600,\"ph\":\"B\",\"name\":\"idle\"}\
+             ,{ \"cat\":\"C++\", \"pid\":0,\"tid\":0, \"ts\":1000,\"ph\":\"C\",\"name\":\"fps\",\"args\":{\"counter\": 0}}]";
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
+
+    /// `jsonDumpCount_` frames share one file: the comma separator
+    /// persists (`jsonFileHasData_`), the thread meta line repeats every
+    /// frame and every `ts` stays anchored to the first frame's first
+    /// entry (`profiler.cpp:1239-1242`, `1406`).
+    #[test]
+    fn json_dump_count_frames_share_one_file_and_one_time_anchor() {
+        let (profiler, _stamp) = clocked();
+        assert!(profiler.init(128 * 1024 * 1024, 16));
+        profiler.enable(true);
+        profiler.tick();
+        profiler.set_json_dump_dir(&dump_dir("count"));
+        profiler.set_json_dump_count(2);
+        profiler.watcher_set_dump_profile(true);
+
+        profiler.debug_inject_raw_entry(raw_entry(
+            "work",
+            EventType::Start,
+            1000,
+            CATEGORY_CPP,
+            0,
+            1,
+        ));
+        profiler.debug_inject_raw_entry(raw_entry(
+            "work",
+            EventType::End,
+            1500,
+            CATEGORY_CPP,
+            0,
+            1,
+        ));
+        profiler.tick();
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Active);
+        assert!(profiler.watcher_get_dump_profile());
+
+        profiler.debug_inject_raw_entry(raw_entry(
+            "run",
+            EventType::Start,
+            5000,
+            CATEGORY_CPP,
+            0,
+            2,
+        ));
+        profiler.debug_inject_raw_entry(raw_entry(
+            "fps",
+            EventType::Counter,
+            5600,
+            CATEGORY_CPP,
+            0,
+            2,
+        ));
+        profiler.tick();
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Completed);
+
+        let path = profiler.get_json_output_file_path();
+        let meta = "{\"pid\":0,\"tid\":0, \"ph\": \"M\", \"name\":\"thread_name\",\"args\":{\"name\": \"MainThread\"} } ";
+        let expected = format!(
+            "[{meta},\
+             {{ \"cat\":\"C++\", \"pid\":0,\"tid\":0, \"ts\":0,\"ph\":\"B\",\"name\":\"work\"}}\
+             ,{{ \"cat\":\"C++\", \"pid\":0,\"tid\":0, \"ts\":500,\"ph\":\"E\",\"name\":\"work\"}}\
+             ,{meta}\
+             ,{{ \"cat\":\"C++\", \"pid\":0,\"tid\":0, \"ts\":4000,\"ph\":\"B\",\"name\":\"run\"}}\
+             ,{{ \"cat\":\"C++\", \"pid\":0,\"tid\":0, \"ts\":4600,\"ph\":\"C\",\"name\":\"fps\",\"args\":{{\"counter\": 0}}}}]"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
+
+    /// `watcherSetDumpProfile(false)` stops after the NEXT frame:
+    /// `processEntries`' else arm closes the open file with its `]` and
+    /// reports completed (`profiler.cpp:1489-1492`, `1249-1258`).
+    #[test]
+    fn json_dump_stops_after_dumping_is_disabled() {
+        let (profiler, _stamp) = clocked();
+        assert!(profiler.init(128 * 1024 * 1024, 16));
+        profiler.enable(true);
+        profiler.tick();
+        profiler.set_json_dump_dir(&dump_dir("stop"));
+        profiler.set_json_dump_count(5);
+        profiler.watcher_set_dump_profile(true);
+
+        profiler.debug_inject_raw_entry(entry("work", EventType::Start, 1000, 0, 1));
+        profiler.debug_inject_raw_entry(entry("work", EventType::End, 1500, 0, 1));
+        profiler.tick();
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Active);
+
+        profiler.watcher_set_dump_profile(false);
+        profiler.debug_inject_raw_entry(entry("lost", EventType::Start, 2000, 0, 2));
+        profiler.tick();
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Completed);
+        assert!(!profiler.watcher_get_dump_profile());
+
+        let path = profiler.get_json_output_file_path();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with('['), "content: {content}");
+        assert!(content.ends_with("]"), "content: {content}");
+        assert!(content.contains("\"ts\":0,\"ph\":\"B\",\"name\":\"work\""));
+        assert!(content.contains("\"ts\":500,\"ph\":\"E\",\"name\":\"work\""));
+        // The stop frame contributes nothing: its "lost" entry sat in the
+        // final buffer, but the else arm only closes the file - the meta
+        // line plus the two frame-1 entries are all that "ph" there is.
+        assert_eq!(content.matches("\"ph\"").count(), 3);
+        assert!(!content.contains("lost"));
+    }
+
+    /// An unwritable dump directory fails the open, resets the index,
+    /// drops the flag and reports `JSON_DUMPING_FAILED`
+    /// (`profiler.cpp:1218-1225`).
+    #[test]
+    fn json_dump_open_failure_reports_failed_and_drops_the_flag() {
+        let (profiler, _stamp) = clocked();
+        assert!(profiler.init(128 * 1024 * 1024, 16));
+        profiler.enable(true);
+        profiler.tick();
+        // A regular file where the directory should be: the create fails
+        // with ENOTDIR even for root.
+        let blocker = std::env::temp_dir().join(format!("bw120303-file-{}", std::process::id()));
+        std::fs::write(&blocker, b"").unwrap();
+        profiler.set_json_dump_dir(blocker.to_string_lossy().as_ref());
+        profiler.watcher_set_dump_profile(true);
+
+        profiler.debug_inject_raw_entry(entry("work", EventType::Start, 1000, 0, 1));
+        profiler.tick();
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Failed);
+        assert!(!profiler.watcher_get_dump_profile());
+        assert_eq!(profiler.get_json_output_file_path(), "");
+        let _ = std::fs::remove_file(&blocker);
+    }
+
+    /// Unregistered masks render as an empty `cat` (the reference's
+    /// `BW::map::operator[]` default), thread-slot -1 entries are skipped
+    /// whole, and a slot number with no registered thread still prints
+    /// (`profiler.cpp:1411-1414`, `1421-1422`).
+    #[test]
+    fn json_dump_category_and_thread_slot_faces() {
+        let (profiler, _stamp) = clocked();
+        assert!(profiler.init(128 * 1024 * 1024, 16));
+        profiler.enable(true);
+        profiler.tick();
+        profiler.set_json_dump_dir(&dump_dir("faces"));
+        profiler.watcher_set_dump_profile(true);
+
+        // The skipped entry still anchors `jsonDumpStartTime_`.
+        profiler.debug_inject_raw_entry(entry("ghost", EventType::Start, 1000, -1, 1));
+        profiler.debug_inject_raw_entry(raw_entry(
+            "other",
+            EventType::Start,
+            1100,
+            CATEGORY_GPU,
+            3,
+            1,
+        ));
+        profiler.debug_inject_raw_entry(entry("real", EventType::Start, 1200, 0, 1));
+        profiler.tick();
+
+        let path = profiler.get_json_output_file_path();
+        let expected = "[\
+             {\"pid\":0,\"tid\":0, \"ph\": \"M\", \"name\":\"thread_name\",\"args\":{\"name\": \"MainThread\"} } ,\
+             { \"cat\":\"\", \"pid\":0,\"tid\":3, \"ts\":100,\"ph\":\"B\",\"name\":\"other\"}\
+             ,{ \"cat\":\"C++\", \"pid\":0,\"tid\":0, \"ts\":200,\"ph\":\"B\",\"name\":\"real\"}]";
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
+
+    /// A frozen profiler still dumps: the hookup runs before the freeze
+    /// bail-out (`profiler.cpp:1485-1500`).
+    #[test]
+    fn json_dump_runs_before_the_freeze_bail_out() {
+        let (profiler, _stamp) = clocked();
+        assert!(profiler.init(128 * 1024 * 1024, 16));
+        profiler.enable(true);
+        profiler.tick();
+        profiler.set_json_dump_dir(&dump_dir("frozen"));
+        profiler.freeze(true, false);
+        profiler.watcher_set_dump_profile(true);
+
+        profiler.debug_inject_raw_entry(entry("work", EventType::Start, 1000, 0, 1));
+        profiler.debug_inject_raw_entry(entry("work", EventType::End, 1500, 0, 1));
+        profiler.tick();
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Completed);
+        let path = profiler.get_json_output_file_path();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"name\":\"work\"")
+        );
+    }
+
+    /// Re-arming mid-file resets the index, so the next frame closes the
+    /// stale file and opens a fresh one (`profiler.cpp:1205-1213`).
+    #[test]
+    fn json_dump_rearm_reopens_a_fresh_file() {
+        let (profiler, _stamp) = clocked();
+        assert!(profiler.init(128 * 1024 * 1024, 16));
+        profiler.enable(true);
+        profiler.tick();
+        profiler.set_json_dump_dir(&dump_dir("rearm"));
+        profiler.set_json_dump_count(3);
+        profiler.watcher_set_dump_profile(true);
+        profiler.debug_inject_raw_entry(entry("work", EventType::Start, 1000, 0, 1));
+        profiler.tick();
+        let first_path = profiler.get_json_output_file_path();
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Active);
+
+        profiler.watcher_set_dump_profile(true);
+        profiler.debug_inject_raw_entry(entry("work", EventType::End, 2000, 0, 2));
+        profiler.tick();
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Active);
+        // Within the same wall-clock second the new file replaces the old
+        // one at the same schema name; either way the fresh file starts
+        // with its own `[`.
+        let path = profiler.get_json_output_file_path();
+        assert!(path.ends_with(".json"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with('['), "content: {content}");
+        let _ = first_path;
     }
 }
