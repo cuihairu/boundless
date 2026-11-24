@@ -1202,8 +1202,8 @@
 - [x] **BW-07-05-02 写入回放头及元数据**。**验收** 原版读取器可解析。（交付 2026-11-24，`86f4879`，lane/bw15-platform：`crates/server-runtime/src/replay_write.rs` 按 `replay_header.cpp`/`replay_metadata.cpp`/`replay_data_file_writer.cpp` 逐面移植——头块 55 字节布局（版本流序 subpatch,patch,minor,major=`00 00 09 02`，client_server_protocol_version.hpp:138）、MD5 签名链（metaSig=md5(headerSig‖metaPayload)， primeChecksumScheme 语义）、BTreeMap 序键值对、≥255 三字节长度前缀；验收面 `parse_header(Some(Md5Verify))`+`parse_metadata_chained` 全字段回读，篡改签名→ChecksumMismatch。附带勘误：client 读取端 parse_header 版本字节序修正为 subpatch-first（原实现按 major-first 比对，与参考流序相悖，86f4879 内一并修正）+ 新增 `parse_metadata_chained` 种子面（replay_data_file_reader.cpp:981 primeChecksumScheme）。16 测绿（writer 侧），client replay 42 测绿，fmt/build/test 门禁绿。）
 - [x] **BW-07-05-03 写入压缩 Tick 块**。**验收** 已知事件序列可无损读取。（交付 2026-11-24，`86f4879`：`compression_stream.cpp`+`zip_stream.cpp` ZipOStream 语义——类型字节+NONE 原样/ZIP_1..9 zlib 压缩（flate2 rust_backend，compress2 等价）、非法类型回退 NONE；`TickReplayData::finalise` 两字头（tick+长度补丁）；chunk 签名覆盖长度字+ticks 且链式（sig_n=md5(sig_{n-1}‖payload)，引用 signAndWriteCompletedTickData `stream << chunkLength` 在 ChecksumOStream 内）；缺号 tick 写 8 字节空头。验收：6 tick 已知序列（含每 tick 逐 cell 投递）经 `parse_tick_chunks`+`decompress_tick` 无损回读、全文件字节对账、3 tick 跨块链签名外部重算吻合。）
 - [x] **BW-07-05-04 处理结束和失败**。**验收** 文件关闭与回调次数符合基线。（交付 2026-11-24，`86f4879`：finalise 补丁 numTicks 至 `headerSize-4`（51）+chmod 0444+closeWriter（finalising 且无更早缓冲 tick 时在完成回调内自关）；已勾账计数镜像 onBackgroundFileWritingComplete（numTicksWritten+=、lastChunkPosition/Length、缓冲逐出）；write 失败一次 error 回调+错误态保持、后续 add/finalise 惰性；finalising 后拒收；首空 tick 忽略+陈旧 tick 丢弃；close(false) 不补丁不置只读。sync 移植偏差（BackgroundFileWriter→同步写）已在模块文档登记，文件字节结果一致；回调基线：首块 1+每 chunk 1+finalise 尾 1，destroyed=1（Drop）。测试 4/16 覆盖四条路径。）
-- [x] **BW-07-05-02 写入回放头及元数据** `(81ce090)`。**验收** 原版读取器可解析。
-- [x] **BW-07-05-03 写入压缩 Tick 块** `(3afa940)`。**验收** 已知事件序列可无损读取。
+- [x] **BW-07-05-02 写入回放头及元数据** `(81ce090, 孤儿复活 8e20d1b)`。**验收** 原版读取器可解析。
+- [x] **BW-07-05-03 写入压缩 Tick 块** `(3afa940, 孤儿复活 8e20d1b)`。**验收** 已知事件序列可无损读取。
 - [x] **BW-07-05-04 处理结束和失败** `(123efb6)`。**验收** 文件关闭与回调次数符合基线。
 
 ### BW-08 CellApp、Space、AOI 与实体迁移
@@ -1234,7 +1234,7 @@
 - [x] **BW-08-02-05 处理乘客和传送**。**验收** 父子变换、脱离和目标位置吻合。（f5f285a）
 - [x] **BW-08-02-06 销毁 Real**。**验收** 实体状态和活动控制器正确清理。（0609405）
 - [x] **BW-08-02-01 创建 Real 实体并推进 Tick** (`a2d794c`)。**验收** 脚本回调顺序吻合。
-- [x] **BW-08-02-02 挂接与清除 Controller/Extra** (`d8f4efa`)。**验收** 反复注册不会留存旧对象。
+- [x] **BW-08-02-02 挂接与清除 Controller/Extra** (`d8f4efa`, 孤儿复活 8e20d1b)。**验收** 反复注册不会留存旧对象。
 - [x] **BW-08-02-03 移植移动、转向、加速控制** (`ebe6213`)。**验收** 固定输入轨迹吻合。
 - [x] **BW-08-02-04 实现定时器与寻路控制器接续** (`48646b6`)。**验收** 退出或迁移后状态满足基线。
 - [x] **BW-08-02-05 处理乘客和传送** (`72e5785`)。**验收** 父子变换、脱离和目标位置吻合。
@@ -1299,11 +1299,13 @@
 - [x] **BW-08-05-05 实现跨 Space 传送**（2a3cfdb）。**验收** 新旧 Space 的可见集吻合。
 - [x] **BW-08-05-06 验证迁移目标失联和恢复**。**验收** 角色及消息状态对照通过。（72665c3）
 - [x] **BW-08-05-01 实现 Offload 判定**。**验收** 越过测试边界时按阈值迁移。（`f8bbe46`）
-- [x] **BW-08-05-02 切换 Real/Ghost 角色**。**验收** 两端任意观测点可定位唯一 Real。（`46718ee`）
+- [x] **BW-08-05-02 切换 Real/Ghost 角色**。**验收** 两端任意观测点可定位唯一 Real。（`46718ee, 孤儿复活 8e20d1b`）
 - [x] **BW-08-05-03 转移控制器及回调状态**。**验收** 移动过程连续。（`8e289da`）
-- [x] **BW-08-05-04 重定向切换期间消息**。**验收** 调用到达迁移目标且响应一次。（`2e350f4`）
+- [x] **BW-08-05-04 重定向切换期间消息**。**验收** 调用到达迁移目标且响应一次。（`2e350f4, 孤儿复活 8e20d1b`）
 - [x] **BW-08-05-05 实现跨 Space 传送**。**验收** 新旧 Space 的可见集吻合。 (b130a76)
-- [x] **BW-08-05-06 验证迁移目标失联和恢复**。**验收** 角色及消息状态对照通过。 (d4137c2)
+- [x] **BW-08-05-06 验证迁移目标失联和恢复**。**验收** 角色及消息状态对照通过。 (d4137c2, 孤儿复活 8e20d1b)
+  - 2026-11-25 复活（9 模块同批）：`offload_role`/`message_redirect`/`offload_recovery`/`ghost_data`/`buffered_ghost`/`controller_extra`/`load_throttle`/`replay_header`/`replay_tick` 声明入 `crates/server-runtime/src/lib.rs`。`ghost_data.rs` 仅需一处嫁接：`movement::Vec3`（该代不存在的类型）→ 现行 `foundation::math::Vector3`（`::new(x,y,z)` 逐字同签名），连带解掉 4 个 import `crate::ghost_data` 的模块。**同批复核**：server-runtime 1210 测绿，workspace 109 suites 4457 绿，clippy/fmt 清。DA：ghost_data/load_throttle/message_redirect/offload_recovery **100%**、buffered_ghost 98.96%、offload_role 98.93%、controller_extra 92.33%、replay_header 93.67%、replay_tick 89.76%——后三者缺口全为**仅被仍孤立消费方调用**的公共面（controller_extra 的 `Domain::has_ghost/has_real/is_empty` 与 `ControllerId` 三访问器；replay_header/replay_tick 的压缩 tag 解析臂与 `ReplayTickError` 整个 `Display` 实现在写侧 `replay_file_writer`/`replay_recording` 复活前无调用方），按 db 批一 xml_database 97.93% 的既定口径如实登记，不硬造测试凑 98%。
+  - `buffered_ghost`(6b93267) 与 `ghost_data`(7acef2a) 两票未在台账被任何行引用（验收随同簇行一并承载），故无行头注记。
 
 #### BW-08-06 感知、观测和回放采集
 
@@ -1317,7 +1319,7 @@
 - [x] **BW-08-06-01 实现 proximity/vision 触发**。**验收** 进出区域和遮挡回调吻合。(5cf561a)
 - [x] **BW-08-06-02 实现 noise 感知**。**验收** 不同半径与距离的触发对照。(aaa5435)
 - [x] **BW-08-06-03 提供 Cell Viewer 查询**。**验收** 与实时 Space/Cell 状态匹配。(9fb116b)
-- [x] **BW-08-06-04 实现负载节流**。**验收** 慢加载及超预算 Tick 有可对照结果。(b5e3875)
+- [x] **BW-08-06-04 实现负载节流**。**验收** 慢加载及超预算 Tick 有可对照结果。(b5e3875, 孤儿复活 8e20d1b)
 - [x] **BW-08-06-05 记录回放事件**。**验收** Tick 边界与事件排序一致。(8c3bbb6)
 
 ### BW-09 DBApp、持久化和数据库运维
