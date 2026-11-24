@@ -80,6 +80,7 @@ pub mod replay;
 pub mod screen_shot;
 pub mod settings;
 pub mod shadow_math;
+pub mod simple_gui;
 pub mod skeleton;
 pub mod terrain_height;
 pub mod texture;
