@@ -7,7 +7,7 @@
 //! new ghost, delete budget) applied. The receiving side mirrors
 //! `Space::createGhost`'s immediate path and `delGhost`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use foundation::math::Vector3;
 
@@ -589,9 +589,10 @@ pub struct GhostEntityTypeDesc {
 pub enum GhostCreateOutcome {
     /// The immediate path: the ghost was created.
     Created,
-    /// The entity already exists here (`space.cpp:236-266` buffers the
-    /// message instead; the buffered replay is BW-08-04-04's face).
-    EntityAlreadyExists,
+    /// The entity already exists here, or messages from this real are
+    /// already queued (`space.cpp:236-266`): the message was buffered for
+    /// a later replay.
+    Buffered,
     /// The payload names a type this app does not know (the reference
     /// MF-asserts on the lookup).
     UnknownEntityType,
@@ -610,6 +611,8 @@ pub struct GhostHost {
     pub ghosts: BTreeMap<EntityId, GhostRecord>,
     /// The local `EntityTypeDB` slice the creates are validated against.
     pub types: BTreeMap<u16, GhostEntityTypeDesc>,
+    /// `BufferedGhostMessages` — the out-of-order real->ghost messages.
+    pub buffer: GhostBuffer,
 }
 
 impl GhostHost {
@@ -623,11 +626,19 @@ impl GhostHost {
     /// the buffered path, otherwise the ghost is created at once.
     pub fn receive_create_ghost(
         &mut self,
+        src: Addr,
         payload: GhostCreatePayload,
         time: u32,
     ) -> GhostCreateOutcome {
-        if self.ghosts.contains_key(&payload.entity_id) {
-            return GhostCreateOutcome::EntityAlreadyExists;
+        let entity_id = payload.entity_id;
+        if self.ghosts.contains_key(&entity_id) || self.buffer.has_messages_for(entity_id, src) {
+            let msg = BufferedGhostMessage::CreateGhost { src, payload };
+            if self.buffer.has_messages_for(entity_id, src) {
+                self.buffer.add(entity_id, src, msg);
+            } else {
+                self.buffer.delay_subsequence(entity_id, src, msg);
+            }
+            return GhostCreateOutcome::Buffered;
         }
 
         let Some(desc) = self.types.get(&payload.entity_type_id) else {
@@ -673,20 +684,28 @@ impl GhostHost {
         GhostCreateOutcome::Created
     }
 
-    /// The `delGhost` receive: the ghost goes; a second notice finds nothing.
-    /// Returns whether a ghost was removed.
-    pub fn receive_del_ghost(&mut self, entity_id: EntityId) -> bool {
-        self.ghosts.remove(&entity_id).is_some()
+    /// The `delGhost` receive: the ghost goes; a second notice finds
+    /// nothing. Returns whether a ghost was removed. Like `Entity::destroy`
+    /// (`entity.cpp:3007`), a removal then offers the buffered queues a new
+    /// lifespan (a queued `createGhost` may now start).
+    pub fn receive_del_ghost(&mut self, entity_id: EntityId, time: u32) -> bool {
+        if self.ghosts.remove(&entity_id).is_none() {
+            return false;
+        }
+        self.play_new_lifespan_for(entity_id, time);
+        true
     }
 
     /// `Entity::ghostSetNextReal` (`entity.cpp:4961-4979`): the offloading
     /// real's sign-off. Only the first sign-off takes (`nextRealAddr_` must
-    /// be NONE); the buffered-subsequence replay it triggers is BW-08-04-04's
-    /// face. Returns whether the handover was recorded.
+    /// be NONE). This is the last message from the current real, so from
+    /// now on only the new address is accepted — and any buffered
+    /// subsequence from it plays (`playSubsequenceFor`).
     pub fn receive_ghost_set_next_real(
         &mut self,
         entity_id: EntityId,
         next_real_addr: Addr,
+        time: u32,
     ) -> bool {
         let Some(record) = self.ghosts.get_mut(&entity_id) else {
             return false;
@@ -695,6 +714,7 @@ impl GhostHost {
             return false;
         }
         record.next_real_addr = Some(next_real_addr);
+        self.play_subsequence_for(entity_id, next_real_addr, time);
         true
     }
 
@@ -714,6 +734,17 @@ impl GhostHost {
 
         let expected = record.num_times_real_offloaded + 1;
         if num_times_real_offloaded != expected {
+            // `entity.cpp:4941-4945`: the stale update heads its own
+            // delayed subsequence until a sign-off plays it.
+            self.buffer.delay_subsequence(
+                entity_id,
+                owner,
+                BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                    entity_id,
+                    num_times_real_offloaded,
+                    owner,
+                })),
+            );
             return GhostSetRealOutcome::DelayedSubsequence;
         }
 
@@ -736,6 +767,348 @@ pub enum GhostSetRealOutcome {
     DelayedSubsequence,
     /// No such ghost here.
     UnknownEntity,
+}
+
+// -----------------------------------------------------------------------------
+// Section: buffered ghost messages (`buffered_ghost_message*.cpp`)
+// -----------------------------------------------------------------------------
+
+/// A real->ghost message held while its subsequence is out of order.
+/// The three reference plays are `BufferedCreateGhostMessage`,
+/// `BufferedGhostSetRealMessage` and `CommonBufferedGhostMessage`
+/// (`buffered_ghost_message_factory.cpp`).
+#[derive(Clone, Debug)]
+pub enum BufferedGhostMessage {
+    /// A `createGhost` that arrived too early; it carries the sender so a
+    /// replay that finds the ghost alive can re-delay onto the same queue.
+    CreateGhost {
+        src: Addr,
+        payload: GhostCreatePayload,
+    },
+    /// Any other ghost message, replayed through its normal receiver.
+    Common(GhostMessage),
+}
+
+impl BufferedGhostMessage {
+    /// `isSubsequenceStart` (`buffered_ghost_messages.hpp:57-59`) plus the
+    /// two message classes the factory hard-marks as starts.
+    pub fn is_subsequence_start(&self) -> bool {
+        match self {
+            BufferedGhostMessage::CreateGhost { .. } => true,
+            BufferedGhostMessage::Common(
+                GhostMessage::CreateGhost(_) | GhostMessage::SetReal(_),
+            ) => true,
+            BufferedGhostMessage::Common(_) => false,
+        }
+    }
+
+    /// `isSubsequenceEnd` (`buffered_ghost_messages.hpp:62-65`).
+    pub fn is_subsequence_end(&self) -> bool {
+        matches!(
+            self,
+            BufferedGhostMessage::Common(
+                GhostMessage::DelGhost { .. } | GhostMessage::SetNextReal(_),
+            )
+        )
+    }
+
+    /// `isCreateGhostMessage`.
+    pub fn is_create_ghost(&self) -> bool {
+        matches!(
+            self,
+            BufferedGhostMessage::CreateGhost { .. }
+                | BufferedGhostMessage::Common(GhostMessage::CreateGhost(_))
+        )
+    }
+}
+
+/// The stream of buffered real->ghost messages from one CellApp for one
+/// entity (`BufferedGhostMessageQueue`). Only ordering within the queue is
+/// guaranteed; the per-entity map works out the order between queues.
+#[derive(Debug, Default)]
+pub struct GhostMessageQueue {
+    messages: VecDeque<BufferedGhostMessage>,
+    /// `pDelayedMessages_` — an old (unexpected) subsequence being
+    /// collected until its end marker shows up.
+    delayed: Option<Vec<BufferedGhostMessage>>,
+}
+
+impl GhostMessageQueue {
+    /// `add`: while delaying, late arrivals join the delayed list;
+    /// otherwise the queue must keep starting at a subsequence start.
+    fn add(&mut self, msg: BufferedGhostMessage) {
+        if self.is_delaying() {
+            self.delayed.as_mut().unwrap().push(msg);
+        } else {
+            debug_assert!(self.messages.is_empty() || self.messages[0].is_subsequence_start());
+            self.messages.push_back(msg);
+        }
+    }
+
+    /// `isDelaying`: mid-collection of a delayed subsequence.
+    fn is_delaying(&self) -> bool {
+        self.delayed
+            .as_ref()
+            .is_some_and(|d| !d.last().unwrap().is_subsequence_end())
+    }
+
+    /// `delaySubsequence`: head a subsequence with `first`, then swallow
+    /// the front of the queue until the delayed list reaches an end.
+    fn delay_subsequence(&mut self, first: BufferedGhostMessage) {
+        debug_assert!(first.is_subsequence_start());
+        self.delayed.get_or_insert_with(Vec::new).push(first);
+        while !self.messages.is_empty() && self.is_delaying() {
+            self.delayed
+                .as_mut()
+                .unwrap()
+                .push(self.messages.pop_front().unwrap());
+        }
+    }
+
+    /// `promoteDelayedSubsequences`: un-delay the collected messages.
+    fn promote_delayed(&mut self) {
+        if let Some(delayed) = self.delayed.take() {
+            for msg in delayed.into_iter().rev() {
+                self.messages.push_front(msg);
+            }
+        }
+    }
+
+    /// `isEmpty` — the playable list only (a delaying queue reports
+    /// empty, matching `hasMessagesFrom`'s check).
+    fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    fn front_is_subsequence_end(&self) -> bool {
+        self.messages
+            .front()
+            .is_some_and(|m| m.is_subsequence_end())
+    }
+
+    fn front_is_create_ghost(&self) -> bool {
+        self.messages.front().is_some_and(|m| m.is_create_ghost())
+    }
+}
+
+/// `BufferedGhostMessages` — the out-of-order real->ghost messages of one
+/// app, keyed by entity, then by the CellApp they came from
+/// (`buffered_ghost_messages.cpp`). The ghost lifespan is a chain of
+/// subsequences, one per real the entity visits; the sign-off
+/// (`ghostSetNextReal`) tells the ghost which subsequence plays next.
+#[derive(Debug, Default)]
+pub struct GhostBuffer {
+    entries: BTreeMap<EntityId, BTreeMap<Addr, GhostMessageQueue>>,
+}
+
+impl GhostBuffer {
+    /// `add`.
+    pub fn add(&mut self, entity_id: EntityId, src: Addr, msg: BufferedGhostMessage) {
+        self.entries
+            .entry(entity_id)
+            .or_default()
+            .entry(src)
+            .or_default()
+            .add(msg);
+    }
+
+    /// `hasMessagesFor` — a playable (non-delaying) queue from `src`.
+    pub fn has_messages_for(&self, entity_id: EntityId, src: Addr) -> bool {
+        self.queue_for(entity_id, src)
+            .is_some_and(|q| !q.is_empty())
+    }
+
+    /// `isEmpty`.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Whether any queue (playable or delaying) exists from `src` — the
+    /// `ForEntity::playSubsequence` lookup the plays are gated on.
+    pub fn has_queue_for(&self, entity_id: EntityId, src: Addr) -> bool {
+        self.queue_for(entity_id, src).is_some()
+    }
+
+    /// `isDelayingMessagesFor`.
+    pub fn is_delaying_for(&self, entity_id: EntityId, src: Addr) -> bool {
+        self.queue_for(entity_id, src)
+            .is_some_and(|q| q.is_delaying())
+    }
+
+    fn queue_for(&self, entity_id: EntityId, src: Addr) -> Option<&GhostMessageQueue> {
+        self.entries.get(&entity_id)?.get(&src)
+    }
+
+    /// `delaySubsequence`.
+    pub fn delay_subsequence(
+        &mut self,
+        entity_id: EntityId,
+        src: Addr,
+        first: BufferedGhostMessage,
+    ) {
+        self.entries
+            .entry(entity_id)
+            .or_default()
+            .entry(src)
+            .or_default()
+            .delay_subsequence(first);
+    }
+
+    fn promote_delayed_for(&mut self, entity_id: EntityId, src: Addr) {
+        if let Some(q) = self
+            .entries
+            .get_mut(&entity_id)
+            .and_then(|m| m.get_mut(&src))
+        {
+            q.promote_delayed();
+        }
+    }
+
+    /// The next playable message plus the facts `playFront` needs:
+    /// (message, queue-drained-before-play, front-was-a-subsequence-end).
+    fn next_to_play(
+        &mut self,
+        entity_id: EntityId,
+        src: Addr,
+    ) -> Option<(BufferedGhostMessage, bool, bool)> {
+        let q = self.entries.get_mut(&entity_id)?.get_mut(&src)?;
+        if q.is_empty() {
+            return None;
+        }
+        let finished = q.front_is_subsequence_end();
+        let msg = q.messages.pop_front()?;
+        let empty_before_play = q.is_empty() && q.delayed.is_none();
+        Some((msg, empty_before_play, finished))
+    }
+
+    /// The queue's post-play state: `Some((messages_empty, delayed))`,
+    /// `None` when the queue no longer exists (a nested play erased it).
+    fn queue_state(
+        &self,
+        entity_id: EntityId,
+        src: Addr,
+    ) -> Option<(bool, Option<&Vec<BufferedGhostMessage>>)> {
+        let q = self.queue_for(entity_id, src)?;
+        Some((q.is_empty(), q.delayed.as_ref()))
+    }
+
+    fn erase_queue(&mut self, entity_id: EntityId, src: Addr) {
+        if let Some(queues) = self.entries.get_mut(&entity_id) {
+            queues.remove(&src);
+            if queues.is_empty() {
+                self.entries.remove(&entity_id);
+            }
+        }
+    }
+
+    fn peek_first_create_lifespan(&mut self, entity_id: EntityId) -> Option<Addr> {
+        let queues = self.entries.get_mut(&entity_id)?;
+        for (&addr, queue) in queues.iter_mut() {
+            queue.promote_delayed();
+            if queue.front_is_create_ghost() {
+                return Some(addr);
+            }
+        }
+        None
+    }
+}
+
+impl GhostHost {
+    /// `BufferedGhostMessages::playSubsequenceFor` (`buffered_ghost_messages
+    /// .cpp:22-40`): play the buffered subsequence from `src` up to its end,
+    /// erasing the queue when it drains.
+    pub fn play_subsequence_for(&mut self, entity_id: EntityId, src: Addr, time: u32) {
+        if !self.buffer.has_queue_for(entity_id, src) {
+            // "Not playing buffered ghost messages ... still talking to
+            // real at %s" — no queue from that real exists at all.
+            return;
+        }
+        self.play_queue(entity_id, src, time);
+    }
+
+    /// `BufferedGhostMessages::playNewLifespanFor` (`buffered_ghost_messages
+    /// .cpp:42-55`): after this ghost was destroyed, a queue whose front is
+    /// a `createGhost` starts the entity's next lifespan here.
+    pub fn play_new_lifespan_for(&mut self, entity_id: EntityId, time: u32) {
+        let Some(src) = self.buffer.peek_first_create_lifespan(entity_id) else {
+            return;
+        };
+        self.play_queue(entity_id, src, time);
+    }
+
+    /// The shared drain loop (`BufferedGhostMessageQueue::playSubsequence`):
+    /// play until a subsequence end has been played and the queue did not
+    /// refill; a drained queue is erased.
+    fn play_queue(&mut self, entity_id: EntityId, src: Addr, time: u32) {
+        self.buffer.promote_delayed_for(entity_id, src);
+
+        while let Some((msg, empty_before_play, finished)) =
+            self.buffer.next_to_play(entity_id, src)
+        {
+            self.dispatch_buffered(msg, time);
+
+            match self.buffer.queue_state(entity_id, src) {
+                None => return,
+                Some((messages_empty, delayed)) => {
+                    if empty_before_play && messages_empty && delayed.is_none() {
+                        self.buffer.erase_queue(entity_id, src);
+                        return;
+                    }
+                }
+            }
+            if finished {
+                return;
+            }
+        }
+    }
+
+    /// The three buffered plays (`buffered_ghost_message_factory.cpp`).
+    fn dispatch_buffered(&mut self, msg: BufferedGhostMessage, time: u32) {
+        match msg {
+            BufferedGhostMessage::CreateGhost { src, payload } => {
+                let entity_id = payload.entity_id;
+                if self.ghosts.contains_key(&entity_id) {
+                    // The ghost (re)appeared before its create could play:
+                    // hold the whole subsequence again.
+                    self.buffer.delay_subsequence(
+                        entity_id,
+                        src,
+                        BufferedGhostMessage::CreateGhost { src, payload },
+                    );
+                } else {
+                    let _ = self.receive_create_ghost(src, payload, time);
+                }
+            }
+            BufferedGhostMessage::Common(GhostMessage::CreateGhost(payload)) => {
+                let src = payload.real_addr;
+                if self.ghosts.contains_key(&payload.entity_id) {
+                    self.buffer.delay_subsequence(
+                        payload.entity_id,
+                        src,
+                        BufferedGhostMessage::Common(GhostMessage::CreateGhost(payload)),
+                    );
+                } else {
+                    let _ = self.receive_create_ghost(src, payload, time);
+                }
+            }
+            BufferedGhostMessage::Common(GhostMessage::SetReal(set)) => {
+                // A stale update re-delays inside the receiver
+                // (`Entity::ghostSetReal`'s own mismatch arm) — no
+                // dispatcher-side copy, or the message lands twice.
+                let _ = self.receive_ghost_set_real(
+                    set.entity_id,
+                    set.num_times_real_offloaded,
+                    set.owner,
+                );
+            }
+            BufferedGhostMessage::Common(GhostMessage::DelGhost { entity_id }) => {
+                let _ = self.receive_del_ghost(entity_id, time);
+            }
+            BufferedGhostMessage::Common(GhostMessage::SetNextReal(set)) => {
+                let _ = self.receive_ghost_set_next_real(set.entity_id, set.next_real_addr, time);
+            }
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1321,7 +1694,7 @@ mod tests {
             aoi_update_scheme_id: 0,
         };
         assert_eq!(
-            host.receive_create_ghost(payload, 5),
+            host.receive_create_ghost(APP_A, payload, 5),
             GhostCreateOutcome::Created
         );
         // `eventHistory_.lastTrimmedEventNumber( lastEventNumber_ )`: the
@@ -1360,7 +1733,7 @@ mod tests {
 
         // Unknown type: the local EntityTypeDB has no such entry.
         assert_eq!(
-            host.receive_create_ghost(payload.clone(), 5),
+            host.receive_create_ghost(APP_A, payload.clone(), 5),
             GhostCreateOutcome::UnknownEntityType
         );
 
@@ -1369,7 +1742,7 @@ mod tests {
         payload.entity_type_id = 4;
         payload.property_event_stamps = vec![1, 2];
         assert_eq!(
-            host.receive_create_ghost(payload.clone(), 5),
+            host.receive_create_ghost(APP_A, payload.clone(), 5),
             GhostCreateOutcome::StampCountMismatch
         );
 
@@ -1377,7 +1750,7 @@ mod tests {
         payload.property_event_stamps = vec![1];
         payload.ghost_properties = vec![PropValue::Int(0)];
         assert_eq!(
-            host.receive_create_ghost(payload, 5),
+            host.receive_create_ghost(APP_A, payload, 5),
             GhostCreateOutcome::PropertyCountMismatch
         );
         assert!(host.ghosts.is_empty());
@@ -1402,7 +1775,7 @@ mod tests {
             panic!("expected a create");
         };
         assert_eq!(
-            host.receive_create_ghost(payload, 100),
+            host.receive_create_ghost(APP_A, payload, 100),
             GhostCreateOutcome::Created
         );
         assert_eq!(host.ghosts[&10].real_addr, APP_A);
@@ -1418,12 +1791,12 @@ mod tests {
                 next_real_addr: APP_C,
             })
         );
-        assert!(host.receive_ghost_set_next_real(10, APP_C));
+        assert!(host.receive_ghost_set_next_real(10, APP_C, 300));
         assert_eq!(host.ghosts[&10].next_real_addr, Some(APP_C));
 
         // The handover address is taken exactly once: a duplicate
         // sign-off (a retransmit) never moves it again.
-        assert!(!host.receive_ghost_set_next_real(10, APP_A));
+        assert!(!host.receive_ghost_set_next_real(10, APP_A, 300));
         assert_eq!(host.ghosts[&10].next_real_addr, Some(APP_C));
 
         // C loads the entity and re-haunts B with the routing update.
@@ -1465,7 +1838,7 @@ mod tests {
         assert_eq!(host.ghosts[&10].real_addr, APP_C);
         assert_eq!(host.ghosts[&10].next_real_addr, None);
         assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
-        assert!(host.receive_del_ghost(10));
+        assert!(host.receive_del_ghost(10, 200));
     }
 
     #[test]
@@ -1497,7 +1870,7 @@ mod tests {
             aoi_update_scheme_id: 0,
         };
         assert_eq!(
-            host.receive_create_ghost(payload, 100),
+            host.receive_create_ghost(APP_A, payload, 100),
             GhostCreateOutcome::Created
         );
 
@@ -1522,7 +1895,439 @@ mod tests {
             host.receive_ghost_set_real(11, 1, APP_C),
             GhostSetRealOutcome::UnknownEntity
         );
-        assert!(!host.receive_ghost_set_next_real(11, APP_C));
+        assert!(!host.receive_ghost_set_next_real(11, APP_C, 300));
+    }
+
+    /// A ghost holding one real, for the buffering tests.
+    fn hold_host(entity_id: EntityId, num_times_real_offloaded: u32) -> GhostHost {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 0,
+                num_event_stamped_properties: 0,
+            },
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id,
+            entity_type_id: 4,
+            num_times_real_offloaded,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload, 100),
+            GhostCreateOutcome::Created
+        );
+        host
+    }
+
+    #[test]
+    fn buffered_flags_classify_the_reference_subsequence_markers() {
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        let create = BufferedGhostMessage::CreateGhost {
+            src: APP_C,
+            payload,
+        };
+        assert!(create.is_subsequence_start() && create.is_create_ghost());
+        assert!(!create.is_subsequence_end());
+
+        let set_real = BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+            entity_id: 10,
+            num_times_real_offloaded: 1,
+            owner: APP_C,
+        }));
+        assert!(set_real.is_subsequence_start());
+        assert!(!set_real.is_subsequence_end() && !set_real.is_create_ghost());
+
+        let del = BufferedGhostMessage::Common(GhostMessage::DelGhost { entity_id: 10 });
+        let set_next = BufferedGhostMessage::Common(GhostMessage::SetNextReal(GhostSetNextReal {
+            entity_id: 10,
+            next_real_addr: APP_C,
+        }));
+        assert!(del.is_subsequence_end() && set_next.is_subsequence_end());
+        assert!(!del.is_subsequence_start() && !set_next.is_subsequence_start());
+    }
+
+    #[test]
+    fn a_stale_set_real_plays_when_its_subsequence_is_signed_off() {
+        // The real offloaded twice in quick succession (A->C->D) and the
+        // D->B channel beat C's update here: the ghost's number is 0, so
+        // SetReal{2, D} is out of subsequence.
+        let mut host = hold_host(10, 0);
+        assert_eq!(
+            host.receive_ghost_set_real(10, 2, APP_D),
+            GhostSetRealOutcome::DelayedSubsequence
+        );
+        // A delaying queue reports empty to `hasMessagesFor` but is
+        // mid-collection to `isDelayingMessagesFor`.
+        assert!(!host.buffer.has_messages_for(10, APP_D));
+        assert!(host.buffer.is_delaying_for(10, APP_D));
+
+        // C's update is in order and applies straight away.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 1, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+
+        // C's sign-off hands routing to D — which releases the held
+        // update, and the ghost now routes to the right process.
+        assert!(host.receive_ghost_set_next_real(10, APP_D, 300));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 2);
+        assert_eq!(host.ghosts[&10].real_addr, APP_D);
+        assert_eq!(host.ghosts[&10].next_real_addr, None);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_create_for_a_live_ghost_re_delays_instead_of_duplicating() {
+        let mut host = hold_host(10, 0);
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 1,
+            position: Vector3::new(12.0, 3.0, 4.0),
+            is_on_ground: false,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_C,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+
+        // The create arrives while the ghost is still alive: buffered.
+        assert_eq!(
+            host.receive_create_ghost(APP_C, payload, 150),
+            GhostCreateOutcome::Buffered
+        );
+        assert_eq!(host.ghosts.len(), 1);
+        assert!(host.buffer.is_delaying_for(10, APP_C));
+
+        // The sign-off plays it, but the ghost still lives: the create
+        // re-delays rather than duplicating the record.
+        assert!(host.receive_ghost_set_next_real(10, APP_C, 300));
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].real_addr, APP_A);
+        assert!(host.buffer.is_delaying_for(10, APP_C));
+
+        // The death starts a new lifespan: the held create replays once.
+        assert!(host.receive_del_ghost(10, 400));
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert_eq!(host.ghosts[&10].position, Vector3::new(12.0, 3.0, 4.0));
+        assert_eq!(host.ghosts[&10].creation_time, 400);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_chained_sign_off_plays_each_subsequence_in_turn() {
+        let mut host = hold_host(10, 0);
+
+        // Two whole subsequences queued: C's handover to D, then D's own
+        // routing update.
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_C,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: 10,
+                next_real_addr: APP_D,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_D,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 2,
+                owner: APP_D,
+            })),
+        );
+
+        // Signing off to C plays C's subsequence; its trailing handover
+        // chains straight into D's.
+        assert!(host.receive_ghost_set_next_real(10, APP_C, 300));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 2);
+        assert_eq!(host.ghosts[&10].real_addr, APP_D);
+        assert_eq!(host.ghosts[&10].next_real_addr, None);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_delaying_subsequence_collects_until_its_end() {
+        let mut host = hold_host(10, 1);
+
+        // Out of subsequence: the update heads a delayed list.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 3, APP_D),
+            GhostSetRealOutcome::DelayedSubsequence
+        );
+        assert!(host.buffer.is_delaying_for(10, APP_D));
+
+        // Late arrivals join the delayed list until an end marker closes
+        // the collection.
+        host.buffer.add(
+            10,
+            APP_D,
+            BufferedGhostMessage::Common(GhostMessage::DelGhost { entity_id: 10 }),
+        );
+        assert!(!host.buffer.is_delaying_for(10, APP_D));
+        assert!(!host.buffer.has_messages_for(10, APP_D));
+
+        // The skipped update arrives and moves the ghost's count to 2,
+        // making the held {3, D} the next expected subsequence number.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 2, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+
+        // The sign-off promotes and plays both, in order.
+        assert!(host.receive_ghost_set_next_real(10, APP_D, 300));
+        assert!(!host.ghosts.contains_key(&10));
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_create_while_delaying_joins_the_delayed_subsequence() {
+        let mut host = hold_host(10, 1);
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 3,
+            position: Vector3::new(1.0, 2.0, 3.0),
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_D,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+
+        assert_eq!(
+            host.receive_ghost_set_real(10, 3, APP_D),
+            GhostSetRealOutcome::DelayedSubsequence
+        );
+
+        // No playable queue yet (`hasMessagesFor` is false while
+        // delaying), so the create delays too — after the held update.
+        assert_eq!(
+            host.receive_create_ghost(APP_D, payload, 150),
+            GhostCreateOutcome::Buffered
+        );
+        assert!(host.buffer.is_delaying_for(10, APP_D));
+
+        // The skipped update arrives, making the held {3, D} next in line.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 2, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+
+        // The sign-off applies the update; the replayed create still finds
+        // the ghost alive and holds again — exactly one record throughout.
+        assert!(host.receive_ghost_set_next_real(10, APP_D, 300));
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 3);
+        assert_eq!(host.ghosts[&10].real_addr, APP_D);
+        assert!(host.buffer.is_delaying_for(10, APP_D));
+    }
+
+    #[test]
+    fn a_buffered_create_behind_a_playable_queue_appends_to_it() {
+        let mut host = hold_host(10, 0);
+
+        // A playable queue from C already exists, so the early create
+        // joins it (`Space::createGhost`'s add branch) instead of heading
+        // its own delayed subsequence.
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_C,
+            })),
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 1,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_C,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        assert_eq!(
+            host.receive_create_ghost(APP_C, payload, 150),
+            GhostCreateOutcome::Buffered
+        );
+        assert!(host.buffer.has_messages_for(10, APP_C));
+        assert!(!host.buffer.is_delaying_for(10, APP_C));
+
+        // The sign-off plays the pair in order: the update applies, then
+        // the replayed create finds the ghost alive and holds again.
+        assert!(host.receive_ghost_set_next_real(10, APP_C, 300));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
+        assert_eq!(host.ghosts.len(), 1);
+        assert!(host.buffer.is_delaying_for(10, APP_C));
+    }
+
+    #[test]
+    fn an_out_of_order_set_real_in_a_played_queue_re_heads_the_delay() {
+        let mut host = hold_host(10, 0);
+
+        // A whole playable subsequence from D lands while the ghost still
+        // expects subsequence 1: playing it re-delays from the stale head,
+        // swallowing the rest of the queue behind it.
+        host.buffer.add(
+            10,
+            APP_D,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 2,
+                owner: APP_D,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_D,
+            BufferedGhostMessage::Common(GhostMessage::DelGhost { entity_id: 10 }),
+        );
+        host.play_subsequence_for(10, APP_D, 300);
+        assert!(!host.buffer.has_messages_for(10, APP_D));
+        assert!(host.buffer.has_queue_for(10, APP_D));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 0);
+
+        // The skipped update lands, and D's sign-off releases the pair:
+        // the update applies, the del destroys the ghost.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 1, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+        assert!(host.receive_ghost_set_next_real(10, APP_D, 400));
+        assert!(!host.ghosts.contains_key(&10));
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_played_subsequence_pause_keeps_the_rest_queued() {
+        let mut host = hold_host(10, 0);
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 1,
+            position: Vector3::new(6.0, 7.0, 8.0),
+            is_on_ground: false,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_C,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+
+        // A whole subsequence plus a trailing create form carried as a
+        // common message (the channel shape).
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_C,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: 10,
+                next_real_addr: APP_E,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::CreateGhost(payload.clone())),
+        );
+
+        // Playing stops at the subsequence end: the update and handover
+        // apply, the rest of the queue stays for a later play.
+        host.play_subsequence_for(10, APP_C, 300);
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert_eq!(host.ghosts[&10].next_real_addr, Some(APP_E));
+        assert!(host.buffer.has_messages_for(10, APP_C));
+
+        // The ghost dies: the queued create starts the next lifespan and
+        // runs the immediate create path.
+        assert!(host.receive_del_ghost(10, 400));
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].position, Vector3::new(6.0, 7.0, 8.0));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
+        assert_eq!(host.ghosts[&10].creation_time, 400);
+        assert!(host.buffer.is_empty());
     }
 
     #[test]
@@ -1655,7 +2460,7 @@ mod tests {
         };
 
         assert_eq!(
-            host.receive_create_ghost(payload.clone(), 42),
+            host.receive_create_ghost(APP_A, payload.clone(), 42),
             GhostCreateOutcome::Created
         );
         assert_eq!(host.ghosts.len(), 1);
@@ -1687,14 +2492,19 @@ mod tests {
         // A second create for a living entity takes the buffered path — no
         // duplicate record, no count drift.
         assert_eq!(
-            host.receive_create_ghost(payload, 43),
-            GhostCreateOutcome::EntityAlreadyExists
+            host.receive_create_ghost(APP_A, payload, 43),
+            GhostCreateOutcome::Buffered
         );
         assert_eq!(host.ghosts.len(), 1);
 
-        assert!(host.receive_del_ghost(10));
+        assert!(host.receive_del_ghost(10, 200));
+        // The death offered the buffered queue a new lifespan: the held
+        // create replayed (with the replay time) instead of leaking.
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].creation_time, 200);
+        assert!(host.receive_del_ghost(10, 200));
         assert_eq!(host.ghosts.len(), 0);
-        assert!(!host.receive_del_ghost(10));
+        assert!(!host.receive_del_ghost(10, 200));
     }
 
     #[test]
