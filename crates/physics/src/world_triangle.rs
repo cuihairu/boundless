@@ -71,6 +71,62 @@ impl WorldTriangle {
         Vector3::ZERO.cross_product(&(self.v[2] - self.v[0]), &(self.v[2] - self.v[1]))
     }
 
+    /// `WorldTriangle::intersects(start, dir, length)` — the
+    /// Möller–Trumbore ray test (`worldtri.cpp:211-280`), double sided
+    /// (no backface cull). `EPSILON = 0.000001` (`worldtri.cpp:208`);
+    /// `almostZero(det, eps)` is the exclusive window `-eps < det < eps`
+    /// (`stdmf.hpp:616-619`). On a hit `length` is narrowed to the hit
+    /// fraction, so the caller's running value acts as both the search
+    /// limit and the answer.
+    pub fn intersects(&self, start: Vector3, dir: Vector3, length: &mut f32) -> bool {
+        const EPSILON: f32 = 0.000_001;
+
+        // Find the vectors for the edges sharing v0.
+        let edge1 = self.v[1] - self.v[0];
+        let edge2 = self.v[2] - self.v[0];
+
+        // Begin calculating determinant — also used to calculate the U
+        // parameter.
+        let p = Vector3::ZERO.cross_product(&dir, &edge2);
+        let det = edge1.dot_product(&p);
+
+        // If the determinant is near zero, the ray lies in the plane of
+        // the triangle (almostZero is the exclusive window).
+        if -EPSILON < det && det < EPSILON {
+            return false;
+        }
+
+        let inv_det = 1.0 / det;
+
+        // Calculate the distance from vert0 to the ray origin.
+        let t = start - self.v[0];
+
+        // Calculate the U parameter and test bounds.
+        let u = t.dot_product(&p) * inv_det;
+        if u < 0.0 || 1.0 < u {
+            return false;
+        }
+
+        // Prepare to test the V parameter.
+        let q = Vector3::ZERO.cross_product(&t, &edge1);
+
+        // Calculate the V parameter and test bounds.
+        let v = dir.dot_product(&q) * inv_det;
+        if v < 0.0 || 1.0 < u + v {
+            return false;
+        }
+
+        // Calculate the intersection point = start + dist * dir.
+        let distance_to_plane = edge2.dot_product(&q) * inv_det;
+
+        if 0.0 < distance_to_plane && distance_to_plane < *length {
+            *length = distance_to_plane;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn flags(&self) -> u16 {
         self.flags
     }
@@ -192,6 +248,38 @@ mod tests {
         assert_eq!(WorldTriangle::pack_flags(0x05, 0x2A), 0x2A05);
         // packFlags masks the collision byte like the reference.
         assert_eq!(WorldTriangle::pack_flags(0x105, 0x2A), 0x2A05);
+    }
+
+    #[test]
+    fn the_ray_test_is_the_reference_moeller_trumbore() {
+        // Vertical ray down through the triangle (z=1 plane); in-length 2,
+        // hit narrows it to the plane distance 1 (worldtri.cpp:211-280).
+        let tri = WorldTriangle::new(v(0.0, 0.0, 1.0), v(2.0, 0.0, 1.0), v(0.0, 2.0, 1.0), 0x0102);
+        let mut length = 2.0;
+        assert!(tri.intersects(v(0.5, 0.5, 3.0), v(0.0, 0.0, -4.0), &mut length));
+        assert_eq!(length, 2.0 / 4.0);
+        // Behind the origin: rejected (0 < distanceToPlane).
+        let mut length = 2.0;
+        assert!(!tri.intersects(v(0.5, 0.5, -3.0), v(0.0, 0.0, -4.0), &mut length));
+        assert_eq!(length, 2.0);
+        // Beyond the running length: rejected and the length is kept.
+        let mut length = 0.1;
+        assert!(!tri.intersects(v(0.5, 0.5, 3.0), v(0.0, 0.0, -4.0), &mut length));
+        assert_eq!(length, 0.1);
+        // Outside the u/v bounds.
+        let mut length = 2.0;
+        assert!(!tri.intersects(v(2.5, 2.5, 3.0), v(0.0, 0.0, -4.0), &mut length));
+        // Parallel ray (det in the epsilon window): rejected.
+        let mut length = 2.0;
+        assert!(!tri.intersects(v(0.5, 0.5, 1.0), v(1.0, 0.0, 0.0), &mut length));
+        // Double sided: the same geometry from below hits too.
+        let mut length = 2.0;
+        assert!(tri.intersects(v(0.5, 0.5, -3.0), v(0.0, 0.0, 4.0), &mut length));
+        assert_eq!(length, 1.0);
+        // Edge-inclusive bounds: u == 1 exactly is inside.
+        let mut length = 5.0;
+        assert!(tri.intersects(v(2.0, 0.0, 3.0), v(0.0, 0.0, -4.0), &mut length));
+        assert_eq!(length, 0.5);
     }
 
     #[test]

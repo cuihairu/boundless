@@ -58,7 +58,16 @@ fn v3h(hex: [&str; 3]) -> Vector3 {
     v3(row(&hex))
 }
 
-/// One dump_tree run in the truth log: tag, NT/NN/BB/CAN/TRI/USER lines.
+/// One RAY truth line: seed/dist bits and, on a hit, the hit point,
+/// the triangle normal and the flags.
+#[derive(Clone)]
+struct RayLine {
+    seed_bits: u32,
+    dist_bits: u32,
+    hit: Option<([String; 3], [String; 3], u16)>,
+}
+
+/// One dump_tree run in the truth log: tag, NT/NN/BB/CAN/TRI/USER/RAY lines.
 struct Truth {
     nt: u32,
     nn: u32,
@@ -66,6 +75,7 @@ struct Truth {
     can: bool,
     tris: Vec<(u32, [String; 9], u16)>,
     user: Vec<(u32, Vec<u8>)>,
+    rays: Vec<RayLine>,
 }
 
 fn truth(tag: &'static str) -> Truth {
@@ -76,6 +86,7 @@ fn truth(tag: &'static str) -> Truth {
         can: false,
         tris: Vec::new(),
         user: Vec::new(),
+        rays: Vec::new(),
     };
     let mut saw_result_ok = false;
     for line in truth_lines() {
@@ -103,6 +114,23 @@ fn truth(tag: &'static str) -> Truth {
                     .map(|h| u8::from_str_radix(h, 16).unwrap())
                     .collect();
                 t.user.push((key, data));
+            }
+            "RAY" => {
+                let hit = if f[2] == "HIT" {
+                    Some((
+                        row(&f[5..8]),
+                        row(&f[8..11]),
+                        u16::from_str_radix(f[11], 16).unwrap(),
+                    ))
+                } else {
+                    assert_eq!(f[2], "MISS");
+                    None
+                };
+                t.rays.push(RayLine {
+                    seed_bits: u32::from_str_radix(f[3], 16).unwrap(),
+                    dist_bits: u32::from_str_radix(f[4], 16).unwrap(),
+                    hit,
+                });
             }
             "RESULT" => {
                 assert_eq!(f[2], "OK");
@@ -345,4 +373,140 @@ fn the_node_type_is_the_packed_record() {
     assert_eq!(n.num_triangles, 4);
     assert_eq!(n.shared, Some(5));
     assert_eq!(n.num_shared, 6);
+}
+
+#[test]
+fn the_reference_rays_are_answered_bit_for_bit() {
+    // The same rays the generator pushed through the original
+    // BSPTree::intersects, replayed through the port: the returned
+    // triangle (flags, reference-order normal), the narrowed dist and
+    // the hit point (start + dist * (end - start)) must match the truth
+    // bits exactly; a MISS must leave the caller's dist untouched.
+    let bt_rays: [(Vector3, Vector3, f32); 9] = [
+        (
+            Vector3::new(1.0, 0.5, 3.0),
+            Vector3::new(1.0, 0.5, -3.0),
+            1.0,
+        ),
+        (
+            Vector3::new(0.5, 1.2, 3.0),
+            Vector3::new(0.5, 1.2, -3.0),
+            1.0,
+        ),
+        (
+            Vector3::new(0.5, 0.2, -3.0),
+            Vector3::new(0.5, 0.2, 1.0),
+            1.0,
+        ),
+        (
+            Vector3::new(5.2, 5.2, 6.0),
+            Vector3::new(5.2, 5.2, -6.0),
+            1.0,
+        ),
+        (
+            Vector3::new(1.0, 0.5, 3.0),
+            Vector3::new(1.0, 0.5, -3.0),
+            0.45,
+        ),
+        (
+            Vector3::new(1.0, 0.5, 3.0),
+            Vector3::new(1.0, 0.5, -3.0),
+            0.4,
+        ),
+        (
+            Vector3::new(1.0, 2.0, 3.0),
+            Vector3::new(1.0, -1.0, 0.0),
+            1.0,
+        ),
+        (
+            Vector3::new(1.0, 2.0, 3.0),
+            Vector3::new(1.0, -1.0, 0.0),
+            0.4,
+        ),
+        (
+            Vector3::new(1.0, 0.5, -3.0),
+            Vector3::new(1.0, 0.5, 3.0),
+            1.0,
+        ),
+    ];
+    let lg_rays: [(Vector3, Vector3, f32); 4] = [
+        (
+            Vector3::new(0.5, 0.5, 3.0),
+            Vector3::new(0.5, 0.5, -3.0),
+            1.0,
+        ),
+        (
+            Vector3::new(2.5, 0.5, 3.0),
+            Vector3::new(2.5, 0.5, -3.0),
+            1.0,
+        ),
+        (
+            Vector3::new(0.5, 2.5, -1.0),
+            Vector3::new(0.5, 2.5, 4.0),
+            1.0,
+        ),
+        (
+            Vector3::new(0.5, 0.5, 0.9),
+            Vector3::new(0.5, 0.5, -1.0),
+            1.0,
+        ),
+    ];
+    let uc_rays: [(Vector3, Vector3, f32); 3] = [
+        (
+            Vector3::new(0.0, 0.0, 3.0),
+            Vector3::new(0.0, 0.0, -3.0),
+            1.0,
+        ),
+        (
+            Vector3::new(3.0, 0.0, 0.0),
+            Vector3::new(-3.0, 0.0, 0.0),
+            1.0,
+        ),
+        (
+            Vector3::new(5.0, 5.0, 6.0),
+            Vector3::new(5.0, 5.0, -6.0),
+            1.0,
+        ),
+    ];
+    #[allow(clippy::type_complexity)]
+    let trees: [(&str, &str, &[(Vector3, Vector3, f32)]); 3] = [
+        ("BT", "built.bsp", &bt_rays),
+        ("LG", "legacy.bsp", &lg_rays),
+        ("UC", "unit_cube.bsp", &uc_rays),
+    ];
+
+    for (tag, file, rays) in trees {
+        let t = truth(tag);
+        assert_eq!(rays.len(), t.rays.len(), "{tag} ray count");
+        let tree = BspTree::load(&fixture_bytes(file)).unwrap_or_else(|e| panic!("{tag}: {e}"));
+        for (r, line) in rays.iter().zip(t.rays.iter()) {
+            let (s, e, seed) = *r;
+            let delta = e - s;
+            let mut dist = seed;
+            let hit = tree.intersects(s, e, &mut dist, None);
+            assert_eq!(seed.to_bits(), line.seed_bits, "{tag} seed");
+            assert_eq!(dist.to_bits(), line.dist_bits, "{tag} {s:?} dist");
+            match (&line.hit, hit) {
+                (Some((point, normal, flags)), Some(tri)) => {
+                    assert_eq!(tri.flags(), *flags, "{tag} flags");
+                    assert_eq!(
+                        tri.normal(),
+                        v3(normal.to_vec().try_into().unwrap()),
+                        "{tag} normal"
+                    );
+                    assert_eq!(
+                        s + delta * dist,
+                        v3(point.to_vec().try_into().unwrap()),
+                        "{tag} point"
+                    );
+                }
+                (None, None) => {}
+                (expected, got) => panic!(
+                    "{tag} hit mismatch: expected {} got {}",
+                    expected.is_some(),
+                    got.is_some()
+                ),
+            }
+        }
+    }
 }

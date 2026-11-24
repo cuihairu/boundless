@@ -109,6 +109,34 @@ static void dump_tree(const char* tag, BSPTree* tree)
     }
 }
 
+// BW-10-03-05: one ray probe through the original BSPTree::intersects —
+// the caller seeds dist (the running closest-hit fraction, here the seed
+// below) and the walk narrows it to the hit fraction. HIT lines carry the
+// seed/dist/hit-point/normal bits and the triangle flags; MISS lines
+// carry the seed and the untouched dist.
+static void ray_probe(const char* tag, BSPTree* tree,
+    const Vector3& s, const Vector3& e, float seed)
+{
+    const Vector3 delta = e - s;
+    float dist = seed;
+    const WorldTriangle* pHit = NULL;
+    const bool r = tree->intersects(s, e, dist, &pHit);
+    if (r && pHit)
+    {
+        const Vector3 point = s + delta * dist;
+        const Vector3 n = pHit->normal();
+        printf("%s RAY HIT %08x %08x %08x %08x %08x %08x %08x %08x %04x\n", tag,
+            bits(seed), bits(dist),
+            bits(point.x), bits(point.y), bits(point.z),
+            bits(n.x), bits(n.y), bits(n.z),
+            pHit->flags());
+    }
+    else
+    {
+        printf("%s RAY MISS %08x %08x\n", tag, bits(seed), bits(dist));
+    }
+}
+
 static void write_file(const std::string& path, const void* data, size_t len)
 {
     FILE* f = fopen(path.c_str(), "wb");
@@ -168,6 +196,21 @@ int main(int argc, char* argv[])
     }
     write_blob(outDir + "/built.bsp", BSPTreeTool::saveBSPInMemory(built));
     dump_tree("BT", built);
+    // Ray battery: down through the straddler then the slant; slant-only;
+    // WATER from below (up); the NOT_IN_BSP triangle alone; the seed-0.2
+    // clamp misses the straddler hit (~0.2223), 0.25 reaches it; up from
+    // below takes the bottom face double-sided.
+    ray_probe("BT", built, Vector3(1, 0.5f, 3), Vector3(1, 0.5f, -3), 1.f);
+    ray_probe("BT", built, Vector3(0.5f, 1.2f, 3), Vector3(0.5f, 1.2f, -3), 1.f);
+    ray_probe("BT", built, Vector3(0.5f, 0.2f, -3), Vector3(0.5f, 0.2f, 1), 1.f);
+    ray_probe("BT", built, Vector3(5.2f, 5.2f, 6), Vector3(5.2f, 5.2f, -6), 1.f);
+    ray_probe("BT", built, Vector3(1, 0.5f, 3), Vector3(1, 0.5f, -3), 0.45f);
+    ray_probe("BT", built, Vector3(1, 0.5f, 3), Vector3(1, 0.5f, -3), 0.4f);
+    // Crosses the straddler's plane (y=0.5) at fraction 0.5, point
+    // (1, 0.5, 1.5) inside the triangle; the slant would be at 2/3.
+    ray_probe("BT", built, Vector3(1, 2, 3), Vector3(1, -1, 0), 1.f);
+    ray_probe("BT", built, Vector3(1, 2, 3), Vector3(1, -1, 0), 0.4f);
+    ray_probe("BT", built, Vector3(1, 0.5f, -3), Vector3(1, 0.5f, 3), 1.f);
     printf("BT RESULT OK\n");
 
     // --- 2. the crafted legacy blob ------------------------------------
@@ -224,6 +267,18 @@ int main(int argc, char* argv[])
     }
     dump_tree("LG", legacyTree);
     write_blob(outDir + "/legacy_saved.bsp", BSPTreeTool::saveBSPInMemory(legacyTree));
+    // All four MISS: the rays are vertical (constant x/y), so they never
+    // cross the x=0 (root) or y=1 (node1) partition planes — the walk
+    // descends same-side paths and a same-side descent never scans the
+    // node's own run. t0/t1 (node0's run) and t2 (node1's run) are never
+    // offered even where the rays cross them geometrically (ray 1/4 cross
+    // t0's z=0 plane at (0.5,0.5,0)); ray 3 runs in front of node1's
+    // plane, so node3's t3 (which it does cross at (0.5,2.5,0)) is never
+    // visited either. Engine-faithful walk behavior, pinned as truth.
+    ray_probe("LG", legacyTree, Vector3(0.5f, 0.5f, 3), Vector3(0.5f, 0.5f, -3), 1.f);
+    ray_probe("LG", legacyTree, Vector3(2.5f, 0.5f, 3), Vector3(2.5f, 0.5f, -3), 1.f);
+    ray_probe("LG", legacyTree, Vector3(0.5f, 2.5f, -1), Vector3(0.5f, 2.5f, 4), 1.f);
+    ray_probe("LG", legacyTree, Vector3(0.5f, 0.5f, 0.9f), Vector3(0.5f, 0.5f, -1), 1.f);
     printf("LG RESULT OK\n");
 
     // --- 3. the real asset's bsp2 child (bytes only) --------------------
@@ -273,6 +328,11 @@ int main(int argc, char* argv[])
         return 3;
     }
     dump_tree("UC", ucTree);
+    // Down through the top face; horizontal through a side face; outside
+    // the cube entirely.
+    ray_probe("UC", ucTree, Vector3(0, 0, 3), Vector3(0, 0, -3), 1.f);
+    ray_probe("UC", ucTree, Vector3(3, 0, 0), Vector3(-3, 0, 0), 1.f);
+    ray_probe("UC", ucTree, Vector3(5, 5, 6), Vector3(5, 5, -6), 1.f);
     printf("UC RESULT OK\n");
     delete ucTree;
 

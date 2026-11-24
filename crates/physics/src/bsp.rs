@@ -634,6 +634,241 @@ impl BspTree {
             .iter()
             .any(|t| t.collision_flags() != TRIANGLE_NOT_IN_BSP)
     }
+
+    /// `BSPNode::intersectsThisNode(start, end, dist, ppHitTriangle,
+    /// pVisitor)` (`bsp.cpp:221-247`): scan the node's own run then its
+    /// shared run, skipping `TRIANGLE_NOT_IN_BSP` candidates. Every hit
+    /// narrows `dist`; a rejected visit restores the previous value. The
+    /// node's scan does NOT stop at the first hit — the last accepted
+    /// (i.e. closest) candidate wins.
+    fn intersects_this_node<'a>(
+        &'a self,
+        node: &BspNode,
+        start: Vector3,
+        direction_vec: Vector3,
+        dist: &mut f32,
+        mut visitor: Option<&mut (dyn CollisionVisitor + '_)>,
+        hit: &mut Option<&'a WorldTriangle>,
+    ) -> bool {
+        let mut b_intersects = false;
+
+        for candidate in self
+            .node_triangles(node)
+            .iter()
+            .chain(self.node_shared_triangles(node))
+        {
+            if candidate.collision_flags() != TRIANGLE_NOT_IN_BSP {
+                let original_dist = *dist;
+
+                let accepted = candidate.intersects(start, direction_vec, dist)
+                    && match visitor.as_deref_mut() {
+                        None => true,
+                        Some(v) => v.visit(candidate, *dist),
+                    };
+
+                if accepted {
+                    b_intersects = true;
+                    *hit = Some(candidate);
+                } else {
+                    *dist = original_dist;
+                }
+            }
+        }
+
+        b_intersects
+    }
+
+    /// `BSPTree::intersects(start, end, dist, ppHitTriangle, pVisitor)`
+    /// (`bsp.cpp:1865-1997`): the iterative near-to-far BSP walk with a
+    /// `BSPStackNode` stack (`DynamicEmbeddedArray<BSPStackNode, 32>`).
+    /// `dist` in is the fraction of the interval to consider (usually 1);
+    /// on a hit it is the fraction the collision occurred at, so the hit
+    /// point is `start + dist * (end - start)`. Returns the hit triangle
+    /// (the reference's `ppHitTriangle` out-param; callers that pass NULL
+    /// ignore it — no in-tree caller seeds it, so the port has no
+    /// initial-hit parameter; registered).
+    pub fn intersects(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        dist: &mut f32,
+        visitor: Option<&mut dyn CollisionVisitor>,
+    ) -> Option<&WorldTriangle> {
+        struct StackNode<'a> {
+            node: &'a BspNode,
+            /// -1 for unseen, -2 marks nothing (leaves set both sides
+            /// before the branch below).
+            e_back: i32,
+            s_dist: f32,
+            e_dist: f32,
+        }
+
+        let mut visitor = visitor;
+        let orig_dist = *dist;
+        let mut hit: Option<&WorldTriangle> = None;
+        let orig_hit = hit;
+
+        let delta = end - start;
+        let tolerance_pct = BSPNODE_TOLERANCE / delta.length();
+
+        let mut stack: Vec<StackNode> = vec![StackNode {
+            node: self.root(),
+            e_back: -1,
+            s_dist: 0.0,
+            e_dist: 1.0,
+        }];
+
+        while let Some(cur) = stack.pop() {
+            // Set default / initial values for the line segment range.
+            let s_dist = cur.s_dist;
+            let e_dist = cur.e_dist;
+
+            // Set up for plane intersection.
+            let mut i_dist = 0.0;
+            let pe = &cur.node.plane_eq;
+
+            // Variables saying if points are on the back side of the
+            // plane.
+            let s_back;
+            let e_back;
+
+            // See if this is a really simple node.
+            if cur.node.front.is_none() && cur.node.back.is_none() {
+                // Just look at the triangles and don't try to add to the
+                // stack. (The reference's sBack is never read on this
+                // path, so the port does not bind it.)
+                e_back = -2;
+            }
+            // See if this is the first time we've seen it.
+            else if cur.e_back == -1 {
+                let s_out = pe.distance_to(&(start + delta * (s_dist - tolerance_pct)));
+                let e_out = pe.distance_to(&(start + delta * (e_dist + tolerance_pct)));
+                s_back = (s_out < 0.0) as i32;
+                e_back = (e_out < 0.0) as i32;
+
+                // Find which side the start is on (`(&pFront_)[sBack]`:
+                // index 0 is front, 1 is back).
+                let start_side = if s_back == 0 {
+                    cur.node.front
+                } else {
+                    cur.node.back
+                };
+
+                // Are they both on the same side?
+                if s_back == e_back {
+                    // But first check if either is within tolerance: some
+                    // triangles might slightly cross the partition plane.
+                    if s_out.abs() < BSPNODE_TOLERANCE || e_out.abs() < BSPNODE_TOLERANCE {
+                        stack.push(StackNode {
+                            node: cur.node,
+                            e_back: 1 - s_back,
+                            s_dist,
+                            e_dist,
+                        });
+                    }
+
+                    // Now go down the start side.
+                    if let Some(side) = start_side {
+                        stack.push(StackNode {
+                            node: &self.nodes[side],
+                            e_back: -1,
+                            s_dist,
+                            e_dist,
+                        });
+                    }
+
+                    continue;
+                }
+
+                // The points are on different sides: find the intersect
+                // distance.
+                i_dist = pe.intersect_ray_half(&start, pe.normal().dot_product(&delta));
+
+                // If there's anything on the start side we'll have to do
+                // it first.
+                if let Some(side) = start_side {
+                    // Remember to come to the end side.
+                    stack.push(StackNode {
+                        node: cur.node,
+                        e_back,
+                        s_dist,
+                        e_dist,
+                    });
+
+                    // And then look at the start side.
+                    stack.push(StackNode {
+                        node: &self.nodes[side],
+                        e_back: -1,
+                        s_dist,
+                        e_dist: i_dist,
+                    });
+
+                    continue;
+                }
+
+                // Nothing on the start side: fall through to check this
+                // node's triangles and later add the end side.
+            }
+            // We've been here before.
+            else {
+                // (The reference's sBack assignment here is dead — only
+                // eBack is read below.)
+                e_back = cur.e_back;
+
+                i_dist = pe.intersect_ray_half(&start, pe.normal().dot_product(&delta));
+
+                // Fall through to check this node's triangles and later
+                // add the end side.
+            }
+
+            // Check the triangles on this node, and get out immediately
+            // if we get a (confirmed) hit.
+            if self.intersects_this_node(
+                cur.node,
+                start,
+                delta,
+                dist,
+                visitor.as_deref_mut(),
+                &mut hit,
+            ) && *dist <= (e_dist + tolerance_pct)
+            {
+                return hit;
+            }
+
+            // Reset stuff.
+            *dist = orig_dist;
+            hit = orig_hit;
+
+            // Now add the other side if it's not null (and eBack is ok).
+            if e_back >= 0 {
+                let end_side = if e_back == 0 {
+                    cur.node.front
+                } else {
+                    cur.node.back
+                };
+                if let Some(side) = end_side {
+                    stack.push(StackNode {
+                        node: &self.nodes[side],
+                        e_back: -1,
+                        s_dist: i_dist,
+                        e_dist,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+}
+
+/// `BSPNODE_TOLERANCE` (`bsp.cpp:85`).
+pub const BSPNODE_TOLERANCE: f32 = 0.01;
+
+/// `CollisionVisitor` (`bsp.hpp:22-31`): receives every accepted hit
+/// triangle in a node scan; returning false rejects the hit (the walk
+/// restores the previous `dist` and keeps scanning).
+pub trait CollisionVisitor {
+    fn visit(&mut self, hit_triangle: &WorldTriangle, dist: f32) -> bool;
 }
 
 /// `offsetToPtr` (`bsp.cpp:1083-1092`): null for `OFFSET_32BIT_NULL`,
@@ -1268,6 +1503,243 @@ mod tests {
         assert_eq!(tree.nodes()[0].triangles, Some(0));
         assert_eq!(tree.nodes()[1].triangles, Some(1));
         assert_eq!(tree.node_triangles(&tree.nodes()[0]).len(), 1);
+    }
+
+    /// A three-node ray fixture: the root splits at the z=1 plane, the
+    /// front leaf owns tA at z=2, the back leaf owns tB at z=0.
+    fn ray_blob(tri_flags: [u16; 2]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend(&words(&[BSP_FILE_CUR_TOKEN, 16, 40, 40, 2, 3, 0]));
+        b.extend(&v3_bytes(v(0.0, 0.0, 0.0)));
+        b.extend(&v3_bytes(v(1.0, 1.0, 2.0)));
+        b.extend(&[0u8; 8]);
+        b.extend(&tri_bytes(
+            v(0.0, 0.0, 2.0),
+            v(1.0, 0.0, 2.0),
+            v(0.0, 1.0, 2.0),
+            tri_flags[0],
+        ));
+        b.extend(&tri_bytes(
+            v(0.0, 0.0, 0.0),
+            v(1.0, 0.0, 0.0),
+            v(0.0, 1.0, 0.0),
+            tri_flags[1],
+        ));
+        b.extend(&node_bytes(
+            1,
+            2,
+            v(0.0, 0.0, 1.0),
+            1.0,
+            OFFSET_32BIT_NULL,
+            0,
+            OFFSET_32BIT_NULL,
+            0,
+        ));
+        b.extend(&node_bytes(
+            OFFSET_32BIT_NULL,
+            OFFSET_32BIT_NULL,
+            v(0.0, 0.0, 1.0),
+            2.0,
+            0,
+            1,
+            OFFSET_32BIT_NULL,
+            0,
+        ));
+        b.extend(&node_bytes(
+            OFFSET_32BIT_NULL,
+            OFFSET_32BIT_NULL,
+            v(0.0, 0.0, 1.0),
+            0.0,
+            1,
+            1,
+            OFFSET_32BIT_NULL,
+            0,
+        ));
+        b
+    }
+
+    struct CountingVisitor {
+        allowed: u32,
+        seen: Vec<(u16, u32)>,
+    }
+
+    impl CountingVisitor {
+        fn accepting() -> CountingVisitor {
+            CountingVisitor {
+                allowed: u32::MAX,
+                seen: Vec::new(),
+            }
+        }
+
+        fn rejecting() -> CountingVisitor {
+            CountingVisitor {
+                allowed: 0,
+                seen: Vec::new(),
+            }
+        }
+    }
+
+    impl CollisionVisitor for CountingVisitor {
+        fn visit(&mut self, hit_triangle: &WorldTriangle, dist: f32) -> bool {
+            self.seen.push((hit_triangle.flags(), dist.to_bits()));
+            self.allowed > 0
+        }
+    }
+
+    #[test]
+    fn the_ray_walk_answers_the_nearest_hit_first() {
+        let tree = BspTree::load(&ray_blob([0, 0])).expect("loads");
+
+        // Down from above: the front side is scanned first and confirms
+        // tA at a quarter of the interval.
+        let mut dist = 1.0;
+        let hit = tree
+            .intersects(v(0.5, 0.5, 3.0), v(0.5, 0.5, -1.0), &mut dist, None)
+            .expect("hits");
+        assert_eq!(hit.flags(), 0);
+        assert_eq!(hit.v0(), v(0.0, 0.0, 2.0), "tA is the hit");
+        assert_eq!(dist, 0.25);
+        // The hit point is start + dist * (end - start).
+        let point = v(0.5, 0.5, 3.0) + (v(0.5, 0.5, -1.0) - v(0.5, 0.5, 3.0)) * dist;
+        assert_eq!(point, v(0.5, 0.5, 2.0));
+
+        // Up from below: the back side confirms tB first.
+        let mut dist = 1.0;
+        let hit = tree
+            .intersects(v(0.5, 0.5, -3.0), v(0.5, 0.5, 3.0), &mut dist, None)
+            .expect("hits");
+        assert_eq!(hit.v0(), v(0.0, 0.0, 0.0), "tB is the hit");
+        assert_eq!(dist, 0.5);
+    }
+
+    #[test]
+    fn the_input_dist_is_the_search_limit() {
+        let tree = BspTree::load(&ray_blob([0, 0])).expect("loads");
+
+        // A limit short of the tA hit (0.25) misses both planes.
+        let mut dist = 0.1;
+        assert_eq!(
+            tree.intersects(v(0.5, 0.5, 3.0), v(0.5, 0.5, -1.0), &mut dist, None),
+            None,
+            "both hits lie beyond the limit"
+        );
+        assert_eq!(dist, 0.1, "the caller's value survives a miss");
+
+        // A limit past it confirms tA and narrows dist.
+        let mut dist = 0.8;
+        assert!(
+            tree.intersects(v(0.5, 0.5, 3.0), v(0.5, 0.5, -1.0), &mut dist, None)
+                .is_some()
+        );
+        assert_eq!(dist, 0.25);
+    }
+
+    #[test]
+    fn the_ray_misses_through_a_side_it_does_not_touch() {
+        // x=5 is outside both leaves' triangles: the walk descends the
+        // start side, revisits the root for the end side and finds
+        // nothing anywhere.
+        let tree = BspTree::load(&ray_blob([0, 0])).expect("loads");
+        let mut dist = 1.0;
+        assert_eq!(
+            tree.intersects(v(5.0, 0.5, 3.0), v(5.0, 0.5, -1.0), &mut dist, None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_rejecting_visitor_restores_and_keeps_scanning() {
+        let mut b = Vec::new();
+        b.extend(&words(&[BSP_FILE_CUR_TOKEN, 16, 40, 40, 2, 1, 0]));
+        b.extend(&v3_bytes(v(0.0, 0.0, 0.0)));
+        b.extend(&v3_bytes(v(1.0, 1.0, 2.0)));
+        b.extend(&[0u8; 8]);
+        b.extend(&tri_bytes(
+            v(0.0, 0.0, 2.0),
+            v(1.0, 0.0, 2.0),
+            v(0.0, 1.0, 2.0),
+            0x0001,
+        ));
+        b.extend(&tri_bytes(
+            v(0.0, 0.0, 1.0),
+            v(1.0, 0.0, 1.0),
+            v(0.0, 1.0, 1.0),
+            0x0002,
+        ));
+        b.extend(&node_bytes(
+            OFFSET_32BIT_NULL,
+            OFFSET_32BIT_NULL,
+            v(0.0, 0.0, 1.0),
+            1.0,
+            0,
+            2,
+            OFFSET_32BIT_NULL,
+            0,
+        ));
+        let tree = BspTree::load(&b).expect("loads");
+
+        // The null visitor takes the first (closest) candidate: tA.
+        let mut dist = 1.0;
+        let hit = tree
+            .intersects(v(0.5, 0.5, 3.0), v(0.5, 0.5, -1.0), &mut dist, None)
+            .expect("hits");
+        assert_eq!(hit.v0(), v(0.0, 0.0, 2.0));
+
+        // A rejecting visitor is consulted per candidate (tA then tB)
+        // and every rejection restores the previous dist: no hit.
+        let mut visitor = CountingVisitor::rejecting();
+        let mut dist = 1.0;
+        assert_eq!(
+            tree.intersects(
+                v(0.5, 0.5, 3.0),
+                v(0.5, 0.5, -1.0),
+                &mut dist,
+                Some(&mut visitor)
+            ),
+            None
+        );
+        assert_eq!(dist, 1.0);
+        assert_eq!(
+            visitor.seen,
+            vec![(0x0001, 0.25f32.to_bits()), (0x0002, 0.5f32.to_bits())],
+            "both candidates were offered, with their hit fractions"
+        );
+
+        // An accepting visitor takes tA (the ray descends from z=3, so
+        // the z=2 plane is nearer at fraction 0.25); tB's farther hit can
+        // never beat the running dist, so it is not even offered.
+        let mut visitor = CountingVisitor::accepting();
+        let mut dist = 1.0;
+        let hit = tree
+            .intersects(
+                v(0.5, 0.5, 3.0),
+                v(0.5, 0.5, -1.0),
+                &mut dist,
+                Some(&mut visitor),
+            )
+            .expect("hits");
+        assert_eq!(hit.v0(), v(0.0, 0.0, 2.0));
+        assert_eq!(dist, 0.25);
+        assert_eq!(visitor.seen, vec![(0x0001, 0.25f32.to_bits())]);
+    }
+
+    #[test]
+    fn not_in_bsp_triangles_are_skipped_by_the_ray_walk() {
+        let tree =
+            BspTree::load(&ray_blob([TRIANGLE_NOT_IN_BSP, TRIANGLE_NOT_IN_BSP])).expect("loads");
+        let mut dist = 1.0;
+        assert_eq!(
+            tree.intersects(v(0.5, 0.5, 3.0), v(0.5, 0.5, -1.0), &mut dist, None),
+            None,
+            "both planes are NOT_IN_BSP"
+        );
+        // Only the far one is skipped: the near one still answers.
+        let tree = BspTree::load(&ray_blob([TRIANGLE_NOT_IN_BSP, 0])).expect("loads");
+        let mut dist = 1.0;
+        let hit = tree
+            .intersects(v(0.5, 0.5, -3.0), v(0.5, 0.5, 3.0), &mut dist, None)
+            .expect("hits");
+        assert_eq!(hit.v0(), v(0.0, 0.0, 0.0));
     }
 
     #[test]
