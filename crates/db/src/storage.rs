@@ -21,11 +21,13 @@ use crate::record::EntityRecord;
 
 /// `EntityKey`: the identity of a stored entity, `(type, database id)`.
 ///
-/// `lib/db_storage/entity_key.hpp` `EntityKey`. The reference resolves by
+/// `lib/db_storage/entity_key.hpp` `EntityKey` — ordered
+/// (`operator<`, `entity_key.hpp:22`) so it can key the buffered-task
+/// maps. The reference resolves by
 /// `name` when `dbID == 0`; that leg is
 /// [`EntityStorage::lookup_entity_by_name`] (BW-09-01-04), and
 /// [`load_entity_by_name`] composes it into a load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntityKey {
     /// `EntityKey::typeID`.
     pub type_id: EntityTypeId,

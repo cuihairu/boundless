@@ -15,6 +15,7 @@
 //! BW-09-05 operational tools.
 
 pub mod account;
+pub mod buffered_entity_tasks;
 pub mod connection;
 pub mod error;
 pub mod log_on;
@@ -25,6 +26,9 @@ pub mod storage;
 pub mod transaction;
 
 pub use account::{AccountLogOnStatus, AccountRow, AccountStore, hash_password};
+pub use buffered_entity_tasks::{
+    BufferedEntityTasks, EntityTask, EntityTaskPtr, TaskQueue, TaskSink,
+};
 pub use connection::StorageConnection;
 pub use error::DbError;
 pub use log_on::LogOnRecord;
