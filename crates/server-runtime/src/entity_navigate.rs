@@ -260,6 +260,58 @@ impl CanNavigateFailure {
     }
 }
 
+/// `almostZero( f )` (`cstdmf/stdmf.hpp:616`): the reference's default
+/// epsilon is `0.0004`, the same helper the physics crate ports.
+fn almost_zero(f: f32) -> bool {
+    -0.0004 < f && f < 0.0004
+}
+
+/// The entity `navigateFollow` follows — the `Entity` facets the reference
+/// reads off it (`entity_navigate.cpp:882-895`).
+#[derive(Clone, Copy, Debug)]
+pub struct FollowTarget {
+    /// `PyObject_IsInstance( pEntity, &Entity::s_type_ )`.
+    pub is_entity: bool,
+    /// `pOtherEntity->isDestroyed()`.
+    pub destroyed: bool,
+    /// `entity().space().id() == pOtherEntity->space().id()`.
+    pub same_space: bool,
+    /// `pOtherEntity->position()`.
+    pub position: Vector3,
+    /// `pOtherEntity->direction().yaw`.
+    pub yaw: f32,
+}
+
+/// The `navigateFollow` failure faces
+/// (`entity_navigate.cpp:884-915`), the follow-specific checks first and
+/// then the delegated `navigateStep` refusals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigateFollowFailure {
+    /// `PyExc_TypeError`.
+    NotEntity,
+    /// `PyExc_ValueError`.
+    Destroyed,
+    /// `PyExc_ValueError`.
+    DifferentSpace,
+    /// `PyExc_ValueError`.
+    ZeroSearchDistance,
+    /// A `navigateStep` refusal the delegation passes through.
+    NavigateStep(NavigateStepFailure),
+}
+
+impl NavigateFollowFailure {
+    /// The reference's error text.
+    pub fn message(&self) -> &'static str {
+        match self {
+            NavigateFollowFailure::NotEntity => "parameter 1 must be an Entity instance",
+            NavigateFollowFailure::Destroyed => "cannot follow a destroyed entity",
+            NavigateFollowFailure::DifferentSpace => "followed entity is not in the same space",
+            NavigateFollowFailure::ZeroSearchDistance => "maxSearchDistance cannot be 0.0",
+            NavigateFollowFailure::NavigateStep(inner) => inner.message(),
+        }
+    }
+}
+
 /// The `NavmeshEntityNavigationSystem` (`navmesh_navigation_system.hpp`):
 /// the entity-bound system face `EntityNavigate` reaches through
 /// `navigationSystem()`.
@@ -593,6 +645,84 @@ impl EntityNavigate {
         let mut wp = dst.point();
         dst.make_max_height(&mut wp);
         Ok(Some(wp))
+    }
+
+    /// `EntityNavigate::navigateFollow` (`entity_navigate.cpp:872-922`,
+    /// deprecated in the reference's docstring): resolve the `-1` search
+    /// limit, check the target is an `Entity` in the same space and not
+    /// destroyed, reject an almost-zero search limit, then step towards
+    /// the point `distance` metres behind the target's own yaw plus
+    /// `angle` — `distance * sin( totalYaw )` on `x`, `cos` on `z` — and
+    /// delegate the rest to [`EntityNavigate::navigate_step`], whose
+    /// refusals and controller id pass through unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn navigate_follow(
+        &mut self,
+        state: &mut EntityState,
+        navigator: &mut MeshNavigator,
+        target: FollowTarget,
+        angle: f32,
+        distance: f32,
+        velocity: f32,
+        max_move_distance: f32,
+        max_search_distance: f32,
+        face_movement: bool,
+        girth: f32,
+        user_arg: i32,
+        hertz: f32,
+        max_aoi_radius: f32,
+        next_controller_id: ControllerId,
+        chunk_space: bool,
+        now: u32,
+    ) -> Result<ControllerId, NavigateFollowFailure> {
+        // isEqual( maxSearchDistance, -1.f ) — resolved before every
+        // check below, as in the other faces.
+        let max_search_distance = if max_search_distance == -1.0 {
+            max_aoi_radius
+        } else {
+            max_search_distance
+        };
+
+        // Check that the entity parameter actually has an entity
+        if !target.is_entity {
+            return Err(NavigateFollowFailure::NotEntity);
+        }
+
+        // A destroyed entity has no real location
+        if target.destroyed {
+            return Err(NavigateFollowFailure::Destroyed);
+        }
+
+        // Check that the entity is in the same space
+        if !target.same_space {
+            return Err(NavigateFollowFailure::DifferentSpace);
+        }
+
+        if almost_zero(max_search_distance) {
+            return Err(NavigateFollowFailure::ZeroSearchDistance);
+        }
+
+        let total_yaw = target.yaw + angle;
+        let offset = Vector3::new(distance * total_yaw.sin(), 0.0, distance * total_yaw.cos());
+        let position = target.position + offset;
+
+        self.navigate_step(
+            state,
+            navigator,
+            position,
+            velocity,
+            max_move_distance,
+            max_search_distance,
+            face_movement,
+            girth,
+            user_arg,
+            hertz,
+            max_aoi_radius,
+            next_controller_id,
+            chunk_space,
+            now,
+        )
+        .map_err(NavigateFollowFailure::NavigateStep)
     }
 }
 
@@ -1584,5 +1714,330 @@ mod tests {
             )
             .expect("the face itself works");
         assert_eq!(answer, None);
+    }
+
+    /// A following target, in the same space, at `position` facing `yaw`.
+    fn following_target(position: Vector3, yaw: f32) -> FollowTarget {
+        FollowTarget {
+            is_entity: true,
+            destroyed: false,
+            same_space: true,
+            position,
+            yaw,
+        }
+    }
+
+    /// `navigateFollow` with the acceptance's defaults (velocity 2,
+    /// maxMoveDistance 100, facing, the gen girth, userArg 42).
+    #[allow(clippy::too_many_arguments)]
+    fn follow(
+        extra: &mut EntityNavigate,
+        navigator: &mut MeshNavigator,
+        state: &mut EntityState,
+        target: FollowTarget,
+        angle: f32,
+        distance: f32,
+        limit: f32,
+        id: u16,
+        now: u32,
+    ) -> Result<ControllerId, NavigateFollowFailure> {
+        extra.navigate_follow(
+            state,
+            navigator,
+            target,
+            angle,
+            distance,
+            2.0,
+            100.0,
+            limit,
+            true,
+            GIRTH,
+            42,
+            DEFAULT_GAME_UPDATE_HERTZ,
+            MAX_AOI_RADIUS,
+            id,
+            true,
+            now,
+        )
+    }
+
+    /// The follow-specific refusals, in the reference's order: the target
+    /// is checked for being an `Entity` before the search limit is
+    /// checked for almost zero, then the delegated navigateStep
+    /// refusals come through unchanged.
+    #[test]
+    fn navigate_follow_refuses_the_bad_target_and_the_zero_limit() {
+        let mut navigator = mesh_navigator("slope");
+        let mut extra = real_entity();
+        let mut state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+        let target = following_target(Vector3::new(1.0, 0.5, 1.0), 0.0);
+
+        // A non-Entity is refused before the limit check.
+        let mut not_entity = target;
+        not_entity.is_entity = false;
+        let err = follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            not_entity,
+            0.0,
+            1.0,
+            0.0,
+            4,
+            1,
+        )
+        .expect_err("parameter 1 must be an Entity instance");
+        assert_eq!(err, NavigateFollowFailure::NotEntity);
+        assert_eq!(err.message(), "parameter 1 must be an Entity instance");
+
+        let mut destroyed = target;
+        destroyed.destroyed = true;
+        let err = follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            destroyed,
+            0.0,
+            1.0,
+            -1.0,
+            4,
+            1,
+        )
+        .expect_err("a destroyed entity cannot be followed");
+        assert_eq!(err, NavigateFollowFailure::Destroyed);
+        assert_eq!(err.message(), "cannot follow a destroyed entity");
+
+        let mut other_space = target;
+        other_space.same_space = false;
+        let err = follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            other_space,
+            0.0,
+            1.0,
+            -1.0,
+            4,
+            1,
+        )
+        .expect_err("another space cannot be followed");
+        assert_eq!(err, NavigateFollowFailure::DifferentSpace);
+        assert_eq!(err.message(), "followed entity is not in the same space");
+
+        // almostZero's default epsilon is 0.0004.
+        let err = follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            target,
+            0.0,
+            1.0,
+            0.0003,
+            4,
+            1,
+        )
+        .expect_err("the limit is refused inside the epsilon");
+        assert_eq!(err, NavigateFollowFailure::ZeroSearchDistance);
+        assert_eq!(err.message(), "maxSearchDistance cannot be 0.0");
+
+        // Just outside the epsilon the limit passes the check and binds
+        // the in-set search, so the delegated step finds no path. The
+        // offset lands in the next waypoint's height band, so the
+        // same-waypoint shortcut cannot answer instead.
+        let err = follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            following_target(Vector3::new(1.0, 3.5, 1.0), 0.0),
+            0.0,
+            6.0,
+            0.0005,
+            4,
+            1,
+        )
+        .expect_err("the limit binds the search just outside the epsilon");
+        assert_eq!(
+            err,
+            NavigateFollowFailure::NavigateStep(NavigateStepFailure::NoPath)
+        );
+        assert_eq!(err.message(), NavigateStepFailure::NoPath.message());
+
+        // The delegated step's own refusals pass through, and the entity
+        // itself is checked last.
+        let mut ghost = EntityNavigate::default();
+        let err = follow(
+            &mut ghost,
+            &mut navigator,
+            &mut state,
+            target,
+            0.0,
+            1.0,
+            -1.0,
+            4,
+            1,
+        )
+        .expect_err("a ghost cannot follow");
+        assert_eq!(
+            err,
+            NavigateFollowFailure::NavigateStep(NavigateStepFailure::NotReal)
+        );
+        assert_eq!(
+            err.message(),
+            "This method can only be called on a real entity."
+        );
+    }
+
+    /// BW-10-06-04 acceptance — 目标移动后跟随轨迹对照: the follower
+    /// steps towards the point `distance` metres along the target's own
+    /// yaw plus `angle`, and when the target moves a second call
+    /// retargets the same controller to the new offset.
+    #[test]
+    fn a_following_entity_walks_the_offset_behind_the_target() {
+        let mut navigator = mesh_navigator("slope");
+        let mut extra = real_entity();
+        let mut state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        // The target sits at (1, 0.5, 1) facing yaw 0, so the point 1 m
+        // along the offset is (1, 0.5, 2) — inside wp1.
+        let id = follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            following_target(Vector3::new(1.0, 0.5, 1.0), 0.0),
+            0.0,
+            1.0,
+            -1.0,
+            4,
+            1,
+        )
+        .expect("the follow resolves");
+        assert_eq!(id, 4, "the controller id is the answer");
+        let controller = extra.navigate_step.as_ref().expect("attached");
+        assert_eq!(controller.destination, Vector3::new(1.0, 1.5, 2.0));
+        assert_eq!(state.position, Vector3::new(1.0, 1.5, 1.0));
+
+        let mut log = Vec::new();
+        let mut now = 2u32;
+        while !extra.navigate_step.as_mut().expect("attached").update(
+            &mut state,
+            now,
+            &mut || None,
+            &mut log,
+        ) {
+            now += 1;
+            assert!(now < 200, "must arrive");
+        }
+        assert_eq!(state.position, Vector3::new(1.0, 1.5, 2.0));
+
+        // The target moves: a second call retargets the attached
+        // controller (same id, same userArg) to the new offset point
+        // (1.5, 0.5, 2.5), and the follower walks the next leg.
+        let id = follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            following_target(Vector3::new(1.5, 0.5, 1.5), 0.0),
+            0.0,
+            1.0,
+            -1.0,
+            9,
+            now + 1,
+        )
+        .expect("the second follow resolves");
+        assert_eq!(id, 4, "the attached controller is reused");
+        let controller = extra.navigate_step.as_ref().expect("attached");
+        assert_eq!(controller.destination, Vector3::new(1.5, 1.5, 2.5));
+        assert_eq!(controller.user_arg, 42, "the reuse arm keeps the userArg");
+        assert_eq!(
+            state.position,
+            Vector3::new(1.0, 1.5, 2.0),
+            "the drop is a no-op in y"
+        );
+
+        let mut now = now + 1;
+        while !extra.navigate_step.as_mut().expect("attached").update(
+            &mut state,
+            now,
+            &mut || None,
+            &mut log,
+        ) {
+            now += 1;
+            assert!(now < 400, "must arrive");
+        }
+        assert_eq!(state.position, Vector3::new(1.5, 1.5, 2.5));
+        assert_eq!(
+            log,
+            vec![
+                ScriptCallback {
+                    entity_id: 7,
+                    method: "onMove",
+                    controller_id: 4,
+                    user_arg: 42,
+                },
+                ScriptCallback {
+                    entity_id: 7,
+                    method: "onMove",
+                    controller_id: 4,
+                    user_arg: 42,
+                }
+            ]
+        );
+    }
+
+    /// The offset is built from the target's own yaw plus the script
+    /// angle — `distance * sin( totalYaw )` on `x`, `cos` on `z` — so a
+    /// target facing `pi` puts the follower on the other side of it.
+    #[test]
+    fn the_follow_offset_follows_the_target_yaw() {
+        let mut navigator = mesh_navigator("slope");
+        let mut extra = real_entity();
+        let mut state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        // yaw 0 + pi/2: the offset points along +x.
+        follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            following_target(Vector3::new(1.0, 0.5, 1.0), 0.0),
+            std::f32::consts::FRAC_PI_2,
+            0.5,
+            -1.0,
+            4,
+            1,
+        )
+        .expect("the follow resolves");
+        let destination = extra.navigate_step.as_ref().expect("attached").destination;
+        assert!(
+            (destination.x - 1.5).abs() < 1e-6
+                && (destination.y - 1.5).abs() < 1e-6
+                && (destination.z - 1.0).abs() < 1e-6,
+            "offset at {:?}",
+            destination
+        );
+        extra.navigate_step = None;
+        state.position = Vector3::new(1.0, 0.5, 1.0);
+
+        // yaw pi + pi/2: the same script angle points along -x for a
+        // target facing the other way.
+        follow(
+            &mut extra,
+            &mut navigator,
+            &mut state,
+            following_target(Vector3::new(1.0, 0.5, 1.0), std::f32::consts::PI),
+            std::f32::consts::FRAC_PI_2,
+            0.5,
+            -1.0,
+            4,
+            1,
+        )
+        .expect("the follow resolves");
+        let destination = extra.navigate_step.as_ref().expect("attached").destination;
+        assert!(
+            (destination.x - 0.5).abs() < 1e-6
+                && (destination.y - 1.5).abs() < 1e-6
+                && (destination.z - 1.0).abs() < 1e-6,
+            "offset at {:?}",
+            destination
+        );
     }
 }
