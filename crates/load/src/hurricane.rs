@@ -31,6 +31,9 @@ pub struct HurricaneLedger {
     pub speeds: Vec<f32>,
     /// Bots the FD budget refused to admit.
     pub refused: u32,
+    /// The fleet size at each second boundary — the online-count series
+    /// the login aggregate reports (BW-17-03-02).
+    pub online: Vec<u32>,
 }
 
 impl HurricaneLedger {
@@ -50,6 +53,7 @@ pub fn run_login_hurricane(scenario: &Scenario, fd_limit: i32, seed: u64) -> Hur
         names: Vec::new(),
         speeds: Vec::new(),
         refused: 0,
+        online: Vec::new(),
     };
 
     let total_secs = stages.total().as_secs();
@@ -77,6 +81,7 @@ pub fn run_login_hurricane(scenario: &Scenario, fd_limit: i32, seed: u64) -> Hur
         fleet.tick(fleet.local_time() + MINI_TICK_PERIOD);
         sends += (due - fleet.retry_queue_len()) as u32;
         ledger.per_second.push(sends);
+        ledger.online.push(fleet.len() as u32);
     }
 
     ledger.names = fleet
