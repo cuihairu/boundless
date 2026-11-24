@@ -14,6 +14,7 @@ pub mod fleet;
 pub mod bot_watchers;
 pub mod hurricane;
 pub mod patrol;
+pub mod report;
 pub mod scenario;
 pub mod steady;
 

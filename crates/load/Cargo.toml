@@ -18,3 +18,6 @@ resources = { workspace = true }
 # The four bots command callables ride the watcher protocol machinery
 # (BW-17-01-06): a legal domain-to-domain edge.
 watcher = { workspace = true }
+# The scenario report renders the machine-readable document the
+# documentation item's field contract defines (BW-17-03-01).
+serde_json = { workspace = true }
