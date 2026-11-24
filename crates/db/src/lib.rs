@@ -17,6 +17,7 @@
 pub mod error;
 pub mod lookup;
 pub mod record;
+pub mod retry;
 pub mod storage;
 
 pub use error::DbError;
@@ -25,6 +26,11 @@ pub use lookup::{
     get_database_id_from_name, lookup_entities, lookup_entity_by_name,
 };
 pub use record::EntityRecord;
+pub use retry::{
+    CR_CONN_HOST_ERROR, CR_CONNECTION_ERROR, CR_SERVER_GONE_ERROR, CR_SERVER_LOST, DatabaseFailure,
+    ER_LOCK_DEADLOCK, ER_LOCK_WAIT_TIMEOUT, RetryTask, RunReport, failure_from_db_error,
+    run_with_retry,
+};
 pub use storage::{
     BaseMailbox, CheckOut, EntityKey, EntityStorage, MemoryConnection, MemoryStorage, load_entity,
 };
