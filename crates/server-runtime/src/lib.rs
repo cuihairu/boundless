@@ -48,6 +48,7 @@ pub mod passengers;
 pub mod pending_logins;
 pub mod proxy_client;
 pub mod proxy_logoff;
+pub mod py_billing;
 pub mod range_list;
 pub mod real_entity;
 
