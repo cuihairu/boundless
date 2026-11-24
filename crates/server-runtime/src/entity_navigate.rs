@@ -23,6 +23,7 @@ use waypoint::{
 };
 
 use crate::controllers::ControllerId;
+use crate::movement::{EntityState, NavigateStepController};
 use crate::navigation_controller::{NavigationController, Navigator};
 
 // -----------------------------------------------------------------------------
@@ -57,12 +58,26 @@ impl MeshNavigator {
     /// (the space constructor's `+0.01` lift stays inside the chunk lookup
     /// it was written for), and a valid location is clipped into its
     /// waypoint.
-    fn navloc_at(&self, point: Vector3, girth: f32) -> NavLoc {
+    /// `NavLoc( pChunkSpace, point, girth )` — the space constructor face
+    /// without the clip: `navigateStep` resolves its destination with it
+    /// and clips only after the validity check
+    /// (`navmesh_navigation_system.cpp:353-362`).
+    fn navloc_unclipped(&self, point: Vector3, girth: f32) -> NavLoc {
         let res = find_by_girth(&self.sets, point, girth, false);
         let Some(set) = res.p_set() else {
             return NavLoc::new();
         };
-        let mut loc = NavLoc::from_parts(Rc::clone(set), res.waypoint(), point, self.grid_size);
+        NavLoc::from_parts(Rc::clone(set), res.waypoint(), point, self.grid_size)
+    }
+
+    /// `navigator_.createPathNavLoc( pChunkSpace, point, girth )` —
+    /// `NavLoc( pChunkSpace, point, girth )` (`navloc.cpp:31-58`) plus the
+    /// clip: the set is picked with the girth filter over the raw point
+    /// (the space constructor's `+0.01` lift stays inside the chunk lookup
+    /// it was written for), and a valid location is clipped into its
+    /// waypoint.
+    fn navloc_at(&self, point: Vector3, girth: f32) -> NavLoc {
+        let mut loc = self.navloc_unclipped(point, girth);
         loc.clip();
         loc
     }
@@ -181,6 +196,45 @@ impl NavigateFailure {
     }
 }
 
+/// The `navigateStep` failure faces — the reference's `PyErr` results
+/// (`entity_navigate.cpp:783-799`, `navmesh_navigation_system.cpp:332-376`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigateStepFailure {
+    /// `PyExc_TypeError`.
+    NotReal,
+    /// `PyExc_ValueError`, the vehicle text.
+    OnVehicle,
+    /// `!entity_.pChunkSpace()`.
+    NoSpace,
+    /// The source navloc is invalid.
+    SourceUnresolved,
+    /// The destination navloc is invalid.
+    DestinationUnresolved,
+    /// No route within the search limit.
+    NoPath,
+}
+
+impl NavigateStepFailure {
+    /// The reference's error text.
+    pub fn message(&self) -> &'static str {
+        match self {
+            NavigateStepFailure::NotReal => "This method can only be called on a real entity.",
+            NavigateStepFailure::OnVehicle => {
+                "Cannot call Entity.navigateStep() for an entity on a vehicle, either \
+                 alight from the vehicle first, or call Entity.navigateStep() for the \
+                 vehicle."
+            }
+            NavigateStepFailure::NoSpace => {
+                "NavmeshEntityNavigationSystem::navigateStep(): \
+                 Physical space of entity does not support navigation queries"
+            }
+            NavigateStepFailure::SourceUnresolved => "Could not resolve source position.",
+            NavigateStepFailure::DestinationUnresolved => "Could not resolve destination position.",
+            NavigateStepFailure::NoPath => "No path found.",
+        }
+    }
+}
+
 /// The `NavmeshEntityNavigationSystem` (`navmesh_navigation_system.hpp`):
 /// the entity-bound system face `EntityNavigate` reaches through
 /// `navigationSystem()`.
@@ -223,7 +277,8 @@ impl NavmeshEntityNavigationSystem {
 }
 
 /// The `EntityNavigate` extra (`entity_navigate.hpp`): the entity facets
-/// the script face reads, plus `navigationSystem()`.
+/// the script face reads, plus `navigationSystem()` and the attached
+/// navigate-step controller.
 #[derive(Clone, Debug, Default)]
 pub struct EntityNavigate {
     /// `entity_.isRealToScript()`.
@@ -233,6 +288,10 @@ pub struct EntityNavigate {
     /// `navigationSystem()` — created on demand in the reference, a plain
     /// member here.
     pub navigation_system: NavmeshEntityNavigationSystem,
+    /// `pNavigateStepController_` — the step controller
+    /// `registerNavigateStepController` attached (`entity_navigate.cpp:86-91`);
+    /// owning it models the registration.
+    pub navigate_step: Option<NavigateStepController>,
 }
 
 impl EntityNavigate {
@@ -284,6 +343,139 @@ impl EntityNavigate {
             hertz,
             max_aoi_radius,
         ))
+    }
+
+    /// `deregisterNavigateStepController` (`entity_navigate.cpp:93-100`):
+    /// the attached step controller is cleared when the id matches.
+    pub fn deregister_navigate_step_controller(&mut self, id: ControllerId) {
+        if self.navigate_step.as_ref().map(|c| c.id) == Some(id) {
+            self.navigate_step = None;
+        }
+    }
+
+    /// `EntityNavigate::navigateStep` (`entity_navigate.cpp:775-806`) and
+    /// the `NavmeshEntityNavigationSystem::navigateStep` body
+    /// (`navmesh_navigation_system.cpp:328-434`): resolve the `-1` search
+    /// limit, refuse non-real and mounted entities, resolve both navlocs
+    /// (the source through `createPathNavLoc` — space constructor + clip;
+    /// the destination through the bare space constructor, clipped only
+    /// after the validity check), ask `getNavigatePosition` for the single
+    /// step, honour `maxMoveDistance` by trimming the step along its
+    /// `x`/`z` displacement, drop the entity's `y` onto the step now (the
+    /// reference's `setAndDropGlobalPositionAndDirection`), and create the
+    /// step controller or — when one is already attached — retarget it.
+    ///
+    /// The `srcLoc.makeMaxHeight` of the trim arm goes through the source
+    /// navloc's own waypoint projection window
+    /// (`NavLoc::containsProjection`); the answer is the controller id
+    /// either way, as the reference's `Script::getData( id() )`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn navigate_step(
+        &mut self,
+        state: &mut EntityState,
+        navigator: &mut MeshNavigator,
+        destination: Vector3,
+        velocity: f32,
+        max_move_distance: f32,
+        max_search_distance: f32,
+        face_movement: bool,
+        girth: f32,
+        user_arg: i32,
+        hertz: f32,
+        max_aoi_radius: f32,
+        next_controller_id: ControllerId,
+        chunk_space: bool,
+        now: u32,
+    ) -> Result<ControllerId, NavigateStepFailure> {
+        // isEqual( maxSearchDistance, -1.f ) — resolved before the
+        // refusals, as in navigate().
+        let max_search_distance = if max_search_distance == -1.0 {
+            max_aoi_radius
+        } else {
+            max_search_distance
+        };
+
+        if !self.is_real {
+            return Err(NavigateStepFailure::NotReal);
+        }
+
+        if self.on_vehicle {
+            return Err(NavigateStepFailure::OnVehicle);
+        }
+
+        // ToDo in the reference: change when navigation system supports
+        // non-grid spaces.
+        if !chunk_space {
+            return Err(NavigateStepFailure::NoSpace);
+        }
+
+        // figure out the source navloc
+        let src = navigator.navloc_at(state.position, girth);
+
+        // complain if invalid
+        if !src.valid() {
+            return Err(NavigateStepFailure::SourceUnresolved);
+        }
+
+        // figure out the dest navloc, then clip it
+        let mut dst = navigator.navloc_unclipped(destination, girth);
+        if !dst.valid() {
+            return Err(NavigateStepFailure::DestinationUnresolved);
+        }
+        dst.clip();
+
+        // getNavigatePosition: the same-waypoint shortcut or the findPath
+        // hop (the clipped endpoints re-resolve onto their own waypoints).
+        let Some(mut next_position) =
+            navigator.navigate_position(src.point(), dst.point(), max_search_distance, girth)
+        else {
+            return Err(NavigateStepFailure::NoPath);
+        };
+
+        let mut disp = next_position - state.position;
+        disp.y = 0.0;
+        let way_distance = disp.length();
+        let mut dst_y = next_position.y;
+
+        let mut wsv = next_position;
+        src.make_max_height(&mut wsv);
+        let src_y = wsv.y;
+
+        if way_distance > max_move_distance {
+            // shorten it
+            next_position = state.position + disp * (max_move_distance / way_distance);
+
+            if src.contains_projection(next_position) {
+                dst_y = src_y;
+            }
+        }
+
+        // set our y position now
+        next_position.y = dst_y.max(src_y);
+        let mut position = state.position;
+        position.y = next_position.y;
+
+        // since not on a vehicle, so it's ok to pass global
+        // position/direction (the drop face is the ghost update, as in the
+        // navigation controller).
+        state.set_position_and_direction(position, state.direction, now, hertz);
+
+        if let Some(controller) = &mut self.navigate_step {
+            controller.set_destination(next_position);
+            Ok(controller.id)
+        } else {
+            let controller = NavigateStepController::new(
+                next_controller_id,
+                user_arg,
+                next_position,
+                velocity,
+                face_movement,
+                hertz,
+            );
+            let id = controller.id;
+            self.navigate_step = Some(controller);
+            Ok(id)
+        }
     }
 }
 
@@ -355,6 +547,7 @@ mod tests {
             is_real: true,
             on_vehicle: false,
             navigation_system: NavmeshEntityNavigationSystem,
+            navigate_step: None,
         }
     }
 
@@ -387,6 +580,7 @@ mod tests {
             is_real: true,
             on_vehicle: true,
             navigation_system: NavmeshEntityNavigationSystem,
+            navigate_step: None,
         };
         let err = mounted
             .navigate(
@@ -627,5 +821,445 @@ mod tests {
             -1.0,
             0.5,
         );
+    }
+
+    /// The navigateStep script refusals and the non-chunk-space face,
+    /// with the reference's error texts.
+    #[test]
+    fn navigate_step_refuses_like_the_script_face() {
+        let mut navigator = mesh_navigator("slope");
+        let mut state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        let mut ghost = EntityNavigate::default();
+        let err = ghost
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                -1.0,
+                true,
+                GIRTH,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect_err("a ghost cannot navigate-step");
+        assert_eq!(err, NavigateStepFailure::NotReal);
+        assert_eq!(
+            err.message(),
+            "This method can only be called on a real entity."
+        );
+
+        let mut mounted = EntityNavigate {
+            is_real: true,
+            on_vehicle: true,
+            navigation_system: NavmeshEntityNavigationSystem,
+            navigate_step: None,
+        };
+        let err = mounted
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                -1.0,
+                true,
+                GIRTH,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect_err("a mounted entity cannot navigate-step");
+        assert_eq!(err, NavigateStepFailure::OnVehicle);
+        assert_eq!(
+            err.message(),
+            "Cannot call Entity.navigateStep() for an entity on a vehicle, either \
+             alight from the vehicle first, or call Entity.navigateStep() for the \
+             vehicle."
+        );
+
+        // A non-chunk (delegate) space refuses before any mesh work.
+        let mut extra = real_entity();
+        let err = extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                -1.0,
+                true,
+                GIRTH,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                false,
+                1,
+            )
+            .expect_err("a delegate space cannot navigate");
+        assert_eq!(err, NavigateStepFailure::NoSpace);
+        assert_eq!(
+            err.message(),
+            "NavmeshEntityNavigationSystem::navigateStep(): \
+             Physical space of entity does not support navigation queries"
+        );
+    }
+
+    /// BW-10-06-02 acceptance — 单步目标、返回值与越界行为吻合: over the
+    /// slope asset the wp1 → wp0 route is one waypoint transition, so
+    /// `findPath` answers the destination navloc itself ("Use dst as
+    /// point might not match", `navigator.cpp` `waypointsEqual( dst )`
+    /// arm) — the single-step target is the whole destination; the
+    /// answer is the controller id; the entity's `y` drops onto the step
+    /// at once; the step controller then walks the leg straight and
+    /// fires `onMove` on arrival.
+    #[test]
+    fn the_single_step_target_is_the_destination_for_a_one_hop_route() {
+        let mut navigator = mesh_navigator("slope");
+        let mut extra = real_entity();
+        let mut state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        let id = extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                -1.0,
+                true,
+                GIRTH,
+                42,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect("the step resolves");
+        assert_eq!(id, 4, "the controller id is the answer");
+
+        let controller = extra.navigate_step.as_ref().expect("attached");
+        assert_eq!(controller.destination, Vector3::new(7.0, 3.5, 7.0));
+        assert!((controller.core.metres_per_tick - 0.2).abs() < 1e-5);
+        // The entity's `y` is dropped onto the step; `x`/`z` stay until
+        // the controller walks.
+        assert_eq!(state.position, Vector3::new(1.0, 3.5, 1.0));
+
+        // One 0.2 m hop per update; the leg arrives and `onMove` fires.
+        // The script re-stepping nowhere new cancels the controller.
+        let mut log = Vec::new();
+        let mut now = 2u32;
+        while !extra.navigate_step.as_mut().expect("attached").update(
+            &mut state,
+            now,
+            &mut || None,
+            &mut log,
+        ) {
+            now += 1;
+            assert!(now < 200, "must arrive");
+        }
+        assert_eq!(state.position, Vector3::new(7.0, 3.5, 7.0));
+        assert_eq!(
+            log,
+            vec![ScriptCallback {
+                entity_id: 7,
+                method: "onMove",
+                controller_id: 4,
+                user_arg: 42,
+            }]
+        );
+    }
+
+    /// A `maxMoveDistance` shorter than the leg trims the step along its
+    /// `x`/`z` displacement; the trimmed point still projects into the
+    /// source waypoint, so the height raise answers the source's max
+    /// height (1.5) instead of the destination's 3.5.
+    #[test]
+    fn a_short_max_move_distance_trims_the_step() {
+        let mut navigator = mesh_navigator("slope");
+        let mut extra = real_entity();
+        let mut state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                1.0,
+                -1.0,
+                true,
+                GIRTH,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect("the step resolves");
+
+        // The one-hop answer is (7, 3.5, 7): disp = (6, 0, 6),
+        // wayDistance 8.49 > 1: the step is trimmed to exactly 1 m along
+        // the diagonal.
+        let controller = extra.navigate_step.as_ref().expect("attached");
+        assert!(
+            (controller.destination.x - (1.0 + 0.5f32.sqrt())).abs() < 1e-4
+                && (controller.destination.z - (1.0 + 0.5f32.sqrt())).abs() < 1e-4,
+            "trimmed to {:?}",
+            controller.destination
+        );
+        assert!((controller.destination.y - 1.5).abs() < 1e-5);
+        assert_eq!(state.position, Vector3::new(1.0, 1.5, 1.0));
+    }
+
+    /// An off-mesh source still resolves through the closest-waypoint
+    /// fallback, so the step goes out from the far point; the trimmed
+    /// point projects into nothing, so the height stays the found step's.
+    #[test]
+    fn an_off_mesh_source_still_steps_from_the_closest_waypoint() {
+        let mut navigator = mesh_navigator("slope");
+        let mut extra = real_entity();
+        let mut state =
+            EntityState::new(7, Vector3::new(50.0, 50.0, 50.0), Direction3D::default(), 0);
+
+        extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                1.0,
+                -1.0,
+                true,
+                GIRTH,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect("the closest fallback keeps the source valid");
+
+        // The displacement is a 45-degree diagonal whichever hop the
+        // search found, so the 1 m trim lands sqrt(0.5) per axis in; the
+        // trimmed point projects into no waypoint and the height stays
+        // the found step's 3.5.
+        let controller = extra.navigate_step.as_ref().expect("attached");
+        assert!(
+            (controller.destination.x - (50.0 - 0.5f32.sqrt())).abs() < 1e-4
+                && (controller.destination.z - (50.0 - 0.5f32.sqrt())).abs() < 1e-4,
+            "stepped to {:?}",
+            controller.destination
+        );
+        assert!((controller.destination.y - 3.5).abs() < 1e-5);
+        assert_eq!(state.position, Vector3::new(50.0, 3.5, 50.0));
+    }
+
+    /// The unresolved faces: a girth no record matches fails the source
+    /// first, the cross-layer shell route has no path, and a search limit
+    /// at or below the space's grid size binds the in-set search while a
+    /// larger one does not (the reference checks maxSearchDistance inside
+    /// a navpoly set only when it is not greater than gridSize,
+    /// `navigator.cpp:433-438`).
+    #[test]
+    fn the_unresolved_faces_answer_the_reference_errors() {
+        let mut navigator = mesh_navigator("slope");
+        let mut extra = real_entity();
+        let mut state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        let err = extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                -1.0,
+                true,
+                0.5,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect_err("the girth matches no record");
+        assert_eq!(err, NavigateStepFailure::SourceUnresolved);
+        assert_eq!(err.message(), "Could not resolve source position.");
+
+        // The cross-layer shell route has no path.
+        let mut shell = mesh_navigator("shell");
+        let mut floor_state =
+            EntityState::new(7, Vector3::new(2.5, 0.5, 4.5), Direction3D::default(), 0);
+        let err = extra
+            .navigate_step(
+                &mut floor_state,
+                &mut shell,
+                Vector3::new(3.0, 1.5, 3.5),
+                2.0,
+                100.0,
+                -1.0,
+                true,
+                GIRTH,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect_err("the layers are disconnected");
+        assert_eq!(err, NavigateStepFailure::NoPath);
+        assert_eq!(err.message(), "No path found.");
+
+        // A search limit at the grid size binds: the destination state
+        // sits 8.9 m from the start, so the AStar skips it and no path is
+        // found.
+        state.position = Vector3::new(1.0, 0.5, 1.0);
+        extra.navigate_step = None;
+        let err = extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                1.0,
+                true,
+                GIRTH,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect_err("the search limit binds at the grid size");
+        assert_eq!(err, NavigateStepFailure::NoPath);
+
+        // One greater than the grid size does not bind the in-set search —
+        // the 8.5 m route still resolves (this probe runs after the failed
+        // one, whose search cleared the cache; a read/write findPath does
+        // not re-validate a matched cache against the search limit).
+        state.position = Vector3::new(1.0, 0.5, 1.0);
+        extra.navigate_step = None;
+        extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                2.0,
+                true,
+                GIRTH,
+                0,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect("a limit above the grid size does not bind");
+    }
+
+    /// A second navigateStep retargets the attached controller and keeps
+    /// its id and original `userArg` (the reuse arm ignores the new
+    /// script arguments); the deregister hook clears it only for the
+    /// matching id.
+    #[test]
+    fn a_second_call_reuses_the_registered_controller() {
+        let mut navigator = mesh_navigator("slope");
+        let mut extra = real_entity();
+        let mut state = EntityState::new(7, Vector3::new(1.0, 0.5, 1.0), Direction3D::default(), 0);
+
+        let id = extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                -1.0,
+                true,
+                GIRTH,
+                42,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                4,
+                true,
+                1,
+            )
+            .expect("the step resolves");
+        assert_eq!(id, 4);
+
+        // Same inputs again: the attached controller is retargeted, not
+        // replaced — id and userArg stay, the destination re-answers.
+        state.position = Vector3::new(1.0, 0.5, 1.0);
+        let id = extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                3.0,
+                100.0,
+                -1.0,
+                true,
+                GIRTH,
+                7,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                9,
+                true,
+                2,
+            )
+            .expect("the second step resolves");
+        assert_eq!(id, 4, "the attached controller is reused");
+        let controller = extra.navigate_step.as_ref().expect("attached");
+        assert_eq!(controller.destination, Vector3::new(7.0, 3.5, 7.0));
+        assert_eq!(controller.user_arg, 42, "the reuse arm keeps the userArg");
+        assert!((controller.core.metres_per_tick - 0.2).abs() < 1e-5);
+
+        // deregister keeps a non-matching id and clears the match.
+        extra.deregister_navigate_step_controller(9);
+        assert!(extra.navigate_step.is_some());
+        extra.deregister_navigate_step_controller(4);
+        assert!(extra.navigate_step.is_none());
+
+        // A fresh call after the deregister creates a new controller with
+        // the id the caller offers.
+        let id = extra
+            .navigate_step(
+                &mut state,
+                &mut navigator,
+                Vector3::new(7.0, 3.0, 7.0),
+                2.0,
+                100.0,
+                -1.0,
+                true,
+                GIRTH,
+                42,
+                DEFAULT_GAME_UPDATE_HERTZ,
+                MAX_AOI_RADIUS,
+                9,
+                true,
+                3,
+            )
+            .expect("the fresh step resolves");
+        assert_eq!(id, 9);
     }
 }
