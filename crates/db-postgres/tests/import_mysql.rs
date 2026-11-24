@@ -30,6 +30,7 @@ use db_postgres::{
     AccountRow, EntitySchema, MySqlEntityRow, PostgresStorage, import_accounts, import_entities,
 };
 use entitydef::value::PropertyValue;
+use foundation::ids::PENDING_DATABASE_ID;
 
 static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -271,5 +272,141 @@ fn a_rerun_skips_the_landed_rows_and_a_conflict_fails_without_moving_them() {
             Some(account(b"hero", b"pw", 7)),
             "the mapping did not move"
         );
+    });
+}
+
+/// 验收 (BW-09-07-06): allocations never collide with the imported ids —
+/// every explicit-id write re-seats the table's identity past the
+/// imported id, so a table-allocated DBID always lands above the whole
+/// imported set, and a rerun that skips everything leaves the seat put.
+#[test]
+fn allocations_reseat_past_the_imported_ids() {
+    with_fresh_db(|storage, _connect| {
+        let schema = hero_schema(storage, 4);
+        let source = [hero(5, "warrior", 3, &[1]), hero(900, "mage", 9, &[2])];
+        import_entities(storage, 4, &schema, &source).expect("the import lands");
+
+        // A table-allocated DBID lands above the whole imported set.
+        let mut allocated = Vec::new();
+        for _ in 0..2 {
+            let id = EntityStorage::put_entity(
+                storage,
+                &EntityKey {
+                    type_id: 4,
+                    db_id: PENDING_DATABASE_ID,
+                },
+                &[
+                    PropertyValue::String("new".to_string()),
+                    PropertyValue::Int(0),
+                    PropertyValue::Blob(vec![]),
+                ],
+                false,
+            )
+            .expect("the allocation runs");
+            allocated.push(id);
+        }
+        assert_eq!(allocated[0], 901, "the first allocation clears the import");
+        assert_eq!(allocated[1], 902);
+
+        // The rerun skips both rows, and the seat stays put: the next
+        // allocation keeps clearing the import.
+        assert_eq!(
+            import_entities(storage, 4, &schema, &source).expect("the rerun runs"),
+            db_postgres::ImportReport {
+                written: 0,
+                skipped: 2
+            }
+        );
+        let id = EntityStorage::put_entity(
+            storage,
+            &EntityKey {
+                type_id: 4,
+                db_id: PENDING_DATABASE_ID,
+            },
+            &[
+                PropertyValue::String("newer".to_string()),
+                PropertyValue::Int(0),
+                PropertyValue::Blob(vec![]),
+            ],
+            false,
+        )
+        .expect("the allocation runs");
+        assert_eq!(id, 903, "the rerun left the seat alone");
+
+        // Every imported and allocated row stands, none collided.
+        for (db_id, name) in [
+            (5, "warrior"),
+            (900, "mage"),
+            (901, "new"),
+            (902, "new"),
+            (903, "newer"),
+        ] {
+            let found = EntityStorage::get_entity(storage, &EntityKey { type_id: 4, db_id })
+                .expect("the read runs")
+                .unwrap_or_else(|| panic!("row {db_id} must exist"));
+            assert_eq!(found.values[0], PropertyValue::String(name.to_string()));
+        }
+    });
+}
+
+/// A low import never pulls the allocation seat back down
+/// (`GREATEST($2, nextval)`): the seat only climbs, so the allocations
+/// keep clearing both the earlier and the later imports.
+#[test]
+fn a_low_import_does_not_pull_the_allocation_seat_back_down() {
+    with_fresh_db(|storage, _connect| {
+        let schema = hero_schema(storage, 4);
+        import_entities(storage, 4, &schema, &[hero(3, "high", 1, &[])]).expect("the import lands");
+        let first = EntityStorage::put_entity(
+            storage,
+            &EntityKey {
+                type_id: 4,
+                db_id: PENDING_DATABASE_ID,
+            },
+            &[
+                PropertyValue::String("a".to_string()),
+                PropertyValue::Int(0),
+                PropertyValue::Blob(vec![]),
+            ],
+            false,
+        )
+        .expect("the allocation runs");
+        assert_eq!(first, 4, "the seat re-seated past the import");
+
+        // A lower id imports fine — and the seat stays above everything.
+        assert_eq!(
+            import_entities(storage, 4, &schema, &[hero(2, "low", 1, &[])])
+                .expect("the low import lands"),
+            db_postgres::ImportReport {
+                written: 1,
+                skipped: 0
+            }
+        );
+        let second = EntityStorage::put_entity(
+            storage,
+            &EntityKey {
+                type_id: 4,
+                db_id: PENDING_DATABASE_ID,
+            },
+            &[
+                PropertyValue::String("b".to_string()),
+                PropertyValue::Int(0),
+                PropertyValue::Blob(vec![]),
+            ],
+            false,
+        )
+        .expect("the allocation runs");
+        assert!(
+            second > 4 && second != 2 && second != 3,
+            "the allocation cleared both imports ({second})"
+        );
+
+        // Both imported rows stand under their own ids.
+        for (db_id, name) in [(2, "low"), (3, "high")] {
+            let found = EntityStorage::get_entity(storage, &EntityKey { type_id: 4, db_id })
+                .expect("the read runs")
+                .expect("the imported row exists");
+            assert_eq!(found.values[0], PropertyValue::String(name.to_string()));
+        }
     });
 }
