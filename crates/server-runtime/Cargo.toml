@@ -19,3 +19,8 @@ sha2 = { workspace = true }  # the signal syscalls land here (BW-16-02-01)
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
+
+[dev-dependencies]
+# BW-16-02-03 backend-isolation proof: the postgresql driver is exercised
+# from outside its own crate.
+db-postgres = { workspace = true }
