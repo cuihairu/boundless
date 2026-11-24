@@ -28,9 +28,6 @@ flate2 = { version = "1.1.11", default-features = false, features = ["rust_backe
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
-# Replay tick compression (CompressionOStream's ZipOStream `compress2`,
-# lib/network/zip_stream.cpp). Pure-Rust backend, same as the client side.
-flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 # BW-16-02-03 backend-isolation proof: the postgresql driver is exercised

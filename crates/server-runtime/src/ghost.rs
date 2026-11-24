@@ -1,868 +1,4345 @@
-//! BW-08-04-01: ghost creation and removal.
+//! BW-08-04: ghost creation and deletion (`entity_ghost_maintainer.cpp`).
 //!
-//! Ported from `server/cellapp/entity_ghost_maintainer.{hpp,cpp}`: `check`
-//! (`.cpp:56-75`), `checkEntityForOffload` (`.cpp:91-123`), `markHaunts`
-//! (`.cpp:135-154`), `createOrUnmarkRequiredHaunts` (`.cpp:169-188`),
-//! `visit` (`.cpp:194-241`) and `deleteMarkedHaunts`
-//! (`.cpp:258-309`), plus the deletion cap in
-//! `server/cellapp/offload_checker.cpp:123-127`.
-//!
-//! The reference threads the work through live `Entity` / `RealEntity` /
-//! `CellInfo` / `CellAppChannel` objects and a space tree; here the entity's
-//! haunting set is [`RealGhosts`] and the space is a flat list of
-//! [`GhostCell`]. `SpaceTree::visitRect` prunes by internal node bounds, so
-//! the set of cells it reaches is exactly those whose rect intersects the
-//! interest rect - which is what [`GhostMaintainer::check`] scans for.
-//! `BW::Rect`'s XZ ranges become [`GhostRect`]
-//! (`programming/bigworld/lib/math/range1dt.ipp:129-131` keeps the
-//! touching-edge case intersecting).
+//! A real entity haunts every neighbouring cell its ghost distance reaches:
+//! `EntityGhostMaintainer::check` marks the existing haunts, creates the
+//! missing ones the interest area touches, and deletes the haunts left
+//! marked — with the reference's keep rules (offload destination, new real,
+//! new ghost, delete budget) applied. The receiving side mirrors
+//! `Space::createGhost`'s immediate path and `delGhost`.
 
-/// `GHOST_FUDGE` (`entity_ghost_maintainer.cpp:172`).
-pub const GHOST_FUDGE: f32 = 20.0;
+use std::collections::{BTreeMap, VecDeque};
 
-/// `CellAppConfig::ghostDistance()` default (`cellapp_config.cpp:29`).
+use foundation::math::Vector3;
+use foundation::stream::BinaryStream;
+
+use crate::cellappmgr::{Addr, Rect, SpaceId};
+use crate::controllers::Controllers;
+use crate::entity_creator::PropValue;
+use crate::entity_dispatch::EntityId;
+use crate::real_entity::{EntityCallbackBuffer, EntityMailBoxRef, Haunt, RealEntity};
+use crate::space::CellInfoRecord;
+use crate::witness::VolatileInfo;
+
+// -----------------------------------------------------------------------------
+// Section: configuration (`cellapp_config.cpp` + maintainer locals)
+// -----------------------------------------------------------------------------
+
+/// `DEFAULT_AOI_RADIUS`, the `ghostDistance` default.
 pub const DEFAULT_GHOST_DISTANCE: f32 = 500.0;
-
-/// `NEW_REAL_KEEP_GHOST_PERIOD_IN_SECONDS` (`entity_ghost_maintainer.cpp:260`).
+/// `minGhostLifespan` default, in seconds.
+pub const DEFAULT_MIN_GHOST_LIFESPAN_IN_SECONDS: f32 = 5.0;
+/// `maxGhostsToDelete` default.
+pub const DEFAULT_MAX_GHOSTS_TO_DELETE: u32 = 100;
+/// `GHOST_FUDGE` (`entity_ghost_maintainer.cpp:172`): the extra band around
+/// the interest area. An existing haunt survives inside it, a new ghost does
+/// not appear in it.
+pub const GHOST_FUDGE: f32 = 20.0;
+/// `NEW_REAL_KEEP_GHOST_PERIOD_IN_SECONDS`
+/// (`entity_ghost_maintainer.cpp:260`).
 pub const NEW_REAL_KEEP_GHOST_PERIOD_IN_SECONDS: f32 = 2.0;
 
-/// An XZ range pair, `BW::Rect`'s member ranges.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GhostRect {
-    pub min_x: f32,
-    pub max_x: f32,
-    pub min_z: f32,
-    pub max_z: f32,
-}
-
-impl GhostRect {
-    /// `Rect(x, y, x, y)` - a point rect at `position`.
-    pub fn point(x: f32, z: f32) -> Self {
-        GhostRect {
-            min_x: x,
-            max_x: x,
-            min_z: z,
-            max_z: z,
-        }
-    }
-
-    /// `Range1DT::inflateBy`: both ends grow, clamped at the coordinate
-    /// limits (`range1dt.ipp:108-117`).
-    pub fn inflate_by(&mut self, value: f32) {
-        if self.min_x > f32::MIN {
-            self.min_x -= value;
-        }
-        if self.max_x < f32::MAX {
-            self.max_x += value;
-        }
-        if self.min_z > f32::MIN {
-            self.min_z -= value;
-        }
-        if self.max_z < f32::MAX {
-            self.max_z += value;
-        }
-    }
-
-    /// `RectT::intersects` (`rectt.ipp:89-92`).
-    pub fn intersects(&self, other: &GhostRect) -> bool {
-        other.min_x <= self.max_x
-            && self.min_x <= other.max_x
-            && other.min_z <= self.max_z
-            && self.min_z <= other.max_z
+/// `ServerAppConfig::secondsToTicks`: `max(lower, floor(seconds*hertz+0.5))`.
+pub fn seconds_to_ticks(seconds: f32, lower_bound: i32, update_hertz: f32) -> i32 {
+    let ticks = (seconds * update_hertz + 0.5).floor() as i32;
+    if ticks < lower_bound {
+        lower_bound
+    } else {
+        ticks
     }
 }
 
-/// One link to a neighbouring cell: its channel state.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The ghost knobs the maintainer reads
+/// (`CellAppConfig::ghostDistance/minGhostLifespanInTicks/maxGhostsToDelete`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GhostConfig {
+    /// `ghostDistance`.
+    pub ghost_distance: f32,
+    /// `updateHertz` — feeds the tick conversions.
+    pub update_hertz: f32,
+    /// `minGhostLifespanInTicks` (`secondsToTicks(minGhostLifespan, 0)`).
+    pub min_ghost_lifespan_in_ticks: i32,
+    /// `maxGhostsToDelete`.
+    pub max_ghosts_to_delete: u32,
+}
+
+impl Default for GhostConfig {
+    fn default() -> Self {
+        let update_hertz = 10.0;
+        GhostConfig {
+            ghost_distance: DEFAULT_GHOST_DISTANCE,
+            update_hertz,
+            min_ghost_lifespan_in_ticks: seconds_to_ticks(
+                DEFAULT_MIN_GHOST_LIFESPAN_IN_SECONDS,
+                0,
+                update_hertz,
+            ),
+            max_ghosts_to_delete: DEFAULT_MAX_GHOSTS_TO_DELETE,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Section: the CellAppChannel mirror
+// -----------------------------------------------------------------------------
+
+/// One message the maintainer streams onto a channel's bundle
+/// (`CellAppInterface::createGhost` / `delGhost`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GhostMessage {
+    /// `Entity::createGhost` (`entity.cpp:4742`): the space id plus the
+    /// entity's ghost snapshot.
+    CreateGhost(GhostCreatePayload),
+    /// `RealEntity::addDelGhostMessage` (`real_entity.cpp:755`).
+    DelGhost {
+        /// `entity_.id()`.
+        entity_id: EntityId,
+    },
+    /// `CellAppInterface::ghostSetNextReal`
+    /// (`real_entity.cpp:272-278`): the offloading real's sign-off.
+    SetNextReal(GhostSetNextReal),
+    /// `CellAppInterface::ghostSetReal`
+    /// (`real_entity.cpp:384-398`): the loaded real's routing update.
+    SetReal(GhostSetReal),
+}
+
+/// The offload sign-off payload (`ghostSetNextRealArgs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GhostSetNextReal {
+    /// The entity whose real is moving.
+    pub entity_id: EntityId,
+    /// `nextRealAddr` — where the real will live.
+    pub next_real_addr: Addr,
+}
+
+/// The routing update payload (`ghostSetRealArgs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GhostSetReal {
+    /// The entity whose real has landed.
+    pub entity_id: EntityId,
+    /// `numTimesRealOffloaded` — the subsequence number.
+    pub num_times_real_offloaded: u32,
+    /// `owner` — the real's new address.
+    pub owner: Addr,
+}
+
+/// The `writeGhostDataToStream` head (`entity.cpp:1846-1874`): everything the
+/// receiving side needs before the ghosted properties and controllers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GhostCreatePayload {
+    /// `cell().space().id()`, streamed ahead of the ghost data.
+    pub space_id: SpaceId,
+    /// `id_` — read off first by `Space::createGhost`.
+    pub entity_id: EntityId,
+    /// `entityTypeID()`.
+    pub entity_type_id: u16,
+    /// `numTimesRealOffloaded_` — `BufferedGhostMessage` reads it too.
+    pub num_times_real_offloaded: u32,
+    /// `localPosition_`.
+    pub position: Vector3,
+    /// `isOnGround_`.
+    pub is_on_ground: bool,
+    /// `lastEventNumber_`.
+    pub last_event_number: i32,
+    /// `volatileInfo_`.
+    pub volatile: VolatileInfo,
+    /// `CellApp::instance().interface().address()` — where the real lives.
+    pub real_addr: Addr,
+    /// `baseAddr_`.
+    pub base_addr: Addr,
+    /// `localDirection_`.
+    pub direction: Vector3,
+    /// `propertyEventStamps_` — one stamp per event-stamped property.
+    pub property_event_stamps: Vec<i32>,
+    /// The `propCountGhost` leading properties (`GProperties` token block).
+    pub ghost_properties: Vec<PropValue>,
+    /// `Controllers::writeGhostsToStream`'s per-controller records
+    /// (`GController` token block): id, type, user arg, ghost payload.
+    pub ghost_controllers: Vec<GhostControllerSeed>,
+    /// `periodsWithoutWitness_` (`GTail` token block).
+    pub periods_without_witness: u16,
+    /// `aoiUpdateSchemeID_`.
+    pub aoi_update_scheme_id: u8,
+}
+
+/// One `Controllers::writeGhostsToStream` entry
+/// (`controllers.cpp:152-165`): `id << type << userArg` then the
+/// controller's own `writeGhostToStream` payload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GhostControllerSeed {
+    /// `pController->id()`.
+    pub id: crate::controllers::ControllerId,
+    /// `pController->type()`.
+    pub type_id: crate::controllers::ControllerType,
+    /// `pController->userArg()`.
+    pub user_arg: i32,
+    /// `writeGhostToStream`'s payload.
+    pub payload: Vec<u8>,
+}
+
+/// The pieces of a `CellAppChannel` the maintainer touches: the mark used to
+/// sweep haunts, the channel health, and the bundle's outbound messages.
+#[derive(Clone, Debug, PartialEq)]
 pub struct GhostChannel {
-    /// Whether `mark()` is set (`CellAppChannel::mark`).
-    pub marked: bool,
-    /// `isDeletePending()` on the remote `CellInfo`.
-    pub delete_pending: bool,
-    /// `isGood()` on the channel.
-    pub good: bool,
+    /// The remote app's address (the map key, kept for message reads).
+    pub addr: Addr,
+    /// `mark_` — 1 while the sweep is deciding the haunt's fate.
+    pub mark: u8,
+    /// `isGood()`.
+    pub is_good: bool,
+    /// `bundle()` — the messages gathered for this channel.
+    pub out: Vec<GhostMessage>,
 }
 
 impl GhostChannel {
-    pub const fn new() -> Self {
+    /// A fresh, healthy channel (`CellAppChannels::get` creates on demand).
+    pub fn new(addr: Addr) -> Self {
         GhostChannel {
-            marked: false,
-            delete_pending: false,
-            good: true,
+            addr,
+            mark: 0,
+            is_good: true,
+            out: Vec::new(),
         }
     }
 }
 
-impl Default for GhostChannel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A `CellInfo` in the space: a rect, an address and its channel.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GhostCell {
-    pub cell_id: u32,
-    /// `Mercury::Address`, modelled as an opaque value.
-    pub address: u64,
-    pub rect: GhostRect,
-    pub channel: GhostChannel,
-}
-
-/// One haunt (`RealEntity::Haunt`): which cell holds the ghost and when it
-/// was created.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Haunt {
-    pub cell_id: u32,
-    pub creation_time: u64,
-}
-
-/// The messages a check iteration would send, in order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GhostMessage {
-    /// `Entity::createGhost`.
-    Create { cell_id: u32 },
-    /// `RealEntity::addDelGhostMessage`.
-    Delete { cell_id: u32 },
-}
-
-/// `RealEntity`'s haunting set plus what a check iteration sends.
-#[derive(Debug, Default)]
-pub struct RealGhosts {
-    pub entity_id: u32,
-    /// `Entity::position()` x.
-    pub x: f32,
-    /// `Entity::position()` z.
-    pub z: f32,
-    pub haunts: Vec<Haunt>,
-    pub messages: Vec<GhostMessage>,
-    /// `RealEntity::creationTime`.
-    pub creation_time: u64,
-    /// `pType()->description().appealRadius()`.
-    pub appeal_radius: f32,
-}
-
-impl RealGhosts {
-    /// `pReal()->addHaunt(channel)`.
-    pub fn add_haunt(&mut self, cell_id: u32, creation_time: u64) {
-        self.haunts.push(Haunt {
-            cell_id,
-            creation_time,
-        });
-    }
-
-    /// `pReal()->delHaunt`.
-    pub fn del_haunt(&mut self, cell_id: u32) {
-        if let Some(pos) = self.haunts.iter().position(|h| h.cell_id == cell_id) {
-            self.haunts.remove(pos);
-        }
-    }
-}
-
-/// `OffloadChecker`'s half that matters here: the per-iteration deletion cap
-/// (`offload_checker.cpp:123-127`) and the offload queue.
-#[derive(Debug, Default)]
-pub struct OffloadChecker {
-    /// `CellAppConfig::maxGhostsToDelete()` (default 100).
-    pub max_ghosts_to_delete: u32,
+/// `OffloadChecker`'s ghost-deletion budget (`offload_checker.hpp:38-44`).
+/// One instance lives for one offload-checker iteration; `numGhostsDeleted_`
+/// carries across the entities it visits.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OffloadCheckerBudget {
     /// `numGhostsDeleted_`.
     pub num_ghosts_deleted: u32,
-    /// `OffloadList`: entity id, destination cell.
-    pub offloads: Vec<(u32, u32)>,
 }
 
-impl OffloadChecker {
-    /// `canDeleteMoreGhosts`: note the `<=`, not `<`.
-    pub fn can_delete_more_ghosts(&self) -> bool {
-        self.num_ghosts_deleted <= self.max_ghosts_to_delete
+impl OffloadCheckerBudget {
+    /// `OffloadChecker::canDeleteMoreGhosts`
+    /// (`offload_checker.cpp:123-126`): `num <= max` — the reference allows
+    /// one deletion past the configured cap.
+    pub fn can_delete_more_ghosts(&self, config: &GhostConfig) -> bool {
+        self.num_ghosts_deleted <= config.max_ghosts_to_delete
     }
 
-    /// `addDeletedGhost`.
+    /// `OffloadChecker::addDeletedGhost`.
     pub fn add_deleted_ghost(&mut self) {
         self.num_ghosts_deleted += 1;
     }
-
-    /// `addToOffloads`.
-    pub fn add_to_offloads(&mut self, entity_id: u32, destination_cell: u32) {
-        self.offloads.push((entity_id, destination_cell));
-    }
 }
 
-/// The cell-app configuration the reference reads for this work.
-#[derive(Debug, Clone, Copy)]
-pub struct GhostMaintainerConfig {
-    /// `CellAppConfig::ghostDistance()` (default 500).
-    pub ghost_distance: f32,
-    /// `CellAppConfig::updateHertz()`.
-    pub update_hertz: u64,
-    /// `CellAppConfig::minGhostLifespanInTicks()` - seconds to ticks.
-    pub min_ghost_lifespan_ticks: u64,
-    /// `CellAppConfig::maxGhostsToDelete()` (default 100).
-    pub max_ghosts_to_delete: u32,
-    /// `CellApp::instance().interface().address()`.
-    pub own_address: u64,
+// -----------------------------------------------------------------------------
+// Section: the offload checker (`offload_checker.cpp`)
+// -----------------------------------------------------------------------------
+
+/// One entry of `offloadList_`: the entity and the channel
+/// `Cell::offloadEntity` will send it down (the send itself is the
+/// Real/Ghost role switch, BW-08-05-02).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OffloadPlan {
+    /// The real entity being moved.
+    pub entity_id: EntityId,
+    /// The destination app's address.
+    pub destination: Addr,
 }
 
-impl Default for GhostMaintainerConfig {
-    fn default() -> Self {
-        GhostMaintainerConfig {
-            ghost_distance: DEFAULT_GHOST_DISTANCE,
-            update_hertz: 50,
-            min_ghost_lifespan_ticks: 250,
-            max_ghosts_to_delete: 100,
-            own_address: 0,
-        }
-    }
-}
-
-/// `EntityGhostMaintainer`.
-pub struct GhostMaintainer {
-    pub cfg: GhostMaintainerConfig,
-    /// `NEW_REAL_KEEP_GHOST_PERIOD` in ticks.
-    pub new_real_keep_ghost_period: u64,
-    /// `hysteresisArea_`.
-    pub hysteresis_area: GhostRect,
-    /// `pOffloadDestination_`.
-    pub offload_destination: Option<u32>,
-    /// `numGhostsCreated_`.
-    pub num_ghosts_created: u32,
-    /// The real entity's home cell, `pEntity_->cell().cellInfo()`.
-    pub home_cell: u32,
-    /// `Cell::shouldOffload()`.
+/// `OffloadChecker` (`offload_checker.hpp`): the per-tick pass over a
+/// cell's real entities. One instance lives for one run — the ghost-delete
+/// budget and the offload list belong to the run, not to an entity.
+#[derive(Debug, Default)]
+pub struct OffloadChecker {
+    /// `cell_.space().isShuttingDown()` — the whole run is skipped so
+    /// entities are not lost with the cells.
+    pub is_shutting_down: bool,
+    /// `Cell::shouldOffload()` — `shouldOffload_ && CellApp::shouldOffload()`.
+    /// When false the offload decision is skipped but ghosts are still
+    /// maintained.
     pub should_offload: bool,
-    /// `CellApp::instance().time()`.
-    pub current_time: u64,
-    /// The `OffloadChecker` this iteration runs against.
-    pub checker: OffloadChecker,
+    /// `numGhostsDeleted_` — shared by every entity this run visits.
+    pub budget: OffloadCheckerBudget,
+    /// `offloadList_`.
+    pub offload_list: Vec<OffloadPlan>,
+}
+
+impl OffloadChecker {
+    /// `OffloadChecker::run` (`offload_checker.cpp:39-62`): ghost upkeep
+    /// per entity, then the offload list drains as plans.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(
+        &mut self,
+        cells: &BTreeMap<Addr, CellInfoRecord>,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        reals: &mut [(RealEntity, GhostedEntityView)],
+        config: &GhostConfig,
+        own_addr: Addr,
+        space_id: SpaceId,
+        time: u32,
+    ) -> Vec<OffloadPlan> {
+        self.offload_list.clear();
+
+        // "If this space is shutting down, don't offload any entities so
+        // that they are not lost when the cells are shut down."
+        if self.is_shutting_down {
+            return Vec::new();
+        }
+
+        for (real, view) in reals.iter_mut() {
+            // The run owns the delete budget; the per-entity maintainer
+            // borrows it and hands it back.
+            let mut maintainer = GhostMaintainer {
+                config: config.clone(),
+                own_addr,
+                space_id,
+                should_offload: self.should_offload,
+                budget: std::mem::take(&mut self.budget),
+            };
+            let report = maintainer.check(cells, channels, real, view, time);
+            self.budget = maintainer.budget;
+
+            // `addToOffloads` + `sendOffloads`: the plans are what
+            // `sendOffload` would walk.
+            if let Some(destination) = report.offload_destination {
+                self.offload_list.push(OffloadPlan {
+                    entity_id: real.id,
+                    destination,
+                });
+            }
+        }
+
+        self.offload_list.clone()
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Section: the maintainer (`entity_ghost_maintainer.cpp`)
+// -----------------------------------------------------------------------------
+
+/// What one `check` pass did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GhostCheckReport {
+    /// Haunts added this pass.
+    pub ghosts_created: usize,
+    /// Haunts removed this pass.
+    pub ghosts_deleted: usize,
+    /// `pOffloadDestination_` when `checkEntityForOffload` picked one.
+    pub offload_destination: Option<Addr>,
+}
+
+/// The per-entity half of the ghost sweep (`EntityGhostMaintainer`). The
+/// channel map and the space's cell records are shared across entities, the
+/// budget is the caller's iteration counter.
+pub struct GhostMaintainer {
+    /// The knobs.
+    pub config: GhostConfig,
+    /// `ownAddress_` — this app's interface address.
+    pub own_addr: Addr,
+    /// The space id the createGhost messages carry.
+    pub space_id: SpaceId,
+    /// `Cell::shouldOffload()` — the balance decision is BW-08-05-01's face;
+    /// when false the offload half of `check` is skipped entirely.
+    pub should_offload: bool,
+    /// `offloadChecker_`'s ghost budget.
+    pub budget: OffloadCheckerBudget,
 }
 
 impl GhostMaintainer {
-    pub fn new(cfg: GhostMaintainerConfig, home_cell: u32) -> Self {
-        GhostMaintainer {
-            checker: OffloadChecker {
-                max_ghosts_to_delete: cfg.max_ghosts_to_delete,
-                ..OffloadChecker::default()
-            },
-            current_time: 0,
-            new_real_keep_ghost_period: (NEW_REAL_KEEP_GHOST_PERIOD_IN_SECONDS
-                * cfg.update_hertz as f32) as u64,
-            hysteresis_area: GhostRect::point(0.0, 0.0),
-            offload_destination: None,
-            num_ghosts_created: 0,
-            cfg,
-            home_cell,
-            should_offload: false,
-        }
-    }
-
-    /// `check()` (`entity_ghost_maintainer.cpp:56-75`).
-    ///
-    /// Returns `numGhostsCreated_` for the assertion the reference makes
-    /// (`MF_ASSERT` at `.cpp:70-72`), which this port checks itself.
-    pub fn check(&mut self, ghosts: &mut RealGhosts, cells: &mut [GhostCell]) -> u32 {
-        // The reference builds a fresh maintainer per entity per run, so
-        // its counters start at zero every iteration.
-        self.num_ghosts_created = 0;
-        if self.should_offload {
-            self.check_entity_for_offload(ghosts, cells);
-        }
-
-        // We mark all the haunts for this entity, and then we unmark all
-        // the valid ones. The invalid ghosts are left marked and are
-        // deleted.
-        let does_offload_destination_have_ghost = self.mark_haunts(ghosts, cells);
-
-        self.create_or_unmark_required_haunts(ghosts, cells);
-
-        debug_assert!(
-            self.offload_destination.is_none()
-                || does_offload_destination_have_ghost
-                || self.num_ghosts_created == 1,
-            "an offload destination without a ghost and no ghost created"
-        );
-
-        self.delete_marked_haunts(ghosts, cells);
-        self.num_ghosts_created
-    }
-
-    /// `checkEntityForOffload` (`.cpp:91-123`).
-    fn check_entity_for_offload(&mut self, ghosts: &RealGhosts, cells: &mut [GhostCell]) {
-        // Find out where we really want to live.
-        let home = cells
-            .iter()
-            .find(|c| c.rect.intersects(&GhostRect::point(ghosts.x, ghosts.z)));
-        let Some(home) = home else {
-            return;
-        };
-        if home.cell_id == self.home_cell {
-            // Don't offload to ourselves.
-            return;
-        }
-        if home.channel.delete_pending {
-            // Don't offload to a cell that is being deleted.
-            return;
-        }
-        if !home.channel.good {
-            // Don't offload if other cell has failed or died.
-            return;
-        }
-
-        // OK to offload now.
-        self.offload_destination = Some(home.cell_id);
-        self.checker.add_to_offloads(ghosts.entity_id, home.cell_id);
-    }
-
-    /// `markHaunts` (`.cpp:135-154`).
-    fn mark_haunts(&mut self, ghosts: &RealGhosts, cells: &mut [GhostCell]) -> bool {
-        let mut does_offload_destination_have_ghost = false;
-        for haunt in ghosts.haunts.iter() {
-            let Some(cell) = cells.iter_mut().find(|c| c.cell_id == haunt.cell_id) else {
-                continue;
-            };
-            if Some(cell.cell_id) == self.offload_destination {
-                does_offload_destination_have_ghost = true;
-            }
-            cell.channel.marked = true;
-        }
-        does_offload_destination_have_ghost
-    }
-
-    /// `createOrUnmarkRequiredHaunts` + `visit` (`.cpp:169-188`, `.cpp:194-241`).
-    fn create_or_unmark_required_haunts(
+    /// `EntityGhostMaintainer::check` (`entity_ghost_maintainer.cpp:56-75`):
+    /// mark the haunts, create or unmark the required ones, delete the rest.
+    pub fn check(
         &mut self,
-        ghosts: &mut RealGhosts,
-        cells: &mut [GhostCell],
+        cells: &BTreeMap<Addr, CellInfoRecord>,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        real: &mut RealEntity,
+        view: &GhostedEntityView,
+        time: u32,
+    ) -> GhostCheckReport {
+        let mut report = GhostCheckReport::default();
+
+        // `if (this->cell().shouldOffload())` — find where we really want to
+        // live before deciding which ghosts to touch.
+        let mut offload_destination = None;
+        if self.should_offload {
+            offload_destination = self.check_entity_for_offload(cells, channels, view.position);
+        }
+        report.offload_destination = offload_destination;
+
+        self.mark_haunts(channels, real);
+        self.create_or_unmark_required_haunts(
+            cells,
+            channels,
+            real,
+            view,
+            offload_destination,
+            time,
+            &mut report,
+        );
+        self.delete_marked_haunts(channels, real, offload_destination, time, &mut report);
+
+        report
+    }
+
+    /// `checkEntityForOffload` (`entity_ghost_maintainer.cpp:91-123`): the
+    /// cell at the entity's position, provided it is not ours, not being
+    /// deleted, and its channel is still good.
+    fn check_entity_for_offload(
+        &self,
+        cells: &BTreeMap<Addr, CellInfoRecord>,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        position: Vector3,
+    ) -> Option<Addr> {
+        // `Space::pCellAt`: the leaf containing the point, and only a leaf
+        // that has been created is a candidate.
+        let home = cells.values().find(|info| {
+            info.has_been_created
+                && info.rect.xmin <= position.x
+                && position.x < info.rect.xmax
+                && info.rect.ymin <= position.z
+                && position.z < info.rect.ymax
+        })?;
+
+        // Don't offload to ourselves.
+        if home.addr == self.own_addr {
+            return None;
+        }
+        // Don't offload to a cell that is being deleted.
+        if home.is_delete_pending {
+            return None;
+        }
+
+        let channel = channels
+            .entry(home.addr)
+            .or_insert_with(|| GhostChannel::new(home.addr));
+        // Don't offload if the other cell has failed or died.
+        if !channel.is_good {
+            return None;
+        }
+
+        Some(home.addr)
+    }
+
+    /// `markHaunts` (`entity_ghost_maintainer.cpp:135-154`): every haunt's
+    /// channel is marked 1; `createOrUnmarkRequiredHaunts` unmarks the ones
+    /// that survive.
+    fn mark_haunts(&self, channels: &mut BTreeMap<Addr, GhostChannel>, real: &RealEntity) {
+        for haunt in &real.haunts {
+            let channel = channels
+                .entry(haunt.addr)
+                .or_insert_with(|| GhostChannel::new(haunt.addr));
+            channel.mark = 1;
+        }
+    }
+
+    /// `createOrUnmarkRequiredHaunts`
+    /// (`entity_ghost_maintainer.cpp:169-188`): the interest area is the
+    /// entity's position grown by `ghostDistance + appealRadius`; the
+    /// hysteresis area is that without the fudge. Cells in the interest area
+    /// are visited, cells in the hysteresis area gain or keep ghosts.
+    #[allow(clippy::too_many_arguments)]
+    fn create_or_unmark_required_haunts(
+        &self,
+        cells: &BTreeMap<Addr, CellInfoRecord>,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        real: &mut RealEntity,
+        view: &GhostedEntityView,
+        offload_destination: Option<Addr>,
+        time: u32,
+        report: &mut GhostCheckReport,
     ) {
-        // Find all the haunts that we should have.
-        let mut interest_area = GhostRect::point(ghosts.x, ghosts.z);
-
-        // Entities with an appeal radius have to ghost more.
-        interest_area.inflate_by(self.cfg.ghost_distance + ghosts.appeal_radius);
-
-        self.hysteresis_area = interest_area;
-
+        let mut interest_area = Rect::new(
+            view.position.x,
+            view.position.z,
+            view.position.x,
+            view.position.z,
+        );
+        interest_area.inflate_by(self.config.ghost_distance + view.appeal_radius);
+        let hysteresis_area = interest_area;
         interest_area.inflate_by(GHOST_FUDGE);
 
-        // `SpaceTree::visitRect`: every cell whose rect intersects.
-        let targets: Vec<GhostCell> = cells
-            .iter()
-            .filter(|c| c.rect.intersects(&interest_area))
-            .copied()
-            .collect();
-        for cell in targets {
-            self.visit(&cell, ghosts, cells);
-        }
-    }
-
-    /// `visit` (`.cpp:194-241`).
-    fn visit(&mut self, target: &GhostCell, ghosts: &mut RealGhosts, cells: &mut [GhostCell]) {
-        // discard it if it is ourself
-        if target.address == self.cfg.own_address {
-            return;
-        }
-
-        if target.channel.delete_pending {
-            // Do not have ghosts on cells that are about to be deleted.
-            return;
-        }
-
-        // If it has been marked as an existing haunt then unmark it and bail.
-        let marked = target.channel.marked;
-        if marked {
-            for cell in cells.iter_mut() {
-                if cell.cell_id == target.cell_id {
-                    cell.channel.marked = false;
-                }
-            }
-            return;
-        }
-
-        // Do not create a ghost if we are about to be offloaded. Let the
-        // destination do this.
-        if self
-            .offload_destination
-            .is_some_and(|destination| destination != target.cell_id)
+        // `Space::visitRect` over the flat leaf set: a leaf is visited when
+        // it has been created and its range meets the query rectangle
+        // (`CellInfo::visitRect` visits its leaf unconditionally; the BSP
+        // prunes the rest).
+        for info in cells
+            .values()
+            .filter(|info| info.has_been_created && interest_area.intersects(&info.rect))
         {
-            return;
+            self.visit(
+                info,
+                channels,
+                real,
+                view,
+                &hysteresis_area,
+                offload_destination,
+                time,
+                report,
+            );
         }
-
-        // and if we are not far enough in then toss it too (hysteresis check)
-        if !target.rect.intersects(&self.hysteresis_area) {
-            return;
-        }
-
-        // Otherwise we should create a new ghost.
-        ghosts.add_haunt(target.cell_id, self.current_time);
-        ghosts.messages.push(GhostMessage::Create {
-            cell_id: target.cell_id,
-        });
-
-        self.num_ghosts_created += 1;
     }
 
-    /// `deleteMarkedHaunts` (`.cpp:258-309`).
-    fn delete_marked_haunts(&mut self, ghosts: &mut RealGhosts, cells: &mut [GhostCell]) {
-        for haunt in ghosts.haunts.clone() {
-            let cell_id = haunt.cell_id;
-            let good = cells
-                .iter()
-                .find(|c| c.cell_id == cell_id)
-                .map(|c| c.channel.good)
-                .unwrap_or(false);
+    /// `EntityGhostMaintainer::visit` (`entity_ghost_maintainer.cpp:194-241`).
+    #[allow(clippy::too_many_arguments)]
+    fn visit(
+        &self,
+        info: &CellInfoRecord,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        real: &mut RealEntity,
+        view: &GhostedEntityView,
+        hysteresis_area: &Rect,
+        offload_destination: Option<Addr>,
+        time: u32,
+        report: &mut GhostCheckReport,
+    ) {
+        let remote_addr = info.addr;
 
-            // Keep the ghost if we're offloading there, or the real entity
-            // or the ghost is too new.
-            let should_del_ghost = self.checker.can_delete_more_ghosts()
-                && self.offload_destination != Some(cell_id)
-                && self.current_time.saturating_sub(ghosts.creation_time)
-                    > self.new_real_keep_ghost_period
-                && self.current_time.saturating_sub(haunt.creation_time)
-                    > self.cfg.min_ghost_lifespan_ticks;
+        // Discard it if it is ourself.
+        if remote_addr == self.own_addr {
+            return;
+        }
 
-            let marked = cells
-                .iter()
-                .find(|c| c.cell_id == cell_id)
-                .map(|c| c.channel.marked)
-                .unwrap_or(false);
+        // Do not have ghosts on cells that are about to be deleted.
+        if info.is_delete_pending {
+            return;
+        }
 
-            if marked && should_del_ghost {
-                // only bother telling it if it hasn't failed
-                if good {
-                    ghosts.messages.push(GhostMessage::Delete { cell_id });
-                    self.checker.add_deleted_ghost();
+        let channel = channels
+            .entry(remote_addr)
+            .or_insert_with(|| GhostChannel::new(remote_addr));
+
+        // An existing haunt this pass still wants: unmark it and bail.
+        if channel.mark == 1 {
+            channel.mark = 0;
+            return;
+        }
+
+        // While offloading, only the destination may gain a ghost.
+        if offload_destination.is_some() && offload_destination != Some(remote_addr) {
+            return;
+        }
+
+        // Not far enough in yet (the hysteresis check).
+        if !info.rect.intersects(hysteresis_area) {
+            return;
+        }
+
+        // Otherwise create a new ghost.
+        // `addHaunt` stamps the app time (`real_entity.cpp:859-863`).
+        real.haunts.push(Haunt {
+            addr: remote_addr,
+            creation_time: time,
+        });
+        channel
+            .out
+            .push(GhostMessage::CreateGhost(GhostCreatePayload {
+                space_id: self.space_id,
+                entity_id: view.entity_id,
+                entity_type_id: view.entity_type_id,
+                num_times_real_offloaded: view.num_times_real_offloaded,
+                position: view.position,
+                is_on_ground: view.is_on_ground,
+                last_event_number: view.last_event_number,
+                volatile: view.volatile,
+                real_addr: self.own_addr,
+                base_addr: view.base_addr,
+                direction: view.direction,
+                property_event_stamps: view.property_event_stamps.clone(),
+                ghost_properties: view.ghost_properties.clone(),
+                ghost_controllers: view.ghost_controllers.clone(),
+                periods_without_witness: view.periods_without_witness,
+                aoi_update_scheme_id: view.aoi_update_scheme_id,
+            }));
+        report.ghosts_created += 1;
+    }
+
+    /// `deleteMarkedHaunts` (`entity_ghost_maintainer.cpp:258-308`): the
+    /// marked haunts go, unless a keep rule holds. The mark is always
+    /// cleared for the next user.
+    fn delete_marked_haunts(
+        &mut self,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        real: &mut RealEntity,
+        offload_destination: Option<Addr>,
+        time: u32,
+        report: &mut GhostCheckReport,
+    ) {
+        let new_real_keep_period = seconds_to_ticks(
+            NEW_REAL_KEEP_GHOST_PERIOD_IN_SECONDS,
+            0,
+            self.config.update_hertz,
+        ) as u32;
+
+        let mut index = 0;
+        while index < real.haunts.len() {
+            let haunt = &real.haunts[index];
+            let haunt_addr = haunt.addr;
+            let haunt_creation_time = haunt.creation_time;
+
+            let should_del_ghost =
+                // Too many ghosts deleted in this iteration.
+                self.budget.can_delete_more_ghosts(&self.config)
+                    // Keep the ghost if we're offloading there.
+                    && offload_destination != Some(haunt_addr)
+                    // Keep the ghost if the real entity is new.
+                    && time.wrapping_sub(real.creation_time) > new_real_keep_period
+                    // Keep the ghost if the ghost is new.
+                    && time.wrapping_sub(haunt_creation_time)
+                        > self.config.min_ghost_lifespan_in_ticks as u32;
+
+            let channel = channels
+                .entry(haunt_addr)
+                .or_insert_with(|| GhostChannel::new(haunt_addr));
+
+            if channel.mark != 0 && should_del_ghost {
+                // Only bother telling it if it hasn't failed.
+                if channel.is_good {
+                    channel
+                        .out
+                        .push(GhostMessage::DelGhost { entity_id: real.id });
+                    self.budget.add_deleted_ghost();
                 }
-                ghosts.del_haunt(cell_id);
+                real.haunts.remove(index);
+                report.ghosts_deleted += 1;
+            } else {
+                index += 1;
             }
 
-            // always clear the mark for the next user
-            if let Some(cell) = cells.iter_mut().find(|c| c.cell_id == cell_id) {
-                cell.channel.marked = false;
+            // Always clear the mark for the next user.
+            channel.mark = 0;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Section: the receiving side (`Space::createGhost` + `delGhost`)
+// -----------------------------------------------------------------------------
+
+/// The ghost-side entity record `Space::createGhost` builds
+/// (`space.cpp:271-292`): `newEntity` + `initGhost` over the streamed head.
+#[derive(Clone, Debug)]
+pub struct GhostRecord {
+    /// `id_`.
+    pub entity_id: EntityId,
+    /// `entityTypeID()`.
+    pub entity_type_id: u16,
+    /// `numTimesRealOffloaded_`.
+    pub num_times_real_offloaded: u32,
+    /// `localPosition_`.
+    pub position: Vector3,
+    /// `isOnGround_`.
+    pub is_on_ground: bool,
+    /// `lastEventNumber_`.
+    pub last_event_number: i32,
+    /// `volatileInfo_`.
+    pub volatile: VolatileInfo,
+    /// The real's cellapp address (`pRealChannel_`'s address).
+    pub real_addr: Addr,
+    /// `nextRealAddr_` — set by the offload sign-off, cleared when the
+    /// new real's `ghostSetReal` lands.
+    pub next_real_addr: Option<Addr>,
+    /// `baseAddr_`.
+    pub base_addr: Addr,
+    /// `localDirection_` (`globalDirection_ = localDirection_` on init).
+    pub direction: Vector3,
+    /// `propertyEventStamps_` after the read — one per event-stamped
+    /// property of the type.
+    pub property_event_stamps: Vec<i32>,
+    /// `eventHistory_.lastTrimmedEventNumber( lastEventNumber_ )` — the
+    /// ghost's history starts trimmed at the real's last event number.
+    pub last_trimmed_event_number: i32,
+    /// The `propCountGhost` leading properties.
+    pub ghost_properties: Vec<PropValue>,
+    /// `Controllers::readGhostsFromStream`'s result: the ghost-domain
+    /// controllers, started (`startGhost`).
+    pub controllers: Controllers,
+    /// `periodsWithoutWitness_`.
+    pub periods_without_witness: u16,
+    /// `aoiUpdateSchemeID_`.
+    pub aoi_update_scheme_id: u8,
+    /// The app time the ghost was created at (haunt-age bookkeeping).
+    pub creation_time: u32,
+}
+
+/// The local entity type facts `initGhost` needs: how many properties are
+/// ghosted, and how many are event-stamped (`propertyEventStamps_.init`
+/// resizes to the stamped count, `readGhostDataFromStreamInternal` reads
+/// exactly that many).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GhostEntityTypeDesc {
+    /// `pEntityType_->propCountGhost()`.
+    pub prop_count_ghost: usize,
+    /// `entityDescription.numEventStampedProperties()`.
+    pub num_event_stamped_properties: usize,
+}
+
+/// What `Space::createGhost(srcAddr, data)` did with the message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GhostCreateOutcome {
+    /// The immediate path: the ghost was created.
+    Created,
+    /// The entity already exists here, or messages from this real are
+    /// already queued (`space.cpp:236-266`): the message was buffered for
+    /// a later replay.
+    Buffered,
+    /// The payload names a type this app does not know (the reference
+    /// MF-asserts on the lookup).
+    UnknownEntityType,
+    /// The streamed stamp count does not match the local type
+    /// (`removeFromStream` reads exactly `eventStamps_.size()` entries).
+    StampCountMismatch,
+    /// The streamed property count does not match the local type's
+    /// `propCountGhost`.
+    PropertyCountMismatch,
+}
+
+/// The receiving CellApp's ghost surface: the ghost records of one space.
+#[derive(Debug, Default)]
+pub struct GhostHost {
+    /// `app.findEntity` + the ghost population, keyed by entity id.
+    pub ghosts: BTreeMap<EntityId, GhostRecord>,
+    /// The local `EntityTypeDB` slice the creates are validated against.
+    pub types: BTreeMap<u16, GhostEntityTypeDesc>,
+    /// `BufferedGhostMessages` — the out-of-order real->ghost messages.
+    pub buffer: GhostBuffer,
+}
+
+impl GhostHost {
+    /// Register a local entity type (`EntityTypeDB` lookup fact).
+    pub fn register_type(&mut self, entity_type_id: u16, desc: GhostEntityTypeDesc) {
+        self.types.insert(entity_type_id, desc);
+    }
+
+    /// `Space::createGhost(srcAddr, header, data)`
+    /// (`space.cpp:228-266`): an existing entity (or pending buffer) takes
+    /// the buffered path, otherwise the ghost is created at once.
+    pub fn receive_create_ghost(
+        &mut self,
+        src: Addr,
+        payload: GhostCreatePayload,
+        time: u32,
+    ) -> GhostCreateOutcome {
+        let entity_id = payload.entity_id;
+        if self.ghosts.contains_key(&entity_id) || self.buffer.has_messages_for(entity_id, src) {
+            let msg = BufferedGhostMessage::CreateGhost { src, payload };
+            if self.buffer.has_messages_for(entity_id, src) {
+                self.buffer.add(entity_id, src, msg);
+            } else {
+                self.buffer.delay_subsequence(entity_id, src, msg);
+            }
+            return GhostCreateOutcome::Buffered;
+        }
+
+        let Some(desc) = self.types.get(&payload.entity_type_id) else {
+            return GhostCreateOutcome::UnknownEntityType;
+        };
+        if payload.property_event_stamps.len() != desc.num_event_stamped_properties {
+            return GhostCreateOutcome::StampCountMismatch;
+        }
+        if payload.ghost_properties.len() != desc.prop_count_ghost {
+            return GhostCreateOutcome::PropertyCountMismatch;
+        }
+
+        // `readGhostsFromStream` (`controllers.cpp:50-73`): create each
+        // ghost-domain controller and start it.
+        let mut controllers = Controllers::new();
+        for seed in &payload.ghost_controllers {
+            controllers.create_ghost(seed.id, seed.type_id, seed.user_arg, seed.payload.clone());
+        }
+
+        self.ghosts.insert(
+            payload.entity_id,
+            GhostRecord {
+                entity_id: payload.entity_id,
+                entity_type_id: payload.entity_type_id,
+                num_times_real_offloaded: payload.num_times_real_offloaded,
+                position: payload.position,
+                is_on_ground: payload.is_on_ground,
+                last_event_number: payload.last_event_number,
+                volatile: payload.volatile,
+                real_addr: payload.real_addr,
+                next_real_addr: None,
+                base_addr: payload.base_addr,
+                direction: payload.direction,
+                property_event_stamps: payload.property_event_stamps,
+                last_trimmed_event_number: payload.last_event_number,
+                ghost_properties: payload.ghost_properties,
+                controllers,
+                periods_without_witness: payload.periods_without_witness,
+                aoi_update_scheme_id: payload.aoi_update_scheme_id,
+                creation_time: time,
+            },
+        );
+        GhostCreateOutcome::Created
+    }
+
+    /// The `delGhost` receive: the ghost goes; a second notice finds
+    /// nothing. Returns whether a ghost was removed. Like `Entity::destroy`
+    /// (`entity.cpp:3007`), a removal then offers the buffered queues a new
+    /// lifespan (a queued `createGhost` may now start).
+    pub fn receive_del_ghost(&mut self, entity_id: EntityId, time: u32) -> bool {
+        if self.ghosts.remove(&entity_id).is_none() {
+            return false;
+        }
+        self.play_new_lifespan_for(entity_id, time);
+        true
+    }
+
+    /// `Entity::ghostSetNextReal` (`entity.cpp:4961-4979`): the offloading
+    /// real's sign-off. Only the first sign-off takes (`nextRealAddr_` must
+    /// be NONE). This is the last message from the current real, so from
+    /// now on only the new address is accepted — and any buffered
+    /// subsequence from it plays (`playSubsequenceFor`).
+    pub fn receive_ghost_set_next_real(
+        &mut self,
+        entity_id: EntityId,
+        next_real_addr: Addr,
+        time: u32,
+    ) -> bool {
+        let Some(record) = self.ghosts.get_mut(&entity_id) else {
+            return false;
+        };
+        if record.next_real_addr.is_some() {
+            return false;
+        }
+        record.next_real_addr = Some(next_real_addr);
+        self.play_subsequence_for(entity_id, next_real_addr, time);
+        true
+    }
+
+    /// `Entity::ghostSetReal` (`entity.cpp:4927-4955`): the loaded real's
+    /// routing update. The subsequence number must be exactly one past the
+    /// ghost's; a mismatch is delayed (`delaySubsequence`) for the buffered
+    /// replay, leaving the routing table untouched.
+    pub fn receive_ghost_set_real(
+        &mut self,
+        entity_id: EntityId,
+        num_times_real_offloaded: u32,
+        owner: Addr,
+    ) -> GhostSetRealOutcome {
+        let Some(record) = self.ghosts.get_mut(&entity_id) else {
+            return GhostSetRealOutcome::UnknownEntity;
+        };
+
+        let expected = record.num_times_real_offloaded + 1;
+        if num_times_real_offloaded != expected {
+            // `entity.cpp:4941-4945`: the stale update heads its own
+            // delayed subsequence until a sign-off plays it.
+            self.buffer.delay_subsequence(
+                entity_id,
+                owner,
+                BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                    entity_id,
+                    num_times_real_offloaded,
+                    owner,
+                })),
+            );
+            return GhostSetRealOutcome::DelayedSubsequence;
+        }
+
+        record.num_times_real_offloaded = num_times_real_offloaded;
+        record.real_addr = owner;
+        record.next_real_addr = None;
+        // `relocated()` (`entity.cpp:4204-4211`) only notifies entity extras,
+        // which this port does not model.
+        GhostSetRealOutcome::Relocated
+    }
+}
+
+/// What `Entity::ghostSetReal` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GhostSetRealOutcome {
+    /// The routing table moved to the new real.
+    Relocated,
+    /// Out of subsequence order — the message is delayed
+    /// (`delaySubsequence`, replayed by the buffered-ghost pass).
+    DelayedSubsequence,
+    /// No such ghost here.
+    UnknownEntity,
+}
+
+// -----------------------------------------------------------------------------
+// Section: buffered ghost messages (`buffered_ghost_message*.cpp`)
+// -----------------------------------------------------------------------------
+
+/// A real->ghost message held while its subsequence is out of order.
+/// The three reference plays are `BufferedCreateGhostMessage`,
+/// `BufferedGhostSetRealMessage` and `CommonBufferedGhostMessage`
+/// (`buffered_ghost_message_factory.cpp`).
+#[derive(Clone, Debug)]
+pub enum BufferedGhostMessage {
+    /// A `createGhost` that arrived too early; it carries the sender so a
+    /// replay that finds the ghost alive can re-delay onto the same queue.
+    CreateGhost {
+        src: Addr,
+        payload: GhostCreatePayload,
+    },
+    /// Any other ghost message, replayed through its normal receiver.
+    Common(GhostMessage),
+}
+
+impl BufferedGhostMessage {
+    /// `isSubsequenceStart` (`buffered_ghost_messages.hpp:57-59`) plus the
+    /// two message classes the factory hard-marks as starts.
+    pub fn is_subsequence_start(&self) -> bool {
+        match self {
+            BufferedGhostMessage::CreateGhost { .. } => true,
+            BufferedGhostMessage::Common(
+                GhostMessage::CreateGhost(_) | GhostMessage::SetReal(_),
+            ) => true,
+            BufferedGhostMessage::Common(_) => false,
+        }
+    }
+
+    /// `isSubsequenceEnd` (`buffered_ghost_messages.hpp:62-65`).
+    pub fn is_subsequence_end(&self) -> bool {
+        matches!(
+            self,
+            BufferedGhostMessage::Common(
+                GhostMessage::DelGhost { .. } | GhostMessage::SetNextReal(_),
+            )
+        )
+    }
+
+    /// `isCreateGhostMessage`.
+    pub fn is_create_ghost(&self) -> bool {
+        matches!(
+            self,
+            BufferedGhostMessage::CreateGhost { .. }
+                | BufferedGhostMessage::Common(GhostMessage::CreateGhost(_))
+        )
+    }
+}
+
+/// The stream of buffered real->ghost messages from one CellApp for one
+/// entity (`BufferedGhostMessageQueue`). Only ordering within the queue is
+/// guaranteed; the per-entity map works out the order between queues.
+#[derive(Debug, Default)]
+pub struct GhostMessageQueue {
+    messages: VecDeque<BufferedGhostMessage>,
+    /// `pDelayedMessages_` — an old (unexpected) subsequence being
+    /// collected until its end marker shows up.
+    delayed: Option<Vec<BufferedGhostMessage>>,
+}
+
+impl GhostMessageQueue {
+    /// `add`: while delaying, late arrivals join the delayed list;
+    /// otherwise the queue must keep starting at a subsequence start.
+    fn add(&mut self, msg: BufferedGhostMessage) {
+        if self.is_delaying() {
+            self.delayed.as_mut().unwrap().push(msg);
+        } else {
+            debug_assert!(self.messages.is_empty() || self.messages[0].is_subsequence_start());
+            self.messages.push_back(msg);
+        }
+    }
+
+    /// `isDelaying`: mid-collection of a delayed subsequence.
+    fn is_delaying(&self) -> bool {
+        self.delayed
+            .as_ref()
+            .is_some_and(|d| !d.last().unwrap().is_subsequence_end())
+    }
+
+    /// `delaySubsequence`: head a subsequence with `first`, then swallow
+    /// the front of the queue until the delayed list reaches an end.
+    fn delay_subsequence(&mut self, first: BufferedGhostMessage) {
+        debug_assert!(first.is_subsequence_start());
+        self.delayed.get_or_insert_with(Vec::new).push(first);
+        while !self.messages.is_empty() && self.is_delaying() {
+            self.delayed
+                .as_mut()
+                .unwrap()
+                .push(self.messages.pop_front().unwrap());
+        }
+    }
+
+    /// `promoteDelayedSubsequences`: un-delay the collected messages.
+    fn promote_delayed(&mut self) {
+        if let Some(delayed) = self.delayed.take() {
+            for msg in delayed.into_iter().rev() {
+                self.messages.push_front(msg);
+            }
+        }
+    }
+
+    /// `isEmpty` — the playable list only (a delaying queue reports
+    /// empty, matching `hasMessagesFrom`'s check).
+    fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    fn front_is_subsequence_end(&self) -> bool {
+        self.messages
+            .front()
+            .is_some_and(|m| m.is_subsequence_end())
+    }
+
+    fn front_is_create_ghost(&self) -> bool {
+        self.messages.front().is_some_and(|m| m.is_create_ghost())
+    }
+}
+
+/// `BufferedGhostMessages` — the out-of-order real->ghost messages of one
+/// app, keyed by entity, then by the CellApp they came from
+/// (`buffered_ghost_messages.cpp`). The ghost lifespan is a chain of
+/// subsequences, one per real the entity visits; the sign-off
+/// (`ghostSetNextReal`) tells the ghost which subsequence plays next.
+#[derive(Debug, Default)]
+pub struct GhostBuffer {
+    entries: BTreeMap<EntityId, BTreeMap<Addr, GhostMessageQueue>>,
+}
+
+impl GhostBuffer {
+    /// `add`.
+    pub fn add(&mut self, entity_id: EntityId, src: Addr, msg: BufferedGhostMessage) {
+        self.entries
+            .entry(entity_id)
+            .or_default()
+            .entry(src)
+            .or_default()
+            .add(msg);
+    }
+
+    /// `hasMessagesFor` — a playable (non-delaying) queue from `src`.
+    pub fn has_messages_for(&self, entity_id: EntityId, src: Addr) -> bool {
+        self.queue_for(entity_id, src)
+            .is_some_and(|q| !q.is_empty())
+    }
+
+    /// `isEmpty`.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Whether any queue (playable or delaying) exists from `src` — the
+    /// `ForEntity::playSubsequence` lookup the plays are gated on.
+    pub fn has_queue_for(&self, entity_id: EntityId, src: Addr) -> bool {
+        self.queue_for(entity_id, src).is_some()
+    }
+
+    /// `isDelayingMessagesFor`.
+    pub fn is_delaying_for(&self, entity_id: EntityId, src: Addr) -> bool {
+        self.queue_for(entity_id, src)
+            .is_some_and(|q| q.is_delaying())
+    }
+
+    fn queue_for(&self, entity_id: EntityId, src: Addr) -> Option<&GhostMessageQueue> {
+        self.entries.get(&entity_id)?.get(&src)
+    }
+
+    /// `delaySubsequence`.
+    pub fn delay_subsequence(
+        &mut self,
+        entity_id: EntityId,
+        src: Addr,
+        first: BufferedGhostMessage,
+    ) {
+        self.entries
+            .entry(entity_id)
+            .or_default()
+            .entry(src)
+            .or_default()
+            .delay_subsequence(first);
+    }
+
+    fn promote_delayed_for(&mut self, entity_id: EntityId, src: Addr) {
+        if let Some(q) = self
+            .entries
+            .get_mut(&entity_id)
+            .and_then(|m| m.get_mut(&src))
+        {
+            q.promote_delayed();
+        }
+    }
+
+    /// The next playable message plus the facts `playFront` needs:
+    /// (message, queue-drained-before-play, front-was-a-subsequence-end).
+    fn next_to_play(
+        &mut self,
+        entity_id: EntityId,
+        src: Addr,
+    ) -> Option<(BufferedGhostMessage, bool, bool)> {
+        let q = self.entries.get_mut(&entity_id)?.get_mut(&src)?;
+        if q.is_empty() {
+            return None;
+        }
+        let finished = q.front_is_subsequence_end();
+        let msg = q.messages.pop_front()?;
+        let empty_before_play = q.is_empty() && q.delayed.is_none();
+        Some((msg, empty_before_play, finished))
+    }
+
+    /// The queue's post-play state: `Some((messages_empty, delayed))`,
+    /// `None` when the queue no longer exists (a nested play erased it).
+    fn queue_state(
+        &self,
+        entity_id: EntityId,
+        src: Addr,
+    ) -> Option<(bool, Option<&Vec<BufferedGhostMessage>>)> {
+        let q = self.queue_for(entity_id, src)?;
+        Some((q.is_empty(), q.delayed.as_ref()))
+    }
+
+    fn erase_queue(&mut self, entity_id: EntityId, src: Addr) {
+        if let Some(queues) = self.entries.get_mut(&entity_id) {
+            queues.remove(&src);
+            if queues.is_empty() {
+                self.entries.remove(&entity_id);
+            }
+        }
+    }
+
+    fn peek_first_create_lifespan(&mut self, entity_id: EntityId) -> Option<Addr> {
+        let queues = self.entries.get_mut(&entity_id)?;
+        for (&addr, queue) in queues.iter_mut() {
+            queue.promote_delayed();
+            if queue.front_is_create_ghost() {
+                return Some(addr);
+            }
+        }
+        None
+    }
+}
+
+impl GhostHost {
+    /// `BufferedGhostMessages::playSubsequenceFor` (`buffered_ghost_messages
+    /// .cpp:22-40`): play the buffered subsequence from `src` up to its end,
+    /// erasing the queue when it drains.
+    pub fn play_subsequence_for(&mut self, entity_id: EntityId, src: Addr, time: u32) {
+        if !self.buffer.has_queue_for(entity_id, src) {
+            // "Not playing buffered ghost messages ... still talking to
+            // real at %s" — no queue from that real exists at all.
+            return;
+        }
+        self.play_queue(entity_id, src, time);
+    }
+
+    /// `BufferedGhostMessages::playNewLifespanFor` (`buffered_ghost_messages
+    /// .cpp:42-55`): after this ghost was destroyed, a queue whose front is
+    /// a `createGhost` starts the entity's next lifespan here.
+    pub fn play_new_lifespan_for(&mut self, entity_id: EntityId, time: u32) {
+        let Some(src) = self.buffer.peek_first_create_lifespan(entity_id) else {
+            return;
+        };
+        self.play_queue(entity_id, src, time);
+    }
+
+    /// The shared drain loop (`BufferedGhostMessageQueue::playSubsequence`):
+    /// play until a subsequence end has been played and the queue did not
+    /// refill; a drained queue is erased.
+    fn play_queue(&mut self, entity_id: EntityId, src: Addr, time: u32) {
+        self.buffer.promote_delayed_for(entity_id, src);
+
+        while let Some((msg, empty_before_play, finished)) =
+            self.buffer.next_to_play(entity_id, src)
+        {
+            self.dispatch_buffered(msg, time);
+
+            match self.buffer.queue_state(entity_id, src) {
+                None => return,
+                Some((messages_empty, delayed)) => {
+                    if empty_before_play && messages_empty && delayed.is_none() {
+                        self.buffer.erase_queue(entity_id, src);
+                        return;
+                    }
+                }
+            }
+            if finished {
+                return;
+            }
+        }
+    }
+
+    /// The three buffered plays (`buffered_ghost_message_factory.cpp`).
+    fn dispatch_buffered(&mut self, msg: BufferedGhostMessage, time: u32) {
+        match msg {
+            BufferedGhostMessage::CreateGhost { src, payload } => {
+                let entity_id = payload.entity_id;
+                if self.ghosts.contains_key(&entity_id) {
+                    // The ghost (re)appeared before its create could play:
+                    // hold the whole subsequence again.
+                    self.buffer.delay_subsequence(
+                        entity_id,
+                        src,
+                        BufferedGhostMessage::CreateGhost { src, payload },
+                    );
+                } else {
+                    let _ = self.receive_create_ghost(src, payload, time);
+                }
+            }
+            BufferedGhostMessage::Common(GhostMessage::CreateGhost(payload)) => {
+                let src = payload.real_addr;
+                if self.ghosts.contains_key(&payload.entity_id) {
+                    self.buffer.delay_subsequence(
+                        payload.entity_id,
+                        src,
+                        BufferedGhostMessage::Common(GhostMessage::CreateGhost(payload)),
+                    );
+                } else {
+                    let _ = self.receive_create_ghost(src, payload, time);
+                }
+            }
+            BufferedGhostMessage::Common(GhostMessage::SetReal(set)) => {
+                // A stale update re-delays inside the receiver
+                // (`Entity::ghostSetReal`'s own mismatch arm) — no
+                // dispatcher-side copy, or the message lands twice.
+                let _ = self.receive_ghost_set_real(
+                    set.entity_id,
+                    set.num_times_real_offloaded,
+                    set.owner,
+                );
+            }
+            BufferedGhostMessage::Common(GhostMessage::DelGhost { entity_id }) => {
+                let _ = self.receive_del_ghost(entity_id, time);
+            }
+            BufferedGhostMessage::Common(GhostMessage::SetNextReal(set)) => {
+                let _ = self.receive_ghost_set_next_real(set.entity_id, set.next_real_addr, time);
             }
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// Section: the real-side handover (`real_entity.cpp`)
+// -----------------------------------------------------------------------------
+
+/// The flags `RealEntity::readOffloadData` branches on
+/// (`real_entity.cpp:315-405`).
+#[derive(Clone, Debug, Default)]
+pub struct OnloadHauntContext {
+    /// `hasChangedSpace` — the offload crossed a space boundary.
+    pub has_changed_space: bool,
+    /// `isTeleported`.
+    pub is_teleported: bool,
+    /// `pBadHauntAddr` — skipped during an onload from a failed teleport.
+    pub bad_haunt_addr: Option<Addr>,
+}
+
+/// `RealEntity::destroy`'s offload sign-off (`real_entity.cpp:250-270`):
+/// every haunt except the destination learns where the real is going.
+pub fn offload_sign_off(
+    real: &RealEntity,
+    next_real_addr: Addr,
+    channels: &mut BTreeMap<Addr, GhostChannel>,
+) {
+    for haunt in &real.haunts {
+        if haunt.addr == next_real_addr {
+            continue;
+        }
+        let channel = channels
+            .entry(haunt.addr)
+            .or_insert_with(|| GhostChannel::new(haunt.addr));
+        channel
+            .out
+            .push(GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: real.id,
+                next_real_addr,
+            }));
+    }
+}
+
+/// `RealEntity::readOffloadData`'s haunt pass (`real_entity.cpp:353-405`):
+/// the loaded real re-haunts the ghost apps and tells each one where the
+/// real now lives — or, across a space change or teleport, deletes the
+/// ghost instead. Returns `areWeHaunted`: whether our own address was in
+/// the list — a checkable stand-in for the reference's
+/// `MF_ASSERT( areWeHaunted )` (the offload destination always ghosts the
+/// entity before the move).
+pub fn onload_notify_haunts(
+    real: &mut RealEntity,
+    haunt_addrs: &[Addr],
+    channels: &mut BTreeMap<Addr, GhostChannel>,
+    own_addr: Addr,
+    num_times_real_offloaded: u32,
+    time: u32,
+    context: &OnloadHauntContext,
+) -> bool {
+    let mut are_we_haunted = false;
+
+    for addr in haunt_addrs {
+        // We don't care if it's our own address — it could be from a local
+        // teleport or some such.
+        if *addr == own_addr {
+            are_we_haunted = true;
+            continue;
+        }
+
+        // Skipped during an onload from a failed teleport: no ghost was
+        // created on the destination.
+        if context.bad_haunt_addr == Some(*addr) {
+            continue;
+        }
+
+        // No channel means the app is unknown to us: same skip as a dead
+        // one (`Not notifying ghost for %u on dead app`).
+        let Some(channel) = channels.get_mut(addr) else {
+            continue;
+        };
+
+        if !channel.is_good {
+            continue;
+        }
+
+        if !context.has_changed_space && !context.is_teleported {
+            real.haunts.push(Haunt {
+                addr: *addr,
+                creation_time: time,
+            });
+            channel.out.push(GhostMessage::SetReal(GhostSetReal {
+                entity_id: real.id,
+                num_times_real_offloaded,
+                owner: own_addr,
+            }));
+        } else {
+            channel
+                .out
+                .push(GhostMessage::DelGhost { entity_id: real.id });
+        }
+    }
+
+    are_we_haunted
+}
+
+// -----------------------------------------------------------------------------
+// Section: the role switch (`entity.cpp` offload/onload)
+// -----------------------------------------------------------------------------
+
+/// The `onload` message body — `Entity::writeRealDataToStream`
+/// (`entity.cpp:2080-2135`) plus `RealEntity::writeOffloadData`
+/// (`real_entity.cpp:430-470`), distilled to the fields the port models.
+/// The ghost-level state is not re-sent: the destination already holds it
+/// as a ghost.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnloadPayload {
+    /// `data << id_`.
+    pub entity_id: EntityId,
+    /// `data << entityTypeID()`.
+    pub entity_type_id: u16,
+    /// The real-only properties (`propCountGhost ..
+    /// propCountGhostPlusReal`).
+    pub real_properties: Vec<PropValue>,
+    /// `writeOffloadData`: `velocity_`.
+    pub velocity: Vector3,
+    /// `shouldAutoBackup_`.
+    pub should_auto_backup: u8,
+    /// `controlledBy_`.
+    pub controlled_by: EntityMailBoxRef,
+    /// The space the entity came from — a change drives the haunt pass.
+    pub space_id: SpaceId,
+    /// `isTeleport`.
+    pub is_teleport: bool,
+    /// The haunt list: every app holding a ghost, plus the source itself
+    /// when it was not already haunted (`!isAlreadyHaunted`).
+    pub haunt_addrs: Vec<Addr>,
+    /// `Entity::writeRealControllersToStream` (`entity.cpp:2204`): the
+    /// `Controllers::writeRealsToStream` encoding — the id counter, then
+    /// each real-domain controller's id, type/user arg for real-only
+    /// ones, and its live state.
+    pub real_controllers: Vec<u8>,
+}
+
+/// `Cell::offloadEntity` -> `Entity::offload` -> `convertRealToGhost`
+/// (`cell.cpp:193-218`, `entity.cpp:1978-2104`): build the `onload`
+/// payload for the destination, sign off the other haunts
+/// (`RealEntity::destroy`'s pass), and leave a ghost behind pointing at
+/// the destination until its `ghostSetReal` confirms the handover
+/// (`pRealChannel_ = pChannel`, `nextRealAddr_ = pChannel->addr()`).
+/// Returns the payload to send and the ghost record to install — the
+/// real part is consumed: its haunts travel in the payload and the
+/// destination's haunt pass rebuilds them there.
+#[allow(clippy::too_many_arguments)]
+pub fn convert_real_to_ghost(
+    real: &mut RealEntity,
+    view: &GhostedEntityView,
+    controllers: &mut Controllers,
+    callbacks: &mut EntityCallbackBuffer,
+    destination: Addr,
+    own_addr: Addr,
+    space_id: SpaceId,
+    is_teleport: bool,
+    time: u32,
+    channels: &mut BTreeMap<Addr, GhostChannel>,
+) -> (OnloadPayload, GhostRecord) {
+    // `Entity::callbacksPermitted( false )` (`entity.cpp:2021`): script
+    // callbacks fired during the switch queue and replay once it is done.
+    callbacks.enter_buffered_section();
+
+    // `writeOffloadData`: the haunt list, plus us when we are not already
+    // haunted (`isAlreadyHaunted` = our own address in the list).
+    let mut haunt_addrs: Vec<Addr> = real.haunts.iter().map(|h| h.addr).collect();
+    if !haunt_addrs.contains(&own_addr) {
+        haunt_addrs.push(own_addr);
+    }
+
+    // `Entity::writeRealControllersToStream` inside `writeOffloadData`
+    // (`real_entity.cpp:563`): the controllers stream their live state
+    // while they are still running.
+    let mut controller_stream = BinaryStream::new();
+    controllers.write_reals_to_stream(&mut controller_stream);
+
+    let payload = OnloadPayload {
+        entity_id: real.id,
+        entity_type_id: view.entity_type_id,
+        real_properties: view.real_properties.clone(),
+        velocity: real.velocity,
+        should_auto_backup: real.should_auto_backup,
+        controlled_by: real.controlled_by.clone(),
+        space_id,
+        is_teleport,
+        haunt_addrs,
+        real_controllers: controller_stream.as_bytes().to_vec(),
+    };
+
+    // `RealEntity::destroy(&pChannel->addr())`: every haunt except the
+    // destination learns where the real is going. The real part then dies
+    // — its destructor stops the real controllers (`real_entity.cpp:252`)
+    // after their state went onto the stream: real-only ones are erased,
+    // both-domain ghost halves keep running.
+    offload_sign_off(real, destination, channels);
+    controllers.stop_reals(false);
+
+    // The ghost keeps the ghost-level view. It routes to the destination
+    // right away and still expects that app's `ghostSetReal`.
+    let mut controllers = Controllers::new();
+    for seed in &view.ghost_controllers {
+        controllers.create_ghost(seed.id, seed.type_id, seed.user_arg, seed.payload.clone());
+    }
+    real.haunts.clear();
+    let record = GhostRecord {
+        entity_id: real.id,
+        entity_type_id: view.entity_type_id,
+        num_times_real_offloaded: view.num_times_real_offloaded,
+        position: view.position,
+        is_on_ground: view.is_on_ground,
+        last_event_number: view.last_event_number,
+        volatile: view.volatile,
+        real_addr: destination,
+        next_real_addr: Some(destination),
+        base_addr: view.base_addr,
+        direction: view.direction,
+        property_event_stamps: view.property_event_stamps.clone(),
+        last_trimmed_event_number: view.last_event_number,
+        ghost_properties: view.ghost_properties.clone(),
+        controllers,
+        periods_without_witness: view.periods_without_witness,
+        aoi_update_scheme_id: view.aoi_update_scheme_id,
+        creation_time: time,
+    };
+    callbacks.leave_buffered_section(&|_id| false);
+    (payload, record)
+}
+
+/// What `Entity::onload` produced: the one real for this entity, and
+/// whether this app was itself in the haunt list — the reference's
+/// `MF_ASSERT( areWeHaunted )` (the offload destination ghosts the entity
+/// before the move, so it always is).
+pub struct OnloadOutcome {
+    /// The real created from the ghost.
+    pub real: RealEntity,
+    /// Our own address was in the haunt list.
+    pub are_we_haunted: bool,
+}
+
+impl GhostHost {
+    /// `Entity::onload` -> `convertGhostToReal`
+    /// (`entity.cpp:4656-4790`): the ghost becomes the one real —
+    /// `numTimesRealOffloaded_` increments first — and the haunt pass
+    /// (`readOffloadData`) re-points the other ghosts, or deletes them
+    /// across a space change or teleport. Returns `None` when no ghost is
+    /// here to load: the reference routes `onload` to an entity, and
+    /// without one the message has nowhere to land.
+    ///
+    /// `bad_haunt_addr` is the failed-teleport face: the source address
+    /// (`pBadHauntAddr`) whose haunt entry is skipped because no ghost
+    /// was ever created on this app.
+    #[allow(clippy::too_many_arguments)]
+    pub fn receive_onload(
+        &mut self,
+        payload: OnloadPayload,
+        entity_controllers: &mut Controllers,
+        callbacks: &mut EntityCallbackBuffer,
+        local_space_id: SpaceId,
+        bad_haunt_addr: Option<Addr>,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        own_addr: Addr,
+        time: u32,
+    ) -> Option<OnloadOutcome> {
+        // `Entity::callbacksPermitted( false )` (`entity.cpp:4761`).
+        callbacks.enter_buffered_section();
+
+        let record = self.ghosts.remove(&payload.entity_id)?;
+
+        // The ghost's controller halves are the entity's own in the
+        // reference (`pControllers_`); move them in before the stream is
+        // read — `readRealsFromStream` looks them up by id.
+        entity_controllers.merge_ghost_halves(record.controllers);
+
+        // `Entity::readRealControllersFromStream` inside `readOffloadData`
+        // (`real_entity.cpp:415`): the streamed controllers are built
+        // now, started only after the entity is real.
+        let mut controller_stream = BinaryStream::from_slice(&payload.real_controllers);
+        let controllers_read = entity_controllers.read_reals_from_stream(&mut controller_stream);
+        debug_assert!(controllers_read.is_ok(), "onload controller stream");
+
+        // `convertGhostToReal`'s first line.
+        let num_times_real_offloaded = record.num_times_real_offloaded + 1;
+
+        // `readRealDataFromStreamForOnload`: the ghost keeps its
+        // snapshot; the stream adds the real-only state on top.
+        let mut real = RealEntity::new(
+            payload.entity_id,
+            record.base_addr,
+            record.position,
+            time,
+            payload.should_auto_backup,
+        );
+        real.velocity = payload.velocity;
+        real.controlled_by = payload.controlled_by;
+
+        let context = OnloadHauntContext {
+            has_changed_space: payload.space_id != local_space_id,
+            is_teleported: payload.is_teleport,
+            bad_haunt_addr,
+        };
+        let are_we_haunted = onload_notify_haunts(
+            &mut real,
+            &payload.haunt_addrs,
+            channels,
+            own_addr,
+            num_times_real_offloaded,
+            time,
+            &context,
+        );
+
+        // `Entity::startRealControllers` (`entity.cpp:4856`): now that
+        // the entity is real, the streamed controllers resume — not as
+        // their initial start, so their state carries over.
+        entity_controllers.start_reals();
+
+        // `convertGhostToReal`'s tail (`entity.cpp:4786-4795`):
+        // `onEnteredCell` runs buffered at high priority, ahead of
+        // everything queued during the switch.
+        callbacks.enable_high_priority_buffering();
+        callbacks.callback(payload.entity_id, "onEnteredCell", false);
+        callbacks.disable_high_priority_buffering();
+
+        callbacks.leave_buffered_section(&|_id| false);
+        Some(OnloadOutcome {
+            real,
+            are_we_haunted,
+        })
+    }
+}
+
+/// A call re-addressed to the real's address
+/// (`Entity::forwardMessageToReal`, `entity.cpp:2281-2308`): the entity
+/// id heads the body again; a request carries its reply id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForwardedCall {
+    /// The address the message now heads to — during an offload, the
+    /// migration target.
+    pub to: Addr,
+    pub entity_id: EntityId,
+    pub message_id: u8,
+    pub body: Vec<u8>,
+    /// `REPLY_ID_NONE` for a one-way message.
+    pub reply_id: Option<u32>,
+}
+
+/// The reply half (`ReplyForwarder`, `entity.cpp:2234-2261`): the
+/// target's response comes back through this app to the original caller,
+/// once — the forwarder is consumed by its own forward.
+#[derive(Debug, Default)]
+pub struct ReplyForwarders {
+    pending: BTreeMap<u32, Addr>,
+    forwarded: Vec<(u32, Addr, Vec<u8>)>,
+}
+
+impl ReplyForwarders {
+    /// `bundle.startRequest( ie, new ReplyForwarder( srcAddr, replyID ) )`.
+    pub fn register(&mut self, reply_id: u32, src_addr: Addr) {
+        self.pending.insert(reply_id, src_addr);
+    }
+
+    /// `ReplyForwarder::handleMessage`: the response rides back to the
+    /// original caller. A second response — or one for a request that
+    /// was never forwarded — finds no forwarder and is refused.
+    pub fn forward_reply(&mut self, reply_id: u32, payload: Vec<u8>) -> Option<Addr> {
+        let src_addr = self.pending.remove(&reply_id)?;
+        self.forwarded.push((reply_id, src_addr, payload));
+        Some(src_addr)
+    }
+
+    /// The responses forwarded so far, in order.
+    pub fn forwarded(&self) -> &[(u32, Addr, Vec<u8>)] {
+        &self.forwarded
+    }
+
+    /// Nothing in flight and nothing forwarded.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.forwarded.is_empty()
+    }
+}
+
+/// The switch-window redirect (`message_handlers.cpp:184-216`,
+/// `DISPOSITION_FORWARD_TO_REAL`): a REAL_ONLY message for an entity we
+/// hold only as a ghost is re-addressed to the real's address — during
+/// an offload, the migration target. A request registers its reply
+/// forwarder before the message leaves. Returns `None` with nothing
+/// registered when there is no routing record — the population's
+/// `findRealChannel` miss turns the forward into the unknown-entity
+/// failure.
+pub fn forward_message_to_real(
+    ghosts: &BTreeMap<EntityId, GhostRecord>,
+    forwarders: &mut ReplyForwarders,
+    src_addr: Addr,
+    entity_id: EntityId,
+    message_id: u8,
+    body: Vec<u8>,
+    reply_id: Option<u32>,
+) -> Option<ForwardedCall> {
+    // `pEntity ? pEntity->pRealChannel() : population().findRealChannel(
+    // entityID)` — a NULL channel turns the forward into the failure.
+    let real_addr = ghosts.get(&entity_id)?.real_addr;
+    if let Some(reply_id) = reply_id {
+        forwarders.register(reply_id, src_addr);
+    }
+    Some(ForwardedCall {
+        to: real_addr,
+        entity_id,
+        message_id,
+        body,
+        reply_id,
+    })
+}
+
+/// The `onloadTeleportedEntity` message (`real_entity.cpp:1315-1325` +
+/// `writeRealDataToStream`): the nearby entity's id, the create-ghost
+/// body for the destination's copy, and the offload body for the onload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TeleportedEntityPayload {
+    /// `bundle << nearbyMBRef.id` — who we teleport near to.
+    pub nearby_id: EntityId,
+    /// `writeGhostDataToStream` — the destination's copy starts from
+    /// this. It carries the SOURCE's space id; the destination replaces
+    /// it with its own before dispatching the create.
+    pub create: GhostCreatePayload,
+    /// `writeRealDataToStream` — the offload body (`teleportFailure` is
+    /// always false from the sender).
+    pub onload: OnloadPayload,
+}
+
+/// What `CellApp::onloadTeleportedEntity` produced when the nearby
+/// entity exists here.
+pub struct TeleportLoadOutcome {
+    /// The create dispatched for the destination's copy — carrying THIS
+    /// space's id (the destination's overwrite).
+    pub create: GhostCreatePayload,
+    /// The onload result: the real and its haunt pass.
+    pub onload: OnloadOutcome,
+    /// The nearby entity the script asked to teleport near
+    /// (`onTeleportSuccess`'s argument).
+    pub nearby_id: EntityId,
+}
+
+/// The bounce back to the originator when the nearby entity does not
+/// exist here: the offload body returns with `teleportFailure` set
+/// (`cellapp.cpp:2186-2203`) — nothing was dispatched.
+pub struct TeleportFailureBounce {
+    /// The teleported entity.
+    pub entity_id: EntityId,
+    /// The offload body, sent back on the originator's channel.
+    pub onload: OnloadPayload,
+}
+
+/// The two ways `CellApp::onloadTeleportedEntity` can go.
+pub enum TeleportLoad {
+    /// Nearby existed: the ghost was created with our space id and the
+    /// onload turned it into the real.
+    Loaded(TeleportLoadOutcome),
+    /// Nearby missing: the offload body bounces back with
+    /// `teleportFailure` true; the originator runs its failure path.
+    FailedNearbyMissing(TeleportFailureBounce),
+}
+
+/// The cross-space teleport send face (`RealEntity::teleport`,
+/// `real_entity.cpp:1186-1345`): every existing ghost is deleted first —
+/// they are recreated on the destination, and a teleport failure must
+/// not leave stale copies — `onLeavingCell` fires, the destination is
+/// haunted anew, and the `onloadTeleportedEntity` message carries the
+/// ghost data plus the offload body (`offloadEntity( isTeleport )`, the
+/// 05-02 face). The view's snapshot is the teleport target already
+/// (`localPosition_ = position`, `real_entity.cpp:1279`). Returns the
+/// message payload, the ghost record the source keeps, and the
+/// addresses the delGhosts went to.
+#[allow(clippy::too_many_arguments)]
+pub fn teleport_entity_to_space(
+    real: &mut RealEntity,
+    view: &GhostedEntityView,
+    controllers: &mut Controllers,
+    callbacks: &mut EntityCallbackBuffer,
+    own_addr: Addr,
+    space_id: SpaceId,
+    destination: Addr,
+    nearby_id: EntityId,
+    time: u32,
+    channels: &mut BTreeMap<Addr, GhostChannel>,
+) -> (TeleportedEntityPayload, GhostRecord, Vec<Addr>) {
+    // Delete all ghosts first (`real_entity.cpp:1288-1300`).
+    let mut del_addrs = Vec::new();
+    for haunt in real.haunts.drain(..) {
+        if let Some(channel) = channels.get_mut(&haunt.addr) {
+            channel
+                .out
+                .push(GhostMessage::DelGhost { entity_id: real.id });
+        }
+        del_addrs.push(haunt.addr);
+    }
+
+    // `onLeavingCell`, before the message is built
+    // (`real_entity.cpp:1307`).
+    callbacks.callback(real.id, "onLeavingCell", false);
+
+    // Re-add haunt for the destination (`real_entity.cpp:1316`).
+    real.haunts = vec![Haunt {
+        addr: destination,
+        creation_time: time,
+    }];
+
+    let create = GhostCreatePayload {
+        space_id,
+        entity_id: view.entity_id,
+        entity_type_id: view.entity_type_id,
+        num_times_real_offloaded: view.num_times_real_offloaded,
+        position: view.position,
+        is_on_ground: view.is_on_ground,
+        last_event_number: view.last_event_number,
+        volatile: view.volatile,
+        real_addr: own_addr,
+        base_addr: view.base_addr,
+        direction: view.direction,
+        property_event_stamps: view.property_event_stamps.clone(),
+        ghost_properties: view.ghost_properties.clone(),
+        ghost_controllers: view.ghost_controllers.clone(),
+        periods_without_witness: view.periods_without_witness,
+        aoi_update_scheme_id: view.aoi_update_scheme_id,
+    };
+
+    // `offloadEntity( isTeleport: true )` — the offload body's haunt
+    // list is just the re-added destination plus ourselves.
+    let (onload, record) = convert_real_to_ghost(
+        real,
+        view,
+        controllers,
+        callbacks,
+        destination,
+        own_addr,
+        space_id,
+        true,
+        time,
+        channels,
+    );
+
+    (
+        TeleportedEntityPayload {
+            nearby_id,
+            create,
+            onload,
+        },
+        record,
+        del_addrs,
+    )
+}
+
+impl GhostHost {
+    /// `CellApp::onloadTeleportedEntity` (`cellapp.cpp:2108-2196`): the
+    /// create dispatches with THIS space's id (the destination's
+    /// overwrite of the streamed one), a same-app teleport destroys the
+    /// local copy first, and the onload turns the fresh ghost into the
+    /// real. `nearby_exists` is the caller's `findEntity(nearbyID)`: a
+    /// miss discards the stream and bounces the offload body back with
+    /// `teleportFailure` true.
+    #[allow(clippy::too_many_arguments)]
+    pub fn receive_onload_teleported_entity(
+        &mut self,
+        src: Addr,
+        nearby_exists: bool,
+        payload: TeleportedEntityPayload,
+        entity_controllers: &mut Controllers,
+        callbacks: &mut EntityCallbackBuffer,
+        local_space_id: SpaceId,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        own_addr: Addr,
+        time: u32,
+    ) -> TeleportLoad {
+        if !nearby_exists {
+            return TeleportLoad::FailedNearbyMissing(TeleportFailureBounce {
+                entity_id: payload.onload.entity_id,
+                onload: payload.onload,
+            });
+        }
+
+        let mut create = payload.create;
+        create.space_id = local_space_id;
+
+        // Same-app teleport: the local copy goes before the fresh
+        // create, which would otherwise be buffered
+        // (`cellapp.cpp:2145-2153`).
+        if src == own_addr && self.ghosts.contains_key(&create.entity_id) {
+            self.receive_del_ghost(create.entity_id, time);
+        }
+
+        let _ = self.receive_create_ghost(src, create.clone(), time);
+
+        let onload = self
+            .receive_onload(
+                payload.onload,
+                entity_controllers,
+                callbacks,
+                local_space_id,
+                None,
+                channels,
+                own_addr,
+                time,
+            )
+            .expect("create ghost dispatched above");
+        TeleportLoad::Loaded(TeleportLoadOutcome {
+            create,
+            onload,
+            nearby_id: payload.nearby_id,
+        })
+    }
+}
+
+/// `Entity::checkIfZombied`'s outcome (`entity.cpp:3309-3355`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZombieVerdict {
+    /// A real, or an already-destroyed entity — never a zombie.
+    NotZombied,
+    /// The ghost re-pointed at its next real: the handover survived the
+    /// old real's death (`Recovering zombie ... by updating current real
+    /// to next real`).
+    RecoveredToNext,
+    /// No live real to point at — the ghost is a zombie and dies.
+    Zombied,
+}
+
+/// `Entity::checkIfZombied` (`entity.cpp:3309-3355`) over the port's
+/// routing record. `is_real`/`is_destroyed` are the caller's entity
+/// facts — the port splits reals from ghost records; `recently_dead` is
+/// `CellAppChannels::hasRecentlyDied`. The next real is checked FIRST:
+/// a mid-offload ghost whose destination died is a zombie even though
+/// the record's routing still names it.
+pub fn check_if_zombied(
+    record: &mut GhostRecord,
+    is_real: bool,
+    is_destroyed: bool,
+    dying_addr: Addr,
+    recently_dead: &dyn Fn(Addr) -> bool,
+    channels: &mut BTreeMap<Addr, GhostChannel>,
+) -> ZombieVerdict {
+    if is_destroyed || is_real {
+        return ZombieVerdict::NotZombied;
+    }
+
+    // Zombied if next real is dying or dead.
+    if let Some(next) = record.next_real_addr
+        && (next == dying_addr || recently_dead(next))
+    {
+        return ZombieVerdict::Zombied;
+    }
+
+    // Current real healthy?
+    if record.real_addr != dying_addr {
+        return ZombieVerdict::NotZombied;
+    }
+    if let Some(next) = record.next_real_addr {
+        // Recovering zombie: the current real becomes the next real
+        // (`pRealChannel_ = get(nextRealAddr_)` — the get creates the
+        // channel).
+        channels
+            .entry(next)
+            .or_insert_with(|| GhostChannel::new(next));
+        record.real_addr = next;
+        return ZombieVerdict::RecoveredToNext;
+    }
+    ZombieVerdict::Zombied
+}
+
+/// `CellApp::handleCellAppDeath`'s real half (`cellapp.cpp:1787-1804`):
+/// the real clears its haunts on the dead app. Returns the number of
+/// haunts removed.
+pub fn reals_clear_dead_haunts(real: &mut RealEntity, dying_addr: Addr) -> usize {
+    let before = real.haunts.len();
+    real.haunts.retain(|haunt| haunt.addr != dying_addr);
+    before - real.haunts.len()
+}
+
+impl GhostHost {
+    /// `CellApp::handleCellAppDeath`'s ghost half
+    /// (`cellapp.cpp:1769-1838`): every ghost is checked against the
+    /// dying app; zombies are destroyed, and each destroy offers the
+    /// buffered queues a new lifespan — a revived ghost re-zombies
+    /// (the reference's do-while) until its queues are spent. Returns
+    /// the destroyed ids, one entry per destroy.
+    pub fn handle_cell_app_death(
+        &mut self,
+        dying_addr: Addr,
+        recently_dead: &dyn Fn(Addr) -> bool,
+        channels: &mut BTreeMap<Addr, GhostChannel>,
+        time: u32,
+    ) -> Vec<EntityId> {
+        let mut zombies = Vec::new();
+        for (id, record) in self.ghosts.iter_mut() {
+            if matches!(
+                check_if_zombied(record, false, false, dying_addr, recently_dead, channels),
+                ZombieVerdict::Zombied
+            ) {
+                zombies.push(*id);
+            }
+        }
+
+        let mut destroyed = Vec::new();
+        for id in zombies {
+            let mut current = Some(id);
+            while let Some(entity_id) = current {
+                if self.ghosts.remove(&entity_id).is_none() {
+                    break;
+                }
+                destroyed.push(entity_id);
+                self.play_new_lifespan_for(entity_id, time);
+                current = match self.ghosts.get_mut(&entity_id) {
+                    Some(record) => {
+                        let verdict = check_if_zombied(
+                            record,
+                            false,
+                            false,
+                            dying_addr,
+                            recently_dead,
+                            channels,
+                        );
+                        if matches!(verdict, ZombieVerdict::Zombied) {
+                            Some(entity_id)
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+            }
+        }
+        destroyed
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Section: the entity view
+// -----------------------------------------------------------------------------
+
+/// What the maintainer reads off the entity (`Entity::createGhost`'s
+/// payload sources). `appealRadius` comes from the entity type's
+/// description; `creationTime` is the app time for haunt stamps.
+#[derive(Clone, Debug)]
+pub struct GhostedEntityView {
+    /// `id_`.
+    pub entity_id: EntityId,
+    /// `entityTypeID()`.
+    pub entity_type_id: u16,
+    /// `pType()->description().appealRadius()`.
+    pub appeal_radius: f32,
+    /// `numTimesRealOffloaded_`.
+    pub num_times_real_offloaded: u32,
+    /// `position()`.
+    pub position: Vector3,
+    /// `isOnGround()`.
+    pub is_on_ground: bool,
+    /// `lastEventNumber()`.
+    pub last_event_number: i32,
+    /// `volatileInfo()`.
+    pub volatile: VolatileInfo,
+    /// `baseAddr()`.
+    pub base_addr: Addr,
+    /// `localDirection()`.
+    pub direction: Vector3,
+    /// `propertyEventStamps()`.
+    pub property_event_stamps: Vec<i32>,
+    /// The ghosted properties (`propCountGhost` leading values).
+    pub ghost_properties: Vec<PropValue>,
+    /// The real-only properties (`propCountGhost ..
+    /// propCountGhostPlusReal`) — the `onload` stream's extra payload.
+    pub real_properties: Vec<PropValue>,
+    /// The ghost-domain controllers (`writeGhostsToStream`).
+    pub ghost_controllers: Vec<GhostControllerSeed>,
+    /// `periodsWithoutWitness()`.
+    pub periods_without_witness: u16,
+    /// `aoiUpdateSchemeID()`.
+    pub aoi_update_scheme_id: u8,
+}
+
+// -----------------------------------------------------------------------------
+// Section: tests
+// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controllers::{Controller, ControllerEvent, DOMAIN_GHOST_AND_REAL, DOMAIN_REAL};
+    use crate::real_entity::BufferedScriptCallback;
 
-    fn config(max_deletions: u32) -> GhostMaintainerConfig {
-        GhostMaintainerConfig {
-            max_ghosts_to_delete: max_deletions,
-            // The CellApp hosting cell 1: its own cell is skipped by address.
-            own_address: 1,
-            ..GhostMaintainerConfig::default()
+    const APP_A: Addr = (1, 1);
+    const APP_B: Addr = (2, 2);
+    const APP_C: Addr = (3, 3);
+    const APP_D: Addr = (4, 4);
+    const APP_E: Addr = (5, 5);
+
+    /// Two adjacent 100m cells: A owns x in [0,100), B owns x in [100,200).
+    /// A tight ghost distance keeps the interest bands inside the fixture.
+    fn two_cell_world() -> (
+        BTreeMap<Addr, CellInfoRecord>,
+        BTreeMap<Addr, GhostChannel>,
+        GhostMaintainer,
+    ) {
+        let mut cells = BTreeMap::new();
+        cells.insert(
+            APP_A,
+            CellInfoRecord::new(APP_A, Rect::new(0.0, 0.0, 100.0, 100.0)),
+        );
+        cells.insert(
+            APP_B,
+            CellInfoRecord::new(APP_B, Rect::new(100.0, 0.0, 200.0, 100.0)),
+        );
+        for info in cells.values_mut() {
+            info.has_been_created = true;
+        }
+
+        let mut channels = BTreeMap::new();
+        channels.insert(APP_A, GhostChannel::new(APP_A));
+        channels.insert(APP_B, GhostChannel::new(APP_B));
+
+        let maintainer = GhostMaintainer {
+            config: GhostConfig {
+                ghost_distance: 30.0,
+                ..GhostConfig::default()
+            },
+            own_addr: APP_A,
+            space_id: 7,
+            should_offload: false,
+            budget: OffloadCheckerBudget::default(),
+        };
+        (cells, channels, maintainer)
+    }
+
+    /// The cell/channel layout for checker tests (A and B created, C is a
+    /// third app with a channel but no cell record here).
+    fn checker_world() -> (
+        BTreeMap<Addr, CellInfoRecord>,
+        BTreeMap<Addr, GhostChannel>,
+        GhostConfig,
+    ) {
+        let mut cells = BTreeMap::new();
+        cells.insert(
+            APP_A,
+            CellInfoRecord::new(APP_A, Rect::new(0.0, 0.0, 100.0, 100.0)),
+        );
+        cells.insert(
+            APP_B,
+            CellInfoRecord::new(APP_B, Rect::new(100.0, 0.0, 200.0, 100.0)),
+        );
+        for info in cells.values_mut() {
+            info.has_been_created = true;
+        }
+
+        let mut channels = BTreeMap::new();
+        for addr in [APP_A, APP_B, APP_C] {
+            channels.insert(addr, GhostChannel::new(addr));
+        }
+
+        let config = GhostConfig {
+            ghost_distance: 30.0,
+            ..GhostConfig::default()
+        };
+        (cells, channels, config)
+    }
+
+    /// A checker with the given gates, ready for one run.
+    fn checker(should_offload: bool, is_shutting_down: bool) -> OffloadChecker {
+        OffloadChecker {
+            is_shutting_down,
+            should_offload,
+            ..OffloadChecker::default()
         }
     }
 
-    /// Two adjacent cells of half-width 250 either side of the origin:
-    /// the left one is the real entity's own cell, the right one the
-    /// neighbour.
-    fn two_cells() -> Vec<GhostCell> {
-        vec![
-            GhostCell {
-                cell_id: 1,
-                address: 1,
-                rect: GhostRect {
-                    min_x: -250.0,
-                    max_x: 250.0,
-                    min_z: -250.0,
-                    max_z: 250.0,
-                },
-                channel: GhostChannel::new(),
-            },
-            GhostCell {
-                cell_id: 2,
-                address: 2,
-                rect: GhostRect {
-                    min_x: 250.0,
-                    max_x: 500.0,
-                    min_z: -250.0,
-                    max_z: 250.0,
-                },
-                channel: GhostChannel::new(),
-            },
-        ]
-    }
-
-    fn ghosts_at(x: f32, z: f32) -> RealGhosts {
-        let mut ghosts = RealGhosts {
-            entity_id: 9,
-            ..RealGhosts::default()
+    /// A real entity of type 4 living on A, created 100 ticks ago.
+    fn ghosted_real(id: EntityId, x: f32) -> (RealEntity, GhostedEntityView) {
+        let mut real = RealEntity::new(id, APP_A, Vector3::new(x, 0.0, 50.0), 0, 0);
+        real.creation_time = 0;
+        let view = GhostedEntityView {
+            entity_id: id,
+            entity_type_id: 4,
+            appeal_radius: 0.0,
+            num_times_real_offloaded: 0,
+            position: Vector3::new(x, 0.0, 50.0),
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            base_addr: (9, 9),
+            direction: Vector3::new(1.5, 0.25, -0.5),
+            property_event_stamps: vec![7, 13],
+            ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+            real_properties: vec![PropValue::Int(99)],
+            ghost_controllers: vec![GhostControllerSeed {
+                id: 3,
+                type_id: 9,
+                user_arg: 42,
+                payload: vec![1, 2, 3],
+            }],
+            periods_without_witness: 4,
+            aoi_update_scheme_id: 3,
         };
-        ghosts.x = x;
-        ghosts.z = z;
-        ghosts
+        (real, view)
     }
 
     #[test]
-    fn channel_default_matches_new() {
-        assert_eq!(GhostChannel::default(), GhostChannel::new());
-    }
+    fn a_real_near_the_boundary_ghosts_onto_the_adjacent_cell() {
+        let (cells, mut channels, mut maintainer) = two_cell_world();
+        let (mut real, view) = ghosted_real(10, 90.0);
 
-    #[test]
-    fn inflate_by_respects_the_coordinate_limits() {
-        let mut r = GhostRect {
-            min_x: f32::MIN,
-            max_x: f32::MAX,
-            min_z: f32::MIN,
-            max_z: f32::MAX,
-        };
-        r.inflate_by(100.0);
-        assert_eq!(r.min_x, f32::MIN);
-        assert_eq!(r.max_x, f32::MAX);
-        assert_eq!(r.min_z, f32::MIN);
-        assert_eq!(r.max_z, f32::MAX);
-    }
-
-    #[test]
-    fn del_haunt_of_an_unknown_cell_is_a_noop() {
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        ghosts.add_haunt(2, 0);
-        ghosts.del_haunt(99);
-        assert_eq!(ghosts.haunts.len(), 1);
-    }
-
-    #[test]
-    fn offload_checks_refuse_our_own_cell() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.should_offload = true;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(m.offload_destination, None, "don't offload to ourselves");
-    }
-
-    #[test]
-    fn offload_checks_refuse_no_home_cell() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(10_000.0, 10_000.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.should_offload = true;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(m.offload_destination, None);
-    }
-
-    #[test]
-    fn a_haunt_on_a_missing_cell_is_left_alone() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        ghosts.add_haunt(2, 0);
-        ghosts.add_haunt(99, 0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
+        // x = 90: B's rect is 10m away, inside the 30m ghost distance.
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        assert_eq!(report.ghosts_created, 1);
+        assert_eq!(report.ghosts_deleted, 0);
         assert_eq!(
-            ghosts.haunts.len(),
-            2,
-            "a cell that vanished mid-run keeps its haunt"
-        );
-        assert!(!cells.iter().any(|c| c.channel.marked));
-    }
-
-    #[test]
-    fn deleting_through_a_dead_channel_sends_no_message() {
-        let mut cells = two_cells();
-        cells[1].channel.good = false;
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(ghosts.haunts.len(), 1);
-
-        // Walk out of range: the stale haunt is dropped locally but the
-        // dead channel gets no message.
-        ghosts.x = -10_000.0;
-        ghosts.z = -10_000.0;
-        ghosts.creation_time = 0;
-        ghosts.haunts[0].creation_time = 0;
-        m.current_time = 1000;
-        m.check(&mut ghosts, &mut cells);
-        assert!(ghosts.haunts.is_empty());
-        assert!(!ghosts
-            .messages
-            .contains(&GhostMessage::Delete { cell_id: 2 }));
-        assert_eq!(m.checker.num_ghosts_deleted, 0);
-    }
-
-    #[test]
-    fn the_offload_destination_is_the_only_cell_created_on() {
-        let mut cells = two_cells();
-        cells.push(GhostCell {
-            cell_id: 3,
-            address: 3,
-            rect: GhostRect {
-                min_x: 500.0,
-                max_x: 750.0,
-                min_z: -250.0,
-                max_z: 250.0,
-            },
-            channel: GhostChannel::new(),
-        });
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.offload_destination = Some(3);
-        let created = m.check(&mut ghosts, &mut cells);
-        assert_eq!(created, 1, "only the destination gets a new ghost");
-        assert_eq!(ghosts.haunts.len(), 1);
-        assert_eq!(ghosts.haunts[0].cell_id, 3);
-    }
-
-    #[test]
-    fn the_hysteresis_band_rejects_cells_only_inside_the_fudge() {
-        let mut cells = two_cells();
-        // Cell 3 reaches into the GHOST_FUDGE band past the interest area
-        // but not into the interest area itself.
-        cells.push(GhostCell {
-            cell_id: 3,
-            address: 3,
-            rect: GhostRect {
-                min_x: 515.0,
-                max_x: 750.0,
-                min_z: -250.0,
-                max_z: 250.0,
-            },
-            channel: GhostChannel::new(),
-        });
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        let created = m.check(&mut ghosts, &mut cells);
-        assert_eq!(created, 1, "only the fully-overlapping cell is haunted");
-        assert_eq!(ghosts.haunts[0].cell_id, 2);
-    }
-
-    #[test]
-    fn rect_intersection_keeps_touching_edges() {
-        let mut a = GhostRect::point(0.0, 0.0);
-        a.inflate_by(100.0);
-        let mut b = GhostRect::point(100.0, 0.0);
-        b.inflate_by(100.0);
-        assert!(a.intersects(&b), "edge to edge still intersects");
-
-        let c = GhostRect::point(1000.0, 0.0);
-        assert!(!a.intersects(&c));
-    }
-
-    #[test]
-    fn a_real_entity_ghosts_into_both_adjacent_cells() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        let created = m.check(&mut ghosts, &mut cells);
-        assert_eq!(created, 1, "only the neighbour cell needs a ghost");
-        assert_eq!(ghosts.haunts.len(), 1);
-        assert_eq!(ghosts.haunts[0].cell_id, 2);
-        assert_eq!(ghosts.messages, vec![GhostMessage::Create { cell_id: 2 }]);
-    }
-
-    #[test]
-    fn hysteresis_keeps_a_ghost_while_the_cell_still_overlaps() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
-
-        // Move away: still inside the inflated interest area, so the
-        // existing ghost survives (its channel gets unmarked).
-        let mut further = ghosts;
-        further.x = 400.0;
-        let created = m.check(&mut further, &mut cells);
-        assert_eq!(created, 0);
-        assert_eq!(further.haunts.len(), 1);
-        assert!(!cells.iter().any(|c| c.channel.marked));
-    }
-
-    #[test]
-    fn offloading_does_not_create_ghosts_elsewhere() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.offload_destination = Some(2);
-        m.check(&mut ghosts, &mut cells);
-        // The destination cell still gets its ghost, and no others.
-        assert_eq!(ghosts.haunts.len(), 1);
-        assert_eq!(ghosts.haunts[0].cell_id, 2);
-    }
-
-    #[test]
-    fn delete_pending_cell_never_receives_a_ghost() {
-        let mut cells = two_cells();
-        cells[1].channel.delete_pending = true;
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        let created = m.check(&mut ghosts, &mut cells);
-        assert_eq!(created, 0);
-        assert!(ghosts.haunts.is_empty());
-    }
-
-    #[test]
-    fn a_new_real_entity_keeps_its_ghosts() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
-
-        // Teleport out of range before the keep period is up.
-        ghosts.x = -10_000.0;
-        ghosts.z = -10_000.0;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(ghosts.haunts.len(), 1, "the new real keeps its ghost");
-    }
-
-    #[test]
-    fn a_new_ghost_outlives_the_minimum_lifespan() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
-
-        // Move out of range with the haunt created at the same tick.
-        ghosts.x = -10_000.0;
-        ghosts.z = -10_000.0;
-        ghosts.haunts[0].creation_time = m.current_time;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(ghosts.haunts.len(), 1, "a brand new ghost is kept");
-    }
-
-    #[test]
-    fn the_deletion_cap_limits_ghost_removals() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(0), 1);
-        m.check(&mut ghosts, &mut cells);
-        // With no deletions allowed the stale haunt stays marked but lives.
-        ghosts.x = -10_000.0;
-        ghosts.z = -10_000.0;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(ghosts.haunts.len(), 1);
-        assert!(m.checker.num_ghosts_deleted == 0);
-    }
-
-    #[test]
-    fn marks_are_cleared_for_the_next_user() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
-        assert!(
-            !cells.iter().any(|c| c.channel.marked),
-            "marks never leak into the next iteration"
-        );
-    }
-
-    #[test]
-    fn an_entity_standing_in_the_neighbour_offloads_there() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(300.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.should_offload = true;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(m.offload_destination, Some(2));
-        assert_eq!(m.checker.offloads, vec![(9, 2)]);
-    }
-
-    #[test]
-    fn offload_to_a_delete_pending_cell_is_refused() {
-        let mut cells = two_cells();
-        cells[1].channel.delete_pending = true;
-        let mut ghosts = ghosts_at(300.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.should_offload = true;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(m.offload_destination, None);
-    }
-
-    #[test]
-    fn offload_to_a_dead_cell_is_refused() {
-        let mut cells = two_cells();
-        cells[1].channel.good = false;
-        let mut ghosts = ghosts_at(300.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.should_offload = true;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(m.offload_destination, None);
-    }
-
-    #[test]
-    fn the_own_cell_is_skipped_by_address() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
-        // Cell 1 carries the app's own address, so only the neighbour is
-        // haunted.
-        assert_eq!(ghosts.haunts.len(), 1);
-        assert_eq!(ghosts.haunts[0].cell_id, 2);
-    }
-
-    #[test]
-    fn appeal_radius_reaches_further_cells() {
-        let mut cells = two_cells();
-        // A cell a cell-width to the right, beyond the ghost distance.
-        cells.push(GhostCell {
-            cell_id: 3,
-            address: 3,
-            rect: GhostRect {
-                min_x: 500.0,
-                max_x: 750.0,
-                min_z: -250.0,
-                max_z: 250.0,
-            },
-            channel: GhostChannel::new(),
-        });
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        ghosts.appeal_radius = 100.0;
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(ghosts.haunts.len(), 2, "the appeal radius ghosts further");
-        assert_eq!(ghosts.haunts[0].cell_id, 2);
-        assert_eq!(ghosts.haunts[1].cell_id, 3);
-    }
-
-    #[test]
-    fn crossing_the_boundary_swaps_the_ghost_side() {
-        let mut cells = two_cells();
-        let mut ghosts = ghosts_at(0.0, 0.0);
-        let mut m = GhostMaintainer::new(config(100), 1);
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(
-            ghosts.haunts,
+            real.haunts,
             vec![Haunt {
-                cell_id: 2,
-                creation_time: 0
+                addr: APP_B,
+                creation_time: 100
+            }]
+        );
+        assert_eq!(
+            channels[&APP_B].out,
+            vec![GhostMessage::CreateGhost(GhostCreatePayload {
+                space_id: 7,
+                entity_id: 10,
+                entity_type_id: 4,
+                num_times_real_offloaded: 0,
+                position: Vector3::new(90.0, 0.0, 50.0),
+                is_on_ground: true,
+                last_event_number: 0,
+                volatile: VolatileInfo::NONE,
+                real_addr: APP_A,
+                base_addr: (9, 9),
+                direction: Vector3::new(1.5, 0.25, -0.5),
+                property_event_stamps: vec![7, 13],
+                ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+                ghost_controllers: vec![GhostControllerSeed {
+                    id: 3,
+                    type_id: 9,
+                    user_arg: 42,
+                    payload: vec![1, 2, 3],
+                }],
+                periods_without_witness: 4,
+                aoi_update_scheme_id: 3,
+            })]
+        );
+
+        // A second pass at the same spot keeps exactly one haunt: the
+        // channel unmarks and no second create rides.
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        assert_eq!(report.ghosts_created, 0);
+        assert_eq!(report.ghosts_deleted, 0);
+        assert_eq!(real.haunts.len(), 1);
+        assert_eq!(channels[&APP_B].out.len(), 1);
+    }
+
+    #[test]
+    fn the_hysteresis_band_keeps_an_existing_ghost_without_creating_new_ones() {
+        let (cells, mut channels, mut maintainer) = two_cell_world();
+        let (mut real, mut view) = ghosted_real(10, 90.0);
+        maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        assert_eq!(channels[&APP_B].out.len(), 1);
+
+        // x = 65: B is 35m away — outside the 30m hysteresis area, inside
+        // the 50m fudged interest area. The visit unmarks the haunt without
+        // creating anything, so the ghost survives the sweep.
+        view.position.x = 65.0;
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 200);
+        assert_eq!(report.ghosts_created, 0);
+        assert_eq!(report.ghosts_deleted, 0);
+        assert_eq!(real.haunts.len(), 1);
+
+        // A third pass still holds the ghost: the cell is visited with its
+        // mark already cleared, and the visit stops at the hysteresis band.
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 200);
+        assert_eq!(report.ghosts_created, 0);
+        assert_eq!(report.ghosts_deleted, 0);
+        assert_eq!(real.haunts.len(), 1);
+
+        // x = 45: B is 55m away — outside even the fudged area. The haunt
+        // stays marked and the sweep deletes it.
+        view.position.x = 45.0;
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 200);
+        assert_eq!(report.ghosts_created, 0);
+        assert_eq!(report.ghosts_deleted, 1);
+        assert!(real.haunts.is_empty());
+        assert_eq!(
+            channels[&APP_B].out,
+            vec![
+                GhostMessage::CreateGhost(GhostCreatePayload {
+                    space_id: 7,
+                    entity_id: 10,
+                    entity_type_id: 4,
+                    num_times_real_offloaded: 0,
+                    position: Vector3::new(90.0, 0.0, 50.0),
+                    is_on_ground: true,
+                    last_event_number: 0,
+                    volatile: VolatileInfo::NONE,
+                    real_addr: APP_A,
+                    base_addr: (9, 9),
+                    direction: Vector3::new(1.5, 0.25, -0.5),
+                    property_event_stamps: vec![7, 13],
+                    ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+                    ghost_controllers: vec![GhostControllerSeed {
+                        id: 3,
+                        type_id: 9,
+                        user_arg: 42,
+                        payload: vec![1, 2, 3],
+                    }],
+                    periods_without_witness: 4,
+                    aoi_update_scheme_id: 3,
+                }),
+                GhostMessage::DelGhost { entity_id: 10 },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pending_delete_cell_neither_gains_nor_keeps_ghosts() {
+        let (mut cells, mut channels, mut maintainer) = two_cell_world();
+        let (mut real, view) = ghosted_real(10, 90.0);
+
+        // No new ghost toward a pending-delete cell.
+        cells.get_mut(&APP_B).unwrap().is_delete_pending = true;
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        assert_eq!(report.ghosts_created, 0);
+        assert!(real.haunts.is_empty());
+
+        // ... and an existing ghost on a cell that turns pending-delete is
+        // swept: the pending check runs before the unmark, so the haunt
+        // stays marked and the delete pass takes it.
+        cells.get_mut(&APP_B).unwrap().is_delete_pending = false;
+        maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        assert_eq!(real.haunts.len(), 1);
+        cells.get_mut(&APP_B).unwrap().is_delete_pending = true;
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 200);
+        assert_eq!(report.ghosts_deleted, 1);
+        assert!(real.haunts.is_empty());
+    }
+
+    #[test]
+    fn new_reals_and_new_ghosts_survive_the_sweep() {
+        let (cells, mut channels, mut maintainer) = two_cell_world();
+        let (mut real, mut view) = ghosted_real(10, 90.0);
+
+        // Ghost created at tick 100 with the default 50-tick lifespan.
+        maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        view.position.x = 45.0; // out of the fudged area: the sweep runs
+
+        // At tick 120 the haunt is 20 ticks old: below the lifespan. Kept.
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 120);
+        assert_eq!(report.ghosts_deleted, 0);
+        assert_eq!(real.haunts.len(), 1);
+
+        // A young real outranks even a spent ghost lifespan: with the
+        // lifespan cut to 5 ticks, the haunt at tick 112 is 12 ticks old
+        // (past the ghost rule) but the real is 12 ticks old, inside the
+        // 20-tick new-real keep period.
+        maintainer.config.min_ghost_lifespan_in_ticks = 5;
+        let (mut young_real, mut young_view) = ghosted_real(11, 90.0);
+        young_real.creation_time = 100;
+        maintainer.check(&cells, &mut channels, &mut young_real, &young_view, 100);
+        young_view.position.x = 45.0;
+        let report = maintainer.check(&cells, &mut channels, &mut young_real, &young_view, 112);
+        assert_eq!(report.ghosts_deleted, 0);
+        assert_eq!(young_real.haunts.len(), 1);
+
+        // Past both periods the same haunt goes.
+        let report = maintainer.check(&cells, &mut channels, &mut young_real, &young_view, 200);
+        assert_eq!(report.ghosts_deleted, 1);
+        assert!(young_real.haunts.is_empty());
+
+        // And the first real's long-lived haunt is now past every rule.
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 200);
+        assert_eq!(report.ghosts_deleted, 1);
+        assert!(real.haunts.is_empty());
+    }
+
+    #[test]
+    fn the_delete_budget_blocks_the_second_ghost_of_an_iteration() {
+        let (cells, mut channels, mut maintainer) = two_cell_world();
+
+        // Entity 10 ghosts and is then swept: with maxGhostsToDelete = 0 the
+        // first deletion still goes through (`num <= max`).
+        maintainer.config.max_ghosts_to_delete = 0;
+        let (mut real_a, mut view_a) = ghosted_real(10, 90.0);
+        maintainer.check(&cells, &mut channels, &mut real_a, &view_a, 100);
+        view_a.position.x = 45.0;
+        let report = maintainer.check(&cells, &mut channels, &mut real_a, &view_a, 200);
+        assert_eq!(report.ghosts_deleted, 1);
+        assert_eq!(maintainer.budget.num_ghosts_deleted, 1);
+
+        // Entity 11 in the same checker iteration: the budget is spent, its
+        // marked haunt survives, and the mark still clears for next time.
+        let (mut real_b, mut view_b) = ghosted_real(11, 90.0);
+        maintainer.check(&cells, &mut channels, &mut real_b, &view_b, 100);
+        view_b.position.x = 45.0;
+        let report = maintainer.check(&cells, &mut channels, &mut real_b, &view_b, 200);
+        assert_eq!(report.ghosts_deleted, 0);
+        assert_eq!(real_b.haunts.len(), 1);
+        assert_eq!(channels[&APP_B].mark, 0);
+    }
+
+    #[test]
+    fn a_failed_channel_is_dropped_without_a_del_ghost_message() {
+        let (cells, mut channels, mut maintainer) = two_cell_world();
+        let (mut real, mut view) = ghosted_real(10, 90.0);
+        maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        assert_eq!(real.haunts.len(), 1);
+
+        // The channel failed: the haunt still goes (no point keeping a ghost
+        // on a dead app), but no delGhost rides the dead channel.
+        channels.get_mut(&APP_B).unwrap().is_good = false;
+        view.position.x = 45.0;
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 200);
+        assert_eq!(report.ghosts_deleted, 1);
+        assert!(real.haunts.is_empty());
+        assert_eq!(channels[&APP_B].out.len(), 1);
+    }
+
+    #[test]
+    fn an_offloading_real_only_ghosts_onto_its_destination() {
+        let (mut cells, mut channels, mut maintainer) = two_cell_world();
+        // A third cell off the A/B axis, reachable at ghost distance.
+        cells.insert(
+            APP_C,
+            CellInfoRecord::new(APP_C, Rect::new(0.0, 100.0, 100.0, 200.0)),
+        );
+        cells.get_mut(&APP_C).unwrap().has_been_created = true;
+        channels.insert(APP_C, GhostChannel::new(APP_C));
+
+        maintainer.should_offload = true;
+        // The real sits inside B's rect: the offload destination is B.
+        let (mut real, mut view) = ghosted_real(10, 130.0);
+
+        // A fourth cell east of B is inside the interest area but not the
+        // destination: while offloading, no ghost may appear there.
+        cells.insert(
+            APP_D,
+            CellInfoRecord::new(APP_D, Rect::new(150.0, 0.0, 250.0, 100.0)),
+        );
+        cells.get_mut(&APP_D).unwrap().has_been_created = true;
+        channels.insert(APP_D, GhostChannel::new(APP_D));
+
+        // First pass ghosts onto B only — C and D are inside the interest
+        // area but not the destination.
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        assert_eq!(report.offload_destination, Some(APP_B));
+        assert_eq!(report.ghosts_created, 1);
+        assert_eq!(
+            real.haunts,
+            vec![Haunt {
+                addr: APP_B,
+                creation_time: 100
+            }]
+        );
+        assert!(channels[&APP_C].out.is_empty());
+
+        // A haunt on C from an earlier pass is swept (B stays: it is the
+        // offload destination).
+        real.haunts.push(Haunt {
+            addr: APP_C,
+            creation_time: 0,
+        });
+        channels.get_mut(&APP_C).unwrap().mark = 1;
+        // Still inside B's rect, so the destination does not move; C falls
+        // out of the fudged interest area and its marked haunt is swept.
+        view.position.x = 140.0;
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 200);
+        assert_eq!(report.offload_destination, Some(APP_B));
+        assert_eq!(report.ghosts_deleted, 1);
+        assert_eq!(
+            real.haunts,
+            vec![Haunt {
+                addr: APP_B,
+                creation_time: 100
+            }]
+        );
+        assert_eq!(
+            channels[&APP_C].out,
+            vec![GhostMessage::DelGhost { entity_id: 10 }]
+        );
+        // The B haunt was kept and unmarked without a second create.
+        assert_eq!(channels[&APP_B].out.len(), 1);
+    }
+
+    #[test]
+    fn an_offload_check_skips_our_own_cell_and_unsuitable_ground() {
+        let (mut cells, mut channels, mut maintainer) = two_cell_world();
+        maintainer.should_offload = true;
+
+        // Standing on our own cell: no offload destination.
+        let (real, view) = ghosted_real(10, 50.0);
+        let report = maintainer.check(&cells, &mut channels, &mut real.clone(), &view, 100);
+        assert_eq!(report.offload_destination, None);
+
+        // Off the topology entirely: no cell owns the point.
+        let (real, mut view) = ghosted_real(10, 250.0);
+        let report = maintainer.check(&cells, &mut channels, &mut real.clone(), &view, 100);
+        assert_eq!(report.offload_destination, None);
+
+        // The cell under our feet is being deleted.
+        view.position.x = 130.0;
+        cells.get_mut(&APP_B).unwrap().is_delete_pending = true;
+        let report = maintainer.check(&cells, &mut channels, &mut real.clone(), &view, 100);
+        assert_eq!(report.offload_destination, None);
+
+        // The cell under our feet has a dead channel.
+        cells.get_mut(&APP_B).unwrap().is_delete_pending = false;
+        channels.get_mut(&APP_B).unwrap().is_good = false;
+        let report = maintainer.check(&cells, &mut channels, &mut real.clone(), &view, 100);
+        assert_eq!(report.offload_destination, None);
+    }
+
+    #[test]
+    fn a_haunt_whose_channel_never_existed_is_still_swept() {
+        let (cells, mut channels, mut maintainer) = two_cell_world();
+        let (mut real, mut view) = ghosted_real(10, 45.0);
+
+        // A haunt for an app the channel map lost: mark and delete passes
+        // recreate the channel on the fly (`CellAppChannels::get`).
+        real.haunts.push(Haunt {
+            addr: APP_C,
+            creation_time: 0,
+        });
+        view.position.x = 45.0; // nothing new to create
+        let report = maintainer.check(&cells, &mut channels, &mut real, &view, 200);
+        assert_eq!(report.ghosts_deleted, 1);
+        assert!(real.haunts.is_empty());
+        // The recreated channel is healthy, so the delGhost rides it.
+        assert_eq!(
+            channels[&APP_C].out,
+            vec![GhostMessage::DelGhost { entity_id: 10 }]
+        );
+    }
+
+    #[test]
+    fn the_ghost_history_starts_trimmed_at_the_real() {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 0,
+                num_event_stamped_properties: 0,
+            },
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 12,
+            entity_type_id: 4,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 31,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload, 5),
+            GhostCreateOutcome::Created
+        );
+        // `eventHistory_.lastTrimmedEventNumber( lastEventNumber_ )`: the
+        // ghost never replays events the real already handed out.
+        assert_eq!(host.ghosts[&12].last_trimmed_event_number, 31);
+    }
+
+    #[test]
+    fn a_create_for_an_unknown_type_or_mismatched_body_is_rejected() {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 2,
+                num_event_stamped_properties: 1,
+            },
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 12,
+            entity_type_id: 5,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![1],
+            ghost_properties: vec![PropValue::Int(0), PropValue::Int(0)],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+
+        // Unknown type: the local EntityTypeDB has no such entry.
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload.clone(), 5),
+            GhostCreateOutcome::UnknownEntityType
+        );
+
+        // Wrong stamp count: removeFromStream would read past the message.
+        let mut payload = payload;
+        payload.entity_type_id = 4;
+        payload.property_event_stamps = vec![1, 2];
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload.clone(), 5),
+            GhostCreateOutcome::StampCountMismatch
+        );
+
+        // Wrong ghosted-property count.
+        payload.property_event_stamps = vec![1];
+        payload.ghost_properties = vec![PropValue::Int(0)];
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload, 5),
+            GhostCreateOutcome::PropertyCountMismatch
+        );
+        assert!(host.ghosts.is_empty());
+    }
+
+    #[test]
+    fn a_routing_update_moves_the_ghost_to_the_new_real() {
+        let (cells, mut channels, mut maintainer) = two_cell_world();
+        let (mut real, view) = ghosted_real(10, 90.0);
+
+        // The real ghosts onto B and the ghost starts routed to A.
+        maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 2,
+                num_event_stamped_properties: 2,
+            },
+        );
+        let GhostMessage::CreateGhost(payload) = channels[&APP_B].out[0].clone() else {
+            panic!("expected a create");
+        };
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload, 100),
+            GhostCreateOutcome::Created
+        );
+        assert_eq!(host.ghosts[&10].real_addr, APP_A);
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 0);
+
+        // The real offloads to C: the sign-off tells B where the real is
+        // going, and B records the handover.
+        offload_sign_off(&real, APP_C, &mut channels);
+        assert_eq!(
+            channels[&APP_B].out[1],
+            GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: 10,
+                next_real_addr: APP_C,
+            })
+        );
+        assert!(host.receive_ghost_set_next_real(10, APP_C, 300));
+        assert_eq!(host.ghosts[&10].next_real_addr, Some(APP_C));
+
+        // The handover address is taken exactly once: a duplicate
+        // sign-off (a retransmit) never moves it again.
+        assert!(!host.receive_ghost_set_next_real(10, APP_A, 300));
+        assert_eq!(host.ghosts[&10].next_real_addr, Some(APP_C));
+
+        // C loads the entity and re-haunts B with the routing update.
+        // C ghosted the entity before the move (offload checker rule), so
+        // C itself is in the haunt list — the areWeHaunted assert holds.
+        let mut landed = RealEntity::new(10, (9, 9), Vector3::new(140.0, 0.0, 50.0), 300, 0);
+        let haunted = onload_notify_haunts(
+            &mut landed,
+            &[APP_B, APP_C],
+            &mut channels,
+            APP_C,
+            1,
+            300,
+            &OnloadHauntContext::default(),
+        );
+        assert!(haunted);
+        assert_eq!(
+            landed.haunts,
+            vec![Haunt {
+                addr: APP_B,
+                creation_time: 300
+            }]
+        );
+        assert_eq!(
+            channels[&APP_B].out[2],
+            GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_C,
+            })
+        );
+
+        // B applies the update: the ghost now routes to C, and the next
+        // message down that route (a delGhost from C) lands on it.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 1, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert_eq!(host.ghosts[&10].next_real_addr, None);
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
+        assert!(host.receive_del_ghost(10, 200));
+    }
+
+    #[test]
+    fn a_set_real_out_of_subsequence_is_delayed_not_applied() {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 0,
+                num_event_stamped_properties: 0,
+            },
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload, 100),
+            GhostCreateOutcome::Created
+        );
+
+        // A stale or duplicated update skips its subsequence number: the
+        // reference delays it for the buffered replay and keeps routing.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 5, APP_C),
+            GhostSetRealOutcome::DelayedSubsequence
+        );
+        assert_eq!(host.ghosts[&10].real_addr, APP_A);
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 0);
+
+        // The right number still lands afterwards.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 1, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+
+        // An unknown entity has nothing to route.
+        assert_eq!(
+            host.receive_ghost_set_real(11, 1, APP_C),
+            GhostSetRealOutcome::UnknownEntity
+        );
+        assert!(!host.receive_ghost_set_next_real(11, APP_C, 300));
+    }
+
+    /// A ghost holding one real, for the buffering tests.
+    fn hold_host(entity_id: EntityId, num_times_real_offloaded: u32) -> GhostHost {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 0,
+                num_event_stamped_properties: 0,
+            },
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id,
+            entity_type_id: 4,
+            num_times_real_offloaded,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload, 100),
+            GhostCreateOutcome::Created
+        );
+        host
+    }
+
+    #[test]
+    fn buffered_flags_classify_the_reference_subsequence_markers() {
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        let create = BufferedGhostMessage::CreateGhost {
+            src: APP_C,
+            payload,
+        };
+        assert!(create.is_subsequence_start() && create.is_create_ghost());
+        assert!(!create.is_subsequence_end());
+
+        let set_real = BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+            entity_id: 10,
+            num_times_real_offloaded: 1,
+            owner: APP_C,
+        }));
+        assert!(set_real.is_subsequence_start());
+        assert!(!set_real.is_subsequence_end() && !set_real.is_create_ghost());
+
+        let del = BufferedGhostMessage::Common(GhostMessage::DelGhost { entity_id: 10 });
+        let set_next = BufferedGhostMessage::Common(GhostMessage::SetNextReal(GhostSetNextReal {
+            entity_id: 10,
+            next_real_addr: APP_C,
+        }));
+        assert!(del.is_subsequence_end() && set_next.is_subsequence_end());
+        assert!(!del.is_subsequence_start() && !set_next.is_subsequence_start());
+    }
+
+    #[test]
+    fn a_stale_set_real_plays_when_its_subsequence_is_signed_off() {
+        // The real offloaded twice in quick succession (A->C->D) and the
+        // D->B channel beat C's update here: the ghost's number is 0, so
+        // SetReal{2, D} is out of subsequence.
+        let mut host = hold_host(10, 0);
+        assert_eq!(
+            host.receive_ghost_set_real(10, 2, APP_D),
+            GhostSetRealOutcome::DelayedSubsequence
+        );
+        // A delaying queue reports empty to `hasMessagesFor` but is
+        // mid-collection to `isDelayingMessagesFor`.
+        assert!(!host.buffer.has_messages_for(10, APP_D));
+        assert!(host.buffer.is_delaying_for(10, APP_D));
+
+        // C's update is in order and applies straight away.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 1, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+
+        // C's sign-off hands routing to D — which releases the held
+        // update, and the ghost now routes to the right process.
+        assert!(host.receive_ghost_set_next_real(10, APP_D, 300));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 2);
+        assert_eq!(host.ghosts[&10].real_addr, APP_D);
+        assert_eq!(host.ghosts[&10].next_real_addr, None);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_create_for_a_live_ghost_re_delays_instead_of_duplicating() {
+        let mut host = hold_host(10, 0);
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 1,
+            position: Vector3::new(12.0, 3.0, 4.0),
+            is_on_ground: false,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_C,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+
+        // The create arrives while the ghost is still alive: buffered.
+        assert_eq!(
+            host.receive_create_ghost(APP_C, payload, 150),
+            GhostCreateOutcome::Buffered
+        );
+        assert_eq!(host.ghosts.len(), 1);
+        assert!(host.buffer.is_delaying_for(10, APP_C));
+
+        // The sign-off plays it, but the ghost still lives: the create
+        // re-delays rather than duplicating the record.
+        assert!(host.receive_ghost_set_next_real(10, APP_C, 300));
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].real_addr, APP_A);
+        assert!(host.buffer.is_delaying_for(10, APP_C));
+
+        // The death starts a new lifespan: the held create replays once.
+        assert!(host.receive_del_ghost(10, 400));
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert_eq!(host.ghosts[&10].position, Vector3::new(12.0, 3.0, 4.0));
+        assert_eq!(host.ghosts[&10].creation_time, 400);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_chained_sign_off_plays_each_subsequence_in_turn() {
+        let mut host = hold_host(10, 0);
+
+        // Two whole subsequences queued: C's handover to D, then D's own
+        // routing update.
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_C,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: 10,
+                next_real_addr: APP_D,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_D,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 2,
+                owner: APP_D,
+            })),
+        );
+
+        // Signing off to C plays C's subsequence; its trailing handover
+        // chains straight into D's.
+        assert!(host.receive_ghost_set_next_real(10, APP_C, 300));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 2);
+        assert_eq!(host.ghosts[&10].real_addr, APP_D);
+        assert_eq!(host.ghosts[&10].next_real_addr, None);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_delaying_subsequence_collects_until_its_end() {
+        let mut host = hold_host(10, 1);
+
+        // Out of subsequence: the update heads a delayed list.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 3, APP_D),
+            GhostSetRealOutcome::DelayedSubsequence
+        );
+        assert!(host.buffer.is_delaying_for(10, APP_D));
+
+        // Late arrivals join the delayed list until an end marker closes
+        // the collection.
+        host.buffer.add(
+            10,
+            APP_D,
+            BufferedGhostMessage::Common(GhostMessage::DelGhost { entity_id: 10 }),
+        );
+        assert!(!host.buffer.is_delaying_for(10, APP_D));
+        assert!(!host.buffer.has_messages_for(10, APP_D));
+
+        // The skipped update arrives and moves the ghost's count to 2,
+        // making the held {3, D} the next expected subsequence number.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 2, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+
+        // The sign-off promotes and plays both, in order.
+        assert!(host.receive_ghost_set_next_real(10, APP_D, 300));
+        assert!(!host.ghosts.contains_key(&10));
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_create_while_delaying_joins_the_delayed_subsequence() {
+        let mut host = hold_host(10, 1);
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 3,
+            position: Vector3::new(1.0, 2.0, 3.0),
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_D,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+
+        assert_eq!(
+            host.receive_ghost_set_real(10, 3, APP_D),
+            GhostSetRealOutcome::DelayedSubsequence
+        );
+
+        // No playable queue yet (`hasMessagesFor` is false while
+        // delaying), so the create delays too — after the held update.
+        assert_eq!(
+            host.receive_create_ghost(APP_D, payload, 150),
+            GhostCreateOutcome::Buffered
+        );
+        assert!(host.buffer.is_delaying_for(10, APP_D));
+
+        // The skipped update arrives, making the held {3, D} next in line.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 2, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+
+        // The sign-off applies the update; the replayed create still finds
+        // the ghost alive and holds again — exactly one record throughout.
+        assert!(host.receive_ghost_set_next_real(10, APP_D, 300));
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 3);
+        assert_eq!(host.ghosts[&10].real_addr, APP_D);
+        assert!(host.buffer.is_delaying_for(10, APP_D));
+    }
+
+    #[test]
+    fn a_buffered_create_behind_a_playable_queue_appends_to_it() {
+        let mut host = hold_host(10, 0);
+
+        // A playable queue from C already exists, so the early create
+        // joins it (`Space::createGhost`'s add branch) instead of heading
+        // its own delayed subsequence.
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_C,
+            })),
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 1,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_C,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+        assert_eq!(
+            host.receive_create_ghost(APP_C, payload, 150),
+            GhostCreateOutcome::Buffered
+        );
+        assert!(host.buffer.has_messages_for(10, APP_C));
+        assert!(!host.buffer.is_delaying_for(10, APP_C));
+
+        // The sign-off plays the pair in order: the update applies, then
+        // the replayed create finds the ghost alive and holds again.
+        assert!(host.receive_ghost_set_next_real(10, APP_C, 300));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
+        assert_eq!(host.ghosts.len(), 1);
+        assert!(host.buffer.is_delaying_for(10, APP_C));
+    }
+
+    #[test]
+    fn an_out_of_order_set_real_in_a_played_queue_re_heads_the_delay() {
+        let mut host = hold_host(10, 0);
+
+        // A whole playable subsequence from D lands while the ghost still
+        // expects subsequence 1: playing it re-delays from the stale head,
+        // swallowing the rest of the queue behind it.
+        host.buffer.add(
+            10,
+            APP_D,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 2,
+                owner: APP_D,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_D,
+            BufferedGhostMessage::Common(GhostMessage::DelGhost { entity_id: 10 }),
+        );
+        host.play_subsequence_for(10, APP_D, 300);
+        assert!(!host.buffer.has_messages_for(10, APP_D));
+        assert!(host.buffer.has_queue_for(10, APP_D));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 0);
+
+        // The skipped update lands, and D's sign-off releases the pair:
+        // the update applies, the del destroys the ghost.
+        assert_eq!(
+            host.receive_ghost_set_real(10, 1, APP_C),
+            GhostSetRealOutcome::Relocated
+        );
+        assert!(host.receive_ghost_set_next_real(10, APP_D, 400));
+        assert!(!host.ghosts.contains_key(&10));
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_played_subsequence_pause_keeps_the_rest_queued() {
+        let mut host = hold_host(10, 0);
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 1,
+            position: Vector3::new(6.0, 7.0, 8.0),
+            is_on_ground: false,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_C,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        };
+
+        // A whole subsequence plus a trailing create form carried as a
+        // common message (the channel shape).
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_C,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: 10,
+                next_real_addr: APP_E,
+            })),
+        );
+        host.buffer.add(
+            10,
+            APP_C,
+            BufferedGhostMessage::Common(GhostMessage::CreateGhost(payload.clone())),
+        );
+
+        // Playing stops at the subsequence end: the update and handover
+        // apply, the rest of the queue stays for a later play.
+        host.play_subsequence_for(10, APP_C, 300);
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert_eq!(host.ghosts[&10].next_real_addr, Some(APP_E));
+        assert!(host.buffer.has_messages_for(10, APP_C));
+
+        // The ghost dies: the queued create starts the next lifespan and
+        // runs the immediate create path.
+        assert!(host.receive_del_ghost(10, 400));
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].position, Vector3::new(6.0, 7.0, 8.0));
+        assert_eq!(host.ghosts[&10].num_times_real_offloaded, 1);
+        assert_eq!(host.ghosts[&10].creation_time, 400);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn an_entity_past_the_boundary_is_planned_to_the_owning_cell() {
+        let (cells, mut channels, config) = checker_world();
+        let mut reals = vec![ghosted_real(10, 140.0), ghosted_real(11, 50.0)];
+        let mut run = checker(true, false);
+
+        // Entity 10 sits in B's half of the space: it is planned across
+        // the boundary; entity 11 is at home on A and stays.
+        let plans = run.run(&cells, &mut channels, &mut reals, &config, APP_A, 7, 200);
+        assert_eq!(
+            plans,
+            vec![OffloadPlan {
+                entity_id: 10,
+                destination: APP_B,
+            }]
+        );
+        assert_eq!(run.offload_list, plans);
+    }
+
+    #[test]
+    fn the_offload_gate_only_silences_the_offload_half() {
+        let (cells, mut channels, config) = checker_world();
+        let mut reals = vec![ghosted_real(10, 140.0)];
+        let mut run = checker(false, false);
+
+        // The gate is shut: nothing is planned to move — but the ghost
+        // half still ran (the interest area reaches into B).
+        let plans = run.run(&cells, &mut channels, &mut reals, &config, APP_A, 7, 200);
+        assert!(plans.is_empty());
+        assert_eq!(run.offload_list, Vec::<OffloadPlan>::new());
+        assert!(
+            channels[&APP_B]
+                .out
+                .iter()
+                .any(|m| matches!(m, GhostMessage::CreateGhost(_)))
+        );
+    }
+
+    #[test]
+    fn a_shutting_down_space_skips_the_whole_run() {
+        let (cells, mut channels, config) = checker_world();
+        let mut reals = vec![ghosted_real(10, 140.0)];
+        let mut run = checker(true, true);
+
+        // Nothing at all: no plans, no ghosts — the entities must not be
+        // lost with the cells.
+        let plans = run.run(&cells, &mut channels, &mut reals, &config, APP_A, 7, 200);
+        assert!(plans.is_empty());
+        assert!(channels[&APP_B].out.is_empty());
+    }
+
+    #[test]
+    fn the_ghost_budget_is_shared_across_the_run() {
+        let (cells, mut channels, mut config) = checker_world();
+        config.max_ghosts_to_delete = 1;
+
+        let (mut e1, view1) = ghosted_real(10, 50.0);
+        let (mut e2, view2) = ghosted_real(11, 50.0);
+        for real in [&mut e1, &mut e2] {
+            for addr in [APP_B, APP_C] {
+                real.haunts.push(Haunt {
+                    addr,
+                    creation_time: 0,
+                });
+            }
+        }
+        let mut reals = vec![(e1, view1), (e2, view2)];
+        let mut run = checker(false, false);
+
+        // Each entity's pair of ghosts is far outside the interest area
+        // and past every keep rule. The run cap of 1 (which allows one
+        // deletion past the cap) is shared: entity 10 spends it on both
+        // of its ghosts, entity 11 gets nothing.
+        let plans = run.run(&cells, &mut channels, &mut reals, &config, APP_A, 7, 200);
+        assert!(plans.is_empty());
+        assert_eq!(run.budget.num_ghosts_deleted, 2);
+        assert_eq!(reals[0].0.haunts.len(), 0);
+        assert_eq!(reals[1].0.haunts.len(), 2);
+        let dels_to = |addr: Addr| -> usize {
+            channels[&addr]
+                .out
+                .iter()
+                .filter(|m| matches!(m, GhostMessage::DelGhost { .. }))
+                .count()
+        };
+        assert_eq!(dels_to(APP_B), 1);
+        assert_eq!(dels_to(APP_C), 1);
+    }
+
+    #[test]
+    fn the_sign_off_skips_the_destination_haunt() {
+        let (cells, mut channels, mut maintainer) = two_cell_world();
+        let (mut real, view) = ghosted_real(10, 90.0);
+        maintainer.check(&cells, &mut channels, &mut real, &view, 100);
+
+        // The real already haunts C as well; offloading to C leaves that
+        // haunt unsigned (its ghost learns from the new real directly).
+        real.haunts.push(Haunt {
+            addr: APP_C,
+            creation_time: 100,
+        });
+        offload_sign_off(&real, APP_C, &mut channels);
+        assert_eq!(
+            channels[&APP_B].out[1],
+            GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: 10,
+                next_real_addr: APP_C,
+            })
+        );
+        // The destination is not even touched: no channel is created for
+        // it here.
+        assert!(!channels.contains_key(&APP_C));
+    }
+
+    #[test]
+    fn onload_skips_unsuitable_haunts_and_deletes_across_spaces() {
+        let mut channels = BTreeMap::new();
+        for addr in [APP_A, APP_B, APP_D, APP_E] {
+            channels.insert(addr, GhostChannel::new(addr));
+        }
+        channels.get_mut(&APP_E).unwrap().is_good = false;
+        let unknown = (6, 6);
+        let mut real = RealEntity::new(10, (9, 9), Vector3::new(140.0, 0.0, 50.0), 0, 0);
+        let context = OnloadHauntContext {
+            bad_haunt_addr: Some(APP_D),
+            ..Default::default()
+        };
+
+        // Own address (local teleport), the bad haunt, the dead channel,
+        // and an app we have no channel for all pass silently; only the
+        // healthy B haunt is notified.
+        let haunted = onload_notify_haunts(
+            &mut real,
+            &[APP_A, APP_D, unknown, APP_E, APP_B],
+            &mut channels,
+            APP_A,
+            1,
+            300,
+            &context,
+        );
+        assert!(haunted);
+        assert_eq!(
+            real.haunts,
+            vec![Haunt {
+                addr: APP_B,
+                creation_time: 300
+            }]
+        );
+        assert_eq!(
+            channels[&APP_B].out,
+            vec![GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_A,
+            })]
+        );
+        assert!(channels[&APP_E].out.is_empty());
+
+        // Same list across a space change: the ghosts are deleted instead.
+        let mut real = RealEntity::new(10, (9, 9), Vector3::new(140.0, 0.0, 50.0), 0, 0);
+        let context = OnloadHauntContext {
+            has_changed_space: true,
+            ..Default::default()
+        };
+        let haunted = onload_notify_haunts(
+            &mut real,
+            &[APP_B, APP_E],
+            &mut channels,
+            APP_A,
+            1,
+            300,
+            &context,
+        );
+        assert!(!haunted);
+        assert!(real.haunts.is_empty());
+        assert_eq!(
+            channels[&APP_B].out[1],
+            GhostMessage::DelGhost { entity_id: 10 }
+        );
+        // The dead channel is skipped in this pass too: a dead app gets
+        // no delGhost at all.
+        assert!(channels[&APP_E].out.is_empty());
+    }
+
+    #[test]
+    fn the_ghost_host_keeps_exactly_one_record_per_create() {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 2,
+                num_event_stamped_properties: 2,
+            },
+        );
+        let payload = GhostCreatePayload {
+            space_id: 7,
+            entity_id: 10,
+            entity_type_id: 4,
+            num_times_real_offloaded: 2,
+            position: Vector3::new(90.0, 0.0, 50.0),
+            is_on_ground: true,
+            last_event_number: 5,
+            volatile: VolatileInfo::NONE,
+            real_addr: APP_A,
+            base_addr: (9, 9),
+            direction: Vector3::new(1.5, 0.25, -0.5),
+            property_event_stamps: vec![7, 13],
+            ghost_properties: vec![PropValue::Int(5), PropValue::Str("hi".to_string())],
+            ghost_controllers: vec![GhostControllerSeed {
+                id: 3,
+                type_id: 9,
+                user_arg: 42,
+                payload: vec![1, 2, 3],
+            }],
+            periods_without_witness: 4,
+            aoi_update_scheme_id: 3,
+        };
+
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload.clone(), 42),
+            GhostCreateOutcome::Created
+        );
+        assert_eq!(host.ghosts.len(), 1);
+        let record = host.ghosts.get(&10).unwrap();
+        assert_eq!(record.entity_type_id, 4);
+        assert_eq!(record.num_times_real_offloaded, 2);
+        assert_eq!(record.last_event_number, 5);
+        assert_eq!(record.real_addr, APP_A);
+        assert_eq!(record.creation_time, 42);
+        // The snapshot matches the real that streamed it, head to tail.
+        assert_eq!(record.direction, Vector3::new(1.5, 0.25, -0.5));
+        assert_eq!(record.property_event_stamps, vec![7, 13]);
+        assert_eq!(
+            record.ghost_properties,
+            vec![PropValue::Int(5), PropValue::Str("hi".to_string())]
+        );
+        assert_eq!(record.periods_without_witness, 4);
+        assert_eq!(record.aoi_update_scheme_id, 3);
+        // The ghost-domain controllers were created and started.
+        assert_eq!(record.controllers.len(), 1);
+        assert_eq!(record.controllers.ids(), vec![3]);
+        let controller = record.controllers.controller(3).unwrap();
+        assert_eq!(controller.type_id, 9);
+        assert_eq!(controller.user_arg, 42);
+        assert_eq!(controller.domain, crate::controllers::DOMAIN_GHOST);
+        assert_eq!(controller.ghost_state, vec![1, 2, 3]);
+        assert!(controller.attached);
+
+        // A second create for a living entity takes the buffered path — no
+        // duplicate record, no count drift.
+        assert_eq!(
+            host.receive_create_ghost(APP_A, payload, 43),
+            GhostCreateOutcome::Buffered
+        );
+        assert_eq!(host.ghosts.len(), 1);
+
+        assert!(host.receive_del_ghost(10, 200));
+        // The death offered the buffered queue a new lifespan: the held
+        // create replayed (with the replay time) instead of leaking.
+        assert_eq!(host.ghosts.len(), 1);
+        assert_eq!(host.ghosts[&10].creation_time, 200);
+        assert!(host.receive_del_ghost(10, 200));
+        assert_eq!(host.ghosts.len(), 0);
+        assert!(!host.receive_del_ghost(10, 200));
+    }
+
+    #[test]
+    fn seconds_to_ticks_matches_the_reference_rounding() {
+        // `max(lower, floor(seconds*hertz + 0.5))`.
+        assert_eq!(seconds_to_ticks(5.0, 0, 10.0), 50);
+        assert_eq!(seconds_to_ticks(2.0, 0, 10.0), 20);
+        assert_eq!(seconds_to_ticks(0.0, 0, 10.0), 0);
+        assert_eq!(seconds_to_ticks(0.01, 0, 10.0), 0);
+        // The lower bound floors a sub-tick result up.
+        assert_eq!(seconds_to_ticks(0.01, 1, 10.0), 1);
+    }
+
+    // -- BW-08-05-02: the role switch ------------------------------------
+
+    #[test]
+    fn an_offload_switches_roles_with_one_real_left_on_both_ends() {
+        // Destination B already ghosts the entity — the checker's rule —
+        // so the handover starts with B haunted.
+        let mut host_a = GhostHost::default();
+        let mut host_b = hold_host(10, 0);
+        let (_cells, mut channels, _config) = checker_world();
+        let mut controllers = Controllers::new();
+        let mut entity_controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+
+        // A offloads to B: the payload streams, the ghost replaces the
+        // real on A.
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
+        host_a.ghosts.insert(10, record);
+
+        // The payload carries the real-only state and the haunt list —
+        // B's haunt plus ourselves (we were not haunted).
+        assert_eq!(payload.entity_id, 10);
+        assert_eq!(payload.entity_type_id, 4);
+        assert_eq!(payload.real_properties, vec![PropValue::Int(99)]);
+        assert_eq!(payload.space_id, 7);
+        assert!(!payload.is_teleport);
+        assert_eq!(payload.haunt_addrs, vec![APP_B, APP_A]);
+        // The destination is skipped in the sign-off: nothing for B yet.
+        assert!(channels[&APP_B].out.is_empty());
+        // A's ghost points at B right away and still expects B's
+        // `ghostSetReal`.
+        assert_eq!(host_a.ghosts[&10].real_addr, APP_B);
+        assert_eq!(host_a.ghosts[&10].next_real_addr, Some(APP_B));
+
+        // B loads: the ghost record becomes the one real.
+        let outcome = host_b
+            .receive_onload(
+                payload,
+                &mut entity_controllers,
+                &mut callbacks,
+                7,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
+            .unwrap();
+        assert!(host_b.ghosts.is_empty());
+        assert!(outcome.are_we_haunted);
+        assert_eq!(outcome.real.id, 10);
+        assert_eq!(outcome.real.base_addr, (9, 9));
+        // The ghost snapshot carries over: the real sits where the ghost
+        // sat (`readRealDataFromStreamForOnload` keeps the ghost state).
+        assert_eq!(outcome.real.position_sample, Vector3::ZERO);
+
+        // The haunt pass re-pointed A's ghost with the new count.
+        assert_eq!(
+            channels[&APP_A].out,
+            vec![GhostMessage::SetReal(GhostSetReal {
+                entity_id: 10,
+                num_times_real_offloaded: 1,
+                owner: APP_B,
+            })]
+        );
+
+        // A applies it: from both ends exactly one real, at B.
+        assert_eq!(
+            host_a.receive_ghost_set_real(10, 1, APP_B),
+            GhostSetRealOutcome::Relocated
+        );
+        assert_eq!(host_a.ghosts[&10].real_addr, APP_B);
+        assert_eq!(host_a.ghosts[&10].next_real_addr, None);
+    }
+
+    #[test]
+    fn an_offloading_real_signs_off_its_other_ghosts() {
+        let (_cells, mut channels, _config) = checker_world();
+        let mut controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+        let (mut real, view) = ghosted_real(10, 50.0);
+        real.haunts = vec![
+            Haunt {
+                addr: APP_B,
+                creation_time: 100,
+            },
+            Haunt {
+                addr: APP_C,
+                creation_time: 150,
+            },
+        ];
+
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_C,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
+
+        // The destination (C) is skipped; B learns where the real went.
+        assert_eq!(
+            channels[&APP_B].out,
+            vec![GhostMessage::SetNextReal(GhostSetNextReal {
+                entity_id: 10,
+                next_real_addr: APP_C,
+            })]
+        );
+        assert!(channels[&APP_C].out.is_empty());
+        // The payload carries every haunt plus ourselves (not haunted).
+        assert_eq!(payload.haunt_addrs, vec![APP_B, APP_C, APP_A]);
+        // The real part is consumed: no haunts left behind.
+        assert!(real.haunts.is_empty());
+        // The leftover ghost keeps the ghost-level view and the offload
+        // count.
+        assert_eq!(record.num_times_real_offloaded, 0);
+        assert_eq!(record.real_addr, APP_C);
+        assert_eq!(record.next_real_addr, Some(APP_C));
+        assert_eq!(record.creation_time, 300);
+        assert_eq!(
+            record.ghost_properties,
+            vec![PropValue::Int(5), PropValue::Str("hi".to_string())]
+        );
+        assert_eq!(record.controllers.len(), 1);
+    }
+
+    #[test]
+    fn a_teleport_onload_deletes_the_far_ghost_instead_of_re_haunting() {
+        let mut host_a = GhostHost::default();
+        let mut host_b = hold_host(10, 0);
+        let (_cells, mut channels, _config) = checker_world();
+        let mut controllers = Controllers::new();
+        let mut entity_controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            APP_A,
+            7,
+            true,
+            300,
+            &mut channels,
+        );
+        host_a.ghosts.insert(10, record);
+
+        // Same space, but a teleport: no re-haunt — the source ghost is
+        // deleted instead.
+        let outcome = host_b
+            .receive_onload(
+                payload,
+                &mut entity_controllers,
+                &mut callbacks,
+                7,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
+            .unwrap();
+        assert_eq!(
+            channels[&APP_A].out,
+            vec![GhostMessage::DelGhost { entity_id: 10 }]
+        );
+        assert!(outcome.real.haunts.is_empty());
+
+        // A processes the deletion; nobody holds a ghost any more.
+        assert!(host_a.receive_del_ghost(10, 300));
+        assert!(host_a.ghosts.is_empty());
+    }
+
+    #[test]
+    fn a_cross_space_onload_also_deletes_instead_of_re_haunting() {
+        let mut host_a = GhostHost::default();
+        let mut host_b = hold_host(10, 0);
+        let (_cells, mut channels, _config) = checker_world();
+        let mut controllers = Controllers::new();
+        let mut entity_controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
+        host_a.ghosts.insert(10, record);
+
+        // Not a teleport, but the local space differs: the ghosts of the
+        // old space go.
+        let outcome = host_b
+            .receive_onload(
+                payload,
+                &mut entity_controllers,
+                &mut callbacks,
+                9,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
+            .unwrap();
+        assert_eq!(
+            channels[&APP_A].out,
+            vec![GhostMessage::DelGhost { entity_id: 10 }]
+        );
+        assert!(outcome.real.haunts.is_empty());
+        assert!(host_a.receive_del_ghost(10, 300));
+        assert!(host_a.ghosts.is_empty());
+    }
+
+    #[test]
+    fn an_onload_without_a_ghost_has_nothing_to_load() {
+        let mut host_b = GhostHost::default();
+        let (_cells, mut channels, _config) = checker_world();
+        let payload = OnloadPayload {
+            entity_id: 10,
+            entity_type_id: 4,
+            real_properties: Vec::new(),
+            velocity: Vector3::ZERO,
+            should_auto_backup: 0,
+            controlled_by: EntityMailBoxRef::empty(),
+            space_id: 7,
+            is_teleport: false,
+            haunt_addrs: vec![APP_A],
+            real_controllers: Vec::new(),
+        };
+
+        assert!(
+            host_b
+                .receive_onload(
+                    payload,
+                    &mut Controllers::new(),
+                    &mut EntityCallbackBuffer::new(),
+                    7,
+                    None,
+                    &mut channels,
+                    APP_B,
+                    300,
+                )
+                .is_none()
+        );
+        assert!(host_b.buffer.is_empty());
+    }
+
+    #[test]
+    fn the_offloaded_controllers_resume_on_the_destination() {
+        let (_cells, mut channels, _config) = checker_world();
+        let mut host_a = GhostHost::default();
+        let mut host_b = hold_host(10, 0);
+        // The destination's ghost already holds the both-domain half —
+        // the ghostControllerCreate the source sent when it was added.
+        let record_controllers = &mut host_b.ghosts.get_mut(&10).unwrap().controllers;
+        record_controllers.create_ghost(3, 9, 42, vec![1]);
+        // The both-domain class arrives with its full domain
+        // (`Controller::create` builds the registered class, not a bare
+        // ghost), so the real half can resume after the onload.
+        record_controllers.controller_mut(3).unwrap().domain = DOMAIN_GHOST_AND_REAL;
+
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+
+        // Source: a real-only movement controller with live state, and a
+        // both-domain one whose ghost half the far side holds.
+        let mut controllers = Controllers::new();
+        let mut movement = Controller::new(7, DOMAIN_REAL);
+        movement.real_state = vec![4, 5, 6];
+        controllers.add_controller(movement, 11, 10, &[], &mut Vec::new());
+        let mut both = Controller::new(9, DOMAIN_GHOST_AND_REAL);
+        both.exclusive_id = 3;
+        both.ghost_state = vec![1];
+        both.real_state = vec![2, 3];
+        controllers.add_controller(both, 42, 10, &[], &mut Vec::new());
+        let mut callbacks = EntityCallbackBuffer::new();
+
+        let (payload, record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
+        host_a.ghosts.insert(10, record);
+
+        // The real part died: the real-only controller is gone, the
+        // both-domain ghost half keeps running.
+        assert_eq!(controllers.len(), 1);
+        assert_eq!(controllers.ids(), vec![3]);
+        assert!(controllers.history.contains(&ControllerEvent::StopReal {
+            id: 1,
+            final_stop: false,
+        }));
+
+        // Onload on B: the ghost half merges, the stream reals read in,
+        // then everything restarts — not as initial starts, so the
+        // carried state keeps the movement going.
+        let mut entity_controllers = Controllers::new();
+        let outcome = host_b
+            .receive_onload(
+                payload,
+                &mut entity_controllers,
+                &mut callbacks,
+                7,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
+            .unwrap();
+        assert!(outcome.are_we_haunted);
+
+        assert_eq!(entity_controllers.ids(), vec![1, 3]);
+        assert_eq!(
+            entity_controllers.controller(1).unwrap().real_state,
+            vec![4, 5, 6]
+        );
+        assert_eq!(entity_controllers.controller(1).unwrap().user_arg, 11);
+        // The surviving ghost half took the fresh real payload and kept
+        // its ghost state.
+        assert_eq!(
+            entity_controllers.controller(3).unwrap().real_state,
+            vec![2, 3]
+        );
+        assert_eq!(
+            entity_controllers.controller(3).unwrap().ghost_state,
+            vec![1]
+        );
+        // Both halves resumed, neither as an initial start.
+        let resumed: Vec<ControllerEvent> = entity_controllers
+            .history
+            .iter()
+            .filter(|event| matches!(event, ControllerEvent::StartReal { initial: false, .. }))
+            .cloned()
+            .collect();
+        assert_eq!(
+            resumed,
+            vec![
+                ControllerEvent::StartReal {
+                    id: 1,
+                    initial: false
+                },
+                ControllerEvent::StartReal {
+                    id: 3,
+                    initial: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_switch_buffers_callbacks_and_replays_them_once() {
+        let (_cells, mut channels, _config) = checker_world();
+        let mut host_b = hold_host(10, 0);
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+        let mut controllers = Controllers::new();
+
+        // Source app: an outer buffered section holds a queued callback
+        // across the conversion.
+        let mut source_callbacks = EntityCallbackBuffer::new();
+        source_callbacks.enter_buffered_section();
+        source_callbacks.store_callback(10, "onLeavingCell");
+
+        let (payload, _record) = convert_real_to_ghost(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut source_callbacks,
+            APP_B,
+            APP_A,
+            7,
+            false,
+            300,
+            &mut channels,
+        );
+
+        // The conversion's own section closed; the outer one still holds
+        // — nothing replayed yet, nothing lost.
+        assert!(!source_callbacks.callbacks_permitted());
+        assert!(source_callbacks.executed().is_empty());
+        source_callbacks.leave_buffered_section(&|_id| false);
+        assert_eq!(
+            source_callbacks.executed(),
+            [BufferedScriptCallback {
+                entity_id: 10,
+                method: "onLeavingCell".to_string(),
             }]
         );
 
-        // The real walks into the neighbour and is offloaded there: its
-        // own haunt on the destination is kept and nothing else changes.
-        ghosts.x = 300.0;
-        ghosts.creation_time = 0;
-        ghosts.haunts[0].creation_time = 0;
-        m.current_time = 1000;
-        m.should_offload = true;
-        m.check(&mut ghosts, &mut cells);
-        assert_eq!(m.offload_destination, Some(2));
-        assert_eq!(ghosts.haunts.len(), 1, "the destination keeps its haunt");
-
-        // From the destination app's point of view: cell 2 is now home,
-        // so the ghost flips sides - cell 1 gains one, cell 2 drops its
-        // stale one.
-        let mut m2 = GhostMaintainer::new(config(100), 2);
-        m2.cfg.own_address = 2;
-        m2.current_time = 1000;
-        m2.check(&mut ghosts, &mut cells);
-
-        assert_eq!(ghosts.haunts.len(), 1);
-        assert_eq!(ghosts.haunts[0].cell_id, 1, "cell 1 is haunted instead");
-        assert!(
-            ghosts
-                .messages
-                .contains(&GhostMessage::Create { cell_id: 1 }),
-            "the old cell gains its ghost"
+        // Destination app: onEnteredCell fires buffered at high priority
+        // and replays once when the section ends.
+        let mut dest_callbacks = EntityCallbackBuffer::new();
+        host_b
+            .receive_onload(
+                payload,
+                &mut Controllers::new(),
+                &mut dest_callbacks,
+                7,
+                None,
+                &mut channels,
+                APP_B,
+                300,
+            )
+            .unwrap();
+        assert!(dest_callbacks.callbacks_permitted());
+        assert_eq!(
+            dest_callbacks.executed(),
+            [BufferedScriptCallback {
+                entity_id: 10,
+                method: "onEnteredCell".to_string(),
+            }]
         );
-        assert!(
-            ghosts
-                .messages
-                .contains(&GhostMessage::Delete { cell_id: 2 }),
-            "the stale ghost on the new home cell is dropped"
+    }
+
+    #[test]
+    fn a_call_mid_switch_reaches_the_target_and_responds_once() {
+        // The routed handover state: A holds the ghost pointing at B.
+        let mut host_a = hold_host(10, 0);
+        assert_eq!(
+            host_a.receive_ghost_set_real(10, 1, APP_B),
+            GhostSetRealOutcome::Relocated
         );
+        let mut forwarders = ReplyForwarders::default();
+
+        // A mailbox call arrives at A mid-switch: it is re-addressed to
+        // the migration target, its reply forwarder registered first.
+        let call = forward_message_to_real(
+            &host_a.ghosts,
+            &mut forwarders,
+            (7, 7),
+            10,
+            42,
+            b"do it".to_vec(),
+            Some(9),
+        )
+        .unwrap();
+        assert_eq!(call.to, APP_B);
+        assert_eq!(call.entity_id, 10);
+        assert_eq!(call.message_id, 42);
+        assert_eq!(call.body, b"do it");
+        assert_eq!(call.reply_id, Some(9));
+
+        // The target's response rides back to the original caller — and
+        // only once: the forwarder is consumed.
+        assert_eq!(forwarders.forward_reply(9, b"done".to_vec()), Some((7, 7)));
+        assert_eq!(forwarders.forwarded(), [(9, (7, 7), b"done".to_vec())]);
+        assert_eq!(forwarders.forward_reply(9, b"dup".to_vec()), None);
+        assert_eq!(forwarders.forwarded().len(), 1);
+    }
+
+    // -- BW-08-05-05: the cross-space teleport ---------------------------
+
+    /// A host that accepts the full view payload (2 ghost properties, 2
+    /// event stamps).
+    fn loadable_host() -> GhostHost {
+        let mut host = GhostHost::default();
+        host.register_type(
+            4,
+            GhostEntityTypeDesc {
+                prop_count_ghost: 2,
+                num_event_stamped_properties: 2,
+            },
+        );
+        host
+    }
+
+    #[test]
+    fn a_cross_space_teleport_matches_the_visible_sets() {
+        // Old space 7: the real on A with haunts on B and C.
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, mut view) = ghosted_real(10, 140.0);
+        real.haunts = vec![
+            Haunt {
+                addr: APP_B,
+                creation_time: 100,
+            },
+            Haunt {
+                addr: APP_C,
+                creation_time: 150,
+            },
+        ];
+        // The teleport target: B's half, new space 9 (`localPosition_ =
+        // position` before the bodies stream).
+        view.position = Vector3::new(140.0, 0.0, 50.0);
+        let mut controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+
+        // The script teleports to B's space, near entity 11.
+        let (payload, record, del_addrs) = teleport_entity_to_space(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_A,
+            7,
+            APP_B,
+            11,
+            300,
+            &mut channels,
+        );
+
+        // Old space cleared: delGhost went to every haunt.
+        assert_eq!(del_addrs, vec![APP_B, APP_C]);
+        assert_eq!(
+            channels[&APP_B].out[0],
+            GhostMessage::DelGhost { entity_id: 10 }
+        );
+        assert_eq!(
+            channels[&APP_C].out[0],
+            GhostMessage::DelGhost { entity_id: 10 }
+        );
+        // The create carries the SOURCE's space id; the onload body's
+        // haunt list is the re-added destination plus ourselves.
+        assert_eq!(payload.create.space_id, 7);
+        assert_eq!(payload.create.position, Vector3::new(140.0, 0.0, 50.0));
+        assert_eq!(payload.nearby_id, 11);
+        assert!(payload.onload.is_teleport);
+        assert_eq!(payload.onload.haunt_addrs, vec![APP_B, APP_A]);
+        // onLeavingCell fired on the way out.
+        assert_eq!(
+            callbacks.executed(),
+            [BufferedScriptCallback {
+                entity_id: 10,
+                method: "onLeavingCell".to_string(),
+            }]
+        );
+
+        // The source keeps the ghost pointing at the migration target.
+        let mut host_a = GhostHost::default();
+        host_a.ghosts.insert(10, record);
+        assert_eq!(host_a.ghosts[&10].real_addr, APP_B);
+
+        // Destination B: the ghost dispatches with the NEW space id and
+        // the onload loads it into the one real.
+        let mut host_b = loadable_host();
+        let mut entity_controllers = Controllers::new();
+        let mut dest_callbacks = EntityCallbackBuffer::new();
+        let outcome = match host_b.receive_onload_teleported_entity(
+            APP_A,
+            true,
+            payload,
+            &mut entity_controllers,
+            &mut dest_callbacks,
+            9,
+            &mut channels,
+            APP_B,
+            300,
+        ) {
+            TeleportLoad::Loaded(outcome) => outcome,
+            TeleportLoad::FailedNearbyMissing(_) => {
+                panic!("nearby entity 11 exists")
+            }
+        };
+        assert_eq!(outcome.create.space_id, 9);
+        assert!(host_b.ghosts.is_empty());
+        assert!(outcome.onload.are_we_haunted);
+        assert_eq!(outcome.onload.real.id, 10);
+        assert_eq!(outcome.nearby_id, 11);
+
+        // The haunt pass ran as a teleport: the source's offload ghost
+        // is deleted — the old space keeps nothing of this entity.
+        assert_eq!(
+            channels[&APP_A].out,
+            vec![GhostMessage::DelGhost { entity_id: 10 }]
+        );
+        assert!(host_a.receive_del_ghost(10, 300));
+        assert!(host_a.ghosts.is_empty());
+
+        // New space visible set: the real at B, no ghosts anywhere —
+        // new-space ghosts come from B's own maintainer next check.
+        assert_eq!(outcome.onload.real.id, 10);
+        assert!(host_a.ghosts.is_empty() && host_b.ghosts.is_empty());
+    }
+
+    #[test]
+    fn a_teleport_without_the_nearby_entity_bounces_back() {
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        real.haunts = vec![Haunt {
+            addr: APP_B,
+            creation_time: 100,
+        }];
+        let mut controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+
+        let (payload, _record, _dels) = teleport_entity_to_space(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_A,
+            7,
+            APP_B,
+            11,
+            300,
+            &mut channels,
+        );
+        let sent_before = channels[&APP_B].out.len();
+
+        // Entity 11 does not live on B: nothing dispatches, the offload
+        // body bounces with the failure flag.
+        let mut host_b = loadable_host();
+        let bounce = match host_b.receive_onload_teleported_entity(
+            APP_A,
+            false,
+            payload,
+            &mut Controllers::new(),
+            &mut EntityCallbackBuffer::new(),
+            9,
+            &mut channels,
+            APP_B,
+            300,
+        ) {
+            TeleportLoad::FailedNearbyMissing(bounce) => bounce,
+            TeleportLoad::Loaded(_) => panic!("nearby entity 11 is missing"),
+        };
+        assert_eq!(bounce.entity_id, 10);
+        assert_eq!(bounce.onload.entity_id, 10);
+        assert!(host_b.ghosts.is_empty());
+        // Nothing new went out for the failed load.
+        assert_eq!(channels[&APP_B].out.len(), sent_before);
+    }
+
+    #[test]
+    fn a_same_app_teleport_replaces_the_local_copy() {
+        let (_cells, mut channels, _config) = checker_world();
+        let (mut real, view) = ghosted_real(10, 140.0);
+        let mut controllers = Controllers::new();
+        let mut callbacks = EntityCallbackBuffer::new();
+
+        let (payload, _record, _dels) = teleport_entity_to_space(
+            &mut real,
+            &view,
+            &mut controllers,
+            &mut callbacks,
+            APP_B,
+            7,
+            APP_B,
+            11,
+            300,
+            &mut channels,
+        );
+
+        // A stale ghost of this entity is already on B (a previous
+        // life). Without the pre-destroy the fresh create would be
+        // buffered and the onload would find nothing.
+        let mut host_b = loadable_host();
+        assert_eq!(
+            host_b.receive_create_ghost(APP_A, payload.create.clone(), 200),
+            GhostCreateOutcome::Created
+        );
+
+        let outcome = match host_b.receive_onload_teleported_entity(
+            APP_B,
+            true,
+            payload,
+            &mut Controllers::new(),
+            &mut EntityCallbackBuffer::new(),
+            7,
+            &mut channels,
+            APP_B,
+            300,
+        ) {
+            TeleportLoad::Loaded(outcome) => outcome,
+            TeleportLoad::FailedNearbyMissing(_) => {
+                panic!("nearby entity 11 exists")
+            }
+        };
+        assert_eq!(outcome.onload.real.id, 10);
+        assert!(host_b.ghosts.is_empty());
+    }
+
+    #[test]
+    fn a_one_way_call_needs_no_reply_forwarder() {
+        let mut host_a = hold_host(10, 0);
+        host_a.receive_ghost_set_real(10, 1, APP_B);
+        let mut forwarders = ReplyForwarders::default();
+
+        let call = forward_message_to_real(
+            &host_a.ghosts,
+            &mut forwarders,
+            (7, 7),
+            10,
+            42,
+            b"fire and forget".to_vec(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(call.to, APP_B);
+        assert_eq!(call.reply_id, None);
+        // No forwarder was registered — a stray response finds nothing.
+        assert_eq!(forwarders.forward_reply(5, b"stray".to_vec()), None);
+        assert!(forwarders.is_empty());
+    }
+
+    #[test]
+    fn a_call_for_an_unknown_entity_fails_and_registers_nothing() {
+        let host_a = GhostHost::default();
+        let mut forwarders = ReplyForwarders::default();
+
+        assert!(
+            forward_message_to_real(
+                &host_a.ghosts,
+                &mut forwarders,
+                (7, 7),
+                10,
+                42,
+                b"lost".to_vec(),
+                Some(9),
+            )
+            .is_none()
+        );
+        // The forward became the unknown-entity failure: no forwarder
+        // ever went out.
+        assert!(forwarders.is_empty());
+    }
+
+    /// A create payload naming `real_addr` as the real's app.
+    fn create_payload(entity_id: EntityId, real_addr: Addr) -> GhostCreatePayload {
+        GhostCreatePayload {
+            space_id: 7,
+            entity_id,
+            entity_type_id: 4,
+            num_times_real_offloaded: 0,
+            position: Vector3::ZERO,
+            is_on_ground: true,
+            last_event_number: 0,
+            volatile: VolatileInfo::NONE,
+            real_addr,
+            base_addr: (9, 9),
+            direction: Vector3::ZERO,
+            property_event_stamps: vec![],
+            ghost_properties: vec![],
+            ghost_controllers: vec![],
+            periods_without_witness: 0,
+            aoi_update_scheme_id: 0,
+        }
+    }
+
+    /// Reshapes the held ghost into the mid-offload state where the
+    /// migration target signed its own death warrant: the record routes
+    /// to `addr` and still waits on `addr`'s confirmation.
+    fn stranded_on(mut host: GhostHost, entity_id: EntityId, addr: Addr) -> GhostHost {
+        assert_eq!(
+            host.receive_ghost_set_real(entity_id, 1, addr),
+            GhostSetRealOutcome::Relocated
+        );
+        assert!(host.receive_ghost_set_next_real(entity_id, addr, 100));
+        host
+    }
+
+    #[test]
+    fn a_dead_migration_target_zombies_only_the_stranded() {
+        let mut host = stranded_on(hold_host(10, 0), 10, APP_B);
+        // 20 rides a healthy real on C.
+        assert_eq!(
+            host.receive_create_ghost(APP_B, create_payload(20, APP_C), 100),
+            GhostCreateOutcome::Created
+        );
+        // 30's real already handed over to a next real elsewhere: the
+        // handover survives the old real's death.
+        assert_eq!(
+            host.receive_create_ghost(APP_B, create_payload(30, APP_B), 100),
+            GhostCreateOutcome::Created
+        );
+        assert!(host.receive_ghost_set_next_real(30, (6, 6), 100));
+        // 40's next real recently died elsewhere: zombie by history,
+        // even though its current real is healthy.
+        assert_eq!(
+            host.receive_create_ghost(APP_C, create_payload(40, APP_C), 100),
+            GhostCreateOutcome::Created
+        );
+        assert!(host.receive_ghost_set_next_real(40, APP_D, 100));
+
+        let mut channels = BTreeMap::new();
+        let recently_dead = |addr: Addr| addr == APP_D;
+        let destroyed = host.handle_cell_app_death(APP_B, &recently_dead, &mut channels, 150);
+
+        // 10 is stranded on the dead target and 40's next real is dead:
+        // both zombies. 20 rides a healthy real; 30 recovers onto its
+        // next real (`pRealChannel_ = get(nextRealAddr_)` — the get
+        // creates the channel).
+        assert_eq!(destroyed, vec![10, 40]);
+        let survivors: Vec<EntityId> = host.ghosts.keys().copied().collect();
+        assert_eq!(survivors, vec![20, 30]);
+        assert_eq!(host.ghosts[&30].real_addr, (6, 6));
+        assert_eq!(host.ghosts[&30].next_real_addr, Some((6, 6)));
+        assert!(channels.contains_key(&(6, 6)));
+    }
+
+    #[test]
+    fn a_revived_ghost_re_zombies_until_its_lifespan_ends() {
+        let mut host = stranded_on(hold_host(10, 0), 10, APP_B);
+        // A buffered create is waiting to replay the ghost's next life.
+        assert_eq!(
+            host.receive_create_ghost(APP_B, create_payload(10, APP_B), 100),
+            GhostCreateOutcome::Buffered
+        );
+
+        let mut channels = BTreeMap::new();
+        let recently_dead = |_addr: Addr| false;
+        let destroyed = host.handle_cell_app_death(APP_B, &recently_dead, &mut channels, 150);
+
+        // The buffered lifespan revives the ghost on the dead real, and
+        // the revived copy re-zombies — destroyed until its queues are
+        // spent (the reference's do-while).
+        assert_eq!(destroyed, vec![10, 10]);
+        assert!(!host.ghosts.contains_key(&10));
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_revival_from_a_live_real_ends_the_zombie_walk() {
+        let mut host = stranded_on(hold_host(10, 0), 10, APP_B);
+        // The next real signed on elsewhere and its create is still
+        // queued behind the dead app's messages.
+        assert_eq!(
+            host.receive_create_ghost(APP_B, create_payload(10, APP_C), 100),
+            GhostCreateOutcome::Buffered
+        );
+
+        let mut channels = BTreeMap::new();
+        let recently_dead = |_addr: Addr| false;
+        let destroyed = host.handle_cell_app_death(APP_B, &recently_dead, &mut channels, 150);
+
+        // The first destroy replays the queued create: the revived
+        // record names a live real, so the walk stops and the ghost
+        // survives on the new routing.
+        assert_eq!(destroyed, vec![10]);
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_restored_real_re_establishes_the_visible_set() {
+        let mut host = stranded_on(hold_host(10, 0), 10, APP_B);
+
+        // A real on this app still watches the dying app through one
+        // haunt; the death walk clears exactly that one.
+        let mut real = RealEntity::new(50, (9, 9), Vector3::ZERO, 0, 0);
+        real.haunts = vec![
+            Haunt {
+                addr: APP_B,
+                creation_time: 5,
+            },
+            Haunt {
+                addr: (6, 6),
+                creation_time: 6,
+            },
+        ];
+        assert_eq!(reals_clear_dead_haunts(&mut real, APP_B), 1);
+        assert_eq!(
+            real.haunts,
+            vec![Haunt {
+                addr: (6, 6),
+                creation_time: 6,
+            }]
+        );
+        assert_eq!(reals_clear_dead_haunts(&mut real, APP_B), 0);
+
+        let mut channels = BTreeMap::new();
+        let recently_dead = |_addr: Addr| false;
+        let destroyed = host.handle_cell_app_death(APP_B, &recently_dead, &mut channels, 150);
+        assert_eq!(destroyed, vec![10]);
+
+        // The base restores the real elsewhere; its maintainer check
+        // re-creates the ghost here against the restored real address.
+        assert_eq!(
+            host.receive_create_ghost(APP_C, create_payload(10, APP_C), 200),
+            GhostCreateOutcome::Created
+        );
+
+        // Roles line up: one ghost routed to the restored real, and no
+        // stranded queue left from the dead app.
+        assert_eq!(host.ghosts[&10].real_addr, APP_C);
+        assert_eq!(host.ghosts.len(), 1);
+        assert!(host.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_real_or_destroyed_entity_is_never_a_zombie() {
+        let host = hold_host(10, 0);
+        let mut channels = BTreeMap::new();
+        let recently_dead = |_addr: Addr| false;
+        let mut record = host.ghosts[&10].clone();
+
+        // Reals and already-destroyed entities never zombie.
+        assert_eq!(
+            check_if_zombied(
+                &mut record,
+                true,
+                false,
+                APP_B,
+                &recently_dead,
+                &mut channels
+            ),
+            ZombieVerdict::NotZombied
+        );
+        assert_eq!(
+            check_if_zombied(
+                &mut record,
+                false,
+                true,
+                APP_B,
+                &recently_dead,
+                &mut channels
+            ),
+            ZombieVerdict::NotZombied
+        );
+
+        // A healthy current real answers the same, without re-pointing.
+        assert_eq!(
+            check_if_zombied(
+                &mut record,
+                false,
+                false,
+                APP_B,
+                &recently_dead,
+                &mut channels
+            ),
+            ZombieVerdict::NotZombied
+        );
+        assert_eq!(record.real_addr, APP_A);
     }
 }

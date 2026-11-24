@@ -9,6 +9,7 @@ pub mod baseapp_relogon;
 pub mod baseappmgr;
 pub mod billing;
 pub mod cell_data;
+pub mod cell_viewer;
 pub mod cellappmgr;
 pub mod client_login;
 pub mod cluster_shutdown;
@@ -20,6 +21,7 @@ pub mod dbapp;
 pub mod dbappmgr;
 pub mod dead_cell_app;
 pub mod dispatcher;
+pub mod emergency_throttle;
 pub mod entity_creator;
 pub mod entity_destroy;
 pub mod entity_dispatch;
@@ -38,18 +40,19 @@ pub mod machined;
 pub mod mailbox_call;
 pub mod movement;
 pub mod navigation_controller;
+pub mod noise;
 pub mod offloaded_backup;
 pub mod passengers;
 pub mod pending_logins;
 pub mod proxy_client;
 pub mod proxy_logoff;
+pub mod range_list;
 pub mod real_entity;
 
-pub mod range_list;
 pub mod relogon;
 pub mod replay_recording;
-
 pub mod replay_write;
+pub mod replay_data;
 pub mod reviver;
 pub mod script_timers;
 pub mod server_app;
@@ -73,6 +76,7 @@ pub mod timekeeper;
 pub mod topology;
 
 pub mod timer_controller;
+pub mod vision;
 
 pub mod watcher;
 pub mod web_session;

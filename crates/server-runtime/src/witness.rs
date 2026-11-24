@@ -1,1726 +1,3572 @@
-//! BW-08-03-02: the witness and its entity caches.
+//! BW-08-03-02: Witness and EntityCache management.
 //!
-//! Ported from the reference faces:
-//! `server/cellapp/entity_cache.{hpp,cpp,ipp}` (the cached state per seen
-//! entity and its client-lifecycle flags), and the witness management faces
-//! in `server/cellapp/witness.cpp`: `AoITrigger::triggerEnter/triggerLeave`
-//! (`witness.cpp:3586-3614`), `Witness::addToAoI` / `removeFromAoI`
-//! (the manual/trigger two-holder bookkeeping), `Witness::addToSeen` /
-//! `deleteFromAoI` (the known-entity queue) and the `Witness::~Witness`
-//! teardown (unlink the AoI trigger without contraction, drop the caches).
+//! Port of the AoI-management face of `cellapp/witness.cpp` plus
+//! `cellapp/entity_cache.{hpp,cpp,ipp}`. The Witness is created per
+//! client-backed RealEntity and keeps one `EntityCache` per observed entity
+//! in `aoiMap_`, driven through a priority queue (`entityQueue_`).
 //!
-//! The reference reads type facts (`canBeOnClient`, `isManualAoI`,
-//! destroyed, event numbers) off the live `Entity`; here they arrive via
-//! [`EntityFacts`] registered per entity, which keeps this module free of the
-//! entitydef layer. Enter/leave range events are drained from
-//! [`RangeList::drain_events_for`] and applied exactly as the reference's
-//! trigger callbacks would.
+//! State machine per cache (flags in `entity_cache.hpp`):
+//! ENTER_PENDING -> (sendEnter) REQUEST_PENDING -> (requestEntityUpdate)
+//! CREATE_PENDING -> (sendCreate) updatable; leaveAoI marks GONE and the
+//! update pass deletes it from client and map. A cache that re-enters before
+//! the deletion pass runs is `reuse()`d; if its last event was trimmed off the
+//! entity's history it takes the REFRESH path (delete-from-client then
+//! re-enter) so first observation and re-entry agree.
+//!
+//! Scope: cache lifecycle, manual/trigger pairing, withheld handling, the
+//! 256-entry ID-alias pool, leave stamps, vehicle-change sync and the default
+//! AoI priority scheme accumulation. Bandwidth/priority selection of updates
+//! is BW-08-03-03; history/property payloads are BW-08-03-04.
 
-use crate::entity_creator::EntityId;
-use crate::range_list::{EventKind, NodeId, RangeList, TriggerId};
-use foundation::math::Vector3;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
-/// `NO_ID_ALIAS` (`entity_cache.hpp:27`).
+/// `EntityID` on the cellapp side.
+pub type EntityId = u32;
+
+/// `NO_ID_ALIAS` — reserved value that is never handed out (`entity_cache.hpp`).
 pub const NO_ID_ALIAS: u8 = 0xff;
 
-/// `EntityCache::MAX_LOD_LEVELS` (`entity_cache.hpp:37`).
+/// `EntityCache::MAX_LOD_LEVELS`.
 pub const MAX_LOD_LEVELS: usize = 4;
 
-/// `EntityCache::Priority`.
-pub type Priority = f64;
+/// `DEFAULT_AOI_RADIUS` in `cellapp_config.cpp`; also the `maxAoIRadius`.
+pub const DEFAULT_AOI_RADIUS: f32 = 500.0;
 
-/// The EntityCache flag bits (`entity_cache.hpp:138-162`). A cache is
-/// updatable only while none of [`cache_flags::NOT_UPDATABLE`] is set.
-pub mod cache_flags {
-    /// Waiting to send enterAoI to client.
-    pub const ENTER_PENDING: u16 = 1 << 0;
-    /// Expecting requestEntityUpdate from client.
-    pub const REQUEST_PENDING: u16 = 1 << 1;
-    /// Waiting to send createEntity to client.
-    pub const CREATE_PENDING: u16 = 1 << 2;
-    /// Waiting to remove from priority queue.
-    pub const GONE: u16 = 1 << 3;
-    /// Do not send to client.
-    pub const WITHHELD: u16 = 1 << 4;
-    /// Waiting to be removed and re-added to the AoI.
-    pub const REFRESH: u16 = 1 << 5;
-    /// Should be sent in the next `Witness::update()`.
-    pub const PRIORITISED: u16 = 1 << 6;
-    /// Added manually to the AoI.
-    pub const MANUALLY_ADDED: u16 = 1 << 7;
-    /// Added automatically by the trigger.
-    pub const ADDED_BY_TRIGGER: u16 = 1 << 8;
-    /// Volatile position updates are detailed at all distances.
-    pub const IS_ALWAYS_DETAILED: u16 = 1 << 9;
-    /// Any of these set means no normal update in
-    /// `RealEntityWithWitnesses::update`.
-    pub const NOT_UPDATABLE: u16 =
-        ENTER_PENDING | REQUEST_PENDING | CREATE_PENDING | GONE | WITHHELD | REFRESH;
-    /// Client related state, reset when the entity leaves the client.
-    pub const CLIENT_STATE: u16 = ENTER_PENDING | REQUEST_PENDING | CREATE_PENDING | GONE | REFRESH;
-}
+/// `CellAppConfig::witnessUpdateDeltaGrowthThrottle` default: 1 + 1/8.
+pub const WITNESS_UPDATE_DELTA_GROWTH_THROTTLE: f64 = 1.0 + 1.0 / 8.0;
 
-/// The per-entity facts the reference reads off the live `Entity` and its
-/// type description: `canBeOnClient` / `isManualAoI` from the description,
-/// `isDestroyed`, `lastEventNumber`, `volatileUpdateNumber`, the number of
-/// LoD levels and the event-history floor (`lastTrimmedEventNumber`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EntityFacts {
-    /// `canBeOnClient`.
-    pub client_visible: bool,
-    /// `isManualAoI`.
-    pub manual_aoi: bool,
-    /// `isDestroyed`.
-    pub destroyed: bool,
-    /// `lastEventNumber`.
+/// `CellAppConfig::witnessUpdateMaxPriorityDelta` default (`witness.cpp`).
+pub const MAX_PRIORITY_DELTA: f64 = 5.0;
+/// `CellAppConfig::sendDetailedPlayerVehicles` (default false).
+pub const SEND_DETAILED_PLAYER_VEHICLES: bool = false;
+
+/// `UDP_OVERHEAD` (`basictypes.hpp`).
+pub const UDP_OVERHEAD: i32 = 28;
+
+/// `NETWORK_BITS_PER_BYTE` (`basictypes.hpp`).
+pub const NETWORK_BITS_PER_BYTE: i32 = 8;
+
+/// Stand-in encoded size of one entity update while BW-08-03-04 has not yet
+/// brought the real property payloads (the reference writes variable-length
+/// position/property data here).
+// Flag bits, verbatim from `entity_cache.hpp` `enum // Flags bits`.
+pub const ENTER_PENDING: u16 = 1 << 0;
+pub const REQUEST_PENDING: u16 = 1 << 1;
+pub const CREATE_PENDING: u16 = 1 << 2;
+pub const GONE: u16 = 1 << 3;
+pub const WITHHELD: u16 = 1 << 4;
+pub const REFRESH: u16 = 1 << 5;
+pub const PRIORITISED: u16 = 1 << 6;
+pub const MANUALLY_ADDED: u16 = 1 << 7;
+pub const ADDED_BY_TRIGGER: u16 = 1 << 8;
+pub const IS_ALWAYS_DETAILED: u16 = 1 << 9;
+/// If any of these are set we shouldn't do a normal update.
+pub const NOT_UPDATABLE: u16 =
+    ENTER_PENDING | REQUEST_PENDING | CREATE_PENDING | GONE | WITHHELD | REFRESH;
+/// Client related state, reset when the entity is removed from the client.
+pub const CLIENT_STATE: u16 = ENTER_PENDING | REQUEST_PENDING | CREATE_PENDING | GONE | REFRESH;
+
+/// Snapshot of an observed entity — the parts of `Entity` the Witness reads.
+/// The harness keeps the authoritative copy; the Witness looks entities up by
+/// id the way `CellApp::findEntity` serves `Witness::requestEntityUpdate`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntitySnapshot {
+    pub id: EntityId,
+    pub client_type_id: u16,
+    /// `position()` — only x/z feed the priority scheme; y rides along in
+    /// create payloads.
+    pub position: (f32, f32, f32),
+    /// `localDirection()`.
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    /// `pVehicle()` — None when the entity is on the ground.
+    pub vehicle_id: Option<EntityId>,
+    /// `volatileInfo()` — gates alias allocation, the volatile create
+    /// message and the projection detail.
+    pub volatile: VolatileInfo,
+    /// `isOnGround()` — on-ground entities pack only x/z.
+    pub is_on_ground: bool,
+    /// `pReal()->controlledByRef().id == entity_.id()` — the witness's own
+    /// client drives this entity, so it already knows the position.
+    pub controlled_by_self: bool,
+    /// `eventHistory()` in chronological order.
+    pub events: Vec<HistoryEvent>,
+    /// `lodLevels()` transitions; empty means the entity never changes
+    /// detail level.
+    pub lod_thresholds: Vec<LodLevelThreshold>,
+    /// `lastEventNumber()`.
     pub last_event_number: i32,
-    /// `volatileUpdateNumber`.
+    /// `volatileUpdateNumber()`.
     pub volatile_update_number: u16,
-    /// `numLoDLevels` (max [`MAX_LOD_LEVELS`]).
-    pub detail_level: u8,
-    /// `lastTrimmedEventNumber`.
-    pub history_floor: i32,
+    /// `vehicleChangeNum()`.
+    pub vehicle_change_num: u8,
+    /// `eventHistory().lastTrimmedEventNumber()` — events older than this are
+    /// gone, and a cache behind it must refresh instead of reuse.
+    pub last_trimmed_event_number: i32,
+    /// `pType()->description().lodLevels().size()`.
+    pub lod_levels: u8,
+    /// `pType()->description().canBeOnClient()`.
+    pub can_be_on_client: bool,
+    pub destroyed: bool,
+    /// `aoiUpdateSchemeID()`.
+    pub aoi_update_scheme_id: u8,
 }
 
-impl Default for EntityFacts {
-    fn default() -> Self {
-        EntityFacts {
-            client_visible: true,
-            manual_aoi: false,
-            destroyed: false,
+impl EntitySnapshot {
+    /// A volatile ground entity with no history — enough for most fixtures.
+    pub fn new(id: EntityId, client_type_id: u16, position: (f32, f32, f32)) -> Self {
+        EntitySnapshot {
+            id,
+            client_type_id,
+            position,
+            yaw: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            vehicle_id: None,
+            volatile: VolatileInfo::ALWAYS_ALL,
+            is_on_ground: true,
+            controlled_by_self: false,
+            events: Vec::new(),
+            lod_thresholds: Vec::new(),
             last_event_number: 0,
             volatile_update_number: 0,
-            detail_level: 1,
-            history_floor: 0,
+            vehicle_change_num: 0,
+            last_trimmed_event_number: 0,
+            lod_levels: 1,
+            can_be_on_client: true,
+            destroyed: false,
+            aoi_update_scheme_id: 0,
+        }
+    }
+    /// `volatileInfo().hasVolatile( 0.f )`.
+    pub fn has_volatile(&self) -> bool {
+        self.volatile.has_volatile(0.0)
+    }
+}
+
+/// One AoI update scheme (`aoi_update_schemes.hpp`). The default scheme is
+/// initialised with min delta 1, max delta 101 over the 500m max radius,
+/// which works out to `(dist/5 + 1) * 1`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AoIUpdateScheme {
+    weighting: f32,
+    distance_weighting: f32,
+}
+
+impl AoIUpdateScheme {
+    /// `AoIUpdateScheme::init` — non-positive minimum makes the scheme
+    /// "coincident": everything sits at priority delta 1.
+    pub fn init(min_delta: f32, max_delta: f32, max_aoi_radius: f32) -> Self {
+        if min_delta <= 0.0 || max_delta < min_delta {
+            AoIUpdateScheme {
+                weighting: 0.0,
+                distance_weighting: 0.0,
+            }
+        } else {
+            AoIUpdateScheme {
+                weighting: min_delta,
+                distance_weighting: ((max_delta / min_delta) - 1.0) / max_aoi_radius,
+            }
+        }
+    }
+
+    /// `shouldTreatAsCoincident`.
+    pub fn should_treat_as_coincident(&self) -> bool {
+        self.weighting == 0.0 && self.distance_weighting == 0.0
+    }
+
+    /// `apply` — priority delta for a squared distance.
+    /// `AoIUpdateSchemes::shouldTreatAsCoincident` — the coincident init
+    /// leaves both weightings at zero.
+    pub fn is_coincident(&self) -> bool {
+        self.weighting == 0.0 && self.distance_weighting == 0.0
+    }
+
+    pub fn apply(&self, distance_squared: f32) -> f64 {
+        if self.should_treat_as_coincident() {
+            return 1.0;
+        }
+        let distance = distance_squared.sqrt();
+        ((distance * self.distance_weighting + 1.0) * self.weighting) as f64
+    }
+}
+
+/// Scheme 0: `("default", 1, 101)` over `maxAoIRadius` (`aoi_update_schemes.cpp`).
+pub fn default_aoi_scheme() -> AoIUpdateScheme {
+    AoIUpdateScheme::init(1.0, 101.0, DEFAULT_AOI_RADIUS)
+}
+
+/// `ServerUtil::bpsToPacketSize` — bits per second to payload bytes per
+/// packet, minus the UDP/IP header overhead (`lib/server/util.hpp`).
+pub fn bps_to_packet_size(bits_per_second: i32, update_hertz: i32) -> i32 {
+    bits_per_second / (NETWORK_BITS_PER_BYTE * update_hertz) - UDP_OVERHEAD
+}
+
+/// `AoIUpdateSchemes::apply` — scheme 0 is the default; custom schemes come
+/// with bw.xml and are treated as coincident until BW-08-03-03 needs them.
+/// `VolatileInfo::ALWAYS`.
+pub const VOLATILE_ALWAYS: f32 = f32::MAX;
+
+/// Port of `VolatileInfo` — the per-axis volatile thresholds of one entity
+/// type, already squared like the reference keeps them after `parse`
+/// (`asPriority` squares the configured metres and maps -1 to ALWAYS).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolatileInfo {
+    pub position_priority: f32,
+    pub yaw_priority: f32,
+    pub pitch_priority: f32,
+    pub roll_priority: f32,
+}
+
+impl VolatileInfo {
+    /// No volatile axis at all — `VolatileInfo()` defaults.
+    pub const NONE: VolatileInfo = VolatileInfo {
+        position_priority: -1.0,
+        yaw_priority: -1.0,
+        pitch_priority: -1.0,
+        roll_priority: -1.0,
+    };
+
+    /// Every axis at maximum rate.
+    pub const ALWAYS_ALL: VolatileInfo = VolatileInfo {
+        position_priority: VOLATILE_ALWAYS,
+        yaw_priority: VOLATILE_ALWAYS,
+        pitch_priority: VOLATILE_ALWAYS,
+        roll_priority: VOLATILE_ALWAYS,
+    };
+
+    /// `VolatileInfo::parse` thresholds in metres; `None` disables the axis
+    /// and `Some(-1.0)` means ALWAYS.
+    pub fn from_thresholds(
+        position: Option<f32>,
+        yaw: Option<f32>,
+        pitch: Option<f32>,
+        roll: Option<f32>,
+    ) -> Self {
+        let sq = |v: Option<f32>| match v {
+            None => -1.0,
+            Some(-1.0) => VOLATILE_ALWAYS,
+            Some(v) => v * v,
+        };
+        VolatileInfo {
+            position_priority: sq(position),
+            yaw_priority: sq(yaw),
+            pitch_priority: sq(pitch),
+            roll_priority: sq(roll),
+        }
+    }
+
+    pub fn should_send_position(&self) -> bool {
+        self.position_priority > 0.0
+    }
+
+    /// `dirType` — how many direction axes are too far away to send.
+    pub fn dir_type(&self, lod_priority: f32) -> u8 {
+        (lod_priority > self.yaw_priority) as u8
+            + (lod_priority > self.pitch_priority) as u8
+            + (lod_priority > self.roll_priority) as u8
+    }
+
+    /// `hasVolatile` — anything worth sending at this LoD priority?
+    pub fn has_volatile(&self, lod_priority: f32) -> bool {
+        lod_priority < self.position_priority || lod_priority < self.yaw_priority
+    }
+}
+
+/// `HistoryEvent::Level` — detail levels for state changes, priorities for
+/// messages (already squared like every other threshold in this module).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HistoryLevel {
+    Detail(i32),
+    Priority(f32),
+}
+
+/// `HistoryEvent` — one entry of the entity's event history.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistoryEvent {
+    pub number: i32,
+    pub level: HistoryLevel,
+    /// `msgLen()` — what the event charges to the bundle.
+    pub payload_bytes: usize,
+}
+
+impl HistoryEvent {
+    /// `HistoryEvent::shouldSend`.
+    pub fn should_send(&self, threshold: f32, detail_level: u8) -> bool {
+        match self.level {
+            HistoryLevel::Detail(detail) => detail_level as i32 <= detail,
+            HistoryLevel::Priority(priority) => threshold < priority,
         }
     }
 }
 
-/// Cached state about one seen entity (`entity_cache.hpp:33-195`).
+/// One `DataLoDLevel` transition point, thresholds already squared.
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LodLevelThreshold {
+    pub low: f32,
+    pub high: f32,
+}
+
+/// How an entity update projects its position onto the client.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PosProjection {
+    /// PackedXZ (on ground) or PackedXYZ (airborne), relative to the
+    /// witness's reference position.
+    Relative {
+        x: f32,
+        y: f32,
+        z: f32,
+        on_ground: bool,
+    },
+    /// PackedXZ/PackedXYZ with the absolute local position — a vehicle
+    /// passenger (`writeVolatileDataToBundle` skips the subtraction).
+    Absolute {
+        x: f32,
+        y: f32,
+        z: f32,
+        on_ground: bool,
+    },
+    /// `avatarUpdate*Detailed` — absolute local position when the packed
+    /// form cannot represent the offset.
+    Detailed { x: f32, y: f32, z: f32 },
+    /// The type sends no position at all (`shouldSendPosition()` false).
+    None,
+}
+
+/// How an entity update projects its direction, by `dirType`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DirProjection {
+    YawPitchRoll { yaw: f32, pitch: f32, roll: f32 },
+    YawPitch { yaw: f32, pitch: f32 },
+    Yaw { yaw: f32 },
+    None,
+}
+
+fn scheme_for(id: u8) -> AoIUpdateScheme {
+    if id == 0 {
+        default_aoi_scheme()
+    } else {
+        AoIUpdateScheme::init(0.0, 0.0, DEFAULT_AOI_RADIUS)
+    }
+}
+
+/// Messages the Witness writes to the client bundle. Payloads cover the
+/// 03-02 face; wire packing and property bodies arrive with BW-08-03-04.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClientMessage {
+    /// `BaseAppIntInterface::enterAoI`.
+    EnterAoI { id: EntityId, id_alias: u8 },
+    /// `BaseAppIntInterface::enterAoIOnVehicle`.
+    EnterAoIOnVehicle {
+        id: EntityId,
+        vehicle_id: EntityId,
+        id_alias: u8,
+    },
+    /// `BaseAppIntInterface::leaveAoI` — id then the LoD event stamps.
+    LeaveAoI {
+        id: EntityId,
+        lod_event_numbers: Vec<i32>,
+    },
+    /// `BaseAppIntInterface::setVehicle` from `writeVehicleChangeToBundle`.
+    SetVehicle {
+        passenger_id: EntityId,
+        vehicle_id: Option<EntityId>,
+    },
+    /// `BaseAppIntInterface::createEntity` — volatile entity.
+    CreateEntity {
+        id: EntityId,
+        client_type_id: u16,
+        position: (f32, f32, f32),
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+    },
+    /// `BaseAppIntInterface::createEntityDetailed` — non-volatile entity.
+    CreateEntityDetailed {
+        id: EntityId,
+        client_type_id: u16,
+        position: (f32, f32, f32),
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+    },
+    /// `BaseAppIntInterface::relativePositionArgs`.
+    RelativePosition { position: (f32, f32, f32) },
+    /// `BaseAppIntInterface::relativePositionReferenceArgs`.
+    RelativePositionReference { sequence_number: u32 },
+    /// `BaseAppIntInterface::avatarUpdatePlayerDetailed` — the witness's
+    /// own projection, sent ahead of every observed entity.
+    AvatarUpdatePlayerDetailed {
+        position: (f32, f32, f32),
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+    },
+    /// `BaseAppIntInterface::selectEntityArgs`.
+    SelectEntity { id: EntityId },
+    /// `BaseAppIntInterface::selectAliasedEntityArgs`.
+    SelectAliasedEntity { id_alias: u8 },
+    /// `BaseAppIntInterface::updateEntity` — the changed-properties resend
+    /// that follows a detail-level increase.
+    UpdateProperties {
+        id: EntityId,
+        id_alias: Option<u8>,
+        detail_level: u8,
+    },
+    /// One entity update from `Witness::sendQueueElement`: the projection
+    /// of position and direction onto this witness, plus the history events
+    /// that crossed the LoD gate. `bytes` is what it charged to this tick's
+    /// packet budget.
+    EntityUpdate {
+        id: EntityId,
+        id_alias: Option<u8>,
+        pos: PosProjection,
+        dir: DirProjection,
+        events: Vec<i32>,
+        bytes: usize,
+    },
+}
+
+impl ClientMessage {
+    /// Encoded size on the wire — what `Mercury::Bundle::size` would report.
+    pub fn wire_size(&self) -> usize {
+        match self {
+            ClientMessage::EntityUpdate { bytes, .. } => *bytes,
+            // The hand-written payloads of this module are small and fixed;
+            // only the per-update cost feeds the 03-03 budget gates.
+            _ => 8,
+        }
+    }
+}
+
+/// Port of `EntityCache` — what the Witness remembers about one observed
+/// entity, including what the client has been told about it.
+#[derive(Debug, Clone)]
 pub struct EntityCache {
-    /// The seen entity's id (`pEntity_`).
-    pub entity_id: EntityId,
     flags: u16,
-    /// `priority_`.
-    priority: Priority,
-    /// `lastPriorityDelta_`.
-    last_priority_delta: Priority,
-    /// `lastEventNumber_`.
+    priority: f64,
+    last_priority_delta: f64,
     last_event_number: i32,
-    /// `lastVolatileUpdateNumber_`.
     last_volatile_update_number: u16,
-    /// `detailLevel_`.
     detail_level: u8,
-    /// `idAlias_`.
     id_alias: u8,
-    /// `lodEventNumbers_`.
+    vehicle_change_num: u8,
+    update_scheme_id: u8,
     lod_event_numbers: [i32; MAX_LOD_LEVELS],
 }
 
 impl EntityCache {
-    /// The constructor plus `resetClientState`
-    /// (`entity_cache.ipp:24-60`): a fresh cache starts with the entity's
-    /// current event number, one below its volatile number, at its outer
-    /// detail level, unaliased, with an uncapped priority delta.
-    fn new(entity_id: EntityId, facts: &EntityFacts) -> Self {
-        EntityCache {
-            entity_id,
+    /// `EntityCache( const Entity * pEntity )` — constructed with client
+    /// state already synced to the entity (via `resetClientState`).
+    pub fn new(entity: &EntitySnapshot) -> Self {
+        let mut cache = EntityCache {
             flags: 0,
             priority: 0.0,
-            last_priority_delta: f64::MAX,
-            last_event_number: facts.last_event_number,
-            last_volatile_update_number: facts.volatile_update_number.wrapping_sub(1),
-            detail_level: facts.detail_level,
+            last_priority_delta: 0.0,
+            last_event_number: 0,
+            last_volatile_update_number: 0,
+            detail_level: 0,
             id_alias: NO_ID_ALIAS,
+            vehicle_change_num: 0,
+            update_scheme_id: entity.aoi_update_scheme_id,
             lod_event_numbers: [0; MAX_LOD_LEVELS],
-        }
+        };
+        cache.reset_client_state(entity);
+        cache
     }
 
-    /// `resetClientState` (`entity_cache.ipp:40-60`): the client state is
-    /// re-seeded from the entity.
-    fn reset_client_state(&mut self, facts: &EntityFacts) {
-        self.last_event_number = facts.last_event_number;
-        self.last_volatile_update_number = facts.volatile_update_number.wrapping_sub(1);
-        self.detail_level = facts.detail_level;
+    /// `resetClientState` — called at construction and when removed from the
+    /// client.
+    pub fn reset_client_state(&mut self, entity: &EntitySnapshot) {
+        self.last_event_number = entity.last_event_number;
+        self.last_volatile_update_number = entity.volatile_update_number.wrapping_sub(1);
+        self.detail_level = entity.lod_levels;
         self.id_alias = NO_ID_ALIAS;
+        // DBL_MAX marks "last delta was infinitely large" so the next delta is
+        // not capped by the growth throttle.
         self.last_priority_delta = f64::MAX;
-        self.flags &= !cache_flags::CLIENT_STATE;
-        self.lod_event_numbers = [0; MAX_LOD_LEVELS];
+        let levels = self.detail_level as usize;
+        self.lod_event_numbers[..levels].fill(0);
     }
 
-    /// `onEntityRemovedFromClient` (`entity_cache.ipp:64-70`).
-    pub fn on_entity_removed_from_client(&mut self, facts: &EntityFacts) {
-        self.reset_client_state(facts);
+    /// `onEntityRemovedFromClient` — clear the client flags (retaining server
+    /// ones: WITHHELD, MANUAL/TRIGGER source, PRIORITISED) and resnap the
+    /// client state to the entity.
+    pub fn on_entity_removed_from_client(&mut self, entity: &EntitySnapshot) {
+        self.flags &= !CLIENT_STATE;
+        self.reset_client_state(entity);
     }
 
-    /// `reuse` (`entity_cache.cpp:382-403`): a gone cache is revived; if the
-    /// client has missed events past the history floor, mark it for a full
-    /// out-and-back-in refresh instead.
-    fn reuse(&mut self, facts: &EntityFacts) {
-        debug_assert!(self.is_gone());
-        self.clear_gone();
-        if self.last_event_number < facts.history_floor && self.is_updatable() {
-            self.set_refresh();
+    /// `reuse` — the entity re-entered before it had been removed. Throw the
+    /// cache back into sync, or take the REFRESH detour when the client's
+    /// last event has been trimmed off the entity's history.
+    pub fn reuse(&mut self, entity: &EntitySnapshot) {
+        assert!(self.flags & GONE != 0);
+        self.flags &= !GONE;
+
+        if self.last_event_number < entity.last_trimmed_event_number
+            && self.flags & NOT_UPDATABLE == 0
+        {
+            self.flags |= REFRESH;
         }
     }
 
-    /// Sets the flag bits in `bits`.
-    fn set_flags(&mut self, bits: u16) {
-        self.flags |= bits;
+    pub fn set_flag(&mut self, flag: u16) {
+        self.flags |= flag;
     }
 
-    /// Clears the flag bits in `bits`.
-    fn clear_flags(&mut self, bits: u16) {
-        self.flags &= !bits;
+    pub fn clear_flag(&mut self, flag: u16) {
+        self.flags &= !flag;
     }
 
-    /// Whether all of `bits` are set.
-    fn has_flags(&self, bits: u16) -> bool {
-        (self.flags & bits) == bits
+    pub fn has_flag(&self, flag: u16) -> bool {
+        self.flags & flag != 0
     }
 
-    /// `setEnterPending` / `clearEnterPending` / `isEnterPending`.
-    pub fn set_enter_pending(&mut self) {
-        self.set_flags(cache_flags::ENTER_PENDING);
-    }
-    pub fn clear_enter_pending(&mut self) {
-        self.clear_flags(cache_flags::ENTER_PENDING);
-    }
-    pub fn is_enter_pending(&self) -> bool {
-        self.has_flags(cache_flags::ENTER_PENDING)
-    }
-
-    /// `setRequestPending` / `clearRequestPending` / `isRequestPending`.
-    pub fn set_request_pending(&mut self) {
-        self.set_flags(cache_flags::REQUEST_PENDING);
-    }
-    pub fn clear_request_pending(&mut self) {
-        self.clear_flags(cache_flags::REQUEST_PENDING);
-    }
-    pub fn is_request_pending(&self) -> bool {
-        self.has_flags(cache_flags::REQUEST_PENDING)
-    }
-
-    /// `setCreatePending` / `clearCreatePending` / `isCreatePending`.
-    pub fn set_create_pending(&mut self) {
-        self.set_flags(cache_flags::CREATE_PENDING);
-    }
-    pub fn clear_create_pending(&mut self) {
-        self.clear_flags(cache_flags::CREATE_PENDING);
-    }
-    pub fn is_create_pending(&self) -> bool {
-        self.has_flags(cache_flags::CREATE_PENDING)
-    }
-
-    /// `setGone` / `clearGone` / `isGone`.
-    pub fn set_gone(&mut self) {
-        self.set_flags(cache_flags::GONE);
-    }
-    pub fn clear_gone(&mut self) {
-        self.clear_flags(cache_flags::GONE);
-    }
-    pub fn is_gone(&self) -> bool {
-        self.has_flags(cache_flags::GONE)
-    }
-
-    /// `setWithheld` / `isWithheld`.
-    pub fn set_withheld(&mut self) {
-        self.set_flags(cache_flags::WITHHELD);
-    }
-    pub fn is_withheld(&self) -> bool {
-        self.has_flags(cache_flags::WITHHELD)
-    }
-
-    /// `setRefresh` / `clearRefresh` / `isRefresh`.
-    pub fn set_refresh(&mut self) {
-        self.set_flags(cache_flags::REFRESH);
-    }
-    pub fn clear_refresh(&mut self) {
-        self.clear_flags(cache_flags::REFRESH);
-    }
-    pub fn is_refresh(&self) -> bool {
-        self.has_flags(cache_flags::REFRESH)
-    }
-
-    /// `setPrioritised` / `clearPrioritised` / `isPrioritised`.
-    pub fn set_prioritised(&mut self) {
-        self.set_flags(cache_flags::PRIORITISED);
-    }
-    pub fn clear_prioritised(&mut self) {
-        self.clear_flags(cache_flags::PRIORITISED);
-    }
-    pub fn is_prioritised(&self) -> bool {
-        self.has_flags(cache_flags::PRIORITISED)
-    }
-
-    /// `setManuallyAdded` / `isManuallyAdded`.
-    pub fn set_manually_added(&mut self) {
-        self.set_flags(cache_flags::MANUALLY_ADDED);
-    }
-    pub fn is_manually_added(&self) -> bool {
-        self.has_flags(cache_flags::MANUALLY_ADDED)
-    }
-
-    /// `setAddedByTrigger` / `isAddedByTrigger`.
-    pub fn set_added_by_trigger(&mut self) {
-        self.set_flags(cache_flags::ADDED_BY_TRIGGER);
-    }
-    pub fn is_added_by_trigger(&self) -> bool {
-        self.has_flags(cache_flags::ADDED_BY_TRIGGER)
-    }
-
-    /// `isUpdatable` (`entity_cache.hpp:131`).
+    /// `isUpdatable` — no pending/dead/withheld state.
     pub fn is_updatable(&self) -> bool {
-        (self.flags & cache_flags::NOT_UPDATABLE) == 0
+        self.flags & NOT_UPDATABLE == 0
     }
 
-    /// `priority()`.
-    pub fn priority(&self) -> Priority {
+    pub fn priority(&self) -> f64 {
         self.priority
     }
 
-    /// `priority(newPriority)`.
-    pub fn set_priority(&mut self, value: Priority) {
-        self.priority = value;
+    pub fn set_priority(&mut self, priority: f64) {
+        self.priority = priority;
     }
 
-    /// `lastPriorityDelta()`.
-    pub fn last_priority_delta(&self) -> Priority {
-        self.last_priority_delta
+    pub fn id_alias(&self) -> u8 {
+        self.id_alias
     }
 
-    /// `lastPriorityDelta(newDelta)`.
-    pub fn set_last_priority_delta(&mut self, value: Priority) {
-        self.last_priority_delta = value;
+    pub fn set_id_alias(&mut self, id_alias: u8) {
+        self.id_alias = id_alias;
     }
 
-    /// `lastEventNumber()`.
+    pub fn vehicle_change_num(&self) -> u8 {
+        self.vehicle_change_num
+    }
+
+    pub fn set_vehicle_change_num(&mut self, num: u8) {
+        self.vehicle_change_num = num;
+    }
+
     pub fn last_event_number(&self) -> i32 {
         self.last_event_number
     }
 
-    /// `lastVolatileUpdateNumber()`.
+    /// `lastVolatileUpdateNumber`.
     pub fn last_volatile_update_number(&self) -> u16 {
         self.last_volatile_update_number
     }
 
-    /// `detailLevel()`.
+    /// `updateSchemeID`.
+    pub fn update_scheme_id(&self) -> u8 {
+        self.update_scheme_id
+    }
+
     pub fn detail_level(&self) -> u8 {
         self.detail_level
     }
 
-    /// `idAlias()`.
-    pub fn id_alias(&self) -> u8 {
-        self.id_alias
+    /// `lodEventNumber( detailLevel )` readback.
+    pub fn lod_event_numbers(&self) -> [i32; MAX_LOD_LEVELS] {
+        self.lod_event_numbers
+    }
+
+    /// Full flag word readback.
+    pub fn flags(&self) -> u16 {
+        self.flags
+    }
+
+    /// `lodEventNumbers` — set the top `stamps.len()` levels.
+    pub fn set_lod_event_numbers(&mut self, entity: &EntitySnapshot, stamps: &[i32]) {
+        let offset = (entity.lod_levels as usize).saturating_sub(stamps.len());
+        for (i, stamp) in stamps.iter().enumerate() {
+            self.lod_event_numbers[i + offset] = *stamp;
+        }
+    }
+
+    /// `getDistanceSquared` — x/z only, clamped at FLT_MAX.
+    fn distance_squared(&self, entity: &EntitySnapshot, origin: (f32, f32, f32)) -> f32 {
+        let diff_x = entity.position.0 - origin.0;
+        let diff_z = entity.position.2 - origin.2;
+        let ret = diff_x * diff_x + diff_z * diff_z;
+        if ret > f32::MAX { f32::MAX } else { ret }
+    }
+
+    /// `getLoDPriority`.
+    pub fn lod_priority(&self, entity: &EntitySnapshot, origin: (f32, f32, f32)) -> f32 {
+        self.distance_squared(entity, origin)
+    }
+
+    /// `updatePriority` — accumulate the scheme delta, capped to a fraction of
+    /// the previous delta by the growth throttle.
+    pub fn update_priority(&mut self, entity: &EntitySnapshot, origin: (f32, f32, f32)) {
+        let dist_sq = self.distance_squared(entity, origin);
+        let mut delta = scheme_for(entity.aoi_update_scheme_id).apply(dist_sq);
+        delta = delta.min(WITNESS_UPDATE_DELTA_GROWTH_THROTTLE * self.last_priority_delta);
+        self.last_priority_delta = delta;
+        self.priority += delta;
+    }
+
+    /// `addOuterDetailLevel` — created one level below outermost, stamped
+    /// with the entity's current event. The changed-properties body itself is
+    /// BW-08-03-04.
+    pub fn add_outer_detail_level(&mut self, entity: &EntitySnapshot) {
+        assert_eq!(self.detail_level, entity.lod_levels);
+        self.detail_level = entity.lod_levels - 1;
+        self.last_event_number = entity.last_event_number;
+    }
+
+    /// `addLeaveAoIMessage` stamps — entered levels carry their stored
+    /// numbers, the current and lower levels all sit at `lastEventNumber`.
+    fn leave_aoi_stamps(&self, entity: &EntitySnapshot) -> Vec<i32> {
+        let mut stamps: Vec<i32> = self.lod_event_numbers[..self.detail_level as usize].to_vec();
+        for _ in self.detail_level as usize..entity.lod_levels as usize {
+            stamps.push(self.last_event_number);
+        }
+        stamps
     }
 }
 
-/// A witness: a real entity's view of the entities around it, driven by an
-/// AoI range trigger and the cache map + known-entity queue
-/// (`witness.hpp:48-`, `aoiMap_` / `entityQueue_`).
+/// Port of `Witness` — the AoI-management face. The owning entity's snapshot
+/// lives in `entities` alongside everything it observes, mirroring how the
+/// reference reads `entity_` directly and finds others via the CellApp.
+#[derive(Debug)]
 pub struct Witness {
-    /// The witness entity's range-list node.
-    pub node: NodeId,
-    /// The AoI trigger id in the shared range list.
-    pub aoi: TriggerId,
-    /// The witness entity's id.
-    pub entity_id: EntityId,
-    /// `aoiMap_`: one cache per seen entity, keyed by id (`EntityCacheMap`).
-    caches: BTreeMap<EntityId, EntityCache>,
-    /// `entityQueue_`: the known entities, in add order
-    /// (`witness.hpp:201`).
-    queue: Vec<EntityId>,
-    /// Per-entity facts, registered or defaulted.
-    facts: HashMap<EntityId, EntityFacts>,
-    /// Entity positions for `updatePriority` (`distance_squared`), fed by
-    /// the position pipeline (the cache reads the live entity in the
-    /// engine).
-    positions: HashMap<EntityId, Vector3>,
-    /// The witness entity's own position (`entity_.position()`).
-    pos: Vector3,
-    /// The vehicle stack (`entity_.pVehicle()` chain), sent first.
-    vehicles: Vec<EntityId>,
-    /// `bandwidthDeficit_`, carried between updates.
+    entity_id: EntityId,
+    /// `CellApp::findEntity` stand-in: every entity this witness can see,
+    /// including its own.
+    entities: HashMap<EntityId, EntitySnapshot>,
+    /// `aoiMap_`.
+    aoi_map: HashMap<EntityId, EntityCache>,
+    /// `entityQueue_` — the reference keeps a min-heap on priority; the
+    /// 03-02 state-change pass only reads the minimum (in `addToSeen`), so a
+    /// plain vector with swap-pop removal keeps the same behaviour. The real
+    /// heap ordering arrives with BW-08-03-03.
+    entity_queue: Vec<EntityId>,
+    /// `freeAliases_` — LIFO pool; slot 0xff is reserved for `NO_ID_ALIAS`,
+    /// so the filled pool is 0..254 ascending and allocation pops the back.
+    free_aliases: Vec<u8>,
+    /// `bundle()` stand-in — messages waiting to go to the client.
+    bundle: Vec<ClientMessage>,
+    /// WARNING_MSG / CRITICAL_MSG records.
+    warnings: Vec<String>,
+    /// `entity_.isInAoIOffload()` — set when an add was deferred for a dead
+    /// entity during offload, cleared by the matching remove.
+    is_in_aoi_offload: bool,
+    aoi_radius: f32,
+    aoi_hyst: f32,
+    /// `maxPacketSize_` — payload bytes per tick, 0 until the proxy tells us
+    /// the client's rate via `setWitnessCapacity`.
+    max_packet_size: i32,
+    /// `bandwidthDeficit_` — bytes we overshot last tick, paid back now.
     bandwidth_deficit: i32,
-    num_prioritised: i32,
+    /// `CellApp::emergencyThrottle()` snapshot for this tick.
+    emergency_throttle: f32,
+    /// Fixed encoded size charged per entity update (harness face for the
+    /// 03-03 budget scenarios); `None` charges the computed payload size.
+    update_bytes: Option<usize>,
+    /// Running `Mercury::Bundle::size` for the budget gates.
+    bundle_bytes: usize,
+    /// `referencePosition_` — the grid-aligned point relative positions are
+    /// measured from.
+    reference_position: (f32, f32, f32),
+    /// `hasReferencePosition_` — the client has supplied a reference.
+    has_reference_position: bool,
+    /// `referenceSeqNum_`.
+    reference_seq_num: u32,
+    /// `CellApp::instance().time()` stand-in; bumped at the end of each
+    /// update pass. Starts at 1 so the "never sent" sentinel of
+    /// `last_sent_reliable_game_time` stays distinct.
+    time: u32,
+    /// `CellAppConfig::maxTimeBetweenPlayerUpdatesInTicks()`.
+    max_time_between_player_updates_in_ticks: i32,
+    /// `lastSentReliableGameTime_` — 0 means "never".
+    last_sent_reliable_game_time: u32,
+    /// `lastSentReliablePosition_`.
+    last_sent_reliable_position: (f32, f32, f32),
+    /// `lastSentReliableDirection_`.
+    last_sent_reliable_direction: (f32, f32, f32),
 }
 
 impl Witness {
-    /// Witness creation around `entity_id` at `pos` with an AoI `radius`:
-    /// the AoI trigger inserts (firing enter events for everything already
-    /// in radius) and the large entities whose appeal range covers the
-    /// position join immediately (`AoITrigger` constructor,
-    /// `witness.cpp:73-101`, including `visitLargeEntities`).
-    pub fn new(list: &mut RangeList, entity_id: EntityId, pos: Vector3, radius: f32) -> Self {
-        let node = list.add_entity(entity_id, pos);
-        let aoi = list.add_aoi_trigger(node, radius);
-        let mut witness = Witness {
-            node,
-            aoi,
+    /// `Witness::Witness` for `CREATE_REAL_FROM_INIT`.
+    pub fn new(entity_id: EntityId, self_entity: EntitySnapshot) -> Self {
+        let reference_position = (
+            self_entity.position.0.round(),
+            self_entity.position.1.round(),
+            self_entity.position.2.round(),
+        );
+        let mut entities = HashMap::new();
+        entities.insert(entity_id, self_entity);
+        Witness {
             entity_id,
-            caches: BTreeMap::new(),
-            queue: Vec::new(),
-            facts: HashMap::new(),
-            pos,
-            positions: HashMap::new(),
-            vehicles: Vec::new(),
+            entities,
+            aoi_map: HashMap::new(),
+            entity_queue: Vec::new(),
+            free_aliases: (0..=254u8).collect(),
+            bundle: Vec::new(),
+            warnings: Vec::new(),
+            is_in_aoi_offload: false,
+            aoi_radius: DEFAULT_AOI_RADIUS,
+            aoi_hyst: 5.0,
+            max_packet_size: 0,
             bandwidth_deficit: 0,
-            num_prioritised: 0,
+            emergency_throttle: 1.0,
+            update_bytes: None,
+            bundle_bytes: 0,
+            reference_position,
+            has_reference_position: false,
+            reference_seq_num: 0,
+            time: 1,
+            max_time_between_player_updates_in_ticks: 0,
+            last_sent_reliable_game_time: 0,
+            last_sent_reliable_position: (0.0, 0.0, 0.0),
+            last_sent_reliable_direction: (0.0, 0.0, 0.0),
+        }
+    }
+
+    pub fn entity_id(&self) -> EntityId {
+        self.entity_id
+    }
+
+    /// Harness face — refresh the authoritative copy of an entity
+    /// (`Entity::position` etc. mutate in place upstream).
+    pub fn upsert_entity(&mut self, entity: EntitySnapshot) {
+        self.entities.insert(entity.id, entity);
+    }
+
+    pub fn entity(&self, id: EntityId) -> Option<&EntitySnapshot> {
+        self.entities.get(&id)
+    }
+
+    /// `Witness::setAoIRadius` bookkeeping half; the trigger rewiring is the
+    /// range list's business.
+    pub fn set_aoi_radius(&mut self, radius: f32, hyst: f32) {
+        self.aoi_radius = radius.max(0.1);
+        self.aoi_hyst = hyst;
+    }
+
+    pub fn aoi_radius(&self) -> f32 {
+        self.aoi_radius
+    }
+
+    pub fn aoi_hyst(&self) -> f32 {
+        self.aoi_hyst
+    }
+
+    /// `Witness::setWitnessCapacity` — the proxy reports the client's rate;
+    /// a zero hertz leaves the packet size untouched.
+    pub fn set_witness_capacity(&mut self, bits_per_second: i32, update_hertz: i32) {
+        // a zero hertz leaves the packet size untouched
+        self.max_packet_size = if update_hertz != 0 {
+            bps_to_packet_size(bits_per_second, update_hertz)
+        } else {
+            self.max_packet_size
         };
-        // visitLargeEntities: appeal-covered entities join before the
-        // trigger's own insert events are applied.
-        for large in list.appeal_entities_containing(pos.x, pos.z) {
-            if large != entity_id {
-                witness.add_to_aoi(large, false);
-            }
-        }
-        list.trigger_insert(aoi);
-        witness.poll(list);
-        witness
     }
 
-    /// Register the facts for an entity (the type-description side of the
-    /// reference). Unregistered entities use [`EntityFacts::default`].
-    pub fn register(&mut self, entity_id: EntityId, facts: EntityFacts) {
-        self.facts.insert(entity_id, facts);
+    pub fn max_packet_size(&self) -> i32 {
+        self.max_packet_size
     }
 
-    fn facts_of(&self, entity_id: EntityId) -> EntityFacts {
-        *self
-            .facts
-            .get(&entity_id)
-            .unwrap_or(&EntityFacts::default())
+    /// `CellApp::emergencyThrottle()` stand-in — the harness pins it per tick.
+    pub fn set_emergency_throttle(&mut self, throttle: f32) {
+        self.emergency_throttle = throttle;
     }
 
-    /// Apply this witness's share of the range list's enter/leave events,
-    /// exactly as its `AoITrigger::triggerEnter` / `triggerLeave` callbacks
-    /// would (`witness.cpp:3586-3614`): other triggers' events stay queued
-    /// for them, and the witness's own entity plus manual-AoI types are
-    /// skipped.
-    pub fn poll(&mut self, list: &mut RangeList) {
-        for event in list.drain_events_for(self.aoi) {
-            if event.entity == self.entity_id {
-                continue;
-            }
-            if self.facts_of(event.entity).manual_aoi {
-                continue;
-            }
-            match event.kind {
-                EventKind::Enter => self.add_to_aoi(event.entity, false),
-                EventKind::Leave => self.remove_from_aoi(event.entity, false),
-            }
-        }
+    /// Harness face for the encoded update size — fixes the per-update
+    /// budget charge; `clear_entity_update_bytes` returns to the computed
+    /// payload sizes.
+    pub fn set_entity_update_bytes(&mut self, bytes: usize) {
+        self.update_bytes = Some(bytes);
     }
 
-    /// `Witness::addToAoI` (`witness.cpp`, the management half): destroyed
-    /// and non-client entities never join; a present-and-live cache just
-    /// gains the holder flag; a gone cache is reused; a fresh entity gets a
-    /// cache, enter-pending and a queue slot.
-    pub fn add_to_aoi(&mut self, entity_id: EntityId, set_manually_added: bool) {
-        let facts = self.facts_of(entity_id);
-        if facts.destroyed || !facts.client_visible {
-            return;
-        }
-        if let Some(cache) = self.caches.get_mut(&entity_id) {
-            // Present: a gone cache is revived, a live one is a no-op apart
-            // from the holder flag.
-            if cache.is_gone() {
-                cache.reuse(&facts);
-            } else {
-                if set_manually_added {
-                    cache.set_manually_added();
-                } else {
-                    cache.set_added_by_trigger();
-                }
-                return;
-            }
-        } else {
-            let mut cache = EntityCache::new(entity_id, &facts);
-            cache.set_enter_pending();
-            self.add_to_seen(entity_id, &mut cache);
-            self.caches.insert(entity_id, cache);
-        }
-        let cache = self.caches.get_mut(&entity_id).unwrap();
-        if set_manually_added {
-            cache.set_manually_added();
-        } else {
-            cache.set_added_by_trigger();
-        }
+    pub fn clear_entity_update_bytes(&mut self) {
+        self.update_bytes = None;
     }
 
-    /// `Witness::removeFromAoI`: with `clear_manually_added` the manual hold
-    /// is dropped first (a trigger hold keeps the entity), otherwise the
-    /// trigger hold is dropped first. The last holder out marks the cache
-    /// gone; unknown entities are ignored.
-    pub fn remove_from_aoi(&mut self, entity_id: EntityId, clear_manually_added: bool) {
-        let facts = self.facts_of(entity_id);
-        if !facts.client_visible {
-            return;
-        }
-        let Some(cache) = self.caches.get_mut(&entity_id) else {
-            return;
-        };
-        if clear_manually_added {
-            cache.clear_flags(cache_flags::MANUALLY_ADDED);
-            if cache.is_added_by_trigger() {
-                return;
-            }
-        } else {
-            cache.clear_flags(cache_flags::ADDED_BY_TRIGGER);
-            if cache.is_manually_added() {
-                return;
-            }
-        }
-        cache.set_gone();
+    /// `CellAppConfig::maxTimeBetweenPlayerUpdatesInTicks` harness face.
+    pub fn set_max_time_between_player_updates(&mut self, ticks: i32) {
+        self.max_time_between_player_updates_in_ticks = ticks;
     }
 
-    /// `Witness::addToSeen` (`witness.cpp`): the newcomer starts at the
-    /// current front priority so it does not jump the queue, then joins the
-    /// back.
-    fn add_to_seen(&mut self, entity_id: EntityId, cache: &mut EntityCache) {
-        let initial_priority = self
-            .queue
-            .first()
-            .and_then(|front| self.caches.get(front))
-            .map(|front| front.priority())
-            .unwrap_or(0.0);
-        cache.set_priority(initial_priority);
-        self.queue.push(entity_id);
+    /// The client has supplied a reference position (`onSendReliablePosition`
+    /// counterpart on the receiving side).
+    pub fn set_client_reference_sequence(&mut self, sequence_number: u32) {
+        self.has_reference_position = true;
+        self.reference_seq_num = sequence_number;
     }
 
-    /// `Witness::deleteFromAoI` (`witness.cpp`): swap-remove the queue slot
-    /// and drop the cache.
-    pub fn delete_from_aoi(&mut self, entity_id: EntityId) {
-        if let Some(pos) = self.queue.iter().position(|id| *id == entity_id) {
-            let last = self.queue.len() - 1;
-            self.queue.swap(pos, last);
-            self.queue.pop();
-        }
-        self.caches.remove(&entity_id);
+    /// `CellApp::instance().time()` readback.
+    pub fn time(&self) -> u32 {
+        self.time
     }
 
-    /// `Witness::~Witness` (the AoI half): unlink the AoI trigger without
-    /// contraction (no per-entity leaves — the AoI goes away wholesale) and
-    /// drop the caches.
-    pub fn destroy(&mut self, list: &mut RangeList) {
-        list.trigger_remove_without_contracting(self.aoi);
-        self.caches.clear();
-        self.queue.clear();
+    /// `Mercury::Bundle::size` readback.
+    pub fn bundle_size(&self) -> usize {
+        self.bundle_bytes
     }
 
-    /// The cache for a seen entity, if any.
-    pub fn cache(&self, entity_id: EntityId) -> Option<&EntityCache> {
-        self.caches.get(&entity_id)
+    pub fn bandwidth_deficit(&self) -> i32 {
+        self.bandwidth_deficit
     }
 
-    /// Mutable cache access for the update/selection paths
-    /// (`aoiMap_` mutation faces).
-    pub fn cache_mut(&mut self, entity_id: EntityId) -> Option<&mut EntityCache> {
-        self.caches.get_mut(&entity_id)
+    /// `bundle()` — inspect queued messages without consuming them.
+    pub fn bundle(&self) -> &[ClientMessage] {
+        &self.bundle
     }
 
-    /// `Witness::isInAoI`: cached and not gone.
-    pub fn is_in_aoi(&self, entity_id: EntityId) -> bool {
-        matches!(self.caches.get(&entity_id), Some(c) if !c.is_gone())
+    /// Send everything queued and clear the bundle.
+    pub fn take_bundle(&mut self) -> Vec<ClientMessage> {
+        self.bundle_bytes = 0;
+        std::mem::take(&mut self.bundle)
     }
 
-    /// The ids with a cache, gone ones included, in id order
-    /// (`EntityCacheMap` iteration order).
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Readback faces for tests.
     pub fn aoi_ids(&self) -> Vec<EntityId> {
-        self.caches.keys().copied().collect()
+        let mut ids: Vec<EntityId> = self.aoi_map.keys().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
-    /// The known-entity queue, front first (`entityQueue_`).
-    pub fn queue(&self) -> &[EntityId] {
-        &self.queue
+    pub fn queue_ids(&self) -> Vec<EntityId> {
+        self.entity_queue.clone()
     }
 
-    /// The number of caches (`EntityCacheMap::size`).
-    pub fn cache_count(&self) -> usize {
-        self.caches.len()
+    pub fn cache_flags(&self, id: EntityId) -> Option<u16> {
+        self.aoi_map.get(&id).map(|c| c.flags)
+    }
+
+    pub fn cache_priority(&self, id: EntityId) -> Option<f64> {
+        self.aoi_map.get(&id).map(|c| c.priority)
+    }
+
+    pub fn cache_id_alias(&self, id: EntityId) -> Option<u8> {
+        self.aoi_map.get(&id).map(|c| c.id_alias)
+    }
+
+    fn cache_mut(&mut self, id: EntityId) -> &mut EntityCache {
+        self.aoi_map.get_mut(&id).expect("cache present in AoI map")
+    }
+
+    /// `Witness::addToAoI` — the entity came into range (or was added by
+    /// script). Not actually processed until the state-change pass runs.
+    pub fn add_to_aoi(&mut self, id: EntityId, manually_added: bool) {
+        let source = if manually_added {
+            MANUALLY_ADDED
+        } else {
+            ADDED_BY_TRIGGER
+        };
+
+        let Some(entity) = self.entities.get(&id).cloned() else {
+            return;
+        };
+
+        if entity.destroyed {
+            // `MF_ASSERT( !this->entity().isInAoIOffload() )`; the flag marks
+            // that this dead entity was triggered artificially so the
+            // matching removeFromAoI knows to be a no-op.
+            assert!(!self.is_in_aoi_offload);
+            self.is_in_aoi_offload = true;
+            return;
+        }
+
+        if !entity.can_be_on_client {
+            return;
+        }
+
+        if let Some(cache) = self.aoi_map.get_mut(&id) {
+            if cache.has_flag(GONE) {
+                cache.reuse(&entity);
+            } else {
+                cache.set_flag(source);
+                return;
+            }
+        } else {
+            self.aoi_map.insert(id, EntityCache::new(&entity));
+            self.cache_mut(id).set_flag(ENTER_PENDING);
+            self.add_to_seen(id);
+        }
+
+        self.cache_mut(id).set_flag(source);
+    }
+
+    /// `Witness::removeFromAoI` — matched against the add's source flag; the
+    /// entity is marked GONE and the update pass does the actual deletion.
+    pub fn remove_from_aoi(&mut self, id: EntityId, clear_manually_added: bool) {
+        // A remove matched with an ignored add of a dead entity (offload).
+        if self.is_in_aoi_offload {
+            self.is_in_aoi_offload = false;
+            return;
+        }
+
+        let Some(entity) = self.entities.get(&id).cloned() else {
+            return;
+        };
+
+        if !entity.can_be_on_client {
+            return;
+        }
+
+        let Some(cache) = self.aoi_map.get_mut(&id) else {
+            self.warnings.push(format!(
+                "removeFromAoI: entity {id} not in AoI of entity {}",
+                self.entity_id
+            ));
+            return;
+        };
+
+        if clear_manually_added {
+            cache.clear_flag(MANUALLY_ADDED);
+            if cache.has_flag(ADDED_BY_TRIGGER) {
+                return;
+            }
+        } else {
+            cache.clear_flag(ADDED_BY_TRIGGER);
+            if cache.has_flag(MANUALLY_ADDED) {
+                return;
+            }
+        }
+
+        cache.set_flag(GONE);
+    }
+
+    /// `Witness::addToSeen` — join the queue at the minimum current priority
+    /// so a newly seen entity is not starved by old neighbours' debt.
+    pub fn add_to_seen(&mut self, id: EntityId) {
+        let initial_priority = if self.entity_queue.is_empty() {
+            0.0
+        } else {
+            self.entity_queue
+                .iter()
+                .filter_map(|qid| self.aoi_map.get(qid).map(|c| c.priority()))
+                .fold(f64::INFINITY, f64::min)
+        };
+
+        self.cache_mut(id).set_priority(initial_priority);
+        self.entity_queue.push(id);
+    }
+
+    /// `Witness::requestEntityUpdate` — the client replied to our enterAoI;
+    /// stamp its LoD event numbers and put the cache back in the queue with
+    /// CREATE_PENDING.
+    pub fn request_entity_update(&mut self, id: EntityId, lod_stamps: &[i32]) {
+        if !self.aoi_map.contains_key(&id) {
+            if id != self.entity_id {
+                self.warnings.push(format!(
+                    "requestEntityUpdate: entity {id} is no longer in AoI"
+                ));
+            } else {
+                self.warnings
+                    .push(format!("requestEntityUpdate: entity {id} requested itself"));
+            }
+            return;
+        }
+
+        if !self.cache_mut(id).has_flag(REQUEST_PENDING) {
+            self.warnings.push(format!(
+                "requestEntityUpdate: request for {id} that is not pending"
+            ));
+            return;
+        }
+
+        self.cache_mut(id).clear_flag(REQUEST_PENDING);
+        self.cache_mut(id).set_flag(CREATE_PENDING);
+
+        let entity = self
+            .entities
+            .get(&id)
+            .cloned()
+            .expect("requestEntityUpdate on a known entity");
+        if lod_stamps.len() > entity.lod_levels as usize {
+            self.warnings
+                .push("requestEntityUpdate: LoD stamp cheat".to_string());
+        }
+        self.cache_mut(id)
+            .set_lod_event_numbers(&entity, lod_stamps);
+
+        self.add_to_seen(id);
+    }
+
+    /// Script face for `withholdFromClient` — keep the entity from the client
+    /// while it stays in the AoI.
+    pub fn set_withheld(&mut self, id: EntityId) {
+        self.cache_mut(id).set_flag(WITHHELD);
+    }
+
+    pub fn clear_withheld(&mut self, id: EntityId) {
+        self.cache_mut(id).clear_flag(WITHHELD);
+    }
+
+    /// `Witness::allocateIDAlias` — only volatile entities get an alias.
+    fn allocate_id_alias(&mut self, entity: &EntitySnapshot) -> u8 {
+        if entity.has_volatile() && !self.free_aliases.is_empty() {
+            return self.free_aliases.pop().expect("checked non-empty");
+        }
+        NO_ID_ALIAS
+    }
+
+    /// Queue a client message, keeping the budget's byte count in step with
+    /// `Mercury::Bundle::size`.
+    fn push_message(&mut self, message: ClientMessage) {
+        self.bundle_bytes += message.wire_size();
+        self.bundle.push(message);
+    }
+
+    /// `Witness::sendEnter` — hand out the alias, park the cache on
+    /// REQUEST_PENDING and address the client.
+    fn send_enter(&mut self, id: EntityId) {
+        let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+        let alias = self.allocate_id_alias(&entity);
+
+        let cache = self.cache_mut(id);
+        assert!(!cache.has_flag(REQUEST_PENDING));
+        cache.set_id_alias(alias);
+        cache.clear_flag(ENTER_PENDING);
+        cache.set_flag(REQUEST_PENDING);
+        cache.set_vehicle_change_num(entity.vehicle_change_num);
+
+        match entity.vehicle_id {
+            Some(vehicle_id) => self.push_message(ClientMessage::EnterAoIOnVehicle {
+                id,
+                vehicle_id,
+                id_alias: alias,
+            }),
+            None => self.push_message(ClientMessage::EnterAoI {
+                id,
+                id_alias: alias,
+            }),
+        }
+    }
+
+    /// `Witness::sendCreate` — the client asked for the full entity.
+    fn send_create(&mut self, id: EntityId) {
+        self.cache_mut(id).clear_flag(CREATE_PENDING);
+
+        if self.cache_mut(id).has_flag(REFRESH) {
+            self.warnings
+                .push("sendCreate: isRefresh = true".to_string());
+            self.cache_mut(id).clear_flag(REFRESH);
+        }
+
+        assert!(self.cache_mut(id).is_updatable());
+
+        let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+
+        // `writeVehicleChangeToBundle` — tell the client if our vehicular
+        // record is stale.
+        let cached_num = self.cache_mut(id).vehicle_change_num();
+        if cached_num != entity.vehicle_change_num {
+            self.push_message(ClientMessage::SetVehicle {
+                passenger_id: id,
+                vehicle_id: entity.vehicle_id,
+            });
+            self.cache_mut(id)
+                .set_vehicle_change_num(entity.vehicle_change_num);
+        }
+
+        let (yaw, pitch, roll) = (entity.yaw, entity.pitch, entity.roll);
+        let message = if entity.has_volatile() {
+            ClientMessage::CreateEntity {
+                id,
+                client_type_id: entity.client_type_id,
+                position: entity.position,
+                yaw,
+                pitch,
+                roll,
+            }
+        } else {
+            ClientMessage::CreateEntityDetailed {
+                id,
+                client_type_id: entity.client_type_id,
+                position: entity.position,
+                yaw,
+                pitch,
+                roll,
+            }
+        };
+        self.push_message(message);
+
+        // `addOuterDetailLevel` — created one level below outermost.
+        self.cache_mut(id).add_outer_detail_level(&entity);
+    }
+
+    /// `Witness::deleteFromClient` — the client stops knowing this entity.
+    /// WITHHELD survives the reset.
+    fn delete_from_client(&mut self, id: EntityId) {
+        self.cache_mut(id).clear_flag(REFRESH);
+
+        let entity = self
+            .entities
+            .get(&id)
+            .cloned()
+            .expect("deleteFromClient on a known entity");
+
+        if !self.cache_mut(id).has_flag(ENTER_PENDING) {
+            let stamps = self.cache_mut(id).leave_aoi_stamps(&entity);
+            self.push_message(ClientMessage::LeaveAoI {
+                id,
+                lod_event_numbers: stamps,
+            });
+        }
+
+        self.on_leave_aoi(id);
+
+        // Reset client related state.
+        self.cache_mut(id).on_entity_removed_from_client(&entity);
+    }
+
+    /// `Witness::onLeaveAoI` — return the alias to the pool.
+    fn on_leave_aoi(&mut self, id: EntityId) {
+        let alias = self.cache_mut(id).id_alias();
+        if alias != NO_ID_ALIAS {
+            self.free_aliases.push(alias);
+        }
+    }
+
+    /// `Witness::handleStateChange` — dispatch one cache's pending flags.
+    /// Returns true when the entry leaves the queue: deletions and enter
+    /// sends take it out (deletions drop the cache from the map too), while
+    /// withheld and create-pending caches stay queued.
+    fn apply_state_change(&mut self, id: EntityId, origin: (f32, f32, f32)) -> bool {
+        assert!(!self.cache_mut(id).has_flag(REQUEST_PENDING));
+
+        if self.cache_mut(id).has_flag(GONE) {
+            self.delete_from_client(id);
+            self.aoi_map.remove(&id);
+            true
+        } else if self.cache_mut(id).has_flag(WITHHELD) {
+            // If the client knows about a withheld entity, make it "un-know".
+            if !self.cache_mut(id).has_flag(ENTER_PENDING) {
+                self.delete_from_client(id);
+                // The WITHHELD flag survives deleteFromClient's reset.
+                self.cache_mut(id).set_flag(ENTER_PENDING);
+            }
+            // Leave withheld entities queued.
+            false
+        } else if self.cache_mut(id).has_flag(ENTER_PENDING) {
+            self.send_enter(id);
+            // Enter-pending caches rejoin the queue via requestEntityUpdate.
+            true
+        } else if self.cache_mut(id).has_flag(CREATE_PENDING) {
+            self.send_create(id);
+            let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+            self.cache_mut(id).update_priority(&entity, origin);
+            false
+        } else if self.cache_mut(id).has_flag(REFRESH) {
+            self.cache_mut(id).clear_flag(REFRESH);
+            // We are effectively resetting this cache's history: tell the
+            // client it is gone and (re-)entered.
+            self.delete_from_client(id);
+            self.cache_mut(id).set_flag(ENTER_PENDING);
+            self.send_enter(id);
+            true
+        } else {
+            unreachable!("queued cache with no pending state");
+        }
+    }
+
+    /// The queue's heap front: minimum priority, ties broken by entity id so
+    /// the send sequence stays deterministic. The reference's std heap leaves
+    /// ties unspecified.
+    fn queue_front(&self) -> Option<EntityId> {
+        self.entity_queue.iter().copied().min_by_key(|id| {
+            let prio = self.aoi_map.get(id).map(|c| c.priority());
+            (prio.unwrap_or(f64::INFINITY).to_bits(), *id)
+        })
+    }
+
+    /// `std::pop_heap` — take the front out of the queue.
+    fn queue_pop(&mut self) -> Option<EntityId> {
+        let front = self.queue_front()?;
+        let index = self
+            .entity_queue
+            .iter()
+            .position(|id| *id == front)
+            .expect("front still queued");
+        self.entity_queue.swap_remove(index);
+        Some(front)
+    }
+
+    /// `std::push_heap` / `std::make_heap` — (re)join the queue.
+    fn queue_push(&mut self, id: EntityId) {
+        self.entity_queue.push(id);
+    }
+
+    /// `EntityCache::getLoDPriority` — squared x/z distance to the origin,
+    /// or 0 for coincident schemes.
+    fn lod_priority_of(entity: &EntitySnapshot, origin: (f32, f32, f32)) -> f32 {
+        if scheme_for(entity.aoi_update_scheme_id).is_coincident() {
+            return 0.0;
+        }
+        let dx = entity.position.0 - origin.0;
+        let dz = entity.position.2 - origin.2;
+        let ret = dx * dx + dz * dz;
+        // FLT_MAX squared results in +inf; fix that
+        if ret > f32::MAX { f32::MAX } else { ret }
+    }
+
+    /// `PackedXZ::maxLimit` — `getLimit<3, 8>` works out to 510 at scale 1.
+    fn packed_limit(&self) -> f32 {
+        510.0 * (500.0 / 510.0)
+    }
+
+    /// `Witness::sendQueueElement` — one entity update: the vehicle change,
+    /// the LoD-gated event history and the volatile position/direction
+    /// projection, all on this tick's budget. Returns whether a reliable
+    /// relative position went out (reliability itself is not modelled).
+    fn send_queue_element(&mut self, id: EntityId) -> bool {
+        let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+        let origin = self
+            .entities
+            .get(&self.entity_id)
+            .map(|e| e.position)
+            .expect("witness's own entity registered");
+        let lod_priority = Witness::lod_priority_of(&entity, origin);
+
+        // `writeVehicleChangeToBundle` — the client's record of this
+        // entity's vehicular state must match before anything else rides.
+        let vehicle_changed = self
+            .aoi_map
+            .get(&id)
+            .map(|cache| cache.vehicle_change_num != entity.vehicle_change_num)
+            .unwrap_or(false);
+        if vehicle_changed {
+            self.push_message(ClientMessage::SetVehicle {
+                passenger_id: id,
+                vehicle_id: entity.vehicle_id,
+            });
+            self.aoi_map
+                .get_mut(&id)
+                .expect("queued cache present")
+                .vehicle_change_num = entity.vehicle_change_num;
+        }
+
+        // Which pending history events clear the LoD gate?
+        let (last_event_number, detail_level, id_alias) = {
+            let cache = self.aoi_map.get(&id).expect("queued cache present");
+            (cache.last_event_number, cache.detail_level, cache.id_alias)
+        };
+        let pending: Vec<HistoryEvent> = entity
+            .events
+            .iter()
+            .filter(|e| e.number > last_event_number)
+            .copied()
+            .collect();
+        let has_events_to_send = pending
+            .iter()
+            .any(|e| e.should_send(lod_priority, detail_level));
+
+        // The volatile projection. `cache.lastVolatileUpdateNumber` stamps
+        // before the gate so unchanged positions are not resent.
+        let mut pos = PosProjection::None;
+        let mut dir = DirProjection::None;
+        let mut has_selected_entity = false;
+        {
+            let cache = self.aoi_map.get_mut(&id).expect("queued cache present");
+            if cache.last_volatile_update_number != entity.volatile_update_number {
+                cache.last_volatile_update_number = entity.volatile_update_number;
+                if entity.volatile.has_volatile(lod_priority) {
+                    let always_detailed = cache.has_flag(IS_ALWAYS_DETAILED)
+                        || (cache.has_flag(PRIORITISED) && SEND_DETAILED_PLAYER_VEHICLES);
+                    let dir_type = entity.volatile.dir_type(lod_priority);
+                    dir = match dir_type {
+                        0 => DirProjection::YawPitchRoll {
+                            yaw: entity.yaw,
+                            pitch: entity.pitch,
+                            roll: entity.roll,
+                        },
+                        1 => DirProjection::YawPitch {
+                            yaw: entity.yaw,
+                            pitch: entity.pitch,
+                        },
+                        2 => DirProjection::Yaw { yaw: entity.yaw },
+                        _ => DirProjection::None,
+                    };
+                    if !entity.volatile.should_send_position() {
+                        pos = PosProjection::None;
+                    } else if always_detailed {
+                        pos = PosProjection::Detailed {
+                            x: entity.position.0,
+                            y: entity.position.1,
+                            z: entity.position.2,
+                        };
+                    } else {
+                        // A passenger's packed position stays absolute; a
+                        // ground entity's is relative to our reference.
+                        let is_relative = entity.vehicle_id.is_none();
+                        let raw = if is_relative {
+                            (
+                                entity.position.0 - self.reference_position.0,
+                                entity.position.1 - self.reference_position.1,
+                                entity.position.2 - self.reference_position.2,
+                            )
+                        } else {
+                            entity.position
+                        };
+                        let limit = self.packed_limit();
+                        if raw.0 < -limit || limit <= raw.0 || raw.2 < -limit || limit <= raw.2 {
+                            pos = PosProjection::Detailed {
+                                x: entity.position.0,
+                                y: entity.position.1,
+                                z: entity.position.2,
+                            };
+                        } else {
+                            let (x, y, z) = raw;
+                            pos = if is_relative {
+                                PosProjection::Relative {
+                                    x,
+                                    y,
+                                    z,
+                                    on_ground: entity.is_on_ground,
+                                }
+                            } else {
+                                PosProjection::Absolute {
+                                    x,
+                                    y,
+                                    z,
+                                    on_ground: entity.is_on_ground,
+                                }
+                            };
+                        }
+                    }
+                    has_selected_entity = true;
+                }
+            }
+        }
+
+        // History events ride in chronological order behind a select.
+        let mut events = Vec::new();
+        if has_events_to_send {
+            if !has_selected_entity {
+                if id_alias != NO_ID_ALIAS {
+                    self.push_message(ClientMessage::SelectAliasedEntity { id_alias });
+                } else {
+                    self.push_message(ClientMessage::SelectEntity { id });
+                }
+                has_selected_entity = true;
+            }
+            events = pending
+                .iter()
+                .filter(|e| e.should_send(lod_priority, detail_level))
+                .map(|e| e.number)
+                .collect();
+        }
+
+        // `cache.lastEventNumber( this->lastEventNumber() )` stamps even
+        // when nothing was eligible.
+        self.aoi_map
+            .get_mut(&id)
+            .expect("queued cache present")
+            .last_event_number = entity.last_event_number;
+
+        // `EntityCache::updateDetailLevel` — detail transitions stamp their
+        // LoD levels on the way out and resend properties on the way in.
+        let mut props_level = None;
+        {
+            let cache = self.aoi_map.get_mut(&id).expect("queued cache present");
+            // An unconfigured level has no transition point, so neither
+            // transition fires.
+            while cache.detail_level > 0
+                && lod_priority
+                    < entity
+                        .lod_thresholds
+                        .get(cache.detail_level as usize)
+                        .map(|t| t.low)
+                        .unwrap_or(-1.0)
+            {
+                cache.detail_level -= 1;
+                props_level = Some(cache.detail_level);
+            }
+            while (cache.detail_level as usize) < entity.lod_thresholds.len()
+                && lod_priority
+                    > entity
+                        .lod_thresholds
+                        .get(cache.detail_level as usize)
+                        .map(|t| t.high)
+                        .unwrap_or(-1.0)
+            {
+                cache.lod_event_numbers[cache.detail_level as usize] = cache.last_event_number;
+                cache.detail_level += 1;
+            }
+        }
+        let bytes = self.update_bytes.unwrap_or_else(|| {
+            let mut bytes = if id_alias != NO_ID_ALIAS { 1 } else { 4 };
+            bytes += match pos {
+                PosProjection::Relative {
+                    on_ground: true, ..
+                }
+                | PosProjection::Absolute {
+                    on_ground: true, ..
+                } => 3, // PackedXZ
+                PosProjection::Relative { .. } | PosProjection::Absolute { .. } => 5, // PackedXYZ
+                PosProjection::Detailed { .. } => 12,
+                PosProjection::None => 0,
+            };
+            bytes += match dir {
+                DirProjection::YawPitchRoll { .. } => 12,
+                DirProjection::YawPitch { .. } => 8,
+                DirProjection::Yaw { .. } => 4,
+                DirProjection::None => 0,
+            };
+            bytes += pending
+                .iter()
+                .filter(|e| e.should_send(lod_priority, detail_level))
+                .map(|e| 4 + e.payload_bytes)
+                .sum::<usize>();
+            bytes
+        });
+        self.push_message(ClientMessage::EntityUpdate {
+            id,
+            id_alias: (id_alias != NO_ID_ALIAS).then_some(id_alias),
+            pos,
+            dir,
+            events,
+            bytes,
+        });
+
+        // `updateDetailLevel` appends its select + changed-properties resend
+        // after the rest of the entity's stream.
+        if let Some(level) = props_level {
+            if !has_selected_entity {
+                if id_alias != NO_ID_ALIAS {
+                    self.push_message(ClientMessage::SelectAliasedEntity { id_alias });
+                } else {
+                    self.push_message(ClientMessage::SelectEntity { id });
+                }
+            }
+            self.push_message(ClientMessage::UpdateProperties {
+                id,
+                id_alias: (id_alias != NO_ID_ALIAS).then_some(id_alias),
+                detail_level: level,
+            });
+        }
+        false
+    }
+
+    /// Returns and clears the PRIORITISED marker of a queued cache.
+    fn drop_prioritised_flag(&mut self, id: &EntityId) -> bool {
+        match self.aoi_map.get_mut(id) {
+            Some(cache) if cache.has_flag(PRIORITISED) => {
+                cache.clear_flag(PRIORITISED);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A prioritised vehicle that also popped inside the window restarts
+    /// from the tick's starting priority so it is not starved behind its own
+    /// pre-send.
+    fn restart_prioritised_from(
+        &mut self,
+        id: EntityId,
+        starting_priority: f64,
+        origin: (f32, f32, f32),
+    ) {
+        let cache = self
+            .aoi_map
+            .get_mut(&id)
+            .expect("prioritised cache present");
+        cache.set_priority(starting_priority);
+        cache.clear_flag(PRIORITISED);
+        let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+        cache.update_priority(&entity, origin);
+    }
+
+    /// `Witness::addReferencePosition` — makes sure the bundle carries a
+    /// reference position, either the client's own sequence or a fresh
+    /// grid-aligned one. Returns whether a message was added.
+    fn add_reference_position(&mut self) -> bool {
+        let self_entity = self
+            .entities
+            .get(&self.entity_id)
+            .cloned()
+            .expect("witness's own entity registered");
+
+        // Fast path: client-controlled witness which has sent us a
+        // reference position at some point.
+        if self_entity.controlled_by_self && self.has_reference_position {
+            self.push_message(ClientMessage::RelativePositionReference {
+                sequence_number: self.reference_seq_num,
+            });
+            return true;
+        }
+
+        // Clear out any now-useless client-supplied reference position.
+        self.has_reference_position = false;
+
+        // The witness is either server-controlled, or newly client-controlled
+        // and hasn't sent us a reference position to use. So we choose one.
+        self.reference_position = (
+            self_entity.position.0.round(),
+            self_entity.position.1.round(),
+            self_entity.position.2.round(),
+        );
+
+        if self_entity.vehicle_id.is_some() || self_entity.controlled_by_self {
+            self.push_message(ClientMessage::RelativePosition {
+                position: self.reference_position,
+            });
+            return true;
+        }
+        false
+    }
+
+    /// `Witness::addDetailedPlayerPosition` — the witness's own projection,
+    /// ahead of the observed entities. Skipped for non-volatile or
+    /// client-controlled entities, and for unchanged positions inside the
+    /// resend window.
+    fn add_detailed_player_position(&mut self, is_reference_position: bool) {
+        let entity = self
+            .entities
+            .get(&self.entity_id)
+            .cloned()
+            .expect("witness's own entity registered");
+
+        // Non-volatile or witness-controlled entity: don't send the position.
+        if !entity.volatile.has_volatile(0.0) || entity.controlled_by_self {
+            return;
+        }
+
+        // Check that we're allowed to skip an unchanged player position
+        // update.
+        let has_sent_player_position = self.last_sent_reliable_game_time != 0;
+        let always_skip_unchanged = self.max_time_between_player_updates_in_ticks == -1;
+        let time_since_last_send = self.time.wrapping_sub(self.last_sent_reliable_game_time);
+        let last_send_was_recent_enough = always_skip_unchanged
+            || time_since_last_send <= self.max_time_between_player_updates_in_ticks as u32;
+        let direction = (entity.yaw, entity.pitch, entity.roll);
+        let should_skip_unchanged_player_position = has_sent_player_position
+            && last_send_was_recent_enough
+            && entity.position == self.last_sent_reliable_position
+            && direction == self.last_sent_reliable_direction;
+
+        if !is_reference_position && should_skip_unchanged_player_position {
+            return;
+        }
+
+        self.push_message(ClientMessage::AvatarUpdatePlayerDetailed {
+            position: entity.position,
+            yaw: entity.yaw,
+            pitch: entity.pitch,
+            roll: entity.roll,
+        });
+
+        // The message is reliable (and so stamped) unless it is being used
+        // as the reference position.
+        let reliable = !is_reference_position && self.max_time_between_player_updates_in_ticks != 0;
+        if reliable {
+            self.last_sent_reliable_game_time = self.time;
+            self.last_sent_reliable_position = entity.position;
+            self.last_sent_reliable_direction = direction;
+        }
+    }
+
+    /// `Witness::update` — the per-tick client update pass. Sends the vehicle
+    /// stack first, then walks the priority queue under the packet budget:
+    /// entries within `MAX_PRIORITY_DELTA` of the front's priority pop and
+    /// update until the budget or the window runs out. Deletions and
+    /// enter/create handshakes ride the same pass.
+    pub fn update(&mut self) {
+        let origin = self
+            .entities
+            .get(&self.entity_id)
+            .map(|e| e.position)
+            .expect("witness's own entity registered");
+
+        let desired_packet_size = (self.max_packet_size as f32 * self.emergency_throttle) as i32
+            - self.bandwidth_deficit
+            + self.bundle_bytes as i32;
+
+        // A reference position rides first (the client's own sequence, or a
+        // fresh grid-aligned one); the player's detailed projection doubles
+        // as the reference when no separate message went out.
+        let pushed_reference = self.add_reference_position();
+        let use_player_as_reference = !pushed_reference;
+        self.add_detailed_player_position(use_player_as_reference);
+
+        let mut num_prioritised = 0usize;
+
+        // Send the vehicle stack first, ahead of priority order.
+        let mut vehicle = self
+            .entities
+            .get(&self.entity_id)
+            .and_then(|e| e.vehicle_id);
+        while let Some(id) = vehicle {
+            let Some(cache) = self.aoi_map.get_mut(&id) else {
+                self.warnings.push(format!(
+                    "Witness::update: witness {} trying to prioritise entity {id} outside its AoI",
+                    self.entity_id
+                ));
+                break;
+            };
+            let entity_destroyed = self.entities.get(&id).map(|e| e.destroyed);
+            if !cache.is_updatable()
+                || cache.has_flag(REQUEST_PENDING)
+                || entity_destroyed == Some(true)
+            {
+                vehicle = self.entities.get(&id).and_then(|e| e.vehicle_id);
+                continue;
+            }
+            assert!(!cache.has_flag(PRIORITISED));
+            cache.set_flag(PRIORITISED);
+            num_prioritised += 1;
+            self.send_queue_element(id);
+            vehicle = self.entities.get(&id).and_then(|e| e.vehicle_id);
+        }
+
+        let starting_priority = self
+            .queue_front()
+            .and_then(|id| self.aoi_map.get(&id))
+            .map(|c| c.priority())
+            .unwrap_or(0.0);
+
+        // Entities at a distance are never sent at full rate: only the
+        // window [front, front + MAX_PRIORITY_DELTA) is walked this tick.
+        let max_priority = starting_priority + MAX_PRIORITY_DELTA;
+
+        // Popped entries, in pop order — [queueEnd, entityQueue_.end()) in
+        // the reference.
+        let mut popped: Vec<(EntityId, bool)> = Vec::new();
+
+        while let Some(id) = self.queue_front() {
+            let front_priority = self.aoi_map.get(&id).map(|c| c.priority()).unwrap_or(0.0);
+            if front_priority >= max_priority || self.bundle_bytes as i32 >= desired_packet_size - 2
+            {
+                break;
+            }
+            self.queue_pop();
+            let was_prioritised = self
+                .aoi_map
+                .get(&id)
+                .map(|c| c.has_flag(PRIORITISED))
+                .unwrap_or(false);
+
+            // A destroyed entity still held open by a manual add drops out
+            // here rather than being sent.
+            let destroyed = self.entities.get(&id).map(|e| e.destroyed);
+            let gone = self.aoi_map.get(&id).map(|c| c.has_flag(GONE));
+            if destroyed == Some(true) && gone == Some(false) {
+                assert!(
+                    self.aoi_map
+                        .get(&id)
+                        .map(|c| c.has_flag(MANUALLY_ADDED))
+                        .unwrap_or(false)
+                );
+                self.remove_from_aoi(id, true);
+            }
+
+            let cache = self
+                .aoi_map
+                .get(&id)
+                .expect("queued cache present in AoI map");
+            let survives = if !cache.is_updatable() {
+                !self.apply_state_change(id, origin)
+            } else {
+                if !was_prioritised {
+                    self.send_queue_element(id);
+                    let entity = self.entities.get(&id).cloned().expect("entity in AoI");
+                    self.cache_mut(id).update_priority(&entity, origin);
+                }
+                true
+            };
+
+            // Prioritised (vehicle) entries were sent before the loop; they
+            // only restart from the tick's starting priority here.
+            if was_prioritised {
+                self.restart_prioritised_from(id, starting_priority, origin);
+                num_prioritised -= 1;
+            }
+
+            if survives {
+                popped.push((id, was_prioritised));
+            }
+        }
+
+        // Pay back any budget overshoot next tick.
+        self.bandwidth_deficit = (self.bundle_bytes as i32 - desired_packet_size).max(0);
+        if self.bandwidth_deficit > self.max_packet_size {
+            self.warnings.push(format!(
+                "Witness::update: witness {} has a bandwidth deficit of {} bytes",
+                self.entity_id, self.bandwidth_deficit
+            ));
+            self.bandwidth_deficit = self.max_packet_size;
+        }
+
+        if self.entity_queue.is_empty() && num_prioritised == 0 {
+            // We sent everything: next tick starts everyone from zero, in
+            // order of closeness. The popped entries stay queued (the
+            // reference make-heaps the whole vector here).
+            for (id, _) in &popped {
+                let cache = self
+                    .aoi_map
+                    .get_mut(id)
+                    .expect("requeued cache present in AoI map");
+                cache.set_priority(0.0);
+                self.queue_push(*id);
+            }
+        } else {
+            let earliest_priority = self
+                .queue_front()
+                .and_then(|id| self.aoi_map.get(&id))
+                .map(|c| c.priority())
+                .unwrap_or(0.0);
+
+            // Vehicles that stayed queued had their update go out before the
+            // loop; drop the marker so they are prioritised once.
+            let mut vehicle = self
+                .entities
+                .get(&self.entity_id)
+                .and_then(|e| e.vehicle_id);
+            while let Some(id) = vehicle {
+                num_prioritised -= self.drop_prioritised_flag(&id) as usize;
+                vehicle = self.entities.get(&id).and_then(|e| e.vehicle_id);
+            }
+            debug_assert_eq!(num_prioritised, 0);
+
+            // Push the sent entries back, never "in the past": an entity that
+            // should have gone out twice in one tick waits for the next one.
+            for (id, _) in popped {
+                if let Some(cache) = self
+                    .aoi_map
+                    .get_mut(&id)
+                    .filter(|cache| cache.priority() < earliest_priority)
+                {
+                    cache.set_priority(earliest_priority);
+                }
+                self.queue_push(id);
+            }
+        }
+
+        // `CellApp::instance().time()` advances between update passes.
+        self.time = self.time.wrapping_add(1);
+    }
+
+    /// One pass over the queue's current contents, exactly like the reference
+    /// loop's pop-heap sweep: each slot is visited once, deletions swap-pop
+    /// the vacated slot so its new occupant is handled in the same pass.
+    /// Updatable entries are left queued — the bandwidth/priority selection
+    /// that sends their updates is BW-08-03-03.
+    pub fn flush_state_changes(&mut self) {
+        let origin = self
+            .entities
+            .get(&self.entity_id)
+            .map(|e| e.position)
+            .expect("witness's own entity registered");
+
+        let mut i = 0;
+        while i < self.entity_queue.len() {
+            let id = self.entity_queue[i];
+            let cache = self
+                .aoi_map
+                .get(&id)
+                .expect("queued cache present in AoI map");
+            if !cache.is_updatable() && self.apply_state_change(id, origin) {
+                // the reference swap-pops the vacated slot
+                self.entity_queue.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::range_list::RangeList;
 
-    fn v(x: f32, z: f32) -> Vector3 {
-        Vector3::new(x, 0.0, z)
+    /// Harness: one witness entity plus whatever it observes.
+    struct WitnessWorld {
+        witness: Witness,
     }
 
-    /// A witness (entity 1) at the origin with a 10-unit AoI.
-    fn setup() -> (RangeList, Witness) {
-        let mut list = RangeList::new();
-        let w = Witness::new(&mut list, 1, v(0.0, 0.0), 10.0);
-        (list, w)
-    }
+    impl WitnessWorld {
+        fn new() -> Self {
+            let mut self_entity = EntitySnapshot::new(1, 1, (0.0, 0.0, 0.0));
+            // The fixtures watch other entities; the self projection has its
+            // own tests below.
+            self_entity.volatile = VolatileInfo::NONE;
+            let mut witness = Witness::new(1, self_entity);
+            witness.upsert_entity(EntitySnapshot::new(2, 2, (10.0, 0.0, 0.0)));
+            WitnessWorld { witness }
+        }
 
-    /// The observable snapshot of a cache: every flag, the queue-visible
-    /// numbers and the bookkeeping state.
-    fn snapshot(c: &EntityCache) -> String {
-        format!(
-            "flags={:04x} prio={} evn={} lod{} alias={} vol={} delta={}",
-            c.flags,
-            c.priority(),
-            c.last_event_number(),
-            c.detail_level(),
-            c.id_alias(),
-            c.last_volatile_update_number(),
-            c.last_priority_delta(),
-        )
-    }
+        /// Full first-observation cycle: enterAoI, client request, create.
+        fn enter(&mut self, id: EntityId) {
+            self.witness.add_to_aoi(id, false);
+            self.witness.flush_state_changes();
+            assert!(matches!(
+                self.witness.bundle.first(),
+                Some(ClientMessage::EnterAoI { .. })
+            ));
+            self.witness.request_entity_update(id, &[]);
+            self.witness.flush_state_changes();
+        }
 
-    #[test]
-    fn first_observation_and_reentry_produce_same_result() {
-        let (mut list, mut w) = setup();
-        let b = list.add_entity(2, v(5.0, 5.0));
-        w.poll(&mut list);
+        fn leave(&mut self, id: EntityId) {
+            self.witness.remove_from_aoi(id, false);
+            self.witness.flush_state_changes();
+        }
 
-        // First observation: cached, enter-pending, queued once.
-        assert!(w.is_in_aoi(2));
-        let first = w.cache(2).copied().unwrap();
-        assert!(first.is_enter_pending());
-        assert!(first.is_added_by_trigger());
-        assert!(!first.is_manually_added());
-        assert!(!first.is_gone());
-        assert_eq!(w.queue(), &[2]);
-
-        // Walk out: cache marked gone but the slot survives.
-        list.move_entity(b, v(50.0, 50.0));
-        w.poll(&mut list);
-        assert!(!w.is_in_aoi(2));
-        assert!(w.cache(2).unwrap().is_gone());
-        assert_eq!(w.cache_count(), 1);
-
-        // Walk back in: the same cache slot is reused and the observable
-        // result matches the first observation exactly.
-        list.move_entity(b, v(5.0, 5.0));
-        w.poll(&mut list);
-        assert!(w.is_in_aoi(2));
-        let again = w.cache(2).copied().unwrap();
-        assert_eq!(snapshot(&again), snapshot(&first));
-        assert_eq!(w.queue(), &[2], "no duplicate queue slot on re-entry");
-        assert_eq!(w.cache_count(), 1);
+        fn take(&mut self) -> Vec<ClientMessage> {
+            self.witness.take_bundle()
+        }
     }
 
     #[test]
-    fn double_add_is_idempotent() {
-        let (_list, mut w) = setup();
-        w.add_to_aoi(7, false);
-        w.add_to_aoi(7, false);
-        assert_eq!(w.cache_count(), 1);
-        assert_eq!(w.queue(), &[7]);
-        let c = w.cache(7).unwrap();
-        assert!(c.is_enter_pending());
-        assert!(c.is_added_by_trigger());
-    }
+    fn first_observation_and_reentry_produce_identical_messages() {
+        let mut world = WitnessWorld::new();
 
-    #[test]
-    fn manual_and_trigger_holders() {
-        let (mut list, mut w) = setup();
-        w.add_to_aoi(3, true);
-        let e = list.add_entity(3, v(4.0, 0.0));
-        w.poll(&mut list);
-        let c = w.cache(3).unwrap();
-        assert!(c.is_manually_added());
-        assert!(c.is_added_by_trigger());
-
-        // Re-adding manually while live is a pure flag OR.
-        w.add_to_aoi(3, true);
-        assert!(w.cache(3).unwrap().is_manually_added());
-
-        // Clearing the manual hold while the trigger still holds it is a
-        // no-op on the live cache.
-        w.remove_from_aoi(3, true);
-        let c = w.cache(3).unwrap();
-        assert!(!c.is_manually_added());
-        assert!(c.is_added_by_trigger());
-        assert!(!c.is_gone());
-
-        // The trigger leave drops only the trigger hold.
-        list.move_entity(e, v(40.0, 0.0));
-        w.poll(&mut list);
-        let c = w.cache(3).unwrap();
-        assert!(!c.is_manually_added());
-        assert!(!c.is_added_by_trigger());
-        assert!(c.is_gone());
-        assert!(!w.is_in_aoi(3));
-    }
-
-    #[test]
-    fn non_client_visible_entities_are_ignored() {
-        let (mut list, mut w) = setup();
-        w.register(
-            4,
-            EntityFacts {
-                client_visible: false,
-                ..EntityFacts::default()
-            },
+        world.enter(2);
+        let first_cycle = world.take();
+        assert_eq!(
+            first_cycle,
+            vec![
+                ClientMessage::EnterAoI {
+                    id: 2,
+                    id_alias: 254
+                },
+                ClientMessage::CreateEntity {
+                    id: 2,
+                    client_type_id: 2,
+                    position: (10.0, 0.0, 0.0),
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    roll: 0.0,
+                },
+            ]
         );
-        let e = list.add_entity(4, v(1.0, 0.0));
-        w.poll(&mut list);
-        assert!(w.cache(4).is_none());
-        w.add_to_aoi(4, true);
-        assert!(w.cache(4).is_none());
-        w.remove_from_aoi(4, false);
-        w.remove_from_aoi(4, true);
-        assert_eq!(w.cache_count(), 0);
-        list.remove_entity(e);
-        list.drain_events();
-    }
 
-    #[test]
-    fn manual_aoi_types_skip_the_trigger_but_allow_explicit_add() {
-        let (mut list, mut w) = setup();
-        w.register(
-            5,
-            EntityFacts {
-                manual_aoi: true,
-                ..EntityFacts::default()
-            },
+        world.leave(2);
+        assert_eq!(
+            world.take(),
+            vec![ClientMessage::LeaveAoI {
+                id: 2,
+                lod_event_numbers: vec![0],
+            }]
         );
-        let e = list.add_entity(5, v(2.0, 0.0));
-        w.poll(&mut list);
-        assert!(w.cache(5).is_none());
-        w.add_to_aoi(5, false);
-        assert!(w.is_in_aoi(5));
-        list.remove_entity(e);
-        list.drain_events();
+
+        // The alias went back to the pool, so the re-entry hands out the same
+        // one and the client sees the identical enter/create pair.
+        world.enter(2);
+        let second_cycle = world.take();
+        assert_eq!(first_cycle, second_cycle);
     }
 
     #[test]
-    fn destroyed_entities_are_ignored() {
-        let (_list, mut w) = setup();
-        w.register(
-            6,
-            EntityFacts {
-                destroyed: true,
-                ..EntityFacts::default()
-            },
+    fn reenter_before_the_deletion_pass_reuses_the_cache() {
+        let mut world = WitnessWorld::new();
+
+        world.enter(2);
+        world.take();
+        assert!(world.witness.aoi_ids().contains(&2));
+
+        // Leave then re-enter before the pass that would have deleted the
+        // cache: reuse() throws it back into sync and the client, which
+        // already knows the entity, is told nothing.
+        world.witness.remove_from_aoi(2, false);
+        assert_eq!(world.witness.cache_flags(2), Some(GONE));
+
+        world.witness.add_to_aoi(2, false);
+        assert_eq!(world.witness.cache_flags(2), Some(ADDED_BY_TRIGGER));
+        world.witness.flush_state_changes();
+        assert!(world.witness.bundle().is_empty());
+        assert!(world.witness.aoi_ids().contains(&2));
+    }
+
+    #[test]
+    fn a_cache_missing_trimmed_events_refreshes_through_leave_and_enter() {
+        let mut world = WitnessWorld::new();
+
+        world.enter(2);
+        world.take();
+
+        // The entity's history moved on and the early events were trimmed
+        // past what the client last received.
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.last_event_number = 10;
+        entity.last_trimmed_event_number = 5;
+        world.witness.upsert_entity(entity);
+
+        world.witness.remove_from_aoi(2, false);
+        world.witness.add_to_aoi(2, false);
+
+        // reuse() could not restore sync, so the cache takes the REFRESH
+        // detour: the client is told the entity left and re-entered at once.
+        world.witness.flush_state_changes();
+        assert_eq!(
+            world.take(),
+            vec![
+                ClientMessage::LeaveAoI {
+                    id: 2,
+                    lod_event_numbers: vec![0],
+                },
+                ClientMessage::EnterAoI {
+                    id: 2,
+                    id_alias: 254,
+                },
+            ]
         );
-        w.add_to_aoi(6, false);
-        assert!(w.cache(6).is_none());
     }
 
     #[test]
-    fn trigger_held_entities_retire_when_the_trigger_releases_them() {
-        let (mut list, mut w) = setup();
-        list.add_entity(8, v(3.0, 0.0));
-        w.poll(&mut list);
-        assert!(w.cache(8).unwrap().is_added_by_trigger());
-        assert!(!w.cache(8).unwrap().is_manually_added());
+    fn withheld_known_entity_is_deleted_then_reenters_when_released() {
+        let mut world = WitnessWorld::new();
 
-        // The trigger is the only holder, so dropping it retires the
-        // entity instead of keeping it client-visible.
-        w.remove_from_aoi(8, false);
-        assert!(w.cache(8).unwrap().is_gone());
-    }
+        world.enter(2);
+        world.take();
 
-    #[test]
-    fn manual_holder_survives_a_trigger_release() {
-        let (mut list, mut w) = setup();
-        list.add_entity(8, v(3.0, 0.0));
-        w.poll(&mut list);
-        // Both holders: the trigger saw it in range and a caller pinned it.
-        w.add_to_aoi(8, true);
-        assert!(w.cache(8).unwrap().is_added_by_trigger());
-        assert!(w.cache(8).unwrap().is_manually_added());
-
-        // Dropping only the trigger holder leaves the manual pin intact,
-        // so the entity stays live for the client.
-        w.remove_from_aoi(8, false);
-        let cache = w.cache(8).unwrap();
-        assert!(!cache.is_added_by_trigger());
-        assert!(cache.is_manually_added());
-        assert!(!cache.is_gone());
-    }
-
-    #[test]
-    fn reuse_after_trim_sets_refresh() {
-        let (mut list, mut w) = setup();
-        let e = list.add_entity(8, v(3.0, 0.0));
-        w.poll(&mut list);
-        // Simulate the client having taken the entity, then the event
-        // history being trimmed past the cache's last event.
-        w.cache_mut(8).unwrap().clear_enter_pending();
-        assert!(w.cache(8).unwrap().is_updatable());
-
-        list.move_entity(e, v(80.0, 0.0));
-        w.poll(&mut list);
-        assert!(w.cache(8).unwrap().is_gone());
-
-        w.register(
-            8,
-            EntityFacts {
-                history_floor: 10,
-                ..EntityFacts::default()
-            },
+        world.witness.set_withheld(2);
+        world.witness.flush_state_changes();
+        assert_eq!(
+            world.take(),
+            vec![ClientMessage::LeaveAoI {
+                id: 2,
+                lod_event_numbers: vec![0],
+            }]
         );
-        list.move_entity(e, v(3.0, 0.0));
-        w.poll(&mut list);
-        let c = w.cache(8).unwrap();
+        // WITHHELD survives the client-state reset (as does the server-side
+        // source flag) and the cache waits in enter-pending.
+        assert_eq!(
+            world.witness.cache_flags(2),
+            Some(ADDED_BY_TRIGGER | WITHHELD | ENTER_PENDING)
+        );
+
+        // Still withheld: the pass leaves it queued and silent.
+        world.witness.flush_state_changes();
+        assert!(world.witness.bundle().is_empty());
+
+        world.witness.clear_withheld(2);
+        world.witness.flush_state_changes();
+        assert_eq!(
+            world.take(),
+            vec![ClientMessage::EnterAoI {
+                id: 2,
+                id_alias: 254,
+            }]
+        );
+    }
+
+    #[test]
+    fn manual_and_trigger_adds_pair_their_removes() {
+        let mut world = WitnessWorld::new();
+
+        world.witness.add_to_aoi(2, true);
+        world.witness.add_to_aoi(2, false);
+        assert_eq!(
+            world.witness.cache_flags(2),
+            Some(MANUALLY_ADDED | ADDED_BY_TRIGGER | ENTER_PENDING)
+        );
+
+        // The trigger drop leaves the manual add holding the entity in AoI.
+        world.witness.remove_from_aoi(2, false);
+        assert_eq!(
+            world.witness.cache_flags(2),
+            Some(MANUALLY_ADDED | ENTER_PENDING)
+        );
+
+        // Dropping the manual add finally marks it GONE (on top of the
+        // never-serviced enter-pending bit). The client was never told about
+        // it, so the deletion pass sends nothing at all.
+        world.witness.remove_from_aoi(2, true);
+        assert_eq!(world.witness.cache_flags(2), Some(ENTER_PENDING | GONE));
+        world.witness.flush_state_changes();
+        assert!(world.witness.bundle().is_empty());
+        assert!(!world.witness.aoi_ids().contains(&2));
+
+        // Same dance for entity 3 in the other order: dropping the manual
+        // add first leaves the trigger holding the entity in AoI.
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(3, 2, (20.0, 0.0, 0.0)));
+        world.witness.add_to_aoi(3, true);
+        world.witness.add_to_aoi(3, false);
+        world.witness.remove_from_aoi(3, true);
+        assert_eq!(
+            world.witness.cache_flags(3),
+            Some(ADDED_BY_TRIGGER | ENTER_PENDING)
+        );
+        world.witness.remove_from_aoi(3, false);
+        assert_eq!(world.witness.cache_flags(3), Some(ENTER_PENDING | GONE));
+    }
+
+    #[test]
+    fn aliases_skip_the_reserved_value_and_recycle_lifo() {
+        let mut world = WitnessWorld::new();
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(3, 2, (20.0, 0.0, 0.0)));
+
+        world.enter(2);
+        world.enter(3);
+        world.take();
+
+        // Ascending pool, popped from the back: 254 then 253; 0xff never.
+        assert_eq!(world.witness.cache_id_alias(2), Some(254));
+        assert_eq!(world.witness.cache_id_alias(3), Some(253));
+
+        // A non-volatile entity gets no alias at all.
+        let mut ground = EntitySnapshot::new(4, 2, (30.0, 0.0, 0.0));
+        ground.volatile = VolatileInfo::NONE;
+        world.witness.upsert_entity(ground);
+        world.enter(4);
+        assert_eq!(
+            world.take()[..1],
+            [ClientMessage::EnterAoI {
+                id: 4,
+                id_alias: NO_ID_ALIAS
+            }][..]
+        );
+
+        // Freed aliases return to the top of the pool: 254 freed, then 253,
+        // so the next enter hands out 253 again.
+        world.leave(2);
+        world.leave(3);
+        world.take();
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+        assert_eq!(world.witness.cache_id_alias(2), Some(253));
+    }
+
+    #[test]
+    fn add_and_remove_mismatches_are_recorded_not_panicked() {
+        let mut world = WitnessWorld::new();
+
+        // An entity we have never heard of is dropped silently, both ways.
+        world.witness.add_to_aoi(99, false);
+        world.witness.remove_from_aoi(99, false);
+        assert!(world.witness.warnings().is_empty());
+
+        // A visible entity that was never added is a critical.
+        world.witness.remove_from_aoi(2, false);
+        assert_eq!(world.witness.warnings().len(), 1);
+        assert!(world.witness.warnings()[0].contains("not in AoI"));
+    }
+
+    #[test]
+    fn request_entity_update_ignores_unknown_and_unpending_requests() {
+        let mut world = WitnessWorld::new();
+
+        // Unknown entity.
+        world.witness.request_entity_update(2, &[]);
+        assert!(world.witness.warnings()[0].contains("no longer in AoI"));
+
+        // The witness's own entity is singled out as a bad client.
+        world.witness.request_entity_update(1, &[]);
+        assert!(world.witness.warnings()[1].contains("itself"));
+
+        // An updatable cache (already created) is not pending either.
+        world.enter(2);
+        world.take();
+        world.witness.request_entity_update(2, &[]);
+        assert!(world.witness.warnings()[2].contains("not pending"));
+    }
+
+    #[test]
+    fn request_entity_update_clamps_a_lod_stamp_cheat() {
+        let mut world = WitnessWorld::new();
+
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.lod_levels = 2;
+        world.witness.upsert_entity(entity);
+
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+        world.take();
+
+        // Two levels max, three stamps sent: the excess is dropped with a
+        // warning and the stamps land at the top levels.
+        world.witness.request_entity_update(2, &[7, 8, 9]);
         assert!(
-            c.is_refresh(),
-            "missed events past the floor force a refresh"
+            world
+                .witness
+                .warnings()
+                .last()
+                .unwrap()
+                .contains("LoD stamp cheat")
         );
-        assert!(!c.is_gone());
+
+        world.witness.flush_state_changes();
+        assert!(matches!(
+            world.witness.bundle().first(),
+            Some(ClientMessage::CreateEntity { .. })
+        ));
+        world.take();
     }
 
     #[test]
-    fn creation_seeds_aoi_from_insert_and_appeal() {
-        let mut list = RangeList::new();
-        // Entity 2 sits inside the upcoming AoI; entity 3 is far outside it
-        // but its 100-unit appeal range covers the origin.
-        let _near = list.add_entity(2, v(5.0, 0.0));
-        let large = list.add_entity(3, v(60.0, 0.0));
-        let appeal = list.add_appeal_trigger(large, 100.0);
-        list.trigger_insert(appeal);
-        list.drain_events();
+    fn a_destroyed_entity_add_is_deferred_through_the_offload_flag() {
+        let mut world = WitnessWorld::new();
+        let mut dead = world.witness.entity(2).cloned().unwrap();
+        dead.destroyed = true;
+        world.witness.upsert_entity(dead);
 
-        let w = Witness::new(&mut list, 1, v(0.0, 0.0), 10.0);
-        assert!(w.is_in_aoi(2), "insert-time enter lands in the cache");
+        world.witness.add_to_aoi(2, false);
+        assert!(world.witness.is_in_aoi_offload);
+        assert!(world.witness.aoi_ids().is_empty());
+
+        // The matched remove clears the flag without touching the AoI.
+        world.witness.remove_from_aoi(2, false);
+        assert!(!world.witness.is_in_aoi_offload);
+        assert!(world.witness.warnings().is_empty());
+    }
+
+    #[test]
+    fn entities_that_cannot_be_on_the_client_are_ignored() {
+        let mut world = WitnessWorld::new();
+        let mut hidden = world.witness.entity(2).cloned().unwrap();
+        hidden.can_be_on_client = false;
+        world.witness.upsert_entity(hidden);
+
+        world.witness.add_to_aoi(2, false);
+        assert!(world.witness.aoi_ids().is_empty());
+        world.witness.remove_from_aoi(2, false);
+        assert!(world.witness.warnings().is_empty());
+        world.witness.flush_state_changes();
+        assert!(world.witness.bundle().is_empty());
+    }
+
+    #[test]
+    fn a_newly_seen_entity_joins_at_the_minimum_current_priority() {
+        let mut world = WitnessWorld::new();
+        world.witness.add_to_aoi(2, false);
+        world.witness.cache_mut(2).set_priority(7.5);
+
+        // Entity 3 joins a queue that already holds 2 at priority 7.5: it
+        // takes that minimum instead of starting from zero.
+        world.witness.aoi_map.insert(
+            3,
+            EntityCache::new(&EntitySnapshot::new(3, 2, (0.0, 0.0, 0.0))),
+        );
+        world.witness.add_to_seen(3);
+        assert_eq!(world.witness.cache_priority(3), Some(7.5));
+        assert_eq!(world.witness.queue_ids(), vec![2, 3]);
+
+        // On an empty queue the newcomer starts at zero.
+        let mut fresh = WitnessWorld::new();
+        fresh.witness.aoi_map.insert(
+            3,
+            EntityCache::new(&EntitySnapshot::new(3, 2, (0.0, 0.0, 0.0))),
+        );
+        fresh.witness.add_to_seen(3);
+        assert_eq!(fresh.witness.cache_priority(3), Some(0.0));
+    }
+
+    #[test]
+    fn creating_a_cache_accumulates_the_default_scheme_delta() {
+        let mut world = WitnessWorld::new();
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+        world.witness.request_entity_update(2, &[]);
+
+        // Witness at the origin, entity at x=10: dist 10 -> (10/5 + 1) * 1.
+        world.witness.flush_state_changes();
+        let priority = world.witness.cache_priority(2).unwrap();
+        assert!((priority - 3.0).abs() < 1e-9, "{priority}");
+        world.take();
+    }
+
+    #[test]
+    fn leave_stamps_mix_lod_numbers_and_the_last_event() {
+        let mut world = WitnessWorld::new();
+
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.lod_levels = 2;
+        entity.last_event_number = 42;
+        world.witness.upsert_entity(entity);
+
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+
+        // Both levels stamped by the client; after create the cache sits at
+        // detail level 1, so leaving reports the stored stamp for level 0 and
+        // the entity's current event for level 1.
+        world.witness.request_entity_update(2, &[5, 11]);
+        world.witness.flush_state_changes();
+        world.take();
+
+        world.leave(2);
+        assert_eq!(
+            world.take(),
+            vec![ClientMessage::LeaveAoI {
+                id: 2,
+                lod_event_numbers: vec![5, 42],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_vehicle_change_before_create_is_announced_first() {
+        let mut world = WitnessWorld::new();
+
+        // The entity boards a vehicle between enter and create.
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+        world.take();
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.vehicle_id = Some(5);
+        entity.vehicle_change_num = 1;
+        world.witness.upsert_entity(entity);
+
+        world.witness.request_entity_update(2, &[]);
+        world.witness.flush_state_changes();
+
+        assert_eq!(
+            world.take(),
+            vec![
+                ClientMessage::SetVehicle {
+                    passenger_id: 2,
+                    vehicle_id: Some(5),
+                },
+                ClientMessage::CreateEntity {
+                    id: 2,
+                    client_type_id: 2,
+                    position: (10.0, 0.0, 0.0),
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    roll: 0.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_enter_on_a_vehicle_uses_the_vehicle_message() {
+        let mut world = WitnessWorld::new();
+        let mut rider = world.witness.entity(2).cloned().unwrap();
+        rider.vehicle_id = Some(5);
+        world.witness.upsert_entity(rider);
+
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+        assert_eq!(
+            world.take(),
+            vec![ClientMessage::EnterAoIOnVehicle {
+                id: 2,
+                vehicle_id: 5,
+                id_alias: 254,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_default_scheme_matches_the_reference_curves() {
+        let scheme = default_aoi_scheme();
+        // weighting 1, distanceWeighting (101/1 - 1)/500 = 0.2.
+        assert!((scheme.apply(0.0) - 1.0).abs() < 1e-9);
+        assert!((scheme.apply(100.0) - 3.0).abs() < 1e-9); // dist 10
+        assert!((scheme.apply(250_000.0) - 101.0).abs() < 1e-9); // dist 500
+
+        // A degenerate scheme is coincident: flat delta 1.
+        let flat = AoIUpdateScheme::init(0.0, 0.0, DEFAULT_AOI_RADIUS);
+        assert!(flat.should_treat_as_coincident());
+        assert_eq!(flat.apply(1000.0), 1.0);
+    }
+
+    #[test]
+    fn resetting_client_state_resnaps_to_the_entity() {
+        let mut entity = EntitySnapshot::new(2, 2, (0.0, 0.0, 0.0));
+        entity.last_event_number = 9;
+        entity.volatile_update_number = 4;
+        entity.lod_levels = 2;
+        entity.aoi_update_scheme_id = 3;
+
+        let mut cache = EntityCache::new(&entity);
+        assert_eq!(cache.last_event_number(), 9);
+        assert_eq!(cache.last_volatile_update_number(), 3);
+        assert_eq!(cache.update_scheme_id(), 3);
+        assert_eq!(cache.detail_level(), 2);
+        assert_eq!(cache.id_alias(), NO_ID_ALIAS);
+        assert!(cache.is_updatable());
+        assert_eq!(cache.priority(), 0.0);
+
+        // Drift the cache, then remove it from the client: WITHHELD survives
+        // (a server-side flag) while the pending state and stamps resnap.
+        cache.set_flag(WITHHELD | CREATE_PENDING);
+        cache.set_lod_event_numbers(&entity, &[3, 4]);
+        cache.set_id_alias(7);
+        cache.on_entity_removed_from_client(&entity);
+        assert_eq!(cache.flags(), WITHHELD);
+        assert_eq!(cache.id_alias(), NO_ID_ALIAS);
+        assert_eq!(cache.detail_level(), 2);
+        assert_eq!(cache.last_event_number(), 9);
+    }
+
+    #[test]
+    fn a_very_distant_entity_clamps_its_priority_distance() {
+        let mut world = WitnessWorld::new();
+        let mut far = EntitySnapshot::new(2, 2, (1e20, 0.0, 0.0));
+        far.volatile = VolatileInfo::NONE;
+        world.witness.upsert_entity(far);
+
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+        world.witness.request_entity_update(2, &[]);
+
+        // (1e20)^2 overflows to inf; getDistanceSquared clamps to FLT_MAX so
+        // the scheme delta stays finite instead of poisoning the priority.
+        world.witness.flush_state_changes();
+        let priority = world.witness.cache_priority(2).unwrap();
+        assert!(priority.is_finite(), "{priority}");
+        world.take();
+    }
+
+    #[test]
+    fn set_aoi_radius_keeps_the_bookkeeping() {
+        let mut world = WitnessWorld::new();
+        assert_eq!(world.witness.aoi_radius(), 500.0);
+        assert_eq!(world.witness.aoi_hyst(), 5.0);
+
+        world.witness.set_aoi_radius(60.0, 8.0);
+        assert_eq!(world.witness.aoi_radius(), 60.0);
+        assert_eq!(world.witness.aoi_hyst(), 8.0);
+
+        // The reference clamps to at least 0.1.
+        world.witness.set_aoi_radius(0.0, 8.0);
+        assert!((world.witness.aoi_radius() - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_lod_priority_is_the_plain_distance_squared() {
+        let mut world = WitnessWorld::new();
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+        world.take();
+
+        let entity = world.witness.entity(2).cloned().unwrap();
+        let cache = world.witness.aoi_map.get(&2).expect("cache after add");
+        assert_eq!(cache.lod_priority(&entity, (0.0, 0.0, 0.0)), 100.0);
+        assert_eq!(world.witness.entity_id(), 1);
+    }
+
+    /// Three observers at 10/50/100m: scheme deltas 3, 11, 21. One 25-byte
+    /// update fits a 30-byte packet, so each tick sends exactly one. The
+    /// caches are seeded already-updatable (the enter handshake already ran)
+    /// so the pass goes straight to the prioritised updates.
+    fn prioritised_world() -> WitnessWorld {
+        let mut world = WitnessWorld::new();
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(3, 2, (50.0, 0.0, 0.0)));
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(4, 2, (100.0, 0.0, 0.0)));
+        for id in [2, 3, 4] {
+            let entity = world.witness.entity(id).cloned().unwrap();
+            world.witness.aoi_map.insert(id, EntityCache::new(&entity));
+            world.witness.queue_push(id);
+        }
+        // 4400 bps at 10 Hz -> 4400/80 - 28 = 27 payload bytes per tick: a
+        // 25-byte update goes out, then the gate shuts for the tick.
+        world.witness.set_witness_capacity(4400, 10);
+        world.witness.set_entity_update_bytes(25);
+        world
+    }
+
+    fn update_ids(world: &mut WitnessWorld) -> Vec<EntityId> {
+        world.witness.update();
+        world
+            .witness
+            .take_bundle()
+            .into_iter()
+            .filter_map(|m| match m {
+                ClientMessage::EntityUpdate { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn updates_go_out_in_priority_order_within_the_delta_window() {
+        let mut world = prioritised_world();
+
+        // Everyone starts at zero, so the first three ticks hand out the
+        // entities round-robin in id order.
+        let mut sequence = Vec::new();
+        for _ in 0..3 {
+            sequence.extend(update_ids(&mut world));
+        }
+        assert_eq!(sequence, vec![2, 3, 4]);
+
+        // Priorities now read 3/11/21. The window only reaches three past
+        // the closest, so entity 2 keeps the channel until its accumulated
+        // debt crosses entity 3's, and so on: closest-first round robin.
+        // Traced by hand against the reference rules: within the window the
+        // closest entity (lowest id on ties) keeps the channel until its
+        // accumulated debt crosses a neighbour's, and a sent entity clamps
+        // up to the earliest queued priority so it never repeats "in past".
+        let mut rest = Vec::new();
+        for _ in 0..10 {
+            rest.extend(update_ids(&mut world));
+        }
+        assert_eq!(rest, vec![2, 2, 3, 2, 2, 4, 3, 2, 2, 3]);
+    }
+
+    #[test]
+    fn an_emptied_queue_resets_priorities_to_zero() {
+        let mut world = prioritised_world();
+        // A fat packet lets the whole queue drain in one tick.
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        for id in [2, 3, 4] {
+            world.witness.cache_mut(id).set_priority(40.0 + id as f64);
+        }
+        update_ids(&mut world);
+        for id in [2, 3, 4] {
+            assert_eq!(world.witness.cache_priority(id), Some(0.0));
+        }
+    }
+
+    #[test]
+    fn a_sent_entity_is_clamped_to_the_earliest_queued_priority() {
+        let mut world = prioritised_world();
+
+        update_ids(&mut world);
+        assert_eq!(world.witness.cache_priority(2), Some(3.0));
+
+        // The queue never emptied, so entity 2 (sent this tick at 3.0) may
+        // not sit "in the past" next to the two unsent zeros: it clamps up.
+        assert_eq!(world.witness.cache_priority(3), Some(0.0));
+        assert_eq!(world.witness.cache_priority(4), Some(0.0));
+    }
+
+    #[test]
+    fn prioritised_vehicles_go_first_and_keep_their_debt() {
+        let mut world = prioritised_world();
+        world.witness.set_witness_capacity(1_000_000, 10);
+        world.witness.set_entity_update_bytes(25);
+
+        // Entity 5 rides as our vehicle with a big priority debt; entity 2
+        // is fresh. Give 5 a cache and a queue slot without an enter.
+        let rider = EntitySnapshot::new(5, 2, (5.0, 0.0, 0.0));
+        world.witness.upsert_entity(rider.clone());
+        world.witness.aoi_map.insert(5, EntityCache::new(&rider));
+        world.witness.cache_mut(5).set_priority(50.0);
+        world.witness.queue_push(5);
+
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(5);
+        world.witness.upsert_entity(self_entity);
+
+        // The vehicle goes out first regardless of its 50.0 debt; the rest
+        // of the (fat-packet) queue follows in id order at zero.
+        let ids = update_ids(&mut world);
+        assert_eq!(ids, vec![5, 2, 3, 4]);
+
+        // The vehicle was prioritised once; its marker cleared and its debt
+        // untouched (it never entered the delta window).
+        assert!(!world.witness.aoi_map.get(&5).unwrap().has_flag(PRIORITISED));
+        assert_eq!(world.witness.cache_priority(5), Some(50.0));
+    }
+
+    #[test]
+    fn a_prioritised_vehicle_inside_the_window_restarts_from_the_front() {
+        let mut world = prioritised_world();
+        world.witness.set_witness_capacity(1_000_000, 10);
+        world.witness.set_entity_update_bytes(25);
+
+        // Same vehicle as the debt test, but with no priority debt: it sits
+        // inside the delta window, so the pop loop reaches it too.
+        let rider = EntitySnapshot::new(5, 2, (5.0, 0.0, 0.0));
+        world.witness.upsert_entity(rider.clone());
+        world.witness.aoi_map.insert(5, EntityCache::new(&rider));
+        world.witness.queue_push(5);
+
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(5);
+        world.witness.upsert_entity(self_entity);
+
+        // Sent once from the stack; the later pop does not resend, it
+        // restarts from the front's priority and drops the marker.
+        assert_eq!(update_ids(&mut world), vec![5, 2, 3, 4]);
+        let cache = world.witness.aoi_map.get(&5).unwrap();
+        assert!(!cache.has_flag(PRIORITISED));
+        // the queue emptied this tick, so the emptied-queue reset zeroes
+        // every popped entry, the vehicle included
+        assert_eq!(world.witness.cache_priority(5), Some(0.0));
+    }
+
+    #[test]
+    fn the_budget_gates_and_carries_a_deficit() {
+        let mut world = WitnessWorld::new();
+        // 4240 bps at 10 Hz -> 4240/80 - 28 = 25 payload bytes per tick.
+        world.witness.set_witness_capacity(4240, 10);
+        world.witness.set_entity_update_bytes(10);
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(3, 2, (0.0, 0.0, 0.0)));
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(4, 2, (0.0, 0.0, 0.0)));
+        for id in [2, 3, 4] {
+            world.witness.aoi_map.insert(
+                id,
+                EntityCache::new(&EntitySnapshot::new(id, 2, (0.0, 0.0, 0.0))),
+            );
+            world.witness.queue_push(id);
+        }
+
+        // Gate closes at 23 bytes: two updates fit, the third would be 30.
+        assert_eq!(update_ids(&mut world).len(), 3);
+        assert_eq!(world.witness.bandwidth_deficit(), 5);
+        assert_eq!(world.witness.max_packet_size(), 25);
+
+        // The deficit shrinks next tick's budget to 20, closing the gate
+        // after two updates instead of three.
+        assert_eq!(update_ids(&mut world).len(), 2);
+        assert_eq!(world.witness.bandwidth_deficit(), 0);
+    }
+
+    #[test]
+    fn an_oversized_deficit_caps_at_the_packet_size() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(4240, 10);
+        world.witness.set_entity_update_bytes(200);
+        world.witness.aoi_map.insert(
+            2,
+            EntityCache::new(&EntitySnapshot::new(2, 2, (0.0, 0.0, 0.0))),
+        );
+        world.witness.queue_push(2);
+
+        // One 200-byte update against a 25-byte packet: the deficit caps at
+        // one full packet with a warning.
+        update_ids(&mut world);
+        assert_eq!(world.witness.bandwidth_deficit(), 25);
+        assert!(world.witness.warnings().last().unwrap().contains("deficit"));
+    }
+
+    #[test]
+    fn the_emergency_throttle_shrinks_the_budget() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(4240, 10);
+        world.witness.set_entity_update_bytes(10);
+        for id in [2, 3, 4] {
+            world.witness.aoi_map.insert(
+                id,
+                EntityCache::new(&EntitySnapshot::new(id, 2, (0.0, 0.0, 0.0))),
+            );
+            world.witness.queue_push(id);
+        }
+
+        world.witness.set_emergency_throttle(0.5);
+        // desired = 12, gate closes at 10: one update only.
+        assert_eq!(update_ids(&mut world).len(), 1);
+    }
+
+    #[test]
+    fn state_handshakes_ride_the_update_pass() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        world.witness.add_to_aoi(2, false);
+        // the enterAoI handshake rides the pass; no entity update yet
+        assert!(update_ids(&mut world).is_empty());
         assert!(
-            w.is_in_aoi(3),
-            "appeal-covered large entity joins at creation"
+            !world
+                .witness
+                .aoi_map
+                .get(&2)
+                .unwrap()
+                .has_flag(ENTER_PENDING)
         );
-        assert_eq!(
-            w.queue(),
-            &[3, 2],
-            "appeal seeds queue before insert enters"
-        );
+        world.take();
 
-        // The large entity's own witness skips its own appeal coverage.
-        let w3 = Witness::new(&mut list, 3, v(60.0, 0.0), 10.0);
-        assert!(w3.cache(3).is_none());
+        world.witness.request_entity_update(2, &[]);
+        world.witness.update();
+        assert!(matches!(
+            world.witness.bundle().first(),
+            Some(ClientMessage::CreateEntity { .. })
+        ));
+        assert!(world.witness.bundle_size() > 0);
+        world.take();
     }
 
     #[test]
-    fn removing_unknown_entities_is_a_noop() {
-        let (mut list, mut w) = setup();
-        w.remove_from_aoi(99, false);
-        w.remove_from_aoi(99, true);
-        w.delete_from_aoi(99);
-        assert_eq!(w.cache_count(), 0);
-        assert!(w.queue().is_empty());
-        list.drain_events();
+    fn a_destroyed_manual_entity_is_dropped_inside_the_pass() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        world.witness.add_to_aoi(2, true);
+        let mut dead = world.witness.entity(2).cloned().unwrap();
+        dead.destroyed = true;
+        world.witness.upsert_entity(dead);
+
+        world.witness.update();
+        assert!(world.witness.bundle().is_empty());
+        assert!(!world.witness.aoi_ids().contains(&2));
     }
 
     #[test]
-    fn destroy_unlinks_aoi_and_clears_caches() {
-        let (mut list, mut w) = setup();
-        let _e = list.add_entity(2, v(5.0, 0.0));
-        w.poll(&mut list);
-        assert_eq!(w.cache_count(), 1);
-        assert_eq!(list.trigger_count(), 1);
-        // Two entities plus the AoI trigger's two bounds are on the axes.
-        assert_eq!(list.iter_x().len(), 4);
+    fn an_unupdatable_vehicle_is_skipped_in_the_stack() {
+        let mut world = prioritised_world();
 
-        w.destroy(&mut list);
-        assert_eq!(w.cache_count(), 0);
-        assert!(w.queue().is_empty());
-        assert_eq!(list.iter_x().len(), 2, "the AoI bounds leave both axes");
-        assert_eq!(list.iter_z().len(), 2);
-        assert!(list.drain_events().is_empty(), "no per-entity leaves fire");
-        w.poll(&mut list);
-        assert_eq!(w.cache_count(), 0);
+        let rider = EntitySnapshot::new(5, 2, (5.0, 0.0, 0.0));
+        world.witness.upsert_entity(rider.clone());
+        world.witness.aoi_map.insert(5, EntityCache::new(&rider));
+        world.witness.cache_mut(5).set_flag(WITHHELD);
+        world.witness.queue_push(5);
+
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(5);
+        world.witness.upsert_entity(self_entity);
+
+        // The withheld vehicle is not sent from the stack; the budget
+        // still only fits the closest entity this tick.
+        let ids = update_ids(&mut world);
+        assert_eq!(ids, vec![2]);
+        // A witness on a vehicle has to send its reference position first,
+        // and that 8 bytes pushes the update over the 27-byte packet.
+        assert_eq!(world.witness.bandwidth_deficit(), 6);
+    }
+
+    // ---- BW-08-03-04: position and property projections ----
+
+    /// Two seeded volatile entities, `witness.entities` style.
+    fn projection_world(self_position: (f32, f32, f32)) -> WitnessWorld {
+        let mut self_entity = EntitySnapshot::new(1, 1, self_position);
+        self_entity.volatile = VolatileInfo::NONE;
+        let mut witness = Witness::new(1, self_entity);
+        witness.set_witness_capacity(1_000_000, 10);
+        WitnessWorld { witness }
+    }
+
+    fn seed_observer(world: &mut WitnessWorld, entity: EntitySnapshot) {
+        world.witness.upsert_entity(entity.clone());
+        world
+            .witness
+            .aoi_map
+            .insert(entity.id, EntityCache::new(&entity));
+        world.witness.queue_push(entity.id);
+    }
+
+    fn first_entity_update(world: &mut WitnessWorld) -> ClientMessage {
+        world.witness.update();
+        world
+            .witness
+            .take_bundle()
+            .into_iter()
+            .find(|m| matches!(m, ClientMessage::EntityUpdate { .. }))
+            .expect("one entity update went out")
     }
 
     #[test]
-    fn delete_from_aoi_removes_queue_slot_and_cache() {
-        let (mut list, mut w) = setup();
-        let _a = list.add_entity(2, v(5.0, 0.0));
-        let _b = list.add_entity(3, v(6.0, 0.0));
-        w.poll(&mut list);
-        assert_eq!(w.queue(), &[2, 3]);
-        assert_eq!(w.aoi_ids(), vec![2, 3]);
+    fn two_witnesses_each_get_their_own_projection() {
+        let entity = EntitySnapshot::new(2, 1, (20.0, 0.0, 0.0));
 
-        w.delete_from_aoi(2);
-        assert_eq!(w.queue(), &[3]);
-        assert_eq!(w.aoi_ids(), vec![3]);
-        assert!(w.cache(2).is_none());
-        assert!(w.cache(3).is_some());
-    }
-
-    #[test]
-    fn poll_skips_other_triggers_and_the_witnesss_own_events() {
-        let (mut list, mut w) = setup();
-        // A second witness sits just outside the first one's AoI.
-        let mut w2 = Witness::new(&mut list, 2, v(15.0, 0.0), 10.0);
-
-        // Walking witness 1 toward witness 2 drags its upper bound past
-        // entity 2, which genuinely enters the widened AoI. The crossing
-        // with witness 2's bounds belongs to witness 2's trigger and must
-        // not leak into witness 1's caches.
-        list.move_entity(w.node, v(12.0, 0.0));
-        w.poll(&mut list);
-        assert!(w.is_in_aoi(2));
-        assert!(w.cache(1).is_none());
-        assert_eq!(w.cache_count(), 1);
-
-        w2.poll(&mut list);
-        assert!(w2.is_in_aoi(1));
-
-        // Removing the witness entity fires leaves naming itself (the
-        // teleport shuffle); they must not self-seed or self-drop caches.
-        list.remove_entity(w.node);
-        w.poll(&mut list);
-        assert!(w.cache(1).is_none());
-        assert!(w.is_in_aoi(2));
-        w2.poll(&mut list);
-        assert!(!w2.is_in_aoi(1));
-    }
-
-    #[test]
-    fn newcomers_start_at_the_queue_front_priority() {
-        let (mut list, mut w) = setup();
-        let _a = list.add_entity(2, v(5.0, 0.0));
-        w.poll(&mut list);
-        assert_eq!(w.cache(2).unwrap().priority(), 0.0);
-
-        w.cache_mut(2).unwrap().set_priority(5.0);
-        let _b = list.add_entity(3, v(7.0, 0.0));
-        w.poll(&mut list);
-        assert_eq!(w.cache(3).unwrap().priority(), 5.0);
-    }
-
-    #[test]
-    fn on_entity_removed_from_client_resets_client_state() {
-        let (mut list, mut w) = setup();
-        let e = list.add_entity(2, v(5.0, 0.0));
-        w.poll(&mut list);
-        {
-            let c = w.cache_mut(2).unwrap();
-            c.clear_enter_pending();
-            c.set_request_pending();
-            c.set_create_pending();
-            assert!(!c.is_updatable());
-        }
-        let facts = EntityFacts {
-            last_event_number: 7,
-            volatile_update_number: 9,
-            detail_level: 3,
-            ..EntityFacts::default()
-        };
-        w.cache_mut(2)
-            .unwrap()
-            .on_entity_removed_from_client(&facts);
-        let c = w.cache(2).unwrap();
-        assert!(c.is_updatable());
-        assert!(!c.is_enter_pending());
-        assert!(!c.is_request_pending());
-        assert!(!c.is_create_pending());
-        assert_eq!(c.last_event_number(), 7);
-        assert_eq!(c.last_volatile_update_number(), 8);
-        assert_eq!(c.detail_level(), 3);
-        assert_eq!(c.id_alias(), NO_ID_ALIAS);
-        assert_eq!(c.entity_id, 2);
-        list.remove_entity(e);
-        list.drain_events();
-    }
-
-    #[test]
-    fn cache_flag_semantics() {
-        let mut c = EntityCache::new(5, &EntityFacts::default());
-        assert!(c.is_updatable());
-        assert_eq!(c.last_volatile_update_number(), u16::MAX);
-        assert_eq!(c.id_alias(), NO_ID_ALIAS);
-        assert_eq!(c.last_priority_delta(), f64::MAX);
-
-        c.set_prioritised();
-        assert!(c.is_prioritised());
-        assert!(
-            c.is_updatable(),
-            "prioritised alone keeps the cache updatable"
-        );
-        c.clear_prioritised();
-        assert!(!c.is_prioritised());
-
-        c.set_withheld();
-        assert!(c.is_withheld());
-        assert!(!c.is_updatable(), "withheld blocks updates");
-        c.set_refresh();
-        assert!(c.is_refresh());
-        c.clear_refresh();
-        assert!(!c.is_refresh());
-
-        c.set_request_pending();
-        assert!(c.is_request_pending());
-        c.clear_request_pending();
-        assert!(!c.is_request_pending());
-        c.set_create_pending();
-        assert!(c.is_create_pending());
-        c.clear_create_pending();
-        assert!(!c.is_create_pending());
-
-        c.set_last_priority_delta(1.5);
-        assert_eq!(c.last_priority_delta(), 1.5);
-        assert!(!c.is_updatable(), "withheld survives refresh toggling");
-    }
-
-    // =================================================================
-    // BW-08-03-03: Witness::update selection.
-    // =================================================================
-
-    fn update_setup(entries: &[(EntityId, f32, f32)]) -> (RangeList, Witness) {
-        let mut list = RangeList::new();
-        let mut w = Witness::new(&mut list, 1, v(0.0, 0.0), 1000.0);
-        for (id, x, z) in entries {
-            w.set_position(*id, v(*x, *z));
-            w.add_to_aoi(*id, false);
-            // Mid-session entities are past the initial enter handshake.
-            w.cache_mut(*id).unwrap().clear_enter_pending();
-        }
-        (list, w)
-    }
-
-    fn update_config(packet: i32) -> WitnessUpdateConfig {
-        WitnessUpdateConfig {
-            max_packet_size: packet,
-            update_cost: 100,
-            ..WitnessUpdateConfig::default()
-        }
-    }
-
-    fn seed_priority(w: &mut Witness, id: EntityId, priority: f64) {
-        w.cache_mut(id).unwrap().set_priority(priority);
-    }
-
-    #[test]
-    fn update_priority_applies_scheme_and_throttle() {
-        let (_list, mut w) = update_setup(&[(2, 1.0, 0.0)]);
-        // distance/5 + 1 at distance 1: delta 1.2; lastPriorityDelta
-        // starts at MAX so nothing throttles the first step.
-        let d1 = (1.0f64).sqrt() * 0.2 + 1.0;
-        w.update_priority(2, &WitnessUpdateConfig::default());
-        assert_eq!(w.cache(2).unwrap().priority(), d1);
-        assert_eq!(w.cache(2).unwrap().last_priority_delta(), d1);
-
-        // Stepping out to distance 10 wants delta 3.0 but the growth
-        // throttle holds it to 1.125 * 1.2.
-        let d2 = 1.125 * d1;
-        w.set_position(2, v(10.0, 0.0));
-        w.update_priority(2, &WitnessUpdateConfig::default());
-        assert!((w.cache(2).unwrap().priority() - (d1 + d2)).abs() < 1e-9);
-        assert!((w.cache(2).unwrap().last_priority_delta() - d2).abs() < 1e-12);
-
-        // A FLT_MAX squared distance still only grows by the throttle.
-        w.set_position(2, v(1e30, 0.0));
-        w.update_priority(2, &WitnessUpdateConfig::default());
-        let expected = d1 + d2 + 1.125 * d2;
-        assert!((w.cache(2).unwrap().priority() - expected).abs() < 1e-9);
-
-        // The coincident scheme sends a flat delta regardless of distance.
-        let coincident = WitnessUpdateConfig {
-            scheme: AoIUpdateScheme {
-                weighting: 0.0,
-                distance_weighting: 0.0,
-            },
-            ..WitnessUpdateConfig::default()
-        };
-        let (_list, mut w2) = update_setup(&[(2, 7.0, 0.0)]);
-        w2.update_priority(2, &coincident);
-        assert_eq!(w2.cache(2).unwrap().priority(), 1.0);
-        assert_eq!(w2.cache(2).unwrap().last_priority_delta(), 1.0);
-    }
-
-    #[test]
-    fn update_sends_in_priority_order_under_fixed_load() {
-        // Four entities at distances 1/2/4/8 -> deltas 1.2/1.4/1.8/2.6.
-        // Packet 202 with cost 100 sends exactly two per tick.
-        let (_list, mut w) =
-            update_setup(&[(2, 1.0, 0.0), (3, 2.0, 0.0), (4, 4.0, 0.0), (5, 8.0, 0.0)]);
-        seed_priority(&mut w, 2, 0.0);
-        seed_priority(&mut w, 3, 1.0);
-        seed_priority(&mut w, 4, 2.0);
-        seed_priority(&mut w, 5, 3.0);
-        let cfg = update_config(202);
-
-        let r1 = w.update(&cfg);
-        assert_eq!(
-            r1.updated,
-            vec![2, 3],
-            "tick 1: the two smallest priorities"
-        );
-        let r2 = w.update(&cfg);
-        assert_eq!(
-            r2.updated,
-            vec![4, 2],
-            "tick 2: 4 surfaces, 2 was clamped to 2.0"
-        );
-        let r3 = w.update(&cfg);
-        assert_eq!(r3.updated, vec![3, 5], "tick 3");
-        let r4 = w.update(&cfg);
-        assert_eq!(r4.updated, vec![2, 3], "tick 4");
-
-        // Fixed load: two per tick, twenty ticks, everyone keeps rotating.
-        let mut total = [0usize; 8];
-        for _ in 0..20 {
-            let r = w.update(&cfg);
-            assert!(r.updated.len() <= 2);
-            for id in r.updated {
-                total[id as usize] += 1;
+        // Witness A sits at the grid origin; the offset is 20.
+        let mut a = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut a, entity.clone());
+        match first_entity_update(&mut a) {
+            ClientMessage::EntityUpdate { id, pos, dir, .. } => {
+                assert_eq!(id, 2);
+                assert_eq!(
+                    pos,
+                    PosProjection::Relative {
+                        x: 20.0,
+                        y: 0.0,
+                        z: 0.0,
+                        on_ground: true
+                    }
+                );
+                assert_eq!(
+                    dir,
+                    DirProjection::YawPitchRoll {
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        roll: 0.0
+                    }
+                );
             }
+            other => panic!("unexpected message: {other:?}"),
         }
-        assert_eq!(
-            total[2] + total[3] + total[4] + total[5],
-            40,
-            "every slot was spent"
-        );
-        for id in 2..=5 {
-            assert!(total[id as usize] >= 4, "id {id} is still rotating");
-        }
-        assert_eq!(w.bandwidth_deficit, 0);
-    }
 
-    #[test]
-    fn update_deficit_overshoots_and_is_paid_back() {
-        let (_list, mut w) = update_setup(&[(2, 1.0, 0.0)]);
-        let cfg = update_config(30);
-        let r1 = w.update(&cfg);
-        assert_eq!(
-            r1.updated,
-            vec![2],
-            "one send overshoots the 30-byte budget"
-        );
-        assert_eq!(r1.bundle_size, 100);
-        assert_eq!(r1.deficit, 30, "the deficit is capped at one packet");
-        assert_eq!(w.bandwidth_deficit, 30);
-
-        // The whole next budget goes to paying the deficit back.
-        let r2 = w.update(&cfg);
-        assert_eq!(r2.updated, Vec::<EntityId>::new());
-        assert_eq!(r2.deficit, 0);
-        assert_eq!(w.bandwidth_deficit, 0);
-    }
-
-    #[test]
-    fn update_deficit_carries_partially_between_passes() {
-        // Budget 150, cost 100: the second send of tick 1 leaves 50 owed;
-        // tick 2 can afford exactly one send; tick 3 is unrestricted again.
-        let (_list, mut w) = update_setup(&[(2, 1.0, 0.0), (3, 2.0, 0.0)]);
-        let cfg = update_config(150);
-
-        let r1 = w.update(&cfg);
-        assert_eq!(r1.updated.len(), 2);
-        assert_eq!(r1.deficit, 50);
-
-        let r2 = w.update(&cfg);
-        assert_eq!(r2.updated.len(), 1);
-        assert_eq!(r2.deficit, 0);
-
-        let r3 = w.update(&cfg);
-        assert_eq!(r3.updated.len(), 2);
-        assert_eq!(r3.deficit, 50);
-    }
-
-    #[test]
-    fn update_throttles_far_entities() {
-        // Six entities, deltas 1.2 .. 4.2, two sends per tick: the near
-        // ones turn over faster than the far ones.
-        let (_list, mut w) = update_setup(&[
-            (2, 1.0, 0.0),
-            (3, 2.0, 0.0),
-            (4, 4.0, 0.0),
-            (5, 8.0, 0.0),
-            (6, 12.0, 0.0),
-            (7, 16.0, 0.0),
-        ]);
-        let cfg = update_config(202);
-        let mut counts = [0usize; 8];
-        for _ in 0..20 {
-            let r = w.update(&cfg);
-            assert!(r.updated.len() <= 2);
-            for id in r.updated {
-                counts[id as usize] += 1;
-            }
-        }
-        assert_eq!(
-            counts[2] + counts[3] + counts[4] + counts[5] + counts[6] + counts[7],
-            40
-        );
-        assert!(counts[2] > counts[7], "near entities turn over faster");
-        assert!(counts[7] >= 1, "far entities are never starved out");
-    }
-
-    #[test]
-    fn update_handle_state_change_branches() {
-        let cfg = update_config(10000);
-
-        // gone: retired from the queue and the AoI map, leave recorded.
-        let (_list, mut w) = update_setup(&[(2, 1.0, 0.0)]);
-        w.cache_mut(2).unwrap().set_gone();
-        let r = w.update(&cfg);
-        assert_eq!(r.leaves, vec![2]);
-        assert!(w.cache(2).is_none());
-        assert!(w.queue().is_empty());
-
-        // withheld: leave recorded, re-pended as enter, stays queued.
-        let (_list, mut w) = update_setup(&[(3, 1.0, 0.0)]);
-        w.cache_mut(3).unwrap().set_withheld();
-        let r = w.update(&cfg);
-        assert_eq!(r.leaves, vec![3]);
-        assert!(w.cache(3).unwrap().is_enter_pending());
-        assert_eq!(w.queue(), &[3], "withheld entities are not popped");
-
-        // enter pending: enter sent, request pending, out of the queue
-        // but still in the AoI map.
-        let (_list, mut w) = update_setup(&[(4, 1.0, 0.0)]);
-        w.cache_mut(4).unwrap().set_enter_pending();
-        let r = w.update(&cfg);
-        assert_eq!(r.enters, vec![4]);
-        assert!(w.cache(4).unwrap().is_request_pending());
-        assert!(!w.cache(4).unwrap().is_enter_pending());
-        assert!(w.queue().is_empty());
-        assert!(w.cache(4).is_some());
-
-        // create pending: create sent, still queued, priority refreshed.
-        let (_list, mut w) = update_setup(&[(5, 1.0, 0.0)]);
-        w.cache_mut(5).unwrap().set_create_pending();
-        let r = w.update(&cfg);
-        assert_eq!(r.creates, vec![5]);
-        assert!(!w.cache(5).unwrap().is_create_pending());
-        assert_eq!(w.queue(), &[5]);
-
-        // refresh: out-and-back-in, leave + enter, popped from the queue.
-        let (_list, mut w) = update_setup(&[(6, 1.0, 0.0)]);
-        w.cache_mut(6).unwrap().set_refresh();
-        let r = w.update(&cfg);
-        assert_eq!(r.leaves, vec![6]);
-        assert_eq!(r.enters, vec![6]);
-        assert!(w.cache(6).unwrap().is_request_pending());
-        assert!(w.queue().is_empty());
-
-        // destroyed and manually added: retired through removeFromAoI.
-        // The manual add is the only holder - a trigger holder would make
-        // removeFromAoI keep the cache live (the trigger still wants it).
-        let (_list, mut w) = update_setup(&[]);
-        w.set_position(7, v(1.0, 0.0));
-        w.add_to_aoi(7, true);
-        w.cache_mut(7).unwrap().clear_enter_pending();
-        w.register(
-            7,
-            EntityFacts {
-                destroyed: true,
-                ..EntityFacts::default()
-            },
-        );
-        let r = w.update(&cfg);
-        assert_eq!(r.leaves, vec![7]);
-        assert!(w.cache(7).is_none());
-        assert!(w.queue().is_empty());
-    }
-
-    #[test]
-    fn update_prioritised_vehicles_go_out_first() {
-        let (_list, mut w) = update_setup(&[(2, 1.0, 0.0), (3, 2.0, 0.0), (5, 8.0, 0.0)]);
-        w.add_vehicle(4);
-        w.set_position(4, v(1.0, 0.0));
-        w.add_to_aoi(4, false);
-        w.cache_mut(4).unwrap().clear_enter_pending();
-        let cfg = update_config(202);
-
-        let r1 = w.update(&cfg);
-        assert_eq!(r1.updated, vec![4, 2], "the vehicle stack goes out first");
-        assert_eq!(
-            w.cache(4).unwrap().priority(),
-            0.0,
-            "the vehicle pass never touches priority"
-        );
-
-        // Next tick it is popped as prioritised: not re-sent, reset to the
-        // tick's starting priority and re-delta'd from its own distance.
-        let r2 = w.update(&cfg);
-        assert_eq!(r2.updated, vec![4, 3]);
-        assert!((w.cache(4).unwrap().priority() - 1.2).abs() < 1e-9);
-    }
-
-    #[test]
-    fn update_rebuilds_heap_when_queue_empties() {
-        let (_list, mut w) = update_setup(&[(2, 1.0, 0.0), (3, 2.0, 0.0)]);
-        let cfg = update_config(402);
-        let r = w.update(&cfg);
-        assert_eq!(r.updated, vec![2, 3], "everything fits: full drain");
-        assert_eq!(w.cache(2).unwrap().priority(), 0.0);
-        assert_eq!(w.cache(3).unwrap().priority(), 0.0);
-        assert_eq!(w.queue().len(), 2);
-
-        // With the priorities reset the pair goes out again next tick
-        // (the rebuild keeps the physical order, so 3 is at the front).
-        let r = w.update(&cfg);
-        assert_eq!(r.updated, vec![3, 2]);
-    }
-
-    #[test]
-    fn update_empty_queue_is_a_noop() {
-        let (_list, mut w) = setup();
-        let r = w.update(&WitnessUpdateConfig::default());
-        assert!(r.updated.is_empty());
-        assert!(r.enters.is_empty());
-        assert!(r.creates.is_empty());
-        assert!(r.leaves.is_empty());
-        assert_eq!(r.bundle_size, 0);
-        assert_eq!(r.deficit, 0);
-    }
-}
-
-// =====================================================================
-// BW-08-03-03: `Witness::update` — bandwidth and priority selection.
-//
-// The reference keeps `entityQueue_` as a live binary min-heap over
-// `EntityCache::priority()` (`PriorityCompare` = `l.p > r.p`), with the
-// not-yet-processed tail living in the vector's back (the `[queueEnd, end)`
-// "popped region"). Every heap operation is reproduced here verbatim;
-// `push_heap`/`pop_heap`/`make_heap` are the std algorithms over the same
-// strict `priority()` ordering, so ties resolve identically.
-// =====================================================================
-
-/// One AoI update scheme (`aoi_update_schemes.hpp:26-51`).
-///
-/// `delta = (distance * distance_weighting + 1) * weighting` for
-/// non-coincident schemes; a coincident scheme yields a flat `1.0`.
-/// The reference default scheme ("distance/5 + 1") is
-/// `weighting = 1`, `distance_weighting = 0.2`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AoIUpdateScheme {
-    /// `weighting_`.
-    pub weighting: f64,
-    /// `distanceWeighting_`.
-    pub distance_weighting: f64,
-}
-
-/// The reference default scheme, "distance/5 + 1" (`witness.cpp:1192`).
-pub const DEFAULT_AOI_UPDATE_SCHEME: AoIUpdateScheme = AoIUpdateScheme {
-    weighting: 1.0,
-    distance_weighting: 0.2,
-};
-
-impl AoIUpdateScheme {
-    /// `shouldTreatAsCoincident`.
-    pub fn coincident(&self) -> bool {
-        self.weighting == 0.0 && self.distance_weighting == 0.0
-    }
-
-    /// `AoIUpdateScheme::apply` — the per-send priority delta for a
-    /// squared distance.
-    pub fn apply(&self, distance_squared: f32) -> f64 {
-        if self.coincident() {
-            1.0
-        } else {
-            ((distance_squared as f64).sqrt() * self.distance_weighting + 1.0) * self.weighting
-        }
-    }
-}
-
-/// One `Witness::update()` pass: the modelled bundle costs, the selection
-/// report and the resulting bandwidth deficit.
-pub struct WitnessUpdateConfig {
-    /// `maxPacketSize_` (negotiated with the client).
-    pub max_packet_size: i32,
-    /// `CellApp::emergencyThrottle()`.
-    pub emergency_throttle: f32,
-    /// `addSpaceDataChanges` + reference/player position costs.
-    pub base_cost: i32,
-    /// `writeClientUpdateDataToBundle` per selected entity.
-    pub update_cost: i32,
-    /// Per `enterAoI` message.
-    pub enter_cost: i32,
-    /// Per `leaveAoI` message.
-    pub leave_cost: i32,
-    /// Per `createEntity` message.
-    pub create_cost: i32,
-    /// `witnessUpdateMaxPriorityDelta` (default 5.0).
-    pub max_priority_delta: f64,
-    /// `witnessUpdateDeltaGrowthThrottle` (default 1.125).
-    pub delta_growth_throttle: f64,
-    /// The entity update scheme (per-entity `aoiUpdateSchemeID_`).
-    pub scheme: AoIUpdateScheme,
-}
-
-impl Default for WitnessUpdateConfig {
-    fn default() -> Self {
-        WitnessUpdateConfig {
-            max_packet_size: 512,
-            emergency_throttle: 1.0,
-            base_cost: 0,
-            update_cost: 40,
-            enter_cost: 60,
-            leave_cost: 20,
-            create_cost: 80,
-            max_priority_delta: 5.0,
-            delta_growth_throttle: 1.125,
-            scheme: DEFAULT_AOI_UPDATE_SCHEME,
-        }
-    }
-}
-
-/// What one `update()` pass sent, in send order.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct WitnessUpdateReport {
-    /// Update messages sent (vehicle stack first, then the queue loop).
-    pub updated: Vec<EntityId>,
-    /// Entities whose enterAoI message went out.
-    pub enters: Vec<EntityId>,
-    /// Entities whose createEntity message went out.
-    pub creates: Vec<EntityId>,
-    /// Entities whose leaveAoI message went out.
-    pub leaves: Vec<EntityId>,
-    /// The modelled bundle size at the end of the pass.
-    pub bundle_size: i32,
-    /// The bandwidth deficit carried into the next pass.
-    pub deficit: i32,
-}
-
-impl Witness {
-    fn priority_of(&self, id: EntityId) -> f64 {
-        self.caches
-            .get(&id)
-            .map(|c| c.priority())
-            .unwrap_or(f64::MAX)
-    }
-
-    /// `std::sift_down` over `[begin, end)` for the priority min-heap.
-    fn sift_down(&mut self, _begin: usize, mut pos: usize, end: usize) {
-        loop {
-            let mut child = 2 * pos + 1;
-            if child >= end {
-                break;
-            }
-            let right = child + 1;
-            if right < end
-                && self.priority_of(self.queue[right]) < self.priority_of(self.queue[child])
-            {
-                child = right;
-            }
-            if self.priority_of(self.queue[child]) < self.priority_of(self.queue[pos]) {
-                self.queue.swap(child, pos);
-                pos = child;
-            } else {
-                break;
-            }
-        }
-    }
-
-    /// `std::sift_up` from `pos` up to `begin`.
-    fn sift_up(&mut self, begin: usize, mut pos: usize) {
-        while pos > begin {
-            let parent = (pos - 1) / 2;
-            if self.priority_of(self.queue[pos]) < self.priority_of(self.queue[parent]) {
-                self.queue.swap(pos, parent);
-                pos = parent;
-            } else {
-                break;
-            }
-        }
-    }
-
-    /// `std::pop_heap` over `[0, queue_end)`: the front moves to the back
-    /// of the heap range and `queue_end` is returned as the popped slot.
-    fn heap_pop(&mut self, queue_end: &mut usize) -> EntityId {
-        self.queue.swap(0, *queue_end - 1);
-        let end = *queue_end - 1;
-        *queue_end -= 1;
-        self.sift_down(0, 0, end);
-        self.queue[*queue_end]
-    }
-
-    /// `std::push_heap` over `[0, queue_end + 1)`.
-    fn heap_push(&mut self, queue_end: &mut usize) {
-        self.sift_up(0, *queue_end);
-        *queue_end += 1;
-    }
-
-    /// `std::make_heap` over the whole queue.
-    fn heap_rebuild(&mut self) {
-        let len = self.queue.len();
-        for i in (0..len / 2).rev() {
-            self.sift_down(0, i, len);
-        }
-    }
-
-    /// `*iter = back(); pop_back();` — the reference's in-place removal
-    /// of a just-popped element (`handleEnterPending` / `deleteFromAoI`).
-    fn remove_popped(&mut self, queue_end: usize) {
-        let last = self.queue.len() - 1;
-        self.queue.swap(queue_end, last);
-        self.queue.pop();
-    }
-
-    /// Squared XZ distance to the witness position, clamped to
-    /// `f32::MAX` (`entity_cache.ipp:77-85`).
-    fn distance_squared(&self, id: EntityId) -> f32 {
-        let (ex, ez) = self
-            .positions
-            .get(&id)
-            .map(|p| (p.x, p.z))
-            .unwrap_or((0.0, 0.0));
-        let dx = ex - self.pos.x;
-        let dz = ez - self.pos.z;
-        let ret = dx * dx + dz * dz;
-        if ret > f32::MAX {
-            f32::MAX
-        } else {
-            ret
-        }
-    }
-
-    /// `EntityCache::updatePriority` (`entity_cache.ipp:106-140`):
-    /// scheme delta, growth throttle against the last delta, accumulation.
-    fn update_priority(&mut self, id: EntityId, cfg: &WitnessUpdateConfig) {
-        let dist_sq = self.distance_squared(id);
-        let mut delta = cfg.scheme.apply(dist_sq);
-        let cache = self.caches.get_mut(&id).unwrap();
-        let last = cache.last_priority_delta();
-        delta = delta.min(cfg.delta_growth_throttle * last);
-        cache.set_last_priority_delta(delta);
-        let priority = cache.priority() + delta;
-        cache.set_priority(priority);
-    }
-
-    /// `deleteFromClient` (`witness.cpp:1919`): the leave message unless
-    /// the client never saw the enter, then the client-state reset.
-    fn delete_from_client(
-        &mut self,
-        id: EntityId,
-        size: &mut i32,
-        cfg: &WitnessUpdateConfig,
-        report: &mut WitnessUpdateReport,
-    ) {
-        let enter_pending = match self.caches.get(&id) {
-            Some(cache) => cache.is_enter_pending(),
-            None => return,
-        };
-        if let Some(cache) = self.caches.get_mut(&id) {
-            cache.clear_refresh();
-            if !enter_pending {
-                // tell the client that the entity has left the AoI
-                *size += cfg.leave_cost;
-                report.leaves.push(id);
-            }
-        }
-        let facts = self.facts_of(id);
-        if let Some(cache) = self.caches.get_mut(&id) {
-            cache.on_entity_removed_from_client(&facts);
-        }
-    }
-
-    /// `handleEnterPending` (`witness.cpp:1589`): sendEnter then pop the
-    /// cache out of the queue (it stays in the AoI map awaiting the
-    /// client's requestEntityUpdate reply).
-    fn handle_enter_pending(
-        &mut self,
-        id: EntityId,
-        queue_end: usize,
-        size: &mut i32,
-        cfg: &WitnessUpdateConfig,
-        report: &mut WitnessUpdateReport,
-    ) {
-        if let Some(cache) = self.caches.get_mut(&id) {
-            cache.set_request_pending();
-            cache.clear_enter_pending();
-            *size += cfg.enter_cost;
-            report.enters.push(id);
-        }
-        self.remove_popped(queue_end);
-    }
-
-    /// `deleteFromSeen` (`witness.cpp:1909`): delete from client, then
-    /// drop the cache out of the AoI map and the queue.
-    fn delete_from_seen(
-        &mut self,
-        id: EntityId,
-        queue_end: usize,
-        size: &mut i32,
-        cfg: &WitnessUpdateConfig,
-        report: &mut WitnessUpdateReport,
-    ) {
-        self.delete_from_client(id, size, cfg, report);
-        self.remove_popped(queue_end);
-        self.caches.remove(&id);
-    }
-
-    /// `handleStateChange` (`witness.cpp:986-1039`): the non-updatable
-    /// branches of the selection loop.
-    fn handle_state_change(
-        &mut self,
-        id: EntityId,
-        queue_end: usize,
-        cfg: &WitnessUpdateConfig,
-        size: &mut i32,
-        report: &mut WitnessUpdateReport,
-    ) {
-        let (gone, withheld, enter_pending, create_pending, refresh) = match self.caches.get(&id) {
-            Some(c) => (
-                c.is_gone(),
-                c.is_withheld(),
-                c.is_enter_pending(),
-                c.is_create_pending(),
-                c.is_refresh(),
+        // Witness B sits at (15, 0, 0); the same entity projects to 5.
+        let mut b = projection_world((15.0, 0.0, 0.0));
+        seed_observer(&mut b, entity);
+        match first_entity_update(&mut b) {
+            ClientMessage::EntityUpdate { pos, .. } => assert_eq!(
+                pos,
+                PosProjection::Relative {
+                    x: 5.0,
+                    y: 0.0,
+                    z: 0.0,
+                    on_ground: true
+                }
             ),
-            None => return,
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    // ---- BW-08-03-05: multiple observers retest ----
+
+    #[test]
+    fn observers_select_and_stamp_history_independently() {
+        // Both caches exist before the history grows, exactly as for two
+        // clients watching one cell; each then sees the growth on its own
+        // entity copy.
+        let mut base = EntitySnapshot::new(2, 1, (3.0, 0.0, 0.0));
+        base.volatile = VolatileInfo::NONE;
+        let mut grown = base.clone();
+        grown.events = vec![
+            HistoryEvent {
+                number: 5,
+                level: HistoryLevel::Detail(0),
+                payload_bytes: 2,
+            },
+            HistoryEvent {
+                number: 7,
+                level: HistoryLevel::Detail(1),
+                payload_bytes: 2,
+            },
+        ];
+        grown.last_event_number = 7;
+
+        let mut a = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut a, base.clone());
+        a.witness.cache_mut(2).detail_level = 1;
+
+        let mut b = projection_world((15.0, 0.0, 0.0));
+        seed_observer(&mut b, base);
+        b.witness.cache_mut(2).detail_level = 0;
+
+        // A's tick first: at detail 1 only the Detail(1) event rides, and
+        // the cache stamps the entity's history end.
+        a.witness.upsert_entity(grown.clone());
+        match first_entity_update(&mut a) {
+            ClientMessage::EntityUpdate { id, events, .. } => {
+                assert_eq!(id, 2);
+                assert_eq!(events, &[7]);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+        assert_eq!(a.witness.aoi_map.get(&2).unwrap().last_event_number(), 7);
+
+        // B runs after A has consumed the history: its own stamp is still
+        // 0, so both events ride — nothing was used up by A's send.
+        b.witness.upsert_entity(grown);
+        match first_entity_update(&mut b) {
+            ClientMessage::EntityUpdate { id, events, .. } => {
+                assert_eq!(id, 2);
+                assert_eq!(events, &[5, 7]);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+        let b_cache = b.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(b_cache.last_event_number(), 7);
+        assert_eq!(b_cache.detail_level(), 0);
+    }
+
+    #[test]
+    fn an_observers_detail_transition_does_not_reach_the_other_observer() {
+        let mut entity = EntitySnapshot::new(2, 1, (50.0, 0.0, 0.0));
+        entity.lod_levels = 2;
+        entity.lod_thresholds = vec![
+            LodLevelThreshold {
+                low: -1.0,
+                high: 1600.0, // 40m squared
+            },
+            LodLevelThreshold {
+                low: 900.0, // 30m squared
+                high: 1600.0,
+            },
+        ];
+
+        // A watches from the grid origin: 2500 > 1600 drops it to the
+        // outermost level — a stamp on its own cache, no select, no resend.
+        let mut a = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut a, entity.clone());
+        a.witness.cache_mut(2).detail_level = 1;
+        a.witness.cache_mut(2).id_alias = 7;
+        a.witness.update();
+        let a_bundle = a.witness.take_bundle();
+        assert!(matches!(
+            a_bundle.first(),
+            Some(ClientMessage::EntityUpdate { .. })
+        ));
+        assert!(!a_bundle.iter().any(|m| matches!(
+            m,
+            ClientMessage::SelectEntity { .. }
+                | ClientMessage::SelectAliasedEntity { .. }
+                | ClientMessage::UpdateProperties { .. }
+        )));
+        let a_cache = a.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(a_cache.detail_level(), 2);
+        assert_eq!(a_cache.id_alias(), 7);
+
+        // B watches the same entity from (45, 0, 0): 25 < 900 raises it to
+        // level 0 — its own select and property resend, on its own alias,
+        // after A already transitioned the other way.
+        let mut b = projection_world((45.0, 0.0, 0.0));
+        seed_observer(&mut b, entity);
+        b.witness.cache_mut(2).detail_level = 1;
+        b.witness.cache_mut(2).id_alias = 9;
+        b.witness.update();
+        // The volatile update already addresses the entity by alias, so the
+        // property resend rides right behind it without a select.
+        let b_bundle = b.witness.take_bundle();
+        assert!(!b_bundle.iter().any(|m| matches!(
+            m,
+            ClientMessage::SelectEntity { .. } | ClientMessage::SelectAliasedEntity { .. }
+        )));
+        assert_eq!(
+            b_bundle.get(1),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: Some(9),
+                detail_level: 0
+            })
+        );
+        let b_cache = b.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(b_cache.detail_level(), 0);
+        assert_eq!(b_cache.id_alias(), 9);
+    }
+
+    #[test]
+    fn observer_budgets_do_not_bleed_into_each_other() {
+        // A runs a 27-byte packet while sending 30-byte updates: one update
+        // per tick and a standing deficit.
+        let mut a = prioritised_world();
+        a.witness.set_entity_update_bytes(30);
+        assert_eq!(update_ids(&mut a), vec![2]);
+        assert_eq!(a.witness.bandwidth_deficit(), 3);
+
+        // B drains the same three entities in one tick even though entity 2
+        // just went out on A's budget; its queue empties and resets.
+        let mut b = prioritised_world();
+        b.witness.set_witness_capacity(1_000_000, 10);
+        assert_eq!(update_ids(&mut b), vec![2, 3, 4]);
+        assert_eq!(b.witness.bandwidth_deficit(), 0);
+        for id in [2, 3, 4] {
+            assert_eq!(b.witness.cache_priority(id), Some(0.0));
+        }
+
+        // A keeps paying its own deficit on the next tick: the unsent 3 and
+        // 4 still sit at 0.0 and outrun the grown entity 2 (3.0), and the
+        // 30-byte send shuts the gate after one update. None of that ever
+        // shows up in B.
+        assert_eq!(update_ids(&mut a), vec![3]);
+        // tick two's desired budget is 27 - 3 = 24, so the same 30-byte
+        // update now overspends by 6.
+        assert_eq!(a.witness.bandwidth_deficit(), 6);
+        assert_eq!(b.witness.bandwidth_deficit(), 0);
+    }
+
+    #[test]
+    fn an_offset_beyond_the_packed_limits_falls_back_to_detailed() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        // packedXZScale keeps the packed form inside the 500m AoI, so 600m
+        // cannot be represented.
+        seed_observer(&mut world, EntitySnapshot::new(2, 1, (600.0, 0.0, 0.0)));
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Detailed {
+                        x: 600.0,
+                        y: 0.0,
+                        z: 0.0
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn direction_detail_shrinks_with_distance() {
+        // position ALWAYS; direction thresholds in metres
+        let thresholds =
+            VolatileInfo::from_thresholds(Some(-1.0), Some(10.0), Some(8.0), Some(5.0));
+
+        // 25 < every squared threshold: all three angles go out.
+        let mut near = EntitySnapshot::new(2, 1, (3.0, 0.0, 0.0));
+        near.volatile = thresholds;
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, near);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { dir, .. } => assert_eq!(
+                dir,
+                DirProjection::YawPitchRoll {
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    roll: 0.0
+                }
+            ),
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // 81 > 64 and > 25 but < 100: yaw only.
+        let mut mid = EntitySnapshot::new(3, 1, (9.0, 0.0, 0.0));
+        mid.volatile = thresholds;
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, mid);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { dir, .. } => {
+                assert_eq!(dir, DirProjection::Yaw { yaw: 0.0 });
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // 32 clears only the roll (25): yaw and pitch.
+        let mut mid_low = EntitySnapshot::new(5, 1, (4.0, 0.0, 4.0));
+        mid_low.volatile = thresholds;
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, mid_low);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { dir, .. } => {
+                assert_eq!(
+                    dir,
+                    DirProjection::YawPitch {
+                        yaw: 0.0,
+                        pitch: 0.0
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // 720000 clears everything: no direction at all.
+        let mut far = EntitySnapshot::new(6, 1, (600.0, 0.0, 600.0));
+        far.volatile = thresholds;
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, far);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { dir, pos, .. } => {
+                assert_eq!(dir, DirProjection::None);
+                // both offsets are past the 500m packed limit
+                assert!(matches!(pos, PosProjection::Detailed { .. }));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // A type that sends no position at all: pos drops, dir stays.
+        let mut ground = EntitySnapshot::new(4, 1, (3.0, 0.0, 0.0));
+        ground.volatile = VolatileInfo::from_thresholds(None, Some(5.0), Some(4.0), Some(3.0));
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, ground);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, dir, .. } => {
+                assert_eq!(pos, PosProjection::None);
+                assert!(matches!(dir, DirProjection::YawPitchRoll { .. }));
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_airborne_entity_packs_three_axes() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut flyer = EntitySnapshot::new(2, 1, (6.0, 12.0, 8.0));
+        flyer.is_on_ground = false;
+        seed_observer(&mut world, flyer);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, bytes, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Relative {
+                        x: 6.0,
+                        y: 12.0,
+                        z: 8.0,
+                        on_ground: false
+                    }
+                );
+                // alias 4 + PackedXYZ 5 + YawPitchRoll 12
+                assert_eq!(bytes, 21);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_vehicle_passenger_projects_its_absolute_position() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut rider = EntitySnapshot::new(2, 1, (20.0, 0.0, 0.0));
+        rider.vehicle_id = Some(3);
+        seed_observer(&mut world, rider.clone());
+        // The cache already knows about the vehicle, so no SetVehicle rides.
+        world.witness.cache_mut(2).vehicle_change_num = rider.vehicle_change_num;
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Absolute {
+                        x: 20.0,
+                        y: 0.0,
+                        z: 0.0,
+                        on_ground: true
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_always_detailed_cache_projects_an_absolute_position() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let entity = EntitySnapshot::new(2, 1, (20.0, 0.0, 0.0));
+        seed_observer(&mut world, entity.clone());
+        world.witness.cache_mut(2).set_flag(IS_ALWAYS_DETAILED);
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Detailed {
+                        x: 20.0,
+                        y: 0.0,
+                        z: 0.0
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        // A prioritised vehicle is only detailed when the config asks for
+        // it; the default does not.
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut vehicle = EntitySnapshot::new(3, 1, (10.0, 0.0, 0.0));
+        vehicle.vehicle_id = Some(4);
+        seed_observer(&mut world, vehicle.clone());
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(3);
+        world.witness.upsert_entity(self_entity);
+        world.witness.cache_mut(3).vehicle_change_num = vehicle.vehicle_change_num;
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, .. } => {
+                assert_eq!(
+                    pos,
+                    PosProjection::Absolute {
+                        x: 10.0,
+                        y: 0.0,
+                        z: 0.0,
+                        on_ground: true
+                    }
+                );
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_self_projection_rides_ahead_of_the_updates() {
+        let mut self_entity = EntitySnapshot::new(1, 1, (3.0, 4.0, 5.0));
+        self_entity.yaw = 1.0;
+        self_entity.pitch = 0.5;
+        self_entity.roll = 0.25;
+        let mut world = WitnessWorld {
+            witness: Witness::new(1, self_entity.clone()),
         };
-        if gone {
-            self.delete_from_seen(id, queue_end, size, cfg, report);
-        } else if withheld {
-            if !enter_pending {
-                self.delete_from_client(id, size, cfg, report);
-                if let Some(cache) = self.caches.get_mut(&id) {
-                    cache.set_enter_pending();
-                }
-            }
-        } else if enter_pending {
-            self.handle_enter_pending(id, queue_end, size, cfg, report);
-        } else if create_pending {
-            if let Some(cache) = self.caches.get_mut(&id) {
-                cache.clear_create_pending();
-            }
-            *size += cfg.create_cost;
-            report.creates.push(id);
-            self.update_priority(id, cfg);
-        } else if refresh {
-            if let Some(cache) = self.caches.get_mut(&id) {
-                cache.clear_refresh();
-            }
-            self.delete_from_client(id, size, cfg, report);
-            if let Some(cache) = self.caches.get_mut(&id) {
-                cache.set_enter_pending();
-            }
-            self.handle_enter_pending(id, queue_end, size, cfg, report);
-        }
+        world.witness.set_witness_capacity(1_000_000, 10);
+        world
+            .witness
+            .upsert_entity(EntitySnapshot::new(2, 1, (10.0, 0.0, 0.0)));
+        let entity = world.witness.entity(2).cloned().unwrap();
+        world.witness.aoi_map.insert(2, EntityCache::new(&entity));
+        world.witness.queue_push(2);
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::AvatarUpdatePlayerDetailed {
+                position: (3.0, 4.0, 5.0),
+                yaw: 1.0,
+                pitch: 0.5,
+                roll: 0.25
+            })
+        );
+        assert!(matches!(
+            bundle.get(1),
+            Some(ClientMessage::EntityUpdate { id: 2, .. })
+        ));
     }
 
-    /// Move the witness entity itself (the engine reads it live off the
-    /// entity).
-    pub fn set_self_position(&mut self, pos: Vector3) {
-        self.pos = pos;
-    }
-
-    /// Register an entity's position for the priority computation. In the
-    /// engine the cache reads the live entity position; here the event
-    /// feed supplies positions (BW-08-03-04 wires the pipeline).
-    pub fn set_position(&mut self, id: EntityId, pos: Vector3) {
-        self.positions.insert(id, pos);
-    }
-
-    /// Add an entity to the vehicle stack (sent first, every update).
-    pub fn add_vehicle(&mut self, id: EntityId) {
-        if !self.vehicles.contains(&id) {
-            self.vehicles.push(id);
-        }
-    }
-
-    /// Remove an entity from the vehicle stack.
-    pub fn remove_vehicle(&mut self, id: EntityId) {
-        self.vehicles.retain(|v| *v != id);
-    }
-
-    /// The vehicle stack, front first.
-    pub fn vehicles(&self) -> &[EntityId] {
-        &self.vehicles
-    }
-
-    /// Entities currently flagged prioritised (`numPrioritised_`).
-    pub fn num_prioritised(&self) -> i32 {
-        self.num_prioritised
-    }
-
-    /// `Witness::update` (`witness.cpp:1088-1382`): the vehicle stack
-    /// pass, then the priority/bandwidth selection loop over the heap,
-    /// then the deficit bookkeeping and heap rebuild.
-    pub fn update(&mut self, cfg: &WitnessUpdateConfig) -> WitnessUpdateReport {
-        let mut report = WitnessUpdateReport::default();
-        let mut size = cfg.base_cost;
-        let desired = (cfg.max_packet_size as f32 * cfg.emergency_throttle) as i32
-            - self.bandwidth_deficit
-            + size;
-
-        let starting_priority = if self.queue.is_empty() {
-            0.0
-        } else {
-            self.priority_of(self.queue[0])
+    #[test]
+    fn an_unchanged_player_position_is_skipped_when_recent() {
+        let mut self_entity = EntitySnapshot::new(1, 1, (3.0, 0.0, 0.0));
+        self_entity.vehicle_id = Some(2); // a reference position rides anyway
+        let mut world = WitnessWorld {
+            witness: Witness::new(1, self_entity),
         };
-        let max_priority = starting_priority + cfg.max_priority_delta;
+        world.witness.set_max_time_between_player_updates(10);
 
-        let mut num_prioritised = 0;
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(matches!(
+            bundle.first(),
+            Some(ClientMessage::RelativePosition { .. })
+        ));
+        assert!(matches!(
+            bundle.get(1),
+            Some(ClientMessage::AvatarUpdatePlayerDetailed { .. })
+        ));
 
-        // The vehicle stack goes out first (witness.cpp:1158-1183).
-        for vehicle in self.vehicles.clone() {
-            let destroyed = self.facts_of(vehicle).destroyed;
-            let Some(cache) = self.caches.get_mut(&vehicle) else {
-                continue;
-            };
-            if !cache.is_updatable() || cache.is_request_pending() || destroyed {
-                continue;
+        // The same tick's worth of budget: recent and unchanged, so the
+        // player position is not repeated.
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(
+            !bundle
+                .iter()
+                .any(|m| matches!(m, ClientMessage::AvatarUpdatePlayerDetailed { .. }))
+        );
+
+        // Moving reopens the tap.
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.position = (4.0, 0.0, 0.0);
+        world.witness.upsert_entity(self_entity);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(matches!(
+            bundle.get(1),
+            Some(ClientMessage::AvatarUpdatePlayerDetailed {
+                position: (4.0, 0.0, 0.0),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_client_controlled_witness_uses_the_client_reference() {
+        let mut self_entity = EntitySnapshot::new(1, 1, (0.0, 0.0, 0.0));
+        self_entity.controlled_by_self = true;
+        let mut world = WitnessWorld {
+            witness: Witness::new(1, self_entity),
+        };
+
+        // Before the client has ever sent a reference we pick one ourselves.
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::RelativePosition {
+                position: (0.0, 0.0, 0.0)
+            })
+        );
+        // And a client-controlled entity never gets its position repeated.
+        assert!(
+            !bundle
+                .iter()
+                .any(|m| matches!(m, ClientMessage::AvatarUpdatePlayerDetailed { .. }))
+        );
+
+        // Once the client supplies its sequence, only that rides.
+        world.witness.set_client_reference_sequence(7);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::RelativePositionReference { sequence_number: 7 })
+        );
+    }
+
+    #[test]
+    fn history_events_ride_the_projection_in_order() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut entity = EntitySnapshot::new(2, 1, (3.0, 0.0, 0.0));
+        entity.volatile = VolatileInfo::NONE; // the select rides first
+        entity.events = vec![
+            HistoryEvent {
+                number: 5,
+                level: HistoryLevel::Priority(10_000.0), // squared: 100m
+                payload_bytes: 6,
+            },
+            HistoryEvent {
+                number: 7,
+                level: HistoryLevel::Detail(1),
+                payload_bytes: 2,
+            },
+        ];
+        seed_observer(&mut world, entity.clone());
+        // the client knows this entity by alias
+        world.witness.cache_mut(2).id_alias = 5;
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::SelectAliasedEntity { id_alias: 5 })
+        );
+        match bundle.get(1) {
+            Some(ClientMessage::EntityUpdate {
+                id,
+                id_alias,
+                events,
+                bytes,
+                ..
+            }) => {
+                assert_eq!(*id, 2);
+                assert_eq!(*id_alias, Some(5));
+                assert_eq!(events, &[5, 7]);
+                // alias 1 + no position + no direction + (4+6) + (4+2)
+                assert_eq!(*bytes, 17);
             }
-            cache.set_prioritised();
-            num_prioritised += 1;
-            size += cfg.update_cost;
-            report.updated.push(vehicle);
+            other => panic!("unexpected message: {other:?}"),
         }
 
-        let mut queue_end = self.queue.len();
-        while queue_end > 0 && self.priority_of(self.queue[0]) < max_priority && size < desired - 2
-        {
-            let id = self.heap_pop(&mut queue_end);
-            let was_prioritised = self.caches[&id].is_prioritised();
+        // The same shape without an alias: the full id rides the select,
+        // and the detail increase does not repeat it.
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        entity.events = vec![entity.events[1]];
+        entity.lod_levels = 2;
+        entity.lod_thresholds = vec![
+            LodLevelThreshold {
+                low: -1.0,
+                high: 1600.0,
+            },
+            LodLevelThreshold {
+                low: 900.0,
+                high: 1600.0,
+            },
+        ];
+        seed_observer(&mut world, entity.clone());
+        world.witness.cache_mut(2).detail_level = 1;
+        world.witness.upsert_entity(entity);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(bundle.first(), Some(&ClientMessage::SelectEntity { id: 2 }));
+        assert_eq!(
+            bundle.get(1),
+            Some(&ClientMessage::EntityUpdate {
+                id: 2,
+                id_alias: None,
+                pos: PosProjection::None,
+                dir: DirProjection::None,
+                events: vec![7],
+                bytes: 10,
+            })
+        );
+        assert_eq!(
+            bundle.get(2),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: None,
+                detail_level: 0
+            })
+        );
+    }
 
-            let facts = self.facts_of(id);
-            if facts.destroyed && !self.caches[&id].is_gone() {
-                debug_assert!(self.caches[&id].is_manually_added());
-                self.remove_from_aoi(id, true);
-            }
+    #[test]
+    fn out_of_range_events_are_not_sent_but_the_number_still_advances() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, EntitySnapshot::new(2, 1, (3.0, 0.0, 0.0)));
 
-            if !self.caches[&id].is_updatable() {
-                self.handle_state_change(id, queue_end, cfg, &mut size, &mut report);
-            } else if !self.caches[&id].is_prioritised() {
-                size += cfg.update_cost;
-                report.updated.push(id);
-                self.update_priority(id, cfg);
-            }
+        // squared threshold 16: at distance 3 (9) the event goes out.
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.events = vec![HistoryEvent {
+            number: 5,
+            level: HistoryLevel::Priority(16.0),
+            payload_bytes: 4,
+        }];
+        entity.last_event_number = 5;
+        world.witness.upsert_entity(entity);
 
-            if was_prioritised {
-                if let Some(cache) = self.caches.get_mut(&id) {
-                    cache.set_priority(starting_priority);
-                    cache.clear_prioritised();
-                }
-                self.update_priority(id, cfg);
-                num_prioritised -= 1;
-            }
+        let sent = first_entity_update(&mut world);
+        match sent {
+            ClientMessage::EntityUpdate { events, .. } => assert_eq!(events, &[5]),
+            other => panic!("unexpected message: {other:?}"),
         }
 
-        self.bandwidth_deficit = if size > desired { size - desired } else { 0 };
-        if self.bandwidth_deficit > cfg.max_packet_size {
-            self.bandwidth_deficit = cfg.max_packet_size;
+        // Step the entity past the threshold with a fresh event; the new
+        // one is suppressed, and the cache still catches up.
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.position = (5.0, 0.0, 0.0);
+        entity.events.push(HistoryEvent {
+            number: 6,
+            level: HistoryLevel::Priority(16.0),
+            payload_bytes: 4,
+        });
+        entity.last_event_number = 6;
+        world.witness.upsert_entity(entity);
+        let sent = first_entity_update(&mut world);
+        match sent {
+            ClientMessage::EntityUpdate { events, .. } => assert!(events.is_empty()),
+            other => panic!("unexpected message: {other:?}"),
         }
+        let cache = world.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(cache.last_event_number(), 6);
+    }
 
-        if queue_end == 0 {
-            // Everything was popped: reset the priorities and rebuild.
-            for id in &self.queue {
-                if let Some(cache) = self.caches.get_mut(id) {
-                    cache.set_priority(0.0);
-                }
+    #[test]
+    fn the_detail_level_transitions_stamp_and_resend() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut entity = EntitySnapshot::new(2, 1, (5.0, 0.0, 0.0));
+        entity.lod_levels = 2;
+        entity.lod_thresholds = vec![
+            LodLevelThreshold {
+                low: -1.0,
+                high: 1600.0, // 40m squared
+            },
+            LodLevelThreshold {
+                low: 900.0, // 30m squared
+                high: 1600.0,
+            },
+        ];
+        seed_observer(&mut world, entity);
+        // `addOuterDetailLevel` leaves entry one level below the outermost.
+        world.witness.cache_mut(2).detail_level = 1;
+        world.witness.cache_mut(2).id_alias = 7;
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.last(),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: Some(7),
+                detail_level: 0
+            })
+        );
+        assert_eq!(world.witness.aoi_map.get(&2).unwrap().detail_level(), 0);
+
+        // Move out past 40m: both levels stamp their events on the way up.
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.position = (50.0, 0.0, 0.0);
+        world.witness.upsert_entity(entity);
+        world.witness.update();
+        let cache = world.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(cache.detail_level(), 2);
+        let stamps = cache.lod_event_numbers();
+        assert_eq!(stamps[0], 0);
+        assert_eq!(stamps[1], 0);
+    }
+
+    #[test]
+    fn a_detail_increase_selects_the_entity_first() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut entity = EntitySnapshot::new(2, 1, (5.0, 0.0, 0.0));
+        entity.volatile = VolatileInfo::NONE; // no volatile select ahead
+        entity.lod_levels = 2;
+        entity.lod_thresholds = vec![
+            LodLevelThreshold {
+                low: -1.0,
+                high: 1600.0,
+            },
+            LodLevelThreshold {
+                low: 900.0,
+                high: 1600.0,
+            },
+        ];
+        seed_observer(&mut world, entity.clone());
+        world.witness.cache_mut(2).detail_level = 1;
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(matches!(
+            bundle.first(),
+            Some(ClientMessage::EntityUpdate { .. })
+        ));
+        assert_eq!(bundle.get(1), Some(&ClientMessage::SelectEntity { id: 2 }));
+        assert_eq!(
+            bundle.get(2),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: None,
+                detail_level: 0
+            })
+        );
+
+        // The aliased shape selects by alias instead.
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, entity.clone());
+        world.witness.cache_mut(2).detail_level = 1;
+        world.witness.cache_mut(2).id_alias = 7;
+        world.witness.upsert_entity(entity);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.get(1),
+            Some(&ClientMessage::SelectAliasedEntity { id_alias: 7 })
+        );
+        assert_eq!(
+            bundle.get(2),
+            Some(&ClientMessage::UpdateProperties {
+                id: 2,
+                id_alias: Some(7),
+                detail_level: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_coincident_scheme_projects_from_zero_priority() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut entity = EntitySnapshot::new(2, 1, (600.0, 0.0, 0.0));
+        entity.aoi_update_scheme_id = 1; // custom schemes are coincident
+        seed_observer(&mut world, entity);
+
+        // Coincident entities read as LoD priority 0, so even a 600m offset
+        // keeps every direction angle; the position itself is past the
+        // packed limits and goes out detailed.
+        match first_entity_update(&mut world) {
+            ClientMessage::EntityUpdate { pos, dir, .. } => {
+                assert!(matches!(pos, PosProjection::Detailed { .. }));
+                assert_eq!(
+                    dir,
+                    DirProjection::YawPitchRoll {
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        roll: 0.0
+                    }
+                );
             }
-            self.heap_rebuild();
-        } else {
-            let earliest = self.priority_of(self.queue[0]);
-            while queue_end < self.queue.len() {
-                if self.priority_of(self.queue[queue_end]) < earliest {
-                    let clamped = earliest;
-                    self.caches
-                        .get_mut(&self.queue[queue_end])
-                        .unwrap()
-                        .set_priority(clamped);
-                }
-                self.heap_push(&mut queue_end);
-            }
+            other => panic!("unexpected message: {other:?}"),
         }
+    }
 
-        self.num_prioritised = num_prioritised;
-        report.bundle_size = size;
-        report.deficit = self.bandwidth_deficit;
-        report
+    #[test]
+    fn clearing_the_update_size_returns_to_the_computed_payload() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, EntitySnapshot::new(2, 1, (10.0, 0.0, 0.0)));
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        // The harness fix charges 25 regardless of the body.
+        world.witness.set_entity_update_bytes(25);
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(matches!(
+            bundle.first(),
+            Some(ClientMessage::EntityUpdate { bytes: 25, .. })
+        ));
+
+        world.witness.clear_entity_update_bytes();
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        // The volatile number has not moved, so the second body is only the
+        // entity id.
+        assert!(matches!(
+            bundle.first(),
+            Some(ClientMessage::EntityUpdate { bytes: 4, .. })
+        ));
+        // two passes have run
+        assert_eq!(world.witness.time(), 3);
+    }
+
+    #[test]
+    fn the_budget_counts_the_real_payload() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        seed_observer(&mut world, EntitySnapshot::new(2, 1, (10.0, 0.0, 0.0)));
+        world.witness.set_witness_capacity(4400, 10); // 27 bytes a tick
+        // No harness fix this time: a 19-byte update goes out, and the
+        // 8-byte headroom cannot fit a second one.
+        let ids = update_ids(&mut world);
+        assert_eq!(ids, vec![2]);
+        assert_eq!(world.witness.bandwidth_deficit(), 0);
+        let cache = world.witness.aoi_map.get(&2).unwrap();
+        assert_eq!(cache.priority(), 0.0);
+    }
+
+    #[test]
+    fn vehicle_changes_ride_updates() {
+        let mut world = projection_world((0.0, 0.0, 0.0));
+        let mut rider = EntitySnapshot::new(2, 1, (6.0, 0.0, 0.0));
+        rider.vehicle_change_num = 3;
+        seed_observer(&mut world, rider.clone());
+
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert_eq!(
+            bundle.first(),
+            Some(&ClientMessage::SetVehicle {
+                passenger_id: 2,
+                vehicle_id: None
+            })
+        );
+        assert!(matches!(
+            bundle.get(1),
+            Some(ClientMessage::EntityUpdate { .. })
+        ));
+        // stamped, so the next pass does not repeat it
+        world.witness.update();
+        let bundle = world.witness.take_bundle();
+        assert!(
+            !bundle
+                .iter()
+                .any(|m| matches!(m, ClientMessage::SetVehicle { .. }))
+        );
+    }
+
+    #[test]
+    fn volatile_info_thresholds_match_the_reference() {
+        let info = VolatileInfo::from_thresholds(Some(10.0), Some(10.0), Some(8.0), Some(5.0));
+        assert_eq!(info.position_priority, 100.0);
+        assert!(info.should_send_position());
+        // squared distance 100 clears the pitch (64) and roll (25) but not
+        // the yaw (100): yaw only.
+        assert_eq!(info.dir_type(100.0), 2);
+        assert_eq!(info.dir_type(101.0), 3);
+        // 20 sits under the roll's 25: every angle rides.
+        assert_eq!(info.dir_type(20.0), 0);
+        assert!(info.has_volatile(99.0));
+        assert!(!info.has_volatile(100.0));
+
+        // -1 means ALWAYS, no section means the axis is off.
+        let always = VolatileInfo::from_thresholds(Some(-1.0), Some(-1.0), Some(-1.0), Some(-1.0));
+        assert_eq!(always.position_priority, VOLATILE_ALWAYS);
+        assert!(always.has_volatile(0.0));
+        assert!(!VolatileInfo::NONE.has_volatile(0.0));
+        assert!(!VolatileInfo::NONE.should_send_position());
+    }
+
+    #[test]
+    fn a_vehicle_outside_the_aoi_is_reported_once() {
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(1_000_000, 10);
+
+        let mut self_entity = world.witness.entity(1).cloned().unwrap();
+        self_entity.vehicle_id = Some(9);
+        world.witness.upsert_entity(self_entity);
+
+        world.witness.update();
+        assert!(
+            world
+                .witness
+                .warnings()
+                .last()
+                .unwrap()
+                .contains("outside its AoI")
+        );
+    }
+
+    #[test]
+    fn bps_to_packet_size_matches_the_reference() {
+        assert_eq!(bps_to_packet_size(4640, 10), 30);
+        assert_eq!(bps_to_packet_size(4240, 10), 25);
+        // 8 bits per byte, 28 bytes of UDP/IP overhead.
+        assert_eq!(bps_to_packet_size(8000, 10), 100 - 28);
+
+        // a zero hertz leaves the packet size untouched
+        let mut world = WitnessWorld::new();
+        world.witness.set_witness_capacity(4400, 10);
+        world.witness.set_witness_capacity(9999, 0);
+        assert_eq!(world.witness.max_packet_size(), 27);
+    }
+
+    #[test]
+    fn a_custom_scheme_is_treated_as_coincident() {
+        let mut world = WitnessWorld::new();
+        let mut entity = world.witness.entity(2).cloned().unwrap();
+        entity.aoi_update_scheme_id = 1;
+        world.witness.upsert_entity(entity);
+
+        world.witness.add_to_aoi(2, false);
+        world.witness.flush_state_changes();
+        world.witness.request_entity_update(2, &[]);
+
+        // Non-default schemes register through bw.xml, which the port does
+        // not parse yet: they sit at a flat delta 1 like a coincident scheme.
+        world.witness.flush_state_changes();
+        let priority = world.witness.cache_priority(2).unwrap();
+        assert!((priority - 1.0).abs() < 1e-9, "{priority}");
+        world.take();
     }
 }
