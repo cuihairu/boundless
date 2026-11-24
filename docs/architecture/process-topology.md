@@ -72,7 +72,7 @@ server](/guide/standalone-server).
 | Mercury transport framing | Implemented (`crates/mercury/src/packet.rs`) |
 | UDP endpoint, event poll and interface dispatch | Implemented (**BW-02-01-01..04**: `endpoint.rs`, `poller.rs`, `network_interface.rs`, `packet_receiver.rs`) |
 | Mercury message layer and RPC | Implemented (**BW-02-02**: `interfaces.rs`, `interface_table.rs`, `interface_element.rs`, `request_manager.rs`, `reply_order.rs`) |
-| Mercury channel lifecycle and retransmission | Partial (**BW-02-03-01..03**: packet/bundle codec, channel registration, acks and send window in `udp_channel.rs`, `channel_map.rs`, `unacked_packet.rs`); `BW-02-03-04..07` pending |
+| Mercury channel lifecycle and retransmission | Implemented (**BW-02-03**: windows, acks, retransmission and fragmentation in `udp_channel.rs`, `channel_map.rs`, `unacked_packet.rs`, `fragmented_bundle.rs`; see [Mercury protocol](/architecture/mercury-protocol)) |
 
 `contracts` now carries the bwmachined wire layouts, but nothing depends on it:
 the crate is still commented out of the root `[workspace.dependencies]`, and no

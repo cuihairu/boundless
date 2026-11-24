@@ -4,13 +4,15 @@ Boundless keeps the reference's four storage backends and adds PostgreSQL
 operations on top. This page describes the target procedure for migrating and
 restoring data.
 
-::: danger Nothing on this page runs today
-There is no database code in the working tree: no SQL dependency, no `.sql`
-file, no migration directory, and no `dbapp` logic beyond the role name. The
-only persistence primitive that exists is the id vocabulary
-(`DatabaseId = i64`, `PENDING_DATABASE_ID = -1` in
-`crates/foundation/src/ids.rs`). Every step below is tracked by a `todo.md`
-id and is written so that the page becomes true as the work lands.
+::: warning What runs today
+The read-side contract and the PostgreSQL schema lifecycle exist:
+`crates/db` (backend selection, error vocabulary, `get_entity` reads) and
+`crates/db-postgres` (entity schema mapping, the account table, schema
+initialisation, dry-run and incremental upgrade) — described on
+[the database model page](/architecture/database-model). Entity writes,
+deletes, lookups and DBID allocation have not landed (BW-09-01-02..05,
+BW-09-06-04..10), so the procedures below remain *targets* tracked by
+`todo.md` ids.
 :::
 
 ## Backends
@@ -90,8 +92,8 @@ allocation sequence (BW-09-06-04) was not part of the backup.
 
 ## Working with the id space today
 
-Until the storage layer lands, the only part of persistence you can rely on is
-the id convention:
+The one part of the persistence contract that is settled, whatever backend
+lands next, is the id convention:
 
 ```rust
 use foundation::ids::{DatabaseId, PENDING_DATABASE_ID};
