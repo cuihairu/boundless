@@ -343,6 +343,36 @@ impl Matrix {
         *self = out;
     }
 
+    /// In-place full transpose, the swap loop (`matrix.cpp:664-690`, also
+    /// `matrix.ipp:548-556`): the w row and the bottom corner are preserved,
+    /// not zeroed.
+    pub fn transpose(&mut self) {
+        let mut out = Self::zero();
+        for i in 0..4 {
+            for j in 0..4 {
+                out.m[i][j] = self.m[j][i];
+            }
+        }
+        *self = out;
+    }
+
+    /// The scale taken from the x axis row length
+    /// (`matrix.ipp:693-696`) — only meaningful for uniformly scaled
+    /// matrices.
+    pub fn uniform_scale(&self) -> f32 {
+        self.apply_to_unit_axis_vector(0).length()
+    }
+
+    /// All three axis rows carry the same length within the `almostEqual`
+    /// epsilon of 0.0004 (`matrix.cpp:141-150`).
+    pub fn is_uniformly_scaled(&self) -> bool {
+        let l0 = self.apply_to_unit_axis_vector(0).length();
+        let l1 = self.apply_to_unit_axis_vector(1).length();
+        let l2 = self.apply_to_unit_axis_vector(2).length();
+        const EPSILON: f32 = 0.0004;
+        (l0 - l1).abs() < EPSILON && (l1 - l2).abs() < EPSILON && (l2 - l0).abs() < EPSILON
+    }
+
     /// Yaw extraction (`matrix.ipp:638-684`): normalised z axis row, then
     /// `atan2f(zdir.x, zdir.z)`.
     pub fn yaw(&self) -> f32 {
@@ -995,5 +1025,40 @@ mod tests {
         // Out-of-range indices wrap mod 4.
         m.set_element(5, 1, 9.0);
         assert_eq!(m.get_element(1, 1), 9.0);
+    }
+
+    #[test]
+    fn transpose_swaps_off_diagonals() {
+        let mut m = Matrix::identity();
+        for (i, row) in m.m.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell = (i * 4 + j) as f32;
+            }
+        }
+        m.transpose();
+        for (i, row) in m.m.iter().enumerate() {
+            for (j, cell) in row.iter().enumerate() {
+                assert_eq!(*cell, (j * 4 + i) as f32);
+            }
+        }
+    }
+
+    #[test]
+    fn uniform_scale_reads_the_x_row_length() {
+        let mut m = Matrix::identity();
+        m.set_scale(2.0, 2.0, 2.0);
+        assert_eq!(m.uniform_scale(), 2.0);
+        assert!(m.is_uniformly_scaled());
+
+        // Non-uniform scale: the getter still reads the x row, the test
+        // answers false within the 0.0004 epsilon.
+        m.set_scale(2.0, 3.0, 4.0);
+        assert_eq!(m.uniform_scale(), 2.0);
+        assert!(!m.is_uniformly_scaled());
+
+        // A bare rotation is uniformly scaled at 1.
+        let mut rot = Matrix::identity();
+        rot.set_rotate_y(1.23);
+        assert!(rot.is_uniformly_scaled());
     }
 }

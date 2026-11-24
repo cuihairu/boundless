@@ -77,6 +77,52 @@ impl BoundBox {
         self.max - self.min
     }
 
+    /// Assign both corners directly (`boundbox.ipp:104-108`) — no
+    /// normalisation, unlike `add_bounds`.
+    pub fn set_bounds(&mut self, min: Vector3, max: Vector3) {
+        self.min = min;
+        self.max = max;
+    }
+
+    /// Distance from the box to a point: per-axis clamping to the nearest
+    /// face, then the length of the accumulated offsets; a contained point
+    /// reads zero (`boundbox.cpp:397-417`).
+    pub fn distance(&self, point: &Vector3) -> f32 {
+        let mut offset = Vector3::new(0.0, 0.0, 0.0);
+
+        if point.x > self.max.x {
+            offset.x = point.x - self.max.x;
+        } else if point.x < self.min.x {
+            offset.x = point.x - self.min.x;
+        }
+
+        if point.y > self.max.y {
+            offset.y = point.y - self.max.y;
+        } else if point.y < self.min.y {
+            offset.y = point.y - self.min.y;
+        }
+
+        if point.z > self.max.z {
+            offset.z = point.z - self.max.z;
+        } else if point.z < self.min.z {
+            offset.z = point.z - self.min.z;
+        }
+
+        offset.length()
+    }
+
+    /// Whether the box grown by `bias` on every axis contains the point —
+    /// the light volumes' sphere probe (`boundbox.ipp:313-321`), whose
+    /// second parameter is a bias, not a radius.
+    pub fn intersects_point(&self, v: &Vector3, bias: f32) -> bool {
+        v.x >= self.min.x - bias
+            && v.y >= self.min.y - bias
+            && v.z >= self.min.z - bias
+            && v.x < self.max.x + bias
+            && v.y < self.max.y + bias
+            && v.z < self.max.z + bias
+    }
+
     /// Efficient eight-corner transform (`boundbox.cpp:73-118`): transform
     /// the min corner, then accumulate the axis-aligned extents row by row
     /// with sign handling.
@@ -190,5 +236,42 @@ mod tests {
             Vector3::new(-1.0, -1.0, 0.0),
             Vector3::new(1.0, 1.0, 0.0)
         )));
+    }
+
+    #[test]
+    fn set_bounds_assigns_both_corners() {
+        let mut b = BoundBox::default();
+        b.set_bounds(Vector3::new(1.0, 2.0, 3.0), Vector3::new(4.0, 5.0, 6.0));
+        assert_eq!(b.min, Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(b.max, Vector3::new(4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn distance_is_zero_for_a_contained_point() {
+        let b = BoundBox::new(Vector3::new(-1.0, -1.0, -1.0), Vector3::new(1.0, 1.0, 1.0));
+        assert_eq!(b.distance(&Vector3::ZERO), 0.0);
+        // A point beyond a single face measures the shortest offset only.
+        assert_eq!(b.distance(&Vector3::new(3.0, 0.0, 0.0)), 2.0);
+        // A point past a corner is the euclidean offset.
+        assert!(
+            (b.distance(&Vector3::new(2.0, 2.0, 2.0)) - (3.0f32).sqrt()).abs() < 1e-5,
+            "corner distance sums the three axis offsets"
+        );
+        // Points before min measure to the min faces.
+        assert_eq!(b.distance(&Vector3::new(-3.0, -1.0, -1.0)), 2.0);
+    }
+
+    #[test]
+    fn intersects_point_grows_the_box_by_the_bias() {
+        let b = BoundBox::new(Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0));
+        // Zero bias: the half-open containment test.
+        assert!(b.intersects_point(&Vector3::new(5.0, 5.0, 5.0), 0.0));
+        assert!(!b.intersects_point(&Vector3::new(-1.0, 5.0, 5.0), 0.0));
+        // A positive bias admits points within radius of the faces; the
+        // grown box stays half-open (`12.0 < 10.0 + 2.0` is false).
+        assert!(b.intersects_point(&Vector3::new(-1.0, 5.0, 5.0), 2.0));
+        assert!(b.intersects_point(&Vector3::new(11.9, 5.0, 5.0), 2.0));
+        assert!(!b.intersects_point(&Vector3::new(12.0, 5.0, 5.0), 2.0));
+        assert!(!b.intersects_point(&Vector3::new(-3.0, 5.0, 5.0), 2.0));
     }
 }
