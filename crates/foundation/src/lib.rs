@@ -6,6 +6,7 @@ pub mod ids;
 pub mod layout;
 pub mod math;
 pub mod profiler;
+pub mod profiler_frame;
 pub mod stream;
 pub mod time;
 pub mod time_queue;
