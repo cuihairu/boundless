@@ -46,6 +46,7 @@ pub mod proxy_logoff;
 pub mod range_list;
 pub mod real_entity;
 pub mod relogon;
+pub mod replay_data;
 pub mod reviver;
 pub mod script_timers;
 pub mod server_app;
