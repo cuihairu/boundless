@@ -77,6 +77,7 @@ pub mod player;
 pub mod post_processing;
 pub mod render;
 pub mod replay;
+pub mod screen_shot;
 pub mod settings;
 pub mod shadow_math;
 pub mod skeleton;
