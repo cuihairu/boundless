@@ -1,0 +1,13 @@
+typeID	bigworldID	name
+1	0	Guard
+2	1	ClientAvatar
+3	2	Account
+4	3	Space
+checksum
+89D667A1571FE40F0483C0F67133EE6D
+time
+0
+version	snapshotTime	isPasswordHashed
+9	NULL	1
+id
+9601
