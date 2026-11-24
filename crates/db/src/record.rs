@@ -32,3 +32,16 @@ impl EntityRecord {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_record_starts_pending_and_empty() {
+        let record = EntityRecord::new(3);
+        assert_eq!(record.type_id, 3);
+        assert_eq!(record.db_id, PENDING_DATABASE_ID);
+        assert!(record.values.is_empty());
+    }
+}

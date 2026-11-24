@@ -20,4 +20,4 @@ pub mod storage;
 
 pub use error::DbError;
 pub use record::EntityRecord;
-pub use storage::{EntityKey, EntityStorage, MemoryStorage, load_entity};
+pub use storage::{EntityKey, EntityStorage, MemoryConnection, MemoryStorage, load_entity};

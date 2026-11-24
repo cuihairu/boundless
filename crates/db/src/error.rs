@@ -14,6 +14,10 @@ pub enum DbError {
     /// The entity or key does not exist in storage. This is the "missing
     /// DBID" / "missing name" outcome, not a failure.
     NotFound,
+    /// A put under an explicit database id hit an existing row — the
+    /// duplicate-primary-key outcome of `insertExplicit`
+    /// (`put_entity_task.cpp:93-97`).
+    AlreadyExists,
     /// A transient condition (a locked row, a backend that is momentarily
     /// unreachable): the caller may retry. Mirrors the reference `RETRY`
     /// status.
@@ -26,6 +30,7 @@ impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DbError::NotFound => write!(f, "entity not found"),
+            DbError::AlreadyExists => write!(f, "entity already exists"),
             DbError::Retry => write!(f, "storage busy, retry"),
             DbError::Storage(msg) => write!(f, "storage error: {msg}"),
         }
@@ -33,3 +38,19 @@ impl fmt::Display for DbError {
 }
 
 impl std::error::Error for DbError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_errors_read_like_the_reference_statuses() {
+        assert_eq!(DbError::NotFound.to_string(), "entity not found");
+        assert_eq!(DbError::AlreadyExists.to_string(), "entity already exists");
+        assert_eq!(DbError::Retry.to_string(), "storage busy, retry");
+        assert_eq!(
+            DbError::Storage("disk full".into()).to_string(),
+            "storage error: disk full"
+        );
+    }
+}

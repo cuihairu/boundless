@@ -1,16 +1,20 @@
-//! The storage contract (`IDatabase`) and the entity get/load operations.
+//! The storage contract (`IDatabase`) and the entity get/load/put
+//! operations.
 //!
 //! The reference's persistence contract is `lib/db_storage/idatabase.hpp`
 //! (`class IDatabase`). Each entity operation is one `todo.md` item: this
-//! module carries `get_entity` (BW-09-01-01); `put_entity` (BW-09-01-02),
-//! `del_entity` (BW-09-01-03), lookup (BW-09-01-04) and id allocation
-//! (BW-09-01-05) join the trait as they land. The in-memory backend lets
-//! the entity-operation acceptance cases run before any real backend
-//! exists; MySQL/XML/SQLite/PostgreSQL plug into the same trait.
+//! module carries `get_entity` (BW-09-01-01) and `put_entity`
+//! (BW-09-01-02); `del_entity` (BW-09-01-03), lookup (BW-09-01-04) and id
+//! allocation (BW-09-01-05) join the trait as they land. The in-memory
+//! backend lets the entity-operation acceptance cases run before any real
+//! backend exists; MySQL/XML/SQLite/PostgreSQL plug into the same trait.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use foundation::ids::{DatabaseId, EntityTypeId};
+use entitydef::value::PropertyValue;
+use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
 
 use crate::error::DbError;
 use crate::record::EntityRecord;
@@ -37,6 +41,33 @@ pub trait EntityStorage {
     /// persistent data. `Ok(None)` is the reference's "row missing"
     /// (`isOK=false`) outcome, not a failure.
     fn get_entity(&self, key: &EntityKey) -> Result<Option<EntityRecord>, DbError>;
+
+    /// `IDatabase::putEntity` (`idatabase.hpp`): write an entity's
+    /// persistent data. The legs match the reference backends:
+    ///
+    /// * `key.db_id == 0` (`PENDING_DATABASE_ID`): create a new row and
+    ///   allocate its id — the XML backend's `++maxID_`
+    ///   (`xml_database.cpp:626`) or `insertNew`
+    ///   (`put_entity_task.cpp:85-88`). The returned id is the
+    ///   `onPutEntityComplete` payload.
+    /// * `key.db_id != 0`, `put_explicit_id == false`: update the row.
+    ///   A missing row is the XML backend's `isOK=false`
+    ///   (`xml_database.cpp:617-620`) → [`DbError::NotFound`].
+    /// * `put_explicit_id == true`: insert under the given id
+    ///   (`insertExplicit`, `put_entity_task.cpp:89-97`); a duplicate id
+    ///   is [`DbError::AlreadyExists`] and the original row is kept.
+    ///
+    /// The reference legs that ride on the same call are out of scope:
+    /// the base-mailbox/logon-record and auto-load updates are the
+    /// online-state face (BW-09-01-05), and the trailing
+    /// position/direction/spaceID/gameTime fields are the snapshot face
+    /// (BW-09-04).
+    fn put_entity(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        put_explicit_id: bool,
+    ) -> Result<DatabaseId, DbError>;
 }
 
 /// The DBApp load: fetch the record for `key`, or [`DbError::NotFound`]
@@ -45,14 +76,76 @@ pub fn load_entity(storage: &impl EntityStorage, key: &EntityKey) -> Result<Enti
     storage.get_entity(key)?.ok_or(DbError::NotFound)
 }
 
-/// An in-memory backend.
+/// The shared rows of an in-memory database.
+#[derive(Debug, Default)]
+struct MemoryInner {
+    entities: HashMap<EntityKey, EntityRecord>,
+}
+
+impl MemoryInner {
+    /// The `putEntity` legs (`xml_database.cpp:561-743`,
+    /// `put_entity_task.cpp:71-100`).
+    fn put(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        put_explicit_id: bool,
+    ) -> Result<DatabaseId, DbError> {
+        if key.db_id == PENDING_DATABASE_ID {
+            // Create: a fresh id above every stored row — the XML
+            // backend's `++maxID_`, seeded past the rows loaded at
+            // startup (xml_database.cpp:215-230).
+            let db_id = self.entities.keys().map(|k| k.db_id).max().unwrap_or(0) + 1;
+            self.entities.insert(
+                EntityKey {
+                    type_id: key.type_id,
+                    db_id,
+                },
+                EntityRecord {
+                    type_id: key.type_id,
+                    db_id,
+                    values: values.to_vec(),
+                },
+            );
+            return Ok(db_id);
+        }
+
+        let existing = self.entities.get(key).cloned();
+        if put_explicit_id {
+            // `insertExplicit`: INSERT under the given id — a duplicate
+            // primary key fails the put and keeps the original row.
+            if existing.is_some() {
+                return Err(DbError::AlreadyExists);
+            }
+            self.entities.insert(
+                *key,
+                EntityRecord {
+                    type_id: key.type_id,
+                    db_id: key.db_id,
+                    values: values.to_vec(),
+                },
+            );
+            return Ok(key.db_id);
+        }
+
+        // Update of an existing row; a missing row is the XML backend's
+        // `isOK=false` (xml_database.cpp:617-620).
+        let mut record = existing.ok_or(DbError::NotFound)?;
+        record.values = values.to_vec();
+        self.entities.insert(*key, record);
+        Ok(key.db_id)
+    }
+}
+
+/// An in-memory database. Cloning it yields another handle to the same
+/// database — an independent connection — not a snapshot.
 ///
-/// The BW-09-01 entity-operation acceptance cases run against this before a
-/// real backend exists. `insert` seeds a known entity and becomes the
-/// `put_entity` implementation in BW-09-01-02.
+/// The BW-09-01 entity-operation acceptance cases run against this before
+/// a real backend exists. `insert` seeds a known entity; the entity
+/// operations go through the [`EntityStorage`] methods.
 #[derive(Debug, Default, Clone)]
 pub struct MemoryStorage {
-    entities: HashMap<EntityKey, EntityRecord>,
+    inner: Rc<RefCell<MemoryInner>>,
 }
 
 impl MemoryStorage {
@@ -61,29 +154,69 @@ impl MemoryStorage {
         Self::default()
     }
 
+    /// An independent connection to the same database: writes through one
+    /// handle are visible from the others.
+    pub fn connection(&self) -> MemoryConnection {
+        MemoryConnection {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+
     /// Store `record` under its key.
     pub fn insert(&mut self, record: EntityRecord) {
         let key = EntityKey {
             type_id: record.type_id,
             db_id: record.db_id,
         };
-        self.entities.insert(key, record);
+        self.inner.borrow_mut().entities.insert(key, record);
     }
 
     /// Number of stored entities.
     pub fn len(&self) -> usize {
-        self.entities.len()
+        self.inner.borrow().entities.len()
     }
 
     /// Whether the store is empty.
     pub fn is_empty(&self) -> bool {
-        self.entities.is_empty()
+        self.inner.borrow().entities.is_empty()
     }
 }
 
 impl EntityStorage for MemoryStorage {
     fn get_entity(&self, key: &EntityKey) -> Result<Option<EntityRecord>, DbError> {
-        Ok(self.entities.get(key).cloned())
+        Ok(self.inner.borrow().entities.get(key).cloned())
+    }
+
+    fn put_entity(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        put_explicit_id: bool,
+    ) -> Result<DatabaseId, DbError> {
+        self.inner.borrow_mut().put(key, values, put_explicit_id)
+    }
+}
+
+/// A connection to a [`MemoryStorage`]: the read/write face a caller
+/// holds. Independent connections see each other's writes — the
+/// `put_entity` acceptance.
+#[derive(Debug, Clone)]
+pub struct MemoryConnection {
+    inner: Rc<RefCell<MemoryInner>>,
+}
+
+impl EntityStorage for MemoryConnection {
+    fn get_entity(&self, key: &EntityKey) -> Result<Option<EntityRecord>, DbError> {
+        Ok(self.inner.borrow().entities.get(key).cloned())
+    }
+
+    fn put_entity(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        put_explicit_id: bool,
+    ) -> Result<DatabaseId, DbError> {
+        self.inner.borrow_mut().put(key, values, put_explicit_id)
     }
 }
 
@@ -148,6 +281,184 @@ mod tests {
         )
         .expect_err("a different type is a different entity");
         assert_eq!(err, DbError::NotFound);
+    }
+
+    #[test]
+    fn a_create_allocates_a_fresh_id_visible_from_an_independent_connection() {
+        let mut store = MemoryStorage::new();
+        // A connection opened before any write still sees the rows
+        // written afterwards — the writes land in the database, not in
+        // a caller-side cache.
+        let reader = store.connection();
+
+        let values = vec![PropertyValue::Int(7), PropertyValue::String("hi".into())];
+        let first = store
+            .put_entity(
+                &EntityKey {
+                    type_id: 3,
+                    db_id: PENDING_DATABASE_ID,
+                },
+                &values,
+                false,
+            )
+            .expect("create writes");
+        assert_eq!(first, 1);
+
+        let second = store
+            .put_entity(
+                &EntityKey {
+                    type_id: 3,
+                    db_id: PENDING_DATABASE_ID,
+                },
+                &values,
+                false,
+            )
+            .expect("second create writes");
+        assert_eq!(second, 2);
+
+        assert_eq!(store.len(), 2);
+        let found = reader
+            .get_entity(&EntityKey {
+                type_id: 3,
+                db_id: first,
+            })
+            .expect("independent connection reads")
+            .expect("created row exists");
+        assert_eq!(found.values, values);
+    }
+
+    #[test]
+    fn an_update_overwrites_the_row_visible_from_an_independent_connection() {
+        let mut store = MemoryStorage::new();
+        let key = EntityKey {
+            type_id: 3,
+            db_id: PENDING_DATABASE_ID,
+        };
+        let id = store
+            .put_entity(&key, &[PropertyValue::Int(1)], false)
+            .expect("create writes");
+
+        let reader = store.connection();
+        let updated = store
+            .put_entity(
+                &EntityKey {
+                    type_id: 3,
+                    db_id: id,
+                },
+                &[PropertyValue::Int(2)],
+                false,
+            )
+            .expect("update writes");
+        assert_eq!(updated, id);
+        assert_eq!(store.len(), 1);
+        let found = reader
+            .get_entity(&EntityKey {
+                type_id: 3,
+                db_id: id,
+            })
+            .expect("independent connection reads")
+            .expect("updated row exists");
+        assert_eq!(found.values, vec![PropertyValue::Int(2)]);
+    }
+
+    #[test]
+    fn an_update_of_a_missing_row_is_not_found() {
+        let mut store = MemoryStorage::new();
+
+        let err = store
+            .put_entity(
+                &EntityKey {
+                    type_id: 3,
+                    db_id: 4242,
+                },
+                &[PropertyValue::Int(1)],
+                false,
+            )
+            .expect_err("missing row update fails");
+        assert_eq!(err, DbError::NotFound);
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn an_explicit_id_inserts_under_that_id_and_rejects_duplicates() {
+        let mut store = MemoryStorage::new();
+        let key = EntityKey {
+            type_id: 3,
+            db_id: 7,
+        };
+
+        let id = store
+            .put_entity(&key, &[PropertyValue::Int(1)], true)
+            .expect("explicit insert writes");
+        assert_eq!(id, 7);
+
+        let err = store
+            .put_entity(&key, &[PropertyValue::Int(9)], true)
+            .expect_err("duplicate explicit insert fails");
+        assert_eq!(err, DbError::AlreadyExists);
+        // The original row is intact.
+        let found = store.get_entity(&key).expect("read").expect("row exists");
+        assert_eq!(found.values, vec![PropertyValue::Int(1)]);
+    }
+
+    #[test]
+    fn created_ids_clear_the_seeded_rows() {
+        // XMLDatabase seeds maxID_ past the rows loaded at startup
+        // (xml_database.cpp:215-230).
+        let mut store = MemoryStorage::new();
+        store.insert(record(5));
+
+        let id = store
+            .put_entity(
+                &EntityKey {
+                    type_id: 3,
+                    db_id: PENDING_DATABASE_ID,
+                },
+                &[PropertyValue::Int(1)],
+                false,
+            )
+            .expect("create writes");
+        assert_eq!(id, 6);
+    }
+
+    #[test]
+    fn a_write_through_one_connection_is_visible_from_the_others() {
+        let store = MemoryStorage::new();
+        let mut writer = store.connection();
+        let reader = store.connection();
+
+        let written = writer
+            .put_entity(
+                &EntityKey {
+                    type_id: 3,
+                    db_id: PENDING_DATABASE_ID,
+                },
+                &[PropertyValue::Int(3)],
+                false,
+            )
+            .expect("connection write");
+        assert_eq!(written, 1);
+
+        let key = EntityKey {
+            type_id: 3,
+            db_id: written,
+        };
+        assert_eq!(
+            reader
+                .get_entity(&key)
+                .expect("read")
+                .expect("row exists")
+                .values,
+            vec![PropertyValue::Int(3)]
+        );
+        assert_eq!(
+            store
+                .get_entity(&key)
+                .expect("read")
+                .expect("row exists")
+                .values,
+            vec![PropertyValue::Int(3)]
+        );
     }
 
     #[test]
