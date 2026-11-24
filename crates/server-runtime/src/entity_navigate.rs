@@ -26,7 +26,8 @@ use waypoint::{
 use crate::controllers::ControllerId;
 use crate::entity_dispatch::EntityId;
 use crate::movement::{
-    EntityState, MoveToEntityController, MoveToPointController, NavigateStepController,
+    AccelerateToPointController, EntityState, FACING_MAX, MoveToEntityController,
+    MoveToPointController, NavigateStepController,
 };
 use crate::navigation_controller::{NavigationController, Navigator};
 
@@ -224,6 +225,27 @@ impl NavigateFailure {
                  alight from the vehicle first, or call Entity.navigate() for the \
                  vehicle."
             }
+        }
+    }
+}
+
+/// The `accelerateToPoint` failure faces — the reference's `PyErr`
+/// results (`entity_navigate.cpp`, the accelerate faces).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccelerateToPointFailure {
+    /// `PyExc_TypeError`.
+    NotReal,
+    /// `PyExc_TypeError` — the facing int outside `0..FACING_MAX`.
+    BadFacing,
+}
+
+impl AccelerateToPointFailure {
+    /// The reference's error text.
+    pub fn message(&self) -> &'static str {
+        match self {
+            AccelerateToPointFailure::NotReal => "This method can only be called on a real entity.",
+            // The reference's own typo.
+            AccelerateToPointFailure::BadFacing => "Facing must one of the value 0, 1 or 2",
         }
     }
 }
@@ -1061,6 +1083,48 @@ impl EntityNavigate {
         ))
     }
 
+    /// `EntityNavigate::accelerateToPoint`
+    /// (`entity_navigate.cpp:297-327`, "equivalent to calling
+    /// `accelerateAlongPath( [destination], ... )`"): refuse non-real
+    /// entities, validate the facing int against `0..FACING_MAX`
+    /// (verbatim "Facing must one of the value 0, 1 or 2" — the
+    /// reference's own typo), then hand back the acceleration
+    /// controller. **No vehicle check** (the destination is
+    /// vehicle-local space by contract, as with `move_to_point`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn accelerate_to_point(
+        &self,
+        destination: Vector3,
+        acceleration: f32,
+        max_speed: f32,
+        int_facing: i32,
+        stop_at_destination: bool,
+        user_arg: i32,
+        controller_id: ControllerId,
+        hertz: f32,
+    ) -> Result<AccelerateToPointController, AccelerateToPointFailure> {
+        if !self.is_real {
+            return Err(AccelerateToPointFailure::NotReal);
+        }
+
+        let facing = if (0..FACING_MAX as i32).contains(&int_facing) {
+            int_facing as u8
+        } else {
+            return Err(AccelerateToPointFailure::BadFacing);
+        };
+
+        Ok(AccelerateToPointController::new(
+            controller_id,
+            user_arg,
+            destination,
+            acceleration,
+            max_speed,
+            facing,
+            stop_at_destination,
+            hertz,
+        ))
+    }
+
     /// `EntityNavigate::waySetPathLength` (`entity_navigate.cpp:987-1005`)
     /// over the system face (`navmesh_navigation_system.cpp:536-541`):
     /// the length of the most recently determined navigation path "in
@@ -1145,7 +1209,10 @@ impl GetStopPointFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::movement::{DEFAULT_GAME_UPDATE_HERTZ, Direction3D, EntityState, ScriptCallback};
+    use crate::movement::{
+        DEFAULT_GAME_UPDATE_HERTZ, Direction3D, EntityState, FACING_NONE, FACING_VELOCITY,
+        ScriptCallback,
+    };
     use waypoint::Portal;
 
     /// `CellAppConfig::maxAoIRadius()` stand-in.
@@ -3217,5 +3284,150 @@ mod tests {
             .move_to_entity(42, 10.0, 1.0, 0, true, false, 6, DEFAULT_GAME_UPDATE_HERTZ)
             .expect_err("a ghost is refused");
         assert_eq!(err, NavigateFailure::NotReal);
+    }
+
+    #[test]
+    fn accelerate_to_point_ramps_to_max_speed_and_arrives() {
+        let navigate = real_entity();
+        let mut controller = navigate
+            .accelerate_to_point(
+                Vector3::new(5.0, 0.0, 0.0),
+                2.0,
+                2.0,
+                FACING_VELOCITY as i32,
+                true,
+                3,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("a real entity gets the controller");
+        assert_eq!(controller.id, 5);
+        assert_eq!(controller.user_arg, 3);
+        assert!((controller.core.acceleration - 2.0).abs() < 1e-6);
+        assert!((controller.core.max_speed - 2.0).abs() < 1e-6);
+        assert_eq!(controller.core.facing, FACING_VELOCITY);
+        assert!(controller.stop_at_destination);
+
+        let mut state = EntityState::new(7, Vector3::ZERO, Direction3D::default(), 0);
+        let mut log = Vec::new();
+
+        // Per-tick velocity ramp: +acceleration/hertz per tick up to the
+        // max-speed cap; the position steps are velocity/hertz.
+        let mut ticks = 0;
+        let mut speed_trace = Vec::new();
+        let mut pos_trace = Vec::new();
+        loop {
+            ticks += 1;
+            if controller.update(&mut state, ticks, &mut log) {
+                break;
+            }
+            assert!(ticks < 400, "must arrive");
+            speed_trace.push(state.velocity.x);
+            pos_trace.push(state.position.x);
+        }
+
+        // The entity's sampled velocity lags the controller ramp one
+        // tick (it is recomputed from the position samples, not the
+        // controller's internal velocity): 0, 0.2, 0.2, 0.4, 0.4, … up
+        // to the 2.0 cap; the position rides the ramp at 0.02/0.04/…
+        // per tick.
+        let d = |a: f32, b: f32| (a - b).abs();
+        assert!(d(speed_trace[0], 0.0) < 1e-5, "tick 1 v {}", speed_trace[0]);
+        assert!(d(speed_trace[3], 0.4) < 1e-4, "tick 4 v {}", speed_trace[3]);
+        assert!(
+            d(speed_trace[9], 1.0) < 1e-4,
+            "tick 10 v {}",
+            speed_trace[9]
+        );
+        assert!(
+            d(speed_trace[19], 2.0) < 1e-3,
+            "tick 20 v {}",
+            speed_trace[19]
+        );
+        assert!(
+            d(speed_trace[37], 0.0) < 1e-4,
+            "decayed to {}",
+            speed_trace[37]
+        );
+        assert!(d(pos_trace[9], 0.6) < 1e-4, "tick 10 x {}", pos_trace[9]);
+        assert!(d(pos_trace[19], 2.2) < 1e-3, "tick 20 x {}", pos_trace[19]);
+        assert_eq!(ticks, 39);
+        // Arrives snapped onto the destination with the sampled velocity
+        // decayed to zero and a single onMove.
+        assert_eq!(state.position, Vector3::new(5.0, 0.0, 0.0));
+        assert_eq!(state.velocity, Vector3::ZERO);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].method, "onMove");
+    }
+
+    #[test]
+    fn accelerate_to_point_refuses_ghosts_and_bad_facings() {
+        let navigate = real_entity();
+
+        // Valid facings pass through; facing 0 = FACING_NONE keeps the
+        // entity's direction untouched by the controller.
+        let controller = navigate
+            .accelerate_to_point(
+                Vector3::ZERO,
+                1.0,
+                1.0,
+                0,
+                false,
+                0,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect("facing 0 is valid");
+        assert_eq!(controller.core.facing, FACING_NONE);
+        assert!(!controller.stop_at_destination);
+
+        let err = navigate
+            .accelerate_to_point(
+                Vector3::new(5.0, 0.0, 0.0),
+                2.0,
+                2.0,
+                3,
+                true,
+                0,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect_err("facing 3 is out of range");
+        assert_eq!(err, AccelerateToPointFailure::BadFacing);
+        assert_eq!(err.message(), "Facing must one of the value 0, 1 or 2");
+
+        let err = navigate
+            .accelerate_to_point(
+                Vector3::new(5.0, 0.0, 0.0),
+                2.0,
+                2.0,
+                -1,
+                true,
+                0,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect_err("facing -1 is out of range");
+        assert_eq!(err, AccelerateToPointFailure::BadFacing);
+
+        let mut navigate = real_entity();
+        navigate.is_real = false;
+        let err = navigate
+            .accelerate_to_point(
+                Vector3::ZERO,
+                2.0,
+                2.0,
+                1,
+                true,
+                0,
+                5,
+                DEFAULT_GAME_UPDATE_HERTZ,
+            )
+            .expect_err("a ghost is refused");
+        assert_eq!(err, AccelerateToPointFailure::NotReal);
+        assert_eq!(
+            err.message(),
+            "This method can only be called on a real entity."
+        );
     }
 }
