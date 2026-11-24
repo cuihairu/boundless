@@ -26,6 +26,7 @@ members = [
     "crates/message_logger",
     "crates/client",
     "crates/load",
+    "apps/bots",
     "apps/server",
 ]
 
@@ -57,8 +58,10 @@ serde_json = "1"
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
+load = { path = "crates/load" }
 platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
+watcher = { path = "crates/watcher" }
 mercury = { path = "crates/mercury" }
 contracts = { path = "crates/contracts" }
 entitydef = { path = "crates/entitydef" }
@@ -67,9 +70,6 @@ db-postgres = { path = "crates/db-postgres" }
 scene = { path = "crates/scene" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
-# The watcher path tree (BW-12-01); load's bots command callables are its
-# first consumer (BW-17-01-06).
-watcher = { path = "crates/watcher" }
 server-runtime = { path = "crates/server-runtime" }
 client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
 # load = { path = "crates/load" }  # re-add with first consumer

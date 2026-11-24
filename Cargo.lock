@@ -187,6 +187,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bots"
+version = "0.1.0"
+dependencies = [
+ "load",
+]
+
+[[package]]
 name = "boundless-server"
 version = "0.1.0"
 dependencies = [
@@ -1045,8 +1052,8 @@ name = "load"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "libc",
  "resources",
- "serde_json",
  "watcher",
 ]
 

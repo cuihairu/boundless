@@ -1,258 +1,237 @@
-//! BW-17-01-04: the Beeline movement controller
-//! (`server/tools/bots/beeline_controller.{hpp,cpp}`).
+//! The `Beeline` movement controller (`server/tools/bots/beeline_controller.hpp`).
 //!
-//! The reference controller walks a straight line to a fixed
-//! destination: every step covers `speed * dTime` along the direction to
-//! `destinationPos_`, turning the yaw to face it
-//! (`beeline_controller.cpp:26-45`). It never reports completion — the
-//! `true` return is unconditional, and a final step shorter than the
-//! tick's travel is simply not taken (the position holds, the yaw keeps
-//! its last value); arrival clearing is the caller's business
-//! (`ClientApp::moveTo`, BW-17-01-03).
-//!
-//! The factory (`beeline_controller.cpp:57-81`) is registered as
-//! `"Beeline"` and reads its data as `"x,y,z"` with the C `atof`
-//! tolerance — missing or unparsable parts are `0.0`.
+//! The straight-line controller: each tick it walks one `speed * dTime`
+//! stride toward a fixed destination, turning the yaw to face it. The gate
+//! is strict (`destVec.length() > distance`), so a bot never overshoots —
+//! it parks up to one stride short of the destination and stays there.
+//! `nextStep` always returns `true`; the reference caller ignores the
+//! return anyway (client_app.cpp:1118).
 
-use crate::bot::{MovementController, MovementFactory};
 use foundation::math::vector::Vector3;
 
-/// `Beeline::BeelineController`: the destination is the whole state.
+use crate::bot::{MovementController, MovementFactory};
+
+/// `Beeline::BeelineController` (beeline_controller.hpp:14-29).
 pub struct BeelineController {
+    /// `destinationPos_` — the fixed target the controller walks toward.
     destination_pos: Vector3,
 }
 
 impl BeelineController {
-    /// The reference constructor (`beeline_controller.cpp:21-24`).
+    /// `BeelineController( destinationPos )`.
     pub fn new(destination_pos: Vector3) -> Self {
         Self { destination_pos }
     }
 }
 
 impl MovementController for BeelineController {
+    /// `nextStep` (beeline_controller.cpp:19-37): step `speed * dTime`
+    /// along the normalized direction to the destination; the yaw tracks
+    /// the step direction whenever the bot actually moves. The strict `>`
+    /// means a bot within one stride of its destination stops moving
+    /// (and stops turning) rather than stepping past it.
     fn next_step(&mut self, speed: &mut f32, dtime: f32, pos: &mut Vector3, yaw: &mut f32) -> bool {
-        // Distance travelled per tick
         let distance = *speed * dtime;
-
-        // Vector to dest and zzp respectively
         let dest_vec = self.destination_pos - *pos;
         let length = dest_vec.length();
-
-        // Move closer if we are aren't there yet
         if length > distance {
             *pos = *pos + dest_vec * (distance / length);
             *yaw = dest_vec.yaw();
         }
-
         true
     }
 }
 
-/// `atof` (`cstdmf`): the longest numeric prefix, `0.0` when there is
-/// none.
-fn c_atof(text: &str) -> f32 {
-    let bytes = text.as_bytes();
-    let mut end = 0;
-    // Leading whitespace, then an optional sign, then digits with at most
-    // one dot, then an optional exponent.
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    let start = i;
-    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-        i += 1;
-    }
-    let digits_start = i;
-    let mut seen_dot = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b.is_ascii_digit() {
-            i += 1;
-        } else if b == b'.' && !seen_dot {
-            seen_dot = true;
-            i += 1;
-        } else {
-            break;
-        }
-    }
-    if i > digits_start {
-        end = i;
-        // Optional exponent: e/E, optional sign, at least one digit.
-        let j = i;
-        if j < bytes.len() && (bytes[j] == b'e' || bytes[j] == b'E') {
-            let mut k = j + 1;
-            if k < bytes.len() && (bytes[k] == b'+' || bytes[k] == b'-') {
-                k += 1;
-            }
-            let exp_start = k;
-            while k < bytes.len() && bytes[k].is_ascii_digit() {
-                k += 1;
-            }
-            if k > exp_start {
-                end = k;
-            }
-        }
-    }
-    text[start..end].parse::<f32>().unwrap_or(0.0)
-}
+/// `BeelineControllerFactory` (beeline_controller.cpp:49-80): the
+/// `"Beeline"` entry for `moveType`. The move data is `"x,y,z"`; the
+/// factory reads only the destination and leaves the bot's starting
+/// position alone (beeline_controller.cpp:72-76).
+pub struct BeelineControllerFactory;
 
-/// `Beeline::BeelineControllerFactory`, registered as `"Beeline"`
-/// (`beeline_controller.cpp:51-83`).
-pub struct BeelineFactory;
-
-impl MovementFactory for BeelineFactory {
+impl MovementFactory for BeelineControllerFactory {
     fn create(
         &self,
         data: &str,
-        _speed: f32,
+        _speed: &mut f32,
         _start_pos: &mut Vector3,
     ) -> Option<Box<dyn MovementController>> {
-        // The reference splits at the first and last comma
-        // (`find_first_of` / `find_last_of`, :71-75). A data string
-        // without both separators relies on `npos` arithmetic in the
-        // reference; the port reads that as the missing parts being 0.0.
-        let com1 = data.find(',').unwrap_or(data.len());
-        let com2 = data.rfind(',').unwrap_or(data.len()).max(com1);
-        let destination = Vector3::new(
-            c_atof(&data[..com1]),
-            c_atof(&data[(com1 + 1).min(com2)..com2]),
-            c_atof(&data[(com2 + 1).min(data.len())..]),
-        );
-        Some(Box::new(BeelineController::new(destination)))
+        Some(Box::new(BeelineController::new(parse_destination(data))))
     }
+}
+
+/// The factory's destination parse (beeline_controller.cpp:62-70): the
+/// x/y/z segments sit around the string's first and last comma.
+///
+/// The reference slices with `size_t` arithmetic, so the y segment's
+/// count `com2 - com1 - 1` wraps to a huge value whenever the two comma
+/// indices coincide (one comma, or none) and the segment then runs to the
+/// end of the string; `npos + 1` wraps to 0 for the z segment the same
+/// way. The arms below reproduce those degenerate shapes: `"1,2"` lands
+/// on `(1, 2, 2)` and `"5"` on `(5, 5, 5)`.
+///
+/// `atof` also differs from a Rust `parse` on junk: `atof("3abc")` is
+/// `3.0` while a strict parse fails. Well-formed `"x,y,z"` triples are
+/// the contract — a segment that does not parse (including surrounding
+/// whitespace only partly tolerated) lands on `0.0`, matching `atof`'s
+/// zero-on-fail behaviour.
+fn parse_destination(data: &str) -> Vector3 {
+    let com1 = data.find(',');
+    let com2 = data.rfind(',');
+    // x = data.substr( 0, com1 )
+    let x = atof(&data[..com1.unwrap_or(data.len())]);
+    // y = data.substr( com1 + 1, com2 - com1 - 1 )
+    let y = match com1 {
+        Some(i) => match com2 {
+            Some(j) if j > i => atof(&data[i + 1..j]),
+            _ => atof(&data[i + 1..]),
+        },
+        None => atof(data),
+    };
+    // z = data.substr( com2 + 1 )
+    let z = match com2 {
+        Some(j) => atof(&data[j + 1..]),
+        None => atof(data),
+    };
+    Vector3::new(x, y, z)
+}
+
+/// `atof` for a segment: a value, or `0.0` when it does not parse.
+fn atof(text: &str) -> f32 {
+    text.trim().parse().unwrap_or(0.0)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::fleet::ControllerRegistry;
-
     use super::*;
+    use crate::fleet::ControllerRegistry;
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, SQRT_2};
 
-    /// Compares with a tolerance finer than one step.
-    fn near(a: f32, b: f32) -> bool {
-        (a - b).abs() < 1e-4
-    }
-
-    fn near_pos(a: Vector3, b: Vector3) -> bool {
-        near(a.x, b.x) && near(a.y, b.y) && near(a.z, b.z)
-    }
-
+    /// The reference fixed route (beeline_controller.cpp:19-37): start at
+    /// the origin, destination `(10, 0, 0)`, speed 2, dTime 1 — strides
+    /// of 2 land on 2, 4, 6, 8, and the fifth tick, where the remaining
+    /// distance equals the stride, does not move the bot (strict `>`).
+    /// The bot parks one stride short and never overshoots.
     #[test]
-    fn each_step_advances_by_speed_times_dtime() {
-        // The fixed route: a straight line toward +x, one 0.6 step per
-        // tick, the yaw facing the destination (beeline_controller.cpp:31-42).
-        let mut controller = BeelineController::new(Vector3::new(100.0, 0.0, 0.0));
-        let mut speed = 6.0;
+    fn the_reference_route_is_reproduced_step_for_step() {
+        let mut controller = BeelineController::new(Vector3::new(10.0, 0.0, 0.0));
         let mut pos = Vector3::new(0.0, 0.0, 0.0);
         let mut yaw = 0.0;
+        let mut speed = 2.0;
 
-        for expected in [0.6, 1.2, 1.8] {
-            assert!(controller.next_step(&mut speed, 0.1, &mut pos, &mut yaw));
-            assert!(near(pos.x, expected), "x {}", pos.x);
-            assert!(near(pos.y, 0.0) && near(pos.z, 0.0));
+        let route = [2.0, 4.0, 6.0, 8.0, 8.0];
+        for (tick, &x) in route.iter().enumerate() {
+            assert!(controller.next_step(&mut speed, 1.0, &mut pos, &mut yaw));
+            assert_eq!(pos.x, x, "tick {}", tick + 1);
+            assert_eq!(pos.y, 0.0);
+            assert_eq!(pos.z, 0.0);
         }
-        // atan2(x, z) of the travel vector: due +x is a quarter turn.
-        assert!(near(yaw, std::f32::consts::FRAC_PI_2), "yaw {yaw}");
-        // A controller may slow the bot down; the beeline never does.
-        assert!(near(speed, 6.0));
+
+        // Yaw tracked the direction on every moved tick and holds its
+        // last value through the parked tick (atan2f( 2, 0 )).
+        assert_eq!(yaw, FRAC_PI_2);
+        // The controller never slows the bot down.
+        assert_eq!(speed, 2.0);
     }
 
+    /// On a diagonal destination the yaw is `atan2f( x, z )` — for
+    /// `(10, 0, 10)` that is pi/4 — and the first stride is a normalized
+    /// `speed * dTime` step along the diagonal.
     #[test]
-    fn a_short_final_step_is_not_taken() {
-        // With 1.0 to go and 0.6 of travel, the second step holds the
-        // position and the yaw keeps the value from the last moving step
-        // (`length > distance` is false, :38).
-        let mut controller = BeelineController::new(Vector3::new(1.0, 0.0, 0.0));
-        let mut speed = 6.0;
+    fn the_yaw_faces_the_destination_on_a_diagonal() {
+        let mut controller = BeelineController::new(Vector3::new(10.0, 0.0, 10.0));
         let mut pos = Vector3::new(0.0, 0.0, 0.0);
         let mut yaw = 0.0;
+        let mut speed = 2.0;
 
-        assert!(controller.next_step(&mut speed, 0.1, &mut pos, &mut yaw));
-        assert!(near(pos.x, 0.6));
-
-        let (held_pos, held_yaw) = (pos, yaw);
-        assert!(controller.next_step(&mut speed, 0.1, &mut pos, &mut yaw));
-        assert!(near_pos(pos, held_pos), "holds at {pos:?}");
-        assert!(near(yaw, held_yaw));
-        // And it never reports completion (`return true`, :44) — arrival
-        // clearing belongs to ClientApp::moveTo.
-        assert!(controller.next_step(&mut speed, 0.1, &mut pos, &mut yaw));
-        assert!(near_pos(pos, held_pos));
+        assert!(controller.next_step(&mut speed, 1.0, &mut pos, &mut yaw));
+        assert_eq!(yaw, FRAC_PI_4);
+        // A stride of 2 along the (1, 0, 1) direction.
+        assert!((pos.x - SQRT_2).abs() < 1e-5);
+        assert_eq!(pos.y, 0.0);
+        assert!((pos.z - SQRT_2).abs() < 1e-5);
     }
 
+    /// An already-arrived bot neither moves nor turns, and `nextStep`
+    /// still returns `true` (the return is always true; the reference
+    /// caller ignores it regardless, client_app.cpp:1118).
     #[test]
-    fn the_diagonal_route_steps_along_the_unit_direction() {
-        // Destination off-axis: each step is `dest * 0.6 / |dest|` and
-        // the yaw faces it (atan2(x, z)).
-        let mut controller = BeelineController::new(Vector3::new(10.5, 20.0, 30.0));
+    fn an_arrived_bot_stays_put_and_still_reports_true() {
+        let mut controller = BeelineController::new(Vector3::new(5.0, 5.0, 5.0));
+        let mut pos = Vector3::new(5.0, 5.0, 5.0);
+        let mut yaw = 1.25;
         let mut speed = 6.0;
-        let mut pos = Vector3::new(0.0, 0.0, 0.0);
-        let mut yaw = 0.0;
 
-        assert!(controller.next_step(&mut speed, 0.1, &mut pos, &mut yaw));
-        let length = (10.5_f32 * 10.5 + 20.0 * 20.0 + 30.0 * 30.0).sqrt();
-        assert!(near_pos(
-            pos,
-            Vector3::new(10.5, 20.0, 30.0) * (0.6 / length)
-        ));
-        assert!(near(yaw, (Vector3::new(10.5, 0.0, 30.0)).yaw()));
+        assert!(controller.next_step(&mut speed, 1.0, &mut pos, &mut yaw));
+        assert_eq!(pos, Vector3::new(5.0, 5.0, 5.0));
+        assert_eq!(yaw, 1.25);
     }
 
+    /// The factory parse (beeline_controller.cpp:62-76): `"x,y,z"` around
+    /// the first and last comma; the starting position is untouched.
     #[test]
-    fn the_factory_builds_from_the_comma_data() {
-        // `"x,y,z"` via the first/last comma split (:71-75); a part that
-        // is not a number reads as 0.0, as `atof` does.
-        let mut pos = Vector3::new(0.0, 0.0, 0.0);
-        let mut controller = BeelineFactory
-            .create("10.5,20,30", 6.0, &mut pos)
-            .expect("the factory always builds");
+    fn the_factory_parses_the_destination_triple() {
+        let factory = BeelineControllerFactory;
+        let mut start_pos = Vector3::new(99.0, 99.0, 99.0);
+        let mut speed = 7.0;
+        let mut controller = factory
+            .create("3.5,1.0,-2.25", &mut speed, &mut start_pos)
+            .unwrap();
+
+        assert_eq!(start_pos, Vector3::new(99.0, 99.0, 99.0));
+        // Drive the parsed destination out through the controller: from
+        // (3.5, 1.0, -2.25) the bot is already there and stays put.
+        let mut pos = Vector3::new(3.5, 1.0, -2.25);
+        let mut yaw = 0.0;
         let mut speed = 6.0;
+        assert!(controller.next_step(&mut speed, 1.0, &mut pos, &mut yaw));
+        assert_eq!(pos, Vector3::new(3.5, 1.0, -2.25));
+
+        // Spaces around the numbers are tolerated the way `atof` skips
+        // leading whitespace: the destination still lands on (10, 0, 0)
+        // and the bot strides toward it.
+        let mut controller = factory
+            .create("10, 0, 0", &mut 2.0, &mut start_pos)
+            .unwrap();
+        let mut pos = Vector3::new(4.0, 0.0, 0.0);
         let mut yaw = 0.0;
-        assert!(controller.next_step(&mut speed, 0.1, &mut pos, &mut yaw));
-        let length = (10.5_f32 * 10.5 + 20.0 * 20.0 + 30.0 * 30.0).sqrt();
-        assert!(near_pos(
-            pos,
-            Vector3::new(10.5, 20.0, 30.0) * (0.6 / length)
-        ));
-
-        let mut pos = Vector3::new(0.0, 0.0, 0.0);
-        let mut controller = BeelineFactory.create("5,ignored,", 6.0, &mut pos).unwrap();
-        assert!(controller.next_step(&mut speed, 0.1, &mut pos, &mut yaw));
-        assert!(near(pos.x, 0.6) && near(pos.y, 0.0) && near(pos.z, 0.0));
+        let mut speed = 2.0;
+        assert!(controller.next_step(&mut speed, 1.0, &mut pos, &mut yaw));
+        assert_eq!(pos.x, 6.0);
+        assert_eq!(yaw, FRAC_PI_2);
     }
 
+    /// The degenerate parse arms, reproduced from the reference's
+    /// `size_t` slicing: one comma wraps the y count to the tail, no
+    /// comma wraps both offsets onto the whole string, and a non-numeric
+    /// segment lands on `atof`'s 0.0.
     #[test]
-    fn atof_takes_the_longest_numeric_prefix() {
-        assert!(near(c_atof("10.5"), 10.5));
-        assert!(near(c_atof(" 7x"), 7.0));
-        assert!(near(c_atof("-2.5,"), -2.5));
-        assert!(near(c_atof("1e2"), 100.0));
-        assert!(near(c_atof("1e-2"), 0.01));
-        assert!(near(c_atof("7e"), 7.0));
-        assert!(near(c_atof(""), 0.0));
-        assert!(near(c_atof("abc"), 0.0));
-        assert!(near(c_atof("1.2.3"), 1.2));
+    fn degenerate_parses_match_the_reference_slice_shapes() {
+        assert_eq!(parse_destination("1,2"), Vector3::new(1.0, 2.0, 2.0));
+        assert_eq!(parse_destination("5"), Vector3::new(5.0, 5.0, 5.0));
+        assert_eq!(parse_destination(""), Vector3::new(0.0, 0.0, 0.0));
+        assert_eq!(parse_destination("x,y,z"), Vector3::new(0.0, 0.0, 0.0));
     }
 
+    /// Registration face: `"Beeline"` resolves through the fleet's
+    /// controller registry (`MainApp::addFactory`, main_app.cpp:807-815)
+    /// and the created controller walks the same fixed route.
     #[test]
-    fn the_registry_drives_the_fixed_route() {
-        // The end-to-end face `MainApp::createMovementController` uses:
-        // register "Beeline", resolve it through the fleet's registry and
-        // walk the same fixed route (main_app.cpp:740-803).
+    fn the_registry_creates_a_beeline_controller() {
         let mut registry = ControllerRegistry::new();
-        registry.register("Beeline", Box::new(BeelineFactory));
+        registry.register("Beeline", Box::new(BeelineControllerFactory));
 
-        let mut pos = Vector3::new(0.0, 0.0, 0.0);
+        let mut start_pos = Vector3::new(0.0, 0.0, 0.0);
         let mut controller = registry
-            .create("Beeline", "100,0,0", 6.0, &mut pos)
-            .expect("registered")
-            .expect("the factory always builds");
-        let mut speed = 6.0;
+            .create("Beeline", "10,0,0", &mut 2.0, &mut start_pos)
+            .unwrap()
+            .expect("Beeline creates a controller");
+
+        let mut pos = start_pos;
         let mut yaw = 0.0;
-        for expected in [0.6, 1.2, 1.8] {
-            controller.next_step(&mut speed, 0.1, &mut pos, &mut yaw);
-            assert!(near(pos.x, expected));
+        let mut speed = 2.0;
+        for _ in 0..5 {
+            assert!(controller.next_step(&mut speed, 1.0, &mut pos, &mut yaw));
         }
+        assert_eq!(pos, Vector3::new(8.0, 0.0, 0.0));
     }
 }

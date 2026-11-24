@@ -1,0 +1,15 @@
+[package]
+name = "bots"
+description = "The load-generation process (BW-17-01) and its PR smoke CLI (BW-17-03-05)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The fleet, scenario and smoke faces live in the load domain crate; this
+# process is their standalone entry point (`apps/bots`, the layout
+# `docs/operations/load-testing.md` fixes as the runner).
+load = { workspace = true }
+

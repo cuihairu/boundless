@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The resource sampler scales `/proc/self/stat` clock ticks through
+# `_SC_CLK_TCK` (BW-17-03-04).
+libc = { workspace = true }
 # The bot movement faces carry Vector3 positions, ported from the same
 # `lib/math/` scalar path the reference builds.
 foundation = { workspace = true }
@@ -15,9 +18,7 @@ foundation = { workspace = true }
 # config through the same `BWConfig`/DataSection style), so the section
 # reader is needed here.
 resources = { workspace = true }
-# The four bots command callables ride the watcher protocol machinery
-# (BW-17-01-06): a legal domain-to-domain edge.
+# The bots command callables (BW-17-01-06) register on the watcher tree the
+# same way `MainApp::initWatchers` lands them on the root watcher.
 watcher = { workspace = true }
-# The scenario report renders the machine-readable document the
-# documentation item's field contract defines (BW-17-03-01).
-serde_json = { workspace = true }
+
