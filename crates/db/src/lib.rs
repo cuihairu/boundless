@@ -23,6 +23,7 @@ pub mod namer;
 pub mod record;
 pub mod recovery;
 pub mod retry;
+pub mod secondary;
 pub mod storage;
 pub mod transaction;
 pub mod xml;
@@ -53,6 +54,10 @@ pub use retry::{
     CR_CONN_HOST_ERROR, CR_CONNECTION_ERROR, CR_SERVER_GONE_ERROR, CR_SERVER_LOST, DatabaseFailure,
     ER_LOCK_DEADLOCK, ER_LOCK_WAIT_TIMEOUT, RetryTask, RunReport, failure_from_db_error,
     run_with_retry,
+};
+pub use secondary::{
+    SecondaryDatabase, SecondaryRow, SecondaryTable, StreamKind, StreamPropDef, StreamTypeDef,
+    blob_to_values, values_to_blob,
 };
 pub use storage::{
     BaseMailbox, CheckOut, EntityKey, EntityStorage, EntityStorageImage, MemoryConnection,

@@ -42,6 +42,10 @@ sha2 = "0.10"
 # OpenSSL's `BF_set_key`/`BF_ecb_encrypt`; this crate is the standard Blowfish
 # (wire-tested against Eric Young's published vectors in the unit tests).
 blowfish = "0.9"
+# The secondary database reader (BW-09-03-02): the reference links sqlite3
+# directly (`server/baseapp/sqlite_database.cpp`); `bundled` keeps the file
+# format pinned regardless of the host's libsqlite3.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
