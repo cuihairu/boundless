@@ -276,6 +276,7 @@ mod tests {
 
     use entitydef::value::PropertyValue;
 
+    use crate::auto_load::UpdateAutoLoad;
     use crate::error::DbError;
     use crate::record::EntityRecord;
     use crate::storage::MemoryStorage;
@@ -359,11 +360,12 @@ mod tests {
                         },
                         &values,
                         false,
+                        UpdateAutoLoad::Retain,
                     )
                     .inspect(|db_id| self.set_db_id(*db_id))
             } else {
                 // An update of the entity the task now addresses.
-                storage.put_entity(&self.key, &values, false)
+                storage.put_entity(&self.key, &values, false, UpdateAutoLoad::Retain)
             };
 
             if outcome.is_err() {

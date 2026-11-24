@@ -279,6 +279,7 @@ mod tests {
     use entitydef::value::PropertyValue;
     use foundation::ids::{DatabaseId, PENDING_DATABASE_ID};
 
+    use crate::auto_load::{EntityAutoLoader, UpdateAutoLoad};
     use crate::error::DbError;
     use crate::secondary::{FLIP_TABLE, FLOP_TABLE, StreamKind, StreamPropDef, StreamTypeDef};
     use crate::storage::{BaseMailbox, CheckOut, MemoryStorage};
@@ -721,8 +722,10 @@ mod tests {
             key: &EntityKey,
             values: &[PropertyValue],
             put_explicit_id: bool,
+            update_auto_load: UpdateAutoLoad,
         ) -> Result<DatabaseId, DbError> {
-            self.inner.put_entity(key, values, put_explicit_id)
+            self.inner
+                .put_entity(key, values, put_explicit_id, update_auto_load)
         }
 
         fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
@@ -747,6 +750,10 @@ mod tests {
 
         fn all_entities(&self) -> Result<Vec<crate::record::EntityRecord>, DbError> {
             self.inner.all_entities()
+        }
+
+        fn auto_load_entities(&mut self, loader: &mut dyn EntityAutoLoader) -> Result<(), DbError> {
+            self.inner.auto_load_entities(loader)
         }
 
         fn put_consolidated(
@@ -915,7 +922,12 @@ mod tests {
             db_id: PENDING_DATABASE_ID,
         };
         let db_id = store
-            .put_entity(&seed_key, &avatar_values("MadeAvatar", 3), false)
+            .put_entity(
+                &seed_key,
+                &avatar_values("MadeAvatar", 3),
+                false,
+                UpdateAutoLoad::Retain,
+            )
             .expect("the create puts");
         let made = EntityKey { type_id: 1, db_id };
         assert!(matches!(
@@ -995,7 +1007,12 @@ mod tests {
             db_id: PENDING_DATABASE_ID,
         };
         let db_id = xml
-            .put_entity(&seed_key, &avatar_values("OldAvatar", 1), false)
+            .put_entity(
+                &seed_key,
+                &avatar_values("OldAvatar", 1),
+                false,
+                UpdateAutoLoad::Retain,
+            )
             .expect("the seed puts");
         let key = EntityKey { type_id: 1, db_id };
 

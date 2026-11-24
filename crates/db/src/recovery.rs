@@ -99,6 +99,7 @@ mod tests {
     use foundation::ids::{DatabaseId, GameTime, PENDING_DATABASE_ID};
     use mercury::endpoint::Address;
 
+    use crate::auto_load::{EntityAutoLoader, UpdateAutoLoad};
     use crate::error::DbError;
     use crate::record::EntityRecord;
     use crate::storage::{
@@ -183,11 +184,13 @@ mod tests {
             key: &EntityKey,
             values: &[PropertyValue],
             put_explicit_id: bool,
+            update_auto_load: UpdateAutoLoad,
         ) -> Result<DatabaseId, DbError> {
             if let Some(error) = self.script.borrow_mut().pop() {
                 return Err(error);
             }
-            self.inner.put_entity(key, values, put_explicit_id)
+            self.inner
+                .put_entity(key, values, put_explicit_id, update_auto_load)
         }
 
         fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
@@ -216,6 +219,10 @@ mod tests {
 
         fn game_time_of(&self, key: &EntityKey) -> Result<Option<GameTime>, DbError> {
             self.inner.game_time_of(key)
+        }
+
+        fn auto_load_entities(&mut self, loader: &mut dyn EntityAutoLoader) -> Result<(), DbError> {
+            self.inner.auto_load_entities(loader)
         }
 
         fn put_consolidated(
@@ -333,8 +340,13 @@ mod tests {
             attempts_body.set(attempts_body.get() + 1);
             // Both writes stage; the commit applies them as one.
             transaction
-                .put(key(3, PENDING_DATABASE_ID), values("new"), false)
-                .put(key(3, 1), values("update"), false);
+                .put(
+                    key(3, PENDING_DATABASE_ID),
+                    values("new"),
+                    false,
+                    UpdateAutoLoad::Retain,
+                )
+                .put(key(3, 1), values("update"), false, UpdateAutoLoad::Retain);
             Ok(())
         });
 
@@ -372,8 +384,13 @@ mod tests {
         let result = retry_transaction(&mut flaky, move |transaction| {
             attempts_body.set(attempts_body.get() + 1);
             transaction
-                .put(key(3, PENDING_DATABASE_ID), values("new"), false)
-                .put(key(3, 1), values("update"), false);
+                .put(
+                    key(3, PENDING_DATABASE_ID),
+                    values("new"),
+                    false,
+                    UpdateAutoLoad::Retain,
+                )
+                .put(key(3, 1), values("update"), false, UpdateAutoLoad::Retain);
             Ok(())
         });
 
@@ -400,7 +417,12 @@ mod tests {
         let attempts_body = attempts.clone();
         let result: Result<(), DbError> = retry_transaction(&mut flaky, move |transaction| {
             attempts_body.set(attempts_body.get() + 1);
-            transaction.put(key(3, PENDING_DATABASE_ID), values("new"), false);
+            transaction.put(
+                key(3, PENDING_DATABASE_ID),
+                values("new"),
+                false,
+                UpdateAutoLoad::Retain,
+            );
             Err(DbError::NotFound)
         });
 
@@ -420,8 +442,13 @@ mod tests {
         let result = retry_transaction(&mut flaky, move |transaction| {
             attempts_body.set(attempts_body.get() + 1);
             transaction
-                .put(key(3, PENDING_DATABASE_ID), values("new"), false)
-                .put(key(3, 1), values("update"), false);
+                .put(
+                    key(3, PENDING_DATABASE_ID),
+                    values("new"),
+                    false,
+                    UpdateAutoLoad::Retain,
+                )
+                .put(key(3, 1), values("update"), false, UpdateAutoLoad::Retain);
             Ok(())
         });
 
@@ -463,7 +490,7 @@ mod tests {
         assert_eq!(flaky.check_in(&key(3, 1)), Ok(()));
 
         assert_eq!(
-            flaky.put_entity(&key(3, 1), &values("x"), false),
+            flaky.put_entity(&key(3, 1), &values("x"), false, UpdateAutoLoad::Retain),
             Err(DbError::Retry),
             "the scripted put still fails"
         );
@@ -478,7 +505,12 @@ mod tests {
         let attempts_body = attempts.clone();
         let result = retry_transaction(&mut flaky, move |transaction| {
             attempts_body.set(attempts_body.get() + 1);
-            transaction.put(key(3, PENDING_DATABASE_ID), values("new"), false);
+            transaction.put(
+                key(3, PENDING_DATABASE_ID),
+                values("new"),
+                false,
+                UpdateAutoLoad::Retain,
+            );
             Ok(())
         });
 

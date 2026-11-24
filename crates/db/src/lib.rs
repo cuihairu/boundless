@@ -15,6 +15,7 @@
 //! BW-09-05 operational tools.
 
 pub mod account;
+pub mod auto_load;
 pub mod buffered;
 pub mod charset;
 pub mod consolidate;
@@ -33,6 +34,9 @@ pub use account::{
     AccountLogOn, AccountRow, BIGWORLD_ID_COLUMN, ENTITY_ID_COLUMN, ENTITY_TYPE_COLUMN,
     ENTITY_TYPES_TABLE, INFO_TABLE, IS_PASSWORD_HASHED_COLUMN, LOG_ON_MAPPING_TABLE,
     LOG_ON_NAME_COLUMN, PASSWORD_COLUMN, UserTypeBinding, bind_user_type, check_password,
+};
+pub use auto_load::{
+    DEFAULT_MAX_OUTSTANDING, EntityAutoLoader, PacedEntityAutoLoader, UpdateAutoLoad,
 };
 pub use buffered::{Admission, BufferedEntityTasks, EntityTask};
 pub use charset::{
