@@ -7,9 +7,20 @@
 //! The PostgreSQL port keeps the same shape: `INSERT ... ON CONFLICT
 //! ("id") DO UPDATE` replaces the row, and `get_entity` reads the columns
 //! back in the schema's visit order, one [`PropertyValue`] per column.
+//!
+//! The DBID allocation follows the reference's `putEntity` create leg:
+//! `PutEntityTask` takes `insertNew` when the key carries no id
+//! (`tasks/put_entity_task.cpp:60-98`), the generated statement lists
+//! the property columns only (`utils.cpp:48-76`), and the caller reads
+//! the DB's own choice back with `LAST_INSERT_ID` (`wrapper.hpp:75`).
+//! The id column is the table's `AUTO_INCREMENT` (`column_type.hpp:144-146`,
+//! `mysql_table_initialiser.cpp:366-369`), which is this backend's
+//! identity column: the reference has no DBID watermark table of its own,
+//! so the guarantee is the DBMS sequence's.
 
 use db::{DbError, EntityKey, EntityRecord};
 use entitydef::value::PropertyValue;
+use foundation::ids::DatabaseId;
 use postgres::Client;
 use postgres::error::SqlState;
 use postgres::types::ToSql;
@@ -34,11 +45,23 @@ fn error_message(error: &postgres::Error) -> String {
 }
 
 pub fn map_db_error(error: postgres::Error) -> DbError {
+    map_unique_violation(error, DbError::DuplicateAccount)
+}
+
+/// Maps the error of an entity write: an entity table's only unique
+/// constraint is its id, so a unique violation there is a duplicate
+/// DBID — the contract's `AlreadyExists`, not the accounts table's
+/// duplicate-name outcome.
+pub fn map_write_error(error: postgres::Error) -> DbError {
+    map_unique_violation(error, DbError::AlreadyExists)
+}
+
+fn map_unique_violation(error: postgres::Error, duplicate: DbError) -> DbError {
     let is_duplicate = error
         .code()
         .is_some_and(|code| *code == SqlState::UNIQUE_VIOLATION);
     if is_duplicate {
-        DbError::DuplicateAccount
+        duplicate
     } else {
         DbError::Storage(error_message(&error))
     }
@@ -51,27 +74,29 @@ fn uint_to_bigint(value: u64) -> Result<i64, DbError> {
 }
 
 /// Validates a record against its schema before any SQL runs: the values
-/// must be the schema's columns in visit order, the DBID must be assigned,
-/// and every `Uint` must fit `BIGINT`.
+/// must be the schema's columns in visit order, and the DBID must be
+/// assigned — a pending id is not a row key, the create leg takes one.
 fn validate_put(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
-    if record.values.len() != schema.columns.len() {
-        return Err(DbError::Storage(format!(
-            "record for {} carries {} values but the schema lists {} columns",
-            schema.type_name,
-            record.values.len(),
-            schema.columns.len()
-        )));
-    }
+    validate_values(schema, &record.values)?;
     if record.db_id < 0 {
         return Err(DbError::Storage(format!(
             "record for {} still has a pending database id",
             schema.type_name
         )));
     }
-    for value in &record.values {
-        if let PropertyValue::Uint(n) = value {
-            uint_to_bigint(*n)?;
-        }
+    Ok(())
+}
+
+/// Validates a value run against its schema's arity: one value per column,
+/// in visit order.
+fn validate_values(schema: &EntitySchema, values: &[PropertyValue]) -> Result<(), DbError> {
+    if values.len() != schema.columns.len() {
+        return Err(DbError::Storage(format!(
+            "record for {} carries {} values but the schema lists {} columns",
+            schema.type_name,
+            values.len(),
+            schema.columns.len()
+        )));
     }
     Ok(())
 }
@@ -124,9 +149,31 @@ fn put_entity_params(
     record: &EntityRecord,
 ) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
     validate_put(schema, record)?;
-    let mut params: Vec<PutParam> = vec![Box::new(record.db_id)];
+    let (values, nested_texts) = value_params(&record.values)?;
+    let mut params: Vec<PutParam> = Vec::with_capacity(values.len() + 1);
+    params.push(Box::new(record.db_id));
+    params.extend(values);
+    Ok((params, nested_texts))
+}
+
+/// Builds the parameter list for a create: one placeholder per property,
+/// in the schema's visit order, and no id parameter — the statement leaves
+/// the column out for the identity to fill in.
+fn create_entity_params(
+    schema: &EntitySchema,
+    values: &[PropertyValue],
+) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
+    validate_values(schema, values)?;
+    value_params(values)
+}
+
+/// The bound parameters for one run of property values. A `Uint` must fit
+/// `BIGINT`, and nested values bind as their JSON text — the returned texts
+/// keep that text alive for the borrow.
+fn value_params(values: &[PropertyValue]) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
+    let mut params: Vec<PutParam> = Vec::with_capacity(values.len());
     let mut nested_texts: Vec<String> = Vec::new();
-    for value in &record.values {
+    for value in values {
         match value {
             PropertyValue::Int(n) => params.push(Box::new(*n)),
             PropertyValue::Uint(n) => params.push(Box::new(uint_to_bigint(*n)?)),
@@ -142,6 +189,41 @@ fn put_entity_params(
         }
     }
     Ok((params, nested_texts))
+}
+
+/// The create statement (`insertNew`, `utils.cpp:48-76`): the property
+/// columns only, the id column left out of the column list, and the
+/// server's allocation read back. A table with no properties inserts
+/// nothing but still asks for its id.
+fn create_entity_sql(schema: &EntitySchema) -> String {
+    let returning = format!("RETURNING {}", quote_ident(ID_COLUMN));
+    if schema.columns.is_empty() {
+        return format!(
+            "INSERT INTO {} DEFAULT VALUES {}",
+            schema.quoted_table(),
+            returning
+        );
+    }
+    let mut columns = Vec::with_capacity(schema.columns.len());
+    let mut placeholders = Vec::with_capacity(schema.columns.len());
+    for (index, (prop, kind)) in schema.columns.iter().enumerate() {
+        columns.push(quote_ident(&column_name(prop)));
+        let placeholder = format!("${}", index + 1);
+        placeholders.push(match kind {
+            // The param binds as text and casts server-side: an un-annotated
+            // CAST would type-infer the parameter itself as jsonb, which the
+            // text binding then cannot serialize.
+            ColumnKind::Nested => format!("CAST({placeholder}::text AS JSONB)"),
+            _ => placeholder,
+        });
+    }
+    format!(
+        "INSERT INTO {} ({}) VALUES ({}) {}",
+        schema.quoted_table(),
+        columns.join(", "),
+        placeholders.join(", "),
+        returning
+    )
 }
 
 /// Builds the select statement for a schema: the id column first, then one
@@ -263,6 +345,36 @@ impl PostgresStorage {
         Ok(())
     }
 
+    /// Writes a new entity row and allocates its DBID: the reference's
+    /// `putEntity` create leg, where the key carries no id yet
+    /// (`put_entity_task.cpp:60-98` → `insertNew`). The statement lists
+    /// the property columns only, so the table's own sequence assigns the
+    /// id; `RETURNING "id"` is this port's `LAST_INSERT_ID` read-back
+    /// (`wrapper.hpp:75`).
+    ///
+    /// The allocation is safe under concurrency and across a restart
+    /// because the sequence is the table's own catalog state: `nextval`
+    /// advances it atomically, and it is not in-process state, so a
+    /// reopened connection continues where the table left off. An id
+    /// inserted explicitly does not advance it (the reference is the same:
+    /// MySQL does not move `AUTO_INCREMENT` for an explicit value), so
+    /// importing rows must recalibrate it afterwards.
+    pub fn create_entity(
+        &mut self,
+        schema: &EntitySchema,
+        values: &[PropertyValue],
+    ) -> Result<DatabaseId, DbError> {
+        let sql = create_entity_sql(schema);
+        let (params, nested_texts) = create_entity_params(schema, values)?;
+        let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
+        let row = self
+            .client
+            .query_one(sql.as_str(), &refs)
+            .map_err(map_write_error)?;
+        drop(nested_texts);
+        Ok(row.get::<_, i64>(0))
+    }
+
     /// Reads an entity row back: `Ok(None)` is the reference's "row
     /// missing" outcome, not a failure.
     pub fn get_entity(
@@ -328,10 +440,11 @@ mod tests {
         let err = validate_put(&schema(), &record(-1)).unwrap_err();
         assert!(err.to_string().contains("pending database id"));
 
-        // A uint64 over BIGINT cannot bind.
+        // A uint64 over BIGINT cannot bind; that check lives where the
+        // parameters are built, and the create leg runs it the same way.
         let mut huge = record(1);
         huge.values[1] = PropertyValue::Uint(u64::MAX);
-        let err = validate_put(&schema(), &huge).unwrap_err();
+        let err = put_entity_params(&schema(), &huge).unwrap_err();
         assert!(err.to_string().contains("exceeds BIGINT"));
     }
 
@@ -355,6 +468,57 @@ mod tests {
         let schema = EntitySchema::for_record("Monster", &["name", "loot"], &values).unwrap();
         let sql = put_entity_sql(&schema);
         assert!(sql.contains("VALUES ($1, $2, CAST($3::text AS JSONB))"));
+    }
+
+    #[test]
+    fn create_sql_leaves_the_id_column_out() {
+        // `insertNew`: the property columns only, and the id read back.
+        let sql = create_entity_sql(&schema());
+        assert_eq!(
+            sql,
+            concat!(
+                "INSERT INTO \"tbl_Account\" ",
+                "(\"sm_name\", \"sm_level\", \"sm_secret\") ",
+                "VALUES ($1, $2, $3) RETURNING \"id\""
+            )
+        );
+    }
+
+    #[test]
+    fn create_sql_casts_nested_placeholders_to_jsonb() {
+        let values = vec![
+            PropertyValue::String("cui".into()),
+            PropertyValue::Sequence(vec![PropertyValue::Int(2)]),
+        ];
+        let schema = EntitySchema::for_record("Monster", &["name", "loot"], &values).unwrap();
+        assert_eq!(
+            create_entity_sql(&schema),
+            "INSERT INTO \"tbl_Monster\" (\"sm_name\", \"sm_loot\") \
+             VALUES ($1, CAST($2::text AS JSONB)) RETURNING \"id\""
+        );
+    }
+
+    #[test]
+    fn a_propertyless_table_inserts_a_default_row() {
+        let schema = EntitySchema::for_record("Empty", &[], &[]).unwrap();
+        assert_eq!(
+            create_entity_sql(&schema),
+            "INSERT INTO \"tbl_Empty\" DEFAULT VALUES RETURNING \"id\""
+        );
+    }
+
+    #[test]
+    fn create_params_carry_the_values_without_an_id() {
+        // One parameter per column: the statement has no id placeholder, so
+        // the numbering starts where the put statement's properties begin.
+        let (params, nested) = create_entity_params(&schema(), &record(0).values).unwrap();
+        assert_eq!(params.len(), 3);
+        assert!(nested.is_empty());
+
+        let mut short = record(0);
+        short.values.truncate(1);
+        let err = create_entity_params(&schema(), &short.values).unwrap_err();
+        assert!(err.to_string().contains("carries 1 values"));
     }
 
     #[test]
