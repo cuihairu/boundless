@@ -60,6 +60,32 @@ impl ChunkWaypointState {
         }
     }
 
+    /// `desc` (`chunk_waypoint_state.cpp:53-70`): the waypoint, the point,
+    /// the owning chunk identifier and the portal flag. The reference
+    /// prefixes `no set` / `no chunk`; the port answers `no set` for a
+    /// stateless location and reports the set's `baseIndex_` in the chunk
+    /// identifier's place, since the chunk mounting is out of this face
+    /// (registered).
+    pub fn desc(&self) -> String {
+        let set = match self.nav_loc.p_set() {
+            Some(set) => set,
+            None => return "no set".to_owned(),
+        };
+        let point = self.nav_loc.point();
+        let mut out = format!(
+            "{} ({}, {}, {})",
+            self.nav_loc.waypoint(),
+            point.x,
+            point.y,
+            point.z
+        );
+        out.push_str(&format!(" in {}", set.base_index()));
+        if self.crossed_portal {
+            out.push_str(" (portal)");
+        }
+        out
+    }
+
     /// `compare` (`chunk_waypoint_state.hpp:37-45`): the same set compares
     /// waypoints; different sets compare raw pointers. Only `== 0` is ever
     /// consumed.
@@ -503,6 +529,24 @@ mod tests {
                 super::super::chunk_waypoint::ADJACENT_RANGE_END
             )
         );
+    }
+
+    #[test]
+    fn desc_reports_the_waypoint_the_point_and_the_portal_flag() {
+        let set = split_square();
+        let src = state_on(&set, 0, 0.5, 1.0);
+        assert_eq!(
+            src.desc(),
+            format!("0 (0.5, 0.5, 1) in {}", set.base_index())
+        );
+
+        // The portal suffix is the cross-chunk marker.
+        let mut portal = src.clone();
+        portal.crossed_portal = true;
+        assert!(portal.desc().ends_with(" (portal)"), "{}", portal.desc());
+
+        // The stateless location answers the reference's first guard.
+        assert_eq!(ChunkWaypointState::default().desc(), "no set");
     }
 
     #[test]
