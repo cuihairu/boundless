@@ -1492,8 +1492,15 @@
 - [ ] **BW-10-05-03 移植选用的 Recast 生成**。**验收** 固定输入生成可读导航资源。
 - [ ] **BW-10-05-04 实现原版 NavGen 图形工作流**。**验收** 同图可选择目标、生成和保存。
   - 保存臂已交付（84a98a8）：`asBinary` 记录流写入器 + `saveOut` 旧记录合并
-    与逐字节原版对照（gen_view.log）；余片 = `WaypointGenerator` BSP 多边形化 +
-    per-girth 工作流环。
+    与逐字节原版对照（gen_view.log）。
+  - BSP 多边形化已交付（bf521d5）：`WaypointGenerator` 全管线
+    （initBSP/processNode/splitNode/refineNodeEdges/generatePolygons/
+    generateAdjacencies/joinPolygons/streamline/calculateSetMembership），
+    原版 flood+generator+view 三件全链路 harness 逐字节对照
+    （gen_generate.log：slope 终流 136B、shell 终流 152B fnv 全等），
+    generator.rs 99.31%（9 行收尾括号 DA:0 已档）。
+    余片 = 门户两臂（determineEdgesAdjacentToOtherChunks /
+    extendThroughUnboundPortals）+ readTGA + per-girth 工作流环。
 - [ ] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。
 - [ ] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。
 
