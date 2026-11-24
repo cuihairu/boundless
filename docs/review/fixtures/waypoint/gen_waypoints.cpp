@@ -23,6 +23,8 @@
 
 #include "cstdmf/memory_stream.hpp"
 #include "resmgr/binary_block.hpp"
+#include "resmgr/bwresource.hpp"
+#include "resmgr/xml_section.hpp"
 
 #include "math/vector2.hpp"
 #include "math/vector3.hpp"
@@ -31,6 +33,15 @@
 #include "waypoint_generator/waypoint_view.hpp"
 
 #include "waypoint/chunk_waypoint_set_data.hpp"
+#include "waypoint/chunk_waypoint_set.hpp"
+#include "waypoint/chunk_waypoint_state.hpp"
+#include "waypoint/navloc.hpp"
+#include "waypoint/chunk_navigator.hpp"
+#include "waypoint/astar.hpp"
+
+#include "chunk/chunk.hpp"
+#include "chunk/chunk_space.hpp"
+#include "chunk/geometry_mapping.hpp"
 
 using namespace std;
 using namespace BW;
@@ -127,6 +138,11 @@ static void putI(std::vector<uint8_t>& b, int32_t i)
 
 int main()
 {
+    // The empty resource instance: GeometryMapping's settings lookup goes
+    // through BWResource and must not assert on the missing singleton.
+    BWResource bwResource;
+    BWResource::instance().init( BW::vector< BW::string >() );
+
     FixtureView view;
 
     // Set 0 (girth 0.6): the A-B-C chain with shared corners.
@@ -341,6 +357,86 @@ int main()
             printf("GIRTHFINDIGN %.3f %.6f %.6f %.6f %d\n",
                    girths[slot], 2.5f, 5.f, 1.f,
                    pSets[slot]->find(GeoSpaceVector3(2.5f, 5.f, 1.f), true));
+        }
+
+
+        // ---- BW-10-04-04: the in-set A* search, straight off the
+        // reference astar + waypoint state ----
+        // A minimal indoor chunk: identity transform and identity mapper,
+        // so waypoint space is world space; the local bounds box spans the
+        // whole fixture so clip's chunk-box branch never engages.
+        {
+            ChunkSpacePtr pSpace = new ChunkSpace(1);
+            // A fresh space adopts whatever gridSize the settings carry,
+            // so the empty section passes validation (NULL would fail it
+            // and null the mapping's space).
+            XMLSectionPtr pSettings = new XMLSection("space");
+            GeometryMapping* pMapping =
+                new GeometryMapping(pSpace, Matrix::identity, ".", pSettings);
+            BoundingBox localBB(Vector3(-10.f, -10.f, -10.f),
+                                Vector3(50.f, 50.f, 50.f));
+            Chunk* pChunk =
+                new Chunk("fixture", pMapping, Matrix::identity, localBB);
+
+            // The plain ChunkItem setter mounts the set without toss/bind
+            // side effects; the navigator cache holds it so NavLoc's chunk
+            // ctor runs its genuine search.
+            ChunkWaypointSetDataPtr pSetDataA(pSetA);
+            ChunkWaypointSetPtr pWaySetA = new ChunkWaypointSet(pSetDataA);
+            pWaySetA->chunk(pChunk);
+            ChunkNavigator::instance(*pChunk).add(pWaySetA.get());
+            // The reference free list destructs each recycled search state
+            // twice (eager ~IntState in free(), then delete in the list
+            // destructor), so every A* node drops one set reference too
+            // many. Real chunks keep the set alive from the chunk side; this
+            // fixture pins it instead, without touching the algorithm the
+            // probes are meant to exercise.
+            for (int pin = 0; pin < 128; ++pin)
+            {
+                pWaySetA->incRef();
+            }
+
+            struct PathProbe
+            {
+                const char* name;
+                Vector3     src;
+                Vector3     dst;
+            };
+            const PathProbe probes[] = {
+                { "AC", Vector3(0.5f, 0.5f, 0.5f), Vector3(3.5f, 0.5f, 1.5f) },
+                { "AB", Vector3(0.5f, 0.5f, 0.5f), Vector3(3.5f, 0.5f, 3.0f) },
+                { "BA", Vector3(3.5f, 0.5f, 3.0f), Vector3(0.5f, 0.5f, 0.5f) },
+                { "CB", Vector3(3.5f, 0.5f, 0.5f), Vector3(3.0f, 0.5f, 2.5f) },
+                { "AA", Vector3(0.5f, 0.5f, 0.5f), Vector3(1.5f, 0.5f, 1.5f) },
+                { "BC", Vector3(3.0f, 0.5f, 2.5f), Vector3(3.5f, 0.5f, 0.5f) },
+            };
+            for (size_t p = 0; p < sizeof(probes) / sizeof(probes[0]); ++p)
+            {
+                NavLoc src(pChunk, probes[p].src, 0.6f);
+                NavLoc dst(pChunk, probes[p].dst, 0.6f);
+                printf("PATHBEGIN %s %d %d\n", probes[p].name,
+                       int(src.waypoint()), int(dst.waypoint()));
+
+                ChunkWaypointState srcState(src);
+                ChunkWaypointState dstState(dst);
+                AStar<ChunkWaypointState,
+                      ChunkWaypointState::SearchData>::StateScopedFreeList
+                    freeList;
+                AStar<ChunkWaypointState, ChunkWaypointState::SearchData>
+                    astar(&freeList);
+                if (astar.search(srcState, dstState, -1.f))
+                {
+                    for (const ChunkWaypointState* s = astar.first();
+                         s != NULL; s = astar.next())
+                    {
+                        printf("PATH %s %.6f %.6f %.6f %d\n",
+                               probes[p].name, s->navLoc().point().x,
+                               s->navLoc().point().y, s->navLoc().point().z,
+                               int(s->navLoc().waypoint()));
+                    }
+                }
+                printf("PATHEND %s\n", probes[p].name);
+            }
         }
 
         printf("RESULT OK\n");
