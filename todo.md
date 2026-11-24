@@ -1238,7 +1238,7 @@
 - [x] **BW-08-02-03 移植移动、转向、加速控制** (`ebe6213`)。**验收** 固定输入轨迹吻合。
 - [x] **BW-08-02-04 实现定时器与寻路控制器接续** (`48646b6`)。**验收** 退出或迁移后状态满足基线。
 - [x] **BW-08-02-05 处理乘客和传送** (`72e5785`)。**验收** 父子变换、脱离和目标位置吻合。
-- [x] **BW-08-02-06 销毁 Real** (`efb216c`)。**验收** 实体状态和活动控制器正确清理。
+- [x] **BW-08-02-06 销毁 Real** (`efb216c`, 孤儿复活 4c5df48)。**验收** 实体状态和活动控制器正确清理。
 
 #### BW-08-03 AOI 和 Witness
 
@@ -1298,14 +1298,15 @@
 - [x] **BW-08-05-04 重定向切换期间消息**（4265953）。**验收** 调用到达迁移目标且响应一次。
 - [x] **BW-08-05-05 实现跨 Space 传送**（2a3cfdb）。**验收** 新旧 Space 的可见集吻合。
 - [x] **BW-08-05-06 验证迁移目标失联和恢复**。**验收** 角色及消息状态对照通过。（72665c3）
-- [x] **BW-08-05-01 实现 Offload 判定**。**验收** 越过测试边界时按阈值迁移。（`f8bbe46`）
+- [x] **BW-08-05-01 实现 Offload 判定**。**验收** 越过测试边界时按阈值迁移。（`f8bbe46, 孤儿复活 4c5df48`）
 - [x] **BW-08-05-02 切换 Real/Ghost 角色**。**验收** 两端任意观测点可定位唯一 Real。（`46718ee, 孤儿复活 8e20d1b`）
 - [x] **BW-08-05-03 转移控制器及回调状态**。**验收** 移动过程连续。（`8e289da`）
 - [x] **BW-08-05-04 重定向切换期间消息**。**验收** 调用到达迁移目标且响应一次。（`2e350f4, 孤儿复活 8e20d1b`）
 - [x] **BW-08-05-05 实现跨 Space 传送**。**验收** 新旧 Space 的可见集吻合。 (b130a76)
 - [x] **BW-08-05-06 验证迁移目标失联和恢复**。**验收** 角色及消息状态对照通过。 (d4137c2, 孤儿复活 8e20d1b)
-  - 2026-11-25 复活（9 模块同批）：`offload_role`/`message_redirect`/`offload_recovery`/`ghost_data`/`buffered_ghost`/`controller_extra`/`load_throttle`/`replay_header`/`replay_tick` 声明入 `crates/server-runtime/src/lib.rs`。`ghost_data.rs` 仅需一处嫁接：`movement::Vec3`（该代不存在的类型）→ 现行 `foundation::math::Vector3`（`::new(x,y,z)` 逐字同签名），连带解掉 4 个 import `crate::ghost_data` 的模块。**同批复核**：server-runtime 1210 测绿，workspace 109 suites 4457 绿，clippy/fmt 清。DA：ghost_data/load_throttle/message_redirect/offload_recovery **100%**、buffered_ghost 98.96%、offload_role 98.93%、controller_extra 92.33%、replay_header 93.67%、replay_tick 89.76%——后三者缺口全为**仅被仍孤立消费方调用**的公共面（controller_extra 的 `Domain::has_ghost/has_real/is_empty` 与 `ControllerId` 三访问器；replay_header/replay_tick 的压缩 tag 解析臂与 `ReplayTickError` 整个 `Display` 实现在写侧 `replay_file_writer`/`replay_recording` 复活前无调用方），按 db 批一 xml_database 97.93% 的既定口径如实登记，不硬造测试凑 98%。
+  - 2026-11-25 复活（9 模块同批）：`offload_role`/`message_redirect`/`offload_recovery`/`ghost_data`/`buffered_ghost`/`controller_extra`/`load_throttle`/`replay_header`/`replay_tick` 声明入 `crates/server-runtime/src/lib.rs`。`ghost_data.rs` 仅需一处嫁接：`movement::Vec3`（该代不存在的类型）→ 现行 `foundation::math::Vector3`（`::new(x,y,z)` 逐字同签名），连带解掉 4 个 import `crate::ghost_data` 的模块。**同批复核**：server-runtime 1210 测绿，workspace 109 suites 4457 绿，clippy/fmt 清。DA：ghost_data/load_throttle/message_redirect/offload_recovery **100%**、buffered_ghost 98.96%、offload_role 98.93%、controller_extra 94.79%（同批复活 `destroy_real` 后升，余缺口仍为 `ControllerId` 访问器无人调）、replay_header 93.67%、replay_tick 89.76%——后三者缺口全为**仅被仍孤立消费方调用**的公共面（controller_extra 的 `Domain::has_ghost/has_real/is_empty` 与 `ControllerId` 三访问器；replay_header/replay_tick 的压缩 tag 解析臂与 `ReplayTickError` 整个 `Display` 实现在写侧 `replay_file_writer`/`replay_recording` 复活前无调用方），按 db 批一 xml_database 97.93% 的既定口径如实登记，不硬造测试凑 98%。
   - `buffered_ghost`(6b93267) 与 `ghost_data`(7acef2a) 两票未在台账被任何行引用（验收随同簇行一并承载），故无行头注记。
+  - 2026-11-25 第二批复活（4c5df48）：`destroy_real`(efb216c)、`offload`(f8bbe46)、`replay_events`(8c3bbb6) 三模块声明入 lib.rs，仅改 import 指向现行别名——`real_entity::EntityId`→`entity_dispatch::EntityId`、`space::SpaceId`→`cellappmgr::SpaceId`、`ghost::CellRect`→`cellappmgr::Rect`、`range_list::EntityId`→`range_list::NodeRef`；offload 在**测试**里把 8 个 BSP 矩形实参显式转 `f32`（生产代码零 f64，`Branch::position` 现行仍 f64、`Rect` 系 f32）。复核：server-runtime 1225 测绿、workspace 109 suites 4472 绿、clippy/fmt 清。DA：offload 99.65%、destroy_real 95.16%（6 个 0 行为 `id/is_real/is_destroyed` 等访问器，无存活调用方）；`replay_events.rs` llvm-cov 未产出 SF 记录（实测 lcov 内该名 `grep -c "^SF:"` 为 0，其余 11 文件均有），不计入覆盖率口径，其测试随 crate 1225 测绿跑。
 
 #### BW-08-06 感知、观测和回放采集
 
@@ -1320,7 +1321,7 @@
 - [x] **BW-08-06-02 实现 noise 感知**。**验收** 不同半径与距离的触发对照。(aaa5435)
 - [x] **BW-08-06-03 提供 Cell Viewer 查询**。**验收** 与实时 Space/Cell 状态匹配。(9fb116b)
 - [x] **BW-08-06-04 实现负载节流**。**验收** 慢加载及超预算 Tick 有可对照结果。(b5e3875, 孤儿复活 8e20d1b)
-- [x] **BW-08-06-05 记录回放事件**。**验收** Tick 边界与事件排序一致。(8c3bbb6)
+- [x] **BW-08-06-05 记录回放事件**。**验收** Tick 边界与事件排序一致。(8c3bbb6, 孤儿复活 4c5df48)
 
 ### BW-09 DBApp、持久化和数据库运维
 
