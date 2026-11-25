@@ -1368,7 +1368,7 @@
 - [x] **BW-09-06-06 提交 PostgreSQL 事务**。**验收** 已提交的实体更新可从另一连接读回。结果：`PostgresStorage::{begin_transaction,commit,rollback}`——BEGIN/COMMIT/ROLLBACK 在单连接上执行、`in_transaction` 旗标（二次 begin 拒绝、无事务时 commit/rollback 拒绝，参照 transaction.cpp:15-23 先执行后立旗标），事务内所有语句同事务，另一连接在 COMMIT 前不可见、之后整份可见；套件 tests/transaction.rs（未提交不可见+提交后行与关联记录可见）。（commit 4cb0574）
 - [x] **BW-09-06-07 回滚 PostgreSQL 事务**。**验收** 写入中途返回错误时，实体和关联记录从独立连接读出旧值。结果：事务中段以显式重复 id 触发契约错误（AlreadyExists）后 ROLLBACK，独立连接读回事务前旧值（行值+logon 记录都未变）；干净回滚同语义；tests/transaction.rs 5 例（含旗标四臂+拒绝错误文本=Storage 契约面）。（commit 4cb0574）
 - [x] **BW-09-06-08 处理 PostgreSQL 并发写冲突**。**验收** 两个写入同一实体的请求按存储契约返回结果，重试后没有重复记录。结果：双连接双线程过 barrier 真并发——同一显式 id 恰一方 Ok(700) 另一方 AlreadyExists（唯一索引串行化=参照 put_entity_task.cpp:93-97），同 id 行数恰 1；被拒方重试走 create 分配新 id（两行各归其键不重复）；并发 update 双 Ok 串行落一行（持有两值之一）。（commit da0db16）
-- [ ] **BW-09-06-09 实现断链恢复**。**验收** 数据库恢复后新请求成功。
+- [x] **BW-09-06-09 实现断链恢复**。**验收** 数据库恢复后新请求成功。结果： 存 （参照 wrapper.hpp:111 connectInfo_）重连同库，已注册类型保留、死连接上的事务随连接丢弃；套件 tests/connection_recovery.rs 2 例——pg_terminate_backend 杀会话后下一请求报错、reconnect 后新请求成功且已提交行与 identity 序列原样（新建不撞旧 id）；暗端口（末位 port=1 libpq 取后者）连接失败即 Storage 错且不污染活连接。（commit 0fb882c）
 - [ ] **BW-09-06-10 验证账号重登**。**验收** 会话状态与 MySQL 基准相符。
 - [ ] **BW-09-06-11 对接 auto-load 与 SQLite 归档**。**验收** 重启恢复对应实体。
 
