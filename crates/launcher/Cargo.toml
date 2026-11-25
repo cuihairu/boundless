@@ -1,0 +1,13 @@
+[package]
+name = "launcher"
+description = "BW-13-05-05 BigWorld launcher (tools/bwlauncher)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The per-game `.db` files are XML; the reference reads them with a
+# vendored tinyxml, this tree reads them with the shared datasection.
+resources = { workspace = true }

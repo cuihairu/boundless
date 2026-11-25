@@ -23,6 +23,7 @@ members = [
     "crates/asset-pipeline",
     "crates/python-module",
     "crates/plugin-host",
+    "crates/launcher",
     "crates/watcher",
     "crates/message_logger",
     "crates/profiler",
@@ -86,6 +87,7 @@ client = { path = "crates/client" }  # replay_write round-trips through its read
 asset-pipeline = { path = "crates/asset-pipeline" }
 terrain = { path = "crates/terrain" }
 # plugin-host = { path = "crates/plugin-host" }  # re-add with first consumer
+# launcher = { path = "crates/launcher" }  # re-add with first consumer
 
 [profile.release]
 opt-level = 3
