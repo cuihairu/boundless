@@ -92,7 +92,13 @@
 //! - [`material_editor`] — the ModelEditor's material editing face: the
 //!   material/dye/tint census, mfm instantiation and overloading, the
 //!   clean/property/naming/feed/flag moves and the shader gates
-//!   (`tools/modeleditor_core/Models/mutant_materials.cpp`).
+//!   (`tools/modeleditor_core/Models/mutant_materials.cpp`);
+//! - [`maya_visual_exporter`] — the Maya visual exporter's portable core:
+//!   the exporter settings round-trip, the scene records the Maya
+//!   traversal produces, the mesh save chain into a `.visual` plus its
+//!   `.primitives`, the hierarchy/world-space handling, and the custom
+//!   hull and boundary faces
+//!   (`tools/mayavisualexporter/`).
 
 pub mod animation_exporter;
 pub mod asset_compiler;
@@ -117,6 +123,7 @@ pub mod hierarchical_config;
 pub mod hierarchical_config_converter;
 pub mod jit_compiler;
 pub mod material_editor;
+pub mod maya_visual_exporter;
 pub mod model_editor;
 pub mod offline_processor;
 pub mod plugin_loader;
