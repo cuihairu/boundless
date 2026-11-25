@@ -2843,7 +2843,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。他席双交付未进 main：bw14-script-host `5120dea`/`0fbfa8f`（hotspot.rs 525 行三窗口）+bw15-platform `ec7b6b0` 复测勾行（7/7 PASS）；主席择一后按勾行态处理，本行保持开。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -4407,7 +4407,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。他席双交付未进 main：bw14-script-host `5120dea`/`0fbfa8f`（hotspot.rs 525 行三窗口）+bw15-platform `ec7b6b0` 复测勾行（7/7 PASS）；主席择一后按勾行态处理，本行保持开。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -5932,7 +5932,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。他席双交付未进 main：bw14-script-host `5120dea`/`0fbfa8f`（hotspot.rs 525 行三窗口）+bw15-platform `ec7b6b0` 复测勾行（7/7 PASS）；主席择一后按勾行态处理，本行保持开。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -7457,7 +7457,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。他席双交付未进 main：bw14-script-host `5120dea`/`0fbfa8f`（hotspot.rs 525 行三窗口）+bw15-platform `ec7b6b0` 复测勾行（7/7 PASS）；主席择一后按勾行态处理，本行保持开。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -9021,7 +9021,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。他席双交付未进 main：bw14-script-host `5120dea`/`0fbfa8f`（hotspot.rs 525 行三窗口）+bw15-platform `ec7b6b0` 复测勾行（7/7 PASS）；主席择一后按勾行态处理，本行保持开。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -10546,7 +10546,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。他席双交付未进 main：bw14-script-host `5120dea`/`0fbfa8f`（hotspot.rs 525 行三窗口）+bw15-platform `ec7b6b0` 复测勾行（7/7 PASS）；主席择一后按勾行态处理，本行保持开。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 

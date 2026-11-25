@@ -168,6 +168,10 @@ impl Range1d {
     }
 }
 
+#[cfg(test)]
+#[path = "cellappmgr_baseline.rs"]
+mod cellappmgr_baseline;
+
 /// A rectangle in the `x`/`y` plane, the coordinate system `BW::Rect` uses
 /// for a space's cell partitioning.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
