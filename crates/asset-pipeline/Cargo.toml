@@ -15,6 +15,7 @@ resources = { workspace = true }
 # The chunk `.cdata` height maps decode through the terrain2 readers
 # (`world_machine_import.rs`).
 terrain = { workspace = true }
+waypoint-gen = { path = "../waypoint-gen" }
 
 [dev-dependencies]
 # The `.animation` reader face (`Animation::from_bytes`) the exporter's
