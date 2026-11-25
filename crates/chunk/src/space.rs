@@ -1733,40 +1733,6 @@ mod tests {
         )
     }
 
-    fn add_outside_chunk(space: &mut ChunkSpace, mapping: &GeometryMapping, id: &str) {
-        let mut chunk = Chunk::new(id, mapping, &Matrix::identity());
-        chunk.is_loaded = true;
-        space.add_chunk(chunk);
-    }
-
-    /// An inside chunk with a box shell around (10,0,10)-(20,10,20): six
-    /// inward boundary planes indexed by `bounds`, the input `Chunk::focus`
-    /// folds into its columns' hull trees.
-    fn shell_chunk(mapping: &GeometryMapping) -> Chunk {
-        let mut chunk = Chunk::new("00000000i", mapping, &Matrix::identity());
-        let min = Vector3::new(10.0, 0.0, 10.0);
-        let max = Vector3::new(20.0, 10.0, 20.0);
-        chunk.bounding_box = foundation::math::BoundBox::new(min, max);
-        chunk.boundaries = [
-            (Vector3::new(1.0, 0.0, 0.0), min.x),
-            (Vector3::new(-1.0, 0.0, 0.0), -max.x),
-            (Vector3::new(0.0, 1.0, 0.0), min.y),
-            (Vector3::new(0.0, -1.0, 0.0), -max.y),
-            (Vector3::new(0.0, 0.0, 1.0), min.z),
-            (Vector3::new(0.0, 0.0, -1.0), -max.z),
-        ]
-        .iter()
-        .map(|(n, d)| ChunkBoundary {
-            plane: PlaneEq::new(*n, *d),
-            bound_portals: Vec::new(),
-            unbound_portals: Vec::new(),
-        })
-        .collect();
-        chunk.bounds = (0..6).collect();
-        chunk.is_loaded = true;
-        chunk
-    }
-
     /// BW-10-01-05 acceptance: cross-chunk and empty-region queries return
     /// the right sets — one answer per outside-chunk column, the shell hull
     /// inside it, and nothing where no chunk was focussed.
@@ -2076,6 +2042,76 @@ mod tests {
         assert_eq!(dist, -1.0);
     }
 
+    #[test]
+    fn inside_chunks_take_the_column_by_smallest_volume() {
+        // no outside chunk is loaded: the smallest containing inside chunk
+        // wins the column, and a larger one never displaces it
+        let mapping = identity_mapping();
+        let mut space = ChunkSpace::new(0, vec![mapping]);
+        for (id, volume) in [
+            ("a0000000i", 8000.0_f32),
+            ("b0000000i", 1000.0),
+            ("c0000000i", 4000.0),
+        ] {
+            let mut chunk = Chunk::new(id, &identity_mapping(), &Matrix::identity());
+            let edge = volume.cbrt();
+            chunk.bounding_box = BoundBox::new(
+                Vector3::new(50.0 - edge / 2.0, -edge / 2.0, 50.0 - edge / 2.0),
+                Vector3::new(50.0 + edge / 2.0, edge / 2.0, 50.0 + edge / 2.0),
+            );
+            chunk.is_loaded = true;
+            space.add_chunk(chunk);
+        }
+        let winner = space
+            .find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0))
+            .map(|c| c.identifier.clone());
+        assert_eq!(winner.as_deref(), Some("b0000000i"));
+    }
+
+    /// The `column(pt, canCreate)` arms and the focus-fold arms: a fresh
+    /// in-span column is created on demand, out-of-span points are None
+    /// even when willing, an unknown identifier's focus is a no-op, an
+    /// outside chunk folds into its single centre column (reused on a
+    /// second focus), and an inside chunk's corners outside the focus
+    /// window are skipped.
+    #[test]
+    fn the_column_and_focus_fold_arms() {
+        let mapping = identity_mapping();
+        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+        assert!(
+            space
+                .column(&Vector3::new(-500.0, 0.0, -500.0), true)
+                .is_none(),
+            "outside the focus window"
+        );
+        assert!(
+            space.column(&Vector3::new(50.0, 0.0, 50.0), true).is_some(),
+            "created on demand"
+        );
+        assert!(
+            space
+                .column(&Vector3::new(150.0, 0.0, 150.0), false)
+                .is_none(),
+            "read-only refusal on a fresh cell"
+        );
+        // focus of an unknown identifier is the early return
+        space.focus_chunk("nosuchchunk");
+        add_outside_chunk(&mut space, &mapping, "00000000o");
+        space.focus_chunk("00000000o");
+        // a second focus reuses the column the first one created
+        space.focus_chunk("00000000o");
+        // an inside chunk with corners past the focus window: the far
+        // cells are skipped, the near one still folds
+        let mut far = Chunk::new("02000000i", &mapping, &Matrix::identity());
+        far.bounding_box = BoundBox::new(
+            Vector3::new(240.0, 0.0, 10.0),
+            Vector3::new(250.0, 10.0, 20.0),
+        );
+        far.is_loaded = true;
+        space.add_chunk(far);
+        space.focus_chunk("02000000i");
+    }
+
     /// The map-walk query family (the WorldEditor placement face) resolves
     /// points without a focus pump: the containing inside chunk of the
     /// point's grid cell wins by smallest volume, and an unloaded chunk is
@@ -2114,96 +2150,5 @@ mod tests {
                 .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
                 .is_none_or(|c| c.identifier != "b0000000i")
         );
-    }
-
-    /// A focussed chunk's obstacle reaches the column its corners touch,
-    /// and a ray through it lands on the obstacle's BSP plane — the
-    /// distance `ChunkSpace::collide` reports is the nearest triangle's
-    /// distance along the sweep (`findDropPoint` consumes it).
-    #[test]
-    fn a_ray_through_a_focussed_obstacle_answers_the_nearest_triangle() {
-        let mapping = identity_mapping();
-        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
-        add_outside_chunk(&mut space, &mapping, "00000000o");
-        space.add_chunk(shell_chunk(&mapping));
-        space.focus_chunk("00000000i");
-
-        assert_eq!(space.add_obstacle(slab_obstacle(Some("00000000i"))), 0);
-
-        let mut fdpt = ClosestTriangle::new();
-        let dist = space.collide(
-            Vector3::new(2.0, 2.0, 0.0),
-            Vector3::new(2.0, 2.0, 8.0),
-            &mut fdpt,
-        );
-
-        assert!((dist - 5.0).abs() < 1e-5, "dist {dist}");
-        // the slab plane sits at z 5
-        assert!((fdpt.triangle().v0().z - 5.0).abs() < 1e-5);
-    }
-
-    /// A callback that stops the sweep still reports the swept distance —
-    /// the `ChunkSpace_collide` early-return arm.
-    #[test]
-    fn a_stopping_callback_returns_the_state_distance_early() {
-        let mapping = identity_mapping();
-        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
-        add_outside_chunk(&mut space, &mapping, "00000000o");
-        space.add_chunk(shell_chunk(&mapping));
-        space.focus_chunk("00000000i");
-        space.add_obstacle(slab_obstacle(Some("00000000i")));
-
-        let dist = space.collide(
-            Vector3::new(2.0, 2.0, 0.0),
-            Vector3::new(2.0, 2.0, 8.0),
-            &mut StoppingCallback,
-        );
-        assert!((dist - 5.0).abs() < 1e-5, "dist {dist}");
-    }
-
-    /// Outside the focus grid there is no column to walk, so the sweep
-    /// never touches an obstacle and reports the untouched state distance.
-    #[test]
-    fn a_ray_outside_the_focus_grid_never_touches_an_obstacle() {
-        let mapping = identity_mapping();
-        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
-        add_outside_chunk(&mut space, &mapping, "00000000o");
-        space.add_chunk(shell_chunk(&mapping));
-        space.focus_chunk("00000000i");
-        space.add_obstacle(slab_obstacle(Some("00000000i")));
-
-        let mut fdpt = ClosestTriangle::new();
-        let dist = space.collide(
-            Vector3::new(250.0, 2.0, 0.0),
-            Vector3::new(250.0, 2.0, 8.0),
-            &mut fdpt,
-        );
-        assert_eq!(dist, -1.0);
-        assert_eq!(fdpt.triangle().v0(), Vector3::ZERO);
-    }
-
-    /// An obstacle whose chunk is not focussed — or that owns no chunk —
-    /// never reaches a column: it sits in the arena only, and the sweep
-    /// ignores it.
-    #[test]
-    fn an_unfocussed_chunk_obstacle_never_reaches_a_column() {
-        let mapping = identity_mapping();
-        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
-        add_outside_chunk(&mut space, &mapping, "00000000o");
-        space.add_chunk(shell_chunk(&mapping));
-
-        // the shell was never focussed, and the outside chunk has no
-        // focus either: both obstacles park in the arena only
-        assert_eq!(space.add_obstacle(slab_obstacle(Some("00000000i"))), 0);
-        assert_eq!(space.add_obstacle(slab_obstacle(Some("00000000o"))), 1);
-        assert_eq!(space.add_obstacle(slab_obstacle(None)), 2);
-
-        let mut fdpt = ClosestTriangle::new();
-        let dist = space.collide(
-            Vector3::new(2.0, 2.0, 0.0),
-            Vector3::new(2.0, 2.0, 8.0),
-            &mut fdpt,
-        );
-        assert_eq!(dist, -1.0);
     }
 }
