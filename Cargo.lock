@@ -1095,6 +1095,7 @@ dependencies = [
 name = "mercury"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "foundation",
  "platform",
 ]
