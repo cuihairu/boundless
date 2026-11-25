@@ -128,10 +128,53 @@ generator's own footprint, not a served topology; per-period RSS/CPU
 sampling of a live run (`ResourceTracker`, BW-17-03-04) exists in
 `crates/load` but is not yet wired into the driver report.
 
+## OPT-01-01-03 (2026-11-26): hot-path allocation fixes
+
+Two fixes, each pinned by a counting-allocator test that failed against
+the old implementation first (TDD red phase = the "before" numbers).
+
+`DataSectionCache` (`crates/resources`) relink machinery: the LRU chain
+previously stored neighbour links as `Option<String>` path copies, so
+every relink allocated 2-6 Strings. The chain now lives in a slot arena
+(`Vec<CacheNode>`) with integer links and an intrusive free chain; `add`
+pays its two Strings (map key + in-slot name copy) once, and the
+steady-state relinks allocate nothing. Sections drop when their entry is
+freed, like the reference deleting the list node. Per-operation counts
+(`crates/resources/tests/data_section_cache_alloc.rs`):
+
+| operation | before | after |
+|---|---|---|
+| `find` head hit | 0 | 0 |
+| `find` middle hit | 6 / 36 B | 0 |
+| `find` tail hit | 5 / 30 B | 0 |
+| `find` miss | 0 | 0 |
+| `purgeLRU` | 3 / 18 B | 0 |
+| `remove` middle / tail | 3 / 18 B | 0 |
+| `remove` head | 2 / 12 B | 0 |
+| in-place re-add | 0 | 0 |
+| `add` new name | 4 | 2 |
+
+`BinaryStream::new()` now reserves the reference constructor's 64-byte
+buffer (`MemoryOStream( int size = 64 )`,
+`lib/cstdmf/memory_stream.hpp`), so a small write pays one allocation
+instead of a growth sequence (61-byte write: 2 → 1 allocation, the
+first allocation requesting exactly 64 bytes). The
+`stream/encode_mixed_payload` fixture drops 29 → 26 allocations
+(26,563 → 26,507 bytes).
+
+Load-peak A/B (`bots` generator, `LOAD_CLIENTS=4`, `LOAD_DURATION=2`,
+median of 3 runs, main `33e030a` ± the optimization commit):
+steady-move 3,216 → 3,456 KiB, login-hurricane 3,284 → 3,152 KiB,
+dense-aoi 3,248 → 3,168 KiB. Every delta sits inside the ±150-200 KiB
+run spread, so the generator's peak RSS is unchanged in noise — the
+expected outcome for allocation-count work on the offline faces.
+
 ## CI
 
 No CI wiring yet for the benches (per batch ticket): they stay out of
 the test gate. The allocation harness is a test, not a bench — it runs
-as part of `cargo test -p foundation -p server-runtime`. When a perf
-gate lands, compare timings against `target/criterion` baselines via
-`--save-baseline` / `--baseline`, not absolute numbers from this page.
+as part of `cargo test -p foundation -p server-runtime` (and, since
+OPT-01-01-03, `cargo test -p resources` for the cache hot path). When a
+perf gate lands, compare timings against `target/criterion` baselines
+via `--save-baseline` / `--baseline`, not absolute numbers from this
+page.
