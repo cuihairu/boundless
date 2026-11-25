@@ -2048,7 +2048,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
-- [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
+- [x] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。（4a6f4c1：long_stability.rs soak+8 样本/窗口 procfs 计划，确定面走 stdout 指标、墙钟资源半（CPU/RSS 序列+峰值+定义）经 resource_report_entries 落 LOAD_REPORT；ci/load.sh 6/6 绿；cargo test -p load 168 绿；llvm-cov 100%）
   - 卡点（活服务端）：负载生成器自身资源使用需压测进程实际运行——BW-12-04 bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots`，未并 main）交付，仍缺 BW-17-01 + 活服务端（`app::run` tick-loop）；场景 `long-stability.xml` 与计时已备。
   - 复测（2026-11-25，lane/bw19-docs）：「活服务端 tick-loop 缺」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01、压测进程实际运行）不变。
 
@@ -3614,7 +3614,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
-- [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
+- [x] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。（4a6f4c1：long_stability.rs soak+8 样本/窗口 procfs 计划，确定面走 stdout 指标、墙钟资源半（CPU/RSS 序列+峰值+定义）经 resource_report_entries 落 LOAD_REPORT；ci/load.sh 6/6 绿；cargo test -p load 168 绿；llvm-cov 100%）
   - 卡点（活服务端）：负载生成器自身资源使用需压测进程实际运行——BW-12-04 bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots`，未并 main）交付，仍缺 BW-17-01 + 活服务端（`app::run` tick-loop）；场景 `long-stability.xml` 与计时已备。
   - 复测（2026-11-25，lane/bw19-docs）：「活服务端 tick-loop 缺」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01、压测进程实际运行）不变。
 
@@ -5141,7 +5141,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
-- [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
+- [x] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。（4a6f4c1：long_stability.rs soak+8 样本/窗口 procfs 计划，确定面走 stdout 指标、墙钟资源半（CPU/RSS 序列+峰值+定义）经 resource_report_entries 落 LOAD_REPORT；ci/load.sh 6/6 绿；cargo test -p load 168 绿；llvm-cov 100%）
   - 卡点（活服务端）：负载生成器自身资源使用需压测进程实际运行——BW-12-04 bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots`，未并 main）交付，仍缺 BW-17-01 + 活服务端（`app::run` tick-loop）；场景 `long-stability.xml` 与计时已备。
   - 复测（2026-11-25，lane/bw19-docs）：「活服务端 tick-loop 缺」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01、压测进程实际运行）不变。
 
@@ -6668,7 +6668,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
-- [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
+- [x] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。（4a6f4c1：long_stability.rs soak+8 样本/窗口 procfs 计划，确定面走 stdout 指标、墙钟资源半（CPU/RSS 序列+峰值+定义）经 resource_report_entries 落 LOAD_REPORT；ci/load.sh 6/6 绿；cargo test -p load 168 绿；llvm-cov 100%）
   - 卡点（活服务端）：负载生成器自身资源使用需压测进程实际运行——BW-12-04 bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots`，未并 main）交付，仍缺 BW-17-01 + 活服务端（`app::run` tick-loop）；场景 `long-stability.xml` 与计时已备。
   - 复测（2026-11-25，lane/bw19-docs）：「活服务端 tick-loop 缺」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01、压测进程实际运行）不变。
 
@@ -8234,7 +8234,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
-- [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
+- [x] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。（4a6f4c1：long_stability.rs soak+8 样本/窗口 procfs 计划，确定面走 stdout 指标、墙钟资源半（CPU/RSS 序列+峰值+定义）经 resource_report_entries 落 LOAD_REPORT；ci/load.sh 6/6 绿；cargo test -p load 168 绿；llvm-cov 100%）
   - 卡点（活服务端）：负载生成器自身资源使用需压测进程实际运行——BW-12-04 bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots`，未并 main）交付，仍缺 BW-17-01 + 活服务端（`app::run` tick-loop）；场景 `long-stability.xml` 与计时已备。
   - 复测（2026-11-25，lane/bw19-docs）：「活服务端 tick-loop 缺」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01、压测进程实际运行）不变。
 
@@ -9761,7 +9761,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
 - [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
-- [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
+- [x] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。（4a6f4c1：long_stability.rs soak+8 样本/窗口 procfs 计划，确定面走 stdout 指标、墙钟资源半（CPU/RSS 序列+峰值+定义）经 resource_report_entries 落 LOAD_REPORT；ci/load.sh 6/6 绿；cargo test -p load 168 绿；llvm-cov 100%）
   - 卡点（活服务端）：负载生成器自身资源使用需压测进程实际运行——BW-12-04 bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots`，未并 main）交付，仍缺 BW-17-01 + 活服务端（`app::run` tick-loop）；场景 `long-stability.xml` 与计时已备。
   - 复测（2026-11-25，lane/bw19-docs）：「活服务端 tick-loop 缺」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01、压测进程实际运行）不变。
 
