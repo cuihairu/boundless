@@ -12,6 +12,7 @@ foundation = { workspace = true }
 physics = { path = "../physics" }
 regex = { workspace = true }
 resources = { workspace = true }
+waypoint-gen = { path = "../waypoint-gen" }
 
 [dev-dependencies]
 compiled-space = { path = "../compiled-space" }

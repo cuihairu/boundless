@@ -112,6 +112,7 @@ pub mod hierarchical_config_converter;
 pub mod jit_compiler;
 pub mod material_editor;
 pub mod model_editor;
+pub mod navmesh_processor;
 pub mod offline_processor;
 pub mod plugin_loader;
 pub mod primitive_file_structs;
