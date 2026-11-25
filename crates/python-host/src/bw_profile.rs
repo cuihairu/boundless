@@ -994,7 +994,7 @@ mod tests {
             // The refusal left the stored directory at the good path.
             assert_eq!(global().json_dump_dir(), good);
             assert_eq!(read_global(b"__good\0"), good);
-            let _ = std::fs::remove_dir_all(&good);
+            let _ = std::fs::remove_dir_all(good);
         });
     }
 
