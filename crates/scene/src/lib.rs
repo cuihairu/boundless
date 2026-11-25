@@ -17,7 +17,11 @@
 //!   and the visibility intersect walk (`intersect_scene_view.{hpp,cpp}`
 //!   + `intersection_set.{hpp,cpp}` + `scene_intersect_context.{hpp,cpp}`),
 //! - the object-change event face (`object_change_scene_view.{hpp,cpp}`
-//!   + `scene_event_view.{hpp,cpp}`).
+//!   + `scene_event_view.{hpp,cpp}`),
+//! - the debug field view: `tools/visual_studio/visualizers/bigworld.natvis`
+//!   migrated to the Rust `SceneObject` (the natvis asset below for
+//!   MSVC-family debuggers, the GDB script for GDB-family ones, and the
+//!   display-string core in `SceneObject::debug_view_string`).
 //!
 //! Ownership adaptations are registered at each site: the reference passes
 //! raw `Scene*`/`ProviderInterface*` pointers around a shared graph; the
@@ -29,6 +33,9 @@
 //! mutably borrowed, so `Scene::add_provider` materializes the
 //! [`provider::SceneBoundFaces`] and pushes them to the provider through
 //! `on_scene_bound`.
+
+#![debugger_visualizer(natvis_file = "bigworld.natvis")]
+#![debugger_visualizer(gdb_script_file = "bigworld_gdb.py")]
 
 pub mod collision_operation;
 pub mod collision_scene_view;
