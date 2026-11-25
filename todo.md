@@ -1372,13 +1372,13 @@
 
 提供建库、schema 同步与 dry-run、备份恢复和现有 MySQL 数据导入。用原版样本核对实体 ID、账号关联、二进制字段、默认值和下一个可分配 DBID。验证迁移失败时的状态和重试行为。
 
-- [ ] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。
-- [ ] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。
-- [ ] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。
-- [ ] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。
-- [ ] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。
-- [ ] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。
-- [ ] **BW-09-07-07 验证迁移失败与重跑**。**验收** 下次执行不重复导入。
+- [x] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。（bw16-18 席交付 lane/bw16-18；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂 lane/bw16-18 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；b3afdea schema_init 2/2+storage_contract 17/17）
+- [x] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。（bw16-18 席交付 lane/bw16-18；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂 lane/bw16-18 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；b3afdea dry_run 3/3）
+- [x] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。（bw16-18 席交付 lane/bw16-18；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂 lane/bw16-18 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；b3afdea upgrade 3/3）
+- [x] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。（bw16-18 席交付 lane/bw16-18；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂 lane/bw16-18 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；b3afdea/e4d24e5 backup 6/6）
+- [x] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。（bw16-18 席交付 lane/bw16-18；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂 lane/bw16-18 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；b3afdea/fc61d0d import_mysql 6/6）
+- [x] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。（bw16-18 席交付 lane/bw16-18；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂 lane/bw16-18 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；b3afdea dbid_allocation 3/3（⚠️ 双交付：lane/bw08-ledger-tick 6f025f1 calibrate 专面未并 main，合并择一））
+- [x] **BW-09-07-07 验证迁移失败与重跑**。**验收** 下次执行不重复导入。（bw16-18 席交付 lane/bw16-18；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂 lane/bw16-18 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；b3afdea/3f218d8 迁移失败重跑面 3f218d8）
 
 ### BW-10 世界资源、碰撞和导航
 
