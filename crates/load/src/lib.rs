@@ -12,6 +12,7 @@ pub mod cross_cell;
 pub mod dense;
 pub mod executor;
 pub mod fleet;
+pub mod hotspot;
 pub mod hurricane;
 pub mod long_stability;
 pub mod metrics;
@@ -32,6 +33,7 @@ pub use bots_config::{BotsConfig, OptionEntry, Value as BotOptionValue, WatcherM
 pub use dense::{DenseAoiLedger, run_dense_aoi};
 pub use executor::{Executor, StageTimeline};
 pub use fleet::{ControllerRegistry, Fleet, FleetSettings, MINI_TICK_PERIOD, TICK_FRAGMENTS};
+pub use hotspot::{HotspotBaselineLedger, run_hotspot_baseline};
 pub use hurricane::{HurricaneLedger, run_login_hurricane};
 pub use long_stability::run_long_stability;
 pub use metrics::{LoginAggregate, OnlineSummary, online_report_entries, online_summary};

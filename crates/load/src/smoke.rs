@@ -22,6 +22,7 @@ use std::time::Duration;
 use crate::bot::FD_PER_BOT;
 use crate::cross_cell::{CrossingLedger, run_cross_cell};
 use crate::dense::{DenseAoiLedger, run_dense_aoi};
+use crate::hotspot::run_hotspot_baseline;
 use crate::hurricane::{HurricaneLedger, run_login_hurricane};
 use crate::long_stability::run_long_stability;
 use crate::reconnect::{ReconnectLedger, run_reconnect};
@@ -110,6 +111,8 @@ pub enum SmokeRun {
     Reconnect(ReconnectLedger),
     /// The long-stability run's record.
     LongStability(crate::long_stability::LongStabilityLedger),
+    /// The hotspot/fault baseline run's record.
+    Hotspot(crate::hotspot::HotspotBaselineLedger),
 }
 
 /// Clamp a saved scenario to the smoke envelope: the concurrency is the
@@ -184,6 +187,11 @@ pub fn run_face(scenario: &Scenario) -> Result<SmokeRun, SmokeError> {
             scenario.fixed_seed,
         ))),
         "long-stability" => Ok(SmokeRun::LongStability(run_long_stability(
+            scenario,
+            fd_limit,
+            scenario.fixed_seed,
+        ))),
+        "hotspot-baseline" => Ok(SmokeRun::Hotspot(run_hotspot_baseline(
             scenario,
             fd_limit,
             scenario.fixed_seed,
@@ -311,6 +319,41 @@ pub fn smoke_metrics(run: &SmokeRun) -> Vec<(String, MetricValue)> {
                 ),
             ]
         }
+        SmokeRun::Hotspot(ledger) => {
+            // The reproducible face only: the fleet size, the window and
+            // drain shape, the recovery statistics and the sample
+            // schedule. The wall-clock RSS numbers travel through the
+            // ledger's `resource_report_entries` into the saved report.
+            vec![
+                ("bots".to_string(), int(ledger.recovery.len() as i64)),
+                ("window_ticks".to_string(), int(ledger.window_ticks as i64)),
+                ("drain_ticks".to_string(), int(ledger.drain_ticks as i64)),
+                (
+                    "recoveries_completed".to_string(),
+                    int(ledger.recoveries_completed() as i64),
+                ),
+                (
+                    "mean_recovery_ticks".to_string(),
+                    MetricValue::Float(ledger.mean_recovery_ticks()),
+                ),
+                (
+                    "max_recovery_ticks".to_string(),
+                    int(ledger.max_recovery_ticks() as i64),
+                ),
+                (
+                    "sampling_period_secs".to_string(),
+                    MetricValue::Float(ledger.resource_period.as_secs_f64()),
+                ),
+                (
+                    "resource_sample_count".to_string(),
+                    int(ledger.samples.len() as i64),
+                ),
+                (
+                    "load_min_online_ratio".to_string(),
+                    MetricValue::Float(ledger.load_window_min_online_ratio()),
+                ),
+            ]
+        }
     }
 }
 
@@ -415,6 +458,7 @@ mod tests {
             "cross-cell",
             "reconnect",
             "long-stability",
+            "hotspot-baseline",
         ] {
             let saved = saved(name);
             let (capped, run) =
@@ -539,6 +583,59 @@ mod tests {
             matches!(saved_find("peak_rss_kib"), ReportValue::Int(kib) if *kib > 0),
             "the process has a resident size"
         );
+        assert_eq!(
+            saved_find("cpu_metric_def"),
+            &ReportValue::Str(CPU_METRIC_DEF.to_string())
+        );
+        assert_eq!(
+            match saved_find("rss_kib_series") {
+                ReportValue::List(items) => items.len(),
+                _ => 0,
+            },
+            8
+        );
+    }
+
+    /// The hotspot smoke lines carry the recovery statistics and the
+    /// window shape; the wall-clock resource half is saved through the
+    /// ledger's report entries — the allocation peak, the reclamation
+    /// floor, the series and the metric definitions.
+    #[test]
+    fn the_hotspot_metrics_save_all_three_windows() {
+        let small = scenario("hotspot-baseline", 4, 3);
+        let (_, run) = run_smoke(&small, &caps()).expect("smoke");
+        let metrics = smoke_metrics(&run);
+        assert_eq!(find(&metrics, "bots"), &MetricValue::Int(4));
+        assert_eq!(find(&metrics, "window_ticks"), &MetricValue::Int(30));
+        assert_eq!(find(&metrics, "recoveries_completed"), &MetricValue::Int(4));
+        assert!((as_float(find(&metrics, "mean_recovery_ticks")) - 2.0).abs() < 1e-12);
+        assert_eq!(find(&metrics, "max_recovery_ticks"), &MetricValue::Int(2));
+        assert_eq!(
+            find(&metrics, "resource_sample_count"),
+            &MetricValue::Int(8)
+        );
+
+        let SmokeRun::Hotspot(ledger) = &run else {
+            panic!("the hotspot kind dispatched elsewhere");
+        };
+        assert_eq!(*ledger.online.last().unwrap(), 0, "the drain released all");
+        let saved = ledger.resource_report_entries();
+        let saved_find = |key: &str| {
+            saved
+                .iter()
+                .find(|entry| entry.key == key)
+                .map(|entry| &entry.value)
+                .unwrap_or_else(|| panic!("no {key} entry"))
+        };
+        assert!(
+            matches!(saved_find("peak_rss_kib"), ReportValue::Int(kib) if *kib > 0),
+            "the process has a resident size"
+        );
+        assert!(matches!(saved_find("final_rss_kib"), ReportValue::Int(_)));
+        assert!(matches!(
+            saved_find("reclaimed_rss_kib"),
+            ReportValue::Int(_)
+        ));
         assert_eq!(
             saved_find("cpu_metric_def"),
             &ReportValue::Str(CPU_METRIC_DEF.to_string())

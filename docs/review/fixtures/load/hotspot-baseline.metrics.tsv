@@ -1,0 +1,9 @@
+bots	4
+window_ticks	300
+drain_ticks	75
+recoveries_completed	4
+mean_recovery_ticks	2
+max_recovery_ticks	2
+sampling_period_secs	4.599999905
+resource_sample_count	8
+load_min_online_ratio	0.75
