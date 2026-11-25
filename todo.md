@@ -1376,14 +1376,18 @@
 
 复现建表和同步、dry-run、快照、传输、二级库合并、清理 auto-load 及移除辅助工具。比较命令行、退出码、输出和操作前后数据。
 
+- 本段六项收口。05-01..04/05-06 的交付在 bw16-18 席并已并 main（两套 hash 皆实测为 `lane/bw16-18` 与 main 的祖先；本席 lane 树早于 main 的 `tools/` 子树，故按 main 实况勾账）；05-05 二级库合并工具本席车道平行交付（见下双交付警示）。
+
 - [x] **BW-09-05-01 移植 sync_db**。**验收** 原版 schema 上的 DDL 差异可复核。 (a9d2dfb)
 - [x] **BW-09-05-02 移植 dry-run**。**验收** 报告计划且数据库前后相同。 (e70fc3f)
 - [x] **BW-09-05-03 移植快照工具**。**验收** 原版读者可读取结果。 (435f174)
 - [x] **BW-09-05-04 移植 transfer_db**。**验收** 目标数据和退出码吻合。 (9d42be9)
 - [x] **BW-09-05-05 移植二级库合并工具**。**验收** 原版输入合并结果吻合。（commit 62a93ab + dcd4011）
   - 证据：`crates/db/src/consolidate_tool.rs`（62a93ab 立项 `pub mod consolidate_tool` 已声明，dcd4011 收尾）——命令面+整条 'n'/'e' 字节协议：手写 getopt 簇（长短选项、inline `--name=value`、`--` 终结符、五段 `host;port;user;pass;db` spec 走 strtoul-base-0、`-r` 值两式：簇尾附值或下一参数）、`unquote_digest`/`check_entity_defs_digest_match`（32 个大写十六进制、nibble 折叠 `c > '9'` 逐字——小写折成垃圾）、`SecondaryDbInfo`（网络序 IP，`ip_as_string` 印 SWAPPED 字节——存 0x0A000009 印 "9.0.0.10"）、`ConsolidateSender`（`'n'`+u16 名长+全 sqlite 路径+u32 尺寸+4096 字节读发循环、`'e'` 错误折返 supplemental 为 `" (%s)"` 加 +3、`wait_for_delete` 收 `'d'` 才删源文件、非 `'d'` 保留文件）、`FileReceiver` 八态状态机（Command/SrcPathLen/SrcPath/FileLen/FileContents/ErrorLen/ErrorStr/Done|Failed、-2 碰撞后缀、裸名直接落盘、空文件拒收）+ `FileReceiverMgr`（pending 记账、finished、cleanUpRemoteFiles 保留 errored 库、cleanUpLocalFiles）。**验收**：`a_transferred_database_carries_the_identical_merge_input` —— 传输后文件与源**逐字节相同**、行读回一致、digest 门吻合（合并引擎=`secondary_database.rs` 的 merge_into，验收在工具边界证明）。**收尾（dcd4011）**：挂起测试 `the_sender_keeps_the_file_on_an_unexpected_reply` 修复并取消 ignore（拉线程按名长解析头，先前固定 19 字节读入错尺寸永久挂起）+ 5 新测（FailureScript 断线三腿：头发送/内容发送/删除等待、CutAfter 截断七腿：各头字段断裂按态名拒、裸错误无折返、目标三腿：裸名落盘/缺目录拒开/缝合消息）；23 测全绿 **0 ignored**；fresh llvm-cov DA 1543 缺 12＝**99.22%**（12 行全为登记防御臂：read_and_send_db 的 File::open 拒绝臂（stat+sqlite 干净的文件在单进程内无法变不可开）+ FileContents 写失败臂（碰撞后缀把既有目标改道新路径，新文件不拒写）），双臂源码注释登记。
-  - 双交付警示（主席合并裁定）：**main 现有三份候选全部是孤儿未编译**——`consolidate_dbs.rs`（bw16-18 席 4cbdccf，1681 行 30 测）、`consolidate_tool.rs`（本席 62a93ab+dcd4011，2219 行 23 测+`pub mod` 声明+99.22%）、`consolidate.rs`（合并引擎 1074 行 20 测）；main 的 `crates/db/src/lib.rs` 三者**皆未声明**（声明的是 `secondary_database`+`tools`）。本席车道声明并编译 `consolidate_tool`，合并须择一并补声明。
-- [ ] **BW-09-05-06 移植 clear_auto_load 和 remove_db 入口**。**验收** 用隔离样本校验各自操作及退出码。
+  - 双交付警示（主席合并裁定，已按 main 实况校正）：main 的活面在 `crates/db/src/tools/`（`lib.rs:40 pub mod tools;` → `tools/mod.rs` 声明七件 BW-09-05 工具），consolidate 面即 `tools/consolidate_dbs.rs` 1441 行 + `tools/consolidate_dbs/tests.rs` 1881 行/**74 测**——**已声明已编译**。**顶层另有三份未声明孤儿**（`lib.rs` 无条目故从不编译）：`consolidate_tool.rs` 2219 行/18 测（本席 62a93ab 的 WIP，其中 1 例 `#[ignore]` 挂起测试仍在，`dcd4011` 未并 main）、`consolidate_dbs.rs` 1681 行/30 测（bw16-18 4cbdccf）、`consolidate.rs` 1074 行/20 测（合并引擎）。本席车道版为顶层 `consolidate_tool.rs` 2511 行/**23 测 0 ignored**/99.22% + `lib.rs:21 pub mod consolidate_tool;`（声明并编译），与 main 的 `db::tools::consolidate_dbs` 同面平行；合并须择一并清孤儿（本席版覆盖数据更齐：无 ignore，含 FailureScript/CutAfter 断线与截断族）。
+- [x] **BW-09-05-06 移植 clear_auto_load 和 remove_db 入口**。（66768bd）
+  - 本席无代码交付——bw16-18 席 66768bd 已并 main（`git merge-base --is-ancestor 66768bd origin/main` 成立），main 活面在 `crates/db/src/tools/`（`tools/mod.rs:10,13` 声明 `clear_auto_load`+`remove_db`）：`tools/clear_auto_load.rs` 272 行 + `clear_auto_load/tests.rs` 588 行/**28 测**、`tools/remove_db.rs` 89 行 + `remove_db/tests.rs` 249 行/**12 测**；两入口都留 `main_face(...) -> i32` 缝供退出码直断言（`help_prints_the_usage_and_exits_successfully`、`an_unrecognised_option_exits_with_failure`）。验收「用隔离样本校验各自操作及退出码」对应：clear_auto_load 的 `the_tool_deletes_only_the_auto_load_entities_of_a_real_sample`（隔离样本真操作）+ 四表门 / 首失败中止 / DELETE 失败仅告警仍成功 / 未知类型占位名；remove_db 的 `a_real_secondary_database_is_removed`、非库文件 / 无 checksum 表 / 空文件**保留**、`--res` 剥离（含吞掉路径本身）、无路径失败。
+  - 双交付警示：main 另有两份**未声明孤儿**顶层副本 `crates/db/src/clear_auto_load.rs`（713 行/14 测，bw16-18 原始版）与 `crates/db/src/remove_db.rs`（171 行/8 测）——`lib.rs` 无条目故从不编译；合并须择一并清孤儿。
 
 #### BW-09-06 PostgreSQL 持久化
 
