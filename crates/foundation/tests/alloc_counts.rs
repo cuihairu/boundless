@@ -193,6 +193,21 @@ fn encode_fixture() -> BinaryStream {
     stream
 }
 
+/// `BinaryStream::new()` reserves the reference `MemoryOStream`'s
+/// 64-byte inline buffer: small writes (up to 64 bytes) fit in the
+/// first allocation, with no growth reallocations.
+#[test]
+fn new_stream_reserves_64_bytes() {
+    let (count, stream) = measure(|| {
+        let mut stream = BinaryStream::new();
+        stream.write_blob(&[0xA5u8; 60]).unwrap();
+        stream
+    });
+    assert_eq!(stream.length(), 61);
+    assert_eq!(count.allocs, 1, "64-byte reserve covers a 60-byte write");
+    assert_eq!(count.bytes, 64);
+}
+
 /// `stream/encode_mixed_payload`.
 #[test]
 fn encode_mixed_payload() {

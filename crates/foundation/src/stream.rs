@@ -63,11 +63,24 @@ impl std::error::Error for StreamError {}
 
 /// A byte buffer that supports sequential reading and sequential writing,
 /// mirroring the reference `BinaryIStream` / `BinaryOStream` pair.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BinaryStream {
     buf: Vec<u8>,
     read: usize,
     error: bool,
+}
+
+impl Default for BinaryStream {
+    fn default() -> Self {
+        Self {
+            // `MemoryOStream( int size = 64 )`: the reference output
+            // stream constructor starts with a 64-byte buffer, so small
+            // payloads never pay growth reallocations.
+            buf: Vec::with_capacity(64),
+            read: 0,
+            error: false,
+        }
+    }
 }
 
 impl BinaryStream {
