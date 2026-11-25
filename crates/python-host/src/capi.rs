@@ -601,6 +601,7 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyObject_CallNoArgs(func: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_CallObject(func: *mut PyObject, args: *mut PyObject) -> *mut PyObject;
+    pub fn PyObject_CallFunction(func: *mut PyObject, format: *const c_char, ...) -> *mut PyObject;
     pub fn PyCallable_Check(obj: *mut PyObject) -> c_int;
     pub fn PyObject_IsTrue(obj: *mut PyObject) -> c_int;
     pub fn PyModule_AddFunctions(module: *mut PyObject, functions: *const PyMethodDef) -> c_int;
