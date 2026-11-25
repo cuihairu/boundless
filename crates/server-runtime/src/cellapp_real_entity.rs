@@ -399,6 +399,47 @@ pub enum ControllerKind {
         /// `vehicleID_`.
         vehicle_id: u32,
     },
+    /// `ProximityController` (`proximity_controller.cpp`): the script
+    /// trap — an x/z trigger pair around the owner that turns
+    /// range-list crossings into `onEnterTrap`/`onLeaveTrap`. A plain
+    /// controller type: an entity may carry several traps at once.
+    /// `onloaded` is the restore state `readRealFromStream` carried
+    /// (the ids that were in range when the entity offloaded); the
+    /// start reconciles against it.
+    Proximity {
+        /// `range_`.
+        range: f32,
+        /// `pOnloadedSet_`: the ids that were inside at offload time.
+        onloaded: Vec<u32>,
+    },
+    /// `VisionController` (`vision_controller.cpp`): the seer's own
+    /// trigger plus the periodic `updateVisibleEntities` pass that
+    /// turns in-range entities into `onStartSeeing`/`onStopSeeing`
+    /// after the occlusion ladder. `onloaded_visible` is the restore
+    /// state `pOnloadedVisible_` carried.
+    Vision {
+        /// `visionAngle_`: the half-angle in radians (the field of
+        /// view is double it).
+        vision_angle: f32,
+        /// `visionRange_`.
+        vision_range: f32,
+        /// `seeingHeight_`.
+        seeing_height: f32,
+        /// `updatePeriod_`.
+        update_period: u32,
+        /// `tickSinceLast_`.
+        ticks_since_last: u32,
+        /// `pOnloadedVisible_`: the ids that were visible at offload
+        /// time, restored before the first update runs.
+        onloaded_visible: Vec<u32>,
+    },
+    /// `VisibilityController` (`visibility_controller.cpp`): the
+    /// ghost-domain marker that makes the owner seeable and carries
+    /// the model height others sight against.
+    Visibility {
+        /// `visibleHeight_` (the factory default is 2.f).
+        visible_height: f32,
+    },
 }
 
 /// The category string every movement-family controller registers under
@@ -565,7 +606,7 @@ impl Controller {
     /// ported kind is real.
     pub fn domain(&self) -> u8 {
         match self.kind {
-            ControllerKind::Passenger { .. } => DOMAIN_GHOST,
+            ControllerKind::Passenger { .. } | ControllerKind::Visibility { .. } => DOMAIN_GHOST,
             _ => DOMAIN_REAL,
         }
     }
@@ -1309,6 +1350,15 @@ impl CellApp {
             ControllerKind::Passenger { vehicle_id } => {
                 self.passenger_start(entity_rc, id, vehicle_id)
             }
+            ControllerKind::Proximity { range, onloaded } => {
+                self.start_proximity_controller(entity_rc, id, is_initial_start, range, onloaded)
+            }
+            ControllerKind::Vision { .. } => {
+                self.start_vision_controller(entity_rc, id, is_initial_start)
+            }
+            ControllerKind::Visibility { visible_height } => {
+                self.visibility_start(entity_rc, id, visible_height)
+            }
             _ => self.start_movement_controller(entity_rc, id, kind),
         }
     }
@@ -1389,8 +1439,23 @@ impl CellApp {
         // The ghost-domain half of `stop`: the passenger marker runs its
         // stop face while the controller is still in reach (the
         // reference's `PassengerController::stopGhost`).
-        if let Some(ControllerKind::Passenger { vehicle_id }) = kind {
-            self.passenger_stop(&entity_rc, id, vehicle_id);
+        if let Some(ControllerKind::Passenger { vehicle_id }) = &kind {
+            self.passenger_stop(&entity_rc, id, *vehicle_id);
+        }
+        // The sensor controllers' stop faces (`stopReal`'s trigger
+        // teardown, `stopGhost`'s visibility clear) run here too, the
+        // controller still in reach.
+        match &kind {
+            Some(ControllerKind::Proximity { .. }) => {
+                self.stop_proximity_controller(&entity_rc, id);
+            }
+            Some(ControllerKind::Vision { .. }) => {
+                self.stop_vision_controller(&entity_rc, id);
+            }
+            Some(ControllerKind::Visibility { .. }) => {
+                self.visibility_stop(&entity_rc, id);
+            }
+            _ => {}
         }
         // The updatable half of `stopReal`: a movement controller leaves
         // the per-tick registry with its container entry.
@@ -1416,6 +1481,10 @@ impl CellApp {
     pub fn advance_tick(&mut self) {
         self.time += 1;
         self.run_movement_pass();
+        // The sensor sinks' pump: the traps' and the seers' crossings
+        // the pass shuffled dispatch here (the reference fires them
+        // synchronously inside the shuffles).
+        self.dispatch_sensor_events();
         self.time_queue.process(self.time);
         let events = std::mem::take(&mut *self.router_events.borrow_mut());
         for event in events {

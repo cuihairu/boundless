@@ -552,6 +552,18 @@ pub struct ChunkSpace {
     pub cleared: bool,
 }
 
+/// One obstacle the space's `collide` query answers against. The
+/// reference's chunk collision is the chunk lane's geometry; this port
+/// carries the same query as an obstacle registry the tests drive —
+/// `ChunkSpace::collide`'s "any obstacle will do" face.
+#[derive(Clone, Copy, Debug)]
+pub struct Blocker {
+    /// The obstacle centre.
+    pub center: [f32; 3],
+    /// The obstacle radius.
+    pub radius: f32,
+}
+
 /// `PhysicalChunkSpace` (`physical_chunk_space.cpp`): chunked geometry
 /// through a `ChunkSpace` this backend owns.
 #[derive(Debug)]
@@ -561,6 +573,9 @@ pub struct PhysicalChunkSpace {
     pub chunk_space: ChunkSpace,
     /// `geometryMappings_`: one entry per `SpaceEntryID`.
     pub mappings: BTreeMap<u32, GeometryMapping>,
+    /// The obstacles `collide` answers against (the chunk geometry's
+    /// port seam).
+    pub blockers: Vec<Blocker>,
 }
 
 impl PhysicalChunkSpace {
@@ -573,7 +588,48 @@ impl PhysicalChunkSpace {
                 cleared: false,
             },
             mappings: BTreeMap::new(),
+            blockers: Vec::new(),
         }
+    }
+
+    /// `ChunkSpace::collide( source, destination )` (`chunk_space.hpp`):
+    /// walk the ray and answer the distance to the first obstacle —
+    /// any obstacle will do (`entity_vision.cpp:303`). Clear ground
+    /// answers `0.f`, the reference's "nothing hit" reading.
+    pub fn collide(&self, source: [f32; 3], destination: [f32; 3]) -> f32 {
+        let dir = [
+            destination[0] - source[0],
+            destination[1] - source[1],
+            destination[2] - source[2],
+        ];
+        let len_sq = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
+        if len_sq <= 0.0 {
+            return 0.0;
+        }
+        for blocker in &self.blockers {
+            let to_center = [
+                blocker.center[0] - source[0],
+                blocker.center[1] - source[1],
+                blocker.center[2] - source[2],
+            ];
+            let proj = to_center[0] * dir[0] + to_center[1] * dir[1] + to_center[2] * dir[2];
+            let t_closest = proj / len_sq;
+            if !(0.0..=1.0).contains(&t_closest) {
+                continue;
+            }
+            let closest = [
+                source[0] + dir[0] * t_closest,
+                source[1] + dir[1] * t_closest,
+                source[2] + dir[2] * t_closest,
+            ];
+            let dx = blocker.center[0] - closest[0];
+            let dy = blocker.center[1] - closest[1];
+            let dz = blocker.center[2] - closest[2];
+            if dx * dx + dy * dy + dz * dz <= blocker.radius * blocker.radius {
+                return t_closest * len_sq.sqrt();
+            }
+        }
+        0.0
     }
 
     /// `loadResource` → `addMappingAsync`: the mapping arrives pending.
@@ -1789,6 +1845,40 @@ pub struct CellApp {
     /// `CellAppChannels::hasRecentlyDied`: apps the death sweep marked
     /// gone, so a ghost whose next real names one still zombies.
     pub dead_apps: BTreeSet<u32>,
+    /// `ProximityRangeTrigger`'s callback ledger: one entry per
+    /// `onEnterTrap`/`onLeaveTrap` the trap dispatch ran (the payload
+    /// tuple `(who, range, controllerID, userArg)` the script call
+    /// alone cannot carry).
+    pub trap_calls: Vec<crate::cellapp_vision::TrapCall>,
+    /// `EntityVision`'s diff callbacks: one entry per
+    /// `onStartSeeing`/`onStopSeeing`.
+    pub vision_calls: Vec<crate::cellapp_vision::VisionCall>,
+    /// The live traps, by controller id: the trigger, the trap range
+    /// and the recorder sink the range-list crossings land in.
+    pub trap_triggers:
+        BTreeMap<crate::cellapp_real_entity::ControllerId, crate::cellapp_vision::TrapTriggerState>,
+    /// The live trap membership, by controller id: the crossing ledger
+    /// survives the sink being drained for script dispatch.
+    pub trap_members: BTreeMap<crate::cellapp_real_entity::ControllerId, BTreeSet<u32>>,
+    /// The seer triggers, by entity id: the trigger and the vision
+    /// range (`pVisionTrigger_`).
+    pub vision_triggers: BTreeMap<u32, crate::cellapp_vision::VisionTriggerState>,
+    /// `EntityVision` (`entity_vision.hpp`): the per-entity vision
+    /// extra — the seeing/visible heights, the current cone, and the
+    /// `vision_`/`visibility_` controller backlinks whose presence is
+    /// `canBeSeen`.
+    pub vision_extras: BTreeMap<u32, crate::cellapp_vision::VisionExtra>,
+    /// `entitiesInVisionRange_`: the ids each seer's trigger currently
+    /// holds.
+    pub entities_in_vision_range: BTreeMap<u32, BTreeSet<u32>>,
+    /// `visibleEntities_`: the ids each seer's last vision pass said
+    /// it could see.
+    pub visible_entities: BTreeMap<u32, BTreeSet<u32>>,
+    /// The vision ERROR/INFO faces, in delivery order: the incumbent
+    /// `VisionController::startReal` error, the delegate-space
+    /// `updateVisibleEntities` error, and the `setVisibleEntities`
+    /// restore warnings.
+    pub vision_notes: Vec<(u32, &'static str)>,
     /// `CellAppChannels`' per-channel `mark()` — the ghost maintainer's
     /// this-round mark bookkeeping, by remote address.
     pub channel_marks: BTreeMap<u32, i32>,
@@ -1895,6 +1985,15 @@ impl Default for CellApp {
             teleport_outbox: Vec::new(),
             emergency_outbox: Vec::new(),
             dead_apps: BTreeSet::new(),
+            trap_calls: Vec::new(),
+            vision_calls: Vec::new(),
+            trap_triggers: BTreeMap::new(),
+            trap_members: BTreeMap::new(),
+            vision_triggers: BTreeMap::new(),
+            vision_extras: BTreeMap::new(),
+            entities_in_vision_range: BTreeMap::new(),
+            visible_entities: BTreeMap::new(),
+            vision_notes: Vec::new(),
             channel_marks: BTreeMap::new(),
             dead_channels: BTreeSet::new(),
             ghost_property_descriptions: BTreeMap::new(),

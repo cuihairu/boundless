@@ -1730,7 +1730,7 @@ impl CellApp {
     /// stopped in its real half only and stays. The erase runs before
     /// the stops — "in case delController is called on it due to a
     /// script callback from stopping the controller".
-    fn stop_reals_for_offload(&mut self, entity: u32) {
+    pub(crate) fn stop_reals_for_offload(&mut self, entity: u32) {
         let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
             return;
         };
@@ -1749,6 +1749,14 @@ impl CellApp {
                 .handles
                 .get_mut(&id)
                 .and_then(|slot| slot.take());
+            // The kind captured before the erase — the sensor stops need
+            // it to pick their trigger teardown.
+            let kind = entity_rc
+                .borrow()
+                .controllers
+                .container
+                .get(&id)
+                .map(|controller| controller.kind.clone());
             // The erase: real-domain-only controllers leave the
             // container; the entry is gone before any stop callback
             // could re-enter it.
@@ -1760,6 +1768,17 @@ impl CellApp {
                 .is_some_and(|controller| controller.domain() == DOMAIN_REAL);
             if only_real {
                 entity_rc.borrow_mut().controllers.container.remove(&id);
+            }
+            // The sensor controllers' stop faces (`stopReal( false )`'s
+            // trigger teardowns).
+            match &kind {
+                Some(crate::cellapp_real_entity::ControllerKind::Proximity { .. }) => {
+                    self.stop_proximity_controller(&entity_rc, id);
+                }
+                Some(crate::cellapp_real_entity::ControllerKind::Vision { .. }) => {
+                    self.stop_vision_controller(&entity_rc, id);
+                }
+                _ => {}
             }
             // `pController->stopReal( false )`: the updatable drive and
             // the navigate-step pointer are the port's families' stop
