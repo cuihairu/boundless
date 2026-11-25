@@ -30,7 +30,15 @@ order against one embedded interpreter (`Script::init` → legs → `Script::fin
    fires are asserted before the numbers are recorded, so a broken fire
    path cannot produce a timing row at all. A counting global allocator
    (the foundation `alloc_counts` pattern) wraps the tick loop to count
-   the calling thread's Rust allocations per fire.
+   the calling thread's Rust allocations per fire. The timers are
+   cancelled after their window so the tick-driven leg that follows
+   measures only its own Python work.
+5. **Frequent-task walk** (added with the OPT-03-01-03 comparison) — 32
+   no-argument tasks registered from script
+   (`BigWorld.addFrequentTask(on_frequent)`), driven by the same 64
+   `timers::tick(0.1)` steps; 2,048 calls asserted. This is the
+   no-argument cross-language callback every registered task pays once
+   per tick (`ScriptFrequentTask::update`).
 
 Structural assertions run on every execution. Wall-clock numbers are
 **recorded, never asserted tight** — raw nanoseconds are machine-dependent,
@@ -87,10 +95,35 @@ traffic; the alloc counter is therefore a boundary finding (the fire path
 allocates nothing through Rust on either side, worth knowing for the
 OPT-01 allocation family), not a discriminator between the two paths.
 
+## OPT-03-01-03 — frequent-task call, GIL occupancy and tail
+
+The GIL-queue leg now also reports **GIL occupancy**: the share of the
+drain window the owning thread spends inside `gil::process()` (servicing
+posted callbacks plus the polling between them) — `gil_occupancy_pct`.
+Tail latency stays the `gil_e2e` p90/p99/max rows. First record under
+fleet load: occupancy 28.3%, e2e p50 869 µs / p99 1.86 ms.
+
+The frequent-task walk (`ScriptFrequentTask::update`) is the row's
+optimization face. The reference builds the call as
+`Script::ask(pCallback.newRef(), PyTuple_New(0))` — an empty tuple
+allocated, passed and dropped for every task on every tick — and the
+port mirrors it. The change fires the no-argument callback through
+`PyObject_CallNoArgs` (the CPython zero-argument fast path the harness's
+callback leg already benchmarks): no tuple object is created, the
+semantic contract is unchanged (same callable, no arguments, truthy
+result still deregisters, failure still prints and the task stays).
+
+Before record (with the walk still on the tuple path), fleet load:
+**2,384.0 ns per call**; the Rust allocator counts 0.00 per call — the
+tuple lives in pymalloc, like every object on this bridge. The after
+record lands with the optimization commit.
+
 ## Current fixture record
 
-`docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv` (34 rows)
-is the canonical after run quoted above. The conversion/callback/GIL rows
-moved with the machine load as expected (int p50 88→63 ns, str p50 273→172
-ns, GIL drain 1,193→1,437 ns per callback) — same code on those paths,
-differing load; they are snapshots, not regressions.
+`docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv` is a
+rolling canonical record: each delivery commit re-records it with the
+harness as it stands, and the other side of every comparison lives in the
+commit cited in the section above (e10ccbd for the OPT-03-01-01/02
+before, this commit for the OPT-03-01-03 before). Rows moved between
+records with the machine load as expected — same code, differing load;
+they are snapshots, not regressions.

@@ -1,10 +1,12 @@
-//! OPT-03-01-01 / OPT-03-01-02: the Python bridge baseline measurements.
+//! OPT-03-01-01 / OPT-03-01-02 / OPT-03-01-03: the Python bridge baseline
+//! measurements.
 //!
-//! The acceptance saves four record families — native↔Python conversion
-//! timing, cross-language callback timing, GIL-queue occupancy, and the
-//! server timer fire path — against the embedded interpreter the way the
-//! engine runs it: the main thread owns the lock from `Script::init`
-//! and the posted-task queue is drained by the thread that owns the GIL.
+//! The acceptance saves five record families — native↔Python conversion
+//! timing, cross-language callback timing, GIL-queue occupancy, the
+//! server timer fire path, and the frequent-task walk — against the
+//! embedded interpreter the way the engine runs it: the main thread owns
+//! the lock from `Script::init` and the posted-task queue is drained by
+//! the thread that owns the GIL.
 //!
 //! Structural invariants are asserted on every run: every conversion
 //! round-trip must return the value it was given, every callback must
@@ -264,11 +266,14 @@ fn gil_leg(record: &mut Record) {
     });
 
     let started = Instant::now();
+    let mut busy = std::time::Duration::ZERO;
     let mut completed = 0;
     while completed < POSTED_CALLBACKS {
         // Safe: this is the thread that owns the GIL, and the posted
         // closures only touch the report channel.
+        let pass = Instant::now();
         let ran = unsafe { python_host::gil::process() };
+        busy += pass.elapsed();
         completed += ran;
     }
     let drained = started.elapsed();
@@ -292,6 +297,18 @@ fn gil_leg(record: &mut Record) {
 
     record.put("gil_posted", POSTED_CALLBACKS);
     put_summary(record, "gil_e2e", summarize(&mut latencies));
+    // GIL occupancy: the share of the drain window the owning thread
+    // spends inside `process()` — servicing posted callbacks plus the
+    // polling between them. Under a flat-out poster this is the
+    // saturated-queue occupancy; an idle host spends most of its window
+    // outside `process()`.
+    record.put(
+        "gil_occupancy_pct",
+        format!(
+            "{:.1}",
+            busy.as_nanos() as f64 / drained.as_nanos() as f64 * 100.0
+        ),
+    );
     record.put(
         "gil_drain_ns_per_callback",
         format!("{:.1}", drained.as_nanos() as f64 / POSTED_CALLBACKS as f64),
@@ -336,10 +353,11 @@ fn timer_fire_leg(record: &mut Record, interpreter: &Interpreter) {
         interpreter.run_simple_string(
             "import BigWorld\n\
              fire_count = [0]\n\
+             timer_handles = []\n\
              def on_fire(id, userArg):\n\
              \x20   fire_count[0] += 1\n\
              for _ in range(32):\n\
-             \x20   BigWorld.addTimer(on_fire, 0.1, 0.1, 9)\n\
+             \x20   timer_handles.append(BigWorld.addTimer(on_fire, 0.1, 0.1, 9))\n\
              ",
         ),
         "registering the timers failed"
@@ -379,6 +397,19 @@ fn timer_fire_leg(record: &mut Record, interpreter: &Interpreter) {
         "every timer must fire exactly once per tick"
     );
 
+    // Cancel the timers so the legs that tick after this one (the
+    // frequent-task walk) measure their own Python work only. The
+    // measure window above already finished, so the cancel does not
+    // touch the recorded fire numbers.
+    assert!(
+        interpreter.run_simple_string(
+            "for h in timer_handles:\n\
+             \x20   BigWorld.delTimer(h)\n\
+             ",
+        ),
+        "cancelling the timers failed"
+    );
+
     record.put("timer_fire_count", FIRES);
     record.put(
         "timer_fire_allocs_per_fire",
@@ -396,6 +427,71 @@ fn timer_fire_leg(record: &mut Record, interpreter: &Interpreter) {
         "timer_fire_ticks_s",
         format!("{:.3}", elapsed.as_secs_f64()),
     );
+}
+
+/// Leg 5: the frequent-task walk — the no-argument cross-language
+/// callback every registered task pays once per server tick
+/// (`ScriptFrequentTask::update`, `script_frequent_tasks.cpp:43-63`).
+/// `K` no-argument tasks are registered from script and driven by the
+/// same engine tick as the timers; a `None` result keeps a task
+/// registered, so the walk sees all of them every tick. The call count
+/// is asserted; the per-call nanoseconds are recorded.
+fn frequent_call_leg(record: &mut Record, interpreter: &Interpreter) {
+    const TASKS: usize = 32;
+    const TICKS: usize = 64;
+    const CALLS: usize = TASKS * TICKS;
+
+    assert!(
+        interpreter.run_simple_string(
+            "import BigWorld\n\
+             freq_count = [0]\n\
+             def on_frequent():\n\
+             \x20   freq_count[0] += 1\n\
+             \x20   return None\n\
+             for _ in range(32):\n\
+             \x20   BigWorld.addFrequentTask(on_frequent)\n\
+             ",
+        ),
+        "registering the frequent tasks failed"
+    );
+
+    let (count, elapsed) = measure(|| {
+        let started = Instant::now();
+        for _ in 0..TICKS {
+            python_host::timers::tick(0.1);
+        }
+        started.elapsed()
+    });
+
+    assert!(
+        interpreter.run_simple_string("__probe = freq_count[0]\n"),
+        "probing the frequent call count failed"
+    );
+    let module = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+    assert!(!module.is_null(), "fetching __main__ failed");
+    let holder = PyRef::borrowed(module);
+    let probe = unsafe { capi::PyObject_GetAttrString(holder.as_ptr(), c"__probe".as_ptr()) };
+    let probe = PyRef::from_owned(probe).expect("fetching __probe failed");
+    let calls = unsafe { capi::PyLong_AsLongLong(probe.as_ptr()) };
+    assert_eq!(
+        calls, CALLS as i64,
+        "every frequent task must run exactly once per tick"
+    );
+
+    record.put("frequent_calls", CALLS);
+    record.put(
+        "frequent_allocs_per_call",
+        format!("{:.2}", count.allocs as f64 / CALLS as f64),
+    );
+    record.put(
+        "frequent_bytes_per_call",
+        format!("{:.2}", count.bytes as f64 / CALLS as f64),
+    );
+    record.put(
+        "frequent_ns_per_call",
+        format!("{:.1}", elapsed.as_nanos() as f64 / CALLS as f64),
+    );
+    record.put("frequent_ticks_s", format!("{:.3}", elapsed.as_secs_f64()));
 }
 
 /// `Script::init`'s config with the fixture root in the path list and
@@ -425,6 +521,7 @@ fn the_python_bridge_baseline_runs_all_legs() {
     conversion_leg(&mut record);
     callback_leg(&mut record, &interpreter);
     timer_fire_leg(&mut record, &interpreter);
+    frequent_call_leg(&mut record, &interpreter);
     gil_leg(&mut record);
 
     assert_eq!(
