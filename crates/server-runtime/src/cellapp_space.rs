@@ -1774,6 +1774,11 @@ pub struct CellApp {
     /// them into the peer CellApp; the reference hands them to
     /// `CellAppChannels`' bundles.
     pub ghost_outbox: Vec<crate::cellapp_ghost::GhostWire>,
+    /// The `CellAppInterface::onload` wires an offload streamed: the
+    /// real entity's data bound for the app it is moving to. The tests
+    /// deliver them into the peer CellApp; the reference hands them to
+    /// the destination's bundle.
+    pub onload_outbox: Vec<crate::cellapp_ghost::OnloadWire>,
     /// `CellAppChannels`' per-channel `mark()` — the ghost maintainer's
     /// this-round mark bookkeeping, by remote address.
     pub channel_marks: BTreeMap<u32, i32>,
@@ -1867,6 +1872,7 @@ impl Default for CellApp {
             ghost_distance: crate::cellapp_ghost::DEFAULT_AOI_RADIUS,
             max_ghosts_to_delete: crate::cellapp_ghost::MAX_GHOSTS_TO_DELETE,
             ghost_outbox: Vec::new(),
+            onload_outbox: Vec::new(),
             channel_marks: BTreeMap::new(),
             dead_channels: BTreeSet::new(),
             ghost_property_descriptions: BTreeMap::new(),

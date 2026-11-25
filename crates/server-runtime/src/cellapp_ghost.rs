@@ -39,6 +39,7 @@ use crate::cellapp_navigate::{
     controller_type_code, read_controller_payload, write_controller_payload,
 };
 use crate::cellapp_real_entity::DOMAIN_GHOST;
+use crate::cellapp_real_entity::start_real_controllers;
 use crate::cellapp_space::{CellApp, CellInfo, Entity, Space};
 use crate::cellappmgr::SpaceId;
 
@@ -144,6 +145,26 @@ pub enum GhostSetReal {
     Buffered,
     /// No such entity (or real) to sign off.
     Missing,
+}
+
+/// `CellAppInterface::onload` (`cellapp_interface.hpp:296`): the real
+/// entity's data leaving for the app it is being offloaded to. The
+/// reference streams it into the destination's bundle ahead of the
+/// entity's ghosts; the port carries one wire per offload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnloadWire {
+    /// The destination app's address.
+    pub dest: u32,
+    /// The sender's address.
+    pub src: u32,
+    /// The space the offload runs in.
+    pub space_id: SpaceId,
+    /// The entity that moves.
+    pub entity: u32,
+    /// `isTeleport`: the offload checker never teleports.
+    pub is_teleport: bool,
+    /// The `Entity::writeRealDataToStream` body.
+    pub data: Vec<u8>,
 }
 
 impl GhostWire {
@@ -581,6 +602,68 @@ pub fn write_ghost_data_to_stream(app: &CellApp, entity: u32) -> Option<Vec<u8>>
     stream.write_u32(borrowed.periods_without_witness);
     stream.write_u8(borrowed.aoi_update_scheme_id);
     drop(borrowed);
+    Some(stream.as_bytes().to_vec())
+}
+
+/// `Entity::writeRealDataToStream` (`entity.cpp:2061`): the real's whole
+/// state — the id, the fixed `false` teleportFailure the onload checks
+/// first, then the body `writeRealDataToStreamInternal` takes.
+pub fn write_real_data_to_stream(app: &CellApp, entity: u32, is_teleport: bool) -> Option<Vec<u8>> {
+    let entity_rc = app.entity_population.get(&entity)?;
+    let borrowed = entity_rc.borrow();
+    let mut stream = BinaryStream::new();
+    stream.write_u32(borrowed.id);
+    stream.write_bool(false); // teleportFailure
+    // The compression decision (`internalNetworkCompressionType`) has no
+    // port face; the body below is the uncompressed one.
+    // `writeRealDataToStreamInternal`: the real-only properties
+    // (`propCountGhost()..propCountGhostPlusReal()`) — none in the port
+    // (the property-replication cluster fills this shape) — then
+    // `TOKEN_ADD( data, "RealProps" )`, which is the first four bytes of
+    // the tag alone.
+    stream.write_bytes(&b"RealProps"[..4]);
+    // `RealEntity::writeOffloadData` (`real_entity.cpp:501`).
+    // `StreamHelper::addRealEntity( data )`: 0-size today
+    // (`cell_data.rs`'s payload record).
+    // `pChannel_->addToStream( data )`: the channel's own address, then
+    // the entity's base address — the same pair the ghost body carries.
+    stream.write_u32(app.address);
+    let (base_ip, base_port) = borrowed.base_addr.unwrap_or((0, 0));
+    stream.write_u32(base_ip);
+    stream.write_u16(base_port);
+    // `velocity_ << topSpeed_ << topSpeedY_ << physicsCorrections_`: the
+    // port's entity carries the velocity; the physics cluster holds the
+    // rest.
+    stream.write_f32(borrowed.velocity[0]);
+    stream.write_f32(borrowed.velocity[1]);
+    stream.write_f32(borrowed.velocity[2]);
+    // `uint8( shouldAutoBackup_ )`: the backup-policy cluster's field.
+    stream.write_u8(0);
+    // The current space ID, so the destination can detect a change.
+    stream.write_u32(borrowed.space_id);
+    stream.write_bool(is_teleport);
+    let haunts = borrowed.haunts.clone();
+    let controlled_by = borrowed.controlled_by;
+    drop(borrowed);
+    // The ghosts this entity has on the other apps. This app's own
+    // address is always one of them, since the entity turns into a ghost
+    // here when the offload lands.
+    let owner = app.address;
+    let is_already_haunted = haunts.iter().any(|haunt| haunt.addr == owner);
+    stream.write_u32(haunts.len() as u32 + u32::from(!is_already_haunted));
+    for haunt in &haunts {
+        stream.write_u32(haunt.addr);
+    }
+    if !is_already_haunted {
+        stream.write_u32(owner);
+    }
+    stream.write_u32(controlled_by);
+    // `CellApp::instance().adjustLoadForOffload( ... )`: the load
+    // bookkeeping has no port face — the app keeps the load until the
+    // destination's onload asks for it.
+    // `writeBasePropertiesExposedForReplayToStream`: the packed
+    // base-properties block, empty when there are none.
+    stream.write_packed_int(0).expect("the stream writes");
     Some(stream.as_bytes().to_vec())
 }
 
@@ -1285,6 +1368,347 @@ impl CellApp {
         are_we_haunted
     }
 
+    /// `Cell::offloadEntity` (`cell.cpp:193`) → `Entity::offload`
+    /// (`entity.cpp:1978`) → `convertRealToGhost` (`entity.cpp:1999`):
+    /// the real's state streams to the destination, the channel hands
+    /// over, the entity turns into a ghost waiting for the sign-off.
+    /// The `isTeleport` arm skips `onLeavingCell` (the teleport's caller
+    /// already ran it).
+    pub fn offload_entity(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        entity: u32,
+        destination: u32,
+        is_teleport: bool,
+    ) {
+        // MF_ASSERT( pEntity->pReal() != NULL ): the caller only hands
+        // over reals.
+        if self
+            .entity_population
+            .get(&entity)
+            .is_none_or(|entity_rc| !entity_rc.borrow().is_real)
+        {
+            return;
+        }
+
+        // `EntityPtr pCopy = pEntity` + the script call held between the
+        // list moves.
+        if !is_teleport {
+            // `pEntity->callback( "onLeavingCell" )`.
+            self.entity_callback(entity, "onLeavingCell", true, None);
+        }
+
+        if self
+            .entity_population
+            .get(&entity)
+            .is_some_and(|entity_rc| entity_rc.borrow().is_real)
+        {
+            // The replay face (`pReplayData_->deleteEntity`) is the
+            // recording cluster's.
+            // `realEntities_.remove( pEntity )`: off the cell's real
+            // list — the space's entity list keeps it (it stays here as
+            // a ghost).
+            // `pEntity->offload( pChannel, isTeleport )`:
+            // `convertRealToGhost`'s stream, then the ghost half.
+            let data = write_real_data_to_stream(self, entity, is_teleport)
+                .expect("the real's offload data is always writable");
+            self.onload_outbox.push(OnloadWire {
+                dest: destination,
+                src: self.address,
+                space_id: self.space_of(entity),
+                entity,
+                is_teleport,
+                data,
+            });
+
+            // `pRealChannel_ = pChannel` +
+            // `nextRealAddr_ = pRealChannel_->addr()` — the seam the
+            // sign-off rides ("it will send a ghostSetReal back to this
+            // app, so we better be ready for it").
+            self.entity_population
+                .get(&entity)
+                .expect("checked above")
+                .borrow_mut()
+                .next_real_addr = Some(destination);
+
+            // `offloadReal()` → `pReal_->destroy( &nextRealAddr_ )`:
+            // every haunt but the destination hears where the real is
+            // going; the real part dies here.
+            self.send_ghost_set_next_real(entity, destination);
+
+            let entity_rc = self
+                .entity_population
+                .get(&entity)
+                .expect("checked above")
+                .clone();
+            {
+                let mut borrowed = entity_rc.borrow_mut();
+                // `MF_ASSERT( !this->isReal() )` held; the port's real
+                // half is the flag plus the haunt bookkeeping the real
+                // owned.
+                borrowed.is_real = false;
+                // The real-only properties drop (`properties_.erase(
+                // propCountGhost() .. )`): none in the port.
+            }
+
+            // `this->relocated()` — the extras notification; a ghosted
+            // passenger alights from a vehicle this space no longer
+            // holds as real.
+            self.relocate_entity_extras(&entity_rc);
+
+            // `pEntity->callback( "onLeftCell" )` (`cell.cpp:222`).
+            self.entity_callback(entity, "onLeftCell", true, None);
+        }
+        let _ = spaces;
+    }
+
+    /// `Entity::onload` (`entity.cpp:4656`): the destination's receive
+    /// face — the ghost here becomes the real, from the stream
+    /// [`write_real_data_to_stream`] wrote. The `bad_haunt_addr` is the
+    /// failed teleport's origin: its haunt is skipped instead of
+    /// notified. Answers `convertGhostToReal`'s outcome.
+    pub fn onload_entity(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        wire: &OnloadWire,
+        bad_haunt_addr: Option<u32>,
+    ) -> bool {
+        let Some(entity_rc) = self.entity_population.get(&wire.entity).cloned() else {
+            // MF_ASSERT( !this->isReal() ) reached through the
+            // population; a stray onload for an unknown id has no
+            // entity to convert.
+            return false;
+        };
+        {
+            let borrowed = entity_rc.borrow();
+            debug_assert!(!borrowed.is_real, "onload converts a ghost");
+        }
+        let mut stream = BinaryStream::from_slice(&wire.data);
+
+        // The id the writer put first; the reference's channel filter
+        // consumes it on the way in, the port carries it in the wire.
+        match stream.read_u32() {
+            Ok(id) => debug_assert_eq!(id, wire.entity, "the same entity"),
+            Err(_) => return false,
+        }
+
+        // `data >> teleportFailure`.
+        let teleport_failure = stream.read_bool().unwrap_or(false);
+
+        // `this->callback( "onEnteringCell" )`.
+        self.entity_callback(wire.entity, "onEnteringCell", true, None);
+
+        // `convertGhostToReal( data, pBadHauntAddr )`
+        // (`entity.cpp:4707`): the script is locked out for the
+        // conversion, the counter bumps first, the ghost's real
+        // channel dies, then the body reads.
+        self.callbacks_permitted(false);
+        entity_rc.borrow_mut().num_times_real_offloaded += 1;
+        entity_rc.borrow_mut().real_addr = None;
+
+        // `readRealDataFromStreamForOnloadInternal`: the real-only
+        // properties (none in the port), then the RealProps token.
+        let ok = self.read_real_data_from_stream(&mut stream, &entity_rc, bad_haunt_addr);
+        if !ok {
+            return false;
+        }
+
+        // `this->cell().addRealEntity( this, true )` — the ghost entry
+        // becomes the real; it already sits on the space's list.
+        entity_rc.borrow_mut().is_real = true;
+
+        // `this->relocated()`.
+        self.relocate_entity_extras(&entity_rc);
+
+        // The high-priority-buffered `onEnteredCell`
+        // (`entity.cpp:4737-4741`).
+        self.callback_buffer.enable_high_priority();
+        self.entity_callback(wire.entity, "onEnteredCell", true, None);
+        self.callback_buffer.disable_high_priority();
+
+        // `Entity::callbacksPermitted( true )`.
+        self.callbacks_permitted(true);
+
+        // `Entity::population().onEntityAdd` — the passenger observers.
+        self.entity_entered_population(wire.entity);
+
+        // `if (teleportFailure)` (`entity.cpp:4729`): the haunt to the
+        // failed destination goes, then `onTeleportFailure`.
+        if teleport_failure {
+            let src = bad_haunt_addr.unwrap_or(wire.src);
+            if let Some(entity) = self.entity_population.get(&wire.entity) {
+                let mut borrowed = entity.borrow_mut();
+                borrowed.haunts.retain(|haunt| haunt.addr != src);
+            }
+            self.entity_callback(wire.entity, "onTeleportFailure", true, None);
+        }
+        let _ = spaces;
+        true
+    }
+
+    /// `RealEntity::readOffloadData` (`real_entity.cpp:312`) over
+    /// [`write_real_data_to_stream`]'s body: the channel and base
+    /// addresses, the velocity block, the space and teleport flags, the
+    /// haunt list (signed on or told off), the controller id, the
+    /// replay block, and the controllers themselves. Answers whether the
+    /// read ran out clean; the reference's `needsPhysicsCorrection` arm
+    /// never fires (the port's positions are always valid).
+    fn read_real_data_from_stream(
+        &mut self,
+        stream: &mut BinaryStream,
+        entity_rc: &Rc<RefCell<Entity>>,
+        bad_haunt_addr: Option<u32>,
+    ) -> bool {
+        // `readRealDataFromStreamForOnloadInternal`: the real-only
+        // properties (none in the port) then `TOKEN_CHECK( data,
+        // "RealProps" )` — the writer's four tag bytes.
+        let token = match stream.read_u32() {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        debug_assert_eq!(token, u32::from_le_bytes(*b"Real"), "the offload token");
+        // `pChannel_->initFromStream( data, entity_.baseAddr() )` —
+        // the old real's address, then the base's.
+        let old_real_addr = match stream.read_u32() {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let base_ip = match stream.read_u32() {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let base_port = match stream.read_u16() {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let mut velocity = [0.0f32; 3];
+        for component in &mut velocity {
+            *component = match stream.read_f32() {
+                Ok(value) => value,
+                Err(_) => return false,
+            };
+        }
+        let _should_auto_backup = stream.read_u8().unwrap_or(0);
+        let old_space_id = stream.read_u32().unwrap_or(0);
+        let is_teleported = stream.read_bool().unwrap_or(false);
+
+        let entity_id = entity_rc.borrow().id;
+        let space_id = entity_rc.borrow().space_id;
+        let num_times = entity_rc.borrow().num_times_real_offloaded;
+        {
+            let mut borrowed = entity_rc.borrow_mut();
+            borrowed.velocity = velocity;
+            borrowed.base_addr = Some((base_ip, base_port));
+        }
+        let has_changed_space = old_space_id != space_id;
+
+        // The haunt list: sign each reachable ghost onto this app, or
+        // tell it the ghost is done after a space change or teleport.
+        let num_haunts = stream.read_u32().unwrap_or(0);
+        let mut addresses = Vec::new();
+        for _ in 0..num_haunts {
+            match stream.read_u32() {
+                Ok(addr) => addresses.push(addr),
+                Err(_) => return false,
+            }
+        }
+        // `MF_ASSERT( numHaunts > 0 )`: the writer always sends at
+        // least its own address.
+        debug_assert!(!addresses.is_empty());
+        let owner = self.address;
+        let are_we_haunted = addresses.contains(&owner);
+        // MF_ASSERT( areWeHaunted ): "they should not have offloaded
+        // the entity without creating a ghost here first" — the offload
+        // checker's own guarantee; the port reports instead.
+        if !are_we_haunted {
+            return false;
+        }
+        for addr in addresses {
+            if addr == owner {
+                continue;
+            }
+            if Some(addr) == bad_haunt_addr {
+                // WARNING "Not notifying app %s because of failed
+                // teleport for %u"
+                self.ghost_property_notes.push(format!(
+                    "RealEntity::readOffloadData: failed teleport haunt {addr} for {entity_id}"
+                ));
+                continue;
+            }
+            if self.dead_channels.contains(&addr) {
+                // WARNING "Not notifying ghost for %u on dead app %s"
+                self.ghost_property_notes.push(format!(
+                    "RealEntity::readOffloadData: dead haunt {addr} for {entity_id}"
+                ));
+                continue;
+            }
+            if !has_changed_space && !is_teleported {
+                // `this->addHaunt( *pAppChannel )` + the sign-off.
+                entity_rc.borrow_mut().haunts.push(Haunt {
+                    addr,
+                    creation_time: self.time,
+                });
+                self.ghost_outbox.push(GhostWire {
+                    dest: addr,
+                    src: owner,
+                    space_id,
+                    entity: entity_id,
+                    message: GhostMessage::SetReal {
+                        num_times_real_offloaded: num_times,
+                        owner,
+                    },
+                });
+            } else {
+                // `addDelGhostMessage( pAppChannel->bundle() )`.
+                self.ghost_outbox.push(GhostWire {
+                    dest: addr,
+                    src: owner,
+                    space_id,
+                    entity: entity_id,
+                    message: GhostMessage::Del,
+                });
+            }
+        }
+
+        // `data >> controlledBy_`.
+        let controlled_by = stream.read_u32().unwrap_or(0);
+        entity_rc.borrow_mut().controlled_by = controlled_by;
+        // `data >> entity_.profiler()` + `adjustLoadForOffload`: the
+        // load bookkeeping has no port face.
+        // The packed replay block (`readBasePropertiesExposedForReplay
+        // FromStream`).
+        let _replay_len = match stream.read_packed_int() {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        // `readRealControllersFromStream`: the trailing block.
+        let controllers = stream.unread_bytes().to_vec();
+        self.read_real_controllers_from_stream(entity_id, &controllers);
+        // `startRealControllers` ran inside `convertGhostToReal`'s body
+        // (`readRealDataFromStreamForOnloadInternal`'s tail).
+        let entity_rc2 = Rc::clone(entity_rc);
+        start_real_controllers(self, &entity_rc2);
+
+        // `entity_.readRealControllersFromStream` already consumed the
+        // tail; `periodsWithoutWitness_`/`recordingSpaceEntryID_` ride
+        // the port's entity fields (the recording face is the replay
+        // cluster's).
+        let _ = old_real_addr;
+        // The reference's return is `needsPhysicsCorrection`
+        // (`isTeleported && localPosition_ == INVALID_POSITION`); the
+        // port's positions are always valid, so the caller only needs
+        // the read's own outcome.
+        true
+    }
+
+    /// The entity's space, for the wire.
+    fn space_of(&self, entity: u32) -> SpaceId {
+        self.entity_population
+            .get(&entity)
+            .map(|entity_rc| entity_rc.borrow().space_id)
+            .expect("the offload runs for a live entity")
+    }
+
     /// `Cell::checkOffloadsAndGhosts` (`cell.cpp:174`): run the offload
     /// checker over our cell of `space_id`. The return is the cell's
     /// `isReadyForDeletion` (the port's face: reals gone, space entities
@@ -1569,6 +1993,12 @@ impl OffloadChecker {
         for entity in reals {
             let mut maintainer = GhostMaintainer::new(self.space_id, entity);
             maintainer.check(app, spaces, self);
+        }
+        // `sendOffloads` (`offload_checker.cpp:74`): the collected pairs
+        // go out in check order.
+        let offloads = self.offload_list.clone();
+        for (entity, destination) in offloads {
+            app.offload_entity(spaces, entity, destination, false);
         }
     }
 }
@@ -2754,6 +3184,153 @@ mod tests {
         checker.run(&mut app_a, &mut spaces_a);
         assert!(app_a.ghost_outbox.is_empty(), "the far cell stays bare");
         assert!(app_a.entity_population[&2].borrow().haunts.is_empty());
+    }
+
+    /// BW-08-05-01's acceptance: the entity that crosses the test
+    /// boundary migrates at the threshold — the checker collects the
+    /// pair, the send face streams the real to the destination, the
+    /// ghost left behind follows the sign-off, and both ends agree on
+    /// who holds the real.
+    #[test]
+    fn crossing_the_boundary_offloads_at_the_threshold() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        // Both ends carry the migration callbacks so `entity_callback`
+        // records them (`has_method` gates the log).
+        for app in [&mut app_a, &mut app_b] {
+            let mut script = EntityScript::with_init(vec![]);
+            for name in [
+                "onLeavingCell",
+                "onLeftCell",
+                "onEnteringCell",
+                "onEnteredCell",
+            ] {
+                script.methods.insert(name);
+            }
+            app.entity_scripts.insert(TYPE, script);
+        }
+        // The boundary is B's rect at 50: the entity starts on A at 40
+        // and stays put through the pre-crossing check.
+        let mut checker = OffloadChecker::new(SID);
+        checker.run(&mut app_a, &mut spaces_a);
+        assert!(
+            checker.offload_list.is_empty(),
+            "nothing to migrate before the boundary"
+        );
+        assert!(app_a.onload_outbox.is_empty());
+        assert!(app_a.entity_population[&2].borrow().is_real);
+        // The maintenance pass put a ghost on B before the crossing —
+        // the offload has somewhere to land.
+        let run_one = app_a.ghost_outbox.len();
+        for wire in &app_a.ghost_outbox {
+            if wire.dest == B_ADDR {
+                assert_eq!(
+                    deliver(&mut app_b, &mut spaces_b, wire),
+                    CreateGhostOutcome::Created,
+                    "B holds the ghost the offload lands on"
+                );
+            }
+        }
+
+        // Across the boundary: the threshold check collects the pair
+        // and the send face migrates it.
+        {
+            let mut borrowed = app_a.entity_population[&2].borrow_mut();
+            borrowed.position = [60.0, 0.0, 25.0];
+            borrowed.velocity = [1.5, 0.0, 0.0];
+        }
+        let scripts_before = app_a.script_calls.len();
+        let mut checker = OffloadChecker::new(SID);
+        checker.run(&mut app_a, &mut spaces_a);
+        assert_eq!(
+            app_a.onload_outbox.len(),
+            1,
+            "the real streamed to the destination"
+        );
+        let wire = app_a.onload_outbox.remove(0);
+        assert_eq!(wire.dest, B_ADDR);
+        assert_eq!(wire.entity, 2);
+        assert!(!wire.is_teleport, "the checker never teleports");
+
+        // The source end: the entity is the ghost now, waiting on the
+        // sign-off with `onLeavingCell`/`onLeftCell` run in order.
+        assert!(!app_a.entity_population[&2].borrow().is_real);
+        let leaving: Vec<&str> = app_a
+            .script_calls
+            .iter()
+            .skip(scripts_before)
+            .filter(|call| call.entity == 2)
+            .map(|call| call.name)
+            .collect();
+        assert_eq!(leaving, ["onLeavingCell", "onLeftCell"]);
+        let notified: Vec<u32> = app_a
+            .ghost_outbox
+            .iter()
+            .filter(|wire| matches!(wire.message, GhostMessage::SetNextReal { .. }))
+            .map(|wire| wire.dest)
+            .collect();
+        assert!(
+            notified.is_empty(),
+            "the destination hears nothing until the sign-off"
+        );
+
+        // The destination end: the ghost that held the ground becomes
+        // the real, signed onto its old haunt through the read.
+        // No new create went out with the offload — the destination
+        // already holds the ghost from the maintenance pass.
+        let create = app_a
+            .ghost_outbox
+            .iter()
+            .skip(run_one)
+            .position(|wire| matches!(wire.message, GhostMessage::Create(_)));
+        assert!(create.is_none(), "the offload creates no fresh ghost");
+        assert!(app_b.entity_population.contains_key(&2));
+        assert!(!app_b.entity_population[&2].borrow().is_real);
+        assert!(
+            app_b.onload_entity(&mut spaces_b, &wire, None),
+            "the stream reads back"
+        );
+        assert!(app_b.entity_population[&2].borrow().is_real);
+        // The stream carries the velocity, not the position: the
+        // position is the ghost's own, told by the updates.
+        assert_eq!(
+            app_b.entity_population[&2].borrow().position,
+            [40.0, 0.0, 25.0],
+            "the ghost keeps the position the updates gave it"
+        );
+        assert_eq!(
+            app_b.entity_population[&2].borrow().velocity,
+            [1.5, 0.0, 0.0],
+            "the real's velocity rides the stream"
+        );
+        let entered: Vec<&str> = app_b
+            .script_calls
+            .iter()
+            .filter(|call| call.entity == 2)
+            .map(|call| call.name)
+            .collect();
+        assert_eq!(entered, ["onEnteringCell", "onEnteredCell"]);
+
+        // The sign-off rides back: the ghost on A now follows the real
+        // on B, and both ends can name its one real.
+        let sign_off: Vec<_> = app_b
+            .ghost_outbox
+            .iter()
+            .filter(|wire| matches!(wire.message, GhostMessage::SetReal { .. }))
+            .collect();
+        assert_eq!(sign_off.len(), 1, "the read signed the old haunt on");
+        assert_eq!(sign_off[0].dest, A_ADDR);
+        assert_eq!(
+            deliver(&mut app_a, &mut spaces_a, sign_off[0]),
+            CreateGhostOutcome::Created
+        );
+        let a_view = app_a.entity_population[&2].borrow();
+        assert!(!a_view.is_real);
+        assert_eq!(a_view.real_addr, Some(B_ADDR));
+        assert_eq!(a_view.next_real_addr, None, "the switch is settled");
+        drop(a_view);
+        let b_view = app_b.entity_population[&2].borrow();
+        assert!(b_view.is_real);
+        assert_eq!(b_view.num_times_real_offloaded, 1);
     }
 
     /// The real's snapshot rides to the ghost: the position, the ground
