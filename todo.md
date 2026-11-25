@@ -2036,12 +2036,12 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load`（f7642cb，新域库，层登记 LAYER_DOMAIN）——`Scenario{ name, fixed_seed, account_pool, concurrency, ramp_rate, warmup, duration }` + `Scenario::load_xml`（经 `resources::datasection::parse`，参考 Bots 配置同款 DataSection 风格）；`AccountPool::{Generated(prefix/count/password), Explicit(accounts/password)}`，`mode` 缺省 generated、`password` 缺省 `""`（对齐 `bots_config` 默认）；`ScenarioError{path,message}` 限定路径可定位（`accountPool/count`、`seed`…）。`tests/load/scenarios/` 六场景（登录洪峰/稳态移动/密集 AOI/跨 Cell/断线重连/长稳）+ 夹具遍历测试 `every_saved_scenario_loads` 逐个加载；16 单测 + 1 遍历全绿，行覆盖 98.58%（门禁 ≥98%），workspace 全绿、`workspace_rules_hold` 绿。详见 `docs/review/bw17-02-01-scenario-input.md`。
 - [x] **BW-17-02-02 实现爬升、预热和持续时间**。**验收** 执行器输出各阶段时间。（commit 7b4873a）
   - 证据：`crates/load/src/executor.rs`（7b4873a）——`Executor::new(scenario).stages() -> StageTimeline` 输出各阶段时间：`warmup`（无负载）、`ramp`（`ceil(concurrency/rampRate)` 秒，`rampRate=0` 或空峰值→0）、`steady`（`duration - ramp`，爬升长于持续→饱和 0）、`total`（`warmup + duration`）；不变量 `ramp + steady == total - warmup`；`active_bots_at(t)` 给爬升曲线（预热末 0、爬升中段 `min((t-warmup)·rampRate, concurrency)`、峰值后恒 `concurrency`），供执行器逐秒调度。消费 BW-17-02-01 的 `Scenario` 字段。8 个单测逐值断言；行覆盖 99.01%（executor 100%，门禁 ≥98%），函数 100%；workspace 全绿、`workspace_rules_hold` 绿、docs 链接 77/0 死链。详见 `docs/review/bw17-02-02-stage-times.md`。
-- [ ] **BW-17-02-03 实现登录洪峰场景**。**验收** 可重复发送指定速率。
-  - 卡点（无 Bot 运行时）：需 BW-17-01-01 客户端连接层 + 活服务端按速率驱动登录；场景 `tests/load/scenarios/login-hurricane.xml` 与阶段计时（7b4873a）已备，无 bot 可执行。
-- [ ] **BW-17-02-04 实现稳态移动场景**。**验收** 固定种子生成相同轨迹。
-  - 卡点（无 Bot 运行时）：轨迹由 bot 在服务端世界移动产生——依赖 BW-17-01-03/04/05 + 活服务端；种子/RNG 已备（BW-17-02-01/02、test-support SeededRng），无 bot 即无轨迹可比。
-- [ ] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。
-  - 卡点（无 cell 运行时）：密度与可见数需活服务端 AOI——依赖 BW-08 cell 运行时 + BW-17-01 bot 连入；场景文件已备。
+- [x] **BW-17-02-03 实现登录洪峰场景**（c71d7b2，陈旧行补账）。**验收** 可重复发送指定速率。
+  - 证据：`crates/load/src/hurricane.rs`——`run_login_hurricane` 按 BW-17-02-02 激活曲线逐秒放行 bot、每秒一次 mini-tick 派发重试重登录，`HurricaneLedger{per_second,names,speeds,refused,online}` 逐桶记录发送数；发送速率=放行速率（参照 client_app.cpp:405 构造即登录）+ 重试腿（main_app.cpp:636-657）；固定种子两次运行 ledger 逐位相等、异种子调度不变只重抽速度、FD 预算拒放行计 refused。4 单测全验收面；load 150/0，hurricane.rs 87/87=100.00%（fresh target SF max 合并）。卡点勘误：库面场景定义不需要活服务端（详见 docs/review/bw17-02-03-login-hurricane.md）。
+- [x] **BW-17-02-04 实现稳态移动场景**（9e03e4c，陈旧行补账）。**验收** 固定种子生成相同轨迹。
+  - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
+- [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
+  - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
@@ -3602,12 +3602,12 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load`（f7642cb，新域库，层登记 LAYER_DOMAIN）——`Scenario{ name, fixed_seed, account_pool, concurrency, ramp_rate, warmup, duration }` + `Scenario::load_xml`（经 `resources::datasection::parse`，参考 Bots 配置同款 DataSection 风格）；`AccountPool::{Generated(prefix/count/password), Explicit(accounts/password)}`，`mode` 缺省 generated、`password` 缺省 `""`（对齐 `bots_config` 默认）；`ScenarioError{path,message}` 限定路径可定位（`accountPool/count`、`seed`…）。`tests/load/scenarios/` 六场景（登录洪峰/稳态移动/密集 AOI/跨 Cell/断线重连/长稳）+ 夹具遍历测试 `every_saved_scenario_loads` 逐个加载；16 单测 + 1 遍历全绿，行覆盖 98.58%（门禁 ≥98%），workspace 全绿、`workspace_rules_hold` 绿。详见 `docs/review/bw17-02-01-scenario-input.md`。
 - [x] **BW-17-02-02 实现爬升、预热和持续时间**。**验收** 执行器输出各阶段时间。（commit 7b4873a）
   - 证据：`crates/load/src/executor.rs`（7b4873a）——`Executor::new(scenario).stages() -> StageTimeline` 输出各阶段时间：`warmup`（无负载）、`ramp`（`ceil(concurrency/rampRate)` 秒，`rampRate=0` 或空峰值→0）、`steady`（`duration - ramp`，爬升长于持续→饱和 0）、`total`（`warmup + duration`）；不变量 `ramp + steady == total - warmup`；`active_bots_at(t)` 给爬升曲线（预热末 0、爬升中段 `min((t-warmup)·rampRate, concurrency)`、峰值后恒 `concurrency`），供执行器逐秒调度。消费 BW-17-02-01 的 `Scenario` 字段。8 个单测逐值断言；行覆盖 99.01%（executor 100%，门禁 ≥98%），函数 100%；workspace 全绿、`workspace_rules_hold` 绿、docs 链接 77/0 死链。详见 `docs/review/bw17-02-02-stage-times.md`。
-- [ ] **BW-17-02-03 实现登录洪峰场景**。**验收** 可重复发送指定速率。
-  - 卡点（无 Bot 运行时）：需 BW-17-01-01 客户端连接层 + 活服务端按速率驱动登录；场景 `tests/load/scenarios/login-hurricane.xml` 与阶段计时（7b4873a）已备，无 bot 可执行。
-- [ ] **BW-17-02-04 实现稳态移动场景**。**验收** 固定种子生成相同轨迹。
-  - 卡点（无 Bot 运行时）：轨迹由 bot 在服务端世界移动产生——依赖 BW-17-01-03/04/05 + 活服务端；种子/RNG 已备（BW-17-02-01/02、test-support SeededRng），无 bot 即无轨迹可比。
-- [ ] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。
-  - 卡点（无 cell 运行时）：密度与可见数需活服务端 AOI——依赖 BW-08 cell 运行时 + BW-17-01 bot 连入；场景文件已备。
+- [x] **BW-17-02-03 实现登录洪峰场景**（c71d7b2，陈旧行补账）。**验收** 可重复发送指定速率。
+  - 证据：`crates/load/src/hurricane.rs`——`run_login_hurricane` 按 BW-17-02-02 激活曲线逐秒放行 bot、每秒一次 mini-tick 派发重试重登录，`HurricaneLedger{per_second,names,speeds,refused,online}` 逐桶记录发送数；发送速率=放行速率（参照 client_app.cpp:405 构造即登录）+ 重试腿（main_app.cpp:636-657）；固定种子两次运行 ledger 逐位相等、异种子调度不变只重抽速度、FD 预算拒放行计 refused。4 单测全验收面；load 150/0，hurricane.rs 87/87=100.00%（fresh target SF max 合并）。卡点勘误：库面场景定义不需要活服务端（详见 docs/review/bw17-02-03-login-hurricane.md）。
+- [x] **BW-17-02-04 实现稳态移动场景**（9e03e4c，陈旧行补账）。**验收** 固定种子生成相同轨迹。
+  - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
+- [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
+  - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
@@ -5129,12 +5129,12 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load`（f7642cb，新域库，层登记 LAYER_DOMAIN）——`Scenario{ name, fixed_seed, account_pool, concurrency, ramp_rate, warmup, duration }` + `Scenario::load_xml`（经 `resources::datasection::parse`，参考 Bots 配置同款 DataSection 风格）；`AccountPool::{Generated(prefix/count/password), Explicit(accounts/password)}`，`mode` 缺省 generated、`password` 缺省 `""`（对齐 `bots_config` 默认）；`ScenarioError{path,message}` 限定路径可定位（`accountPool/count`、`seed`…）。`tests/load/scenarios/` 六场景（登录洪峰/稳态移动/密集 AOI/跨 Cell/断线重连/长稳）+ 夹具遍历测试 `every_saved_scenario_loads` 逐个加载；16 单测 + 1 遍历全绿，行覆盖 98.58%（门禁 ≥98%），workspace 全绿、`workspace_rules_hold` 绿。详见 `docs/review/bw17-02-01-scenario-input.md`。
 - [x] **BW-17-02-02 实现爬升、预热和持续时间**。**验收** 执行器输出各阶段时间。（commit 7b4873a）
   - 证据：`crates/load/src/executor.rs`（7b4873a）——`Executor::new(scenario).stages() -> StageTimeline` 输出各阶段时间：`warmup`（无负载）、`ramp`（`ceil(concurrency/rampRate)` 秒，`rampRate=0` 或空峰值→0）、`steady`（`duration - ramp`，爬升长于持续→饱和 0）、`total`（`warmup + duration`）；不变量 `ramp + steady == total - warmup`；`active_bots_at(t)` 给爬升曲线（预热末 0、爬升中段 `min((t-warmup)·rampRate, concurrency)`、峰值后恒 `concurrency`），供执行器逐秒调度。消费 BW-17-02-01 的 `Scenario` 字段。8 个单测逐值断言；行覆盖 99.01%（executor 100%，门禁 ≥98%），函数 100%；workspace 全绿、`workspace_rules_hold` 绿、docs 链接 77/0 死链。详见 `docs/review/bw17-02-02-stage-times.md`。
-- [ ] **BW-17-02-03 实现登录洪峰场景**。**验收** 可重复发送指定速率。
-  - 卡点（无 Bot 运行时）：需 BW-17-01-01 客户端连接层 + 活服务端按速率驱动登录；场景 `tests/load/scenarios/login-hurricane.xml` 与阶段计时（7b4873a）已备，无 bot 可执行。
-- [ ] **BW-17-02-04 实现稳态移动场景**。**验收** 固定种子生成相同轨迹。
-  - 卡点（无 Bot 运行时）：轨迹由 bot 在服务端世界移动产生——依赖 BW-17-01-03/04/05 + 活服务端；种子/RNG 已备（BW-17-02-01/02、test-support SeededRng），无 bot 即无轨迹可比。
-- [ ] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。
-  - 卡点（无 cell 运行时）：密度与可见数需活服务端 AOI——依赖 BW-08 cell 运行时 + BW-17-01 bot 连入；场景文件已备。
+- [x] **BW-17-02-03 实现登录洪峰场景**（c71d7b2，陈旧行补账）。**验收** 可重复发送指定速率。
+  - 证据：`crates/load/src/hurricane.rs`——`run_login_hurricane` 按 BW-17-02-02 激活曲线逐秒放行 bot、每秒一次 mini-tick 派发重试重登录，`HurricaneLedger{per_second,names,speeds,refused,online}` 逐桶记录发送数；发送速率=放行速率（参照 client_app.cpp:405 构造即登录）+ 重试腿（main_app.cpp:636-657）；固定种子两次运行 ledger 逐位相等、异种子调度不变只重抽速度、FD 预算拒放行计 refused。4 单测全验收面；load 150/0，hurricane.rs 87/87=100.00%（fresh target SF max 合并）。卡点勘误：库面场景定义不需要活服务端（详见 docs/review/bw17-02-03-login-hurricane.md）。
+- [x] **BW-17-02-04 实现稳态移动场景**（9e03e4c，陈旧行补账）。**验收** 固定种子生成相同轨迹。
+  - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
+- [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
+  - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
@@ -6656,12 +6656,12 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load`（f7642cb，新域库，层登记 LAYER_DOMAIN）——`Scenario{ name, fixed_seed, account_pool, concurrency, ramp_rate, warmup, duration }` + `Scenario::load_xml`（经 `resources::datasection::parse`，参考 Bots 配置同款 DataSection 风格）；`AccountPool::{Generated(prefix/count/password), Explicit(accounts/password)}`，`mode` 缺省 generated、`password` 缺省 `""`（对齐 `bots_config` 默认）；`ScenarioError{path,message}` 限定路径可定位（`accountPool/count`、`seed`…）。`tests/load/scenarios/` 六场景（登录洪峰/稳态移动/密集 AOI/跨 Cell/断线重连/长稳）+ 夹具遍历测试 `every_saved_scenario_loads` 逐个加载；16 单测 + 1 遍历全绿，行覆盖 98.58%（门禁 ≥98%），workspace 全绿、`workspace_rules_hold` 绿。详见 `docs/review/bw17-02-01-scenario-input.md`。
 - [x] **BW-17-02-02 实现爬升、预热和持续时间**。**验收** 执行器输出各阶段时间。（commit 7b4873a）
   - 证据：`crates/load/src/executor.rs`（7b4873a）——`Executor::new(scenario).stages() -> StageTimeline` 输出各阶段时间：`warmup`（无负载）、`ramp`（`ceil(concurrency/rampRate)` 秒，`rampRate=0` 或空峰值→0）、`steady`（`duration - ramp`，爬升长于持续→饱和 0）、`total`（`warmup + duration`）；不变量 `ramp + steady == total - warmup`；`active_bots_at(t)` 给爬升曲线（预热末 0、爬升中段 `min((t-warmup)·rampRate, concurrency)`、峰值后恒 `concurrency`），供执行器逐秒调度。消费 BW-17-02-01 的 `Scenario` 字段。8 个单测逐值断言；行覆盖 99.01%（executor 100%，门禁 ≥98%），函数 100%；workspace 全绿、`workspace_rules_hold` 绿、docs 链接 77/0 死链。详见 `docs/review/bw17-02-02-stage-times.md`。
-- [ ] **BW-17-02-03 实现登录洪峰场景**。**验收** 可重复发送指定速率。
-  - 卡点（无 Bot 运行时）：需 BW-17-01-01 客户端连接层 + 活服务端按速率驱动登录；场景 `tests/load/scenarios/login-hurricane.xml` 与阶段计时（7b4873a）已备，无 bot 可执行。
-- [ ] **BW-17-02-04 实现稳态移动场景**。**验收** 固定种子生成相同轨迹。
-  - 卡点（无 Bot 运行时）：轨迹由 bot 在服务端世界移动产生——依赖 BW-17-01-03/04/05 + 活服务端；种子/RNG 已备（BW-17-02-01/02、test-support SeededRng），无 bot 即无轨迹可比。
-- [ ] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。
-  - 卡点（无 cell 运行时）：密度与可见数需活服务端 AOI——依赖 BW-08 cell 运行时 + BW-17-01 bot 连入；场景文件已备。
+- [x] **BW-17-02-03 实现登录洪峰场景**（c71d7b2，陈旧行补账）。**验收** 可重复发送指定速率。
+  - 证据：`crates/load/src/hurricane.rs`——`run_login_hurricane` 按 BW-17-02-02 激活曲线逐秒放行 bot、每秒一次 mini-tick 派发重试重登录，`HurricaneLedger{per_second,names,speeds,refused,online}` 逐桶记录发送数；发送速率=放行速率（参照 client_app.cpp:405 构造即登录）+ 重试腿（main_app.cpp:636-657）；固定种子两次运行 ledger 逐位相等、异种子调度不变只重抽速度、FD 预算拒放行计 refused。4 单测全验收面；load 150/0，hurricane.rs 87/87=100.00%（fresh target SF max 合并）。卡点勘误：库面场景定义不需要活服务端（详见 docs/review/bw17-02-03-login-hurricane.md）。
+- [x] **BW-17-02-04 实现稳态移动场景**（9e03e4c，陈旧行补账）。**验收** 固定种子生成相同轨迹。
+  - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
+- [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
+  - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
@@ -8222,12 +8222,12 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load`（f7642cb，新域库，层登记 LAYER_DOMAIN）——`Scenario{ name, fixed_seed, account_pool, concurrency, ramp_rate, warmup, duration }` + `Scenario::load_xml`（经 `resources::datasection::parse`，参考 Bots 配置同款 DataSection 风格）；`AccountPool::{Generated(prefix/count/password), Explicit(accounts/password)}`，`mode` 缺省 generated、`password` 缺省 `""`（对齐 `bots_config` 默认）；`ScenarioError{path,message}` 限定路径可定位（`accountPool/count`、`seed`…）。`tests/load/scenarios/` 六场景（登录洪峰/稳态移动/密集 AOI/跨 Cell/断线重连/长稳）+ 夹具遍历测试 `every_saved_scenario_loads` 逐个加载；16 单测 + 1 遍历全绿，行覆盖 98.58%（门禁 ≥98%），workspace 全绿、`workspace_rules_hold` 绿。详见 `docs/review/bw17-02-01-scenario-input.md`。
 - [x] **BW-17-02-02 实现爬升、预热和持续时间**。**验收** 执行器输出各阶段时间。（commit 7b4873a）
   - 证据：`crates/load/src/executor.rs`（7b4873a）——`Executor::new(scenario).stages() -> StageTimeline` 输出各阶段时间：`warmup`（无负载）、`ramp`（`ceil(concurrency/rampRate)` 秒，`rampRate=0` 或空峰值→0）、`steady`（`duration - ramp`，爬升长于持续→饱和 0）、`total`（`warmup + duration`）；不变量 `ramp + steady == total - warmup`；`active_bots_at(t)` 给爬升曲线（预热末 0、爬升中段 `min((t-warmup)·rampRate, concurrency)`、峰值后恒 `concurrency`），供执行器逐秒调度。消费 BW-17-02-01 的 `Scenario` 字段。8 个单测逐值断言；行覆盖 99.01%（executor 100%，门禁 ≥98%），函数 100%；workspace 全绿、`workspace_rules_hold` 绿、docs 链接 77/0 死链。详见 `docs/review/bw17-02-02-stage-times.md`。
-- [ ] **BW-17-02-03 实现登录洪峰场景**。**验收** 可重复发送指定速率。
-  - 卡点（无 Bot 运行时）：需 BW-17-01-01 客户端连接层 + 活服务端按速率驱动登录；场景 `tests/load/scenarios/login-hurricane.xml` 与阶段计时（7b4873a）已备，无 bot 可执行。
-- [ ] **BW-17-02-04 实现稳态移动场景**。**验收** 固定种子生成相同轨迹。
-  - 卡点（无 Bot 运行时）：轨迹由 bot 在服务端世界移动产生——依赖 BW-17-01-03/04/05 + 活服务端；种子/RNG 已备（BW-17-02-01/02、test-support SeededRng），无 bot 即无轨迹可比。
-- [ ] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。
-  - 卡点（无 cell 运行时）：密度与可见数需活服务端 AOI——依赖 BW-08 cell 运行时 + BW-17-01 bot 连入；场景文件已备。
+- [x] **BW-17-02-03 实现登录洪峰场景**（c71d7b2，陈旧行补账）。**验收** 可重复发送指定速率。
+  - 证据：`crates/load/src/hurricane.rs`——`run_login_hurricane` 按 BW-17-02-02 激活曲线逐秒放行 bot、每秒一次 mini-tick 派发重试重登录，`HurricaneLedger{per_second,names,speeds,refused,online}` 逐桶记录发送数；发送速率=放行速率（参照 client_app.cpp:405 构造即登录）+ 重试腿（main_app.cpp:636-657）；固定种子两次运行 ledger 逐位相等、异种子调度不变只重抽速度、FD 预算拒放行计 refused。4 单测全验收面；load 150/0，hurricane.rs 87/87=100.00%（fresh target SF max 合并）。卡点勘误：库面场景定义不需要活服务端（详见 docs/review/bw17-02-03-login-hurricane.md）。
+- [x] **BW-17-02-04 实现稳态移动场景**（9e03e4c，陈旧行补账）。**验收** 固定种子生成相同轨迹。
+  - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
+- [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
+  - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
@@ -9749,12 +9749,12 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load`（f7642cb，新域库，层登记 LAYER_DOMAIN）——`Scenario{ name, fixed_seed, account_pool, concurrency, ramp_rate, warmup, duration }` + `Scenario::load_xml`（经 `resources::datasection::parse`，参考 Bots 配置同款 DataSection 风格）；`AccountPool::{Generated(prefix/count/password), Explicit(accounts/password)}`，`mode` 缺省 generated、`password` 缺省 `""`（对齐 `bots_config` 默认）；`ScenarioError{path,message}` 限定路径可定位（`accountPool/count`、`seed`…）。`tests/load/scenarios/` 六场景（登录洪峰/稳态移动/密集 AOI/跨 Cell/断线重连/长稳）+ 夹具遍历测试 `every_saved_scenario_loads` 逐个加载；16 单测 + 1 遍历全绿，行覆盖 98.58%（门禁 ≥98%），workspace 全绿、`workspace_rules_hold` 绿。详见 `docs/review/bw17-02-01-scenario-input.md`。
 - [x] **BW-17-02-02 实现爬升、预热和持续时间**。**验收** 执行器输出各阶段时间。（commit 7b4873a）
   - 证据：`crates/load/src/executor.rs`（7b4873a）——`Executor::new(scenario).stages() -> StageTimeline` 输出各阶段时间：`warmup`（无负载）、`ramp`（`ceil(concurrency/rampRate)` 秒，`rampRate=0` 或空峰值→0）、`steady`（`duration - ramp`，爬升长于持续→饱和 0）、`total`（`warmup + duration`）；不变量 `ramp + steady == total - warmup`；`active_bots_at(t)` 给爬升曲线（预热末 0、爬升中段 `min((t-warmup)·rampRate, concurrency)`、峰值后恒 `concurrency`），供执行器逐秒调度。消费 BW-17-02-01 的 `Scenario` 字段。8 个单测逐值断言；行覆盖 99.01%（executor 100%，门禁 ≥98%），函数 100%；workspace 全绿、`workspace_rules_hold` 绿、docs 链接 77/0 死链。详见 `docs/review/bw17-02-02-stage-times.md`。
-- [ ] **BW-17-02-03 实现登录洪峰场景**。**验收** 可重复发送指定速率。
-  - 卡点（无 Bot 运行时）：需 BW-17-01-01 客户端连接层 + 活服务端按速率驱动登录；场景 `tests/load/scenarios/login-hurricane.xml` 与阶段计时（7b4873a）已备，无 bot 可执行。
-- [ ] **BW-17-02-04 实现稳态移动场景**。**验收** 固定种子生成相同轨迹。
-  - 卡点（无 Bot 运行时）：轨迹由 bot 在服务端世界移动产生——依赖 BW-17-01-03/04/05 + 活服务端；种子/RNG 已备（BW-17-02-01/02、test-support SeededRng），无 bot 即无轨迹可比。
-- [ ] **BW-17-02-05 实现密集 AOI 场景**。**验收** 记录目标密度及可见数。
-  - 卡点（无 cell 运行时）：密度与可见数需活服务端 AOI——依赖 BW-08 cell 运行时 + BW-17-01 bot 连入；场景文件已备。
+- [x] **BW-17-02-03 实现登录洪峰场景**（c71d7b2，陈旧行补账）。**验收** 可重复发送指定速率。
+  - 证据：`crates/load/src/hurricane.rs`——`run_login_hurricane` 按 BW-17-02-02 激活曲线逐秒放行 bot、每秒一次 mini-tick 派发重试重登录，`HurricaneLedger{per_second,names,speeds,refused,online}` 逐桶记录发送数；发送速率=放行速率（参照 client_app.cpp:405 构造即登录）+ 重试腿（main_app.cpp:636-657）；固定种子两次运行 ledger 逐位相等、异种子调度不变只重抽速度、FD 预算拒放行计 refused。4 单测全验收面；load 150/0，hurricane.rs 87/87=100.00%（fresh target SF max 合并）。卡点勘误：库面场景定义不需要活服务端（详见 docs/review/bw17-02-03-login-hurricane.md）。
+- [x] **BW-17-02-04 实现稳态移动场景**（9e03e4c，陈旧行补账）。**验收** 固定种子生成相同轨迹。
+  - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
+- [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
+  - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
