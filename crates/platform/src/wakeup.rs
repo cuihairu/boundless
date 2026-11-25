@@ -269,7 +269,6 @@ mod tests {
 mod windows_tests {
     use super::*;
     use std::io::Read;
-    use std::os::windows::io::AsRawSocket;
     use std::sync::Arc;
 
     /// A live wakeup pair over loopback sockets.
