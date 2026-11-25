@@ -3187,8 +3187,10 @@ exported.  Adding a material will fix this problem."
             export_mode: ExportMode::MeshParticles,
             ..MayaExportSettings::default()
         };
-        let mut visual = MayaVisualMesh::default();
-        visual.identifier = "particles".to_string();
+        let mut visual = MayaVisualMesh {
+            identifier: "particles".to_string(),
+            ..MayaVisualMesh::default()
+        };
         let tri = |material_index: i32| Triangle {
             index: [0, 1, 2],
             real_index: [0, 1, 2],
@@ -3235,8 +3237,10 @@ Mesh particles must use only 1 material/mesh."
         // Past 65536 vertices the index blob switches to the list32
         // format; a 65537-vertex triangle exercises the u32 write loop.
         let settings = MayaExportSettings::default();
-        let mut visual = MayaVisualMesh::default();
-        visual.identifier = "big".to_string();
+        let mut visual = MayaVisualMesh {
+            identifier: "big".to_string(),
+            ..MayaVisualMesh::default()
+        };
         // Distinct positions keep every vertex through the dedup: the
         // reference's `sortTriangles` also discards unreferenced ones.
         for i in 0..65537u32 {
@@ -3506,9 +3510,11 @@ Mesh particles must use only 1 material/mesh."
         assert_eq!(pg.read_string("material/mfm", ""), "defaults/skinned.mfm");
 
         // Meaning 2 writes the mfm straight from the map identifier.
-        let mut material = MayaMaterial::default();
-        material.map_id_meaning = 2;
-        material.map_identifier = "walls/wall.mfm".to_string();
+        let material = MayaMaterial {
+            map_id_meaning: 2,
+            map_identifier: "walls/wall.mfm".to_string(),
+            ..MayaMaterial::default()
+        };
         let mut geometry = DataSection::new("geometry");
         maya_material_save(
             &material,
@@ -3550,9 +3556,11 @@ Mesh particles must use only 1 material/mesh."
         );
 
         // The materials-empty box at save time.
-        let mut visual = MayaVisualMesh::default();
-        visual.identifier = "wall".to_string();
-        visual.materials = Vec::new();
+        let mut visual = MayaVisualMesh {
+            identifier: "wall".to_string(),
+            materials: Vec::new(),
+            ..MayaVisualMesh::default()
+        };
         assert!(
             visual
                 .save(&settings, None, "out.primitives", false, &mut host)
