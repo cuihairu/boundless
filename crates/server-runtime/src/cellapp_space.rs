@@ -1783,6 +1783,12 @@ pub struct CellApp {
     /// teleport's head (the nearby id and the ghost body) with the tail
     /// `onload` boxed inside.
     pub teleport_outbox: Vec<crate::cellapp_ghost::TeleportWire>,
+    /// `BaseAppIntInterface::emergencySetCurrentCell` wires from the
+    /// death sweep: one per zombied ghost with a base.
+    pub emergency_outbox: Vec<crate::cellapp_ghost::EmergencySetCurrentCellWire>,
+    /// `CellAppChannels::hasRecentlyDied`: apps the death sweep marked
+    /// gone, so a ghost whose next real names one still zombies.
+    pub dead_apps: BTreeSet<u32>,
     /// `CellAppChannels`' per-channel `mark()` — the ghost maintainer's
     /// this-round mark bookkeeping, by remote address.
     pub channel_marks: BTreeMap<u32, i32>,
@@ -1887,6 +1893,8 @@ impl Default for CellApp {
             ghost_outbox: Vec::new(),
             onload_outbox: Vec::new(),
             teleport_outbox: Vec::new(),
+            emergency_outbox: Vec::new(),
+            dead_apps: BTreeSet::new(),
             channel_marks: BTreeMap::new(),
             dead_channels: BTreeSet::new(),
             ghost_property_descriptions: BTreeMap::new(),

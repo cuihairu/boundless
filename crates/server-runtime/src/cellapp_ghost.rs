@@ -189,6 +189,23 @@ pub struct TeleportWire {
     pub onload: Box<OnloadWire>,
 }
 
+/// `BaseAppIntInterface::emergencySetCurrentCell`
+/// (`cellapp.cpp:1854`): the death sweep's ask to the dead ghost's
+/// base — the space the entity lived in and the real's address, so
+/// the base can say where the real currently is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmergencySetCurrentCellWire {
+    /// The base's internal address.
+    pub base: (u32, u16),
+    /// The zombie ghost's id.
+    pub entity: u32,
+    /// The ghost's space when it died.
+    pub space_id: SpaceId,
+    /// `Entity::realAddr()` as read after the zombied check — a ghost
+    /// the sweep recovered answers its promoted real.
+    pub real_addr: u32,
+}
+
 impl GhostWire {
     /// The `CellAppInterface::createGhost` arguments off a wire's
     /// payload: the entity id the message carries, then the rest.
@@ -2765,6 +2782,112 @@ impl CellApp {
     pub fn forget_dead_real_channel(&mut self, addr: u32) {
         self.curr_real_channels.retain(|_, cached| *cached != addr);
         self.prev_real_channels.retain(|_, cached| *cached != addr);
+    }
+
+    /// `CellAppChannels::hasRecentlyDied`'s stand-in: the death sweep
+    /// registers the dead app so a ghost whose `nextRealAddr_` still
+    /// names it zombies on the re-check too.
+    pub fn mark_app_dead(&mut self, addr: u32) {
+        self.dead_apps.insert(addr);
+    }
+
+    /// `CellAppChannels::hasRecentlyDied`.
+    fn has_recently_died(&self, addr: u32) -> bool {
+        self.dead_apps.contains(&addr)
+    }
+
+    /// `Entity::checkIfZombied` (`entity.cpp:3309`): whether a ghost's
+    /// real is gone with the dying app. The recovery arm runs here —
+    /// a ghost whose current real is the dying one but whose
+    /// `nextRealAddr_` is alive promotes the next real to current and
+    /// survives.
+    pub fn check_if_zombied(&mut self, entity: u32, dying_addr: u32) -> bool {
+        let Some(entity_rc) = self.entity_population.get(&entity) else {
+            return false;
+        };
+        let mut borrowed = entity_rc.borrow_mut();
+        if borrowed.destroyed || borrowed.is_real {
+            return false;
+        }
+        // Zombied if next real is dying or dead.
+        if borrowed
+            .next_real_addr
+            .is_some_and(|next| next == dying_addr || self.has_recently_died(next))
+        {
+            return true;
+        }
+        // Check if current real is healthy.
+        if borrowed.real_addr.is_some_and(|real| real != dying_addr) {
+            return false;
+        }
+        // The current real is the dying one (or unset): recovering by
+        // updating current real to next real (`entity.cpp:3339`).
+        if let Some(next) = borrowed.next_real_addr {
+            borrowed.real_addr = Some(next);
+            return false;
+        }
+        true
+    }
+
+    /// `CellApp::handleCellAppDeath`'s entity face
+    /// (`cellapp.cpp:1765`): strip every real's haunts on the dead
+    /// app, zombie the ghosts whose real died with it (recovering the
+    /// ones mid-switch to a live next real), wire the baseapps an
+    /// `emergencySetCurrentCell` per zombied ghost, and destroy the
+    /// zombies. The population listener face (`forgetDeadRealChannel`
+    /// on both generations) and the offload freeze
+    /// (`AckCellAppDeathHelper`'s `shouldOffload(false)`) ride here
+    /// too. Returns the zombie ids.
+    pub fn handle_cell_app_death(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        dead_addr: u32,
+    ) -> Vec<u32> {
+        self.mark_app_dead(dead_addr);
+        // "Disable offloading for all cells until we're in a good
+        // state again."
+        for cell in self.cells.iter() {
+            cell.borrow_mut().should_offload = false;
+        }
+        // EntityPopulation::handleCellAppDeath: the cached real
+        // channels on the dead app go, both generations.
+        self.forget_dead_real_channel(dead_addr);
+
+        // "Destroy the ghosts that are associated with real entities
+        // that are lost": every real drops its haunts on the dead app;
+        // every ghost answers the zombied check.
+        for entity_rc in self.entity_population.values() {
+            let mut borrowed = entity_rc.borrow_mut();
+            if borrowed.is_real {
+                borrowed.haunts.retain(|haunt| haunt.addr != dead_addr);
+            }
+        }
+        let ids: Vec<u32> = self.entity_population.keys().copied().collect();
+        let mut zombies = Vec::new();
+        for id in ids {
+            if self.check_if_zombied(id, dead_addr) {
+                zombies.push(id);
+            }
+        }
+
+        for id in &zombies {
+            // The base is told where the entity lived and where its
+            // real is — read after the check, so a recovered ghost
+            // answers its promoted real.
+            let base = self.entity_population[id].borrow().base_addr;
+            let space_id = self.entity_population[id].borrow().space_id;
+            let real_addr = self.entity_real_addr(*id);
+            if let Some(base) = base {
+                self.emergency_outbox.push(EmergencySetCurrentCellWire {
+                    base,
+                    entity: *id,
+                    space_id,
+                    real_addr,
+                });
+            }
+            self.destroy_entity(spaces, *id);
+        }
+        zombies
     }
 }
 
@@ -6022,6 +6145,181 @@ mod tests {
         let mut bad_tail = wire.clone();
         bad_tail.onload.data.truncate(2);
         assert!(!app_b.onload_teleported_entity(&mut spaces_b, &bad_tail));
+    }
+
+    /// The death sweep's zombied face: the ghost whose real died with
+    /// the app is destroyed and its base asked where the real is now
+    /// — the roles and the message state read back against the
+    /// reference ladder (`checkIfZombied`'s zombie arm).
+    #[test]
+    fn a_death_zombies_the_ghost_of_the_dying_real() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::Created
+        );
+
+        // A healthy stranger's death keeps the ghost alive.
+        assert!(!app_b.check_if_zombied(2, D_ADDR));
+
+        let zombies = app_b.handle_cell_app_death(&mut spaces_b, A_ADDR);
+        assert_eq!(zombies, vec![2]);
+        // The role: destroyed. The message state: one
+        // emergencySetCurrentCell to the base, naming the space and
+        // the dying real's address.
+        assert!(app_b.entity_population[&2].borrow().destroyed);
+        let wire = app_b.emergency_outbox.remove(0);
+        assert_eq!(wire.base, (7, 6502));
+        assert_eq!(wire.entity, 2);
+        assert_eq!(wire.space_id, SID);
+        assert_eq!(wire.real_addr, A_ADDR);
+        // A re-check answers no: destroyed ghosts are not zombied.
+        assert!(!app_b.check_if_zombied(2, A_ADDR));
+
+        // A base-less ghost has nobody to ask but still dies: the
+        // zombie list grows, no second wire goes.
+        let stray = Rc::new(RefCell::new(crate::cellapp_space::Entity::new(4, false)));
+        {
+            let mut borrowed = stray.borrow_mut();
+            borrowed.real_addr = Some(A_ADDR);
+            borrowed.space_id = SID;
+        }
+        app_b.entity_population.insert(4, stray);
+        let zombies = app_b.handle_cell_app_death(&mut spaces_b, A_ADDR);
+        assert_eq!(zombies, vec![4]);
+        assert!(app_b.entity_population[&4].borrow().destroyed);
+        assert!(app_b.emergency_outbox.is_empty());
+    }
+
+    /// The recovery face (`entity.cpp:3339`): a ghost whose current
+    /// real is the dying one but whose `nextRealAddr_` survived
+    /// promotes the next real to current and stays — and the message
+    /// state moves with the role: the dead real's stragglers buffer,
+    /// the promoted real's flow freely.
+    #[test]
+    fn a_death_recovers_a_ghost_whose_next_real_survived() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::Created
+        );
+        // The real signed off mid-offload to C: the ghost holds the
+        // sign-off until C's first message.
+        app_b.entity_population[&2].borrow_mut().next_real_addr = Some(C_ADDR);
+
+        let zombies = app_b.handle_cell_app_death(&mut spaces_b, A_ADDR);
+        assert!(zombies.is_empty(), "the mid-switch ghost recovers");
+        let ghost = app_b.entity_population[&2].borrow();
+        assert!(!ghost.destroyed);
+        assert_eq!(ghost.real_addr, Some(C_ADDR), "the next real is current");
+        assert_eq!(ghost.next_real_addr, Some(C_ADDR));
+        // Message states: the dead real's stragglers buffer; the
+        // promoted real's messages flow; a routed real call now finds
+        // the promoted real.
+        assert!(app_b.should_buffer_messages_from(2, A_ADDR));
+        assert!(!app_b.should_buffer_messages_from(2, C_ADDR));
+        assert_eq!(app_b.entity_real_addr(2), C_ADDR);
+    }
+
+    /// The migration target's own death: a ghost mid-switch to a
+    /// dying target zombies even though its current real is alive
+    /// (`entity.cpp:3317`) — and once the sweep marked the app gone,
+    /// a later check zombies through `hasRecentlyDied` too.
+    #[test]
+    fn a_death_zombies_a_ghost_whose_next_real_is_the_target() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::Created
+        );
+        app_b.entity_population[&2].borrow_mut().next_real_addr = Some(D_ADDR);
+        // A stranger's death leaves the healthy current real holding
+        // the ghost (the check with the current real's own address is
+        // the recovery call, not a health check).
+        assert!(!app_b.check_if_zombied(2, C_ADDR));
+
+        let zombies = app_b.handle_cell_app_death(&mut spaces_b, D_ADDR);
+        assert_eq!(zombies, vec![2]);
+        assert!(app_b.entity_population[&2].borrow().destroyed);
+        // The wire still names the old real: the flight never
+        // completed, so the base's answer comes back to where it was.
+        let wire = app_b.emergency_outbox.remove(0);
+        assert_eq!(wire.real_addr, A_ADDR);
+
+        // `hasRecentlyDied`: another ghost mid-switch to the dead
+        // target zombies on a later check, whatever the dying arg is.
+        let stranger = Rc::new(RefCell::new(crate::cellapp_space::Entity::new(3, false)));
+        {
+            let mut borrowed = stranger.borrow_mut();
+            borrowed.real_addr = Some(A_ADDR);
+            borrowed.next_real_addr = Some(D_ADDR);
+            borrowed.space_id = SID;
+        }
+        app_b.entity_population.insert(3, stranger);
+        assert!(app_b.check_if_zombied(3, A_ADDR));
+    }
+
+    /// The sweep's bookkeeping: every real drops its haunts on the
+    /// dead app and keeps the rest, the cells freeze their offloads
+    /// until we're in a good state again, and the population's cached
+    /// channels on the dead app go from both generations.
+    #[test]
+    fn the_death_sweep_strips_haunts_and_freezes_offload() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::Created
+        );
+        app_a.entity_population[&2].borrow_mut().haunts = vec![
+            Haunt {
+                addr: B_ADDR,
+                creation_time: 0,
+            },
+            Haunt {
+                addr: C_ADDR,
+                creation_time: 0,
+            },
+            Haunt {
+                addr: D_ADDR,
+                creation_time: 0,
+            },
+        ];
+        app_a.remember_real_channel(2, C_ADDR);
+        app_a.advance_tick();
+        app_a.remember_real_channel(5, B_ADDR);
+
+        let zombies = app_a.handle_cell_app_death(&mut spaces_a, B_ADDR);
+        assert!(zombies.is_empty(), "the real is not zombied");
+        assert_eq!(
+            app_a.entity_population[&2].borrow().haunts,
+            vec![
+                Haunt {
+                    addr: C_ADDR,
+                    creation_time: 0,
+                },
+                Haunt {
+                    addr: D_ADDR,
+                    creation_time: 0,
+                },
+            ]
+        );
+        assert!(
+            !app_a.cells.iter().any(|cell| cell.borrow().should_offload),
+            "offloads freeze on the death"
+        );
+        // The cached channel on the dead app goes; the live one stays.
+        assert_eq!(app_a.find_real_channel(5), None);
+        assert_eq!(app_a.find_real_channel(2), Some(C_ADDR));
+        // The sweep marked the app gone for the recently-died face.
+        assert!(app_a.dead_apps.contains(&B_ADDR));
     }
 
     /// `handleCellAppDeath`'s cache face: a dead channel's entry goes,
