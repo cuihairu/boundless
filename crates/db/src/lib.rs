@@ -37,6 +37,7 @@ pub mod retry;
 pub mod schema;
 pub mod secondary_database;
 pub mod storage;
+pub mod tools;
 pub mod transaction;
 pub mod xml;
 pub mod xml_database;

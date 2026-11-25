@@ -2011,6 +2011,7 @@ dependencies = [
  "libc",
  "md-5 0.10.6",
  "mercury",
+ "physics",
  "platform",
  "regex",
  "resources",

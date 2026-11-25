@@ -31,6 +31,7 @@ use crate::xml_database::XmlDatabase;
 
 /// The billing systems the registry can build
 /// (`BillingSystem *` as created by the registered creators).
+#[allow(clippy::large_enum_variant)] // both variants carry a full system; boxing would add indirection to every dispatch
 pub enum RegisteredBillingSystem {
     /// The database's own billing face — the
     /// `getIDatabase().createBillingSystem()` fallback of the standard
@@ -79,6 +80,7 @@ impl BillingSystem for RegisteredBillingSystem {
 }
 
 /// The outcome of `BillingSystemCreator::createFromConfig`.
+#[allow(clippy::large_enum_variant)] // Ready carries the built system by value, as the reference returns the live pointer
 pub enum BillingCreation {
     /// The config's type matched a registered creator and the built
     /// system passed `isOkay`.
