@@ -1584,16 +1584,23 @@ mod tests {
 
         // Receive the whole file like FileReceiver does, checking the
         // header bytes on the way.
-        // The wire name is the sqlite path as the sender holds it.
+        // The wire name is the sqlite path as the sender holds it, and
+        // its length moves with the temp path, so the header parses by
+        // structure — a fixed-size read would swallow the first content
+        // byte whenever the name is shorter than the assumed 36 and
+        // deadlock the exchange.
         let name = db_path.display().to_string();
-        let mut header = [0u8; 1 + 2 + 4 + 36];
-        assert!(recv_exact(&mut receiver_stream, &mut header));
-        assert_eq!(header[0], b'n');
-        let name_len = u16::from_le_bytes(header[1..3].try_into().expect("len"));
-        assert_eq!(name_len as usize, name.len());
-        assert_eq!(&header[3..3 + name.len()], name.as_bytes());
-        let size_at = 3 + name.len();
-        let file_size = u32::from_le_bytes(header[size_at..size_at + 4].try_into().expect("size"));
+        let mut head = [0u8; 1 + 2];
+        assert!(recv_exact(&mut receiver_stream, &mut head));
+        assert_eq!(head[0], b'n');
+        let name_len = u16::from_le_bytes(head[1..3].try_into().expect("len")) as usize;
+        assert_eq!(name_len, name.len());
+        let mut name_bytes = vec![0u8; name_len];
+        assert!(recv_exact(&mut receiver_stream, &mut name_bytes));
+        assert_eq!(name_bytes, name.as_bytes());
+        let mut size_bytes = [0u8; 4];
+        assert!(recv_exact(&mut receiver_stream, &mut size_bytes));
+        let file_size = u32::from_le_bytes(size_bytes);
 
         let expected_bytes = std::fs::read(&db_path).expect("source bytes");
         assert_eq!(file_size as usize, expected_bytes.len());
