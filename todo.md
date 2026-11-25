@@ -1724,7 +1724,7 @@
 将 Python simple client、Android/iOS 客户端和 CellApp Controller/Extra 扩展示例纳入 `examples/sdk/` 兼容验证。SDK 实现与游戏引擎适配由 BW-21 交付。
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
-  - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
+  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -3304,7 +3304,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 将 Python simple client、Android/iOS 客户端和 CellApp Controller/Extra 扩展示例纳入 `examples/sdk/` 兼容验证。SDK 实现与游戏引擎适配由 BW-21 交付。
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
-  - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
+  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -4845,7 +4845,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 将 Python simple client、Android/iOS 客户端和 CellApp Controller/Extra 扩展示例纳入 `examples/sdk/` 兼容验证。SDK 实现与游戏引擎适配由 BW-21 交付。
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
-  - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
+  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -6386,7 +6386,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 将 Python simple client、Android/iOS 客户端和 CellApp Controller/Extra 扩展示例纳入 `examples/sdk/` 兼容验证。SDK 实现与游戏引擎适配由 BW-21 交付。
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
-  - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
+  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -7966,7 +7966,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 将 Python simple client、Android/iOS 客户端和 CellApp Controller/Extra 扩展示例纳入 `examples/sdk/` 兼容验证。SDK 实现与游戏引擎适配由 BW-21 交付。
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
-  - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
+  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
@@ -9507,7 +9507,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 将 Python simple client、Android/iOS 客户端和 CellApp Controller/Extra 扩展示例纳入 `examples/sdk/` 兼容验证。SDK 实现与游戏引擎适配由 BW-21 交付。
 
 - [ ] **BW-14-02-01 运行 Python simple 示例**。**验收** 与新服务端完成登录。
-  - 卡点（服务端登录链路未落地，同 BW-14-01-02）：simple client 在参考 `examples/client_integration/python/simple/`（自带 res 树，实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对），其登录依赖新服务端 loginapp 挑战协商（BW-06-01-02）+ baseapp onLogin（BW-07-01），当前 `apps/server` 仅最小入口无登录处理。
+  - 卡点复测（2026-11-26，bw14-script-host 席）：旧注「服务端登录链路未落地」**已过时**——登录链已落地并真机绿：BW-06-01-02 挑战协商（3244af7，main 祖先）+ BW-07-01 baseapp 装载/ID 分配 + BW-14-01-02/05 进程内登录链（`fantasydemo_login.rs` 5 测：既有账户走机/未知用户建档/错密码拒不碰行/新角色建档回指，`fantasydemo_logout_relogin.rs` 2 测：退出持久化重登读回，本席实测全绿）。**真余卡点两处**：①`apps/server` 仍最小入口（`main.rs` 仅 BWResource/BwConfig 初始化 + `app::run` 信号/关停面），无角色运行时把 loginapp/dbapp/baseapp 登录链接到真实 Mercury 端口（同 BW-15-02-01 卡点；BW-08-01-02 CellApp 创建与注册未勾）；②参考 simple 客户端是 **C++ 壳内嵌 Python**（`main.cpp`/`entity.cpp`/`py_server.cpp` 等，目录名「python」指 Python 脚本化实体而非纯 Python 程序），跑通它需移植该壳或等价客户端驱动，与①同属大面工程，随角色运行时落地。simple 自带 res 树实体定义已被 BW-04-04-04 `factory_loads_the_client_integration_example` 核对。
 - [x] **BW-14-02-02 运行原版 Android 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
   - 宿主缺口（未运行互通测试）：`docs/review/bw14-02-02-03-mobile-interop-host-gap.md`（402c28a）——参考 `examples/client_integration/c_plus_plus/android/`（JNI + `android.app.NativeActivity` + `android_native_app_glue` + `connection_model` 静态库 + `-llog -landroid -lEGL -lGLESv1_CM`，NDK `armeabi-v7a`/`APP_STL=gnustl_static`/`APP_PLATFORM=android-9`）需 Android NDK 工具链 + 真机/模拟器，本机 Linux 无 NDK/设备；即使宿主就绪，互通目标（新服务端登录）亦未落地（同 02-01 卡点）。协议结果未采集；两侧缺口均已登记。
 - [x] **BW-14-02-03 运行原版 iOS 示例互通测试**。**验收** 保存协议结果或宿主缺口。（commit 402c28a）
