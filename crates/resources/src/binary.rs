@@ -209,6 +209,19 @@ impl BinSection {
         self.find_child(tag).map(|child| child.block.clone())
     }
 
+    /// `DataSection::writeBinary` on the container face: create-or-replace
+    /// the child with `tag` (the reference's `openSection(tag, true)` +
+    /// `setBinary` flow), so re-saving a stream keeps one entry per name.
+    pub fn write_binary(&mut self, tag: &str, block: BinaryBlock) {
+        self.introspect();
+        self.dirty = true;
+        if let Some(child) = self.children.iter_mut().find(|child| child.tag == tag) {
+            child.block = block;
+            return;
+        }
+        self.children.push(BinSection::new(tag, block));
+    }
+
     /// `BinSection::newSection`: append an empty child with `tag`.
     pub fn new_section(&mut self, tag: &str) -> &mut BinSection {
         self.introspect();
