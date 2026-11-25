@@ -3286,7 +3286,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；compiled space 解析已落地（BW-10-02-01..05 全勾）；仍缺 CellApp 创建与注册（BW-08-01-02 未勾）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
-- [ ] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。
+- [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
 - [x] **BW-14-01-06 登记资源生成与完整包**。**验收** 每个样本可追溯至来源。（commit fccd8bd）
   - 证据：`docs/review/bw14-01-06-resource-generation-registry.md`（fccd8bd）——生成器 `programming/bigworld/scripts/generate-fantasydemo-assets.py`（参考 HEAD `167688a4`），输出基址 `programming/fantasydemo/res/`，**完整包 = 21 项**（`server/bw.xml` + `scripts/` 20 项），逐项登记生成器内嵌常量（`BW_XML`/`ENTITIES_XML`/`DB_XML`/`ALIAS_XML`/5×`*_DEF`/11×`{BASE,CELL,CLIENT}_*_PY`）；跟踪镜像 `docs/review/fixtures/fantasydemo_def/res/`（fccd8bd 补 `server/bw.xml` 后 **21 文件**，`diff -r` 与参考 res 树字节一致）+ 01-01 逐类摘要吻合（845831f）。边界：美术资源生成器明确不产出（非美术代餐），`development_defaults.xml` 父配置在参考仓不存在故 `bw.xml` 自含。
@@ -4820,7 +4820,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；compiled space 解析已落地（BW-10-02-01..05 全勾）；仍缺 CellApp 创建与注册（BW-08-01-02 未勾）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
-- [ ] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。
+- [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
 - [x] **BW-14-01-06 登记资源生成与完整包**。**验收** 每个样本可追溯至来源。（commit fccd8bd）
   - 证据：`docs/review/bw14-01-06-resource-generation-registry.md`（fccd8bd）——生成器 `programming/bigworld/scripts/generate-fantasydemo-assets.py`（参考 HEAD `167688a4`），输出基址 `programming/fantasydemo/res/`，**完整包 = 21 项**（`server/bw.xml` + `scripts/` 20 项），逐项登记生成器内嵌常量（`BW_XML`/`ENTITIES_XML`/`DB_XML`/`ALIAS_XML`/5×`*_DEF`/11×`{BASE,CELL,CLIENT}_*_PY`）；跟踪镜像 `docs/review/fixtures/fantasydemo_def/res/`（fccd8bd 补 `server/bw.xml` 后 **21 文件**，`diff -r` 与参考 res 树字节一致）+ 01-01 逐类摘要吻合（845831f）。边界：美术资源生成器明确不产出（非美术代餐），`development_defaults.xml` 父配置在参考仓不存在故 `bw.xml` 自含。
@@ -6354,7 +6354,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；compiled space 解析已落地（BW-10-02-01..05 全勾）；仍缺 CellApp 创建与注册（BW-08-01-02 未勾）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
-- [ ] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。
+- [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
 - [x] **BW-14-01-06 登记资源生成与完整包**。**验收** 每个样本可追溯至来源。（commit fccd8bd）
   - 证据：`docs/review/bw14-01-06-resource-generation-registry.md`（fccd8bd）——生成器 `programming/bigworld/scripts/generate-fantasydemo-assets.py`（参考 HEAD `167688a4`），输出基址 `programming/fantasydemo/res/`，**完整包 = 21 项**（`server/bw.xml` + `scripts/` 20 项），逐项登记生成器内嵌常量（`BW_XML`/`ENTITIES_XML`/`DB_XML`/`ALIAS_XML`/5×`*_DEF`/11×`{BASE,CELL,CLIENT}_*_PY`）；跟踪镜像 `docs/review/fixtures/fantasydemo_def/res/`（fccd8bd 补 `server/bw.xml` 后 **21 文件**，`diff -r` 与参考 res 树字节一致）+ 01-01 逐类摘要吻合（845831f）。边界：美术资源生成器明确不产出（非美术代餐），`development_defaults.xml` 父配置在参考仓不存在故 `bw.xml` 自含。
@@ -7927,7 +7927,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；compiled space 解析已落地（BW-10-02-01..05 全勾）；仍缺 CellApp 创建与注册（BW-08-01-02 未勾）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
-- [ ] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。
+- [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
 - [x] **BW-14-01-06 登记资源生成与完整包**。**验收** 每个样本可追溯至来源。（commit fccd8bd）
   - 证据：`docs/review/bw14-01-06-resource-generation-registry.md`（fccd8bd）——生成器 `programming/bigworld/scripts/generate-fantasydemo-assets.py`（参考 HEAD `167688a4`），输出基址 `programming/fantasydemo/res/`，**完整包 = 21 项**（`server/bw.xml` + `scripts/` 20 项），逐项登记生成器内嵌常量（`BW_XML`/`ENTITIES_XML`/`DB_XML`/`ALIAS_XML`/5×`*_DEF`/11×`{BASE,CELL,CLIENT}_*_PY`）；跟踪镜像 `docs/review/fixtures/fantasydemo_def/res/`（fccd8bd 补 `server/bw.xml` 后 **21 文件**，`diff -r` 与参考 res 树字节一致）+ 01-01 逐类摘要吻合（845831f）。边界：美术资源生成器明确不产出（非美术代餐），`development_defaults.xml` 父配置在参考仓不存在故 `bw.xml` 自含。
@@ -9461,7 +9461,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
   - 卡点（cell/场景运行时未全落地）：**chunk 解析已落地**（BW-10-01-01，`crates/chunk` 标识符/边界/portal）；compiled space 解析已落地（BW-10-02-01..05 全勾）；仍缺 CellApp 创建与注册（BW-08-01-02 未勾）；入场/移动/AOI 观测事件依赖 cell 角色实体模型，无 cell 运行时可驱动轨迹。
 - [ ] **BW-14-01-04 运行 Guard 和 Space 脚本**。**验收** 行为与基准相符。
   - 卡点（脚本宿主未接到服务角色）：Guard（cell+client 占位）与 Space（DefaultSpace bootstrap）的脚本 `scripts/cell/Guard.py`、`scripts/base/Space.py` 已随夹具跟踪（845831f）。pyscript **模块面**已合入——BW-03-03-01 模块清单/核对（b50a875）+ BW-03-03-02 数学对象/Provider + BW-03-03-03 定时器模块——但脚本宿主↔服务角色**接线**未落地：无 cell/base script app 把 `Guard.py`/`Space.py` 载入活解释器并驱动 `onCellEnter`/`onSpaceStart` 回调，该接线随 cell 运行时（BW-08）+ 服务端 script app（BW-03-03-04 资源访问后角色侧集成）落地，无宿主则本项不可运行。
-- [ ] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。
+- [x] **BW-14-01-05 验证退出重登**。**验收** 读回此前角色位置及属性。（commit 70079db）
   - 卡点（持久化读写链未落地）：重登读回 Avatar 属性需 dbapp loadCharacter/getCharacter（BW-09-01-05 未勾）；登录链路已合入（同 01-02 卡点，BW-06-01-02 + BW-07-01）。读回面即夹具 db.xml 的 `<Avatar>` 段（playerName/prop1/prop2/prop3/position/direction/spaceID/databaseID）；`Avatar.def` 把 position/yaw/pitch 声明为 `<Volatile>`（运行时态、不走属性持久化），故重登比对的是 db.xml 种值而非 volatile 值。
 - [x] **BW-14-01-06 登记资源生成与完整包**。**验收** 每个样本可追溯至来源。（commit fccd8bd）
   - 证据：`docs/review/bw14-01-06-resource-generation-registry.md`（fccd8bd）——生成器 `programming/bigworld/scripts/generate-fantasydemo-assets.py`（参考 HEAD `167688a4`），输出基址 `programming/fantasydemo/res/`，**完整包 = 21 项**（`server/bw.xml` + `scripts/` 20 项），逐项登记生成器内嵌常量（`BW_XML`/`ENTITIES_XML`/`DB_XML`/`ALIAS_XML`/5×`*_DEF`/11×`{BASE,CELL,CLIENT}_*_PY`）；跟踪镜像 `docs/review/fixtures/fantasydemo_def/res/`（fccd8bd 补 `server/bw.xml` 后 **21 文件**，`diff -r` 与参考 res 树字节一致）+ 01-01 逐类摘要吻合（845831f）。边界：美术资源生成器明确不产出（非美术代餐），`development_defaults.xml` 父配置在参考仓不存在故 `bw.xml` 自含。
