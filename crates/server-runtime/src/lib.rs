@@ -99,6 +99,7 @@ pub mod shutdown;
 pub mod signals;
 pub mod space;
 pub mod space_data;
+pub mod space_parallel;
 pub mod takeover_rerun;
 pub mod task_manager;
 pub mod tick;
