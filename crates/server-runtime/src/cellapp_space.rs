@@ -576,6 +576,11 @@ pub struct PhysicalChunkSpace {
     /// The obstacles `collide` answers against (the chunk geometry's
     /// port seam).
     pub blockers: Vec<Blocker>,
+    /// `subBounds()`: the loaded geometry's bounds, `(min, max)`. The
+    /// reference's grows as chunks load; the port's is written whole.
+    pub bounds: ([f32; 3], [f32; 3]),
+    /// `ChunkSpace::gridSize()`: the square chunk size the grid uses.
+    pub grid_size: f32,
 }
 
 impl PhysicalChunkSpace {
@@ -589,6 +594,8 @@ impl PhysicalChunkSpace {
             },
             mappings: BTreeMap::new(),
             blockers: Vec::new(),
+            bounds: ([0.0; 3], [0.0; 3]),
+            grid_size: 200.0,
         }
     }
 
@@ -694,6 +701,10 @@ pub struct PhysicalDelegateSpace {
     /// `worlds_`: the materialised instances (holding the path once
     /// `CreateWorldInstance` succeeded).
     pub worlds: BTreeMap<u32, String>,
+    /// `subBounds()`: the loaded geometry's bounds, `(min, max)`. A
+    /// delegate space has no chunk grid, so the viewer's grid size
+    /// falls back to this bounds' square.
+    pub bounds: ([f32; 3], [f32; 3]),
     /// The factory every call goes through — shared with the holder, so
     /// the releases survive the space.
     factory: Rc<RefCell<SpaceWorldFactory>>,
@@ -708,6 +719,7 @@ impl PhysicalDelegateSpace {
             id,
             paths: BTreeMap::new(),
             worlds: BTreeMap::new(),
+            bounds: ([0.0; 3], [0.0; 3]),
             factory,
         }
     }
@@ -794,6 +806,33 @@ impl PhysicalSpace {
         match self {
             PhysicalSpace::Chunk(chunk) => Some(chunk),
             PhysicalSpace::Delegate(_) => None,
+        }
+    }
+
+    /// `subBounds()` plus the grid size the backend carries: the chunk
+    /// grid reports `ChunkSpace::gridSize()`, the delegate has none and
+    /// the viewer falls back to the bounds' square.
+    pub fn sub_bounds(&self) -> (([f32; 3], [f32; 3]), Option<f32>) {
+        match self {
+            PhysicalSpace::Chunk(chunk) => (chunk.bounds, Some(chunk.grid_size)),
+            PhysicalSpace::Delegate(delegate) => (delegate.bounds, None),
+        }
+    }
+
+    /// The test seam: write the loaded geometry's bounds whole.
+    pub fn set_sub_bounds(&mut self, min: [f32; 3], max: [f32; 3]) {
+        let bounds = match self {
+            PhysicalSpace::Chunk(chunk) => &mut chunk.bounds,
+            PhysicalSpace::Delegate(delegate) => &mut delegate.bounds,
+        };
+        *bounds = (min, max);
+    }
+
+    /// The test seam: set the chunk grid's size (no face on a delegate
+    /// backend — it has no grid).
+    pub fn set_grid_size(&mut self, grid_size: f32) {
+        if let PhysicalSpace::Chunk(chunk) = self {
+            chunk.grid_size = grid_size;
         }
     }
 
@@ -1858,6 +1897,12 @@ pub struct CellApp {
     /// `(who, propRange, distance, event, info)` the script call alone
     /// cannot carry).
     pub noise_calls: Vec<crate::cellapp_noise::NoiseCall>,
+    /// `EntityType::getTypes()`' names, by type id — the registry the
+    /// Cell Viewer's type-names query reads.
+    pub entity_type_names: BTreeMap<u32, String>,
+    /// The Cell Viewer connection's WARNING/ERROR faces, in the order
+    /// the requests raised them.
+    pub viewer_notes: Vec<String>,
     /// The live traps, by controller id: the trigger, the trap range
     /// and the recorder sink the range-list crossings land in.
     pub trap_triggers:
@@ -1993,6 +2038,8 @@ impl Default for CellApp {
             trap_calls: Vec::new(),
             vision_calls: Vec::new(),
             noise_calls: Vec::new(),
+            entity_type_names: BTreeMap::new(),
+            viewer_notes: Vec::new(),
             trap_triggers: BTreeMap::new(),
             trap_members: BTreeMap::new(),
             vision_triggers: BTreeMap::new(),
