@@ -53,6 +53,12 @@ const CALL_WINDOWS: usize = 10;
 const POSTED_PER_PASS: usize = 500;
 const DRAIN_PASSES: usize = 10;
 
+/// Callbacks the tail-latency face posts from its poster thread.
+const TAIL_POSTS: usize = 5_000;
+
+/// One frame at 60 fps, the budget the occupancy figures divide by.
+const FRAME_60FPS_NS: f64 = 16_666_666.0;
+
 /// One face: a name, and a closure that runs `ops` back-to-back operations.
 /// The return is the window's wall time.
 type Face<'a> = (&'a str, usize, Box<dyn FnMut() + 'a>);
@@ -294,14 +300,28 @@ fn the_bridge_baseline_records_all_faces() {
 
     // ---- GIL bracket -------------------------------------------------------
     // The reference's main-thread idle pair: release, then take it back.
-    let mut gil_faces: Vec<Face> = vec![(
-        "gil_release_acquire",
-        CALL_WINDOW_OPS,
-        Box::new(|| {
-            unsafe { gil::release_lock().expect("release") };
-            unsafe { gil::acquire_lock() };
-        }),
-    )];
+    // The empty-drain face is the poll-side steady state: a pass over a
+    // queue that has nothing waiting, which every frame pays whether or
+    // not anything was posted. The queue is empty here — nothing has been
+    // posted yet — and the pass must report zero.
+    let mut gil_faces: Vec<Face> = vec![
+        (
+            "gil_release_acquire",
+            CALL_WINDOW_OPS,
+            Box::new(|| {
+                unsafe { gil::release_lock().expect("release") };
+                unsafe { gil::acquire_lock() };
+            }),
+        ),
+        (
+            "drain_empty",
+            CALL_WINDOW_OPS,
+            Box::new(|| {
+                // SAFETY: the test thread owns the GIL.
+                assert_eq!(unsafe { gil::process() }, 0);
+            }),
+        ),
+    ];
 
     // ---- callbacks ---------------------------------------------------------
     let add3 = define_callbacks();
@@ -371,6 +391,56 @@ fn the_bridge_baseline_records_all_faces() {
         measure(face, &mut records);
     }
 
+    // ---- cross-thread post -> run tail latency -----------------------------
+    // A second thread posts `TAIL_POSTS` callbacks, each carrying its post
+    // `Instant`; this thread — the script thread, GIL held — pumps passes in
+    // a tight loop. The latency of one callback is run time minus post
+    // time: the handoff through the queue, not OS scheduling (a pumped
+    // queue never sleeps). Asserts every posted callback ran exactly once.
+    assert_eq!(gil::pending(), 0, "the tail face needs an empty queue");
+    let latencies = std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(TAIL_POSTS)));
+    let ran = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        // The poster owns its clones under other names: the pump loop below
+        // keeps the originals, so `ran` stays readable after the spawn.
+        let poster_latencies = std::sync::Arc::clone(&latencies);
+        let poster_ran = std::sync::Arc::clone(&ran);
+        let poster = std::thread::spawn(move || {
+            for _ in 0..TAIL_POSTS {
+                // Fresh clones per post: the move closure takes the loop
+                // locals, the captured Arcs stay put for the next pass.
+                let posted_latencies = std::sync::Arc::clone(&poster_latencies);
+                let posted_ran = std::sync::Arc::clone(&poster_ran);
+                let posted = Instant::now();
+                gil::post(move || {
+                    posted_latencies.lock().unwrap().push(posted.elapsed());
+                    posted_ran.fetch_add(1, std::sync::atomic::Ordering::Release);
+                });
+            }
+        });
+        while ran.load(std::sync::atomic::Ordering::Acquire) < TAIL_POSTS {
+            // SAFETY: the test thread owns the GIL; posted callbacks only
+            // touch the shared vectors.
+            unsafe { gil::process() };
+        }
+        poster.join().expect("the poster thread");
+    }
+    let mut latencies = std::sync::Arc::try_unwrap(latencies)
+        .unwrap_or_else(|_| panic!("the poster held a reference"))
+        .into_inner()
+        .unwrap();
+    assert_eq!(latencies.len(), TAIL_POSTS);
+    assert_eq!(ran.load(std::sync::atomic::Ordering::Acquire), TAIL_POSTS);
+    assert_eq!(gil::pending(), 0);
+    latencies.sort();
+    for (label, value) in [("p50", 0.50), ("p90", 0.90), ("p99", 0.99), ("max", 1.00)] {
+        let at = latencies[((latencies.len() - 1) as f64 * value).round() as usize];
+        records.push((
+            format!("post_run_latency_{label}_ns"),
+            at.as_nanos().to_string(),
+        ));
+    }
+
     // ---- posted main-thread callbacks -------------------------------------
     // `gil::post` is the cross-thread entry; the drain pass is the script
     // thread's cost. Each pass asserts the posted count and the order.
@@ -405,6 +475,34 @@ fn the_bridge_baseline_records_all_faces() {
             at.as_nanos().to_string(),
         ));
     }
+
+    // ---- GIL occupancy ------------------------------------------------------
+    // The pass cost against a 60 fps frame budget: a frame that drains 500
+    // callbacks occupies the GIL for that share of the budget, and the
+    // empty pass is the floor every idle frame pays. Derived from the
+    // figures above so the TSV carries the report rows.
+    let record_value = |records: &[(String, String)], key: &str| -> f64 {
+        records
+            .iter()
+            .find(|(k, _)| k == key)
+            .unwrap_or_else(|| panic!("the {key} record is missing"))
+            .1
+            .parse()
+            .unwrap_or_else(|_| panic!("the {key} record is numeric"))
+    };
+    let per_callback_p50 = record_value(&records, "post_drain_per_callback_p50_ns");
+    records.push((
+        "gil_occupancy_500cb_pct_60fps".into(),
+        format!(
+            "{:.3}",
+            per_callback_p50 * POSTED_PER_PASS as f64 / FRAME_60FPS_NS * 100.0
+        ),
+    ));
+    let empty_pass_p50 = record_value(&records, "drain_empty_p50_ns");
+    records.push((
+        "gil_occupancy_empty_pass_pct_60fps".into(),
+        format!("{:.4}", empty_pass_p50 / FRAME_60FPS_NS * 100.0),
+    ));
 
     // ---- port-level conversion: the Math.Matrix translation faces --------
     // `m.translation = (1, 2, 3)` and `m.translation` are the engine's
@@ -526,7 +624,7 @@ fn the_bridge_baseline_records_all_faces() {
 
     records.push((
         "faces_measured".into(),
-        "to_python 4, from_python 4, handle 1, gil 1, callback 2, post_drain 1, math 3".into(),
+        "to_python 4, from_python 4, handle 1, gil 2, callback 2, tail 1, post_drain 1, occupancy 2, math 3".into(),
     ));
 
     if let Ok(path) = std::env::var("PYTHON_BRIDGE_OUT") {
