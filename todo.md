@@ -1814,7 +1814,7 @@
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -3367,7 +3367,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -4893,7 +4893,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -6419,7 +6419,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -7972,7 +7972,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
@@ -9498,7 +9498,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 三个原生 runner 分别构建、跑协议/资源/Python/持久化测试和实际进程启动测试。持久化矩阵覆盖 MySQL、PostgreSQL、XML 主存储及 SQLite 二级库，三端 DBApp 均连接真实 PostgreSQL 实例验证登录、写档和重启加载。再组合三端客户端与服务端、替换独立服务进程，核对版本标识、结果和关服顺序。
 
 - [ ] **BW-15-05-01 配置三端原生 runner**。**验收** 每端独立构建和启动。
-  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；Windows 端构建被 `resources` 预存 unix-only 代码挡（`std::os::unix`/`Metadata::uid`，E0433/E0599，属 BW-15-03）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
+  - 证据（部分，未勾）：配置已在（`.github/workflows/ci.yml` runners job，三 OS matrix + `ci/runners.sh`，`cargo build -p boundless-server` + 逐角色启动）。Linux 端 `boundless-server` 构建+启动已实测（BW-15-02-01）；macOS 端构建已交叉验绿（afe9973，见 BW-15-04-01 证据），启动待 macOS runner；`resources` 端 Windows 已清：`bwresource.rs` 的 `Metadata::uid`/`/proc/self` 探针早经 `fix: gate the proc self uid probe on unix` 门控、本轮 `file_system.rs` 的 `symlinks_follow_stat_semantics` 测试补 `#[cfg(unix)]`（`cargo check -p resources --target x86_64-pc-windows-gnu --all-targets` 0 error，Linux 232 测全绿）；Windows 端真 blocker 是 `mercury` 未门控的 `event_dispatcher`/`udp_channel`/`packet_receiver`/`platform::socket` import（E0433，属 bw02 席）。`ci/runners.sh` 期望服务端自退出（`CI_RUNNERS_TIMEOUT`，1612c33 已让 `app::run` 尊重预算）。
 - [ ] **BW-15-05-02 在三端执行协议、资源与 Python 测试**。**验收** 各端分别留存结果。
 - [ ] **BW-15-05-03 配置 MySQL、XML 与 SQLite 测试矩阵**。**验收** 每种模式产生独立结果。
 - [ ] **BW-15-05-04 配置 PostgreSQL 真实后端矩阵**。**验收** 各端完成登录、写档和重启读档。
