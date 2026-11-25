@@ -2807,7 +2807,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
 - [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
 ### OPT-04-01 EntityDef 启动和编解码
@@ -4360,7 +4360,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
 - [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
 ### OPT-04-01 EntityDef 启动和编解码
@@ -5886,7 +5886,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
 - [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
 ### OPT-04-01 EntityDef 启动和编解码
@@ -7412,7 +7412,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
 - [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
 ### OPT-04-01 EntityDef 启动和编解码
@@ -8965,7 +8965,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
 - [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
 ### OPT-04-01 EntityDef 启动和编解码
@@ -10491,7 +10491,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 b4d6afe/2f093ba/f6a5f7e, lane/bw15-platform：crates/python-host/tests/bridge_baseline.rs 窗测 13 面（标量/字符串/复合对象双向转换+句柄层 INCREF/DECREF+GIL 括号+两种回调形态+post 与 drain），结构断言随行（八面往返精确值/回调返回 6/500 post 按序完成）；TSV docs/review/fixtures/python-baseline/bridge-baseline.tsv，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；python-host 151 lib+1 新测全绿，clippy/fmt 净；基线判读：标量双向 17–34ns 已是下限、回调 111–116ns 贴 CPython 下限、优化收益上限在字符串/复合面（115–3249ns）与 port 侧排队面（160ns 摊派））
 - [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（b3728d6/eac5ee7：math 三面入基线+TYPES/DIMS 换 AtomicPtr 写时复制快照，交错 15 轮钉核 A/B 全指标单调向好，p50 −9%/−9%/−27%，p99 −12%~−30%，证据 docs/review/opt-03-01-02-python-conversion-opt.md）
-- [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
+- [x] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。（7464d06/6f69a00：队列加 QUEUED 原子计数空闲快路径，交错 12 轮钉核 A/B 空队过账 p50 148→18ns(8.2×)，满帧 500 回调 GIL 占用 0.852% 帧预算，尾延迟 p50~1.3-2.1ms 由调度支配，报告 docs/review/opt-03-01-03-callback-gil-report.md）
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
 ### OPT-04-01 EntityDef 启动和编解码
