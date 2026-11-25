@@ -2042,7 +2042,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
 - [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
-- [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
+- [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
@@ -3608,7 +3608,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
 - [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
-- [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
+- [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
@@ -5135,7 +5135,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
 - [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
-- [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
+- [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
@@ -6662,7 +6662,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
 - [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
-- [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
+- [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
@@ -8228,7 +8228,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
 - [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
-- [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
+- [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
@@ -9755,7 +9755,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/steady.rs`——满并发进队+喂登录结果，warmup 走不采样，负载窗逐 mini-tick 采样 (x,z,yaw) 每 bot 一轨；轨迹=参照闲逛圆律纯函数（client_app.cpp:1106-1134 半径 10 圆、θ=clientTime·2π/period、周期来自 BW-17-01-03 种子 xorshift 速度抽样），固定种子 SteadyLedger 逐位相等。5 单测含 θ 律逐值复算与 FD 界队；steady.rs 101/101=100.00%。卡点勘误：轨迹是种子化纯函数，活服务端验证归 02-06..08（详见 docs/review/bw17-02-04-steady-movement.md）。
 - [x] **BW-17-02-05 实现密集 AOI 场景**（7ce12df，陈旧行补账）。**验收** 记录目标密度及可见数。
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
-- [ ] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。
+- [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
 - [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
