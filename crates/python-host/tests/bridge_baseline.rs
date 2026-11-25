@@ -34,6 +34,9 @@ use python_host::pyref::PyRef;
 /// real cost, short enough to stay trivial.
 const MARKER: &[u8] = b"bridge baseline marker 0123456789";
 
+/// The tuple index the subscript face reads: component 0.
+const SUBSCRIPT_INDEX: c_long = 0;
+
 /// The tuple face's payload.
 const TUPLE_VALUES: (i64, i64, i64) = (42, -7, 1000);
 
@@ -403,9 +406,127 @@ fn the_bridge_baseline_records_all_faces() {
         ));
     }
 
+    // ---- port-level conversion: the Math.Matrix translation faces --------
+    // `m.translation = (1, 2, 3)` and `m.translation` are the engine's
+    // hottest conversion paths: every assignment walks the type check and
+    // the tuple parse, every read builds a Vector3 back. The round trip is
+    // asserted once, before the timed loops.
+    let matrix = {
+        // SAFETY: only called while the interpreter is up.
+        unsafe {
+            let module = capi::PyImport_ImportModule(c"Math".as_ptr());
+            assert!(!module.is_null(), "the Math module did not import");
+            let dictionary = capi::PyModule_GetDict(module);
+            let type_ = capi::PyDict_GetItemString(dictionary, c"Matrix".as_ptr());
+            assert!(!type_.is_null(), "the Matrix type was not found");
+            let instance = capi::PyObject_CallNoArgs(type_);
+            assert!(!instance.is_null(), "the Matrix instance was not built");
+            instance
+        }
+    };
+    // The setter's value is a live Vector3, the engine's hottest shape: the
+    // assignment walks `check_type` against the registered type object and
+    // takes the fast body copy (`script_math.cpp` accessor set shape).
+    let vector3 = PyRef::from_owned({
+        let type_ = unsafe {
+            let module = capi::PyImport_AddModule(c"Math".as_ptr());
+            let dictionary = capi::PyModule_GetDict(module);
+            capi::PyDict_GetItemString(dictionary, c"Vector3".as_ptr())
+        };
+        assert!(!type_.is_null(), "the Vector3 type was not found");
+        let arguments = unsafe {
+            let tuple = capi::PyTuple_New(3);
+            assert!(!tuple.is_null());
+            for (index, value) in [1.0f64, 2.0, 3.0].into_iter().enumerate() {
+                let item = capi::PyFloat_FromDouble(value);
+                assert!(!item.is_null());
+                assert_eq!(capi::PyTuple_SetItem(tuple, index as _, item), 0);
+            }
+            tuple
+        };
+        let instance = unsafe { capi::PyObject_CallObject(type_, arguments) };
+        unsafe { capi::Py_DecRef(arguments) };
+        assert!(!instance.is_null(), "the Vector3 instance was not built");
+        instance
+    })
+    .expect("the translation vector");
+    // SAFETY: the interpreter is up; `matrix` and `vector3` are live.
+    unsafe {
+        assert_eq!(
+            capi::PyObject_SetAttrString(matrix, c"translation".as_ptr(), vector3.as_ptr()),
+            0,
+            "the translation assignment was refused"
+        );
+        let read = capi::PyObject_GetAttrString(matrix, c"translation".as_ptr());
+        assert!(!read.is_null(), "the translation read failed");
+        assert!(
+            !std::ptr::eq(read, vector3.as_ptr()),
+            "the getter must hand back a fresh copy"
+        );
+        assert_eq!(capi::PySequence_Size(read), 3);
+        for (index, expected) in [1.0f64, 2.0, 3.0].into_iter().enumerate() {
+            let component = capi::PySequence_GetItem(read, index as _);
+            assert!(!component.is_null());
+            assert_eq!(capi::PyFloat_AsDouble(component), expected);
+            capi::Py_DecRef(component);
+        }
+        capi::Py_DecRef(read);
+        let component =
+            capi::PySequence_GetItem(vector3.as_ptr(), SUBSCRIPT_INDEX as capi::PySsize);
+        assert_eq!(
+            capi::PyFloat_AsDouble(component),
+            1.0,
+            "the subscript read failed"
+        );
+        capi::Py_DecRef(component);
+    }
+    let mut math_faces: Vec<Face> = vec![
+        (
+            "matrix_set_translation",
+            WINDOW_OPS,
+            Box::new(|| {
+                // SAFETY: the interpreter is up; the operands are live.
+                assert_eq!(
+                    unsafe {
+                        capi::PyObject_SetAttrString(
+                            matrix,
+                            c"translation".as_ptr(),
+                            vector3.as_ptr(),
+                        )
+                    },
+                    0
+                );
+            }),
+        ),
+        (
+            "matrix_get_translation",
+            WINDOW_OPS,
+            Box::new(|| {
+                // SAFETY: the interpreter is up; the operand is live.
+                let read = unsafe { capi::PyObject_GetAttrString(matrix, c"translation".as_ptr()) };
+                assert!(!read.is_null());
+                unsafe { capi::Py_DecRef(read) };
+            }),
+        ),
+        (
+            "vector3_getitem",
+            WINDOW_OPS,
+            Box::new(|| {
+                // SAFETY: the interpreter is up; the operand is live.
+                let component =
+                    unsafe { capi::PySequence_GetItem(vector3.as_ptr(), SUBSCRIPT_INDEX as _) };
+                assert!(!component.is_null());
+                unsafe { capi::Py_DecRef(component) };
+            }),
+        ),
+    ];
+    for face in math_faces.drain(..) {
+        measure(face, &mut records);
+    }
+
     records.push((
         "faces_measured".into(),
-        "to_python 4, from_python 4, handle 1, gil 1, callback 2, post_drain 1".into(),
+        "to_python 4, from_python 4, handle 1, gil 1, callback 2, post_drain 1, math 3".into(),
     ));
 
     if let Ok(path) = std::env::var("PYTHON_BRIDGE_OUT") {
