@@ -80,7 +80,7 @@ impl Record {
 }
 
 /// The p50/p90/p99/max/min summary of a sample set, in the recorded unit.
-fn summarize(samples: &mut Vec<f64>) -> [f64; 5] {
+fn summarize(samples: &mut [f64]) -> [f64; 5] {
     samples.sort_by(|a, b| a.total_cmp(b));
     let pick = |p: f64| {
         let idx = ((p * samples.len() as f64).ceil() as usize).clamp(1, samples.len()) - 1;
