@@ -93,6 +93,12 @@
 //!   material/dye/tint census, mfm instantiation and overloading, the
 //!   clean/property/naming/feed/flag moves and the shader gates
 //!   (`tools/modeleditor_core/Models/mutant_materials.cpp`);
+//! - [`visual_exporter`] — the Max visual exporter's portable core: the
+//!   `ExportSettings` IO, the `BloatVertex`/`Triangle`/`Material` model
+//!   and the `VisualMesh::save` pipeline (dedup, sorting, primitive
+//!   groups, the `xyznuv`/`xyznuvi` vertex streams and the `.visual`
+//!   XML) with the Max-plugin host seams documented
+//!   (`tools/visualexporter/`);
 //! - [`maya_visual_exporter`] — the Maya visual exporter's portable core:
 //!   the exporter settings round-trip, the scene records the Maya
 //!   traversal produces, the mesh save chain into a `.visual` plus its
@@ -144,5 +150,6 @@ pub mod texformat_converter;
 pub mod texture_converter;
 pub mod texture_detail_level;
 pub mod vertex_format;
+pub mod visual_exporter;
 pub mod visual_processor;
 pub mod world_machine_import;
