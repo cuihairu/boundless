@@ -80,6 +80,51 @@ detect_driver() {
 
 # --- the runner ---------------------------------------------------------------
 
+# The thresholds lane (BW-17-03-06): the capacity and soak jobs check the
+# recorded scenario results against the baseline thresholds in
+# tests/load/baselines.tsv — the recorded baselines the acceptance asks the
+# jobs' thresholds to come from. Every rule is an envelope-independent
+# invariant (rates and counts the offline faces hold at any knob size), so
+# the same band holds the PR short lane and the nightly's bigger knobs.
+# Pure: reads the baselines table and one TSV record, so the self-test can
+# reuse it directly.
+check_one() { # $1 scenario name, $2 the tsv record, $3 the baselines table
+    local name="$1" tsv="$2" base="$3" verdict
+    verdict="$(awk -F '\t' -v scn="$name" '
+        FNR == NR {
+            if ($1 == scn && $1 != "" && $2 != "") {
+                op[$2] = $3; band[$2] = $4; ref[$2] = $5
+            }
+            next
+        }
+        NF == 2 && $1 != "" {
+            seen[$1] = $2 + 0
+            if ($1 in op) {
+                if (op[$1] == "min" && $2 + 0 < band[$1] + 0) {
+                    bad = bad " " $1 "=" $2 " below the recorded min " band[$1]
+                }
+                if (op[$1] == "max" && $2 + 0 > band[$1] + 0) {
+                    bad = bad " " $1 "=" $2 " above the recorded max " band[$1]
+                }
+                checked[$1] = 1
+            }
+        }
+        END {
+            for (k in op) {
+                if (!(k in checked)) bad = bad " " k " (metric missing)"
+            }
+            if (bad != "") {
+                print scn ":" bad; exit 1
+            }
+            exit 0
+        }
+    ' "$base" "$tsv")"
+    local rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    printf '%s\n' "$verdict"
+    return 1
+}
+
 # One scenario, one record. Prints the verdict text and returns 0 only when
 # the scenario exited cleanly inside its budget with at least one metric
 # line. Pure: no manifest writes, so the self-test can reuse it directly.
@@ -156,6 +201,39 @@ run_scenarios() {
     return 1
 }
 
+# Check the just-recorded scenario TSVs against the baselines table. A
+# missing table is a SKIP (the thresholds have not been recorded yet), not
+# a vacuous PASS. Every scenario's record gets checked; the verdict names
+# the metric and the band it broke.
+run_thresholds() {
+    local base rec name verdict total=0 ok=0 bad=""
+    base="$(cur_root)/tests/load/baselines.tsv"
+    if [ ! -f "$base" ]; then
+        ci_skip load-thresholds "no baselines table: no recorded thresholds to check"
+        return 0
+    fi
+    local dir f
+    dir="$(cur_root)/tests/load/scenarios"
+    for f in "$dir"/*; do
+        [ -f "$f" ] && [ -x "$f" ] || continue
+        name="$(basename "$f")"
+        name="${name%%.*}"
+        rec="$(record_path "$name")"
+        total=$((total + 1))
+        if verdict="$(check_one "$name" "$rec" "$base")"; then
+            ok=$((ok + 1))
+        else
+            bad="$bad $verdict"
+        fi
+    done
+    if [ -z "$bad" ]; then
+        ci_pass load-thresholds "$ok/$total scenario(s) inside the recorded baseline bands"
+        return 0
+    fi
+    ci_fail load-thresholds "$((total - ok))/$total scenario(s) outside the recorded bands:$(tsv_escape "$bad")"
+    return 1
+}
+
 run_all() {
     ci_step "PR short load test (budget ${CI_LOAD_DURATION:-30}s, clients ${CI_LOAD_CLIENTS:-4})"
     mkdir -p "$CI_OUT"
@@ -175,6 +253,7 @@ run_all() {
     *) ci_fail load-driver "$(tsv_escape "$out")" ;;
     esac
     run_scenarios
+    run_thresholds
 }
 
 self_test() {
@@ -257,6 +336,42 @@ self_test() {
     fi
 
     rm -rf "$REPO_ROOT/ci-out/load-selftest".*
+
+    # The thresholds checker (BW-17-03-06): a record inside its recorded
+    # band passes, a metric out of band names itself, and a rule whose
+    # metric never arrived is named rather than silently dropped.
+    ci_step "self-test: the thresholds checker bands a record against its baselines"
+    local tbase tdir
+    tdir="$(mktemp -d "$REPO_ROOT/ci-out/load-selftest.XXXXXX")"
+    tbase="$tdir/baselines.tsv"
+    {
+        printf '# scenario\tmetric\top\tvalue\trecorded baseline\n'
+        printf 'demo\tlogin_success_rate\tmin\t1.0\tsome-fixture.json\n'
+        printf 'demo\tpeak_rss_kib\tmax\t2048\tsome-fixture.json\n'
+    } >"$tbase"
+    printf 'login_success_rate\t1\npeak_rss_kib\t1024\n' >"$tdir/good.tsv"
+    printf 'login_success_rate\t0.5\npeak_rss_kib\t1024\n' >"$tdir/low.tsv"
+    printf 'login_success_rate\t1\npeak_rss_kib\t99999\n' >"$tdir/high.tsv"
+    printf 'login_success_rate\t1\n' >"$tdir/short.tsv"
+
+    if check_one demo "$tdir/good.tsv" "$tbase"; then
+        ci_pass selftest-load-thresholds "a record inside its recorded bands passes"
+    else
+        ci_fail selftest-load-thresholds "a well-behaved record failed its recorded bands"
+        fails=$((fails + 1))
+    fi
+    for case in low high short; do
+        if verdict="$(check_one demo "$tdir/$case.tsv" "$tbase")"; then
+            ci_fail "selftest-load-thresholds-$case" "a violating record passed its bands ($case)"
+            fails=$((fails + 1))
+        elif [ "$case" = short ] && ! printf '%s' "$verdict" | grep -q "metric missing"; then
+            ci_fail "selftest-load-thresholds-$case" "a missing metric was not named: $verdict"
+            fails=$((fails + 1))
+        else
+            ci_pass "selftest-load-thresholds-$case" "the violation is named: $verdict"
+        fi
+    done
+    rm -rf "$tdir"
 
     if [ "$fails" -gt 0 ]; then
         ci_note "$fails self-test(s) did not behave"
