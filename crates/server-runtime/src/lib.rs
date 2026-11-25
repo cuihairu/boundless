@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod archiver;
+pub mod backup_baseline;
 pub mod backup_hash;
 pub mod balance_baseline;
 pub mod base_backup;
