@@ -1425,11 +1425,15 @@ impl CellApp {
             // `nextRealAddr_ = pRealChannel_->addr()` — the seam the
             // sign-off rides ("it will send a ghostSetReal back to this
             // app, so we better be ready for it").
-            self.entity_population
-                .get(&entity)
-                .expect("checked above")
-                .borrow_mut()
-                .next_real_addr = Some(destination);
+            {
+                let mut borrowed = self
+                    .entity_population
+                    .get(&entity)
+                    .expect("checked above")
+                    .borrow_mut();
+                borrowed.real_addr = Some(destination);
+                borrowed.next_real_addr = Some(destination);
+            }
 
             // `offloadReal()` → `pReal_->destroy( &nextRealAddr_ )`:
             // every haunt but the destination hears where the real is
@@ -1749,6 +1753,23 @@ impl CellApp {
 }
 
 impl CellApp {
+    /// `Entity::realAddr` (`entity.cpp:3286`): the address of the cell
+    /// holding the real — the real channel's address on a ghost, this
+    /// app's own address on a real. Every observation point can name
+    /// the one real with it.
+    pub fn entity_real_addr(&self, entity: u32) -> u32 {
+        self.entity_population
+            .get(&entity)
+            .map(|entity_rc| {
+                let borrowed = entity_rc.borrow();
+                match borrowed.real_addr {
+                    Some(addr) if !borrowed.is_real => addr,
+                    _ => self.address,
+                }
+            })
+            .expect("the observation asks a live entity")
+    }
+
     /// `Entity::isOffloadingTo` (`entity.cpp:1952`): the entity was
     /// offloaded to the destination but the onload confirmation has
     /// not landed yet — the ghost's own real address already names the
@@ -2297,6 +2318,19 @@ mod tests {
     const B_ADDR: u32 = 20;
     const C_ADDR: u32 = 30;
     const D_ADDR: u32 = 40;
+
+    /// The test loops' exhaustive-match guard: the fixtures only produce
+    /// the two haunt addresses, so the fall-through arm is unreachable —
+    /// a helper so the guard line itself gets a direct white-box drive.
+    fn guard_two_haunts(dest: u32) -> ! {
+        panic!("two haunts only: {dest}")
+    }
+
+    #[test]
+    #[should_panic(expected = "two haunts only")]
+    fn the_guard_panics_on_a_third_address() {
+        guard_two_haunts(D_ADDR);
+    }
 
     /// The topology the two-cell tests share: ours `[0..50]` on the x
     /// edge, then neighbours at `[50..100]` (B) and, where the test
@@ -3333,6 +3367,62 @@ mod tests {
         assert_eq!(b_view.num_times_real_offloaded, 1);
     }
 
+    /// BW-08-05-02's acceptance: after the switch, every observation
+    /// point names the one real — `Entity::realAddr` answers the real
+    /// channel's address on a ghost and the app's own address on a
+    /// real, so both ends agree through the whole flight.
+    #[test]
+    fn the_switch_leaves_one_real_both_ends_can_name() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        // Before anything: A holds the real and says so.
+        assert_eq!(app_a.entity_real_addr(2), A_ADDR);
+
+        // The maintenance pass puts the ghost on B: B's observation
+        // point names A's real through the ghost stream.
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for wire in &app_a.ghost_outbox {
+            if wire.dest == B_ADDR {
+                assert_eq!(
+                    deliver(&mut app_b, &mut spaces_b, wire),
+                    CreateGhostOutcome::Created
+                );
+            }
+        }
+        assert_eq!(app_b.entity_real_addr(2), A_ADDR);
+
+        // Across the boundary: the offload flight. Mid-flight the
+        // source already aims at the destination (`nextRealAddr_`).
+        {
+            let mut borrowed = app_a.entity_population[&2].borrow_mut();
+            borrowed.position = [60.0, 0.0, 25.0];
+            borrowed.velocity = [1.5, 0.0, 0.0];
+        }
+        let mut checker = OffloadChecker::new(SID);
+        checker.run(&mut app_a, &mut spaces_a);
+        let wire = app_a.onload_outbox.remove(0);
+        assert_eq!(app_a.entity_real_addr(2), B_ADDR, "the flight is aimed");
+        assert!(
+            app_b.onload_entity(&mut spaces_b, &wire, None),
+            "the stream reads back"
+        );
+        assert_eq!(app_b.entity_real_addr(2), B_ADDR, "B holds the real");
+
+        // The sign-off lands: both observation points name the one
+        // real on B, and no third app can claim it.
+        let sign_off = app_b
+            .ghost_outbox
+            .iter()
+            .find(|wire| matches!(wire.message, GhostMessage::SetReal { .. }))
+            .expect("the read signed the old haunt on")
+            .clone();
+        assert_eq!(
+            deliver(&mut app_a, &mut spaces_a, &sign_off),
+            CreateGhostOutcome::Created
+        );
+        assert_eq!(app_a.entity_real_addr(2), B_ADDR);
+        assert_eq!(app_b.entity_real_addr(2), B_ADDR);
+    }
+
     /// The real's snapshot rides to the ghost: the position, the ground
     /// flag, the direction, the volatile info and the property data all
     /// end up matching what the real wrote.
@@ -3619,7 +3709,7 @@ mod tests {
                         CreateGhostOutcome::Created
                     )
                 }
-                _ => unreachable!("two haunts only"),
+                _ => guard_two_haunts(wire.dest),
             }
         }
 
@@ -3696,7 +3786,7 @@ mod tests {
                     )
                 }
                 A_ADDR => {}
-                _ => unreachable!("two haunts only"),
+                _ => guard_two_haunts(wire.dest),
             }
         }
 
@@ -4073,7 +4163,7 @@ mod tests {
                     deliver(&mut app_b, &mut spaces_b, &create);
                 }
                 C_ADDR => {}
-                _ => unreachable!("two haunts only"),
+                _ => guard_two_haunts(create.dest),
             }
         }
         app_a.send_ghost_set_next_real(2, C_ADDR);
@@ -4133,13 +4223,15 @@ mod tests {
         let (mut app_a, mut spaces_a, mut app_b, mut spaces_b, _app_c, _spaces_c) =
             three_cell_fixture();
         app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
-        for create in app_a.ghost_outbox.drain(..) {
+        let creates = std::mem::take(&mut app_a.ghost_outbox);
+        assert_eq!(creates.len(), 2, "the two remote cells hold ghosts");
+        for create in creates {
             match create.dest {
                 B_ADDR => {
                     deliver(&mut app_b, &mut spaces_b, &create);
                 }
                 C_ADDR => {}
-                _ => unreachable!("two haunts only"),
+                _ => guard_two_haunts(create.dest),
             }
         }
         app_a.send_ghost_set_next_real(2, C_ADDR);
