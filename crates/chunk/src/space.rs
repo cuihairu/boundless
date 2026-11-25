@@ -30,7 +30,6 @@ use crate::boundary::PortalTarget;
 use crate::chunk::Chunk;
 use crate::column::{Column, ColumnGrid};
 use crate::grid_traversal::SpaceGridTraversal;
-use crate::identifier::is_outside_chunk;
 use crate::mapping::GeometryMapping;
 use crate::obstacle::{ChunkObstacle, next_mark};
 
@@ -51,9 +50,6 @@ pub struct ChunkSpace {
     bind_order: Vec<String>,
     /// `currentFocus_` (`server_chunk_space.hpp:114`).
     focus: ColumnGrid,
-    /// `blurred_` (`base_chunk_space.hpp`): bound chunks whose hulls are
-    /// not in the focus grid yet.
-    blurred: Vec<String>,
     /// The obstacle arena. The reference scatters refcounted
     /// `ChunkObstacle`s behind the columns' `heldObstacles_` lists and
     /// the model obstacles' own vectors; the port owns them here and the
@@ -69,7 +65,6 @@ impl ChunkSpace {
             chunks: BTreeMap::new(),
             bind_order: Vec::new(),
             focus: ColumnGrid::new(),
-            blurred: Vec::new(),
             obstacles: Vec::new(),
         };
         space.recalc_grid_bounds();
@@ -459,213 +454,6 @@ impl ChunkSpace {
         boundary.unbound_portals = kept;
     }
 
-    /// `Chunk::unbind(bool)` (`chunk.cpp:1305-1458`): move every connected
-    /// bound portal back to its boundary's unbound list and tell the online
-    /// neighbour to do the same, then drop `isBound_`. With `cut` the
-    /// portal targets are cleared on both sides — an inside chunk's portal
-    /// to an outside chunk becomes `INVASIVE`, everything else `NULL` — so
-    /// the connection cannot silently rebind; without it the target names
-    /// survive and a later `bind` reconnects without re-reading anything.
-    ///
-    /// The reference's exit-portal item removal and lender/borrower
-    /// release have no port-side objects and stay registered (see
-    /// `docs/review/bw10-01-chunk-load.md`); the focus-grid eviction is
-    /// ported (`ignoreChunk`, BW-10-01-05).
-    pub fn unbind(&mut self, identifier: &str, cut: bool) {
-        // `pSpace_->ignoreChunk( this ); focusCount_ = 0; updateCompleted()`
-        // (`chunk.cpp:1332-1337`): nothing of this chunk may stay findable
-        // in the focus grid
-        self.ignore_chunk(identifier);
-        // Decide immutably which bound portals move back, what their
-        // targets become, and what each neighbour must do.
-        struct Move {
-            joint: usize,
-            portal: usize,
-            target: PortalTarget,
-        }
-        let mut moves: Vec<Move> = Vec::new();
-        struct Back {
-            other: String,
-            cut: bool,
-        }
-        let mut backs: Vec<Back> = Vec::new();
-        {
-            let Some(chunk) = self.chunks.get(identifier) else {
-                return;
-            };
-            for &ji in &chunk.joints {
-                for (pi, portal) in chunk.boundaries[ji].bound_portals.iter().enumerate() {
-                    match &portal.target {
-                        // A heavenly portal in an inside chunk unbinds
-                        // itself (in an outside chunk it has no chunk and
-                        // stays bound, like every other special target).
-                        PortalTarget::Heaven if !chunk.is_outside => {
-                            moves.push(Move {
-                                joint: ji,
-                                portal: pi,
-                                target: PortalTarget::Heaven,
-                            });
-                        }
-                        // don't unbind it if it's not a chunk
-                        target if !target.has_chunk() => {}
-                        PortalTarget::Chunk(other) => {
-                            // clear the chunk if we're cutting it off
-                            let target = if cut {
-                                if !chunk.is_outside && is_outside_chunk(other) {
-                                    PortalTarget::Invasive
-                                } else {
-                                    PortalTarget::Nothing
-                                }
-                            } else {
-                                portal.target.clone()
-                            };
-                            // always cut off an exit portal into an
-                            // outside chunk
-                            let back_cut = if chunk.is_outside && !is_outside_chunk(other) {
-                                true
-                            } else {
-                                cut
-                            };
-                            moves.push(Move {
-                                joint: ji,
-                                portal: pi,
-                                target,
-                            });
-                            backs.push(Back {
-                                other: other.clone(),
-                                cut: back_cut,
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        // Move them back to the unbound lists (`ChunkBoundary::unbindPortal`,
-        // ascending bound index, which is the reference's `unbindPortal
-        // (i--)` append order).
-        if let Some(chunk) = self.chunks.get_mut(identifier) {
-            let mut touched: Vec<usize> = Vec::new();
-            for mv in &moves {
-                if !touched.contains(&mv.joint) {
-                    touched.push(mv.joint);
-                }
-            }
-            for ji in touched {
-                let joint_moves: Vec<(usize, PortalTarget)> = moves
-                    .iter()
-                    .filter(|m| m.joint == ji)
-                    .map(|m| (m.portal, m.target.clone()))
-                    .collect();
-                let boundary = &mut chunk.boundaries[ji];
-                let old = std::mem::take(&mut boundary.bound_portals);
-                let mut moved = Vec::new();
-                let mut kept = Vec::new();
-                for (i, mut portal) in old.into_iter().enumerate() {
-                    if let Some((_, target)) = joint_moves.iter().find(|(pi, _)| *pi == i) {
-                        portal.target = target.clone();
-                        moved.push(portal);
-                    } else {
-                        kept.push(portal);
-                    }
-                }
-                boundary.unbound_portals.extend(moved);
-                boundary.bound_portals = kept;
-            }
-            chunk.is_bound = false;
-            chunk.focus_count = 0;
-        }
-
-        // and let the neighbours know we're offline
-        for back in backs {
-            self.unbind_back(&back.other, identifier, back.cut);
-        }
-    }
-
-    /// `Chunk::unbind(Chunk*, bool)` (`chunk.cpp:2083-2138`): in `owner`,
-    /// find the first bound portal pointing back at `requester`; with
-    /// `cut` clear its target — erasing the whole joint when the portal is
-    /// internal — otherwise move it to the unbound list. A missing owner
-    /// or a missing reverse portal is a logged no-op in the reference;
-    /// the port stays silent and registers the divergence.
-    fn unbind_back(&mut self, owner: &str, requester: &str, cut: bool) {
-        let Some(chunk) = self.chunks.get_mut(owner) else {
-            return;
-        };
-        for (joint_pos, &ji) in chunk.joints.iter().enumerate() {
-            let boundary = &mut chunk.boundaries[ji];
-            let Some(pi) = boundary
-                .bound_portals
-                .iter()
-                .position(|p| p.target == PortalTarget::Chunk(requester.to_string()))
-            else {
-                continue;
-            };
-            if cut {
-                // clear the link if we're cutting it out
-                boundary.bound_portals[pi].target =
-                    if !chunk.is_outside && is_outside_chunk(requester) {
-                        PortalTarget::Invasive
-                    } else {
-                        PortalTarget::Nothing
-                    };
-                // get rid of the whole boundary if this was an internal
-                // portal on a non-bounding plane
-                if boundary.bound_portals[pi].internal {
-                    chunk.joints.remove(joint_pos);
-                }
-            } else {
-                let portal = boundary.bound_portals.remove(pi);
-                boundary.unbound_portals.push(portal);
-            }
-            return;
-        }
-    }
-
-    /// `ChunkSpace::unloadChunk` (`chunk_space.cpp:1262-1296`): unbind then
-    /// unload one chunk. Unloaded or (here, never in-flight — the sync
-    /// loader has no loading state, registered) loading chunks answer
-    /// false; a non-removable chunk answers false. The chunk stays in the
-    /// map, appointed but unloaded.
-    pub fn unload_chunk(&mut self, identifier: &str) -> bool {
-        let Some(chunk) = self.chunks.get(identifier) else {
-            return false;
-        };
-
-        // Can only unload if chunk is removable
-        if !chunk.removable {
-            return false;
-        }
-
-        // Cannot unload if chunk is not loaded
-        if !chunk.is_loaded {
-            return false;
-        }
-
-        // Unbind, then unload
-        if chunk.is_bound {
-            self.unbind(identifier, false);
-        }
-
-        // Unload after unbind
-        let chunk = self.chunks.get_mut(identifier).unwrap();
-        chunk.unload();
-
-        true
-    }
-
-    /// `ChunkSpace::unloadChunks`
-    /// (`chunk_space.cpp:1204-1222, 1235-1246`): attempt to unbind and unload
-    /// every loaded chunk, map order, returning the identifiers that went.
-    pub fn unload_chunks(&mut self) -> Vec<String> {
-        let identifiers: Vec<String> = self.chunks.keys().cloned().collect();
-        identifiers
-            .into_iter()
-            .filter(|id| self.unload_chunk(id))
-            .collect()
-    }
-
     // ------------------------------------------------------------------
     // BW-10-01-05: the focus grid and the point queries over it
     // ------------------------------------------------------------------
@@ -703,69 +491,19 @@ impl ChunkSpace {
     }
 
     /// The `~Column` face (`base_chunk_space.cpp:393-411`): every held
-    /// `HullChunk` smudges its chunk — the focus count drops and a bound
-    /// chunk joins the blurred list.
+    /// `HullChunk` smudges its chunk — the focus count drops to zero. The
+    /// blurred-list half of the smudge rides on the unload face, not
+    /// carried here.
     fn release_dropped_columns(&mut self, dropped: Vec<Column>) {
         for column in dropped {
             for id in column.holdings() {
-                self.smudge_chunk(id);
+                if let Some(c) = self.chunks.get_mut(id)
+                    && c.focus_count != 0
+                {
+                    c.focus_count = 0;
+                }
             }
         }
-    }
-
-    /// `Chunk::smudge` (`chunk.cpp:1619-1638`): a non-zero focus count
-    /// drops to zero and the (bound) chunk joins the blurred list.
-    pub fn smudge_chunk(&mut self, identifier: &str) {
-        if self.chunk(identifier).is_some_and(|c| c.focus_count != 0) {
-            if let Some(c) = self.chunks.get_mut(identifier) {
-                c.focus_count = 0;
-            }
-            self.blurred_chunk(identifier);
-        }
-    }
-
-    /// `BaseChunkSpace::blurredChunk` (`base_chunk_space.cpp:718-726`):
-    /// but only if it's bound.
-    pub fn blurred_chunk(&mut self, identifier: &str) {
-        if self.chunk(identifier).is_some_and(|c| c.is_bound) {
-            self.blurred.push(identifier.to_string());
-        }
-    }
-
-    /// `BaseChunkSpace::removeFromBlurred` (`base_chunk_space.cpp:729-744`).
-    pub fn remove_from_blurred(&mut self, identifier: &str) -> bool {
-        if let Some(pos) = self.blurred.iter().position(|s| s == identifier) {
-            self.blurred.remove(pos);
-            return true;
-        }
-        false
-    }
-
-    /// The chunks waiting to be (re)focussed.
-    pub fn blurred_chunks(&self) -> &[String] {
-        &self.blurred
-    }
-
-    /// The focus grid window (`xBegin/zBegin/xEnd/zEnd`).
-    pub fn focus_span(&self) -> (i32, i32, i32, i32) {
-        self.focus.span()
-    }
-
-    /// `ChunkSpace::noticeChunk` (`chunk_space.cpp:1356-1371`): the chunk
-    /// is now bound and may be focussed.
-    pub fn notice_chunk(&mut self, identifier: &str) {
-        self.blurred_chunk(identifier);
-    }
-
-    /// The grid cell of a chunk centre — the reference computes it with an
-    /// int truncation plus a manual negative adjust
-    /// (`server_chunk_space.cpp:55-58`, `chunk_space.cpp:1320-1321`).
-    fn centre_grid(&self, centre: f32) -> i32 {
-        let mut n = (centre / self.grid_size()) as i32;
-        if centre < 0.0 {
-            n -= 1;
-        }
-        n
     }
 
     /// `ChunkSpace::column(point, canCreate)` (`chunk_space.cpp:776-803`):
@@ -849,85 +587,6 @@ impl ChunkSpace {
         if let Some(chunk) = self.chunks.get_mut(identifier) {
             chunk.focus_count = 1;
         }
-    }
-
-    /// `ServerChunkSpace::focus` (`server_chunk_space.cpp:50-113`): focus
-    /// every blurred chunk — shut the columns that have already seen it,
-    /// refocus it, then mark the neighbourhood as having seen it again.
-    pub fn focus(&mut self) {
-        while !self.blurred.is_empty() {
-            let identifier = self.blurred.remove(0);
-
-            // find out where it is in the focus grid; a chunk missing from
-            // the map is a stale blur entry the port skips (the reference
-            // walks a raw pointer)
-            let Some(chunk) = self.chunks.get(&identifier) else {
-                continue;
-            };
-            let centre = chunk.centre();
-            let nx = self.centre_grid(centre.x);
-            let nz = self.centre_grid(centre.z);
-
-            // see if this chunk is new to (nx,nz) and adjacent columns,
-            // close them if it isn't
-            for x in nx - 1..=nx + 1 {
-                for z in nz - 1..=nz + 1 {
-                    if let Some(column) = self.focus.get_mut(x, z) {
-                        column.shut_if_seen(&identifier);
-                    }
-                }
-            }
-
-            // do the actual focussing work
-            self.focus_chunk(&identifier);
-
-            // open all the columns, and mark them as having seen this chunk
-            for x in nx - 1..=nx + 1 {
-                for z in nz - 1..=nz + 1 {
-                    if let Some(column) = self.focus.get_mut(x, z) {
-                        column.open_and_see(&identifier);
-                    }
-                }
-            }
-        }
-    }
-
-    /// `ChunkSpace::ignoreChunk` (`chunk_space.cpp:1306-1353`): the chunk
-    /// is about to be disposed — delete the columns of its 3×3 focus
-    /// neighbourhood (deleting, not marking stale, so nothing of this
-    /// chunk stays findable in the focus grid) and take it out of the
-    /// blurred list.
-    pub fn ignore_chunk(&mut self, identifier: &str) {
-        // can't ignore unbound chunks
-        if !self.chunk(identifier).is_some_and(|c| c.is_bound) {
-            // ERROR_MSG "Attempted to ignore offline chunk"
-            return;
-        }
-
-        let centre = self.chunk(identifier).unwrap().centre();
-        let nx = self.centre_grid(centre.x);
-        let nz = self.centre_grid(centre.z);
-
-        for x in nx - 1..=nx + 1 {
-            for z in nz - 1..=nz + 1 {
-                if self.focus.in_span(x, z) {
-                    let dropped = self.focus.set(x, z, None);
-                    self.release_dropped_columns(dropped.into_iter().collect());
-                }
-            }
-        }
-
-        self.remove_from_blurred(identifier);
-    }
-
-    /// `ChunkSpace::findOutsideChunkFromPoint` (`chunk_space.cpp:714-734`):
-    /// the last-resort outside-chunk lookup, with the small +y fudge the
-    /// reference adds to dodge bounding-box edge floating point.
-    pub fn find_outside_chunk_from_point(&self, point: &Vector3) -> Option<String> {
-        let mut pt = *point;
-        pt.y += 0.0001;
-        let column = self.column_at(&pt)?;
-        column.outside_chunk().map(|id| id.to_string())
     }
 
     /// `column(pt, false)` (`chunk_space.cpp:788-802`): the read-only
@@ -1099,6 +758,50 @@ mod tests {
         let mut chunk = Chunk::new(id, mapping, &Matrix::identity());
         chunk.is_loaded = true;
         space.add_chunk(chunk);
+    }
+
+    /// The `column(pt, canCreate)` arms and the focus-fold arms: a fresh
+    /// in-span column is created on demand, out-of-span points are None
+    /// even when willing, an unknown identifier's focus is a no-op, an
+    /// outside chunk folds into its single centre column (reused on a
+    /// second focus), and an inside chunk's corners outside the focus
+    /// window are skipped.
+    #[test]
+    fn the_column_and_focus_fold_arms() {
+        let mapping = identity_mapping();
+        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+        assert!(
+            space
+                .column(&Vector3::new(-500.0, 0.0, -500.0), true)
+                .is_none(),
+            "outside the focus window"
+        );
+        assert!(
+            space.column(&Vector3::new(50.0, 0.0, 50.0), true).is_some(),
+            "created on demand"
+        );
+        assert!(
+            space
+                .column(&Vector3::new(150.0, 0.0, 150.0), false)
+                .is_none(),
+            "read-only refusal on a fresh cell"
+        );
+        // focus of an unknown identifier is the early return
+        space.focus_chunk("nosuchchunk");
+        add_outside_chunk(&mut space, &mapping, "00000000o");
+        space.focus_chunk("00000000o");
+        // a second focus reuses the column the first one created
+        space.focus_chunk("00000000o");
+        // an inside chunk with corners past the focus window: the far
+        // cells are skipped, the near one still folds
+        let mut far = Chunk::new("02000000i", &mapping, &Matrix::identity());
+        far.bounding_box = BoundBox::new(
+            Vector3::new(240.0, 0.0, 10.0),
+            Vector3::new(250.0, 10.0, 20.0),
+        );
+        far.is_loaded = true;
+        space.add_chunk(far);
+        space.focus_chunk("02000000i");
     }
 
     /// An inside chunk with a box shell around (10,0,10)-(20,10,20): six
