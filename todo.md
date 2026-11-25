@@ -1445,7 +1445,7 @@
   - 交付沿革（2026-11-25）：交付本体 `b57e4b9`（feat: unload chunks and release scene objects，`Chunk::removable`+`ChunkSpace::{unbind,unload_chunk,unload_chunks,unload_farthest,unbind_portal,unbind_back}`+`intersects_with_bias`，参照 chunk.cpp:914-984/1292-1458/2083-2136、chunk_boundary.cpp:185-191、chunk_manager.cpp:92-95/2085/2236-2366、boundbox.ipp:313-317）为 main 祖先且 bw16-18 席已勾（main 行证据 29+11 测）。**main 活树曾丢面**：五条 lane 合并把 space.rs 解回旧代（588 行、无卸载面）——本席按用户令（「优先 BW-10-01-04 及其后同车道项」）把 `b57e4b9` 樱挑到本 lane（`3780de6`，基座 `934a268` 与其父逐字节一致零冲突），**本席活树实测**：`cargo test -p chunk` 29 lib+11 集成全绿；llvm-cov（fresh `CARGO_TARGET_DIR=target/cov-chunk`，(SF,行) max 合并）space.rs 644/647=**99.54%**、chunk.rs 237/240=98.75%、boundary 99.56%、identifier 100%、mapping 99.16%，全 ≥98%；DA:0 三行=两处花括号伪迹（173/568）+`(true,Some(false))=>true` 强制 cut 腿（403，BW-10-02 前不可达，原交付同位登记）；clippy chunk 自身 0 告警、fmt 干净。
   - **main 侧重接仍欠**：main 活树 space.rs 未含卸载面（`fa01ada` 一族裁定回退），主席须择 bw16-18 `d6e8192` 完整接线（1643 行含 unload_farthest×3，其 `7fc13e2` 已登记换代）或地形席 `2801186` 半落地形——同一裁定连带 BW-10-01-05 空间索引（main 自身该行也未勾）。
 - [ ] **BW-10-01-05 实现空间索引**。**验收** 跨 Chunk 与空白区查询返回正确集合。
-  - 卡点（2026-11-25 本席登记）：交付本体已存在两份、归主席合并裁定，本席不另起第三实现（避免 consolidate_tool/animation_exporter 双交付反模式）。① 地形席 `2801186`（main 祖先，hulltree.rs/column.rs 已逐字节落 main，但其 space.rs 索引接线被 `fa01ada` 合并族丢弃）；② bw16-18 席 `d6e8192`（完整接线 1643 行 space.rs 含 unload_farthest×3，其 `7fc13e2` 登记换代；**非** main 祖先，活面只在 origin/lane/bw16-18）。两份 overlap 未核，主席择一后本席可按 BW-10-01-04 同法真机复测勾账。
+  - 卡点（2026-11-25 本席登记）：交付本体已存在两份、归主席合并裁定，本席不另起第三实现（避免 consolidate_tool/animation_exporter 双交付反模式）。① 地形席 `2801186`（main 祖先，hulltree.rs/column.rs 已逐字节落 main，但其 space.rs 索引接线被 `fa01ada` 合并族丢弃）；② bw16-18 席 `d6e8192`（完整接线 1643 行 space.rs 含 unload_farthest×3，其 `7fc13e2` 登记换代；**非** main 祖先，活面只在 origin/lane/bw16-18）。两份 overlap 未核，主席择一后本席可按 BW-10-01-04 同法真机复测勾账。**勘误补充**（同日）：bw16-18 席已在其 lane（88e2489）勾本行，证据 hulltree.rs/column.rs/lineeq.rs+space.rs 接线（current_focus/blurred/focus/recalc_grid_bounds）——即②案的完成态，裁定天平进一步偏向 d6e8192 一族。
 
 #### BW-10-02 编译空间和场景查询
 
@@ -1506,7 +1506,8 @@
 - [x] **BW-10-05-02 移植 flood 生成**。**验收** 斜坡和室内外交界产物可对照。
 - 落账（2026-11-25，本席零代码同步）：flood 生成=e572b23（`git merge-base --is-ancestor` 实证 main 祖先），main 活面 `waypoint-gen/src/flood.rs` 1026 行+flood/{artifacts,covers,tests}.rs 全在树，e572b23 --stat 3731 insertions。
 - [ ] **BW-10-05-03 移植选用的 Recast 生成**。**验收** 固定输入生成可读导航资源。
-- [ ] **BW-10-05-04 实现原版 NavGen 图形工作流**。**验收** 同图可选择目标、生成和保存。
+- [x] **BW-10-05-04 实现原版 NavGen 图形工作流**。**验收** 同图可选择目标、生成和保存。（bw16-18 席 977f555，origin/lane/bw16-18；保存臂 84a98a8）
+  - 落账（2026-11-25 本席核）：bw16-18 席交付 `977f555`——`waypoint-gen/src/workflow.rs` + tests 1962 行（`readTGA` 34B 头/palette seek/16 adj+16 hgt 层截断即 Read 臂；`toVector3` 16 层序查高；`extendThroughUnboundPortals` 带符号半空间；per-girth 工作流环清 dirty 旗），补齐地形席 84a98a8 保存臂之余片。**真机复测**：本席跑 `cargo test -p waypoint-gen`（该 lane 树 88e2489）——并行首跑 86/87，`a_broken_flood_file_is_rejected_at_the_first_lie` 因临时目录清理竞争（DirectoryNotEmpty）偶发；单线程重跑 87/87 全绿（isolation 亦绿）——交付为真，flaky 卫生问题登记待其席修。main 活树无 workflow.rs，待主席并 lane。
 - [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。
 - 落账（2026-11-25，本席零代码同步）：旧导航资产读取=bbfb5ef（main 祖先实证），main 行附证据（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory）。
 - [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。
@@ -1759,11 +1760,14 @@
 
 盘点 Max 动画/模型、Maya 模型导出、`bw_world_machine_import`、`bwlauncher` 和插件系统的实际目标。验证导出语义和文件，单独列宿主及 SDK 的平台矩阵。
 
-- [ ] **BW-13-05-01 验证 Max 模型导出**。**验收** 同输入模型文件可读。
+- [x] **BW-13-05-01 验证 Max 模型导出**。**验收** 同输入模型文件可读。（bw15 席 f4bd3b2，origin/lane/bw15-platform）
+  - 落账（2026-11-25 本席核）：bw15 席交付 `f4bd3b2`——`asset-pipeline/src/visual_exporter.rs` 2570 行新文件+primitive_file_structs.rs `IndexHeader::write`+resources/binary.rs `BinSection::write_binary`，lib.rs 已声明（活面在 origin/lane/bw15-platform 5b1dc24）。**真机复测**：本席跑 `cargo test -p asset-pipeline`（该 lane 树）408/408 全绿。main 活树无该文件（main todo 本行未勾），待主席并 lane。
 - [x] **BW-13-05-02 验证 Max 动画导出**。**验收** 骨骼与时间关键帧一致。
 - 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/animation_exporter.rs` 1791 行 19 测（本席 05-02 交付双架构之一，主席合并择一，见双交付警示）。
-- [ ] **BW-13-05-03 验证 Maya 模型导出**。**验收** 同场景导出的资产可读。
-- [ ] **BW-13-05-04 验证 World Machine 导入**。**验收** 地形尺寸、采样和材质吻合。
+- [x] **BW-13-05-03 验证 Maya 模型导出**。**验收** 同场景导出的资产可读。（bw15 席 c37ba81，origin/lane/bw15-platform）
+  - 落账（2026-11-25 本席核）：bw15 席交付 `c37ba81`——`asset-pipeline/src/maya_exporter.rs` 3831 行新文件（含 lib.rs 声明与 visual_exporter.rs 的 create_primitive_groups 改收 ExportMode 参数），参照 tools/mayavisualexporter。**真机复测**：同上 408/408 全绿（maya_exporter::tests 含 mesh_particle_save 等）。main 活树无该文件，待主席并 lane。
+- [x] **BW-13-05-04 验证 World Machine 导入**。**验收** 地形尺寸、采样和材质吻合。（bw15 席 8322e9d，origin/lane/bw15-platform）
+  - 落账（2026-11-25 本席核）：bw15 席交付 `8322e9d`——`asset-pipeline/src/world_machine_import.rs` 1365 行新文件（含 lib.rs 声明与 Cargo.toml 的 terrain 依赖），参照 tools/bw_world_machine_import（bw_height_import.cpp）。**真机复测**：同上 408/408 全绿（world_machine_import::tests 22 测含 PNG 解码/重采样/缩放链）。main 活树无该文件，待主席并 lane。
 - [ ] **BW-13-05-05 验证 launcher**。**验收** 按配置启动同一产品入口。
 - [ ] **BW-13-05-06 核实插件宿主 SDK**。**验收** 每个启用组合有样本或缺口。
 
