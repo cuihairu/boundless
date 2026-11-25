@@ -100,21 +100,21 @@ impl Updatables {
         // Error checking only: a handle that is set must either point at
         // this very object ("Already added.") or the object is in an
         // invalid state (the reference CRITICAL_MSG aborts).
-        if let Some(&handle) = self.handles.get(&key) {
-            if handle != -1 {
-                let pointing_at_self = handle >= 0
-                    && (handle as usize) < self.objects.len()
-                    && self.objects[handle as usize]
-                        .as_ref()
-                        .map(|slot| Self::key(slot) == key)
-                        .unwrap_or(false);
-                if pointing_at_self {
-                    eprintln!("Updatables::add: Already added.");
-                } else {
-                    panic!("Updatables::add: Updatable object in invalid state.");
-                }
-                return false;
+        if let Some(&handle) = self.handles.get(&key)
+            && handle != -1
+        {
+            let pointing_at_self = handle >= 0
+                && (handle as usize) < self.objects.len()
+                && self.objects[handle as usize]
+                    .as_ref()
+                    .map(|slot| Self::key(slot) == key)
+                    .unwrap_or(false);
+            if pointing_at_self {
+                eprintln!("Updatables::add: Already added.");
+            } else {
+                panic!("Updatables::add: Updatable object in invalid state.");
             }
+            return false;
         }
 
         // "Initially, the Updatable is placed at the end of the vector,
@@ -475,13 +475,14 @@ mod tests {
     use std::cell::Cell;
 
     type Log = Rc<RefCell<Vec<String>>>;
+    type Behavior = Box<dyn FnMut(&mut Updatables)>;
 
     /// A tagged updatable; optionally runs a behaviour before recording
     /// the visit.
     struct Tagged {
         tag: &'static str,
         log: Log,
-        behavior: Option<Box<dyn FnMut(&mut Updatables)>>,
+        behavior: Option<Behavior>,
     }
 
     impl Tagged {
@@ -496,7 +497,7 @@ mod tests {
         fn behaving(
             tag: &'static str,
             log: &Log,
-            behavior: Box<dyn FnMut(&mut Updatables)>,
+            behavior: Behavior,
         ) -> Rc<RefCell<Self>> {
             Rc::new(RefCell::new(Self {
                 tag,
