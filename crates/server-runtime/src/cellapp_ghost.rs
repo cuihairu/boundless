@@ -36,10 +36,11 @@ use std::rc::Rc;
 use foundation::stream::BinaryStream;
 
 use crate::cellapp_navigate::{
-    controller_type_code, read_controller_payload, write_controller_payload,
+    controller_type_code, deregister_navigate_step, read_controller_payload,
+    write_controller_payload,
 };
-use crate::cellapp_real_entity::DOMAIN_GHOST;
 use crate::cellapp_real_entity::start_real_controllers;
+use crate::cellapp_real_entity::{ControllerId, DOMAIN_GHOST, DOMAIN_REAL};
 use crate::cellapp_space::{CellApp, CellInfo, Entity, Space};
 use crate::cellappmgr::SpaceId;
 
@@ -469,8 +470,11 @@ fn play_held_message(
                     delayed: true,
                     message: GhostMessage::Create(data.clone()),
                 });
-            } else {
-                app.create_ghost(spaces, held.space_id, held.entity, data);
+            } else if let Some((_entity, payload)) = split_create_payload(data) {
+                // The held stream still carries the wire's id prefix,
+                // which `deliverGhost` has to split off too — only
+                // what follows is the ghost's own stream.
+                app.create_ghost(spaces, held.space_id, held.entity, &payload);
             }
         }
         GhostMessage::Del => {
@@ -664,6 +668,14 @@ pub fn write_real_data_to_stream(app: &CellApp, entity: u32, is_teleport: bool) 
     // `writeBasePropertiesExposedForReplayToStream`: the packed
     // base-properties block, empty when there are none.
     stream.write_packed_int(0).expect("the stream writes");
+    // `entity_.writeRealControllersToStream( data )` — the movement
+    // that survives the switch. The reference puts this block before
+    // the periods and the witness marker, with the replay block after
+    // `writeOffloadData` returns; the port rides it last, the read's
+    // tail slurp delimits it, and the per-controller body is the same.
+    if let Some(controllers) = app.write_real_controllers_to_stream(entity) {
+        stream.write_bytes(&controllers);
+    }
     Some(stream.as_bytes().to_vec())
 }
 
@@ -1440,6 +1452,13 @@ impl CellApp {
             // going; the real part dies here.
             self.send_ghost_set_next_real(entity, destination);
 
+            // `~RealEntity` → `Entity::stopRealControllers` →
+            // `Controllers::stopReals( false )` (`controllers.cpp:481`):
+            // the controllers already rode the stream, so the real drive
+            // stops and the real-only controllers are erased — the
+            // ghost-domain ones stay for the ghost this app keeps.
+            self.stop_reals_for_offload(entity);
+
             let entity_rc = self
                 .entity_population
                 .get(&entity)
@@ -1464,6 +1483,54 @@ impl CellApp {
             self.entity_callback(entity, "onLeftCell", true, None);
         }
         let _ = spaces;
+    }
+
+    /// `Controllers::stopReals( false )` (`controllers.cpp:481`), the
+    /// offload's stop face: the real-domain drive faces stop and the
+    /// real-only controllers are erased; a ghost-domain controller is
+    /// stopped in its real half only and stays. The erase runs before
+    /// the stops — "in case delController is called on it due to a
+    /// script callback from stopping the controller".
+    fn stop_reals_for_offload(&mut self, entity: u32) {
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return;
+        };
+        let ids: Vec<ControllerId> = entity_rc
+            .borrow()
+            .controllers
+            .container
+            .iter()
+            .filter(|(_, controller)| controller.domain() & DOMAIN_REAL != 0)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let mut armed = entity_rc
+                .borrow_mut()
+                .controllers
+                .handles
+                .get_mut(&id)
+                .and_then(|slot| slot.take());
+            // The erase: real-domain-only controllers leave the
+            // container; the entry is gone before any stop callback
+            // could re-enter it.
+            let only_real = entity_rc
+                .borrow()
+                .controllers
+                .container
+                .get(&id)
+                .is_some_and(|controller| controller.domain() == DOMAIN_REAL);
+            if only_real {
+                entity_rc.borrow_mut().controllers.container.remove(&id);
+            }
+            // `pController->stopReal( false )`: the updatable drive and
+            // the navigate-step pointer are the port's families' stop
+            // faces, then the timer's queue release.
+            self.deregister_updatable(entity, id);
+            deregister_navigate_step(self, entity, id);
+            for handle in armed.iter_mut() {
+                handle.cancel();
+            }
+        }
     }
 
     /// `Entity::onload` (`entity.cpp:4656`): the destination's receive
@@ -2318,19 +2385,6 @@ mod tests {
     const B_ADDR: u32 = 20;
     const C_ADDR: u32 = 30;
     const D_ADDR: u32 = 40;
-
-    /// The test loops' exhaustive-match guard: the fixtures only produce
-    /// the two haunt addresses, so the fall-through arm is unreachable —
-    /// a helper so the guard line itself gets a direct white-box drive.
-    fn guard_two_haunts(dest: u32) -> ! {
-        panic!("two haunts only: {dest}")
-    }
-
-    #[test]
-    #[should_panic(expected = "two haunts only")]
-    fn the_guard_panics_on_a_third_address() {
-        guard_two_haunts(D_ADDR);
-    }
 
     /// The topology the two-cell tests share: ours `[0..50]` on the x
     /// edge, then neighbours at `[50..100]` (B) and, where the test
@@ -3296,14 +3350,11 @@ mod tests {
             .map(|call| call.name)
             .collect();
         assert_eq!(leaving, ["onLeavingCell", "onLeftCell"]);
-        let notified: Vec<u32> = app_a
-            .ghost_outbox
-            .iter()
-            .filter(|wire| matches!(wire.message, GhostMessage::SetNextReal { .. }))
-            .map(|wire| wire.dest)
-            .collect();
         assert!(
-            notified.is_empty(),
+            !app_a
+                .ghost_outbox
+                .iter()
+                .any(|wire| matches!(wire.message, GhostMessage::SetNextReal { .. })),
             "the destination hears nothing until the sign-off"
         );
 
@@ -3311,12 +3362,10 @@ mod tests {
         // the real, signed onto its old haunt through the read.
         // No new create went out with the offload — the destination
         // already holds the ghost from the maintenance pass.
-        let create = app_a
-            .ghost_outbox
-            .iter()
-            .skip(run_one)
-            .position(|wire| matches!(wire.message, GhostMessage::Create(_)));
-        assert!(create.is_none(), "the offload creates no fresh ghost");
+        let create = app_a.ghost_outbox.iter().enumerate().any(|(index, wire)| {
+            index >= run_one && matches!(wire.message, GhostMessage::Create(_))
+        });
+        assert!(!create, "the offload creates no fresh ghost");
         assert!(app_b.entity_population.contains_key(&2));
         assert!(!app_b.entity_population[&2].borrow().is_real);
         assert!(
@@ -3421,6 +3470,100 @@ mod tests {
         );
         assert_eq!(app_a.entity_real_addr(2), B_ADDR);
         assert_eq!(app_b.entity_real_addr(2), B_ADDR);
+    }
+
+    /// BW-08-05-03's acceptance: the movement is continuous — the
+    /// walking controller rides the offload stream, the source stops
+    /// its real drive, and the landed real keeps walking toward the
+    /// same destination.
+    #[test]
+    fn the_movement_survives_the_boundary() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        let id = app_a.attach_controller(
+            2,
+            Controller {
+                kind: ControllerKind::MoveToPoint {
+                    destination: [80.0, 0.0, 25.0],
+                    metres_per_tick: 1.0,
+                    face_movement: true,
+                    move_vertically: false,
+                },
+                user_arg: 5,
+            },
+        );
+        assert_ne!(id, 0, "the controller attached");
+
+        // The walk is underway on A.
+        app_a.advance_tick();
+        assert_eq!(
+            app_a.entity_population[&2].borrow().position,
+            [41.0, 0.0, 25.0]
+        );
+
+        // Across the boundary: the stream carries the controller, the
+        // source's real drive stops with it.
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for create in app_a.ghost_outbox.drain(..) {
+            if create.dest == B_ADDR {
+                assert_eq!(
+                    deliver(&mut app_b, &mut spaces_b, &create),
+                    CreateGhostOutcome::Created
+                );
+            }
+        }
+        app_a.entity_population[&2].borrow_mut().position = [60.0, 0.0, 25.0];
+        let mut checker = OffloadChecker::new(SID);
+        checker.run(&mut app_a, &mut spaces_a);
+        let wire = app_a.onload_outbox.remove(0);
+        assert!(
+            app_b.onload_entity(&mut spaces_b, &wire, None),
+            "the stream reads back"
+        );
+
+        // The controller lives on B with the same id, user argument and
+        // destination; A's copy stopped (the source ghost has none).
+        let landed = app_b.entity_population[&2]
+            .borrow()
+            .controllers
+            .container
+            .get(&id)
+            .cloned()
+            .expect("the controller rode the stream");
+        assert_eq!(landed.user_arg, 5);
+        assert!(matches!(
+            landed.kind,
+            ControllerKind::MoveToPoint {
+                destination: [80.0, 0.0, 25.0],
+                metres_per_tick: 1.0,
+                face_movement: true,
+                move_vertically: false,
+            }
+        ));
+        assert!(
+            app_a.entity_population[&2]
+                .borrow()
+                .controllers
+                .container
+                .is_empty(),
+            "the source's real controllers stopped"
+        );
+        // The stale drive on A moves nothing.
+        app_a.advance_tick();
+        assert_eq!(
+            app_a.entity_population[&2].borrow().position,
+            [60.0, 0.0, 25.0]
+        );
+
+        // The landed real keeps walking toward 80. The ghost was
+        // created after A's first walk, so it held 41 — two more ticks
+        // of the one-metre drive land on 43.
+        app_b.advance_tick();
+        app_b.advance_tick();
+        assert_eq!(
+            app_b.entity_population[&2].borrow().position,
+            [43.0, 0.0, 25.0],
+            "the movement continues on the destination"
+        );
     }
 
     /// The real's snapshot rides to the ghost: the position, the ground
@@ -3696,20 +3839,21 @@ mod tests {
         app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
         // Every haunt materialises its ghost.
         for wire in app_a.ghost_outbox.drain(..) {
-            match wire.dest {
-                B_ADDR => {
-                    assert_eq!(
-                        deliver(&mut app_b, &mut spaces_b, &wire),
-                        CreateGhostOutcome::Created
-                    )
-                }
-                C_ADDR => {
-                    assert_eq!(
-                        deliver(&mut app_c, &mut spaces_c, &wire),
-                        CreateGhostOutcome::Created
-                    )
-                }
-                _ => guard_two_haunts(wire.dest),
+            assert!(
+                matches!(wire.dest, B_ADDR | C_ADDR),
+                "two haunts only: {}",
+                wire.dest
+            );
+            if wire.dest == B_ADDR {
+                assert_eq!(
+                    deliver(&mut app_b, &mut spaces_b, &wire),
+                    CreateGhostOutcome::Created
+                )
+            } else {
+                assert_eq!(
+                    deliver(&mut app_c, &mut spaces_c, &wire),
+                    CreateGhostOutcome::Created
+                )
             }
         }
 
@@ -3778,15 +3922,16 @@ mod tests {
             }
         );
         for wire in &set_real_wires {
-            match wire.dest {
-                B_ADDR => {
-                    assert_eq!(
-                        deliver(&mut app_b, &mut spaces_b, wire),
-                        CreateGhostOutcome::Created
-                    )
-                }
-                A_ADDR => {}
-                _ => guard_two_haunts(wire.dest),
+            assert!(
+                matches!(wire.dest, B_ADDR | A_ADDR),
+                "two haunts only: {}",
+                wire.dest
+            );
+            if wire.dest == B_ADDR {
+                assert_eq!(
+                    deliver(&mut app_b, &mut spaces_b, wire),
+                    CreateGhostOutcome::Created
+                )
             }
         }
 
@@ -3799,10 +3944,7 @@ mod tests {
         drop(borrowed);
         assert!(app_b.buffered_ghost_messages.is_empty());
         assert!(
-            !app_b
-                .ghost_property_notes
-                .iter()
-                .any(|note| note.contains("ghostSetReal")),
+            app_b.ghost_property_notes.is_empty(),
             "the in-order sign-off never warned"
         );
     }
@@ -4158,12 +4300,13 @@ mod tests {
             three_cell_fixture();
         app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
         for create in app_a.ghost_outbox.drain(..) {
-            match create.dest {
-                B_ADDR => {
-                    deliver(&mut app_b, &mut spaces_b, &create);
-                }
-                C_ADDR => {}
-                _ => guard_two_haunts(create.dest),
+            assert!(
+                matches!(create.dest, B_ADDR | C_ADDR),
+                "two haunts only: {}",
+                create.dest
+            );
+            if create.dest == B_ADDR {
+                deliver(&mut app_b, &mut spaces_b, &create);
             }
         }
         app_a.send_ghost_set_next_real(2, C_ADDR);
@@ -4226,12 +4369,13 @@ mod tests {
         let creates = std::mem::take(&mut app_a.ghost_outbox);
         assert_eq!(creates.len(), 2, "the two remote cells hold ghosts");
         for create in creates {
-            match create.dest {
-                B_ADDR => {
-                    deliver(&mut app_b, &mut spaces_b, &create);
-                }
-                C_ADDR => {}
-                _ => guard_two_haunts(create.dest),
+            assert!(
+                matches!(create.dest, B_ADDR | C_ADDR),
+                "two haunts only: {}",
+                create.dest
+            );
+            if create.dest == B_ADDR {
+                deliver(&mut app_b, &mut spaces_b, &create);
             }
         }
         app_a.send_ghost_set_next_real(2, C_ADDR);
@@ -4274,6 +4418,567 @@ mod tests {
             1
         );
         assert_eq!(app_b.entity_population[&2].borrow().real_addr, Some(C_ADDR));
+    }
+
+    /// BW-08-05-03's timer face: the armed `TimeQueue` handle is the
+    /// stop face's release, the timer itself rides the offload stream,
+    /// and the source drops it with the rest of the real's controllers
+    /// while the destination re-arms it.
+    #[test]
+    fn the_timer_controller_crosses_too() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        let id = app_a.add_timer(2, 0.0, 5.0, 9);
+        assert!(
+            app_a.entity_population[&2].borrow().controllers.handles[&id].is_some(),
+            "the timer arms before the offload"
+        );
+
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for wire in app_a.ghost_outbox.drain(..) {
+            assert!(
+                matches!(wire.dest, B_ADDR | A_ADDR),
+                "two haunts only: {}",
+                wire.dest
+            );
+            if wire.dest == B_ADDR {
+                assert_eq!(
+                    deliver(&mut app_b, &mut spaces_b, &wire),
+                    CreateGhostOutcome::Created
+                );
+            }
+        }
+
+        {
+            let mut borrowed = app_a.entity_population[&2].borrow_mut();
+            borrowed.position = [60.0, 0.0, 25.0];
+        }
+        let mut checker = OffloadChecker::new(SID);
+        checker.run(&mut app_a, &mut spaces_a);
+
+        // The stop face released the queue handle and erased the
+        // real-only controller before the destroy ran.
+        let source = app_a.entity_population[&2].borrow();
+        assert!(source.controllers.container.is_empty());
+        assert!(
+            source.controllers.handles[&id].is_none(),
+            "the armed slot released"
+        );
+        drop(source);
+
+        // The destination read the block and re-armed the timer.
+        let wire = app_a.onload_outbox.remove(0);
+        assert!(
+            app_b.onload_entity(&mut spaces_b, &wire, None),
+            "the stream reads back"
+        );
+        let landed = app_b.entity_population[&2].borrow();
+        let controller = &landed.controllers.container[&id];
+        assert_eq!(controller.user_arg, 9);
+        assert!(matches!(controller.kind, ControllerKind::Timer { .. }));
+        drop(landed);
+        assert!(app_b.entity_population[&2].borrow().controllers.handles[&id].is_some());
+    }
+
+    /// The replay surface every held kind rides: `play_held_message`
+    /// hands each variant to the delivery face it names, the queue
+    /// keeps its entry when a play re-buffers, and a drained replay
+    /// leaves no entry behind.
+    #[test]
+    fn every_held_kind_replays_through_its_face() {
+        let held = |message| BufferedGhostMessage {
+            src: A_ADDR,
+            entity: 2,
+            space_id: SID,
+            delayed: false,
+            message,
+        };
+        let ghost_on_b = |spaces: &mut BTreeMap<SpaceId, Space>,
+                          app_b: &mut CellApp,
+                          app_a: &mut CellApp,
+                          spaces_a: &mut BTreeMap<SpaceId, Space>| {
+            app_a.check_offloads_and_ghosts(spaces_a, SID);
+            for wire in app_a.ghost_outbox.drain(..) {
+                if wire.dest == B_ADDR {
+                    assert_eq!(deliver(app_b, spaces, &wire), CreateGhostOutcome::Created);
+                }
+            }
+        };
+
+        // The create kind: the entity pre-exists, so the held create
+        // re-buffers behind a fresh delayed subsequence.
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        ghost_on_b(&mut spaces_b, &mut app_b, &mut app_a, &mut spaces_a);
+        play_held_message(
+            &mut app_b,
+            &mut spaces_b,
+            &held(GhostMessage::Create(vec![9])),
+        );
+        let buffered = app_b.buffered_ghost_messages[&2]
+            .delayed
+            .as_ref()
+            .map(Vec::len);
+        assert_eq!(buffered, Some(1), "the pre-existing create re-buffers");
+
+        // The del kind: the held del destroys the ghost it names.
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        ghost_on_b(&mut spaces_b, &mut app_b, &mut app_a, &mut spaces_a);
+        play_held_message(&mut app_b, &mut spaces_b, &held(GhostMessage::Del));
+        assert!(
+            app_b.entity_population[&2].borrow().destroyed,
+            "the held del landed"
+        );
+
+        // The create kind on a cold app: no ghost yet, so the replay
+        // materialises one — with the very stream the wire carried.
+        let (mut app_a, mut spaces_a, _warm_b, _warm_spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        // A del rides along too, ahead of the create, so the pick
+        // below has to look past a kind it does not want.
+        app_a.ghost_outbox.insert(
+            0,
+            GhostWire {
+                dest: B_ADDR,
+                src: A_ADDR,
+                space_id: SID,
+                entity: 2,
+                message: GhostMessage::Del,
+            },
+        );
+        let create_data = app_a
+            .ghost_outbox
+            .iter()
+            .find_map(|wire| match &wire.message {
+                GhostMessage::Create(data) => Some(data.clone()),
+                _ => None,
+            })
+            .expect("the offload sends a create");
+        let (_cold_a, _cold_spaces_a, mut cold_b, mut cold_spaces_b) = two_cell_fixture();
+        play_held_message(
+            &mut cold_b,
+            &mut cold_spaces_b,
+            &held(GhostMessage::Create(create_data)),
+        );
+        assert!(
+            cold_b.entity_population.get(&2).is_some_and(|entity| {
+                let borrowed = entity.borrow();
+                !borrowed.is_real && !borrowed.destroyed
+            }),
+            "the cold create landed"
+        );
+        assert!(
+            cold_b.entity_population.get(&2).is_some_and(|entity| {
+                let borrowed = entity.borrow();
+                !borrowed.is_real && !borrowed.destroyed
+            }),
+            "the cold create landed"
+        );
+
+        // The sign-off kind on a cold app: the ERROR face notes the
+        // missing entity instead of dereferencing it (CR-P2-09).
+        let (_gone_a, _gone_spaces_a, mut gone_b, mut gone_spaces_b) = two_cell_fixture();
+        play_held_message(
+            &mut gone_b,
+            &mut gone_spaces_b,
+            &held(GhostMessage::SetReal {
+                num_times_real_offloaded: 1,
+                owner: A_ADDR,
+            }),
+        );
+        assert!(
+            gone_b
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("no longer exists")),
+            "the sign-off against nothing is noted"
+        );
+
+        // The observation kinds ride the ghost's faces; the sign-off
+        // and the announcement ride the switch's faces.
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        ghost_on_b(&mut spaces_b, &mut app_b, &mut app_a, &mut spaces_a);
+        play_held_message(
+            &mut app_b,
+            &mut spaces_b,
+            &held(GhostMessage::Position {
+                pos: [1.0, 2.0, 3.0],
+                dir: [0.0, 0.0, 1.0],
+                is_on_ground: true,
+                update_number: 4,
+            }),
+        );
+        let ghost = app_b.entity_population[&2].borrow();
+        assert_eq!(ghost.local_position, [1.0, 2.0, 3.0]);
+        drop(ghost);
+        play_held_message(
+            &mut app_b,
+            &mut spaces_b,
+            &held(GhostMessage::VolatileInfo(
+                crate::cellapp_witness::VolatileInfo {
+                    position_priority: 1.0,
+                    yaw_priority: 1.0,
+                    pitch_priority: 1.0,
+                    roll_priority: 1.0,
+                },
+            )),
+        );
+        assert!(
+            app_b.entity_population[&2]
+                .borrow()
+                .volatile_info
+                .position_priority
+                == 1.0,
+            "the held volatile info landed"
+        );
+        play_held_message(
+            &mut app_b,
+            &mut spaces_b,
+            &held(GhostMessage::Property {
+                index: 0,
+                data: Vec::new(),
+            }),
+        );
+        play_held_message(
+            &mut app_b,
+            &mut spaces_b,
+            &held(GhostMessage::SetNextReal {
+                next_real_addr: A_ADDR,
+            }),
+        );
+        assert_eq!(
+            app_b.entity_population[&2].borrow().next_real_addr,
+            Some(A_ADDR),
+            "the held announcement landed"
+        );
+        // The sign-off kind aimed at a gone entity: the ERROR face
+        // notes instead of dereferencing (CR-P2-09).
+        play_held_message(
+            &mut app_b,
+            &mut spaces_b,
+            &held(GhostMessage::SetReal {
+                num_times_real_offloaded: 1,
+                owner: A_ADDR,
+            }),
+        );
+        // The entry survives the plays; the false return re-inserts it.
+        assert!(
+            !app_b.buffered_ghost_messages.contains_key(&2),
+            "plays never buffered here"
+        );
+        // An empty queue answers false, and `playSubsequenceFor`
+        // re-inserts the entry it took out.
+        let mut bare = BufferedGhostMessagesForEntity::default();
+        assert!(bare.is_empty(), "nothing held at all");
+        assert!(!bare.play_subsequence(&mut app_b, &mut spaces_b));
+        assert!(!bare.play_front(&mut app_b, &mut spaces_b));
+        // A delay drags the queued head into the collection with it.
+        bare.add(held(GhostMessage::Create(Vec::new())));
+        assert!(!bare.is_empty());
+        bare.delay_subsequence(held(GhostMessage::Create(Vec::new())));
+        assert!(bare.messages.is_empty(), "the queue drained into the delay");
+        assert_eq!(bare.delayed.as_ref().map(Vec::len), Some(2));
+        app_b
+            .buffered_ghost_messages
+            .insert(2, BufferedGhostMessagesForEntity::default());
+        app_b.play_subsequence_for(&mut spaces_b, 2);
+        assert!(
+            app_b.buffered_ghost_messages.contains_key(&2),
+            "the undrained entry went back"
+        );
+    }
+
+    /// The teleport-failure tail: the haunt to the failed destination
+    /// drops, `onTeleportFailure` fires, and the rest of the offload
+    /// still lands.
+    #[test]
+    fn the_teleport_failure_strips_the_failed_haunt() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_b
+            .entity_scripts
+            .get_mut(&TYPE)
+            .expect("the fixture script")
+            .methods
+            .insert("onTeleportFailure");
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for wire in app_a.ghost_outbox.drain(..) {
+            if wire.dest == B_ADDR {
+                assert_eq!(
+                    deliver(&mut app_b, &mut spaces_b, &wire),
+                    CreateGhostOutcome::Created
+                );
+            }
+        }
+        {
+            let mut borrowed = app_a.entity_population[&2].borrow_mut();
+            borrowed.position = [60.0, 0.0, 25.0];
+        }
+        // The checker never teleports; the face takes the flag
+        // directly, and the stream's bool is what the read trusts.
+        app_a.offload_entity(&mut spaces_a, 2, B_ADDR, true);
+        let mut wire = app_a.onload_outbox.remove(0);
+        // The writer always marks the failure byte false — only the
+        // offload-failure resend marks it true — so the read face is
+        // driven on a crafted byte.
+        wire.data[4] = 1;
+
+        let calls = app_b.script_calls.len();
+        assert!(
+            app_b.onload_entity(&mut spaces_b, &wire, Some(B_ADDR)),
+            "the stream reads back"
+        );
+        let landed = app_b.entity_population[&2].borrow();
+        assert!(landed.is_real);
+        assert!(
+            !landed.haunts.iter().any(|haunt| haunt.addr == B_ADDR),
+            "the failed haunt is stripped"
+        );
+        drop(landed);
+        let fired: Vec<&str> = app_b.script_calls[calls..]
+            .iter()
+            .map(|call| call.name)
+            .collect();
+        assert!(
+            fired.contains(&"onTeleportFailure"),
+            "the failure callback fired"
+        );
+        assert!(
+            app_b
+                .ghost_outbox
+                .iter()
+                .any(|wire| wire.dest == A_ADDR && matches!(wire.message, GhostMessage::Del)),
+            "the teleported real tells its old haunt it is done"
+        );
+    }
+
+    /// `MF_ASSERT( pEntity->pReal() != NULL )`: the caller only hands
+    /// over reals — an offload aimed at a ghost or at a stranger id
+    /// leaves the population untouched and says nothing.
+    #[test]
+    fn the_offload_ignores_a_ghost() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for wire in app_a.ghost_outbox.drain(..) {
+            if wire.dest == B_ADDR {
+                deliver(&mut app_b, &mut spaces_b, &wire);
+            }
+        }
+
+        let calls = app_b.script_calls.len();
+        app_b.offload_entity(&mut spaces_b, 2, A_ADDR, false);
+        app_b.offload_entity(&mut spaces_b, 999, A_ADDR, false);
+        assert_eq!(app_b.script_calls.len(), calls, "no onLeavingCell fires");
+        assert!(app_b.onload_outbox.is_empty());
+        assert!(!app_b.entity_population[&2].borrow().is_real);
+        assert_eq!(app_b.entity_population.len(), 1);
+    }
+
+    /// The strangers: `stopReals` with no controller owner, a sign-off
+    /// with no ghost, and an onload with no entity — each is a silent
+    /// refusal before any stream opens.
+    #[test]
+    fn the_strangers_are_refused_quietly() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.stop_reals_for_offload(999);
+        assert!(app_a.onload_outbox.is_empty());
+        assert!(!app_a.ghost_set_next_real(&mut spaces_a, 999, B_ADDR));
+
+        let wire = OnloadWire {
+            dest: B_ADDR,
+            src: A_ADDR,
+            space_id: SID,
+            entity: 999,
+            is_teleport: false,
+            data: Vec::new(),
+        };
+        assert!(!app_b.onload_entity(&mut spaces_b, &wire, None));
+    }
+
+    /// The deliver helper's failure ladder: every message kind aimed at
+    /// a stranger collapses onto `BadStream`, the out-of-turn sign-off
+    /// onto `Buffered`, and the sign-off with no ghost onto
+    /// `UnknownType`.
+    #[test]
+    fn the_deliver_helper_maps_the_failures() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for wire in app_a.ghost_outbox.drain(..) {
+            if wire.dest == B_ADDR {
+                deliver(&mut app_b, &mut spaces_b, &wire);
+            }
+        }
+        let stranger = |message| GhostWire {
+            dest: B_ADDR,
+            src: A_ADDR,
+            space_id: SID,
+            entity: 999,
+            message,
+        };
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &stranger(GhostMessage::Del)),
+            CreateGhostOutcome::BadStream
+        );
+        assert_eq!(
+            deliver(
+                &mut app_b,
+                &mut spaces_b,
+                &stranger(GhostMessage::Position {
+                    pos: [1.0, 2.0, 3.0],
+                    dir: [0.0, 0.0, 1.0],
+                    is_on_ground: true,
+                    update_number: 1,
+                })
+            ),
+            CreateGhostOutcome::BadStream
+        );
+        assert_eq!(
+            deliver(
+                &mut app_b,
+                &mut spaces_b,
+                &stranger(GhostMessage::VolatileInfo(
+                    crate::cellapp_witness::VolatileInfo {
+                        position_priority: 1.0,
+                        yaw_priority: 1.0,
+                        pitch_priority: 1.0,
+                        roll_priority: 1.0,
+                    }
+                ))
+            ),
+            CreateGhostOutcome::BadStream
+        );
+        assert_eq!(
+            deliver(
+                &mut app_b,
+                &mut spaces_b,
+                &stranger(GhostMessage::Property {
+                    index: 0,
+                    data: Vec::new(),
+                })
+            ),
+            CreateGhostOutcome::BadStream
+        );
+        assert_eq!(
+            deliver(
+                &mut app_b,
+                &mut spaces_b,
+                &stranger(GhostMessage::SetReal {
+                    num_times_real_offloaded: 5,
+                    owner: A_ADDR,
+                })
+            ),
+            CreateGhostOutcome::BadStream,
+            "the routing ladder drops a sign-off with no ghost"
+        );
+        assert_eq!(
+            deliver(
+                &mut app_b,
+                &mut spaces_b,
+                &GhostWire {
+                    dest: B_ADDR,
+                    src: A_ADDR,
+                    space_id: SID,
+                    entity: 2,
+                    message: GhostMessage::SetReal {
+                        num_times_real_offloaded: 5,
+                        owner: A_ADDR,
+                    },
+                }
+            ),
+            CreateGhostOutcome::BadStream,
+            "the ghost holds the out-of-turn sign-off"
+        );
+        assert_eq!(
+            deliver(
+                &mut app_b,
+                &mut spaces_b,
+                &stranger(GhostMessage::SetNextReal {
+                    next_real_addr: A_ADDR,
+                })
+            ),
+            CreateGhostOutcome::BadStream
+        );
+    }
+
+    /// Every hard read of the offload stream refuses a stream cut in
+    /// front of it, and the haunt walk's anomaly arms report into the
+    /// notes instead of signing. The sweep walks the cut through the
+    /// header fields, the haunt count, the haunt list, and the replay
+    /// length; the last two cuts carry a failed teleport haunt and a
+    /// dead channel through the signing loop.
+    #[test]
+    fn the_truncated_stream_refuses() {
+        // The reference blob: a plain real, no controllers, its ghost
+        // already on B.
+        let blob = {
+            let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+            app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+            for wire in app_a.ghost_outbox.drain(..) {
+                if wire.dest == B_ADDR {
+                    deliver(&mut app_b, &mut spaces_b, &wire);
+                }
+            }
+            {
+                let mut borrowed = app_a.entity_population[&2].borrow_mut();
+                borrowed.position = [60.0, 0.0, 25.0];
+            }
+            let mut checker = OffloadChecker::new(SID);
+            checker.run(&mut app_a, &mut spaces_a);
+            app_a.onload_outbox.remove(0).data
+        };
+
+        let run = |data: &[u8], bad_haunt: Option<u32>, dead: bool| {
+            let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+            app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+            for wire in app_a.ghost_outbox.drain(..) {
+                if wire.dest == B_ADDR {
+                    deliver(&mut app_b, &mut spaces_b, &wire);
+                }
+            }
+            if dead {
+                app_b.dead_channels.insert(A_ADDR);
+            }
+            let wire = OnloadWire {
+                dest: B_ADDR,
+                src: A_ADDR,
+                space_id: SID,
+                entity: 2,
+                is_teleport: false,
+                data: data.to_vec(),
+            };
+            app_b.onload_entity(&mut spaces_b, &wire, bad_haunt)
+        };
+
+        // The header up to the velocity triple: id, teleport flag,
+        // token, old real, base ip, base port, three floats — every
+        // cut lands in front of a hard read.
+        for len in [0usize, 1, 4, 5, 9, 13, 17, 19, 23, 27, 30] {
+            assert!(!run(&blob[..len], None, false), "cut at {len} refuses");
+        }
+        // The haunt tail: cut after the count leaves a list without a
+        // haunt; cut at the replay length byte strands the packed
+        // read. (A haunt list without our own address never comes
+        // from a cut — the writer always lists it.)
+        let after_count = blob.len() - 21;
+        let before_replay = blob.len() - 9;
+        assert!(
+            !run(&blob[..after_count], None, false),
+            "a haunt count with no haunt refuses"
+        );
+        assert!(
+            !run(&blob[..before_replay], None, false),
+            "the replay length refuses"
+        );
+        // A haunt list that lost our own address is crafted: the count
+        // drops to one and the remaining haunt is the old real.
+        let mut crafted = blob.clone();
+        crafted[37..41].copy_from_slice(&1u32.to_le_bytes());
+        crafted[41..45].copy_from_slice(&A_ADDR.to_le_bytes());
+        assert!(
+            !run(&crafted, None, false),
+            "a haunt list without us refuses"
+        );
+        // The anomaly arms: the failed teleport haunt and the dead
+        // channel report and the read still lands.
+        assert!(run(&blob, Some(A_ADDR), false), "the bad haunt reports");
+        assert!(run(&blob, None, true), "the dead channel reports");
     }
 
     /// The destroyed-ghost drops: an in-flight message for a real, for
