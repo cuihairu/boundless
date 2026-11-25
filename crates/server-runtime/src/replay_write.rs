@@ -1956,6 +1956,123 @@ mod tests {
         assert_eq!(destroyed.get(), 1);
     }
 
+    /// A mid-recording write failure reports through the error callback
+    /// exactly once, keeps the error state, and later calls are inert —
+    /// the chunk that hit `/dev/full` lands after the header block, so
+    /// the failure is genuinely mid-file.
+    #[cfg(unix)]
+    #[test]
+    fn a_mid_recording_write_failure_fails_once_and_stays_inert() {
+        if !std::path::Path::new("/dev/full").exists() {
+            return;
+        }
+        let (listener, destroyed) = CountingListener::new();
+        let mut writer = ReplayDataFileWriter::new(
+            std::path::Path::new("/dev/full"),
+            Box::new(Md5Checksum::new()),
+            compression::NONE,
+            fixture_digest(),
+            2,
+            &ReplayMetaData::new(),
+            fixture_nonce(),
+        );
+        writer.add_listener(Box::new(listener));
+        assert!(writer.has_error(), "the first block write was refused");
+        assert!(writer.is_closed(), "the failure released the file");
+        // `closeWriter` sets finalising too — that is what `isClosed`
+        // reports, and an error is as closed as a finalise.
+        assert!(writer.is_finalising());
+        assert_eq!(writer.last_tick_written(), 0);
+        assert_eq!(writer.last_tick_pending_write(), 0);
+        assert_eq!(writer.num_ticks_written(), 0);
+
+        // Later chunk work and a finalise are inert: the error is
+        // reported once and the state does not change again.
+        writer.add_tick_data(1, 1, &[1; 8]);
+        writer.add_tick_data(2, 1, &[2; 8]);
+        assert_eq!(writer.num_ticks_written(), 0);
+        writer.finalise();
+        assert!(writer.is_closed());
+        assert_eq!(writer.errors_after_construction(), 1);
+
+        drop(writer);
+        assert_eq!(destroyed.get(), 1, "the destruction callback fires once");
+    }
+
+    /// The completion callback lands once per write: one per chunk and
+    /// one for the finalise tail. The header/metadata first block also
+    /// completes, but it lands during construction, before any listener
+    /// can be attached — so an attached listener never sees it.
+    #[test]
+    fn the_callback_counts_match_the_baseline() {
+        let (dir, path) = temp_file("counts.replay");
+        let completes = Rc::new(Cell::new(0u32));
+        let destroyed = Rc::new(Cell::new(0u32));
+        {
+            let completes = Rc::clone(&completes);
+            let destroyed = Rc::clone(&destroyed);
+            struct BaselineListener {
+                completes: Rc<Cell<u32>>,
+                destroyed: Rc<Cell<u32>>,
+            }
+            impl ReplayDataFileWriterListener for BaselineListener {
+                fn on_writing_error(&mut self, _path: &str, _error: &str) {
+                    panic!("no write fails on a healthy file");
+                }
+                fn on_writing_complete(&mut self, _ticks: u32, _last: u32) {
+                    self.completes.set(self.completes.get() + 1);
+                }
+                fn on_writer_destroyed(&mut self, _path: &str) {
+                    self.destroyed.set(self.destroyed.get() + 1);
+                }
+            }
+            let mut writer = ReplayDataFileWriter::new(
+                &path,
+                Box::new(Md5Checksum::new()),
+                compression::NONE,
+                fixture_digest(),
+                2,
+                &ReplayMetaData::new(),
+                fixture_nonce(),
+            );
+            writer.add_listener(Box::new(BaselineListener {
+                completes,
+                destroyed,
+            }));
+
+            // The first block (header + metadata) completed during the
+            // constructor; two chunks follow as ticks complete.
+            for tick in 1u32..=4 {
+                writer.add_tick_data(tick, 1, &[tick as u8; 4]);
+            }
+            assert_eq!(writer.num_ticks_written(), 4);
+            writer.finalise();
+            drop(writer);
+        }
+        assert_eq!(
+            completes.get(),
+            3,
+            "two chunks + the finalise tail: the first block completes \
+             before any listener is attached"
+        );
+        assert_eq!(destroyed.get(), 1, "one destruction");
+        let _ = dir;
+    }
+
+    /// The listener's own counters: one error per failure and one
+    /// completion per landed write, exactly the baseline a recovering
+    /// server reads them by.
+    #[test]
+    fn the_listener_counts_each_callback_once() {
+        let (mut listener, _destroyed) = CountingListener::new();
+        listener.on_writing_error("recording.replay", "no space left on device");
+        assert_eq!(listener.errors.get(), 1);
+        listener.on_writing_complete(3, 7);
+        assert_eq!(listener.completes.get(), 1);
+        listener.on_writer_destroyed("recording.replay");
+        assert_eq!(listener.destroyed.get(), 1);
+    }
+
     // Small helpers the tests above lean on.
     impl ReplayDataFileWriter {
         fn has_listeners_after_drop_pending(&self) -> bool {
