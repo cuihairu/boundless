@@ -12,6 +12,9 @@ foundation = { workspace = true }
 physics = { path = "../physics" }
 regex = { workspace = true }
 resources = { workspace = true }
+# The chunk `.cdata` height maps decode through the terrain2 readers
+# (`world_machine_import.rs`).
+terrain = { workspace = true }
 
 [dev-dependencies]
 compiled-space = { path = "../compiled-space" }

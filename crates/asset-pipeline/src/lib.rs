@@ -97,7 +97,12 @@
 //! - [`animation_exporter`] — the Max animation exporter's portable
 //!   core: the settings read chain, the `preProcess` classification, the
 //!   `MFXNode` relative-transform keys and the `.animation` binary with
-//!   its cue channel (`tools/animationexporter/`).
+//!   its cue channel (`tools/animationexporter/`);
+//! - [`world_machine_import`] — the World Machine height importer: the
+//!   `SpaceHelper` space.settings reader, the chunk `.cdata` height-map
+//!   decode and the `BWHeightImport` resample into a World Machine
+//!   height field, with the framework seam documented
+//!   (`tools/bw_world_machine_import/`).
 
 pub mod animation_exporter;
 pub mod asset_compiler;
@@ -140,3 +145,4 @@ pub mod texture_detail_level;
 pub mod vertex_format;
 pub mod visual_exporter;
 pub mod visual_processor;
+pub mod world_machine_import;
