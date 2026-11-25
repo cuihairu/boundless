@@ -4,7 +4,8 @@
 //! The plane equation is `normal · p = d`; after a normalised `init` the
 //! normal is unit length and `d` is the signed offset from the origin.
 
-use super::vector::Vector3;
+use super::lineeq::LineEq;
+use super::vector::{Vector2, Vector3, almost_equal, almost_zero};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaneEq {
@@ -80,29 +81,22 @@ impl PlaneEq {
         self.normal.dot_product(point) - self.d
     }
 
-    /// `isInFrontOf` (`planeeq.ipp:197-202`): a point within the
-    /// reference's `almostEqual` epsilon of the plane counts as in front.
+    /// `isInFrontOf` (`planeeq.ipp:196-202`): a point within the
+    /// `almostEqual` buffer of the plane counts as in front — this is the
+    /// sidedness test `HullTree::testPoint` walks its tree with.
     pub fn is_in_front_of(&self, point: &Vector3) -> bool {
         let dot = self.normal.dot_product(point);
-        if (dot - self.d).abs() < 0.0004 {
+        if almost_equal(dot, self.d) {
             return true;
         }
         dot > self.d
     }
 
-    /// `isInFrontOfExact` (`planeeq.ipp:211-214`): no epsilon.
-    pub fn is_in_front_of_exact(&self, point: &Vector3) -> bool {
-        self.normal.dot_product(point) > self.d
-    }
-
-    /// `basis` (`planeeq.cpp:92-115`): the parameterised x/y directions of
-    /// the plane. The x direction zeroes the smaller of the two components
-    /// next to the normal's largest, solves the largest for the plane
-    /// equation, and y is the cross product; both are normalised.
+    /// `basis` (`planeeq.cpp:85-115`): an orthonormal `(xdir, ydir)` pair
+    /// spanning the plane, picked on the normal's largest axis.
     pub fn basis(&self) -> (Vector3, Vector3) {
         const BI_MORE_L: [usize; 3] = [1, 2, 0];
         const BI_LESS_L: [usize; 3] = [2, 0, 1];
-
         let fabses = [
             self.normal.x.abs(),
             self.normal.y.abs(),
@@ -123,72 +117,53 @@ impl PlaneEq {
         xdir.set(bi_more, 1.0);
         xdir.set(bi, -self.normal.get(bi_more) / self.normal.get(bi));
 
-        // find a suitable y basis vector (cross product of existing ones)
-        let mut ydir = Vector3::ZERO.cross_product(&self.normal, &xdir);
-
+        // The y direction is the cross of the two; both end unit length.
+        let mut ydir = Vector3::ZERO;
+        ydir = ydir.cross_product(&self.normal, &xdir);
         xdir.normalise();
         ydir.normalise();
         (xdir, ydir)
     }
 
-    /// `param` (`planeeq.cpp:122-133`): the 3D point at the given
-    /// parameter in the plane's basis; the plane's origin sits at
-    /// `normal * d / |normal|²`.
-    pub fn param(&self, param: &super::vector::Vector2) -> Vector3 {
+    /// `param` (`planeeq.cpp:122-133`): the 3D point of a 2D parameter in the
+    /// plane's basis, from the plane origin `normal * d / |normal|²`.
+    pub fn param(&self, param: Vector2) -> Vector3 {
         let (xdir, ydir) = self.basis();
         let d_over_norm_len = self.d / self.normal.length_squared();
         self.normal * d_over_norm_len + xdir * param.x + ydir * param.y
     }
 
-    /// `project` (`planeeq.cpp:139-152`): the parameter of the given point
-    /// in the plane's basis.
-    pub fn project(&self, point: &Vector3) -> super::vector::Vector2 {
+    /// `project` (`planeeq.cpp:139-152`): the 2D parameter of a 3D point in
+    /// the plane's basis.
+    pub fn project(&self, point: &Vector3) -> Vector2 {
         let (xdir, ydir) = self.basis();
         let offset = *point - self.normal * (self.d / self.normal.length_squared());
-        super::vector::Vector2::new(xdir.dot_product(&offset), ydir.dot_product(&offset))
+        Vector2::new(xdir.dot_product(&offset), ydir.dot_product(&offset))
     }
 
-    /// `intersect` (`planeeq.cpp:24-76`): the line where the `slice`
-    /// plane cuts this plane, expressed in this plane's parameterised
-    /// basis. Nearly-parallel planes give the zero line (the caller
-    /// filters it by comparing the normal against zero). The reference's
-    /// reconstitution sanity check only prints, so it is not ported.
-    pub fn intersect(&self, slice: &PlaneEq) -> super::lineeq::LineEq {
-        // find the direction of our line in 3D
-        let dir3d = Vector3::ZERO.cross_product(&self.normal, &slice.normal);
-
-        if super::vector::almost_zero(dir3d.length_squared(), 0.0001) {
-            return super::lineeq::LineEq::new(super::vector::Vector2::new(0.0, 0.0), 0.0);
+    /// `intersect` (`planeeq.cpp:24-76`): this line, defined in this plane,
+    /// where the `slice` plane cuts it. A parallel slice gives the zero
+    /// line (`LineEq` with zero normal), which `HullTree::add` filters.
+    /// The reference's debug reconstitution block prints only; it has no
+    /// result-bearing code and is not ported.
+    pub fn intersect(&self, slice: &PlaneEq) -> LineEq {
+        let dir3d = Vector3::ZERO.cross_product(&self.normal, slice.normal());
+        if almost_zero(dir3d.length_squared(), 0.0001) {
+            return LineEq::new(Vector2::ZERO, 0.0);
         }
-
-        // find the normal to the line (on the first plane) in 3D
         let normal3d = Vector3::ZERO.cross_product(&self.normal, &dir3d);
-
-        // find the origin of the basis plane's coordinate system in 3D
-        let origin3d = self.param(&super::vector::Vector2::new(0.0, 0.0));
-
-        // find the intersection in the direction of normal3D through
-        // origin3D with the slice plane
+        let origin3d = self.param(Vector2::new(0.0, 0.0));
         let intersect_point3d = slice.intersect_ray(&origin3d, &normal3d);
-
-        // now turn the intersection point and dir3D into the basis of the
-        // basis plane
         let intersect_point2d = self.project(&intersect_point3d);
-
-        // set the normal from the normal in 3D
         let mut line_normal = self.project(&(origin3d + normal3d));
         line_normal.normalise();
-
-        // calc d to work for the point that we know is on the line
         let line_d = line_normal.dot_product(&intersect_point2d);
-
-        super::lineeq::LineEq::new(line_normal, line_d)
+        LineEq::new(line_normal, line_d)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::vector::Vector2;
     use super::*;
 
     fn assert_almost_eq(a: f32, b: f32) {
@@ -267,104 +242,81 @@ mod tests {
         assert_almost_eq(hit.z, 5.0);
     }
 
-    /// `basis` (`planeeq.cpp:92-115`) + `param`/`project`
-    /// (`planeeq.cpp:122-152`): the parameterisation round-trips and the
-    /// basis spans the plane.
+    /// `isInFrontOf` (`planeeq.ipp:196-202`): the almostEqual buffer makes
+    /// an on-plane point report "in front".
     #[test]
-    fn basis_param_and_project_round_trip() {
-        let mut plane = PlaneEq::default();
-        plane.init(
-            &Vector3::new(1.0, 2.0, 3.0),
-            &Vector3::new(3.0, 2.0, 1.0),
-            &Vector3::new(2.0, 0.0, 1.0),
-        );
-        let (xdir, ydir) = plane.basis();
-        // both basis vectors are unit and lie in the plane
-        assert_almost_eq(xdir.length(), 1.0);
-        assert_almost_eq(ydir.length(), 1.0);
-        assert_almost_eq(plane.normal().dot_product(&xdir), 0.0);
-        assert_almost_eq(plane.normal().dot_product(&ydir), 0.0);
-
-        // a point on the plane projects to (x, y) and param maps it back
-        let on_plane = Vector3::new(3.0, 2.0, 1.0);
-        let projected = plane.project(&on_plane);
-        let rebuilt = plane.param(&projected);
-        assert_almost_eq(rebuilt.x, on_plane.x);
-        assert_almost_eq(rebuilt.y, on_plane.y);
-        assert_almost_eq(rebuilt.z, on_plane.z);
-
-        // param(0,0) is the plane origin: normal * d / |normal|²
-        let origin = plane.param(&Vector2::new(0.0, 0.0));
-        assert_almost_eq(plane.distance_to(&origin), 0.0);
-        assert_almost_eq(origin.dot_product(plane.normal()), plane.d());
-
-        // projected components follow the basis dot products
-        let offset = on_plane - origin;
-        assert_almost_eq(projected.x, xdir.dot_product(&offset));
-        assert_almost_eq(projected.y, ydir.dot_product(&offset));
-    }
-
-    /// `intersect` (`planeeq.cpp:24-76`): the slice line lies in both
-    /// planes; nearly-parallel planes give the zero line.
-    #[test]
-    fn intersect_cuts_a_line_both_planes_contain() {
-        let mut a = PlaneEq::default();
-        a.init(
-            &Vector3::new(0.0, 0.0, 0.0),
-            &Vector3::new(1.0, 0.0, 0.0),
-            &Vector3::new(0.0, 1.0, 0.0),
-        ); // z = 0
-        let mut b = PlaneEq::default();
-        b.init(
-            &Vector3::new(0.0, 0.0, 0.0),
-            &Vector3::new(1.0, 0.0, 0.0),
-            &Vector3::new(0.0, 0.0, 1.0),
-        ); // y = 0
-        let line = a.intersect(&b);
-        // the line's normal is unit length
-        assert!((line.normal().length() - 1.0).abs() < 1e-5);
-        // a point on the line satisfies both planes
-        let on_line2 = line.param(4.0);
-        let p3 = a.param(&on_line2);
-        assert_almost_eq(a.distance_to(&p3), 0.0);
-        assert_almost_eq(b.distance_to(&p3), 0.0);
-
-        // a plane cut by itself is nearly parallel: the zero line
-        let self_line = a.intersect(&a);
-        assert_eq!(self_line.normal(), Vector2::ZERO);
-    }
-
-    /// `isInFrontOfExact` (`planeeq.ipp:211-214`): no epsilon arm.
-    #[test]
-    fn is_in_front_of_exact_has_no_epsilon() {
+    fn is_in_front_of_allows_the_almost_equal_buffer() {
         let plane = PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 5.0);
-        // just behind the plane but within the almostEqual epsilon: in
-        // front of by the fuzzy check, behind by the exact one
-        let near_behind = Vector3::new(0.0, 0.0, 4.9999);
-        assert!(plane.is_in_front_of(&near_behind));
-        assert!(!plane.is_in_front_of_exact(&near_behind));
-        // clearly behind / clearly in front agree between the two
-        assert!(!plane.is_in_front_of_exact(&Vector3::new(0.0, 0.0, 4.0)));
-        assert!(plane.is_in_front_of_exact(&Vector3::new(0.0, 0.0, 6.0)));
+        assert!(plane.is_in_front_of(&Vector3::new(1.0, 2.0, 7.0)));
+        assert!(!plane.is_in_front_of(&Vector3::new(1.0, 2.0, 3.0)));
+        // On-plane, and within the 0.0004 buffer either side: front.
+        assert!(plane.is_in_front_of(&Vector3::new(0.0, 0.0, 5.0)));
+        assert!(plane.is_in_front_of(&Vector3::new(0.0, 0.0, 5.0 + 3e-4)));
+        assert!(plane.is_in_front_of(&Vector3::new(0.0, 0.0, 5.0 - 3e-4)));
+        // Past the buffer the strict comparison decides.
+        assert!(!plane.is_in_front_of(&Vector3::new(0.0, 0.0, 5.0 - 1e-3)));
     }
 
+    /// `basis` picks the normal's biggest axis and builds both directions on
+    /// it (`planeeq.cpp:92-115`); `param`/`project` are inverse mappings.
     #[test]
-    fn basis_is_two_orthonormal_in_plane_directions() {
-        // The z-normal plane through the origin: the largest axis is z, so
-        // xdir solves -nz/nz * nz = -1 on z with x at 1 — xdir = (1, 0, -1)
-        // before the normalise, ydir = normal × xdir.
-        let plane = PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 0.0);
+    fn basis_param_and_project_roundtrip() {
+        let plane = PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 5.0);
         let (xdir, ydir) = plane.basis();
-        assert_almost_eq(xdir.length(), 1.0);
-        assert_almost_eq(ydir.length(), 1.0);
-        assert_almost_eq(xdir.dot_product(&ydir), 0.0);
-        assert_almost_eq(xdir.dot_product(plane.normal()), 0.0);
-        assert_almost_eq(ydir.dot_product(plane.normal()), 0.0);
+        // Biggest axis is z: xdir is +x, ydir = n × xdir = +y.
+        assert_eq!(xdir, Vector3::new(1.0, 0.0, 0.0));
+        assert_eq!(ydir, Vector3::new(0.0, 1.0, 0.0));
+        // param lifts the 2D basis point onto the plane at height d.
+        let p = plane.param(Vector2::new(3.0, -2.0));
+        assert_almost_eq(p.x, 3.0);
+        assert_almost_eq(p.y, -2.0);
+        assert_almost_eq(p.z, 5.0);
+        // project brings it back.
+        let q = plane.project(&p);
+        assert_almost_eq(q.x, 3.0);
+        assert_almost_eq(q.y, -2.0);
 
-        // The x-normal plane: biMoreL[0] puts the 1 on y and the zero on z.
-        let x_plane = PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 3.0);
-        let (xdir, _ydir) = x_plane.basis();
-        assert_almost_eq(xdir.z, 0.0);
-        assert_almost_eq(xdir.dot_product(&Vector3::new(1.0, 0.0, 0.0)), 0.0);
+        // A slanted plane: biggest axis x → xdir has its slope in z.
+        let mut n = Vector3::new(2.0, 0.0, 1.0);
+        n.normalise();
+        let slanted = PlaneEq::new(n, 1.0);
+        let (sx, sy) = slanted.basis();
+        assert_almost_eq(sx.length(), 1.0);
+        assert_almost_eq(sy.length(), 1.0);
+        assert_almost_eq(sx.dot_product(&sy), 0.0);
+        let sp = slanted.param(Vector2::new(1.5, 0.5));
+        assert!(
+            slanted.distance_to(&sp).abs() < 1e-4,
+            "param lands on the plane"
+        );
+        let sq = slanted.project(&sp);
+        assert_almost_eq(sq.x, 1.5);
+        assert_almost_eq(sq.y, 0.5);
+    }
+
+    /// `intersect` (`planeeq.cpp:24-76`): the cut of two planes is a line in
+    /// the first plane's basis; the zero normal marks a parallel slice.
+    #[test]
+    fn intersect_gives_the_cut_line_and_zero_for_parallel() {
+        let ground = PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 2.0);
+        let wall = PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 3.0);
+        let line = ground.intersect(&wall);
+        // The line normal comes from project(origin + normal3D) with the
+        // un-scaled cross product, so it is (-1, 0) here with d -3: the same
+        // line as (1, 0) with d 3 (param(4) is the same point either way).
+        assert_almost_eq(line.normal().x, -1.0);
+        assert_almost_eq(line.normal().y, 0.0);
+        assert_almost_eq(line.d(), -3.0);
+        // The line param lands on both planes.
+        let p = ground.param(line.param(4.0));
+        assert_almost_eq(p.x, 3.0);
+        assert_almost_eq(p.z, 2.0);
+        assert_almost_eq(ground.distance_to(&p), 0.0);
+        assert_almost_eq(wall.distance_to(&p), 0.0);
+
+        // Parallel slices give the zero line.
+        let flat = ground.intersect(&PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 7.0));
+        assert_eq!(flat.normal(), &Vector2::ZERO);
+        assert_eq!(flat.d(), 0.0);
     }
 }
