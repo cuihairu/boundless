@@ -1828,8 +1828,7 @@ mod tests {
             "/../../docs/review/fixtures/fantasydemo_def/res/server/bw.xml"
         ))
         .expect("the xml source fixture is in the repo");
-        let xml =
-            crate::datasection::parse("bw.xml", &raw).expect("the xml source parses");
+        let xml = crate::datasection::parse("bw.xml", &raw).expect("the xml source parses");
         let mut mismatches = 0;
         compare_with_xml(&xml, &packed, "", &mut mismatches);
         assert_eq!(mismatches, 0, "every node reads back identical");
