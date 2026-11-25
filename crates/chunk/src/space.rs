@@ -943,14 +943,21 @@ impl ChunkSpace {
 
     /// `ChunkSpace::findChunkFromPoint` (`chunk_space.cpp:731-751`) plus
     /// `BaseChunkSpace::Column::findChunk` (`base_chunk_space.cpp:570-595`):
-    /// the outside chunk of the point's grid cell, displaced by any
-    /// smaller-volume inside chunk whose bounding box contains the point
-    /// (equal volume keeps the first chunk in map order). Like the reference
+    /// the focussed column's hull-tree walk — outside chunk first, then
+    /// larger hull volumes — with the bounding-box displacement as the
+    /// fallback for points whose column was never focussed (the equal
+    /// volume case keeps the first chunk in map order). Like the reference
     /// a tiny fudge is added to y so points sitting exactly on a chunk face
     /// still resolve.
     pub fn find_chunk_from_point(&self, point: &Vector3) -> Option<&Chunk> {
         let mut pt = *point;
         pt.y += 0.0001;
+        if let Some(id) = self
+            .column_at(&pt)
+            .and_then(|column| column.find_chunk(&pt, &self.chunks))
+        {
+            return self.chunks.get(&id);
+        }
         let grid_x = self.point_to_grid(pt.x);
         let grid_z = self.point_to_grid(pt.z);
         let mut winner = self.find_chunk_by_grid(grid_x, grid_z);
