@@ -122,6 +122,7 @@ pub mod hierarchical_config;
 pub mod hierarchical_config_converter;
 pub mod jit_compiler;
 pub mod material_editor;
+pub mod maya_exporter;
 pub mod model_editor;
 pub mod offline_processor;
 pub mod plugin_loader;

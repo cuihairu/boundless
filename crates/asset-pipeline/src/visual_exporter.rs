@@ -448,6 +448,254 @@ pub fn best_entry_size(vertex_num: u32) -> usize {
 }
 
 // ----------------------------------------------------------------------
+// The mesh pipeline steps, shared with the Maya exporter port
+// (`maya_exporter.rs`): the two reference files carry the same bodies.
+// ----------------------------------------------------------------------
+
+/// `VisualMesh::flipTriangleWindingOrder`: swap the second and third
+/// corners of every triangle.
+pub fn flip_triangle_winding_order(triangles: &mut [Triangle]) {
+    for tri in triangles {
+        tri.index.swap(1, 2);
+        tri.real_index.swap(1, 2);
+    }
+}
+
+/// `VisualMesh::sortTriangles`: sort by `triangleSorter`, then compact the
+/// vertex list per material run (each run renumbers from zero; a run that
+/// starts a new material forgets the previous runs' assignments). Only
+/// `index` is renumbered — `realIndex` keeps pointing at the source mesh,
+/// and the unreferenced vertices drop out.
+pub fn sort_triangles(vertices: &mut Vec<BloatVertex>, triangles: &mut Vec<Triangle>) {
+    let mut keys: Vec<(i32, i32)> = triangles
+        .iter()
+        .map(|tri| {
+            (
+                tri.material_index,
+                vertices[tri.index[0] as usize].mesh_index,
+            )
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..triangles.len()).collect();
+    order.sort_by_key(|&i| keys[i]);
+    let sorted: Vec<Triangle> = order.into_iter().map(|i| triangles[i]).collect();
+    keys.clear();
+    *triangles = sorted;
+
+    if triangles.is_empty() {
+        return;
+    }
+
+    let mut vertex_indices: Vec<i32> = vec![-1; vertices.len()];
+    let mut vs: Vec<BloatVertex> = Vec::new();
+    let mut m_index = triangles[0].material_index;
+    for tri in triangles.iter_mut() {
+        if tri.material_index != m_index {
+            m_index = tri.material_index;
+            vertex_indices.iter_mut().for_each(|v| *v = -1);
+        }
+        for slot in &mut tri.index {
+            let ind = *slot as usize;
+            if vertex_indices[ind] == -1 {
+                vertex_indices[ind] = vs.len() as i32;
+                vs.push(vertices[ind].clone());
+            }
+            *slot = vertex_indices[ind];
+        }
+    }
+    *vertices = vs;
+}
+
+/// `VisualMesh::removeDuplicateVertices` — the compiled `TC_OPTIMISATION`
+/// path: bucket by `hashKey(pos)`, `closeEnough` within a bucket, remap
+/// the triangles. (The non-optimised O(n²) scan is the reference's own
+/// dead code under the same guard and is not ported.)
+pub fn remove_duplicate_vertices(vertices: &mut [BloatVertex], triangles: &mut Vec<Triangle>) {
+    let mut map: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut remap: Vec<usize> = vec![0; vertices.len()];
+    for j1 in 0..vertices.len() {
+        let key = hash_key(&vertices[j1].pos);
+        let mut found = None;
+        if let Some(bucket) = map.get(&key) {
+            for &hashed in bucket {
+                if vertices[j1].close_enough(&vertices[hashed]) {
+                    found = Some(hashed);
+                    break;
+                }
+            }
+        }
+        match found {
+            None => {
+                map.entry(key).or_default().push(j1);
+                remap[j1] = j1;
+            }
+            Some(index) => remap[j1] = index,
+        }
+    }
+    for tri in triangles {
+        for j in 0..3 {
+            tri.index[j] = remap[tri.index[j] as usize] as i32;
+        }
+    }
+    // (sortTriangles removes the unreferenced vertices)
+}
+
+/// `VisualMesh::createPrimitiveGroups`: one `PrimitiveGroup` per material
+/// run over the sorted triangles, the index buffer in triangle order, and
+/// the 16/32-bit selection by vertex count. Marks each emitted run's
+/// material `inUse`. In mesh-particle mode the single material group hands
+/// over to `createMeshParticlePrimGroups`.
+pub fn create_primitive_groups(
+    vertices: &[BloatVertex],
+    triangles: &[Triangle],
+    materials: &mut [Material],
+    export_mode: ExportMode,
+) -> Result<(Vec<PrimitiveGroup>, Vec<u32>, usize), SaveError> {
+    let mut groups = Vec::new();
+    let mut indices = Vec::new();
+    let entry_size = best_entry_size(vertices.len() as u32);
+    if triangles.is_empty() {
+        return Ok((groups, indices, entry_size));
+    }
+
+    let mut m_index = triangles[0].material_index;
+    let mut first_vertex = triangles[0].index[0];
+    let mut last_vertex = triangles[0].index[0];
+    let mut first_triangle = 0usize;
+    let count = triangles.len();
+    for i in 0..=count {
+        let tri = if i == count {
+            &triangles[count - 1]
+        } else {
+            &triangles[i]
+        };
+        if i == count || tri.material_index != m_index {
+            groups.push(PrimitiveGroup {
+                start_index: (first_triangle * 3) as i32,
+                n_primitives: (i - first_triangle) as i32,
+                start_vertex: first_vertex,
+                n_vertices: last_vertex - first_vertex + 1,
+            });
+            first_vertex = tri.index[0];
+            last_vertex = tri.index[0];
+            first_triangle = i;
+            materials[m_index as usize].in_use = true;
+            m_index = tri.material_index;
+        }
+        if i != count {
+            indices.extend_from_slice(&[
+                tri.index[0] as u32,
+                tri.index[1] as u32,
+                tri.index[2] as u32,
+            ]);
+            first_vertex = first_vertex
+                .min(tri.index[0])
+                .min(tri.index[1])
+                .min(tri.index[2]);
+            last_vertex = last_vertex
+                .max(tri.index[0])
+                .max(tri.index[1])
+                .max(tri.index[2]);
+        }
+    }
+
+    if export_mode == ExportMode::MeshParticles {
+        create_mesh_particle_prim_groups(vertices, triangles, &mut groups)?;
+    }
+    Ok((groups, indices, entry_size))
+}
+
+/// `VisualMesh::createMeshParticlePrimGroups`: 15 more groups keyed on
+/// `meshIndex` (group 0 stays the whole mesh; 1..=15 draw the sub-meshes
+/// one by one). The final loop iteration also shifts the window — a dead
+/// update the reference performs unconditionally.
+fn create_mesh_particle_prim_groups(
+    vertices: &[BloatVertex],
+    triangles: &[Triangle],
+    groups: &mut Vec<PrimitiveGroup>,
+) -> Result<(), SaveError> {
+    if groups.len() != 1 {
+        return Err(SaveError::MeshParticleGroups);
+    }
+
+    if !triangles.is_empty() {
+        let mut first_vertex = triangles[0].index[0];
+        let mut last_vertex = first_vertex;
+        let mut m_index = vertices[first_vertex as usize].mesh_index;
+        let mut first_triangle = 0usize;
+        let count = triangles.len();
+        for i in 0..=count {
+            let tri = if i == count {
+                &triangles[count - 1]
+            } else {
+                &triangles[i]
+            };
+            if i == count || vertices[tri.index[0] as usize].mesh_index != m_index {
+                groups.push(PrimitiveGroup {
+                    start_index: (first_triangle * 3) as i32,
+                    n_primitives: (i - first_triangle) as i32,
+                    start_vertex: first_vertex,
+                    n_vertices: last_vertex - first_vertex + 1,
+                });
+                first_vertex = tri.index[0];
+                last_vertex = tri.index[0];
+                m_index = vertices[first_vertex as usize].mesh_index;
+                first_triangle = i;
+            }
+
+            first_vertex = first_vertex
+                .min(tri.index[0])
+                .min(tri.index[1])
+                .min(tri.index[2]);
+            last_vertex = last_vertex
+                .max(tri.index[0])
+                .max(tri.index[1])
+                .max(tri.index[2]);
+        }
+    }
+
+    // The MeshParticleRenderer assumes 16 groups.
+    debug_assert!(
+        groups.len() == 16,
+        "mesh particles must produce 16 primitive groups"
+    );
+    Ok(())
+}
+
+/// `VisualMesh::Material::findExistingMaterial`: the first
+/// `primitiveGroup` whose `material` carries `identifier`.
+pub fn find_existing_material<'a>(
+    identifier: &str,
+    existing_visual: Option<&'a DataSection>,
+) -> Option<&'a DataSection> {
+    let existing = existing_visual?;
+    for r in 0..existing.count_children() {
+        let render_set = existing.open_child(r).unwrap();
+        if render_set.section_name() != "renderSet" {
+            continue;
+        }
+        for g in 0..render_set.count_children() {
+            let geometry = render_set.open_child(g).unwrap();
+            if geometry.section_name() != "geometry" {
+                continue;
+            }
+            for p in 0..geometry.count_children() {
+                let prim_group = geometry.open_child(p).unwrap();
+                if prim_group.section_name() != "primitiveGroup" {
+                    continue;
+                }
+                if let Some(material) = prim_group.open_section("material")
+                    && material.read_string("identifier", "") == identifier
+                {
+                    return Some(prim_group);
+                }
+            }
+        }
+    }
+    None
+}
+
+// ----------------------------------------------------------------------
 // VisualMesh.
 // ----------------------------------------------------------------------
 
@@ -504,213 +752,30 @@ pub struct VisualMesh {
 impl VisualMesh {
     /// `flipTriangleWindingOrder`.
     pub fn flip_triangle_winding_order(&mut self) {
-        for tri in &mut self.triangles {
-            tri.index.swap(1, 2);
-            tri.real_index.swap(1, 2);
-        }
+        flip_triangle_winding_order(&mut self.triangles);
     }
 
-    /// `triangleSorter`: material first, then the mesh index of the first
-    /// vertex.
-    fn triangle_sort_key(&self, tri: &Triangle) -> (i32, i32) {
-        (
-            tri.material_index,
-            self.vertices[tri.index[0] as usize].mesh_index,
-        )
-    }
-
-    /// `sortTriangles`: sort by the sorter, then compact the vertex list
-    /// per material run (each run renumbers from zero; a run that starts a
-    /// new material forgets the previous runs' assignments). Only `index`
-    /// is renumbered — `realIndex` keeps pointing at the Max mesh, and the
-    /// unreferenced vertices drop out.
+    /// `sortTriangles` — see [`sort_triangles`].
     pub fn sort_triangles(&mut self) {
-        let mut keys: Vec<(i32, i32)> = self
-            .triangles
-            .iter()
-            .map(|tri| self.triangle_sort_key(tri))
-            .collect();
-        let mut order: Vec<usize> = (0..self.triangles.len()).collect();
-        order.sort_by_key(|&i| keys[i]);
-        let sorted: Vec<Triangle> = order.into_iter().map(|i| self.triangles[i]).collect();
-        keys.clear();
-        self.triangles = sorted;
-
-        if self.triangles.is_empty() {
-            return;
-        }
-
-        let mut vertex_indices: Vec<i32> = vec![-1; self.vertices.len()];
-        let mut vs: Vec<BloatVertex> = Vec::new();
-        let mut m_index = self.triangles[0].material_index;
-        for tri in &mut self.triangles {
-            if tri.material_index != m_index {
-                m_index = tri.material_index;
-                vertex_indices.iter_mut().for_each(|v| *v = -1);
-            }
-            for slot in &mut tri.index {
-                let ind = *slot as usize;
-                if vertex_indices[ind] == -1 {
-                    vertex_indices[ind] = vs.len() as i32;
-                    vs.push(self.vertices[ind].clone());
-                }
-                *slot = vertex_indices[ind];
-            }
-        }
-        self.vertices = vs;
+        sort_triangles(&mut self.vertices, &mut self.triangles);
     }
 
-    /// `removeDuplicateVertices` — the compiled `TC_OPTIMISATION` path:
-    /// bucket by `hashKey(pos)`, `closeEnough` within a bucket, remap the
-    /// triangles. (The non-optimised O(n²) scan is the reference's own
-    /// dead code under the same guard and is not ported.)
+    /// `removeDuplicateVertices` — see [`remove_duplicate_vertices`].
     pub fn remove_duplicate_vertices(&mut self) {
-        let mut map: HashMap<u64, Vec<usize>> = HashMap::new();
-        let mut remap: Vec<usize> = vec![0; self.vertices.len()];
-        for j1 in 0..self.vertices.len() {
-            let key = hash_key(&self.vertices[j1].pos);
-            let mut found = None;
-            if let Some(bucket) = map.get(&key) {
-                for &hashed in bucket {
-                    if self.vertices[j1].close_enough(&self.vertices[hashed]) {
-                        found = Some(hashed);
-                        break;
-                    }
-                }
-            }
-            match found {
-                None => {
-                    map.entry(key).or_default().push(j1);
-                    remap[j1] = j1;
-                }
-                Some(index) => remap[j1] = index,
-            }
-        }
-        for tri in &mut self.triangles {
-            for j in 0..3 {
-                tri.index[j] = remap[tri.index[j] as usize] as i32;
-            }
-        }
-        // (sortTriangles removes the unreferenced vertices)
+        remove_duplicate_vertices(&mut self.vertices, &mut self.triangles);
     }
 
-    /// `createPrimitiveGroups`: one `PrimitiveGroup` per material run over
-    /// the sorted triangles, the index buffer in triangle order, and the
-    /// 16/32-bit selection by vertex count. Marks each emitted run's
-    /// material `inUse`. In mesh-particle mode the single material group
-    /// hands over to [`VisualMesh::create_mesh_particle_prim_groups`].
+    /// `createPrimitiveGroups` — see [`create_primitive_groups`].
     pub fn create_primitive_groups(
         &mut self,
         settings: &ExportSettings,
     ) -> Result<(Vec<PrimitiveGroup>, Vec<u32>, usize), SaveError> {
-        let mut groups = Vec::new();
-        let mut indices = Vec::new();
-        let entry_size = best_entry_size(self.vertices.len() as u32);
-        if self.triangles.is_empty() {
-            return Ok((groups, indices, entry_size));
-        }
-
-        let mut m_index = self.triangles[0].material_index;
-        let mut first_vertex = self.triangles[0].index[0];
-        let mut last_vertex = self.triangles[0].index[0];
-        let mut first_triangle = 0usize;
-        let count = self.triangles.len();
-        for i in 0..=count {
-            let tri = if i == count {
-                &self.triangles[count - 1]
-            } else {
-                &self.triangles[i]
-            };
-            if i == count || tri.material_index != m_index {
-                groups.push(PrimitiveGroup {
-                    start_index: (first_triangle * 3) as i32,
-                    n_primitives: (i - first_triangle) as i32,
-                    start_vertex: first_vertex,
-                    n_vertices: last_vertex - first_vertex + 1,
-                });
-                first_vertex = tri.index[0];
-                last_vertex = tri.index[0];
-                first_triangle = i;
-                self.materials[m_index as usize].in_use = true;
-                m_index = tri.material_index;
-            }
-            if i != count {
-                indices.extend_from_slice(&[
-                    tri.index[0] as u32,
-                    tri.index[1] as u32,
-                    tri.index[2] as u32,
-                ]);
-                first_vertex = first_vertex
-                    .min(tri.index[0])
-                    .min(tri.index[1])
-                    .min(tri.index[2]);
-                last_vertex = last_vertex
-                    .max(tri.index[0])
-                    .max(tri.index[1])
-                    .max(tri.index[2]);
-            }
-        }
-
-        if settings.export_mode == ExportMode::MeshParticles {
-            self.create_mesh_particle_prim_groups(&mut groups)?;
-        }
-        Ok((groups, indices, entry_size))
-    }
-
-    /// `createMeshParticlePrimGroups`: 15 more groups keyed on
-    /// `meshIndex` (group 0 stays the whole mesh; 1..=15 draw the
-    /// sub-meshes one by one). The final loop iteration also shifts the
-    /// window — a dead update the reference performs unconditionally.
-    fn create_mesh_particle_prim_groups(
-        &self,
-        groups: &mut Vec<PrimitiveGroup>,
-    ) -> Result<(), SaveError> {
-        if groups.len() != 1 {
-            return Err(SaveError::MeshParticleGroups);
-        }
-
-        if !self.triangles.is_empty() {
-            let mut first_vertex = self.triangles[0].index[0];
-            let mut last_vertex = first_vertex;
-            let mut m_index = self.vertices[first_vertex as usize].mesh_index;
-            let mut first_triangle = 0usize;
-            let count = self.triangles.len();
-            for i in 0..=count {
-                let tri = if i == count {
-                    &self.triangles[count - 1]
-                } else {
-                    &self.triangles[i]
-                };
-                if i == count || self.vertices[tri.index[0] as usize].mesh_index != m_index {
-                    groups.push(PrimitiveGroup {
-                        start_index: (first_triangle * 3) as i32,
-                        n_primitives: (i - first_triangle) as i32,
-                        start_vertex: first_vertex,
-                        n_vertices: last_vertex - first_vertex + 1,
-                    });
-                    first_vertex = tri.index[0];
-                    last_vertex = tri.index[0];
-                    m_index = self.vertices[first_vertex as usize].mesh_index;
-                    first_triangle = i;
-                }
-
-                first_vertex = first_vertex
-                    .min(tri.index[0])
-                    .min(tri.index[1])
-                    .min(tri.index[2]);
-                last_vertex = last_vertex
-                    .max(tri.index[0])
-                    .max(tri.index[1])
-                    .max(tri.index[2]);
-            }
-        }
-
-        // The MeshParticleRenderer assumes 16 groups.
-        debug_assert!(
-            groups.len() == 16,
-            "mesh particles must produce 16 primitive groups"
-        );
-        Ok(())
+        create_primitive_groups(
+            &self.vertices,
+            &self.triangles,
+            &mut self.materials,
+            settings.export_mode,
+        )
     }
 
     /// The position/normal swizzle of `createVertexList`: (x, z, y), with
@@ -1090,46 +1155,12 @@ impl Material {
         prim_group: &mut DataSection,
         existing_visual: Option<&DataSection>,
     ) -> bool {
-        if let Some(material) = self.find_existing_material(identifier, existing_visual) {
+        if let Some(material) = find_existing_material(identifier, existing_visual) {
             prim_group.copy_from(material);
             true
         } else {
             false
         }
-    }
-
-    /// `findExistingMaterial`: the first `primitiveGroup` whose
-    /// `material` carries `identifier`.
-    fn find_existing_material<'a>(
-        &self,
-        identifier: &str,
-        existing_visual: Option<&'a DataSection>,
-    ) -> Option<&'a DataSection> {
-        let existing = existing_visual?;
-        for r in 0..existing.count_children() {
-            let render_set = existing.open_child(r).unwrap();
-            if render_set.section_name() != "renderSet" {
-                continue;
-            }
-            for g in 0..render_set.count_children() {
-                let geometry = render_set.open_child(g).unwrap();
-                if geometry.section_name() != "geometry" {
-                    continue;
-                }
-                for p in 0..geometry.count_children() {
-                    let prim_group = geometry.open_child(p).unwrap();
-                    if prim_group.section_name() != "primitiveGroup" {
-                        continue;
-                    }
-                    if let Some(material) = prim_group.open_section("material")
-                        && material.read_string("identifier", "") == identifier
-                    {
-                        return Some(prim_group);
-                    }
-                }
-            }
-        }
-        None
     }
 }
 
