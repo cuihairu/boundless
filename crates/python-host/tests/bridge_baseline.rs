@@ -1,10 +1,10 @@
-//! OPT-03-01-01: the Python bridge baseline measurements.
+//! OPT-03-01-01 / OPT-03-01-02: the Python bridge baseline measurements.
 //!
-//! The acceptance saves three record families — native↔Python conversion
-//! timing, cross-language callback timing, and GIL-queue occupancy —
-//! against the embedded interpreter the way the engine runs it: the
-//! main thread owns the lock from `Script::init` and the posted-task
-//! queue is drained by the thread that owns the GIL.
+//! The acceptance saves four record families — native↔Python conversion
+//! timing, cross-language callback timing, GIL-queue occupancy, and the
+//! server timer fire path — against the embedded interpreter the way the
+//! engine runs it: the main thread owns the lock from `Script::init`
+//! and the posted-task queue is drained by the thread that owns the GIL.
 //!
 //! Structural invariants are asserted on every run: every conversion
 //! round-trip must return the value it was given, every callback must
@@ -21,6 +21,8 @@
 //!     --test bridge_baseline the_python_bridge_baseline_runs_all_legs -- --exact
 //! ```
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, channel};
@@ -30,6 +32,64 @@ use python_host::capi;
 use python_host::import_paths;
 use python_host::interpreter::{InitConfig, Interpreter};
 use python_host::pyref::PyRef;
+
+// ---------------------------------------------------------------------------
+// The counting allocator (the foundation alloc_counts pattern)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// const-init: the flag and counters never allocate, so turning
+    /// tracking on inside the allocator cannot recurse.
+    static TRACKING: Cell<bool> = const { Cell::new(false) };
+    static ALLOCS: Cell<usize> = const { Cell::new(0) };
+    static BYTES: Cell<usize> = const { Cell::new(0) };
+}
+
+struct Counting;
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if TRACKING.with(Cell::get) {
+            ALLOCS.with(|c| c.set(c.get() + 1));
+            BYTES.with(|c| c.set(c.get() + layout.size()));
+        }
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+/// What one measurement window counted.
+struct Count {
+    /// The calling thread's allocation calls.
+    allocs: usize,
+    /// Their cumulative requested size.
+    bytes: usize,
+}
+
+/// Count the calling thread's allocations inside `body`. Everything the
+/// window touches runs on this thread — the tick loop, the timer fires,
+/// and the interpreter calls they make — so the count covers the whole
+/// fire path and is exactly reproducible on a given toolchain.
+fn measure<T>(body: impl FnOnce() -> T) -> (Count, T) {
+    TRACKING.with(|t| {
+        ALLOCS.with(|c| c.set(0));
+        BYTES.with(|c| c.set(0));
+        t.set(true);
+    });
+    let out = body();
+    TRACKING.with(|t| t.set(false));
+    let count = TRACKING.with(|_| Count {
+        allocs: ALLOCS.with(Cell::get),
+        bytes: BYTES.with(Cell::get),
+    });
+    (count, out)
+}
 
 /// Round-trips per conversion family.
 const CONVERT_ROUNDS: usize = 20_000;
@@ -260,7 +320,87 @@ fn temp_resource_root() -> PathBuf {
     root
 }
 
-/// `Script::init`'s config with the fixture root in the path list.
+/// Leg 4: the server timer fire path — the native→Python conversion a
+/// running cell pays on every fire of every repeating timer. `K`
+/// repeating timers are registered from script and driven by the
+/// engine tick; each fire carries `(id, userArg)` across the bridge,
+/// so the aggregate per-fire cost includes the conversion block the
+/// fire path builds. The fired count is asserted; the per-fire
+/// nanoseconds are recorded.
+fn timer_fire_leg(record: &mut Record, interpreter: &Interpreter) {
+    const TIMERS: usize = 32;
+    const TICKS: usize = 64;
+    const FIRES: usize = TIMERS * TICKS;
+
+    assert!(
+        interpreter.run_simple_string(
+            "import BigWorld\n\
+             fire_count = [0]\n\
+             def on_fire(id, userArg):\n\
+             \x20   fire_count[0] += 1\n\
+             for _ in range(32):\n\
+             \x20   BigWorld.addTimer(on_fire, 0.1, 0.1, 9)\n\
+             ",
+        ),
+        "registering the timers failed"
+    );
+
+    // One tick of 0.1s at the 10 Hz server clock advances the queue one
+    // step, so each timer fires once per tick. The tick loop is also the
+    // allocation-count window: wall-clock nanoseconds are machine and
+    // load dependent (the fleet's compile load makes them swing), and
+    // the alloc count turns out to record a boundary, not a
+    // discriminator — CPython's pymalloc serves the fire path's object
+    // allocations from its own arenas, invisible to the Rust allocator,
+    // so both fire paths count 0.00 here and the number documents where
+    // the allocations live rather than which path is cheaper.
+    let (count, elapsed) = measure(|| {
+        let started = Instant::now();
+        for _ in 0..TICKS {
+            python_host::timers::tick(0.1);
+        }
+        started.elapsed()
+    });
+
+    // Read the fired count back out of __main__ through the probe the
+    // interpreter scenarios use.
+    assert!(
+        interpreter.run_simple_string("__probe = fire_count[0]\n"),
+        "probing the fired count failed"
+    );
+    let module = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+    assert!(!module.is_null(), "fetching __main__ failed");
+    let holder = PyRef::borrowed(module);
+    let probe = unsafe { capi::PyObject_GetAttrString(holder.as_ptr(), c"__probe".as_ptr()) };
+    let probe = PyRef::from_owned(probe).expect("fetching __probe failed");
+    let fired = unsafe { capi::PyLong_AsLongLong(probe.as_ptr()) };
+    assert_eq!(
+        fired, FIRES as i64,
+        "every timer must fire exactly once per tick"
+    );
+
+    record.put("timer_fire_count", FIRES);
+    record.put(
+        "timer_fire_allocs_per_fire",
+        format!("{:.2}", count.allocs as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_bytes_per_fire",
+        format!("{:.2}", count.bytes as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_ns_per_fire",
+        format!("{:.1}", elapsed.as_nanos() as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_ticks_s",
+        format!("{:.3}", elapsed.as_secs_f64()),
+    );
+}
+
+/// `Script::init`'s config with the fixture root in the path list and
+/// the `cell` component, which carries the server timer table the fire
+/// leg drives.
 fn baseline_config() -> InitConfig {
     let root = temp_resource_root();
     let root_path = root.to_str().expect("a UTF-8 root").to_owned();
@@ -268,6 +408,7 @@ fn baseline_config() -> InitConfig {
     paths.add_res_path(&[&root_path], import_paths::COMMON_PATH);
     InitConfig {
         import_paths: paths,
+        component: "cell".to_owned(),
         ..InitConfig::default()
     }
 }
@@ -283,6 +424,7 @@ fn the_python_bridge_baseline_runs_all_legs() {
 
     conversion_leg(&mut record);
     callback_leg(&mut record, &interpreter);
+    timer_fire_leg(&mut record, &interpreter);
     gil_leg(&mut record);
 
     assert_eq!(
