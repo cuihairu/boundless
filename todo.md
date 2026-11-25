@@ -2869,7 +2869,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。他席已交付并勾行未进 main：bw14-script-host `eee8fde`+勾 `61b7880`（aoi_baseline.rs 全 shipped 栈逐 tick 接线：cross 范围列表 move_entity shuffle 确定步/AoI+vision trigger 喂 witness 更新/CreateEntity+vision 锥 28m 清晰地形/Witness::update 预算 772B/tick 密集；120 实体 10×12 格单观察者账本+tick0 创建爆发）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -4433,7 +4433,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。他席已交付并勾行未进 main：bw14-script-host `eee8fde`+勾 `61b7880`（aoi_baseline.rs 全 shipped 栈逐 tick 接线：cross 范围列表 move_entity shuffle 确定步/AoI+vision trigger 喂 witness 更新/CreateEntity+vision 锥 28m 清晰地形/Witness::update 预算 772B/tick 密集；120 实体 10×12 格单观察者账本+tick0 创建爆发）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -5958,7 +5958,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。他席已交付并勾行未进 main：bw14-script-host `eee8fde`+勾 `61b7880`（aoi_baseline.rs 全 shipped 栈逐 tick 接线：cross 范围列表 move_entity shuffle 确定步/AoI+vision trigger 喂 witness 更新/CreateEntity+vision 锥 28m 清晰地形/Witness::update 预算 772B/tick 密集；120 实体 10×12 格单观察者账本+tick0 创建爆发）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -7483,7 +7483,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。他席已交付并勾行未进 main：bw14-script-host `eee8fde`+勾 `61b7880`（aoi_baseline.rs 全 shipped 栈逐 tick 接线：cross 范围列表 move_entity shuffle 确定步/AoI+vision trigger 喂 witness 更新/CreateEntity+vision 锥 28m 清晰地形/Witness::update 预算 772B/tick 密集；120 实体 10×12 格单观察者账本+tick0 创建爆发）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -9047,7 +9047,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。他席已交付并勾行未进 main：bw14-script-host `eee8fde`+勾 `61b7880`（aoi_baseline.rs 全 shipped 栈逐 tick 接线：cross 范围列表 move_entity shuffle 确定步/AoI+vision trigger 喂 witness 更新/CreateEntity+vision 锥 28m 清晰地形/Witness::update 预算 772B/tick 密集；120 实体 10×12 格单观察者账本+tick0 创建爆发）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -10572,7 +10572,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。他席已交付并勾行未进 main：bw14-script-host `eee8fde`+勾 `61b7880`（aoi_baseline.rs 全 shipped 栈逐 tick 接线：cross 范围列表 move_entity shuffle 确定步/AoI+vision trigger 喂 witness 更新/CreateEntity+vision 锥 28m 清晰地形/Witness::update 预算 772B/tick 密集；120 实体 10×12 格单观察者账本+tick0 创建爆发）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
