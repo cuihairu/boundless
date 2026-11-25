@@ -2808,9 +2808,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。`6b6cc9c` 三面基线齐（main=`8084132`）：
+  - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
+  - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
+  - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
+  - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
+  - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
+  - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
 
 ### OPT-02-01 网络基线
 
@@ -4381,9 +4387,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。`6b6cc9c` 三面基线齐（main=`8084132`）：
+  - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
+  - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
+  - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
+  - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
+  - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
+  - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
 
 ### OPT-02-01 网络基线
 
@@ -5915,9 +5927,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。`6b6cc9c` 三面基线齐（main=`8084132`）：
+  - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
+  - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
+  - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
+  - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
+  - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
+  - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
 
 ### OPT-02-01 网络基线
 
@@ -7449,9 +7467,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。`6b6cc9c` 三面基线齐（main=`8084132`）：
+  - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
+  - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
+  - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
+  - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
+  - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
+  - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
 
 ### OPT-02-01 网络基线
 
@@ -9022,9 +9046,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。`6b6cc9c` 三面基线齐（main=`8084132`）：
+  - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
+  - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
+  - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
+  - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
+  - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
+  - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
 
 ### OPT-02-01 网络基线
 
@@ -10556,9 +10586,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。`6b6cc9c` 三面基线齐（main=`8084132`）：
+  - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
+  - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
+  - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。`ebbde2b` 双面交付（main=`e478d90`）：
+  - 资源缓存热路径零分配：`crates/resources/src/data_section_cache.rs` 链指针原是 `Option<String>` 路径拷贝（每次重链 2-6 次 String 分配）→ 槽位 arena（`Vec<CacheNode>` 整数双向链 + 侵入式自由链；`add` 一次性付两份 String——map key + 槽内 name 拷贝——稳态 relink 机器全零分配；section 在 entry 释放时 drop，与参照删节点同语义）。TDD 红先证旧实现逐操作计数（find 中段 6 次/36 B、尾段 5/30、purgeLRU 3/18、remove 中/尾 3/18、remove 头 2/12、head 命中/miss/原地重加 0），新实现 `crates/resources/tests/data_section_cache_alloc.rs` 全零断言 3 测绿，模块 llvm-cov 100.00%（380/380 行）；「复跑失效夹具」随 `cargo test -p resources` 222 全绿一并完成（multi_file_system 目录列举缓存失效 + data_section_cache 七测同套）。
+  - BinaryStream 64 字节预留：`crates/foundation/src/stream.rs` 手写 `Default` = `Vec::with_capacity(64)`（参照 `MemoryOStream( int size = 64 )`，`lib/cstdmf/memory_stream.hpp`——参照默认构造即预留，`new()`/`from_u32_le` 同享；`from_slice` 读流包已有内存不预留）。红先证旧实现 61 字节小写 2 次分配，新实现 1 次/64 B；encode_mixed_payload 29→26 次（26,563→26,507 B）；`cargo test -p foundation` 228+10 绿（405 处 `BinaryStream::new()` 调用点无回归），clippy 净。
+  - 加载峰值 A/B（bots 生成器，`LOAD_CLIENTS=4`/`LOAD_DURATION=2`，main `33e030a` ± 本 commit 双临时 worktree，3 轮取中位）：steady-move 3,216→3,456、login-hurricane 3,284→3,152、dense-aoi 3,248→3,168 KiB——差异全在 ±150-200 KiB 轮间摆幅内，生成器峰值 RSS 噪声内不变（分配数工作对离线面足迹本就无感）；A/B 表落 `docs/perf-baseline-2026-11-24.md` OPT-01-01-03 节。
 
 ### OPT-02-01 网络基线
 
