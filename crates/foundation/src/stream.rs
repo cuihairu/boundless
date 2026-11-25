@@ -75,6 +75,22 @@ impl BinaryStream {
         Self::default()
     }
 
+    /// An empty stream with room for `capacity` written bytes, so a writer
+    /// that knows its payload size allocates once instead of growing.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(capacity),
+            read: 0,
+            error: false,
+        }
+    }
+
+    /// Consume the stream into the bytes written so far, without the final
+    /// `as_bytes().to_vec()` copy a collected payload would otherwise pay.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.buf
+    }
+
     /// Create a stream pre-filled with a fixed-width value.
     pub fn from_u32_le(value: u32) -> Self {
         let mut s = Self::default();
@@ -1203,5 +1219,15 @@ mod original_fixtures {
         assert_eq!(s.read_blob_raw(4), Err(StreamError::Truncated));
         assert!(s.has_error());
         assert_eq!(s.remaining(), 0);
+    }
+
+    #[test]
+    fn with_capacity_and_into_bytes_move_the_buffer_without_a_copy() {
+        let mut s = BinaryStream::with_capacity(16);
+        s.write_bytes(&decode_hex("0102"));
+        let bytes = s.into_bytes();
+        assert_eq!(bytes, vec![1, 2]);
+        // The moved-out buffer keeps its reservation (no growth paid).
+        assert!(bytes.capacity() >= 16);
     }
 }
