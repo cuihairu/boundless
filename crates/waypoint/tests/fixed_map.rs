@@ -566,48 +566,41 @@ fn the_navigator_answers_the_reference_findpath_probes() {
     // the way to B.  `saveWayPath` runs `smoothPath` before
     // `removeDuplicates` (navigator_cache.cpp:38), and the funnel rebuilds
     // every state through the guess ctor `NavLoc( navLoc, newPoint )`
-    // (navloc.cpp:60, `point.y += 0.01`), so the reference's FPOK y carries
-    // that lift.  The port defers that face ("Registered boundary
-    // (smoothing face deferred)", chunk_waypoint_state_path.rs), so its next
-    // state is the unsmoothed A* state point: same set, same waypoint, same
-    // x/z (the funnel's first corner happens to sit on A1's own state point
-    // in x/z), y unlifted.  The funnel lands with the path-quality face that
-    // first needs it.
+    // (navloc.cpp:60, `point.y += 0.01`), so the FPOK y carries that lift.
     let navigator = Navigator::default();
     let src = loc(a, 0, 0.1, 0.41, 0.25);
     let dst = loc(b, 0, 0.75, 0.41, 0.2);
     let (found, next, act) = answer(&navigator, &src, &dst);
     assert!(found, "FPOK CROSS");
     assert!(
-        point_near(next.point(), 0.2, 1.0, 0.5),
-        "reference 1.01, port unlifted: {:?}",
+        point_near(next.point(), 0.2, 1.01, 0.5),
+        "{:?}",
         next.point()
     );
     assert_eq!(next.waypoint(), 2);
     assert!(Rc::ptr_eq(next.p_set().unwrap(), a));
     assert!(!act, "the reference's act flag stays 0");
 
-    // `saveWayPath` line 1 (`wayPath_.init( astar )`) with the funnel
-    // omitted: the cached path is the A* chain sans its start state, so
-    // it answers the XPATH tail verbatim. The funnel would have re-shaped
-    // exactly these points (and lifted their y).
+    // The smoothed cached path: the funnel's corner points with the maxY
+    // chain lifting each onto the tallest state they skip over, the last
+    // entry the crossing state into B's south strip.
     let cached = navigator.get_cached_waypoint_path();
     assert_eq!(cached.len(), 3, "the saved path keeps all four states");
-    assert!(point_near(cached[0], 0.2, 1.0, 0.5));
-    assert!(point_near(cached[1], 0.3, 0.6, 0.5));
-    assert!(point_near(cached[2], 0.5, 0.6, 0.366667));
+    assert!(point_near(cached[0], 0.2, 1.01, 0.5), "{cached:?}");
+    assert!(point_near(cached[1], 0.3, 1.01, 0.5), "{cached:?}");
+    assert!(point_near(cached[2], 0.5, 0.61, 0.366667), "{cached:?}");
 
     // FPOK CROSSR: the exact repeat answers the same off the cached path.
     let (found, next, _) = answer(&navigator, &src, &dst);
     assert!(found, "FPOK CROSSR");
-    assert!(point_near(next.point(), 0.2, 1.0, 0.5));
+    assert!(point_near(next.point(), 0.2, 1.01, 0.5));
     assert_eq!(next.waypoint(), 2);
 
     // FPOK HOLE (0.2,1.01,0.5) wp2: the slope detour's first hop.
     let hole_dst = loc(a, 1, 0.4, 0.41, 0.25);
     let (found, next, _) = answer(&navigator, &src, &hole_dst);
     assert!(found, "FPOK HOLE");
-    assert!(point_near(next.point(), 0.2, 1.0, 0.5));
+    assert!(point_near(next.point(), 0.2, 1.01, 0.5));
     assert_eq!(next.waypoint(), 2);
     assert!(Rc::ptr_eq(next.p_set().unwrap(), a));
 
@@ -616,7 +609,7 @@ fn the_navigator_answers_the_reference_findpath_probes() {
     let holer_dst = loc(a, 0, 0.1, 0.41, 0.25);
     let (found, next, _) = answer(&navigator, &holer_src, &holer_dst);
     assert!(found, "FPOK HOLER");
-    assert!(point_near(next.point(), 0.3, 1.0, 0.5));
+    assert!(point_near(next.point(), 0.3, 1.01, 0.5));
     assert_eq!(next.waypoint(), 2);
 
     // FPOK OBST (0.65,0.61,0.4) wp0 set1: around the obstacle via the
@@ -625,7 +618,7 @@ fn the_navigator_answers_the_reference_findpath_probes() {
     let obst_dst = loc(b, 3, 0.925, 0.41, 0.5);
     let (found, next, _) = answer(&navigator, &obst_src, &obst_dst);
     assert!(found, "FPOK OBST");
-    assert!(point_near(next.point(), 0.65, 0.6, 0.4));
+    assert!(point_near(next.point(), 0.65, 0.61, 0.4));
     assert_eq!(next.waypoint(), 0);
     assert!(Rc::ptr_eq(next.p_set().unwrap(), b));
 
@@ -658,7 +651,9 @@ fn the_navigator_answers_the_reference_findfullpath_probes() {
     };
 
     // FFP HOLE: the detour's three points — the slope corner, A0e's
-    // centre — then the destination.
+    // centre — then the destination. The funnel's maxY chain lifts both
+    // corners onto the slope (the tallest state each skips), the guess
+    // ctor adding its +0.01.
     let navigator = Navigator::default();
     let src = loc(a, 0, 0.1, 0.41, 0.25);
     let dst = loc(a, 1, 0.4, 0.41, 0.25);
@@ -667,11 +662,11 @@ fn the_navigator_answers_the_reference_findfullpath_probes() {
     assert_eq!(
         path,
         vec![
-            Vector3::new(0.2, 1.0, 0.5),
-            Vector3::new(0.3, 0.6, 0.5),
+            Vector3::new(0.2, 1.01, 0.5),
+            Vector3::new(0.3, 1.01, 0.5),
             Vector3::new(0.4, 0.6, 0.25),
         ],
-        "the three detour states plus the destination — the pushed \
+        "the funnel-shaped detour plus the destination — the pushed \
          destination is the clipped point (clip's makeMaxHeight tail \
          lifts y to the waypoint's max height, the 06-01 quirk)"
     );
@@ -685,9 +680,9 @@ fn the_navigator_answers_the_reference_findfullpath_probes() {
     assert_eq!(
         path,
         vec![
-            Vector3::new(0.2, 1.0, 0.5),
-            Vector3::new(0.3, 0.6, 0.5),
-            Vector3::new(0.5, 0.6, 0.36666667),
+            Vector3::new(0.2, 1.01, 0.5),
+            Vector3::new(0.3, 1.01, 0.5),
+            Vector3::new(0.5, 0.61, 0.36666667),
             Vector3::new(0.75, 0.6, 0.2),
         ]
     );
@@ -700,8 +695,8 @@ fn the_navigator_answers_the_reference_findfullpath_probes() {
     assert_eq!(
         path,
         vec![
-            Vector3::new(0.65, 0.6, 0.6),
-            Vector3::new(0.85, 0.6, 0.6),
+            Vector3::new(0.65, 0.61, 0.6),
+            Vector3::new(0.85, 0.61, 0.6),
             Vector3::new(0.925, 0.6, 0.5),
         ]
     );

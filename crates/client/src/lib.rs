@@ -65,6 +65,7 @@ pub mod focus;
 pub mod frame;
 pub mod local_entity;
 pub mod movement_filter;
+pub mod navigation;
 pub mod picker;
 pub mod player;
 pub mod render;

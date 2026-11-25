@@ -3,11 +3,9 @@
 //! set path. `findWayPath`/`findWaySetPath` are the cache-hit tests
 //! (`matches`); the saves run after a fresh search.
 //!
-//! Registered boundary (smoothing face deferred, see
-//! `chunk_waypoint_state_path`): the reference's `saveWayPath` also calls
-//! `smoothPath` between `init` and `removeDuplicates`; in this lane's
-//! truth world every way path is 2–3 states and `smoothPath` early-returns
-//! untouched, so the saved paths are identical without it.
+//! The way-path save runs the reference's full sequence: `init`, then
+//! `smoothPath` (the string-pulling funnel — its `src`/`dst` feeding is
+//! why the reference signature carries them), then `removeDuplicates`.
 
 use super::astar::AStar;
 use super::chunk_waypoint_set_state::ChunkWPSetState;
@@ -26,18 +24,18 @@ pub struct NavigatorCache {
 }
 
 impl NavigatorCache {
-    /// `saveWayPath` (`navigator_cache.cpp:31-41`): initialise from the
-    /// unspoilt search, then dedupe. The `smoothPath` call sits deferred
-    /// between the two (see the module header) — its `src`/`dst` feeding
-    /// is why the reference signature carries them.
+    /// `saveWayPath` (`navigator_cache.cpp:31-51`): initialise from the
+    /// unspoilt search, string-pull, then dedupe. The reference discards
+    /// `smoothPath`'s return value — a failed smoothing leaves the
+    /// initialised path standing.
     pub fn save_way_path(
         &mut self,
         astar: &AStar<ChunkWaypointState>,
-        _src: &ChunkWaypointState,
-        _dst: &ChunkWaypointState,
+        src: &ChunkWaypointState,
+        dst: &ChunkWaypointState,
     ) {
         self.way_path.init(astar);
-        // wayPath_.smoothPath( astar, src, dst ) — deferred.
+        let _ = self.way_path.smooth_path(astar, src, dst);
         self.way_path.remove_duplicates();
         debug_assert!(self.way_path.is_valid());
     }

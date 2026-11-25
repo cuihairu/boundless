@@ -66,10 +66,12 @@ entitydef = { path = "crates/entitydef" }
 db = { path = "crates/db" }
 db-postgres = { path = "crates/db-postgres" }
 scene = { path = "crates/scene" }
-# chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
+# The chunk space faces (BW-10-07-04): the client's findDropPoint /
+# navigatePathPoints query faces run the obstacle sweep and the
+# waypoint walk over it.
+chunk = { path = "crates/chunk" }
 # The collision faces (world triangles, BSP trees, portal pass-through,
-# quad trees); the chunk space obstacle sweep (BW-10-07-04) is the first
-# consumer.
+# quad trees); the chunk space obstacle sweep is the first consumer.
 physics = { path = "crates/physics" }
 python-host = { path = "crates/python-host" }
 # The watcher path tree (BW-12-01); load's bots command callables are its
