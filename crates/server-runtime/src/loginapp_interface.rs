@@ -41,7 +41,7 @@ use foundation::stream::BinaryStream;
 use mercury::bundle_dispatch::dispatch_messages;
 use mercury::endpoint::Address;
 use mercury::event_dispatcher::EventDispatcher;
-use mercury::interface_element::{FIXED_LENGTH_MESSAGE, VARIABLE_LENGTH_MESSAGE};
+use mercury::interface_element::{FIXED_LENGTH_MESSAGE, InterfaceElement, VARIABLE_LENGTH_MESSAGE};
 use mercury::interface_minder::InterfaceMinder;
 use mercury::interface_table::InterfaceTable;
 use mercury::interfaces::InputMessageHandler;
@@ -49,6 +49,7 @@ use mercury::misc::Reason;
 use mercury::network_interface::{InterfaceType, NetworkInterface};
 use mercury::packet::{HEADER_SIZE, Packet, flags};
 use mercury::packet_receiver::PacketSink;
+use mercury::request_manager::RequestManager;
 use mercury::udp_bundle::{ReliableType, UdpBundle};
 use mercury::unpacked_message_header::UnpackedMessageHeader;
 use platform::socket;
@@ -56,7 +57,8 @@ use resources::bwresource::current_uid;
 
 use crate::config::BwConfig;
 use crate::loginapp_login::{
-    ChallengeResponseHandler, LoginFaces, LoginFacesConfig, LoginRequestHandler, NoLogOnForward,
+    ChallengeResponseHandler, DbAppForward, LogOnForward, LoginFaces, LoginFacesConfig,
+    LoginRequestHandler,
 };
 
 /// `PORT_LOGIN` (`lib/network/portmap.hpp:7`), the login interface's
@@ -181,6 +183,14 @@ impl LoginAppInterface {
     pub fn faces(&self) -> &Rc<LoginFaces> {
         &self.faces
     }
+
+    /// `LoginIntInterface::notifyDBAppAlpha` (loginapp.cpp:516-521): the
+    /// DBAppMgr's notice of which DBApp is the alpha. The faces log it and
+    /// open the ready gate, and the DBApp leg then has a destination to
+    /// send its `logOn` requests to.
+    pub fn notify_db_app_alpha(&self, addr: &Address) {
+        self.faces.notify_db_app_alpha(addr);
+    }
 }
 
 /// The `LoginApp` constructor's external half (loginapp.cpp:114-135):
@@ -199,19 +209,32 @@ pub fn open(
 ) -> Rc<LoginAppInterface> {
     let (interface, _receiver) = NetworkInterface::new_on_dispatcher(
         InterfaceType::External,
-        dispatcher,
+        Rc::clone(&dispatcher),
         config.external_port(),
         &config.external_interface,
     );
 
     let table = Rc::new(InterfaceTable::new());
     let users_count = Rc::new(Cell::new(0));
+
+    // Every reference interface owns a request manager and serves
+    // `InterfaceElement::REPLY` on it (network_interface.cpp:124, 147).
+    // The port keeps those off the constructor, so the interface that
+    // makes the DBApp request takes them here -- without the manager the
+    // answer a DBApp sends back has nowhere to route.
+    let manager = Rc::new(RequestManager::new(true, Rc::clone(&dispatcher)));
+    interface.set_request_manager(Some(Rc::clone(&manager)));
+
+    // The DBApp leg holds the faces by weak handle, so the faces are
+    // built first and handed over here.
+    let forward = Rc::new(DbAppForward::new(&interface));
     let faces = Rc::new(LoginFaces::new(
         faces_config,
         Rc::downgrade(&interface),
         Rc::clone(&users_count),
-        Rc::new(NoLogOnForward),
+        Rc::clone(&forward) as Rc<dyn LogOnForward>,
     ));
+    forward.set_faces(&faces);
     let probe = Rc::new(ProbeHandler {
         log_probes: config.log_probes,
         allow_probe: config.allow_probe,
@@ -224,6 +247,15 @@ pub fn open(
         Some(Rc::new(ChallengeResponseHandler(Rc::clone(&faces)))),
     );
     minder.register_with_interface(&table);
+
+    // The reply element serves the request manager itself, so a DBApp's
+    // answer to the `logOn` request finds its pending order. The table
+    // owns the manager's handler slot, which is what keeps the manager
+    // alive.
+    table.serve(
+        &InterfaceElement::reply(),
+        Some(Rc::clone(&manager) as Rc<dyn InputMessageHandler>),
+    );
 
     // The off-channel datagrams reach the table through this sink; the
     // interface keeps it until the interface itself dies.
@@ -1090,5 +1122,112 @@ mod tests {
         });
         assert_eq!(login.faces().num_login_failures(), 0);
         assert_eq!(login.faces().users_count(), 0);
+    }
+
+    /// The DBApp request leg closes the loop over the real datagram path:
+    /// `notifyDBAppAlpha` names the alpha and opens the ready gate, an
+    /// accepted login leaves as a `DBAppInterface::logOn` request on the
+    /// wire, and the DBApp's answer routes back through the request
+    /// manager to the client that has been waiting.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_dbapp_request_leg_reaches_the_wire_and_its_answer_routes_back() {
+        let config = LoginAppConfig {
+            external_port: 0,
+            external_interface: "127.0.0.1".to_string(),
+            allow_probe: false,
+            log_probes: true,
+            should_offset_external_port_by_uid: false,
+        };
+        let mut faces_config = crate::loginapp_login::LoginFacesConfig::new();
+        faces_config.gate.allow_login = true;
+        let dispatcher = Rc::new(EventDispatcher::new());
+        let login = open(&config, faces_config, Rc::clone(&dispatcher));
+        check(&login).expect("the interface binds on an ephemeral port");
+
+        // The alpha stands on a plain socket, the way a DBApp would.
+        let dbapp = client_socket();
+        let dbapp_addr = Address::new(
+            platform::socket::inet_aton("127.0.0.1").expect("loopback parses"),
+            platform::socket::htons(dbapp.local_addr().expect("dbapp port").port()),
+        );
+        login.notify_db_app_alpha(&dbapp_addr);
+        assert!(login.faces().db_ready(), "registration opens the gate");
+        assert_eq!(login.faces().db_app_alpha(), dbapp_addr);
+
+        // A login that passes every gate.
+        let host_port = socket::ntohs(login.interface().address().port);
+        let client = client_socket();
+        let mut params = crate::loginapp::LogOnParams::with_credentials("user", "pw", "key");
+        params.set_nonce(7);
+        let mut body = BinaryStream::new();
+        crate::loginapp::ClientServerProtocolVersion::current().write_to_stream(&mut body);
+        params.add_to_stream(&mut body, crate::loginapp::LOG_ON_PARAMS_PASS_THRU);
+        client
+            .send_to(
+                &login_request_datagram(0, body.as_bytes()),
+                ("127.0.0.1", host_port),
+            )
+            .expect("send the login");
+        assert!(
+            dispatcher.poller().process_pending_events(0.1) >= 1,
+            "the login surfaced through the poller"
+        );
+
+        // The alpha reads the request: the element id, the reserved reply
+        // id in the preamble, and the footer pointing at the frame.
+        let request = recv(&dbapp).expect("the request leaves on the wire");
+        assert_eq!(
+            u16::from_le_bytes(request[0..2].try_into().unwrap())
+                & mercury::packet::flags::HAS_REQUESTS,
+            mercury::packet::flags::HAS_REQUESTS,
+            "the request flag"
+        );
+        assert_eq!(
+            request[2],
+            crate::db_login::DB_APP_LOG_ON_ELEMENT_ID,
+            "the logOn element"
+        );
+        let reply_id = i32::from_le_bytes(request[5..9].try_into().unwrap());
+        assert_ne!(reply_id, 0, "startRequest reserved a reply id");
+
+        // The DBApp answers off its own socket, so the reply's source is
+        // the pending request's address; the frame answers `reply_id` and
+        // carries a failure status with its text.
+        let mut payload = Vec::new();
+        payload.push(crate::loginapp::LogOnStatus::LoginRejectedInvalidPassword as u8);
+        let mut text = BinaryStream::new();
+        text.write_string("Database says no")
+            .expect("write the text");
+        payload.extend_from_slice(text.as_bytes());
+
+        let mut answer = Vec::new();
+        answer.extend_from_slice(&0u16.to_le_bytes());
+        answer.push(REPLY_MESSAGE_IDENTIFIER);
+        answer.extend_from_slice(&((payload.len() as u32 + 4).to_le_bytes()));
+        answer.extend_from_slice(&reply_id.to_le_bytes());
+        answer.extend_from_slice(&payload);
+        dbapp
+            .send_to(&answer, ("127.0.0.1", host_port))
+            .expect("send the answer");
+        assert!(
+            dispatcher.poller().process_pending_events(0.1) >= 1,
+            "the answer surfaced through the poller"
+        );
+
+        // The waiting client gets the DBApp's verdict under its own
+        // original reply id.
+        let reply = recv(&client).expect("the DBApp verdict routes back");
+        let (routed_id, reply_body) = reply_frame(&reply);
+        assert_eq!(routed_id, 7, "the client's original reply id");
+        assert_eq!(
+            reply_body[0],
+            crate::loginapp::LogOnStatus::LoginRejectedInvalidPassword as u8
+        );
+        let mut routed_text = BinaryStream::from_slice(&reply_body[1..]);
+        assert_eq!(
+            routed_text.read_string().ok().as_deref(),
+            Some("Database says no")
+        );
     }
 }

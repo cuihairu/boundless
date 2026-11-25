@@ -22,10 +22,12 @@
 //! ([`LoginFaces::db_reply`] / [`LoginFaces::db_no_reply`] are
 //! `DatabaseReplyHandler::handleMessage` / `handleException`
 //! (`server/loginapp/database_reply_handler.cpp`)). The DBApp request leg
-//! itself is the [`LogOnForward`] seam standing in for
-//! `dbBundle.startRequest( DBAppInterface::logOn, pDBHandler ) +
-//! dbAppAlpha().send()`; the production sink is [`NoLogOnForward`] until the
-//! DBApp interface face lands.
+//! itself is the [`LogOnForward`] seam: the production sink
+//! [`DbAppForward`] bundles the `DBAppInterface::logOn` request
+//! (`dbBundle.startRequest( DBAppInterface::logOn, pDBHandler ) +
+//! dbAppAlpha().send()`, `loginapp.cpp:1024-1029`) and routes the answer
+//! back through [`DbReplyHandler`]; [`NoLogOnForward`] remains as the
+//! dead-link stand-in for tests without a wire.
 //!
 //! DEBUG-severity reference logs are omitted (they are silent under the
 //! default message severity threshold); `loginStats_` counters and the
@@ -37,15 +39,17 @@ use std::rc::{Rc, Weak};
 
 use foundation::stream::BinaryStream;
 use mercury::endpoint::Address;
-use mercury::interfaces::InputMessageHandler;
+use mercury::interfaces::{InputMessageHandler, ReplyMessageHandler};
 use mercury::misc::ReplyID;
 use mercury::network_interface::NetworkInterface;
-use mercury::udp_bundle::{ReliableType, UdpBundle};
+use mercury::nub_exception::NubException;
+use mercury::udp_bundle::{DEFAULT_REQUEST_TIMEOUT, ReliableType, UdpBundle};
 use mercury::unpacked_message_header::UnpackedMessageHeader;
 
 use crate::config::BwConfig;
 use crate::db_login::{
-    DB_NO_REPLY, DbReplyOutcome, IP_BAN_MESSAGE, SystemOverload, handle_db_reply,
+    DB_NO_REPLY, DbReplyOutcome, IP_BAN_MESSAGE, SystemOverload, db_app_log_on_element,
+    handle_db_reply, write_logon_request,
 };
 use crate::login_challenge::{
     ChallengeAction, ChallengeFactories, ChallengeResponseOutcome, LoginChallengeState,
@@ -133,15 +137,15 @@ impl Default for LoginFacesConfig {
 /// The DBApp leg seam: `dbBundle << source << *pParams;
 /// dbAppAlpha().send()` (`loginapp.cpp:1024-1029`).
 ///
-/// Until the DBApp interface face lands, the production sink is
-/// [`NoLogOnForward`], which drops the request exactly the way a dead DBApp
+/// The production sink [`DbAppForward`] bundles the request onto the wire;
+/// [`NoLogOnForward`] drops it, the way a dead DBApp
 /// link would: no reply ever reaches the client.
 pub trait LogOnForward {
     /// Hand one accepted login to the DBApp leg.
     fn send_logon(&self, source: ServerAddress, params: LogOnParams);
 }
 
-/// The production stand-in while the DBApp face is unported.
+/// The dead-link stand-in: a sink that drops every request.
 #[derive(Default)]
 pub struct NoLogOnForward;
 
@@ -159,11 +163,153 @@ impl LogOnForward for RecordingLogOnForward {
     }
 }
 
+/// `DatabaseReplyHandler` (`server/loginapp/database_reply_handler.hpp`)
+/// as a Mercury reply handler: the object a `DBAppInterface::logOn`
+/// request carries so its answer comes back. The reference constructs one
+/// per attempt holding the client address, channel, reply id and params
+/// snapshot; the port keeps those facts in the faces' `in_flight`
+/// registry, so this handler only carries the client address and routes
+/// every delivery into the faces.
+pub struct DbReplyHandler {
+    /// The faces the attempt was accepted by; weak so a request outliving
+    /// its LoginApp cannot pin it.
+    faces: Weak<LoginFaces>,
+    /// `clientAddr_`: the client the attempt came from.
+    client_addr: ServerAddress,
+}
+
+impl DbReplyHandler {
+    /// The client address as the wire sees it.
+    fn address(&self) -> Address {
+        Address {
+            ip: self.client_addr.ip,
+            port: self.client_addr.port,
+            salt: self.client_addr.salt,
+        }
+    }
+}
+
+impl ReplyMessageHandler for DbReplyHandler {
+    /// `handleMessage`: the DBApp answered; decode it and reply to the
+    /// client.
+    fn handle_message(
+        &self,
+        _source: &Address,
+        _header: &UnpackedMessageHeader,
+        data: &mut BinaryStream,
+        _arg: usize,
+    ) {
+        if let Some(faces) = self.faces.upgrade() {
+            faces.db_reply(&self.address(), data);
+        }
+    }
+
+    /// `handleException`: no reply came back. The reference reports the
+    /// overload failure first, then the WARNING with the reason
+    /// (`database_reply_handler.cpp:165-172`).
+    fn handle_exception(&self, exception: &NubException, _arg: usize) {
+        if let Some(faces) = self.faces.upgrade() {
+            faces.db_no_reply(&self.address());
+        }
+        eprintln!(
+            "DatabaseReplyHandler: got an exception ({})",
+            exception.reason().to_string()
+        );
+    }
+
+    /// `handleShuttingDown`: the request died with Mercury, not with the
+    /// DBApp; the attempt is dropped silently
+    /// (`database_reply_handler.cpp:175-179`).
+    fn handle_shutting_down(&self, _exception: &NubException, _arg: usize) {
+        if let Some(faces) = self.faces.upgrade() {
+            faces.db_shutting_down(&self.address());
+        }
+    }
+}
+
+/// The production DBApp leg (the `dbAppAlpha_` member,
+/// `loginapp.hpp:117`): the accepted login goes out as a
+/// `DBAppInterface::logOn` request on the bound interface, carrying a
+/// [`DbReplyHandler`] with the client address so the DBApp's answer finds
+/// its way back.
+///
+/// `dbAppAlpha_.addr()` starts unset; [`LoginFaces::notify_db_app_alpha`]
+/// records it, exactly as the reference's `notifyDBAppAlpha`
+/// (`loginapp.cpp:516-521`) points the alpha's channel owner at the
+/// address and its channel then establishes.
+pub struct DbAppForward {
+    /// The interface the request datagrams leave on; weak so the faces
+    /// (which hold this sink) cannot pin the interface through it.
+    interface: Weak<NetworkInterface>,
+    /// The faces, for the alpha address and the reply routing; handed over
+    /// by [`DbAppForward::set_faces`] once they exist.
+    faces: RefCell<Weak<LoginFaces>>,
+}
+
+impl DbAppForward {
+    /// Constructor over a live interface.
+    pub fn new(interface: &Rc<NetworkInterface>) -> Self {
+        Self {
+            interface: Rc::downgrade(interface),
+            faces: RefCell::new(Weak::new()),
+        }
+    }
+
+    /// Hand the sink the faces it serves; called once by the interface
+    /// `open`, after the faces exist.
+    pub fn set_faces(&self, faces: &Rc<LoginFaces>) {
+        *self.faces.borrow_mut() = Rc::downgrade(faces);
+    }
+}
+
+impl LogOnForward for DbAppForward {
+    /// `dbBundle.startRequest( DBAppInterface::logOn, pDBHandler );
+    /// dbBundle << source << *pParams; dbAppAlpha().send()`
+    /// (`loginapp.cpp:1024-1029`).
+    fn send_logon(&self, source: ServerAddress, params: LogOnParams) {
+        let Some(interface) = self.interface.upgrade() else {
+            return;
+        };
+        let Some(faces) = self.faces.borrow().upgrade() else {
+            return;
+        };
+        let alpha = faces.db_app_alpha();
+        if alpha.is_none() {
+            // No alpha has registered, so the ready gate cannot have let
+            // this attempt through; only a direct send reaches here. Drop
+            // the request the way a dead DBApp link would.
+            return;
+        }
+
+        let mut bundle = UdpBundle::new(0);
+        bundle.start_request(
+            &db_app_log_on_element(),
+            Rc::new(DbReplyHandler {
+                faces: Rc::downgrade(&faces),
+                client_addr: source,
+            }),
+            0,
+            DEFAULT_REQUEST_TIMEOUT,
+            ReliableType::Driver,
+        );
+
+        let mut body = BinaryStream::new();
+        write_logon_request(&source, &params, &mut body);
+        bundle.write_bytes(body.as_bytes());
+
+        interface.send(&alpha, &mut bundle, None);
+    }
+}
+
 /// `LoginApp`'s mutable login state, interior to keep the message-handler
 /// faces `&self` like the reference's registered handlers.
 struct LoginFacesState {
     /// `isDBReady_`: set when a DBApp registers (the dbapp leg).
     db_ready: bool,
+    /// `dbAppAlpha_`'s address (`loginapp.hpp:117`): unset until the
+    /// DBAppMgr names the alpha, then the destination the DBApp request
+    /// leg sends to.
+    db_app_alpha: Address,
     /// `numAllowedLoginsLeft_` / `lastRateLimitCheckTime_`.
     limiter: RateLimiter,
     /// `ipAddressBanMap_` / `nextIPAddressBanMapCleanupTime_`.
@@ -228,6 +374,7 @@ impl LoginFaces {
             factories: ChallengeFactories::new(),
             state: RefCell::new(LoginFacesState {
                 db_ready: false,
+                db_app_alpha: Address::default(),
                 limiter: RateLimiter::new(config.gate.login_rate_limit),
                 bans: IpBanMap::new(),
                 overload: SystemOverload::new(),
@@ -259,6 +406,24 @@ impl LoginFaces {
     /// `isDBReady_`, set by the DBApp registration faces.
     pub fn set_db_ready(&self, ready: bool) {
         self.state.borrow_mut().db_ready = ready;
+    }
+
+    /// `dbAppAlpha_`'s address, the destination of the DBApp request leg.
+    pub fn db_app_alpha(&self) -> Address {
+        self.state.borrow().db_app_alpha
+    }
+
+    /// `LoginApp::notifyDBAppAlpha` (`loginapp.cpp:516-521`): the
+    /// DBAppMgr's notice of which DBApp is the alpha. The reference
+    /// records the address on the alpha's channel owner, and readiness is
+    /// that channel establishing (`isDBReady()`, `loginapp.hpp:122`); the
+    /// port has no channels yet (BW-02-03), so registration is the ready
+    /// state itself.
+    pub fn notify_db_app_alpha(&self, addr: &Address) {
+        eprintln!("LoginApp::notifyDBAppAlpha: {}", addr.c_str());
+        let mut st = self.state.borrow_mut();
+        st.db_app_alpha = *addr;
+        st.db_ready = true;
     }
 
     /// `gNumLoginAttempts`.
@@ -986,13 +1151,18 @@ mod tests {
     use super::*;
 
     use crate::db_login::{
-        DB_NON_PROXY_ERROR, DB_UNELABORATED_ERROR, LOGIN_REPLY_RECORD_STREAM_SIZE,
+        DB_APP_LOG_ON_ELEMENT_ID, DB_NON_PROXY_ERROR, DB_UNELABORATED_ERROR,
+        LOGIN_REPLY_RECORD_STREAM_SIZE, write_logon_request,
     };
     use crate::login_challenge::{CHALLENGE_DELAY, LoginChallenge};
     use crate::login_request::LoginReplyRecord;
     use crate::loginapp::{ClientServerProtocolVersion, LOG_ON_PARAMS_PASS_THRU};
+    use mercury::event_dispatcher::EventDispatcher;
     use mercury::interface_element::REPLY_MESSAGE_IDENTIFIER;
+    use mercury::misc::Reason;
     use mercury::network_interface::InterfaceType;
+    use mercury::packet::{HEADER_SIZE, flags};
+    use mercury::request_manager::RequestManager;
 
     const LOOPBACK: u32 = 0x0100_007f;
     /// One second into the port clock; nanosecond stamps.
@@ -2518,5 +2688,222 @@ mod tests {
         );
         assert_eq!(recording.0.borrow().len(), 1);
         assert_eq!(recording.0.borrow()[0].1.username(), "u");
+    }
+
+    /// `notifyDBAppAlpha` (loginapp.cpp:516-521): the DBAppMgr's notice
+    /// names the alpha and opens the ready gate -- the port has no
+    /// channels yet (BW-02-03), so the registration is `isDBReady()`
+    /// itself.
+    #[test]
+    fn notify_db_app_alpha_names_the_alpha_and_opens_the_gate() {
+        let harness = detached(open_config());
+        assert!(!harness.faces.db_ready(), "the default state");
+        assert!(harness.faces.db_app_alpha().is_none(), "no alpha named");
+
+        let alpha = Address::new(LOOPBACK, 3100);
+        harness.faces.notify_db_app_alpha(&alpha);
+        assert!(harness.faces.db_ready(), "registration is readiness");
+        assert_eq!(harness.faces.db_app_alpha(), alpha);
+    }
+
+    /// The production DBApp leg: an accepted login leaves as a
+    /// `DBAppInterface::logOn` request -- the element eighth in the
+    /// declaration order, a reserved reply id in the preamble, the
+    /// `source << params` pair as the body, the footer last, addressed to
+    /// the alpha the notice named.
+    #[test]
+    fn the_dbapp_forward_bundles_the_log_on_request() {
+        let dispatcher = Rc::new(EventDispatcher::new());
+        let interface = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1").0;
+        // The manager `open` arms the interface with: the reply id the
+        // request reserves is written by the manager, not the bundle.
+        interface.set_request_manager(Some(Rc::new(RequestManager::new(
+            true,
+            Rc::clone(&dispatcher),
+        ))));
+
+        let forward = Rc::new(DbAppForward::new(&interface));
+        let users = Rc::new(Cell::new(0));
+        let faces = Rc::new(LoginFaces::new(
+            open_config(),
+            Rc::downgrade(&interface),
+            Rc::clone(&users),
+            Rc::clone(&forward) as Rc<dyn LogOnForward>,
+        ));
+        forward.set_faces(&faces);
+
+        // The alpha stands on a plain socket.
+        let dbapp = client_socket();
+        let dbapp_addr = Address::new(
+            platform::socket::inet_aton("127.0.0.1").expect("loopback parses"),
+            platform::socket::htons(dbapp.local_addr().expect("dbapp port").port()),
+        );
+        faces.notify_db_app_alpha(&dbapp_addr);
+
+        let client = client_socket();
+        let p = params("user", "pw", "key");
+        drive_login(&faces, &client_address(&client), 42, &login_payload(&p));
+
+        let request = recv(&dbapp).expect("the request leaves on the wire");
+        let packet_flags = u16::from_le_bytes(request[0..2].try_into().unwrap());
+        assert!(
+            packet_flags & flags::HAS_REQUESTS != 0,
+            "the request flag rides with the reliable driver's own bits"
+        );
+        assert_ne!(
+            packet_flags & flags::IS_RELIABLE,
+            0,
+            "`RELIABLE_DRIVER` makes the request reliable"
+        );
+        assert_eq!(
+            request[2], DB_APP_LOG_ON_ELEMENT_ID,
+            "the logOn element, eighth in declaration order"
+        );
+        let length = u16::from_le_bytes(request[3..5].try_into().unwrap()) as usize;
+        let reply_id = i32::from_le_bytes(request[5..9].try_into().unwrap());
+        assert_ne!(reply_id, 0, "startRequest reserved a reply id");
+        assert_eq!(
+            u16::from_le_bytes(request[9..11].try_into().unwrap()),
+            0,
+            "no next request"
+        );
+        // The first-request offset footer sits just before the reliable
+        // seq footer, and points at the frame behind the packet header.
+        assert_eq!(
+            u16::from_le_bytes(
+                request[request.len() - 6..request.len() - 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            HEADER_SIZE as u16,
+            "the first-request footer points at the frame"
+        );
+
+        // The body is the `source << params` pair the reference streams,
+        // byte for byte.
+        let body = &request[11..11 + length];
+        let mut expected = BinaryStream::new();
+        write_logon_request(
+            &server_address_of(&client_address(&client)),
+            &p,
+            &mut expected,
+        );
+        assert_eq!(body, expected.as_bytes(), "the request body");
+    }
+
+    /// The dead arms of the production leg: no faces handed over, no
+    /// alpha named, no interface -- each drops the request silently, the
+    /// way a dead DBApp link would.
+    #[test]
+    fn the_dbapp_forward_drops_without_its_wiring() {
+        let interface = NetworkInterface::new(InterfaceType::Internal, 0, "127.0.0.1").0;
+        let forward = Rc::new(DbAppForward::new(&interface));
+
+        // No faces handed over yet.
+        forward.send_logon(
+            crate::login_request::ServerAddress::NONE,
+            params("u", "p", "k"),
+        );
+
+        // Faces without an alpha: the ready gate cannot have passed.
+        let users = Rc::new(Cell::new(0));
+        let faces = Rc::new(LoginFaces::new(
+            open_config(),
+            Weak::new(),
+            users,
+            Rc::new(NoLogOnForward),
+        ));
+        forward.set_faces(&faces);
+        forward.send_logon(
+            crate::login_request::ServerAddress::NONE,
+            params("u", "p", "k"),
+        );
+
+        // No interface to leave on.
+        drop(interface);
+        faces.notify_db_app_alpha(&Address::new(LOOPBACK, 3100));
+        forward.send_logon(
+            crate::login_request::ServerAddress::NONE,
+            params("u", "p", "k"),
+        );
+    }
+
+    /// `DatabaseReplyHandler` as a reply handler: a delivery routes into
+    /// the faces as the DBApp reply does, an exception lands as the
+    /// no-reply failure after the reference's WARNING, and a shutdown is
+    /// dropped silently (`database_reply_handler.cpp:165-179`).
+    #[test]
+    fn the_db_reply_handler_routes_its_deliveries() {
+        let (harness, _interface) = harness(open_config());
+        harness
+            .faces
+            .notify_db_app_alpha(&Address::new(LOOPBACK, 3100));
+
+        let client = client_socket();
+        let addr = client_address(&client);
+        drive_login(
+            &harness.faces,
+            &addr,
+            42,
+            &login_payload(&params("u", "p", "k")),
+        );
+        assert_eq!(harness.forward.0.borrow().len(), 1, "accepted");
+
+        let handler = DbReplyHandler {
+            faces: Rc::downgrade(&harness.faces),
+            client_addr: server_address_of(&addr),
+        };
+        let dbapp = Address::new(LOOPBACK, 3100);
+
+        // The answer: the failure status and its text reach the client
+        // under the client's reply id, and the attempt leaves the
+        // registry.
+        let header = UnpackedMessageHeader::new(0);
+        let mut data = BinaryStream::from_slice(&db_failure(
+            LogOnStatus::LoginRejectedInvalidPassword as u8,
+            Some("db says no"),
+        ));
+        handler.handle_message(&dbapp, &header, &mut data, 0);
+        let reply = recv(&client).expect("the DBApp answer routes back");
+        let (reply_id, body) = reply_frame(&reply);
+        assert_eq!(reply_id, 42, "the client's original reply id");
+        assert_eq!(
+            reply_status(&body),
+            LogOnStatus::LoginRejectedInvalidPassword as u8
+        );
+        assert_eq!(reply_text(&body).as_deref(), Some("db says no"));
+        assert!(harness.faces.with_requests(|requests| requests.is_empty()));
+        assert_eq!(harness.faces.num_login_failures(), 1);
+
+        // The exception: the overload failure replies, then the WARNING.
+        drive_login(
+            &harness.faces,
+            &addr,
+            43,
+            &login_payload(&params("u", "p", "k")),
+        );
+        handler.handle_exception(&NubException::new(Reason::TimerExpired, None), 0);
+        let reply = recv(&client).expect("the no-reply failure replies");
+        let (_, body) = reply_frame(&reply);
+        assert_eq!(
+            reply_status(&body),
+            LogOnStatus::LoginRejectedDbAppOverload as u8
+        );
+        assert_eq!(reply_text(&body).as_deref(), Some(DB_NO_REPLY));
+
+        // The shutdown: nothing reaches the client.
+        drive_login(
+            &harness.faces,
+            &addr,
+            44,
+            &login_payload(&params("u", "p", "k")),
+        );
+        handler.handle_shutting_down(&NubException::new(Reason::ShuttingDown, None), 0);
+        assert!(recv(&client).is_none(), "a shutdown drops the attempt");
+        assert_eq!(
+            harness.faces.num_login_failures(),
+            2,
+            "only the exception failed"
+        );
     }
 }
