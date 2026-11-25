@@ -552,6 +552,7 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyDict_DelItemString(dict: *mut PyObject, key: *const c_char) -> c_int;
     pub fn PyDict_Clear(dict: *mut PyObject);
+    pub fn PyDict_New() -> *mut PyObject;
     pub fn PyDict_Update(dict: *mut PyObject, other: *mut PyObject) -> c_int;
     pub fn PyDict_Next(
         dict: *mut PyObject,
