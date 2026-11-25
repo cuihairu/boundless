@@ -13,8 +13,8 @@
 //! scope (it lives in `crates/mercury`, a forbidden zone), so the collector
 //! is fed replies directly by the caller instead of by the network.
 
-use super::path_tree::{Mode, WatcherDataType, WATCHER_SEPARATOR};
-use foundation::stream::{packed_int_size, BinaryStream};
+use super::path_tree::{Mode, WATCHER_SEPARATOR, WatcherDataType};
+use foundation::stream::{BinaryStream, packed_int_size};
 
 /// `ForwardingWatcher::TARGET_CELL_APPS` (watcher_forwarding.cpp:10).
 pub const TARGET_CELL_APPS: &str = "cellApps";

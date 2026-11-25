@@ -135,7 +135,7 @@ impl BoundBox {
     /// Efficient eight-corner transform (`boundbox.cpp:73-118`): transform
     /// the min corner, then accumulate the axis-aligned extents row by row
     /// with sign handling.
-pub fn add_bound_box(&mut self, bb: &Self) {
+    pub fn add_bound_box(&mut self, bb: &Self) {
         if bb.inside_out() {
             return;
         }
@@ -151,7 +151,7 @@ pub fn add_bound_box(&mut self, bb: &Self) {
             self.max.z = self.max.z.max(bb.max.z);
         }
     }
-pub fn clip(&self, source: &mut Vector3, extent: &mut Vector3, bloat: f32) -> bool {
+    pub fn clip(&self, source: &mut Vector3, extent: &mut Vector3, bloat: f32) -> bool {
         let mut s_min = 0.0f32;
         let mut e_max = 1.0f32;
 
@@ -244,7 +244,7 @@ pub fn clip(&self, source: &mut Vector3, extent: &mut Vector3, bloat: f32) -> bo
         // and that's it
         true
     }
-pub fn intersects_ray(&self, origin: &Vector3, dir: &Vector3) -> bool {
+    pub fn intersects_ray(&self, origin: &Vector3, dir: &Vector3) -> bool {
         let bounds = [self.min, self.max];
         for bound in &bounds {
             for axis in 0..3 {
@@ -271,7 +271,7 @@ pub fn intersects_ray(&self, origin: &Vector3, dir: &Vector3) -> bool {
 
         false
     }
-pub fn intersects_ray_hit(
+    pub fn intersects_ray_hit(
         &self,
         origin: &Vector3,
         dir: &Vector3,
