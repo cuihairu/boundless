@@ -81,6 +81,7 @@ BW-00-03-05）承载：
 | `particle`/`camera`/`post_processing`/`web_render`（面） | `crates/client/src/{particle,camera,post_processing,web_render}.rs` | client 内联（857 测） | BW-11（`c5a70f6` 合入）；`web_render` 等三方 SDK 集成点在 `conditional_integrations.rs` 登记缺席（BW-11 SDK 矩阵） |
 | 编辑器核（`modeleditor_core`/`worldeditor` 核面） | `asset-pipeline::{model_editor,material_editor}` + `chunk::{chunk_editor,chunk_placer,snaps,undoredo,space_publish}` + `client::{animation_editor,particle_editor,simple_gui}` | 内联 | **部分**：编辑核面在树；GUI 外壳二进制未建（BW-15-03 Windows 构建入口） |
 | `common`（tools/common） | `chunk::undoredo` + `asset_pipeline::navmesh_processor` 等按面散布 | 内联 | **部分**：按面落位，无独立 crate |
+| `bwmachined` | `crates/server-runtime/src/machined.rs`（408 行，daemon+discovery 客户端）+ `crates/contracts/src/machined.rs`（3527 行消息契约） | 两模块均 `pub mod` 在活树（`lib.rs:54`/`lib.rs:7`）；server-runtime 内联 3 测（`#[test]` @295/328/356） | BW-05-01-06（`PORT_MACHINED=20018`，真实 SOCK_DGRAM 经 `platform::socket`）；2026-11-25 勘误：旧 §2 记「未建」已过时——模块与测试路径在树；RPM 布局基线见 BW-15-02-05 §2.2 |
 
 ### 1.5 他席在途（并轨后补登）
 
@@ -97,7 +98,6 @@ BW-00-03-05）承载：
 |---|---|---|---|
 | `appmgr`/`moo`/`romp`/`chunk_loading`/`model`/`speedtree`/`ual`/`gizmo`/`guimanager`/`guitabs`/`controls`/`input`/`duplo`/`navigation_recast`/`connection`/`connection_model`/`bwentity`/`delegate_interface`/`visual_manipulator`/`ashes` | `crates/`（客户端/渲染/工具库） | BW-11 / BW-13 | 未建（`moo` 的设备生命周期面已由 `crates/client/src/device` 等建模，完整渲染器待 BW-11；`navigation_recast` 用户挂起 BW-10-05-03；三方 SDK 面 `fmodsound`/`scaleform`/`emptyvoip`/`memhook`/`open_automate` 在 `conditional_integrations.rs` 登记缺席） |
 | `modeleditor`/`worldeditor`/`worldeditor_ui`/`particle_editor`/`editor_shared`（GUI 外壳） | `apps/editor` | BW-15-03（Windows 构建入口） | 外壳未建；编辑核面已入库（§1.4） |
-| `bwmachined` | `crates/`（machined） | BW-15-02 | 未建；消息契约面 `contracts/src/machined.rs` 在树；RPM 基线见 BW-15-02-05 |
 | `bw_lsp`/`visual_studio`/`exporter_common` | `crates/`（工具） | BW-13 | 未建 |
 
 ## 3. 覆盖与卡点
@@ -106,12 +106,14 @@ BW-00-03-05）承载：
   `entitydef`/`pyscript`/`script`/`resmgr`/`asset_pipeline`/`server`/`chunk`/`testing`/`db`（部分）/
   `terrain`/`physics2`/`scene`/`compiled_space`/`space`/`waypoint`/`waypoint_generator`/`navgen`（部分）/
   `bots`/`message_logger`/`bw_profile`/DB 六工具/`urlrequest`/`jit_compiler`/`offline_processor`/
-  `resourcechecker`/`res_packer`/`particle`/`camera`/`post_processing`/`web_render`（面）/编辑器核（部分）；
+  `resourcechecker`/`res_packer`/`particle`/`camera`/`post_processing`/`web_render`（面）/编辑器核（部分）/
+  `bwmachined`（模块+3 内联测在树，2026-11-25 勘误迁入 §1.4）；
   8 个角色目标（单二进制面）、3 个扩展目标（模块面）、`client`/`process_defs`/`plugin_system`。
 - **他席在途（§1.5）**：`animationexporter`（双交付待主席择一）、`visualexporter`/`mayavisualexporter`/
   `bw_world_machine_import`/`launcher`——并轨后补登。
-- **未建（§2）**：客户端/渲染/工具库残余、编辑器 GUI 外壳、machined daemon、
+- **未建（§2）**：客户端/渲染/工具库残余、编辑器 GUI 外壳、
   `bw_lsp`/`visual_studio`/`exporter_common`——**无模块与测试路径**，各随 BW-11/BW-13/BW-15 立项解锁。
+  （`bwmachined` 已于 2026-11-25 勘误迁入 §1.4——`server-runtime/src/machined.rs` daemon+discovery 在树。）
 - **部分**：`db`（后端矩阵）、3 个扩展（扩展内容）、`entitydef_script`（脚本类型）、
   `navgen`（Windows 入口）、编辑器核（GUI 外壳）——模块面已有，缺口见各行。
 
