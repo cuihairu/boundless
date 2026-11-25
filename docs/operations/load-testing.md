@@ -4,12 +4,13 @@ Load testing is driven by headless bot clients against a real server topology.
 The reference entry point is `server/tools/bots/`; its behavioural parity is
 BW-12-04 and its scenario work is BW-17.
 
-::: warning No bot runner exists in the working tree
-There is no `apps/bots/` and no bot runtime code anywhere in this repository — a
-search for the bot runner returns nothing but `todo.md`. The scenario input
-layer (`crates/load` + `tests/load/scenarios/`) is in place (BW-17-02-01); this
-page specifies the target so the scenario files can be written before the
-runner exists.
+::: warning No live topology yet
+The bot runtime lives in `crates/load` (fleet, movement controllers,
+watcher commands — BW-17-01), the scenario input layer in `crates/load` +
+`tests/load/scenarios/` (BW-17-02-01) and the standalone process in
+`apps/bots` (BW-17-03-05). The process drives the scenarios' **offline**
+faces: a live server topology is not wired in yet, so every number it
+reports is the offline expectation a live run will check against.
 :::
 
 ## Target layout
@@ -42,14 +43,14 @@ A scenario is a fixed-seed file under `tests/load/scenarios/` that names the
 account pool, concurrency, ramp rate, warm-up and duration. Fixed seeds are what
 make a second run comparable to the first.
 
-| Scenario | Item | Measured |
-| --- | --- | --- |
-| Login surge | BW-17-02-03 | a stated rate of logins, repeatably |
-| Steady movement | BW-17-02-04 | same seed produces the same trajectory |
-| Dense AOI | BW-17-02-05 | target density and visibility counts |
-| Cross-cell | BW-17-02-06 | hand-off success rate |
-| Disconnect/reconnect | BW-17-02-07 | recovery time |
-| Long soak | BW-17-02-08 | resource use of the load generator itself |
+| Scenario | Item | Measured | Runs |
+| --- | --- | --- | --- |
+| Login surge | BW-17-02-03 | a stated rate of logins, repeatably | PR smoke |
+| Steady movement | BW-17-02-04 | same seed produces the same trajectory | PR smoke |
+| Dense AOI | BW-17-02-05 | target density and visibility counts | PR smoke |
+| Cross-cell | BW-17-02-06 | hand-off success rate | not yet |
+| Disconnect/reconnect | BW-17-02-07 | recovery time | not yet |
+| Long soak | BW-17-02-08 | resource use of the load generator itself | schedule/manual |
 
 Scenario input loading (seeds, account pools, concurrency) is BW-17-02-01, and
 ramp/warm-up/duration timing is BW-17-02-02.
@@ -69,13 +70,36 @@ Plus tick timeouts, bandwidth and resource usage. Regression policy: short
 scenarios run in the PR smoke gate, capacity and long-soak scenarios run on a
 schedule or manually, with thresholds set from measured baselines.
 
+## The PR smoke gate (BW-17-03-05)
+
+`ci/load.sh` runs every executable scenario under
+`tests/load/scenarios/`: each one runs with `LOAD_DURATION` (wall budget) and
+`LOAD_CLIENTS` (concurrency) and must exit 0 inside the budget having printed
+at least one `metric<TAB>value` line. The pull-request job
+(`load-smoke`) gives the low knobs — 2 clients, 20 seconds — so the
+nightly-scale saved scenarios run at a scale a PR runner affords;
+`load-schedule` gives the high ones.
+
+The gate is re-runnable on purpose. The saved scenarios carry fixed seeds and
+`run_smoke` runs each face twice and refuses to report a scenario whose two
+passes disagree, so a red run reproduces its own numbers; `workflow_dispatch`
+re-runs it without a push, and the records upload even when the lane is red,
+which is what a retry compares against.
+
 ## What you can run today
 
-Nothing in this section. The only reproducible load-related fact in the tree is
-the tick rate the server is configured for, which is what a load test ultimately
-stresses:
+The report envelope (BW-17-03-01) is delivered: a scenario run produces a
+deterministic JSON document through `load::ScenarioReport::record` +
+`to_json`, carrying the schema tag, the scenario name, the generator
+version (`load <pkg version>`), the topology the run targeted (`offline`
+until a live server joins), the fixed seed, and the run's recorded
+values. Login success and online counts aggregate on top of the same
+ledger face (BW-17-03-02 onward).
 
 ```bash
+cargo test -p load                # fleet, scenarios, ledgers, reports, smoke
+ci/load.sh self-test              # the harness records and bounds a case
+ci/load.sh                        # the scenarios, low load, records to ci-out/
 cargo test -p server-runtime      # tick, timers, task manager
 ```
 

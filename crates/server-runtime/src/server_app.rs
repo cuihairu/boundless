@@ -420,6 +420,34 @@ pub fn base_on_signalled(sig_num: i32) {
     }
 }
 
+/// `EntityApp::onSignalled`'s SIGQUIT arm (entity_app.cpp:131-138): the
+/// CRITICAL text naming the manager that presumably killed an
+/// unresponsive app, verbatim including the `ServiceApp` special case
+/// that reads "BaseApp" as the suspected killer.
+pub fn entity_app_quit_message(app_name: &str) -> String {
+    let suspected_manager = if app_name == "ServiceApp" {
+        "BaseApp"
+    } else {
+        app_name
+    };
+    format!(
+        "Received QUIT signal. This is likely caused by the \
+         {suspected_manager}Mgr killing this {app_name} because it has \
+         been unresponsive for too long. Look at the callstack from the \
+         core dump to find the likely cause."
+    )
+}
+
+/// The SIGQUIT arm end to end: the CRITICAL text, then the abort that is
+/// the core dump the reference's CRITICAL policy produces. Never returns;
+/// the reference runs this straight from signal context
+/// (`signal_processor.cpp:306-308`), so the caller is the immediate
+/// `SIGQUIT` slot and there is nothing after it.
+pub fn entity_app_quit_signal(app_name: &str) -> ! {
+    eprintln!("{}", entity_app_quit_message(app_name));
+    std::process::abort()
+}
+
 /// The base `ServerApp::run` body: `mainDispatcher_.processUntilBreak()`,
 /// then `onRunComplete()`, then success. Role apps that do not override
 /// `run` inherit exactly this.
@@ -820,33 +848,6 @@ mod tests {
         kernel_pending_signals, pending_signals, signal_number_to_string,
     };
 
-    /// Consume a signal the test just parked kernel-pending. Linux polls
-    /// with `sigtimedwait` (zero timeout); the BSD family has no
-    /// `sigtimedwait` in libc, but the signal is guaranteed pending at
-    /// this point, so `sigwait` returns immediately with the same result.
-    fn consume_pending_signal(sig_num: i32) {
-        let mut wait_set = Set::empty();
-        wait_set.set(sig_num);
-        #[cfg(target_os = "linux")]
-        unsafe {
-            let mut info: libc::siginfo_t = std::mem::zeroed();
-            let timeout = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            assert_eq!(
-                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
-                sig_num
-            );
-        }
-        #[cfg(not(target_os = "linux"))]
-        unsafe {
-            let mut received: libc::c_int = 0;
-            assert_eq!(libc::sigwait(wait_set.raw(), &mut received), 0);
-            assert_eq!(received, sig_num);
-        }
-    }
-
     /// A role-app skeleton: owns its dispatcher (the `mainDispatcher_`
     /// member) and registers a control-event handler as a frequent task
     /// -- the BW-02 stand-in for the Mercury shutDown message handler.
@@ -962,7 +963,47 @@ mod tests {
         // Consume the pending signal so unblocking is safe (the
         // reference lets the default action kill the process; the test
         // must survive).
-        consume_pending_signal(libc::SIGINT);
+        let mut wait_set = Set::empty();
+        wait_set.set(libc::SIGINT);
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
+                libc::SIGINT
+            );
+        }
+    }
+
+    /// `EntityApp::onSignalled`'s SIGQUIT text, verbatim including the
+    /// `ServiceApp` special case that reads "BaseApp" as the suspected
+    /// killer (entity_app.cpp:131-138).
+    #[test]
+    fn entity_app_quit_message_is_the_reference_text() {
+        assert_eq!(
+            entity_app_quit_message("BaseApp"),
+            "Received QUIT signal. This is likely caused by the BaseAppMgr \
+             killing this BaseApp because it has been unresponsive for too \
+             long. Look at the callstack from the core dump to find the \
+             likely cause."
+        );
+        assert_eq!(
+            entity_app_quit_message("CellApp"),
+            "Received QUIT signal. This is likely caused by the CellAppMgr \
+             killing this CellApp because it has been unresponsive for too \
+             long. Look at the callstack from the core dump to find the \
+             likely cause."
+        );
+        assert_eq!(
+            entity_app_quit_message("ServiceApp"),
+            "Received QUIT signal. This is likely caused by the BaseAppMgr \
+             killing this ServiceApp because it has been unresponsive for \
+             too long. Look at the callstack from the core dump to find the \
+             likely cause."
+        );
     }
 
     /// The default `on_signalled` (and the base arm for non-SIGINT
@@ -1168,7 +1209,19 @@ mod tests {
         );
 
         // Consume the parked signal while still blocked.
-        consume_pending_signal(libc::SIGINT);
+        let mut wait_set = Set::empty();
+        wait_set.set(libc::SIGINT);
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                libc::sigtimedwait(wait_set.raw(), &mut info, &timeout),
+                libc::SIGINT
+            );
+        }
         drop(blocker);
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_DFL);

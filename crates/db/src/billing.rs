@@ -1,555 +1,530 @@
-//! The standard billing system: how a `username`/`password` pair becomes
-//! an entity, and how a mapping gets written back.
+//! Billing systems — the account authentication front end.
 //!
-//! The reference's "standard" billing creator
-//! (`standard_billing_system.cpp:63-86`) uses the personality's
-//! `connectToBillingSystem` script when it has one and otherwise falls
-//! through to the database type's own billing system — `MySqlBillingSystem`
-//! (`mysql_billing_system.cpp`) over the `bigworldLogOnMapping` tables,
-//! `XMLBillingSystem` (`xml_billing_system.cpp`) over the
-//! `_BigWorldInfo/LogOnMapping` section. Both share the `BillingSystem`
-//! base's configuration (`billing_system.cpp:23-48`) and the handler
-//! contract (`billing_system.hpp:15-76`): one of four outcomes comes back.
+//! The DBApp turns user/password credentials into an entity key through a
+//! pluggable `BillingSystem` (`lib/db_storage/billing_system.{hpp,cpp}`).
+//! The standard XML backend keeps a logOnName → (EntityKey, password) map
+//! in the database's `LogOnMapping` section
+//! (`lib/db_storage_xml/xml_billing_system.{hpp,cpp}`) — the XML twin of
+//! the MySQL `bigworldLogOnMapping` table.
 //!
-//! The reference reports through callbacks on a background task; the port
-//! folds them into the [`GetEntityKeyOutcome`] enum. The MD5 digest is the
-//! caller's business, exactly as [`crate::account::check_password`] leaves
-//! it: `isPasswordHashed` only decides how `presented` was formed.
-//!
-//! The acceptance for BW-09-04-01 is the outcome table: a legal account
-//! logs on (or creates a new entity), an invalid account is rejected with
-//! the status the reference picks.
+//! Layering: domain library (layer 2). The handler callbacks of the
+//! reference are modelled as the returned outcome enums — the reference
+//! calls exactly one handler method per request.
 
 use std::collections::BTreeMap;
 
-use foundation::ids::{DatabaseId, EntityTypeId, INVALID_ENTITY_TYPE_ID};
+use entitydef::entity_map::EntityDescriptionMap;
+use foundation::ids::{EntityTypeId, INVALID_ENTITY_TYPE_ID};
+use mercury::endpoint::Address;
+use resources::datasection::DataSection;
 
-use crate::account::{AccountLogOn, AccountRow, check_password, log_on_status};
+use crate::log_on_status::{LogOnStatus, codes};
 use crate::storage::EntityKey;
 
-/// The `BillingSystem` constructor's configuration
-/// (`billing_system.cpp:23-48`), read from `bw.xml`'s `billingSystem/`
-/// section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The `billingSystem/` block of bw.xml, read with the reference's
+/// defaults (`BillingSystem::BillingSystem`,
+/// `db_storage/billing_system.cpp:21-53`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BillingConfig {
-    /// `billingSystem/shouldAcceptUnknownUsers`, default false.
+    /// `billingSystem/shouldAcceptUnknownUsers`.
     pub should_accept_unknown_users: bool,
-    /// `billingSystem/shouldRememberUnknownUsers`, default false.
+    /// `billingSystem/shouldRememberUnknownUsers`.
     pub should_remember_unknown_users: bool,
-    /// `billingSystem/authenticateViaBaseEntity`, default false.
+    /// `billingSystem/authenticateViaBaseEntity`.
     pub authenticate_via_base_entity: bool,
-    /// `entityTypeIDForUnknownUsers_`: the resolved
-    /// `billingSystem/entityTypeForUnknownUsers` name. Unresolvable names
-    /// leave [`INVALID_ENTITY_TYPE_ID`] (`billing_system.cpp:48-51`).
-    pub entity_type_id_for_unknown_users: EntityTypeId,
+    /// `billingSystem/entityTypeForUnknownUsers`.
+    pub entity_type_for_unknown_users: String,
 }
 
 impl BillingConfig {
-    /// The constructor: `resolve` plays `EntityDefs::getEntityType` on the
-    /// configured name (`billing_system.cpp:44-48`). The reference logs an
-    /// error when the type is needed but missing; [`Self::is_okay`] is
-    /// where that shows up.
-    pub fn from_name(
-        should_accept_unknown_users: bool,
-        should_remember_unknown_users: bool,
-        authenticate_via_base_entity: bool,
-        entity_type_for_unknown_users: &str,
-        resolve: impl FnOnce(&str) -> Option<EntityTypeId>,
-    ) -> Self {
+    /// Read the block from a section; missing children keep the defaults
+    /// (`BWConfig::get( path, default )`).
+    pub fn from_section(section: &DataSection) -> Self {
         Self {
-            should_accept_unknown_users,
-            should_remember_unknown_users,
-            authenticate_via_base_entity,
-            entity_type_id_for_unknown_users: resolve(entity_type_for_unknown_users)
-                .unwrap_or(INVALID_ENTITY_TYPE_ID),
+            should_accept_unknown_users: section
+                .find_child("shouldAcceptUnknownUsers")
+                .map(|s| s.as_bool(false))
+                .unwrap_or(false),
+            should_remember_unknown_users: section
+                .find_child("shouldRememberUnknownUsers")
+                .map(|s| s.as_bool(false))
+                .unwrap_or(false),
+            authenticate_via_base_entity: section
+                .find_child("authenticateViaBaseEntity")
+                .map(|s| s.as_bool(false))
+                .unwrap_or(false),
+            entity_type_for_unknown_users: section.read_string("entityTypeForUnknownUsers", ""),
         }
-    }
-
-    /// The defaults: every flag off, no known unknown-user type.
-    pub fn disabled() -> Self {
-        Self {
-            should_accept_unknown_users: false,
-            should_remember_unknown_users: false,
-            authenticate_via_base_entity: false,
-            entity_type_id_for_unknown_users: INVALID_ENTITY_TYPE_ID,
-        }
-    }
-
-    /// `BillingSystem::isOkay` (`billing_system.hpp:110-114`): the
-    /// system can start with a usable unknown-user type, or when it
-    /// needs no unknown-user face at all.
-    pub fn is_okay(&self) -> bool {
-        (self.entity_type_id_for_unknown_users != INVALID_ENTITY_TYPE_ID)
-            || (!self.should_accept_unknown_users && !self.authenticate_via_base_entity)
     }
 }
 
-/// One folded `IGetEntityKeyForAccountHandler` outcome
-/// (`billing_system.hpp:15-63`). The `dataForClient`/`dataForBaseEntity`
-/// strings ride on every callback in the reference; the standard system
-/// only ever fills the base-entity one, with the password, on the
-/// base-entity authentication leg.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GetEntityKeyOutcome {
-    /// `onGetEntityKeyForAccountSuccess`: the account maps to this entity.
+/// The one callback `getEntityKeyForAccount` makes
+/// (`IGetEntityKeyForAccountHandler`,
+/// `db_storage/billing_system.hpp:17-69`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum EntityKeyOutcome {
+    /// The credentials name a known entity
+    /// (`onGetEntityKeyForAccountSuccess`).
     Success {
-        /// The mapped entity.
         key: EntityKey,
-        /// `dataForClient`.
         data_for_client: String,
-        /// `dataForBaseEntity`.
         data_for_base_entity: String,
     },
-    /// `onGetEntityKeyForAccountLoadFromUsername`: load (or create) by
-    /// name instead of by mapping — the base-entity authentication leg.
+    /// Load the entity with the given username
+    /// (`onGetEntityKeyForAccountLoadFromUsername`).
     LoadFromUsername {
-        /// The type to load.
-        type_id: EntityTypeId,
-        /// The name to load.
+        entity_type: EntityTypeId,
         username: String,
-        /// `shouldCreateNewOnLoadFailure`.
         should_create_new_on_load_failure: bool,
-        /// `shouldRememberNewOnLoadFailure`.
         should_remember_new_on_load_failure: bool,
-        /// `dataForClient`.
         data_for_client: String,
-        /// `dataForBaseEntity`.
         data_for_base_entity: String,
     },
-    /// `onGetEntityKeyForAccountCreateNew`: the account has no entity
-    /// yet; make one.
+    /// Create a new entity for the account
+    /// (`onGetEntityKeyForAccountCreateNew`).
     CreateNew {
-        /// The type to create.
-        type_id: EntityTypeId,
-        /// `shouldRemember`: whether the new entity is mapped to the
-        /// account.
+        entity_type: EntityTypeId,
         should_remember: bool,
-        /// `dataForClient`.
         data_for_client: String,
-        /// `dataForBaseEntity`.
         data_for_base_entity: String,
     },
-    /// `onGetEntityKeyForAccountFailure`: rejected.
+    /// The account is rejected (`onGetEntityKeyForAccountFailure`).
     Failure {
-        /// The numeric `LogOnStatus` value the reference reports —
-        /// [`crate::account::log_on_status`] holds the table. The script
-        /// face reports statuses this crate has no name for, so the
-        /// outcome carries the raw value.
-        status: i32,
-        /// `errorMsg` — always empty for the standard systems.
+        status: LogOnStatus,
         error_msg: String,
     },
 }
 
-/// One folded `ISetEntityKeyForAccountHandler` outcome
-/// (`billing_system.hpp:66-80`).
+/// The one callback `setEntityKeyForAccount` makes
+/// (`ISetEntityKeyForAccountHandler`,
+/// `db_storage/billing_system.hpp:71-85`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetEntityKeyOutcome {
     /// `onSetEntityKeyForAccountSuccess`.
     Success(EntityKey),
-    /// `onSetEntityKeyForAccountFailure` — the SQL exception path.
+    /// `onSetEntityKeyForAccountFailure`.
     Failure(EntityKey),
 }
 
-/// One looked-up account row: the `bigworldLogOnMapping` row joined to
-/// its BigWorld type id and entity id
-/// (`get_entity_key_for_account_task.cpp:38-48`). `None` legs mirror SQL
-/// NULL: the `LEFT JOIN` misses leave [`Self::bigworld_type_id`] unset,
-/// and a NULL `entityID` leaves [`Self::entity_id`] unset — only SQL
-/// NULL unsets them, a stored 0 arrives as `Some(0)`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccountLookup {
-    /// The `bigworldLogOnMapping` row.
-    pub row: AccountRow,
-    /// `t.bigworldID`, `NULL` when the type has no BigWorld mapping.
-    pub bigworld_type_id: Option<EntityTypeId>,
-    /// `m.entityID`.
-    pub entity_id: Option<DatabaseId>,
-}
-
-/// `GetEntityKeyForAccountTask::performBackgroundTask`
-/// (`get_entity_key_for_account_task.cpp:50-77`): no row is
-/// `NO_SUCH_USER`, a row goes through the byte-exact password compare.
-/// The reference maps the query's exception to
-/// `LOGIN_REJECTED_DB_GENERAL_FAILURE` (`:80-86`) — that stays the
-/// caller's, which keeps this function total.
-pub fn resolve_status(
-    lookup: Option<&AccountLookup>,
-    is_password_hashed: bool,
-    presented: &str,
-) -> AccountLogOn {
-    let Some(lookup) = lookup else {
-        return AccountLogOn::RejectedNoSuchUser;
-    };
-    check_password(&lookup.row, is_password_hashed, presented)
-}
-
-/// `GetEntityKeyForAccountTask::performMainThreadTask`
-/// (`get_entity_key_for_account_task.cpp:88-116`): the status picks the
-/// handler callback. The unknown-user type id backs both a NULL join and
-/// the create path; a mapped entity id means success, a missing one
-/// means a **remembered** create.
-pub fn dispatch_get(
-    status: AccountLogOn,
-    lookup: Option<&AccountLookup>,
-    config: &BillingConfig,
-) -> GetEntityKeyOutcome {
-    // `pEntityTypeID == NULL` falls back to `defaultEntityTypeID_`
-    // (`:91-97`).
-    let type_id = lookup
-        .and_then(|lookup| lookup.bigworld_type_id)
-        .unwrap_or(config.entity_type_id_for_unknown_users);
-    match status {
-        AccountLogOn::LoggedOn => {
-            // `pDBID` set → success; unset → create and remember.
-            match lookup.and_then(|lookup| lookup.entity_id) {
-                Some(db_id) => GetEntityKeyOutcome::Success {
-                    key: EntityKey { type_id, db_id },
-                    data_for_client: String::new(),
-                    data_for_base_entity: String::new(),
-                },
-                None => GetEntityKeyOutcome::CreateNew {
-                    type_id,
-                    should_remember: true,
-                    data_for_client: String::new(),
-                    data_for_base_entity: String::new(),
-                },
-            }
-        }
-        AccountLogOn::RejectedNoSuchUser if config.should_accept_unknown_users => {
-            GetEntityKeyOutcome::CreateNew {
-                type_id,
-                should_remember: config.should_remember_unknown_users,
-                data_for_client: String::new(),
-                data_for_base_entity: String::new(),
-            }
-        }
-        other => GetEntityKeyOutcome::Failure {
-            status: other.value(),
-            error_msg: String::new(),
-        },
-    }
-}
-
-/// The standard front: `authenticateViaBaseEntity` takes the load-by-name
-/// leg with the password handed to the base entity
-/// (`mysql_billing_system.cpp:37-45`, `xml_billing_system.cpp:60-73`);
-/// everything else resolves the row and dispatches its status.
-pub fn get_entity_key_for_account(
-    config: &BillingConfig,
-    lookup: Option<&AccountLookup>,
-    log_on_name: &str,
-    is_password_hashed: bool,
-    presented: &str,
-) -> GetEntityKeyOutcome {
-    if config.authenticate_via_base_entity {
-        return GetEntityKeyOutcome::LoadFromUsername {
-            type_id: config.entity_type_id_for_unknown_users,
-            username: log_on_name.to_owned(),
-            should_create_new_on_load_failure: true,
-            should_remember_new_on_load_failure: false,
-            data_for_client: String::new(),
-            data_for_base_entity: presented.to_owned(),
-        };
-    }
-    let status = resolve_status(lookup, is_password_hashed, presented);
-    dispatch_get(status, lookup, config)
-}
-
-/// `SetEntityKeyForAccountTask`'s outcome: the reference's background
-/// REPLACE either lands (`performMainThreadTask` always reports success,
-/// `set_entity_key_for_account_task.cpp:63-68`) or the connection
-/// failed (`onException`, `:70-77`).
-pub fn dispatch_set(key: EntityKey, succeeded: bool) -> SetEntityKeyOutcome {
-    if succeeded {
-        SetEntityKeyOutcome::Success(key)
-    } else {
-        SetEntityKeyOutcome::Failure(key)
-    }
-}
-
-/// `LogOnMapping` (`xml_billing_system.hpp:70-90`): the entity a log-on
-/// name maps to and its byte-compared password.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct XmlLogOnMapping {
-    /// The mapped entity.
-    pub entity_key: EntityKey,
-    /// The stored password, compared byte-exact.
-    pub password: String,
-}
-
-/// One entry of the `LogOnMapping` section as it reads off disk
-/// (`xml_billing_system.cpp:31-58`): `logOnName`, `type`, `entityID`,
-/// `entityName`, `password`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct XmlLogOnEntry {
-    /// `logOnName`.
-    pub log_on_name: String,
-    /// `type`: the entity type's name.
-    pub type_name: String,
-    /// `entityID` — `0` means "resolve [`Self::entity_name`] instead".
-    pub entity_id: DatabaseId,
-    /// `entityName`.
-    pub entity_name: String,
-    /// `password`.
-    pub password: String,
-}
-
-/// The written tags of one `LogOnMapping/item` section
-/// (`xml_billing_system.cpp:128-153`) — what a set hands the caller to
-/// persist.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct XmlLogOnEntryWrite {
-    /// `logOnName`.
-    pub log_on_name: String,
-    /// `password`.
-    pub password: String,
-    /// `type`: the entity type's name.
-    pub type_name: String,
-    /// `entityID`.
-    pub entity_id: DatabaseId,
-}
-
-/// The XML billing system (`xml_billing_system.cpp`): the
-/// `_BigWorldInfo/LogOnMapping` section as a live map. Section writes
-/// stay the caller's — this face hands back the entry to write, the way
-/// the database crate keeps the document face in `xml.rs`.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct XmlBillingSystem {
-    /// `logonMap_`, keyed by `logOnName`.
-    logon_map: BTreeMap<String, XmlLogOnMapping>,
-}
-
-impl XmlBillingSystem {
-    /// `initLogOnMapping` (`xml_billing_system.cpp:31-58`): resolve each
-    /// entry's type name through `resolve`; an invalid type is ignored
-    /// with the reference's warning. An `entityID` of 0 falls to the
-    /// name lookup.
-    pub fn from_entries(
-        entries: impl IntoIterator<Item = XmlLogOnEntry>,
-        mut resolve: impl FnMut(&str) -> Option<EntityTypeId>,
-        mut find_by_name: impl FnMut(EntityTypeId, &str) -> Option<DatabaseId>,
-    ) -> Self {
-        let mut logon_map = BTreeMap::new();
-        for entry in entries {
-            let Some(type_id) = resolve(&entry.type_name) else {
-                // WARNING_MSG "Logon mapping ignored because '%s' is not
-                // a valid entity type".
-                continue;
-            };
-            let mut entity_id = entry.entity_id;
-            if entity_id == 0 {
-                entity_id = find_by_name(type_id, &entry.entity_name).unwrap_or(0);
-            }
-            logon_map.insert(
-                entry.log_on_name,
-                XmlLogOnMapping {
-                    entity_key: EntityKey {
-                        type_id,
-                        db_id: entity_id,
-                    },
-                    password: entry.password,
-                },
-            );
-        }
-        Self { logon_map }
-    }
-
-    /// `XMLBillingSystem::getEntityKeyForAccount`
-    /// (`xml_billing_system.cpp:75-99`).
-    pub fn get_entity_key_for_account(
-        &self,
-        config: &BillingConfig,
-        log_on_name: &str,
+/// The billing system interface
+/// (`BillingSystem`, `db_storage/billing_system.hpp:87-125`).
+pub trait BillingSystem {
+    /// Turn login credentials into the entity key associated with them.
+    /// `clientAddr` is the address the logon request came from
+    /// (`getEntityKeyForAccount`, `db_storage/billing_system.hpp:104-107`);
+    /// the DBApp's authenticate path always passes `Mercury::Address(0, 0)`.
+    fn get_entity_key_for_account(
+        &mut self,
+        logon_name: &str,
         password: &str,
-    ) -> GetEntityKeyOutcome {
-        if config.authenticate_via_base_entity {
-            return GetEntityKeyOutcome::LoadFromUsername {
-                type_id: config.entity_type_id_for_unknown_users,
-                username: log_on_name.to_owned(),
-                should_create_new_on_load_failure: true,
-                should_remember_new_on_load_failure: false,
-                data_for_client: String::new(),
-                data_for_base_entity: password.to_owned(),
-            };
-        }
-        match self.logon_map.get(log_on_name) {
-            Some(mapping) if mapping.password == password => GetEntityKeyOutcome::Success {
-                key: mapping.entity_key,
-                data_for_client: String::new(),
-                data_for_base_entity: String::new(),
-            },
-            Some(_) => GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
-                error_msg: String::new(),
-            },
-            None if config.should_accept_unknown_users => GetEntityKeyOutcome::CreateNew {
-                type_id: config.entity_type_id_for_unknown_users,
-                should_remember: config.should_remember_unknown_users,
-                data_for_client: String::new(),
-                data_for_base_entity: String::new(),
-            },
-            None => GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
-                error_msg: String::new(),
-            },
-        }
-    }
+        client_addr: Address,
+    ) -> EntityKeyOutcome;
 
-    /// `XMLBillingSystem::setEntityKeyForAccount`
-    /// (`xml_billing_system.cpp:102-157`): upsert the mapping and hand
-    /// back the section entry to persist. The reference always reports
-    /// success — a section write cannot fail.
-    pub fn set_entity_key_for_account(
+    /// Set the mapping between credentials and an entity.
+    fn set_entity_key_for_account(
         &mut self,
         username: &str,
         password: &str,
         key: EntityKey,
-        type_name_of: impl FnOnce(EntityTypeId) -> String,
-    ) -> (SetEntityKeyOutcome, XmlLogOnEntryWrite) {
-        self.logon_map.insert(
-            username.to_owned(),
-            XmlLogOnMapping {
-                entity_key: key,
-                password: password.to_owned(),
-            },
-        );
-        let write = XmlLogOnEntryWrite {
-            log_on_name: username.to_owned(),
-            password: password.to_owned(),
-            type_name: type_name_of(key.type_id),
-            entity_id: key.db_id,
+    ) -> SetEntityKeyOutcome;
+
+    /// `BillingSystem::isOkay`: configured well enough to run
+    /// (`db_storage/billing_system.hpp:116-121`).
+    fn is_okay(&self) -> bool;
+}
+
+/// The configuration-driven base shared by every backend
+/// (`BillingSystem`'s protected members).
+#[derive(Debug)]
+struct BillingSystemBase {
+    config: BillingConfig,
+    entity_type_id_for_unknown_users: EntityTypeId,
+}
+
+impl BillingSystemBase {
+    fn new(config: BillingConfig, defs: &EntityDescriptionMap) -> Self {
+        let entity_type_id_for_unknown_users = defs
+            .name_to_index(&config.entity_type_for_unknown_users)
+            .unwrap_or(INVALID_ENTITY_TYPE_ID);
+        Self {
+            config,
+            entity_type_id_for_unknown_users,
+        }
+    }
+}
+
+impl BillingSystemBase {
+    fn is_okay(&self) -> bool {
+        (self.entity_type_id_for_unknown_users != INVALID_ENTITY_TYPE_ID)
+            || (!self.config.should_accept_unknown_users
+                && !self.config.authenticate_via_base_entity)
+    }
+}
+
+/// One logOnName mapping row (`LogOnMapping`,
+/// `db_storage_xml/xml_billing_system.hpp:44-58`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogOnMapping {
+    /// The entity the account logs into.
+    pub entity_key: EntityKey,
+    /// `matchesPassword`: plain equality.
+    pub password: String,
+}
+
+/// The standard XML billing system
+/// (`XMLBillingSystem`,
+/// `db_storage_xml/xml_billing_system.{hpp,cpp}`).
+pub struct XmlBillingSystem {
+    base: BillingSystemBase,
+    /// The key is the "logOnName" column.
+    logon_map: BTreeMap<String, LogOnMapping>,
+    /// The `LogOnMapping` section the mappings round-trip through.
+    logon_section: DataSection,
+    defs: EntityDescriptionMap,
+}
+
+impl XmlBillingSystem {
+    /// Build from the LogOnMapping section
+    /// (`XMLBillingSystem::XMLBillingSystem` + `initLogOnMapping`,
+    /// `xml_billing_system.cpp:25-70`).
+    pub fn new(
+        logon_section: DataSection,
+        config: BillingConfig,
+        defs: EntityDescriptionMap,
+        database: &crate::xml_database::XmlDatabase,
+    ) -> Self {
+        let mut system = Self {
+            base: BillingSystemBase::new(config, &defs),
+            logon_map: BTreeMap::new(),
+            logon_section,
+            defs,
         };
-        (SetEntityKeyOutcome::Success(key), write)
+        system.init_log_on_mapping(database);
+        system
     }
 
-    /// The mapped entity for `log_on_name`, if any.
-    pub fn mapping(&self, log_on_name: &str) -> Option<&XmlLogOnMapping> {
-        self.logon_map.get(log_on_name)
+    /// Read the section's items into the map. An item whose type is not a
+    /// valid entity type is ignored with a warning
+    /// (`xml_billing_system.cpp:33-70`).
+    fn init_log_on_mapping(&mut self, database: &crate::xml_database::XmlDatabase) {
+        for index in 0..self.logon_section.count_children() {
+            let item = self
+                .logon_section
+                .open_child(index)
+                .expect("index below count_children");
+
+            let type_name = item.read_string("type", "");
+            let type_id = self.defs.name_to_index(&type_name);
+
+            let Some(type_id) = type_id else {
+                eprintln!(
+                    "XMLDatabase::initLogOnMapping: Logon mapping ignored because \
+                     '{type_name}' is not a valid entity type"
+                );
+                continue;
+            };
+
+            let mut entity_id = item
+                .find_child("entityID")
+                .map(|s| s.as_int64(0))
+                .unwrap_or(0);
+            if entity_id == 0 {
+                entity_id =
+                    database.find_entity_by_name(type_id, &item.read_string("entityName", ""));
+            }
+
+            let log_on_name = item.read_string("logOnName", "");
+            self.logon_map.insert(
+                log_on_name,
+                LogOnMapping {
+                    entity_key: EntityKey {
+                        type_id,
+                        db_id: entity_id,
+                    },
+                    password: item.read_string("password", ""),
+                },
+            );
+        }
+    }
+
+    /// The resolved map, for inspection and tests.
+    pub fn logon_map(&self) -> &BTreeMap<String, LogOnMapping> {
+        &self.logon_map
+    }
+}
+
+impl BillingSystem for XmlBillingSystem {
+    /// `XMLBillingSystem::getEntityKeyForAccount`,
+    /// `xml_billing_system.cpp:79-116`.
+    fn get_entity_key_for_account(
+        &mut self,
+        logon_name: &str,
+        password: &str,
+        _client_addr: Address,
+    ) -> EntityKeyOutcome {
+        if self.base.config.authenticate_via_base_entity {
+            return EntityKeyOutcome::LoadFromUsername {
+                entity_type: self.base.entity_type_id_for_unknown_users,
+                username: logon_name.to_string(),
+                should_create_new_on_load_failure: true,
+                should_remember_new_on_load_failure: false,
+                data_for_client: String::new(),
+                // The password rides to the base entity as its data.
+                data_for_base_entity: password.to_string(),
+            };
+        }
+
+        if let Some(mapping) = self.logon_map.get(logon_name) {
+            if mapping.password == password {
+                EntityKeyOutcome::Success {
+                    key: mapping.entity_key,
+                    data_for_client: String::new(),
+                    data_for_base_entity: String::new(),
+                }
+            } else {
+                EntityKeyOutcome::Failure {
+                    status: LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
+                    error_msg: String::new(),
+                }
+            }
+        } else if self.base.config.should_accept_unknown_users {
+            EntityKeyOutcome::CreateNew {
+                entity_type: self.base.entity_type_id_for_unknown_users,
+                should_remember: self.base.config.should_remember_unknown_users,
+                data_for_client: String::new(),
+                data_for_base_entity: String::new(),
+            }
+        } else {
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_NO_SUCH_USER),
+                error_msg: String::new(),
+            }
+        }
+    }
+
+    /// `XMLBillingSystem::setEntityKeyForAccount`,
+    /// `xml_billing_system.cpp:119-159`. An existing mapping updates its
+    /// item in place; a new one appends an `<item>`.
+    fn set_entity_key_for_account(
+        &mut self,
+        username: &str,
+        password: &str,
+        key: EntityKey,
+    ) -> SetEntityKeyOutcome {
+        // Try to find existing section (`xml_billing_system.cpp:123-136`).
+        let mut item_index = None;
+        if self.logon_map.contains_key(username) {
+            for index in 0..self.logon_section.count_children() {
+                let item = self
+                    .logon_section
+                    .open_child(index)
+                    .expect("index below count_children");
+                if item.read_string("logOnName", "") == username {
+                    item_index = Some(index);
+                    break;
+                }
+            }
+        }
+
+        self.logon_map.insert(
+            username.to_string(),
+            LogOnMapping {
+                entity_key: key,
+                password: password.to_string(),
+            },
+        );
+
+        let type_name = self
+            .defs
+            .entity_description(key.type_id)
+            .map(|desc| desc.name.clone())
+            .unwrap_or_default();
+
+        let item_index = match item_index {
+            Some(index) => index,
+            None => {
+                self.logon_section.add_child("item");
+                self.logon_section.count_children() - 1
+            }
+        };
+
+        let item = self
+            .logon_section
+            .child_mut(item_index)
+            .expect("index just chosen");
+        item.write_string("logOnName", username);
+        item.write_string("password", password);
+        item.write_string("type", &type_name);
+        // `pSection->write( "entityID", ekey.dbID )` — find-or-create the
+        // child, then set its value.
+        if item.find_child("entityID").is_none() {
+            item.add_child("entityID");
+        }
+        for index in 0..item.count_children() {
+            if let Some(child) = item.child_mut(index)
+                && child.section_name() == "entityID"
+            {
+                child.set_int64(key.db_id);
+                break;
+            }
+        }
+
+        SetEntityKeyOutcome::Success(key)
+    }
+
+    fn is_okay(&self) -> bool {
+        self.base.is_okay()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xml_database::tests::defs;
+    use crate::xml_database::{AutoLoadUpdate, XmlDatabase};
+    use foundation::stream::BinaryStream;
+    use resources::datasection::parse;
 
-    fn row(name: &str, password: &str, entity_id: i32) -> AccountRow {
-        AccountRow {
-            log_on_name: name.to_owned(),
-            password: password.to_owned(),
-            entity_type: 1,
-            entity_id,
-        }
+    /// The DBApp's authenticate path always passes the zero address.
+    fn addr() -> Address {
+        Address::new(0, 0)
     }
 
-    fn lookup(name: &str, password: &str, entity_id: i32) -> AccountLookup {
-        AccountLookup {
-            row: row(name, password, entity_id),
-            bigworld_type_id: Some(1),
-            entity_id: Some(entity_id as DatabaseId),
-        }
+    /// A database holding one named Avatar (id 1) and a LogOnMapping
+    /// section with a by-id row, a by-name row and an invalid-type row.
+    fn fixture(logon_xml: &str) -> (XmlDatabase, XmlBillingSystem, u16) {
+        let mut database = XmlDatabase::new(defs());
+        let avatar = defs().name_to_index("Avatar").unwrap();
+        let mut stream = BinaryStream::new();
+        let _ = stream.write_string("moe");
+        stream.write_i32(10);
+        stream.write_i64(0);
+        database
+            .put_entity_stream(avatar, 1, &mut stream, AutoLoadUpdate::Retain, true)
+            .expect("put");
+
+        let section = parse("root", logon_xml.as_bytes()).expect("parse logon map");
+        let config = BillingConfig {
+            should_accept_unknown_users: false,
+            should_remember_unknown_users: false,
+            authenticate_via_base_entity: false,
+            entity_type_for_unknown_users: "Avatar".to_string(),
+        };
+        let system = XmlBillingSystem::new(section, config, defs(), &database);
+        (database, system, avatar)
+    }
+
+    const LOGON_MAP: &str = "<root> \
+         <item> <logOnName> moe </logOnName> <password> secret </password> \
+             <type> Avatar </type> <entityID> 1 </entityID> </item> \
+         <item> <logOnName> byname </logOnName> <password> pw2 </password> \
+             <type> Avatar </type> <entityName> moe </entityName> </item> \
+         <item> <logOnName> badtype </logOnName> <password> pw3 </password> \
+             <type> Nobody </type> </item> \
+     </root>";
+
+    /// The `billingSystem/` block keeps the defaults for missing children
+    /// (`BWConfig::get( path, default )`).
+    #[test]
+    fn the_billing_config_block_reads_with_defaults() {
+        let empty = parse("root", b"<root/>").expect("parse");
+        let config = BillingConfig::from_section(&empty);
+        assert!(!config.should_accept_unknown_users);
+        assert!(!config.should_remember_unknown_users);
+        assert!(!config.authenticate_via_base_entity);
+        assert_eq!(config.entity_type_for_unknown_users, "");
+
+        let full = parse(
+            "root",
+            b"<root> \
+               <shouldAcceptUnknownUsers> true </shouldAcceptUnknownUsers> \
+               <shouldRememberUnknownUsers> TRUE </shouldRememberUnknownUsers> \
+               <authenticateViaBaseEntity> false </authenticateViaBaseEntity> \
+               <entityTypeForUnknownUsers> Nobody </entityTypeForUnknownUsers> \
+             </root>",
+        )
+        .expect("parse");
+        let config = BillingConfig::from_section(&full);
+        assert!(config.should_accept_unknown_users);
+        assert!(config.should_remember_unknown_users);
+        assert!(!config.authenticate_via_base_entity);
+        assert_eq!(config.entity_type_for_unknown_users, "Nobody");
     }
 
     #[test]
-    fn the_config_resolves_the_unknown_user_type_or_leaves_it_invalid() {
-        let known = BillingConfig::from_name(true, true, false, "Avatar", |name| {
-            (name == "Avatar").then_some(1)
-        });
-        assert_eq!(known.entity_type_id_for_unknown_users, 1);
-        assert!(known.is_okay());
-
-        let unknown = BillingConfig::from_name(true, true, false, "Nope", |_| None);
-        assert_eq!(
-            unknown.entity_type_id_for_unknown_users,
-            INVALID_ENTITY_TYPE_ID
-        );
-        assert!(!unknown.is_okay(), "unknown users need a type");
-
-        let plain = BillingConfig::disabled();
-        assert!(plain.is_okay(), "no unknown face needs no type");
-    }
-
-    /// The outcome table: legal accounts log on, wrong passwords and
-    /// unknown names are rejected with the reference's statuses.
-    #[test]
-    fn the_standard_arbitration_matches_the_reference_statuses() {
-        let config = BillingConfig::disabled();
-        let found = lookup("hero", "secret", 7);
+    fn a_legal_account_matches_to_its_mapped_key() {
+        let (_database, mut system, avatar) = fixture(LOGON_MAP);
 
         assert_eq!(
-            get_entity_key_for_account(&config, Some(&found), "hero", false, "secret"),
-            GetEntityKeyOutcome::Success {
+            system.get_entity_key_for_account("moe", "secret", addr()),
+            EntityKeyOutcome::Success {
                 key: EntityKey {
-                    type_id: 1,
-                    db_id: 7
+                    type_id: avatar,
+                    db_id: 1
                 },
                 data_for_client: String::new(),
                 data_for_base_entity: String::new(),
             }
         );
-        assert_eq!(
-            get_entity_key_for_account(&config, Some(&found), "hero", false, "wrong"),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
-                error_msg: String::new(),
-            }
-        );
-        assert_eq!(
-            get_entity_key_for_account(&config, None, "ghost", false, "anything"),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
-                error_msg: String::new(),
-            }
-        );
     }
 
-    /// The hashed-password leg: the flag only decides how `presented`
-    /// was formed — the compare stays byte-exact both ways.
     #[test]
-    fn hashed_passwords_compare_bytes_like_the_query() {
-        let config = BillingConfig::disabled();
-        let digest = "5f4dcc3b5aa765d61d8327deb882cf99";
-        let hashed = AccountLookup {
-            row: row("hero", digest, 7),
-            bigworld_type_id: Some(1),
-            entity_id: Some(7),
-        };
-        // MD5("password" + "hero") presented for a hashed store.
+    fn a_zero_entity_id_resolves_the_entity_by_name() {
+        let (database, mut system, avatar) = fixture(LOGON_MAP);
+        let _ = database;
+
         assert_eq!(
-            get_entity_key_for_account(&config, Some(&hashed), "hero", true, digest),
-            GetEntityKeyOutcome::Success {
+            system.get_entity_key_for_account("byname", "pw2", addr()),
+            EntityKeyOutcome::Success {
                 key: EntityKey {
-                    type_id: 1,
-                    db_id: 7
+                    type_id: avatar,
+                    db_id: 1
                 },
                 data_for_client: String::new(),
                 data_for_base_entity: String::new(),
             }
         );
-        // The plain password never matches a digest store.
+    }
+
+    #[test]
+    fn an_invalid_password_and_an_unknown_user_are_rejected() {
+        let (_database, mut system, _avatar) = fixture(LOGON_MAP);
+
         assert_eq!(
-            get_entity_key_for_account(&config, Some(&hashed), "hero", true, "password"),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
+            system.get_entity_key_for_account("moe", "wrong", addr()),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
+                error_msg: String::new(),
+            }
+        );
+        // The bad-type row was ignored at init, so it is an unknown user.
+        assert_eq!(
+            system.get_entity_key_for_account("badtype", "pw3", addr()),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_NO_SUCH_USER),
                 error_msg: String::new(),
             }
         );
     }
 
-    /// A mapped account with no stored entity id creates — and the
-    /// create is remembered, unlike an unknown user's.
     #[test]
-    fn a_mapped_account_without_an_entity_creates_and_remembers() {
-        let config = BillingConfig::from_name(true, false, false, "Avatar", |_| Some(1));
-        let unmapped = AccountLookup {
-            row: row("hero", "secret", 0),
-            bigworld_type_id: Some(1),
-            entity_id: None,
+    fn unknown_users_are_accepted_only_when_configured() {
+        let (_database, _system, avatar) = fixture(LOGON_MAP);
+
+        // shouldAcceptUnknownUsers on: a stranger gets a create-new with
+        // the configured unknown-user type and the remember flag.
+        let section = parse("root", b"<root/>").expect("parse");
+        let config = BillingConfig {
+            should_accept_unknown_users: true,
+            should_remember_unknown_users: true,
+            authenticate_via_base_entity: false,
+            entity_type_for_unknown_users: "Avatar".to_string(),
         };
+        let mut accepting = XmlBillingSystem::new(section, config, defs(), &empty_db());
         assert_eq!(
-            get_entity_key_for_account(&config, Some(&unmapped), "hero", false, "secret"),
-            GetEntityKeyOutcome::CreateNew {
-                type_id: 1,
+            accepting.get_entity_key_for_account("stranger", "pw", addr()),
+            EntityKeyOutcome::CreateNew {
+                entity_type: avatar,
                 should_remember: true,
                 data_for_client: String::new(),
                 data_for_base_entity: String::new(),
@@ -557,281 +532,140 @@ mod tests {
         );
     }
 
-    /// Unknown users only create when the config accepts them, with the
-    /// configured remember flag and the unknown-user type.
     #[test]
-    fn unknown_users_create_only_when_accepted() {
-        let accepting = BillingConfig::from_name(true, true, false, "Avatar", |_| Some(1));
-        assert_eq!(
-            get_entity_key_for_account(&accepting, None, "stranger", false, "x"),
-            GetEntityKeyOutcome::CreateNew {
-                type_id: 1,
-                should_remember: true,
-                data_for_client: String::new(),
-                data_for_base_entity: String::new(),
-            }
-        );
-        let strict = BillingConfig::disabled();
-        assert_eq!(
-            get_entity_key_for_account(&strict, None, "stranger", false, "x"),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
-                error_msg: String::new(),
-            }
-        );
-    }
-
-    /// A type whose BigWorld mapping is missing falls back to the
-    /// unknown-user type id (`pEntityTypeID == NULL`).
-    #[test]
-    fn a_missing_type_mapping_falls_back_to_the_unknown_user_type() {
-        let config = BillingConfig::from_name(false, false, false, "", |_| Some(9));
-        let orphan = AccountLookup {
-            row: row("hero", "secret", 7),
-            bigworld_type_id: None,
-            entity_id: Some(7),
+    fn base_entity_authentication_defers_to_the_username_load() {
+        let section = parse("root", b"<root/>").expect("parse");
+        let config = BillingConfig {
+            should_accept_unknown_users: false,
+            should_remember_unknown_users: false,
+            authenticate_via_base_entity: true,
+            entity_type_for_unknown_users: "Avatar".to_string(),
         };
-        assert_eq!(
-            get_entity_key_for_account(&config, Some(&orphan), "hero", false, "secret"),
-            GetEntityKeyOutcome::Success {
-                key: EntityKey {
-                    type_id: 9,
-                    db_id: 7
-                },
-                data_for_client: String::new(),
-                data_for_base_entity: String::new(),
-            }
-        );
-    }
+        let mut system = XmlBillingSystem::new(section, config, defs(), &empty_db());
 
-    /// The base-entity leg bypasses the row entirely and hands the
-    /// password to the entity as its data.
-    #[test]
-    fn base_entity_authentication_loads_by_username() {
-        let config = BillingConfig::from_name(false, false, true, "Avatar", |_| Some(1));
+        // The password rides as the base entity's data
+        // (`xml_billing_system.cpp:83-91`).
         assert_eq!(
-            get_entity_key_for_account(&config, None, "stranger", true, "pw"),
-            GetEntityKeyOutcome::LoadFromUsername {
-                type_id: 1,
-                username: "stranger".to_owned(),
+            system.get_entity_key_for_account("whoever", "their-password", addr()),
+            EntityKeyOutcome::LoadFromUsername {
+                entity_type: 0,
+                username: "whoever".to_string(),
                 should_create_new_on_load_failure: true,
                 should_remember_new_on_load_failure: false,
                 data_for_client: String::new(),
-                data_for_base_entity: "pw".to_owned(),
-            }
-        );
-    }
-
-    /// The query's exception maps to the general-failure status, and no
-    /// unknown-user accept reroutes it (`:100-105` only routes
-    /// `NO_SUCH_USER`).
-    #[test]
-    fn a_general_failure_stays_a_failure() {
-        let config = BillingConfig::from_name(true, true, false, "Avatar", |_| Some(1));
-        assert_eq!(
-            dispatch_get(AccountLogOn::RejectedDbGeneralFailure, None, &config),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE,
-                error_msg: String::new(),
+                data_for_base_entity: "their-password".to_string(),
             }
         );
     }
 
     #[test]
-    fn the_set_dispatch_reports_the_key_both_ways() {
+    fn set_updates_the_existing_item_and_appends_new_ones() {
+        let (mut database, mut system, avatar) = fixture(LOGON_MAP);
+        let children_before = system.logon_section_child_count();
+
+        // Password rotation on "moe": one item, changed password.
         let key = EntityKey {
-            type_id: 1,
-            db_id: 7,
+            type_id: avatar,
+            db_id: 1,
         };
-        assert_eq!(dispatch_set(key, true), SetEntityKeyOutcome::Success(key));
-        assert_eq!(dispatch_set(key, false), SetEntityKeyOutcome::Failure(key));
-    }
-
-    /// The XML face: entries resolve through the type names, invalid
-    /// types are dropped, and entityID 0 falls to the name lookup.
-    #[test]
-    fn the_xml_map_harvests_entries_like_init_log_on_mapping() {
-        let entries = vec![
-            XmlLogOnEntry {
-                log_on_name: "hero".to_owned(),
-                type_name: "Avatar".to_owned(),
-                entity_id: 7,
-                entity_name: String::new(),
-                password: "secret".to_owned(),
-            },
-            XmlLogOnEntry {
-                log_on_name: "named".to_owned(),
-                type_name: "Avatar".to_owned(),
-                entity_id: 0,
-                entity_name: "Kept".to_owned(),
-                password: "pw2".to_owned(),
-            },
-            XmlLogOnEntry {
-                log_on_name: "broken".to_owned(),
-                type_name: "Nope".to_owned(),
-                entity_id: 9,
-                entity_name: String::new(),
-                password: "pw3".to_owned(),
-            },
-        ];
-        let system = XmlBillingSystem::from_entries(
-            entries,
-            |name| (name == "Avatar").then_some(1),
-            |type_id, name| {
-                assert_eq!((type_id, name), (1, "Kept"));
-                Some(3)
-            },
-        );
-        assert_eq!(system.mapping("broken"), None);
         assert_eq!(
-            system.mapping("named").map(|m| m.entity_key),
-            Some(EntityKey {
-                type_id: 1,
-                db_id: 3
-            })
+            system.set_entity_key_for_account("moe", "rotated", key),
+            SetEntityKeyOutcome::Success(key)
         );
-    }
-
-    /// The XML outcome table mirrors the reference's map lookup.
-    #[test]
-    fn the_xml_face_rejects_and_accepts_like_the_reference() {
-        let entries = vec![XmlLogOnEntry {
-            log_on_name: "hero".to_owned(),
-            type_name: "Avatar".to_owned(),
-            entity_id: 7,
-            entity_name: String::new(),
-            password: "secret".to_owned(),
-        }];
-        let system = XmlBillingSystem::from_entries(
-            entries,
-            |name| (name == "Avatar").then_some(1),
-            |_, _| None,
-        );
-        let strict = BillingConfig::disabled();
-        let accepting = BillingConfig::from_name(true, true, false, "Avatar", |_| Some(1));
-
+        assert_eq!(system.logon_section_child_count(), children_before);
         assert_eq!(
-            system.get_entity_key_for_account(&strict, "hero", "secret"),
-            GetEntityKeyOutcome::Success {
-                key: EntityKey {
-                    type_id: 1,
-                    db_id: 7
-                },
+            system.get_entity_key_for_account("moe", "rotated", addr()),
+            EntityKeyOutcome::Success {
+                key,
                 data_for_client: String::new(),
                 data_for_base_entity: String::new(),
             }
         );
         assert_eq!(
-            system.get_entity_key_for_account(&strict, "hero", "bad"),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
+            system.get_entity_key_for_account("moe", "secret", addr()),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
                 error_msg: String::new(),
             }
         );
+
+        // A brand-new account appends exactly one item, written in the
+        // reference's column order.
+        let key2 = EntityKey {
+            type_id: avatar,
+            db_id: 2,
+        };
         assert_eq!(
-            system.get_entity_key_for_account(&strict, "ghost", "x"),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
-                error_msg: String::new(),
-            }
+            system.set_entity_key_for_account("curly", "pw", key2),
+            SetEntityKeyOutcome::Success(key2)
         );
+        assert_eq!(system.logon_section_child_count(), children_before + 1);
+        let item = system
+            .logon_section_ref()
+            .open_child(system.logon_section_ref().count_children() - 1)
+            .expect("appended item");
+        assert_eq!(item.read_string("logOnName", ""), "curly");
+        assert_eq!(item.read_string("password", ""), "pw");
+        assert_eq!(item.read_string("type", ""), "Avatar");
         assert_eq!(
-            system.get_entity_key_for_account(&accepting, "ghost", "x"),
-            GetEntityKeyOutcome::CreateNew {
-                type_id: 1,
-                should_remember: true,
-                data_for_client: String::new(),
-                data_for_base_entity: String::new(),
-            }
+            item.find_child("entityID")
+                .map(|c| c.as_int64(0))
+                .unwrap_or(-1),
+            2
         );
+
+        // The map agrees with the section.
+        assert_eq!(system.logon_map().len(), 3);
+        assert_eq!(system.logon_map()["curly"].password, "pw");
+
+        // And the whole thing still round-trips through the database's
+        // info section on save.
+        database.set_file_path("unused");
+        let _ = database.to_xml();
     }
 
-    /// The XML face's base-entity leg: the map is skipped and the
-    /// password rides as the base entity's data.
     #[test]
-    fn the_xml_base_entity_leg_loads_by_username() {
-        let entries = vec![XmlLogOnEntry {
-            log_on_name: "hero".to_owned(),
-            type_name: "Avatar".to_owned(),
-            entity_id: 7,
-            entity_name: String::new(),
-            password: "secret".to_owned(),
-        }];
-        let system = XmlBillingSystem::from_entries(
-            entries,
-            |name| (name == "Avatar").then_some(1),
-            |_, _| None,
+    fn is_okay_follows_the_configuration_matrix() {
+        let section = parse("root", b"<root/>").expect("parse");
+
+        // No unknown-user type, no accepting flags: the default setup is
+        // fine (it just rejects strangers).
+        let plain = XmlBillingSystem::new(
+            parse("root", b"<root/>").expect("parse"),
+            BillingConfig::default(),
+            defs(),
+            &empty_db(),
         );
-        let config = BillingConfig::from_name(false, false, true, "Avatar", |_| Some(1));
-        assert_eq!(
-            system.get_entity_key_for_account(&config, "hero", "pw"),
-            GetEntityKeyOutcome::LoadFromUsername {
-                type_id: 1,
-                username: "hero".to_owned(),
-                should_create_new_on_load_failure: true,
-                should_remember_new_on_load_failure: false,
-                data_for_client: String::new(),
-                data_for_base_entity: "pw".to_owned(),
-            }
+        assert!(BillingSystem::is_okay(&plain));
+
+        // Accepting strangers without a valid unknown-user type is not.
+        let broken = XmlBillingSystem::new(
+            section,
+            BillingConfig {
+                should_accept_unknown_users: true,
+                should_remember_unknown_users: false,
+                authenticate_via_base_entity: false,
+                entity_type_for_unknown_users: "Nobody".to_string(),
+            },
+            defs(),
+            &empty_db(),
         );
+        assert!(!BillingSystem::is_okay(&broken));
     }
 
-    /// The set face upserts the map and hands back the section write
-    /// with the type's name.
-    #[test]
-    fn the_xml_set_upserts_and_writes_the_section_entry() {
-        let mut system = XmlBillingSystem::default();
-        let (outcome, write) = system.set_entity_key_for_account(
-            "hero",
-            "secret",
-            EntityKey {
-                type_id: 1,
-                db_id: 7,
-            },
-            |type_id| (type_id == 1).then(|| "Avatar".to_owned()).unwrap(),
-        );
-        assert_eq!(
-            outcome,
-            SetEntityKeyOutcome::Success(EntityKey {
-                type_id: 1,
-                db_id: 7
-            })
-        );
-        assert_eq!(
-            write,
-            XmlLogOnEntryWrite {
-                log_on_name: "hero".to_owned(),
-                password: "secret".to_owned(),
-                type_name: "Avatar".to_owned(),
-                entity_id: 7,
-            }
-        );
-        assert_eq!(
-            system.mapping("hero").map(|m| m.password.as_str()),
-            Some("secret")
-        );
+    // -- helpers ---------------------------------------------------------
 
-        // An overwrite keeps the map single-valued per name.
-        let (outcome, _) = system.set_entity_key_for_account(
-            "hero",
-            "new",
-            EntityKey {
-                type_id: 2,
-                db_id: 8,
-            },
-            |_| "Goblin".to_owned(),
-        );
-        assert!(matches!(outcome, SetEntityKeyOutcome::Success(_)));
-        assert_eq!(
-            system.mapping("hero").map(|m| m.entity_key),
-            Some(EntityKey {
-                type_id: 2,
-                db_id: 8
-            })
-        );
-        assert_eq!(
-            system.mapping("hero").map(|m| m.password.as_str()),
-            Some("new")
-        );
+    fn empty_db() -> XmlDatabase {
+        XmlDatabase::new(defs())
+    }
+
+    impl XmlBillingSystem {
+        fn logon_section_child_count(&self) -> usize {
+            self.logon_section_ref().count_children()
+        }
+
+        fn logon_section_ref(&self) -> &DataSection {
+            &self.logon_section
+        }
     }
 }

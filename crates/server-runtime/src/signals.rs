@@ -187,6 +187,23 @@ impl Set {
         self.is_clear = self.is_clear();
     }
 
+    /// The quit set every server process holds: `SIGTERM`/`SIGINT`/
+    /// `SIGQUIT`, the signals whose first arrival ends the run. Both
+    /// holders build it the same way: the role entry (`app::run`) and
+    /// the topology supervisor (`topology::run_topology`), so a stop
+    /// reaches whichever thread is holding the wait.
+    pub fn quit() -> Self {
+        let mut set = Set::empty();
+        for sig in [
+            platform::signals::SIGTERM,
+            platform::signals::SIGINT,
+            platform::signals::SIGQUIT,
+        ] {
+            set.set(sig);
+        }
+        set
+    }
+
     pub fn set(&mut self, signal: i32) {
         unsafe {
             libc::sigaddset(&mut self.raw, signal);
@@ -272,15 +289,16 @@ pub fn disposition_of(sig_num: i32) -> usize {
     }
 }
 
-/// One `(signal, id, handler)` registration-table row.
+/// One registration entry: the signal number, the registration id and the
+/// handler, kept in registration order (the reference's multimap keeps
+/// insertion order within a signal).
 type HandlerEntry = (i32, HandlerId, Rc<RefCell<dyn SignalHandler>>);
 
 /// `SignalProcessor`: registration + the dispatch drain. The global
 /// signal/quit-handler state is shared exactly like the reference's
 /// singleton; instances manage the main-thread registration table.
 pub struct SignalProcessor {
-    /// Registration order (the reference's multimap keeps insertion
-    /// order within a signal).
+    /// `(signal, id, handler)` in registration order.
     handlers: Vec<HandlerEntry>,
     /// Whether this instance installed the `SIGQUIT` slot.
     quit_installed: bool,

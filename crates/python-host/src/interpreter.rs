@@ -679,7 +679,6 @@ mod tests {
         "interpreter::tests::scenario_swapping_in_a_module_window_keeps_sys_and_main",
         "interpreter::tests::scenario_migrate_reports_the_hook_success_and_failure",
         "interpreter::tests::scenario_a_failed_reload_leaves_the_old_definitions_callable",
-        "bw_profile::tests::scenario_the_module_imports_and_answers_the_state_faces",
     ];
 
     /// Runs `scenario` in a fresh process of this test binary and requires it to

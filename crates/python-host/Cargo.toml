@@ -12,6 +12,9 @@ repository.workspace = true
 # the search path behind the `ResMgr` module functions.
 foundation = { workspace = true }
 resources = { workspace = true }
-# The `_bw_profile` write probe is the reference's `access( dir, W_OK )`
-# (`bw_profile.cpp:211`), not a permission-bit re-reading.
+# The `_bw_profile` module (BW-12-03-02) records through the profiler's
+# `g_profiler` global (BW-12-03-01).
+profiler = { workspace = true }
+# `access`/`W_OK`/`strerror` behind `setJsonDumpDir`'s writability check
+# (`bw_profile.cpp:211-216`).
 libc = { workspace = true }

@@ -8,7 +8,14 @@ members = [
     "crates/contracts",
     "crates/entitydef",
     "crates/chunk",
+    "crates/compiled-space",
+    "crates/scene",
+    "crates/terrain",
+    "crates/physics",
+    "crates/waypoint",
+    "crates/waypoint-gen",
     "crates/db",
+    "crates/db-postgres",
     "crates/python-host",
     "crates/python-module",
     "crates/server-runtime",
@@ -18,8 +25,10 @@ members = [
     "crates/plugin-host",
     "crates/watcher",
     "crates/message_logger",
+    "crates/profiler",
     "crates/client",
     "crates/load",
+    "apps/bots",
     "apps/server",
 ]
 
@@ -42,26 +51,40 @@ sha2 = "0.10"
 # OpenSSL's `BF_set_key`/`BF_ecb_encrypt`; this crate is the standard Blowfish
 # (wire-tested against Eric Young's published vectors in the unit tests).
 blowfish = "0.9"
-# The secondary database reader (BW-09-03-02): the reference links sqlite3
-# directly (`server/baseapp/sqlite_database.cpp`); `bundled` keeps the file
-# format pinned regardless of the host's libsqlite3.
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+# PostgreSQL wire client for the BW-09-06 storage backend (sync libpq
+# conventions; JSONB columns carry the nested property values).
+postgres = "0.19"
+# JSON encoding for the JSONB columns (the nested PropertyValue codec).
+serde_json = "1"
 
 # Internal crates, dependency direction: apps -> role runtimes -> contracts &
 # domain libs -> foundation (BW-16-01).
 foundation = { path = "crates/foundation" }
+load = { path = "crates/load" }
 platform = { path = "crates/platform" }
 resources = { path = "crates/resources" }
+watcher = { path = "crates/watcher" }
 mercury = { path = "crates/mercury" }
 contracts = { path = "crates/contracts" }
 entitydef = { path = "crates/entitydef" }
+db = { path = "crates/db" }
+db-postgres = { path = "crates/db-postgres" }
+scene = { path = "crates/scene" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
 python-host = { path = "crates/python-host" }
+# The profiler frame and counter compatibility layer (BW-12-03-01); the
+# `_bw_profile` module (BW-12-03-02) records through its `g_profiler`
+# global.
+profiler = { path = "crates/profiler" }
 server-runtime = { path = "crates/server-runtime" }
-# client = { path = "crates/client" }  # re-add with first consumer
+# The waypoint navigation mesh reader/search (BW-10-04/05); server-runtime's
+# MeshNavigator (BW-10-06-01) is the first runtime consumer.
+waypoint = { path = "crates/waypoint" }
+client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
 # load = { path = "crates/load" }  # re-add with first consumer
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }
+terrain = { path = "crates/terrain" }
 # plugin-host = { path = "crates/plugin-host" }  # re-add with first consumer
 
 [profile.release]

@@ -6,6 +6,15 @@ use super::vector::Vector3;
 /// `min` starts at `FLT_MAX`, `max` at `-FLT_MAX`: the default box is
 /// inside-out (`boundbox.ipp:10-14`).
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RayIntersectionType {
+    NoIntersection,
+    OriginInside,
+    Intersection,
+}
+
+/// `min` starts at `FLT_MAX`, `max` at `-FLT_MAX`: the default box is
+/// inside-out (`boundbox.ipp:10-14`).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoundBox {
     pub min: Vector3,
     pub max: Vector3,
@@ -126,6 +135,207 @@ impl BoundBox {
     /// Efficient eight-corner transform (`boundbox.cpp:73-118`): transform
     /// the min corner, then accumulate the axis-aligned extents row by row
     /// with sign handling.
+    pub fn add_bound_box(&mut self, bb: &Self) {
+        if bb.inside_out() {
+            return;
+        }
+        if self.inside_out() {
+            self.min = bb.min;
+            self.max = bb.max;
+        } else {
+            self.min.x = self.min.x.min(bb.min.x);
+            self.min.y = self.min.y.min(bb.min.y);
+            self.min.z = self.min.z.min(bb.min.z);
+            self.max.x = self.max.x.max(bb.max.x);
+            self.max.y = self.max.y.max(bb.max.y);
+            self.max.z = self.max.z.max(bb.max.z);
+        }
+    }
+    pub fn clip(&self, source: &mut Vector3, extent: &mut Vector3, bloat: f32) -> bool {
+        let mut s_min = 0.0f32;
+        let mut e_max = 1.0f32;
+
+        let delta = *extent - *source;
+
+        // check the x faces
+        if delta.x != 0.0 {
+            // find the parameter along the line as it crosses these faces
+            let mt_x = (self.min.x - bloat - source.x) / delta.x;
+            let mt_up_x = (self.max.x + bloat - source.x) / delta.x;
+
+            // see if it moves in the min or max,
+            //  (depends on line dir in this axis)
+            if delta.x > 0.0 {
+                if mt_x > s_min {
+                    s_min = mt_x;
+                }
+                if mt_up_x < e_max {
+                    e_max = mt_up_x;
+                }
+            } else {
+                if mt_up_x > s_min {
+                    s_min = mt_up_x;
+                }
+                if mt_x < e_max {
+                    e_max = mt_x;
+                }
+            }
+        } else if source.x < self.min.x - bloat || source.x >= self.max.x + bloat {
+            return false;
+        }
+
+        // check the y faces
+        if delta.y != 0.0 {
+            let mt_y = (self.min.y - bloat - source.y) / delta.y;
+            let mt_up_y = (self.max.y + bloat - source.y) / delta.y;
+            if delta.y > 0.0 {
+                if mt_y > s_min {
+                    s_min = mt_y;
+                }
+                if mt_up_y < e_max {
+                    e_max = mt_up_y;
+                }
+            } else {
+                if mt_up_y > s_min {
+                    s_min = mt_up_y;
+                }
+                if mt_y < e_max {
+                    e_max = mt_y;
+                }
+            }
+        } else if source.y < self.min.y - bloat || source.y >= self.max.y + bloat {
+            return false;
+        }
+
+        // check the z faces
+        if delta.z != 0.0 {
+            let mt_z = (self.min.z - bloat - source.z) / delta.z;
+            let mt_up_z = (self.max.z + bloat - source.z) / delta.z;
+            if delta.z > 0.0 {
+                if mt_z > s_min {
+                    s_min = mt_z;
+                }
+                if mt_up_z < e_max {
+                    e_max = mt_up_z;
+                }
+            } else {
+                if mt_up_z > s_min {
+                    s_min = mt_up_z;
+                }
+                if mt_z < e_max {
+                    e_max = mt_z;
+                }
+            }
+        } else if source.z < self.min.z - bloat || source.z >= self.max.z + bloat {
+            return false;
+        }
+
+        // get out if it's not inside
+        if s_min >= e_max {
+            return false;
+        }
+
+        // otherwise set the points the the calculated parameters
+        // (reference: `source + eMax * delta` — float*vector, bitwise the
+        // same as the vector*scale form used here)
+        *extent = *source + delta * e_max;
+        *source = *source + delta * s_min;
+
+        // and that's it
+        true
+    }
+    pub fn intersects_ray(&self, origin: &Vector3, dir: &Vector3) -> bool {
+        let bounds = [self.min, self.max];
+        for bound in &bounds {
+            for axis in 0..3 {
+                if dir.get(axis) != 0.0 {
+                    let t = (bound.get(axis) - origin.get(axis)) / dir.get(axis);
+
+                    if t > 0.0 {
+                        let pt_on_plane = *origin + *dir * t;
+
+                        let next_axis = (axis + 1) % 3;
+                        let prev_axis = (axis + 2) % 3;
+
+                        if self.min.get(next_axis) < pt_on_plane.get(next_axis)
+                            && pt_on_plane.get(next_axis) < self.max.get(next_axis)
+                            && self.min.get(prev_axis) < pt_on_plane.get(prev_axis)
+                            && pt_on_plane.get(prev_axis) < self.max.get(prev_axis)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
+    pub fn intersects_ray_hit(
+        &self,
+        origin: &Vector3,
+        dir: &Vector3,
+        coord: &mut Vector3,
+    ) -> RayIntersectionType {
+        const RAYAABB_EPSILON: f32 = 0.00001;
+
+        let mut is_inside = true;
+        let min_bounds = self.min;
+        let max_bounds = self.max;
+        let mut max_t = Vector3::new(-1.0, -1.0, -1.0);
+
+        // Find candidate planes.
+        for i in 0..3 {
+            if origin.get(i) < min_bounds.get(i) {
+                coord.set(i, min_bounds.get(i));
+                is_inside = false;
+
+                // Calculate T distances to candidate planes
+                if dir.get(i).to_bits() != 0 {
+                    max_t.set(i, (min_bounds.get(i) - origin.get(i)) / dir.get(i));
+                }
+            } else if origin.get(i) > max_bounds.get(i) {
+                coord.set(i, max_bounds.get(i));
+                is_inside = false;
+
+                if dir.get(i).to_bits() != 0 {
+                    max_t.set(i, (max_bounds.get(i) - origin.get(i)) / dir.get(i));
+                }
+            }
+        }
+
+        // Ray origin inside bounding box
+        if is_inside {
+            *coord = *origin;
+            return RayIntersectionType::OriginInside;
+        }
+
+        // Get smallest of the maxT's for final choice of intersection
+        let mut which_plane = 0usize;
+        if max_t.get(1) > max_t.get(which_plane) {
+            which_plane = 1;
+        }
+        if max_t.get(2) > max_t.get(which_plane) {
+            which_plane = 2;
+        }
+
+        // Check final candidate actually inside box
+        if max_t.get(which_plane).to_bits() & 0x8000_0000 != 0 {
+            return RayIntersectionType::NoIntersection;
+        }
+
+        for i in 0..3 {
+            if i != which_plane {
+                coord.set(i, origin.get(i) + max_t.get(which_plane) * dir.get(i));
+                if coord.get(i) < min_bounds.get(i) - RAYAABB_EPSILON
+                    || coord.get(i) > max_bounds.get(i) + RAYAABB_EPSILON
+                {
+                    return RayIntersectionType::NoIntersection;
+                }
+            }
+        }
+        RayIntersectionType::Intersection
+    }
     pub fn transform_by(&mut self, m: &Matrix) {
         let min = m.apply_point(&self.min);
         let mut new_min = min;

@@ -1,0 +1,13 @@
+[package]
+name = "compiled-space"
+description = "BW-10-02-01 compiled space binary container readers (BWTB/BWST/BWAL/BWCS)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation = { workspace = true }
+physics = { path = "../physics" }
+scene = { workspace = true }

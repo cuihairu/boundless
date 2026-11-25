@@ -1,0 +1,12 @@
+[package]
+name = "scene"
+description = "BW-10-02-04 scene delegation layer (lib/scene): type system, scene objects, provider/view wiring"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation = { workspace = true }
+physics = { path = "../physics" }

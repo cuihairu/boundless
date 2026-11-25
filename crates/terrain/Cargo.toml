@@ -1,0 +1,18 @@
+[package]
+name = "terrain"
+description = "BW-10-03 terrain2 readers (height map, holes, dominant materials)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Height-map PNG payloads are zlib streams (libpng-written IDATs), decoded
+# with the pure Rust backend so the workspace gate needs no system zlib.
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+# PNG chunk CRCs.
+crc32fast = "1.5.5"
+# The editor block face saves through the zip/BinSection faces and writes
+# the chunk terrain item section (`editor_chunk_terrain.cpp`).
+resources = { path = "../resources" }

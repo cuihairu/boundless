@@ -49,9 +49,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use entitydef::value::PropertyValue;
-use foundation::ids::{DatabaseId, EntityTypeId, GameTime, PENDING_DATABASE_ID};
+use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
 
-use crate::auto_load::{EntityAutoLoader, UpdateAutoLoad};
 use crate::error::DbError;
 use crate::record::EntityRecord;
 use crate::storage::{BaseMailbox, CheckOut, EntityKey, EntityStorage, StorageImage};
@@ -962,16 +961,6 @@ impl XmlDatabase {
     }
 
     /// The auto-load set, in id order (`autoLoadEntities`'s source).
-    /// The put-time flag write (`xml_database.cpp:700-711`): only a
-    /// successful put (`isOK`) touches the flag; `Retain` leaves it.
-    fn apply_auto_load(&mut self, db_id: DatabaseId, update_auto_load: UpdateAutoLoad) {
-        match update_auto_load {
-            UpdateAutoLoad::Retain => {}
-            UpdateAutoLoad::True => self.add_auto_load(db_id),
-            UpdateAutoLoad::False => self.remove_auto_load(db_id),
-        }
-    }
-
     pub fn auto_load_ids(&self) -> Vec<DatabaseId> {
         self.auto_load.iter().copied().collect()
     }
@@ -1045,7 +1034,6 @@ impl EntityStorage for XmlDatabase {
         key: &EntityKey,
         values: &[PropertyValue],
         put_explicit_id: bool,
-        update_auto_load: UpdateAutoLoad,
     ) -> Result<DatabaseId, DbError> {
         // `putExplicitID` is unused by the XML backend
         // (xml_database.cpp:67).
@@ -1090,7 +1078,6 @@ impl EntityStorage for XmlDatabase {
                 },
             );
             self.slots.push(Slot::Entity(db_id));
-            self.apply_auto_load(db_id, update_auto_load);
             return Ok(db_id);
         }
 
@@ -1134,7 +1121,6 @@ impl EntityStorage for XmlDatabase {
         self.slots
             .retain(|slot| !matches!(slot, Slot::Entity(db_id) if *db_id == key.db_id));
         self.slots.push(Slot::Entity(key.db_id));
-        self.apply_auto_load(key.db_id, update_auto_load);
         Ok(key.db_id)
     }
 
@@ -1197,47 +1183,6 @@ impl EntityStorage for XmlDatabase {
             .collect();
         records.sort_by_key(|record| (record.type_id, record.db_id));
         Ok(records)
-    }
-
-    fn game_time_of(&self, _key: &EntityKey) -> Result<Option<GameTime>, DbError> {
-        // The XML database has no per-entity gameTime: the reference reads
-        // the consolidation game time off the put stream and discards it
-        // ("Used in MySQL only", xml_database.cpp:648-650), so there is
-        // never a stored time to compare and no record is ever "newer".
-        Ok(None)
-    }
-
-    fn put_consolidated(
-        &mut self,
-        key: &EntityKey,
-        values: &[PropertyValue],
-        _game_time: GameTime,
-    ) -> Result<(), DbError> {
-        // Same discarded-stream face: the write is a plain put, and the
-        // consolidator never touches the flag
-        // (`UPDATE_AUTO_LOAD_RETAIN`).
-        self.put_entity(key, values, false, UpdateAutoLoad::Retain)
-            .map(|_| ())
-    }
-
-    /// `XMLDatabase::autoLoadEntities` (`xml_database.cpp:1059-1095`):
-    /// stream the flagged ids out in flag order; an id whose row is
-    /// gone is pruned from the set with a warning, not delivered. The
-    /// unknown-type error leg is unreachable here — our rows carry
-    /// `type_id` directly and puts reject unknown types up front.
-    fn auto_load_entities(&mut self, loader: &mut dyn EntityAutoLoader) -> Result<(), DbError> {
-        for db_id in self.auto_load.iter().copied().collect::<Vec<_>>() {
-            match self.rows.get(&db_id) {
-                Some(row) => loader.add_entity(row.type_id, db_id),
-                None => {
-                    // WARNING_MSG "removing database ID for non-existent
-                    // entity from auto-loading entities set".
-                    self.remove_auto_load(db_id);
-                }
-            }
-        }
-        loader.start();
-        Ok(())
     }
 }
 
@@ -2054,7 +1999,7 @@ mod tests {
         let mut values = avatar_values("Renamed");
         values[1] = PropertyValue::Int(10);
         let db_id = database
-            .put_entity(&key(1, 1), &values, false, UpdateAutoLoad::Retain)
+            .put_entity(&key(1, 1), &values, false)
             .expect("the update lands");
 
         assert_eq!(db_id, 1);
@@ -2090,12 +2035,7 @@ mod tests {
     fn an_update_keeps_the_cell_sections_the_def_face_does_not_read() {
         let mut database = demo();
         database
-            .put_entity(
-                &key(1, 1),
-                &avatar_values("FantasyHero"),
-                false,
-                UpdateAutoLoad::Retain,
-            )
+            .put_entity(&key(1, 1), &avatar_values("FantasyHero"), false)
             .expect("the update lands");
 
         let text = database.to_xml();
@@ -2114,7 +2054,6 @@ mod tests {
                 &key(1, PENDING_DATABASE_ID),
                 &avatar_values("Rookie"),
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("the create lands");
 
@@ -2142,7 +2081,6 @@ mod tests {
                 &key(1, PENDING_DATABASE_ID),
                 &avatar_values("FantasyHero"),
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect_err("the name is taken");
         assert_eq!(error, DbError::AlreadyExists);
@@ -2155,16 +2093,10 @@ mod tests {
                 &key(1, PENDING_DATABASE_ID),
                 &avatar_values("Rookie"),
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("the create lands");
         let rename = database
-            .put_entity(
-                &key(1, rookie),
-                &avatar_values("FantasyHero"),
-                false,
-                UpdateAutoLoad::Retain,
-            )
+            .put_entity(&key(1, rookie), &avatar_values("FantasyHero"), false)
             .expect_err("the other avatar owns that name");
         assert_eq!(rename, DbError::AlreadyExists);
         assert_eq!(
@@ -2176,23 +2108,13 @@ mod tests {
 
         // Renaming an entity to its own name is not a conflict.
         database
-            .put_entity(
-                &key(1, rookie),
-                &avatar_values("Rookie"),
-                false,
-                UpdateAutoLoad::Retain,
-            )
+            .put_entity(&key(1, rookie), &avatar_values("Rookie"), false)
             .expect("the same name is fine");
 
         // A cross-type name clash is fine too: the Account owns
         // FantasyAccount, but the Avatar's map does not.
         database
-            .put_entity(
-                &key(1, rookie),
-                &avatar_values("FantasyAccount"),
-                false,
-                UpdateAutoLoad::Retain,
-            )
+            .put_entity(&key(1, rookie), &avatar_values("FantasyAccount"), false)
             .expect("the other type's map is separate");
     }
 
@@ -2200,21 +2122,11 @@ mod tests {
     fn an_update_of_a_missing_or_foreign_row_is_not_found() {
         let mut database = demo();
         assert_eq!(
-            database.put_entity(
-                &key(1, 99),
-                &avatar_values("x"),
-                false,
-                UpdateAutoLoad::Retain
-            ),
+            database.put_entity(&key(1, 99), &avatar_values("x"), false),
             Err(DbError::NotFound)
         );
         assert_eq!(
-            database.put_entity(
-                &key(2, 1),
-                &avatar_values("x"),
-                false,
-                UpdateAutoLoad::Retain
-            ),
+            database.put_entity(&key(2, 1), &avatar_values("x"), false),
             Err(DbError::NotFound),
             "dbID 1 is an Avatar, not an Account"
         );
@@ -2224,12 +2136,7 @@ mod tests {
     fn a_values_vector_that_fits_no_def_is_rejected() {
         let mut database = demo();
         let error = database
-            .put_entity(
-                &key(1, PENDING_DATABASE_ID),
-                &[],
-                false,
-                UpdateAutoLoad::Retain,
-            )
+            .put_entity(&key(1, PENDING_DATABASE_ID), &[], false)
             .expect_err("the empty vector fits no def");
         assert!(
             error.to_string().contains("takes 4 values, got 0"),
@@ -2238,7 +2145,7 @@ mod tests {
 
         // The same guard guards an update.
         let update = database
-            .put_entity(&key(1, 1), &[], false, UpdateAutoLoad::Retain)
+            .put_entity(&key(1, 1), &[], false)
             .expect_err("the empty vector fits the update either");
         assert!(
             update.to_string().contains("takes 4 values, got 0"),
@@ -2255,7 +2162,6 @@ mod tests {
                 &key(7, PENDING_DATABASE_ID),
                 &[PropertyValue::Int(5)],
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("the create lands");
         assert_eq!(db_id, 1);
@@ -2279,12 +2185,7 @@ mod tests {
     fn an_unknown_type_is_invalid_on_put() {
         let mut database = demo();
         let error = database
-            .put_entity(
-                &key(9, PENDING_DATABASE_ID),
-                &avatar_values("x"),
-                false,
-                UpdateAutoLoad::Retain,
-            )
+            .put_entity(&key(9, PENDING_DATABASE_ID), &avatar_values("x"), false)
             .expect_err("type 9 has no def");
         assert!(error.to_string().contains("entity type 9 is invalid"));
     }
@@ -2328,7 +2229,6 @@ mod tests {
                 &key(1, PENDING_DATABASE_ID),
                 &avatar_values("Rookie"),
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("the create lands");
         let records = database.all_entities().expect("the listing succeeds");
@@ -2491,18 +2391,8 @@ mod tests {
         let mut database = demo();
         let mut transaction = EntityTransaction::new(&mut database);
         transaction
-            .put(
-                key(1, PENDING_DATABASE_ID),
-                avatar_values("Rookie"),
-                false,
-                UpdateAutoLoad::Retain,
-            )
-            .put(
-                key(1, 99),
-                avatar_values("ghost"),
-                false,
-                UpdateAutoLoad::Retain,
-            );
+            .put(key(1, PENDING_DATABASE_ID), avatar_values("Rookie"), false)
+            .put(key(1, 99), avatar_values("ghost"), false);
         let error = transaction
             .commit()
             .expect_err("the second write misses its row");
@@ -2526,7 +2416,6 @@ mod tests {
                 &key(1, PENDING_DATABASE_ID),
                 &avatar_values("Rookie"),
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("the retry lands");
         assert_eq!(database.max_id, 3);

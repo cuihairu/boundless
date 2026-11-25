@@ -122,6 +122,12 @@ impl EntityDescriptionMap {
         self.map.get(name).copied()
     }
 
+    /// `getEntityDescription(typeID).name()`: the entity's name for a type
+    /// id, `None` when the id names nothing in this set.
+    pub fn index_to_name(&self, type_id: EntityTypeID) -> Option<&str> {
+        self.entities.get(type_id as usize).map(|e| e.name.as_str())
+    }
+
     /// `digest()`: uppercase hex, as `MD5::Digest::quote()` renders it.
     pub fn digest(&self) -> &str {
         &self.digest

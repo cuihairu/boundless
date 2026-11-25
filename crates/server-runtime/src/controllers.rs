@@ -287,6 +287,49 @@ impl ExclusiveControllerIds {
     }
 }
 
+/// The script argument to `Entity.cancel` (`controllers.cpp:541-566`):
+/// either an integer ControllerID or a string exclusive category.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CancelArg {
+    /// An object that converts to a ControllerID.
+    Id(ControllerId),
+    /// A string naming an exclusive category (`"Movement"`, …).
+    Category(String),
+    /// Any other object — neither int-like nor a string.
+    Other,
+}
+
+/// `py_cancel`'s TypeErrors (`controllers.cpp:556-559, 566-569`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CancelFailure {
+    /// A string no category registry entry backs.
+    UnknownCategory(String),
+    /// The argument was neither int-like nor a string.
+    BadArgument,
+}
+
+impl CancelFailure {
+    /// The TypeError text, verbatim.
+    pub fn message(&self) -> String {
+        match self {
+            CancelFailure::UnknownCategory(category) => {
+                format!("invalid exclusive controller category '{category}'")
+            }
+            CancelFailure::BadArgument => "argument must be a ControllerID or a string".to_owned(),
+        }
+    }
+}
+
+/// `py_cancel`'s outcome: whether a record was cancelled, plus the
+/// WARNING texts (`controllers.cpp:578-582`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CancelOutcome {
+    /// A live controller was found and deleted.
+    pub cancelled: bool,
+    /// The by-ID miss warning; the category path never warns.
+    pub warnings: Vec<String>,
+}
+
 // -----------------------------------------------------------------------------
 // Section: The collection (`controllers.hpp:34-64`)
 // -----------------------------------------------------------------------------
@@ -548,6 +591,25 @@ impl Controllers {
         }
     }
 
+    /// The cell-boundary handover: `RealEntity::writeOffloadData` streams
+    /// the real controllers while they are still registered
+    /// (`real_entity.cpp:501-566`), the receiving side
+    /// `readRealControllersFromStream` reads them back **without**
+    /// starting them (`controllers.cpp:118-121` — the `startReal` there is
+    /// deliberately commented out), and only
+    /// `Entity::startRealControllers` (`entity.cpp:4867`, "now that
+    /// `pReal_` has been set") starts them. Nothing else happens to a
+    /// moving controller in between: no callback fires on the boundary, so
+    /// the walk resumes toward the very same destination it had.
+    pub fn migrate_real_controllers(&mut self, destination: &mut Controllers) {
+        let mut stream = BinaryStream::new();
+        self.write_reals_to_stream(&mut stream);
+        destination
+            .read_reals_from_stream(&mut stream)
+            .expect("our own bytes round-trip");
+        destination.start_reals();
+    }
+
     /// `Controllers::createGhost` (`controllers.cpp:186-205`), the
     /// ghost-side receiver of `ghostControllerCreate`. Insertion is
     /// keep-the-original: a repeated create for a live id leaves the old
@@ -729,6 +791,55 @@ impl Controllers {
         out: &mut Vec<GhostControllerOutbound>,
     ) -> bool {
         self.del_controller(id, entity_id, true, true, haunts, out)
+    }
+
+    /// `Controllers::py_cancel` (`controllers.cpp:529-584`), the script
+    /// layer over `cancel`: the argument is either an integer ControllerID
+    /// or a string exclusive category. A category resolves through the
+    /// global registry without creating (`Controller::getExclusiveID(
+    /// categoryName, false)`); because an exclusive controller's id *is*
+    /// the category id (`add_controller`), `Entity.cancel("Movement")`
+    /// finds the live movement controller by it. Cancelling an unknown
+    /// id warns; cancelling a category whose controller is already gone
+    /// stays silent (`deleteByID` is false on that path). The one-argument
+    /// arity TypeError is unreachable through this typed face.
+    pub fn py_cancel(
+        &mut self,
+        arg: CancelArg,
+        exclusive: &mut ExclusiveControllerIds,
+        entity_id: EntityId,
+        haunts: &[Addr],
+        out: &mut Vec<GhostControllerOutbound>,
+    ) -> Result<CancelOutcome, CancelFailure> {
+        let (controller_id, delete_by_id) = match arg {
+            CancelArg::Id(id) => (id, true),
+            CancelArg::Category(category) => match exclusive.get_id(&category, false) {
+                Some(id) => (id, false),
+                None => return Err(CancelFailure::UnknownCategory(category)),
+            },
+            CancelArg::Other => return Err(CancelFailure::BadArgument),
+        };
+
+        if self.container.contains_key(&controller_id) {
+            self.cancel(controller_id, entity_id, haunts, out);
+            return Ok(CancelOutcome {
+                cancelled: true,
+                warnings: Vec::new(),
+            });
+        }
+
+        let warnings = if delete_by_id {
+            vec![format!(
+                "Entity.cancel({}): Cancelling an unknown controller ID {}\n",
+                entity_id, controller_id
+            )]
+        } else {
+            Vec::new()
+        };
+        Ok(CancelOutcome {
+            cancelled: false,
+            warnings,
+        })
     }
 
     /// `Controllers::~Controllers` (`controllers.cpp:42-55`): whatever is
@@ -1580,5 +1691,114 @@ mod tests {
         });
         extras.destroy_extras();
         assert!(!extras.exists(eeid));
+    }
+
+    // -------------------------------------------------------------------
+    // TDD: BW-10-06-13 取消活动寻路控制器 — py_cancel 的参数解析
+    // -------------------------------------------------------------------
+
+    /// `Controllers::py_cancel`'s by-ID face (`controllers.cpp:541-577,
+    /// 582`): a live id cancels; an unknown id only warns and leaves the
+    /// container alone; a non-int non-string argument is the TypeError.
+    #[test]
+    fn py_cancel_by_id_cancels_warns_on_unknown_and_refuses_other_types() {
+        let mut controllers = Controllers::new();
+        let mut exclusive = ExclusiveControllerIds::default();
+        let mut out = Vec::new();
+        let id = controllers.add_controller(Controller::new(1, DOMAIN_REAL), 9, 7, &[], &mut out);
+
+        let outcome = controllers
+            .py_cancel(CancelArg::Id(id), &mut exclusive, 7, &[], &mut out)
+            .expect("an int argument parses");
+        assert!(outcome.cancelled);
+        assert!(outcome.warnings.is_empty());
+        assert!(controllers.controller(id).is_none());
+        assert_eq!(controllers.missed_deletes.len(), 0);
+        assert_eq!(
+            controllers.history.last(),
+            Some(&ControllerEvent::Disowned { id })
+        );
+
+        // The unknown-id path warns with the verbatim sentence and does
+        // not touch anything else.
+        let outcome = controllers
+            .py_cancel(CancelArg::Id(99), &mut exclusive, 7, &[], &mut out)
+            .expect("an int argument parses");
+        assert!(!outcome.cancelled);
+        assert_eq!(
+            outcome.warnings,
+            vec!["Entity.cancel(7): Cancelling an unknown controller ID 99\n"]
+        );
+        assert_eq!(controllers.missed_deletes.len(), 0);
+
+        // Anything that is neither int-like nor a string.
+        let err = controllers
+            .py_cancel(CancelArg::Other, &mut exclusive, 7, &[], &mut out)
+            .expect_err("the TypeError");
+        assert_eq!(err, CancelFailure::BadArgument);
+        assert_eq!(err.message(), "argument must be a ControllerID or a string");
+    }
+
+    /// `py_cancel`'s category face: `"Movement"` resolves through the
+    /// global registry and finds the exclusive controller by its id; a
+    /// stale category (registered, controller already gone) stays silent;
+    /// an unregistered category is the other TypeError.
+    #[test]
+    fn py_cancel_by_category_resolves_is_silent_when_stale_and_refuses_unknown() {
+        let mut controllers = Controllers::new();
+        let mut exclusive = ExclusiveControllerIds::default();
+        let mut out = Vec::new();
+        let movement = controllers.add_controller(
+            Controller::with_exclusive_category(3, DOMAIN_REAL, "Movement", &mut exclusive),
+            11,
+            5,
+            &[],
+            &mut out,
+        );
+
+        let outcome = controllers
+            .py_cancel(
+                CancelArg::Category("Movement".to_owned()),
+                &mut exclusive,
+                5,
+                &[],
+                &mut out,
+            )
+            .expect("a live category cancels");
+        assert!(outcome.cancelled);
+        assert!(outcome.warnings.is_empty());
+        assert!(controllers.controller(movement).is_none());
+
+        // The category stays registered after the controller is gone: the
+        // second cancel answers quietly — deleteByID is false, so no
+        // warning fires.
+        let outcome = controllers
+            .py_cancel(
+                CancelArg::Category("Movement".to_owned()),
+                &mut exclusive,
+                5,
+                &[],
+                &mut out,
+            )
+            .expect("a stale category is not an error");
+        assert!(!outcome.cancelled);
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(controllers.missed_deletes.len(), 0);
+
+        // A category that no controller type ever registered.
+        let err = controllers
+            .py_cancel(
+                CancelArg::Category("Trap".to_owned()),
+                &mut exclusive,
+                5,
+                &[],
+                &mut out,
+            )
+            .expect_err("the TypeError");
+        assert_eq!(err, CancelFailure::UnknownCategory("Trap".to_owned()));
+        assert_eq!(
+            err.message(),
+            "invalid exclusive controller category 'Trap'"
+        );
     }
 }

@@ -4,13 +4,17 @@ Boundless keeps the reference's four storage backends and adds PostgreSQL
 operations on top. This page describes the target procedure for migrating and
 restoring data.
 
-::: danger Nothing on this page runs today
-There is no database code in the working tree: no SQL dependency, no `.sql`
-file, no migration directory, and no `dbapp` logic beyond the role name. The
-only persistence primitive that exists is the id vocabulary
-(`DatabaseId = i64`, `PENDING_DATABASE_ID = -1` in
-`crates/foundation/src/ids.rs`). Every step below is tracked by a `todo.md`
-id and is written so that the page becomes true as the work lands.
+::: warning What runs today
+The read-side contract and the PostgreSQL schema lifecycle exist:
+`crates/db` (backend selection, error vocabulary, `get_entity` reads) and
+`crates/db-postgres` (entity schema mapping, the account table, schema
+initialisation, dry-run, incremental upgrade, the entity upsert and DBID
+allocation, BW-09-06-04) — described on
+[the database model page](/architecture/database-model). Deletes and lookups
+have not landed (BW-09-01-03..04), and neither have the shared write-path
+cases: transactions, concurrent writes, reconnect, relogin
+(BW-09-06-05..10), so the procedures below remain *targets* tracked by
+`todo.md` ids.
 :::
 
 ## Backends
@@ -90,8 +94,8 @@ allocation sequence (BW-09-06-04) was not part of the backup.
 
 ## Working with the id space today
 
-Until the storage layer lands, the only part of persistence you can rely on is
-the id convention:
+The one part of the persistence contract that is settled, whatever backend
+lands next, is the id convention:
 
 ```rust
 use foundation::ids::{DatabaseId, PENDING_DATABASE_ID};
@@ -102,3 +106,21 @@ assert_eq!(id, -1);
 
 An id of `-1` means "not yet allocated", which is why it must never be written
 to a backend as a real id.
+
+The PostgreSQL backend has landed that allocation (BW-09-06-04). A create does
+not pick an id: the statement omits the id column and the table's own sequence
+assigns it, exactly as the reference's MySQL `AUTO_INCREMENT` does.
+
+```rust
+use db_postgres::PostgresStorage;
+
+let id: DatabaseId = storage.create_entity(&schema, &values)?;
+```
+
+Concurrent creates cannot repeat an id, because the sequence advances
+atomically inside the database, and a restarted connection continues where the
+table left off, because the sequence is the table's state rather than the
+session's. One consequence to plan for: an id written explicitly (the import
+and restore paths) does not advance the sequence, so after an import the
+sequence has to be recalibrated (BW-09-07-06); a dump and restore carries the
+sequence as-is (BW-09-07-04).

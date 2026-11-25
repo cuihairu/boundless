@@ -1,0 +1,23 @@
+<model>
+	<resource> models/box_a.model </resource>
+	<resource> models/box_b.model </resource>
+	<transform>
+		<row0> 10 0 0 </row0>
+		<row1> 0 1 0 </row1>
+		<row2> 0 0 10 </row2>
+		<row3> 10 5 10 </row3>
+	</transform>
+	<animation>
+		<name> walk </name>
+		<frameRateMultiplier> 2.5 </frameRateMultiplier>
+	</animation>
+	<dye>
+		<name> hull </name>
+		<tint> red </tint>
+	</dye>
+	<dye>
+		<name> turret </name>
+		<tint> blue </tint>
+	</dye>
+	<castsShadow> false </castsShadow>
+</model>

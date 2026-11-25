@@ -1,0 +1,14 @@
+[package]
+name = "db-postgres"
+description = "BW-09-06 the PostgreSQL storage backend for the DBApp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+db = { workspace = true }
+entitydef = { workspace = true }
+foundation = { workspace = true }
+postgres = { workspace = true }
+serde_json = { workspace = true }

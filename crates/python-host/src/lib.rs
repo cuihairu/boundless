@@ -15,6 +15,7 @@
 //! behaviour-level change in the ledger, and this port keeps the globals to
 //! match.
 
+pub mod billing;
 pub mod binding;
 pub mod bw_profile;
 pub mod capi;
@@ -36,6 +37,11 @@ pub mod timers;
 pub mod urlrequest;
 pub mod wrapper;
 
+pub use billing::{
+    EntityTypeDefs, GetEntityKeyForAccountHandler, LOG_ON_NOT_SET, LOGGED_ON,
+    LOGIN_REJECTED_DB_GENERAL_FAILURE, LOGIN_REJECTED_INVALID_PASSWORD,
+    LOGIN_REJECTED_NO_SUCH_USER, PyBillingSystem, SetEntityKeyForAccountHandler,
+};
 pub use binding::BindError;
 pub use import_paths::ImportPaths;
 pub use init_time_job::{

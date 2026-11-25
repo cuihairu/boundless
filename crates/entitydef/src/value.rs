@@ -73,6 +73,7 @@ const BLOB_STREAM_ELEMENT: &str = "BlobStreamElement";
 const USER_ADD_TO_STREAM: &str = "UserDataType::addObjectToStream";
 const USER_CREATE_FROM_STREAM: &str = "UserDataType::createObjectFromStream";
 const USER_CREATE_FROM_SECTION: &str = "UserDataType::createObjectFromSection";
+const USER_ADD_TO_SECTION: &str = "UserDataType::addToSection";
 
 /// A failure, carrying the reference's own message text where one exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -643,6 +644,150 @@ fn value_from_section(
     }
 }
 
+/// `DataType::addToSection`: the XML side of the value vocabulary, the
+/// counterpart of [`value_from_section`]. One section per type, written the
+/// way each reference data type writes it.
+fn value_to_section(
+    kind: &Kind,
+    value: &PropertyValue,
+    section: &mut DataSection,
+) -> Result<(), PropertyError> {
+    match kind {
+        // `IntegerDataType::addToSection`: `pSection->setLong( value )`.
+        Kind::Int { signed: true, .. } => match value {
+            PropertyValue::Int(v) => {
+                section.set_long(*v);
+                Ok(())
+            }
+            _ => Err(PropertyError::TypeMismatch { meta: "integer" }),
+        },
+        Kind::Int { signed: false, .. } => match value {
+            PropertyValue::Uint(v) => {
+                section.set_long(*v as i64);
+                Ok(())
+            }
+            PropertyValue::Int(v) => {
+                section.set_long(*v);
+                Ok(())
+            }
+            _ => Err(PropertyError::TypeMismatch { meta: "integer" }),
+        },
+        // `FloatDataType::addToSection`: `pSection->be< FLOAT_TYPE >( value )`.
+        Kind::Float32 | Kind::Float64 => match value {
+            PropertyValue::Float(v) => {
+                section.set_double(*v);
+                Ok(())
+            }
+            _ => Err(PropertyError::TypeMismatch { meta: "float" }),
+        },
+        // `StringDataType::addToSection`: `pSection->setString( value )`.
+        Kind::String | Kind::UnicodeString => match value {
+            PropertyValue::String(text) => {
+                section.set_string(text);
+                Ok(())
+            }
+            _ => Err(PropertyError::TypeMismatch { meta: "string" }),
+        },
+        // `BlobDataType::addToSection`: `pSection->setBlob( value )`, which the
+        // reference stores base64 in the section text.
+        Kind::Blob => match value {
+            PropertyValue::Blob(bytes) => {
+                section.set_string(&resources::base64::encode(bytes));
+                Ok(())
+            }
+            _ => Err(PropertyError::TypeMismatch { meta: "blob" }),
+        },
+        // `VectorDataType::addToSection` through
+        // `Helpers::fromVectorToSection`: the components as one section value.
+        Kind::Vector { elements } => {
+            let components = match value {
+                PropertyValue::Vector(components) => components,
+                _ => return Err(PropertyError::TypeMismatch { meta: "vector" }),
+            };
+            let comps: Vec<f32> = (0..*elements as usize)
+                .map(|i| components.get(i).copied().unwrap_or(0.0))
+                .collect();
+            match *elements {
+                2 => section.set_vector2(Vector2::new(comps[0], comps[1])),
+                3 => section.set_vector3(Vector3::new(comps[0], comps[1], comps[2])),
+                4 => section.set_vector4(Vector4::new(comps[0], comps[1], comps[2], comps[3])),
+                _ => unreachable!("vector element count {elements}"),
+            };
+            Ok(())
+        }
+        // `SequenceDataType::addToSection`: one `<item>` child per element, the
+        // element written into its own section. A fixed-length sequence refuses
+        // a value of a different length.
+        Kind::Sequence { size, element, .. } => {
+            let items = match value {
+                PropertyValue::Sequence(items) => items,
+                _ => return Err(PropertyError::TypeMismatch { meta: "sequence" }),
+            };
+            if *size != 0 && items.len() != *size as usize {
+                return Err(PropertyError::WrongSequenceSize {
+                    size: items.len() as i32,
+                    expected: *size,
+                });
+            }
+            let count = if *size == 0 {
+                items.len()
+            } else {
+                *size as usize
+            };
+            for i in 0..count {
+                let item = items
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| default_value(element.kind()));
+                value_to_section(element.kind(), &item, section.add_child("item"))?;
+            }
+            Ok(())
+        }
+        // `FixedDictDataType::addToSection`: `<AllowNone>` writes nothing, else
+        // one child per field, in the type's own field order.
+        Kind::FixedDict { fields, .. } => {
+            let pairs = match value {
+                PropertyValue::FixedDict(pairs) => pairs,
+                _ => return Err(PropertyError::TypeMismatch { meta: "fixed_dict" }),
+            };
+            let Some(pairs) = pairs else {
+                return Ok(());
+            };
+            for field in fields.iter() {
+                let element = pairs
+                    .iter()
+                    .find(|(name, _)| name == &field.name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| {
+                        field
+                            .type_
+                            .default_value()
+                            .unwrap_or_else(|_| default_value(field.type_.kind()))
+                    });
+                value_to_section(field.type_.kind(), &element, section.add_child(&field.name))?;
+            }
+            Ok(())
+        }
+        // `MailBoxDataType::to( mbr, pSection )`: the `id`, `ip` and `etc`
+        // children, `etc` carrying the port.
+        Kind::MailBox => match value {
+            PropertyValue::MailBox { id, ip, port, .. } => {
+                section.add_child("id").set_int(*id);
+                section.add_child("ip").set_int(*ip as i32);
+                section.add_child("etc").set_int(*port as i32);
+                Ok(())
+            }
+            _ => Err(PropertyError::TypeMismatch { meta: "mailbox" }),
+        },
+        Kind::UserType { module, instance } => Err(PropertyError::MissingConverter {
+            site: USER_ADD_TO_SECTION,
+            module: module.clone(),
+            instance: instance.clone(),
+        }),
+        _ => Err(PropertyError::Unsupported(kind.meta_name())),
+    }
+}
+
 /// `DataType::getDefaultValue`: the value `setDefaultValue` stored when the
 /// type was built, else 0, 0.0, `""`, an empty blob or a zero vector.
 fn default_value(kind: &Kind) -> PropertyValue {
@@ -714,6 +859,15 @@ impl DataType {
         section: &DataSection,
     ) -> Result<PropertyValue, PropertyError> {
         value_from_section(self.kind(), section, self.default_section())
+    }
+
+    /// `DataType::addToSection`: the XML side of the value vocabulary.
+    pub fn value_to_section(
+        &self,
+        value: &PropertyValue,
+        section: &mut DataSection,
+    ) -> Result<(), PropertyError> {
+        value_to_section(self.kind(), value, section)
     }
 
     /// `DataType::addToStream` for the scalar metas.
@@ -1223,6 +1377,189 @@ mod tests {
         assert_eq!(
             float64.value_from_section(&parse_xml("<v> 2.5 </v>")),
             Ok(PropertyValue::Float(2.5))
+        );
+    }
+
+    #[test]
+    fn value_to_section_writes_the_section_the_type_reads() {
+        // `IntegerDataType::addToSection` writes `setLong`, which the read
+        // side takes back as an `asLong`.
+        let int32 = build_type("<a> INT32 </a>");
+        let mut section = parse_xml("<v />");
+        int32
+            .value_to_section(&PropertyValue::Int(-9), &mut section)
+            .unwrap();
+        assert_eq!(
+            int32.value_from_section(&section),
+            Ok(PropertyValue::Int(-9))
+        );
+
+        let uint32 = build_type("<a> UINT32 </a>");
+        let mut section = parse_xml("<v />");
+        uint32
+            .value_to_section(&PropertyValue::Uint(7), &mut section)
+            .unwrap();
+        assert_eq!(
+            uint32.value_from_section(&section),
+            Ok(PropertyValue::Uint(7))
+        );
+
+        let float64 = build_type("<a> FLOAT64 </a>");
+        let mut section = parse_xml("<v />");
+        float64
+            .value_to_section(&PropertyValue::Float(2.5), &mut section)
+            .unwrap();
+        assert_eq!(
+            float64.value_from_section(&section),
+            Ok(PropertyValue::Float(2.5))
+        );
+
+        let string = build_type("<a> STRING </a>");
+        let mut section = parse_xml("<v />");
+        string
+            .value_to_section(&PropertyValue::String("milo".into()), &mut section)
+            .unwrap();
+        assert_eq!(
+            string.value_from_section(&section),
+            Ok(PropertyValue::String("milo".into()))
+        );
+
+        // `BlobDataType::addToSection` stores the bytes base64 in the text.
+        let blob = build_type("<a> BLOB </a>");
+        let mut section = parse_xml("<v />");
+        blob.value_to_section(&PropertyValue::Blob(vec![0, 1, 250]), &mut section)
+            .unwrap();
+        assert_eq!(
+            blob.value_from_section(&section),
+            Ok(PropertyValue::Blob(vec![0, 1, 250]))
+        );
+
+        // `Helpers::fromVectorToSection`: the components as one section value.
+        let vector3 = build_type("<a> VECTOR3 </a>");
+        let mut section = parse_xml("<v />");
+        vector3
+            .value_to_section(&PropertyValue::Vector(vec![1.0, -2.0, 3.25]), &mut section)
+            .unwrap();
+        assert_eq!(
+            vector3.value_from_section(&section),
+            Ok(PropertyValue::Vector(vec![1.0, -2.0, 3.25]))
+        );
+    }
+
+    #[test]
+    fn a_sequence_writes_one_item_child_per_element() {
+        // `SequenceDataType::addToSection`: a `<item>` child per element, each
+        // holding its own value.
+        let array = build_type("<a> ARRAY <of> INT8 </of> </a>");
+        let mut section = parse_xml("<v />");
+        array
+            .value_to_section(
+                &PropertyValue::Sequence(vec![PropertyValue::Int(1), PropertyValue::Int(2)]),
+                &mut section,
+            )
+            .unwrap();
+        assert_eq!(
+            array.value_from_section(&section),
+            Ok(PropertyValue::Sequence(vec![
+                PropertyValue::Int(1),
+                PropertyValue::Int(2)
+            ]))
+        );
+
+        // A fixed-length sequence refuses a value of a different length.
+        let tuple = build_type("<a> TUPLE <size> 2 </size> <of> INT8 </of> </a>");
+        let mut section = parse_xml("<v />");
+        assert_eq!(
+            tuple.value_to_section(
+                &PropertyValue::Sequence(vec![PropertyValue::Int(1)]),
+                &mut section
+            ),
+            Err(PropertyError::WrongSequenceSize {
+                size: 1,
+                expected: 2
+            })
+        );
+    }
+
+    #[test]
+    fn a_fixed_dict_writes_one_child_per_field_and_none_leaves_it_empty() {
+        let dict = build_type(
+            "<a> FIXED_DICT <AllowNone> true </AllowNone> <Properties>              <ammo> <Type> INT8 </Type> </ammo> </Properties> </a>",
+        );
+        let mut section = parse_xml("<v />");
+        dict.value_to_section(
+            &PropertyValue::FixedDict(Some(vec![("ammo".into(), PropertyValue::Int(4))])),
+            &mut section,
+        )
+        .unwrap();
+        assert_eq!(
+            dict.value_from_section(&section),
+            Ok(PropertyValue::FixedDict(Some(vec![(
+                "ammo".into(),
+                PropertyValue::Int(4)
+            )])))
+        );
+
+        // `<AllowNone>` writes nothing at all, which the read side takes as None.
+        let mut empty = parse_xml("<v />");
+        dict.value_to_section(&PropertyValue::FixedDict(None), &mut empty)
+            .unwrap();
+        assert_eq!(
+            dict.value_from_section(&empty),
+            Ok(PropertyValue::FixedDict(None))
+        );
+    }
+
+    #[test]
+    fn a_mailbox_writes_its_id_ip_and_port_children() {
+        let mailbox = build_type("<a> MAILBOX </a>");
+        let mut section = parse_xml("<v />");
+        mailbox
+            .value_to_section(
+                &PropertyValue::MailBox {
+                    id: 41,
+                    ip: 167772161,
+                    port: 9,
+                    salt: 0,
+                },
+                &mut section,
+            )
+            .unwrap();
+        assert_eq!(section.read_string("id", ""), "41");
+        assert_eq!(section.read_string("ip", ""), "167772161");
+        assert_eq!(section.read_string("etc", ""), "9");
+        assert_eq!(
+            mailbox.value_from_section(&section),
+            Ok(PropertyValue::MailBox {
+                id: 41,
+                ip: 167772161,
+                port: 9,
+                salt: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn a_user_type_reports_its_add_to_section_site() {
+        let user = build_type("<a> USER_TYPE <implementedBy> m.i </implementedBy> </a>");
+        let mut section = parse_xml("<v />");
+        assert_eq!(
+            user.value_to_section(&PropertyValue::Int(1), &mut section),
+            Err(PropertyError::MissingConverter {
+                site: "UserDataType::addToSection",
+                module: "m".into(),
+                instance: "i".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn value_to_section_refuses_a_value_the_type_cannot_hold() {
+        let int32 = build_type("<a> INT32 </a>");
+        let mut section = parse_xml("<v />");
+        assert_eq!(
+            int32.value_to_section(&PropertyValue::String("x".into()), &mut section),
+            Err(PropertyError::TypeMismatch { meta: "integer" })
         );
     }
 

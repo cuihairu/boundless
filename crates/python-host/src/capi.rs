@@ -70,55 +70,6 @@ pub struct PyTypeHead {
     tp_name: *const c_char,
 }
 
-/// `PyFrameObject`. Opaque in the CPython API: the `_bw_profile` trace
-/// callback receives a frame and only hands it to `PyFrame_GetCode`
-/// (`server/tools/bw_profile/bw_profile.cpp:76-120`).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PyFrameObject {
-    _opaque: [u8; 0],
-}
-
-/// `Py_tracefunc`, the profile callback `PyEval_SetProfile` installs
-/// (`bw_profile.cpp:343`).
-pub type PyTraceFunc = unsafe extern "C" fn(
-    _object: *mut PyObject,
-    frame: *mut PyFrameObject,
-    action: c_int,
-    arg: *mut PyObject,
-) -> c_int;
-
-/// `PyTrace_CALL`: a Python function is entered
-/// (`Include/cpython/profileobject.h`).
-pub const PyTrace_CALL: c_int = 0;
-
-/// `PyTrace_RETURN`.
-pub const PyTrace_RETURN: c_int = 1;
-
-/// `PyTrace_LINE`.
-pub const PyTrace_LINE: c_int = 2;
-
-/// `PyTrace_OP`.
-pub const PyTrace_OP: c_int = 3;
-
-/// `PyTrace_EXCEPTION`.
-pub const PyTrace_EXCEPTION: c_int = 4;
-
-/// `PyTrace_C_CALL`: a C function is entered.
-pub const PyTrace_C_CALL: c_int = 6;
-
-/// `PyTrace_C_RETURN`.
-pub const PyTrace_C_RETURN: c_int = 7;
-
-/// `PyTrace_C_EXCEPTION`.
-pub const PyTrace_C_EXCEPTION: c_int = 8;
-
-/// `PyTrace_PY_CALL`.
-pub const PyTrace_PY_CALL: c_int = 9;
-
-/// `PyTrace_RCALL`: a recursive C call.
-pub const PyTrace_RCALL: c_int = 10;
-
 /// `typeName()`: the type's `tp_name`, `Math.Vector3` style with the module
 /// prefix.
 ///
@@ -165,18 +116,6 @@ pub unsafe fn py_long_check(obj: *mut PyObject) -> bool {
         return false;
     }
     unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyLong_Type)) == 1 }
-}
-
-/// `PyCFunction_Check`: the header macro in `cpython/methodobject.h`
-/// (`PyObject_TypeCheck(op, &PyCFunction_Type)`), written out because the
-/// macro has no callable in the C API.
-///
-/// SAFETY: `obj` must be a borrowed object CPython gave out, or null.
-pub unsafe fn py_c_function_check(obj: *mut PyObject) -> bool {
-    if obj.is_null() {
-        return false;
-    }
-    unsafe { PyType_IsSubtype(Py_TYPE(obj), std::ptr::addr_of_mut!(PyCFunction_Type)) == 1 }
 }
 
 /// `PyObject_TypeCheck` against `PyTuple_Type`.
@@ -339,10 +278,6 @@ pub type SsizeObjArgFunction = unsafe extern "C" fn(*mut PyObject, PySsize, *mut
 /// `METH_VARARGS` from `Include/methodobject.h`.
 pub const METH_VARARGS: c_int = 0x0001;
 
-/// `METH_NOARGS` — the methods take no arguments and CPython passes a null
-/// second argument.
-pub const METH_NOARGS: c_int = 0x0004;
-
 /// `METH_KEYWORDS` from `Include/methodobject.h`: the handler takes a third
 /// `kwargs` argument (see [`PyCFunctionWithKeywords`]).
 pub const METH_KEYWORDS: c_int = 0x0002;
@@ -394,8 +329,15 @@ pub struct PyTypeSpec {
     pub slots: *mut PyTypeSlot,
 }
 
+/// `Py_tp_dealloc` (`typeslots.h`).
+pub const Py_tp_dealloc: c_int = 52;
 /// `Py_tp_getattro` (`typeslots.h`).
 pub const Py_tp_getattro: c_int = 58;
+/// `Py_tp_free` (`typeslots.h`).
+pub const Py_tp_free: c_int = 74;
+/// `Py_TPFLAGS_HAVE_GC` (`object.h`): the type's instances are collector
+/// tracked and their teardown must untrack before freeing.
+pub const Py_TPFLAGS_HAVE_GC: std::os::raw::c_ulong = 1 << 14;
 /// `Py_tp_setattro` (`typeslots.h`).
 pub const Py_tp_setattro: c_int = 69;
 /// `Py_nb_add` (`typeslots.h`).
@@ -426,8 +368,6 @@ pub const Py_tp_richcompare: c_int = 67;
 pub const Py_tp_str: c_int = 70;
 /// `Py_tp_call` (`typeslots.h`).
 pub const Py_tp_call: c_int = 50;
-/// `Py_tp_dealloc` (`typeslots.h`).
-pub const Py_tp_dealloc: c_int = 52;
 
 /// The rich-comparison operation codes of `Py_LT`..`Py_GE`
 /// (`Include/object.h`).
@@ -622,6 +562,7 @@ unsafe extern "C" {
     pub fn PyErr_Clear();
     pub fn PyErr_Occurred() -> *mut PyObject;
     pub fn PyErr_PrintEx(skip: c_int);
+    pub fn PyErr_Print();
     pub fn PyErr_Fetch(
         type_: *mut *mut PyObject,
         value: *mut *mut PyObject,
@@ -661,9 +602,6 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn PyBool_FromLong(value: std::os::raw::c_long) -> *mut PyObject;
     pub fn PyCFunction_New(def: *mut PyMethodDef, self_: *mut PyObject) -> *mut PyObject;
-    pub static mut PyCFunction_Type: PyTypeObject;
-    pub fn PyFrame_GetCode(frame: *mut PyFrameObject) -> *mut PyObject;
-    pub fn PyEval_SetProfile(func: PyTraceFunc, arg: *mut PyObject) -> c_int;
     pub fn PyArg_ParseTuple(args: *mut PyObject, format: *const c_char, ...) -> c_int;
     pub fn PyArg_ParseTupleAndKeywords(
         args: *mut PyObject,
@@ -691,12 +629,14 @@ unsafe extern "C" {
     pub static mut PyExc_AttributeError: *mut PyObject;
     pub static mut PyExc_EnvironmentError: *mut PyObject;
     pub static mut PyExc_IOError: *mut PyObject;
-    pub static mut PyExc_RuntimeError: *mut PyObject;
     pub static mut PyExc_SystemError: *mut PyObject;
     pub fn PyIndex_Check(obj: *mut PyObject) -> c_int;
     pub fn PyNumber_AsSsize_t(obj: *mut PyObject, exception: *mut PyObject) -> PySsize;
     pub fn PyType_FromSpec(spec: *mut PyTypeSpec) -> *mut PyObject;
     pub fn PyType_GenericAlloc(type_: *mut PyTypeObject, items: PySsize) -> *mut PyObject;
+    pub fn PyType_GetFlags(type_: *mut PyTypeObject) -> std::os::raw::c_ulong;
+    pub fn PyType_GetSlot(type_: *mut PyTypeObject, slot: c_int) -> *mut std::os::raw::c_void;
+    pub fn PyObject_GC_UnTrack(obj: *mut PyObject);
     pub fn PyType_GetName(type_: *mut PyTypeObject) -> *mut PyObject;
     pub fn PyObject_GetAttr(obj: *mut PyObject, attr_name: *mut PyObject) -> *mut PyObject;
     pub fn PyObject_GenericGetAttr(obj: *mut PyObject, name: *mut PyObject) -> *mut PyObject;
@@ -729,6 +669,8 @@ unsafe extern "C" {
         length: *mut PySsize,
     ) -> c_int;
     pub fn PyObject_Free(pointer: *mut std::os::raw::c_void);
+    pub fn PyLong_FromLongLong(value: i64) -> *mut PyObject;
+    pub fn PyTuple_Pack(count: PySsize, ...) -> *mut PyObject;
 }
 
 /// The CPython `Py_TYPE` macro: the type pointer lives in the object header's

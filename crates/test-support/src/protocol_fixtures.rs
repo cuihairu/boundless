@@ -115,9 +115,7 @@ fn width(param: &str) -> u8 {
 fn frame_bytes(id: u8, length_style: &str, length_param: &str) -> String {
     let mut bytes = vec![id];
     if length_style == "variable" {
-        for _ in 0..width(length_param) {
-            bytes.push(0);
-        }
+        bytes.extend(std::iter::repeat_n(0, width(length_param).into()));
     }
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

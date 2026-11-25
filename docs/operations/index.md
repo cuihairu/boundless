@@ -21,6 +21,8 @@ gates that decide whether a build is trustworthy.
 
 ## Status warning
 
-Every procedure here is a *target* written against `todo.md` ids: the storage
-layer itself has not landed yet, and each page says which of its steps can be
-run today (currently: none of the database ones).
+Every procedure here is written against `todo.md` ids and each page says
+which of its steps run today. For the database pages the split is: the
+PostgreSQL schema lifecycle (init, dry-run, upgrade) and read-side contract
+exist in `crates/db` and `crates/db-postgres`; the write path, migration and
+backup tooling do not (see [the database model](/architecture/database-model)).

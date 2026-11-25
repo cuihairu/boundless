@@ -22,37 +22,22 @@ pub const GAME_TIME_COLUMN_NAME: &str = "gameTime";
 /// `TIMESTAMP_COLUMN_NAME`: the record's write timestamp.
 pub const TIMESTAMP_COLUMN_NAME: &str = "timestamp";
 
-/// `PARENTID_INDEX_NAME` (`table_meta_data.hpp:18`): the fixed index name
-/// under which a child table's [`PARENTID_COLUMN_NAME`] column is indexed.
-pub const PARENTID_INDEX_NAME: &str = "parentIDIndex";
-
 /// `MemberDescription::COMPONENT_NAME_SEPARATOR`
 /// (`entitydef/member_description.hpp:26`): the separator inside a component
 /// name, which has no place in a SQL identifier and is doubled into an
 /// underscore pair.
 pub const COMPONENT_NAME_SEPARATOR: char = '.';
 
-/// `ColumnIndexType` (`column_type.hpp:15-22`): how a column is indexed.
-/// The mapping side asks for the first three; the schema-observation side
-/// ([`crate::sync_db`]) also sees the index kinds that only exist in a
-/// live database.
+/// `ColumnIndexType` (`property_mapping.hpp`): how a column is indexed in the
+/// table the mapping generates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnIndexType {
-    /// `INDEX_TYPE_NONE`: the column carries no index.
+    /// The column carries no index.
     None,
-    /// `INDEX_TYPE_PRIMARY`: the table's primary key, created with the
-    /// table itself and neither addable nor droppable afterwards.
-    Primary,
-    /// `INDEX_TYPE_PARENT_ID`: the child-table link to its parent row,
-    /// indexed under [`PARENTID_INDEX_NAME`].
-    ParentId,
     /// `INDEX_TYPE_UNIQUE`: duplicate values are refused by the server.
     Unique,
     /// `INDEX_TYPE_NON_UNIQUE`: the column is searchable but not unique.
     NonUnique,
-    /// `INDEX_TYPE_EXTERNAL`: an index somebody else created. Detected
-    /// but never created or dropped.
-    External,
 }
 
 /// `DatabaseIndexingType` (`entitydef/data_description.hpp:49-53`): what the

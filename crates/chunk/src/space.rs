@@ -307,6 +307,51 @@ impl ChunkSpace {
         boundary.unbound_portals = kept;
     }
 
+    /// `ChunkSpace::findChunkFromPoint` (`chunk_space.cpp:731-751`) plus
+    /// `BaseChunkSpace::Column::findChunk` (`base_chunk_space.cpp:570-595`):
+    /// the outside chunk of the point's grid cell, displaced by any
+    /// smaller-volume inside chunk whose bounding box contains the point
+    /// (equal volume keeps the first chunk in map order). Like the reference
+    /// a tiny fudge is added to y so points sitting exactly on a chunk face
+    /// still resolve.
+    pub fn find_chunk_from_point(&self, point: &Vector3) -> Option<&Chunk> {
+        let mut pt = *point;
+        pt.y += 0.0001;
+        let grid_x = self.point_to_grid(pt.x);
+        let grid_z = self.point_to_grid(pt.z);
+        let mut winner = self.find_chunk_by_grid(grid_x, grid_z);
+        for chunk in self.chunks.values() {
+            if chunk.is_outside || !chunk.bounding_box.contains(&pt) {
+                continue;
+            }
+            let smaller = match winner {
+                // any containing inside chunk beats the column's outside chunk
+                None => true,
+                Some(w) if w.is_outside => true,
+                Some(w) => chunk_volume(w) > chunk_volume(chunk),
+            };
+            if smaller {
+                winner = Some(chunk);
+            }
+        }
+        winner
+    }
+
+    /// `ChunkSpace::findChunkFromPointExact` (`chunk_space.cpp:757-770`):
+    /// [`find_chunk_from_point`] plus the `completed()` check — a chunk that
+    /// has not finished loading is not a valid drop target.
+    pub fn find_chunk_from_point_exact(&self, point: &Vector3) -> Option<&Chunk> {
+        match self.find_chunk_from_point(point) {
+            Some(chunk) if chunk.is_loaded => Some(chunk),
+            _ => None,
+        }
+    }
+
+    /// Drop a chunk from the map (`ChunkSpace::removeChunk`).
+    pub fn remove_chunk(&mut self, identifier: &str) {
+        self.chunks.remove(identifier);
+    }
+
     /// Load and bind every candidate in scan order, returning the bind
     /// sequence (the sync form of `checkLoadingChunks`' bind-in-finish-order,
     /// `chunk_manager.cpp:1862-1894`: a single-threaded loader finishes the
@@ -325,6 +370,12 @@ impl ChunkSpace {
         }
         bound
     }
+}
+
+/// `Chunk::volume` (`chunk.cpp:3506-3511`): the bounding box extents product.
+fn chunk_volume(chunk: &Chunk) -> f32 {
+    let v = chunk.bounding_box.max - chunk.bounding_box.min;
+    v.x * v.y * v.z
 }
 
 /// Group the `(joint, portal, neighbour)` connections and the heaven decisions
@@ -354,7 +405,7 @@ mod tests {
     use super::*;
     use crate::boundary::{ChunkBoundary, Portal};
     use crate::mapping::{GeometryMapping, GridBounds};
-    use foundation::math::PlaneEq;
+    use foundation::math::{BoundBox, PlaneEq};
 
     fn identity_mapping() -> GeometryMapping {
         GeometryMapping::new(
@@ -508,5 +559,30 @@ mod tests {
             group_by_joint(Vec::new(), vec![(4, 1, "00000000i".to_string())]),
             vec![(4, vec!["00000000i".to_string()])]
         );
+    }
+    #[test]
+    fn inside_chunks_take_the_column_by_smallest_volume() {
+        // no outside chunk is loaded: the smallest containing inside chunk
+        // wins the column, and a larger one never displaces it
+        let mapping = identity_mapping();
+        let mut space = ChunkSpace::new(0, vec![mapping]);
+        for (id, volume) in [
+            ("a0000000i", 8000.0_f32),
+            ("b0000000i", 1000.0),
+            ("c0000000i", 4000.0),
+        ] {
+            let mut chunk = Chunk::new(id, &identity_mapping(), &Matrix::identity());
+            let edge = volume.cbrt();
+            chunk.bounding_box = BoundBox::new(
+                Vector3::new(50.0 - edge / 2.0, -edge / 2.0, 50.0 - edge / 2.0),
+                Vector3::new(50.0 + edge / 2.0, edge / 2.0, 50.0 + edge / 2.0),
+            );
+            chunk.is_loaded = true;
+            space.add_chunk(chunk);
+        }
+        let winner = space
+            .find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0))
+            .map(|c| c.identifier.clone());
+        assert_eq!(winner.as_deref(), Some("b0000000i"));
     }
 }

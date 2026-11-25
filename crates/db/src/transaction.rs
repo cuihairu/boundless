@@ -17,7 +17,6 @@
 use entitydef::value::PropertyValue;
 use foundation::ids::DatabaseId;
 
-use crate::auto_load::UpdateAutoLoad;
 use crate::error::DbError;
 use crate::storage::{EntityKey, EntityStorageImage, StorageImage};
 
@@ -30,8 +29,6 @@ pub struct StagedWrite {
     pub values: Vec<PropertyValue>,
     /// `putExplicitID`: insert under the key's id.
     pub put_explicit_id: bool,
-    /// The put-time auto-load tri-state.
-    pub update_auto_load: UpdateAutoLoad,
 }
 
 /// A group of entity writes applied as one transaction.
@@ -64,13 +61,11 @@ impl<'a> EntityTransaction<'a> {
         key: EntityKey,
         values: Vec<PropertyValue>,
         put_explicit_id: bool,
-        update_auto_load: UpdateAutoLoad,
     ) -> &mut Self {
         self.staged.push(StagedWrite {
             key,
             values,
             put_explicit_id,
-            update_auto_load,
         });
         self
     }
@@ -82,12 +77,10 @@ impl<'a> EntityTransaction<'a> {
     pub fn commit(self) -> Result<Vec<DatabaseId>, DbError> {
         let mut committed = Vec::with_capacity(self.staged.len());
         for write in &self.staged {
-            match self.storage.put_entity(
-                &write.key,
-                &write.values,
-                write.put_explicit_id,
-                write.update_auto_load,
-            ) {
+            match self
+                .storage
+                .put_entity(&write.key, &write.values, write.put_explicit_id)
+            {
                 Ok(db_id) => committed.push(db_id),
                 Err(error) => {
                     self.storage.restore_image(&self.image);
@@ -136,8 +129,8 @@ mod tests {
     fn a_committed_transaction_applies_every_staged_write() {
         let mut store = MemoryStorage::new();
         let mut tx = EntityTransaction::new(&mut store);
-        tx.put(pending(3), values(), false, UpdateAutoLoad::Retain)
-            .put(pending(4), values(), false, UpdateAutoLoad::Retain);
+        tx.put(pending(3), values(), false)
+            .put(pending(4), values(), false);
         let ids: Vec<DatabaseId> = tx.commit().expect("both writes land");
 
         assert_eq!(ids.len(), 2);
@@ -168,8 +161,8 @@ mod tests {
         // holds, so the transaction must unwind as a whole: the first write
         // lands nowhere.
         let mut tx = EntityTransaction::new(&mut connection);
-        tx.put(pending(3), values(), false, UpdateAutoLoad::Retain)
-            .put(key(3, 1), values(), true, UpdateAutoLoad::Retain);
+        tx.put(pending(3), values(), false)
+            .put(key(3, 1), values(), true);
         let ids = tx.commit();
 
         let error = ids.expect_err("the duplicate insert fails");
@@ -198,8 +191,8 @@ mod tests {
         seed(&mut store, 3, 1);
 
         let mut tx = EntityTransaction::new(&mut store);
-        tx.put(pending(3), values(), false, UpdateAutoLoad::Retain)
-            .put(key(9, 42), values(), false, UpdateAutoLoad::Retain);
+        tx.put(pending(3), values(), false)
+            .put(key(9, 42), values(), false);
         let error = tx
             .commit()
             .expect_err("the missing row makes the update fail");
@@ -212,7 +205,7 @@ mod tests {
     fn a_rollback_discards_everything_it_staged() {
         let mut store = MemoryStorage::new();
         let mut tx = EntityTransaction::new(&mut store);
-        tx.put(pending(3), values(), false, UpdateAutoLoad::Retain);
+        tx.put(pending(3), values(), false);
         tx.rollback();
         assert!(store.is_empty());
     }
@@ -222,7 +215,7 @@ mod tests {
         let mut store = MemoryStorage::new();
         {
             let mut tx = EntityTransaction::new(&mut store);
-            tx.put(pending(3), values(), false, UpdateAutoLoad::Retain);
+            tx.put(pending(3), values(), false);
         }
         assert!(store.is_empty());
     }
@@ -240,7 +233,7 @@ mod tests {
         );
 
         let mut tx = EntityTransaction::new(&mut connection);
-        tx.put(pending(3), values(), false, UpdateAutoLoad::Retain);
+        tx.put(pending(3), values(), false);
         tx.rollback();
         assert!(
             connection
@@ -251,7 +244,7 @@ mod tests {
         );
 
         let mut tx = EntityTransaction::new(&mut connection);
-        tx.put(pending(3), values(), false, UpdateAutoLoad::Retain);
+        tx.put(pending(3), values(), false);
         tx.commit().expect("the commit reaches the shared database");
         assert_eq!(
             connection

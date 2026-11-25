@@ -17,16 +17,27 @@
 //! tool-facing pieces (`Registry`, `LogEvent`) accept them with the
 //! reference's filters and decode back.
 
+pub mod blob_args;
 pub mod bsd_format;
 pub mod component_message;
 pub mod entry;
+pub mod file_logger;
+pub mod format_data;
 pub mod format_string;
 pub mod forwarding_handler;
 pub mod interpolator;
 pub mod message_header;
+pub mod metadata;
 pub mod query;
 pub mod registry;
 pub mod stream;
+pub mod user_components;
+
+/// The conditional MongoDB backend (`HAS_MONGODB_SUPPORT`): compiled only
+/// with `--features mongodb`, like the reference builds it only after the
+/// CMake probe finds the legacy driver.
+#[cfg(feature = "mongodb")]
+pub mod mongodb;
 
 /// The protocol version this port speaks
 /// (`MESSAGE_LOGGER_VERSION`, `logger_message_forwarder.hpp:63`).

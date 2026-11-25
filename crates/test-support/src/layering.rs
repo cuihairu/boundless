@@ -41,9 +41,11 @@ pub fn layer_of(crate_name: &str) -> Option<Layer> {
         "foundation" => Some(LAYER_FOUNDATION),
         "platform" => Some(LAYER_PLATFORM),
         "contracts" | "entitydef" | "mercury" | "python-host" | "resources" | "db"
-        | "asset-pipeline" | "plugin-host" | "chunk" | "load" => Some(LAYER_DOMAIN),
+        | "db-postgres" | "asset-pipeline" | "plugin-host" | "chunk" | "load"
+        | "compiled-space" | "physics" | "watcher" | "scene" | "waypoint" | "waypoint-gen"
+        | "terrain" | "profiler" => Some(LAYER_DOMAIN),
         "server-runtime" => Some(LAYER_ROLE_RUNTIME),
-        "boundless-server" | "client" | "test-support" => Some(LAYER_APPLICATION),
+        "boundless-server" | "bots" | "client" | "test-support" => Some(LAYER_APPLICATION),
         _ => None,
     }
 }
@@ -587,10 +589,15 @@ mod tests {
             "mercury",
             "python-host",
             "resources",
+            "watcher",
             "plugin-host",
             "chunk",
+            "physics",
+            "scene",
+            "waypoint",
             "server-runtime",
             "boundless-server",
+            "bots",
             "test-support",
         ] {
             assert!(layer_of(name).is_some(), "{name} has no layer");

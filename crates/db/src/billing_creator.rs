@@ -1,300 +1,325 @@
-//! The billing system creator registry and the compiled-in custom
-//! extension (`db_storage/billing_system_creator.{hpp,cpp}` +
-//! `dbapp/custom_billing_system.{hpp,cpp}`).
+//! The billing system registry
+//! (`lib/db_storage/billing_system_creator.{hpp,cpp}`).
 //!
-//! The reference picks its billing system from `bw.xml`:
-//! `BWConfig::get( "billingSystem/type", "standard" )` scans the creators
-//! that statically registered with `BillingSystemCreator` — the built-in
-//! set is `standard`, `custom`, and `bwauth`. This module ports the
-//! registry contract and the `custom` creator; `standard` lives in
-//! [`crate::billing`] and its script wrapper in
-//! [`crate::py_billing`], and `bwauth` (an HTTP auth-service client with
-//! its own task machinery) is not in this lane's scope.
+//! The DBApp builds its billing face from one bw.xml option,
+//! `billingSystem/type` (default `"standard"`): a static set of creators
+//! registers itself by type name, `createFromConfig` picks the match,
+//! builds it, and applies the `isOkay` gate — a misconfigured system is
+//! destroyed again with an ERROR line, an unknown type fails silently.
 //!
-//! The gate the registry applies is the acceptance: a creator that
-//! answers to the configured target is run, and the system it builds is
-//! kept only if `isOkay()` holds — the reference deletes a failed system
-//! with "Billing system is not configured correctly" and starts without
-//! one. The custom system's dependency is the `Account` entity type, so
-//! a definition set without it is exactly the missing-dependency case.
+//! The reference's registered names are `standard` (dbapp),
+//! `custom` (dbapp) and `bwauth` (dbapp; an external auth-server client,
+//! not yet ported). `standard` in the reference first asks the
+//! Personality script's `connectToBillingSystem` and falls back to the
+//! database's own face — the script branch produces the BW-09-04-02
+//! [`PyBillingSystem`] and lives in the host layer, so the registry here
+//! carries the fallback face, which for this crate's XML database is
+//! [`XmlBillingSystem`].
+//!
+//! Layering: domain library (layer 2).
 
-use foundation::ids::{EntityTypeId, INVALID_ENTITY_TYPE_ID};
+use entitydef::entity_map::EntityDescriptionMap;
+use mercury::endpoint::Address;
+use resources::datasection::DataSection;
 
-use crate::billing::{BillingConfig, GetEntityKeyOutcome, SetEntityKeyOutcome};
-use crate::py_billing::PyBillingSystem;
+use crate::billing::{
+    BillingConfig, BillingSystem, EntityKeyOutcome, SetEntityKeyOutcome, XmlBillingSystem,
+};
+use crate::custom_billing::CustomBillingSystem;
 use crate::storage::EntityKey;
+use crate::xml_database::XmlDatabase;
 
-/// `CustomBillingSystem`'s hardcoded type name
-/// (`custom_billing_system.cpp:53`).
-pub const ACCOUNT_TYPE_NAME: &str = "Account";
-
-/// The `billingSystem/type` default (`billing_system_creator.cpp:52`).
-pub const DEFAULT_BILLING_TYPE: &str = "standard";
-
-/// `CustomBillingSystem` (`custom_billing_system.cpp:51-111`): the
-/// compiled-in extension — every login creates an `Account` entity and
-/// the password is left to the entity to check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustomBillingSystem {
-    /// `entityTypeID_`: the resolved `Account` type.
-    entity_type_id: EntityTypeId,
-}
-
-impl CustomBillingSystem {
-    /// The constructor: `Account` resolved through the definitions; an
-    /// unresolvable name leaves the invalid type id.
-    pub fn new(resolve: impl FnOnce(&str) -> Option<EntityTypeId>) -> Self {
-        Self {
-            entity_type_id: resolve(ACCOUNT_TYPE_NAME).unwrap_or(INVALID_ENTITY_TYPE_ID),
-        }
-    }
-
-    /// The resolved `Account` type id.
-    pub fn entity_type_id(&self) -> EntityTypeId {
-        self.entity_type_id
-    }
-
-    /// `isOkay` (`custom_billing_system.cpp:108-111`): the `Account` type
-    /// must exist.
-    pub fn is_okay(&self) -> bool {
-        self.entity_type_id != INVALID_ENTITY_TYPE_ID
-    }
-
-    /// `getEntityKeyForAccount` (`custom_billing_system.cpp:70-87`): the
-    /// reference's fallback stub — create the default type, do not
-    /// remember it (`setEntityKeyForAccount` is not implemented by this
-    /// system), and since the password was never checked, hand it to the
-    /// base entity. That is the `authenticateViaBaseEntity` shape of the
-    /// standard system.
-    pub fn get_entity_key_for_account(&self, password: &str) -> GetEntityKeyOutcome {
-        GetEntityKeyOutcome::CreateNew {
-            type_id: self.entity_type_id,
-            should_remember: false,
-            data_for_client: String::new(),
-            data_for_base_entity: password.to_owned(),
-        }
-    }
-
-    /// `setEntityKeyForAccount` (`custom_billing_system.cpp:94-102`):
-    /// always succeeds — the stub has nothing to store.
-    pub fn set_entity_key_for_account(&self, key: EntityKey) -> SetEntityKeyOutcome {
-        SetEntityKeyOutcome::Success(key)
-    }
-}
-
-/// The systems the registered creators hand back — the polymorphic
-/// `BillingSystem *` as the port sees it. The get/set faces stay on the
-/// concrete kinds (their inputs differ: the standard system wants the
-/// account lookup, the script system wants the script call), so the
-/// registry only answers `isOkay` across kinds.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CreatedBillingSystem {
-    /// The per-database standard system: its configuration face
-    /// ([`crate::billing`]).
-    Standard(BillingConfig),
-    /// A script object wrapped as a billing system
-    /// ([`crate::py_billing`]).
-    Py(PyBillingSystem),
-    /// The compiled-in custom extension.
+/// The billing systems the registry can build
+/// (`BillingSystem *` as created by the registered creators).
+#[allow(clippy::large_enum_variant)] // both variants carry a full system; boxing would add indirection to every dispatch
+pub enum RegisteredBillingSystem {
+    /// The database's own billing face — the
+    /// `getIDatabase().createBillingSystem()` fallback of the standard
+    /// creator; for this crate's XML database that is the
+    /// logOnMapping-driven system.
+    Standard(XmlBillingSystem),
+    /// The stub custom system (`CustomBillingSystemCreator`).
     Custom(CustomBillingSystem),
 }
 
-impl CreatedBillingSystem {
-    /// `BillingSystem::isOkay` per kind (`billing_system.hpp:110-114` and
-    /// each subclass's override).
-    pub fn is_okay(&self) -> bool {
+impl BillingSystem for RegisteredBillingSystem {
+    fn get_entity_key_for_account(
+        &mut self,
+        logon_name: &str,
+        password: &str,
+        client_addr: Address,
+    ) -> EntityKeyOutcome {
         match self {
-            Self::Standard(config) => config.is_okay(),
-            Self::Py(system) => system.is_okay(),
+            Self::Standard(system) => {
+                system.get_entity_key_for_account(logon_name, password, client_addr)
+            }
+            Self::Custom(system) => {
+                system.get_entity_key_for_account(logon_name, password, client_addr)
+            }
+        }
+    }
+
+    fn set_entity_key_for_account(
+        &mut self,
+        username: &str,
+        password: &str,
+        key: EntityKey,
+    ) -> SetEntityKeyOutcome {
+        match self {
+            Self::Standard(system) => system.set_entity_key_for_account(username, password, key),
+            Self::Custom(system) => system.set_entity_key_for_account(username, password, key),
+        }
+    }
+
+    fn is_okay(&self) -> bool {
+        match self {
+            Self::Standard(system) => system.is_okay(),
             Self::Custom(system) => system.is_okay(),
         }
     }
 }
 
-/// Why [`create_from_config`] refused. The reference tells these apart
-/// in its log stream and dies on all of them; the port surfaces them as
-/// values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CreationFailure {
-    /// No creator answers to the configured type (`billing_system_creator.cpp:78-82`
-    /// — falling off the scan returns NULL).
-    NoTypeRegistered,
-    /// The creator's own construction failed (`:62-68` — the standard
-    /// creator's script leg returning NULL).
-    ConstructionFailed,
-    /// The system built but `isOkay()` refused; the reference deletes it
-    /// with "Billing system is not configured correctly" (`:69-76`).
-    NotConfiguredCorrectly,
+/// The outcome of `BillingSystemCreator::createFromConfig`.
+#[allow(clippy::large_enum_variant)] // Ready carries the built system by value, as the reference returns the live pointer
+pub enum BillingCreation {
+    /// The config's type matched a registered creator and the built
+    /// system passed `isOkay`.
+    Ready {
+        type_name: String,
+        system: RegisteredBillingSystem,
+    },
+    /// The type matched but the built system failed `isOkay` — the
+    /// reference deletes it again with an ERROR line and returns NULL.
+    Misconfigured { type_name: String },
+    /// No registered creator names the config's type — the reference
+    /// returns NULL without a word.
+    Unknown { type_name: String },
 }
 
-/// One registered creator (`billing_system_creator.hpp:28-41`): the type
-/// name it answers to and its constructor, which closes over whatever the
-/// reference's static initialisers close over — the personality script,
-/// the config flags, the definitions.
-pub type RegisteredCreator<'a> = (&'a str, &'a dyn Fn() -> Option<CreatedBillingSystem>);
-
-/// `BillingSystemCreator::createFromConfig`
-/// (`billing_system_creator.cpp:49-88`): scan for the configured type,
-/// construct, and keep only systems that pass `isOkay`.
-pub fn create_from_config(
-    creators: &[RegisteredCreator],
-    config_type: &str,
-) -> Result<CreatedBillingSystem, CreationFailure> {
-    let Some((_name, create)) = creators.iter().find(|(name, _)| *name == config_type) else {
-        return Err(CreationFailure::NoTypeRegistered);
-    };
-    let Some(system) = create() else {
-        return Err(CreationFailure::ConstructionFailed);
-    };
-    if !system.is_okay() {
-        return Err(CreationFailure::NotConfiguredCorrectly);
+impl BillingCreation {
+    /// The created system with its type name, unless the creation failed.
+    pub fn into_system(self) -> Option<(String, RegisteredBillingSystem)> {
+        match self {
+            Self::Ready { type_name, system } => Some((type_name, system)),
+            Self::Misconfigured { .. } | Self::Unknown { .. } => None,
+        }
     }
-    Ok(system)
+
+    /// The one debug line `createFromConfig` prints for this outcome;
+    /// `None` is the silent-NULL case.
+    pub fn log_line(&self) -> Option<String> {
+        match self {
+            Self::Ready { type_name, .. } => Some(format!("Using billing system: {type_name}\n")),
+            Self::Misconfigured { .. } => Some(
+                "BillingSystemCreator::createFromConfig: Billing system is not configured \
+                 correctly\n"
+                    .to_string(),
+            ),
+            Self::Unknown { .. } => None,
+        }
+    }
+}
+
+/// `billingSystem/type`, with the reference's default
+/// (`BWConfig::get( "billingSystem/type", "standard" )`).
+pub fn configured_type(config_section: &DataSection) -> String {
+    config_section.read_string("type", "standard")
+}
+
+/// `BillingSystemCreator::createFromConfig`: build the system the config
+/// names and apply the `isOkay` gate. The reference's "no billing systems
+/// registered" WARNING arm cannot occur here — the registry is the fixed
+/// match below, never empty.
+pub fn create_from_config(
+    config_section: &DataSection,
+    logon_section: DataSection,
+    defs: EntityDescriptionMap,
+    database: &XmlDatabase,
+) -> BillingCreation {
+    let type_name = configured_type(config_section);
+    match type_name.as_str() {
+        "standard" => {
+            let config = BillingConfig::from_section(config_section);
+            let system = RegisteredBillingSystem::Standard(XmlBillingSystem::new(
+                logon_section,
+                config,
+                defs,
+                database,
+            ));
+            if BillingSystem::is_okay(&system) {
+                BillingCreation::Ready { type_name, system }
+            } else {
+                BillingCreation::Misconfigured { type_name }
+            }
+        }
+        "custom" => {
+            let system = RegisteredBillingSystem::Custom(CustomBillingSystem::new(&defs));
+            if system.is_okay() {
+                BillingCreation::Ready { type_name, system }
+            } else {
+                BillingCreation::Misconfigured { type_name }
+            }
+        }
+        _ => BillingCreation::Unknown { type_name },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::custom_billing::tests::account_defs;
+    use crate::xml_database::tests::defs;
+    use resources::datasection::parse;
 
-    /// The definitions face with `Account` present or not.
-    fn defs_with_account(name: &str) -> Option<EntityTypeId> {
-        (name == ACCOUNT_TYPE_NAME).then_some(2)
+    /// An empty XML database: no logon mappings, no entities.
+    fn empty_db() -> XmlDatabase {
+        XmlDatabase::new(defs())
     }
 
-    /// The definitions face without `Account` — the missing dependency.
-    fn defs_without_account(name: &str) -> Option<EntityTypeId> {
-        (name == "Avatar").then_some(1)
+    /// The `billingSystem/` block for a config string.
+    fn config_section(xml: &str) -> DataSection {
+        parse("root", xml.as_bytes()).expect("parse billing config")
     }
 
+    /// The default type is `standard`, and a standard creation passes
+    /// the logon through the XML system's reject path.
     #[test]
-    fn the_default_target_is_standard() {
-        assert_eq!(DEFAULT_BILLING_TYPE, "standard");
-        assert_eq!(ACCOUNT_TYPE_NAME, "Account");
-    }
+    fn the_default_type_builds_the_standard_system() {
+        let creation = create_from_config(
+            &config_section("<root/>"),
+            parse("root", b"<root/>").expect("parse logon"),
+            defs(),
+            &empty_db(),
+        );
 
-    /// The custom target, Account present: the registry hands the
-    /// system back and its faces work — create-not-remember with the
-    /// password riding to the base entity.
-    #[test]
-    fn the_custom_extension_is_usable_when_account_exists() {
-        let create_custom = || -> Option<CreatedBillingSystem> {
-            Some(CreatedBillingSystem::Custom(CustomBillingSystem::new(
-                defs_with_account,
-            )))
-        };
-        let creators: Vec<RegisteredCreator> = vec![("custom", &create_custom)];
-        let system = create_from_config(&creators, "custom").expect("Account exists");
-        let CreatedBillingSystem::Custom(custom) = system else {
-            panic!("the custom creator built the custom system");
-        };
-        assert!(custom.is_okay());
-        assert_eq!(custom.entity_type_id(), 2);
         assert_eq!(
-            custom.get_entity_key_for_account("pw"),
-            GetEntityKeyOutcome::CreateNew {
-                type_id: 2,
-                should_remember: false,
-                data_for_client: String::new(),
-                data_for_base_entity: "pw".to_owned(),
+            creation.log_line().as_deref(),
+            Some("Using billing system: standard\n")
+        );
+        let (type_name, mut system) = creation.into_system().expect("ready");
+        assert_eq!(type_name, "standard");
+        assert!(system.is_okay());
+        assert_eq!(
+            system.get_entity_key_for_account("stranger", "pw", Address::new(0, 0)),
+            EntityKeyOutcome::Failure {
+                status: crate::log_on_status::LogOnStatus::new(
+                    crate::log_on_status::codes::LOGIN_REJECTED_NO_SUCH_USER
+                ),
+                error_msg: String::new(),
             }
         );
-        assert_eq!(
-            custom.set_entity_key_for_account(EntityKey {
-                type_id: 2,
-                db_id: 7
-            }),
-            SetEntityKeyOutcome::Success(EntityKey {
-                type_id: 2,
-                db_id: 7
-            })
-        );
-    }
 
-    /// The missing-dependency case: no `Account` type in the
-    /// definitions — the system builds, the isOkay gate deletes it.
-    #[test]
-    fn the_custom_extension_without_account_is_refused() {
-        let create_custom = || -> Option<CreatedBillingSystem> {
-            Some(CreatedBillingSystem::Custom(CustomBillingSystem::new(
-                defs_without_account,
-            )))
+        // The setter rides through the same dispatch.
+        let avatar = defs().name_to_index("Avatar").unwrap();
+        let key = EntityKey {
+            type_id: avatar,
+            db_id: 2,
         };
-        let creators: Vec<RegisteredCreator> = vec![("custom", &create_custom)];
         assert_eq!(
-            create_from_config(&creators, "custom"),
-            Err(CreationFailure::NotConfiguredCorrectly)
+            system.set_entity_key_for_account("newuser", "pw", key),
+            SetEntityKeyOutcome::Success(key)
         );
     }
 
-    /// A configured type no creator answers to.
+    /// The custom type builds the custom system when the defs carry an
+    /// `Account` type.
     #[test]
-    fn an_unregistered_target_is_refused() {
-        let creators: Vec<RegisteredCreator> = vec![];
-        assert_eq!(
-            create_from_config(&creators, "custom"),
-            Err(CreationFailure::NoTypeRegistered)
-        );
-    }
+    fn the_custom_type_builds_the_custom_system() {
+        let account_map = account_defs();
+        let account = account_map.name_to_index("Account").unwrap();
 
-    /// A creator whose own construction fails — the standard creator's
-    /// script leg.
-    #[test]
-    fn a_failing_construction_is_refused() {
-        let create_standard = || -> Option<CreatedBillingSystem> { None };
-        let creators: Vec<RegisteredCreator> = vec![("standard", &create_standard)];
-        assert_eq!(
-            create_from_config(&creators, "standard"),
-            Err(CreationFailure::ConstructionFailed)
+        let creation = create_from_config(
+            &config_section("<root> <type> custom </type> </root>"),
+            parse("root", b"<root/>").expect("parse logon"),
+            account_map,
+            &empty_db(),
         );
-    }
 
-    /// The isOkay gate holds across kinds: a script system without the
-    /// get face is refused, one with it passes; a standard config that
-    /// needs an unknown-user type it lacks is refused too.
-    #[test]
-    fn the_gate_applies_to_every_kind() {
-        let faceless = PyBillingSystem::new(false, true);
-        let working = PyBillingSystem::new(true, true);
-        let blind_config = BillingConfig::from_name(true, true, false, "Nope", |_| None);
-        let create_py_bad =
-            || -> Option<CreatedBillingSystem> { Some(CreatedBillingSystem::Py(faceless.clone())) };
-        let create_py_good =
-            || -> Option<CreatedBillingSystem> { Some(CreatedBillingSystem::Py(working.clone())) };
-        let create_standard_bad = || -> Option<CreatedBillingSystem> {
-            Some(CreatedBillingSystem::Standard(blind_config.clone()))
-        };
-        let creators: Vec<RegisteredCreator> = vec![
-            ("py-bad", &create_py_bad),
-            ("py-good", &create_py_good),
-            ("standard-bad", &create_standard_bad),
-        ];
         assert_eq!(
-            create_from_config(&creators, "py-bad"),
-            Err(CreationFailure::NotConfiguredCorrectly)
+            creation.log_line().as_deref(),
+            Some("Using billing system: custom\n")
         );
-        assert!(create_from_config(&creators, "py-good").is_ok());
+        let (_, mut system) = creation.into_system().expect("ready");
+        assert!(system.is_okay());
         assert_eq!(
-            create_from_config(&creators, "standard-bad"),
-            Err(CreationFailure::NotConfiguredCorrectly)
-        );
-    }
-
-    /// The custom face without Account still hands out its stub — it
-    /// does not gate itself; `is_okay` plus the registry gate are what
-    /// stop the invalid type from reaching the DBApp.
-    #[test]
-    fn the_custom_face_does_not_gate_itself() {
-        let blind = CustomBillingSystem::new(|_| None);
-        assert!(!blind.is_okay());
-        assert_eq!(blind.entity_type_id(), INVALID_ENTITY_TYPE_ID);
-        assert_eq!(
-            blind.get_entity_key_for_account("pw"),
-            GetEntityKeyOutcome::CreateNew {
-                type_id: INVALID_ENTITY_TYPE_ID,
+            system.get_entity_key_for_account("anyone", "pw", Address::new(0, 0)),
+            EntityKeyOutcome::CreateNew {
+                entity_type: account,
                 should_remember: false,
                 data_for_client: String::new(),
-                data_for_base_entity: "pw".to_owned(),
+                data_for_base_entity: "pw".to_string(),
             }
         );
+
+        // The setter always reports success, through the same dispatch.
+        let key = EntityKey {
+            type_id: account,
+            db_id: 3,
+        };
+        assert_eq!(
+            system.set_entity_key_for_account("anyone", "pw", key),
+            SetEntityKeyOutcome::Success(key)
+        );
+    }
+
+    /// A custom system whose defs carry no `Account` type fails the
+    /// `isOkay` gate with the reference's ERROR line and NULL.
+    #[test]
+    fn a_misconfigured_custom_system_is_refused_with_the_error_line() {
+        let creation = create_from_config(
+            &config_section("<root> <type> custom </type> </root>"),
+            parse("root", b"<root/>").expect("parse logon"),
+            defs(),
+            &empty_db(),
+        );
+
+        assert_eq!(
+            creation.log_line().as_deref(),
+            Some(
+                "BillingSystemCreator::createFromConfig: Billing system is not configured \
+                 correctly\n"
+            )
+        );
+        assert!(creation.into_system().is_none());
+    }
+
+    /// A standard system accepting strangers without a valid unknown-user
+    /// type fails the gate the same way.
+    #[test]
+    fn a_misconfigured_standard_system_is_refused() {
+        let creation = create_from_config(
+            &config_section(
+                "<root> <type> standard </type> \
+                 <shouldAcceptUnknownUsers> true </shouldAcceptUnknownUsers> \
+                 <entityTypeForUnknownUsers> Nobody </entityTypeForUnknownUsers> \
+                 </root>",
+            ),
+            parse("root", b"<root/>").expect("parse logon"),
+            defs(),
+            &empty_db(),
+        );
+
+        assert_eq!(
+            creation.log_line().as_deref(),
+            Some(
+                "BillingSystemCreator::createFromConfig: Billing system is not configured \
+                 correctly\n"
+            )
+        );
+        assert!(creation.into_system().is_none());
+    }
+
+    /// An unregistered type returns NULL without a word.
+    #[test]
+    fn an_unknown_type_is_refused_silently() {
+        let creation = create_from_config(
+            &config_section("<root> <type> nonsense </type> </root>"),
+            parse("root", b"<root/>").expect("parse logon"),
+            defs(),
+            &empty_db(),
+        );
+
+        assert_eq!(creation.log_line(), None);
+        assert!(creation.into_system().is_none());
     }
 }

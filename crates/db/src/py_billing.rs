@@ -1,98 +1,62 @@
-//! The Python billing system: the script contract for account
-//! authentication (`dbapp/py_billing_system.{hpp,cpp}`).
+//! The Python-script-driven billing system
+//! (`server/dbapp/py_billing_system.{hpp,cpp}`).
 //!
-//! When the personality's `connectToBillingSystem` returns an object, the
-//! standard creator wraps it in a `PyBillingSystem`
-//! (`standard_billing_system.cpp:60-73`). The wrapper hands the script a
-//! `PyBillingResponse` and lets the script drive one of seven methods;
-//! each folds to one of the standard outcomes in
-//! [`crate::billing::GetEntityKeyOutcome`].
+//! The standard creator hands the DBApp a Python object with two members,
+//! `getEntityKeyForAccount` and `setEntityKeyForAccount`. For a logon the
+//! driver calls the first with `(username, password, clientAddr, response)`
+//! where `response` is a [`PyBillingResponse`]: the script authenticates by
+//! its own means and reports through exactly one of the response's seven
+//! methods. A response that never reports — the script raised, or returned
+//! without calling anything — reports the general failure in its place,
+//! which is the reference's destructor contract.
 //!
-//! The contract the script sees is the interesting part, and it is what
-//! this module ports:
+//! The port keeps the reference's error contract verbatim: every refused
+//! method returns the `ValueError` text the reference sets (the port has
+//! no live interpreter to raise on, so the message is the observable),
+//! and "exactly one response" is enforced by the same "Response already
+//! sent" guard the C++ enforces by nulling the handler pointer.
 //!
-//! - `loadEntity` refuses `dbID == 0` with
-//!   `"0 is an invalid database id"` before it even looks at the type
-//!   (`py_billing_system.cpp:198-202`).
-//! - Every entity-typed response resolves the type name through the
-//!   definitions; an unknown name raises
-//!   `"Invalid entity type '<name>'\n"` — the reference's format string
-//!   carries a trailing newline (`:276-277`).
-//! - A second response raises `"Response already sent"` (`:268-270`,
-//!   `:327-330`) — the handler is nulled once it fired.
-//! - `failure(int)` refuses the "okay" statuses with
-//!   `"Invalid failure status <n>"` (`:306-318`). The reference's second
-//!   check (`statusAsInt != status.value()`) is vacuous — the enum cast
-//!   is total and `value()` hands the int straight back — so only the
-//!   okay check survives the port, with the reasoning recorded.
-//! - A response object destroyed with nothing sent reports a general
-//!   failure with `"No response from script"` through the destructor
-//!   (`:31-43`): this is what a script exception that never answered
-//!   produces, because the wrapper prints and clears the traceback and
-//!   moves on (`:423-429`).
-//! - A script object without `getEntityKeyForAccount` fails every lookup
-//!   with a bare general failure (`:394-401`); without
-//!   `setEntityKeyForAccount`, every remembered create fails
-//!   (`:441-448`).
-//!
-//! The script itself is a closure here — the embedder (the Python host)
-//! plays `PyObject_CallObject`, returning `Err` where the call raised.
-//! The wrapper prints and clears such errors, so the port discards the
-//! error value the same way.
+//! Layering: domain library (layer 2). The script members are injected
+//! closures — the CPython bridge lives in python-host, and the contract
+//! under test here is the one the script sees.
 
+use entitydef::entity_map::EntityDescriptionMap;
 use foundation::ids::{DatabaseId, EntityTypeId, INVALID_ENTITY_TYPE_ID};
 use mercury::endpoint::Address;
 
-use crate::account::log_on_status;
-use crate::billing::{GetEntityKeyOutcome, SetEntityKeyOutcome};
+use crate::billing::{BillingSystem, EntityKeyOutcome, SetEntityKeyOutcome};
+use crate::log_on_status::{LogOnStatus, codes};
 use crate::storage::EntityKey;
 
-/// The response object the script drives (`PyBillingResponse`,
-/// `py_billing_system.cpp:18-95`): exactly one of its methods may fire.
+/// The script-facing response object
+/// (`PyBillingResponse`, `py_billing_system.cpp:31-218`).
 ///
-/// The defaults the reference exposes (`OPTARG`) are spelled out in each
-/// method; the port takes them explicitly.
-pub struct PyBillingResponse<'d> {
-    /// `entityDefs_.getEntityType` — the definitions the type names
-    /// resolve through.
-    resolve: &'d dyn Fn(&str) -> Option<EntityTypeId>,
-    /// The outcome once a method fired; `pHandler_ = nullptr` in the
-    /// reference.
-    outcome: Option<GetEntityKeyOutcome>,
+/// One instance per logon attempt. Every method maps to the reference's
+/// `PY_AUTO_METHOD` of the same name, with the same defaults and the same
+/// refusal text.
+pub struct PyBillingResponse<'a> {
+    defs: &'a EntityDescriptionMap,
+    /// The one outcome the handler receives; `None` until a method sends.
+    outcome: Option<EntityKeyOutcome>,
 }
 
-impl<'d> PyBillingResponse<'d> {
-    fn new(resolve: &'d dyn Fn(&str) -> Option<EntityTypeId>) -> Self {
+impl<'a> PyBillingResponse<'a> {
+    /// Constructor: nothing has been sent yet.
+    pub fn new(defs: &'a EntityDescriptionMap) -> Self {
         Self {
-            resolve,
+            defs,
             outcome: None,
         }
     }
 
-    /// Whether a response has already been sent.
-    pub fn sent(&self) -> bool {
+    /// True while no method has reported yet — the reference's non-null
+    /// `pHandler_`.
+    pub fn has_response(&self) -> bool {
         self.outcome.is_some()
     }
 
-    /// `getEntityTypeID` (`py_billing_system.cpp:263-282`): the
-    /// already-sent check rides in here for the entity-typed methods,
-    /// because that is where the reference puts it.
-    fn resolve_type(&self, entity_type: &str) -> Result<EntityTypeId, String> {
-        if self.sent() {
-            return Err("Response already sent".to_owned());
-        }
-        match (self.resolve)(entity_type) {
-            // The reference checks the resolved id
-            // (`resultID == INVALID_ENTITY_TYPE_ID`), so an invalid id
-            // from the definitions reports exactly like a missing name.
-            Some(type_id) if type_id != INVALID_ENTITY_TYPE_ID => Ok(type_id),
-            _ => Err(format!("Invalid entity type '{entity_type}'\n")),
-        }
-    }
-
-    /// `loadEntity` (`py_billing_system.cpp:193-218`): a specific entity,
-    /// by database id. The zero-id refusal happens before the sent check,
-    /// exactly as the reference orders it.
+    /// `loadEntity`: a successful authentication naming one entity by
+    /// database id.
     pub fn load_entity(
         &mut self,
         entity_type: &str,
@@ -100,22 +64,22 @@ impl<'d> PyBillingResponse<'d> {
         data_for_client: &str,
         data_for_base_entity: &str,
     ) -> Result<(), String> {
+        // The id check runs before the sent guard, exactly as the reference
+        // orders it (`py_billing_system.cpp:219-226`).
         if db_id == 0 {
-            return Err("0 is an invalid database id".to_owned());
+            return Err("0 is an invalid database id".to_string());
         }
-        let type_id = self.resolve_type(entity_type)?;
-        self.outcome = Some(GetEntityKeyOutcome::Success {
+        let type_id = self.type_id_for(entity_type)?;
+        self.outcome = Some(EntityKeyOutcome::Success {
             key: EntityKey { type_id, db_id },
-            data_for_client: data_for_client.to_owned(),
-            data_for_base_entity: data_for_base_entity.to_owned(),
+            data_for_client: data_for_client.to_string(),
+            data_for_base_entity: data_for_base_entity.to_string(),
         });
         Ok(())
     }
 
-    /// `loadEntityByName` (`py_billing_system.cpp:221-241`): load (or
-    /// create) by identifier instead of by id — the base-entity
-    /// authentication shape. Defaults: both `should*` flags false, both
-    /// data strings empty.
+    /// `loadEntityByName`: request an entity by its Identifier property;
+    /// the form used when a base entity does the authentication.
     pub fn load_entity_by_name(
         &mut self,
         entity_type: &str,
@@ -125,20 +89,20 @@ impl<'d> PyBillingResponse<'d> {
         data_for_client: &str,
         data_for_base_entity: &str,
     ) -> Result<(), String> {
-        let type_id = self.resolve_type(entity_type)?;
-        self.outcome = Some(GetEntityKeyOutcome::LoadFromUsername {
-            type_id,
-            username: entity_name.to_owned(),
+        let type_id = self.type_id_for(entity_type)?;
+        self.outcome = Some(EntityKeyOutcome::LoadFromUsername {
+            entity_type: type_id,
+            username: entity_name.to_string(),
             should_create_new_on_load_failure: should_create_unknown,
             should_remember_new_on_load_failure: should_remember_unknown,
-            data_for_client: data_for_client.to_owned(),
-            data_for_base_entity: data_for_base_entity.to_owned(),
+            data_for_client: data_for_client.to_string(),
+            data_for_base_entity: data_for_base_entity.to_string(),
         });
         Ok(())
     }
 
-    /// `createNewEntity` (`py_billing_system.cpp:244-260`): a brand new
-    /// entity instead of a loaded one.
+    /// `createNewEntity`: authentication succeeded and a brand new entity
+    /// should be created.
     pub fn create_new_entity(
         &mut self,
         entity_type: &str,
@@ -146,542 +110,721 @@ impl<'d> PyBillingResponse<'d> {
         data_for_client: &str,
         data_for_base_entity: &str,
     ) -> Result<(), String> {
-        let type_id = self.resolve_type(entity_type)?;
-        self.outcome = Some(GetEntityKeyOutcome::CreateNew {
-            type_id,
+        let type_id = self.type_id_for(entity_type)?;
+        self.outcome = Some(EntityKeyOutcome::CreateNew {
+            entity_type: type_id,
             should_remember,
-            data_for_client: data_for_client.to_owned(),
-            data_for_base_entity: data_for_base_entity.to_owned(),
+            data_for_client: data_for_client.to_string(),
+            data_for_base_entity: data_for_base_entity.to_string(),
         });
         Ok(())
     }
 
-    /// `failureInvalidPassword` (`:285-289`).
+    /// `failureInvalidPassword`.
     pub fn failure_invalid_password(&mut self, error_msg: &str) -> Result<(), String> {
-        self.send_failure(log_on_status::LOGIN_REJECTED_INVALID_PASSWORD, error_msg)
+        self.send_failure(
+            LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
+            error_msg,
+        )
     }
 
-    /// `failureNoSuchUser` (`:292-296`).
+    /// `failureNoSuchUser`.
     pub fn failure_no_such_user(&mut self, error_msg: &str) -> Result<(), String> {
-        self.send_failure(log_on_status::LOGIN_REJECTED_NO_SUCH_USER, error_msg)
+        self.send_failure(
+            LogOnStatus::new(codes::LOGIN_REJECTED_NO_SUCH_USER),
+            error_msg,
+        )
     }
 
-    /// `failureDBError` (`:299-303`).
+    /// `failureDBError`.
     pub fn failure_db_error(&mut self, error_msg: &str) -> Result<(), String> {
-        self.send_failure(log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE, error_msg)
+        self.send_failure(
+            LogOnStatus::new(codes::LOGIN_REJECTED_DB_GENERAL_FAILURE),
+            error_msg,
+        )
     }
 
-    /// `failure` (`:306-318`): an arbitrary rejection status as its raw
-    /// `LogOnStatus` int. The reference's `statusAsInt != status.value()`
-    /// arm is vacuous — the enum cast is total and `value()` hands the
-    /// int straight back — so the effective contract is the okay check,
-    /// and this port keeps only that, refusing [`log_on_status::NOT_SET`]
-    /// and [`log_on_status::LOGGED_ON`].
+    /// `failure`: an arbitrary error code. `okay()` codes are refused —
+    /// the reference's `status.okay() || statusAsInt != status.value()`
+    /// check, where the round-trip half is dead because the enum cast is
+    /// the identity.
     pub fn failure(&mut self, status_as_int: i32, error_msg: &str) -> Result<(), String> {
-        if log_on_status::okay(status_as_int) {
-            return Err(format!("Invalid failure status {status_as_int}"));
+        let status = LogOnStatus::new(status_as_int);
+        if status.okay() || status_as_int != status.value() {
+            return Err(format!("Invalid failure status {}", status_as_int));
         }
-        self.send_failure(status_as_int, error_msg)
+        self.send_failure(status, error_msg)
     }
 
-    /// `sendFailure` (`:324-337`).
-    fn send_failure(&mut self, status: i32, error_msg: &str) -> Result<(), String> {
-        if self.sent() {
-            return Err("Response already sent".to_owned());
+    /// `getEntityTypeID`: the shared sent-guard and the name lookup
+    /// (`py_billing_system.cpp:284-301`).
+    fn type_id_for(&self, entity_type: &str) -> Result<EntityTypeId, String> {
+        if self.outcome.is_some() {
+            return Err("Response already sent".to_string());
         }
-        self.outcome = Some(GetEntityKeyOutcome::Failure {
+        self.defs
+            .name_to_index(entity_type)
+            .filter(|id| *id != INVALID_ENTITY_TYPE_ID)
+            .ok_or_else(|| format!("Invalid entity type '{}'\n", entity_type))
+    }
+
+    /// `sendFailure`: the one failure path, guarded like the reference.
+    fn send_failure(&mut self, status: LogOnStatus, error_msg: &str) -> Result<(), String> {
+        if self.outcome.is_some() {
+            return Err("Response already sent".to_string());
+        }
+        self.outcome = Some(EntityKeyOutcome::Failure {
             status,
-            error_msg: error_msg.to_owned(),
+            error_msg: error_msg.to_string(),
         });
         Ok(())
     }
 
-    /// `~PyBillingResponse` (`py_billing_system.cpp:31-43`): a response
-    /// object destroyed with nothing sent reports the general failure
-    /// with the reference's message. This is the outcome a raising script
-    /// leaves behind, because the wrapper prints and clears the traceback
-    /// without answering (`:423-429`).
-    fn finish(self) -> GetEntityKeyOutcome {
-        self.outcome.unwrap_or(GetEntityKeyOutcome::Failure {
-            status: log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE,
-            error_msg: "No response from script".to_owned(),
+    /// The destructor (`~PyBillingResponse`, `py_billing_system.cpp:40-61`):
+    /// a response that never sent anything reports the general failure with
+    /// "No response from script", so every logon attempt ends at the handler
+    /// exactly once.
+    pub fn into_outcome(mut self) -> EntityKeyOutcome {
+        self.outcome.take().unwrap_or(EntityKeyOutcome::Failure {
+            status: LogOnStatus::new(codes::LOGIN_REJECTED_DB_GENERAL_FAILURE),
+            error_msg: "No response from script".to_string(),
         })
     }
 }
 
-/// The script billing system (`PyBillingSystem`,
-/// `py_billing_system.cpp:347-480`): the personality's billing object as
-/// the port sees it — two script methods, present or not.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PyBillingSystem {
-    /// `getEntityKeyFunc_`: the object had a `getEntityKeyForAccount`.
-    get_entity_key_func: bool,
-    /// `setEntityKeyFunc_`: the object had a `setEntityKeyForAccount`.
-    set_entity_key_func: bool,
+/// The script member `getEntityKeyForAccount`: the credentials, the
+/// client address and the response object to report through. An `Err`
+/// is the script raising — the driver logs it and the response's own
+/// contract decides the outcome.
+pub type GetEntityKeyFn<'a> =
+    Box<dyn FnMut(&str, &str, Address, &mut PyBillingResponse) -> Result<(), String> + 'a>;
+
+/// The script member `setEntityKeyForAccount`: `(username, password,
+/// entityType, dbID)`. An `Err` is the script raising
+/// (`PyBillingSystem::setEntityKeyForAccount`, `py_billing_system.cpp:418-457`).
+pub type SetEntityKeyFn<'a> =
+    Box<dyn FnMut(&str, &str, &str, DatabaseId) -> Result<(), String> + 'a>;
+
+/// The members `getMember` reads off the script object
+/// (`py_billing_system.cpp:341-357`). A `None` member is the attribute
+/// the script object does not carry: `getMember` logs and clears, so
+/// construction continues and the failure surfaces at call time.
+pub struct PyBillingScript<'a> {
+    /// The `getEntityKeyForAccount` attribute.
+    pub get_entity_key_for_account: Option<GetEntityKeyFn<'a>>,
+    /// The `setEntityKeyForAccount` attribute.
+    pub set_entity_key_for_account: Option<SetEntityKeyFn<'a>>,
 }
 
-impl PyBillingSystem {
-    /// The constructor's `getMember` face (`:347-382`): a missing member
-    /// is reported and cleared, leaving the system without that face.
-    pub fn new(get_entity_key_func: bool, set_entity_key_func: bool) -> Self {
+/// The Python billing system
+/// (`PyBillingSystem`, `py_billing_system.cpp:344-457`).
+pub struct PyBillingSystem<'a> {
+    defs: &'a EntityDescriptionMap,
+    get_func: Option<GetEntityKeyFn<'a>>,
+    set_func: Option<SetEntityKeyFn<'a>>,
+    /// The `ERROR_MSG` lines the reference would have printed, in order.
+    pub errors: Vec<String>,
+}
+
+impl<'a> PyBillingSystem<'a> {
+    /// Constructor: read the two members, logging the missing ones the way
+    /// `getMember` does (`No such method %s`).
+    pub fn new(script: PyBillingScript<'a>, defs: &'a EntityDescriptionMap) -> Self {
+        let mut errors = Vec::new();
+        if script.get_entity_key_for_account.is_none() {
+            errors.push(
+                "PyBillingSystem::getMember: No such method getEntityKeyForAccount\n".to_string(),
+            );
+        }
+        if script.set_entity_key_for_account.is_none() {
+            errors.push(
+                "PyBillingSystem::getMember: No such method setEntityKeyForAccount\n".to_string(),
+            );
+        }
         Self {
-            get_entity_key_func,
-            set_entity_key_func,
+            defs,
+            get_func: script.get_entity_key_for_account,
+            set_func: script.set_entity_key_for_account,
+            errors,
         }
     }
 
-    /// `isOkay` (`py_billing_system.hpp:33-36`): without the get face the
-    /// system cannot start.
-    pub fn is_okay(&self) -> bool {
-        self.get_entity_key_func
-    }
-
-    /// `getEntityKeyForAccount` (`py_billing_system.cpp:389-430`): the
-    /// script is called as `(username, password, clientAddr, response)`;
-    /// `script` returning `Err` plays the call raising — the wrapper
-    /// prints and clears it and lets the destructor speak.
-    pub fn get_entity_key_for_account(
-        &self,
+    /// `getEntityKeyForAccount`: run the script member against a fresh
+    /// response, then deliver whatever the response ended up carrying —
+    /// including the destructor's general failure when the script raised
+    /// or returned without reporting.
+    pub fn get_entity_key_for_account_with_client_addr(
+        &mut self,
         username: &str,
         password: &str,
-        client_addr: &Address,
-        resolve: &dyn Fn(&str) -> Option<EntityTypeId>,
-        script: impl FnOnce(&str, &str, &Address, &mut PyBillingResponse) -> Result<(), String>,
-    ) -> GetEntityKeyOutcome {
-        if !self.get_entity_key_func {
-            return GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE,
+        client_addr: Address,
+    ) -> EntityKeyOutcome {
+        let Some(func) = self.get_func.as_mut() else {
+            self.errors.push(
+                "PyBillingSystem::getEntityKeyForAccount: No getEntityKeyForAccount method\n"
+                    .to_string(),
+            );
+            return EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_DB_GENERAL_FAILURE),
                 error_msg: String::new(),
             };
+        };
+
+        let mut response = PyBillingResponse::new(self.defs);
+        if func(username, password, client_addr, &mut response).is_err() {
+            // `ERROR_MSG ... Failed. username = %s` then `PyErr_PrintEx` —
+            // the failure is logged, and the response's destructor sends
+            // the outcome.
+            self.errors.push(format!(
+                "PyBillingSystem::getEntityKeyForAccount: Failed. username = {}\n",
+                username
+            ));
         }
-        let mut response = PyBillingResponse::new(resolve);
-        let _ = script(username, password, client_addr, &mut response);
-        response.finish()
+        response.into_outcome()
     }
 
-    /// `setEntityKeyForAccount` (`py_billing_system.cpp:437-480`): the
-    /// script is called as `(username, password, typeName, dbID)`. A
-    /// raising call fails the set; anything else succeeds it.
+    /// `setEntityKeyForAccount`: call the script member with the entity's
+    /// type name and database id; a script failure fails the mapping.
     pub fn set_entity_key_for_account(
-        &self,
+        &mut self,
         username: &str,
         password: &str,
         key: EntityKey,
-        type_name_of: impl FnOnce(EntityTypeId) -> String,
-        script: impl FnOnce(&str, &str, &str, DatabaseId) -> Result<(), String>,
     ) -> SetEntityKeyOutcome {
-        if !self.set_entity_key_func {
-            // "sendCreateNew should not be called with shouldRemember as
-            // True" — the reference's message for exactly this shape.
+        let Some(func) = self.set_func.as_mut() else {
+            self.errors.push(
+                "PyBillingSystem::setEntityKeyForAccount: No setEntityKeyForAccount function \
+                 exists. sendCreateNew should not be called with shouldRemember as True\n"
+                    .to_string(),
+            );
             return SetEntityKeyOutcome::Failure(key);
-        }
-        match script(username, password, &type_name_of(key.type_id), key.db_id) {
+        };
+
+        // `entityDefs_.getEntityDescription( ekey.typeID ).name()`; an id
+        // outside the set has no description to name, and the port passes
+        // the empty string instead of reading one out of bounds.
+        let type_name = self.defs.index_to_name(key.type_id).unwrap_or("");
+        match func(username, password, type_name, key.db_id) {
             Ok(()) => SetEntityKeyOutcome::Success(key),
-            Err(_) => SetEntityKeyOutcome::Failure(key),
+            Err(_) => {
+                self.errors.push(format!(
+                    "PyBillingSystem::setLoginMapping: Failed. username = {}\n",
+                    username
+                ));
+                SetEntityKeyOutcome::Failure(key)
+            }
         }
+    }
+}
+
+impl BillingSystem for PyBillingSystem<'_> {
+    /// The DBAppInterface::authenticateAccount path always passes
+    /// `Mercury::Address( 0, 0 )` as the client address
+    /// (`authenticate_account_handler.cpp:47`).
+    fn get_entity_key_for_account(
+        &mut self,
+        logon_name: &str,
+        password: &str,
+        client_addr: Address,
+    ) -> EntityKeyOutcome {
+        self.get_entity_key_for_account_with_client_addr(logon_name, password, client_addr)
+    }
+
+    fn set_entity_key_for_account(
+        &mut self,
+        username: &str,
+        password: &str,
+        key: EntityKey,
+    ) -> SetEntityKeyOutcome {
+        PyBillingSystem::set_entity_key_for_account(self, username, password, key)
+    }
+
+    fn is_okay(&self) -> bool {
+        // The Python system inherits the base predicate
+        // (`billing_system.hpp:116-121`); `PyBillingSystem` adds no
+        // configuration of its own.
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xml_database::tests::defs;
 
-    /// `Avatar → 1`, everything else unknown — the definitions face.
-    fn resolve(name: &str) -> Option<EntityTypeId> {
-        (name == "Avatar").then_some(1)
+    fn addr() -> Address {
+        Address::new(0, 0)
     }
 
+    /// `loadEntity` with a real type and a non-zero id reports the key
+    /// with the optional data strings.
     #[test]
-    fn load_entity_delivers_the_key_and_data() {
-        let mut response = PyBillingResponse::new(&resolve);
+    fn load_entity_sends_the_key_and_the_data() {
+        let avatar = defs().name_to_index("Avatar").unwrap();
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+
         response
-            .load_entity("Avatar", 7, "for-client", "for-base")
-            .expect("the response fires");
-        assert!(response.sent());
+            .load_entity("Avatar", 7, "for the client", "for the entity")
+            .expect("loadEntity");
+
         assert_eq!(
-            response.finish(),
-            GetEntityKeyOutcome::Success {
+            response.into_outcome(),
+            EntityKeyOutcome::Success {
                 key: EntityKey {
-                    type_id: 1,
+                    type_id: avatar,
                     db_id: 7
                 },
-                data_for_client: "for-client".to_owned(),
-                data_for_base_entity: "for-base".to_owned(),
+                data_for_client: "for the client".to_string(),
+                data_for_base_entity: "for the entity".to_string(),
             }
         );
     }
 
-    /// The zero-id refusal fires before the sent check — a second call
-    /// with id 0 reports the id, not the double response.
+    /// The defaults: omitted data strings are empty, and the type id comes
+    /// from the definition set.
     #[test]
-    fn load_entity_refuses_zero_before_anything_else() {
-        let mut response = PyBillingResponse::new(&resolve);
-        assert_eq!(
-            response.load_entity("Avatar", 0, "", ""),
-            Err("0 is an invalid database id".to_owned())
-        );
-        assert!(!response.sent());
-        response.load_entity("Avatar", 7, "", "").unwrap();
-        assert_eq!(
-            response.load_entity("Avatar", 0, "", ""),
-            Err("0 is an invalid database id".to_owned()),
-            "the id check precedes the sent check"
-        );
-    }
+    fn load_entity_keeps_the_default_data_strings() {
+        let avatar = defs().name_to_index("Avatar").unwrap();
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
 
-    #[test]
-    fn unknown_entity_types_raise_the_reference_text() {
-        let mut response = PyBillingResponse::new(&resolve);
-        assert_eq!(
-            response.load_entity("Nope", 7, "", ""),
-            Err("Invalid entity type 'Nope'\n".to_owned())
-        );
-        assert!(!response.sent());
-        assert_eq!(
-            response.create_new_entity("Also-nope", true, "", ""),
-            Err("Invalid entity type 'Also-nope'\n".to_owned())
-        );
-    }
-
-    #[test]
-    fn a_second_response_raises_already_sent() {
-        let mut response = PyBillingResponse::new(&resolve);
-        response.load_entity("Avatar", 7, "", "").unwrap();
-        assert_eq!(
-            response.load_entity("Avatar", 8, "", ""),
-            Err("Response already sent".to_owned())
-        );
-        assert_eq!(
-            response.create_new_entity("Avatar", true, "", ""),
-            Err("Response already sent".to_owned())
-        );
-        assert_eq!(
-            response.load_entity_by_name("Avatar", "hero", false, false, "", ""),
-            Err("Response already sent".to_owned())
-        );
-        assert_eq!(
-            response.failure_invalid_password(""),
-            Err("Response already sent".to_owned())
-        );
-        assert_eq!(
-            response.failure(log_on_status::LOGIN_REJECTED_NO_SUCH_USER, ""),
-            Err("Response already sent".to_owned())
-        );
-    }
-
-    #[test]
-    fn load_entity_by_name_carries_the_flags_and_data() {
-        let mut response = PyBillingResponse::new(&resolve);
         response
-            .load_entity_by_name("Avatar", "hero", true, true, "c", "b")
-            .unwrap();
+            .load_entity("Avatar", 3, "", "")
+            .expect("loadEntity");
+
         assert_eq!(
-            response.finish(),
-            GetEntityKeyOutcome::LoadFromUsername {
-                type_id: 1,
-                username: "hero".to_owned(),
+            response.into_outcome(),
+            EntityKeyOutcome::Success {
+                key: EntityKey {
+                    type_id: avatar,
+                    db_id: 3
+                },
+                data_for_client: String::new(),
+                data_for_base_entity: String::new(),
+            }
+        );
+    }
+
+    /// The reference's two refusals, in its own order: the zero id first,
+    /// the unknown type second — each with its verbatim `ValueError` text.
+    #[test]
+    fn load_entity_refuses_the_zero_id_and_the_unknown_type() {
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+
+        assert_eq!(
+            response.load_entity("Avatar", 0, "", "").unwrap_err(),
+            "0 is an invalid database id"
+        );
+        assert!(!response.has_response(), "nothing was sent");
+        assert_eq!(
+            response.load_entity("Nobody", 4, "", "").unwrap_err(),
+            "Invalid entity type 'Nobody'\n"
+        );
+        assert!(!response.has_response());
+    }
+
+    #[test]
+    fn load_entity_by_name_carries_every_argument() {
+        let avatar = defs().name_to_index("Avatar").unwrap();
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+
+        response
+            .load_entity_by_name("Avatar", "moe", true, false, "c", "b")
+            .expect("loadEntityByName");
+
+        assert_eq!(
+            response.into_outcome(),
+            EntityKeyOutcome::LoadFromUsername {
+                entity_type: avatar,
+                username: "moe".to_string(),
                 should_create_new_on_load_failure: true,
-                should_remember_new_on_load_failure: true,
-                data_for_client: "c".to_owned(),
-                data_for_base_entity: "b".to_owned(),
+                should_remember_new_on_load_failure: false,
+                data_for_client: "c".to_string(),
+                data_for_base_entity: "b".to_string(),
             }
         );
     }
 
     #[test]
     fn create_new_entity_carries_the_remember_flag() {
-        let mut response = PyBillingResponse::new(&resolve);
-        response.create_new_entity("Avatar", false, "", "").unwrap();
+        let avatar = defs().name_to_index("Avatar").unwrap();
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+
+        response
+            .create_new_entity("Avatar", true, "", "")
+            .expect("createNewEntity");
+
         assert_eq!(
-            response.finish(),
-            GetEntityKeyOutcome::CreateNew {
-                type_id: 1,
-                should_remember: false,
+            response.into_outcome(),
+            EntityKeyOutcome::CreateNew {
+                entity_type: avatar,
+                should_remember: true,
                 data_for_client: String::new(),
                 data_for_base_entity: String::new(),
             }
         );
     }
 
-    /// The three named failures carry the reference's statuses and the
-    /// message the script passed.
+    /// The three named failures map to their `LogOnStatus` codes.
     #[test]
-    fn named_failures_carry_the_reference_statuses() {
-        let mut response = PyBillingResponse::new(&resolve);
-        response.failure_invalid_password("bad pw").unwrap();
+    fn the_named_failures_carry_their_status_codes() {
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+        response.failure_invalid_password("bad password").unwrap();
         assert_eq!(
-            response.finish(),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_INVALID_PASSWORD,
-                error_msg: "bad pw".to_owned(),
+            response.into_outcome(),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
+                error_msg: "bad password".to_string(),
             }
         );
 
-        let mut response = PyBillingResponse::new(&resolve);
-        response.failure_no_such_user("no hero").unwrap();
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+        response.failure_no_such_user("").unwrap();
         assert_eq!(
-            response.finish(),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
-                error_msg: "no hero".to_owned(),
-            }
-        );
-
-        let mut response = PyBillingResponse::new(&resolve);
-        response.failure_db_error("db down").unwrap();
-        assert_eq!(
-            response.finish(),
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE,
-                error_msg: "db down".to_owned(),
-            }
-        );
-    }
-
-    /// `failure(int)`: okay statuses are refused with the reference's
-    /// text; any rejection status — named or not — rides through raw.
-    #[test]
-    fn failure_takes_any_non_okay_status_and_refuses_okay_ones() {
-        let mut response = PyBillingResponse::new(&resolve);
-        assert_eq!(
-            response.failure(log_on_status::NOT_SET, ""),
-            Err("Invalid failure status 0".to_owned())
-        );
-        assert_eq!(
-            response.failure(log_on_status::LOGGED_ON, ""),
-            Err("Invalid failure status 1".to_owned())
-        );
-        assert!(!response.sent());
-
-        // A status this crate has no name for: LOGIN_REJECTED_RATE_LIMITED.
-        response.failure(83, "slow down").unwrap();
-        assert_eq!(
-            response.finish(),
-            GetEntityKeyOutcome::Failure {
-                status: 83,
-                error_msg: "slow down".to_owned(),
-            }
-        );
-    }
-
-    /// The driver: the get face present, the script answers — the
-    /// response rides.
-    #[test]
-    fn the_driver_delivers_the_scripts_response() {
-        let system = PyBillingSystem::new(true, true);
-        let outcome = system.get_entity_key_for_account(
-            "hero",
-            "secret",
-            &Address {
-                ip: 0x0102_0304,
-                port: 20_001,
-                salt: 0,
-            },
-            &resolve,
-            |_username, _password, _addr, response| response.load_entity("Avatar", 7, "", ""),
-        );
-        assert_eq!(
-            outcome,
-            GetEntityKeyOutcome::Success {
-                key: EntityKey {
-                    type_id: 1,
-                    db_id: 7
-                },
-                data_for_client: String::new(),
-                data_for_base_entity: String::new(),
-            }
-        );
-    }
-
-    /// A raising script that never answers leaves the destructor's
-    /// no-response failure; the wrapper prints and clears the traceback.
-    #[test]
-    fn a_raising_script_leaves_the_no_response_failure() {
-        let system = PyBillingSystem::new(true, true);
-        let outcome = system.get_entity_key_for_account(
-            "hero",
-            "secret",
-            &Address {
-                ip: 0,
-                port: 0,
-                salt: 0,
-            },
-            &resolve,
-            |_username, _password, _addr, _response| Err("boom".to_owned()),
-        );
-        assert_eq!(
-            outcome,
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE,
-                error_msg: "No response from script".to_owned(),
-            }
-        );
-    }
-
-    /// A script that answered and *then* raised keeps its answer — the
-    /// destructor only speaks when the handler is still held.
-    #[test]
-    fn an_answered_script_beats_a_late_raise() {
-        let system = PyBillingSystem::new(true, true);
-        let outcome = system.get_entity_key_for_account(
-            "hero",
-            "secret",
-            &Address {
-                ip: 0,
-                port: 0,
-                salt: 0,
-            },
-            &resolve,
-            |_username, _password, _addr, response| {
-                response.failure_no_such_user("gone")?;
-                Err("late boom".to_owned())
-            },
-        );
-        assert_eq!(
-            outcome,
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_NO_SUCH_USER,
-                error_msg: "gone".to_owned(),
-            }
-        );
-    }
-
-    /// The script bodies the faceless drivers must never reach. Named
-    /// functions rather than closures: a never-called closure body is an
-    /// uncovered line, while a function-item reference is not, and the
-    /// guard tests below can call them directly. If a driver ever calls
-    /// through, the test panics and fails.
-    fn must_not_run() -> Result<(), String> {
-        panic!("the script ran without its face")
-    }
-
-    fn never_get<'d>(
-        _username: &str,
-        _password: &str,
-        _addr: &Address,
-        _response: &mut PyBillingResponse<'d>,
-    ) -> Result<(), String> {
-        must_not_run()
-    }
-
-    fn never_set(
-        _username: &str,
-        _password: &str,
-        _type_name: &str,
-        _db_id: DatabaseId,
-    ) -> Result<(), String> {
-        must_not_run()
-    }
-
-    /// The type-name lookup the set face resolves with; shared so its
-    /// body is covered by the leg that actually runs.
-    fn avatar_name(type_id: EntityTypeId) -> String {
-        (type_id == 1).then(|| "Avatar".to_owned()).unwrap()
-    }
-
-    #[test]
-    #[should_panic(expected = "the script ran without its face")]
-    fn the_get_guard_panics_when_reached() {
-        let mut response = PyBillingResponse::new(&resolve);
-        let _ = never_get(
-            "u",
-            "p",
-            &Address {
-                ip: 0,
-                port: 0,
-                salt: 0,
-            },
-            &mut response,
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "the script ran without its face")]
-    fn the_set_guard_panics_when_reached() {
-        let _ = never_set("u", "p", "Avatar", 7);
-    }
-
-    /// Without the get face the driver fails bare — the script never
-    /// runs at all.
-    #[test]
-    fn a_missing_get_face_fails_without_calling_the_script() {
-        let system = PyBillingSystem::new(false, true);
-        assert!(!system.is_okay());
-        let outcome = system.get_entity_key_for_account(
-            "hero",
-            "secret",
-            &Address {
-                ip: 0,
-                port: 0,
-                salt: 0,
-            },
-            &resolve,
-            never_get,
-        );
-        assert_eq!(
-            outcome,
-            GetEntityKeyOutcome::Failure {
-                status: log_on_status::LOGIN_REJECTED_DB_GENERAL_FAILURE,
+            response.into_outcome(),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_NO_SUCH_USER),
                 error_msg: String::new(),
             }
         );
+
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+        response.failure_db_error("db broke").unwrap();
+        assert_eq!(
+            response.into_outcome(),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_DB_GENERAL_FAILURE),
+                error_msg: "db broke".to_string(),
+            }
+        );
     }
 
-    /// The set face: present and raised → failure, present and clean →
-    /// success, missing → failure without a call.
+    /// `failure` passes any non-`okay` code through and refuses the `okay`
+    /// ones with the reference's text; an unknown type name is refused
+    /// before anything else for the load forms.
     #[test]
-    fn the_set_face_rides_the_scripts_outcome() {
+    fn failure_rejects_only_the_okay_codes() {
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+
+        assert_eq!(
+            response.failure(codes::NOT_SET, "").unwrap_err(),
+            "Invalid failure status 0"
+        );
+        assert_eq!(
+            response.failure(codes::LOGGED_ON, "").unwrap_err(),
+            "Invalid failure status 1"
+        );
+        assert!(!response.has_response());
+
+        response
+            .failure(codes::LOGIN_REJECTED_BAN, "banned")
+            .unwrap();
+        assert_eq!(
+            response.into_outcome(),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_BAN),
+                error_msg: "banned".to_string(),
+            }
+        );
+    }
+
+    /// Exactly one response: the second reporting method hits the
+    /// "Response already sent" guard.
+    #[test]
+    fn a_second_report_is_refused_with_the_reference_text() {
+        let defs_map = defs();
+        let mut response = PyBillingResponse::new(&defs_map);
+        response.failure_invalid_password("first").unwrap();
+
+        assert_eq!(
+            response.failure_no_such_user("second").unwrap_err(),
+            "Response already sent"
+        );
+        assert_eq!(
+            response.load_entity("Avatar", 1, "", "").unwrap_err(),
+            "Response already sent"
+        );
+        assert_eq!(
+            response.failure_db_error("").unwrap_err(),
+            "Response already sent"
+        );
+
+        assert_eq!(
+            response.into_outcome(),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_INVALID_PASSWORD),
+                error_msg: "first".to_string(),
+            }
+        );
+    }
+
+    /// The destructor contract: a response that never reported sends the
+    /// general failure with the reference's message.
+    #[test]
+    fn an_unanswered_response_sends_the_general_failure() {
+        let defs_map = defs();
+        let response = PyBillingResponse::new(&defs_map);
+        assert!(!response.has_response());
+
+        assert_eq!(
+            response.into_outcome(),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_DB_GENERAL_FAILURE),
+                error_msg: "No response from script".to_string(),
+            }
+        );
+    }
+
+    /// A script that answers normally drives the outcome through; the
+    /// driver adds no error lines.
+    #[test]
+    fn a_reporting_script_passes_its_outcome_through() {
+        let defs_map = defs();
+        let mut system = PyBillingSystem::new(
+            PyBillingScript {
+                get_entity_key_for_account: Some(Box::new(|_, _, _, response| {
+                    response.load_entity("Avatar", 5, "", "")
+                })),
+                set_entity_key_for_account: Some(Box::new(|_, _, _, _| Ok(()))),
+            },
+            &defs_map,
+        );
+        assert!(system.errors.is_empty());
+
+        let avatar = defs().name_to_index("Avatar").unwrap();
+        assert_eq!(
+            system.get_entity_key_for_account_with_client_addr("moe", "pw", addr()),
+            EntityKeyOutcome::Success {
+                key: EntityKey {
+                    type_id: avatar,
+                    db_id: 5
+                },
+                data_for_client: String::new(),
+                data_for_base_entity: String::new(),
+            }
+        );
+        assert!(system.errors.is_empty());
+    }
+
+    /// A script that returns without reporting ends at the destructor's
+    /// general failure — the reference's `~PyBillingResponse` path.
+    #[test]
+    fn a_silent_script_ends_at_the_general_failure() {
+        let defs_map = defs();
+        let mut system = PyBillingSystem::new(
+            PyBillingScript {
+                get_entity_key_for_account: Some(Box::new(|_, _, _, _| Ok(()))),
+                set_entity_key_for_account: Some(Box::new(|_, _, _, _| Ok(()))),
+            },
+            &defs_map,
+        );
+
+        assert_eq!(
+            system.get_entity_key_for_account_with_client_addr("moe", "pw", addr()),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_DB_GENERAL_FAILURE),
+                error_msg: "No response from script".to_string(),
+            }
+        );
+        assert!(system.errors.is_empty());
+    }
+
+    /// A script that raises is logged with the reference's message and
+    /// ends the same way. A script that reports *and then* raises keeps
+    /// its report — the handler was already nulled.
+    #[test]
+    fn a_raising_script_is_logged_and_defaults() {
+        let defs_map = defs();
+        let mut system = PyBillingSystem::new(
+            PyBillingScript {
+                get_entity_key_for_account: Some(Box::new(|_, _, _, _| Err("boom".to_string()))),
+                set_entity_key_for_account: Some(Box::new(|_, _, _, _| Ok(()))),
+            },
+            &defs_map,
+        );
+
+        assert_eq!(
+            system.get_entity_key_for_account_with_client_addr("curly", "pw", addr()),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_DB_GENERAL_FAILURE),
+                error_msg: "No response from script".to_string(),
+            }
+        );
+        assert_eq!(
+            system.errors,
+            vec!["PyBillingSystem::getEntityKeyForAccount: Failed. username = curly\n".to_string()]
+        );
+    }
+
+    /// A missing `getEntityKeyForAccount` member is logged at construction
+    /// (`getMember`) and fails the logon immediately at call time.
+    #[test]
+    fn a_missing_get_member_fails_the_logon_at_call_time() {
+        let defs_map = defs();
+        let mut system = PyBillingSystem::new(
+            PyBillingScript {
+                get_entity_key_for_account: None,
+                set_entity_key_for_account: None,
+            },
+            &defs_map,
+        );
+        assert_eq!(
+            system.errors,
+            vec![
+                "PyBillingSystem::getMember: No such method getEntityKeyForAccount\n".to_string(),
+                "PyBillingSystem::getMember: No such method setEntityKeyForAccount\n".to_string(),
+            ]
+        );
+
+        let before = system.errors.len();
+        assert_eq!(
+            system.get_entity_key_for_account_with_client_addr("moe", "pw", addr()),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_DB_GENERAL_FAILURE),
+                error_msg: String::new(),
+            }
+        );
+        assert_eq!(
+            system.errors[before],
+            "PyBillingSystem::getEntityKeyForAccount: No getEntityKeyForAccount method\n"
+                .to_string()
+        );
+    }
+
+    /// The setter: success passes the type name and the database id;
+    /// a missing member or a script failure fails the mapping, with the
+    /// reference's log lines.
+    #[test]
+    fn set_entity_key_dispatches_to_the_script_member() {
+        let avatar = defs().name_to_index("Avatar").unwrap();
         let key = EntityKey {
-            type_id: 1,
-            db_id: 7,
+            type_id: avatar,
+            db_id: 9,
         };
 
-        let system = PyBillingSystem::new(true, true);
-        assert!(system.is_okay());
-        assert_eq!(
-            system.set_entity_key_for_account(
-                "hero",
-                "secret",
-                key,
-                avatar_name,
-                |username, password, type_name, db_id| {
-                    assert_eq!(
-                        (username, password, type_name, db_id),
-                        ("hero", "secret", "Avatar", 7)
-                    );
-                    Ok(())
+        let mut seen = None;
+        {
+            let defs_map = defs();
+            let mut system = PyBillingSystem::new(
+                PyBillingScript {
+                    get_entity_key_for_account: None,
+                    set_entity_key_for_account: Some(Box::new(|username, password, ty, db_id| {
+                        seen = Some((
+                            username.to_string(),
+                            password.to_string(),
+                            ty.to_string(),
+                            db_id,
+                        ));
+                        Ok(())
+                    })),
                 },
-            ),
-            SetEntityKeyOutcome::Success(key)
-        );
+                &defs_map,
+            );
+            assert_eq!(
+                system.set_entity_key_for_account("moe", "pw", key),
+                SetEntityKeyOutcome::Success(key)
+            );
+        }
         assert_eq!(
-            system.set_entity_key_for_account(
-                "hero",
-                "secret",
-                key,
-                |_| "Avatar".to_owned(),
-                |_u, _p, _t, _d| Err("boom".to_owned()),
-            ),
-            SetEntityKeyOutcome::Failure(key)
+            seen,
+            Some(("moe".to_string(), "pw".to_string(), "Avatar".to_string(), 9))
         );
 
-        let mute = PyBillingSystem::new(true, false);
-        assert!(mute.is_okay(), "only the get face gates isOkay");
+        let defs_map = defs();
+        let mut failing = PyBillingSystem::new(
+            PyBillingScript {
+                get_entity_key_for_account: None,
+                set_entity_key_for_account: Some(Box::new(|_, _, _, _| Err("raise".to_string()))),
+            },
+            &defs_map,
+        );
         assert_eq!(
-            mute.set_entity_key_for_account("hero", "secret", key, avatar_name, never_set,),
+            failing.set_entity_key_for_account("larry", "pw", key),
             SetEntityKeyOutcome::Failure(key)
+        );
+        assert_eq!(
+            failing.errors,
+            vec![
+                "PyBillingSystem::getMember: No such method getEntityKeyForAccount\n".to_string(),
+                "PyBillingSystem::setLoginMapping: Failed. username = larry\n".to_string(),
+            ]
+        );
+
+        let defs_map = defs();
+        let mut missing = PyBillingSystem::new(
+            PyBillingScript {
+                get_entity_key_for_account: None,
+                set_entity_key_for_account: None,
+            },
+            &defs_map,
+        );
+        assert_eq!(
+            missing.set_entity_key_for_account("moe", "pw", key),
+            SetEntityKeyOutcome::Failure(key)
+        );
+        assert_eq!(
+            missing.errors[2],
+            "PyBillingSystem::setEntityKeyForAccount: No setEntityKeyForAccount function exists. \
+             sendCreateNew should not be called with shouldRemember as True\n"
+                .to_string()
         );
     }
 
-    /// The unresolved-name leg of `resolve_type` mirrors what the
-    /// definitions hand back: the invalid type id never leaks through.
+    /// Through the shared `BillingSystem` trait the Python system behaves
+    /// like any other billing face, with the handler's zero client
+    /// address.
     #[test]
-    fn an_invalid_type_id_is_reported_like_an_unknown_name() {
-        let never: &dyn Fn(&str) -> Option<EntityTypeId> = &|_| Some(INVALID_ENTITY_TYPE_ID);
-        let mut response = PyBillingResponse::new(never);
-        assert_eq!(
-            response.load_entity("Avatar", 7, "", ""),
-            Err("Invalid entity type 'Avatar'\n".to_owned())
+    fn the_trait_face_dispatches_with_the_zero_address() {
+        let defs_map = defs();
+        let mut system = PyBillingSystem::new(
+            PyBillingScript {
+                get_entity_key_for_account: Some(Box::new(|_, _, client_addr, response| {
+                    assert_eq!(client_addr, Address::new(0, 0));
+                    response.failure_no_such_user("who?")
+                })),
+                set_entity_key_for_account: None,
+            },
+            &defs_map,
         );
+
+        assert_eq!(
+            BillingSystem::get_entity_key_for_account(&mut system, "moe", "pw", addr()),
+            EntityKeyOutcome::Failure {
+                status: LogOnStatus::new(codes::LOGIN_REJECTED_NO_SUCH_USER),
+                error_msg: "who?".to_string(),
+            }
+        );
+
+        // The trait face delegates the setter to the script member and
+        // inherits the base `isOkay` predicate.
+        let avatar = defs().name_to_index("Avatar").unwrap();
+        let key = EntityKey {
+            type_id: avatar,
+            db_id: 4,
+        };
+        let mut system = PyBillingSystem::new(
+            PyBillingScript {
+                get_entity_key_for_account: None,
+                set_entity_key_for_account: Some(Box::new(|_, _, ty, db_id| {
+                    assert_eq!(ty, "Avatar");
+                    assert_eq!(db_id, 4);
+                    Ok(())
+                })),
+            },
+            &defs_map,
+        );
+        assert_eq!(
+            BillingSystem::set_entity_key_for_account(&mut system, "moe", "pw", key),
+            SetEntityKeyOutcome::Success(key)
+        );
+        assert!(BillingSystem::is_okay(&system));
     }
 }

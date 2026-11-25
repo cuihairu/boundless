@@ -65,8 +65,13 @@ mod tests {
 
     #[test]
     fn application_packages_are_discovered() {
+        // `bots` is the load-generation process (BW-17-01/BW-17-03-05):
+        // the standalone face of the load crate's runtime.
         let packages = application_packages(&root());
-        assert_eq!(packages, vec!["boundless-server".to_string()]);
+        assert_eq!(
+            packages,
+            vec!["bots".to_string(), "boundless-server".to_string()]
+        );
     }
 
     #[test]

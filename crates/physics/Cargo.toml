@@ -1,0 +1,11 @@
+[package]
+name = "physics"
+description = "BW-10-03 collision faces (BSP trees, world triangles)"
+edition.workspace = true
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+foundation = { path = "../foundation" }

@@ -12,7 +12,7 @@
 //! is the leading fields and its `destroy`/inactivity flow is the
 //! `destroy`/`start_inactivity_detection` pair here.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::{Rc, Weak};
 
@@ -200,6 +200,10 @@ pub struct UdpChannel {
     /// `numReliablePacketsSent_` (udp_channel.cpp:789): reliable outbound
     /// packets this channel has pushed through the interface.
     num_reliable_packets_sent: u32,
+    /// `shouldDropNextSend_` (udp_channel.hpp:508): the one-shot that
+    /// forces the interface's own one-shot on this channel's next bundle
+    /// send (BW-12-03-04).
+    should_drop_next_send: Cell<bool>,
     /// `pFilter_` (udp_channel.hpp:381): the channel's packet filter, the
     /// encryption filter of BW-02-05. An `Rc` so the reference's smart
     /// pointer shares the filter the same way.
@@ -252,6 +256,7 @@ impl UdpChannel {
             push_unsent_acks_threshold: 0,
             should_auto_switch_to_src_addr: false,
             num_reliable_packets_sent: 0,
+            should_drop_next_send: Cell::new(false),
             p_filter: None,
             small_out_seq_at: 0,
             large_out_seq_at: 0,
@@ -914,6 +919,10 @@ impl UdpChannel {
         // `if let` scrutinee's temporary `Ref` must be gone by then.
         let interface = channel.borrow().network_interface.upgrade();
         if let Some(interface) = interface {
+            // Enable artificial loss if required (udp_channel.cpp:774).
+            if channel.borrow().take_drop_next_send() {
+                interface.drop_next_send();
+            }
             interface.send(&addr, bundle, Some(channel));
         }
 
@@ -1622,6 +1631,20 @@ impl UdpChannel {
     /// one is fitted.
     pub fn p_filter(&self) -> Option<Rc<dyn PacketFilter>> {
         self.p_filter.clone()
+    }
+
+    /// `dropNextSend()` (udp_channel.hpp:194): this channel's next bundle
+    /// send forces the interface's own one-shot, exactly once
+    /// (udp_channel.cpp:774-778).
+    pub fn drop_next_send(&self) {
+        self.should_drop_next_send.set(true);
+    }
+
+    /// The send-side consumption of [`Self::drop_next_send`]
+    /// (udp_channel.cpp:774-778): take the one-shot, if set, and forward
+    /// it to the interface just before the bundle goes out.
+    fn take_drop_next_send(&self) -> bool {
+        self.should_drop_next_send.replace(false)
     }
 
     /// `pFilter( PacketFilterPtr )` (udp_channel.hpp:140). The constructor

@@ -10,14 +10,13 @@
 //! backend exists; MySQL/XML/SQLite/PostgreSQL plug into the same trait.
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use entitydef::value::PropertyValue;
-use foundation::ids::{DatabaseId, EntityTypeId, GameTime, PENDING_DATABASE_ID};
+use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
 use mercury::endpoint::Address;
 
-use crate::auto_load::{EntityAutoLoader, UpdateAutoLoad};
 use crate::error::DbError;
 use crate::record::EntityRecord;
 
@@ -26,7 +25,7 @@ use crate::record::EntityRecord;
 /// `lib/db_storage/entity_key.hpp` `EntityKey`. The reference resolves by
 /// `name` when `dbID == 0`; the name leg is `getDatabaseIDFromName`, which
 /// joins with the lookup item (BW-09-01-04).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntityKey {
     /// `EntityKey::typeID`.
     pub type_id: EntityTypeId,
@@ -83,13 +82,9 @@ pub trait EntityStorage {
     ///   (`insertExplicit`, `put_entity_task.cpp:89-97`); a duplicate id
     ///   is [`DbError::AlreadyExists`] and the original row is kept.
     ///
-    /// After a successful put, `update_auto_load` rewrites the row's
-    /// auto-load flag — [`UpdateAutoLoad::True`] flags the row for the
-    /// startup restore, [`UpdateAutoLoad::False`] clears it,
-    /// [`UpdateAutoLoad::Retain`] leaves it alone
-    /// (`xml_database.cpp:700-711`). The reference legs that ride on the
-    /// same call are out of scope: the base-mailbox/logon-record update
-    /// is the online-state face (BW-09-01-05), and the trailing
+    /// The reference legs that ride on the same call are out of scope:
+    /// the base-mailbox/logon-record and auto-load updates are the
+    /// online-state face (BW-09-01-05), and the trailing
     /// position/direction/spaceID/gameTime fields are the snapshot face
     /// (BW-09-04).
     fn put_entity(
@@ -97,7 +92,6 @@ pub trait EntityStorage {
         key: &EntityKey,
         values: &[PropertyValue],
         put_explicit_id: bool,
-        update_auto_load: UpdateAutoLoad,
     ) -> Result<DatabaseId, DbError>;
 
     /// `IDatabase::delEntity` (`idatabase.hpp`): remove the row for
@@ -108,12 +102,10 @@ pub trait EntityStorage {
     /// [`DbError::NotFound`], and a successful delete leaves nothing to
     /// query.
     ///
-    /// The delete always clears the row's auto-load flag with it
-    /// (`xml_database.cpp:837`), so a flagged entity deleted before the
-    /// restart is not restored. The name-resolution leg
-    /// (`key.db_id == 0` resolves via the identifier property) joins
-    /// BW-09-01-04; the logon-record and active-set cleanups are the
-    /// online-state face (BW-09-01-05).
+    /// The name-resolution leg (`key.db_id == 0` resolves via the
+    /// identifier property) joins BW-09-01-04; the logon-record,
+    /// auto-load and active-set cleanups are the online-state face
+    /// (BW-09-01-05).
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError>;
 
     /// `IDatabase`'s logon-record face (`bigworldLogOnRecords` / the
@@ -139,36 +131,6 @@ pub trait EntityStorage {
     /// backend hands everything over and the lookup operations filter,
     /// which keeps the contract synchronous and backend-free.
     fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError>;
-
-    /// `EntityTypeMapping::hasNewerRecord`'s read half
-    /// (`entity_type_mapping.cpp:242-249`): the row's stored `gameTime`.
-    /// `None` means "no newer information" — either there is no row or,
-    /// as in the XML backend, no stored time at all (`xml_database.cpp:648-650`
-    /// reads the consolidation game time off the stream and discards it:
-    /// "Used in MySQL only"). The arbitration treats `None` as writable.
-    fn game_time_of(&self, key: &EntityKey) -> Result<Option<GameTime>, DbError>;
-
-    /// The consolidator's write (`ConsolidateEntityTask`): refresh the
-    /// row's values and its `gameTime` in one statement, leaving the
-    /// auto-load state and the logon record alone
-    /// (`UPDATE_AUTO_LOAD_RETAIN`, no mailbox). A missing row is
-    /// [`DbError::NotFound`] — the reference's update-missed-row path
-    /// (`put_entity_task.cpp:82-90`) logs and reports success, which the
-    /// consolidation caller folds into a "not consolidated" outcome
-    /// rather than an error.
-    fn put_consolidated(
-        &mut self,
-        key: &EntityKey,
-        values: &[PropertyValue],
-        game_time: GameTime,
-    ) -> Result<(), DbError>;
-
-    /// `IDatabase::autoLoadEntities` (`idatabase.hpp:357`): feed every
-    /// auto-load flagged row to `loader` and start the load. Rows that
-    /// vanished are pruned from the flag set, not delivered
-    /// (`xml_database.cpp:1088-1095`); an implementation error aborts
-    /// the loader (`mysql_database.cpp:708-714`).
-    fn auto_load_entities(&mut self, loader: &mut dyn EntityAutoLoader) -> Result<(), DbError>;
 }
 
 /// The DBApp load: fetch the record for `key`, or [`DbError::NotFound`]
@@ -182,14 +144,6 @@ pub fn load_entity(storage: &impl EntityStorage, key: &EntityKey) -> Result<Enti
 pub(crate) struct MemoryInner {
     entities: HashMap<EntityKey, EntityRecord>,
     logons: HashMap<EntityKey, BaseMailbox>,
-    /// The `fm_gameTime` column: the consolidator's arbitration time,
-    /// written by [`MemoryInner::put_consolidated`] and otherwise absent
-    /// (the DBApp save path's meta-property face is a later item).
-    game_times: HashMap<EntityKey, GameTime>,
-    /// The auto-load flags — MySQL's `bigworldLogOns.shouldAutoLoad`
-    /// face (`mysql_database.cpp:667-706`), keyed `(typeID, dbID)` so
-    /// the restore streams ids in flag order.
-    auto_loads: BTreeSet<(EntityTypeId, DatabaseId)>,
 }
 
 impl MemoryInner {
@@ -200,7 +154,6 @@ impl MemoryInner {
         key: &EntityKey,
         values: &[PropertyValue],
         put_explicit_id: bool,
-        update_auto_load: UpdateAutoLoad,
     ) -> Result<DatabaseId, DbError> {
         if key.db_id == PENDING_DATABASE_ID {
             // Create: a fresh id above every stored row — the XML
@@ -218,7 +171,6 @@ impl MemoryInner {
                     values: values.to_vec(),
                 },
             );
-            self.apply_auto_load(key.type_id, db_id, update_auto_load);
             return Ok(db_id);
         }
 
@@ -237,7 +189,6 @@ impl MemoryInner {
                     values: values.to_vec(),
                 },
             );
-            self.apply_auto_load(key.type_id, key.db_id, update_auto_load);
             return Ok(key.db_id);
         }
 
@@ -246,28 +197,7 @@ impl MemoryInner {
         let mut record = existing.ok_or(DbError::NotFound)?;
         record.values = values.to_vec();
         self.entities.insert(*key, record);
-        self.apply_auto_load(key.type_id, key.db_id, update_auto_load);
         Ok(key.db_id)
-    }
-
-    /// The put-time flag write (`xml_database.cpp:700-711`): a
-    /// successful put may set or clear the auto-load state; `Retain`
-    /// leaves it alone.
-    fn apply_auto_load(
-        &mut self,
-        type_id: EntityTypeId,
-        db_id: DatabaseId,
-        update_auto_load: UpdateAutoLoad,
-    ) {
-        match update_auto_load {
-            UpdateAutoLoad::Retain => {}
-            UpdateAutoLoad::True => {
-                self.auto_loads.insert((type_id, db_id));
-            }
-            UpdateAutoLoad::False => {
-                self.auto_loads.remove(&(type_id, db_id));
-            }
-        }
     }
 
     /// The `delEntity` leg (`xml_database.cpp:824-854`): find the row,
@@ -275,13 +205,8 @@ impl MemoryInner {
     /// reference's `isOK=false`.
     fn del(&mut self, key: &EntityKey) -> Result<(), DbError> {
         // The reference delEntity removes the logon record with the row
-        // (`xml_database.cpp:805-811`, `del_entity_task.cpp`); the row's
-        // gameTime column goes with it.
+        // (`xml_database.cpp:805-811`, `del_entity_task.cpp`).
         self.logons.remove(key);
-        self.game_times.remove(key);
-        // The row's auto-load flag goes with it
-        // (`xml_database.cpp:837`).
-        self.auto_loads.remove(&(key.type_id, key.db_id));
         self.entities
             .remove(key)
             .map(|_| ())
@@ -309,43 +234,6 @@ impl MemoryInner {
     fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError> {
         self.logons.remove(key);
         Ok(())
-    }
-
-    /// The consolidation write: the `UPDATE` refreshes the row's values
-    /// and sets `fm_gameTime` (`entity_type_mapping.cpp:683-699` with
-    /// `pushGameTime`). Only an existing row updates; a missing row is
-    /// [`DbError::NotFound`].
-    fn put_consolidated(
-        &mut self,
-        key: &EntityKey,
-        values: &[PropertyValue],
-        game_time: GameTime,
-    ) -> Result<(), DbError> {
-        {
-            let record = self.entities.get_mut(key).ok_or(DbError::NotFound)?;
-            record.values = values.to_vec();
-        }
-        self.game_times.insert(*key, game_time);
-        Ok(())
-    }
-
-    /// The MySQL restore (`mysql_database.cpp:667-706`): stream the
-    /// flagged ids into the loader and, when there are results, blank
-    /// every stored base address so a restored entity never inherits a
-    /// dead socket.
-    fn auto_load_entities(&mut self, loader: &mut dyn EntityAutoLoader) {
-        let flagged: Vec<(EntityTypeId, DatabaseId)> = self.auto_loads.iter().copied().collect();
-        if !flagged.is_empty() {
-            loader.reserve(flagged.len());
-            for (type_id, db_id) in flagged {
-                loader.add_entity(type_id, db_id);
-            }
-            for mailbox in self.logons.values_mut() {
-                mailbox.addr.ip = 0;
-                mailbox.addr.port = 0;
-            }
-        }
-        loader.start();
     }
 }
 
@@ -404,11 +292,8 @@ impl EntityStorage for MemoryStorage {
         key: &EntityKey,
         values: &[PropertyValue],
         put_explicit_id: bool,
-        update_auto_load: UpdateAutoLoad,
     ) -> Result<DatabaseId, DbError> {
-        self.inner
-            .borrow_mut()
-            .put(key, values, put_explicit_id, update_auto_load)
+        self.inner.borrow_mut().put(key, values, put_explicit_id)
     }
 
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
@@ -432,26 +317,6 @@ impl EntityStorage for MemoryStorage {
             self.inner.borrow().entities.values().cloned().collect();
         records.sort_by_key(|r| (r.type_id, r.db_id));
         Ok(records)
-    }
-
-    fn game_time_of(&self, key: &EntityKey) -> Result<Option<GameTime>, DbError> {
-        Ok(self.inner.borrow().game_times.get(key).copied())
-    }
-
-    fn put_consolidated(
-        &mut self,
-        key: &EntityKey,
-        values: &[PropertyValue],
-        game_time: GameTime,
-    ) -> Result<(), DbError> {
-        self.inner
-            .borrow_mut()
-            .put_consolidated(key, values, game_time)
-    }
-
-    fn auto_load_entities(&mut self, loader: &mut dyn EntityAutoLoader) -> Result<(), DbError> {
-        self.inner.borrow_mut().auto_load_entities(loader);
-        Ok(())
     }
 }
 
@@ -473,11 +338,8 @@ impl EntityStorage for MemoryConnection {
         key: &EntityKey,
         values: &[PropertyValue],
         put_explicit_id: bool,
-        update_auto_load: UpdateAutoLoad,
     ) -> Result<DatabaseId, DbError> {
-        self.inner
-            .borrow_mut()
-            .put(key, values, put_explicit_id, update_auto_load)
+        self.inner.borrow_mut().put(key, values, put_explicit_id)
     }
 
     fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
@@ -501,26 +363,6 @@ impl EntityStorage for MemoryConnection {
             self.inner.borrow().entities.values().cloned().collect();
         records.sort_by_key(|r| (r.type_id, r.db_id));
         Ok(records)
-    }
-
-    fn game_time_of(&self, key: &EntityKey) -> Result<Option<GameTime>, DbError> {
-        Ok(self.inner.borrow().game_times.get(key).copied())
-    }
-
-    fn put_consolidated(
-        &mut self,
-        key: &EntityKey,
-        values: &[PropertyValue],
-        game_time: GameTime,
-    ) -> Result<(), DbError> {
-        self.inner
-            .borrow_mut()
-            .put_consolidated(key, values, game_time)
-    }
-
-    fn auto_load_entities(&mut self, loader: &mut dyn EntityAutoLoader) -> Result<(), DbError> {
-        self.inner.borrow_mut().auto_load_entities(loader);
-        Ok(())
     }
 }
 
@@ -604,7 +446,6 @@ mod tests {
                 },
                 &values,
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("create writes");
         assert_eq!(first, 1);
@@ -617,7 +458,6 @@ mod tests {
                 },
                 &values,
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("second create writes");
         assert_eq!(second, 2);
@@ -641,12 +481,7 @@ mod tests {
             db_id: PENDING_DATABASE_ID,
         };
         let id = store
-            .put_entity(
-                &key,
-                &[PropertyValue::Int(1)],
-                false,
-                UpdateAutoLoad::Retain,
-            )
+            .put_entity(&key, &[PropertyValue::Int(1)], false)
             .expect("create writes");
 
         let reader = store.connection();
@@ -658,7 +493,6 @@ mod tests {
                 },
                 &[PropertyValue::Int(2)],
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("update writes");
         assert_eq!(updated, id);
@@ -685,7 +519,6 @@ mod tests {
                 },
                 &[PropertyValue::Int(1)],
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect_err("missing row update fails");
         assert_eq!(err, DbError::NotFound);
@@ -701,12 +534,12 @@ mod tests {
         };
 
         let id = store
-            .put_entity(&key, &[PropertyValue::Int(1)], true, UpdateAutoLoad::Retain)
+            .put_entity(&key, &[PropertyValue::Int(1)], true)
             .expect("explicit insert writes");
         assert_eq!(id, 7);
 
         let err = store
-            .put_entity(&key, &[PropertyValue::Int(9)], true, UpdateAutoLoad::Retain)
+            .put_entity(&key, &[PropertyValue::Int(9)], true)
             .expect_err("duplicate explicit insert fails");
         assert_eq!(err, DbError::AlreadyExists);
         // The original row is intact.
@@ -729,7 +562,6 @@ mod tests {
                 },
                 &[PropertyValue::Int(1)],
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("create writes");
         assert_eq!(id, 6);
@@ -749,7 +581,6 @@ mod tests {
                 },
                 &[PropertyValue::Int(3)],
                 false,
-                UpdateAutoLoad::Retain,
             )
             .expect("connection write");
         assert_eq!(written, 1);
