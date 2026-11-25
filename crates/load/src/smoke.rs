@@ -23,6 +23,7 @@ use crate::bot::FD_PER_BOT;
 use crate::cross_cell::{CrossingLedger, run_cross_cell};
 use crate::dense::{DenseAoiLedger, run_dense_aoi};
 use crate::hurricane::{HurricaneLedger, run_login_hurricane};
+use crate::reconnect::{ReconnectLedger, run_reconnect};
 use crate::scenario::Scenario;
 use crate::steady::{SteadyLedger, run_steady_movement};
 
@@ -64,7 +65,7 @@ impl fmt::Display for MetricValue {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SmokeError {
     /// The scenario's kind has no offline run face yet (the undelivered
-    /// scenario kinds: reconnect, long-stability).
+    /// scenario kind: long-stability).
     Unsupported {
         /// The scenario name that named no known kind.
         name: String,
@@ -104,6 +105,8 @@ pub enum SmokeRun {
     Dense(DenseAoiLedger),
     /// The cross-cell run's record.
     CrossCell(CrossingLedger),
+    /// The reconnect run's record.
+    Reconnect(ReconnectLedger),
 }
 
 /// Clamp a saved scenario to the smoke envelope: the concurrency is the
@@ -168,6 +171,11 @@ pub fn run_face(scenario: &Scenario) -> Result<SmokeRun, SmokeError> {
         ))),
         "dense-aoi" => Ok(SmokeRun::Dense(run_dense_aoi(scenario, 5.0, 25.0))),
         "cross-cell" => Ok(SmokeRun::CrossCell(run_cross_cell(
+            scenario,
+            fd_limit,
+            scenario.fixed_seed,
+        ))),
+        "reconnect" => Ok(SmokeRun::Reconnect(run_reconnect(
             scenario,
             fd_limit,
             scenario.fixed_seed,
@@ -250,6 +258,24 @@ pub fn smoke_metrics(run: &SmokeRun) -> Vec<(String, MetricValue)> {
                 (
                     "crossing_success_rate".to_string(),
                     MetricValue::Float(ledger.crossing_success_rate()),
+                ),
+            ]
+        }
+        SmokeRun::Reconnect(ledger) => {
+            let dropped = ledger.tracks.len() as i64;
+            vec![
+                ("bots_dropped".to_string(), int(dropped)),
+                (
+                    "recoveries_completed".to_string(),
+                    int(ledger.recoveries_completed() as i64),
+                ),
+                (
+                    "mean_recovery_ticks".to_string(),
+                    MetricValue::Float(ledger.mean_recovery_ticks()),
+                ),
+                (
+                    "sample_period".to_string(),
+                    MetricValue::F32(ledger.sample_period),
                 ),
             ]
         }
@@ -348,7 +374,13 @@ mod tests {
     /// pass records the same metrics — the failure that re-runs.
     #[test]
     fn the_saved_kinds_smoke_green_and_reproduce() {
-        for name in ["login-hurricane", "steady-move", "dense-aoi", "cross-cell"] {
+        for name in [
+            "login-hurricane",
+            "steady-move",
+            "dense-aoi",
+            "cross-cell",
+            "reconnect",
+        ] {
             let saved = saved(name);
             let (capped, run) =
                 run_smoke(&saved, &caps()).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -424,19 +456,34 @@ mod tests {
         assert!(as_float(find(&metrics, "crossing_success_rate")).abs() < 1e-12);
     }
 
+    /// The reconnect metrics name the bots dropped, the recoveries that
+    /// completed, and the mean recovery length — the statistic the scenario
+    /// exists to report. With the saved 300s window clamped to the smoke
+    /// budget the drop/relogin/reply floor of two mini-ticks applies to
+    /// every bot.
+    #[test]
+    fn the_reconnect_metrics_report_the_recovery_length() {
+        let small = scenario("reconnect", 4, 3);
+        let (_, run) = run_smoke(&small, &caps()).expect("smoke");
+        let metrics = smoke_metrics(&run);
+        assert_eq!(find(&metrics, "bots_dropped"), &MetricValue::Int(4));
+        assert_eq!(find(&metrics, "recoveries_completed"), &MetricValue::Int(4));
+        assert!((as_float(find(&metrics, "mean_recovery_ticks")) - 2.0).abs() < 1e-12);
+    }
+
     /// A scenario kind with no offline run face is refused by name — the
-    /// saved reconnect file parses, but nothing can run it yet.
+    /// saved long-stability file parses, but nothing can run it yet.
     #[test]
     fn an_undelivered_kind_is_refused_by_name() {
-        let saved = saved("reconnect");
+        let saved = saved("long-stability");
         let error = run_smoke(&saved, &caps()).expect_err("unsupported kind ran");
         assert_eq!(
             error,
             SmokeError::Unsupported {
-                name: "reconnect".to_string()
+                name: "long-stability".to_string()
             }
         );
-        assert!(error.to_string().contains("reconnect"));
+        assert!(error.to_string().contains("long-stability"));
     }
 
     /// A face that would not reproduce is refused by name — the second
