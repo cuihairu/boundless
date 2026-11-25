@@ -187,8 +187,7 @@ fn a_reconnect_reports_the_database_being_unreachable() {
 
         // A fresh connection onto the dark address fails with the
         // storage error the caller waits on.
-        let err = PostgresStorage::connect(&down)
-            .expect_err("the dark address refuses");
+        let err = PostgresStorage::connect(&down).expect_err("the dark address refuses");
         assert!(!err.to_string().is_empty(), "{err}");
 
         // The live connection keeps working: nothing about the failed
