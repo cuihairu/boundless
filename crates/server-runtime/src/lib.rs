@@ -37,6 +37,7 @@ pub mod emergency_throttle;
 pub mod entity_creator;
 pub mod entity_destroy;
 pub mod entity_dispatch;
+pub mod entity_navigate;
 pub mod ghost;
 pub mod ghost_data;
 pub mod ghost_routing;

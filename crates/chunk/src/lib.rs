@@ -10,12 +10,16 @@
 //! maths ([`snaps`]) and the undo/redo engine ([`undoredo`],
 //! `tools/common/undoredo.cpp`). [`space_publish`] carries the
 //! WorldEditor resource browsing (the `IChunkWalker` family) and space
-//! publishing faces (`SpaceRecreator`/`SpaceSettings`).
+//! publishing faces (`SpaceRecreator`/`SpaceSettings`). The column grid
+//! ([`column`]) and the hull tree ([`hulltree`]) carry the terrain
+//! description faces.
 
 pub mod boundary;
 pub mod chunk;
 pub mod chunk_editor;
 pub mod chunk_placer;
+pub mod column;
+pub mod hulltree;
 pub mod identifier;
 pub mod mapping;
 pub mod snaps;
@@ -34,6 +38,7 @@ pub use chunk_placer::{
     ItemFactory, PlacementOptions, PlacementPresets, SectionItemFactory,
     chunk_item_position_property_length,
 };
+pub use column::{Column, ColumnGrid};
 pub use identifier::{
     grid_from_chunk_name, is_outside_chunk, outside_chunk_id_to_grid, outside_chunk_identifier,
 };

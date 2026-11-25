@@ -2016,6 +2016,7 @@ dependencies = [
  "regex",
  "resources",
  "sha2 0.10.9",
+ "waypoint",
 ]
 
 [[package]]
@@ -2651,6 +2652,13 @@ dependencies = [
 
 [[package]]
 name = "waypoint"
+version = "0.1.0"
+dependencies = [
+ "foundation",
+]
+
+[[package]]
+name = "waypoint-gen"
 version = "0.1.0"
 dependencies = [
  "foundation",

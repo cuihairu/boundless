@@ -78,25 +78,36 @@ impl NavLoc {
     /// constructors and `ChunkWaypointState::getAdjacency`, which the
     /// reference reaches through its `friend class ChunkWaypointState`
     /// clause. Waypoint -1 with a set is the goal-only state
-    /// (`ChunkWaypointState(dstSet, dstPoint)`). Public so the replay
-    /// harness can rebuild the reference probes' already-resolved
+    /// (`ChunkWaypointState(dstSet, dstPoint)`). `grid_size` is the space's
+    /// grid size the located reference constructors store
+    /// (`gridSize_( pChunk->space()->gridSize() )`, `navloc.cpp:66-70`) —
+    /// the value `searchNextWaypoint`'s in-set clamp reads. Public so the
+    /// replay harness can rebuild the reference probes' already-resolved
     /// locations; the find-based `from_guess` stays the primary face.
     pub fn from_parts(
         set: Rc<ChunkWaypointSetData>,
         waypoint: WaypointIndex,
         point: Vector3,
+        grid_size: f32,
     ) -> Self {
         Self {
             p_set: Some(set),
             waypoint,
             point,
-            grid_size: 0.0,
+            grid_size,
         }
     }
 
-    /// `NavLoc::clip()` (`navloc.cpp:183-215`): the stored point is pulled
-    /// into the located waypoint. The chunk mapping is the identity here
-    /// (registered).
+    /// `NavLoc::clip()` (`navloc.cpp:183-215`): the public face the
+    /// navigation system calls — `createPathNavLoc` and the navigation
+    /// controller's destination clip. The stored point is pulled into
+    /// the located waypoint.
+    pub fn clip(&mut self) {
+        self.clip_in_place();
+    }
+
+    /// The stored point is pulled into the located waypoint. The chunk
+    /// mapping is the identity here (registered).
     pub(crate) fn clip_in_place(&mut self) {
         if let Some(set) = &self.p_set
             && self.waypoint >= 0
@@ -311,6 +322,25 @@ mod tests {
         // registered out of this lane).
         let loc = NavLoc::from_guess(&lower, Rc::clone(&set), 1.5, Vector3::new(9.0, 0.5, 9.0));
         assert_eq!(loc.waypoint(), -1);
+    }
+
+    #[test]
+    fn clip_pulls_the_stored_point_into_the_waypoint() {
+        let set = sample_set();
+        let mut loc = NavLoc {
+            p_set: Some(Rc::clone(&set)),
+            waypoint: 0,
+            point: Vector3::new(1.0, 0.25, 1.0),
+            grid_size: 0.0,
+        };
+        loc.clip();
+        // `x`/`z` already sit inside wp0; `y` rises to its maxHeight.
+        assert_eq!(loc.point(), Vector3::new(1.0, 1.0, 1.0));
+
+        // An invalid location clips to nothing.
+        let mut none = NavLoc::new();
+        none.clip();
+        assert_eq!(none.point(), Vector3::new(0.0, 0.0, 0.0));
     }
 
     #[test]

@@ -33,6 +33,11 @@ resources = { workspace = true }
 # into the domain layer like mercury/db above.
 physics = { path = "../physics" }
 
+# The navigation mesh: `MeshNavigator` (BW-10-06-01) implements the
+# navigation controller's `Navigator` boundary over waypoint's two-level
+# search — the same downward-edge pattern as db/mercury.
+waypoint = { workspace = true }
+
 # The auction pages' `eregi` criteria matching (BW-14-03-04) is POSIX
 # ERE; the regex crate covers the same common forms.
 regex = { workspace = true }

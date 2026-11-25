@@ -44,6 +44,9 @@ pub const FACING_NONE: u8 = 0;
 pub const FACING_VELOCITY: u8 = 1;
 /// Face along the acceleration while it applies.
 pub const FACING_ACCELERATION: u8 = 2;
+/// One past the last valid facing — the script faces validate
+/// `0..FACING_MAX`.
+pub const FACING_MAX: u8 = 3;
 
 // -----------------------------------------------------------------------------
 // Section: The exact scalar helpers (`stdmf*.hpp`, `angle.ipp`)

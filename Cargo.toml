@@ -13,6 +13,7 @@ members = [
     "crates/terrain",
     "crates/physics",
     "crates/waypoint",
+    "crates/waypoint-gen",
     "crates/db",
     "crates/db-postgres",
     "crates/python-host",
@@ -76,6 +77,9 @@ python-host = { path = "crates/python-host" }
 # global.
 profiler = { path = "crates/profiler" }
 server-runtime = { path = "crates/server-runtime" }
+# The waypoint navigation mesh reader/search (BW-10-04/05); server-runtime's
+# MeshNavigator (BW-10-06-01) is the first runtime consumer.
+waypoint = { path = "crates/waypoint" }
 client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
 # load = { path = "crates/load" }  # re-add with first consumer
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
