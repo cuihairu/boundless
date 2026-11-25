@@ -1590,10 +1590,15 @@
 盘点 Max 动画/模型、Maya 模型导出、`bw_world_machine_import`、`bwlauncher` 和插件系统的实际目标。验证导出语义和文件，单独列宿主及 SDK 的平台矩阵。
 
 - [ ] **BW-13-05-01 验证 Max 模型导出**。**验收** 同输入模型文件可读。
+  - 卡点（DCC 宿主缺席）：参考导出器是 3ds Max 插件——`tools/animationexporter/`（`max.h`、`animationexporter.def`、max2009..max2013 五代子目录导出器，Max SDK .dle 面向插件宿主）+ `tools/modelexporter` 同族；导出验证需 3ds Max + Windows 宿主，本机 Linux 无 DCC（同 BW-15-03 Windows runner 卡点）。参考面已定位，随 Windows 宿主落地解锁。
 - [ ] **BW-13-05-02 验证 Max 动画导出**。**验收** 骨骼与时间关键帧一致。
+  - 卡点（DCC 宿主缺席）：Max 动画导出同 `tools/animationexporter/` 插件族（.def 导出、骨骼/关键帧经 mfx* 包装 Max SDK）——需 3ds Max 宿主，同 BW-15-03 卡点，随 Windows 宿主落地解锁。
 - [ ] **BW-13-05-03 验证 Maya 模型导出**。**验收** 同场景导出的资产可读。
+  - 卡点（DCC 宿主缺席）：`tools/mayavisualexporter/` 为 Maya 插件（Maya SDK 宿主）；同 DCC 缺席卡点，随 Maya 宿主落地解锁。
 - [ ] **BW-13-05-04 验证 World Machine 导入**。**验收** 地形尺寸、采样和材质吻合。
+  - 卡点（外部宿主缺席）：`tools/bw_world_machine_import/` 为 World Machine 的插件（wm_plugin_shell.hpp `__declspec(dllexport)` SetupGlobalAccess/GetHeaderVersion/GetDevPlugin 对 WM 私有头 `core\Plugin_Header.h` 编程，Windows DLL）；WM 宿主不在仓不可运行，同 BW-13-05-06 档登记的缺口，随外部 WM 宿主落地解锁。
 - [ ] **BW-13-05-05 验证 launcher**。**验收** 按配置启动同一产品入口。
+  - 卡点（Windows 真机）：`tools/bwlauncher/` 为 `BW_ADD_EXECUTABLE( bwlauncher WIN32 …)` GUI 目标（CMakeLists.txt:29），el7 RPM tools 无 bwlauncher 二进制（清点仅 _bw_profile.so/_bwlog.so/bwmachined2/message_logger/process_defs/res_packer）——参考 launcher 仅 Windows 可跑，「按配置启动同一产品入口」需 Windows 宿主（同 BW-15-03 卡点）。参考面已定位：bwlauncher.cpp 404 行 + launch_db.cpp 141 + utils.cpp 629 + 内嵌 tinyxml 解析 bwlauncher_config。
 - [x] **BW-13-05-06 核实插件宿主 SDK**。**验收** 每个启用组合有样本或缺口。`docs/review/bw13-05-06-plugin-host-sdk.md`——SDK 本体=`tools/plugin_system/` 三文件（plugin.hpp `PLUGIN_INIT`/`PLUGIN_FINI` 宏、`_DEBUG` 变 `PluginInit_d`/`PluginFini_d` 与 DLL `DEBUG_OUTPUT_NAME "<proj>_d"`（BWMacros.cmake:329-341）成对；plugin_loader.cpp:57 `::LoadLibrary` 开 `<exeDir>/<name>.dll` **全文件无 dlopen/POSIX 分支**；init(host) 返 true 才入表否则 fini+free+NULL；**无独立 CMake 目标**，源被宿主吸收）。宿主清点=全树引用仅 26 文件全在资产管线家族：batch_compiler（MI `public PluginLoader`，batch_compiler.hpp:14）、jit_compiler（WIN32 GUI，main_window.cpp:23/config_dialog.cpp:12 收 `const PluginLoader&`）、TestCompiler 单测宿主（MI AssetCompiler+PluginLoader，单测加载 `testconverter_d` 回退 `testconverter` :14-16）、assetprocessor 生产宿主；**编辑器缺口**：worldeditor/modeleditor 零引用（grep 全清，06-01 档佐证 worldeditor_ui 空壳）。插件侧=`BW_ADD_ASSETPIPELINE_DLL` SHARED 落 `<BW_GAME_DIR>/tools/asset_pipeline/<platform>` 与 exe 相对发现路径对齐，9 个（test_converter 样本+8 生产转换器）；反向插件=wm_plugin_shell 作外部宿主 World Machine 的 DLL（dllexport SetupGlobalAccess/GetHeaderVersion/GetDevPlugin，WM 私有头）。启用组合×样本/缺口总表：batch/jit_compiler 组合参考侧 Windows-only（根 CMake FATAL+el7 无二进制）样本在树、真机缺口随 BW-15-03（Rust 侧 BW-13-01-03/04 已交付）；assetprocessor 组合 Rust 工作流样本已交付（BW-13-02-01）；TestCompiler×test_converter 组合参考样本在树+Rust 对应=plugin-host tests/loader.rs 14 用例+build.rs 真 cdylib（962fcba，100% 覆盖）；编辑器组合缺口（零引用）；WM 组合缺口（BW-13-05-04 同因）；Rust plugin-host unix 门控样本已交付、Windows 宿主后端随 BW-15-03（参考 loader 仅 Windows/移植仅 Unix 互补各盖自家可测平台）。
 
 #### BW-13-06 原版编辑器公共库与调试资产
