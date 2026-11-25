@@ -114,6 +114,8 @@ pub struct TickLedger {
     pub creates: usize,
     /// The ids the seeing pass started this tick.
     pub started_ids: Vec<u32>,
+    /// The ids the budget scheduler sent an entity update for.
+    pub updated_ids: Vec<u32>,
 }
 
 /// The migration leg: handover, seed, convergence to the native set.
@@ -170,8 +172,8 @@ pub struct DenseAoi {
     /// The viewer's AoI trigger in the range list.
     aoi_trigger: TriggerRef,
     /// Probe sums in milliseconds — printed, never asserted.
-    seeing_ms: f64,
-    scheduling_ms: f64,
+    pub seeing_ms: f64,
+    pub scheduling_ms: f64,
 }
 
 impl DenseAoi {
@@ -270,6 +272,24 @@ impl DenseAoi {
     /// for new arrivals, run the budget scheduler, and take the
     /// bundle. Returns what the tick broadcast.
     pub fn tick(&mut self, tick: usize) -> TickLedger {
+        self.tick_inner(tick, None).0
+    }
+
+    /// The same tick with a sector-prefiltered seeing pass: when
+    /// `margin` is set, targets whose horizontal angle from facing
+    /// exceeds `vision_angle + margin` are dropped before the shipped
+    /// pass runs — the candidate AOI index of OPT-08-01-02. The
+    /// prefilter is conservative (horizontal angle ≥ the pass's 3D
+    /// cone angle), so the visible set must come back identical.
+    pub fn tick_sectored(&mut self, tick: usize, margin: f32) -> (TickLedger, usize, usize) {
+        self.tick_inner(tick, Some(margin))
+    }
+
+    pub fn tick_inner(
+        &mut self,
+        tick: usize,
+        sector_margin: Option<f32>,
+    ) -> (TickLedger, usize, usize) {
         let mut ledger = TickLedger::default();
 
         // The field moves; the range list shuffles and logs crossings.
@@ -311,9 +331,31 @@ impl DenseAoi {
         ledger.leaves = departures.len();
         self.witness.flush_state_changes();
 
-        // The seeing pass over the vision trigger's crossings.
+        // The seeing pass over the vision trigger's crossings, over the
+        // full target set or the sector-prefiltered one.
         self.world.dispatch_vision(&self.vision, &mut self.ev);
-        let targets = self.targets();
+        let mut targets = self.targets();
+        if let Some(margin) = sector_margin {
+            let head = (
+                self.viewer_pos.0,
+                self.viewer_pos.1 + SEEING_HEIGHT,
+                self.viewer_pos.2,
+            );
+            // yaw 0 faces +Z: the horizontal facing is (0, 1) in xz.
+            let (fx, fz) = (0.0f32, 1.0f32);
+            targets.retain(|_, target| {
+                let dx = target.position.0 - head.0;
+                let dz = target.position.2 - head.2;
+                let len = (dx * dx + dz * dz).sqrt();
+                if len <= 0.0 {
+                    return true;
+                }
+                let dot = ((dx / len) * fx + (dz / len) * fz).clamp(-1.0, 1.0);
+                dot.acos() <= VISION_ANGLE + margin
+            });
+        }
+        let walked = targets.len();
+        let full = self.ev.entities_in_vision_range.len();
         let viewer = self.viewer_facts();
         let clear = |_: (f32, f32, f32), _: (f32, f32, f32)| 0.0f32;
         let started = Instant::now();
@@ -361,10 +403,17 @@ impl DenseAoi {
             .iter()
             .filter(|m| matches!(m, ClientMessage::CreateEntity { .. }))
             .count();
+        ledger.updated_ids = bundle
+            .iter()
+            .filter_map(|m| match m {
+                ClientMessage::EntityUpdate { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
 
         self.seeing_ms += seeing.as_secs_f64() * 1_000.0;
         self.scheduling_ms += scheduling.as_secs_f64() * 1_000.0;
-        ledger
+        (ledger, walked, full)
     }
 
     /// The migration handover: the stream the old cell sends.
