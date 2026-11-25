@@ -117,6 +117,10 @@ pub static DISCOVERED_INTERNAL_IP: std::sync::atomic::AtomicU32 =
 pub enum AppError {
     /// Role not in `KNOWN_ROLES`.
     UnknownRole(String),
+    /// loginapp's external interface failed its `init` bind checks
+    /// (`loginapp_interface::check`); the verbatim reference ERROR line
+    /// is logged where the arm fires.
+    LoginExternalBind(crate::loginapp_interface::BindError),
 }
 
 impl std::fmt::Display for AppError {
@@ -127,6 +131,9 @@ impl std::fmt::Display for AppError {
                 "unknown server role '{role}' (expected one of: {})",
                 KNOWN_ROLES.join(", ")
             ),
+            AppError::LoginExternalBind(err) => {
+                write!(f, "loginapp: {err}")
+            }
         }
     }
 }
@@ -392,8 +399,37 @@ pub fn run(role: &str, config: &BwConfig) -> Result<(), AppError> {
             );
         }
 
+        // loginapp's own external interface: the constructor opens it on
+        // the configured port (loginapp.cpp:114-135), riding the same
+        // dispatcher the loop pass drives, and serves the LoginInterface
+        // messages on it. The reference's ctor runs at doBWMainT entry,
+        // before ServerApp::init's startup line; the init arms that
+        // check the bind run after it (loginapp.cpp:199-218), so the
+        // check sits behind the running line below. The binding lives
+        // until run's scope ends, like the reference member.
+        let _login_external = if role == "loginapp" {
+            let external_config = crate::loginapp_interface::LoginAppConfig::from_config(config);
+            let external = crate::loginapp_interface::open(
+                &external_config,
+                std::rc::Rc::clone(&mercury_dispatcher),
+            );
+            Some(external)
+        } else {
+            None
+        };
+
         // INFO_MSG( "---- %s is running ----\n" ) (server_app.cpp:278)
         eprintln!("---- {app_name} is running ----");
+
+        // LoginApp::init's bind arms: the ERROR lines and the refusal.
+        // bwMainT prints the shutdown line on any exit from runApp, an
+        // init failure included (bwservice.hpp:141-145).
+        if let Some(external) = _login_external.as_ref()
+            && let Err(bind_error) = crate::loginapp_interface::check(external)
+        {
+            eprintln!("{app_name} has shut down.");
+            return Err(AppError::LoginExternalBind(bind_error));
+        }
 
         // The lane that starts the server with a budget targets the main
         // thread with the controlled-stop signal: the same clean stop an
@@ -703,6 +739,44 @@ mod tests {
             sink.packets.borrow().as_slice(),
             [b"ping".to_vec()],
             "the pass delivered the datagram to the interface"
+        );
+    }
+
+    /// A loginapp whose external port is already taken refuses to run:
+    /// the ctor's bind fails, the init arms log the reference's ERROR
+    /// and `run` returns the refusal after the shutdown line
+    /// (loginapp.cpp:199-206, bwservice.hpp:141-145). The reference's
+    /// `shouldShutDownIfPortUsed` default takes the same shape -- no
+    /// random-port fallback.
+    #[cfg(unix)]
+    #[test]
+    fn a_taken_external_port_refuses_the_loginapp_run() {
+        use mercury::endpoint::Endpoint;
+
+        // `run` installs the single SIGQUIT slot; the lock keeps the
+        // other run-driving test off it while this one runs.
+        let _guard = crate::signals::disposition_guard();
+
+        // Hold the default external port (PORT_LOGIN, portmap.hpp:7).
+        let mut blocker = Endpoint::new();
+        blocker.socket(platform::socket::SOCK_DGRAM);
+        assert_eq!(
+            blocker.bind(
+                platform::socket::htons(crate::loginapp_interface::PORT_LOGIN),
+                0, // INADDR_ANY, the interface's own bind target
+            ),
+            0,
+            "the blocker holds the port"
+        );
+
+        let err = run("loginapp", &BwConfig::new()).expect_err("the bind is refused");
+        assert_eq!(
+            err,
+            AppError::LoginExternalBind(crate::loginapp_interface::BindError::ExternalInterface)
+        );
+        assert_eq!(
+            err.to_string(),
+            "loginapp: unable to bind the external interface to any specified port"
         );
     }
 
