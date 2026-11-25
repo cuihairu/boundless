@@ -2832,7 +2832,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
-- [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（本席 `85aad7c`：timers.rs 服务端每次点火由 2×PyLong+PyTuple_New+2×SetItem+CallObject+decRef 六次 C-API 收敛为单次 `PyObject_CallFunction("ik", id, user)`（参照 app_script_timers.cpp handleTimeout 同形，tuple 归调用内建）；前后对照见基线夹具 e10ccbd→85aad7c 同夹具同机：规范记录 10096.8→5049.4 ns/次（-50%）、安静窗 5621.4/5787.4（≈-44%）、绑单核交错 9 对中位 6495.3→5930.6（-9%，9 对 after 6 胜，负载 46-53 披露在案）——墙钟只记录不设带；计数分配器实证双面 0.00 分配/次=pymalloc arena 对 Rust 分配器不可见（边界发现非判别器）；fire 计数 2048=timers×ticks 结构断言每跑必过；证据页 opt-03-01-01-python-bridge-baseline.md 增 OPT-03-01-02 节+夹具 TSV 34 行 after 记录；python-host 155 绿、全仓 6944 绿）
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
@@ -4411,7 +4411,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
-- [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（本席 `85aad7c`：timers.rs 服务端每次点火由 2×PyLong+PyTuple_New+2×SetItem+CallObject+decRef 六次 C-API 收敛为单次 `PyObject_CallFunction("ik", id, user)`（参照 app_script_timers.cpp handleTimeout 同形，tuple 归调用内建）；前后对照见基线夹具 e10ccbd→85aad7c 同夹具同机：规范记录 10096.8→5049.4 ns/次（-50%）、安静窗 5621.4/5787.4（≈-44%）、绑单核交错 9 对中位 6495.3→5930.6（-9%，9 对 after 6 胜，负载 46-53 披露在案）——墙钟只记录不设带；计数分配器实证双面 0.00 分配/次=pymalloc arena 对 Rust 分配器不可见（边界发现非判别器）；fire 计数 2048=timers×ticks 结构断言每跑必过；证据页 opt-03-01-01-python-bridge-baseline.md 增 OPT-03-01-02 节+夹具 TSV 34 行 after 记录；python-host 155 绿、全仓 6944 绿）
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
@@ -5951,7 +5951,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
-- [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（本席 `85aad7c`：timers.rs 服务端每次点火由 2×PyLong+PyTuple_New+2×SetItem+CallObject+decRef 六次 C-API 收敛为单次 `PyObject_CallFunction("ik", id, user)`（参照 app_script_timers.cpp handleTimeout 同形，tuple 归调用内建）；前后对照见基线夹具 e10ccbd→85aad7c 同夹具同机：规范记录 10096.8→5049.4 ns/次（-50%）、安静窗 5621.4/5787.4（≈-44%）、绑单核交错 9 对中位 6495.3→5930.6（-9%，9 对 after 6 胜，负载 46-53 披露在案）——墙钟只记录不设带；计数分配器实证双面 0.00 分配/次=pymalloc arena 对 Rust 分配器不可见（边界发现非判别器）；fire 计数 2048=timers×ticks 结构断言每跑必过；证据页 opt-03-01-01-python-bridge-baseline.md 增 OPT-03-01-02 节+夹具 TSV 34 行 after 记录；python-host 155 绿、全仓 6944 绿）
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
@@ -7491,7 +7491,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
-- [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（本席 `85aad7c`：timers.rs 服务端每次点火由 2×PyLong+PyTuple_New+2×SetItem+CallObject+decRef 六次 C-API 收敛为单次 `PyObject_CallFunction("ik", id, user)`（参照 app_script_timers.cpp handleTimeout 同形，tuple 归调用内建）；前后对照见基线夹具 e10ccbd→85aad7c 同夹具同机：规范记录 10096.8→5049.4 ns/次（-50%）、安静窗 5621.4/5787.4（≈-44%）、绑单核交错 9 对中位 6495.3→5930.6（-9%，9 对 after 6 胜，负载 46-53 披露在案）——墙钟只记录不设带；计数分配器实证双面 0.00 分配/次=pymalloc arena 对 Rust 分配器不可见（边界发现非判别器）；fire 计数 2048=timers×ticks 结构断言每跑必过；证据页 opt-03-01-01-python-bridge-baseline.md 增 OPT-03-01-02 节+夹具 TSV 34 行 after 记录；python-host 155 绿、全仓 6944 绿）
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
@@ -9070,7 +9070,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
-- [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（本席 `85aad7c`：timers.rs 服务端每次点火由 2×PyLong+PyTuple_New+2×SetItem+CallObject+decRef 六次 C-API 收敛为单次 `PyObject_CallFunction("ik", id, user)`（参照 app_script_timers.cpp handleTimeout 同形，tuple 归调用内建）；前后对照见基线夹具 e10ccbd→85aad7c 同夹具同机：规范记录 10096.8→5049.4 ns/次（-50%）、安静窗 5621.4/5787.4（≈-44%）、绑单核交错 9 对中位 6495.3→5930.6（-9%，9 对 after 6 胜，负载 46-53 披露在案）——墙钟只记录不设带；计数分配器实证双面 0.00 分配/次=pymalloc arena 对 Rust 分配器不可见（边界发现非判别器）；fire 计数 2048=timers×ticks 结构断言每跑必过；证据页 opt-03-01-01-python-bridge-baseline.md 增 OPT-03-01-02 节+夹具 TSV 34 行 after 记录；python-host 155 绿、全仓 6944 绿）
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
@@ -10610,7 +10610,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
 - [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
-- [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
+- [x] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。（本席 `85aad7c`：timers.rs 服务端每次点火由 2×PyLong+PyTuple_New+2×SetItem+CallObject+decRef 六次 C-API 收敛为单次 `PyObject_CallFunction("ik", id, user)`（参照 app_script_timers.cpp handleTimeout 同形，tuple 归调用内建）；前后对照见基线夹具 e10ccbd→85aad7c 同夹具同机：规范记录 10096.8→5049.4 ns/次（-50%）、安静窗 5621.4/5787.4（≈-44%）、绑单核交错 9 对中位 6495.3→5930.6（-9%，9 对 after 6 胜，负载 46-53 披露在案）——墙钟只记录不设带；计数分配器实证双面 0.00 分配/次=pymalloc arena 对 Rust 分配器不可见（边界发现非判别器）；fire 计数 2048=timers×ticks 结构断言每跑必过；证据页 opt-03-01-01-python-bridge-baseline.md 增 OPT-03-01-02 节+夹具 TSV 34 行 after 记录；python-host 155 绿、全仓 6944 绿）
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
 
