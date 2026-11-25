@@ -2849,8 +2849,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
+- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
@@ -4428,8 +4428,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
+- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
@@ -5968,8 +5968,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
+- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
@@ -7508,8 +7508,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
+- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
@@ -9087,8 +9087,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
+- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
@@ -10627,8 +10627,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
+- [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（commit cd056fc：cellappmgr_tuning.rs 三固定场景对比——①热点爬坡跨 EMA bias 0.02/0.05(出货)/0.1/0.2：达阈 informs 52/21/10/5 严格反序、落点几何全同(4000 entity edge 两 pass)，bias 只换探测延迟不换落点；②反转跨 aggression 两分支：反转臂首 pass 减半 0.5 后 ×1.0718/pass 回升(8 pass 0.8123)、延续臂恒 1.0，closest_limit 单调故两臂落点同(5000=level1)，阻尼=抗振荡面零几何代价；③回收 drain 跨 chunk-limit 开关：关=1 pass 完成(CellRemoval 1+幸存者升 unbounded)、开=线被幸存者 chunk ghost margin 钉在 4000(基线 held 面)，空 retiring cell 按参照 Space::writeEntityBoundsForEdge 报无界边+offload floor(这才让 entity limit 可达世界边)；证据页 docs/review/opt-05-01-02-load-tuning-comparison.md+TSV 27 行 fixtures/load-hotspot/cellappmgr-tuning.tsv；server-runtime 1702 绿、全仓 6950 passed/0 failed）
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
 ### OPT-06-01 登录与资源下载基线
