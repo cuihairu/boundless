@@ -2912,7 +2912,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [ ] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。`7ad81a1` 三记录齐：
+  - RTT/吞吐：`crates/mercury/benches/network.rs` 七面 criterion 基线（100 样本 3s 预热，确定性夹具），双层口径——**协议层**（进程内无内核，CPU 成本）：RPC 请求-应答全环 1.1-2.3 µs/RPC、64 KiB bundle 分片 6.9-12.8 µs（5.1-9.5 GB/s payload）、64 KiB 回读派发 67-127 µs（0.5-1.0 GB/s——分片比派发便宜 ~70×，派发侧每消息付 handler 派发+BinaryStream 构建+element 克隆+EMA 记账）、TCP 帧流内存面 277-393 µs/MiB（2.7-3.8 GB/s）；**线层**（真回环 socket，含内核+调度）：可靠消息往返 27-34 µs、逐报文 64 KiB 传输 18.3-23.1 ms（2.8-3.6 MB/s，~1024 发+1024 收+1024 ack 发+1024 ack 收，~18 µs/消息与单消息往返同阶=交叉验证）、TCP 线层 3.8-5.4 ms/MiB（194-276 MB/s 底估）。**机载噪声披露**：测量窗落在共享机 load 35-58，全程面轮间摆 ±20-60%，表记跨轮区间（地板估）非单轮中位——空闲机复跑属基线页自述准则。表与读法落 `docs/perf-baseline-2026-11-24.md` 网络节。
+  - 丢包恢复记录（仿真时间精确戳，`crates/mercury/tests/loss_recovery_record.rs` 3 测绿）：重发周期=max(2×RTT均值, minInactivityResendDelay)（udp_channel.cpp:1113）且陈旧判据**严格大于**——age 恰等周期不重发，+1 µs 才发；双臂均验（2s 最小时延臂=2s 周期；0.3s 健康 ack 驱动 EWMA 0.1→0.12→0.138 后 2×RTT=0.276s 臂压过 50ms 时延）；被重发包的 ack 不采样 RTT 均值（恢复完成后均值仍 0.138 且窗口全清）；单次 checkResendTimers 扫描至多重发 windowSize/8（内部 4096 窗即 512），600 个陈旧包两次扫描收完。
+  - 坑两枚已锁进 bench 注释：UDP bundle 是跨报文连续消息流（消息可跨包边界），逐报文派发会掉尾——回读面按 bundle 迭代器 nextPacket 链语义拼连续流；TCP 帧可跨 16 KiB 读段边界，接收侧拆帧须留残余头。TCP bench 只用 lib.rs 已声明的 `tcp_channel::TcpSendBuffer` 面（专用拆帧器模块是未声明孤儿，归 tcp 恢复链，不 claims）。
+  - 门禁：`cargo test -p mercury` 396+3 绿（396 存量+3 新记录测试）、`cargo clippy -p mercury --benches --tests` 净、rustfmt 过；workspace gate 全绿后推。
 - [ ] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。
 - [ ] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。
 - [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。

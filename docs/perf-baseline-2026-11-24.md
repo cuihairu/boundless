@@ -169,6 +169,73 @@ dense-aoi 3,248 → 3,168 KiB. Every delta sits inside the ±150-200 KiB
 run spread, so the generator's peak RSS is unchanged in noise — the
 expected outcome for allocation-count work on the offline faces.
 
+## Network transport (2026-11-26, OPT-02-01-01)
+
+The Mercury transport baseline: criterion benches in
+`crates/mercury/benches/network.rs`, plus a deterministic loss-recovery
+record in `crates/mercury/tests/loss_recovery_record.rs`. Two layers per
+face: **protocol layer** (in-process, no kernel) isolates the Mercury
+machinery's CPU cost, and **wire layer** (real loopback sockets) carries
+syscall and scheduler cost on top.
+
+These runs landed on a shared box at load average 35–58, and the
+wall-clock faces swung ±20–60% between full runs; the table reports the
+spread across runs (floor estimate first), not one criterion median.
+The loss-recovery record is immune to all of this: it pins exact stamps
+in simulated time.
+
+| benchmark | layer | time (spread over runs) | throughput |
+|---|---|---|---|
+| `udp/protocol_rpc_roundtrip` | protocol | 1.1–2.3 µs per RPC | ~0.5–0.9 M RPC/s |
+| `udp/fragment_64k_stream` | protocol | 6.9–12.8 µs per 64 KiB bundle | 5.1–9.5 GB/s payload |
+| `udp/reparse_64k_stream` | protocol | 67–127 µs per 64 KiB bundle | 0.5–1.0 GB/s payload |
+| `udp/wire_reliable_roundtrip_loopback` | wire | 27–34 µs per reliable message | — |
+| `udp/wire_64k_transfer_loopback` | wire | 18.3–23.1 ms per 1024 messages | 2.8–3.6 MB/s payload |
+| `tcp/frame_stream_in_memory` | protocol | 277–393 µs per 1 MiB framed stream | 2.7–3.8 GB/s |
+| `tcp/wire_stream_loopback` | wire | 3.8–5.4 ms per 1 MiB | 194–276 MB/s |
+
+Reading notes:
+
+- The protocol RPC round trip is ~1 µs of CPU: request bundle build,
+  footer, dispatch walk, echo reply, reply dispatch, handler. At the
+  internal channel's seeded 0.1s RTT that cost is noise; it matters as
+  the floor for what a served RPC costs the process.
+- Fragmentation (pack 1024 messages into ~47 datagrams, 6.9–12.8 µs) is
+  ~70× cheaper than the parse-back (67–127 µs): the dispatch walk pays
+  per-message handler dispatch, a `BinaryStream` build, element clones
+  and the per-element EMA bookkeeping, none of which the pack side
+  touches.
+- The wire 64 KiB transfer is per-datagram (one reliable message per
+  bundle): a bundle whose messages straddle packets needs the
+  bundle-processor reassembly face, which is not declared in `lib.rs`
+  yet (it rides the tcp restore lane). Its cost is ~1024 send + 1024
+  receive + 1024 ack send + 1024 ack receive round trips, ~18 µs per
+  message — the same order as the single-message round trip, which is
+  the consistency check.
+- TCP wire throughput over loopback (~200–280 MB/s at this load) is a
+  floor estimate; the in-memory face (2.7–3.8 GB/s) bounds the framing
+  machinery's own cost. The frame split on the receive side is inline in
+  the bench: the dedicated parser module is an orphan pending the tcp
+  restore lane.
+
+The loss-recovery record (simulated time, exact stamps, all three
+tests green):
+
+- Resend period is `max(2 × roundTripTime_, minInactivityResendDelay)`
+  (`udp_channel.cpp:1113`), and the staleness test is strict: an unacked
+  packet ages past the period, not to it — an age exactly equal to the
+  period is not yet stale, the resend lands one microsecond past.
+- Both arms verified: a 2s minimum delay sets a 2s period on an
+  internal channel (seeded 0.1s RTT), and healthy 0.3s acks walking the
+  EWMA (0.1 → 0.12 → 0.138) set a 0.276s period that outruns a 50ms
+  minimum delay.
+- A resent packet's ack never samples the RTT average
+  (udp_channel.cpp:987): after recovery the average still reads
+  0.138, and the window is fully drained.
+- One `checkResendTimers` scan resends at most `windowSize / 8`
+  (512 on the internal 4096 window); the next scan takes the remainder.
+  Recovery of 600 stale packets therefore completes in two scans.
+
 ## CI
 
 No CI wiring yet for the benches (per batch ticket): they stay out of
