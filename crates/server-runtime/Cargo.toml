@@ -28,6 +28,9 @@ flate2 = { version = "1.1.11", default-features = false, features = ["rust_backe
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
+# The script host faces (BW-14-01-04): the role's scripts run on the live
+# interpreter this crate drives -- the ScriptApp initScript analog.
+python-host = { workspace = true }
 # The Controller/Extra sample's grenade simulation reflects off a
 # `WorldTriangle` (BW-14-02-04, `worldtri.cpp:504-512`); a downward edge
 # into the domain layer like mercury/db above.

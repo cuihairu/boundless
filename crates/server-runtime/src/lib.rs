@@ -21,6 +21,7 @@ pub mod cellapp_range_list;
 pub mod cellapp_real_entity;
 pub mod cellapp_space;
 pub mod cellappmgr;
+pub mod script_host;
 pub mod client_login;
 pub mod cluster_shutdown;
 pub mod config;
