@@ -465,6 +465,7 @@ name = "foundation"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "libc",
 ]
 
 [[package]]
