@@ -123,6 +123,11 @@ pub enum DeliverGhost {
     VolatileInfo(bool),
     /// A `ghostedDataUpdate` delivery.
     Property(bool),
+    /// The routing ladder dropped the message: its ghost was destroyed
+    /// while the message was in flight.
+    Dropped,
+    /// The routing ladder held the message: out of sender order.
+    Buffered,
     /// A `ghostSetReal` delivery: applied, or buffered behind the
     /// subsequence it interrupted.
     SetReal(GhostSetReal),
@@ -197,6 +202,125 @@ fn is_subsequence_end(message: &GhostMessage) -> bool {
         message,
         GhostMessage::Del | GhostMessage::SetNextReal { .. }
     )
+}
+
+/// `EntityReality` (`cellapp_interface.hpp:34`): the message's own
+/// constraint — which form of the entity it is for. `WITNESS_ONLY`
+/// sits above `REAL_ONLY`, so the ladder's `>= REAL_ONLY` arm catches
+/// both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EntityReality {
+    /// For the ghost form only.
+    GhostOnly,
+    /// For the real form only.
+    RealOnly,
+    /// For the entity that holds the witness.
+    WitnessOnly,
+}
+
+/// What `EntityMessageHandler::handleMessage` does with a message
+/// (`entity_message_routing.hpp:24`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityMessageDisposition {
+    /// GHOST_ONLY: the ghost was destroyed while the message was in
+    /// flight.
+    DropDestroyedGhost,
+    /// GHOST_ONLY: out of sender order — buffer until the sender
+    /// catches up.
+    BufferGhostMessage,
+    /// REAL_ONLY / WITNESS_ONLY: not holding the real — attempt a
+    /// forward.
+    ForwardToReal,
+    /// WITNESS_ONLY: the entity has no witness to receive it.
+    DropNoWitness,
+    /// No tick budget left this tick — defer to the next one.
+    BufferIfTickPending,
+    /// None of the above: call through to the message's handler.
+    Dispatch,
+}
+
+/// Everything the disposition ladder branches on
+/// (`EntityMessageRoutingState`, line 54).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EntityMessageRoutingState {
+    /// The message's reality.
+    pub reality: Option<EntityReality>,
+    /// `app.findEntity( entityID ) != NULL`.
+    pub entity_exists: bool,
+    /// The found entity is the real.
+    pub entity_is_real: bool,
+    /// `Entity::isOffloadingTo( srcAddr )`.
+    pub entity_is_offloading_to_sender: bool,
+    /// Only meaningful when the entity exists and is real.
+    pub entity_has_witness: bool,
+    /// `Entity::shouldBufferMessagesFrom( srcAddr )`.
+    pub should_buffer_from_sender: bool,
+    /// `BufferedGhostMessages::isDelayingMessagesFor`.
+    pub delaying_for_sender: bool,
+    /// `BufferedGhostMessages::hasMessagesFor`.
+    pub has_messages_for_sender: bool,
+    /// The message opens a subsequence.
+    pub is_subsequence_start: bool,
+    /// The handler's deferral flag and the cellapp's tick state.
+    pub should_buffer_if_tick_pending: bool,
+    pub next_tick_pending: bool,
+}
+
+/// The `EntityMessageHandler::handleMessage` disposition ladder
+/// (`classifyEntityMessage`), as a pure function over the routing
+/// state. The port's ghost-domain messages all carry
+/// `GHOST_ONLY`, so the `REAL_ONLY`/`WITNESS_ONLY` arms are pinned by
+/// the classifier's own tests — their side effects (the forward and
+/// the witness drop) are the base-message and witness clusters' faces.
+pub fn classify_entity_message(s: &EntityMessageRoutingState) -> EntityMessageDisposition {
+    // Option-free access: the callers always name a reality.
+    let reality = s.reality.unwrap_or(EntityReality::GhostOnly);
+    let should_buffer_ghost_message =
+        !s.entity_exists || s.should_buffer_from_sender || s.delaying_for_sender;
+
+    let mut is_for_destroyed_ghost = false;
+
+    // Message is for a destroyed ghost if it is out of subsequence order.
+    if reality == EntityReality::GhostOnly {
+        // Destroyed by restored real; or destroyed by restored real,
+        // then recreated when offloading to the sender; or destroyed
+        // when the sender's death was handled. A subsequence start has
+        // no predecessor to reference its order, so it is never
+        // counted as destroyed-ghost.
+        is_for_destroyed_ghost = (s.entity_exists && s.entity_is_real)
+            || (s.entity_exists && s.entity_is_offloading_to_sender && !s.is_subsequence_start)
+            || (should_buffer_ghost_message
+                && !s.has_messages_for_sender
+                && !s.is_subsequence_start);
+    }
+
+    // Drop GHOST_ONLY messages for a destroyed ghost.
+    if is_for_destroyed_ghost {
+        return EntityMessageDisposition::DropDestroyedGhost;
+    }
+
+    // Buffer GHOST_ONLY messages that are out of sender order.
+    if reality == EntityReality::GhostOnly && should_buffer_ghost_message {
+        return EntityMessageDisposition::BufferGhostMessage;
+    }
+
+    // REAL_ONLY messages are forwarded if we do not hold the real;
+    // WITNESS_ONLY sits above, so this arm also catches witness
+    // messages for entities we do not hold as real.
+    if reality >= EntityReality::RealOnly && (!s.entity_exists || !s.entity_is_real) {
+        return EntityMessageDisposition::ForwardToReal;
+    }
+
+    // Drop WITNESS_ONLY messages for entities without a witness.
+    if reality == EntityReality::WitnessOnly && s.entity_exists && !s.entity_has_witness {
+        return EntityMessageDisposition::DropNoWitness;
+    }
+
+    if s.should_buffer_if_tick_pending && s.next_tick_pending {
+        return EntityMessageDisposition::BufferIfTickPending;
+    }
+
+    EntityMessageDisposition::Dispatch
 }
 
 /// `BufferedGhostMessagesForEntity`
@@ -1201,14 +1325,135 @@ impl CellApp {
 }
 
 impl CellApp {
+    /// `Entity::isOffloadingTo` (`entity.cpp:1952`): the entity was
+    /// offloaded to the destination but the onload confirmation has
+    /// not landed yet — the ghost's own real address already names the
+    /// destination too.
+    pub fn entity_is_offloading_to(&self, entity: u32, addr: u32) -> bool {
+        self.entity_population
+            .get(&entity)
+            .is_some_and(|entity_rc| {
+                let borrowed = entity_rc.borrow();
+                borrowed.real_addr.is_some()
+                    && borrowed.real_addr == borrowed.next_real_addr
+                    && borrowed.next_real_addr == Some(addr)
+            })
+    }
+
+    /// `Entity::shouldBufferMessagesFrom` (`entity.cpp:7838`): a ghost
+    /// with no real channel never buffers (reals and zombie ghosts);
+    /// one mid-switch buffers everything but the next real, and an
+    /// settled one everything but its current real.
+    pub fn should_buffer_messages_from(&self, entity: u32, addr: u32) -> bool {
+        debug_assert!(addr != 0, "NONE is not a sender");
+        let Some(entity_rc) = self.entity_population.get(&entity) else {
+            return false;
+        };
+        let borrowed = entity_rc.borrow();
+        let Some(real_addr) = borrowed.real_addr else {
+            // Reals and zombie ghosts don't buffer.
+            return false;
+        };
+        match borrowed.next_real_addr {
+            // Buffer messages not from our next real.
+            Some(next_real_addr) => next_real_addr != addr,
+            // Otherwise, buffer messages not from our current real.
+            None => real_addr != addr,
+        }
+    }
+
+    /// `BufferedGhostMessages::hasMessagesFor`
+    /// (`buffered_ghost_messages.cpp:64`): whether anything is held
+    /// for the entity from the given address.
+    fn has_ghost_messages_for(&self, entity: u32, addr: u32) -> bool {
+        self.buffered_ghost_messages
+            .get(&entity)
+            .is_some_and(|held| {
+                held.messages
+                    .iter()
+                    .chain(held.delayed.iter().flatten())
+                    .any(|message| message.entity == entity && message.src == addr)
+            })
+    }
+
+    /// `BufferedGhostMessages::isDelayingMessagesFor` (line 82): the
+    /// port's single queue per ghost stands in for the per-address
+    /// lookup.
+    fn is_delaying_messages_for(&self, entity: u32, _addr: u32) -> bool {
+        self.buffered_ghost_messages
+            .get(&entity)
+            .is_some_and(|held| held.is_delaying())
+    }
+
     /// The ghost channel's deliver face: `CellApp::processMessage`
-    /// dispatching the kind of message the bundle carries.
+    /// dispatching the kind of message the bundle carries. The six
+    /// ghost-domain entity messages run the routing ladder first
+    /// (`EntityMessageHandler::handleMessage`); `createGhost` is not
+    /// an entity message — `Space::createGhost`'s own buffering face
+    /// handles it.
     pub fn deliver_ghost(
         &mut self,
         spaces: &mut BTreeMap<SpaceId, Space>,
         wire: &GhostWire,
     ) -> DeliverGhost {
-        match &wire.message {
+        let message = wire.message.clone();
+        if !matches!(message, GhostMessage::Create(_)) {
+            // `EntityMessageRoutingState` over this app, this wire.
+            let state = EntityMessageRoutingState {
+                reality: Some(EntityReality::GhostOnly),
+                entity_exists: self.entity_population.contains_key(&wire.entity),
+                entity_is_real: self
+                    .entity_population
+                    .get(&wire.entity)
+                    .is_some_and(|entity| entity.borrow().is_real),
+                entity_is_offloading_to_sender: self.entity_is_offloading_to(wire.entity, wire.src),
+                entity_has_witness: self
+                    .entity_population
+                    .get(&wire.entity)
+                    .is_some_and(|entity| entity.borrow().has_witness),
+                should_buffer_from_sender: self.should_buffer_messages_from(wire.entity, wire.src),
+                delaying_for_sender: self.is_delaying_messages_for(wire.entity, wire.src),
+                has_messages_for_sender: self.has_ghost_messages_for(wire.entity, wire.src),
+                is_subsequence_start: is_subsequence_start(&message),
+                // `shouldBufferIfTickPending_` and `nextTickPending`:
+                // the tick-budget buffering cluster's face — not this
+                // cluster's.
+                should_buffer_if_tick_pending: false,
+                next_tick_pending: false,
+            };
+            match classify_entity_message(&state) {
+                EntityMessageDisposition::DropDestroyedGhost => {
+                    // WARNING "Dropping ghost message ... ghost was
+                    // destroyed while in-flight"; `sendFailure` is the
+                    // reply cluster's face.
+                    self.ghost_property_notes.push(format!(
+                        "EntityMessageHandler: dropped ghost message for {} from {}, destroyed while in-flight",
+                        wire.entity, wire.src
+                    ));
+                    return DeliverGhost::Dropped;
+                }
+                EntityMessageDisposition::BufferGhostMessage => {
+                    // WARNING "Buffered ghost message for entity %u"
+                    self.ghost_property_notes.push(format!(
+                        "EntityMessageHandler: buffered ghost message for {} from {}",
+                        wire.entity, wire.src
+                    ));
+                    self.buffer_ghost_message(BufferedGhostMessage {
+                        src: wire.src,
+                        entity: wire.entity,
+                        space_id: wire.space_id,
+                        delayed: false,
+                        message: message.clone(),
+                    });
+                    return DeliverGhost::Buffered;
+                }
+                // The forward, witness-drop, and tick-defer side
+                // effects are other clusters' faces; a ghost-domain
+                // wire cannot reach them.
+                _ => {}
+            }
+        }
+        match &message {
             GhostMessage::Create(data) => {
                 let Some((entity, payload)) = split_create_payload(data) else {
                     // The stream carries no id: the reference's message
@@ -1730,6 +1975,7 @@ mod tests {
                     CreateGhostOutcome::BadStream
                 }
             }
+            DeliverGhost::Dropped | DeliverGhost::Buffered => CreateGhostOutcome::BadStream,
             // The sign-offs collapse onto the same Created/BadStream
             // pair: the tests read the entity's own state.
             DeliverGhost::SetReal(outcome) => match outcome {
@@ -3032,16 +3278,37 @@ mod tests {
             "the dead app is skipped with a WARNING"
         );
 
-        // A failed teleport's haunt is skipped on request.
+        // A failed teleport's haunt is skipped on request: the
+        // bad haunt hears nothing while the live haunt still gets the
+        // sign-on.
+        app_b
+            .entity_population
+            .get_mut(&2)
+            .unwrap()
+            .borrow_mut()
+            .haunts = vec![
+            Haunt {
+                addr: A_ADDR,
+                creation_time: 1000,
+            },
+            Haunt {
+                addr: B_ADDR,
+                creation_time: 1000,
+            },
+            Haunt {
+                addr: C_ADDR,
+                creation_time: 1000,
+            },
+        ];
         app_b.ghost_outbox.clear();
         assert!(app_b.send_ghost_set_real(2, &[A_ADDR], false, false));
-        assert!(
-            app_b
-                .ghost_outbox
-                .iter()
-                .all(|wire| !matches!(wire.message, GhostMessage::SetReal { .. })),
-            "the bad haunt hears nothing"
-        );
+        let signed: Vec<&GhostWire> = app_b
+            .ghost_outbox
+            .iter()
+            .filter(|wire| matches!(wire.message, GhostMessage::SetReal { .. }))
+            .collect();
+        assert_eq!(signed.len(), 1);
+        assert_ne!(signed[0].dest, A_ADDR, "the bad haunt hears nothing");
         assert!(
             app_b
                 .ghost_property_notes
@@ -3069,5 +3336,344 @@ mod tests {
             .collect();
         assert_eq!(del.len(), 1);
         assert_eq!(del[0].dest, A_ADDR);
+    }
+
+    /// The ladder's every disposition, pinned as the pure classifier
+    /// the reference extracted it for (`entity_message_routing.hpp`).
+    #[test]
+    fn the_ladder_pins_every_disposition() {
+        let ladder = |reality: EntityReality,
+                      edit: &dyn Fn(&mut EntityMessageRoutingState)|
+         -> EntityMessageDisposition {
+            let mut state = EntityMessageRoutingState {
+                reality: Some(reality),
+                ..Default::default()
+            };
+            edit(&mut state);
+            classify_entity_message(&state)
+        };
+        // A ghost message from the current real of a settled ghost.
+        let settled = |state: &mut EntityMessageRoutingState| {
+            state.entity_exists = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::GhostOnly, &settled),
+            EntityMessageDisposition::Dispatch
+        );
+        // Destroyed by restored real.
+        let restored = |state: &mut EntityMessageRoutingState| {
+            state.entity_exists = true;
+            state.entity_is_real = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::GhostOnly, &restored),
+            EntityMessageDisposition::DropDestroyedGhost
+        );
+        // Destroyed by restored real, then recreated when offloading
+        // back to the sender — a start survives, a mid-message drops.
+        let offloading = |state: &mut EntityMessageRoutingState| {
+            state.entity_exists = true;
+            state.entity_is_offloading_to_sender = true;
+        };
+        let start = offloading;
+        let with_start = |state: &mut EntityMessageRoutingState| {
+            start(state);
+            state.is_subsequence_start = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::GhostOnly, &offloading),
+            EntityMessageDisposition::DropDestroyedGhost
+        );
+        assert_eq!(
+            ladder(EntityReality::GhostOnly, &with_start),
+            EntityMessageDisposition::Dispatch
+        );
+        // Destroyed when the sender's death was handled: the
+        // entity still exists and buffers the sender, but nothing was
+        // held from it, so the predecessor has no reference.
+        let orphan = |state: &mut EntityMessageRoutingState| {
+            state.entity_exists = true;
+            state.should_buffer_from_sender = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::GhostOnly, &orphan),
+            EntityMessageDisposition::DropDestroyedGhost
+        );
+        // A subsequence start with no entity buffers instead.
+        let orphan_start = |state: &mut EntityMessageRoutingState| {
+            state.is_subsequence_start = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::GhostOnly, &orphan_start),
+            EntityMessageDisposition::BufferGhostMessage
+        );
+        // Out of sender order: the mid-switch ghost holds a stranger.
+        let wrong_sender = |state: &mut EntityMessageRoutingState| {
+            state.entity_exists = true;
+            state.should_buffer_from_sender = true;
+            state.has_messages_for_sender = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::GhostOnly, &wrong_sender),
+            EntityMessageDisposition::BufferGhostMessage
+        );
+        // REAL_ONLY and WITNESS_ONLY for a missing or ghost entity
+        // both attempt the forward.
+        assert_eq!(
+            ladder(EntityReality::RealOnly, &|_| {}),
+            EntityMessageDisposition::ForwardToReal
+        );
+        let witness_missing = |state: &mut EntityMessageRoutingState| {
+            state.entity_exists = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::WitnessOnly, &witness_missing),
+            EntityMessageDisposition::ForwardToReal
+        );
+        // A witness message for a witness-less real drops.
+        let no_witness = |state: &mut EntityMessageRoutingState| {
+            state.entity_exists = true;
+            state.entity_is_real = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::WitnessOnly, &no_witness),
+            EntityMessageDisposition::DropNoWitness
+        );
+        let with_witness = |state: &mut EntityMessageRoutingState| {
+            no_witness(state);
+            state.entity_has_witness = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::WitnessOnly, &with_witness),
+            EntityMessageDisposition::Dispatch
+        );
+        // No tick budget left defers to the next tick.
+        let tick_pending = |state: &mut EntityMessageRoutingState| {
+            state.entity_exists = true;
+            state.should_buffer_if_tick_pending = true;
+            state.next_tick_pending = true;
+        };
+        assert_eq!(
+            ladder(EntityReality::GhostOnly, &tick_pending),
+            EntityMessageDisposition::BufferIfTickPending
+        );
+    }
+
+    /// BW-08-04-04's acceptance: whatever order the wires land in, the
+    /// switch-period messages deliver in sequence and nothing applies
+    /// twice — the reordered and in-order runs end in the same state.
+    #[test]
+    fn the_switch_period_messages_arrive_in_order_whatever_the_wire() {
+        let sign_off = GhostMessage::SetReal {
+            num_times_real_offloaded: 1,
+            owner: C_ADDR,
+        };
+        let announce = GhostMessage::SetNextReal {
+            next_real_addr: C_ADDR,
+        };
+        let position = GhostMessage::Position {
+            pos: [7.0, 8.0, 9.0],
+            dir: [0.0, 1.0, 0.0],
+            is_on_ground: false,
+            update_number: 5,
+        };
+        let wire = |message: GhostMessage, src: u32| GhostWire {
+            dest: B_ADDR,
+            src,
+            space_id: SID,
+            entity: 2,
+            message,
+        };
+
+        // The reordered run: the new real's messages land before the
+        // old real's announcement.
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b, _app_c, _spaces_c) =
+            three_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for create in app_a.ghost_outbox.drain(..) {
+            match create.dest {
+                B_ADDR => {
+                    deliver(&mut app_b, &mut spaces_b, &create);
+                }
+                C_ADDR => {}
+                _ => unreachable!("two haunts only"),
+            }
+        }
+        app_a.send_ghost_set_next_real(2, C_ADDR);
+        app_a.ghost_outbox.clear();
+        assert_eq!(
+            app_b.deliver_ghost(&mut spaces_b, &wire(sign_off.clone(), C_ADDR)),
+            DeliverGhost::Buffered,
+            "the new real's sign-off beats the announcement"
+        );
+        assert_eq!(
+            app_b.deliver_ghost(&mut spaces_b, &wire(position.clone(), C_ADDR)),
+            DeliverGhost::Buffered,
+            "and its position rides behind it"
+        );
+        assert!(
+            app_b
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("buffered ghost message for 2 from 30"))
+        );
+        assert_eq!(
+            app_b.entity_population[&2].borrow().local_position,
+            [10.0, 0.0, 25.0],
+            "nothing applied ahead of the switch"
+        );
+
+        // The old real's announcement — from the address the ghost
+        // still trusts — dispatches and replays the held pair in order.
+        assert_eq!(
+            app_b.deliver_ghost(&mut spaces_b, &wire(announce.clone(), A_ADDR)),
+            DeliverGhost::SetNextReal(true)
+        );
+        let borrowed = app_b.entity_population[&2].borrow();
+        assert_eq!(borrowed.real_addr, Some(C_ADDR));
+        assert_eq!(borrowed.num_times_real_offloaded, 1);
+        assert_eq!(
+            borrowed.local_position,
+            [7.0, 8.0, 9.0],
+            "the position replayed"
+        );
+        drop(borrowed);
+        assert!(
+            app_b.buffered_ghost_messages.is_empty(),
+            "the queue drained"
+        );
+        let reordered_state = (
+            app_b.entity_population[&2].borrow().real_addr,
+            app_b.entity_population[&2]
+                .borrow()
+                .num_times_real_offloaded,
+            app_b.entity_population[&2].borrow().local_position,
+            app_b.entity_population[&2].borrow().next_real_addr,
+        );
+
+        // The in-order run: announcement first, then the new real's
+        // pair — the same end state.
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b, _app_c, _spaces_c) =
+            three_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for create in app_a.ghost_outbox.drain(..) {
+            match create.dest {
+                B_ADDR => {
+                    deliver(&mut app_b, &mut spaces_b, &create);
+                }
+                C_ADDR => {}
+                _ => unreachable!("two haunts only"),
+            }
+        }
+        app_a.send_ghost_set_next_real(2, C_ADDR);
+        app_a.ghost_outbox.clear();
+        assert_eq!(
+            app_b.deliver_ghost(&mut spaces_b, &wire(announce, A_ADDR)),
+            DeliverGhost::SetNextReal(true)
+        );
+        assert_eq!(
+            app_b.deliver_ghost(&mut spaces_b, &wire(sign_off.clone(), C_ADDR)),
+            DeliverGhost::SetReal(GhostSetReal::Applied)
+        );
+        assert_eq!(
+            app_b.deliver_ghost(&mut spaces_b, &wire(position, C_ADDR)),
+            DeliverGhost::Position(true)
+        );
+        let in_order_state = (
+            app_b.entity_population[&2].borrow().real_addr,
+            app_b.entity_population[&2]
+                .borrow()
+                .num_times_real_offloaded,
+            app_b.entity_population[&2].borrow().local_position,
+            app_b.entity_population[&2].borrow().next_real_addr,
+        );
+        assert_eq!(
+            reordered_state, in_order_state,
+            "the wire order did not change the outcome"
+        );
+
+        // The duplicate sign-off never applies twice: the stale id is
+        // held, the route and the count stand still.
+        assert_eq!(
+            app_b.deliver_ghost(&mut spaces_b, &wire(sign_off, C_ADDR)),
+            DeliverGhost::SetReal(GhostSetReal::Buffered)
+        );
+        assert_eq!(
+            app_b.entity_population[&2]
+                .borrow()
+                .num_times_real_offloaded,
+            1
+        );
+        assert_eq!(app_b.entity_population[&2].borrow().real_addr, Some(C_ADDR));
+    }
+
+    /// The destroyed-ghost drops: an in-flight message for a real, for
+    /// a mid-offload ghost handing itself to the sender, and for an
+    /// entity that never was.
+    #[test]
+    fn the_destroyed_ghost_drops_the_inflight_messages() {
+        let position = GhostMessage::Position {
+            pos: [1.0, 2.0, 3.0],
+            dir: [0.0, 0.0, 1.0],
+            is_on_ground: true,
+            update_number: 1,
+        };
+        let wire = |message: GhostMessage, src: u32| GhostWire {
+            dest: A_ADDR,
+            src,
+            space_id: SID,
+            entity: 2,
+            message,
+        };
+
+        // A ghost-domain message for the real we hold.
+        let (mut app_a, mut spaces_a, _app_b, _spaces_b) = two_cell_fixture();
+        assert_eq!(
+            app_a.deliver_ghost(&mut spaces_a, &wire(position.clone(), B_ADDR)),
+            DeliverGhost::Dropped,
+            "restored by a real"
+        );
+        assert!(
+            app_a
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("destroyed while in-flight"))
+        );
+
+        // A message for an entity that never was: nothing buffered from
+        // the sender and no subsequence start to open one.
+        let orphan = GhostWire {
+            dest: A_ADDR,
+            src: B_ADDR,
+            space_id: SID,
+            entity: 99,
+            message: position.clone(),
+        };
+        assert_eq!(
+            app_a.deliver_ghost(&mut spaces_a, &orphan),
+            DeliverGhost::Dropped
+        );
+
+        // A ghost mid-offload to the very sender: destroyed by the
+        // restored real, then recreated when offloading to it.
+        app_a
+            .entity_population
+            .get_mut(&2)
+            .unwrap()
+            .borrow_mut()
+            .is_real = false;
+        {
+            let mut ghost = app_a.entity_population.get_mut(&2).unwrap().borrow_mut();
+            ghost.real_addr = Some(C_ADDR);
+            ghost.next_real_addr = Some(C_ADDR);
+        }
+        assert!(
+            app_a.entity_is_offloading_to(2, C_ADDR),
+            "the ghost names its destination as its real"
+        );
+        assert_eq!(
+            app_a.deliver_ghost(&mut spaces_a, &wire(position, C_ADDR)),
+            DeliverGhost::Dropped
+        );
     }
 }
