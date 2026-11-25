@@ -2788,9 +2788,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。（bw19-docs 席 6b6cc9c，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 临时 worktree 挂彼席 tip 7e25587 真机复测：`foundation --test alloc_counts` 10 绿+`server-runtime --test alloc_counts` 2 绿；Tick/分配/加载峰值三面基线在 docs/perf-baseline-2026-11-24.md+两 alloc_counts 夹具+bots RSS 实测）
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）
 
 ### OPT-02-01 网络基线
 
@@ -4341,9 +4341,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。（bw19-docs 席 6b6cc9c，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 临时 worktree 挂彼席 tip 7e25587 真机复测：`foundation --test alloc_counts` 10 绿+`server-runtime --test alloc_counts` 2 绿；Tick/分配/加载峰值三面基线在 docs/perf-baseline-2026-11-24.md+两 alloc_counts 夹具+bots RSS 实测）
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）
 
 ### OPT-02-01 网络基线
 
@@ -5867,9 +5867,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。（bw19-docs 席 6b6cc9c，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 临时 worktree 挂彼席 tip 7e25587 真机复测：`foundation --test alloc_counts` 10 绿+`server-runtime --test alloc_counts` 2 绿；Tick/分配/加载峰值三面基线在 docs/perf-baseline-2026-11-24.md+两 alloc_counts 夹具+bots RSS 实测）
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）
 
 ### OPT-02-01 网络基线
 
@@ -7393,9 +7393,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。（bw19-docs 席 6b6cc9c，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 临时 worktree 挂彼席 tip 7e25587 真机复测：`foundation --test alloc_counts` 10 绿+`server-runtime --test alloc_counts` 2 绿；Tick/分配/加载峰值三面基线在 docs/perf-baseline-2026-11-24.md+两 alloc_counts 夹具+bots RSS 实测）
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）
 
 ### OPT-02-01 网络基线
 
@@ -8946,9 +8946,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。（bw19-docs 席 6b6cc9c，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 临时 worktree 挂彼席 tip 7e25587 真机复测：`foundation --test alloc_counts` 10 绿+`server-runtime --test alloc_counts` 2 绿；Tick/分配/加载峰值三面基线在 docs/perf-baseline-2026-11-24.md+两 alloc_counts 夹具+bots RSS 实测）
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）
 
 ### OPT-02-01 网络基线
 
@@ -10472,9 +10472,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。（bw19-docs 席 6b6cc9c，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 临时 worktree 挂彼席 tip 7e25587 真机复测：`foundation --test alloc_counts` 10 绿+`server-runtime --test alloc_counts` 2 绿；Tick/分配/加载峰值三面基线在 docs/perf-baseline-2026-11-24.md+两 alloc_counts 夹具+bots RSS 实测）
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
-- [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
+- [x] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。（bw19-docs 席 ebbde2b，lane/bw19-docs 未并 main——合并须带入；本席 2026-11-26 真机复测：`resources --test data_section_cache_alloc` 3 绿（热路径零分配断言）+`foundation --lib stream` 49 绿+resources 全 crate 225 绿+foundation 238 绿，失效夹具随全 crate 套件复跑）
 
 ### OPT-02-01 网络基线
 
