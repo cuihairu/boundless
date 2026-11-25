@@ -2851,7 +2851,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -4432,7 +4432,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -5974,7 +5974,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -7516,7 +7516,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -9097,7 +9097,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -10639,7 +10639,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `5120dea`+`0fbfa8f`：crates/load/src/hotspot.rs run_hotspot_baseline 三窗口=allocation（fleet 经 feed_log_on_result 上线+整窗口 circle-walk，ResourceTracker 读 procfs 八次：utime/stime+VmRSS）、recovery（seeded 子集 mid-window drop，reconnect feed_logged_off(Some(true))，floor 2 tick=drop@d/relogin@d/reply@d+2 与 reconnect 同）、reclamation（drain 全 feed_logged_off(None) destroy，online 归零，采样延到尾部）；可复现面 vs 墙钟：online/recovery/drop 计划/sample schedule 固定 seed 全等断言，RSS/CPU 排除 PartialEq 仅经 resource_report_entries 落 LOAD_REPORT（带 metric def）；7 新 hotspot 测+smoke 门入 saved-kinds；覆盖 269/271=99.26%；ci/load.sh 7/7 PASS；记录 run=300/75 tick、4/4 recoveries、mean=max 2、load 最小在线占比 0.75、sampling 4.6s/8、peak RSS 3464 KiB、final 3464、reclaimed 0 KiB（小 fleet drain 回收 0=诚实值，故墙钟只记录不设带）；baseline 加 min 2.0 floor；证据页 docs/review/opt-05-01-01-load-hotspot-baseline.md）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
