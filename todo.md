@@ -2869,7 +2869,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）
 - [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(0541211)
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -4448,7 +4448,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）
 - [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(0541211)
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -5988,7 +5988,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）
 - [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(0541211)
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -7528,7 +7528,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）
 - [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(0541211)
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -9107,7 +9107,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）
 - [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(0541211)
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -10647,7 +10647,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）
 - [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
 - [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(0541211)
 
 ### OPT-08-01 密集 AOI 基线
 

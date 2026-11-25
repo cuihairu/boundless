@@ -62,5 +62,5 @@ TAKEOVER_RERUN_OUT=<abs path> cargo test -p server-runtime \
 
 ## Fixtures
 
-`docs/review/fixtures/takeover-rerun/takeover-rerun.tsv` — 41 rows,
+`docs/review/fixtures/takeover-rerun/takeover-rerun.tsv` — 42 rows,
 captured with the command above.
