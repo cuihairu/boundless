@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "scenario": "reconnect",
+  "generator": "load 0.1.0",
+  "topology": "linux-offline-harness",
+  "seed": 141421,
+  "values": {
+    "bots_dropped": 4,
+    "recoveries_completed": 4,
+    "mean_recovery_ticks": 2,
+    "sample_period": 0.10000000149011612
+  }
+}

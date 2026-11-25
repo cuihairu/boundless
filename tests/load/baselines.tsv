@@ -1,0 +1,18 @@
+# BW-17-03-06 — the capacity and soak jobs' thresholds, each taken from a
+# recorded baseline run (the fixture the last column cites; the evidence
+# docs next to the fixtures record the runs that produced them). Only
+# envelope-independent invariants: rates and counts the offline faces
+# hold at any harness knob size, so the same band holds the PR short
+# lane and the nightly's bigger knobs. The saved resource series
+# (BW-17-02-08's report half) is deliberately not banded here: a resident
+# size is machine-dependent, so a recorded number on one runner is not a
+# band on another — the series travels in the report with its own metric
+# definitions instead.
+# scenario	metric	op	value	recorded baseline
+login-hurricane	login_success_rate	min	1.0	docs/review/fixtures/load/login-hurricane.report.json
+steady-move	bots_online	min	1	docs/review/fixtures/load/steady-move.report.json
+dense-aoi	bots	min	1	docs/review/fixtures/load/dense-aoi.report.json
+cross-cell	bots_set_out	min	1	docs/review/fixtures/load/cross-cell.report.json
+reconnect	mean_recovery_ticks	min	2.0	docs/review/fixtures/load/reconnect.report.json
+long-stability	resource_sample_count	min	1	docs/review/fixtures/load/long-stability.report.json
+long-stability	min_online_ratio	min	1.0	docs/review/fixtures/load/long-stability.report.json

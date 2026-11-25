@@ -20,8 +20,11 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::bot::FD_PER_BOT;
+use crate::cross_cell::{CrossingLedger, run_cross_cell};
 use crate::dense::{DenseAoiLedger, run_dense_aoi};
 use crate::hurricane::{HurricaneLedger, run_login_hurricane};
+use crate::long_stability::run_long_stability;
+use crate::reconnect::{ReconnectLedger, run_reconnect};
 use crate::scenario::Scenario;
 use crate::steady::{SteadyLedger, run_steady_movement};
 
@@ -62,8 +65,8 @@ impl fmt::Display for MetricValue {
 /// Why a scenario cannot be smoked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SmokeError {
-    /// The scenario's kind has no offline run face yet (the undelivered
-    /// scenario kinds: cross-cell, reconnect, long-stability).
+    /// The scenario's kind names no offline run face (an unknown kind,
+    /// or one whose face is not delivered yet).
     Unsupported {
         /// The scenario name that named no known kind.
         name: String,
@@ -101,6 +104,12 @@ pub enum SmokeRun {
     Steady(SteadyLedger),
     /// The dense AOI run's record.
     Dense(DenseAoiLedger),
+    /// The cross-cell run's record.
+    CrossCell(CrossingLedger),
+    /// The reconnect run's record.
+    Reconnect(ReconnectLedger),
+    /// The long-stability run's record.
+    LongStability(crate::long_stability::LongStabilityLedger),
 }
 
 /// Clamp a saved scenario to the smoke envelope: the concurrency is the
@@ -164,6 +173,21 @@ pub fn run_face(scenario: &Scenario) -> Result<SmokeRun, SmokeError> {
             scenario.fixed_seed,
         ))),
         "dense-aoi" => Ok(SmokeRun::Dense(run_dense_aoi(scenario, 5.0, 25.0))),
+        "cross-cell" => Ok(SmokeRun::CrossCell(run_cross_cell(
+            scenario,
+            fd_limit,
+            scenario.fixed_seed,
+        ))),
+        "reconnect" => Ok(SmokeRun::Reconnect(run_reconnect(
+            scenario,
+            fd_limit,
+            scenario.fixed_seed,
+        ))),
+        "long-stability" => Ok(SmokeRun::LongStability(run_long_stability(
+            scenario,
+            fd_limit,
+            scenario.fixed_seed,
+        ))),
         other => Err(SmokeError::Unsupported {
             name: other.to_string(),
         }),
@@ -231,12 +255,70 @@ pub fn smoke_metrics(run: &SmokeRun) -> Vec<(String, MetricValue)> {
                 ("max_visible".to_string(), int(max_visible as i64)),
             ]
         }
+        SmokeRun::CrossCell(ledger) => {
+            let set_out = ledger.tracks.len() as i64;
+            vec![
+                ("bots_set_out".to_string(), int(set_out)),
+                (
+                    "crossings_completed".to_string(),
+                    int(ledger.crossings_completed() as i64),
+                ),
+                (
+                    "crossing_success_rate".to_string(),
+                    MetricValue::Float(ledger.crossing_success_rate()),
+                ),
+            ]
+        }
+        SmokeRun::Reconnect(ledger) => {
+            let dropped = ledger.tracks.len() as i64;
+            vec![
+                ("bots_dropped".to_string(), int(dropped)),
+                (
+                    "recoveries_completed".to_string(),
+                    int(ledger.recoveries_completed() as i64),
+                ),
+                (
+                    "mean_recovery_ticks".to_string(),
+                    MetricValue::Float(ledger.mean_recovery_ticks()),
+                ),
+                (
+                    "sample_period".to_string(),
+                    MetricValue::F32(ledger.sample_period),
+                ),
+            ]
+        }
+        SmokeRun::LongStability(ledger) => {
+            // The reproducible face only: the soak's schedule and holding
+            // rate. The wall-clock resource numbers travel through the
+            // ledger's `resource_report_entries` into the saved report.
+            vec![
+                (
+                    "bots_online".to_string(),
+                    int(ledger.online.last().copied().unwrap_or(0) as i64),
+                ),
+                ("ticks".to_string(), int(ledger.window_ticks as i64)),
+                (
+                    "sampling_period_secs".to_string(),
+                    MetricValue::Float(ledger.resource_period.as_secs_f64()),
+                ),
+                (
+                    "resource_sample_count".to_string(),
+                    int(ledger.samples.len() as i64),
+                ),
+                (
+                    "min_online_ratio".to_string(),
+                    MetricValue::Float(ledger.min_online_ratio()),
+                ),
+            ]
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::ReportValue;
+    use crate::resource::CPU_METRIC_DEF;
     use crate::scenario::AccountPool;
     use std::path::Path;
 
@@ -326,7 +408,14 @@ mod tests {
     /// pass records the same metrics — the failure that re-runs.
     #[test]
     fn the_saved_kinds_smoke_green_and_reproduce() {
-        for name in ["login-hurricane", "steady-move", "dense-aoi"] {
+        for name in [
+            "login-hurricane",
+            "steady-move",
+            "dense-aoi",
+            "cross-cell",
+            "reconnect",
+            "long-stability",
+        ] {
             let saved = saved(name);
             let (capped, run) =
                 run_smoke(&saved, &caps()).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -387,19 +476,95 @@ mod tests {
         assert!((as_float(find(&metrics, "avg_visible")) - 3.0).abs() < 1e-12);
     }
 
-    /// A scenario kind with no offline run face is refused by name — the
-    /// saved cross-cell file parses, but nothing can run it yet.
+    /// The cross-cell metrics name the fleet that set out, the crossings
+    /// that completed, and the acceptance rate — the number the scenario
+    /// exists to report. The smoke window is far too short to walk the
+    /// 600-unit span, so every bot sets out and none completes; the rate
+    /// over an empty numerator is still 0.0.
+    #[test]
+    fn the_cross_cell_metrics_report_the_success_rate() {
+        let small = scenario("cross-cell", 4, 3);
+        let (_, run) = run_smoke(&small, &caps()).expect("smoke");
+        let metrics = smoke_metrics(&run);
+        assert_eq!(find(&metrics, "bots_set_out"), &MetricValue::Int(4));
+        assert_eq!(find(&metrics, "crossings_completed"), &MetricValue::Int(0));
+        assert!(as_float(find(&metrics, "crossing_success_rate")).abs() < 1e-12);
+    }
+
+    /// The reconnect metrics name the bots dropped, the recoveries that
+    /// completed, and the mean recovery length — the statistic the scenario
+    /// exists to report. With the saved 300s window clamped to the smoke
+    /// budget the drop/relogin/reply floor of two mini-ticks applies to
+    /// every bot.
+    #[test]
+    fn the_reconnect_metrics_report_the_recovery_length() {
+        let small = scenario("reconnect", 4, 3);
+        let (_, run) = run_smoke(&small, &caps()).expect("smoke");
+        let metrics = smoke_metrics(&run);
+        assert_eq!(find(&metrics, "bots_dropped"), &MetricValue::Int(4));
+        assert_eq!(find(&metrics, "recoveries_completed"), &MetricValue::Int(4));
+        assert!((as_float(find(&metrics, "mean_recovery_ticks")) - 2.0).abs() < 1e-12);
+    }
+
+    /// The long-stability smoke lines carry the soak's reproducible
+    /// schedule; the wall-clock resource half is saved through the
+    /// ledger's report entries — the series, the peak and the metric
+    /// definitions, the numbers the scenario exists to save.
+    #[test]
+    fn the_long_stability_metrics_save_the_resource_use() {
+        let small = scenario("long-stability", 4, 3);
+        let (_, run) = run_smoke(&small, &caps()).expect("smoke");
+        let metrics = smoke_metrics(&run);
+        assert_eq!(find(&metrics, "bots_online"), &MetricValue::Int(4));
+        assert_eq!(find(&metrics, "ticks"), &MetricValue::Int(30));
+        assert_eq!(
+            find(&metrics, "resource_sample_count"),
+            &MetricValue::Int(8)
+        );
+        assert!((as_float(find(&metrics, "min_online_ratio")) - 1.0).abs() < 1e-12);
+
+        let SmokeRun::LongStability(ledger) = &run else {
+            panic!("the long-stability kind dispatched elsewhere");
+        };
+        let saved = ledger.resource_report_entries();
+        let saved_find = |key: &str| {
+            saved
+                .iter()
+                .find(|entry| entry.key == key)
+                .map(|entry| &entry.value)
+                .unwrap_or_else(|| panic!("no {key} entry"))
+        };
+        assert_eq!(saved_find("resource_sample_count"), &ReportValue::Int(8));
+        assert!(
+            matches!(saved_find("peak_rss_kib"), ReportValue::Int(kib) if *kib > 0),
+            "the process has a resident size"
+        );
+        assert_eq!(
+            saved_find("cpu_metric_def"),
+            &ReportValue::Str(CPU_METRIC_DEF.to_string())
+        );
+        assert_eq!(
+            match saved_find("rss_kib_series") {
+                ReportValue::List(items) => items.len(),
+                _ => 0,
+            },
+            8
+        );
+    }
+
+    /// A scenario kind with no offline run face is refused by name — an
+    /// unknown kind parses, but nothing can run it.
     #[test]
     fn an_undelivered_kind_is_refused_by_name() {
-        let saved = saved("cross-cell");
-        let error = run_smoke(&saved, &caps()).expect_err("unsupported kind ran");
+        let unknown = scenario("no-such-face", 4, 3);
+        let error = run_smoke(&unknown, &caps()).expect_err("unsupported kind ran");
         assert_eq!(
             error,
             SmokeError::Unsupported {
-                name: "cross-cell".to_string()
+                name: "no-such-face".to_string()
             }
         );
-        assert!(error.to_string().contains("cross-cell"));
+        assert!(error.to_string().contains("no-such-face"));
     }
 
     /// A face that would not reproduce is refused by name — the second

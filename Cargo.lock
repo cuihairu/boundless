@@ -120,6 +120,7 @@ dependencies = [
  "physics",
  "regex",
  "resources",
+ "terrain",
 ]
 
 [[package]]
@@ -1004,6 +1005,13 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "launcher"
+version = "0.1.0"
+dependencies = [
+ "resources",
 ]
 
 [[package]]
@@ -2199,6 +2207,8 @@ dependencies = [
 name = "test-support"
 version = "0.1.0"
 dependencies = [
+ "asset-pipeline",
+ "chunk",
  "foundation",
  "libc",
  "platform",
