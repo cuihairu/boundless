@@ -19,7 +19,7 @@
 | `math` | `crates/foundation` | 同上 | `Matrix`/`Vector*` 等（BW-01） |
 | `network` | `crates/mercury` | 内联（`crates/mercury/src/*`，323 测） | 流编解码 5/5（BW-01-02）；`platform::{interface,socket}` 面在禁区分块 |
 | `entitydef` | `crates/entitydef` | `crates/entitydef/tests/*`（3 文件）+ 内联（238 测） | BW-04 全勾 |
-| `entitydef_script` | `crates/entitydef` | 同上 | Python 绑定面 |
+| `entitydef_script` | `crates/entitydef` | 同上 | **部分**：defs 解析/存储面；`BigWorld.Entity/Base/Proxy` 脚本类型与 entity-script 导入面未落地（entitydef 无 python-host 依赖，BW-16-03-02 真卡点） |
 | `pyscript` | `crates/python-host` | 内联（145 测，含 62 场景 out-of-process） | BW-03-01 全勾 |
 | `script` | `crates/python-host` | 同上 | `Script::init` 序列（BW-03） |
 | `resmgr` | `crates/resources` | 内联（`crates/resources/src/*`，212 测） | `BWResource`/`DataSection`（BW-01-04） |
@@ -58,35 +58,66 @@ BW-00-03-05）承载：
 | `plugin_system`（tools） | `crates/plugin-host` | `crates/plugin-host/tests/*`（1 文件）+ 内联 | `PluginLoader` 移植（BW-13-06-03） |
 | `client`（`bwclient`） | `crates/client` | 内联 | BW-11（窗口/设备/渲染后端，`render/` 建模参考 `IDirect3DDevice9` 生命周期） |
 | `assetprocessor`/`batch_compiler`（tools） | `crates/asset-pipeline` | 内联（`asset_compiler.rs`/`batch_compiler.rs`/`task_processor.rs` 等，62 测） | BW-13-01-01/02/03 已由 tools 席位勾 |
+| `res_packer`（tools） | `crates/asset-pipeline/src/res_packer.rs` | 内联（packers/`PackedSection::convert`/CLI 面） | BW-13（BW-16-04-02 的工具族消费面） |
+
+### 1.4 本次刷新入库（2026-11-25，自 §2 迁入）
+
+| 原版目标 | 新版模块 | 测试路径 | 备注 |
+|---|---|---|---|
+| `terrain` | `crates/terrain` | 内联（92 测） | BW-10-02/03（`EditorTerrainBlock2`/`TerrainSettings`） |
+| `physics2` | `crates/physics` | 内联（91 测） | `WorldTriangle` 等（BW-14-02-04） |
+| `scene`/`chunk_scene_adapter` | `crates/scene` | 内联（38 测） | BW-13-06-04（`7f06848`，11 模块 100%） |
+| `compiled_space` | `crates/compiled-space` | 内联（138 测） | `space_converter` 的 compiled-space 写面 |
+| `space`（lib/chunk space 面） | `crates/chunk/src/space.rs` | 内联（chunk lib 167 测） | BW-10-01（`ChunkSpace`/焦点网格/blur-focus 泵） |
+| `waypoint` | `crates/waypoint` | 内联（105 测） | BW-10-04/05（两层检索，真机复测 `643c2b6`） |
+| `waypoint_generator` | `crates/waypoint-gen` | 内联（87 测） | navgen 生成面（girth workflow/flood/view，`977f555`） |
+| `navgen` | `crates/asset-pipeline/src/navmesh_processor.rs` + `crates/waypoint-gen` | 内联（`79f47c4`） | **部分**：生成/锁块/缓存处理机在树；Windows MFC 入口外壳未建（真卡点=无 EL7 binary，BW-13-02-05）；OpenGL 预览后端见 BW-15-06-01 |
+| `bots` | `crates/load` + `apps/bots` | load 内联（150 测）+ `apps/bots` | BW-10-07-05/06（`2fd88e4`/`7560866`）；scenario runner（cross-cell/reconnect/long-stability）归 lane/bw17-load（BW-17-02-06..08） |
+| `message_logger` | `crates/message_logger` | 内联（160 测） | BW-12 |
+| `bw_profile` | `crates/profiler` | 内联（43 测） | BW-12-03（帧/计数器兼容层 + `_bw_profile`） |
+| `clear_auto_load`/`consolidate_dbs`/`remove_db`/`snapshot_helper`/`sync_db`/`transfer_db` | `crates/db/src/tools/*.rs`（七件已声明已编译） | 内联（clear_auto_load 28 测/remove_db 12 测/consolidate 74 测等） | BW-09-05 簇；顶层散文件五份孤儿归主席清理 |
+| `urlrequest` | `crates/python-host/src/urlrequest.rs` | 内联 | BW-09 |
+| `jit_compiler`/`offline_processor`/`resourcechecker` | `crates/asset-pipeline/src/{jit_compiler,offline_processor,resource_checker}.rs` | 内联 | BW-13 |
+| `particle`/`camera`/`post_processing`/`web_render`（面） | `crates/client/src/{particle,camera,post_processing,web_render}.rs` | client 内联（857 测） | BW-11（`c5a70f6` 合入）；`web_render` 等三方 SDK 集成点在 `conditional_integrations.rs` 登记缺席（BW-11 SDK 矩阵） |
+| 编辑器核（`modeleditor_core`/`worldeditor` 核面） | `asset-pipeline::{model_editor,material_editor}` + `chunk::{chunk_editor,chunk_placer,snaps,undoredo,space_publish}` + `client::{animation_editor,particle_editor,simple_gui}` | 内联 | **部分**：编辑核面在树；GUI 外壳二进制未建（BW-15-03 Windows 构建入口） |
+| `common`（tools/common） | `chunk::undoredo` + `asset_pipeline::navmesh_processor` 等按面散布 | 内联 | **部分**：按面落位，无独立 crate |
+
+### 1.5 他席在途（并轨后补登）
+
+| 原版目标 | 状态 |
+|---|---|
+| `animationexporter` | `origin/main` `95a6df2`（1791 行 19 测）与 lane/bw15-platform `e299957`（2995 行+验收 2 测）同面双交付，主席择一并轨 |
+| `visualexporter`/`mayavisualexporter` | 他席交付（`f4bd3b2`/`c37ba81`），未并本树 |
+| `bw_world_machine_import` | 他席交付（`8322e9d`），未并本树 |
+| `launcher` | 他席交付（`c784ed3`，100.00%），未并本树 |
 
 ## 2. 未建目标（有归属，无模块/测试路径）
 
 | 原版目标 | 计划归属 | 解锁项 | 现状 |
 |---|---|---|---|
-| `appmgr`/`memhook`/`moo`/`romp`/`chunk_loading`/`chunk_scene_adapter`/`compiled_space`/`model`/`particle`/`speedtree`/`terrain`/`post_processing`/`scaleform`/`fmodsound`/`web_render`/`ual`/`gizmo`/`guimanager`/`guitabs`/`controls`/`input`/`camera`/`duplo`/`scene`/`space`/`physics2`/`navigation_recast`/`open_automate`/`emptyvoip`/`connection`/`connection_model`/`waypoint`/`waypoint_generator`/`visual_manipulator`/`bwentity`/`delegate_interface`/`ashes` | `crates/`（客户端/渲染/工具库） | BW-11 / BW-13 | 未建（`moo` 的设备生命周期面已由 `crates/client/src/render` 建模，完整渲染器待 BW-11） |
-| `modeleditor`/`worldeditor`/`worldeditor_ui`/`particle_editor`/`modeleditor_core`/`editor_shared` | `crates/` + `apps/editor` | BW-13（编辑器立项） | 未建；`apps/` 现仅 server（BW-16-04-02/03 同卡） |
-| `navgen` | `crates/`（导航） | BW-13 | 未建；OpenGL 预览后端见 BW-15-06-01 |
-| `visualexporter`/`animationexporter`/`mayavisualexporter` | `crates/`（导出器） | BW-13-02 | 未建；宿主矩阵见 BW-15-06-02 |
-| `bots` | `crates/`（Bots） | BW-12-04 | 未建 |
-| `bwmachined` | `crates/`（machined） | BW-15-02 | 未建；RPM 基线见 BW-15-02-05 |
-| `message_logger`/`bw_profile` | `crates/`（工具） | BW-15-02 | 未建 |
-| `clear_auto_load`/`consolidate_dbs`/`remove_db`/`snapshot_helper`/`sync_db`/`transfer_db` | `crates/`（DB 工具） | BW-09 | 未建 |
-| `bw_lsp`/`jit_compiler`/`bw_world_machine_import`/`offline_processor`/`resourcechecker`/`visual_studio`/`exporter_common`/`common` | `crates/`（工具） | BW-13 | 未建 |
-| `urlrequest` | `crates/` | BW-09 | 未建 |
+| `appmgr`/`moo`/`romp`/`chunk_loading`/`model`/`speedtree`/`ual`/`gizmo`/`guimanager`/`guitabs`/`controls`/`input`/`duplo`/`navigation_recast`/`connection`/`connection_model`/`bwentity`/`delegate_interface`/`visual_manipulator`/`ashes` | `crates/`（客户端/渲染/工具库） | BW-11 / BW-13 | 未建（`moo` 的设备生命周期面已由 `crates/client/src/device` 等建模，完整渲染器待 BW-11；`navigation_recast` 用户挂起 BW-10-05-03；三方 SDK 面 `fmodsound`/`scaleform`/`emptyvoip`/`memhook`/`open_automate` 在 `conditional_integrations.rs` 登记缺席） |
+| `modeleditor`/`worldeditor`/`worldeditor_ui`/`particle_editor`/`editor_shared`（GUI 外壳） | `apps/editor` | BW-15-03（Windows 构建入口） | 外壳未建；编辑核面已入库（§1.4） |
+| `bwmachined` | `crates/`（machined） | BW-15-02 | 未建；消息契约面 `contracts/src/machined.rs` 在树；RPM 基线见 BW-15-02-05 |
+| `bw_lsp`/`visual_studio`/`exporter_common` | `crates/`（工具） | BW-13 | 未建 |
 
 ## 3. 覆盖与卡点
 
-- **已合入**：18 个库目标（含 `chunk`）、8 个角色目标（单二进制面）、3 个扩展目标（模块面）、
-  5 个应用/工具（`client`/`process_defs`/`plugin_system`/`assetprocessor`/`batch_compiler`）——
-  **均已有模块与测试路径**（§1）。
-- **未建**：38 个客户端/渲染/工具库（含 `appmgr`/`memhook`/`urlrequest`）、
-  5 个编辑器目标、3 个导出器、Bots、machined、日志/DB 工具、其余工具——
-  **无模块与测试路径**（§2），各随 BW-09/11/12-04/13 立项解锁。
-- **部分**：`db`（后端矩阵）、3 个扩展（扩展内容）——模块面已有，内容/后端待解锁项。
+- **已合入（§1.1–1.4）**：库目标与工具面大半在树并有测试路径——`cstdmf`/`math`/`network`/
+  `entitydef`/`pyscript`/`script`/`resmgr`/`asset_pipeline`/`server`/`chunk`/`testing`/`db`（部分）/
+  `terrain`/`physics2`/`scene`/`compiled_space`/`space`/`waypoint`/`waypoint_generator`/`navgen`（部分）/
+  `bots`/`message_logger`/`bw_profile`/DB 六工具/`urlrequest`/`jit_compiler`/`offline_processor`/
+  `resourcechecker`/`res_packer`/`particle`/`camera`/`post_processing`/`web_render`（面）/编辑器核（部分）；
+  8 个角色目标（单二进制面）、3 个扩展目标（模块面）、`client`/`process_defs`/`plugin_system`。
+- **他席在途（§1.5）**：`animationexporter`（双交付待主席择一）、`visualexporter`/`mayavisualexporter`/
+  `bw_world_machine_import`/`launcher`——并轨后补登。
+- **未建（§2）**：客户端/渲染/工具库残余、编辑器 GUI 外壳、machined daemon、
+  `bw_lsp`/`visual_studio`/`exporter_common`——**无模块与测试路径**，各随 BW-11/BW-13/BW-15 立项解锁。
+- **部分**：`db`（后端矩阵）、3 个扩展（扩展内容）、`entitydef_script`（脚本类型）、
+  `navgen`（Windows 入口）、编辑器核（GUI 外壳）——模块面已有，缺口见各行。
 
-**卡点**：§2 目标的「模块与测试路径」依赖对应席位立项（BW-09/11/12-04/13）；§1.2
-角色业务逻辑依赖服务端运行时（BW-06..10）。本项按「已合入部分勾证据、未建部分记
-归属与解锁项」的登记面交付，验收「每个目标有模块与测试路径」待 §2 全部立项后闭合。
+**卡点**：§2 目标的「模块与测试路径」依赖对应席位立项（BW-11/BW-13/BW-15）；§1.2
+角色业务逻辑依赖服务端运行时（BW-06..10）；§1.5 待主席并轨。验收「每个目标有模块与
+测试路径」待 §2 残余与 §1.5 并轨后闭合。
 
 ## 4. 边界
 
