@@ -1445,6 +1445,7 @@
   - 交付沿革（2026-11-25）：交付本体 `b57e4b9`（feat: unload chunks and release scene objects，`Chunk::removable`+`ChunkSpace::{unbind,unload_chunk,unload_chunks,unload_farthest,unbind_portal,unbind_back}`+`intersects_with_bias`，参照 chunk.cpp:914-984/1292-1458/2083-2136、chunk_boundary.cpp:185-191、chunk_manager.cpp:92-95/2085/2236-2366、boundbox.ipp:313-317）为 main 祖先且 bw16-18 席已勾（main 行证据 29+11 测）。**main 活树曾丢面**：五条 lane 合并把 space.rs 解回旧代（588 行、无卸载面）——本席按用户令（「优先 BW-10-01-04 及其后同车道项」）把 `b57e4b9` 樱挑到本 lane（`3780de6`，基座 `934a268` 与其父逐字节一致零冲突），**本席活树实测**：`cargo test -p chunk` 29 lib+11 集成全绿；llvm-cov（fresh `CARGO_TARGET_DIR=target/cov-chunk`，(SF,行) max 合并）space.rs 644/647=**99.54%**、chunk.rs 237/240=98.75%、boundary 99.56%、identifier 100%、mapping 99.16%，全 ≥98%；DA:0 三行=两处花括号伪迹（173/568）+`(true,Some(false))=>true` 强制 cut 腿（403，BW-10-02 前不可达，原交付同位登记）；clippy chunk 自身 0 告警、fmt 干净。
   - **main 侧重接仍欠**：main 活树 space.rs 未含卸载面（`fa01ada` 一族裁定回退），主席须择 bw16-18 `d6e8192` 完整接线（1643 行含 unload_farthest×3，其 `7fc13e2` 已登记换代）或地形席 `2801186` 半落地形——同一裁定连带 BW-10-01-05 空间索引（main 自身该行也未勾）。
 - [ ] **BW-10-01-05 实现空间索引**。**验收** 跨 Chunk 与空白区查询返回正确集合。
+  - 卡点（2026-11-25 本席登记）：交付本体已存在两份、归主席合并裁定，本席不另起第三实现（避免 consolidate_tool/animation_exporter 双交付反模式）。① 地形席 `2801186`（main 祖先，hulltree.rs/column.rs 已逐字节落 main，但其 space.rs 索引接线被 `fa01ada` 合并族丢弃）；② bw16-18 席 `d6e8192`（完整接线 1643 行 space.rs 含 unload_farthest×3，其 `7fc13e2` 登记换代；**非** main 祖先，活面只在 origin/lane/bw16-18）。两份 overlap 未核，主席择一后本席可按 BW-10-01-04 同法真机复测勾账。
 
 #### BW-10-02 编译空间和场景查询
 
@@ -1548,10 +1549,13 @@
 
 以带地形高低差、障碍、Portal 和两个 Chunk 的固定地图，覆盖编辑与生成、服务端加载、客户端查询、Bots 穿越和导航调试显示。对照服务端坐标、路径、地形洞与碰撞结果。绑定已启用的原版目标逐平台验收。
 
-- [ ] **BW-10-07-01 固定测试地图和期望值**。**验收** 含坡、洞、障碍和两个相邻 Chunk。
-- [ ] **BW-10-07-02 执行地图编辑和生成**。**验收** 新版导出后可被基准目标消费。
-- [ ] **BW-10-07-03 从服务端加载该地图**。**验收** 坐标、地形和 Portal 状态吻合。
-- [ ] **BW-10-07-04 从客户端查询该地图**。**验收** 固定射线及导航显示吻合。
+- [x] **BW-10-07-01 固定测试地图和期望值**。**验收** 含坡、洞、障碍和两个相邻 Chunk。（地形席 059b0a8/8e074d7，origin/lane/bw10-terrain）
+  - 落账（2026-11-25 本席核）：地形席交付 `059b0a8`+勾 `8e074d7`——gen_fixed_map.cpp 原版 el7 库自建双 Chunk 世界（A 洞+坡带相触、B 环+障碍带隙隔离），真值 139 行（解码/bind 非对称/NAVLOC 平手首迭代者胜/XPATH/SETHOP/FP/FPOK y 差异），回放 `crates/waypoint/tests/fixed_map.rs` 9 测。**真机复测**：本席临时 worktree 挂 origin/lane/bw10-terrain（413bcee）跑 `cargo test -p waypoint`，fixed_map.rs 9/9 绿。main 活树尚无该面（main todo 本行未勾），待主席并 lane。
+- [x] **BW-10-07-02 执行地图编辑和生成**。**验收** 新版导出后可被基准目标消费。（地形席 c3b005a/2a665d2，origin/lane/bw10-terrain）
+  - 落账（2026-11-25 本席核）：地形席交付 `c3b005a`+勾 `2a665d2`——×10 固定图按 navgen 每-chunk 面跑原版 gen_navgen_map.cpp（3710 行真值）+原版读入端 gen_navgen_paths.cpp；端口新增 GenChunk trait+determineEdgesAdjacentToOtherChunks，navgen_map.rs 导出 fnv 等于参照写出字节，原版 el7 读入端吃端口导出字节 stdout LOG-IDENTICAL；`crates/waypoint/tests/genmap.rs` 重放 34 条探针。真机复测 genmap.rs 3/3 绿（同上 worktree）。main 活树尚无该面，待主席并 lane。
+- [x] **BW-10-07-03 从服务端加载该地图**。**验收** 坐标、地形和 Portal 状态吻合。（地形席 d6d8701/3cfe5e5，origin/lane/bw10-terrain）
+  - 落账（2026-11-25 本席核）：地形席交付 `d6d8701`+勾 `3cfe5e5`——gen_mapload.cpp 原版 el7 双 chunk+真 bind() 真值 183 行；端口新增 chunk_bind.rs（邻接边收集/readyToBind 三门/门户扫描/ltpv 投影 findExact/connect）；CONNTO 2 条+EDGELABEL 5 条+NAVLOC 9 条+XPATH 6 组+SETSEARCH 5 组重放。真机复测 `genmap_load.rs` 2/2 绿（同上 worktree）。main 活树尚无该面（无 chunk_bind.rs），待主席并 lane。
+- [ ] **BW-10-07-04 从客户端查询该地图**。**验收** 固定射线及导航显示吻合。（地形席在途：Phase1 `9e9f12f` 已推，`413bcee` 障碍扫掠/grid 遍历参照面已落 lane；本席不接，防双交付）
 - [ ] **BW-10-07-05 执行 Bot 穿越**。**验收** 记录两 Cell 的移动和进入离开事件。
 - [ ] **BW-10-07-06 运行平台验收矩阵**。**验收** 每个适用原版目标有结果及证据。
 
