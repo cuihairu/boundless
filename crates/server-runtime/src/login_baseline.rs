@@ -195,6 +195,36 @@ fn feed(
     completed
 }
 
+/// The queueing seam the comparison harness varies. `Default` reproduces the
+/// shipped flood shape exactly; every knob maps onto a face the flood already
+/// runs, so a rerun under another tuning is the same arrivals through the
+/// same gates with one policy moved.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoginTuning {
+    /// The rate-limit capacity admitted per window.
+    pub rate_limit: u32,
+    /// The rate-limit window width, in seconds.
+    pub rate_limit_seconds: f64,
+    /// Whether a gate-rejected attempt still occupies the cached-request
+    /// record. The shipped shape records it, which leaves a phantom
+    /// in-flight record behind: a later arrival at that address is then
+    /// ignored (`IgnoreInProgress`) until the record resolves, even though
+    /// no login ever proceeded. The tuned comparison stops recording
+    /// gate-rejected attempts, so only an attempt that actually passed the
+    /// gates can hold the address.
+    pub cache_rejected_attempts: bool,
+}
+
+impl Default for LoginTuning {
+    fn default() -> Self {
+        Self {
+            rate_limit: RATE_LIMIT,
+            rate_limit_seconds: RATE_LIMIT_SECONDS,
+            cache_rejected_attempts: true,
+        }
+    }
+}
+
 /// Run the seeded login-and-download baseline once.
 ///
 /// The flood admits arrivals on a fixed LCG schedule into the real login
@@ -203,10 +233,16 @@ fn feed(
 /// generated resource through the real server and client download faces with
 /// a fixed per-tick bundle budget.
 pub fn run_login_baseline(seed: u64) -> LoginBaselineLedger {
+    run_login_baseline_with(seed, LoginTuning::default())
+}
+
+/// Run the seeded flood under an explicit queueing tuning. The default
+/// tuning reproduces [`run_login_baseline`] bit for bit.
+pub fn run_login_baseline_with(seed: u64, tuning: LoginTuning) -> LoginBaselineLedger {
     let mut config = LoginGateConfig::new();
     config.allow_login = true;
-    config.login_rate_limit = RATE_LIMIT;
-    config.rate_limit_duration_seconds = RATE_LIMIT_SECONDS;
+    config.login_rate_limit = tuning.rate_limit;
+    config.rate_limit_duration_seconds = tuning.rate_limit_seconds;
 
     let mut rng = seed;
     let mut next_index = || {
@@ -215,7 +251,7 @@ pub fn run_login_baseline(seed: u64) -> LoginBaselineLedger {
     };
 
     let mut bans = IpBanMap::new();
-    let mut limiter = RateLimiter::new(config.login_rate_limit);
+    let mut limiter = RateLimiter::new(tuning.rate_limit);
     let mut overload = SystemOverload::new();
     let mut cache = LoginRequestCache::new();
     let mut pending = PendingLogins::new_default();
@@ -291,14 +327,18 @@ pub fn run_login_baseline(seed: u64) -> LoginBaselineLedger {
         if cache.is_reattempt(addr) {
             reattempts += 1;
         }
-        let request = cache.entry(addr);
-        request.set_params(params.clone());
-        if status == 0 {
-            request.set_data(
-                CachedReply::new(addr, regenerate_session_key(now + 1)),
-                "welcome",
-                now + 1,
-            );
+        // The record is only occupied when the shipped shape keeps rejected
+        // attempts cached, or when this attempt actually passed the gates.
+        if tuning.cache_rejected_attempts || status == 0 {
+            let request = cache.entry(addr);
+            request.set_params(params.clone());
+            if status == 0 {
+                request.set_data(
+                    CachedReply::new(addr, regenerate_session_key(now + 1)),
+                    "welcome",
+                    now + 1,
+                );
+            }
         }
         let _ = matches!(cached_decision, ResentCachedDecision::ResentSuccess);
         cache.prune_if_over_bound(now);
@@ -474,6 +514,14 @@ mod tests {
         assert_eq!(
             run_login_baseline(SCENARIO_SEED),
             run_login_baseline(SCENARIO_SEED)
+        );
+    }
+
+    #[test]
+    fn the_default_tuning_reproduces_the_shipped_ledger() {
+        assert_eq!(
+            run_login_baseline(SCENARIO_SEED),
+            run_login_baseline_with(SCENARIO_SEED, LoginTuning::default())
         );
     }
 
