@@ -25,10 +25,24 @@ use crate::entity_creator::{BaseEntity, EntityType, PropValue};
 pub const BACKUP_SEED: u64 = 161_803;
 /// The fleet the baseline streams.
 pub const FLEET: u32 = 48;
-/// The bases the sender backs up per tick.
-pub const BACKUP_SLICE: usize = 8;
-/// The archiver cycle the recovery is measured against.
-pub const ARCHIVE_PERIOD: usize = 8;
+/// The queueing and pacing seam the comparison harness varies. `Default`
+/// reproduces the shipped baseline exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BackupTuning {
+    /// The bases the sender backs up per tick.
+    pub backup_slice: usize,
+    /// The archiver cycle the recovery is measured against.
+    pub archive_period: usize,
+}
+
+impl Default for BackupTuning {
+    fn default() -> Self {
+        Self {
+            backup_slice: 8,
+            archive_period: 8,
+        }
+    }
+}
 
 /// The type every entity in the fleet carries.
 pub fn fleet_type() -> EntityType {
@@ -131,6 +145,12 @@ fn fleet_entity(index: u32, rng: &mut u64) -> BaseEntity {
 /// the archiver re-persists the restored entities a slice per tick until
 /// the store holds them all.
 pub fn run_backup_baseline(seed: u64) -> BackupBaselineLedger {
+    run_backup_baseline_with(seed, BackupTuning::default())
+}
+
+/// Run the seeded baseline under an explicit tuning. The default tuning
+/// reproduces [`run_backup_baseline`] bit for bit.
+pub fn run_backup_baseline_with(seed: u64, tuning: BackupTuning) -> BackupBaselineLedger {
     let ty = fleet_type();
     let lookup = {
         let name = ty.name.clone();
@@ -168,7 +188,7 @@ pub fn run_backup_baseline(seed: u64) -> BackupBaselineLedger {
     while !queue.is_empty() {
         ledger.backup_ticks += 1;
         let mut tick_bytes = 0usize;
-        for base in queue.drain(..BACKUP_SLICE.min(queue.len())) {
+        for base in queue.drain(..tuning.backup_slice.min(queue.len())) {
             let mut stream = BinaryStream::new();
             write_backup_data(base, &mut stream);
             let data = stream.as_bytes().to_vec();
@@ -190,7 +210,7 @@ pub fn run_backup_baseline(seed: u64) -> BackupBaselineLedger {
     }
     assert_eq!(
         ledger.backup_ticks,
-        (FLEET as usize).div_ceil(BACKUP_SLICE) as u32,
+        (FLEET as usize).div_ceil(tuning.backup_slice) as u32,
         "the queue drains one slice per tick"
     );
 
@@ -224,7 +244,7 @@ pub fn run_backup_baseline(seed: u64) -> BackupBaselineLedger {
 
     // The recovery duration: the taking-over app's archiver re-persists the
     // restored entities a slice per tick until the store holds them all.
-    let mut archiver = Archiver::new(ARCHIVE_PERIOD);
+    let mut archiver = Archiver::new(tuning.archive_period);
     let mut store = ArchiveStore::new();
     while store.len() < ledger.persisted_entities {
         ledger.archive_recovery_ticks += 1;
@@ -272,6 +292,14 @@ mod tests {
         assert_eq!(
             run_backup_baseline(BACKUP_SEED),
             run_backup_baseline(BACKUP_SEED)
+        );
+    }
+
+    #[test]
+    fn the_default_tuning_reproduces_the_shipped_ledger() {
+        assert_eq!(
+            run_backup_baseline(BACKUP_SEED),
+            run_backup_baseline_with(BACKUP_SEED, BackupTuning::default())
         );
     }
 

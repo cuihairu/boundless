@@ -4,6 +4,7 @@ pub mod app;
 pub mod archiver;
 pub mod backup_baseline;
 pub mod backup_hash;
+pub mod backup_tuning;
 pub mod balance_baseline;
 pub mod base_backup;
 pub mod base_write_db;
