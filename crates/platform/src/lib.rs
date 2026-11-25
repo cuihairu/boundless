@@ -44,9 +44,9 @@ pub mod wakeup;
 pub mod file;
 
 /// Read-only memory mapping and dynamic-library lookup (BW-15-01-05).
-/// Unix only: `mmap(2)`/`dlopen`; the Windows `CreateFileMapping`/
-/// `LoadLibrary` backends land with the Windows work under BW-15-05.
-#[cfg(unix)]
+/// `mmap(2)`/`dlopen` on unix, `CreateFileMapping`/`LoadLibrary` on
+/// Windows; both spellings share one API so resource readers stay
+/// platform-agnostic.
 pub mod mmap;
 
 /// Signal syscalls and the `sigset_t` family, the sole landing point for
