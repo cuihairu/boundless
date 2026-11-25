@@ -578,14 +578,18 @@ fn frequent_call() {
             let Some(function) = function else {
                 continue;
             };
+            // The reference calls through `Script::ask(pCallback.newRef(),
+            // PyTuple_New(0))` (`script_frequent_tasks.cpp:44-46`) — an
+            // empty tuple allocated, passed and dropped for every task on
+            // every tick. The CPython zero-argument fast path reaches the
+            // same callable with the same (no) arguments without
+            // materializing the tuple; every other contract (a truthy
+            // result deregisters, a failing call prints and the task
+            // stays) is untouched.
+            //
             // SAFETY: the entry holds a live callable and the caller owns
             // the GIL.
-            let result = unsafe {
-                let arguments = capi::PyTuple_New(0);
-                let answer = capi::PyObject_CallObject(function.as_ptr(), arguments);
-                capi::dec_ref(arguments);
-                answer
-            };
+            let result = unsafe { capi::PyObject_CallNoArgs(function.as_ptr()) };
             if result.is_null() {
                 // `Script::ask` printed (`script.cpp:1208-1226`); the
                 // task's own log line only reaches the log, and the task
