@@ -9,6 +9,7 @@
 //! `ChunkWaypointSet`) is the chunk lane's face and stays out of this port.
 
 mod astar;
+mod chunk_bind;
 mod chunk_waypoint;
 mod chunk_waypoint_set;
 mod chunk_waypoint_set_data;
@@ -23,6 +24,7 @@ mod navloc;
 mod search_path_base;
 
 pub use astar::{AStar, AStarState};
+pub use chunk_bind::{BindChunk, BindPortal, BindSpace, find_exact};
 pub use chunk_waypoint::{
     ADJACENT_RANGE_END, ADJACENT_RANGE_START, ChunkWaypoint, ChunkWaypointVertexProvider, Edge,
     HEIGHT_RANGE_TOLERANCE, OTHER_CHUNK,

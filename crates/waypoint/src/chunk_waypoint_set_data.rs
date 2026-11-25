@@ -9,6 +9,7 @@
 //! truncation instead (the same registered divergence as the physics BSP
 //! decode).
 
+use super::chunk_bind::NeighbourEdge;
 use super::chunk_waypoint::{ChunkWaypoint, ChunkWaypointVertexProvider, Edge};
 use super::chunk_waypoint_set::{EdgeLabel, Portal};
 use super::{EdgeIndex, WaypointIndex};
@@ -164,6 +165,9 @@ pub struct ChunkWaypointSetData {
     pub(crate) chunk_id: Cell<Option<usize>>,
     /// `Chunk::isOutsideChunk` of the mounted chunk.
     pub(crate) outside_chunk: Cell<bool>,
+    /// `ChunkWaypointSet::neighbourEdges_`: the constructor's another-chunk
+    /// edge collection (see `chunk_bind.rs`).
+    pub(crate) neighbour_edges: RefCell<BTreeMap<EdgeIndex, NeighbourEdge>>,
 }
 
 impl ChunkWaypointSetData {
