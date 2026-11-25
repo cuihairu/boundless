@@ -12,10 +12,15 @@
 pub mod flood;
 pub mod generator;
 pub mod view;
+pub mod workflow;
 
 pub use flood::{AdjGridElt, FloodChunk, FloodPhysics, FloodProgress, MAX_HEIGHTS, WaypointFlood};
 pub use generator::WaypointGenerator;
 pub use view::{
     ADJ_ANOTHER_CHUNK, NAV_POLY_EDGE_ELT_SIZE, NAV_POLY_ELT_SIZE, NAV_POLY_SET_ELT_SIZE, NavVertex,
     NavView, as_binary, save_out_records,
+};
+pub use workflow::{
+    DropPhysics, FloodPhysicsLike, FloodStage, GirthSeed, GirthWorkflow, GirthWorkflowError,
+    NavmeshChunk, NavmeshProbe, TgaError, TgaHeader, compile_girths_list, generate_from_flood,
 };
