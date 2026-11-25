@@ -61,6 +61,16 @@ impl ParticleEditor {
         self.meta.load_str(xml, name)
     }
 
+    /// Save the document (`MetaParticleSystem::save` + `pDS->save()`): the
+    /// XML text a `load` (or the reference editor) reads back. `transient`
+    /// keeps the cached bounding boxes instead of recalculating them. The
+    /// host owns the file write, exactly like every other editor save.
+    pub fn save(&mut self, transient: bool) -> String {
+        let mut ds = resources::datasection::DataSection::new("root");
+        self.meta.save(&mut ds, transient);
+        ds.write_to_string()
+    }
+
     /// Reset to an empty document (`OnNewDocument`).
     pub fn new_document(&mut self) {
         self.meta = crate::particle::MetaParticleSystem::new();
