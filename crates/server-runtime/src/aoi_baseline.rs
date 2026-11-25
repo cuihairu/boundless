@@ -98,7 +98,7 @@ pub fn step_of(id: u32, tick: usize) -> (f32, f32) {
 }
 
 /// What one tick broadcast, and the churn behind it.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct TickLedger {
     /// Client messages the witness sent this tick.
     pub messages: usize,
@@ -112,10 +112,18 @@ pub struct TickLedger {
     pub leaves: usize,
     /// `CreateEntity` messages this tick (the creation burst).
     pub creates: usize,
-    /// The ids the seeing pass started this tick.
+    /// The ids the seeing pass started this tick, in callback order.
     pub started_ids: Vec<u32>,
+    /// The ids the seeing pass stopped this tick, in callback order.
+    pub stopped_ids: Vec<u32>,
+    /// The ids that entered the viewer's AoI this tick.
+    pub entered_ids: Vec<u32>,
+    /// The ids that left the viewer's AoI this tick.
+    pub left_ids: Vec<u32>,
     /// The ids the budget scheduler sent an entity update for.
     pub updated_ids: Vec<u32>,
+    /// The tick's bundle, in send order.
+    pub bundle: Vec<ClientMessage>,
 }
 
 /// The migration leg: handover, seed, convergence to the native set.
@@ -239,6 +247,12 @@ impl DenseAoi {
         Self::with_positions(viewer_pos, &positions, true)
     }
 
+    /// The field's current positions — the raw ground truth the
+    /// audit faces recompute the shipped state from.
+    pub fn positions(&self) -> &BTreeMap<u32, (f32, f32, f32)> {
+        &self.positions
+    }
+
     /// The seeing pass's target facts for the current positions.
     fn targets(&self) -> BTreeMap<u32, TargetFacts> {
         self.positions
@@ -328,7 +342,9 @@ impl DenseAoi {
             self.witness.remove_from_aoi(*id, false);
         }
         ledger.enters = arrivals.len();
+        ledger.entered_ids = arrivals.clone();
         ledger.leaves = departures.len();
+        ledger.left_ids = departures.clone();
         self.witness.flush_state_changes();
 
         // The seeing pass over the vision trigger's crossings, over the
@@ -375,8 +391,9 @@ impl DenseAoi {
                     ledger.starts += 1;
                     ledger.started_ids.push(who);
                 }
-                TrapCallback::StopSeeing { .. } => {
+                TrapCallback::StopSeeing { who } => {
                     ledger.stops += 1;
+                    ledger.stopped_ids.push(who);
                 }
                 _ => {}
             }
@@ -410,6 +427,7 @@ impl DenseAoi {
                 _ => None,
             })
             .collect();
+        ledger.bundle = bundle;
 
         self.seeing_ms += seeing.as_secs_f64() * 1_000.0;
         self.scheduling_ms += scheduling.as_secs_f64() * 1_000.0;

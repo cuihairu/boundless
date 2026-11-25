@@ -1,6 +1,7 @@
 //! BW-01 process bootstrap, configuration and the game tick.
 
 pub mod aoi_baseline;
+pub mod aoi_rerun;
 pub mod aoi_tuning;
 pub mod app;
 pub mod archiver;
