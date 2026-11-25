@@ -2195,6 +2195,8 @@ dependencies = [
 name = "test-support"
 version = "0.1.0"
 dependencies = [
+ "asset-pipeline",
+ "chunk",
  "foundation",
  "libc",
  "platform",
