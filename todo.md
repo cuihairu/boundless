@@ -2844,15 +2844,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付并勾行未进 main：bw14-script-host `a577c5c`+勾 `16b2e95`、bw15-platform 复测勾 `0ee331e`/`e631c72`（balance_baseline.rs 真 CellAppMgr 双相位，5 新测 171/171）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。他席已交付未进 main：bw14-script-host `fd21b51`+勾 `fa7fcde`（lifecycle_scenario.rs 迁移/关服/混部组合场景）、bw15-platform 复跑勾 `0407552`/`af9041f`（75+117 测+EL7 混部 5 腿真机）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席已交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（load/src/login_baseline.rs 三腿 hurricane 峰值/拒绝率/下载 tick 地板，155+1 绿）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席已交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -4408,15 +4408,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付并勾行未进 main：bw14-script-host `a577c5c`+勾 `16b2e95`、bw15-platform 复测勾 `0ee331e`/`e631c72`（balance_baseline.rs 真 CellAppMgr 双相位，5 新测 171/171）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。他席已交付未进 main：bw14-script-host `fd21b51`+勾 `fa7fcde`（lifecycle_scenario.rs 迁移/关服/混部组合场景）、bw15-platform 复跑勾 `0407552`/`af9041f`（75+117 测+EL7 混部 5 腿真机）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席已交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（load/src/login_baseline.rs 三腿 hurricane 峰值/拒绝率/下载 tick 地板，155+1 绿）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席已交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -5933,15 +5933,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付并勾行未进 main：bw14-script-host `a577c5c`+勾 `16b2e95`、bw15-platform 复测勾 `0ee331e`/`e631c72`（balance_baseline.rs 真 CellAppMgr 双相位，5 新测 171/171）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。他席已交付未进 main：bw14-script-host `fd21b51`+勾 `fa7fcde`（lifecycle_scenario.rs 迁移/关服/混部组合场景）、bw15-platform 复跑勾 `0407552`/`af9041f`（75+117 测+EL7 混部 5 腿真机）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席已交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（load/src/login_baseline.rs 三腿 hurricane 峰值/拒绝率/下载 tick 地板，155+1 绿）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席已交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -7458,15 +7458,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付并勾行未进 main：bw14-script-host `a577c5c`+勾 `16b2e95`、bw15-platform 复测勾 `0ee331e`/`e631c72`（balance_baseline.rs 真 CellAppMgr 双相位，5 新测 171/171）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。他席已交付未进 main：bw14-script-host `fd21b51`+勾 `fa7fcde`（lifecycle_scenario.rs 迁移/关服/混部组合场景）、bw15-platform 复跑勾 `0407552`/`af9041f`（75+117 测+EL7 混部 5 腿真机）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席已交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（load/src/login_baseline.rs 三腿 hurricane 峰值/拒绝率/下载 tick 地板，155+1 绿）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席已交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -9022,15 +9022,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付并勾行未进 main：bw14-script-host `a577c5c`+勾 `16b2e95`、bw15-platform 复测勾 `0ee331e`/`e631c72`（balance_baseline.rs 真 CellAppMgr 双相位，5 新测 171/171）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。他席已交付未进 main：bw14-script-host `fd21b51`+勾 `fa7fcde`（lifecycle_scenario.rs 迁移/关服/混部组合场景）、bw15-platform 复跑勾 `0407552`/`af9041f`（75+117 测+EL7 混部 5 腿真机）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席已交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（load/src/login_baseline.rs 三腿 hurricane 峰值/拒绝率/下载 tick 地板，155+1 绿）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席已交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
@@ -10547,15 +10547,15 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席 `e028fbf`：crates/server-runtime/src/cellappmgr_baseline.rs 三腿合成钟 harness 在 crate 内 `#[cfg(test)] #[path]` 挂进 cellappmgr.rs（Space.root/BspInternal 私有），①分配=零面积 sliver B+热点 A 经 inform_of_load EMA 12 步（bias 0.05）爬坡，balance 一步收敛 B.ymin=ENTITY_EDGE=4000 钉死每步 EMA/每轮 A/B 范围；②回收两臂=零面积 sliver 首轮 1 CellRemoval+兄弟升 Rect::unbounded()，实面积 cell 因 growing child A 的 chunk ghost margin（Space::load_balance 从 unbounded 重导范围→chunk_bounds 不含 inflate desired→fallback A.range，chunk_limit=A.ymax-500=3500）被钉在 4000 不回收，两面对照记录；③恢复=严格 now-lastHeard>timeout 检测钉 5000ms/4tick，死信广播+BaseAppMgr 报告+双 cell 树erase 后存活 cell 占 unbounded+最后 app 死触发受控关服；ESTIMATED_INITIAL_CELL_LOAD bump 归 create_space creation seam；证据页 docs/review/opt-05-01-01-cellappmgr-baseline.md+TSV 56 行 fixtures/load-hotspot/cellappmgr-baseline.tsv；clippy/fmt 绿，server-runtime 1680 测绿，全仓 6949 passed/0 failed（基线 6948 +1））
-- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付未进 main：bw14-script-host `a577c5c`（balance_baseline.rs 312 行+cellappmgr.rs 122 行改，双相位调度对比+证据档）；本行待主席并入后按勾行态处理，保持开。
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。他席已交付并勾行未进 main：bw14-script-host `a577c5c`+勾 `16b2e95`、bw15-platform 复测勾 `0ee331e`/`e631c72`（balance_baseline.rs 真 CellAppMgr 双相位，5 新测 171/171）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。他席已交付未进 main：bw14-script-host `fd21b51`+勾 `fa7fcde`（lifecycle_scenario.rs 迁移/关服/混部组合场景）、bw15-platform 复跑勾 `0407552`/`af9041f`（75+117 测+EL7 混部 5 腿真机）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-06-01 登录与资源下载基线
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
-- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
+- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席已交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（load/src/login_baseline.rs 三腿 hurricane 峰值/拒绝率/下载 tick 地板，155+1 绿）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席已交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
 
