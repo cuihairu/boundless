@@ -87,7 +87,7 @@ fn a_fresh_database_is_reported_and_left_unchanged() {
     with_fresh_db(|storage| {
         assert_eq!(table_count(storage), 0);
 
-        let missing = dry_run::plan_missing_schema(storage.client_mut()).unwrap();
+        let missing = dry_run::plan_missing_schema(&mut storage.client_mut()).unwrap();
         // The plan is the whole initialisation: eleven tables, two
         // indexes, the version seed.
         assert_eq!(missing.len(), 14);
@@ -112,15 +112,15 @@ fn a_fresh_database_is_reported_and_left_unchanged() {
         // and the version table (reported but not run) does not exist.
         assert_eq!(table_count(storage), 0);
         assert!(
-            db_postgres::schema_init::read_version(storage.client_mut()).is_err(),
+            db_postgres::schema_init::read_version(&mut storage.client_mut()).is_err(),
             "the version table must not exist yet"
         );
 
         // And the reported statements, applied, reach the target.
-        db_postgres::schema_init::apply(storage.client_mut(), &missing).unwrap();
+        db_postgres::schema_init::apply(&mut storage.client_mut(), &missing).unwrap();
         assert_eq!(table_count(storage), 11);
         assert_eq!(
-            db_postgres::schema_init::read_version(storage.client_mut()).unwrap(),
+            db_postgres::schema_init::read_version(&mut storage.client_mut()).unwrap(),
             Some(db_postgres::CURRENT_VERSION)
         );
     });
@@ -130,10 +130,10 @@ fn a_fresh_database_is_reported_and_left_unchanged() {
 fn an_up_to_date_database_reports_nothing() {
     with_fresh_db(|storage| {
         let plan = db_postgres::schema_init::plan();
-        db_postgres::schema_init::apply(storage.client_mut(), &plan).unwrap();
+        db_postgres::schema_init::apply(&mut storage.client_mut(), &plan).unwrap();
         let tables_before = table_count(storage);
 
-        let missing = dry_run::plan_missing_schema(storage.client_mut()).unwrap();
+        let missing = dry_run::plan_missing_schema(&mut storage.client_mut()).unwrap();
         assert!(missing.is_empty(), "unexpected plan: {missing:?}");
 
         // Unchanged still.
@@ -155,7 +155,7 @@ fn a_partially_initialised_database_reports_its_gaps() {
             )
             .unwrap();
 
-        let missing = dry_run::plan_missing_schema(storage.client_mut()).unwrap();
+        let missing = dry_run::plan_missing_schema(&mut storage.client_mut()).unwrap();
         // The version table's CREATE is not in the plan; the other ten
         // tables, both indexes and the seed are.
         assert_eq!(missing.len(), 10 + 2 + 1);
@@ -176,13 +176,13 @@ fn a_partially_initialised_database_reports_its_gaps() {
         );
 
         // Applying the gap plan finishes the initialisation.
-        db_postgres::schema_init::apply(storage.client_mut(), &missing).unwrap();
+        db_postgres::schema_init::apply(&mut storage.client_mut(), &missing).unwrap();
         assert_eq!(
-            db_postgres::schema_init::read_version(storage.client_mut()).unwrap(),
+            db_postgres::schema_init::read_version(&mut storage.client_mut()).unwrap(),
             Some(db_postgres::CURRENT_VERSION)
         );
         assert!(
-            dry_run::plan_missing_schema(storage.client_mut())
+            dry_run::plan_missing_schema(&mut storage.client_mut())
                 .unwrap()
                 .is_empty()
         );

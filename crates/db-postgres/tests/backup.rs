@@ -80,7 +80,7 @@ fn with_fresh_db(body: impl FnOnce(&mut PostgresStorage, &str)) {
 
 fn initialise(storage: &mut PostgresStorage) {
     let plan = db_postgres::schema_init::plan();
-    db_postgres::schema_init::apply(storage.client_mut(), &plan).unwrap();
+    db_postgres::schema_init::apply(&mut storage.client_mut(), &plan).unwrap();
 }
 
 /// The account schema the population uses: one property per column
@@ -155,7 +155,7 @@ fn populate(storage: &mut PostgresStorage) {
 
     // The DBID books, a checkout row, game time, space data, the
     // secondary databases and the checksum.
-    let client = storage.client_mut();
+    let mut client = storage.client_mut();
     client
         .execute("INSERT INTO \"bigworldNewID\" (\"id\") VALUES (900)", &[])
         .unwrap();
@@ -225,7 +225,7 @@ fn an_empty_target_restores_identical_records() {
     let source_dump = std::cell::RefCell::new(None);
     with_fresh_db(|source, _conninfo| {
         populate(source);
-        let dump = export_backup(source.client_mut()).unwrap();
+        let dump = export_backup(&mut source.client_mut()).unwrap();
 
         // The dump carries the fixed tables in creation order, the
         // registered entity table, and skips the registered name whose
@@ -276,8 +276,8 @@ fn an_empty_target_restores_identical_records() {
         // Every record reads back the same: the restored database's own
         // export compares equal to the source's dump (the dumps are
         // ordered, so equality is record equality).
-        restore_backup(target.client_mut(), &dump).unwrap();
-        let restored = export_backup(target.client_mut()).unwrap();
+        restore_backup(&mut target.client_mut(), &dump).unwrap();
+        let restored = export_backup(&mut target.client_mut()).unwrap();
         assert_eq!(restored, dump);
 
         // The contract-level reads agree: the entity rows (binary,
@@ -313,7 +313,7 @@ fn an_empty_target_restores_identical_records() {
         // The restored version row is the schema version the DBApp
         // requires.
         assert_eq!(
-            db_postgres::schema_init::read_version(target.client_mut()).unwrap(),
+            db_postgres::schema_init::read_version(&mut target.client_mut()).unwrap(),
             Some(db_postgres::CURRENT_VERSION)
         );
     });
@@ -324,18 +324,18 @@ fn a_re_restore_replaces_the_rows_without_duplicating() {
     let dump_cell = std::cell::RefCell::new(None);
     with_fresh_db(|source, _conninfo| {
         populate(source);
-        *dump_cell.borrow_mut() = Some(export_backup(source.client_mut()).unwrap());
+        *dump_cell.borrow_mut() = Some(export_backup(&mut source.client_mut()).unwrap());
     });
     let dump = dump_cell.into_inner().unwrap();
 
     with_fresh_db(|target, _conninfo| {
         initialise(target);
         target.create_entity_table(&account_schema()).unwrap();
-        restore_backup(target.client_mut(), &dump).unwrap();
+        restore_backup(&mut target.client_mut(), &dump).unwrap();
         // Restoring again replaces, not appends: the records still
         // compare equal, so no row was duplicated.
-        restore_backup(target.client_mut(), &dump).unwrap();
-        let restored = export_backup(target.client_mut()).unwrap();
+        restore_backup(&mut target.client_mut(), &dump).unwrap();
+        let restored = export_backup(&mut target.client_mut()).unwrap();
         assert_eq!(restored, dump);
         let entity_rows: i64 = target
             .client_mut()
@@ -351,7 +351,7 @@ fn a_missing_target_table_is_a_restore_error() {
     let dump_cell = std::cell::RefCell::new(None);
     with_fresh_db(|source, _conninfo| {
         populate(source);
-        *dump_cell.borrow_mut() = Some(export_backup(source.client_mut()).unwrap());
+        *dump_cell.borrow_mut() = Some(export_backup(&mut source.client_mut()).unwrap());
     });
     let mut dump = dump_cell.into_inner().unwrap();
 
@@ -375,9 +375,9 @@ fn a_missing_target_table_is_a_restore_error() {
         let good = db_postgres::BackupDump {
             tables: dump.tables[..dump.tables.len() - 1].to_vec(),
         };
-        restore_backup(target.client_mut(), &good).unwrap();
+        restore_backup(&mut target.client_mut(), &good).unwrap();
 
-        let err = restore_backup(target.client_mut(), &dump).unwrap_err();
+        let err = restore_backup(&mut target.client_mut(), &dump).unwrap_err();
         assert!(
             err.to_string()
                 .contains("bigworldNoSuchTable is missing in the target database")
@@ -399,7 +399,7 @@ fn an_uninitialised_database_exports_no_tables() {
     with_fresh_db(|storage, _conninfo| {
         // No initialisation: no fixed tables exist, and without the
         // registry there is nothing registered either.
-        let dump = export_backup(storage.client_mut()).unwrap();
+        let dump = export_backup(&mut storage.client_mut()).unwrap();
         assert!(dump.tables.is_empty());
     });
 }
@@ -412,7 +412,7 @@ fn a_null_snapshot_time_restores_as_null() {
     let dump_cell = std::cell::RefCell::new(None);
     with_fresh_db(|source, _conninfo| {
         initialise(source);
-        *dump_cell.borrow_mut() = Some(export_backup(source.client_mut()).unwrap());
+        *dump_cell.borrow_mut() = Some(export_backup(&mut source.client_mut()).unwrap());
     });
     let dump = dump_cell.into_inner().unwrap();
     let info = &dump.tables[0];
@@ -420,7 +420,7 @@ fn a_null_snapshot_time_restores_as_null() {
 
     with_fresh_db(|target, _conninfo| {
         initialise(target);
-        restore_backup(target.client_mut(), &dump).unwrap();
+        restore_backup(&mut target.client_mut(), &dump).unwrap();
         let read: Option<SystemTime> = target
             .client_mut()
             .query_one("SELECT \"snapshotTime\" FROM \"bigworldInfo\"", &[])
@@ -445,13 +445,13 @@ fn a_timestamp_round_trips_at_microsecond_precision() {
                 &[&when],
             )
             .unwrap();
-        *dump_cell.borrow_mut() = Some(export_backup(source.client_mut()).unwrap());
+        *dump_cell.borrow_mut() = Some(export_backup(&mut source.client_mut()).unwrap());
     });
     let dump = dump_cell.into_inner().unwrap();
 
     with_fresh_db(|target, _conninfo| {
         initialise(target);
-        restore_backup(target.client_mut(), &dump).unwrap();
+        restore_backup(&mut target.client_mut(), &dump).unwrap();
         let read: Option<SystemTime> = target
             .client_mut()
             .query_one("SELECT \"snapshotTime\" FROM \"bigworldInfo\"", &[])
