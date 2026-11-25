@@ -2835,7 +2835,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
 - [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
 - [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
 - [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
@@ -4399,7 +4399,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
 - [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
 - [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
 - [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
@@ -5924,7 +5924,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
 - [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
 - [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
 - [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
@@ -7449,7 +7449,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
 - [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
 - [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
 - [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
@@ -9013,7 +9013,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
 - [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
 - [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
 - [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
@@ -10538,7 +10538,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 缓存解析结果并评估预生成编解码器，衡量启动和序列化开销，锁定定义摘要和产出字节。
 
 - [x] **OPT-04-01-01 测量 EntityDef 启动和编解码**。**验收** 保存基线。（本席 `a041efd`+`9623715`：crates/entitydef/tests/entitydef_baseline.rs 三腿=冷启动 factory_create full_def(3 实体)+fantasydemo_def(5 实体)（诊断零+digest 钉住 oracle 否则不产生计时行）、编解码=两夹具全实体全属性解析默认值 add_to_stream/create_from_stream 20k 轮×每轮逐值恒等断言（11 族：标量 5+STRING/FLOAT64/ARRAY×2/FIXED_DICT×2）、暖启动同进程二次加载 digest 等冷值；记录 TSV docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv 63 行：cold 0.637/0.615ms、warm 0.448ms、标量 p50 457-474ns、FLOAT64 268ns、STRING 340ns、ARRAY 238/247ns、FIXED_DICT2 字段 817ns/3 字段 1565ns；墙钟只记录不设带；证据页 docs/review/opt-04-01-01-entitydef-baseline.md；entitydef 既有测试未动全绿）
-- [ ] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。
+- [x] **OPT-04-01-02 缓存定义解析**。**验收** 比较冷/热启动。（本席 `9881c37`：FsResolver::open_section 进程级 parse 缓存（参照 resmgr/data_section_cache.hpp find/add/clear+setSize：thread_local 按全路径键、上限 1024 条溢出即清、clear_section_cache() 面；MemoryResolver 不动、仓内 FsResolver 消费者皆只读夹具）；基线 runner 起手清缓存→startup_*=缓存冷/ warm=缓存热；**比较**=同跑 cold 0.916ms vs warm 0.297ms（暖启动省 0.619ms=读+解析份额；跨记录冷值不作比因负载 40→21 档差已披露）；digest 前后同 18D00DC6 钉 oracle 恒等；entitydef 库测 247+集成全绿、覆盖 entity_description 99.31%/entity_map 99.24%/data_type 98.02%≥98；证据页 opt-04-01-01-entitydef-baseline.md OPT-04-01-02 节+TSV 滚动 canonical 记录）
 - [ ] **OPT-04-01-03 评估预生成编解码器**。**验收** 报告序列化耗时。
 - [ ] **OPT-04-01-04 复跑定义摘要与字节夹具**。**验收** 产物一致。
 
