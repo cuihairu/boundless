@@ -29,10 +29,10 @@
 //!   `replaceAoITrigger` with a `MobileRangeListNode` centre) is
 //!   deferred: the trigger is always centred on the witnessing entity's
 //!   own range node for now.
-//! - `Witness::update`'s bandwidth scheduler is BW-08-03-03's face:
-//!   [`Witness::process_pending`] here drains the pending state
-//!   machines (gone/withheld/enter/create/refresh) and leaves
-//!   updatable caches queued untouched.
+//! - `Witness::update`'s writer faces (`addSpaceDataChanges`,
+//!   `addReferencePosition`, `addDetailedPlayerPosition`) are
+//!   BW-08-03-04's: the pass's bundle starts empty and each send
+//!   spends the context's fixed `update_bytes`.
 //! - `Entity::writeClientUpdateDataToBundle`'s history-event payload
 //!   and the volatile position encoding are BW-08-03-04's face. The LoD
 //!   machinery ([`EntityCache::update_detail_level`],
@@ -1135,6 +1135,40 @@ pub enum WitnessNote {
         /// The entity in the list.
         entity: u32,
     },
+    /// `Witness::update`'s ERROR face: the mount is outside the AoI.
+    PrioritiseOutsideAoI {
+        /// The witness.
+        witness: u32,
+        /// The mount the chain named.
+        entity: u32,
+    },
+    /// `sendQueueElement`'s DEBUG_BANDWIDTH WARNING face.
+    UpdateSpam {
+        /// The entity whose update went out.
+        entity: u32,
+        /// The bytes it added.
+        added: i32,
+        /// The witness it went to.
+        witness: u32,
+    },
+    /// `Witness::update`'s deficit WARNING face.
+    DeficitCapped {
+        /// The witness.
+        witness: u32,
+        /// The deficit before the cap.
+        deficit: i32,
+        /// The cap (`maxPacketSize_`).
+        max: i32,
+    },
+    /// `Witness::update`'s underflow CRITICAL face.
+    PriorityUnderflow {
+        /// The witness.
+        witness: u32,
+        /// The queue-tail entity whose priority overflowed.
+        entity: u32,
+        /// The priority that failed `+0.0001`.
+        priority: f64,
+    },
     /// `EntityCache::reuse`'s INFO face: the client's history was
     /// trimmed out from under it, so the cache cannot be reused.
     ReuseMissedEvents {
@@ -1168,6 +1202,20 @@ pub struct WitnessContext<'a> {
     pub warnings: &'a mut Vec<WitnessNote>,
     /// The ERROR/CRITICAL faces.
     pub errors: &'a mut Vec<WitnessNote>,
+    /// `CellApp::emergencyThrottle()`: scales the desired packet size.
+    pub throttle: f32,
+    /// `CellAppConfig::witnessUpdateMaxPriorityDelta()`: the most
+    /// priority change one pass walks past.
+    pub max_priority_delta: f32,
+    /// `Entity::writeClientUpdateDataToBundle`'s byte growth per send —
+    /// the writer is BW-08-03-04's face; the selection loop only
+    /// spends its size.
+    pub update_bytes: i32,
+    /// `CellAppConfig::entitySpamSize()`: the per-send size the spam
+    /// WARNING guards.
+    pub spam_size: i32,
+    /// `CellAppConfig::witnessUpdateDeltaGrowthThrottle()`.
+    pub delta_growth_throttle: f32,
 }
 
 impl<'a> WitnessContext<'a> {
@@ -1879,48 +1927,285 @@ impl Witness {
         self.add_to_seen(entity_id);
     }
 
-    /// The pending half of `Witness::update` (`witness.cpp:1088`'s
-    /// heap loop), draining before the bandwidth scheduler: pop by
-    /// ascending priority and run the state machine on every
-    /// non-updatable cache; updatable caches stay queued untouched —
-    /// their per-tick updates are BW-08-03-03's face.
-    pub fn process_pending(&mut self, ctx: &mut WitnessContext<'_>) {
-        let mut carried = Vec::new();
-        while let Some(front) = self.pop_seen() {
-            let updatable = self
-                .aoi_map
-                .find(front)
-                .map(|cache| cache.is_updatable())
-                .unwrap_or(true);
-            if updatable {
-                carried.push(front);
-            } else {
-                self.handle_state_change(ctx, front);
-                // The gone arm deleted the cache and the enter and
-                // refresh arms left it request-pending — all three
-                // took the slot out of the queue (the reference's
-                // `deleteFromAoI` swap and `handleEnterPending`'s
-                // `pop_back`). Everything else stays queued.
-                let stays = self
-                    .aoi_map
-                    .find(front)
-                    .map(|cache| !cache.is_request_pending())
-                    .unwrap_or(false);
-                if stays {
-                    carried.push(front);
-                }
+    /// `Witness::update` (`witness.cpp:1088`): the per-tick send pass.
+    /// The mount chain is prioritised first, then the heap walks by
+    /// ascending priority while the priority change stays inside
+    /// `max_priority_delta` and the bundle inside the throttled
+    /// `desiredPacketSize` — popping runs the state machines on
+    /// non-updatable caches and sends the updatable ones. The popped
+    /// set re-heaps either fully drained (every priority resets) or
+    /// clamped up to the earliest priority that stayed. Returns the
+    /// send sequence, mounts first.
+    pub fn update(&mut self, ctx: &mut WitnessContext<'_>) -> Vec<u32> {
+        let mut sent = Vec::new();
+        // The reference's writer faces (space data, the reference
+        // position, the detailed player position) are BW-08-03-04's,
+        // so the pass's bundle starts empty and every send spends
+        // `update_bytes`.
+        let mut bundle_bytes = 0i32;
+        let desired = (self.max_packet_size as f32 * ctx.throttle) as i32 - self.bandwidth_deficit;
+        let origin = self.origin(ctx);
+        let starting_priority = self
+            .entity_queue
+            .first()
+            .map(|&front| self.queue_priority(front))
+            .unwrap_or(0.0);
+
+        // The mount stack rides first, whatever its priority.
+        let mut num_prioritised = 0i32;
+        let mounts = self.vehicle_chain(ctx);
+        for mount in mounts {
+            let Some(cache) = self.aoi_map.find(mount) else {
+                ctx.errors.push(WitnessNote::PrioritiseOutsideAoI {
+                    witness: self.entity_id,
+                    entity: mount,
+                });
+                continue;
+            };
+            let skip = !cache.is_updatable() || cache.is_request_pending();
+            let destroyed = ctx
+                .entities
+                .get(&mount)
+                .map(|entity| entity.borrow().destroyed)
+                .unwrap_or(false);
+            if skip || destroyed {
+                continue;
+            }
+            debug_assert!(!cache.is_prioritised());
+            self.aoi_map
+                .find_mut(mount)
+                .expect("the cache was just read")
+                .set_prioritised();
+            num_prioritised += 1;
+            sent.push(mount);
+            bundle_bytes += ctx.update_bytes;
+            if ctx.update_bytes > ctx.spam_size {
+                ctx.warnings.push(WitnessNote::UpdateSpam {
+                    entity: mount,
+                    added: ctx.update_bytes,
+                    witness: self.entity_id,
+                });
             }
         }
-        // The drain is always full here, so the reference's
-        // queue-empty branch applies: every popped entity's priority
-        // resets and the whole set re-heaps for the next pass.
-        for id in carried {
-            self.aoi_map
-                .find_mut(id)
-                .expect("the stays check kept the cache")
-                .priority = 0.0;
-            self.push_seen(id);
+
+        // Things up to `maxPriority` change away from the front while
+        // the packet still has space (the two bytes are the sequence
+        // number).
+        let max_priority = starting_priority + ctx.max_priority_delta as f64;
+        let mut popped = Vec::new();
+        while let Some(&front) = self.entity_queue.first() {
+            if self.queue_priority(front) >= max_priority {
+                break;
+            }
+            if bundle_bytes >= desired - 2 {
+                break;
+            }
+            self.pop_seen();
+            popped.push(front);
+            let was_prioritised = self
+                .aoi_map
+                .find(front)
+                .map(|cache| cache.is_prioritised())
+                .unwrap_or(false);
+            debug_assert!(
+                !self
+                    .aoi_map
+                    .find(front)
+                    .map(|cache| cache.is_request_pending())
+                    .unwrap_or(false)
+            );
+            // A destroyed entity still held by hand leaves the AoI
+            // here (`removeFromAoI` with `clearManuallyAdded`).
+            let destroyed = ctx
+                .entities
+                .get(&front)
+                .map(|entity| entity.borrow().destroyed)
+                .unwrap_or(false);
+            let gone = self
+                .aoi_map
+                .find(front)
+                .map(|cache| cache.is_gone())
+                .unwrap_or(false);
+            if destroyed && !gone {
+                debug_assert!(
+                    self.aoi_map
+                        .find(front)
+                        .map(|cache| cache.is_manually_added())
+                        .unwrap_or(false)
+                );
+                // The destroyed gate above resolved this same slot;
+                // the lookup cannot miss now.
+                let entity = ctx
+                    .entities
+                    .get(&front)
+                    .cloned()
+                    .expect("the destroyed gate found the entity");
+                self.remove_from_aoi(ctx, &entity, true);
+            }
+            let face = self
+                .aoi_map
+                .find(front)
+                .map(|cache| (cache.is_updatable(), cache.is_prioritised()));
+            if let Some((updatable, prioritised)) = face {
+                if !updatable {
+                    self.handle_state_change(ctx, front);
+                }
+                if updatable && !prioritised {
+                    // `sendQueueElement`: the writer is BW-08-03-04's
+                    // face; the pass only spends its size.
+                    bundle_bytes += ctx.update_bytes;
+                    sent.push(front);
+                    if ctx.update_bytes > ctx.spam_size {
+                        ctx.warnings.push(WitnessNote::UpdateSpam {
+                            entity: front,
+                            added: ctx.update_bytes,
+                            witness: self.entity_id,
+                        });
+                    }
+                    let entity = ctx
+                        .entities
+                        .get(&front)
+                        .cloned()
+                        .expect("an updatable cache's entity lives");
+                    self.aoi_map
+                        .find_mut(front)
+                        .expect("the cache stays")
+                        .update_priority(
+                            ctx.schemes,
+                            ctx.delta_growth_throttle,
+                            origin,
+                            &entity.borrow(),
+                        );
+                }
+            }
+            if was_prioritised {
+                // Prioritised mounts were sent before the loop; the
+                // pop only re-seats them — within one pass no state
+                // change can take a prioritised cache away.
+                let cache = self
+                    .aoi_map
+                    .find_mut(front)
+                    .expect("the prioritised cache is still here");
+                cache.set_priority(starting_priority);
+                let entity = ctx
+                    .entities
+                    .get(&front)
+                    .cloned()
+                    .expect("a prioritised cache's entity lives");
+                cache.update_priority(
+                    ctx.schemes,
+                    ctx.delta_growth_throttle,
+                    origin,
+                    &entity.borrow(),
+                );
+                cache.clear_prioritised();
+                num_prioritised -= 1;
+                debug_assert!(num_prioritised >= 0);
+            }
         }
+
+        self.bandwidth_deficit = if bundle_bytes > desired {
+            bundle_bytes - desired
+        } else {
+            0
+        };
+        if self.bandwidth_deficit > self.max_packet_size {
+            ctx.warnings.push(WitnessNote::DeficitCapped {
+                witness: self.entity_id,
+                deficit: self.bandwidth_deficit,
+                max: self.max_packet_size,
+            });
+            self.bandwidth_deficit = self.max_packet_size;
+        }
+
+        // The gone arm deleted its cache and the enter and refresh
+        // arms left it request-pending — all three took the slot out
+        // of the queue (the reference's `deleteFromAoI` swap and
+        // `handleEnterPending`'s `pop_back`). Everything else rides
+        // back on the heap.
+        let carried: Vec<u32> = popped
+            .into_iter()
+            .filter(|&id| {
+                self.aoi_map
+                    .find(id)
+                    .map(|cache| !cache.is_request_pending())
+                    .unwrap_or(false)
+            })
+            .collect();
+        if self.entity_queue.is_empty() {
+            // Must have sent and popped all prioritised entities. The
+            // queue-empty branch resets every popped priority so the
+            // next pass sends in closeness order again.
+            debug_assert!(num_prioritised == 0);
+            for id in &carried {
+                self.aoi_map
+                    .find_mut(*id)
+                    .expect("the carry check kept the cache")
+                    .set_priority(0.0);
+            }
+            for id in &carried {
+                self.push_seen(*id);
+            }
+            self.make_seen_heap();
+        } else {
+            let earliest_priority = self.queue_priority(self.entity_queue[0]);
+            // Prioritised mounts the loop never popped lose the flag
+            // here.
+            for mount in self.vehicle_chain(ctx) {
+                if num_prioritised == 0 {
+                    break;
+                }
+                let Some(cache) = self.aoi_map.find_mut(mount) else {
+                    continue;
+                };
+                if cache.is_prioritised() {
+                    cache.clear_prioritised();
+                    num_prioritised -= 1;
+                    debug_assert!(num_prioritised >= 0);
+                }
+            }
+            for id in carried {
+                if self.queue_priority(id) < earliest_priority {
+                    self.aoi_map
+                        .find_mut(id)
+                        .expect("the carry check kept the cache")
+                        .set_priority(earliest_priority);
+                }
+                self.push_seen(id);
+            }
+        }
+
+        // The floating-point underflow watch on the queue tail.
+        if let Some(&back) = self.entity_queue.last() {
+            let highest = self.queue_priority(back);
+            if highest + 0.0001 <= highest {
+                ctx.errors.push(WitnessNote::PriorityUnderflow {
+                    witness: self.entity_id,
+                    entity: back,
+                    priority: highest,
+                });
+            }
+        }
+
+        sent
+    }
+
+    /// `entity_.pVehicle()`'s chain: the witness's mount, then its
+    /// mount, and so on up.
+    fn vehicle_chain(&self, ctx: &WitnessContext<'_>) -> Vec<u32> {
+        let mut chain = Vec::new();
+        let mut mount = ctx
+            .entities
+            .get(&self.entity_id)
+            .map(|e| e.borrow().vehicle);
+        while let Some(Some(id)) = mount {
+            if chain.len() == 256 || chain.contains(&id) {
+                break;
+            }
+            chain.push(id);
+            mount = ctx.entities.get(&id).map(|e| e.borrow().vehicle);
+        }
+        chain
     }
 
     // ----- The query faces --------------------------------------------
@@ -2230,6 +2515,11 @@ impl CellApp {
             scripts: &mut self.script_calls,
             warnings: &mut self.witness_warnings,
             errors: &mut self.witness_errors,
+            throttle: self.emergency_throttle,
+            max_priority_delta: self.witness_max_priority_delta,
+            update_bytes: self.witness_update_bytes,
+            spam_size: self.witness_spam_size,
+            delta_growth_throttle: 1.0 + 1.0 / 8.0,
         }
     }
 
@@ -2287,6 +2577,11 @@ impl CellApp {
             scripts: &mut self.script_calls,
             warnings: &mut self.witness_warnings,
             errors: &mut self.witness_errors,
+            throttle: self.emergency_throttle,
+            max_priority_delta: self.witness_max_priority_delta,
+            update_bytes: self.witness_update_bytes,
+            spam_size: self.witness_spam_size,
+            delta_growth_throttle: 1.0 + 1.0 / 8.0,
         };
         let witness = self
             .witnesses
@@ -2304,7 +2599,7 @@ impl CellApp {
         }
     }
 
-    /// `Witness::process_pending` through the context.
+    /// `Witness::update` through the context.
     pub fn process_witness(&mut self, witness_id: u32) {
         if !self.witnesses.contains_key(&witness_id) {
             return;
@@ -2317,12 +2612,17 @@ impl CellApp {
             scripts: &mut self.script_calls,
             warnings: &mut self.witness_warnings,
             errors: &mut self.witness_errors,
+            throttle: self.emergency_throttle,
+            max_priority_delta: self.witness_max_priority_delta,
+            update_bytes: self.witness_update_bytes,
+            spam_size: self.witness_spam_size,
+            delta_growth_throttle: 1.0 + 1.0 / 8.0,
         };
         let witness = self
             .witnesses
             .get_mut(&witness_id)
             .expect("the witness was just checked");
-        witness.process_pending(&mut ctx);
+        witness.update(&mut ctx);
     }
 
     /// `Witness::requestEntityUpdate` through the context.
@@ -2338,6 +2638,11 @@ impl CellApp {
             scripts: &mut self.script_calls,
             warnings: &mut self.witness_warnings,
             errors: &mut self.witness_errors,
+            throttle: self.emergency_throttle,
+            max_priority_delta: self.witness_max_priority_delta,
+            update_bytes: self.witness_update_bytes,
+            spam_size: self.witness_spam_size,
+            delta_growth_throttle: 1.0 + 1.0 / 8.0,
         };
         let witness = self
             .witnesses
@@ -2439,6 +2744,11 @@ mod tests {
             scripts: &mut app.script_calls,
             warnings: &mut app.witness_warnings,
             errors: &mut app.witness_errors,
+            throttle: app.emergency_throttle,
+            max_priority_delta: app.witness_max_priority_delta,
+            update_bytes: app.witness_update_bytes,
+            spam_size: app.witness_spam_size,
+            delta_growth_throttle: 1.0 + 1.0 / 8.0,
         }
     }
 
@@ -2453,6 +2763,11 @@ mod tests {
             scripts: &mut app.script_calls,
             warnings: &mut app.witness_warnings,
             errors: &mut app.witness_errors,
+            throttle: app.emergency_throttle,
+            max_priority_delta: app.witness_max_priority_delta,
+            update_bytes: app.witness_update_bytes,
+            spam_size: app.witness_spam_size,
+            delta_growth_throttle: 1.0 + 1.0 / 8.0,
         };
         (ctx, app.witnesses.get_mut(&id).expect("the witness"))
     }
@@ -2477,6 +2792,9 @@ mod tests {
             &stream_for(2, TYPE, [3000.0, 0.0, 0.0], b'-'),
         );
         app.entity_type_faces.insert(TYPE, EntityTypeDef::default());
+        for witness in app.witnesses.values_mut() {
+            witness.set_witness_capacity(500_000, 10);
+        }
         app.entity_properties.insert(
             2,
             vec![ClientProperty {
@@ -3859,5 +4177,545 @@ mod tests {
         assert_eq!(witness.pop_seen(), Some(3));
         assert_eq!(witness.pop_seen(), Some(5));
         assert_eq!(witness.pop_seen(), None);
+    }
+
+    /// Drives entity `id` through one full observation: in, pumped,
+    /// updated, acked, created.
+    fn observe(app: &mut CellApp, id: u32, pos: [f32; 3]) {
+        move_entity(app, id, pos);
+        app.pump_aoi_events(1);
+        {
+            let (mut ctx, witness) = ctx_with(app, 1);
+            witness.update(&mut ctx);
+        }
+        app.request_entity_update(1, id, &[5]);
+        app.process_witness(1);
+    }
+
+    /// Three watchers at fixed distances: the create pass rides the
+    /// state machine in queue order, then the scheduler repeats the
+    /// queue order every pass because the full drain resets the
+    /// priorities.
+    #[test]
+    fn the_fixed_load_sends_the_queue_order_each_pass() {
+        let (mut app, mut spaces) = fixture(b'W');
+        for (id, pos) in [(3, [9.0, 0.0, 12.0]), (4, [6.0, 0.0, 8.0])] {
+            app.create_real_entity(&mut spaces, SID, &stream_for(id, TYPE, pos, b'-'));
+        }
+        move_entity(&mut app, 3, [9.0, 0.0, 12.0]);
+        move_entity(&mut app, 4, [6.0, 0.0, 8.0]);
+        move_entity(&mut app, 2, [3.0, 0.0, 4.0]);
+        app.pump_aoi_events(1);
+        // The enter pass queues nothing for the scheduler.
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        assert!(sent.is_empty());
+        for id in [3, 4, 2] {
+            app.request_entity_update(1, id, &[5]);
+        }
+        // The create pass rides the state machine, not the scheduler:
+        // the wire gains three creates in the heap's pop order (the
+        // three caches sit on the same floor, so the sift decides) and
+        // `sent` stays empty.
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            let sent = witness.update(&mut ctx);
+            assert!(sent.is_empty());
+        }
+        {
+            let wire = &app.witnesses[&1].wire;
+            let tail = &wire[wire.len() - 3..];
+            assert!(matches!(&tail[0], Wire::CreateEntity { id: 3, .. }));
+            assert!(matches!(&tail[1], Wire::CreateEntity { id: 2, .. }));
+            assert!(matches!(&tail[2], Wire::CreateEntity { id: 4, .. }));
+        }
+        // Now everyone is updatable and the scheduler sequences the
+        // sends: highest floor first, the vehicle chain ahead of the
+        // pack.
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        assert_eq!(sent, vec![3, 4, 2]);
+        // The drain reset every priority, so the next pass runs the
+        // same race — with the caches on one floor the heap layout
+        // decides the tie, exactly as the reference's std heap does
+        // with equal priorities.
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        assert_eq!(sent, vec![3, 2, 4]);
+    }
+
+    /// A tight budget stops the pass mid-queue: the tail keeps the
+    /// earliest priority and the sent ones never drop below it.
+    #[test]
+    fn the_budget_stops_the_pass_and_the_tail_keeps_the_floor() {
+        let (mut app, mut spaces) = fixture(b'W');
+        for (id, pos) in [(3, [9.0, 0.0, 12.0]), (4, [6.0, 0.0, 8.0])] {
+            app.create_real_entity(&mut spaces, SID, &stream_for(id, TYPE, pos, b'-'));
+        }
+        move_entity(&mut app, 3, [9.0, 0.0, 12.0]);
+        move_entity(&mut app, 4, [6.0, 0.0, 8.0]);
+        move_entity(&mut app, 2, [3.0, 0.0, 4.0]);
+        app.pump_aoi_events(1);
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        for id in [3, 4, 2] {
+            app.request_entity_update(1, id, &[5]);
+        }
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        // 202 bytes of budget against 100-byte sends: two fit, the
+        // third never pops (the two spare bytes are the sequence
+        // number).
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .set_witness_capacity(18_400, 10);
+        let prio_of = |app: &CellApp, id: u32| {
+            app.witnesses[&1]
+                .aoi_map
+                .find(id)
+                .expect("the cache")
+                .priority
+        };
+        let pass = |app: &mut CellApp| {
+            let (mut ctx, witness) = ctx_with(app, 1);
+            witness.update(&mut ctx)
+        };
+        assert_eq!(pass(&mut app), vec![3, 4]);
+        // The unsent 2 is the earliest priority left; 3 and 4 only
+        // grew by their distance deltas.
+        assert!((prio_of(&app, 2) - 0.0).abs() < 1e-6);
+        assert!((prio_of(&app, 3) - 4.0).abs() < 1e-6);
+        assert!((prio_of(&app, 4) - 3.0).abs() < 1e-6);
+    }
+
+    /// The unpaid spend joins the deficit, shrinking the next budget
+    /// until the cap bites — and a pass that sends nothing clears it.
+    #[test]
+    fn the_deficit_shrinks_the_budget_until_the_cap_bites() {
+        let (mut app, _spaces) = fixture(b'W');
+        let _ = observe_once(&mut app);
+        // 72 bytes of budget against 100-byte sends.
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .set_witness_capacity(8_000, 10);
+        let pass = |app: &mut CellApp| {
+            let (mut ctx, witness) = ctx_with(app, 1);
+            let sent = witness.update(&mut ctx);
+            (sent, app.witnesses[&1].bandwidth_deficit)
+        };
+        let (sent, deficit) = pass(&mut app);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(deficit, 28);
+        let (_, deficit) = pass(&mut app);
+        assert_eq!(deficit, 56);
+        let (_, deficit) = pass(&mut app);
+        assert_eq!(deficit, 72);
+        assert!(matches!(
+            app.witness_warnings.pop(),
+            Some(WitnessNote::DeficitCapped {
+                witness: 1,
+                deficit: 84,
+                max: 72
+            })
+        ));
+        // The capped budget admits nothing, so the pass spends
+        // nothing and the deficit clears.
+        let (sent, deficit) = pass(&mut app);
+        assert!(sent.is_empty());
+        assert_eq!(deficit, 0);
+    }
+
+    /// The mount stack is prioritised before the queue: it sends
+    /// first whatever its priority, and a mount the loop never pops
+    /// still loses the flag on the way out.
+    #[test]
+    fn the_mount_stack_sends_first_and_clears_its_flag() {
+        let (mut app, mut spaces) = fixture(b'W');
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [6.0, 0.0, 8.0], b'-'),
+        );
+        let _ = observe_once(&mut app);
+        observe(&mut app, 3, [6.0, 0.0, 8.0]);
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .aoi_map
+            .find_mut(3)
+            .expect("the cache")
+            .set_priority(10.0);
+        app.entity_population[&1].borrow_mut().vehicle = Some(3);
+
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        // The mount rode first; 2 was the only queue pop — 10 is past
+        // the front-plus-delta gate.
+        assert_eq!(sent, vec![3, 2]);
+        let witness = &app.witnesses[&1];
+        assert!(!witness.aoi_map.find(3).expect("the cache").is_prioritised());
+        // The tail clamp lifted 2 to the mount's floor.
+        assert!((witness.aoi_map.find(2).expect("the cache").priority - 10.0).abs() < 1e-6);
+    }
+
+    /// A mount outside the AoI reports and the pass moves on.
+    #[test]
+    fn the_update_reports_a_mount_outside_the_aoi() {
+        let (mut app, _spaces) = fixture(b'W');
+        app.entity_population[&1].borrow_mut().vehicle = Some(999);
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        assert!(sent.is_empty());
+        assert_eq!(
+            app.witness_errors.pop(),
+            Some(WitnessNote::PrioritiseOutsideAoI {
+                witness: 1,
+                entity: 999
+            })
+        );
+    }
+
+    /// The spam guard fires on a send bigger than `entitySpamSize`,
+    /// and the queue tail keeps the underflow watch.
+    #[test]
+    fn the_spam_guard_and_the_underflow_watch() {
+        let (mut app, _spaces) = fixture(b'W');
+        let _ = observe_once(&mut app);
+        app.witness_update_bytes = 300;
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            let sent = witness.update(&mut ctx);
+            assert_eq!(sent, vec![2]);
+        }
+        assert_eq!(
+            app.witness_warnings.pop(),
+            Some(WitnessNote::UpdateSpam {
+                entity: 2,
+                added: 300,
+                witness: 1
+            })
+        );
+
+        // Two infinities pin the gate shut — the tail watch is the
+        // only face that fires.
+        let (mut app, _spaces) = fixture(b'W');
+        for id in [2, 3] {
+            app.entity_population
+                .insert(id, Rc::new(RefCell::new(Entity::new(id, true))));
+            let mut cache = EntityCache::new(id, 0, 1, 0, 0);
+            cache.priority = f64::NEG_INFINITY;
+            app.witnesses
+                .get_mut(&1)
+                .expect("the witness")
+                .aoi_map
+                .add(cache);
+        }
+        app.witnesses.get_mut(&1).expect("the witness").entity_queue = vec![2, 3];
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        assert!(sent.is_empty());
+        assert!(matches!(
+            app.witness_errors.pop(),
+            Some(WitnessNote::PriorityUnderflow {
+                witness: 1,
+                entity: 3,
+                ..
+            })
+        ));
+    }
+
+    /// A destroyed entity still held by hand is stripped of the hold
+    /// right in the pass.
+    #[test]
+    fn the_pass_releases_a_destroyed_manual_hold() {
+        let (mut app, _spaces) = fixture(b'W');
+        let _ = observe_once(&mut app);
+        {
+            let (_, witness) = ctx_with(&mut app, 1);
+            let cache = witness.aoi_map.find_mut(2).expect("the cache");
+            cache.set_manually_added();
+        }
+        app.entity_population[&2].borrow_mut().destroyed = true;
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        let cache = app.witnesses[&1].aoi_map.find(2).expect("the cache stays");
+        // The trigger still holds after the stripped hold, so the
+        // cache keeps its trigger flag and the pass sends as usual.
+        assert!(!cache.is_manually_added());
+        assert!(cache.is_added_by_trigger());
+        assert_eq!(sent, vec![2]);
+    }
+
+    /// A prioritised mount the loop pops re-seats through the re-seat
+    /// arm — no second send, no tail walk needed.
+    #[test]
+    fn the_prioritised_mount_pops_back_to_its_floor() {
+        let (mut app, mut spaces) = fixture(b'W');
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [6.0, 0.0, 8.0], b'-'),
+        );
+        observe(&mut app, 3, [6.0, 0.0, 8.0]);
+        let _ = observe_once(&mut app);
+        // The floor order puts the mount at the queue head.
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .aoi_map
+            .find_mut(3)
+            .expect("the cache")
+            .set_priority(-1.0);
+        app.entity_population[&1].borrow_mut().vehicle = Some(3);
+
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        // The mount rode first and its pop re-seated it; 2 followed on
+        // its own floor.
+        assert_eq!(sent, vec![3, 2]);
+        let witness = &app.witnesses[&1];
+        assert!(!witness.aoi_map.find(3).expect("the cache").is_prioritised());
+        assert!(!witness.aoi_map.find(2).expect("the cache").is_prioritised());
+    }
+
+    /// A destroyed mount is skipped by the chain, the pop still
+    /// releases its manual hold, and the empty-handed walk breaks at
+    /// once.
+    #[test]
+    fn the_destroyed_mount_skips_the_chain_and_the_walk_breaks() {
+        let (mut app, mut spaces) = fixture(b'W');
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [6.0, 0.0, 8.0], b'-'),
+        );
+        let _ = observe_once(&mut app);
+        observe(&mut app, 3, [6.0, 0.0, 8.0]);
+        {
+            let (_, witness) = ctx_with(&mut app, 1);
+            let cache = witness.aoi_map.find_mut(2).expect("the cache");
+            cache.set_manually_added();
+            cache.set_priority(-1.0);
+        }
+        app.entity_population[&2].borrow_mut().destroyed = true;
+        app.entity_population[&1].borrow_mut().vehicle = Some(2);
+        // A 40-byte send against a 42-byte budget: one send fills the
+        // packet to the gate.
+        app.witness_update_bytes = 40;
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .set_witness_capacity(5_600, 10);
+
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        // The chain skipped the destroyed mount; the pop released the
+        // hold and spent the budget, so the walk broke before it.
+        assert_eq!(sent, vec![2]);
+        let witness = &app.witnesses[&1];
+        let cache = witness.aoi_map.find(2).expect("the cache stays");
+        assert!(!cache.is_manually_added());
+        assert!(cache.is_added_by_trigger());
+        assert!(app.witness_warnings.is_empty());
+        assert!(app.witness_errors.is_empty());
+    }
+
+    /// A cache-less mount walks out of the pass with a report and a
+    /// skip, leaving the real mount's flag to the walk.
+    #[test]
+    fn the_chain_walk_skips_a_cache_less_mount() {
+        let (mut app, mut spaces) = fixture(b'W');
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [6.0, 0.0, 8.0], b'-'),
+        );
+        let _ = observe_once(&mut app);
+        observe(&mut app, 3, [6.0, 0.0, 8.0]);
+        app.entity_population
+            .insert(999, Rc::new(RefCell::new(Entity::new(999, true))));
+        app.entity_population[&999].borrow_mut().vehicle = Some(3);
+        app.entity_population[&1].borrow_mut().vehicle = Some(999);
+        app.witness_update_bytes = 40;
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .set_witness_capacity(5_600, 10);
+
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        // The chain reported 999 and rode 3; the budget gate stopped
+        // the loop before the pop, so the walk skipped 999 again and
+        // cleared 3's flag itself.
+        assert_eq!(sent, vec![3]);
+        assert_eq!(
+            app.witness_errors.pop(),
+            Some(WitnessNote::PrioritiseOutsideAoI {
+                witness: 1,
+                entity: 999
+            })
+        );
+        assert!(
+            !app.witnesses[&1]
+                .aoi_map
+                .find(3)
+                .expect("the cache")
+                .is_prioritised()
+        );
+    }
+
+    /// The tail walk falls through a mount it never prioritised
+    /// before clearing the one it did.
+    #[test]
+    fn the_walk_falls_through_an_unprioritised_mount() {
+        let (mut app, mut spaces) = fixture(b'W');
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [6.0, 0.0, 8.0], b'-'),
+        );
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(4, TYPE, [12.0, 0.0, 16.0], b'-'),
+        );
+        let _ = observe_once(&mut app);
+        observe(&mut app, 3, [6.0, 0.0, 8.0]);
+        // 4 rides half-observed: its enter is unacked, so the chain
+        // skips it and the walk meets the cache without a flag.
+        move_entity(&mut app, 4, [12.0, 0.0, 16.0]);
+        app.pump_aoi_events(1);
+        app.process_witness(1);
+        app.entity_population[&1].borrow_mut().vehicle = Some(4);
+        app.entity_population[&4].borrow_mut().vehicle = Some(3);
+        app.witness_update_bytes = 40;
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .set_witness_capacity(5_600, 10);
+
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        assert_eq!(sent, vec![3]);
+        let witness = &app.witnesses[&1];
+        assert!(!witness.aoi_map.find(3).expect("the cache").is_prioritised());
+        assert!(
+            witness
+                .aoi_map
+                .find(4)
+                .expect("the cache")
+                .is_request_pending()
+        );
+    }
+
+    /// The spam guard rides the chain too: a prioritised mount's send
+    /// warns like any other.
+    #[test]
+    fn the_chain_send_spams_like_the_rest() {
+        let (mut app, mut spaces) = fixture(b'W');
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [6.0, 0.0, 8.0], b'-'),
+        );
+        let _ = observe_once(&mut app);
+        observe(&mut app, 3, [6.0, 0.0, 8.0]);
+        app.witness_update_bytes = 300;
+        app.entity_population[&1].borrow_mut().vehicle = Some(3);
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .aoi_map
+            .find_mut(3)
+            .expect("the cache")
+            .set_priority(-1.0);
+
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        assert_eq!(sent, vec![3, 2]);
+        assert_eq!(
+            app.witness_warnings[0],
+            WitnessNote::UpdateSpam {
+                entity: 3,
+                added: 300,
+                witness: 1
+            }
+        );
+        assert_eq!(
+            app.witness_warnings[1],
+            WitnessNote::UpdateSpam {
+                entity: 2,
+                added: 300,
+                witness: 1
+            }
+        );
+    }
+
+    /// A stale queue id with no cache behind it walks the pass
+    /// without a send.
+    #[test]
+    fn the_pass_walks_past_a_stale_queue_entry() {
+        let (mut app, _spaces) = fixture(b'W');
+        let _ = observe_once(&mut app);
+        // White box: an id queued without a cache behind it — the
+        // reference's `deleteFromAoI` swap can leave one.
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .add_to_seen(999);
+        let sent = {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx)
+        };
+        // 999 has no cache: nothing to spend and nothing to carry
+        // back on the heap.
+        assert_eq!(sent, vec![2]);
+        assert_eq!(app.witnesses[&1].entity_queue, vec![2]);
+        assert!(app.witness_errors.is_empty());
+    }
+
+    /// The mount chain walk stops on a cycle instead of looping.
+    #[test]
+    fn the_mount_chain_walk_breaks_on_a_cycle() {
+        let (mut app, mut spaces) = fixture(b'W');
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [6.0, 0.0, 8.0], b'-'),
+        );
+        app.entity_population[&1].borrow_mut().vehicle = Some(3);
+        app.entity_population[&3].borrow_mut().vehicle = Some(1);
+        let (ctx, witness) = ctx_with(&mut app, 1);
+        assert_eq!(witness.vehicle_chain(&ctx), vec![3, 1]);
     }
 }

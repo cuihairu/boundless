@@ -1637,6 +1637,15 @@ pub struct CellApp {
     pub witness_warnings: Vec<crate::cellapp_witness::WitnessNote>,
     /// The witness ERROR/CRITICAL faces, in delivery order.
     pub witness_errors: Vec<crate::cellapp_witness::WitnessNote>,
+    /// `CellApp::emergencyThrottle()`: the load throttle (1.0 is none).
+    pub emergency_throttle: f32,
+    /// `CellAppConfig::witnessUpdateMaxPriorityDelta()` (default 5.0).
+    pub witness_max_priority_delta: f32,
+    /// The fixed per-send bundle growth while the update writer is
+    /// BW-08-03-04's face.
+    pub witness_update_bytes: i32,
+    /// `CellAppConfig::entitySpamSize()` (default 200).
+    pub witness_spam_size: i32,
 }
 
 impl Default for CellApp {
@@ -1701,6 +1710,10 @@ impl Default for CellApp {
             entity_properties: BTreeMap::new(),
             witness_warnings: Vec::new(),
             witness_errors: Vec::new(),
+            emergency_throttle: 1.0,
+            witness_max_priority_delta: 5.0,
+            witness_update_bytes: 100,
+            witness_spam_size: 200,
         }
     }
 }
