@@ -69,20 +69,66 @@ pub struct GhostWire {
     pub space_id: SpaceId,
     /// The entity the message is about.
     pub entity: u32,
+    /// The message the bundle carries.
+    pub message: GhostMessage,
+}
+
+/// The ghost-only messages `deliverGhost` dispatches
+/// (`cellapp_interface.hpp:298`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum GhostMessage {
     /// `createGhost`'s payload (`writeGhostDataToStream`, the id and
-    /// type already on it); `delGhost` sends nothing.
-    pub create_data: Option<Vec<u8>>,
+    /// type already on it).
+    Create(Vec<u8>),
+    /// `delGhost`: an empty message.
+    Del,
+    /// `ghostPositionUpdateArgs`, in the reference's field order.
+    Position {
+        pos: [f32; 3],
+        dir: [f32; 3],
+        is_on_ground: bool,
+        update_number: u32,
+    },
+    /// `ghostVolatileInfoArgs`.
+    VolatileInfo(crate::cellapp_witness::VolatileInfo),
+    /// `ghostedDataUpdate`: the property index, then the change stream.
+    Property { index: i32, data: Vec<u8> },
+}
+
+/// What a delivered ghost bundle became (`CellApp::processMessage`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DeliverGhost {
+    /// A `createGhost` delivery.
+    Create(CreateGhostOutcome),
+    /// A `delGhost` delivery: whether the ghost was there.
+    Del(bool),
+    /// A `ghostPositionUpdate` delivery.
+    Position(bool),
+    /// A `ghostVolatileInfo` delivery.
+    VolatileInfo(bool),
+    /// A `ghostedDataUpdate` delivery.
+    Property(bool),
 }
 
 impl GhostWire {
     /// The `CellAppInterface::createGhost` arguments off a wire's
     /// payload: the entity id the message carries, then the rest.
     pub fn split_create(&self) -> Option<(u32, Vec<u8>)> {
-        let data = self.create_data.as_ref()?;
-        let mut stream = BinaryStream::from_slice(data);
-        let entity = stream.read_u32().ok()?;
-        Some((entity, stream.unread_bytes().to_vec()))
+        let data = match &self.message {
+            GhostMessage::Create(data) => data,
+            _ => return None,
+        };
+        split_create_payload(data)
     }
+}
+
+/// The create payload after the streamed entity id — `MF_*_ENTITY_MSG`
+/// carries the id in the message header, and
+/// `writeGhostDataToStream` puts it on the body too.
+fn split_create_payload(data: &[u8]) -> Option<(u32, Vec<u8>)> {
+    let mut stream = BinaryStream::from_slice(data);
+    let entity = stream.read_u32().ok()?;
+    Some((entity, stream.unread_bytes().to_vec()))
 }
 
 /// A `BufferedGhostMessage` for a `createGhost` that arrived while its
@@ -442,6 +488,208 @@ impl CellApp {
         true
     }
 
+    /// `Entity::updateInternalsForNewPositionOfReal`
+    /// (`entity.cpp:3905`), the ghost half: `volatileUpdateNumber_`
+    /// bumped first, then one `ghostPositionUpdate` per haunt. The
+    /// `RealEntity::newPosition` and range-list shuffle faces are the
+    /// movement cluster's.
+    pub fn send_ghost_position_update(&mut self, entity: u32) {
+        let (haunts, space_id, pos, dir, is_on_ground, update_number) = {
+            let entity_rc = self
+                .entity_population
+                .get(&entity)
+                .expect("the position update runs for reals");
+            let mut borrowed = entity_rc.borrow_mut();
+            borrowed.volatile_update_number = borrowed.volatile_update_number.wrapping_add(1);
+            (
+                borrowed.haunts.clone(),
+                borrowed.space_id,
+                borrowed.local_position,
+                borrowed.local_direction,
+                borrowed.is_on_ground,
+                borrowed.volatile_update_number as u32,
+            )
+        };
+        for haunt in haunts {
+            self.ghost_outbox.push(GhostWire {
+                dest: haunt.addr,
+                src: self.address,
+                space_id,
+                entity,
+                message: GhostMessage::Position {
+                    pos,
+                    dir,
+                    is_on_ground,
+                    update_number,
+                },
+            });
+        }
+    }
+
+    /// `Entity::ghostPositionUpdate` (`entity.cpp:4888`): the real's
+    /// snapshot lands on the ghost's local faces, then the global face
+    /// follows without updating further ghosts.
+    pub fn ghost_position_update(
+        &mut self,
+        _spaces: &mut BTreeMap<SpaceId, Space>,
+        entity: u32,
+        pos: [f32; 3],
+        dir: [f32; 3],
+        is_on_ground: bool,
+        update_number: u32,
+    ) -> bool {
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return false;
+        };
+        debug_assert!(
+            !entity_rc.borrow().is_real,
+            "ghostPositionUpdate is a GHOST_ONLY message"
+        );
+        {
+            let mut borrowed = entity_rc.borrow_mut();
+            borrowed.local_position = pos;
+            borrowed.is_on_ground = is_on_ground;
+            borrowed.local_direction = dir;
+            borrowed.volatile_update_number = update_number as u16;
+        }
+        self.update_global_position(&entity_rc, false);
+        true
+    }
+
+    /// `Entity::setVolatileInfo` (`entity.cpp:6704`): the change, plus
+    /// the tell to every haunt. Answers whether the info changed.
+    pub fn set_volatile_info(
+        &mut self,
+        entity: u32,
+        new_info: crate::cellapp_witness::VolatileInfo,
+    ) -> bool {
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return false;
+        };
+        // The reference has MF_ASSERT( isReal ) and a redundant release
+        // guard; the assert is the port's whole face.
+        debug_assert!(entity_rc.borrow().is_real, "setVolatileInfo is a real face");
+        if entity_rc.borrow().volatile_info == new_info {
+            // The reference returns before touching the haunts.
+            return false;
+        }
+        let (haunts, space_id, less_volatile) = {
+            let borrowed = entity_rc.borrow();
+            (
+                borrowed.haunts.clone(),
+                borrowed.space_id,
+                new_info.is_less_volatile_than(borrowed.volatile_info),
+            )
+        };
+        // `addDetailedPositionToHistory( false )` on the less-volatile
+        // change is the witness cluster's detailed-position face.
+        let _ = less_volatile;
+        let (haunts, space_id) = (haunts, space_id);
+        {
+            let mut borrowed = entity_rc.borrow_mut();
+            borrowed.volatile_info = new_info;
+        }
+        for haunt in haunts {
+            self.ghost_outbox.push(GhostWire {
+                dest: haunt.addr,
+                src: self.address,
+                space_id,
+                entity,
+                message: GhostMessage::VolatileInfo(new_info),
+            });
+        }
+        true
+    }
+
+    /// `Entity::ghostVolatileInfo` (`entity.cpp:4999`): the ghost takes
+    /// the real's volatile info.
+    pub fn ghost_volatile_info(
+        &mut self,
+        entity: u32,
+        info: crate::cellapp_witness::VolatileInfo,
+    ) -> bool {
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return false;
+        };
+        debug_assert!(
+            !entity_rc.borrow().is_real,
+            "ghostVolatileInfo is a GHOST_ONLY message"
+        );
+        entity_rc.borrow_mut().volatile_info = info;
+        true
+    }
+
+    /// `Entity::updateGhosts`'s ghost loop (`entity.cpp:5750`): the
+    /// property change told to every haunt, the id and property index
+    /// streaming first.
+    pub fn send_ghosted_data_update(&mut self, entity: u32, index: i32, data: &[u8]) {
+        let (haunts, space_id) = {
+            let entity_rc = self
+                .entity_population
+                .get(&entity)
+                .expect("the property update runs for reals");
+            let borrowed = entity_rc.borrow();
+            (borrowed.haunts.clone(), borrowed.space_id)
+        };
+        for haunt in haunts {
+            self.ghost_outbox.push(GhostWire {
+                dest: haunt.addr,
+                src: self.address,
+                space_id,
+                entity,
+                message: GhostMessage::Property {
+                    index,
+                    data: data.to_vec(),
+                },
+            });
+        }
+    }
+
+    /// `Entity::ghostedDataUpdate` (`entity.cpp:5068`): the ghost's
+    /// property data changes. The reference looks the property up on
+    /// the entity type's description and CRITICALs on a componentised
+    /// one — the port's description table stands in for the def.
+    pub fn ghosted_data_update(&mut self, entity: u32, index: i32, data: &[u8]) -> bool {
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return false;
+        };
+        debug_assert!(
+            !entity_rc.borrow().is_real,
+            "ghostedDataUpdate is a GHOST_ONLY message"
+        );
+        let type_id = entity_rc.borrow().type_id;
+        let description = self
+            .ghost_property_descriptions
+            .get(&type_id)
+            .and_then(|descriptions| {
+                descriptions
+                    .iter()
+                    .find(|(property_index, _)| *property_index == index)
+                    .copied()
+            });
+        let Some((_, componentised)) = description else {
+            self.ghost_property_notes.push(format!(
+                "Entity::ghostedDataUpdate: no description for entity {entity}"
+            ));
+            return false;
+        };
+        if componentised {
+            // CRITICAL "Unable to handle component update"
+            self.ghost_property_notes.push(format!(
+                "Entity::ghostedDataUpdate: component update {entity}"
+            ));
+            return false;
+        }
+        entity_rc
+            .borrow_mut()
+            .ghost_properties
+            .insert(index, data.to_vec());
+        self.ghost_property_notes.push(format!(
+            "Entity::ghostedDataUpdate: entity {entity} received {index}"
+        ));
+        true
+    }
+
     /// `Cell::checkOffloadsAndGhosts` (`cell.cpp:174`): run the offload
     /// checker over our cell of `space_id`. The return is the cell's
     /// `isReadyForDeletion` (the port's face: reals gone, space entities
@@ -478,6 +726,53 @@ impl CellApp {
             && empty
             && reals_empty
             && self.buffered_ghost_creates.is_empty()
+    }
+}
+
+impl CellApp {
+    /// The ghost channel's deliver face: `CellApp::processMessage`
+    /// dispatching the kind of message the bundle carries.
+    pub fn deliver_ghost(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        wire: &GhostWire,
+    ) -> DeliverGhost {
+        match &wire.message {
+            GhostMessage::Create(data) => {
+                let Some((entity, payload)) = split_create_payload(data) else {
+                    // The stream carries no id: the reference's message
+                    // header could not name an entity either.
+                    return DeliverGhost::Create(CreateGhostOutcome::BadStream);
+                };
+                DeliverGhost::Create(self.create_ghost_message(
+                    spaces,
+                    wire.space_id,
+                    wire.src,
+                    entity,
+                    payload.as_slice(),
+                ))
+            }
+            GhostMessage::Del => DeliverGhost::Del(self.del_ghost(spaces, wire.entity)),
+            GhostMessage::Position {
+                pos,
+                dir,
+                is_on_ground,
+                update_number,
+            } => DeliverGhost::Position(self.ghost_position_update(
+                spaces,
+                wire.entity,
+                *pos,
+                *dir,
+                *is_on_ground,
+                *update_number,
+            )),
+            GhostMessage::VolatileInfo(info) => {
+                DeliverGhost::VolatileInfo(self.ghost_volatile_info(wire.entity, *info))
+            }
+            GhostMessage::Property { index, data } => {
+                DeliverGhost::Property(self.ghosted_data_update(wire.entity, *index, data))
+            }
+        }
     }
 }
 
@@ -758,13 +1053,14 @@ impl GhostMaintainer {
             addr: cell.app_addr,
             creation_time: app.time,
         });
-        let data = write_ghost_data_to_stream(app, self.entity);
+        let data = write_ghost_data_to_stream(app, self.entity)
+            .expect("the real's ghost data is always writable");
         app.ghost_outbox.push(GhostWire {
             dest: cell.app_addr,
             src: self.own_address,
             space_id: self.space_id,
             entity: self.entity,
-            create_data: data,
+            message: GhostMessage::Create(data),
         });
         self.num_ghosts_created += 1;
     }
@@ -808,7 +1104,7 @@ impl GhostMaintainer {
                         src: self.own_address,
                         space_id: self.space_id,
                         entity: self.entity,
-                        create_data: None,
+                        message: GhostMessage::Del,
                     });
                     checker.add_deleted_ghost();
                 }
@@ -920,17 +1216,37 @@ mod tests {
         spaces: &mut BTreeMap<SpaceId, Space>,
         wire: &GhostWire,
     ) -> CreateGhostOutcome {
-        if wire.create_data.is_none() {
-            return if app.del_ghost(spaces, wire.entity) {
-                CreateGhostOutcome::Created
-            } else {
-                CreateGhostOutcome::BadStream
-            };
-        };
-        let Some((entity, payload)) = wire.split_create() else {
-            return CreateGhostOutcome::BadStream;
-        };
-        app.create_ghost_message(spaces, wire.space_id, wire.src, entity, &payload)
+        match app.deliver_ghost(spaces, wire) {
+            DeliverGhost::Create(outcome) => outcome,
+            DeliverGhost::Del(ok) => {
+                if ok {
+                    CreateGhostOutcome::Created
+                } else {
+                    CreateGhostOutcome::BadStream
+                }
+            }
+            DeliverGhost::Position(ok) => {
+                if ok {
+                    CreateGhostOutcome::Created
+                } else {
+                    CreateGhostOutcome::BadStream
+                }
+            }
+            DeliverGhost::VolatileInfo(ok) => {
+                if ok {
+                    CreateGhostOutcome::Created
+                } else {
+                    CreateGhostOutcome::BadStream
+                }
+            }
+            DeliverGhost::Property(ok) => {
+                if ok {
+                    CreateGhostOutcome::Created
+                } else {
+                    CreateGhostOutcome::BadStream
+                }
+            }
+        }
     }
 
     /// A real just inside our cell's far edge, both cells inside the
@@ -1135,7 +1451,7 @@ mod tests {
         assert_eq!(app_a.ghost_outbox.len(), 1, "the delGhost went out");
         let del = app_a.ghost_outbox.remove(0);
         assert_eq!(del.dest, B_ADDR);
-        assert_eq!(del.create_data, None);
+        assert_eq!(del.message, GhostMessage::Del);
         assert!(app_a.entity_population[&2].borrow().haunts.is_empty());
 
         assert_eq!(
@@ -1200,7 +1516,7 @@ mod tests {
         let deletes: Vec<u32> = app_a
             .ghost_outbox
             .iter()
-            .filter(|wire| wire.create_data.is_none())
+            .filter(|wire| matches!(wire.message, GhostMessage::Del))
             .map(|wire| wire.dest)
             .collect();
         assert_eq!(deletes, [B_ADDR], "the first haunt went, the second stayed");
@@ -1298,7 +1614,7 @@ mod tests {
         let creates: Vec<u32> = app_a
             .ghost_outbox
             .iter()
-            .filter(|wire| wire.create_data.is_some())
+            .filter(|wire| matches!(wire.message, GhostMessage::Create(_)))
             .map(|wire| wire.dest)
             .collect();
         assert_eq!(creates, [B_ADDR], "only the destination ghosted");
@@ -1468,8 +1784,12 @@ mod tests {
             src: A_ADDR,
             space_id: SID,
             entity: 99,
-            create_data: None,
+            message: GhostMessage::Del,
         };
+        assert!(
+            del.split_create().is_none(),
+            "a del carries no create payload"
+        );
         assert_eq!(
             deliver(&mut app_b, &mut spaces_b, &del),
             CreateGhostOutcome::BadStream
@@ -1479,7 +1799,7 @@ mod tests {
             src: A_ADDR,
             space_id: SID,
             entity: 2,
-            create_data: Some(vec![1, 2, 3]),
+            message: GhostMessage::Create(vec![1, 2, 3]),
         };
         assert!(short.split_create().is_none());
         assert_eq!(
@@ -1642,5 +1962,185 @@ mod tests {
         checker.run(&mut app_a, &mut spaces_a);
         assert!(app_a.ghost_outbox.is_empty(), "the far cell stays bare");
         assert!(app_a.entity_population[&2].borrow().haunts.is_empty());
+    }
+
+    /// The real's snapshot rides to the ghost: the position, the ground
+    /// flag, the direction, the volatile info and the property data all
+    /// end up matching what the real wrote.
+    #[test]
+    fn the_ghost_matches_the_real_snapshot() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        let create = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &create),
+            CreateGhostOutcome::Created
+        );
+
+        // The volatile info changes on the real: every haunt is told,
+        // and an unchanged tell goes nowhere.
+        let volatile = crate::cellapp_witness::VolatileInfo {
+            position_priority: 8.0,
+            yaw_priority: 4.0,
+            pitch_priority: 2.0,
+            roll_priority: 1.0,
+        };
+        assert!(app_a.set_volatile_info(2, volatile));
+        assert_eq!(app_a.ghost_outbox.len(), 1, "the haunt was told");
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::Created
+        );
+        assert_eq!(app_b.entity_population[&2].borrow().volatile_info, volatile);
+        assert!(
+            !app_a.set_volatile_info(2, volatile),
+            "an unchanged tell is dropped"
+        );
+        assert!(app_a.ghost_outbox.is_empty());
+
+        // The real walks: the ghost's local faces, the global face and
+        // the volatile counter all follow.
+        {
+            let mut real = app_a.entity_population[&2].borrow_mut();
+            real.local_position = [41.0, 0.0, 26.0];
+            real.position = [41.0, 0.0, 26.0];
+            real.local_direction = [0.5, 0.25, -1.0];
+            real.direction = [0.5, 0.25, -1.0];
+            real.is_on_ground = false;
+        }
+        app_a.send_ghost_position_update(2);
+        assert_eq!(app_a.ghost_outbox.len(), 1, "one position update per haunt");
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::Created
+        );
+        let ghost = app_b.entity_population[&2].borrow();
+        assert_eq!(ghost.local_position, [41.0, 0.0, 26.0]);
+        assert_eq!(ghost.position, [41.0, 0.0, 26.0]);
+        assert_eq!(ghost.local_direction, [0.5, 0.25, -1.0]);
+        assert_eq!(ghost.direction, [0.5, 0.25, -1.0]);
+        assert!(!ghost.is_on_ground);
+        drop(ghost);
+        let ghost_counter = app_b.entity_population[&2].borrow().volatile_update_number;
+        let real_counter = app_a.entity_population[&2].borrow().volatile_update_number;
+        assert_eq!(
+            ghost_counter, real_counter,
+            "the ghost restamps the real's counter"
+        );
+
+        // The property data: the description table sits on the ghost's
+        // own app — the ghost is what looks its properties up. A
+        // componentised entry is the reference's CRITICAL.
+        app_b
+            .ghost_property_descriptions
+            .insert(TYPE, vec![(0, false), (1, true)]);
+        app_a.send_ghosted_data_update(2, 0, &[7, 8]);
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::Created
+        );
+        assert_eq!(
+            app_b.entity_population[&2].borrow().ghost_properties[&0],
+            [7, 8]
+        );
+
+        app_a.send_ghosted_data_update(2, 1, &[9, 9]);
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::BadStream
+        );
+        assert!(
+            app_b
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("component")),
+            "the componentised update is the CRITICAL face"
+        );
+
+        // An index the type has no description for is the reference's
+        // NULL-description ERROR.
+        app_a.send_ghosted_data_update(2, 3, &[1]);
+        let wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &wire),
+            CreateGhostOutcome::BadStream
+        );
+        assert!(
+            app_b
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("no description"))
+        );
+
+        // The unknown-entity refusals on every copy face.
+        assert!(!app_a.set_volatile_info(99, volatile));
+        assert!(!app_b.ghost_position_update(&mut spaces_b, 99, [0.0; 3], [0.0; 3], false, 1));
+        assert!(!app_b.ghost_volatile_info(99, volatile));
+        assert!(!app_b.ghosted_data_update(99, 0, &[1]));
+
+        // A refused copy reads as a refusal through the deliver face.
+        let missing = GhostWire {
+            dest: B_ADDR,
+            src: A_ADDR,
+            space_id: SID,
+            entity: 99,
+            message: GhostMessage::Position {
+                pos: [0.0; 3],
+                dir: [0.0; 3],
+                is_on_ground: false,
+                update_number: 1,
+            },
+        };
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &missing),
+            CreateGhostOutcome::BadStream
+        );
+        let missing = GhostWire {
+            dest: B_ADDR,
+            src: A_ADDR,
+            space_id: SID,
+            entity: 99,
+            message: GhostMessage::VolatileInfo(volatile),
+        };
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &missing),
+            CreateGhostOutcome::BadStream
+        );
+    }
+
+    /// The volatile-info comparisons are the reference's own.
+    #[test]
+    fn the_volatile_info_comparisons() {
+        let more = crate::cellapp_witness::VolatileInfo::default();
+        let less = crate::cellapp_witness::VolatileInfo {
+            position_priority: -2.0,
+            yaw_priority: -1.0,
+            pitch_priority: -1.0,
+            roll_priority: -1.0,
+        };
+        assert!(
+            less.is_less_volatile_than(more),
+            "the lower position priority is less volatile"
+        );
+        assert!(!more.is_less_volatile_than(less));
+        assert!(more.is_valid(), "equal priorities count as ordered");
+        let unsorted = crate::cellapp_witness::VolatileInfo {
+            position_priority: 0.0,
+            yaw_priority: 1.0,
+            pitch_priority: 3.0,
+            roll_priority: 2.0,
+        };
+        assert!(!unsorted.is_valid(), "yaw below pitch is unordered");
+        let ordered = crate::cellapp_witness::VolatileInfo {
+            position_priority: 0.0,
+            yaw_priority: 3.0,
+            pitch_priority: 2.0,
+            roll_priority: 1.0,
+        };
+        assert!(ordered.is_valid());
     }
 }

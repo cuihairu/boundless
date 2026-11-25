@@ -291,6 +291,9 @@ pub struct Entity {
     /// witness caches restamp from on reset (their `lastVolatile` is
     /// this minus one).
     pub volatile_update_number: u16,
+    /// `propertyOwner_`'s ghost half: the property data
+    /// `ghostedDataUpdate` set, by the type's property index.
+    pub ghost_properties: BTreeMap<i32, Vec<u8>>,
     /// `baseAddr_`: the base's internal address, when the stream carried one.
     pub base_addr: Option<(u32, u16)>,
     /// The Witness indicator byte `RealEntity::init` read (`'W'`/`'-'`).
@@ -392,6 +395,7 @@ impl Entity {
             last_event_number: 0,
             last_trimmed_event_number: 0,
             volatile_update_number: 0,
+            ghost_properties: BTreeMap::new(),
             base_addr: None,
             has_witness: false,
             controllers: crate::cellapp_real_entity::Controllers::default(),
@@ -1775,6 +1779,14 @@ pub struct CellApp {
     /// for an entity that already exists here (or behind an earlier
     /// buffered one) — held for `playSubsequenceFor` (the replay cluster).
     pub buffered_ghost_creates: Vec<crate::cellapp_ghost::BufferedGhostCreate>,
+    /// `pEntityType_->description().property( index )`: the port's
+    /// property-description table (the reference's def-driven one), keyed
+    /// by entity type. Each entry is the (property index, componentised
+    /// flag) pair `ghostedDataUpdate` looks up.
+    pub ghost_property_descriptions: BTreeMap<u32, Vec<(i32, bool /* componentised */)>>,
+    /// The reference's `countReceived` / CRITICAL / ERROR notes, kept as
+    /// text in the port.
+    pub ghost_property_notes: Vec<String>,
 }
 
 impl Default for CellApp {
@@ -1853,6 +1865,8 @@ impl Default for CellApp {
             channel_marks: BTreeMap::new(),
             dead_channels: BTreeSet::new(),
             buffered_ghost_creates: Vec::new(),
+            ghost_property_descriptions: BTreeMap::new(),
+            ghost_property_notes: Vec::new(),
             max_time_between_player_updates: 0,
         }
     }

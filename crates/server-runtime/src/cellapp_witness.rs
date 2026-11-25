@@ -141,6 +141,23 @@ pub struct VolatileInfo {
     pub roll_priority: f32,
 }
 
+impl VolatileInfo {
+    /// `VolatileInfo::isLessVolatileThan` (`volatile_info.cpp:80`):
+    /// whether a detailed position needs to be sent when the volatile
+    /// info changes.
+    pub fn is_less_volatile_than(&self, info: VolatileInfo) -> bool {
+        self.position_priority < info.position_priority
+            || self.yaw_priority < info.yaw_priority
+            || self.pitch_priority < info.pitch_priority
+            || self.roll_priority < info.roll_priority
+    }
+
+    /// `VolatileInfo::isValid` (`volatile_info.cpp:92`).
+    pub fn is_valid(&self) -> bool {
+        self.yaw_priority >= self.pitch_priority && self.pitch_priority >= self.roll_priority
+    }
+}
+
 impl Default for VolatileInfo {
     /// `VolatileInfo( -1.f, -1.f, -1.f, -1.f )`.
     fn default() -> Self {
