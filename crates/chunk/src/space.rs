@@ -655,6 +655,30 @@ impl ChunkSpace {
         self.remove_from_blurred(identifier);
     }
 
+    /// The placer's `ChunkPlacer::deleteChunk` face (`chunk_placer.rs`
+    /// shells the too-small item out of its chunk): the chunk leaves the
+    /// space outright — out of the map, out of the blur list, and the 3x3
+    /// focus-grid columns around its centre are dropped so no query can
+    /// return it afterwards. Like [`Self::ignore_chunk`] without the
+    /// bound-only refusal: the placer deletes freshly created, not yet
+    /// bound chunks too.
+    pub fn remove_chunk(&mut self, identifier: &str) {
+        let centre = self.chunks.get(identifier).map(|c| c.bounding_box.centre());
+        if let Some(centre) = centre {
+            let nx = self.point_to_grid(centre.x);
+            let nz = self.point_to_grid(centre.z);
+            for x in nx - 1..=nx + 1 {
+                for z in nz - 1..=nz + 1 {
+                    if let Some(slot) = self.current_focus.slot_mut(x, z) {
+                        *slot = None;
+                    }
+                }
+            }
+        }
+        self.remove_from_blurred(identifier);
+        self.chunks.remove(identifier);
+    }
+
     /// `ServerChunkSpace::focus` (`server_chunk_space.cpp:56-113`): focus
     /// every blurred chunk. For each one the 3x3 columns around its centre
     /// grid cell are shut if they had seen the chunk, the chunk is focused
@@ -1583,6 +1607,50 @@ mod tests {
         // Not in the map: silent no-op.
         space.ignore_chunk("nosuchchunk");
         assert!(space.column_at(&Vector3::new(50.0, 0.0, 50.0)).is_some());
+    }
+
+    /// The placer's delete face: `remove_chunk` drops a bound chunk out
+    /// of the map, the blur list and the focus grid — and takes an
+    /// unbound one too, where [`Self::ignore_chunk`] would refuse it.
+    #[test]
+    fn remove_chunk_drops_a_chunk_out_of_every_index() {
+        let mut space = ChunkSpace::new(0, vec![identity_mapping()]);
+        let mapping = identity_mapping();
+        let mut chunk = Chunk::new("00000000o", &mapping, &Matrix::identity());
+        chunk.is_loaded = true;
+        space.add_chunk(chunk);
+        assert!(space.bind("00000000o"));
+        space.focus();
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 5.0, 50.0))
+                .is_some()
+        );
+
+        // An unbound chunk in the map too — the placer deletes these.
+        let mut idle = Chunk::new("00000001o", &mapping, &Matrix::identity());
+        idle.is_bound = false;
+        idle.bounding_box = BoundBox::new(
+            Vector3::new(150.0, 0.0, 150.0),
+            Vector3::new(160.0, 5.0, 160.0),
+        );
+        space.add_chunk(idle);
+
+        space.remove_chunk("00000000o");
+        assert!(space.chunk("00000000o").is_none());
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 5.0, 50.0))
+                .is_none()
+        );
+        assert!(!space.blurred.iter().any(|s| s == "00000000o"));
+
+        // The unbound chunk goes out as well — no bound-only refusal here.
+        space.remove_chunk("00000001o");
+        assert!(space.chunk("00000001o").is_none());
+
+        // Not in the map: a silent no-op, like ignore_chunk's.
+        space.remove_chunk("nosuchchunk");
     }
 
     /// `ServerChunkSpace::recalcGridBounds` (`server_chunk_space.cpp:135-141`):

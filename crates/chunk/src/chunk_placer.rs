@@ -1372,6 +1372,16 @@ mod tests {
                 space.add_chunk(chunk);
             }
         }
+        // The editor space a placer runs against is ready: every chunk is
+        // bound and focused (the reference's ChunkManager did that as the
+        // camera moved), so point lookups resolve through the focus grid.
+        for x in 0..2 {
+            for z in 0..2 {
+                let id = mapping.outside_chunk_identifier(x, z, false);
+                assert!(space.bind(&id), "bind {id}");
+            }
+        }
+        space.focus();
         EditorWorld::new(space)
     }
 
@@ -1418,9 +1428,10 @@ mod tests {
                 .find_chunk_from_point_exact(&Vector3::new(500.0, 0.0, 500.0))
                 .is_none()
         );
-        // a not-loaded chunk is not a valid target (`completed()`)
+        // a not-completed chunk is not a valid target (`completed()`):
+        // smudging drops the flag until the next focus pass
         let mut unloaded = grid_world();
-        unloaded.space.chunk_mut("00000000o").unwrap().is_loaded = false;
+        assert!(unloaded.space.smudge_chunk("00000000o"));
         assert!(
             unloaded
                 .space
@@ -1436,13 +1447,37 @@ mod tests {
         // outside chunk keeps the point when no inside box contains it
         let mapping = world.space.mappings[0].clone();
         let mut inner = Chunk::new("00000000i", &mapping, &Matrix::identity());
-        inner.transform.set_translate(50.0, 0.0, 50.0);
+        // the box planes below are world-space, so the shell keeps the
+        // identity transform (the focus pass transforms boundary planes by
+        // it when building the hull border)
         inner.bounding_box = BoundBox::new(
             Vector3::new(40.0, -5.0, 40.0),
             Vector3::new(60.0, 15.0, 60.0),
         );
         inner.is_loaded = true;
+        // a loaded shell carries its inward-facing hull border (`bounds`
+        // index the boundaries the hull tree is built from)
+        inner.boundaries = [
+            (Vector3::new(1.0, 0.0, 0.0), 40.0),
+            (Vector3::new(-1.0, 0.0, 0.0), -60.0),
+            (Vector3::new(0.0, 1.0, 0.0), -5.0),
+            (Vector3::new(0.0, -1.0, 0.0), -15.0),
+            (Vector3::new(0.0, 0.0, 1.0), 40.0),
+            (Vector3::new(0.0, 0.0, -1.0), -60.0),
+        ]
+        .iter()
+        .map(|&(normal, d)| crate::boundary::ChunkBoundary {
+            plane: PlaneEq::new(normal, d),
+            bound_portals: Vec::new(),
+            unbound_portals: Vec::new(),
+        })
+        .collect();
+        inner.bounds = vec![0, 1, 2, 3, 4, 5];
         world.space.add_chunk(inner);
+        // the ready-space contract: bind and focus the new chunk so the
+        // column at the point holds both chunks
+        assert!(world.space.bind("00000000i"));
+        world.space.focus();
         let id = world
             .space
             .find_chunk_from_point_exact(&Vector3::new(50.0, 5.0, 50.0))
