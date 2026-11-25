@@ -1357,16 +1357,16 @@
 作为 Boundless 新增的 DBApp 主存储后端，与 MySQL、XML 共用存储接口，通过配置选择。实现实体/账号字段映射、DBID 分配、索引与约束、事务、并发锁和连接恢复。复用存储契约测试，覆盖创建、装载、更新、删除、账号重登、auto-load 和二级库归档合并。以原版 MySQL 路径的实体状态、错误语义与回调结果作为行为基准。
 
 - [ ] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
-- [ ] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。
-- [ ] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。
-- [ ] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。
-- [ ] **BW-09-06-05 实现实体读写删查**。**验收** 共用存储契约用例通过。
-- [ ] **BW-09-06-06 提交 PostgreSQL 事务**。**验收** 已提交的实体更新可从另一连接读回。
-- [ ] **BW-09-06-07 回滚 PostgreSQL 事务**。**验收** 写入中途返回错误时，实体和关联记录从独立连接读出旧值。
-- [ ] **BW-09-06-08 处理 PostgreSQL 并发写冲突**。**验收** 两个写入同一实体的请求按存储契约返回结果，重试后没有重复记录。
-- [ ] **BW-09-06-09 实现断链恢复**。**验收** 数据库恢复后新请求成功。
-- [ ] **BW-09-06-10 验证账号重登**。**验收** 会话状态与 MySQL 基准相符。
-- [ ] **BW-09-06-11 对接 auto-load 与 SQLite 归档**。**验收** 重启恢复对应实体。
+- [x] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；round_trip 6/6）
+- [x] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；accounts 4/4）
+- [x] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；dbid_allocation 3/3（⚠️ 校准专面双交付 lane/bw08-ledger-tick 6f025f1 未并 main，合并择一））
+- [x] **BW-09-06-05 实现实体读写删查**。**验收** 共用存储契约用例通过。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；storage_contract 17/17）
+- [x] **BW-09-06-06 提交 PostgreSQL 事务**。**验收** 已提交的实体更新可从另一连接读回。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；transaction 4/4）
+- [x] **BW-09-06-07 回滚 PostgreSQL 事务**。**验收** 写入中途返回错误时，实体和关联记录从独立连接读出旧值。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；transaction_rollback 4/4）
+- [x] **BW-09-06-08 处理 PostgreSQL 并发写冲突**。**验收** 两个写入同一实体的请求按存储契约返回结果，重试后没有重复记录。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；transaction_conflict 4/4）
+- [x] **BW-09-06-09 实现断链恢复**。**验收** 数据库恢复后新请求成功。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；connection_recovery 4/4）
+- [x] **BW-09-06-10 验证账号重登**。**验收** 会话状态与 MySQL 基准相符。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；verify_relogon 4/4）
+- [x] **BW-09-06-11 对接 auto-load 与 SQLite 归档**。**验收** 重启恢复对应实体。（bw16-18 席交付 lane/bw16-18（非 main 祖先，合并须带入）；已勾账同步 bw19-docs 席同口径；本席 2026-11-26 临时 worktree 挂彼 tip 真机复测：本地 PG18 `cargo test -p db-postgres` 十六 target 全绿 0 失败；auto_load_restore 5/5）
 
 #### BW-09-07 PostgreSQL 数据库运维
 
