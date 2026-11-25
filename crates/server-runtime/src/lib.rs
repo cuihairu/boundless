@@ -35,6 +35,7 @@ pub mod dbappmgr;
 pub mod dead_cell_app;
 pub mod destroy_real;
 pub mod dispatcher;
+pub mod download_tuning;
 pub mod emergency_throttle;
 pub mod entity_creator;
 pub mod entity_destroy;
