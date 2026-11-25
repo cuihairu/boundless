@@ -41,27 +41,27 @@ use super::{
 
 /// The two CellApps of every scenario: different machines (the recovery
 /// alternate prefers a cross-host app).
-const APP_A: Addr = (0x7f000001, 3000);
-const APP_B: Addr = (0x7f000002, 3000);
+pub(crate) const APP_A: Addr = (0x7f000001, 3000);
+pub(crate) const APP_B: Addr = (0x7f000002, 3000);
 /// The CellApp timeout every fixture registers (`mgr_with`), milliseconds.
 const TIMEOUT_MS: u64 = 3000;
 /// The inform cadence of the synthetic clock, milliseconds.
-const TICK_MS: u64 = 1000;
+pub(crate) const TICK_MS: u64 = 1000;
 /// Balance-pass cap per window; the ladders settle far below it.
-const MAX_PASSES: usize = 12;
+pub(crate) const MAX_PASSES: usize = 12;
 /// The space geometry of the two balance legs: a 10000x10000 space
 /// split at the hot cell's reported entity edge (y = 6000), large
 /// enough that the `GHOST_DISTANCE` margin does not swallow it.
-const SPACE: Rect = Rect {
+pub(crate) const SPACE: Rect = Rect {
     xmin: 0.0,
     ymin: 0.0,
     xmax: 10000.0,
     ymax: 10000.0,
 };
-const SPACE_GRID: f32 = 500.0;
+pub(crate) const SPACE_GRID: f32 = 500.0;
 /// The entity edge the hot cell reports: y = 4000, below the initial
 /// split at the space top (10000), so the partition has room to move.
-const ENTITY_EDGE: f32 = 4000.0;
+pub(crate) const ENTITY_EDGE: f32 = 4000.0;
 
 // ---------------------------------------------------------------------------
 // The record sink (the entitydef baseline harness shape)
@@ -91,7 +91,7 @@ impl Record {
     }
 }
 
-fn fmt_rect(rect: Rect) -> String {
+pub(crate) fn fmt_rect(rect: Rect) -> String {
     format!(
         "{:.0},{:.0},{:.0},{:.0}",
         rect.xmin, rect.ymin, rect.xmax, rect.ymax
@@ -103,7 +103,7 @@ fn fmt_rect(rect: Rect) -> String {
 // ---------------------------------------------------------------------------
 
 /// `CellAppRecord` with a fixed load, as the in-crate `app` helper.
-fn app(addr: Addr, id: u32, load: f32) -> CellAppRecord {
+pub(crate) fn app(addr: Addr, id: u32, load: f32) -> CellAppRecord {
     let mut rec = CellAppRecord::new(addr, id, 1000 + id as u16, TIMEOUT_MS);
     rec.smoothed_load = load;
     rec.curr_load = load;
@@ -114,7 +114,7 @@ fn app(addr: Addr, id: u32, load: f32) -> CellAppRecord {
 
 /// `CellAppMgr` with the given `(addr, load)` apps, as the in-crate
 /// `mgr_with` helper.
-fn mgr_with(apps: Vec<(Addr, f32)>) -> CellAppMgr {
+pub(crate) fn mgr_with(apps: Vec<(Addr, f32)>) -> CellAppMgr {
     let mut mgr = CellAppMgr::new();
     mgr.set_base_app((0x7f000001, 100));
     mgr.set_db_app_alpha((0x7f000001, 200));
@@ -128,12 +128,12 @@ fn mgr_with(apps: Vec<(Addr, f32)>) -> CellAppMgr {
 /// Marks every cell created (the CellApps' createCells ack, which the
 /// reference gets before the first balance pass runs) and feeds the
 /// per-cell chunk and entity-bound reports of the split fixture.
-fn report_bounds(mgr: &mut CellAppMgr, space_id: u32, hot_entity_edge: (bool, f32)) {
+pub(crate) fn report_bounds(mgr: &mut CellAppMgr, space_id: u32, hot_entity_edge: (bool, f32)) {
     report_bounds_both(mgr, space_id, hot_entity_edge, EntityBoundLevels::new());
 }
 
 /// Same as `report_bounds`, with explicit entity bounds for the B cell.
-fn report_bounds_both(
+pub(crate) fn report_bounds_both(
     mgr: &mut CellAppMgr,
     space_id: u32,
     hot_entity_edge: (bool, f32),
@@ -170,7 +170,7 @@ fn report_bounds_both(
 /// when a cell has been deleted by the pass.
 type Ladder = Vec<(Rect, Option<Rect>)>;
 
-fn ranges(mgr: &CellAppMgr, space_id: u32) -> (Rect, Option<Rect>) {
+pub(crate) fn ranges(mgr: &CellAppMgr, space_id: u32) -> (Rect, Option<Rect>) {
     let space = &mgr.spaces[&space_id];
     let a = space.find_cell_by_app(APP_A).map(|c| c.range);
     let b = space.find_cell_by_app(APP_B).map(|c| c.range);
@@ -187,7 +187,7 @@ fn ranges(mgr: &CellAppMgr, space_id: u32) -> (Rect, Option<Rect>) {
 /// split of `Space::add_cell` produces) and at any lower position it
 /// holds the strip above the line. `Space::load_balance` re-derives the
 /// ranges from the unbounded root, so the split line moves freely.
-fn top_split_two_cell_space(mgr: &mut CellAppMgr, position: f32) -> u32 {
+pub(crate) fn top_split_two_cell_space(mgr: &mut CellAppMgr, position: f32) -> u32 {
     let id = mgr.generate_space_id(NULL_SPACE_ID);
     let mut space = Space::new(id, false, 0);
     let a = mgr.apps.find(APP_A).unwrap().clone();
@@ -221,7 +221,7 @@ fn top_split_two_cell_space(mgr: &mut CellAppMgr, position: f32) -> u32 {
 
 /// A fresh cell leaf with the given range (`CellLeaf::new` gives the
 /// whole world, so override the range after construction).
-fn cell(range: Rect, app: &CellAppRecord) -> CellLeaf {
+pub(crate) fn cell(range: Rect, app: &CellAppRecord) -> CellLeaf {
     let mut leaf = CellLeaf::new(0, app.addr, app.id, app.viewer_port);
     leaf.range = range;
     leaf
