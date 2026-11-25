@@ -1356,10 +1356,14 @@
 
 作为 Boundless 新增的 DBApp 主存储后端，与 MySQL、XML 共用存储接口，通过配置选择。实现实体/账号字段映射、DBID 分配、索引与约束、事务、并发锁和连接恢复。复用存储契约测试，覆盖创建、装载、更新、删除、账号重登、auto-load 和二级库归档合并。以原版 MySQL 路径的实体状态、错误语义与回调结果作为行为基准。
 
-- [ ] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。
-- [ ] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。
-- [ ] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。
-- [ ] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。
+- [x] **BW-09-06-01 配置 PostgreSQL 主存储选择**。**验收** DBApp 启动时报告所用后端。 （commit 0ea3eaf）
+  - 证据：`crates/db/src/config.rs`（0ea3eaf）`StorageBackend{Xml/MySql/PostgreSql}` 读 `<db><type>`（`lib/db/db_config.cpp` 默认 `"xml"`）；`describe()` 逐字 `DBENGINE_INFO_MSG("Database engine = %s\n", databaseType.c_str())`（server/dbapp/dbapp.cpp:427）；未知名→`DbError::UnknownBackend`="Failed to create database of type: oracle"（参照 `DBApp::init` 失败面）；`PostgresConnection` 为 `<db/postgresql>` host/port/database/username/password + `to_conninfo`；config.rs:129-191 六单测全绿。
+- [x] **BW-09-06-02 映射实体 schema 与字段**。**验收** Unicode、二进制和嵌套类型可往返。 （commit 4e8ba87）
+  - 证据：`crates/db-postgres/src/schema.rs`+`json.rs`（4e8ba87）`EntitySchema/ColumnKind/column_name/entity_table_name/quote_ident` 列名/表名映射与 JSON 值编码；验收 `tests/round_trip.rs` `unicode_binary_and_nested_values_round_trip` + `a_row_keeps_only_the_last_write`（PG 实跑，BOUNDLESS_PG_URL）。
+- [x] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。 （commit e68158f）
+  - 证据：`crates/db-postgres/src/accounts.rs`（e68158f）`AccountRow`/`account_table_ddl`；验收 `tests/accounts.rs` `a_duplicate_account_name_is_a_contract_error`（唯一约束→合同错误）+`the_name_key_is_bytes_not_text`（名字键=BLOB 字节）+`the_entity_type_and_id_survive_the_round_trip`+缺失账号读作 none。
+- [x] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。 （commit a289d8d）
+  - 证据：`crates/db-postgres/src/store.rs`（a289d8d）DBID 取自表序列；验收 `tests/dbid.rs` `concurrent_creations_never_repeat_an_id`（并发无重复）+`allocation_continues_after_a_reconnect`（重启连续）+`a_created_id_is_the_row_key`。
 - [ ] **BW-09-06-05 实现实体读写删查**。**验收** 共用存储契约用例通过。
 - [ ] **BW-09-06-06 提交 PostgreSQL 事务**。**验收** 已提交的实体更新可从另一连接读回。
 - [ ] **BW-09-06-07 回滚 PostgreSQL 事务**。**验收** 写入中途返回错误时，实体和关联记录从独立连接读出旧值。
@@ -1372,10 +1376,14 @@
 
 提供建库、schema 同步与 dry-run、备份恢复和现有 MySQL 数据导入。用原版样本核对实体 ID、账号关联、二进制字段、默认值和下一个可分配 DBID。验证迁移失败时的状态和重试行为。
 
-- [ ] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。
-- [ ] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。
-- [ ] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。
-- [ ] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。
+- [x] **BW-09-07-01 初始化 PostgreSQL 新库**。**验收** 从空库生成可启动 schema。 （commit e71ccdc）
+  - 证据：`crates/db-postgres/src/schema_init.rs`（e71ccdc）`CURRENT_VERSION`/`OLDEST_SUPPORTED_VERSION` + 固定表清单；验收 `tests/schema_init.rs` `an_empty_database_becomes_a_startable_schema`（空库→可启动 schema）+`an_uninitialised_database_reads_no_version`。
+- [x] **BW-09-07-02 提供 schema dry-run**。**验收** 数据库不变且报告拟执行语句。 （commit 022bee4）
+  - 证据：`crates/db-postgres/src/dry_run.rs`（022bee4）拟执行语句报告；验收 `tests/dry_run.rs` `a_fresh_database_is_reported_and_left_unchanged`（表计数不变）+`an_up_to_date_database_reports_nothing`+`a_partially_initialised_database_reports_its_gaps`。
+- [x] **BW-09-07-03 应用 schema 更新**。**验收** 旧样本升级后可读。 （commit 9aacde0）
+  - 证据：`crates/db-postgres/src/upgrade.rs`（9aacde0）schema 差量更新；验收 `tests/upgrade.rs` `an_old_sample_upgrades_and_stays_readable`（旧样本升级后可读）+`a_missing_table_plans_a_create`+`an_unchanged_table_plans_nothing`。
+- [x] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。 （commit e4d24e5）
+  - 证据：`crates/db-postgres/src/backup.rs`（e4d24e5）导出与恢复；验收 `tests/backup.rs` `an_empty_target_restores_identical_records`（空目标库恢复相同记录）+`a_re_restore_replaces_the_rows_without_duplicating`+缺失目标表失败臂。
 - [ ] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。
 - [ ] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。
 - [ ] **BW-09-07-07 验证迁移失败与重跑**。**验收** 下次执行不重复导入。
