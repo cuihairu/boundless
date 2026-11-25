@@ -2869,9 +2869,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(9abf58e)
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(4c19ee7)
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(2fbfcf8)
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -4450,9 +4450,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(9abf58e)
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(4c19ee7)
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(2fbfcf8)
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -5992,9 +5992,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(9abf58e)
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(4c19ee7)
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(2fbfcf8)
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -7534,9 +7534,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(9abf58e)
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(4c19ee7)
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(2fbfcf8)
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -9115,9 +9115,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(9abf58e)
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(4c19ee7)
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(2fbfcf8)
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -10657,9 +10657,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。19c4d4d（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 1396/1410/1412×4 共 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复且属性全等、归档恢复耗时 8 tick 重持久化 24/24 且逐实体往返核等；4 测 98.31% 行 100% 区域）
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(9abf58e)
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(4c19ee7)
-- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。(2fbfcf8)
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。9abf58e（backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑：slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，代价=每 tick 带宽峰翻倍(1412→2824)但字节总恒等 8454(方向断言诚实)；same_load 钉同舰队/同持久集/同字节/同恢复；4 测 100% 行）
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。4c19ee7（shared_data_baseline.rs+shared_data_tuning.rs 96 变更过真实双 mgr 链(set/del 四 scope+forward/relay 环 4 BaseApp+3 CellApp)：shipped 575 消息(base284/cell219/fwd24/relay48) vs 抑制 no-op 写 444(216/174/17/37)=省 131(−22.8%)，21 次 no-op 放大为全链腿消去(全局 set=5/转发 set=9/cell=3)；终态三权威图逐位相等(same_load 钉)；跨种子形状钉；9 测 baseline 98.58%+tuning 100%）
+- [x] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。2fbfcf8（takeover_rerun.rs 12 实体种子舰队过真实备份面后源亡接管 restore 12/12 属性全等；16 变更建双 mgr 权威图后按 count+pairs 恢复流形状落盘、全新 mgr 对经真实 recover_shared_data_from_stream 读回=四图逐位等(2/4/2/4 条目)；跨种子形状钉；4 测 99.65% 行 100% 区域，唯一缺行=属性不匹配假臂被断言正确性排除）
 
 ### OPT-08-01 密集 AOI 基线
 
