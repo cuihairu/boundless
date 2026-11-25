@@ -2831,7 +2831,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
@@ -4384,7 +4384,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
@@ -5910,7 +5910,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
@@ -7436,7 +7436,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
@@ -8989,7 +8989,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
@@ -10515,7 +10515,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 降低登录排队、会话接续和资源下载压力。比较登录峰值、拒绝率和尾延迟，复跑重复登录、重连与兼容回放。
 
-- [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。
+- [x] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。（本席 `5ec0620` 交付 `crates/load/src/login_baseline.rs`：组合登录 hurricane（峰值 `online_peak`=500）+ FD 预算拒绝率（`login_refusal_rate`=refused/(admitted+refused)=0.2614，saved 场景 177 拒绝）+ 下载传输 tick 地板（`download_ticks`=ceil(payload/BUNDLE_BYTES)=4，载荷 4096 字节、队列驻留 4096）；5 新测绿，`cargo test -p load` 155+1 全绿，clippy/fmt 净；**离线面为模拟时间，记录的是下载分块 tick 地板非墙钟登录 RTT，报告注明**；证据 docs/review/opt-06-01-01-login-baseline.md + 夹具 docs/review/fixtures/load/login-baseline.report.json，文档 `afee8b2`。）
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。
 - [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。
