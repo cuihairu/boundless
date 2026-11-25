@@ -14,4 +14,8 @@ regex = { workspace = true }
 resources = { workspace = true }
 
 [dev-dependencies]
+# The `.animation` reader face (`Animation::from_bytes`) the exporter's
+# acceptance round-trips through (BW-13-05-02; the reader landed with
+# BW-11-04-01). Tests only — no library dependency.
+client = { path = "../client" }
 compiled-space = { path = "../compiled-space" }

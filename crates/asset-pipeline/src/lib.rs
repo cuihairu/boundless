@@ -84,11 +84,17 @@
 //!   `ensureModelValid` judgement, the save/save-as flows and the metadata
 //!   block they refresh, against the `lib/model` read contract
 //!   (`tools/modeleditor_core/Models/`, `lib/gizmo/meta_data*`);
+//! - [`animation_exporter`] — the Max animation exporter's portable core:
+//!   the node tree, include munging and root sorting, the per-frame
+//!   sampling/decompose pipeline and the `.animation` binary writer
+//!   (type 1/4 node channels, type 6 cue track)
+//!   (`tools/animationexporter`, `lib/math/blend_transform.cpp`);
 //! - [`material_editor`] — the ModelEditor's material editing face: the
 //!   material/dye/tint census, mfm instantiation and overloading, the
 //!   clean/property/naming/feed/flag moves and the shader gates
 //!   (`tools/modeleditor_core/Models/mutant_materials.cpp`).
 
+pub mod animation_exporter;
 pub mod asset_compiler;
 pub mod asset_compiler_options;
 pub mod asset_processor;
