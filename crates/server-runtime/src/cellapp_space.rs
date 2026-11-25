@@ -1779,6 +1779,10 @@ pub struct CellApp {
     /// deliver them into the peer CellApp; the reference hands them to
     /// the destination's bundle.
     pub onload_outbox: Vec<crate::cellapp_ghost::OnloadWire>,
+    /// `CellAppInterface::onloadTeleportedEntity` wires: the cross-space
+    /// teleport's head (the nearby id and the ghost body) with the tail
+    /// `onload` boxed inside.
+    pub teleport_outbox: Vec<crate::cellapp_ghost::TeleportWire>,
     /// `CellAppChannels`' per-channel `mark()` — the ghost maintainer's
     /// this-round mark bookkeeping, by remote address.
     pub channel_marks: BTreeMap<u32, i32>,
@@ -1882,6 +1886,7 @@ impl Default for CellApp {
             max_ghosts_to_delete: crate::cellapp_ghost::MAX_GHOSTS_TO_DELETE,
             ghost_outbox: Vec::new(),
             onload_outbox: Vec::new(),
+            teleport_outbox: Vec::new(),
             channel_marks: BTreeMap::new(),
             dead_channels: BTreeSet::new(),
             ghost_property_descriptions: BTreeMap::new(),

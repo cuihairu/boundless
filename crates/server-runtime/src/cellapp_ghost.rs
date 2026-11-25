@@ -33,6 +33,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use foundation::math::Vector3;
 use foundation::stream::BinaryStream;
 
 use crate::cellapp_navigate::{
@@ -166,6 +167,26 @@ pub struct OnloadWire {
     pub is_teleport: bool,
     /// The `Entity::writeRealDataToStream` body.
     pub data: Vec<u8>,
+}
+
+/// `CellAppInterface::onloadTeleportedEntity` (`cellapp_interface.hpp:143`):
+/// the cross-space teleport's head — the nearby id the ghost lands near
+/// and the ghost body `RealEntity::teleport` wrote for the destination to
+/// `createGhost` in the nearby's space. The tail is the `OnloadWire`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TeleportWire {
+    /// The destination app's address.
+    pub dest: u32,
+    /// The sender's address.
+    pub src: u32,
+    /// The nearby entity the ghost is created near — its space is where
+    /// the entity lands.
+    pub nearby: u32,
+    /// `Entity::writeGhostDataToStream`'s body (the id and type ride the
+    /// message header in the reference; the port carries them on it).
+    pub ghost_data: Vec<u8>,
+    /// The tail: the `onload` the destination runs after the ghost.
+    pub onload: Box<OnloadWire>,
 }
 
 impl GhostWire {
@@ -1483,6 +1504,207 @@ impl CellApp {
             self.entity_callback(entity, "onLeftCell", true, None);
         }
         let _ = spaces;
+    }
+
+    /// `RealEntity::teleport` (`real_entity.cpp:1183`): the cross-space
+    /// teleport. The real turns into a ghost of its old haunts, its old
+    /// ghosts are deleted, `onLeavingCell` fires, and the destination
+    /// receives the ghost-then-onload pair in the nearby's space. The
+    /// position's `INVALID_POSITION` arm (no nearby) is the local
+    /// teleport and lives elsewhere; here a nearby is always given.
+    pub fn teleport_entity(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        entity: u32,
+        destination: u32,
+        nearby: u32,
+        position: Vector3,
+        direction: Vector3,
+    ) -> bool {
+        // `if (!isValidPos)` with a nearby always present: the position
+        // is taken as valid (the reference's INVALID arm is the no-nearby
+        // local face).
+        // `if (nearbyMBRef.id == 0)`: a local teleport, not this face.
+        if nearby == 0 {
+            return false;
+        }
+        // `if (Passengers::instance.exists( entity_ ))`: a vehicle
+        // cannot teleport.
+        if self.passengers_state.contains_key(&entity) {
+            return false;
+        }
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return false;
+        };
+        if !entity_rc.borrow().is_real {
+            return false;
+        }
+        // The nearby must be a real entity on the destination app —
+        // the reference's `CellAppChannels::get( nearbyMBRef.addr )`
+        // channel check; the port's face is the destination's own
+        // population (the caller hands the app that holds the nearby).
+        if self
+            .entity_population
+            .get(&nearby)
+            .is_none_or(|rc| rc.borrow().destroyed)
+        {
+            return false;
+        }
+
+        // `entity().relocated()` — the extras notification.
+        self.relocate_entity_extras(&entity_rc);
+
+        // Save the old position; set the temporary teleport target (the
+        // ghost body is written from it, then the old position restored).
+        let old_position = entity_rc.borrow().position;
+        let old_direction = entity_rc.borrow().direction;
+        {
+            let mut borrowed = entity_rc.borrow_mut();
+            borrowed.position = [position.x, position.y, position.z];
+            borrowed.local_position = borrowed.position;
+            borrowed.direction = [direction.x, direction.y, direction.z];
+            borrowed.local_direction = borrowed.direction;
+        }
+
+        // Delete all ghosts: a Del per haunt, the haunt cleared.
+        let haunts: Vec<u32> = entity_rc
+            .borrow()
+            .haunts
+            .iter()
+            .map(|haunt| haunt.addr)
+            .collect();
+        let old_space = self.space_of(entity);
+        for addr in haunts {
+            self.ghost_outbox.push(GhostWire {
+                dest: addr,
+                src: self.address,
+                space_id: old_space,
+                entity,
+                message: GhostMessage::Del,
+            });
+        }
+        entity_rc.borrow_mut().haunts.clear();
+
+        // `recordingSpaceEntryID_ = SpaceEntryID()`.
+        entity_rc.borrow_mut().periods_without_witness = 0;
+
+        // `entity_.callback( "onLeavingCell" )` — held below the script
+        // lock window like the offload's.
+
+        // Re-add haunt for the destination, write the ghost body from the
+        // teleport position, then the offload streams the real's state
+        // (whose stream carries the OLD space id — the destination's
+        // read detects the space change and tells its haunts the ghost
+        // is done instead of signing them on).
+        entity_rc.borrow_mut().haunts.push(Haunt {
+            addr: destination,
+            creation_time: self.time,
+        });
+        let ghost_data = write_ghost_data_to_stream(self, entity)
+            .expect("the real's ghost data is always writable");
+
+        // `offloadEntity( ..., isTeleport=true )`: the real turns into
+        // a ghost of this app, the real's data streams to the
+        // destination. is_teleport skips onLeavingCell here (the caller
+        // owns it — run it now).
+        self.entity_callback(entity, "onLeavingCell", true, None);
+        self.offload_entity(spaces, entity, destination, true);
+
+        // Restore the old position: the destination gets the teleported
+        // one from the ghost body.
+        {
+            let mut borrowed = entity_rc.borrow_mut();
+            borrowed.position = old_position;
+            borrowed.local_position = old_position;
+            borrowed.direction = old_direction;
+            borrowed.local_direction = old_direction;
+        }
+
+        // The tail onload wire: the destination runs it after the ghost
+        // is created. Its space_id is the OLD space — `read_real_data_
+        // from_stream`'s changed-space detection drives the Del.
+        let onload = self
+            .onload_outbox
+            .last()
+            .cloned()
+            .expect("offload_entity pushed the onload wire");
+        self.teleport_outbox.push(TeleportWire {
+            dest: destination,
+            src: self.address,
+            nearby,
+            ghost_data,
+            onload: Box::new(onload),
+        });
+        // The tail rides inside the teleport wire; it is not also a bare
+        // onload.
+        self.onload_outbox.pop();
+        true
+    }
+
+    /// `CellApp::onloadTeleportedEntity` (`cellapp.cpp:2130`): the
+    /// destination's receive. The nearby's space is where the ghost is
+    /// created; then the onload converts it to the real and
+    /// `onTeleportSuccess` fires.
+    pub fn onload_teleported_entity(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        wire: &TeleportWire,
+    ) -> bool {
+        let nearby_lives = self
+            .entity_population
+            .get(&wire.nearby)
+            .is_some_and(|rc| !rc.borrow().destroyed);
+        if !nearby_lives {
+            // ERROR_MSG "nearby entity (id %u) does not exist on this
+            // CellApp, while teleporting entity %u": the teleport failed
+            // here — the onload bounces back with `teleportFailure`
+            // forced true, and the origin's ghost becomes the real again.
+            self.ghost_property_notes.push(format!(
+                "CellApp::onloadTeleportedEntity: nearby entity {} does not exist on this CellApp, while teleporting entity {}",
+                wire.nearby, wire.onload.entity
+            ));
+            let mut bounced = (*wire.onload).clone();
+            if bounced.data.len() > 4 {
+                bounced.data[4] = 1; // teleportFailure
+            }
+            bounced.dest = wire.src;
+            bounced.src = self.address;
+            self.onload_outbox.push(bounced);
+            return false;
+        }
+        let nearby_space = self.entity_population[&wire.nearby].borrow().space_id;
+
+        // The reference prefixes the nearby's space id and the
+        // teleporting id ahead of the body; the port's
+        // `create_ghost_message` takes both as arguments, so the body
+        // starts at the id the `writeGhostDataToStream` wrote.
+        let id = wire.onload.entity.to_le_bytes();
+        if wire.ghost_data.len() < 4 || wire.ghost_data[..4] != id {
+            return false;
+        }
+        let ghost_payload = &wire.ghost_data[4..];
+        let outcome = self.create_ghost_message(
+            spaces,
+            nearby_space,
+            wire.src,
+            wire.onload.entity,
+            ghost_payload,
+        );
+        if !matches!(outcome, CreateGhostOutcome::Created) {
+            return false;
+        }
+        // The onload tail: the ghost becomes the real.
+        let onload = *wire.onload.clone();
+        let landed = self.onload_entity(spaces, &onload, None);
+        if !landed {
+            return false;
+        }
+        // `onTeleportSuccess( pNearbyEntity )` — the teleported entity
+        // is the receiver; the nearby is the destination context.
+        if let Some(entity_rc) = self.entity_population.get(&wire.onload.entity).cloned() {
+            self.on_teleport_success(&entity_rc, Some(wire.nearby));
+        }
+        true
     }
 
     /// `Controllers::stopReals( false )` (`controllers.cpp:481`), the
@@ -5440,6 +5662,366 @@ mod tests {
         // The next tick drops the previous generation.
         app_a.advance_tick();
         assert_eq!(app_a.find_real_channel(2), None);
+    }
+
+    /// The cross-space fixture: both apps hold both spaces, the real
+    /// starts in `SID` near the old-space observer, and the new space
+    /// holds the destination near its own observer. The helpers here
+    /// take a space id so the new space's witness can name it.
+    const SID_NEW: SpaceId = 9;
+    const OBSERVER: u32 = 1;
+    const MOVER: u32 = 2;
+    const NEW_OBSERVER: u32 = 3;
+    const NEARBY: u32 = 4;
+
+    fn create_stream_in(space: SpaceId, id: u32, pos: [f32; 3], witness: u8) -> Vec<u8> {
+        let mut stream = create_stream(id, pos);
+        let _ = space;
+        let last = stream.len() - 1;
+        stream[last] = witness;
+        stream
+    }
+
+    fn two_space_fixture() -> (
+        CellApp,
+        BTreeMap<SpaceId, Space>,
+        CellApp,
+        BTreeMap<SpaceId, Space>,
+    ) {
+        let cells = cell_infos(&[(A_ADDR, 0.0, 50.0), (B_ADDR, 50.0, 100.0)]);
+        let mut new_cells = cell_infos(&[(A_ADDR, 0.0, 50.0), (B_ADDR, 50.0, 100.0)]);
+        for info in &mut new_cells {
+            info.space_id = SID_NEW;
+        }
+        let (mut app_a, mut spaces_a) = app_at(A_ADDR, &cells);
+        let (mut app_b, mut spaces_b) = app_at(B_ADDR, &cells);
+        for app in [&mut app_a, &mut app_b] {
+            app.entity_scripts.insert(
+                TYPE,
+                crate::cellapp_real_entity::EntityScript::with_methods(
+                    BTreeSet::from(["onLeavingCell"]),
+                    BTreeMap::new(),
+                ),
+            );
+        }
+        let mut space_a_new = Space::new(SID_NEW);
+        space_a_new.update_geometry(&mut app_a, new_cells.clone());
+        let mut space_b_new = Space::new(SID_NEW);
+        space_b_new.update_geometry(&mut app_b, new_cells.clone());
+        let cell_b_new = Rc::new(RefCell::new(Cell {
+            info: new_cells[1].clone(),
+            space_gone_count: 0,
+            reuse_count: 0,
+            should_offload: true,
+            is_removed: false,
+        }));
+        space_b_new.set_cell(cell_b_new.clone());
+        app_b.cells.push(cell_b_new);
+        spaces_a.insert(SID_NEW, space_a_new);
+        spaces_b.insert(SID_NEW, space_b_new);
+        app_a.ghost_distance = 50.0;
+
+        for (app, spaces) in [(&mut app_a, &mut spaces_a), (&mut app_b, &mut spaces_b)] {
+            app.entity_type_faces
+                .insert(TYPE, crate::cellapp_witness::EntityTypeDef::default());
+            app.create_real_entity(
+                spaces,
+                SID,
+                &create_stream_in(SID, OBSERVER, [10.0, 0.0, 10.0], b'W'),
+            );
+            app.create_real_entity(
+                spaces,
+                SID_NEW,
+                &create_stream_in(SID_NEW, NEW_OBSERVER, [10.0, 0.0, 10.0], b'W'),
+            );
+            app.create_real_entity(
+                spaces,
+                SID_NEW,
+                &create_stream_in(SID_NEW, NEARBY, [12.0, 0.0, 12.0], b'-'),
+            );
+        }
+        // Only the source holds the real being teleported; the
+        // destination learns about it from the teleport wire.
+        app_a.create_real_entity(
+            &mut spaces_a,
+            SID,
+            &create_stream_in(SID, MOVER, [12.0, 0.0, 12.0], b'-'),
+        );
+        for witness in app_a
+            .witnesses
+            .values_mut()
+            .chain(app_b.witnesses.values_mut())
+        {
+            witness.set_witness_capacity(500_000, 10);
+        }
+        (app_a, spaces_a, app_b, spaces_b)
+    }
+
+    fn flush_observations(app: &mut CellApp, witness: u32, mover: u32) {
+        app.pump_aoi_events(witness);
+        app.process_witness(witness);
+        app.request_entity_update(witness, mover, &[5]);
+        app.process_witness(witness);
+    }
+
+    /// Shuffle a ranged entity's node so the AoI trigger records a
+    /// crossing, then observe once — the initial create does not queue
+    /// a crossing, so the first move is what opens the visible set.
+    fn nudge_and_observe(app: &mut CellApp, witness: u32, mover: u32) {
+        let space = app.witnesses[&witness].space_id;
+        let entity = app.entity_population[&mover].clone();
+        let node = entity.borrow().range_node.expect("a ranged entity");
+        let old = entity.borrow().position;
+        entity.borrow_mut().position = [old[0] + 0.5, old[1], old[2] + 0.5];
+        app.range_lists
+            .get_mut(&space)
+            .expect("the witness's space list")
+            .shuffle_entity(node, &[], old[0], old[2]);
+        flush_observations(app, witness, mover);
+    }
+
+    /// BW-08-05-05's acceptance: teleporting a real into another space
+    /// makes its visible set in the destination match the one it had
+    /// in the source, and the old space no longer sees it.
+    #[test]
+    fn a_cross_space_teleport_makes_the_visible_sets_agree() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_space_fixture();
+        // Pin down the source-space observation before the move.
+        nudge_and_observe(&mut app_a, OBSERVER, MOVER);
+        let old_set = app_a.witnesses[&OBSERVER]
+            .entities_visible_to_client()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert!(old_set.contains(&MOVER), "the source sees the mover");
+
+        // The source teleports the real near the destination's nearby
+        // entity, which is in the new space. The reference's flow:
+        // onLeavingCell, delete the old ghosts, offload with the
+        // teleport flag, then create the ghost in the nearby's space
+        // and sign the onload off on the destination.
+        let calls_before = app_a.script_calls.len();
+        assert!(app_a.teleport_entity(
+            &mut spaces_a,
+            MOVER,
+            B_ADDR,
+            NEARBY,
+            Vector3::new(12.0, 0.0, 12.0),
+            Vector3::new(0.25, 0.0, 0.0)
+        ));
+        let leaving: Vec<&str> = app_a.script_calls[calls_before..]
+            .iter()
+            .map(|call| call.name)
+            .collect();
+        assert!(leaving.contains(&"onLeavingCell"));
+
+        let wire = app_a.teleport_outbox.remove(0);
+        assert!(wire.onload.is_teleport);
+        for ghost in app_a.ghost_outbox.drain(..) {
+            deliver(&mut app_b, &mut spaces_b, &ghost);
+        }
+        assert!(app_b.onload_teleported_entity(&mut spaces_b, &wire));
+        {
+            let entity = app_b.entity_population[&MOVER].borrow();
+            assert!(entity.is_real);
+            assert_eq!(entity.space_id, SID_NEW);
+        }
+        // The teleported real's own witness moved with it.
+        nudge_and_observe(&mut app_b, NEW_OBSERVER, MOVER);
+        let new_set = app_b.witnesses[&NEW_OBSERVER]
+            .entities_visible_to_client()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(new_set, old_set, "the visible sets agree across spaces");
+    }
+
+    /// The refusals: no nearby, a vehicle, a stranger id, a ghost, a
+    /// destroyed nearby, and an unknown nearby each leave the outboxes
+    /// and the population untouched.
+    #[test]
+    fn a_teleport_refusal_touches_nothing() {
+        let (mut app_a, mut spaces_a, app_b, spaces_b) = two_space_fixture();
+        let pos = Vector3::new(12.0, 0.0, 12.0);
+        let dir = Vector3::new(0.25, 0.0, 0.0);
+
+        // `nearbyMBRef.id == 0`: the local-teleport face.
+        assert!(!app_a.teleport_entity(&mut spaces_a, MOVER, B_ADDR, 0, pos, dir));
+        // A vehicle with passengers cannot teleport.
+        app_a.passengers_state.insert(MOVER, {
+            let mut state = crate::cellapp_passenger::PassengersState {
+                in_destructor: false,
+                passengers: Vec::new(),
+                transform: foundation::math::Matrix::identity(),
+            };
+            state.passengers.push(OBSERVER);
+            state
+        });
+        assert!(!app_a.teleport_entity(&mut spaces_a, MOVER, B_ADDR, NEARBY, pos, dir));
+        app_a.passengers_state.clear();
+        // A stranger id, and a ghost.
+        assert!(!app_a.teleport_entity(&mut spaces_a, 999, B_ADDR, NEARBY, pos, dir));
+        let ghosted = app_a.entity_population[&MOVER].clone();
+        ghosted.borrow_mut().is_real = false;
+        assert!(!app_a.teleport_entity(&mut spaces_a, MOVER, B_ADDR, NEARBY, pos, dir));
+        ghosted.borrow_mut().is_real = true;
+        // An unknown nearby.
+        assert!(!app_a.teleport_entity(&mut spaces_a, MOVER, B_ADDR, 999, pos, dir));
+        // A destroyed nearby.
+        app_a.destroy_entity(&mut spaces_a, NEARBY);
+        assert!(!app_a.teleport_entity(&mut spaces_a, MOVER, B_ADDR, NEARBY, pos, dir));
+
+        assert!(app_a.onload_outbox.is_empty());
+        assert!(app_a.teleport_outbox.is_empty());
+        assert!(app_a.ghost_outbox.is_empty());
+        assert!(app_a.entity_population[&MOVER].borrow().is_real);
+        assert_eq!(app_a.entity_population.len(), 4);
+        // The peer never heard anything either.
+        assert!(app_b.teleport_outbox.is_empty());
+        assert!(spaces_b.contains_key(&SID_NEW));
+    }
+
+    /// "Delete all ghosts": the teleport tells every haunt the ghost is
+    /// gone before the real streams to its destination — a teleport
+    /// failure cannot resurrect a stale ghost.
+    #[test]
+    fn a_teleport_deletes_the_old_ghosts() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_space_fixture();
+        // Walk the real to the far cell so the checker ghosts it onto B.
+        {
+            let mut borrowed = app_a.entity_population[&MOVER].borrow_mut();
+            borrowed.position = [40.0, 0.0, 25.0];
+            borrowed.local_position = borrowed.position;
+        }
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for wire in app_a.ghost_outbox.drain(..) {
+            // The observer ghosts onto B as well; B already holds that
+            // real, so only the mover's create lands here.
+            if wire.dest == B_ADDR && wire.entity == MOVER {
+                let outcome = deliver(&mut app_b, &mut spaces_b, &wire);
+                assert_eq!(outcome, CreateGhostOutcome::Created, "wire {wire:?}");
+            }
+        }
+        assert!(
+            app_a.entity_population[&MOVER]
+                .borrow()
+                .haunts
+                .iter()
+                .any(|haunt| haunt.addr == B_ADDR),
+            "the ghost's haunt rides along"
+        );
+
+        let pos = Vector3::new(12.0, 0.0, 12.0);
+        let dir = Vector3::new(0.25, 0.0, 0.0);
+        assert!(app_a.teleport_entity(&mut spaces_a, MOVER, B_ADDR, NEARBY, pos, dir));
+
+        // One Del per haunt — including the destination itself, which
+        // re-haunts inside the wire.
+        let dels: Vec<_> = app_a
+            .ghost_outbox
+            .iter()
+            .filter(|wire| wire.dest == B_ADDR && matches!(wire.message, GhostMessage::Del))
+            .collect();
+        assert_eq!(dels.len(), 1, "the old ghost on B is deleted");
+        assert!(
+            !app_a.entity_population[&MOVER]
+                .borrow()
+                .haunts
+                .iter()
+                .any(|haunt| haunt.addr != B_ADDR),
+            "every haunt but the destination is cleared"
+        );
+
+        // The destination's ghost (in the old space) dies on the Del,
+        // then the teleport wire rebuilds it in the nearby's space.
+        assert!(app_b.del_ghost(&mut spaces_b, MOVER));
+        let wire = app_a.teleport_outbox.remove(0);
+        assert!(app_b.onload_teleported_entity(&mut spaces_b, &wire));
+        let landed = app_b.entity_population[&MOVER].borrow();
+        assert!(landed.is_real);
+        assert_eq!(landed.space_id, SID_NEW);
+    }
+
+    /// The failed destination bounces the onload with
+    /// `teleportFailure=true`: the origin's ghost becomes the real
+    /// again, the failed haunt strips, and `onTeleportFailure` fires.
+    #[test]
+    fn a_teleport_to_a_missing_nearby_bounces_the_onload() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_space_fixture();
+        let pos = Vector3::new(12.0, 0.0, 12.0);
+        let dir = Vector3::new(0.25, 0.0, 0.0);
+        // The nearby dies on the destination before the wire lands —
+        // the origin never hears of it.
+        app_b.destroy_entity(&mut spaces_b, NEARBY);
+        assert!(app_a.teleport_entity(&mut spaces_a, MOVER, B_ADDR, NEARBY, pos, dir));
+        // The origin now holds the ghost of the mover, haunted by its
+        // own offload.
+        assert!(!app_a.entity_population[&MOVER].borrow().is_real);
+
+        let wire = app_a.teleport_outbox.remove(0);
+        app_a
+            .entity_scripts
+            .get_mut(&TYPE)
+            .expect("the fixture script")
+            .methods
+            .insert("onTeleportFailure");
+        assert!(!app_b.onload_teleported_entity(&mut spaces_b, &wire));
+
+        // The bounce: an onload aimed back at the origin, the failure
+        // byte set.
+        let bounce = app_b.onload_outbox.remove(0);
+        assert_eq!(bounce.dest, A_ADDR);
+        assert_eq!(bounce.data[4], 1);
+        let calls = app_a.script_calls.len();
+        assert!(app_a.onload_entity(&mut spaces_a, &bounce, Some(B_ADDR)));
+        {
+            let entity = app_a.entity_population[&MOVER].borrow();
+            assert!(entity.is_real, "the ghost is the real again");
+            assert!(
+                !entity.haunts.iter().any(|haunt| haunt.addr == B_ADDR),
+                "the failed haunt is stripped"
+            );
+        }
+        let fired: Vec<&str> = app_a.script_calls[calls..]
+            .iter()
+            .map(|call| call.name)
+            .collect();
+        assert!(fired.contains(&"onTeleportFailure"));
+    }
+
+    /// The destination refuses a malformed teleport head (the ghost
+    /// body's id does not match the onload's), a create that cannot
+    /// land, and an onload whose stream does not read back — none of
+    /// them fire `onTeleportSuccess`.
+    #[test]
+    fn a_malformed_teleport_is_refused_at_each_face() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_space_fixture();
+        let pos = Vector3::new(12.0, 0.0, 12.0);
+        let dir = Vector3::new(0.25, 0.0, 0.0);
+        assert!(app_a.teleport_entity(&mut spaces_a, MOVER, B_ADDR, NEARBY, pos, dir));
+        let wire = app_a.teleport_outbox.remove(0);
+
+        // A ghost body naming another id cannot be the onload's ghost.
+        let mut bad_id = wire.clone();
+        bad_id.ghost_data[0] = (MOVER + 1) as u8;
+        assert!(!app_b.onload_teleported_entity(&mut spaces_b, &bad_id));
+
+        // A ghost body too short to name an id.
+        let mut short = wire.clone();
+        short.ghost_data.clear();
+        assert!(!app_b.onload_teleported_entity(&mut spaces_b, &short));
+
+        // A ghost that cannot be created in the nearby's space: the
+        // type has no registered entity class on the destination.
+        app_b.entity_scripts.clear();
+        assert!(!app_b.onload_teleported_entity(&mut spaces_b, &wire));
+        app_b
+            .entity_scripts
+            .insert(TYPE, app_a.entity_scripts[&TYPE].clone());
+
+        // A truncated onload tail: the create lands but the real
+        // stream cannot be read.
+        let mut bad_tail = wire.clone();
+        bad_tail.onload.data.truncate(2);
+        assert!(!app_b.onload_teleported_entity(&mut spaces_b, &bad_tail));
     }
 
     /// `handleCellAppDeath`'s cache face: a dead channel's entry goes,
