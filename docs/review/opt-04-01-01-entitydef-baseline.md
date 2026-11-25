@@ -41,11 +41,44 @@ DEF_BASELINE_OUT=<abs path> cargo test -p entitydef \
     --test entitydef_baseline the_entitydef_baseline_runs_all_legs -- --exact
 ```
 
+## OPT-04-01-02 — cached definition parsing, cold/warm
+
+`FsResolver::open_section` used to read and re-parse the XML on every
+open. The reference resource manager keeps parsed sections for the
+process lifetime — `DataSectionCache`
+(`resmgr/data_section_cache.hpp`: `find`/`add` by path, `clear` as the
+invalidation face, bounded by `setSize`) — and the port now mirrors it:
+a thread-local cache keyed by the joined full path, bounded by entry
+count (1024; on overflow it clears rather than tracking an LRU chain —
+the definition trees are a few dozen small files), with
+`clear_section_cache()` as the `clear` face. `MemoryResolver` is
+untouched; the only `FsResolver` consumers in the repo load read-only
+fixtures.
+
+The baseline harness is the comparison instrument: the runner clears
+the cache first, so `startup_*_ms` measures a cache-cold load and
+`startup_warm_fantasydemo_ms` measures exactly the cached reload (tree
+clones plus map assembly — no file reads, no XML parse).
+
+| Face | Before (`a041efd`) | After (`9881c37`) |
+|---|---:|---:|
+| cold `fantasydemo_def` | 0.615 ms | 0.916 ms |
+| warm `fantasydemo_def` | 0.448 ms | **0.297 ms** |
+| same-run cold/warm gap | 0.167 ms | **0.619 ms** |
+
+Reading: the cross-record cold numbers are not comparable (fleet load
+~40 then ~21), so the honest face is the **same-run gap**: before the
+cache, a warm reload saved 0.167 ms (OS page cache only); after, it
+saves 0.619 ms — the read+parse is gone from the reload, leaving tree
+clones and map assembly. The digests are identical before and after
+(`18D00DC6…`, pinned against the oracle on every run).
+
 ## Record
 
 `docs/review/fixtures/entitydef-baseline/entitydef-baseline.tsv` (63
-rows, commit `a041efd`, 2026-11-26 toolchain, machine under fleet load
-~40):
+rows) is a rolling canonical record: the OPT-04-01-01 before record
+lives at commit `a041efd`, the OPT-04-01-02 after record at `9881c37`
+(2026-11-26 toolchain):
 
 | Face | Value |
 |---|---:|
