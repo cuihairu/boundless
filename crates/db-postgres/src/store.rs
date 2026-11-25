@@ -414,33 +414,6 @@ fn read_salt(raw: i32) -> u16 {
     raw as u16
 }
 
-/// Writes the logon record for `key` (`addLogOnRecord`,
-/// entity_type_mapping.cpp:773-783): the reference's statement is
-/// `INSERT ... ON DUPLICATE KEY UPDATE`, so a relogon overwrites the
-/// record instead of failing on the duplicate key. This is the raw face —
-/// the contract's [`EntityStorage::check_out`] wraps it with the
-/// occupancy grant.
-fn put_logon_record(
-    client: &mut Client,
-    key: &EntityKey,
-    mailbox: &BaseMailbox,
-) -> Result<(), DbError> {
-    client
-        .execute(
-            add_logon_sql().as_str(),
-            &[
-                &key.db_id,
-                &i32::from(key.type_id),
-                &mailbox.entity_id,
-                &stored_ip(mailbox.addr.ip),
-                &stored_port(mailbox.addr.port),
-                &stored_salt(mailbox.addr.salt),
-            ],
-        )
-        .map_err(map_db_error)?;
-    Ok(())
-}
-
 /// A row must carry exactly the id column plus one column per property:
 /// the driver returns the columns the select listed, so a mismatch means
 /// the schema and the statement drifted apart.
@@ -629,6 +602,34 @@ impl PostgresStorage {
         self.client
             .borrow_mut()
             .batch_execute("ROLLBACK")
+            .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    /// Writes the logon record for `key` (`addLogOnRecord`,
+    /// entity_type_mapping.cpp:773-783): the reference's statement is
+    /// `INSERT ... ON DUPLICATE KEY UPDATE`, so a relogon overwrites the
+    /// record instead of failing on the duplicate key. This is the raw
+    /// face — the contract's [`EntityStorage::check_out`] wraps it with
+    /// the occupancy grant.
+    pub fn put_logon_record(
+        &mut self,
+        key: &EntityKey,
+        mailbox: &BaseMailbox,
+    ) -> Result<(), DbError> {
+        self.client
+            .borrow_mut()
+            .execute(
+                add_logon_sql().as_str(),
+                &[
+                    &key.db_id,
+                    &i32::from(key.type_id),
+                    &mailbox.entity_id,
+                    &stored_ip(mailbox.addr.ip),
+                    &stored_port(mailbox.addr.port),
+                    &stored_salt(mailbox.addr.salt),
+                ],
+            )
             .map_err(map_db_error)?;
         Ok(())
     }
@@ -857,7 +858,7 @@ impl EntityStorage for PostgresStorage {
             return Ok(CheckOut::Elsewhere(holder));
         }
         // The grant records the holder with the reference's own upsert.
-        put_logon_record(self.client.get_mut(), key, &mailbox)?;
+        self.put_logon_record(key, &mailbox)?;
         Ok(CheckOut::Granted)
     }
 
