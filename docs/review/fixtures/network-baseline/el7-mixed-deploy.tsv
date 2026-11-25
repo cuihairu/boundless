@@ -1,0 +1,16 @@
+leg1_pid_query_running	1
+leg1_whole_machine_reply	1
+leg3_addtcp_path	logger/addTCP
+leg3_add_path	logger/add
+leg3_push_bytes	tcp=36/udp=33
+leg4_register_bytes	22
+leg4_record_frames	4
+leg4_record_bytes_each	45
+leg5_record_frames	3
+mldb_component_found	1
+mldb_tcp_strings_found	1
+mldb_udp_strings_found	1
+mldb_strings_bytes	120
+fabric_registry_entries	3
+protocol_version	10
+component_versions	2.7/tcp,2.5/udp
