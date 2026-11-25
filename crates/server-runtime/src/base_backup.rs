@@ -452,6 +452,28 @@ mod tests {
         }
     }
 
+    /// The standard five-property entity's backup is 181 wire bytes, so one
+    /// backup cycle's bandwidth floor is 181 bytes per entity (the
+    /// OPT-07-01-01 baseline's structural half; the wall-clock medians are
+    /// machine-local readings and live in the evidence page only).
+    #[test]
+    fn the_standard_entity_backup_has_a_pinned_wire_size() {
+        let base = backed_up_base();
+        let mut stream = BinaryStream::new();
+        write_backup_data(&base, &mut stream);
+        let data = stream.as_bytes();
+        assert_eq!(data.len(), 181);
+        // The bytes round-trip: the receiver rebuilds the same entity.
+        let ty = account_type();
+        let mut stored = BinaryStream::new();
+        stored.write_bytes(data);
+        let parsed = read_backup_data(&mut stored, &ty).unwrap();
+        let rebuilt = restore_base(&parsed, &ty).unwrap();
+        assert_eq!(rebuilt.id, base.id);
+        assert_eq!(rebuilt.db_id, base.db_id);
+        assert_eq!(rebuilt.base_props, base.base_props);
+    }
+
     /// `backupDestination` picks the hashed target, or NONE when the table is
     /// empty; while offloading it resolves a dead target through the chain.
     #[test]
