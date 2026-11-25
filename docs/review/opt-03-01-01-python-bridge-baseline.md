@@ -138,6 +138,34 @@ records — the drain-window share under a flat-out poster, load-dependent)
 and **tail latency** (the `gil_e2e` p50/p90/p99/max rows, plus
 `frequent_ns_per_call` for the walk itself), all recorded, none gated.
 
+## OPT-03-01-04 — rerun of the reference, exception and reload cases
+
+After the two hot-path changes (01-02, 01-03), the case families that pin
+the bridge's behavior were rerun on the optimized tree; the acceptance is
+identical behavior, and these assertions encode those contracts, so
+unchanged green is the evidence:
+
+- **Reference** — the `pyref` unit tests (8: adopt/borrow/clone and the
+  empty-handle ownership rules), the scenario family's reference faces
+  (`scenario_a_handle_owns_one_reference`,
+  `scenario_the_cache_holds_one_reference_per_identity`, the keep-alive
+  and pin reference scenarios), and the baseline harness's per-value
+  identity asserts on every conversion round-trip.
+- **Exception** — `scenario_the_bigworld_timers_behave_like_the_reference`
+  (a timer callback raising `RuntimeError` prints and reschedules — the
+  OPT-03-01-02 path — and a failing frequent task stays registered — the
+  OPT-03-01-03 path), `scenario_a_raising_listener_fails_the_trigger_\
+and_contributes_none`, and the billing exception scenarios.
+- **Reload** — `scenario_a_failed_reload_leaves_the_old_definitions_\
+callable`, `scenario_replacing_a_script_class_updates_existing_instances`,
+  `scenario_swapping_in_a_module_window_keeps_sys_and_main`,
+  `scenario_migrate_reports_the_hook_success_and_failure`, plus the 12
+  `reload_*` unit tests.
+
+Rerun (2026-11-26, post-`2d67612`): `every_scenario_exits_cleanly` ok —
+all 104 interpreter scenarios, each in its own process — plus `reload_*`
+12 passed and `pyref` 8 passed. Zero failures, no assertion changed.
+
 ## Current fixture record
 
 `docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv` is a
