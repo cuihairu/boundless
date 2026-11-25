@@ -1983,6 +1983,7 @@ dependencies = [
  "flate2",
  "foundation",
  "libc",
+ "load",
  "md-5 0.10.6",
  "mercury",
  "platform",

@@ -77,7 +77,7 @@ watcher = { path = "crates/watcher" }
 profiler = { path = "crates/profiler" }
 server-runtime = { path = "crates/server-runtime" }
 client = { path = "crates/client" }  # replay_write round-trips through its reader (BW-07-05-02)
-# load = { path = "crates/load" }  # re-add with first consumer
+load = { path = "crates/load" }
 # test-support = { path = "crates/test-support" }  # re-add with first consumer
 asset-pipeline = { path = "crates/asset-pipeline" }
 # plugin-host = { path = "crates/plugin-host" }  # re-add with first consumer
