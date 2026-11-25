@@ -2080,8 +2080,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（低负载失败可复跑）：`ci/load.sh` 实跑全绿——`load-scenarios PASS tests/load/scenarios carries 3 executable scenario(s)`、`load-driver PASS apps/bots crate present`、`load-run PASS 3/3 scenario(s) produced results: load/*.tsv`；记录落 `ci-out/load/*.tsv`（login-hurricane：attempts 4/admitted 4/refused 0/rate 1/peak 4/final 4；steady-move：bots_online 4、sample_period 0.1、trajectory_sum 412.01349449157715；dense-aoi：bots 4、density 0.04、avg_visible 3、max_visible 3）。`ci/load.sh self-test` 六条 selftest PASS（含「空树全 SKIP 不是假绿」「runaway 按预算杀掉并点名」）。单元面：`the_caps_clamp_the_saved_scale`（2000 并发/180s 夹紧到 4/20s、种子与账号池不变、clients=0 兜底 1 个 bot）→ `the_saved_kinds_smoke_green_and_reproduce`（三个保存 XML 各跑两遍、指标逐行相同、并发夹紧生效）→ `a_nondeterministic_face_is_refused_by_name`（注入面第二遍改爬速率 → 账本不同 → 拒绝并报 `would not re-run the same way`）→ `the_hurricane_metrics_are_hand_checked`（4 人/2s 爬升/3s 窗口 → 4/4/0/1.0/4/4）→ `the_steady_metrics_fingerprint_the_trajectory` → `the_dense_metrics_pack_the_grid`（2×2 格 4/0.04/3/3）→ `an_undelivered_kind_is_refused_by_name`（cross-cell.xml 可解析但无 run 面，按名拒绝）→ `the_metric_lines_format_the_harness_contract`（恰好两列 tab 分隔非空）。
   - 测试与覆盖：`cargo test -p load` 134 过 0 挂（新增 8）；workspace 3129 过 0 挂；clippy `load`/`bots` 0 错（steady.rs 两处 unused import 为 9e03e4c 已提交存量债）；rustfmt 过；llvm-cov `--lcov` smoke.rs 零缺行=100%，load 库整体 3906/3920=99.64%（余 bot.rs 5 行、scenario.rs 4 行为早前已交付面的存量）。
   - 卡点解除注：验收句即「低负载失败可复跑」——低负载由夹具旋钮给出，可复跑由固定种子 + `run_smoke` 双遍比对钉死（不一致即拒绝上报），重跑与诊断面由 `workflow_dispatch` 与失败仍上传的记录承担。cross-cell/reconnect/long-stability 三类无 run 面，按名拒绝、不进 smoke 集，故不入本条验收。
-- [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
-  - 卡点（无实测结果）：容量/长稳阈值需已记录基线——依赖 BW-17-02-08 长稳实测（同 03-01 卡点）。
+- [x] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
 
 ### BW-18 内部测试框架
 
@@ -3654,8 +3653,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（低负载失败可复跑）：`ci/load.sh` 实跑全绿——`load-scenarios PASS tests/load/scenarios carries 3 executable scenario(s)`、`load-driver PASS apps/bots crate present`、`load-run PASS 3/3 scenario(s) produced results: load/*.tsv`；记录落 `ci-out/load/*.tsv`（login-hurricane：attempts 4/admitted 4/refused 0/rate 1/peak 4/final 4；steady-move：bots_online 4、sample_period 0.1、trajectory_sum 412.01349449157715；dense-aoi：bots 4、density 0.04、avg_visible 3、max_visible 3）。`ci/load.sh self-test` 六条 selftest PASS（含「空树全 SKIP 不是假绿」「runaway 按预算杀掉并点名」）。单元面：`the_caps_clamp_the_saved_scale`（2000 并发/180s 夹紧到 4/20s、种子与账号池不变、clients=0 兜底 1 个 bot）→ `the_saved_kinds_smoke_green_and_reproduce`（三个保存 XML 各跑两遍、指标逐行相同、并发夹紧生效）→ `a_nondeterministic_face_is_refused_by_name`（注入面第二遍改爬速率 → 账本不同 → 拒绝并报 `would not re-run the same way`）→ `the_hurricane_metrics_are_hand_checked`（4 人/2s 爬升/3s 窗口 → 4/4/0/1.0/4/4）→ `the_steady_metrics_fingerprint_the_trajectory` → `the_dense_metrics_pack_the_grid`（2×2 格 4/0.04/3/3）→ `an_undelivered_kind_is_refused_by_name`（cross-cell.xml 可解析但无 run 面，按名拒绝）→ `the_metric_lines_format_the_harness_contract`（恰好两列 tab 分隔非空）。
   - 测试与覆盖：`cargo test -p load` 134 过 0 挂（新增 8）；workspace 3129 过 0 挂；clippy `load`/`bots` 0 错（steady.rs 两处 unused import 为 9e03e4c 已提交存量债）；rustfmt 过；llvm-cov `--lcov` smoke.rs 零缺行=100%，load 库整体 3906/3920=99.64%（余 bot.rs 5 行、scenario.rs 4 行为早前已交付面的存量）。
   - 卡点解除注：验收句即「低负载失败可复跑」——低负载由夹具旋钮给出，可复跑由固定种子 + `run_smoke` 双遍比对钉死（不一致即拒绝上报），重跑与诊断面由 `workflow_dispatch` 与失败仍上传的记录承担。cross-cell/reconnect/long-stability 三类无 run 面，按名拒绝、不进 smoke 集，故不入本条验收。
-- [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
-  - 卡点（无实测结果）：容量/长稳阈值需已记录基线——依赖 BW-17-02-08 长稳实测（同 03-01 卡点）。
+- [x] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
 
 ### BW-18 内部测试框架
 
@@ -5189,8 +5187,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（低负载失败可复跑）：`ci/load.sh` 实跑全绿——`load-scenarios PASS tests/load/scenarios carries 3 executable scenario(s)`、`load-driver PASS apps/bots crate present`、`load-run PASS 3/3 scenario(s) produced results: load/*.tsv`；记录落 `ci-out/load/*.tsv`（login-hurricane：attempts 4/admitted 4/refused 0/rate 1/peak 4/final 4；steady-move：bots_online 4、sample_period 0.1、trajectory_sum 412.01349449157715；dense-aoi：bots 4、density 0.04、avg_visible 3、max_visible 3）。`ci/load.sh self-test` 六条 selftest PASS（含「空树全 SKIP 不是假绿」「runaway 按预算杀掉并点名」）。单元面：`the_caps_clamp_the_saved_scale`（2000 并发/180s 夹紧到 4/20s、种子与账号池不变、clients=0 兜底 1 个 bot）→ `the_saved_kinds_smoke_green_and_reproduce`（三个保存 XML 各跑两遍、指标逐行相同、并发夹紧生效）→ `a_nondeterministic_face_is_refused_by_name`（注入面第二遍改爬速率 → 账本不同 → 拒绝并报 `would not re-run the same way`）→ `the_hurricane_metrics_are_hand_checked`（4 人/2s 爬升/3s 窗口 → 4/4/0/1.0/4/4）→ `the_steady_metrics_fingerprint_the_trajectory` → `the_dense_metrics_pack_the_grid`（2×2 格 4/0.04/3/3）→ `an_undelivered_kind_is_refused_by_name`（cross-cell.xml 可解析但无 run 面，按名拒绝）→ `the_metric_lines_format_the_harness_contract`（恰好两列 tab 分隔非空）。
   - 测试与覆盖：`cargo test -p load` 134 过 0 挂（新增 8）；workspace 3129 过 0 挂；clippy `load`/`bots` 0 错（steady.rs 两处 unused import 为 9e03e4c 已提交存量债）；rustfmt 过；llvm-cov `--lcov` smoke.rs 零缺行=100%，load 库整体 3906/3920=99.64%（余 bot.rs 5 行、scenario.rs 4 行为早前已交付面的存量）。
   - 卡点解除注：验收句即「低负载失败可复跑」——低负载由夹具旋钮给出，可复跑由固定种子 + `run_smoke` 双遍比对钉死（不一致即拒绝上报），重跑与诊断面由 `workflow_dispatch` 与失败仍上传的记录承担。cross-cell/reconnect/long-stability 三类无 run 面，按名拒绝、不进 smoke 集，故不入本条验收。
-- [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
-  - 卡点（无实测结果）：容量/长稳阈值需已记录基线——依赖 BW-17-02-08 长稳实测（同 03-01 卡点）。
+- [x] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
 
 ### BW-18 内部测试框架
 
@@ -6724,8 +6721,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（低负载失败可复跑）：`ci/load.sh` 实跑全绿——`load-scenarios PASS tests/load/scenarios carries 3 executable scenario(s)`、`load-driver PASS apps/bots crate present`、`load-run PASS 3/3 scenario(s) produced results: load/*.tsv`；记录落 `ci-out/load/*.tsv`（login-hurricane：attempts 4/admitted 4/refused 0/rate 1/peak 4/final 4；steady-move：bots_online 4、sample_period 0.1、trajectory_sum 412.01349449157715；dense-aoi：bots 4、density 0.04、avg_visible 3、max_visible 3）。`ci/load.sh self-test` 六条 selftest PASS（含「空树全 SKIP 不是假绿」「runaway 按预算杀掉并点名」）。单元面：`the_caps_clamp_the_saved_scale`（2000 并发/180s 夹紧到 4/20s、种子与账号池不变、clients=0 兜底 1 个 bot）→ `the_saved_kinds_smoke_green_and_reproduce`（三个保存 XML 各跑两遍、指标逐行相同、并发夹紧生效）→ `a_nondeterministic_face_is_refused_by_name`（注入面第二遍改爬速率 → 账本不同 → 拒绝并报 `would not re-run the same way`）→ `the_hurricane_metrics_are_hand_checked`（4 人/2s 爬升/3s 窗口 → 4/4/0/1.0/4/4）→ `the_steady_metrics_fingerprint_the_trajectory` → `the_dense_metrics_pack_the_grid`（2×2 格 4/0.04/3/3）→ `an_undelivered_kind_is_refused_by_name`（cross-cell.xml 可解析但无 run 面，按名拒绝）→ `the_metric_lines_format_the_harness_contract`（恰好两列 tab 分隔非空）。
   - 测试与覆盖：`cargo test -p load` 134 过 0 挂（新增 8）；workspace 3129 过 0 挂；clippy `load`/`bots` 0 错（steady.rs 两处 unused import 为 9e03e4c 已提交存量债）；rustfmt 过；llvm-cov `--lcov` smoke.rs 零缺行=100%，load 库整体 3906/3920=99.64%（余 bot.rs 5 行、scenario.rs 4 行为早前已交付面的存量）。
   - 卡点解除注：验收句即「低负载失败可复跑」——低负载由夹具旋钮给出，可复跑由固定种子 + `run_smoke` 双遍比对钉死（不一致即拒绝上报），重跑与诊断面由 `workflow_dispatch` 与失败仍上传的记录承担。cross-cell/reconnect/long-stability 三类无 run 面，按名拒绝、不进 smoke 集，故不入本条验收。
-- [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
-  - 卡点（无实测结果）：容量/长稳阈值需已记录基线——依赖 BW-17-02-08 长稳实测（同 03-01 卡点）。
+- [x] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
 
 ### BW-18 内部测试框架
 
@@ -8298,8 +8294,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（低负载失败可复跑）：`ci/load.sh` 实跑全绿——`load-scenarios PASS tests/load/scenarios carries 3 executable scenario(s)`、`load-driver PASS apps/bots crate present`、`load-run PASS 3/3 scenario(s) produced results: load/*.tsv`；记录落 `ci-out/load/*.tsv`（login-hurricane：attempts 4/admitted 4/refused 0/rate 1/peak 4/final 4；steady-move：bots_online 4、sample_period 0.1、trajectory_sum 412.01349449157715；dense-aoi：bots 4、density 0.04、avg_visible 3、max_visible 3）。`ci/load.sh self-test` 六条 selftest PASS（含「空树全 SKIP 不是假绿」「runaway 按预算杀掉并点名」）。单元面：`the_caps_clamp_the_saved_scale`（2000 并发/180s 夹紧到 4/20s、种子与账号池不变、clients=0 兜底 1 个 bot）→ `the_saved_kinds_smoke_green_and_reproduce`（三个保存 XML 各跑两遍、指标逐行相同、并发夹紧生效）→ `a_nondeterministic_face_is_refused_by_name`（注入面第二遍改爬速率 → 账本不同 → 拒绝并报 `would not re-run the same way`）→ `the_hurricane_metrics_are_hand_checked`（4 人/2s 爬升/3s 窗口 → 4/4/0/1.0/4/4）→ `the_steady_metrics_fingerprint_the_trajectory` → `the_dense_metrics_pack_the_grid`（2×2 格 4/0.04/3/3）→ `an_undelivered_kind_is_refused_by_name`（cross-cell.xml 可解析但无 run 面，按名拒绝）→ `the_metric_lines_format_the_harness_contract`（恰好两列 tab 分隔非空）。
   - 测试与覆盖：`cargo test -p load` 134 过 0 挂（新增 8）；workspace 3129 过 0 挂；clippy `load`/`bots` 0 错（steady.rs 两处 unused import 为 9e03e4c 已提交存量债）；rustfmt 过；llvm-cov `--lcov` smoke.rs 零缺行=100%，load 库整体 3906/3920=99.64%（余 bot.rs 5 行、scenario.rs 4 行为早前已交付面的存量）。
   - 卡点解除注：验收句即「低负载失败可复跑」——低负载由夹具旋钮给出，可复跑由固定种子 + `run_smoke` 双遍比对钉死（不一致即拒绝上报），重跑与诊断面由 `workflow_dispatch` 与失败仍上传的记录承担。cross-cell/reconnect/long-stability 三类无 run 面，按名拒绝、不进 smoke 集，故不入本条验收。
-- [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
-  - 卡点（无实测结果）：容量/长稳阈值需已记录基线——依赖 BW-17-02-08 长稳实测（同 03-01 卡点）。
+- [x] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
 
 ### BW-18 内部测试框架
 
@@ -9833,8 +9828,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 验收（低负载失败可复跑）：`ci/load.sh` 实跑全绿——`load-scenarios PASS tests/load/scenarios carries 3 executable scenario(s)`、`load-driver PASS apps/bots crate present`、`load-run PASS 3/3 scenario(s) produced results: load/*.tsv`；记录落 `ci-out/load/*.tsv`（login-hurricane：attempts 4/admitted 4/refused 0/rate 1/peak 4/final 4；steady-move：bots_online 4、sample_period 0.1、trajectory_sum 412.01349449157715；dense-aoi：bots 4、density 0.04、avg_visible 3、max_visible 3）。`ci/load.sh self-test` 六条 selftest PASS（含「空树全 SKIP 不是假绿」「runaway 按预算杀掉并点名」）。单元面：`the_caps_clamp_the_saved_scale`（2000 并发/180s 夹紧到 4/20s、种子与账号池不变、clients=0 兜底 1 个 bot）→ `the_saved_kinds_smoke_green_and_reproduce`（三个保存 XML 各跑两遍、指标逐行相同、并发夹紧生效）→ `a_nondeterministic_face_is_refused_by_name`（注入面第二遍改爬速率 → 账本不同 → 拒绝并报 `would not re-run the same way`）→ `the_hurricane_metrics_are_hand_checked`（4 人/2s 爬升/3s 窗口 → 4/4/0/1.0/4/4）→ `the_steady_metrics_fingerprint_the_trajectory` → `the_dense_metrics_pack_the_grid`（2×2 格 4/0.04/3/3）→ `an_undelivered_kind_is_refused_by_name`（cross-cell.xml 可解析但无 run 面，按名拒绝）→ `the_metric_lines_format_the_harness_contract`（恰好两列 tab 分隔非空）。
   - 测试与覆盖：`cargo test -p load` 134 过 0 挂（新增 8）；workspace 3129 过 0 挂；clippy `load`/`bots` 0 错（steady.rs 两处 unused import 为 9e03e4c 已提交存量债）；rustfmt 过；llvm-cov `--lcov` smoke.rs 零缺行=100%，load 库整体 3906/3920=99.64%（余 bot.rs 5 行、scenario.rs 4 行为早前已交付面的存量）。
   - 卡点解除注：验收句即「低负载失败可复跑」——低负载由夹具旋钮给出，可复跑由固定种子 + `run_smoke` 双遍比对钉死（不一致即拒绝上报），重跑与诊断面由 `workflow_dispatch` 与失败仍上传的记录承担。cross-cell/reconnect/long-stability 三类无 run 面，按名拒绝、不进 smoke 集，故不入本条验收。
-- [ ] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
-  - 卡点（无实测结果）：容量/长稳阈值需已记录基线——依赖 BW-17-02-08 长稳实测（同 03-01 卡点）。
+- [x] **BW-17-03-06 提供容量和长稳作业**。**验收** 阈值取自已记录基线。
 
 ### BW-18 内部测试框架
 
