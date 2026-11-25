@@ -5,11 +5,15 @@
 //! Registered boundary (smoothing face deferred): the reference's
 //! `saveWayPath` also runs `smoothPath` (string-pulling/funnel) before
 //! `removeDuplicates`. The funnel is a found-path point-shaping face with
-//! no effect on reachable/unreachable, and in this lane's truth world the
-//! way paths are 2–3 states, which `smoothPath` early-returns from
+//! no effect on reachable/unreachable, and on the slope/shell truth world
+//! the way paths are 2–3 states, which `smoothPath` early-returns from
 //! untouched (`reversePath_.size() == 2`) — so the port's cached paths are
-//! byte-identical to the reference's on every pinned probe. The funnel
-//! itself lands with the path-quality face that first needs it.
+//! byte-identical to the reference's on every probe there. The boundary
+//! becomes visible on the fixed map's four-state crossing route
+//! (`crates/waypoint/tests/fixed_map.rs`): the funnel rebuilds each state
+//! through the guess ctor, so the reference's next state carries a +0.01 y
+//! lift the unsmoothed port path does not; set, waypoint and x/z agree.
+//! The funnel itself lands with the path-quality face that first needs it.
 
 use super::astar::AStar;
 use super::chunk_waypoint_state::ChunkWaypointState;
