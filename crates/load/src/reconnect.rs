@@ -81,11 +81,7 @@ impl ReconnectLedger {
                 done += 1;
             }
         }
-        if done == 0 {
-            0.0
-        } else {
-            total / done as f64
-        }
+        if done == 0 { 0.0 } else { total / done as f64 }
     }
 }
 
@@ -264,7 +260,12 @@ mod tests {
         let ledger = run_reconnect(&scenario, 500 * FD_PER_BOT, scenario.fixed_seed);
         assert_eq!(ledger.recoveries_completed(), 0);
         assert_eq!(ledger.mean_recovery_ticks(), 0.0);
-        assert!(ledger.tracks.iter().all(|t| t.back_online_at_tick.is_none()));
+        assert!(
+            ledger
+                .tracks
+                .iter()
+                .all(|t| t.back_online_at_tick.is_none())
+        );
     }
 
     /// The ledger's shape follows the scenario: one track per bot, in

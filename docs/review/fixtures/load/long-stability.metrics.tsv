@@ -1,0 +1,5 @@
+bots_online	4
+ticks	600
+sampling_period_secs	7.5
+resource_sample_count	8
+min_online_ratio	1
