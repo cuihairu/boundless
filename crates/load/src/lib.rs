@@ -8,6 +8,7 @@
 pub mod beeline;
 pub mod bot;
 pub mod bots_config;
+pub mod cross_cell;
 pub mod dense;
 pub mod executor;
 pub mod fleet;
