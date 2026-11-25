@@ -91,6 +91,8 @@ pub mod server_download;
 pub mod server_finder;
 pub mod services_map;
 pub mod shared_data;
+pub mod shared_data_baseline;
+pub mod shared_data_tuning;
 pub mod shutdown;
 pub mod signals;
 pub mod space;
