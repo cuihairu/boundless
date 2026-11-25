@@ -20,6 +20,14 @@
 //!     seam the property-replication task fills;
 //!   * `checkEntityForOffload`'s send side (`Cell::offloadEntity`) is
 //!     the offload cluster's face; here the offload list only collects.
+//!   * the reference keeps one held-message queue per (entity, source
+//!     address); the port keeps one queue per entity, so the address
+//!     lookup `playSubsequenceFor` performs collapses to the entity's
+//!     single queue.
+//!   * the reference's `MF_ASSERT`s — the subsequence markers,
+//!     `ghostSetReal`'s `!isReal` and `nextRealAddr_ == owner` checks —
+//!     come over as `debug_assert!`s, which the port's unit tests run
+//!     under.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -93,6 +101,13 @@ pub enum GhostMessage {
     VolatileInfo(crate::cellapp_witness::VolatileInfo),
     /// `ghostedDataUpdate`: the property index, then the change stream.
     Property { index: i32, data: Vec<u8> },
+    /// `ghostSetRealArgs`: the offload count and the new owner.
+    SetReal {
+        num_times_real_offloaded: u32,
+        owner: u32,
+    },
+    /// `ghostSetNextRealArgs`: where the real is going.
+    SetNextReal { next_real_addr: u32 },
 }
 
 /// What a delivered ghost bundle became (`CellApp::processMessage`).
@@ -108,6 +123,22 @@ pub enum DeliverGhost {
     VolatileInfo(bool),
     /// A `ghostedDataUpdate` delivery.
     Property(bool),
+    /// A `ghostSetReal` delivery: applied, or buffered behind the
+    /// subsequence it interrupted.
+    SetReal(GhostSetReal),
+    /// A `ghostSetNextReal` delivery.
+    SetNextReal(bool),
+}
+
+/// What a `ghostSetReal` delivery became.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GhostSetReal {
+    /// The sign-off matched and the ghost now follows the new real.
+    Applied,
+    /// It arrived out of turn: held for the switch.
+    Buffered,
+    /// No such entity (or real) to sign off.
+    Missing,
 }
 
 impl GhostWire {
@@ -131,22 +162,216 @@ fn split_create_payload(data: &[u8]) -> Option<(u32, Vec<u8>)> {
     Some((entity, stream.unread_bytes().to_vec()))
 }
 
-/// A `BufferedGhostMessage` for a `createGhost` that arrived while its
-/// entity was already present (or behind an earlier buffered message).
-/// The replay face (`playSubsequenceFor`) is the buffering cluster's.
+/// `BufferedGhostMessage` (`buffered_ghost_message.hpp`): one held
+/// message for a ghost whose real is in transit.
 #[derive(Clone, Debug, PartialEq)]
-pub struct BufferedGhostCreate {
+pub struct BufferedGhostMessage {
     /// `srcAddr`.
     pub src: u32,
-    /// The entity the create names.
+    /// The entity the message names.
     pub entity: u32,
     /// The space the message named.
     pub space_id: SpaceId,
-    /// `delaySubsequence` (an existing entity held it) versus a plain
-    /// `add` behind an already-buffered message.
+    /// `delaySubsequence` (an unexpected subsequence is draining)
+    /// versus a plain `add` behind an already-buffered message.
     pub delayed: bool,
-    /// The payload after the entity id was streamed off.
-    pub data: Vec<u8>,
+    /// The message itself.
+    pub message: GhostMessage,
+}
+
+/// `BufferedGhostMessages::isSubsequenceStart`
+/// (`buffered_ghost_messages.hpp:56`): a new real's sign-off opens the
+/// subsequence — and so does a `createGhost`, whose buffered form is
+/// hard-marked a start (`buffered_ghost_message_factory.cpp:132`).
+fn is_subsequence_start(message: &GhostMessage) -> bool {
+    matches!(
+        message,
+        GhostMessage::Create(_) | GhostMessage::SetReal { .. }
+    )
+}
+
+/// `BufferedGhostMessages::isSubsequenceEnd` (line 61): the del and the
+/// next-real sign-off close it.
+fn is_subsequence_end(message: &GhostMessage) -> bool {
+    matches!(
+        message,
+        GhostMessage::Del | GhostMessage::SetNextReal { .. }
+    )
+}
+
+/// `BufferedGhostMessagesForEntity`
+/// (`buffered_ghost_messages_for_entity.{hpp,cpp}`): one ghost's held
+/// messages, with the delayed subsequence being collected while an
+/// unexpected one drains.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BufferedGhostMessagesForEntity {
+    /// The held messages, in arrival order.
+    pub messages: Vec<BufferedGhostMessage>,
+    /// `pDelayedMessages_`: the subsequence being collected.
+    pub delayed: Option<Vec<BufferedGhostMessage>>,
+}
+
+impl BufferedGhostMessagesForEntity {
+    /// `add` (`buffered_ghost_message_queue.cpp:44`): behind a delayed
+    /// subsequence or plain on the queue — whose front must always be
+    /// a subsequence start.
+    pub fn add(&mut self, held: BufferedGhostMessage) {
+        if self.is_delaying() {
+            self.delayed.as_mut().expect("delaying").push(held);
+            return;
+        }
+        self.messages.push(held);
+        // `isFrontSubsequenceStart`: an empty queue passes vacuously.
+        debug_assert!(
+            self.messages.is_empty() || is_subsequence_start(&self.messages[0].message),
+            "the queue opens with a subsequence start"
+        );
+    }
+
+    /// `isDelaying` (line 211): mid-collection until the last held
+    /// message closes the subsequence.
+    pub fn is_delaying(&self) -> bool {
+        self.delayed
+            .as_ref()
+            .is_some_and(|held| !is_subsequence_end(&held.last().expect("non-empty").message))
+    }
+
+    /// `promoteDelayedSubsequences` (line 175): the delayed messages
+    /// splice in ahead of the queue.
+    pub fn promote_delayed_subsequences(&mut self) {
+        if let Some(held) = self.delayed.take() {
+            let mut promoted = held;
+            promoted.append(&mut self.messages);
+            self.messages = promoted;
+        }
+    }
+
+    /// `playFront` (line 96): play one message; answers whether the
+    /// queue drained (and nothing is still delayed).
+    fn play_front(&mut self, app: &mut CellApp, spaces: &mut BTreeMap<SpaceId, Space>) -> bool {
+        let Some(held) = self.messages.first().cloned() else {
+            // WARNING "Queue is empty"
+            return false;
+        };
+        self.messages.remove(0);
+        let drained = self.messages.is_empty() && self.delayed.is_none();
+        play_held_message(app, spaces, &held);
+        drained && self.delayed.is_none()
+    }
+
+    /// `playSubsequence` (line 193): promote the delayed head, then
+    /// replay through the next subsequence end.
+    pub fn play_subsequence(
+        &mut self,
+        app: &mut CellApp,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+    ) -> bool {
+        self.promote_delayed_subsequences();
+        let mut finished = false;
+        while !self.messages.is_empty() && !finished {
+            finished = is_subsequence_end(&self.messages[0].message);
+            if self.play_front(app, spaces) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `delaySubsequence` (`buffered_ghost_message_queue.cpp:217`):
+    /// hold the unexpected subsequence, dragging the queue head with it
+    /// while the collection stays open.
+    pub fn delay_subsequence(&mut self, held: BufferedGhostMessage) {
+        debug_assert!(
+            is_subsequence_start(&held.message),
+            "only a subsequence start delays a queue"
+        );
+        let bucket = self.delayed.get_or_insert_with(Vec::new);
+        bucket.push(held);
+        while !self.messages.is_empty() && self.is_delaying() {
+            let next = self.messages.remove(0);
+            self.delayed.as_mut().expect("delaying").push(next);
+        }
+    }
+
+    /// Nothing held at all.
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty() && self.delayed.is_none()
+    }
+}
+
+/// `BufferedGhostMessage::play`'s dispatch
+/// (`buffered_ghost_message_factory.cpp`): the held message replays
+/// through the very face a normal delivery would have used.
+fn play_held_message(
+    app: &mut CellApp,
+    spaces: &mut BTreeMap<SpaceId, Space>,
+    held: &BufferedGhostMessage,
+) {
+    match &held.message {
+        GhostMessage::Create(data) => {
+            if app
+                .entity_population
+                .get(&held.entity)
+                .is_some_and(|entity| !entity.borrow().destroyed)
+            {
+                // WARNING "BufferedCreateGhostMessage::play: Entity %u
+                // already exists" — re-buffer behind the subsequence it
+                // interrupted.
+                app.delay_ghost_subsequence(BufferedGhostMessage {
+                    src: held.src,
+                    entity: held.entity,
+                    space_id: held.space_id,
+                    delayed: true,
+                    message: GhostMessage::Create(data.clone()),
+                });
+            } else {
+                app.create_ghost(spaces, held.space_id, held.entity, data);
+            }
+        }
+        GhostMessage::Del => {
+            app.del_ghost(spaces, held.entity);
+        }
+        GhostMessage::Position {
+            pos,
+            dir,
+            is_on_ground,
+            update_number,
+        } => {
+            app.ghost_position_update(
+                spaces,
+                held.entity,
+                *pos,
+                *dir,
+                *is_on_ground,
+                *update_number,
+            );
+        }
+        GhostMessage::VolatileInfo(info) => {
+            app.ghost_volatile_info(held.entity, *info);
+        }
+        GhostMessage::Property { index, data } => {
+            app.ghosted_data_update(held.entity, *index, data);
+        }
+        GhostMessage::SetReal {
+            num_times_real_offloaded,
+            owner,
+        } => {
+            let outcome =
+                app.ghost_set_real(spaces, held.entity, *num_times_real_offloaded, *owner);
+            if outcome == GhostSetReal::Missing {
+                // ERROR "BufferedGhostSetRealMessage::play: Entity %u no
+                // longer exists" — drop rather than dereference the
+                // dead findEntity (CR-P2-09).
+                app.ghost_property_notes.push(format!(
+                    "BufferedGhostSetRealMessage::play: entity {entity} no longer exists",
+                    entity = held.entity
+                ));
+            }
+        }
+        GhostMessage::SetNextReal { next_real_addr } => {
+            app.ghost_set_next_real(spaces, held.entity, *next_real_addr);
+        }
+    }
 }
 
 /// `Entity::createGhost`'s and `Space::createGhost`'s outcomes.
@@ -238,8 +463,9 @@ pub fn write_ghost_data_to_stream(app: &CellApp, entity: u32) -> Option<Vec<u8>>
 impl CellApp {
     /// `Space::createGhost`'s message face (`space.cpp:228`): a create
     /// for an entity that already exists here, or that has messages
-    /// buffered, is itself buffered — the counts stay right and the
-    /// WARNING lands; otherwise the ghost is built.
+    /// buffered, is itself buffered — behind a delayed subsequence when
+    /// messages were already held, opening a delayed one when the
+    /// entity pre-exists; otherwise the ghost is built.
     pub fn create_ghost_message(
         &mut self,
         spaces: &mut BTreeMap<SpaceId, Space>,
@@ -253,17 +479,32 @@ impl CellApp {
             .get(&entity_id)
             .is_some_and(|entity| !entity.borrow().destroyed);
         let buffered = self
-            .buffered_ghost_creates
-            .iter()
-            .any(|held| held.entity == entity_id && held.src == src_addr);
+            .buffered_ghost_messages
+            .get(&entity_id)
+            .is_some_and(|held| {
+                held.messages
+                    .iter()
+                    .chain(held.delayed.iter().flatten())
+                    .any(|message| message.entity == entity_id && message.src == src_addr)
+            });
         if existing || buffered {
-            self.buffered_ghost_creates.push(BufferedGhostCreate {
+            // WARNING "Buffered createGhost message for entity %u from %s"
+            self.ghost_property_notes.push(format!(
+                "Space::createGhost: buffered createGhost for {entity_id} from {src_addr}"
+            ));
+            let held = BufferedGhostMessage {
                 src: src_addr,
                 entity: entity_id,
                 space_id,
                 delayed: !buffered,
-                data: data.to_vec(),
-            });
+                message: GhostMessage::Create(data.to_vec()),
+            };
+            if buffered {
+                self.buffer_ghost_message(held);
+            } else {
+                // TRACE "delaying subsequence"
+                self.delay_ghost_subsequence(held);
+            }
             return CreateGhostOutcome::Buffered;
         }
         self.create_ghost(spaces, space_id, entity_id, data)
@@ -690,6 +931,236 @@ impl CellApp {
         true
     }
 
+    /// `BufferedGhostMessages::add` (`buffered_ghost_messages.cpp:11`):
+    /// a message the gate could not play yet joins its entity's queue.
+    fn buffer_ghost_message(&mut self, held: BufferedGhostMessage) {
+        self.buffered_ghost_messages
+            .entry(held.entity)
+            .or_default()
+            .add(held);
+    }
+
+    /// `BufferedGhostMessages::delaySubsequence`
+    /// (`buffered_ghost_messages.cpp:101`): an unexpected subsequence
+    /// opening is held back — along with the queue it interrupted.
+    fn delay_ghost_subsequence(&mut self, held: BufferedGhostMessage) {
+        self.buffered_ghost_messages
+            .entry(held.entity)
+            .or_default()
+            .delay_subsequence(held);
+    }
+
+    /// `BufferedGhostMessages::playSubsequenceFor`
+    /// (`buffered_ghost_messages.cpp:22`): replay one ghost's held
+    /// messages, erasing the entry once its queue drained. The queue
+    /// comes out of the map first — a replayed `ghostSetNextReal`
+    /// calls back into this face (the reference's comment names the
+    /// recursion).
+    pub fn play_subsequence_for(&mut self, spaces: &mut BTreeMap<SpaceId, Space>, entity: u32) {
+        let Some(mut queue) = self.buffered_ghost_messages.remove(&entity) else {
+            return;
+        };
+        if queue.play_subsequence(self, spaces) {
+            // The drained entry stays erased; a play that buffered
+            // fresh messages re-creates its own entry below.
+            return;
+        }
+        self.buffered_ghost_messages.entry(entity).or_insert(queue);
+    }
+
+    /// `Entity::ghostSetReal` (`entity.cpp:4927`): the new real's
+    /// sign-off. An off-sequence id is held for the switch it
+    /// interrupted; a matching one re-points the ghost at the new
+    /// real and notifies the extras.
+    pub fn ghost_set_real(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        entity: u32,
+        num_times_real_offloaded: u32,
+        owner: u32,
+    ) -> GhostSetReal {
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return GhostSetReal::Missing;
+        };
+        let space_id = entity_rc.borrow().space_id;
+        // `NumTimesRealOffloadedType expected = numTimesRealOffloaded_+1`
+        let expected = entity_rc.borrow().num_times_real_offloaded + 1;
+        if num_times_real_offloaded != expected {
+            // WARNING "Invalid subsequence id. Expected %d. Got %d"
+            self.ghost_property_notes.push(format!(
+                "Entity::ghostSetReal({entity}): expected {expected}, got {num_times_real_offloaded}"
+            ));
+            // The message is held keyed by the owner it names — the
+            // queue that owner's own sign-off replays.
+            self.delay_ghost_subsequence(BufferedGhostMessage {
+                src: owner,
+                entity,
+                space_id,
+                delayed: true,
+                message: GhostMessage::SetReal {
+                    num_times_real_offloaded,
+                    owner,
+                },
+            });
+            return GhostSetReal::Buffered;
+        }
+        entity_rc.borrow_mut().num_times_real_offloaded = num_times_real_offloaded;
+        debug_assert!(
+            !entity_rc.borrow().is_real,
+            "ghostSetReal is a GHOST_ONLY message"
+        );
+        debug_assert!(
+            entity_rc.borrow().next_real_addr == Some(owner),
+            "the sign-off must name the address SetNextReal announced"
+        );
+        // `pRealChannel_ = CellAppChannels::instance().get( args.owner )`
+        entity_rc.borrow_mut().real_addr = Some(owner);
+        entity_rc.borrow_mut().next_real_addr = None;
+        // `this->relocated()` — the extras follow the real.
+        self.relocate_entity_extras(&entity_rc);
+        let _ = spaces;
+        GhostSetReal::Applied
+    }
+
+    /// `Entity::ghostSetNextReal` (`entity.cpp:4964`): the current
+    /// real's last word — from now on only the named address may send,
+    /// and the messages it got ahead with replay now. Answers whether
+    /// the entity was here to sign.
+    pub fn ghost_set_next_real(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        entity: u32,
+        next_real_addr: u32,
+    ) -> bool {
+        let Some(entity_rc) = self.entity_population.get(&entity).cloned() else {
+            return false;
+        };
+        debug_assert!(
+            entity_rc.borrow().next_real_addr.is_none(),
+            "a second sign-off cannot arrive before the switch lands"
+        );
+        debug_assert!(next_real_addr != 0, "NONE is not a next address");
+        entity_rc.borrow_mut().next_real_addr = Some(next_real_addr);
+        self.play_subsequence_for(spaces, entity);
+        true
+    }
+
+    /// `RealEntity::destroy( pNextRealAddr )`'s offload arm
+    /// (`real_entity.cpp:255`): every haunt but the next real is told
+    /// where the real is going, so they stop trusting this app. The
+    /// real itself takes the destination first — `entity.cpp:2039`'s
+    /// seam ("it will send a ghostSetReal back to this app").
+    pub fn send_ghost_set_next_real(&mut self, entity: u32, next_real_addr: u32) {
+        let (haunts, space_id) = {
+            let entity_rc = self
+                .entity_population
+                .get(&entity)
+                .expect("the sign-off runs for the offloading real");
+            let borrowed = entity_rc.borrow();
+            (borrowed.haunts.clone(), borrowed.space_id)
+        };
+        self.entity_population
+            .get(&entity)
+            .expect("the sign-off runs for the offloading real")
+            .borrow_mut()
+            .next_real_addr = Some(next_real_addr);
+        for haunt in haunts {
+            if haunt.addr == next_real_addr {
+                continue;
+            }
+            self.ghost_outbox.push(GhostWire {
+                dest: haunt.addr,
+                src: self.address,
+                space_id,
+                entity,
+                message: GhostMessage::SetNextReal { next_real_addr },
+            });
+        }
+        // `pChannel_->reset( NONE, false )` + `destroy()`: the channel
+        // face is the offload cluster's — the channel moves to the
+        // destination app with the resend history handed over.
+    }
+
+    /// `RealEntity::readOffloadData`'s haunt loop (`real_entity.cpp:345`):
+    /// the freshly landed real signs itself onto every haunt it can
+    /// reach — or, when it came through a space change or a teleport,
+    /// tells them the ghost is done instead. Answers `areWeHaunted`:
+    /// whether this app held a haunt of its own.
+    pub fn send_ghost_set_real(
+        &mut self,
+        entity: u32,
+        bad_haunt_addrs: &[u32],
+        changed_space: bool,
+        teleported: bool,
+    ) -> bool {
+        let (haunts, space_id, num_times) = {
+            let entity_rc = self
+                .entity_population
+                .get(&entity)
+                .expect("the sign-off runs for the landed real");
+            let borrowed = entity_rc.borrow();
+            (
+                borrowed.haunts.clone(),
+                borrowed.space_id,
+                borrowed.num_times_real_offloaded,
+            )
+        };
+        let owner = self.address;
+        let mut are_we_haunted = false;
+        for haunt in haunts {
+            if haunt.addr == owner {
+                // "we don't care if it's our own address - it could be
+                // from a local teleport or some such"
+                are_we_haunted = true;
+                continue;
+            }
+            if bad_haunt_addrs.contains(&haunt.addr) {
+                // WARNING "Not notifying app %s because of failed teleport"
+                self.ghost_property_notes.push(format!(
+                    "RealEntity::readOffloadData: failed teleport haunt {} for {entity}",
+                    haunt.addr
+                ));
+                continue;
+            }
+            if self.dead_channels.contains(&haunt.addr) {
+                // WARNING "Not notifying ghost for %u on dead app %s"
+                self.ghost_property_notes.push(format!(
+                    "RealEntity::readOffloadData: dead haunt {} for {entity}",
+                    haunt.addr
+                ));
+                continue;
+            }
+            if changed_space || teleported {
+                // `addDelGhostMessage` — the del's own face.
+                self.ghost_outbox.push(GhostWire {
+                    dest: haunt.addr,
+                    src: owner,
+                    space_id,
+                    entity,
+                    message: GhostMessage::Del,
+                });
+                continue;
+            }
+            // `this->addHaunt( *pAppChannel )`: the haunt list already
+            // carries this address — the stream read it in.
+            self.ghost_outbox.push(GhostWire {
+                dest: haunt.addr,
+                src: owner,
+                space_id,
+                entity,
+                message: GhostMessage::SetReal {
+                    num_times_real_offloaded: num_times,
+                    owner,
+                },
+            });
+        }
+        // MF_ASSERT( areWeHaunted ): the offload cluster guarantees a
+        // ghost here first ("they should not have offloaded the entity
+        // without creating a ghost here first"); the port reports the
+        // face instead of asserting it.
+        are_we_haunted
+    }
+
     /// `Cell::checkOffloadsAndGhosts` (`cell.cpp:174`): run the offload
     /// checker over our cell of `space_id`. The return is the cell's
     /// `isReadyForDeletion` (the port's face: reals gone, space entities
@@ -725,7 +1196,7 @@ impl CellApp {
             .any(|cell| cell.borrow().info.space_id == space_id && cell.borrow().is_removed)
             && empty
             && reals_empty
-            && self.buffered_ghost_creates.is_empty()
+            && self.buffered_ghost_messages.is_empty()
     }
 }
 
@@ -772,6 +1243,18 @@ impl CellApp {
             GhostMessage::Property { index, data } => {
                 DeliverGhost::Property(self.ghosted_data_update(wire.entity, *index, data))
             }
+            GhostMessage::SetReal {
+                num_times_real_offloaded,
+                owner,
+            } => DeliverGhost::SetReal(self.ghost_set_real(
+                spaces,
+                wire.entity,
+                *num_times_real_offloaded,
+                *owner,
+            )),
+            GhostMessage::SetNextReal { next_real_addr } => DeliverGhost::SetNextReal(
+                self.ghost_set_next_real(spaces, wire.entity, *next_real_addr),
+            ),
         }
     }
 }
@@ -1138,6 +1621,7 @@ mod tests {
     const A_ADDR: u32 = 10;
     const B_ADDR: u32 = 20;
     const C_ADDR: u32 = 30;
+    const D_ADDR: u32 = 40;
 
     /// The topology the two-cell tests share: ours `[0..50]` on the x
     /// edge, then neighbours at `[50..100]` (B) and, where the test
@@ -1246,6 +1730,20 @@ mod tests {
                     CreateGhostOutcome::BadStream
                 }
             }
+            // The sign-offs collapse onto the same Created/BadStream
+            // pair: the tests read the entity's own state.
+            DeliverGhost::SetReal(outcome) => match outcome {
+                GhostSetReal::Applied => CreateGhostOutcome::Created,
+                GhostSetReal::Buffered => CreateGhostOutcome::BadStream,
+                GhostSetReal::Missing => CreateGhostOutcome::UnknownType,
+            },
+            DeliverGhost::SetNextReal(ok) => {
+                if ok {
+                    CreateGhostOutcome::Created
+                } else {
+                    CreateGhostOutcome::BadStream
+                }
+            }
         }
     }
 
@@ -1268,6 +1766,37 @@ mod tests {
             crate::cellapp_real_entity::CreateRealOutcome::Created(2)
         ));
         (app_a, spaces_a, app_b, spaces_b)
+    }
+
+    /// The two-cell layout plus the destination app: the real's
+    /// offload target is one of the ghost-holding apps, so the landed
+    /// real signs itself onto its old haunts exactly as
+    /// `readOffloadData` does.
+    #[allow(clippy::type_complexity)]
+    fn three_cell_fixture() -> (
+        CellApp,
+        BTreeMap<SpaceId, Space>,
+        CellApp,
+        BTreeMap<SpaceId, Space>,
+        CellApp,
+        BTreeMap<SpaceId, Space>,
+    ) {
+        let cells = cell_infos(&[
+            (A_ADDR, 0.0, 40.0),
+            (B_ADDR, 40.0, 55.0),
+            (C_ADDR, 55.0, 100.0),
+        ]);
+        let (mut app_a, mut spaces_a) = app_at(A_ADDR, &cells);
+        let (app_b, spaces_b) = app_at(B_ADDR, &cells);
+        let (app_c, spaces_c) = app_at(C_ADDR, &cells);
+        app_a.ghost_distance = 50.0;
+        let outcome =
+            app_a.create_real_entity(&mut spaces_a, SID, &create_stream(2, [10.0, 0.0, 25.0]));
+        assert!(matches!(
+            outcome,
+            crate::cellapp_real_entity::CreateRealOutcome::Created(2)
+        ));
+        (app_a, spaces_a, app_b, spaces_b, app_c, spaces_c)
     }
 
     /// The create wire with every section: the ghost's volatile block,
@@ -1546,17 +2075,34 @@ mod tests {
             CreateGhostOutcome::Buffered
         );
         assert_eq!(app_b.entity_population.len(), 1);
-        let held = &app_b.buffered_ghost_creates[0];
+        let held = app_b.buffered_ghost_messages[&2]
+            .delayed
+            .as_ref()
+            .expect("an existing entity delayed the subsequence");
+        let held = &held[0];
         assert_eq!(held.entity, 2);
         assert_eq!(held.src, A_ADDR);
         assert!(held.delayed, "an existing entity delayed the subsequence");
+        assert!(app_b.buffered_ghost_messages[&2].messages.is_empty());
+        assert!(
+            matches!(held.message, GhostMessage::Create(_)),
+            "the create itself is held"
+        );
         // A create behind an already-buffered one rides the queue
         // instead of delaying its own subsequence.
         assert_eq!(
             deliver(&mut app_b, &mut spaces_b, &wire),
             CreateGhostOutcome::Buffered
         );
-        assert!(!app_b.buffered_ghost_creates[1].delayed);
+        let queued = app_b.buffered_ghost_messages[&2]
+            .delayed
+            .as_ref()
+            .expect("still delaying");
+        assert_eq!(queued.len(), 2);
+        assert!(
+            !queued[1].delayed,
+            "it rode the queue behind the first create"
+        );
     }
 
     /// A bad create stream leaves the half-built ghost destroyed in the
@@ -2142,5 +2688,386 @@ mod tests {
             roll_priority: 1.0,
         };
         assert!(ordered.is_valid());
+    }
+
+    /// The switch-period markers: a create and a `ghostSetReal` open a
+    /// subsequence, a del and a `ghostSetNextReal` close it.
+    #[test]
+    fn the_sign_off_markers_split_the_subsequence() {
+        assert!(is_subsequence_start(&GhostMessage::Create(vec![1, 2])));
+        assert!(is_subsequence_start(&GhostMessage::SetReal {
+            num_times_real_offloaded: 1,
+            owner: C_ADDR
+        }));
+        assert!(!is_subsequence_start(&GhostMessage::Position {
+            pos: [0.0; 3],
+            dir: [0.0; 3],
+            is_on_ground: true,
+            update_number: 0
+        }));
+        assert!(!is_subsequence_end(&GhostMessage::Create(vec![])));
+        assert!(!is_subsequence_end(&GhostMessage::SetReal {
+            num_times_real_offloaded: 1,
+            owner: C_ADDR
+        }));
+        assert!(is_subsequence_end(&GhostMessage::Del));
+        assert!(is_subsequence_end(&GhostMessage::SetNextReal {
+            next_real_addr: C_ADDR
+        }));
+    }
+
+    /// The delayed subsequence drags the messages behind it, and its
+    /// promotion splices the pair ahead of the plain queue.
+    #[test]
+    fn the_delayed_subsequence_splices_ahead_and_replays_in_order() {
+        let mut queue = BufferedGhostMessagesForEntity::default();
+        let sign_off = |message| BufferedGhostMessage {
+            src: A_ADDR,
+            entity: 2,
+            space_id: SID,
+            delayed: true,
+            message,
+        };
+        queue.delay_subsequence(sign_off(GhostMessage::SetReal {
+            num_times_real_offloaded: 1,
+            owner: C_ADDR,
+        }));
+        assert!(queue.is_delaying());
+        assert!(queue.messages.is_empty());
+        // Mid-subsequence messages ride the delayed bucket.
+        queue.add(sign_off(GhostMessage::Position {
+            pos: [1.0, 2.0, 3.0],
+            dir: [0.0, 0.0, 1.0],
+            is_on_ground: true,
+            update_number: 4,
+        }));
+        assert_eq!(
+            queue.delayed.as_ref().map(Vec::len),
+            Some(2),
+            "the position rode the delayed bucket"
+        );
+        // The closing sign-off stops the collection.
+        queue.add(sign_off(GhostMessage::SetNextReal {
+            next_real_addr: C_ADDR,
+        }));
+        assert!(!queue.is_delaying());
+        // A plain add lands on the queue once nothing is delayed.
+        queue.add(BufferedGhostMessage {
+            src: A_ADDR,
+            entity: 2,
+            space_id: SID,
+            delayed: false,
+            message: GhostMessage::SetReal {
+                num_times_real_offloaded: 2,
+                owner: B_ADDR,
+            },
+        });
+        assert_eq!(queue.messages.len(), 1);
+        // `promoteDelayedSubsequences` splices ahead, in order.
+        queue.promote_delayed_subsequences();
+        let kinds: Vec<&GhostMessage> = queue.messages.iter().map(|held| &held.message).collect();
+        assert!(matches!(kinds[0], GhostMessage::SetReal { .. }));
+        assert!(matches!(kinds[1], GhostMessage::Position { .. }));
+        assert!(matches!(kinds[2], GhostMessage::SetNextReal { .. }));
+        assert!(matches!(kinds[3], GhostMessage::SetReal { .. }));
+        assert!(queue.delayed.is_none());
+    }
+
+    /// BW-08-04-03's acceptance: the ghost follows its real to the new
+    /// address — the offloading real announces the destination, the new
+    /// real signs off, and the ghost's route lands on the new process.
+    #[test]
+    fn the_ghost_tracks_its_real_to_the_new_address() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b, mut app_c, mut spaces_c) =
+            three_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        // Every haunt materialises its ghost.
+        for wire in app_a.ghost_outbox.drain(..) {
+            match wire.dest {
+                B_ADDR => {
+                    assert_eq!(
+                        deliver(&mut app_b, &mut spaces_b, &wire),
+                        CreateGhostOutcome::Created
+                    )
+                }
+                C_ADDR => {
+                    assert_eq!(
+                        deliver(&mut app_c, &mut spaces_c, &wire),
+                        CreateGhostOutcome::Created
+                    )
+                }
+                _ => unreachable!("two haunts only"),
+            }
+        }
+
+        // `RealEntity::destroy( pNextRealAddr )` on the offloading
+        // real: the haunt that is not the destination hears it.
+        app_a.send_ghost_set_next_real(2, C_ADDR);
+        assert_eq!(
+            app_a.entity_population[&2].borrow().next_real_addr,
+            Some(C_ADDR),
+            "entity.cpp:2039 — the real takes the destination first"
+        );
+        let next_real_wires: Vec<GhostWire> = app_a
+            .ghost_outbox
+            .drain(..)
+            .filter(|wire| matches!(wire.message, GhostMessage::SetNextReal { .. }))
+            .collect();
+        assert_eq!(next_real_wires.len(), 1, "the destination is excluded");
+        assert_eq!(next_real_wires[0].dest, B_ADDR);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &next_real_wires[0]),
+            CreateGhostOutcome::Created
+        );
+        assert_eq!(
+            app_b.entity_population[&2].borrow().next_real_addr,
+            Some(C_ADDR)
+        );
+        assert!(!app_b.buffered_ghost_messages.contains_key(&2));
+
+        // The destination's ghost converts to the real
+        // (`convertGhostToReal`'s bump is the offload cluster's face;
+        // the count it leaves is what `readOffloadData` streams out).
+        {
+            let mut landed = app_c.entity_population.get_mut(&2).unwrap().borrow_mut();
+            landed.is_real = true;
+            landed.num_times_real_offloaded = 1;
+            landed.haunts = vec![
+                Haunt {
+                    addr: A_ADDR,
+                    creation_time: 1000,
+                },
+                Haunt {
+                    addr: B_ADDR,
+                    creation_time: 1000,
+                },
+                Haunt {
+                    addr: C_ADDR,
+                    creation_time: 1000,
+                },
+            ];
+        }
+        // `RealEntity::readOffloadData`'s haunt loop: the landed real
+        // signs itself onto every haunt it can reach, and its own
+        // address is the guarantee.
+        assert!(app_c.send_ghost_set_real(2, &[], false, false));
+        let set_real_wires: Vec<GhostWire> = app_c
+            .ghost_outbox
+            .drain(..)
+            .filter(|wire| matches!(wire.message, GhostMessage::SetReal { .. }))
+            .collect();
+        assert_eq!(set_real_wires.len(), 2, "the own haunt hears nothing");
+        assert_eq!(
+            set_real_wires[0].message,
+            GhostMessage::SetReal {
+                num_times_real_offloaded: 1,
+                owner: C_ADDR
+            }
+        );
+        for wire in &set_real_wires {
+            match wire.dest {
+                B_ADDR => {
+                    assert_eq!(
+                        deliver(&mut app_b, &mut spaces_b, wire),
+                        CreateGhostOutcome::Created
+                    )
+                }
+                A_ADDR => {}
+                _ => unreachable!("two haunts only"),
+            }
+        }
+
+        // The route now lands on the new process: the ghost holds the
+        // sign-off and nothing of the switch is left pending.
+        let borrowed = app_b.entity_population[&2].borrow();
+        assert_eq!(borrowed.real_addr, Some(C_ADDR));
+        assert_eq!(borrowed.num_times_real_offloaded, 1);
+        assert_eq!(borrowed.next_real_addr, None);
+        drop(borrowed);
+        assert!(app_b.buffered_ghost_messages.is_empty());
+        assert!(
+            !app_b
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("ghostSetReal")),
+            "the in-order sign-off never warned"
+        );
+    }
+
+    /// An out-of-turn `ghostSetReal` is held for the switch, and replays
+    /// when the announcement lands — the stale copy stays held, exactly
+    /// as the reference leaves it.
+    #[test]
+    fn the_off_turn_sign_off_waits_for_the_switch() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        let create_wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &create_wire),
+            CreateGhostOutcome::Created
+        );
+
+        // The real skipped a hop: the id names two offloads, the ghost
+        // has heard of none.
+        assert_eq!(
+            app_b.ghost_set_real(&mut spaces_b, 2, 2, C_ADDR),
+            GhostSetReal::Buffered
+        );
+        let ghost = app_b.entity_population[&2].borrow();
+        assert_eq!(ghost.num_times_real_offloaded, 0);
+        assert_eq!(ghost.real_addr, Some(A_ADDR));
+        drop(ghost);
+        let held = app_b.buffered_ghost_messages[&2]
+            .delayed
+            .as_ref()
+            .expect("the out-of-turn sign-off is held");
+        assert!(matches!(held[0].message, GhostMessage::SetReal { .. }));
+        assert_eq!(held[0].src, C_ADDR);
+        assert!(
+            app_b
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("expected 1, got 2")),
+            "the WARNING face lands"
+        );
+
+        // The announcement replays the held subsequence — the stale id
+        // still does not match, so it is held again.
+        assert!(app_b.ghost_set_next_real(&mut spaces_b, 2, C_ADDR));
+        assert_eq!(
+            app_b.entity_population[&2].borrow().next_real_addr,
+            Some(C_ADDR)
+        );
+        assert_eq!(
+            app_b.buffered_ghost_messages[&2]
+                .delayed
+                .as_ref()
+                .map(Vec::len),
+            Some(1),
+            "the replay re-held the stale sign-off"
+        );
+
+        // The matching sign-off applies once it arrives.
+        assert_eq!(
+            app_b.ghost_set_real(&mut spaces_b, 2, 1, C_ADDR),
+            GhostSetReal::Applied
+        );
+        let ghost = app_b.entity_population[&2].borrow();
+        assert_eq!(ghost.num_times_real_offloaded, 1);
+        assert_eq!(ghost.real_addr, Some(C_ADDR));
+        assert_eq!(ghost.next_real_addr, None);
+        drop(ghost);
+        assert_eq!(
+            app_b.ghost_set_real(&mut spaces_b, 99, 1, C_ADDR),
+            GhostSetReal::Missing,
+            "a sign-off for nothing here is dropped"
+        );
+    }
+
+    /// `RealEntity::readOffloadData`'s haunt loop skips its own
+    /// address, a failed teleport's haunt, and a dead app — and the
+    /// space-changed or teleported arm tells the haunts the ghost is
+    /// done instead.
+    #[test]
+    fn the_landed_real_signs_itself_onto_its_haunts() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        let create_wire = app_a.ghost_outbox.remove(0);
+        assert_eq!(
+            deliver(&mut app_b, &mut spaces_b, &create_wire),
+            CreateGhostOutcome::Created
+        );
+
+        // The landed real (now on B, holding its own haunt) reaches
+        // the old real's app.
+        app_b
+            .entity_population
+            .get_mut(&2)
+            .unwrap()
+            .borrow_mut()
+            .haunts = vec![
+            Haunt {
+                addr: A_ADDR,
+                creation_time: 1000,
+            },
+            Haunt {
+                addr: B_ADDR,
+                creation_time: 1000,
+            },
+            Haunt {
+                addr: D_ADDR,
+                creation_time: 1000,
+            },
+        ];
+        app_b.dead_channels.insert(D_ADDR);
+        app_b
+            .entity_population
+            .get_mut(&2)
+            .unwrap()
+            .borrow_mut()
+            .num_times_real_offloaded = 2;
+        assert!(
+            app_b.send_ghost_set_real(2, &[], false, false),
+            "the app's own haunt is the guarantee"
+        );
+        let set_real: Vec<&GhostWire> = app_b
+            .ghost_outbox
+            .iter()
+            .filter(|wire| matches!(wire.message, GhostMessage::SetReal { .. }))
+            .collect();
+        assert_eq!(set_real.len(), 1, "own and dead haunts hear nothing");
+        assert_eq!(set_real[0].dest, A_ADDR);
+        assert_eq!(
+            set_real[0].message,
+            GhostMessage::SetReal {
+                num_times_real_offloaded: 2,
+                owner: B_ADDR
+            }
+        );
+        assert!(
+            app_b
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("dead haunt 40")),
+            "the dead app is skipped with a WARNING"
+        );
+
+        // A failed teleport's haunt is skipped on request.
+        app_b.ghost_outbox.clear();
+        assert!(app_b.send_ghost_set_real(2, &[A_ADDR], false, false));
+        assert!(
+            app_b
+                .ghost_outbox
+                .iter()
+                .all(|wire| !matches!(wire.message, GhostMessage::SetReal { .. })),
+            "the bad haunt hears nothing"
+        );
+        assert!(
+            app_b
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("failed teleport haunt 10")),
+            "the bad haunt is skipped with a WARNING"
+        );
+
+        // The space-changed or teleported arm sends the del instead.
+        app_b.ghost_outbox.clear();
+        app_b
+            .entity_population
+            .get_mut(&2)
+            .unwrap()
+            .borrow_mut()
+            .haunts = vec![Haunt {
+            addr: A_ADDR,
+            creation_time: 1000,
+        }];
+        assert!(!app_b.send_ghost_set_real(2, &[], true, false));
+        let del: Vec<&GhostWire> = app_b
+            .ghost_outbox
+            .iter()
+            .filter(|wire| matches!(wire.message, GhostMessage::Del))
+            .collect();
+        assert_eq!(del.len(), 1);
+        assert_eq!(del[0].dest, A_ADDR);
     }
 }
