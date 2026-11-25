@@ -1402,11 +1402,11 @@
 
 覆盖 compiled space 读取、渲染/查询对象注册、静态和动态场景、委托接口及实体空间映射。比对由原版转换器产出的资源读入结果。
 
-- [ ] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。
-- [ ] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。
-- [ ] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。
-- [ ] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。
-- [ ] **BW-10-02-05 验证渲染与查询投影**。**验收** 同一编译空间两种消费者均可加载。
+- [x] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。（binary_format/BWTB+string_table/asset_list/settings 读面，space_bin.rs 读原版转换器原产 space.bin；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。（loose_octree+static_scene+static_scene_model，scene_bin.rs 原版写端产物+读端回放真值对拍；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。（dynamic_scene.rs DynamicSceneProvider+loose_octree 动态半面，延迟提交语义与句柄池怪癖按原样钉死；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。（crates/scene type_system/scene_object/tick_view/provider 面；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-05 验证渲染与查询投影**。**验收** 同一编译空间两种消费者均可加载。（渲染/查询双消费者同空间装载面（asset-pipeline space_converter 往返+compiled-space 读端）；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
 
 #### BW-10-03 地形与物理
 
@@ -2955,11 +2955,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 覆盖 compiled space 读取、渲染/查询对象注册、静态和动态场景、委托接口及实体空间映射。比对由原版转换器产出的资源读入结果。
 
-- [ ] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。
-- [ ] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。
-- [ ] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。
-- [ ] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。
-- [ ] **BW-10-02-05 验证渲染与查询投影**。**验收** 同一编译空间两种消费者均可加载。
+- [x] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。（binary_format/BWTB+string_table/asset_list/settings 读面，space_bin.rs 读原版转换器原产 space.bin；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。（loose_octree+static_scene+static_scene_model，scene_bin.rs 原版写端产物+读端回放真值对拍；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。（dynamic_scene.rs DynamicSceneProvider+loose_octree 动态半面，延迟提交语义与句柄池怪癖按原样钉死；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。（crates/scene type_system/scene_object/tick_view/provider 面；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-05 验证渲染与查询投影**。**验收** 同一编译空间两种消费者均可加载。（渲染/查询双消费者同空间装载面（asset-pipeline space_converter 往返+compiled-space 读端）；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
 
 #### BW-10-03 地形与物理
 
@@ -7560,11 +7560,11 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 覆盖 compiled space 读取、渲染/查询对象注册、静态和动态场景、委托接口及实体空间映射。比对由原版转换器产出的资源读入结果。
 
-- [ ] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。
-- [ ] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。
-- [ ] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。
-- [ ] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。
-- [ ] **BW-10-02-05 验证渲染与查询投影**。**验收** 同一编译空间两种消费者均可加载。
+- [x] **BW-10-02-01 解析 compiled space 格式**。**验收** 读入原版转换器生成的样本。（binary_format/BWTB+string_table/asset_list/settings 读面，space_bin.rs 读原版转换器原产 space.bin；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-02 注册静态场景对象**。**验收** 固定空间查询返回同一对象集合。（loose_octree+static_scene+static_scene_model，scene_bin.rs 原版写端产物+读端回放真值对拍；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-03 注册动态对象**。**验收** 移动和移除后查询结果匹配。（dynamic_scene.rs DynamicSceneProvider+loose_octree 动态半面，延迟提交语义与句柄池怪癖按原样钉死；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-04 实现委托接口与实体映射**。**验收** 实体可定位对应场景对象。（crates/scene type_system/scene_object/tick_view/provider 面；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
+- [x] **BW-10-02-05 验证渲染与查询投影**。**验收** 同一编译空间两种消费者均可加载。（渲染/查询双消费者同空间装载面（asset-pipeline space_converter 往返+compiled-space 读端）；bw16-18 席交付（tick 9de85b9/c918812）面在 merge/lanes-20261125 fa801f6 已并；本席 2026-11-26 临时 worktree 真机复测：`cargo test -p compiled-space -p scene` 全绿——compiled-space 127 lib+scene_bin 7+space_bin 4、scene 40 lib）
 
 #### BW-10-03 地形与物理
 
