@@ -418,6 +418,9 @@ pub struct WaypointGenerator {
     points: BTreeSet<PointDef>,
     edges: BTreeSet<EdgeDef>,
     sets: i32,
+    /// `identifier_` (`waypoint_generator.hpp:197`): the TGA file's base
+    /// name, set by `read_tga`.
+    pub(crate) identifier: String,
 }
 
 impl Default for WaypointGenerator {
@@ -441,6 +444,7 @@ impl WaypointGenerator {
             points: BTreeSet::new(),
             edges: BTreeSet::new(),
             sets: 0,
+            identifier: String::new(),
         }
     }
 
@@ -475,6 +479,32 @@ impl WaypointGenerator {
     /// `hgtGrids()` (`waypoint_generator.hpp:52`).
     pub fn hgt_grids_mut(&mut self) -> &mut [Vec<f32>] {
         &mut self.hgt_grids
+    }
+
+    /// `adjGrids` and `hgtGrids`, as `workflow::read_tga` and the port of
+    /// `ChunkWaypointGenerator::generate` need to fill them.
+    pub(crate) fn grids_mut(&mut self) -> (&mut [Vec<AdjGridElt>], &mut [Vec<f32>]) {
+        (&mut self.adj_grids, &mut self.hgt_grids)
+    }
+
+    /// `gridX_` (`waypoint_generator.hpp:191`).
+    pub(crate) fn grid_x(&self) -> u32 {
+        self.grid_x
+    }
+
+    /// `gridMin_` / `gridResolution_` (`waypoint_generator.hpp:193-194`).
+    pub(crate) fn grid_origin(&self) -> (Vector3, f32) {
+        (self.grid_min, self.grid_resolution)
+    }
+
+    /// `hgtGrids_` (`waypoint_generator.hpp:187`) read-only.
+    pub(crate) fn hgt_grids(&self) -> &[Vec<f32>] {
+        &self.hgt_grids
+    }
+
+    /// `gridZ_` (`waypoint_generator.hpp:192`).
+    pub(crate) fn grid_z(&self) -> u32 {
+        self.grid_z
     }
 
     /// `adjGrids()` (`waypoint_generator.hpp:51`).
