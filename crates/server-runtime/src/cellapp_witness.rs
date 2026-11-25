@@ -32,7 +32,6 @@
 //! - `Witness::update`'s writer faces (`addSpaceDataChanges`,
 //!   `addReferencePosition`, `addDetailedPlayerPosition`) are
 //!   BW-08-03-04's: the pass's bundle starts empty and each send
-//!   spends the context's fixed `update_bytes`.
 //! - `Entity::writeClientUpdateDataToBundle`'s history-event payload
 //!   and the volatile position encoding are BW-08-03-04's face. The LoD
 //!   machinery ([`EntityCache::update_detail_level`],
@@ -54,7 +53,7 @@ use crate::cellapp_range_list::{
     FLAG_LOWER_AOI_TRIGGER, FLAG_NO_TRIGGERS, FLAG_UPPER_AOI_TRIGGER, TriggerId, TriggerTarget,
 };
 use crate::cellapp_real_entity::ScriptCall;
-use crate::cellapp_space::{CellApp, Entity};
+use crate::cellapp_space::{CellApp, Entity, SPACE_DATA_FIRST_CELL_ONLY_KEY};
 use crate::cellappmgr::SpaceId;
 
 /// `EntityCache::MAX_LOD_LEVELS` — "TODO: Remove this restriction".
@@ -126,6 +125,208 @@ pub struct ClientProperty {
     pub stamp: EventNumber,
 }
 
+/// `VolatileInfo` (`lib/entitydef/volatile_info.hpp`): what information
+/// of an entity changes frequently enough to ride the volatile updates,
+/// with the priority each face demands. The constructor's `-1`s are the
+/// reference's defaults — nothing volatile at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VolatileInfo {
+    /// `positionPriority_`.
+    pub position_priority: f32,
+    /// `yawPriority_`.
+    pub yaw_priority: f32,
+    /// `pitchPriority_`.
+    pub pitch_priority: f32,
+    /// `rollPriority_`.
+    pub roll_priority: f32,
+}
+
+impl Default for VolatileInfo {
+    /// `VolatileInfo( -1.f, -1.f, -1.f, -1.f )`.
+    fn default() -> Self {
+        Self {
+            position_priority: -1.0,
+            yaw_priority: -1.0,
+            pitch_priority: -1.0,
+            roll_priority: -1.0,
+        }
+    }
+}
+
+impl VolatileInfo {
+    /// `hasVolatile( priority )`.
+    pub fn has_volatile(&self, priority: f32) -> bool {
+        (priority < self.position_priority) || (priority < self.yaw_priority)
+    }
+
+    /// `shouldSendPosition`.
+    pub fn should_send_position(&self) -> bool {
+        self.position_priority > 0.0
+    }
+
+    /// `dirType( priority )`: 0 = yaw, pitch and roll, 3 = no direction
+    /// at all.
+    pub fn dir_type(&self, priority: f32) -> u8 {
+        ((priority > self.yaw_priority) as u8)
+            + ((priority > self.pitch_priority) as u8)
+            + ((priority > self.roll_priority) as u8)
+    }
+}
+
+/// `EXPONENTBITS_XZ` (`msgtypes.hpp:34`).
+pub const EXPONENTBITS_XZ: u32 = 3;
+/// `XZ_MANTISSABITS_XZ` (`msgtypes.hpp:38`).
+pub const XZ_MANTISSABITS_XZ: u32 = 8;
+/// `XYZ_EXPONENTBITS_Y` (`msgtypes.hpp:53`).
+pub const XYZ_EXPONENTBITS_Y: u32 = 4;
+/// `XYZ_MANTISSABITS_Y` (`msgtypes.hpp:55`).
+pub const XYZ_MANTISSABITS_Y: u32 = 11;
+
+/// `getLimit< EXPONENT_BITS, MANTISSA_BITS >()` (`msgtypes.ipp:388`): the
+/// exclusive upper bound of values `packFloat` survives — the all-ones
+/// exponent and mantissa, two subtracted, the rounding error added back.
+pub fn packed_limit(exponent_bits: u32, mantissa_bits: u32) -> f32 {
+    let max_exponent: u32 = (1 << exponent_bits) - 1;
+    let max_mantissa: u32 = (1 << mantissa_bits) - 1;
+    let error = (1.0 / (1u32 << mantissa_bits) as f32) * ((1u64 << max_exponent) as f32);
+    let bits: u32 = ((max_exponent | 0x80) << 23) | (max_mantissa << (23 - mantissa_bits));
+    f32::from_bits(bits) - 2.0 + error
+}
+
+/// `PackedXZ::maxLimit( scale )`: the x/z bound both packed forms share.
+pub fn packed_xz_max_limit(scale: f32) -> f32 {
+    packed_limit(EXPONENTBITS_XZ, XZ_MANTISSABITS_XZ) * scale
+}
+
+/// `PackedXYZ::maxLimit( xzscale )`: the same x/z bound as the ground
+/// form — the shared exponent and mantissa widths are deliberate.
+pub fn packed_xyz_max_limit(scale: f32) -> f32 {
+    packed_limit(EXPONENTBITS_XZ, XZ_MANTISSABITS_XZ) * scale
+}
+
+/// `PackedXZ::minLimit`/`PackedXYZ::minLimit`: the inclusive negated
+/// maximum.
+pub fn packed_min_limit(max_limit: f32) -> f32 {
+    -max_limit
+}
+
+/// `HistoryEvent::Level` (`history_event.hpp:34`): a state change rides
+/// a detail level, a message a priority threshold.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HistoryLevel {
+    /// `Level( int )`: send while the cache's detail level is at or
+    /// below this.
+    Detail(DetailLevel),
+    /// `Level( float )`: send while the LoD priority stays under this.
+    Priority(f32),
+}
+
+impl HistoryLevel {
+    /// `Level::shouldSend( threshold, detailLevel )`.
+    pub fn should_send(&self, threshold: f32, detail_level: DetailLevel) -> bool {
+        match *self {
+            HistoryLevel::Detail(detail) => detail_level <= detail,
+            HistoryLevel::Priority(priority) => threshold < priority,
+        }
+    }
+}
+
+/// One `HistoryEvent` (`history_event.hpp`): the record an entity's
+/// event history keeps for the witness sends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryEvent {
+    /// `number_`.
+    pub number: EventNumber,
+    /// `msgID_`.
+    pub message_id: u16,
+    /// `level_`.
+    pub level: HistoryLevel,
+    /// `isReliable_`.
+    pub reliable: bool,
+    /// `msgStreamSize_`.
+    pub stream_size: i16,
+    /// `msg_`.
+    pub message: Vec<u8>,
+}
+
+impl HistoryEvent {
+    /// `HistoryEvent::shouldSend`.
+    pub fn should_send(&self, threshold: f32, detail_level: DetailLevel) -> bool {
+        self.level.should_send(threshold, detail_level)
+    }
+
+    /// `HistoryEvent::addToBundle`: the `sendMessageToClient` (reliable)
+    /// or `sendMessageToClientUnreliable` frame.
+    pub fn add_to_bundle(&self, wire: &mut Vec<Wire>) {
+        wire.push(Wire::HistoryEventMessage {
+            message_id: self.message_id,
+            stream_size: self.stream_size,
+            payload: self.message.clone(),
+            reliable: self.reliable,
+        });
+    }
+}
+
+/// `EventHistory` (`history_event.hpp`): the events an entity keeps for
+/// its witnesses, trimmed by the game tick's `trimEventHistory`.
+#[derive(Clone, Debug, Default)]
+pub struct EventHistory {
+    /// `trimToEvent_`: the number `trim()` cuts below.
+    pub trim_to_event: EventNumber,
+    /// `container_`: oldest first.
+    pub events: Vec<HistoryEvent>,
+    /// `lastTrimmedEventNumber_`.
+    pub last_trimmed_event_number: EventNumber,
+}
+
+impl EventHistory {
+    /// `EventHistory::add` (`history_event.cpp:151`): the event takes
+    /// the number its caller drew and joins the tail. The port keeps
+    /// one event per call — the `shouldSendLatestOnly` recreation is
+    /// the description face's business, and it never runs here.
+    pub fn add(&mut self, event: HistoryEvent) -> EventNumber {
+        self.events.push(event);
+        self.events.last().expect("just pushed").number
+    }
+
+    /// `EventHistory::trim` (`history_event.cpp:255`): everything at or
+    /// under the trim point leaves; the last reliable event trimmed
+    /// moves the trimmed stamp, and the trim point becomes the newest
+    /// survivor (or zero when the history drained).
+    pub fn trim(&mut self) {
+        let mut index = 0;
+        while index < self.events.len() && self.events[index].number <= self.trim_to_event {
+            if self.events[index].reliable {
+                self.last_trimmed_event_number = self.events[index].number;
+            }
+            index += 1;
+        }
+        self.events.drain(..index);
+        self.trim_to_event = self.events.last().map(|event| event.number).unwrap_or(0);
+    }
+
+    /// `EventHistory::clear` (`history_event.cpp:279`).
+    pub fn clear(&mut self) {
+        self.events.clear();
+        self.trim_to_event = 0;
+        self.last_trimmed_event_number = 0;
+    }
+
+    /// `EventHistory::lastTrimmedEventNumber`.
+    pub fn last_trimmed_event_number(&self) -> EventNumber {
+        self.last_trimmed_event_number
+    }
+
+    /// `EventHistory::lastEventNumber`: the newest event's number, or
+    /// zero.
+    pub fn last_event_number(&self) -> EventNumber {
+        self.events.last().map(|event| event.number).unwrap_or(0)
+    }
+}
+
+/// `Entity::NOT_WITNESSED_THRESHOLD` (`entity.hpp:897`).
+pub const NOT_WITNESSED_THRESHOLD: u32 = 3;
+
 /// The per-type description faces the witness reads
 /// (`EntityDescription::canBeOnClient`/`shouldSendDetailedPosition`/
 /// `isManualAoI`/`aoiUpdateSchemeID` + `Entity::volatileInfo().
@@ -142,6 +343,9 @@ pub struct EntityTypeDef {
     /// `Entity::volatileInfo().hasVolatile( 0.f )`: whether the entity
     /// may take an id alias and ride the non-detailed create message.
     pub has_volatile: bool,
+    /// `EntityDescription::volatileInfo()`: the priorities each
+    /// volatile face demands.
+    pub volatile: VolatileInfo,
     /// `EntityDescription::aoiUpdateSchemeID()`.
     pub update_scheme: SchemeId,
     /// `description().lodLevels()`: each level's `(start, hyst)` pair,
@@ -160,6 +364,7 @@ impl Default for EntityTypeDef {
             should_send_detailed_position: false,
             manual_aoi: false,
             has_volatile: true,
+            volatile: VolatileInfo::default(),
             update_scheme: 0,
             lod_levels: Vec::new(),
         }
@@ -1047,6 +1252,90 @@ pub enum Wire {
         /// The payload size.
         size: i16,
     },
+    /// `spaceData` (`Witness::addSpaceDataChanges`).
+    SpaceData {
+        /// The space the entry belongs to.
+        space_id: SpaceId,
+        /// `SpaceEntryID`.
+        entry_id: u32,
+        /// The key, or `NO_SPACE_DATA_KEY` for a revocation.
+        key: u16,
+        /// The value blob; `None` when the value is gone already (a
+        /// quick add+delete leaves the sequence holding nothing).
+        data: Option<Vec<u8>>,
+    },
+    /// `makeNextMessageReliable(false)` + `relativePositionReference`
+    /// (`Witness::addReferencePosition`'s client-controlled arm).
+    RelativePositionReference {
+        /// `referenceSeqNum_`.
+        seq_num: u8,
+        /// The reliable flag the pass may OR into after the fact.
+        reliable: bool,
+    },
+    /// `makeNextMessageReliable(false)` + `relativePosition`
+    /// (`Witness::addReferencePosition`'s vehicle/self arm).
+    RelativePosition {
+        /// `referencePosition_`.
+        position: [f32; 3],
+        /// The reliable flag the pass may OR into after the fact.
+        reliable: bool,
+    },
+    /// `avatarUpdatePlayerDetailed` (`Witness::addDetailedPlayerPosition`).
+    AvatarUpdatePlayerDetailed {
+        /// `localPosition_`.
+        position: [f32; 3],
+        /// `localDirection_`.
+        direction: [f32; 3],
+        /// Whether the update rides reliable.
+        reliable: bool,
+    },
+    /// `avatarUpdate<alias><pos><dir>` (`Entity::writeVolatileDataToBundle`).
+    AvatarUpdate {
+        /// The alias when the client has one, else the entity id.
+        id: u32,
+        /// The id alias, `NO_ID_ALIAS` when the bare id rides.
+        id_alias: u8,
+        /// Whether a position rides at all.
+        position: bool,
+        /// `sendOnGround`: the packed XZ form.
+        on_ground: bool,
+        /// `dirType`: 0 yaw+pitch+roll, 1 yaw+pitch, 2 yaw.
+        direction_type: u8,
+        /// `makeNextMessageReliable`.
+        reliable: bool,
+    },
+    /// `avatarUpdateAliasDetailed`/`avatarUpdateNoAliasDetailed`
+    /// (`Entity::writeVolatileDetailedDataToBundle`).
+    AvatarUpdateDetailed {
+        /// The entity the update describes.
+        id: u32,
+        /// The id alias, `NO_ID_ALIAS` when the bare id rides.
+        id_alias: u8,
+        /// `localPosition_`.
+        position: [f32; 3],
+        /// `localDirection_`.
+        direction: [f32; 3],
+        /// `makeNextMessageReliable`.
+        reliable: bool,
+    },
+    /// `sendMessageToClient`/`sendMessageToClientUnreliable`
+    /// (`HistoryEvent::addToBundle`).
+    HistoryEventMessage {
+        /// `msgID_`.
+        message_id: u16,
+        /// `msgStreamSize_`.
+        stream_size: i16,
+        /// `msg_`.
+        payload: Vec<u8>,
+        /// Whether the reliable variant went out.
+        reliable: bool,
+    },
+    /// `CellAppInterface::witnessed` to the real entity — the ghost's
+    /// `writeClientUpdateDataToBundle` arm.
+    WitnessedReal {
+        /// The ghost id the real is told about.
+        entity: u32,
+    },
     /// `tickSync` (`Witness::Witness`'s opener).
     TickSync {
         /// The tick byte.
@@ -1169,6 +1458,15 @@ pub enum WitnessNote {
         /// The priority that failed `+0.0001`.
         priority: f64,
     },
+    /// `Entity::writeClientUpdateDataToBundle`'s WARNING face.
+    EntityUpdateSpam {
+        /// The entity whose update went out.
+        entity: u32,
+        /// The bytes it added.
+        added: i32,
+        /// The events it carried.
+        events: i32,
+    },
     /// `EntityCache::reuse`'s INFO face: the client's history was
     /// trimmed out from under it, so the cache cannot be reused.
     ReuseMissedEvents {
@@ -1181,6 +1479,41 @@ pub enum WitnessNote {
         /// `lastTrimmedEventNumber()`.
         history_since: EventNumber,
     },
+}
+
+/// `wire_message_bytes`: the byte size one wire message spends on the
+/// reference's bundle. The counts are the `Mercury` message-frame
+/// layout: one id byte, the fixed-size args, and length-prefixed
+/// blobs.
+pub fn wire_message_bytes(message: &Wire) -> i32 {
+    match message {
+        Wire::SelectPlayer => 1,
+        Wire::SelectEntity { .. } => 5,
+        Wire::SelectAliasedEntity { .. } => 2,
+        Wire::EnterAoI { .. } => 6,
+        Wire::EnterAoIOnVehicle { .. } => 10,
+        Wire::SetVehicle { .. } => 10,
+        Wire::CreateEntity {
+            property_indices, ..
+        } => 5 + property_indices.len() as i32,
+        Wire::UpdateEntity { indices, .. } => 4 + indices.len() as i32,
+        Wire::LeaveAoI { lod_stamps, .. } => 5 + 4 * lod_stamps.len() as i32,
+        Wire::SendMessageToClient { .. } => 8,
+        Wire::SpaceData { data, .. } => 8 + data.as_ref().map_or(0, |blob| 2 + blob.len() as i32),
+        Wire::RelativePositionReference { .. } => 2,
+        Wire::RelativePosition { .. } => 13,
+        Wire::AvatarUpdatePlayerDetailed { .. } => 25,
+        Wire::AvatarUpdate { .. } => 12,
+        Wire::AvatarUpdateDetailed { .. } => 25,
+        Wire::HistoryEventMessage { payload, .. } => 7 + 2 + payload.len() as i32,
+        Wire::WitnessedReal { .. } => 5,
+        Wire::TickSync { .. } => 2,
+    }
+}
+
+/// The bundle's byte size — every message, opener included.
+pub fn wire_bytes(wire: &[Wire]) -> i32 {
+    wire.iter().map(wire_message_bytes).sum()
 }
 
 /// The per-call context the witness faces borrow from the `CellApp`:
@@ -1210,12 +1543,27 @@ pub struct WitnessContext<'a> {
     /// `Entity::writeClientUpdateDataToBundle`'s byte growth per send —
     /// the writer is BW-08-03-04's face; the selection loop only
     /// spends its size.
-    pub update_bytes: i32,
     /// `CellAppConfig::entitySpamSize()`: the per-send size the spam
     /// WARNING guards.
     pub spam_size: i32,
     /// `CellAppConfig::witnessUpdateDeltaGrowthThrottle()`.
     pub delta_growth_throttle: f32,
+    /// `CellApp::instance().time()`.
+    pub time: u32,
+    /// `CellAppConfig::maxTimeBetweenPlayerUpdatesInTicks()`: `-1`
+    /// always skips an unchanged repeat, `0` never does.
+    pub max_time_between_player_updates: i32,
+    /// `Space::s_allSpacesDataChangeSeq_`.
+    pub all_spaces_data_change_seq: u64,
+    /// The spaces, for the space-data face.
+    pub spaces: &'a BTreeMap<crate::cellappmgr::SpaceId, crate::cellapp_space::Space>,
+    /// The `onWitnessed` deliveries: `(entity, wasUnwitnessed)`, in the
+    /// order `Entity::witnessed` fired.
+    pub witnessed_notifications: &'a mut Vec<(u32, bool)>,
+    /// `CellAppConfig::packedXZScale()`.
+    pub packed_xz_scale: f32,
+    /// `CellAppConfig::sendDetailedPlayerVehicles()`.
+    pub send_detailed_player_vehicles: bool,
 }
 
 impl<'a> WitnessContext<'a> {
@@ -1288,6 +1636,24 @@ pub struct Witness {
     pub in_aoi_offload: bool,
     /// `lastSentReliableGameTime_`.
     pub last_sent_reliable_game_time: u32,
+    /// `lastSentReliablePosition_`.
+    pub last_sent_reliable_position: [f32; 3],
+    /// `lastSentReliableDirection_`.
+    pub last_sent_reliable_direction: [f32; 3],
+    /// `referencePosition_`.
+    pub reference_position: [f32; 3],
+    /// `referenceSeqNum_`.
+    pub reference_seq_num: u8,
+    /// `hasReferencePosition_`.
+    pub has_reference_position: bool,
+    /// `allSpacesDataChangeSeq_`: the global this witness last synced
+    /// to. The constructor takes one behind (`Space::
+    /// s_allSpacesDataChangeSeq_ - 1`), so the first pass always sees
+    /// a change.
+    pub all_spaces_data_change_seq: u64,
+    /// The wire length at the last `flushToClient`: everything past it
+    /// is the unflushed bundle the channel still holds.
+    pub flushed_len: usize,
 }
 
 impl Witness {
@@ -1328,7 +1694,27 @@ impl Witness {
             aoi_events: Rc::new(RefCell::new(Vec::new())),
             in_aoi_offload: false,
             last_sent_reliable_game_time: 0,
+            last_sent_reliable_position: [0.0; 3],
+            last_sent_reliable_direction: [0.0; 3],
+            reference_position: [0.0; 3],
+            reference_seq_num: 0,
+            has_reference_position: false,
+            all_spaces_data_change_seq: 0,
+            flushed_len: 0,
         }
+    }
+
+    /// `bundle().size()`: the bytes the unflushed bundle holds — the
+    /// messages written since the last `flushToClient`.
+    pub fn pending_bytes(&self) -> i32 {
+        wire_bytes(&self.wire[self.flushed_len..])
+    }
+
+    /// `Witness::flushToClient` (`witness.cpp:1702`): the pending
+    /// bundle leaves for the client; the log keeps it, the channel
+    /// would not.
+    pub fn flush_to_client(&mut self) {
+        self.flushed_len = self.wire.len();
     }
 
     /// The AoI crossing queue the trigger writes into.
@@ -1927,6 +2313,557 @@ impl Witness {
         self.add_to_seen(entity_id);
     }
 
+    /// `BW_ROUNDF` (`mathdef.hpp:57`).
+    fn bw_roundf(value: f32) -> f32 {
+        (value + 0.5).floor()
+    }
+
+    /// The tail OR: the reference slot's reliability flag takes the
+    /// pass's reliable-relative mark. Only the position messages carry
+    /// the flag; any other frame is tolerated with no effect — the
+    /// reference's `default: break`.
+    fn or_reference_reliability(message: &mut Wire, has_reliable_relative: bool) {
+        if let Wire::RelativePositionReference { reliable, .. }
+        | Wire::RelativePosition { reliable, .. }
+        | Wire::AvatarUpdatePlayerDetailed { reliable, .. } = message
+        {
+            *reliable |= has_reliable_relative;
+        }
+    }
+
+    /// Whether the given frame is reliable — the stamp read keys off
+    /// the position messages; any other frame rides unreliable.
+    fn reference_reliability(message: &Wire) -> bool {
+        if let Wire::RelativePositionReference { reliable, .. }
+        | Wire::RelativePosition { reliable, .. }
+        | Wire::AvatarUpdatePlayerDetailed { reliable, .. } = message
+        {
+            *reliable
+        } else {
+            false
+        }
+    }
+
+    // ----- The send-pass writers --------------------------------------
+
+    /// `Witness::calculateReferencePosition` (`witness.cpp:2413`): the
+    /// entity's position snapped to the coarser grid — stationary
+    /// entities must not drift as the reference moves.
+    pub fn calculate_reference_position(&mut self, ctx: &WitnessContext<'_>) {
+        let position = ctx
+            .entities
+            .get(&self.entity_id)
+            .expect("the witnessed entity lives in the population")
+            .borrow()
+            .position;
+        self.reference_position = [
+            Self::bw_roundf(position[0]),
+            Self::bw_roundf(position[1]),
+            Self::bw_roundf(position[2]),
+        ];
+    }
+
+    /// `Witness::updateReferencePosition` (`witness.cpp:2428`): the
+    /// client's ack lands the reference.
+    pub fn update_reference_position(&mut self, ctx: &WitnessContext<'_>, seq_num: u8) {
+        self.calculate_reference_position(ctx);
+        self.reference_seq_num = seq_num;
+        self.has_reference_position = true;
+    }
+
+    /// `Witness::cancelReferencePosition` (`witness.cpp:2443`).
+    pub fn cancel_reference_position(&mut self) {
+        self.has_reference_position = false;
+        self.reference_position = [0.0; 3];
+        self.reference_seq_num = 0;
+    }
+
+    /// `Witness::addSpaceDataChanges` (`witness.cpp:755`): the space
+    /// data the client has not seen yet — everything, when the
+    /// client's sequence fell behind the space's window, the tail
+    /// otherwise.
+    fn add_space_data_changes(&mut self, ctx: &WitnessContext<'_>, wire: &mut Vec<Wire>) {
+        // see if any space data has changed
+        if self.all_spaces_data_change_seq == ctx.all_spaces_data_change_seq {
+            return;
+        }
+        self.all_spaces_data_change_seq = ctx.all_spaces_data_change_seq;
+
+        // `entity_.space()`: the space the witnessing entity stands in.
+        let space_id = ctx
+            .entities
+            .get(&self.entity_id)
+            .expect("the witnessed entity lives in the population")
+            .borrow()
+            .space_id;
+        let Some(space) = ctx.spaces.get(&space_id) else {
+            return;
+        };
+
+        // see if we want to send any more data
+        if self.known_space_data_seq < space.beg_data_seq as i32 {
+            // if we're not in the seq we have to send it all
+            for (entry_id, value) in space.space_data.entries() {
+                if value.key >= SPACE_DATA_FIRST_CELL_ONLY_KEY {
+                    continue; // but don't send cell-only data
+                }
+                wire.push(Wire::SpaceData {
+                    space_id,
+                    entry_id,
+                    key: value.key,
+                    data: Some(value.data.clone()),
+                });
+            }
+            self.known_space_data_seq = space.end_data_seq as i32;
+        }
+        while self.known_space_data_seq < space.end_data_seq as i32 {
+            // otherwise only send stuff that's new
+            let seq = self.known_space_data_seq as u32;
+            self.known_space_data_seq += 1;
+            let (entry_id, key, value) = space.data_by_seq(seq);
+            wire.push(Wire::SpaceData {
+                space_id,
+                entry_id,
+                key,
+                // (key != uint16(-1)): data might not still be there if
+                // added+removed quickly
+                data: value.cloned(),
+            });
+        }
+    }
+
+    /// `Witness::addReferencePosition` (`witness.cpp:814`): the
+    /// reference position message the relative updates anchor to.
+    /// Returns the wire index of the message carrying its reliability
+    /// flag — `None` when the detailed player position (or the last
+    /// reliable one) carries it instead.
+    fn add_reference_position(
+        &mut self,
+        ctx: &WitnessContext<'_>,
+        wire: &mut Vec<Wire>,
+    ) -> Option<usize> {
+        let (vehicle, controlled_by) = {
+            let entity = ctx
+                .entities
+                .get(&self.entity_id)
+                .expect("the witnessed entity lives in the population")
+                .borrow();
+            (entity.vehicle, entity.controlled_by)
+        };
+
+        // Fast and efficient path: client-controlled witness which has
+        // sent us a reference position at some point.
+        if controlled_by == self.entity_id && self.has_reference_position {
+            let index = wire.len();
+            // Make sure there is a reference position for this tick.
+            wire.push(Wire::RelativePositionReference {
+                seq_num: self.reference_seq_num,
+                reliable: false,
+            });
+            return Some(index);
+        }
+
+        // Clear out any now-useless client-supplied reference position.
+        if self.has_reference_position {
+            self.cancel_reference_position();
+        }
+        debug_assert!(!self.has_reference_position);
+
+        // The witness is either server-controlled, or newly
+        // client-controlled and hasn't sent us a reference position to
+        // use. So we choose a position.
+        self.calculate_reference_position(ctx);
+
+        if vehicle.is_some() || controlled_by == self.entity_id {
+            // Worst-case bandwidth: the witness is on a vehicle, or
+            // client-controlled, so doesn't have any shared state we
+            // can use as a reference position.
+            let index = wire.len();
+            wire.push(Wire::RelativePosition {
+                position: self.reference_position,
+                reliable: false,
+            });
+            return Some(index);
+        }
+
+        // The position sent by addDetailedPlayerPosition (for a
+        // volatile entity) or the most recent detailedPosition (for a
+        // non-volatile one) is the reference position.
+        None
+    }
+
+    /// `Witness::addDetailedPlayerPosition` (`witness.cpp:882`): the
+    /// detailed volatile update for the witness's own entity. Returns
+    /// the wire index of the message carrying its reliability flag, or
+    /// `None` when nothing went out.
+    fn add_detailed_player_position(
+        &mut self,
+        ctx: &WitnessContext<'_>,
+        wire: &mut Vec<Wire>,
+        is_reference_position: bool,
+    ) -> Option<usize> {
+        let entity_rc = ctx
+            .entities
+            .get(&self.entity_id)
+            .cloned()
+            .expect("the witnessed entity lives in the population");
+        let entity = entity_rc.borrow();
+        let volatile = ctx
+            .type_faces
+            .get(&entity.type_id)
+            .map(|face| face.volatile)
+            .unwrap_or_default();
+
+        // Non-volatile or witness-controlled entity: don't send the
+        // position.
+        if !volatile.has_volatile(0.0) || entity.controlled_by == entity.id {
+            return None;
+        }
+
+        // Check that we're allowed to skip an unchanged player
+        // position update.
+        let has_sent_player_position = self.last_sent_reliable_game_time != 0;
+        let always_skip_unchanged = ctx.max_time_between_player_updates == -1;
+        let time_since_last_send = ctx.time.wrapping_sub(self.last_sent_reliable_game_time);
+        // This deliberately skips the message when the max time is 0
+        // and the gap is 0: a detailedPosition message has been added
+        // during this tick already, so we don't need to send the
+        // player position again.
+        let last_send_was_recent_enough = always_skip_unchanged
+            || time_since_last_send <= ctx.max_time_between_player_updates as u32;
+        let should_skip_unchanged_player_position =
+            has_sent_player_position && last_send_was_recent_enough;
+
+        if !is_reference_position
+            && should_skip_unchanged_player_position
+            && entity.local_position == self.last_sent_reliable_position
+            && entity.local_direction == self.last_sent_reliable_direction
+        {
+            return None;
+        }
+
+        // If the max-time optimisation is enabled it is reliable
+        // unless it is the reference position; the reference position
+        // may still be made reliable by the pass's tail.
+        let index = wire.len();
+        wire.push(Wire::AvatarUpdatePlayerDetailed {
+            position: entity.local_position,
+            direction: entity.local_direction,
+            reliable: !is_reference_position && ctx.max_time_between_player_updates != 0,
+        });
+        Some(index)
+    }
+
+    /// `Witness::onSendReliablePosition` (`witness.cpp:1415`).
+    fn on_send_reliable_position(&mut self, position: [f32; 3], direction: [f32; 3], time: u32) {
+        self.last_sent_reliable_game_time = time;
+        self.last_sent_reliable_position = position;
+        self.last_sent_reliable_direction = direction;
+    }
+
+    /// `Entity::writeVolatileDetailedDataToBundle` (`entity.cpp:2816`).
+    fn write_volatile_detailed_data_to_bundle(
+        &mut self,
+        wire: &mut Vec<Wire>,
+        entity_rc: &Rc<RefCell<Entity>>,
+        id_alias: u8,
+        is_reliable: bool,
+    ) {
+        let entity = entity_rc.borrow();
+        wire.push(Wire::AvatarUpdateDetailed {
+            id: entity.id,
+            id_alias,
+            position: entity.local_position,
+            direction: entity.local_direction,
+            reliable: is_reliable,
+        });
+    }
+
+    /// `Entity::writeVolatileDataToBundle` (`entity.cpp:2740`). Returns
+    /// whether a reliable relative position went out.
+    #[allow(clippy::too_many_arguments)]
+    fn write_volatile_data_to_bundle(
+        &mut self,
+        ctx: &WitnessContext<'_>,
+        wire: &mut Vec<Wire>,
+        base_position: [f32; 3],
+        entity_rc: &Rc<RefCell<Entity>>,
+        id_alias: u8,
+        priority_threshold: f32,
+        is_reliable: bool,
+    ) -> bool {
+        let entity = entity_rc.borrow();
+        let volatile = ctx
+            .type_faces
+            .get(&entity.type_id)
+            .map(|face| face.volatile)
+            .unwrap_or_default();
+        let send_on_ground = entity.is_on_ground;
+        let should_send_position = volatile.should_send_position();
+        let scale = ctx.packed_xz_scale;
+
+        // Calculate the relative position.
+        let is_relative = entity.vehicle.is_none();
+        let relative_pos = if is_relative {
+            [
+                entity.local_position[0] - base_position[0],
+                entity.local_position[1] - base_position[1],
+                entity.local_position[2] - base_position[2],
+            ]
+        } else {
+            entity.local_position
+        };
+
+        if should_send_position {
+            // If the packed forms cannot represent the given relative
+            // position, send a detailed volatile update instead.
+            let max_limit = if send_on_ground {
+                packed_xz_max_limit(scale)
+            } else {
+                packed_xyz_max_limit(scale)
+            };
+            let min_limit = packed_min_limit(max_limit);
+            if (relative_pos[0] < min_limit)
+                || (max_limit <= relative_pos[0])
+                || (relative_pos[2] < min_limit)
+                || (max_limit <= relative_pos[2])
+            {
+                drop(entity);
+                self.write_volatile_detailed_data_to_bundle(wire, entity_rc, id_alias, is_reliable);
+                return false;
+            }
+        }
+
+        // `posType`: 0 on-ground, 1 full, 2 no position at all.
+        let position_type = if should_send_position {
+            u8::from(!send_on_ground)
+        } else {
+            2
+        };
+        let direction_type = if should_send_position {
+            volatile.dir_type(priority_threshold)
+        } else {
+            2
+        };
+        // We can't actually send an avatarUpdate*NoPosNoDir message, we
+        // would never have entered this method.
+        debug_assert!(direction_type < 3 || position_type < 2);
+
+        wire.push(Wire::AvatarUpdate {
+            id: entity.id,
+            id_alias,
+            position: position_type < 2,
+            on_ground: send_on_ground && position_type < 2,
+            direction_type,
+            reliable: is_reliable,
+        });
+        is_reliable && is_relative
+    }
+
+    /// `Entity::writeClientUpdateDataToBundle` (`entity.cpp:2485`): the
+    /// vehicle change, the volatile projection, then the event history
+    /// the client has not seen. Returns whether a reliable relative
+    /// position went out.
+    fn write_client_update_data_to_bundle(
+        &mut self,
+        ctx: &mut WitnessContext<'_>,
+        wire: &mut Vec<Wire>,
+        base_pos: [f32; 3],
+        entity_id: u32,
+        lod_priority: f32,
+    ) -> bool {
+        let entity_rc = ctx
+            .entities
+            .get(&entity_id)
+            .cloned()
+            .expect("a queued cache's entity lives");
+        let face = ctx.type_face(&entity_rc.borrow());
+        let mut num_events = 0i32;
+
+        self.write_vehicle_change(wire, &entity_rc);
+
+        // Send the appropriate history for this entity: walk back to
+        // the first event the client has not seen, then forward to add
+        // them to the bundle in chronological order.
+        let last_event_number = self
+            .aoi_map
+            .find(entity_id)
+            .expect("the cache lives")
+            .last_event_number;
+        let detail_level = self
+            .aoi_map
+            .find(entity_id)
+            .expect("the cache lives")
+            .detail_level;
+        let mut has_events_to_send = false;
+        for event in entity_rc.borrow().event_history.events.iter().rev() {
+            if event.number <= last_event_number {
+                break;
+            }
+            has_events_to_send |= event.should_send(lod_priority, detail_level);
+        }
+
+        let mut has_added_reliable_relative_position = false;
+        let mut has_selected_entity = false;
+
+        self.aoi_map
+            .find_mut(entity_id)
+            .expect("the cache lives")
+            .last_volatile_update_number = entity_rc.borrow().volatile_update_number;
+
+        // `oldSize` of the reference's non-volatile accounting.
+        let wire_bytes_before = wire_bytes(wire);
+
+        if face.volatile.has_volatile(lod_priority) {
+            let is_reliable = has_events_to_send;
+            let (id_alias, always_detailed, prioritised) = {
+                let cache = self.aoi_map.find(entity_id).expect("the cache lives");
+                (
+                    cache.id_alias,
+                    cache.is_always_detailed(),
+                    cache.is_prioritised(),
+                )
+            };
+            if always_detailed || (prioritised && ctx.send_detailed_player_vehicles) {
+                self.write_volatile_detailed_data_to_bundle(
+                    wire,
+                    &entity_rc,
+                    id_alias,
+                    is_reliable,
+                );
+            } else {
+                has_added_reliable_relative_position = self.write_volatile_data_to_bundle(
+                    ctx,
+                    wire,
+                    base_pos,
+                    &entity_rc,
+                    id_alias,
+                    lod_priority,
+                    is_reliable,
+                );
+            }
+            has_selected_entity = true;
+        }
+
+        if has_events_to_send {
+            if !has_selected_entity {
+                self.aoi_map
+                    .find(entity_id)
+                    .expect("the cache lives")
+                    .add_entity_select_message(wire);
+                has_selected_entity = true;
+            }
+            for event in &entity_rc.borrow().event_history.events {
+                if event.number <= last_event_number {
+                    continue;
+                }
+                if event.should_send(lod_priority, detail_level) {
+                    num_events += 1;
+                    event.add_to_bundle(wire);
+                }
+            }
+        }
+
+        // `cache.lastEventNumber( this->lastEventNumber() )`.
+        let now = entity_rc.borrow().last_event_number as EventNumber;
+        self.aoi_map
+            .find_mut(entity_id)
+            .expect("the cache lives")
+            .last_event_number = now;
+
+        let non_volatile_size = wire_bytes(wire) - wire_bytes_before;
+        if non_volatile_size > ctx.spam_size {
+            ctx.warnings.push(WitnessNote::EntityUpdateSpam {
+                entity: entity_id,
+                added: non_volatile_size,
+                events: num_events,
+            });
+        }
+
+        let lod_levels = LodLevels::from_starts(&face.lod_levels);
+        // The reference's `hasSelectedEntity |=` here: the flag is
+        // never read after this point, the assignment is dead there
+        // too.
+        let _ = self
+            .aoi_map
+            .find_mut(entity_id)
+            .expect("the cache lives")
+            .update_detail_level(ctx, wire, &lod_levels, lod_priority, has_selected_entity);
+
+        // see if we thought no-one had noticed us before
+        let (periods, real_witnessed, ghost_witnessed) = {
+            let mut entity = entity_rc.borrow_mut();
+            let periods = entity.periods_without_witness;
+            let real = periods != 0 && entity.is_real;
+            let ghost = periods != 0 && !entity.is_real;
+            if ghost {
+                entity.witnessed_sends.push(entity_id);
+            }
+            entity.periods_without_witness = 0;
+            (periods, real, ghost)
+        };
+        if real_witnessed {
+            // `Entity::witnessed` (`entity.cpp:5306`): the callback
+            // only fires at the threshold — the unwitnessed count
+            // grew all the way — and the generation is delayed until
+            // the end of the update loop.
+            if periods == NOT_WITNESSED_THRESHOLD {
+                ctx.witnessed_notifications.push((entity_id, true));
+                ctx.callback(entity_id, "onWitnessed");
+            }
+        }
+        if ghost_witnessed {
+            wire.push(Wire::WitnessedReal { entity: entity_id });
+        }
+
+        has_added_reliable_relative_position
+    }
+
+    /// `Witness::sendQueueElement` (`witness.cpp:1044`): one queued
+    /// entity's client update. Returns whether a reliable relative
+    /// position went out.
+    fn send_queue_element(
+        &mut self,
+        ctx: &mut WitnessContext<'_>,
+        entity_id: u32,
+        origin: [f32; 3],
+    ) -> bool {
+        let entity_rc = ctx
+            .entities
+            .get(&entity_id)
+            .cloned()
+            .expect("a queued cache's entity lives");
+        // Recalculate the priority value of this entity — the LoD
+        // threshold the volatile faces ride.
+        let lod_priority = self
+            .aoi_map
+            .find(entity_id)
+            .expect("a queued cache lives")
+            .lod_priority(ctx.schemes, origin, &entity_rc.borrow());
+
+        // Send data updates to the client for this entity.
+        let mut wire = std::mem::take(&mut self.wire);
+        let before = wire_bytes(&wire);
+        let added_reliable = self.write_client_update_data_to_bundle(
+            ctx,
+            &mut wire,
+            self.reference_position,
+            entity_id,
+            lod_priority,
+        );
+        let added = wire_bytes(&wire) - before;
+        self.wire = wire;
+
+        if added > ctx.spam_size {
+            ctx.warnings.push(WitnessNote::UpdateSpam {
+                entity: entity_id,
+                added,
+                witness: self.entity_id,
+            });
+        }
+        added_reliable
+    }
+
     /// `Witness::update` (`witness.cpp:1088`): the per-tick send pass.
     /// The mount chain is prioritised first, then the heap walks by
     /// ascending priority while the priority change stays inside
@@ -1938,18 +2875,57 @@ impl Witness {
     /// send sequence, mounts first.
     pub fn update(&mut self, ctx: &mut WitnessContext<'_>) -> Vec<u32> {
         let mut sent = Vec::new();
-        // The reference's writer faces (space data, the reference
-        // position, the detailed player position) are BW-08-03-04's,
-        // so the pass's bundle starts empty and every send spends
-        // `update_bytes`.
-        let mut bundle_bytes = 0i32;
-        let desired = (self.max_packet_size as f32 * ctx.throttle) as i32 - self.bandwidth_deficit;
+        let mut wire = std::mem::take(&mut self.wire);
+        // The reference sizes the budget against the bundle as it
+        // stands before the head writers run — the tickSync opener
+        // plus whatever the state machines queued since the last
+        // flush.
+        let bundle_head = wire_bytes(&wire[self.flushed_len..]);
+        let desired = (self.max_packet_size as f32 * ctx.throttle) as i32 - self.bandwidth_deficit
+            + bundle_head;
         let origin = self.origin(ctx);
         let starting_priority = self
             .entity_queue
             .first()
             .map(|&front| self.queue_priority(front))
             .unwrap_or(0.0);
+
+        // The head writers: space data, then the reference position,
+        // then the player's detailed position.
+        let before = wire.len();
+        self.add_space_data_changes(ctx, &mut wire);
+        let mut bundle_bytes = (wire.len() - before) as i32;
+
+        let reference_message = self.add_reference_position(ctx, &mut wire);
+        let reference_carries = reference_message.is_some();
+        let use_player_as_reference = reference_message.is_none();
+        let player_message =
+            self.add_detailed_player_position(ctx, &mut wire, use_player_as_reference);
+        // Get the reference reliability pointing at whatever message
+        // carries the reference position for the rest of the pass.
+        let reference_message = reference_message.or(player_message);
+        let (own_vehicle, own_controlled_by, own_has_volatile) = {
+            let entity = ctx
+                .entities
+                .get(&self.entity_id)
+                .expect("the witnessed entity lives in the population")
+                .borrow();
+            let face = ctx.type_face(&entity);
+            (
+                entity.vehicle.is_some(),
+                entity.controlled_by,
+                face.volatile.has_volatile(0.0),
+            )
+        };
+        if reference_carries && player_message.is_some() {
+            // There's a real reference position message, so the player
+            // position message is not being used as a reference
+            // position (see
+            // `ServerConnection::detailedPositionReceived`).
+            debug_assert!(own_vehicle || own_controlled_by == self.entity_id);
+        }
+        let mut has_added_reliable_relative_position = false;
+        self.wire = wire;
 
         // The mount stack rides first, whatever its priority.
         let mut num_prioritised = 0i32;
@@ -1978,14 +2954,8 @@ impl Witness {
                 .set_prioritised();
             num_prioritised += 1;
             sent.push(mount);
-            bundle_bytes += ctx.update_bytes;
-            if ctx.update_bytes > ctx.spam_size {
-                ctx.warnings.push(WitnessNote::UpdateSpam {
-                    entity: mount,
-                    added: ctx.update_bytes,
-                    witness: self.entity_id,
-                });
-            }
+            has_added_reliable_relative_position |= self.send_queue_element(ctx, mount, origin);
+            bundle_bytes = self.pending_bytes() - bundle_head;
         }
 
         // Things up to `maxPriority` change away from the front while
@@ -1997,7 +2967,9 @@ impl Witness {
             if self.queue_priority(front) >= max_priority {
                 break;
             }
-            if bundle_bytes >= desired - 2 {
+            // `bundle.size() < desiredPacketSize - 2`, read live: the
+            // state machines this loop runs also write the bundle.
+            if bundle_head + bundle_bytes >= desired - 2 {
                 break;
             }
             self.pop_seen();
@@ -2051,17 +3023,10 @@ impl Witness {
                     self.handle_state_change(ctx, front);
                 }
                 if updatable && !prioritised {
-                    // `sendQueueElement`: the writer is BW-08-03-04's
-                    // face; the pass only spends its size.
-                    bundle_bytes += ctx.update_bytes;
+                    has_added_reliable_relative_position |=
+                        self.send_queue_element(ctx, front, origin);
+                    bundle_bytes = self.pending_bytes() - bundle_head;
                     sent.push(front);
-                    if ctx.update_bytes > ctx.spam_size {
-                        ctx.warnings.push(WitnessNote::UpdateSpam {
-                            entity: front,
-                            added: ctx.update_bytes,
-                            witness: self.entity_id,
-                        });
-                    }
                     let entity = ctx
                         .entities
                         .get(&front)
@@ -2104,8 +3069,11 @@ impl Witness {
             }
         }
 
-        self.bandwidth_deficit = if bundle_bytes > desired {
-            bundle_bytes - desired
+        // `bandwidthDeficit_ = bundle.size() - desiredPacketSize`:
+        // the whole pending bundle against the budget.
+        let final_bundle = bundle_head + bundle_bytes;
+        self.bandwidth_deficit = if final_bundle > desired {
+            final_bundle - desired
         } else {
             0
         };
@@ -2186,6 +3154,48 @@ impl Witness {
                 });
             }
         }
+
+        // Mark the reference position message's reliability as whether
+        // or not we have sent any reliable relative position messages.
+        let mut wire = std::mem::take(&mut self.wire);
+        match reference_message {
+            Some(index) => {
+                Self::or_reference_reliability(
+                    &mut wire[index],
+                    has_added_reliable_relative_position,
+                );
+            }
+            None => {
+                // No reference position in this update. The player must
+                // be non-volatile and not on a vehicle, as we'll use
+                // the most recent detailedPosition as the reference
+                // position.
+                debug_assert!(!own_vehicle && !own_has_volatile);
+            }
+        }
+        if let Some(index) = player_message
+            && Self::reference_reliability(&wire[index])
+        {
+            let (position, direction) = {
+                let entity = ctx
+                    .entities
+                    .get(&self.entity_id)
+                    .expect("the witnessed entity lives in the population")
+                    .borrow();
+                (entity.local_position, entity.local_direction)
+            };
+            self.on_send_reliable_position(position, direction, ctx.time);
+        }
+        self.wire = wire;
+
+        // `flushToClient`: the pending bundle leaves for the client.
+        self.flush_to_client();
+
+        // Tell the proxy that anything else we send is from next tick —
+        // this opens the next bundle.
+        self.wire.push(Wire::TickSync {
+            tick_byte: ctx.time.wrapping_add(1) as u8,
+        });
 
         sent
     }
@@ -2517,9 +3527,15 @@ impl CellApp {
             errors: &mut self.witness_errors,
             throttle: self.emergency_throttle,
             max_priority_delta: self.witness_max_priority_delta,
-            update_bytes: self.witness_update_bytes,
             spam_size: self.witness_spam_size,
             delta_growth_throttle: 1.0 + 1.0 / 8.0,
+            time: self.time,
+            max_time_between_player_updates: self.max_time_between_player_updates,
+            all_spaces_data_change_seq: self.all_spaces_data_change_seq,
+            spaces: &self.spaces,
+            witnessed_notifications: &mut self.witnessed_notifications,
+            packed_xz_scale: self.packed_xz_scale,
+            send_detailed_player_vehicles: self.send_detailed_player_vehicles,
         }
     }
 
@@ -2541,6 +3557,10 @@ impl CellApp {
             .ok_or(WitnessSetup::NoRangeNode)?;
         let radius = self.max_aoi_radius;
         let mut witness = Witness::new(entity_id, space_id, radius);
+        // `allSpacesDataChangeSeq_( Space::s_allSpacesDataChangeSeq_ - 1
+        // )`: a fresh witness is one behind the global, so its first
+        // pass always sees a change.
+        witness.all_spaces_data_change_seq = self.all_spaces_data_change_seq.saturating_sub(1);
         let events = Rc::clone(&witness.aoi_events);
         let list = self.range_lists.entry(space_id).or_default();
         let trigger = list.create_trigger(
@@ -2579,9 +3599,15 @@ impl CellApp {
             errors: &mut self.witness_errors,
             throttle: self.emergency_throttle,
             max_priority_delta: self.witness_max_priority_delta,
-            update_bytes: self.witness_update_bytes,
             spam_size: self.witness_spam_size,
             delta_growth_throttle: 1.0 + 1.0 / 8.0,
+            time: self.time,
+            max_time_between_player_updates: self.max_time_between_player_updates,
+            all_spaces_data_change_seq: self.all_spaces_data_change_seq,
+            spaces: &self.spaces,
+            witnessed_notifications: &mut self.witnessed_notifications,
+            packed_xz_scale: self.packed_xz_scale,
+            send_detailed_player_vehicles: self.send_detailed_player_vehicles,
         };
         let witness = self
             .witnesses
@@ -2614,9 +3640,15 @@ impl CellApp {
             errors: &mut self.witness_errors,
             throttle: self.emergency_throttle,
             max_priority_delta: self.witness_max_priority_delta,
-            update_bytes: self.witness_update_bytes,
             spam_size: self.witness_spam_size,
             delta_growth_throttle: 1.0 + 1.0 / 8.0,
+            time: self.time,
+            max_time_between_player_updates: self.max_time_between_player_updates,
+            all_spaces_data_change_seq: self.all_spaces_data_change_seq,
+            spaces: &self.spaces,
+            witnessed_notifications: &mut self.witnessed_notifications,
+            packed_xz_scale: self.packed_xz_scale,
+            send_detailed_player_vehicles: self.send_detailed_player_vehicles,
         };
         let witness = self
             .witnesses
@@ -2640,9 +3672,15 @@ impl CellApp {
             errors: &mut self.witness_errors,
             throttle: self.emergency_throttle,
             max_priority_delta: self.witness_max_priority_delta,
-            update_bytes: self.witness_update_bytes,
             spam_size: self.witness_spam_size,
             delta_growth_throttle: 1.0 + 1.0 / 8.0,
+            time: self.time,
+            max_time_between_player_updates: self.max_time_between_player_updates,
+            all_spaces_data_change_seq: self.all_spaces_data_change_seq,
+            spaces: &self.spaces,
+            witnessed_notifications: &mut self.witnessed_notifications,
+            packed_xz_scale: self.packed_xz_scale,
+            send_detailed_player_vehicles: self.send_detailed_player_vehicles,
         };
         let witness = self
             .witnesses
@@ -2746,9 +3784,15 @@ mod tests {
             errors: &mut app.witness_errors,
             throttle: app.emergency_throttle,
             max_priority_delta: app.witness_max_priority_delta,
-            update_bytes: app.witness_update_bytes,
             spam_size: app.witness_spam_size,
             delta_growth_throttle: 1.0 + 1.0 / 8.0,
+            time: app.time,
+            max_time_between_player_updates: app.max_time_between_player_updates,
+            all_spaces_data_change_seq: app.all_spaces_data_change_seq,
+            spaces: &app.spaces,
+            witnessed_notifications: &mut app.witnessed_notifications,
+            packed_xz_scale: app.packed_xz_scale,
+            send_detailed_player_vehicles: app.send_detailed_player_vehicles,
         }
     }
 
@@ -2765,9 +3809,15 @@ mod tests {
             errors: &mut app.witness_errors,
             throttle: app.emergency_throttle,
             max_priority_delta: app.witness_max_priority_delta,
-            update_bytes: app.witness_update_bytes,
             spam_size: app.witness_spam_size,
             delta_growth_throttle: 1.0 + 1.0 / 8.0,
+            time: app.time,
+            max_time_between_player_updates: app.max_time_between_player_updates,
+            all_spaces_data_change_seq: app.all_spaces_data_change_seq,
+            spaces: &app.spaces,
+            witnessed_notifications: &mut app.witnessed_notifications,
+            packed_xz_scale: app.packed_xz_scale,
+            send_detailed_player_vehicles: app.send_detailed_player_vehicles,
         };
         (ctx, app.witnesses.get_mut(&id).expect("the witness"))
     }
@@ -2825,9 +3875,51 @@ mod tests {
         app.pump_aoi_events(1);
         app.process_witness(1);
         app.request_entity_update(1, 2, &[5]);
+        let start = app.witnesses[&1].wire.len();
         app.process_witness(1);
-        let start = app.witnesses[&1].wire.len() - 2;
-        app.witnesses[&1].wire[start..].to_vec()
+        // The pass ends with the opener of the next bundle: the slice
+        // carries both.
+        let end = app.witnesses[&1].wire.len() - 1;
+        app.witnesses[&1].wire[start..end].to_vec()
+    }
+
+    /// Stacks `count` reliable detail-0 events on the entity's history
+    /// starting at number 100 (past the cache's stamp, which the create
+    /// took from the description): each replay rides the bundle as a
+    /// `HistoryEventMessage` (9 bytes + payload) behind a select.
+    fn add_events(app: &mut CellApp, id: u32, count: u32, payload_len: usize) {
+        let entity = app.entity_population[&id].clone();
+        for _ in 0..count {
+            let number = (entity.borrow().last_event_number + 1) as EventNumber;
+            entity.borrow_mut().last_event_number += 1;
+            entity.borrow_mut().event_history.add(HistoryEvent {
+                number,
+                message_id: 0x100,
+                level: HistoryLevel::Detail(0),
+                reliable: true,
+                stream_size: payload_len as i16,
+                message: vec![0u8; payload_len],
+            });
+        }
+    }
+
+    /// Gives the type face a volatile position so the queue sends ride
+    /// as `AvatarUpdate`s.
+    fn make_volatile(app: &mut CellApp) {
+        app.entity_type_faces.insert(
+            TYPE,
+            EntityTypeDef {
+                volatile: VolatileInfo {
+                    // The LoD priority rides squared distances, so the
+                    // thresholds sit above any fixture distance.
+                    position_priority: 1.0e9,
+                    yaw_priority: 1.0e9,
+                    pitch_priority: 1.0e9,
+                    roll_priority: 1.0e9,
+                },
+                ..EntityTypeDef::default()
+            },
+        );
     }
 
     fn enter_of(wire: &[Wire]) -> (u32, u8) {
@@ -2887,7 +3979,9 @@ mod tests {
         let wire = &app.witnesses[&1].wire;
         assert!(matches!(wire[0], Wire::TickSync { tick_byte: 0 }));
         assert_eq!(enter_of(&wire[1..]), (2, 254));
-        assert_eq!(create_of(&wire[1..]), (2, false, 0, vec![0]));
+        // The opener sits between the two, so the create is the
+        // bundle's second message.
+        assert_eq!(create_of(&wire[2..]), (2, false, 0, vec![0]));
     }
 
     /// BW-08-03-02's acceptance: the second observation replays the
@@ -2938,7 +4032,8 @@ mod tests {
         move_entity(&mut app, 2, [3.0, 0.0, 4.0]);
         app.pump_aoi_events(1);
         app.process_witness(1);
-        assert_eq!(enter_of(&app.witnesses[&1].wire[4..]), (2, 254));
+        // The re-enter is the second bundle's opener.
+        assert_eq!(enter_of(&app.witnesses[&1].wire[7..]), (2, 254));
     }
 
     #[test]
@@ -3460,8 +4555,8 @@ mod tests {
         // The refresh pass deletes and re-enters.
         app.process_witness(1);
         let wire = &app.witnesses[&1].wire;
-        assert!(matches!(&wire[3], Wire::LeaveAoI { id: 2, .. }));
-        assert!(matches!(&wire[4], Wire::EnterAoI { id: 2, .. }));
+        assert!(matches!(&wire[5], Wire::LeaveAoI { id: 2, .. }));
+        assert!(matches!(&wire[6], Wire::EnterAoI { id: 2, .. }));
     }
 
     #[test]
@@ -3513,7 +4608,7 @@ mod tests {
         let wire = &app.witnesses[&1].wire;
         // The create never ran, so the stamps are the reset zeros.
         assert!(matches!(
-            &wire[2],
+            &wire[3],
             Wire::LeaveAoI { id: 2, lod_stamps } if lod_stamps == &vec![0]
         ));
         assert!(app.witnesses[&1].aoi_map.find(2).is_none());
@@ -3564,7 +4659,7 @@ mod tests {
         assert_eq!(app.witnesses[&1].entities_withheld(), vec![2]);
         app.process_witness(1);
         let wire = &app.witnesses[&1].wire;
-        assert!(matches!(&wire[3], Wire::LeaveAoI { id: 2, .. }));
+        assert!(matches!(&wire[5], Wire::LeaveAoI { id: 2, .. }));
         {
             let cache = app.witnesses[&1].aoi_map.find(2).expect("the cache");
             assert!(cache.is_withheld());
@@ -3574,14 +4669,15 @@ mod tests {
         // Still withheld: the pass holds the enter back — the state
         // machine only re-enters once the withhold lifts.
         app.process_witness(1);
-        assert_eq!(app.witnesses[&1].wire.len(), 4);
+        assert_eq!(app.witnesses[&1].wire.len(), 8);
 
         app.witnesses
             .get_mut(&1)
             .expect("the witness")
             .withhold_from_client(2, false);
         app.process_witness(1);
-        assert_eq!(enter_of(&app.witnesses[&1].wire[4..]), (2, 254));
+        // The opener sits ahead of the re-enter again.
+        assert_eq!(enter_of(&app.witnesses[&1].wire[8..]), (2, 254));
 
         // The re-enter leaves the cache request-pending again; the ack
         // finishes the create before the updatable check.
@@ -3769,10 +4865,10 @@ mod tests {
         app.process_witness(1);
         let wire = &app.witnesses[&1].wire;
         assert!(matches!(&wire[1], Wire::EnterAoI { id: 2, .. }));
-        assert!(matches!(&wire[2], Wire::CreateEntity { id: 2, .. }));
-        assert!(matches!(&wire[3], Wire::EnterAoI { id: 3, .. }));
-        assert!(matches!(&wire[4], Wire::CreateEntity { id: 3, .. }));
-        assert!(matches!(&wire[5], Wire::LeaveAoI { id: 2, .. }));
+        assert!(matches!(&wire[3], Wire::CreateEntity { id: 2, .. }));
+        assert!(matches!(&wire[5], Wire::EnterAoI { id: 3, .. }));
+        assert!(matches!(&wire[7], Wire::CreateEntity { id: 3, .. }));
+        assert!(matches!(&wire[9], Wire::LeaveAoI { id: 2, .. }));
         assert_eq!(app.witnesses[&1].entities_in_manual_aoi(), vec![3]);
 
         // An empty list retires the manual members — 3 is a manual
@@ -3784,7 +4880,7 @@ mod tests {
         }
         app.process_witness(1);
         assert!(matches!(
-            &app.witnesses[&1].wire[6],
+            &app.witnesses[&1].wire[11],
             Wire::LeaveAoI { id: 3, .. }
         ));
 
@@ -3984,14 +5080,14 @@ mod tests {
         app.process_witness(1);
         let wire = &app.witnesses[&1].wire;
         assert!(matches!(
-            &wire[2],
+            &wire[3],
             Wire::SetVehicle {
                 passenger_id: 2,
                 vehicle_id: 6,
                 change_num: 2
             }
         ));
-        assert_eq!(create_of(&wire[2..]).0, 2);
+        assert_eq!(create_of(&wire[3..]).0, 2);
     }
 
     // ----- The setup and teardown faces -------------------------------
@@ -4226,10 +5322,11 @@ mod tests {
         }
         {
             let wire = &app.witnesses[&1].wire;
-            let tail = &wire[wire.len() - 3..];
+            let tail = &wire[wire.len() - 4..];
             assert!(matches!(&tail[0], Wire::CreateEntity { id: 3, .. }));
             assert!(matches!(&tail[1], Wire::CreateEntity { id: 2, .. }));
             assert!(matches!(&tail[2], Wire::CreateEntity { id: 4, .. }));
+            assert!(matches!(&tail[3], Wire::TickSync { .. }));
         }
         // Now everyone is updatable and the scheduler sequences the
         // sends: highest floor first, the vehicle chain ahead of the
@@ -4273,13 +5370,16 @@ mod tests {
             let (mut ctx, witness) = ctx_with(&mut app, 1);
             witness.update(&mut ctx);
         }
-        // 202 bytes of budget against 100-byte sends: two fit, the
-        // third never pops (the two spare bytes are the sequence
-        // number).
+        // Each send rides the bundle as a select (2 bytes) plus a
+        // 29-byte event: 31 apiece. A 64-byte budget admits exactly
+        // two (the two spare bytes are the sequence number).
+        for id in [3, 4, 2] {
+            add_events(&mut app, id, 1, 20);
+        }
         app.witnesses
             .get_mut(&1)
             .expect("the witness")
-            .set_witness_capacity(18_400, 10);
+            .set_witness_capacity(7_360, 10);
         let prio_of = |app: &CellApp, id: u32| {
             app.witnesses[&1]
                 .aoi_map
@@ -4305,29 +5405,38 @@ mod tests {
     fn the_deficit_shrinks_the_budget_until_the_cap_bites() {
         let (mut app, _spaces) = fixture(b'W');
         let _ = observe_once(&mut app);
-        // 72 bytes of budget against 100-byte sends.
+        // One 31-byte send against a 24-byte budget: the pass pops it
+        // (the gate looks before the spend), overshoots by seven, and
+        // the next budget pays it back.
         app.witnesses
             .get_mut(&1)
             .expect("the witness")
-            .set_witness_capacity(8_000, 10);
+            .set_witness_capacity(4_160, 10);
         let pass = |app: &mut CellApp| {
+            // A fresh 31-byte spend every pass — the events were
+            // consumed by the previous one.
+            add_events(app, 2, 1, 20);
             let (mut ctx, witness) = ctx_with(app, 1);
             let sent = witness.update(&mut ctx);
             (sent, app.witnesses[&1].bandwidth_deficit)
         };
         let (sent, deficit) = pass(&mut app);
         assert_eq!(sent.len(), 1);
-        assert_eq!(deficit, 28);
+        assert_eq!(deficit, 7);
         let (_, deficit) = pass(&mut app);
-        assert_eq!(deficit, 56);
+        assert_eq!(deficit, 14);
         let (_, deficit) = pass(&mut app);
-        assert_eq!(deficit, 72);
+        assert_eq!(deficit, 21);
+        // The fourth overshoot passes the packet size: the deficit
+        // caps with a warning.
+        let (_, deficit) = pass(&mut app);
+        assert_eq!(deficit, 24);
         assert!(matches!(
             app.witness_warnings.pop(),
             Some(WitnessNote::DeficitCapped {
                 witness: 1,
-                deficit: 84,
-                max: 72
+                deficit: 28,
+                max: 24
             })
         ));
         // The capped budget admits nothing, so the pass spends
@@ -4397,20 +5506,33 @@ mod tests {
     fn the_spam_guard_and_the_underflow_watch() {
         let (mut app, _spaces) = fixture(b'W');
         let _ = observe_once(&mut app);
-        app.witness_update_bytes = 300;
+        // Three 90-byte events ride one select: 299 bytes of update
+        // against the 200-byte spam line.
+        add_events(&mut app, 2, 3, 90);
         {
             let (mut ctx, witness) = ctx_with(&mut app, 1);
             let sent = witness.update(&mut ctx);
             assert_eq!(sent, vec![2]);
         }
+        // Both guards fire: the non-volatile accounting inside the
+        // write, then the queue element's own measure.
         assert_eq!(
             app.witness_warnings.pop(),
             Some(WitnessNote::UpdateSpam {
                 entity: 2,
-                added: 300,
+                added: 299,
                 witness: 1
             })
         );
+        assert_eq!(
+            app.witness_warnings.pop(),
+            Some(WitnessNote::EntityUpdateSpam {
+                entity: 2,
+                added: 299,
+                events: 3
+            })
+        );
+        assert!(app.witness_warnings.is_empty());
 
         // Two infinities pin the gate shut — the tail watch is the
         // only face that fires.
@@ -4521,13 +5643,13 @@ mod tests {
         }
         app.entity_population[&2].borrow_mut().destroyed = true;
         app.entity_population[&1].borrow_mut().vehicle = Some(2);
-        // A 40-byte send against a 42-byte budget: one send fills the
+        // A 31-byte send against a 35-byte budget: one send fills the
         // packet to the gate.
-        app.witness_update_bytes = 40;
+        add_events(&mut app, 2, 1, 20);
         app.witnesses
             .get_mut(&1)
             .expect("the witness")
-            .set_witness_capacity(5_600, 10);
+            .set_witness_capacity(5_040, 10);
 
         let sent = {
             let (mut ctx, witness) = ctx_with(&mut app, 1);
@@ -4560,11 +5682,13 @@ mod tests {
             .insert(999, Rc::new(RefCell::new(Entity::new(999, true))));
         app.entity_population[&999].borrow_mut().vehicle = Some(3);
         app.entity_population[&1].borrow_mut().vehicle = Some(999);
-        app.witness_update_bytes = 40;
+        // A 31-byte send against a 35-byte budget stops the loop
+        // before the queue's first pop.
+        add_events(&mut app, 3, 1, 20);
         app.witnesses
             .get_mut(&1)
             .expect("the witness")
-            .set_witness_capacity(5_600, 10);
+            .set_witness_capacity(5_040, 10);
 
         let sent = {
             let (mut ctx, witness) = ctx_with(&mut app, 1);
@@ -4614,11 +5738,13 @@ mod tests {
         app.process_witness(1);
         app.entity_population[&1].borrow_mut().vehicle = Some(4);
         app.entity_population[&4].borrow_mut().vehicle = Some(3);
-        app.witness_update_bytes = 40;
+        // A 31-byte send against a 35-byte budget stops the loop
+        // before the queue's first pop.
+        add_events(&mut app, 3, 1, 20);
         app.witnesses
             .get_mut(&1)
             .expect("the witness")
-            .set_witness_capacity(5_600, 10);
+            .set_witness_capacity(5_040, 10);
 
         let sent = {
             let (mut ctx, witness) = ctx_with(&mut app, 1);
@@ -4648,7 +5774,6 @@ mod tests {
         );
         let _ = observe_once(&mut app);
         observe(&mut app, 3, [6.0, 0.0, 8.0]);
-        app.witness_update_bytes = 300;
         app.entity_population[&1].borrow_mut().vehicle = Some(3);
         app.witnesses
             .get_mut(&1)
@@ -4658,27 +5783,36 @@ mod tests {
             .expect("the cache")
             .set_priority(-1.0);
 
+        // The mount's own send spams: three 90-byte events behind a
+        // select, 299 bytes against the 200-byte line. A 300-byte
+        // budget stops the queue behind the overshoot.
+        add_events(&mut app, 3, 3, 90);
+        app.witnesses
+            .get_mut(&1)
+            .expect("the witness")
+            .set_witness_capacity(26_240, 10);
         let sent = {
             let (mut ctx, witness) = ctx_with(&mut app, 1);
             witness.update(&mut ctx)
         };
-        assert_eq!(sent, vec![3, 2]);
+        assert_eq!(sent, vec![3]);
         assert_eq!(
             app.witness_warnings[0],
-            WitnessNote::UpdateSpam {
+            WitnessNote::EntityUpdateSpam {
                 entity: 3,
-                added: 300,
-                witness: 1
+                added: 299,
+                events: 3
             }
         );
         assert_eq!(
             app.witness_warnings[1],
             WitnessNote::UpdateSpam {
-                entity: 2,
-                added: 300,
+                entity: 3,
+                added: 299,
                 witness: 1
             }
         );
+        assert_eq!(app.witness_warnings.len(), 2);
     }
 
     /// A stale queue id with no cache behind it walks the pass
@@ -4717,5 +5851,850 @@ mod tests {
         app.entity_population[&3].borrow_mut().vehicle = Some(1);
         let (ctx, witness) = ctx_with(&mut app, 1);
         assert_eq!(witness.vehicle_chain(&ctx), vec![3, 1]);
+    }
+
+    // ----- The volatile projection (BW-08-03-04) ----------------------
+
+    /// The witness's own entity is volatile and not self-controlled:
+    /// every pass writes its detailed player position. Being the
+    /// reference position carrier it rides unreliable, and without a
+    /// reliable stamp the repeat window never opens — the same
+    /// position keeps flowing.
+    #[test]
+    fn the_pass_sends_the_witnesss_own_detailed_position() {
+        let (mut app, _spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        app.max_time_between_player_updates = 5;
+
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        let sent = witness.update(&mut ctx);
+        let sent_time = witness.last_sent_reliable_game_time;
+        let wire = &app.witnesses[&1].wire;
+        // The player's detailed update opens the pass, carrying the
+        // reference position for the relatives to anchor to.
+        assert!(matches!(
+            &wire[1],
+            Wire::AvatarUpdatePlayerDetailed { position, direction, reliable: false }
+                if *position == [0.0, 0.0, 0.0] && *direction == [0.25, 0.0, 0.0]
+        ));
+        assert_eq!(sent, vec![]);
+        assert_eq!(sent_time, 0);
+
+        // No reliable stamp was taken, so the skip gate stays shut.
+        let head = wire.len();
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        let wire = &app.witnesses[&1].wire;
+        assert_eq!(wire.len(), head + 2);
+        assert!(matches!(
+            &wire[head],
+            Wire::AvatarUpdatePlayerDetailed {
+                reliable: false,
+                ..
+            }
+        ));
+        assert!(matches!(&wire[head + 1], Wire::TickSync { .. }));
+    }
+
+    /// A reliable relative update promotes the player position: the
+    /// tail ORs its flag, the stamps move, and the repeat window
+    /// opens — an unchanged position inside it skips, past it resends.
+
+    #[test]
+    fn the_player_position_resends_after_the_window() {
+        let (mut app, _spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        app.max_time_between_player_updates = 5;
+        app.time = 10;
+        let _ = observe_once(&mut app);
+        add_events(&mut app, 2, 1, 20);
+
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        let sent = witness.update(&mut ctx);
+        assert_eq!(sent, vec![2]);
+        let witness = app.witnesses.get(&1).expect("the witness");
+        assert_eq!(witness.last_sent_reliable_game_time, 10);
+        assert_eq!(witness.last_sent_reliable_position, [0.0, 0.0, 0.0]);
+        assert_eq!(witness.last_sent_reliable_direction, [0.25, 0.0, 0.0]);
+        let wire = &witness.wire;
+        assert!(matches!(
+            &wire[wire.len() - 4],
+            Wire::AvatarUpdatePlayerDetailed { reliable: true, .. }
+        ));
+
+        // Still inside the window: the avatar position rides again
+        // but unreliable — only the reliable flag is windowed.
+        app.time = 13;
+        let head = app.witnesses[&1].wire.len();
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        let sent = witness.update(&mut ctx);
+        assert_eq!(sent, vec![2]);
+        let wire = &app.witnesses[&1].wire;
+        assert_eq!(wire.len(), head + 3);
+        assert!(matches!(
+            &wire[head],
+            Wire::AvatarUpdatePlayerDetailed {
+                reliable: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &wire[head + 1],
+            Wire::AvatarUpdate {
+                id: 2,
+                id_alias: 254,
+                reliable: false,
+                ..
+            }
+        ));
+        assert!(matches!(&wire[head + 2], Wire::TickSync { .. }));
+
+        // Past the window: the player position resends, and the fresh
+        // reliable event keeps it reliable.
+        app.time = 16;
+        add_events(&mut app, 2, 1, 20);
+        let head = app.witnesses[&1].wire.len();
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        let sent = witness.update(&mut ctx);
+        assert_eq!(sent, vec![2]);
+        let wire = &app.witnesses[&1].wire;
+        assert!(matches!(
+            &wire[head],
+            Wire::AvatarUpdatePlayerDetailed { reliable: true, .. }
+        ));
+        assert_eq!(app.witnesses[&1].last_sent_reliable_game_time, 16);
+    }
+
+    /// A controlled witness with a client reference anchor sends the
+    /// one-byte reference message instead of a full position.
+    #[test]
+    fn the_controlled_witness_sends_a_relative_reference() {
+        let (mut app, _spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        app.entity_population[&1].borrow_mut().controlled_by = 1;
+
+        // Without the client's ack the pass sends the full reference.
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        let wire = &app.witnesses[&1].wire;
+        assert!(matches!(
+            &wire[1],
+            Wire::RelativePosition {
+                position: [0.0, 0.0, 0.0],
+                reliable: false
+            }
+        ));
+
+        // The ack lands: later passes ride the one-byte reference.
+        let (ctx, witness) = ctx_with(&mut app, 1);
+        witness.update_reference_position(&ctx, 7);
+        let head = app.witnesses[&1].wire.len();
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        let wire = &app.witnesses[&1].wire;
+        assert!(matches!(
+            &wire[head],
+            Wire::RelativePositionReference {
+                seq_num: 7,
+                reliable: false
+            }
+        ));
+        assert!(matches!(&wire[head + 1], Wire::TickSync { .. }));
+    }
+
+    /// The other observer's projection: a volatile entity rides a
+    /// relative avatar update keyed by alias.
+    #[test]
+    fn the_other_observer_sees_a_relative_update() {
+        let (mut app, _spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        let _ = observe_once(&mut app);
+        add_events(&mut app, 2, 1, 20);
+
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        let sent = witness.update(&mut ctx);
+        assert_eq!(sent, vec![2]);
+        let wire = &app.witnesses[&1].wire;
+        // The volatile relative carries the alias — no select rides —
+        // and the events follow it.
+        assert!(matches!(
+            &wire[wire.len() - 3],
+            Wire::AvatarUpdate {
+                id: 2,
+                id_alias: 254,
+                position: true,
+                on_ground: true,
+                direction_type: 0,
+                reliable: true,
+            }
+        ));
+        assert!(matches!(
+            &wire[wire.len() - 2],
+            Wire::HistoryEventMessage {
+                message_id: 256,
+                reliable: true,
+                ..
+            }
+        ));
+    }
+
+    /// An entity whose relative position outgrows the packed form
+    /// falls back to a detailed volatile update.
+    #[test]
+    fn the_out_of_range_observer_falls_back_to_detailed() {
+        let (mut app, _spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        let _ = observe_once(&mut app);
+        // The tight PackedXZ limits ride the on-ground form; a tiny
+        // packed scale puts the relative position out of range.
+        app.entity_population[&2].borrow_mut().is_on_ground = true;
+        app.packed_xz_scale = 0.01;
+        move_entity(&mut app, 2, [40.0, 0.0, 40.0]);
+
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        let sent = witness.update(&mut ctx);
+        assert_eq!(sent, vec![2]);
+        let wire = &app.witnesses[&1].wire;
+        let last = wire.len() - 2;
+        assert!(matches!(
+            &wire[last],
+            Wire::AvatarUpdateDetailed {
+                id: 2,
+                id_alias: 254,
+                ..
+            }
+        ));
+    }
+
+    /// A prioritised mount under the detailed-vehicles switch gets the
+    /// detailed volatile update instead of a relative one.
+    #[test]
+    fn the_prioritised_mount_sends_detailed() {
+        let (mut app, mut spaces) = fixture(b'W');
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [6.0, 0.0, 8.0], b'-'),
+        );
+        make_volatile(&mut app);
+        let _ = observe_once(&mut app);
+        observe(&mut app, 3, [6.0, 0.0, 8.0]);
+        app.entity_population[&1].borrow_mut().vehicle = Some(3);
+        app.send_detailed_player_vehicles = true;
+
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        let sent = witness.update(&mut ctx);
+        assert_eq!(sent, vec![3, 2]);
+        let wire = &app.witnesses[&1].wire;
+        // The reference and player position open, then the mount rides
+        // with the detailed form ahead of the relative update.
+        assert!(matches!(
+            &wire[wire.len() - 5],
+            Wire::RelativePosition { .. }
+        ));
+        assert!(matches!(
+            &wire[wire.len() - 4],
+            Wire::AvatarUpdatePlayerDetailed { .. }
+        ));
+        assert!(matches!(
+            &wire[wire.len() - 3],
+            Wire::AvatarUpdateDetailed {
+                id: 3,
+                id_alias: 254,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &wire[wire.len() - 2],
+            Wire::AvatarUpdate {
+                id: 2,
+                id_alias: 253,
+                ..
+            }
+        ));
+    }
+
+    /// The witness sends the space data its sequence has not seen:
+    /// everything after a rebuild, only the tail otherwise, cell-only
+    /// keys never.
+    #[test]
+    fn the_witness_sends_what_the_client_has_not_seen() {
+        let (mut app, mut spaces) = fixture(b'W');
+        let space = spaces.get_mut(&SID).expect("the space");
+        assert!(space.space_data_entry(
+            &mut app,
+            7,
+            300,
+            vec![1, 2],
+            crate::cellapp_space::UpdateCellAppMgr::DontUpdate,
+            crate::cellapp_space::DataEffected::NeedToEffect
+        ));
+        assert!(space.space_data_entry(
+            &mut app,
+            8,
+            SPACE_DATA_FIRST_CELL_ONLY_KEY,
+            vec![9],
+            crate::cellapp_space::UpdateCellAppMgr::DontUpdate,
+            crate::cellapp_space::DataEffected::NeedToEffect
+        ));
+        app.spaces = spaces;
+
+        // The fresh witness is one behind, so the first pass sends the
+        // whole visible mapping — the cell-only entry never rides.
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        let wire = &app.witnesses[&1].wire;
+        assert!(matches!(
+            &wire[1],
+            Wire::SpaceData { space_id: SID, entry_id: 7, key: 300, data: Some(blob) }
+                if blob == &vec![1, 2]
+        ));
+        // Exactly one space-data message went out.
+        assert_eq!(
+            wire[1..]
+                .iter()
+                .filter(|m| matches!(m, Wire::SpaceData { .. }))
+                .count(),
+            1
+        );
+
+        // A new key rides the tail only.
+        let mut spaces = std::mem::take(&mut app.spaces);
+        let space = spaces.get_mut(&SID).expect("the space");
+        assert!(space.space_data_entry(
+            &mut app,
+            9,
+            301,
+            vec![3],
+            crate::cellapp_space::UpdateCellAppMgr::DontUpdate,
+            crate::cellapp_space::DataEffected::NeedToEffect
+        ));
+        app.spaces = spaces;
+        let head = app.witnesses[&1].wire.len();
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        let wire = &app.witnesses[&1].wire;
+        assert!(matches!(
+            &wire[head],
+            Wire::SpaceData { entry_id: 9, key: 301, data: Some(blob), .. } if blob == &vec![3]
+        ));
+        assert!(matches!(&wire[head + 1], Wire::TickSync { .. }));
+
+        // A revocation carries the header and no blob.
+        let mut spaces = std::mem::take(&mut app.spaces);
+        let space = spaces.get_mut(&SID).expect("the space");
+        assert!(space.space_data_entry(
+            &mut app,
+            9,
+            crate::cellapp_space::NO_SPACE_DATA_KEY,
+            vec![],
+            crate::cellapp_space::UpdateCellAppMgr::DontUpdate,
+            crate::cellapp_space::DataEffected::NeedToEffect
+        ));
+        app.spaces = spaces;
+        let head = app.witnesses[&1].wire.len();
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        let wire = &app.witnesses[&1].wire;
+        assert!(matches!(
+            &wire[head],
+            Wire::SpaceData {
+                key: crate::cellapp_space::NO_SPACE_DATA_KEY,
+                data: None,
+                ..
+            }
+        ));
+
+        // No change, no message.
+        let head = app.witnesses[&1].wire.len();
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        assert_eq!(app.witnesses[&1].wire.len(), head + 1);
+    }
+
+    /// The witnessed arm: a real entity crossing the threshold fires
+    /// onWitnessed, a ghost asks its real to tell the client.
+    #[test]
+    fn the_witnessed_arm_fires_the_callback_and_the_message() {
+        let (mut app, _spaces) = fixture(b'W');
+        let _ = observe_once(&mut app);
+        // The create machine is not the scheduler: the count still
+        // sits at the threshold.
+        let entity = app.entity_population[&2].clone();
+        assert_eq!(
+            entity.borrow().periods_without_witness,
+            crate::cellapp_witness::NOT_WITNESSED_THRESHOLD
+        );
+        assert!(app.witnessed_notifications.is_empty());
+
+        // The scheduler's first send fires the script callback at the
+        // threshold.
+        add_events(&mut app, 2, 1, 20);
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        assert_eq!(entity.borrow().periods_without_witness, 0);
+        assert_eq!(app.witnessed_notifications, vec![(2, true)]);
+        assert!(
+            app.script_calls
+                .iter()
+                .any(|call| call.entity == 2 && call.name == "onWitnessed")
+        );
+
+        // A ghost's witnessed count asks the real to tell the client —
+        // the threshold check is the real's business.
+        entity.borrow_mut().is_real = false;
+        entity.borrow_mut().periods_without_witness = 2;
+        add_events(&mut app, 2, 1, 20);
+        let head = app.witnesses[&1].wire.len();
+        let (mut ctx, witness) = ctx_with(&mut app, 1);
+        witness.update(&mut ctx);
+        let wire = &app.witnesses[&1].wire;
+        // The select and the event ride ahead of the witnessed ask.
+        assert!(matches!(&wire[head + 2], Wire::WitnessedReal { entity: 2 }));
+        assert_eq!(entity.borrow().periods_without_witness, 0);
+        assert_eq!(app.witnessed_notifications, vec![(2, true)]);
+
+        // A real below the threshold: the count still clears but the
+        // callback waits for the full count — and no ghost ask rides.
+        let ghost_asks = entity.borrow().witnessed_sends.len();
+        entity.borrow_mut().is_real = true;
+        entity.borrow_mut().periods_without_witness = 1;
+        add_events(&mut app, 2, 1, 20);
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        assert_eq!(entity.borrow().periods_without_witness, 0);
+        assert_eq!(app.witnessed_notifications, vec![(2, true)]);
+        assert_eq!(entity.borrow().witnessed_sends.len(), ghost_asks);
+        assert!(
+            !app.script_calls
+                .iter()
+                .any(|call| call.entity == 2 && call.name == "onWitnessed2")
+        );
+    }
+    /// `PackedXYZ::maxLimit`: the full cube shares the ground form's
+    /// bound — the widths are the same on purpose.
+    #[test]
+    fn packed_limits_share_the_cube_bound() {
+        let scale = 500.0 / 28.0;
+        assert_eq!(packed_xyz_max_limit(scale), packed_xz_max_limit(scale));
+        let max = packed_xz_max_limit(scale);
+        assert_eq!(packed_min_limit(max), -max);
+    }
+
+    /// The event history's own faces: the priority level gate, the
+    /// trim that moves the reliable stamp, the clear, and the readers.
+    #[test]
+    fn event_history_trims_clears_and_reads_back() {
+        // The priority level sends while the LoD priority stays under
+        // the threshold; the detail level sends at or below.
+        let priority = HistoryLevel::Priority(2.0);
+        assert!(priority.should_send(1.0, 9));
+        assert!(!priority.should_send(2.0, 9));
+        let detail = HistoryLevel::Detail(0);
+        assert!(detail.should_send(0.0, 0));
+        assert!(!detail.should_send(0.0, 1));
+
+        let event = |number, reliable| HistoryEvent {
+            number,
+            message_id: 0x100,
+            level: HistoryLevel::Detail(0),
+            reliable,
+            stream_size: 4,
+            message: vec![0; 4],
+        };
+        let mut history = EventHistory::default();
+        assert_eq!(history.last_event_number(), 0);
+        history.add(event(1, false));
+        history.add(event(2, true));
+        history.add(event(3, true));
+        assert_eq!(history.last_event_number(), 3);
+
+        // The trim cuts at the point: the reliable 2 moves the stamp
+        // and 3 becomes the newest survivor.
+        history.trim_to_event = 2;
+        history.trim();
+        assert_eq!(history.events.len(), 1);
+        assert_eq!(history.last_trimmed_event_number(), 2);
+        assert_eq!(history.trim_to_event, 3);
+
+        // Draining everything resets the point to zero.
+        history.trim_to_event = 3;
+        history.trim();
+        assert!(history.events.is_empty());
+        assert_eq!(history.trim_to_event, 0);
+
+        // The clear wipes the stamps too.
+        history.add(event(4, true));
+        history.clear();
+        assert!(history.events.is_empty());
+        assert_eq!(history.trim_to_event, 0);
+        assert_eq!(history.last_trimmed_event_number(), 0);
+        assert_eq!(history.last_event_number(), 0);
+    }
+
+    /// `wire_message_bytes`: the Mercury frame sizes, straight from the
+    /// variant list — the budget math rides on these.
+    #[test]
+    fn wire_message_bytes_sizes_every_frame() {
+        assert_eq!(wire_message_bytes(&Wire::SelectPlayer), 1);
+        assert_eq!(wire_message_bytes(&Wire::SelectEntity { id: 7 }), 5);
+        assert_eq!(
+            wire_message_bytes(&Wire::SelectAliasedEntity { id_alias: 3 }),
+            2
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::EnterAoI { id: 1, id_alias: 3 }),
+            6
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::EnterAoIOnVehicle {
+                id: 1,
+                vehicle_id: 2,
+                id_alias: 3
+            }),
+            10
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::SetVehicle {
+                passenger_id: 1,
+                vehicle_id: 2,
+                change_num: 9
+            }),
+            10
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::CreateEntity {
+                id: 1,
+                detailed: false,
+                detail_level: 0,
+                property_indices: vec![0, 1, 2],
+            }),
+            8
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::UpdateEntity {
+                id: 1,
+                num: 1,
+                level: 0,
+                indices: vec![0, 1],
+                selected: false,
+            }),
+            6
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::LeaveAoI {
+                id: 1,
+                lod_stamps: vec![1, 2, 3],
+            }),
+            17
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::SendMessageToClient {
+                entity_id: 1,
+                message_id: 0x100,
+                size: 20,
+            }),
+            8
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::SpaceData {
+                space_id: 5,
+                entry_id: 1,
+                key: 7,
+                data: None,
+            }),
+            8
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::SpaceData {
+                space_id: 5,
+                entry_id: 1,
+                key: 7,
+                data: Some(vec![1, 2, 3, 4]),
+            }),
+            14
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::RelativePositionReference {
+                seq_num: 3,
+                reliable: false,
+            }),
+            2
+        );
+        assert_eq!(
+            wire_message_bytes(&Wire::RelativePosition {
+                position: [1.0; 3],
+                reliable: false,
+            }),
+            13
+        );
+    }
+
+    /// `Witness::cancelReferencePosition` through the head writer: a
+    /// client-supplied reference the pass cannot use (the witness is
+    /// not client-controlled) is cancelled before the computed one
+    /// takes over — no reference message rides.
+    #[test]
+    fn the_stale_client_reference_is_cancelled() {
+        let (mut app, _spaces) = fixture(b'W');
+        {
+            let (ctx, witness) = ctx_with(&mut app, 1);
+            witness.update_reference_position(&ctx, 9);
+        }
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        let witness = app.witnesses.get(&1).expect("the witness");
+        assert!(!witness.has_reference_position);
+        assert_eq!(witness.reference_seq_num, 0);
+        assert_eq!(witness.reference_position, [0.0; 3]);
+        assert!(
+            !witness
+                .wire
+                .iter()
+                .any(|m| matches!(m, Wire::RelativePositionReference { .. }))
+        );
+    }
+
+    /// `addSpaceDataChanges`: a changed sequence whose space is gone
+    /// hands back nothing — the entity's space lookup misses.
+    #[test]
+    fn the_missing_space_skips_the_data_changes() {
+        let (mut app, _spaces) = fixture(b'W');
+        app.all_spaces_data_change_seq += 1;
+        app.entity_population[&1].borrow_mut().space_id = 999;
+        let head = app.witnesses[&1].wire.len();
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        let wire = &app.witnesses[&1].wire;
+        assert!(
+            !wire[head..]
+                .iter()
+                .any(|m| matches!(m, Wire::SpaceData { .. }))
+        );
+    }
+
+    /// The player position skip: mounted on a vehicle the own position
+    /// is not the reference, so an unchanged position inside the
+    /// repeat window sends nothing.
+    #[test]
+    fn the_mounted_player_skips_the_unchanged_position() {
+        let (mut app, mut spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [5.0, 0.0, 5.0], b'-'),
+        );
+        app.max_time_between_player_updates = 5;
+        app.time = 13;
+        app.entity_population[&1].borrow_mut().vehicle = Some(3);
+        {
+            let witness = app.witnesses.get_mut(&1).expect("the witness");
+            witness.last_sent_reliable_game_time = 10;
+            witness.last_sent_reliable_position = [0.0; 3];
+            witness.last_sent_reliable_direction = [0.25, 0.0, 0.0];
+        }
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        // The reference rides for the relatives to anchor to; the
+        // player's own detailed position does not.
+        assert!(
+            app.witnesses[&1]
+                .wire
+                .iter()
+                .any(|m| matches!(m, Wire::RelativePosition { .. }))
+        );
+        assert!(
+            !app.witnesses[&1]
+                .wire
+                .iter()
+                .any(|m| matches!(m, Wire::AvatarUpdatePlayerDetailed { .. }))
+        );
+    }
+
+    /// An airborne remote entity: the full cube bounds the relative,
+    /// and the update says it is not on the ground.
+    #[test]
+    fn the_airborne_remote_rides_the_full_cube() {
+        let (mut app, _spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        let _ = observe_once(&mut app);
+        app.entity_population[&2].borrow_mut().is_on_ground = false;
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        assert!(app.witnesses[&1].wire.iter().any(|m| matches!(
+            m,
+            Wire::AvatarUpdate {
+                id: 2,
+                on_ground: false,
+                position: true,
+                ..
+            }
+        )));
+    }
+
+    /// A mounted remote entity keeps its raw position — the relative
+    /// arm is for the unmounted.
+    #[test]
+    fn the_mounted_remote_rides_its_raw_position() {
+        let (mut app, mut spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        app.create_real_entity(
+            &mut spaces,
+            SID,
+            &stream_for(3, TYPE, [5.0, 0.0, 5.0], b'-'),
+        );
+        let _ = observe_once(&mut app);
+        app.entity_population[&2].borrow_mut().vehicle = Some(3);
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        assert!(
+            app.witnesses[&1]
+                .wire
+                .iter()
+                .any(|m| matches!(m, Wire::AvatarUpdate { id: 2, .. }))
+        );
+    }
+
+    /// A yaw-only volatile face: no position goes out, so the update
+    /// carries neither a position nor the ground bit.
+    #[test]
+    fn the_yaw_only_face_sends_no_position() {
+        let (mut app, _spaces) = fixture(b'W');
+        app.entity_type_faces.insert(
+            TYPE,
+            EntityTypeDef {
+                volatile: VolatileInfo {
+                    position_priority: -1.0,
+                    yaw_priority: 1.0e9,
+                    pitch_priority: -1.0,
+                    roll_priority: -1.0,
+                },
+                ..EntityTypeDef::default()
+            },
+        );
+        let _ = observe_once(&mut app);
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        assert!(app.witnesses[&1].wire.iter().any(|m| matches!(
+            m,
+            Wire::AvatarUpdate {
+                id: 2,
+                position: false,
+                on_ground: false,
+                ..
+            }
+        )));
+    }
+
+    /// A relative position the packed forms cannot hold: the volatile
+    /// write falls back to the detailed form.
+    #[test]
+    fn the_out_of_packed_range_entity_goes_detailed() {
+        let (mut app, _spaces) = fixture(b'W');
+        make_volatile(&mut app);
+        let _ = observe_once(&mut app);
+        app.entity_population[&2].borrow_mut().local_position = [20000.0, 0.0, 0.0];
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        let wire = &app.witnesses[&1].wire;
+        assert!(
+            wire.iter()
+                .any(|m| matches!(m, Wire::AvatarUpdateDetailed { id: 2, .. }))
+        );
+        assert!(
+            !wire
+                .iter()
+                .any(|m| matches!(m, Wire::AvatarUpdate { id: 2, .. }))
+        );
+    }
+
+    /// The replay skips the events their level will not carry: the
+    /// priority event stays home while the detail event rides.
+    #[test]
+    fn the_replay_skips_the_level_it_cannot_send() {
+        let (mut app, _spaces) = fixture(b'W');
+        let _ = observe_once(&mut app);
+        add_events(&mut app, 2, 1, 20);
+        let entity = app.entity_population[&2].clone();
+        let number = (entity.borrow().last_event_number + 1) as EventNumber;
+        entity.borrow_mut().last_event_number += 1;
+        entity.borrow_mut().event_history.add(HistoryEvent {
+            number,
+            message_id: 0x101,
+            level: HistoryLevel::Priority(1.0),
+            reliable: true,
+            stream_size: 0,
+            message: vec![],
+        });
+        let head = app.witnesses[&1].wire.len();
+        {
+            let (mut ctx, witness) = ctx_with(&mut app, 1);
+            witness.update(&mut ctx);
+        }
+        let wire = &app.witnesses[&1].wire;
+        assert_eq!(
+            wire[head..]
+                .iter()
+                .filter(|m| matches!(m, Wire::HistoryEventMessage { .. }))
+                .count(),
+            1
+        );
+        assert!(wire[head..].iter().any(|m| matches!(
+            m,
+            Wire::HistoryEventMessage {
+                message_id: 0x100,
+                ..
+            }
+        )));
+    }
+    /// The reliability helpers tolerate any frame: only the position
+    /// messages carry the flag, the rest stay home silently.
+    #[test]
+    fn the_reliability_helpers_tolerate_any_frame() {
+        let mut stray = Wire::TickSync { tick_byte: 0 };
+        Witness::or_reference_reliability(&mut stray, true);
+        assert!(!Witness::reference_reliability(&stray));
+
+        let mut reference = Wire::RelativePositionReference {
+            seq_num: 3,
+            reliable: false,
+        };
+        Witness::or_reference_reliability(&mut reference, true);
+        assert!(Witness::reference_reliability(&reference));
+        // The OR never clears a flag that is already up.
+        Witness::or_reference_reliability(&mut reference, false);
+        assert!(Witness::reference_reliability(&reference));
+
+        let mut relative = Wire::RelativePosition {
+            position: [1.0; 3],
+            reliable: false,
+        };
+        Witness::or_reference_reliability(&mut relative, true);
+        assert!(Witness::reference_reliability(&relative));
+
+        let mut detailed = Wire::AvatarUpdatePlayerDetailed {
+            position: [1.0; 3],
+            direction: [0.25, 0.0, 0.0],
+            reliable: false,
+        };
+        Witness::or_reference_reliability(&mut detailed, true);
+        assert!(Witness::reference_reliability(&detailed));
     }
 }

@@ -318,6 +318,17 @@ pub struct Entity {
     /// `triggers_` (`entity.hpp`): this entity's own range triggers,
     /// sorted by range, largest first.
     pub range_triggers: Vec<crate::cellapp_range_list::TriggerId>,
+    /// `eventHistory_`: the events the witnesses' caches replay from.
+    pub event_history: crate::cellapp_witness::EventHistory,
+    /// `periodsWithoutWitness_`: the unwitnessed tally the send pass
+    /// clears and the tick increments.
+    pub periods_without_witness: u32,
+    /// `EntityDescription::volatileInfo()`: the per-type volatile
+    /// priorities this entity's projections gate on.
+    pub volatile_info: crate::cellapp_witness::VolatileInfo,
+    /// The `CellAppInterface::witnessed` sends a ghost's witnessed arm
+    /// made: the ghost ids the real was told about.
+    pub witnessed_sends: Vec<u32>,
 }
 
 impl Entity {
@@ -351,6 +362,10 @@ impl Entity {
             local_direction: [0.0; 3],
             controlled_by: 0,
             accel_vehicle: None,
+            event_history: crate::cellapp_witness::EventHistory::default(),
+            periods_without_witness: crate::cellapp_witness::NOT_WITNESSED_THRESHOLD,
+            volatile_info: crate::cellapp_witness::VolatileInfo::default(),
+            witnessed_sends: Vec::new(),
             accel_sample: [0.0; 3],
             accel_sample_time: 0,
             accel_velocity: [0.0; 3],
@@ -855,6 +870,21 @@ impl Space {
         self.last_mapped_geometry = geometry;
     }
 
+    /// `dataBySeq( seq, entryID, key )`: the entry the sequence names,
+    /// and the value still in the mapping. A revoked key hands back no
+    /// value — the reference returns `NULL` then, too.
+    pub fn data_by_seq(&self, seq: u32) -> (u32, u16, Option<&Vec<u8>>) {
+        debug_assert!(self.beg_data_seq <= seq as u64);
+        debug_assert!((seq as u64) < self.end_data_seq);
+        let (entry_id, key) = self.recent_data[(seq as usize) - self.beg_data_seq as usize];
+        let blob = (key != NO_SPACE_DATA_KEY)
+            .then(|| self.space_data.data_retrieve_specific_ptr(entry_id))
+            .flatten()
+            .filter(|value| value.key != NO_SPACE_DATA_KEY)
+            .map(|value| &value.data);
+        (entry_id, key, blob)
+    }
+
     /// `pPhysicalSpace()`: the mounted backend. The accessor hands out a
     /// clone of the pointer, like the reference's by-value
     /// `SmartPointer` return — the space stays the only *persistent*
@@ -1045,6 +1075,9 @@ impl Space {
         if effective_key < SPACE_DATA_FIRST_CELL_ONLY_KEY {
             self.recent_data.push((entry_id, key));
             self.end_data_seq += 1;
+            // `s_allSpacesDataChangeSeq_` is a free global in the
+            // reference; the `CellApp` carries it here.
+            cell_app.all_spaces_data_change_seq += 1;
         }
 
         // effect this change unless that has already been done
@@ -1643,9 +1676,27 @@ pub struct CellApp {
     pub witness_max_priority_delta: f32,
     /// The fixed per-send bundle growth while the update writer is
     /// BW-08-03-04's face.
-    pub witness_update_bytes: i32,
     /// `CellAppConfig::entitySpamSize()` (default 200).
     pub witness_spam_size: i32,
+    /// `Space::s_allSpacesDataChangeSeq_`: the global space-data
+    /// sequence the witnesses compare against.
+    pub all_spaces_data_change_seq: u64,
+    /// The spaces, by id. Held on the CellApp like the range lists —
+    /// this port's spaces are deliberately external, and the witness's
+    /// space-data face reaches for the witnessing entity's own space
+    /// through here.
+    pub spaces: BTreeMap<SpaceId, Space>,
+    /// `CellAppConfig::maxTimeBetweenPlayerUpdatesInTicks()`: how long a
+    /// player's detailed position may ride unchanged. `-1` always skips
+    /// the repeat, `0` never does.
+    pub max_time_between_player_updates: i32,
+    /// `CellAppConfig::packedXZScale()`: `maxAoIRadius` over the floor of
+    /// the packed limit.
+    pub packed_xz_scale: f32,
+    /// `CellAppConfig::sendDetailedPlayerVehicles()` (default false).
+    pub send_detailed_player_vehicles: bool,
+    /// The `onWitnessed` callback deliveries the send pass made.
+    pub witnessed_notifications: Vec<(u32, bool)>,
 }
 
 impl Default for CellApp {
@@ -1712,8 +1763,13 @@ impl Default for CellApp {
             witness_errors: Vec::new(),
             emergency_throttle: 1.0,
             witness_max_priority_delta: 5.0,
-            witness_update_bytes: 100,
             witness_spam_size: 200,
+            all_spaces_data_change_seq: 0,
+            spaces: BTreeMap::new(),
+            packed_xz_scale: 500.0 / 28.0,
+            send_detailed_player_vehicles: false,
+            witnessed_notifications: Vec::new(),
+            max_time_between_player_updates: 0,
         }
     }
 }
