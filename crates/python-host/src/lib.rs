@@ -32,6 +32,7 @@ pub mod reload;
 pub mod reload_plan;
 pub mod resmgr;
 pub mod script_events;
+pub mod script_types;
 pub mod sequence;
 pub mod timers;
 pub mod urlrequest;
