@@ -380,6 +380,69 @@ fn remove_logon_sql() -> String {
     "DELETE FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2".to_string()
 }
 
+/// `updateLogOnAutoLoadQuery` (entity_type_mapping.cpp:761,
+/// `:793-797`): the auto-load status of an entity's logon record. An
+/// entity without a record matches no rows and the update stays silent
+/// — the reference's MySQL UPDATE semantics.
+fn update_auto_load_sql() -> String {
+    "UPDATE \"bigworldLogOns\" SET \"shouldAutoLoad\" = $1 \
+     WHERE \"databaseID\" = $2 AND \"typeID\" = $3"
+        .to_string()
+}
+
+/// `autoLoadEntities`' cleanup leg (`mysql_database.cpp:674-675`): the
+/// sessions of the entities that must not auto-load are stale at a
+/// restart and go first.
+fn clear_non_autoload_sql() -> String {
+    "DELETE FROM \"bigworldLogOns\" WHERE NOT \"shouldAutoLoad\"".to_string()
+}
+
+/// `autoLoadEntities`' listing leg (`mysql_database.cpp:677-683`): the
+/// flagged entities joined with the meta table for the running-server
+/// type id — `typeID` is the id used internally by the database,
+/// `bigworldID` the one used by a running server.
+fn auto_load_list_sql() -> String {
+    "SELECT logOn.\"databaseID\", entityType.\"bigworldID\" \
+     FROM \"bigworldLogOns\" logOn, \"bigworldEntityTypes\" entityType \
+     WHERE logOn.\"typeID\" = entityType.\"typeID\" AND logOn.\"shouldAutoLoad\""
+        .to_string()
+}
+
+/// `autoLoadEntities`' holder leg (`mysql_database.cpp:702`): the
+/// restart hands every loaded entity to a fresh base, so the stored
+/// addresses are stale — they zero, while `objectID` and `salt` stay.
+fn clear_holders_sql() -> String {
+    "UPDATE \"bigworldLogOns\" SET \"ip\" = 0, \"port\" = 0".to_string()
+}
+
+/// `getEntityTypeIDQuery` (`bw_meta_data.cpp:13`): the running-server
+/// id of a type, by name.
+fn get_entity_type_id_sql() -> &'static str {
+    "SELECT \"bigworldID\" FROM \"bigworldEntityTypes\" WHERE \"name\" = $1"
+}
+
+/// `addEntityTypeQuery` (`bw_meta_data.cpp:19-21`): the meta row the
+/// auto-load join resolves through. The reference's two type-id spaces
+/// — the database-internal `typeID` and the `entities.xml` `bigworldID`
+/// — collapse into the port's one [`EntityTypeId`] space, so both
+/// columns carry the caller's value.
+fn add_entity_type_sql() -> String {
+    "INSERT INTO \"bigworldEntityTypes\" (\"typeID\", \"bigworldID\", \"name\") \
+     VALUES ($1, $1, $2)"
+        .to_string()
+}
+
+/// `setEntityTypeIDQuery` (`bw_meta_data.cpp:16`): the reference updates
+/// `bigworldID` alone — its internal `typeID` is stable, so old log-on
+/// records keep joining after a re-point. The port's one type-id space
+/// carries the running-server id in both columns, so both move
+/// together.
+fn set_entity_type_id_sql() -> String {
+    "UPDATE \"bigworldEntityTypes\" SET \"typeID\" = $1, \"bigworldID\" = $1 \
+     WHERE \"name\" = $2"
+        .to_string()
+}
+
 /// The reference stores the base address in network byte order:
 /// `htonl(mailbox.addr.ip)` and `htons(mailbox.addr.port)` go in
 /// (`addLogOnRecord`, entity_type_mapping.cpp:779-781) and `ntohl`/`ntohs`
@@ -632,6 +695,88 @@ impl PostgresStorage {
             )
             .map_err(map_db_error)?;
         Ok(())
+    }
+
+    /// Writes the `bigworldEntityTypes` row the auto-load join resolves
+    /// through — the sync pass's `TypesCollector::addType`
+    /// (table_inspector.cpp:250-272) driving `BigWorldMetaData`
+    /// (bw_meta_data.cpp:42-70): absent by name the row is added, a
+    /// different id re-points it, the same id is a no-op.
+    pub fn add_entity_type(&mut self, type_id: EntityTypeId, name: &str) -> Result<(), DbError> {
+        let current = self
+            .client
+            .borrow_mut()
+            .query_opt(get_entity_type_id_sql(), &[&name])
+            .map_err(map_db_error)?;
+        let id = i64::from(type_id);
+        match current.map(|row| row.get::<_, i64>(0)) {
+            None => {
+                self.client
+                    .borrow_mut()
+                    .execute(add_entity_type_sql().as_str(), &[&id, &name])
+                    .map_err(map_db_error)?;
+            }
+            Some(stored) if stored != id => {
+                self.client
+                    .borrow_mut()
+                    .execute(set_entity_type_id_sql().as_str(), &[&id, &name])
+                    .map_err(map_db_error)?;
+            }
+            Some(_) => {}
+        }
+        Ok(())
+    }
+
+    /// Sets the auto-load status of an entity's logon record
+    /// (`EntityTypeMapping::updateAutoLoad`, entity_type_mapping.cpp:792-800).
+    /// An entity without a record matches no rows and the update stays
+    /// silent — the task that carries the flag writes it right after the
+    /// record itself (put_entity_task.cpp:117-121).
+    pub fn set_auto_load(
+        &mut self,
+        key: &EntityKey,
+        should_auto_load: bool,
+    ) -> Result<(), DbError> {
+        self.client
+            .borrow_mut()
+            .execute(
+                update_auto_load_sql().as_str(),
+                &[&should_auto_load, &key.db_id, &i32::from(key.type_id)],
+            )
+            .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    /// The restart face (`MySqlDatabase::autoLoadEntities`,
+    /// mysql_database.cpp:667-713): the sessions of the entities that
+    /// must not auto-load are stale and go first, the flagged entities
+    /// are listed for the auto-loader — running-server type id first,
+    /// then `databaseID`, the `autoLoader.addEntity` order — and when
+    /// the list is non-empty the stored holders zero (`ip = 0,
+    /// port = 0`). The caller feeds the list to the loader's
+    /// `reserve`/`addEntity` and drives `start` — the auto-load recovery
+    /// seam.
+    pub fn auto_load_entities(&mut self) -> Result<Vec<(EntityTypeId, DatabaseId)>, DbError> {
+        self.client
+            .borrow_mut()
+            .execute(clear_non_autoload_sql().as_str(), &[])
+            .map_err(map_db_error)?;
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(auto_load_list_sql().as_str(), &[])
+            .map_err(map_db_error)?;
+        let mut list = Vec::with_capacity(rows.len());
+        for row in &rows {
+            list.push((row.get::<_, i64>(1) as EntityTypeId, row.get::<_, i64>(0)));
+        }
+        if !list.is_empty() {
+            self.client
+                .borrow_mut()
+                .execute(clear_holders_sql().as_str(), &[])
+                .map_err(map_db_error)?;
+        }
+        Ok(list)
     }
 
     /// Creates this schema's table if it is missing (the entity-mapping
@@ -1164,6 +1309,51 @@ mod tests {
         assert_eq!(
             remove_logon_sql(),
             "DELETE FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2"
+        );
+    }
+
+    #[test]
+    fn auto_load_statements_match_the_reference_queries() {
+        assert_eq!(
+            update_auto_load_sql(),
+            concat!(
+                "UPDATE \"bigworldLogOns\" SET \"shouldAutoLoad\" = $1 ",
+                "WHERE \"databaseID\" = $2 AND \"typeID\" = $3"
+            )
+        );
+        assert_eq!(
+            clear_non_autoload_sql(),
+            "DELETE FROM \"bigworldLogOns\" WHERE NOT \"shouldAutoLoad\""
+        );
+        assert_eq!(
+            auto_load_list_sql(),
+            concat!(
+                "SELECT logOn.\"databaseID\", entityType.\"bigworldID\" ",
+                "FROM \"bigworldLogOns\" logOn, \"bigworldEntityTypes\" entityType ",
+                "WHERE logOn.\"typeID\" = entityType.\"typeID\" AND logOn.\"shouldAutoLoad\""
+            )
+        );
+        assert_eq!(
+            clear_holders_sql(),
+            "UPDATE \"bigworldLogOns\" SET \"ip\" = 0, \"port\" = 0"
+        );
+        assert_eq!(
+            get_entity_type_id_sql(),
+            "SELECT \"bigworldID\" FROM \"bigworldEntityTypes\" WHERE \"name\" = $1"
+        );
+        assert_eq!(
+            add_entity_type_sql(),
+            concat!(
+                "INSERT INTO \"bigworldEntityTypes\" (\"typeID\", \"bigworldID\", \"name\") ",
+                "VALUES ($1, $1, $2)"
+            )
+        );
+        assert_eq!(
+            set_entity_type_id_sql(),
+            concat!(
+                "UPDATE \"bigworldEntityTypes\" SET \"typeID\" = $1, \"bigworldID\" = $1 ",
+                "WHERE \"name\" = $2"
+            )
         );
     }
 
