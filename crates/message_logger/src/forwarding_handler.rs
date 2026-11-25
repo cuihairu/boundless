@@ -444,13 +444,13 @@ mod tests {
         );
 
         // The leading int is the transport message ID, then the header
-        // (priority, priority, source, packed category), the packed format
-        // string, and the arguments.
+        // (priority, priority, the source enum's 4-byte encoding, packed
+        // category), the packed format string, and the arguments.
         let mut expected = Vec::new();
         expected.extend_from_slice(&107u32.to_le_bytes());
         expected.push(0); // component priority, pinned zero
         expected.push(message_priority::INFO);
-        expected.push(0); // C++ source
+        expected.extend_from_slice(&[0, 0, 0, 0]); // C++ source enum
         expected.push(0); // empty category
         expected.push(5);
         expected.extend_from_slice(b"%s=%d");
