@@ -1,63 +1,63 @@
 startup_full_entities	3
 startup_full_digest	6FA9B4C32162519E4A50B9C98136791B
-startup_full_ms	0.637
+startup_full_ms	1.076
 startup_fantasydemo_entities	5
 startup_fantasydemo_digest	18D00DC69AC756433D091F537DA7030E
-startup_fantasydemo_ms	0.615
+startup_fantasydemo_ms	0.916
 codec_round_trips	20000
-codec_STRING_p50	340.0
-codec_STRING_p90	585.0
-codec_STRING_p99	741.0
-codec_STRING_max	53555.0
-codec_STRING_min	276.0
-codec_INT32_p50	474.0
-codec_INT32_p90	818.0
-codec_INT32_p99	945.0
-codec_INT32_max	81300.0
-codec_INT32_min	406.0
-codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_p50	817.0
-codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_p90	1242.0
-codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_p99	1600.0
-codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_max	28990.0
-codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_min	732.0
-codec_ARRAY of (STRING)_p50	238.0
-codec_ARRAY of (STRING)_p90	363.0
-codec_ARRAY of (STRING)_p99	454.0
-codec_ARRAY of (STRING)_max	28830.0
-codec_ARRAY of (STRING)_min	221.0
-codec_UINT8_p50	460.0
-codec_UINT8_p90	746.0
-codec_UINT8_p99	944.0
-codec_UINT8_max	45499.0
-codec_UINT8_min	395.0
-codec_UINT32_p50	457.0
-codec_UINT32_p90	693.0
-codec_UINT32_p99	884.0
-codec_UINT32_max	76756.0
-codec_UINT32_min	392.0
-codec_FLOAT64_p50	268.0
-codec_FLOAT64_p90	406.0
-codec_FLOAT64_p99	500.0
-codec_FLOAT64_max	24027.0
-codec_FLOAT64_min	215.0
-codec_ARRAY of (UINT8)_p50	247.0
-codec_ARRAY of (UINT8)_p90	327.0
-codec_ARRAY of (UINT8)_p99	477.0
-codec_ARRAY of (UINT8)_max	33090.0
-codec_ARRAY of (UINT8)_min	223.0
-codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_p50	1565.0
-codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_p90	1728.0
-codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_p99	3000.0
-codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_max	36925.0
-codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_min	1313.0
-codec_INT16_p50	471.0
-codec_INT16_p90	558.0
-codec_INT16_p99	866.0
-codec_INT16_max	23524.0
-codec_INT16_min	429.0
-codec_INT8_p50	457.0
-codec_INT8_p90	487.0
-codec_INT8_p99	825.0
-codec_INT8_max	21510.0
-codec_INT8_min	419.0
-startup_warm_fantasydemo_ms	0.448
+codec_STRING_p50	326.0
+codec_STRING_p90	546.0
+codec_STRING_p99	739.0
+codec_STRING_max	490263.0
+codec_STRING_min	291.0
+codec_INT32_p50	483.0
+codec_INT32_p90	758.0
+codec_INT32_p99	958.0
+codec_INT32_max	507913.0
+codec_INT32_min	438.0
+codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_p50	839.0
+codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_p90	1331.0
+codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_p99	1525.0
+codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_max	103392.0
+codec_FIXED_DICT props x:(FLOAT32), y:(FLOAT32)_min	757.0
+codec_ARRAY of (STRING)_p50	361.0
+codec_ARRAY of (STRING)_p90	438.0
+codec_ARRAY of (STRING)_p99	528.0
+codec_ARRAY of (STRING)_max	23979.0
+codec_ARRAY of (STRING)_min	229.0
+codec_UINT8_p50	474.0
+codec_UINT8_p90	801.0
+codec_UINT8_p99	967.0
+codec_UINT8_max	35937.0
+codec_UINT8_min	429.0
+codec_UINT32_p50	474.0
+codec_UINT32_p90	779.0
+codec_UINT32_p99	935.0
+codec_UINT32_max	86863.0
+codec_UINT32_min	440.0
+codec_FLOAT64_p50	286.0
+codec_FLOAT64_p90	325.0
+codec_FLOAT64_p99	465.0
+codec_FLOAT64_max	56095.0
+codec_FLOAT64_min	256.0
+codec_ARRAY of (UINT8)_p50	264.0
+codec_ARRAY of (UINT8)_p90	428.0
+codec_ARRAY of (UINT8)_p99	528.0
+codec_ARRAY of (UINT8)_max	25925.0
+codec_ARRAY of (UINT8)_min	238.0
+codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_p50	2508.0
+codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_p90	2971.0
+codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_p99	3851.0
+codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_max	766511.0
+codec_FIXED_DICT props r:(UINT8), g:(UINT8), b:(UINT8)_min	1489.0
+codec_INT16_p50	482.0
+codec_INT16_p90	537.0
+codec_INT16_p99	933.0
+codec_INT16_max	23880.0
+codec_INT16_min	427.0
+codec_INT8_p50	525.0
+codec_INT8_p90	864.0
+codec_INT8_p99	1020.0
+codec_INT8_max	74333.0
+codec_INT8_min	457.0
+startup_warm_fantasydemo_ms	0.297

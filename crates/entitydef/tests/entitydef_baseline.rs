@@ -35,7 +35,7 @@ use std::time::Instant;
 
 use entitydef::data_type::TypeContext;
 use entitydef::diagnostics::Diagnostics;
-use entitydef::entity_description::{DefResolver, FsResolver};
+use entitydef::entity_description::{DefResolver, FsResolver, clear_section_cache};
 use entitydef::entity_map::{EntityDescriptionMap, MessageRanges};
 use foundation::stream::BinaryStream;
 
@@ -80,7 +80,7 @@ impl Record {
 }
 
 /// The p50/p90/p99/max/min summary of a sample set, in the recorded unit.
-fn summarize(samples: &mut Vec<f64>) -> [f64; 5] {
+fn summarize(samples: &mut [f64]) -> [f64; 5] {
     samples.sort_by(|a, b| a.total_cmp(b));
     let pick = |p: f64| {
         let idx = ((p * samples.len() as f64).ceil() as usize).clamp(1, samples.len()) - 1;
@@ -240,8 +240,10 @@ fn codec_leg(record: &mut Record) {
 }
 
 /// Leg 3: the warm start — the same fixture loaded a second time in the
-/// same process, page cache warm, so the number measures the XML parse
-/// and not the file reads. The digest must match the cold load.
+/// same process with the section cache already populated by the earlier
+/// legs, so the number measures the cached reload (tree clones plus map
+/// assembly, no file reads, no XML parse). The digest must match the
+/// fresh load.
 fn warm_leg(record: &mut Record) {
     let root = std::path::Path::new(REPO_ROOT).join("docs/review/fixtures/fantasydemo_def/res");
     let cold_digest = {
@@ -262,10 +264,14 @@ fn warm_leg(record: &mut Record) {
     );
 }
 
-/// Runs every leg in fixed order.
+/// Runs every leg in fixed order. The section cache starts cleared so
+/// the startup leg measures a cache-cold load and the warm leg measures
+/// exactly the cached reload — the cold/warm pair the OPT-04-01-02
+/// comparison reads.
 #[test]
 fn the_entitydef_baseline_runs_all_legs() {
     let mut record = Record::default();
+    clear_section_cache();
     startup_leg(&mut record);
     codec_leg(&mut record);
     warm_leg(&mut record);
