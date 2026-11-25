@@ -2897,7 +2897,10 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化时钟、队列、内存分配和资源缓存。比较 tick 尾延迟、分配次数和加载峰值，复跑时序与缓存失效用例。
 
-- [ ] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。
+- [x] **OPT-01-01-01 测量基础运行时**。**验收** 保存 Tick、分配数和加载峰值基线。`6b6cc9c` 三面基线齐：
+  - Tick：`docs/perf-baseline-2026-11-24.md` 既有 11 行 criterion 时序表（`e9c0a52`，已在 main），四热面（time_queue/stream/math/updatables）× tick 尾延迟口径，100 样本 3s 预热可复现。
+  - 分配数：`6b6cc9c` 落 `crates/foundation/tests/alloc_counts.rs` + `crates/server-runtime/tests/alloc_counts.rs`——计数全局分配器 + thread-local 追踪旗标（旗标与计数全在调用线程，并发测试线程互不污染；全局计数器版首跑即暴露互踩：纯浮点夹具数出幻影分配），夹具与时序表逐形对应（`iter_batched` 出时间窗的 setup 同样出计数窗），每测断言双跑恒等故数字按工具链逐位可复现；11 行基线：add_1000_timers 1010 次/112,440 B（每计时器 ~1 次、firing pass 0 次）、process_1000_due 0/0、add_cancel_process_100 108/12,504、encode 29/26,563、decode 20/11,481、math 四面全 0/0、updatables call pass 0/0、register_deregister_100 114/12,424；`cargo test -p foundation` 228+9 绿、`-p server-runtime` 1303+2 绿、两 crate `--tests` clippy 净。
+  - 加载峰值：bots 二进制（debug，main `70a4672`）在 `LOAD_CLIENTS=4` 信封下 `/usr/bin/time -v` 实测三场景 peak RSS——steady-move 3,164 KiB（bots_online 4）、login-hurricane 3,180 KiB（online_peak 4、4/4 admitted）、dense-aoi 3,148 KiB（bots 4、max_visible 3）；`ci/load.sh` 3/3 PASS 落 TSV；离线面按仿真时间跑完故此峰是生成器自身足迹，实拓扑逐期 RSS/CPU 采样（`ResourceTracker`，BW-17-03-04）在 `crates/load` 已测但尚未接进 driver 报告（归 bw17 席）。
 - [ ] **OPT-01-01-02 优化时钟和任务调度**。**验收** 对比 Tick 尾延迟并复跑时序夹具。
 - [ ] **OPT-01-01-03 优化分配和资源缓存**。**验收** 对比分配次数及加载峰值并复跑失效夹具。
 
