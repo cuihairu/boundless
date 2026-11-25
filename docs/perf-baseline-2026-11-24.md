@@ -71,9 +71,67 @@ Reading notes:
 - Per-dispatch cost of the update loop is ~53 ns per object pass,
   including the `Rc` clone, borrow and the mid-pass placement checks.
 
+## Allocation counts (2026-11-25, OPT-01-01-01)
+
+Measured by the counting-allocator harness in
+`crates/foundation/tests/alloc_counts.rs` and
+`crates/server-runtime/tests/alloc_counts.rs`: the same fixtures as the
+timing table, shape for shape (where a bench moves setup out of the
+timed region, the same split applies). Every test asserts that two runs
+allocate identically, so each number below is exactly reproducible on a
+given toolchain — debug profile, same machine as the timing table.
+Bytes are the cumulative requested size, not peak live size.
+
+| fixture | allocations | bytes allocated |
+|---|---|---|
+| `time_queue/add_1000_timers` | 1,010 | 112,440 |
+| `time_queue/process_1000_due` | 0 | 0 |
+| `time_queue/add_cancel_process_100` | 108 | 12,504 |
+| `stream/encode_mixed_payload` | 29 | 26,563 |
+| `stream/decode_mixed_payload` | 20 | 11,481 |
+| `matrix/multiply_4x4_f32` | 0 | 0 |
+| `matrix/apply_point_x256` | 0 | 0 |
+| `vector3/normalise_lerp_dot_x256` | 0 | 0 |
+| `quaternion_multiply_slerp` | 0 | 0 |
+| `updatables/call_1000_over_3_levels` (call pass only) | 0 | 0 |
+| `updatables/register_deregister_100` | 114 | 12,424 |
+
+Reading notes:
+
+- Registration costs ~1 allocation per timer (1,010 for 1,000 adds,
+  ~111 B each); the firing pass allocates nothing.
+- The whole math surface is allocation-free: the scalar 4×4 multiply,
+  the batched transforms and the vector/quaternion chains never touch
+  the heap.
+- The update dispatch pass is allocation-free (`Rc` clones are refcount
+  bumps), so a steady-state tick costs zero allocations; only
+  register/deregister churn allocates, ~1 per object.
+- Encode pays 29 allocations for its string and blob writes; decode
+  pays 20 (16 owned strings + 3 blobs + stream state).
+
+## Load peaks (2026-11-25, OPT-01-01-01)
+
+Peak resident set of the load generator (the `bots` binary, debug
+profile) driving each PR smoke scenario through the offline faces at
+the harness low-load envelope (`LOAD_CLIENTS=4`), measured with
+`/usr/bin/time -v` on the same machine against main `70a4672`:
+
+| scenario | load metrics at the envelope | peak RSS |
+|---|---|---|
+| `steady-move` | `bots_online` 4 | 3,164 KiB |
+| `login-hurricane` | `online_peak` 4, 4/4 admitted | 3,180 KiB |
+| `dense-aoi` | `bots` 4, `max_visible` 3 | 3,148 KiB |
+
+All three scenarios pass `ci/load.sh` (3/3 records). The offline faces
+run the scenario in simulated time, so these peaks describe the
+generator's own footprint, not a served topology; per-period RSS/CPU
+sampling of a live run (`ResourceTracker`, BW-17-03-04) exists in
+`crates/load` but is not yet wired into the driver report.
+
 ## CI
 
-No CI wiring yet (per batch ticket): benches stay out of the test gate,
-`cargo test --workspace` is unaffected. When a perf gate lands, compare
-against `target/criterion` baselines via `--save-baseline` /
-`--baseline`, not absolute numbers from this page.
+No CI wiring yet for the benches (per batch ticket): they stay out of
+the test gate. The allocation harness is a test, not a bench — it runs
+as part of `cargo test -p foundation -p server-runtime`. When a perf
+gate lands, compare timings against `target/criterion` baselines via
+`--save-baseline` / `--baseline`, not absolute numbers from this page.
