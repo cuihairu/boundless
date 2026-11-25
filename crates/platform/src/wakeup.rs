@@ -5,32 +5,45 @@
 //! break flag from another thread does not interrupt that blocked wait:
 //! the loop only notices the flag after the wait returns. This type is
 //! the self-pipe that makes an idle loop *interruptible* -- registering
-//! [`Wakeup::read_fd`] with the poller and calling [`Wakeup::trigger`]
-//! from any thread makes the blocked wait return, so the loop can notice
-//! the break and stop. That is the "三端可停止空闲循环" acceptance.
+//! the read end ([`Wakeup::read_fd`] on unix, [`Wakeup::read_socket`]
+//! on Windows) with the poller and calling [`Wakeup::trigger`] from any
+//! thread makes the blocked wait return, so the loop can notice the
+//! break and stop. That is the "三端可停止空闲循环" acceptance.
 //!
-//! The mechanism is the classic self-pipe: `pipe(2)`. A one-byte write
-//! to the write end makes the read end readable, which the poller reports
-//! as an event; [`Wakeup::consume`] drains the byte to re-arm. The write
-//! end is never closed for the lifetime of the `Wakeup`, so the read end
-//! sees data, never EOF. Both ends are non-blocking so `trigger` and
-//! `consume` never stall the caller.
+//! The mechanism is the classic self-pipe: on unix, `pipe(2)`. A
+//! one-byte write to the write end makes the read end readable, which
+//! the poller reports as an event; [`Wakeup::consume`] drains the byte
+//! to re-arm. The write end is never closed for the lifetime of the
+//! `Wakeup`, so the read end sees data, never EOF. Both ends are
+//! non-blocking so `trigger` and `consume` never stall the caller.
 //!
-//! Unix-only: `pipe(2)` is the same call on Linux and macOS. The Windows
-//! poller uses `WSAPoll` over sockets, so its wakeup needs a socketpair
-//! rather than an anonymous pipe; that backend lands with the Windows
-//! poller under BW-15-05 (the three native CI runners).
+//! Windows cannot poll an anonymous pipe (`WSAPoll` takes sockets only),
+//! so the same contract rides a loopback socketpair: `TcpListener` on
+//! `127.0.0.1:0`, one connect, one accept, both ends non-blocking with
+//! Nagle off so the trigger byte is not delayed in the send buffer.
 
+#[cfg(unix)]
 use crate::socket;
+#[cfg(unix)]
 use std::os::fd::RawFd;
 
 /// A self-pipe whose read end can be registered with a poller and whose
 /// write end is triggered from any thread to interrupt a blocked wait.
+#[cfg(unix)]
 pub struct Wakeup {
     read_fd: RawFd,
     write_fd: RawFd,
 }
 
+/// A loopback-socketpair wakeup, the Windows spelling of the self-pipe:
+/// `WSAPoll` polls sockets, not the anonymous pipes `pipe(2)` creates.
+#[cfg(windows)]
+pub struct Wakeup {
+    reader: std::net::TcpStream,
+    writer: std::net::TcpStream,
+}
+
+#[cfg(unix)]
 impl Wakeup {
     /// `pipe(2)` plus `O_NONBLOCK` on both ends. `Err` when the kernel
     /// refuses to create the pipe.
@@ -85,6 +98,57 @@ impl Wakeup {
     }
 }
 
+#[cfg(windows)]
+impl Wakeup {
+    /// A loopback listener on an ephemeral port: connect and accept
+    /// synchronously, then put both sides in non-blocking mode. Nagle is
+    /// disabled so a one-byte trigger is not held in the send buffer.
+    pub fn new() -> std::io::Result<Self> {
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let writer = TcpStream::connect(addr)?;
+        writer.set_nodelay(true)?;
+        let (reader, _) = listener.accept()?;
+        reader.set_nodelay(true)?;
+        reader.set_nonblocking(true)?;
+        writer.set_nonblocking(true)?;
+        Ok(Self { reader, writer })
+    }
+
+    /// The read socket, to register with `WSAPoll` for read readiness.
+    pub fn read_socket(&self) -> &std::net::TcpStream {
+        &self.reader
+    }
+
+    /// Wake a blocked wait: one byte into the socket. Safe from any
+    /// thread (`TcpStream` is `Send`+`Sync`). `WouldBlock` means a wakeup
+    /// byte is already pending, so the loop will already be interrupted;
+    /// other failures are reported and ignored, as on unix.
+    pub fn trigger(&self) {
+        use std::io::Write;
+        match (&self.writer).write_all(&[1u8]) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(err) => eprintln!("Wakeup::trigger: write failed: {err}"),
+        }
+    }
+
+    /// Drain the pending wakeup byte(s) and re-arm.
+    pub fn consume(&self) {
+        use std::io::Read;
+        let mut buf = [0u8; 64];
+        loop {
+            match (&self.reader).read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) if n < buf.len() => break,
+                Ok(_) => {}
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 impl Drop for Wakeup {
     fn drop(&mut self) {
         socket::close(self.read_fd);
@@ -92,7 +156,7 @@ impl Drop for Wakeup {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::poller::{self, PollEvent};
@@ -197,6 +261,69 @@ mod tests {
             assert_eq!(waker.wait(5000), 1);
             waker.wakeup.consume();
             assert_eq!(waker.wait(0), 0);
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::io::Read;
+    use std::os::windows::io::AsRawSocket;
+    use std::sync::Arc;
+
+    /// A live wakeup pair over loopback sockets.
+    fn waker() -> Arc<Wakeup> {
+        Arc::new(Wakeup::new().expect("wakeup"))
+    }
+
+    /// Non-blocking one-byte probe of the read socket: `None` while
+    /// nothing is pending, `Some(byte)` once a trigger landed.
+    fn probe(wakeup: &Wakeup) -> Option<u8> {
+        let mut buf = [0u8; 1];
+        match wakeup.read_socket().read(&mut buf) {
+            Ok(1) => Some(buf[0]),
+            _ => None,
+        }
+    }
+
+    /// The trigger byte arrives on the read socket from another thread.
+    #[test]
+    fn trigger_makes_the_read_socket_readable() {
+        let wakeup = waker();
+        assert_eq!(probe(&wakeup), None, "untriggered pair reports nothing");
+        let writer = Arc::clone(&wakeup);
+        std::thread::spawn(move || writer.trigger()).join().unwrap();
+        assert_eq!(probe(&wakeup), Some(1), "the wakeup byte arrived");
+    }
+
+    /// `consume` drains: after it, the read socket reports nothing.
+    #[test]
+    fn consume_drains_and_rearms() {
+        let wakeup = waker();
+        wakeup.trigger();
+        assert_eq!(probe(&wakeup), Some(1));
+        wakeup.consume();
+        assert_eq!(probe(&wakeup), None, "consumed wakeup must not re-report");
+    }
+
+    /// `consume` on an un-triggered wakeup is a no-op.
+    #[test]
+    fn consume_without_trigger_is_a_noop() {
+        let wakeup = waker();
+        wakeup.consume();
+        assert_eq!(probe(&wakeup), None);
+    }
+
+    /// Repeated trigger/consume cycles keep working.
+    #[test]
+    fn repeated_trigger_consume_cycles() {
+        let wakeup = waker();
+        for _ in 0..100 {
+            wakeup.trigger();
+            assert_eq!(probe(&wakeup), Some(1));
+            wakeup.consume();
+            assert_eq!(probe(&wakeup), None);
         }
     }
 }

@@ -30,10 +30,9 @@ pub mod path;
 pub mod poller;
 
 /// The self-pipe wakeup that makes an idle event loop interruptible
-/// (BW-15-01-01). Unix only: `pipe(2)` is the same on Linux and macOS;
-/// the Windows `WSAPoll` backend needs a socketpair and lands with the
-/// Windows poller under BW-15-05.
-#[cfg(unix)]
+/// (BW-15-01-01). `pipe(2)` on Linux/macOS; on Windows the same
+/// contract rides a loopback socketpair, because `WSAPoll` cannot poll
+/// anonymous pipes.
 pub mod wakeup;
 
 /// Advisory file locking and atomic replacement (BW-15-01-04). Unix
