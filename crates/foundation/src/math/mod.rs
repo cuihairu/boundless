@@ -26,4 +26,4 @@ pub use plane::PlaneEq;
 pub use portal2d::Portal2D;
 pub use quaternion::Quaternion;
 pub use sphere::Sphere;
-pub use vector::{Vector2, Vector3, Vector4, almost_zero, clamp};
+pub use vector::{Vector2, Vector3, Vector4, almost_equal, almost_zero, clamp};

@@ -1,44 +1,61 @@
-//! BW-10-01-05 the focus-grid column (`BaseChunkSpace::Column`,
-//! `base_chunk_space.hpp:127-176` / `base_chunk_space.cpp:377-600`) and the
-//! grid of columns it lives in (`ServerChunkSpace::ColumnGrid`,
-//! `server_chunk_space.hpp:34-90`).
+//! BW-10-01-05 the space index columns, a port of `BaseChunkSpace::Column`
+//! and the server `ColumnGrid` (`base_chunk_space.cpp`, `server_chunk_space`).
 //!
-//! A column is one grid square of the space: the outside chunk owning it
-//! plus a hull tree of the inside chunks overlapping it. Point queries
-//! (`findChunk`/`findChunkExcluding`) start at the outside chunk and prefer
-//! the larger-volume hull result, exactly like the reference walk.
+//! A column is one grid cell's slice of the space: which chunks reach into
+//! it. Outside chunks sit in `outside_chunk` (one per column); inside chunks
+//! go into the column's `HullTree` keyed by their hull border. `focus` fills
+//! the columns, `find_chunk*` queries them, `open_and_see`/`shut_if_seen`
+//! drive the focus bookkeeping.
 //!
-//! Porting notes: the reference column stores raw `Chunk*`s; the port
-//! stores chunk identifiers and resolves them in the owning space's map
-//! (an id missing from the map is skipped where the reference would
-//! dereference a stale pointer — registered divergence). The outside-chunk
-//! replacement rule keeps whichever chunk has more static items.
+//! The reference stores raw `Chunk*` pointers (`HullChunk` wrappers); the
+//! port stores snapshots (`ColumnChunk`) because the chunk map lives behind
+//! the space's borrow. Not ported (registered): the obstacle tree and
+//! `jogForeignItems` (scene-adaptation surface, BW-10-02), the `stale` flag
+//! and `size`/`dumpDebug` diagnostics.
 
-use std::collections::BTreeMap;
-
-use foundation::math::{PlaneEq, Vector3};
+use foundation::math::{BoundBox, Vector3};
 
 use crate::chunk::Chunk;
-use crate::hulltree::HullTree;
+use crate::hulltree::{HullBorder, HullTree};
 
-/// `BaseChunkSpace::Column` (`base_chunk_space.cpp:377-391`): an empty
-/// column owns no tree; the reference also allocates an obstacle tree,
-/// which has no port-side face here (BW-10-03 collision) and is registered.
-#[derive(Debug, Default, Clone)]
+/// The index face of a chunk: everything a column query needs from a
+/// `Chunk*` (`identifier`, `volume`, bounding box, `sizeStaticItems`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColumnChunk {
+    pub identifier: String,
+    pub volume: f32,
+    pub bounding_box: BoundBox,
+    pub static_items: usize,
+    pub is_outside: bool,
+}
+
+impl ColumnChunk {
+    /// The snapshot of one chunk at focus time (`HullChunk`, plus the
+    /// pointer-level facts the column queries compare).
+    pub fn from_chunk(chunk: &Chunk) -> Self {
+        Self {
+            identifier: chunk.identifier.clone(),
+            volume: chunk.volume(),
+            bounding_box: chunk.bounding_box,
+            static_items: chunk.items.len(),
+            is_outside: chunk.is_outside,
+        }
+    }
+}
+
+/// One grid cell of the space (`BaseChunkSpace::Column`).
+#[derive(Debug, Clone, Default)]
 pub struct Column {
-    /// `pChunkTree_`: the inside chunks' hull tree.
-    tree: Option<HullTree>,
-    /// `pOutsideChunk_`, with the holder's static item count so the
-    /// replacement rule can run without re-resolving the identifier (the
-    /// reference reads it off the stored pointer).
-    outside: Option<(String, usize)>,
-    /// `holdings_`: the hull entries this column holds, one per
-    /// `addChunk` call (the reference's `HullContents` objects).
-    holdings: Vec<String>,
-    /// `seen_` / `shutTo_`: the open-and-see bookkeeping the focus loop
-    /// uses to avoid re-adding a chunk's hull to a column that has it.
-    seen: Vec<String>,
+    /// `pChunkTree_`: the inside chunks' hulls.
+    chunk_tree: Option<HullTree>,
+    /// `pOutsideChunk_`.
+    outside_chunk: Option<ColumnChunk>,
+    /// `holdings_`: every chunk ever added, wrapped originals included.
+    holdings: Vec<ColumnChunk>,
+    /// `shutTo_`: the chunk this column is currently shut to.
     shut_to: Option<String>,
+    /// `seen_`: the chunks this column has been opened for.
+    seen: Vec<String>,
 }
 
 impl Column {
@@ -46,149 +63,164 @@ impl Column {
         Self::default()
     }
 
-    /// `Column::addChunk` (`base_chunk_space.cpp:423-465`).
-    pub fn add_chunk(&mut self, border: &[PlaneEq], chunk: &Chunk) {
-        // see if this column has already seen this chunk
-        if self.shut_to.as_deref() == Some(chunk.identifier.as_str()) {
+    /// `Column::addChunk` (`base_chunk_space.cpp:423-464`): take a holding in
+    /// the chunk; outside chunks replace `pOutsideChunk_` (keeping whichever
+    /// has **more** static items — a tie keeps the old one), inside chunks
+    /// add their hull to the tree.
+    pub fn add_chunk(&mut self, border: &HullBorder, chunk: ColumnChunk) {
+        // See if this column has already seen this chunk.
+        if self.shut_to.as_deref() == Some(&chunk.identifier) {
             return;
         }
 
-        let stuff = chunk.identifier.clone();
+        // The holding wraps the *original* chunk: it is created before any
+        // outside-chunk reassignment, exactly like the reference's
+        // `new HullChunk(pChunk)` (`base_chunk_space.cpp:429`).
+        let holding_idx = self.holdings.len();
+        self.holdings.push(chunk.clone());
 
         if chunk.is_outside {
-            // ERROR_MSG "Column::addChunk: Replacing outside chunk ...":
-            // take whichever has the most static chunk items — the new
-            // chunk only takes the slot when it strictly beats the holder
-            let replace = match &self.outside {
-                None => true,
-                Some((_, existing_items)) => chunk.items.len() > *existing_items,
-            };
-            if replace {
-                self.outside = Some((chunk.identifier.clone(), chunk.items.len()));
+            if let Some(existing) = &self.outside_chunk {
+                // Take whichever has the most static chunk items; a tie
+                // keeps the incumbent. The reference ERRORs here first.
+                if chunk.static_items > existing.static_items {
+                    self.outside_chunk = Some(chunk);
+                }
+            } else {
+                self.outside_chunk = Some(chunk);
             }
         } else {
-            let tree = self.tree.get_or_insert_with(HullTree::new);
-            tree.add(border, stuff.clone());
-            // if this is an inside chunk being added to a column with an
-            // outside chunk already, the reference jogs that chunk's
-            // foreign items — no port-side item nesting face, registered.
+            let tree = self.chunk_tree.get_or_insert_with(HullTree::new);
+            tree.add(border, holding_idx);
+            // The reference shakes up the outside chunk's foreign items here
+            // (`jogForeignItems`); that is scene-adaptation surface (BW-10-02).
         }
-
-        // the holding records the originally added chunk either way
-        self.holdings.push(stuff);
     }
 
-    /// `Column::hasInsideChunks` (`base_chunk_space.hpp:147`).
+    /// `hasInsideChunks` (`base_chunk_space.hpp:135`).
     pub fn has_inside_chunks(&self) -> bool {
-        self.tree.is_some()
+        self.chunk_tree.is_some()
     }
 
-    /// `Column::pOutsideChunk` (`base_chunk_space.hpp:160`).
-    pub fn outside_chunk(&self) -> Option<&str> {
-        self.outside.as_ref().map(|(id, _)| id.as_str())
-    }
-
-    /// `Column::findChunk` (`base_chunk_space.cpp:570-588`): start at the
-    /// outside chunk, then walk the hull chain preferring larger volumes.
-    pub fn find_chunk(&self, point: &Vector3, chunks: &BTreeMap<String, Chunk>) -> Option<String> {
-        let mut current = self.outside.clone().map(|(id, _)| id);
-        if let Some(tree) = &self.tree {
-            for id in tree.test_point(point) {
-                let Some(result) = chunks.get(&id) else {
-                    continue;
+    /// `Column::findChunk` (`base_chunk_space.cpp:570-593`): start at the
+    /// outside chunk; the first hull candidate replaces it unconditionally
+    /// (`pChunk == pOutsideChunk_` holds while nothing was adopted, and
+    /// `NULL == NULL` when there is no outside chunk), and after that a
+    /// candidate replaces the incumbent only while the incumbent is
+    /// strictly bigger (`pChunk->volume() > result->pChunk_->volume()`) —
+    /// the walk converges on the **smallest** hull containing the point,
+    /// the innermost room of nested shells.
+    pub fn find_chunk(&self, point: &Vector3) -> Option<&ColumnChunk> {
+        let mut current = self.outside_chunk.as_ref();
+        if let Some(tree) = &self.chunk_tree {
+            for idx in tree.test_point(point) {
+                let result = &self.holdings[idx];
+                let same_outside = match (current, &self.outside_chunk) {
+                    (None, None) => true,
+                    (Some(c), Some(o)) => c.identifier == o.identifier,
+                    _ => false,
                 };
-                let take = match &current {
-                    c if c.as_deref() == self.outside_id() => true,
-                    Some(c) => match chunks.get(c) {
-                        Some(holder) => holder.volume() > result.volume(),
-                        None => false,
-                    },
-                    None => false,
-                };
-                if take {
-                    current = Some(id);
+                if same_outside || current.is_some_and(|c| c.volume > result.volume) {
+                    current = Some(result);
                 }
             }
         }
         current
     }
 
-    /// `Column::findChunkExcluding` (`base_chunk_space.cpp:539-558`): the
-    /// same walk, skipping `p_not`, and requiring the hull's bounding box
-    /// to contain the point.
-    pub fn find_chunk_excluding(
-        &self,
-        point: &Vector3,
-        p_not: &str,
-        chunks: &BTreeMap<String, Chunk>,
-    ) -> Option<String> {
-        let mut current = match self.outside_id() {
-            Some(id) if id == p_not => None,
-            other => other.map(|id| id.to_string()),
+    /// `Column::findChunkExcluding` (`base_chunk_space.cpp:539-564`): the
+    /// same walk, ignoring one chunk and requiring the candidate's bounding
+    /// box to contain the point.
+    pub fn find_chunk_excluding(&self, point: &Vector3, not: &str) -> Option<&ColumnChunk> {
+        let mut current = match self.outside_chunk.as_ref() {
+            Some(o) if o.identifier != not => Some(o),
+            _ => None,
         };
-        if let Some(tree) = &self.tree {
-            for id in tree.test_point(point) {
-                let Some(result) = chunks.get(&id) else {
-                    continue;
+        if let Some(tree) = &self.chunk_tree {
+            for idx in tree.test_point(point) {
+                let result = &self.holdings[idx];
+                let same_outside = match (current, &self.outside_chunk) {
+                    (None, None) => true,
+                    (Some(c), Some(o)) => c.identifier == o.identifier,
+                    _ => false,
                 };
-                let candidate = match &current {
-                    None => true,
-                    Some(c) if self.outside_id() == Some(c.as_str()) => true,
-                    Some(c) => match chunks.get(c) {
-                        Some(holder) => holder.volume() > result.volume(),
-                        None => false,
-                    },
-                };
-                // `boundingBox().intersects( point )` (`boundbox.ipp:303-307`,
-                // the port's half-open `contains`)
-                if candidate && result.bounding_box.contains(point) && id != p_not {
-                    current = Some(id);
+                let adopt = (current.is_none()
+                    || same_outside
+                    || current.is_some_and(|c| c.volume > result.volume))
+                    && result.bounding_box.contains(point);
+                if adopt && result.identifier != not {
+                    current = Some(result);
                 }
             }
         }
         current
     }
 
-    /// The outside chunk's identifier, if any.
-    fn outside_id(&self) -> Option<&str> {
-        self.outside.as_ref().map(|(id, _)| id.as_str())
+    /// `pOutsideChunk()` (`base_chunk_space.hpp:148`).
+    pub fn outside_chunk(&self) -> Option<&ColumnChunk> {
+        self.outside_chunk.as_ref()
     }
 
     /// `Column::openAndSee` (`base_chunk_space.cpp:626-635`).
-    pub fn open_and_see(&mut self, chunk: &str) {
-        if self.shut_to.as_deref() != Some(chunk) {
-            self.seen.push(chunk.to_string());
+    pub fn open_and_see(&mut self, identifier: &str) {
+        // Only add it if we weren't already shut to it; if we were shut to
+        // it then we must have seen it already.
+        if self.shut_to.as_deref() != Some(identifier) {
+            self.seen.push(identifier.to_string());
         }
         self.shut_to = None;
     }
 
     /// `Column::shutIfSeen` (`base_chunk_space.cpp:641-652`).
-    pub fn shut_if_seen(&mut self, chunk: &str) {
-        self.shut_to = if self.seen.iter().any(|s| s == chunk) {
-            Some(chunk.to_string())
+    pub fn shut_if_seen(&mut self, identifier: &str) {
+        self.shut_to = if self.seen.iter().any(|s| s == identifier) {
+            Some(identifier.to_string())
         } else {
             None
         };
     }
 
-    /// The chunk identifiers this column holds hulls for, in add order
-    /// (the destructor face: the reference deletes the holdings and the
-    /// obstacle-held chunks get smudged; the port reports them so the
-    /// space can blur them).
-    pub fn holdings(&self) -> &[String] {
-        &self.holdings
+    /// The identifiers of every holding, in add order (test/inspection face
+    /// for what the reference's `holdings_` list carries).
+    pub fn holdings_identifiers(&self) -> Vec<&str> {
+        self.holdings
+            .iter()
+            .map(|h| h.identifier.as_str())
+            .collect()
+    }
+
+    /// How many times `identifier` was added (the per-column focus holding
+    /// count the test face reads).
+    pub fn holdings_of(&self, identifier: &str) -> usize {
+        self.holdings
+            .iter()
+            .filter(|h| h.identifier == identifier)
+            .count()
+    }
+
+    pub fn is_shut_to(&self, identifier: &str) -> bool {
+        self.shut_to.as_deref() == Some(identifier)
+    }
+
+    pub fn has_seen(&self, identifier: &str) -> bool {
+        self.seen.iter().any(|s| s == identifier)
+    }
+
+    /// How many open records the column carries (`seen_.size()`).
+    pub fn seen_len(&self) -> usize {
+        self.seen.len()
     }
 }
 
-/// `ServerChunkSpace::ColumnGrid` (`server_chunk_space.hpp:34-90`): a
-/// rectangular window of columns addressed by grid coordinates.
-#[derive(Debug, Default, Clone)]
+/// The server's focus grid (`server_chunk_space.hpp:26-73`): a rectangle of
+/// optional columns over the mapping's world bounds.
+#[derive(Debug, Clone, Default)]
 pub struct ColumnGrid {
     grid: Vec<Option<Column>>,
     x_origin: i32,
     z_origin: i32,
-    x_size: i32,
-    z_size: i32,
+    x_size: usize,
+    z_size: usize,
 }
 
 impl ColumnGrid {
@@ -196,77 +228,87 @@ impl ColumnGrid {
         Self::default()
     }
 
-    /// `inSpan` (`server_chunk_space.hpp:60-64`).
+    /// `inSpan` (`server_chunk_space.hpp:54-58`).
     pub fn in_span(&self, x: i32, z: i32) -> bool {
         self.x_origin <= x
-            && x < self.x_origin + self.x_size
+            && x < self.x_origin + self.x_size as i32
             && self.z_origin <= z
-            && z < self.z_origin + self.z_size
+            && z < self.z_origin + self.z_size as i32
     }
 
-    /// `operator()(x, z)` const arm (`server_chunk_space.hpp:48-53`).
+    fn index(&self, x: i32, z: i32) -> usize {
+        (x - self.x_origin) as usize + self.x_size * (z - self.z_origin) as usize
+    }
+
+    /// The const `operator()` (`server_chunk_space.hpp:47-52`): NULL outside
+    /// the span, the column pointer inside.
     pub fn get(&self, x: i32, z: i32) -> Option<&Column> {
-        if !self.in_span(x, z) {
-            return None;
+        if self.in_span(x, z) {
+            self.grid[self.index(x, z)].as_ref()
+        } else {
+            None
         }
-        let index = (x - self.x_origin) + self.x_size * (z - self.z_origin);
-        self.grid[index as usize].as_ref()
     }
 
-    /// The mutable arm of `operator()(x, z)` (`server_chunk_space.hpp:41-46`).
+    /// The mutable column, if the cell is in span and created.
     pub fn get_mut(&mut self, x: i32, z: i32) -> Option<&mut Column> {
-        if !self.in_span(x, z) {
-            return None;
+        if self.in_span(x, z) {
+            let index = self.index(x, z);
+            self.grid[index].as_mut()
+        } else {
+            None
         }
-        let index = (x - self.x_origin) + self.x_size * (z - self.z_origin);
-        self.grid[index as usize].as_mut()
     }
 
-    /// Install or clear a column; returns the previous one.
-    pub fn set(&mut self, x: i32, z: i32, column: Option<Column>) -> Option<Column> {
-        let index = (x - self.x_origin) + self.x_size * (z - self.z_origin);
-        let old = self.grid[index as usize].take();
-        self.grid[index as usize] = column;
-        old
+    /// The mutable cell — `Column *&` from the reference (`server_chunk_space.hpp:39-45`).
+    pub fn slot_mut(&mut self, x: i32, z: i32) -> Option<&mut Option<Column>> {
+        if self.in_span(x, z) {
+            let index = self.index(x, z);
+            self.grid.get_mut(index)
+        } else {
+            None
+        }
     }
 
-    /// `ColumnGrid::rect` (`server_chunk_space.cpp:143-176`): resize the
-    /// window, carrying in-span columns over and dropping (deleting) the
-    /// others, which the caller reports to the chunks they held.
-    pub fn rect(
-        &mut self,
-        x_origin_new: i32,
-        z_origin_new: i32,
-        x_size_new: i32,
-        z_size_new: i32,
-        dropped: &mut Vec<Column>,
-    ) {
-        let mut grid_new: Vec<Option<Column>> =
-            vec![None; (x_size_new * z_size_new).max(0) as usize];
-        for x in self.x_origin..self.x_origin + self.x_size {
-            let x_in_span = x >= x_origin_new && x < x_origin_new + x_size_new;
-            for z in self.z_origin..self.z_origin + self.z_size {
-                let z_in_span = z >= z_origin_new && z < z_origin_new + z_size_new;
-                let index = (x - self.x_origin) + self.x_size * (z - self.z_origin);
-                let col = self.grid[index as usize].take();
+    /// `ColumnGrid::rect` (`server_chunk_space.cpp:143-176`): copy in-span
+    /// columns into the new rectangle, drop the rest.
+    pub fn rect(&mut self, x_origin: i32, z_origin: i32, x_size: usize, z_size: usize) {
+        let mut new_grid: Vec<Option<Column>> = (0..x_size * z_size).map(|_| None).collect();
+        for x in self.x_origin..self.x_origin + self.x_size as i32 {
+            let x_in_span = x >= x_origin && x < x_origin + x_size as i32;
+            for z in self.z_origin..self.z_origin + self.z_size as i32 {
+                let z_in_span = z >= z_origin && z < z_origin + z_size as i32;
+                let index = self.index(x, z);
+                let col = self.grid[index].take();
                 if x_in_span && z_in_span {
-                    let new_index = (x - x_origin_new) + x_size_new * (z - z_origin_new);
-                    grid_new[new_index as usize] = col;
-                } else if let Some(col) = col {
-                    dropped.push(col);
+                    new_grid[(x - x_origin) as usize + x_size * (z - z_origin) as usize] = col;
                 }
+                // A dropped column's destructor smudges its obstacle-holding
+                // chunks in the reference; the port has no obstacle surface
+                // (registered), so the drop is silent here too.
             }
         }
-        self.x_origin = x_origin_new;
-        self.z_origin = z_origin_new;
-        self.x_size = x_size_new;
-        self.z_size = z_size_new;
-        self.grid = grid_new;
+        self.x_origin = x_origin;
+        self.z_origin = z_origin;
+        self.x_size = x_size;
+        self.z_size = z_size;
+        self.grid = new_grid;
     }
 
-    /// The current window (`xBegin/zBegin/xEnd/zEnd`).
-    pub fn span(&self) -> (i32, i32, i32, i32) {
-        (self.x_origin, self.z_origin, self.x_size, self.z_size)
+    pub fn x_begin(&self) -> i32 {
+        self.x_origin
+    }
+
+    pub fn x_end(&self) -> i32 {
+        self.x_origin + self.x_size as i32
+    }
+
+    pub fn z_begin(&self) -> i32 {
+        self.z_origin
+    }
+
+    pub fn z_end(&self) -> i32 {
+        self.z_origin + self.z_size as i32
     }
 }
 
@@ -274,9 +316,29 @@ impl ColumnGrid {
 mod tests {
     use super::*;
     use crate::mapping::{GeometryMapping, GridBounds};
+    use foundation::math::{Matrix, PlaneEq};
 
-    fn box_border(min: Vector3, max: Vector3) -> Vec<PlaneEq> {
-        // inward normals, the chunk border convention (`chunk.cpp:675-807`)
+    fn identity_mapping() -> GeometryMapping {
+        GeometryMapping::new(
+            "space/",
+            100.0,
+            GridBounds {
+                min_l_grid_x: 0,
+                min_l_grid_y: 0,
+                max_l_grid_x: 1,
+                max_l_grid_y: 1,
+                min_grid_x: 0,
+                min_grid_y: 0,
+                max_grid_x: 1,
+                max_grid_y: 1,
+            },
+            false,
+        )
+    }
+
+    /// The reference border shape: `bounds_` planes face inward, front side
+    /// = chunk interior (`chunk.cpp:695-806`).
+    fn box_border(min: Vector3, max: Vector3) -> HullBorder {
         vec![
             PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), min.x),
             PlaneEq::new(Vector3::new(-1.0, 0.0, 0.0), -max.x),
@@ -287,275 +349,360 @@ mod tests {
         ]
     }
 
-    fn identity_mapping() -> GeometryMapping {
-        let bounds = GridBounds {
-            min_l_grid_x: 0,
-            min_l_grid_y: 0,
-            max_l_grid_x: 1,
-            max_l_grid_y: 1,
-            min_grid_x: 0,
-            min_grid_y: 0,
-            max_grid_x: 1,
-            max_grid_y: 1,
+    fn inside_chunk(identifier: &str, min: Vector3, max: Vector3, items: usize) -> ColumnChunk {
+        ColumnChunk {
+            identifier: identifier.to_string(),
+            volume: (max.x - min.x) * (max.y - min.y) * (max.z - min.z),
+            bounding_box: BoundBox::new(min, max),
+            static_items: items,
+            is_outside: false,
+        }
+    }
+
+    /// The outside chunk answers a column query on its own; an inside chunk
+    /// whose hull covers the point beats it regardless of volume (the first
+    /// hull candidate is adopted over `pOutsideChunk_` unconditionally,
+    /// `base_chunk_space.cpp:582-583`).
+    #[test]
+    fn an_inside_hull_beats_the_outside_chunk_at_its_point() {
+        let mut column = Column::new();
+        let outside = ColumnChunk {
+            identifier: "00000000o".into(),
+            volume: 100.0 * 20000.0 * 100.0,
+            bounding_box: BoundBox::new(
+                Vector3::new(0.0, -10000.0, 0.0),
+                Vector3::new(100.0, 10000.0, 100.0),
+            ),
+            static_items: 2,
+            is_outside: true,
         };
-        GeometryMapping::new("space/", 100.0, bounds, false)
-    }
-
-    fn outside_chunk(identifier: &str, x: f32, items: usize) -> Chunk {
-        let mapping = identity_mapping();
-        let mut chunk = Chunk::new(identifier, &mapping, &foundation::math::Matrix::identity());
-        chunk.is_loaded = true;
-        chunk.items = (0..items)
-            .map(|i| crate::chunk::ChunkItem {
-                tag: "model".to_string(),
-                label: i.to_string(),
-                resource: None,
-                position: None,
-                transform: foundation::math::Matrix::identity(),
-            })
-            .collect();
-        chunk.bounding_box = foundation::math::BoundBox::new(
-            Vector3::new(x, -1.0, 0.0),
-            Vector3::new(x + 100.0, 1.0, 100.0),
+        let border = box_border(Vector3::new(10.0, 0.0, 10.0), Vector3::new(20.0, 5.0, 20.0));
+        column.add_chunk(&border, outside.clone());
+        column.add_chunk(
+            &border,
+            inside_chunk(
+                "00000000i",
+                Vector3::new(10.0, 0.0, 10.0),
+                Vector3::new(20.0, 5.0, 20.0),
+                3,
+            ),
         );
-        chunk
-    }
 
-    fn chunk_map(chunks: Vec<Chunk>) -> BTreeMap<String, Chunk> {
-        chunks
-            .into_iter()
-            .map(|c| (c.identifier.clone(), c))
-            .collect()
-    }
-
-    #[test]
-    fn an_outside_chunk_takes_the_empty_column() {
-        let mut column = Column::new();
-        let chunk = outside_chunk("00000000o", 0.0, 1);
-        let border = box_border(chunk.bounding_box.min, chunk.bounding_box.max);
-        column.add_chunk(&border, &chunk);
-        assert_eq!(column.outside_chunk(), Some("00000000o"));
-        assert!(!column.has_inside_chunks());
-        // the point query answers the outside chunk anywhere in it
-        let chunks = chunk_map(vec![chunk]);
+        // Inside the hull: the shell wins over the towering outside chunk.
         assert_eq!(
-            column.find_chunk(&Vector3::new(50.0, 0.0, 50.0), &chunks),
-            Some("00000000o".to_string())
+            column
+                .find_chunk(&Vector3::new(15.0, 2.0, 15.0))
+                .unwrap()
+                .identifier,
+            "00000000i"
         );
-    }
-
-    #[test]
-    fn a_larger_outside_chunk_replaces_the_holder() {
-        let mut column = Column::new();
-        let small = outside_chunk("00000000o", 0.0, 1);
-        column.add_chunk(
-            &box_border(small.bounding_box.min, small.bounding_box.max),
-            &small,
-        );
-        let big = outside_chunk("00010000o", 0.0, 5);
-        column.add_chunk(
-            &box_border(big.bounding_box.min, big.bounding_box.max),
-            &big,
-        );
-        assert_eq!(column.outside_chunk(), Some("00010000o"));
-        // a challenger with fewer static items loses its bid: the holder
-        // keeps the slot
-        let tiny = outside_chunk("00020000o", 0.0, 0);
-        column.add_chunk(
-            &box_border(tiny.bounding_box.min, tiny.bounding_box.max),
-            &tiny,
-        );
-        assert_eq!(column.outside_chunk(), Some("00010000o"));
-        // all three holdings are still recorded, like the reference's
-        // holdings_
-        assert_eq!(column.holdings().len(), 3);
-    }
-
-    #[test]
-    fn an_inside_chunk_shares_the_column_with_the_outside_chunk() {
-        let mapping = identity_mapping();
-        let mut inside = Chunk::new("00000000i", &mapping, &foundation::math::Matrix::identity());
-        inside.bounding_box = foundation::math::BoundBox::new(
-            Vector3::new(10.0, 0.0, 10.0),
-            Vector3::new(20.0, 10.0, 20.0),
-        );
-        inside.is_loaded = true;
-
-        let mut column = Column::new();
-        let outside = outside_chunk("00000000o", 0.0, 1);
-        column.add_chunk(
-            &box_border(outside.bounding_box.min, outside.bounding_box.max),
-            &outside,
-        );
-        column.add_chunk(
-            &box_border(inside.bounding_box.min, inside.bounding_box.max),
-            &inside,
+        // Outside the hull but in the grid cell: the outside chunk answers.
+        assert_eq!(
+            column
+                .find_chunk(&Vector3::new(80.0, 0.0, 50.0))
+                .unwrap()
+                .identifier,
+            "00000000o"
         );
         assert!(column.has_inside_chunks());
-
-        let chunks = chunk_map(vec![outside, inside]);
-        // inside the shell the hull result wins (it has a real volume, the
-        // outside chunk's MIN/MAX height box is bigger)
         assert_eq!(
-            column.find_chunk(&Vector3::new(15.0, 5.0, 15.0), &chunks),
-            Some("00000000i".to_string())
-        );
-        // outside the shell but inside the grid cell: the outside chunk
-        assert_eq!(
-            column.find_chunk(&Vector3::new(90.0, 0.0, 90.0), &chunks),
-            Some("00000000o".to_string())
+            column.holdings_identifiers(),
+            vec!["00000000o", "00000000i"]
         );
     }
 
+    /// Among overlapping inside hulls the smallest containing hull wins: the
+    /// reference adopts a candidate whenever the incumbent is strictly
+    /// bigger (`base_chunk_space.cpp:582-583`), so the walk converges on the
+    /// tightest interior.
     #[test]
-    fn find_chunk_excluding_skips_the_named_chunk_and_checks_the_box() {
-        let mapping = identity_mapping();
-        let mut inside = Chunk::new("00000000i", &mapping, &foundation::math::Matrix::identity());
-        inside.bounding_box = foundation::math::BoundBox::new(
-            Vector3::new(10.0, 0.0, 10.0),
-            Vector3::new(20.0, 10.0, 20.0),
-        );
-        inside.is_loaded = true;
-        let outside = outside_chunk("00000000o", 0.0, 1);
-
-        let chunks = chunk_map(vec![outside, inside]);
+    fn the_smallest_containing_hull_wins() {
         let mut column = Column::new();
-        let border = box_border(
-            Vector3::new(10.0, 0.0, 10.0),
-            Vector3::new(20.0, 10.0, 20.0),
-        );
-        column.add_chunk(&border, chunks.get("00000000i").unwrap());
+        let small = box_border(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 10.0, 10.0));
+        let big = box_border(Vector3::new(0.0, 0.0, 0.0), Vector3::new(30.0, 30.0, 30.0));
         column.add_chunk(
-            &box_border(
-                chunks.get("00000000o").unwrap().bounding_box.min,
-                chunks.get("00000000o").unwrap().bounding_box.max,
-            ),
-            chunks.get("00000000o").unwrap(),
-        );
-
-        // excluding the inside chunk falls back to the outside chunk
-        assert_eq!(
-            column.find_chunk_excluding(&Vector3::new(15.0, 5.0, 15.0), "00000000i", &chunks),
-            Some("00000000o".to_string())
-        );
-        // excluding nothing finds the inside chunk (its box contains the
-        // point)
-        assert_eq!(
-            column.find_chunk_excluding(&Vector3::new(15.0, 5.0, 15.0), "", &chunks),
-            Some("00000000i".to_string())
-        );
-        // a point in the outside chunk's box but not the shell: excluding
-        // the outside chunk leaves nothing that contains it
-        assert_eq!(
-            column.find_chunk_excluding(&Vector3::new(90.0, 0.0, 90.0), "00000000o", &chunks),
-            None
-        );
-    }
-
-    /// The hull walk prefers the larger volume and skips identifiers no
-    /// longer in the space's map; with no outside chunk in the column the
-    /// first valid hull wins, and `find_chunk_excluding` holds it against a
-    /// smaller challenger it is not excluding.
-    #[test]
-    fn hull_walks_prefer_larger_volumes_and_skip_stale_ids() {
-        let mapping = identity_mapping();
-        let mut big = Chunk::new("00000001i", &mapping, &foundation::math::Matrix::identity());
-        big.bounding_box = foundation::math::BoundBox::new(
-            Vector3::new(10.0, 0.0, 10.0),
-            Vector3::new(20.0, 10.0, 20.0),
-        );
-        big.is_loaded = true;
-        let mut small = Chunk::new("00000000i", &mapping, &foundation::math::Matrix::identity());
-        small.bounding_box = foundation::math::BoundBox::new(
-            Vector3::new(12.0, 0.0, 12.0),
-            Vector3::new(16.0, 4.0, 16.0),
-        );
-        small.is_loaded = true;
-
-        let mut column = Column::new();
-        assert_eq!(column.outside_chunk(), None);
-
-        // a hull whose chunk is gone from the map: its tag is skipped
-        let mut ghost = small.clone();
-        ghost.identifier = "zzzzzzzzi".to_string();
-        column.add_chunk(
-            &box_border(Vector3::new(5.0, 0.0, 5.0), Vector3::new(25.0, 20.0, 25.0)),
-            &ghost,
-        );
-        column.add_chunk(
-            &box_border(big.bounding_box.min, big.bounding_box.max),
-            &big,
-        );
-        column.add_chunk(
-            &box_border(small.bounding_box.min, small.bounding_box.max),
             &small,
+            inside_chunk("small_i", Vector3::ZERO, Vector3::new(10.0, 10.0, 10.0), 0),
+        );
+        column.add_chunk(
+            &big,
+            inside_chunk("big_i", Vector3::ZERO, Vector3::new(30.0, 30.0, 30.0), 0),
         );
 
-        let chunks = chunk_map(vec![big, small]);
-        let pt = Vector3::new(13.0, 2.0, 13.0);
-        // the walk takes the big hull first, then the small hull beats it
-        // on the strictly-greater volume rule
+        // Both hulls contain the point; the tighter one answers.
         assert_eq!(
-            column.find_chunk(&pt, &chunks),
-            Some("00000000i".to_string())
+            column
+                .find_chunk(&Vector3::new(5.0, 5.0, 5.0))
+                .unwrap()
+                .identifier,
+            "small_i",
+            "the walk converges on the smallest containing hull"
         );
-        // excluding the winner leaves the big hull standing
+        // A point only the big hull reaches: it answers.
         assert_eq!(
-            column.find_chunk_excluding(&pt, "00000000i", &chunks),
-            Some("00000001i".to_string())
+            column
+                .find_chunk(&Vector3::new(20.0, 20.0, 20.0))
+                .unwrap()
+                .identifier,
+            "big_i"
         );
-        // excluding nothing: the walk re-runs and re-takes the small hull;
-        // the big hull's larger volume does not displace the holder
+
+        // A third, tighter hull takes the shared point over.
+        let tiny = box_border(Vector3::new(0.0, 0.0, 0.0), Vector3::new(4.0, 4.0, 4.0));
+        column.add_chunk(
+            &tiny,
+            inside_chunk("tiny_i", Vector3::ZERO, Vector3::new(4.0, 4.0, 4.0), 0),
+        );
         assert_eq!(
-            column.find_chunk_excluding(&pt, "", &chunks),
-            Some("00000000i".to_string())
+            column
+                .find_chunk(&Vector3::new(2.0, 2.0, 2.0))
+                .unwrap()
+                .identifier,
+            "tiny_i"
         );
     }
 
+    /// `Column::addChunk`'s outside replacement (`base_chunk_space.cpp:433-443`):
+    /// the newcomer wins only with strictly more static items; a tie keeps
+    /// the incumbent; and the holdings still wrap both originals.
     #[test]
-    fn the_seen_bookkeeping_guards_re_adds() {
+    fn outside_replacement_keeps_whichever_has_more_static_items() {
         let mut column = Column::new();
-        column.open_and_see("a");
-        assert!(column.shut_to.is_none());
-        column.shut_if_seen("a");
-        assert_eq!(column.shut_to.as_deref(), Some("a"));
-        // a chunk never seen does not shut the column
-        column.shut_if_seen("b");
-        assert!(column.shut_to.is_none());
-        // open-and-see while shut to the same chunk does not record a
-        // second entry; a second open-and-see when not shut does — the
-        // reference checks only `shutTo_` (`base_chunk_space.cpp:626-632`)
-        column.shut_if_seen("a");
-        column.open_and_see("a");
-        assert!(column.shut_to.is_none());
-        column.open_and_see("a");
-        assert_eq!(column.seen, vec!["a".to_string(), "a".to_string()]);
+        let mk = |name: &str, items: usize| ColumnChunk {
+            identifier: name.to_string(),
+            volume: 100.0 * 20000.0 * 100.0,
+            bounding_box: BoundBox::new(
+                Vector3::new(0.0, -10000.0, 0.0),
+                Vector3::new(100.0, 10000.0, 100.0),
+            ),
+            static_items: items,
+            is_outside: true,
+        };
+        let border: HullBorder = Vec::new();
+
+        column.add_chunk(&border, mk("00000000o", 2));
+        // One fewer item: the incumbent stays.
+        column.add_chunk(&border, mk("00000001o", 1));
+        assert_eq!(column.outside_chunk().unwrap().identifier, "00000000o");
+        // A tie also keeps the incumbent.
+        column.add_chunk(&border, mk("00000002o", 2));
+        assert_eq!(column.outside_chunk().unwrap().identifier, "00000000o");
+        // Strictly more: the newcomer takes the slot.
+        column.add_chunk(&border, mk("00000003o", 3));
+        assert_eq!(column.outside_chunk().unwrap().identifier, "00000003o");
+        // Every addition still took a holding in the original chunk object.
+        assert_eq!(
+            column.holdings_identifiers(),
+            vec!["00000000o", "00000001o", "00000002o", "00000003o"]
+        );
     }
 
+    /// `findChunkExcluding` skips the named chunk everywhere and applies the
+    /// bounding-box gate to hull candidates (`base_chunk_space.cpp:552-557`).
     #[test]
-    fn the_grid_window_moves_and_drops_columns() {
-        let mut grid = ColumnGrid::new();
-        grid.rect(0, 0, 2, 2, &mut Vec::new());
-        grid.set(1, 1, Some(Column::new()));
-        assert!(grid.in_span(1, 1));
-        assert!(!grid.in_span(2, 1));
-        assert!(grid.get(1, 1).is_some());
-        assert!(grid.get(0, 0).is_none());
+    fn find_chunk_excluding_skips_the_named_chunk() {
+        let mut column = Column::new();
+        let outside = ColumnChunk {
+            identifier: "00000000o".into(),
+            volume: 100.0 * 20000.0 * 100.0,
+            bounding_box: BoundBox::new(
+                Vector3::new(0.0, -10000.0, 0.0),
+                Vector3::new(100.0, 10000.0, 100.0),
+            ),
+            static_items: 0,
+            is_outside: true,
+        };
+        column.add_chunk(&Vec::new(), outside.clone());
+        let border = box_border(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 10.0, 10.0));
+        column.add_chunk(
+            &border,
+            inside_chunk(
+                "00000000i",
+                Vector3::ZERO,
+                Vector3::new(10.0, 10.0, 10.0),
+                0,
+            ),
+        );
 
-        // shrink past the held column: it drops out and is reported
-        let mut dropped = Vec::new();
-        grid.rect(0, 0, 1, 1, &mut dropped);
-        assert_eq!(dropped.len(), 1);
-        assert!(grid.get(1, 1).is_none());
+        let point = Vector3::new(5.0, 5.0, 5.0);
+        assert_eq!(
+            column
+                .find_chunk_excluding(&point, "nothing")
+                .unwrap()
+                .identifier,
+            "00000000i"
+        );
+        // Excluded: the outside chunk takes over again.
+        assert_eq!(
+            column
+                .find_chunk_excluding(&point, "00000000i")
+                .unwrap()
+                .identifier,
+            "00000000o"
+        );
+        // Excluded with no other candidate: None.
+        let only = Column::new();
+        assert!(only.find_chunk_excluding(&point, "00000000o").is_none());
+        // A point outside the hull's bounding box never adopts it.
+        assert_eq!(
+            column
+                .find_chunk(&Vector3::new(50.0, 0.0, 50.0))
+                .unwrap()
+                .identifier,
+            "00000000o"
+        );
 
-        // shift the window: the surviving column moves with its cell
+        // Excluding the outside chunk leaves the inside chunk answering
+        // (`pOutsideChunk_ != pNot`, `base_chunk_space.cpp:545-547`).
+        assert_eq!(
+            column
+                .find_chunk_excluding(&point, "00000000o")
+                .unwrap()
+                .identifier,
+            "00000000i"
+        );
+
+        // A candidate whose hull covers the point but whose bounding box
+        // does not is never adopted (the box gate,
+        // `base_chunk_space.cpp:554-557`).
+        let mut boxless = Column::new();
+        let mut shell = inside_chunk("boxless_i", Vector3::ZERO, Vector3::new(1.0, 1.0, 1.0), 0);
+        shell.bounding_box = BoundBox::new(
+            Vector3::new(-1000.0, -1000.0, -1000.0),
+            Vector3::new(-900.0, 900.0, 900.0),
+        );
+        boxless.add_chunk(
+            &box_border(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 10.0, 10.0)),
+            shell,
+        );
+        assert!(boxless.find_chunk_excluding(&point, "nobody").is_none());
+
+        // Every focus holding of a chunk is its own entry in `holdings_`.
+        let mut counted = Column::new();
+        counted.add_chunk(&Vec::new(), outside.clone());
+        counted.add_chunk(&Vec::new(), outside.clone());
+        counted.add_chunk(&Vec::new(), outside);
+        assert_eq!(counted.holdings_of("00000000o"), 3);
+        assert_eq!(counted.holdings_of("never_o"), 0);
+    }
+
+    /// `findChunkExcluding` compares an adopted hull candidate against the
+    /// outside chunk by identity, not volume
+    /// (`base_chunk_space.cpp:545-557`): the outside chunk stays the start
+    /// whenever it is not the excluded one, and after that only the
+    /// strictly bigger incumbent adopts.
+    #[test]
+    fn find_chunk_excluding_walks_the_volume_rule_and_keeps_the_outside() {
+        let mut column = Column::new();
+        let outside = ColumnChunk {
+            identifier: "00000000o".into(),
+            volume: 100.0 * 20000.0 * 100.0,
+            bounding_box: BoundBox::new(
+                Vector3::new(0.0, -10000.0, 0.0),
+                Vector3::new(100.0, 10000.0, 100.0),
+            ),
+            static_items: 0,
+            is_outside: true,
+        };
+        column.add_chunk(&Vec::new(), outside);
+        let point = Vector3::new(5.0, 5.0, 5.0);
+        let big = box_border(Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 20.0, 20.0));
+        let small = box_border(Vector3::new(0.0, 0.0, 0.0), Vector3::new(6.0, 6.0, 6.0));
+        column.add_chunk(
+            &big,
+            inside_chunk("big_i", Vector3::ZERO, Vector3::new(20.0, 20.0, 20.0), 0),
+        );
+        column.add_chunk(
+            &small,
+            inside_chunk("small_i", Vector3::ZERO, Vector3::new(6.0, 6.0, 6.0), 0),
+        );
+
+        // Nothing excluded: the tightest hull answers, the outside chunk is
+        // adopted over by the first candidate.
+        assert_eq!(
+            column
+                .find_chunk_excluding(&point, "nobody")
+                .unwrap()
+                .identifier,
+            "small_i"
+        );
+        // The tightest one out of the way: the bigger hull answers, which is
+        // the incumbent-vs-candidate comparison with an adopted incumbent.
+        assert_eq!(
+            column
+                .find_chunk_excluding(&point, "small_i")
+                .unwrap()
+                .identifier,
+            "big_i"
+        );
+    }
+
+    /// `openAndSee`/`shutIfSeen` (`base_chunk_space.cpp:626-652`): an open
+    /// records the chunk and clears the shut state; a shut takes hold only
+    /// for a chunk that was seen; and a shut column refuses the chunk's
+    /// holding in `add_chunk`.
+    #[test]
+    fn open_and_shut_drive_the_holdings_gate() {
+        let mut column = Column::new();
+        // Not seen: the shut is a clear, not a hold.
+        column.shut_if_seen("00000000o");
+        assert!(!column.is_shut_to("00000000o"));
+
+        column.open_and_see("00000000o");
+        assert!(column.has_seen("00000000o"));
+        assert!(!column.is_shut_to("00000000o"));
+        column.shut_if_seen("00000000o");
+        assert!(column.is_shut_to("00000000o"));
+
+        // While shut to the chunk, add_chunk returns without a holding.
+        let outside = ColumnChunk {
+            identifier: "00000000o".into(),
+            volume: 1.0,
+            bounding_box: BoundBox::new(Vector3::ZERO, Vector3::new(1.0, 1.0, 1.0)),
+            static_items: 0,
+            is_outside: true,
+        };
+        column.add_chunk(&Vec::new(), outside);
+        assert!(column.holdings_identifiers().is_empty());
+
+        // Re-opening clears the shut state (no duplicate seen entry).
+        column.open_and_see("00000000o");
+        assert!(!column.is_shut_to("00000000o"));
+        column.open_and_see("00000001o");
+        assert_eq!(column.seen_len(), 2);
+    }
+
+    /// `ColumnGrid::rect` (`server_chunk_space.cpp:143-176`): in-span columns
+    /// move to their new indices, out-of-span columns are dropped.
+    #[test]
+    fn grid_rect_moves_and_drops_columns() {
         let mut grid = ColumnGrid::new();
-        grid.rect(0, 0, 2, 1, &mut Vec::new());
-        grid.set(1, 0, Some(Column::new()));
-        let mut dropped = Vec::new();
-        grid.rect(1, 0, 2, 1, &mut dropped);
-        assert!(dropped.is_empty());
+        grid.rect(0, 0, 2, 1);
+        grid.slot_mut(0, 0).unwrap().replace(Column::new());
+        grid.slot_mut(1, 0).unwrap().replace(Column::new());
+        assert!(grid.get(0, 0).is_some());
         assert!(grid.get(1, 0).is_some());
-        assert_eq!(grid.span(), (1, 0, 2, 1));
+        assert!(grid.get(2, 0).is_none(), "outside the span is None");
+
+        // Shift to x 1..3: column (1,0) moves, column (0,0) drops.
+        grid.rect(1, 0, 2, 1);
+        assert!(grid.get(0, 0).is_none());
+        assert!(grid.get(1, 0).is_some());
+        assert!(grid.get(2, 0).is_none());
+        assert_eq!((grid.x_begin(), grid.x_end()), (1, 3));
+    }
+
+    /// A `Chunk` snapshot carries the volume and static-item face the
+    /// column queries compare (`Chunk::volume`, `chunk.cpp:3506-3514`).
+    #[test]
+    fn column_chunk_snapshot_copies_the_query_face() {
+        let mapping = identity_mapping();
+        let chunk = Chunk::new("00010000o", &mapping, &Matrix::identity());
+        let snap = ColumnChunk::from_chunk(&chunk);
+        assert_eq!(snap.identifier, "00010000o");
+        assert!(snap.is_outside);
+        // 100 x 20000 x 100 for an outside chunk of grid size 100.
+        assert_eq!(snap.volume, 100.0 * 20000.0 * 100.0);
+        assert_eq!(snap.static_items, 0);
     }
 }
