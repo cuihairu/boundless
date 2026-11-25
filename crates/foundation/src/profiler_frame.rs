@@ -44,17 +44,23 @@
 //! * `watcherGetSortMode` returns "" for everything but the four mapped
 //!   modes; `watcherSetSortMode` ignores unknown strings.
 //!
-//! The JSON dump (BW-12-03-03), the CSV history task (BW-12-03-02's
-//! `_bw_profile` face — modelled here only as the `csv_output_running` gate
-//! that forces `SORT_BY_NAME`), the per-core profiler, hitch detection, the
-//! GPU thread and the client display mesh are out of this item's compat
-//! scope. Clock and stamp rate are injectable so a fixed scripted load
+//! The CSV history task is modelled only as the `csv_output_running` gate
+//! that forces `SORT_BY_NAME`; the per-core profiler, hitch detection, the
+//! GPU thread and the client display mesh are out of scope.
+//!
+//! BW-12-03-02's `_bw_profile` face takes the JSON dump *interface* from
+//! here: the `JsonDumpState` wire values, `watcherSetDumpProfile` (which
+//! restarts the dump index), the dump count, the dump directory (defaulting
+//! to the executable directory at `init`), the output file path, and
+//! `enable`'s reset of the state to `JSON_DUMPING_INACTIVE` on both edges
+//! (`profiler.cpp:2550`/`:2559`). The dump *output* itself — creating the
+//! file, serialising it, and driving the state to `ACTIVE`/`COMPLETED`/
+//! `FAILED` — is BW-12-03-03. Clock and stamp rate are injectable so a fixed scripted load
 //! asserts the same key fields the reference would produce (the acceptance:
 //! 同负载下关键字段与原版吻合).
 
-use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::time::stamp_now;
 
@@ -94,6 +100,44 @@ pub enum ProfileMode {
     /// `MAX_MODES` — never a valid mode; carried for the reference's
     /// `MF_ASSERT( mode < MAX_MODES )` bound.
     MaxModes,
+}
+
+/// The reference's `Profiler::JsonDumpState`
+/// (`profiler.hpp:171-177`). The values are the integers the `_bw_profile`
+/// module hands to Python, so their order is part of the interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonDumpState {
+    /// `JSON_DUMPING_INACTIVE` = 0.
+    Inactive,
+    /// `JSON_DUMPING_ACTIVE` = 1.
+    Active,
+    /// `JSON_DUMPING_COMPLETED` = 2.
+    Completed,
+    /// `JSON_DUMPING_FAILED` = 3.
+    Failed,
+}
+
+impl JsonDumpState {
+    /// The wire value the module returns.
+    pub fn as_int(self) -> i32 {
+        match self {
+            JsonDumpState::Inactive => 0,
+            JsonDumpState::Active => 1,
+            JsonDumpState::Completed => 2,
+            JsonDumpState::Failed => 3,
+        }
+    }
+
+    /// The state a wire value names, if any.
+    pub fn from_int(value: i32) -> Option<JsonDumpState> {
+        match value {
+            0 => Some(JsonDumpState::Inactive),
+            1 => Some(JsonDumpState::Active),
+            2 => Some(JsonDumpState::Completed),
+            3 => Some(JsonDumpState::Failed),
+            _ => None,
+        }
+    }
 }
 
 /// The reference's `Profiler::EventType`.
@@ -352,8 +396,24 @@ pub struct ProfilerFrame {
     pub warnings: Vec<String>,
     /// `csvOutputTask_->isRunning()` — the BW-12-03-02 gate.
     pub csv_output_running: bool,
-    /// The stamp clock.
-    clock: Rc<RefCell<Box<dyn Fn() -> u64>>>,
+    /// `doJsonDump_`.
+    do_json_dump: bool,
+    /// `jsonDumpIndex_` — reset by `watcherSetDumpProfile`.
+    json_dump_index: i32,
+    /// `jsonDumpCount_`.
+    json_dump_count: i32,
+    /// `jsonDumpDir_` (the reference's `BWUtil::executableDirectory()`
+    /// default at construction).
+    json_dump_dir: String,
+    /// `jsonDumpState_` (`JSON_DUMPING_INACTIVE` at construction).
+    json_dump_state: JsonDumpState,
+    /// `jsonOutputFilePath_`.
+    json_output_file_path: String,
+    /// The stamp clock. `Arc<dyn Fn>`, not `Rc<RefCell<..>>`: `g_profiler` is
+    /// the reference's process-wide singleton (its methods take `BW_GUARD`,
+    /// a process mutex) and the trace callback can fire on any thread, so
+    /// the frame has to be shareable across them.
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     /// `stampsToSeconds`' divisor.
     stamps_per_second: f64,
 
@@ -388,7 +448,7 @@ impl ProfilerFrame {
     pub fn with_clock(
         memory_size: usize,
         max_num_threads: usize,
-        clock: impl Fn() -> u64 + 'static,
+        clock: impl Fn() -> u64 + Send + Sync + 'static,
         stamps_per_second: f64,
     ) -> Self {
         let num = (memory_size
@@ -449,7 +509,13 @@ impl ProfilerFrame {
             dynamic_strings: Vec::new(),
             warnings: Vec::new(),
             csv_output_running: false,
-            clock: Rc::new(RefCell::new(Box::new(clock))),
+            do_json_dump: false,
+            json_dump_index: 0,
+            json_dump_count: 1,
+            json_dump_dir: String::new(),
+            json_dump_state: JsonDumpState::Inactive,
+            json_output_file_path: String::new(),
+            clock: Arc::new(clock),
             stamps_per_second,
             hier_nodes: Vec::new(),
             parent_hier_entry: 0,
@@ -482,7 +548,7 @@ impl ProfilerFrame {
 
     /// The current stamp.
     fn now(&self) -> u64 {
-        (self.clock.borrow_mut())()
+        (self.clock)()
     }
 
     /// Milliseconds from a stamp span.
@@ -554,11 +620,17 @@ impl ProfilerFrame {
             self.is_active = false;
             self.entry_counts[self.current_buffer] = 0;
         }
+        // Both arms reset the dump state (profiler.cpp:2550/:2559).
+        self.json_dump_state = JsonDumpState::Inactive;
     }
 
-    /// `Profiler::freeze( freeze, dump )` without the dump flag (BW-12-03-03
-    /// owns the dump face).
-    pub fn freeze(&mut self, freeze: bool) {
+    /// `Profiler::freeze( freeze, dump )`
+    /// (`profiler.hpp:306-313`): the dump flag is only picked up when this
+    /// call is the one turning the freeze on.
+    pub fn freeze(&mut self, freeze: bool, dump: bool) {
+        if freeze && !self.freeze_profiling {
+            self.do_json_dump = dump;
+        }
         self.freeze_profiling = freeze;
     }
 
@@ -1332,6 +1404,78 @@ impl ProfilerFrame {
         }
     }
 
+    /// `Profiler::watcherSetDumpProfile` (`profiler.hpp:375-379`), the flag
+    /// `startJsonDump` raises: the dump index restarts with the request.
+    pub fn watcher_set_dump_profile(&mut self, new_value: bool) {
+        self.json_dump_index = 0;
+        self.do_json_dump = new_value;
+    }
+
+    /// `Profiler::watcherGetDumpProfile`.
+    pub fn watcher_get_dump_profile(&self) -> bool {
+        self.do_json_dump
+    }
+
+    /// `Profiler::dumpThisFrame` (`profiler.hpp:362-365`).
+    pub fn dump_this_frame(&mut self) {
+        self.do_json_dump = true;
+    }
+
+    /// `Profiler::setJsonDumpCount` (`profiler.hpp:367-370`).
+    pub fn set_json_dump_count(&mut self, count: i32) {
+        self.json_dump_count = count;
+    }
+
+    /// `jsonDumpCount_` (1 at construction).
+    pub fn json_dump_count(&self) -> i32 {
+        self.json_dump_count
+    }
+
+    /// `jsonDumpIndex_` (reset by `watcher_set_dump_profile`).
+    pub fn json_dump_index(&self) -> i32 {
+        self.json_dump_index
+    }
+
+    /// `Profiler::setJsonDumpDir` (`profiler.cpp:1282-1287`).
+    pub fn set_json_dump_dir(&mut self, json_dump_dir: &str) {
+        self.json_dump_dir = json_dump_dir.to_string();
+    }
+
+    /// `jsonDumpDir_` (the executable directory until told otherwise).
+    pub fn json_dump_dir(&self) -> &str {
+        &self.json_dump_dir
+    }
+
+    /// `Profiler::init`'s "By default, dumping to the executable directory"
+    /// (`profiler.cpp:1069-1070`).
+    pub fn use_default_json_dump_dir(&mut self) {
+        self.json_dump_dir = executable_directory();
+    }
+
+    /// `Profiler::getJsonDumpState` (`profiler.cpp:1273-1276`).
+    pub fn get_json_dump_state(&self) -> JsonDumpState {
+        self.json_dump_state
+    }
+
+    /// `Profiler::setJsonDumpState` (`profiler.cpp:1264-1267`). Private in
+    /// the reference; exposed so the dump faces (BW-12-03-03) drive the
+    /// transitions.
+    pub fn set_json_dump_state(&mut self, json_dump_state: JsonDumpState) {
+        self.json_dump_state = json_dump_state;
+    }
+
+    /// `Profiler::getJsonOutputFilePath` (`profiler.hpp:418`) — "" until the
+    /// dump that fills `jsonOutputFilePath_` runs (BW-12-03-03).
+    pub fn get_json_output_file_path(&self) -> String {
+        self.json_output_file_path.clone()
+    }
+
+    /// `jsonOutputFilePath_` (written by the dump file creation,
+    /// `profiler.cpp:1323`).
+    pub fn set_json_output_file_path(&mut self, path: &str) {
+        self.json_output_file_path = path.to_string();
+    }
+
     /// `Profiler::prevCategory` — wraps past the beginning.
     pub fn prev_category(&mut self) {
         if self.current_category == 0 {
@@ -1502,19 +1646,21 @@ impl ProfilerFrame {
 
         output
     }
-
-    /// `Profiler::getJsonOutputFilePath` face — the port keeps no JSON file;
-    /// the getter shape exists for the compat layer (BW-12-03-03 owns the
-    /// dump).
-    pub fn get_json_output_file_path(&self) -> String {
-        String::new()
-    }
 }
 
 /// Truncates a name to `ENTRY_NAME_SIZE - 1` characters (the reference's
 /// `strncpy` + explicit terminator).
 fn truncate_name(text: &str) -> String {
     text.chars().take(ENTRY_NAME_SIZE - 1).collect()
+}
+
+/// `BWUtil::executableDirectory()` (`lib/cstdmf/bw_util.cpp:104-119`): the
+/// directory part of the executable's path, "" when the path cannot be read.
+pub fn executable_directory() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.to_string_lossy().into_owned()))
+        .unwrap_or_default()
 }
 
 /// The reference's `ScopedProfiler` / `ScopedIdleProfiler` / the dynamic
@@ -1585,23 +1731,25 @@ impl ProfilerLevelCounter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
 
-    /// A pinned stamp source: `Rc<Cell<u64>>` advanced by the test.
-    struct Pinned(Rc<Cell<u64>>);
+    /// A pinned stamp source: `Arc<AtomicU64>` advanced by the test. Atomic
+    /// (not `Cell`) because the clock must be shareable across threads, the
+    /// way the reference's `g_profiler` is.
+    struct Pinned(Arc<AtomicU64>);
 
     impl Pinned {
         fn new() -> Self {
-            Pinned(Rc::new(Cell::new(0)))
+            Pinned(Arc::new(AtomicU64::new(0)))
         }
         fn profiler(&self, memory: usize) -> ProfilerFrame {
-            let cell = Rc::clone(&self.0);
-            ProfilerFrame::with_clock(memory, 8, move || cell.get(), 1_000_000.0)
+            let cell = Arc::clone(&self.0);
+            ProfilerFrame::with_clock(memory, 8, move || cell.load(Ordering::Relaxed), 1_000_000.0)
         }
         fn advance(&self, by: u64) {
-            self.0.set(self.0.get() + by);
+            self.0.fetch_add(by, Ordering::Relaxed);
         }
     }
 
@@ -2264,13 +2412,20 @@ mod tests {
         let pinned = Pinned::new();
         let mut profiler = pinned.profiler(1 << 20);
         run_one_frame(&pinned, &mut profiler);
-        profiler.freeze(true);
+        profiler.freeze(true, false);
         profiler.tick();
         profiler.run_queued_task();
         // Nothing processed: no frame advance, no top entries.
         assert_eq!(profiler.get_frame_number(), 0);
         assert_eq!(profiler.num_top_entries[0], 0);
-        profiler.freeze(false);
+
+        // Unfreezing only takes the flag down: the dump request is picked up
+        // by the call that *turns the freeze on* (profiler.hpp:308-312), so
+        // it is refused here and accepted a moment later.
+        profiler.freeze(false, true);
+        assert!(!profiler.watcher_get_dump_profile());
+        profiler.freeze(true, true);
+        assert!(profiler.watcher_get_dump_profile());
     }
 
     #[test]
@@ -2437,10 +2592,60 @@ mod tests {
     }
 
     #[test]
-    fn the_json_path_face_is_empty_until_03_03() {
+    fn the_json_dump_interface_keeps_the_reference_state() {
         let pinned = Pinned::new();
-        let profiler = pinned.profiler(1 << 20);
+        let mut profiler = pinned.profiler(1 << 20);
+
+        // Construction defaults (profiler.cpp:720-726) plus init's dump
+        // directory default (profiler.cpp:1069-1070).
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Inactive);
+        assert_eq!(profiler.get_json_dump_state().as_int(), 0);
+        assert!(!profiler.watcher_get_dump_profile());
+        assert_eq!(profiler.json_dump_count(), 1);
+        assert_eq!(profiler.json_dump_index(), 0);
+        assert_eq!(profiler.json_dump_dir(), "");
         assert_eq!(profiler.get_json_output_file_path(), "");
+        profiler.use_default_json_dump_dir();
+        assert_eq!(profiler.json_dump_dir(), executable_directory());
+        assert!(!profiler.json_dump_dir().is_empty());
+
+        // setJsonDumpDir replaces the directory wholesale (profiler.cpp:1282-1287).
+        profiler.set_json_dump_dir("/tmp/bw_json_dump_dir");
+        assert_eq!(profiler.json_dump_dir(), "/tmp/bw_json_dump_dir");
+        profiler.use_default_json_dump_dir();
+        assert_eq!(profiler.json_dump_dir(), executable_directory());
+
+        // startJsonDump: the index restarts with the request.
+        profiler.set_json_dump_count(4);
+        profiler.watcher_set_dump_profile(true);
+        assert_eq!(profiler.json_dump_index(), 0);
+        assert!(profiler.watcher_get_dump_profile());
+        profiler.watcher_set_dump_profile(false);
+        assert!(!profiler.watcher_get_dump_profile());
+        profiler.dump_this_frame();
+        assert!(profiler.watcher_get_dump_profile());
+
+        // Both edges of enable reset the state (profiler.cpp:2550/:2559).
+        profiler.set_json_dump_state(JsonDumpState::Active);
+        profiler.enable(true);
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Inactive);
+        profiler.set_json_dump_state(JsonDumpState::Completed);
+        profiler.enable(false);
+        assert_eq!(profiler.get_json_dump_state(), JsonDumpState::Inactive);
+
+        // The wire values are the enum order, and they round-trip.
+        for value in 0..=3 {
+            let state = JsonDumpState::from_int(value).unwrap();
+            assert_eq!(state.as_int(), value);
+        }
+        assert_eq!(JsonDumpState::from_int(4), None);
+
+        // The path is written by the dump that creates the file.
+        profiler.set_json_output_file_path("/tmp/bw_profile_dump.json");
+        assert_eq!(
+            profiler.get_json_output_file_path(),
+            "/tmp/bw_profile_dump.json"
+        );
     }
 
     #[test]
