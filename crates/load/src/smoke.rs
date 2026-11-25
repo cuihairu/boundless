@@ -20,6 +20,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::bot::FD_PER_BOT;
+use crate::cross_cell::{CrossingLedger, run_cross_cell};
 use crate::dense::{DenseAoiLedger, run_dense_aoi};
 use crate::hurricane::{HurricaneLedger, run_login_hurricane};
 use crate::scenario::Scenario;
@@ -63,7 +64,7 @@ impl fmt::Display for MetricValue {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SmokeError {
     /// The scenario's kind has no offline run face yet (the undelivered
-    /// scenario kinds: cross-cell, reconnect, long-stability).
+    /// scenario kinds: reconnect, long-stability).
     Unsupported {
         /// The scenario name that named no known kind.
         name: String,
@@ -101,6 +102,8 @@ pub enum SmokeRun {
     Steady(SteadyLedger),
     /// The dense AOI run's record.
     Dense(DenseAoiLedger),
+    /// The cross-cell run's record.
+    CrossCell(CrossingLedger),
 }
 
 /// Clamp a saved scenario to the smoke envelope: the concurrency is the
@@ -164,6 +167,11 @@ pub fn run_face(scenario: &Scenario) -> Result<SmokeRun, SmokeError> {
             scenario.fixed_seed,
         ))),
         "dense-aoi" => Ok(SmokeRun::Dense(run_dense_aoi(scenario, 5.0, 25.0))),
+        "cross-cell" => Ok(SmokeRun::CrossCell(run_cross_cell(
+            scenario,
+            fd_limit,
+            scenario.fixed_seed,
+        ))),
         other => Err(SmokeError::Unsupported {
             name: other.to_string(),
         }),
@@ -229,6 +237,20 @@ pub fn smoke_metrics(run: &SmokeRun) -> Vec<(String, MetricValue)> {
                 ("density".to_string(), MetricValue::F32(ledger.density)),
                 ("avg_visible".to_string(), MetricValue::Float(avg_visible)),
                 ("max_visible".to_string(), int(max_visible as i64)),
+            ]
+        }
+        SmokeRun::CrossCell(ledger) => {
+            let set_out = ledger.tracks.len() as i64;
+            vec![
+                ("bots_set_out".to_string(), int(set_out)),
+                (
+                    "crossings_completed".to_string(),
+                    int(ledger.crossings_completed() as i64),
+                ),
+                (
+                    "crossing_success_rate".to_string(),
+                    MetricValue::Float(ledger.crossing_success_rate()),
+                ),
             ]
         }
     }
@@ -326,7 +348,7 @@ mod tests {
     /// pass records the same metrics — the failure that re-runs.
     #[test]
     fn the_saved_kinds_smoke_green_and_reproduce() {
-        for name in ["login-hurricane", "steady-move", "dense-aoi"] {
+        for name in ["login-hurricane", "steady-move", "dense-aoi", "cross-cell"] {
             let saved = saved(name);
             let (capped, run) =
                 run_smoke(&saved, &caps()).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -387,19 +409,34 @@ mod tests {
         assert!((as_float(find(&metrics, "avg_visible")) - 3.0).abs() < 1e-12);
     }
 
+    /// The cross-cell metrics name the fleet that set out, the crossings
+    /// that completed, and the acceptance rate — the number the scenario
+    /// exists to report. The smoke window is far too short to walk the
+    /// 600-unit span, so every bot sets out and none completes; the rate
+    /// over an empty numerator is still 0.0.
+    #[test]
+    fn the_cross_cell_metrics_report_the_success_rate() {
+        let small = scenario("cross-cell", 4, 3);
+        let (_, run) = run_smoke(&small, &caps()).expect("smoke");
+        let metrics = smoke_metrics(&run);
+        assert_eq!(find(&metrics, "bots_set_out"), &MetricValue::Int(4));
+        assert_eq!(find(&metrics, "crossings_completed"), &MetricValue::Int(0));
+        assert!(as_float(find(&metrics, "crossing_success_rate")).abs() < 1e-12);
+    }
+
     /// A scenario kind with no offline run face is refused by name — the
-    /// saved cross-cell file parses, but nothing can run it yet.
+    /// saved reconnect file parses, but nothing can run it yet.
     #[test]
     fn an_undelivered_kind_is_refused_by_name() {
-        let saved = saved("cross-cell");
+        let saved = saved("reconnect");
         let error = run_smoke(&saved, &caps()).expect_err("unsupported kind ran");
         assert_eq!(
             error,
             SmokeError::Unsupported {
-                name: "cross-cell".to_string()
+                name: "reconnect".to_string()
             }
         );
-        assert!(error.to_string().contains("cross-cell"));
+        assert!(error.to_string().contains("reconnect"));
     }
 
     /// A face that would not reproduce is refused by name — the second

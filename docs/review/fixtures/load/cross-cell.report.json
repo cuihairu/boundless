@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "scenario": "cross-cell",
+  "generator": "load 0.1.0",
+  "topology": "linux-offline-harness",
+  "seed": 161803,
+  "values": {
+    "bots_set_out": 4,
+    "crossings_completed": 4,
+    "crossing_success_rate": 1
+  }
+}
