@@ -73,3 +73,7 @@ message_logger = { workspace = true }
 [[bench]]
 name = "tick"
 harness = false
+
+[[bench]]
+name = "download_assembly"
+harness = false
