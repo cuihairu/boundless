@@ -2825,7 +2825,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（lane/bw14-script-host `a577c5c` + `16b2e95` 交付：balance_baseline.rs 真 CellAppMgr 固定 96 tick 双相位对比，seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条、final loads/cells 两侧一致；BalanceTuning seam 默认值同参考常量、inform_of_load_with 显式 bias，5 新测 171/171 覆盖，证据 docs/review/opt-05-01-02-schedule-comparison.md。本席临时 worktree 挂彼 tip 16b2e95 复测：balance_baseline 5/5 绿、server-runtime lib 1693 绿 0 失败。）
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `0407552` 复跑零代码：迁移面 `cargo test -p server-runtime --lib -- migrat offload teleport` 75/75 绿——mailbox 更新/目标失联 zombie/可见集/控制器恢复/路由切换；关服面 `-- shutdown mixed` 117/117 绿——阶段枚举/队列 drain/空 cell 回收/任务池排空；混部面 `el7_mixed_deploy.rs the_mixed_deploy_rerun_passes_all_legs --ignored` 1/1 绿——EL7 原版二进制双向 5 腿字节账（pid 查询/addTCP+add 双版本/TCP+UDP 记录/mldb 命中）；附加 db isolation 4+duplicate auth 5+load hurricane fleet 28+scenarios 1 全绿；server-runtime lib 1700 passed 0 failed；证据 docs/review/opt-05-01-03-migration-shutdown-mixed-rerun.md。**坑：`EL7_MIXED_OUT` 须为文件路径非目录。**）
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -4378,7 +4378,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（lane/bw14-script-host `a577c5c` + `16b2e95` 交付：balance_baseline.rs 真 CellAppMgr 固定 96 tick 双相位对比，seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条、final loads/cells 两侧一致；BalanceTuning seam 默认值同参考常量、inform_of_load_with 显式 bias，5 新测 171/171 覆盖，证据 docs/review/opt-05-01-02-schedule-comparison.md。本席临时 worktree 挂彼 tip 16b2e95 复测：balance_baseline 5/5 绿、server-runtime lib 1693 绿 0 失败。）
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `0407552` 复跑零代码：迁移面 `cargo test -p server-runtime --lib -- migrat offload teleport` 75/75 绿——mailbox 更新/目标失联 zombie/可见集/控制器恢复/路由切换；关服面 `-- shutdown mixed` 117/117 绿——阶段枚举/队列 drain/空 cell 回收/任务池排空；混部面 `el7_mixed_deploy.rs the_mixed_deploy_rerun_passes_all_legs --ignored` 1/1 绿——EL7 原版二进制双向 5 腿字节账（pid 查询/addTCP+add 双版本/TCP+UDP 记录/mldb 命中）；附加 db isolation 4+duplicate auth 5+load hurricane fleet 28+scenarios 1 全绿；server-runtime lib 1700 passed 0 failed；证据 docs/review/opt-05-01-03-migration-shutdown-mixed-rerun.md。**坑：`EL7_MIXED_OUT` 须为文件路径非目录。**）
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -5904,7 +5904,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（lane/bw14-script-host `a577c5c` + `16b2e95` 交付：balance_baseline.rs 真 CellAppMgr 固定 96 tick 双相位对比，seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条、final loads/cells 两侧一致；BalanceTuning seam 默认值同参考常量、inform_of_load_with 显式 bias，5 新测 171/171 覆盖，证据 docs/review/opt-05-01-02-schedule-comparison.md。本席临时 worktree 挂彼 tip 16b2e95 复测：balance_baseline 5/5 绿、server-runtime lib 1693 绿 0 失败。）
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `0407552` 复跑零代码：迁移面 `cargo test -p server-runtime --lib -- migrat offload teleport` 75/75 绿——mailbox 更新/目标失联 zombie/可见集/控制器恢复/路由切换；关服面 `-- shutdown mixed` 117/117 绿——阶段枚举/队列 drain/空 cell 回收/任务池排空；混部面 `el7_mixed_deploy.rs the_mixed_deploy_rerun_passes_all_legs --ignored` 1/1 绿——EL7 原版二进制双向 5 腿字节账（pid 查询/addTCP+add 双版本/TCP+UDP 记录/mldb 命中）；附加 db isolation 4+duplicate auth 5+load hurricane fleet 28+scenarios 1 全绿；server-runtime lib 1700 passed 0 failed；证据 docs/review/opt-05-01-03-migration-shutdown-mixed-rerun.md。**坑：`EL7_MIXED_OUT` 须为文件路径非目录。**）
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -7430,7 +7430,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（lane/bw14-script-host `a577c5c` + `16b2e95` 交付：balance_baseline.rs 真 CellAppMgr 固定 96 tick 双相位对比，seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条、final loads/cells 两侧一致；BalanceTuning seam 默认值同参考常量、inform_of_load_with 显式 bias，5 新测 171/171 覆盖，证据 docs/review/opt-05-01-02-schedule-comparison.md。本席临时 worktree 挂彼 tip 16b2e95 复测：balance_baseline 5/5 绿、server-runtime lib 1693 绿 0 失败。）
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `0407552` 复跑零代码：迁移面 `cargo test -p server-runtime --lib -- migrat offload teleport` 75/75 绿——mailbox 更新/目标失联 zombie/可见集/控制器恢复/路由切换；关服面 `-- shutdown mixed` 117/117 绿——阶段枚举/队列 drain/空 cell 回收/任务池排空；混部面 `el7_mixed_deploy.rs the_mixed_deploy_rerun_passes_all_legs --ignored` 1/1 绿——EL7 原版二进制双向 5 腿字节账（pid 查询/addTCP+add 双版本/TCP+UDP 记录/mldb 命中）；附加 db isolation 4+duplicate auth 5+load hurricane fleet 28+scenarios 1 全绿；server-runtime lib 1700 passed 0 failed；证据 docs/review/opt-05-01-03-migration-shutdown-mixed-rerun.md。**坑：`EL7_MIXED_OUT` 须为文件路径非目录。**）
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -8983,7 +8983,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（lane/bw14-script-host `a577c5c` + `16b2e95` 交付：balance_baseline.rs 真 CellAppMgr 固定 96 tick 双相位对比，seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条、final loads/cells 两侧一致；BalanceTuning seam 默认值同参考常量、inform_of_load_with 显式 bias，5 新测 171/171 覆盖，证据 docs/review/opt-05-01-02-schedule-comparison.md。本席临时 worktree 挂彼 tip 16b2e95 复测：balance_baseline 5/5 绿、server-runtime lib 1693 绿 0 失败。）
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `0407552` 复跑零代码：迁移面 `cargo test -p server-runtime --lib -- migrat offload teleport` 75/75 绿——mailbox 更新/目标失联 zombie/可见集/控制器恢复/路由切换；关服面 `-- shutdown mixed` 117/117 绿——阶段枚举/队列 drain/空 cell 回收/任务池排空；混部面 `el7_mixed_deploy.rs the_mixed_deploy_rerun_passes_all_legs --ignored` 1/1 绿——EL7 原版二进制双向 5 腿字节账（pid 查询/addTCP+add 双版本/TCP+UDP 记录/mldb 命中）；附加 db isolation 4+duplicate auth 5+load hurricane fleet 28+scenarios 1 全绿；server-runtime lib 1700 passed 0 failed；证据 docs/review/opt-05-01-03-migration-shutdown-mixed-rerun.md。**坑：`EL7_MIXED_OUT` 须为文件路径非目录。**）
 
 ### OPT-06-01 登录与资源下载基线
 
@@ -10509,7 +10509,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [x] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。（lane/bw14-script-host `a577c5c` + `16b2e95` 交付：balance_baseline.rs 真 CellAppMgr 固定 96 tick 双相位对比，seed 27_182_828 基线 partitions_moved=0 vs 候选 limit_to_chunks=false 移动 2 条、final loads/cells 两侧一致；BalanceTuning seam 默认值同参考常量、inform_of_load_with 显式 bias，5 新测 171/171 覆盖，证据 docs/review/opt-05-01-02-schedule-comparison.md。本席临时 worktree 挂彼 tip 16b2e95 复测：balance_baseline 5/5 绿、server-runtime lib 1693 绿 0 失败。）
-- [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
+- [x] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。（本席 `0407552` 复跑零代码：迁移面 `cargo test -p server-runtime --lib -- migrat offload teleport` 75/75 绿——mailbox 更新/目标失联 zombie/可见集/控制器恢复/路由切换；关服面 `-- shutdown mixed` 117/117 绿——阶段枚举/队列 drain/空 cell 回收/任务池排空；混部面 `el7_mixed_deploy.rs the_mixed_deploy_rerun_passes_all_legs --ignored` 1/1 绿——EL7 原版二进制双向 5 腿字节账（pid 查询/addTCP+add 双版本/TCP+UDP 记录/mldb 命中）；附加 db isolation 4+duplicate auth 5+load hurricane fleet 28+scenarios 1 全绿；server-runtime lib 1700 passed 0 failed；证据 docs/review/opt-05-01-03-migration-shutdown-mixed-rerun.md。**坑：`EL7_MIXED_OUT` 须为文件路径非目录。**）
 
 ### OPT-06-01 登录与资源下载基线
 
