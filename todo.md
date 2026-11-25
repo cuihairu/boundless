@@ -2823,7 +2823,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -4376,7 +4376,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -5902,7 +5902,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -7428,7 +7428,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -8981,7 +8981,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
@@ -10507,7 +10507,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 用热点和故障场景测量负载上报、切分/合并频率与恢复窗口，再调优调度策略。检查实体迁移、关服和混部稳定性。
 
-- [ ] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。
+- [x] **OPT-05-01-01 录制负载热点和故障基线**。**验收** 记录分配、回收与恢复窗口。（本席复测 `23c9010` 之后：`5120dea`/`0fbfa8f` `crates/load/src/hotspot.rs` 三窗口=allocation 整窗 circle-walk+online 占比、recovery 中途 drop→reconnect floor 2 tick、reclamation 全 drain 归零；可复现面 seed 固定断言同、RSS/CPU 只写 LOAD_REPORT（机器相关不设带）；8 测绿（hotspot 7+smoke 1）、`CI_LOAD_DURATION=15 CI_LOAD_CLIENTS=4 ci/load.sh` 7/7 PASS；证据 docs/review/opt-05-01-01-load-hotspot-baseline.md。**双交付/跨席**：原交付在 lane/bw14-script-host（eeced72 已勾），本行挂该席 hash 复测勾账，合并主席择一。）
 - [ ] **OPT-05-01-02 调优负载上报与拆并**。**验收** 比较固定场景的调度效果。
 - [ ] **OPT-05-01-03 复跑迁移、关服和混部**。**验收** 实体和进程状态正确。
 
