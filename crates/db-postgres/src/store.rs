@@ -502,6 +502,10 @@ pub struct PostgresStorage {
     /// indexes them by id (`entityTypeMappings_`); the contract
     /// operations resolve the table shape through the same map.
     schemas: HashMap<EntityTypeId, EntitySchema>,
+    /// Whether this connection is inside a transaction the reference
+    /// would be holding as an open `MySqlTransaction`
+    /// (`transaction.cpp:15-23` keeps `inTransaction` on the connection).
+    in_transaction: bool,
 }
 
 impl std::fmt::Debug for PostgresStorage {
@@ -517,6 +521,7 @@ impl PostgresStorage {
         Ok(Self {
             client: RefCell::new(client),
             schemas: HashMap::new(),
+            in_transaction: false,
         })
     }
 
@@ -542,6 +547,70 @@ impl PostgresStorage {
     /// checkout report "not found").
     pub fn schema_of(&self, type_id: EntityTypeId) -> Option<&EntitySchema> {
         self.schemas.get(&type_id)
+    }
+
+    /// Opens a server-side transaction on this connection: the reference's
+    /// `MySqlTransaction` constructor issues `START TRANSACTION` and only
+    /// then marks the connection as being inside one
+    /// (`transaction.cpp:15-23` — the flag is last because the execute can
+    /// fail). Every statement this connection runs afterwards belongs to
+    /// the transaction: another connection sees none of it until
+    /// [`PostgresStorage::commit`].
+    pub fn begin_transaction(&mut self) -> Result<(), DbError> {
+        // The reference only ever has one transaction per connection
+        // (the constructor sets `inTransaction`), so a second begin is
+        // refused rather than left to PostgreSQL's warning-and-no-op.
+        if self.in_transaction {
+            return Err(DbError::Storage(
+                "the connection already has a transaction open".into(),
+            ));
+        }
+        self.client
+            .borrow_mut()
+            .batch_execute("BEGIN")
+            .map_err(map_db_error)?;
+        self.in_transaction = true;
+        Ok(())
+    }
+
+    /// Commits the open transaction: every write this connection made
+    /// since [`PostgresStorage::begin_transaction`] becomes visible to
+    /// the other connections at once.
+    pub fn commit(&mut self) -> Result<(), DbError> {
+        if !self.in_transaction {
+            return Err(DbError::Storage(
+                "the connection has no transaction open".into(),
+            ));
+        }
+        self.client
+            .borrow_mut()
+            .batch_execute("COMMIT")
+            .map_err(map_db_error)?;
+        self.in_transaction = false;
+        Ok(())
+    }
+
+    /// Rolls the open transaction back: the entity rows and the
+    /// associated records written since
+    /// [`PostgresStorage::begin_transaction`] never happened, and the
+    /// other connections keep reading the old values.
+    ///
+    /// On a lost connection the reference skips the `ROLLBACK` — there is
+    /// no connection left to send it to — and just drops the flag
+    /// (`transaction.cpp:52-59`); the port treats a failed `ROLLBACK` the
+    /// same way.
+    pub fn rollback(&mut self) -> Result<(), DbError> {
+        if !self.in_transaction {
+            return Err(DbError::Storage(
+                "the connection has no transaction open".into(),
+            ));
+        }
+        self.in_transaction = false;
+        self.client
+            .borrow_mut()
+            .batch_execute("ROLLBACK")
+            .map_err(map_db_error)?;
+        Ok(())
     }
 
     /// Creates this schema's table if it is missing (the entity-mapping
