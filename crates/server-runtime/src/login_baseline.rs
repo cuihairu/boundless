@@ -583,4 +583,3 @@ mod tests {
         assert_eq!(session.client_addr(), Some((0x7f00_0001, 20000)));
     }
 }
-
