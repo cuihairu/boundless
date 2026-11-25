@@ -698,3 +698,99 @@ fn unbind_cut_marks_inside_shells_invasive_and_flattens_outside_links() {
         PortalTarget::Nothing
     );
 }
+
+/// BW-10-01-05: the fixture space focuses into the space index. Every
+/// loaded outside chunk answers the queries over its own cell, a mapped
+/// cell with no chunk answers nothing (the blank area), and the inside
+/// chunk — whose transform lands at grid (1,2), outside the mapping's
+/// world bounds (0..17 x 0..1) — is silently dropped by the focus grid:
+/// the chunk itself stays focussed, but no column ever holds it, so the
+/// queries over its hull fall through to nothing (the reference column
+/// lookup returns NULL out of span, `chunk_space.cpp:783-786`).
+#[test]
+fn focus_indexes_the_fixture_space_and_drops_the_out_of_span_shell() {
+    let mapping = load_mapping();
+    let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+    for (id, file) in [
+        ("00000000o", "00000000o.chunk"),
+        ("00000001o", "00000001o.chunk"),
+        ("00010000o", "00010000o.chunk"),
+        ("00010001o", "00010001o.chunk"),
+        ("00000000i", "00000000i.chunk"),
+    ] {
+        let chunk = load_chunk_file(&space_root().join(file), &mapping, id);
+        if id.ends_with('i') {
+            // Remember the shell's world box before it joins the map.
+            let shell_box = chunk.bounding_box;
+            space.add_chunk(chunk);
+            assert!(space.bind(id));
+            assert_eq!(shell_box.min, Vector3::new(140.0, -5.0, 240.0));
+            assert_eq!(shell_box.max, Vector3::new(160.0, 5.0, 260.0));
+        } else {
+            space.add_chunk(chunk);
+            assert!(space.bind(id));
+        }
+    }
+    space.focus();
+
+    // Every chunk came through the pump focussed and completed.
+    for id in [
+        "00000000o",
+        "00000001o",
+        "00010000o",
+        "00010001o",
+        "00000000i",
+    ] {
+        let chunk = space.chunk(id).unwrap();
+        assert_eq!(chunk.focus_count, 1, "{id} focussed");
+        assert!(chunk.completed(), "{id} completed");
+    }
+
+    // Cross-chunk queries answer the owning outside chunk of each loaded
+    // cell: grids (0,0), (0,1), (1,0) and (1,1).
+    let found = space
+        .find_chunk_from_point(&Vector3::new(50.0, 1.0, 50.0))
+        .unwrap();
+    assert_eq!(found.identifier, "00000000o");
+    let found = space
+        .find_chunk_from_point(&Vector3::new(50.0, 1.0, 150.0))
+        .unwrap();
+    assert_eq!(found.identifier, "00000001o");
+    let found = space
+        .find_chunk_from_point(&Vector3::new(150.0, 1.0, 50.0))
+        .unwrap();
+    assert_eq!(found.identifier, "00010000o");
+    let found = space
+        .find_chunk_from_point(&Vector3::new(150.0, 1.0, 150.0))
+        .unwrap();
+    assert_eq!(found.identifier, "00010001o");
+
+    // A mapped cell with no chunk answers nothing: the blank area.
+    assert!(
+        space
+            .find_chunk_from_point(&Vector3::new(250.0, 1.0, 50.0))
+            .is_none()
+    );
+    assert!(
+        space
+            .find_outside_chunk_from_point(&Vector3::new(250.0, 1.0, 50.0))
+            .is_none()
+    );
+
+    // The shell's hull sits at grid (1,2) — outside the mapping bounds —
+    // so no column holds it and no query over it answers.
+    let hull_centre = Vector3::new(150.0, 0.0, 250.0);
+    assert!(space.column_at(&hull_centre).is_none());
+    assert!(space.find_chunk_from_point(&hull_centre).is_none());
+    assert!(space.find_outside_chunk_from_point(&hull_centre).is_none());
+
+    // Unbinding a chunk drops the columns around it: the queries over its
+    // cell stop answering, and it stays in the map unfocused.
+    assert!(space.unbind("00000001o", false));
+    assert!(
+        space
+            .find_chunk_from_point(&Vector3::new(50.0, 1.0, 150.0))
+            .is_none()
+    );
+    assert_eq!(space.chunk("00000001o").unwrap().focus_count, 0);
+}

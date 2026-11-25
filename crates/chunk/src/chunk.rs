@@ -87,6 +87,13 @@ pub struct Chunk {
     /// `removable_` (`chunk.cpp:190`): wired and locked chunks refuse the
     /// unload pass (`chunk_manager.cpp:2241`).
     pub removable: bool,
+    /// `focusCount_` (`chunk.cpp:1605`): the focus reference count — set to
+    /// one when the chunk is focused into the space index, zeroed when it
+    /// blurs or unbinds.
+    pub focus_count: u32,
+    /// `completed_` (`chunk.cpp:1468`): every shell of the chunk is focused;
+    /// the gate `findChunkFromPointExact` applies.
+    pub completed: bool,
 }
 
 impl Chunk {
@@ -136,7 +143,26 @@ impl Chunk {
             is_loaded: false,
             is_bound: false,
             removable: true,
+            focus_count: 0,
+            completed: false,
         }
+    }
+
+    /// `Chunk::volume` (`chunk.cpp:3506-3514`): the bounding box size
+    /// product — the approximation the space index compares.
+    pub fn volume(&self) -> f32 {
+        let v = self.bounding_box.max - self.bounding_box.min;
+        v.x * v.y * v.z
+    }
+
+    /// `focussed()` (`chunk.hpp`): the focus count is above zero.
+    pub fn focussed(&self) -> bool {
+        self.focus_count > 0
+    }
+
+    /// `completed()` (`chunk.hpp`): all shells focused.
+    pub fn completed(&self) -> bool {
+        self.completed
     }
 
     /// `Chunk::load` (`chunk.cpp:370-499`): fill in the transform, bounding
