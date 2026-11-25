@@ -1399,14 +1399,15 @@
   - 证据：新 crate `crates/db-postgres`（4e8ba87）——schema 对齐 `lib/db_storage_mysql/mappings/` 的 namer 规则（`TABLE_NAME_PREFIX "tbl"` 与 `buildColumnName("sm", name)`，namer.cpp 的 buildName 加下划线、correctName 把 `.` 换 `__`）：`EntitySchema` 从定义顺序推列，`ColumnKind::of_value` 一形态一列（Int/Uint→BIGINT、Float→DOUBLE PRECISION、String→TEXT 承载 Unicode、Blob→BYTEA、Vector→REAL[]、嵌套→JSONB），`create_table_ddl` 生成 `CREATE TABLE IF NOT EXISTS "tbl_<Type>"`（PostgreSQL 标识符需引号否则小写折叠）。嵌套值走 `json.rs` 的 tag 编码（`{"i"}`/`{"u"}` 保持 Int/Uint 形态分离、fixed dict 字段用 `[name, value]` 对保序、float 非有限值走 `"nan"/"inf"/"-inf"` 标记串）。`PostgresStorage.put_entity` 即参考的 `REPLACE INTO` 语义 `INSERT ... ON CONFLICT ("id") DO UPDATE`，`get_entity` 按列序读回 `Ok(None)` 表示缺行。**验收**：`tests/round_trip.rs` 对本地 PG18 真跑（`BOUNDLESS_PG_URL`/`CI_STORE_PG_*`/unix socket 三级回退，无服务器则按仓内惯例跳过并提示），9 列覆盖 Unicode 控制字符/astral 平面、全 256 字节 blob、负数与 u64 宽值、NaN/±Inf、混合序列、非排序 fixed dict、邮箱往返——3 测全绿；lib+集成 24 测绿；llvm-cov 行覆盖 json 305/305、schema 153/153、store 262/262 全 100%。顺带修掉 `map_db_error` 丢消息的问题（PG 的 `to_string()` 只有 "db error"，正文在 source 链，现拼全链）。
 - [x] **BW-09-06-03 映射账号表和唯一约束**。**验收** 重复账号产生合同错误。
   - 证据：`crates/db-postgres/src/accounts.rs`（e68158f）——表名与列名逐字沿用 `mysql_synchronise.cpp` 的固定表 `bigworldLogOnMapping(logOnName VARBINARY, password VARBINARY, entityType INT, entityID BIGINT)`，PostgreSQL 下 `VARBINARY→BYTEA`、唯一约束即 `logOnName` 主键（PDK 在表本身而非事后索引）。`put_account` 用裸 `INSERT`（不像实体表那样 upsert，否则重复名会静默改挂到别的实体）；唯一键冲突经 `SqlState::UNIQUE_VIOLATION` 映射为合同值 `DbError::DuplicateAccount`（文案 "account already exists"，对应 `get+set_entity_key_for_account_task.cpp` 的账号语义），其余错误仍为 `Storage`。`get_account` 按名字取回，缺行 `Ok(None)`=参考的 "no such user"。**验收**：`tests/accounts.rs` 真跑本地 PG18——同名第二次写入返回 `DuplicateAccount`、首行未被拒绝的写入改动、异名可插、非 UTF-8 名字字节级区分、entityType/entityID 全范围往返——4 测绿；accounts.rs llvm-cov 行 74/74 100%；工作区 3032 测绿。
-- [ ] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。
-- [ ] **BW-09-06-05 实现实体读写删查**。**验收** 共用存储契约用例通过。
-- [ ] **BW-09-06-06 提交 PostgreSQL 事务**。**验收** 已提交的实体更新可从另一连接读回。
-- [ ] **BW-09-06-07 回滚 PostgreSQL 事务**。**验收** 写入中途返回错误时，实体和关联记录从独立连接读出旧值。
-- [ ] **BW-09-06-08 处理 PostgreSQL 并发写冲突**。**验收** 两个写入同一实体的请求按存储契约返回结果，重试后没有重复记录。
-- [ ] **BW-09-06-09 实现断链恢复**。**验收** 数据库恢复后新请求成功。
-- [ ] **BW-09-06-10 验证账号重登**。**验收** 会话状态与 MySQL 基准相符。
-- [ ] **BW-09-06-11 对接 auto-load 与 SQLite 归档**。**验收** 重启恢复对应实体。
+- [x] **BW-09-06-04 实现 DBID 分配**。**验收** 并发创建无重复且重启连续可用。（b3afdea）
+- [x] **BW-09-06-05 实现实体读写删查**。**验收** 共用存储契约用例通过。（b3afdea）
+- [x] **BW-09-06-06 提交 PostgreSQL 事务**。**验收** 已提交的实体更新可从另一连接读回。（b3afdea）
+- [x] **BW-09-06-07 回滚 PostgreSQL 事务**。**验收** 写入中途返回错误时，实体和关联记录从独立连接读出旧值。（b3afdea）
+- [x] **BW-09-06-08 处理 PostgreSQL 并发写冲突**。**验收** 两个写入同一实体的请求按存储契约返回结果，重试后没有重复记录。（b3afdea）
+- [x] **BW-09-06-09 实现断链恢复**。**验收** 数据库恢复后新请求成功。（b3afdea）
+- [x] **BW-09-06-10 验证账号重登**。**验收** 会话状态与 MySQL 基准相符。（b3afdea）
+- [x] **BW-09-06-11 对接 auto-load 与 SQLite 归档**。**验收** 重启恢复对应实体。（b3afdea）
+  - 八行皆本席零代码交付：bw16-18 席 `b3afdea feat: complete the postgres storage backend` 已并 main（实测祖先），store.rs +1158 行扩出完整后端（`begin/commit/rollback_transaction`、`connection_lost`/`reconnect`、`put_logon_record`/`put_new_entity`/`set_auto_load`/`auto_load_entities`/`register_entity_type` 等）。**本席临时工作树在 origin/main 上真机复测**：`BOUNDLESS_PG_URL=… cargo test -p db-postgres` 对本地 PG18 全绿——dbid_allocation 3 测（`concurrent_creations_get_distinct_ids`/`allocation_continues_after_a_restart`/`an_explicit_dbid_coexists_with_the_allocation`=04）、storage_contract 17 测（创建分配可见/更新覆盖/显式 id 插入拒重复/删除只删己行/并发 logon 不双占/checkin 释放=05）、transaction 4 测（提交后另一连接可见+提交前保持旧值=06）、transaction_rollback 4 测（失败写留旧值/显式回滚丢全部暂存/断链标记=07）、transaction_conflict 4 测（两写一 `row`/锁超时 `Retry` 重试落地一次/死锁 `Retry` 不重复/并发删除败者 `NotFound`=08）、connection_recovery 4 测（库恢复后新请求成功=09）、verify_relogon 4 测（重登迁会话+基线不动=10）、auto_load_restore 5 测（重启恰载旗标实体/归档写按己 id 恢复=11）——八条验收逐条对上，合计 44 集成测 0 失败 0 跳过。
 
 #### BW-09-07 PostgreSQL 数据库运维
 
@@ -1420,9 +1421,11 @@
   - 证据：`crates/db-postgres/src/upgrade.rs`（9aacde0）——`plan_schema_update`/`apply_schema_update` 沿 `sync_db/mysql_synchronise.cpp syncAllEntityTables` 语义：表不存在→整表 `CREATE TABLE IF NOT EXISTS`；表已在→对 `information_schema.columns` 差集逐列 `ALTER TABLE ... ADD COLUMN <type> NOT NULL DEFAULT <中性值>`，绝不删列改列，旧行全部保留。中性默认按列型给（Int/Uint→0、Float→0.0、String→''、Blob→''::BYTEA、Vector→ARRAY[]::REAL[]、Nested→'{"d":null}'::JSONB，与 json.rs 解码的未置位形状一致）。**验收**：`tests/upgrade.rs` 对本地 PG18 真跑——旧样本库（`tbl_Account` 仅 sm_name 一列、含一行 Unicode 旧档案）经 plan（3 句 ALTER）+apply 后：旧行读回 sm_name 原值、新列全为中性值（Int 0、Sequence 未置位、Vector 空），新定义整记录（Unicode/Uint/嵌套/Vector）往返精确相等，二次 plan 为空；表缺失时 plan 即整表 CREATE、apply 后 plan 亦空；无变化表 plan 为空。3 测绿，upgrade.rs llvm-cov 行 95/95 100%（crate 全文件行 1169/1169 100%）；工作区 3050 测绿。
 - [x] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。（e4d24e5）
   - 证据：`crates/db-postgres/src/backup.rs`（e4d24e5）——原版无独立备份工具（`server/tools/` 实测八目录无 backup 面；MySQL 侧为运维层 dump），故备份面为 PG 后端自有交付，携带状态=参照 `createSpecialBigWorldTables` 的全部 11 张固定表（版本/实体类型注册表/checkout/账号映射/DBID 账册/game time/space data/二级库注册表/defs checksum）+经 `bigworldEntityTypes` 注册表发现的实体表（`information_schema` 列型发现，每型一一映射 int4/int8/bool/text/bytea/float8/float4[]/jsonb/timestamptz，未知列型拒绝非静默改码）。`BackupCell` 可移植值域逐域读回（空值为列型 `None` 绑定）；恢复=每表 DELETE 后重放，全程单事务（失败回滚，目标原样），`typeID` BIGSERIAL 恢复后 `setval` 接续（`pg_get_serial_sequence` 参数须带引号标识符防小写折叠——实测坑）。JSONB 列 SELECT 侧 `::text`（驱动不给原始 JSONB 出 String——store.rs 同法），INSERT 侧 `CAST($n::text AS JSONB)`。**验收**：`tests/backup.rs` 对本地 PG18 真跑——源库建 schema+实体表（Unicode/二进制/Vector/Float/嵌套五域）+账号+DBID 账册+checkout+空 objectID+时间戳，导出后**空目标库**（全新库+schema 初始化）恢复，再导出与源 dump **逐表逐行相等**（序钉死可比），`get_entity`/`get_account` 契约级读回吻合（二进制/Unicode/嵌套逐值），注册表 serial 续配（恢复后新注册 typeID=3 接续 1）；二次恢复替换不重复（计数仍 2）；缺失表恢复报错且事务回滚先前记录原样；NULL 时间戳按 NULL 往返、微秒精度往返逐字相等；未初始化库导出空 dump。6 集成测；backup.rs llvm-cov 行 530/532=99.62%（余 2 行为闭括号幻影行）；单测 46 绿；clippy 零提及；rustfmt 过；工作区 4446 测绿。
-- [ ] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。
-- [ ] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。
-- [ ] **BW-09-07-07 验证迁移失败与重跑**。**验收** 下次执行不重复导入。
+- [x] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。（fc61d0d）
+- [x] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。（b3afdea 两测 + lane/bw08-ledger-tick 6f025f1 专面）
+- [x] **BW-09-07-07 验证迁移失败与重跑**。**验收** 下次执行不重复导入。（3f218d8）
+  - 三行皆本席零代码交付，按 main/他席实况勾账：`fc61d0d feat: import mysql entities and accounts into postgres`（新增 `crates/db-postgres/src/import_mysql.rs` 111 行 + `tests/import_mysql.rs` 275 行；`db-postgres/src/lib.rs:26 pub mod import_mysql;` 已声明并编译）与 `3f218d8 test: migration failure leaves landed rows for rerun`（+127 行）**皆实测为 main 的祖先**。main 的 `tests/import_mysql.rs` 现 539 行/6 测，三条验收全覆盖：`the_import_lands_ids_relations_and_binary_fields_verbatim`（05 的 ID/关系/二进制逐字对照）、`allocations_reseat_past_the_imported_ids` + `a_low_import_does_not_pull_the_allocation_seat_back_down`（06 不冲突：分配座位抬高越过导入 id，低导入不回拉）、`a_rerun_skips_the_landed_rows_and_a_conflict_fails_without_moving_them` + `a_failing_batch_leaves_the_landed_rows_intact_and_the_rerun_never_duplicates` + `the_account_rerun_lands_the_rest_without_moving_the_mapping`（07 失败留行、重跑不重复、账号重跑不动映射）。
+  - 双交付警示（06 面，主席合并裁定）：main **无** `calibrate_dbid_allocation` API（`import_mysql.rs` 只有 `import_entities`/`import_accounts`），校准由表序分配本身 + 上述两测证成；`lane/bw08-ledger-tick` 的 `6f025f1 db: recalibrate dbid allocation after an import` 另给专门 `calibrate_dbid_allocation`/`calibrate_dbid_sql` + `tests/calibration.rs`（`creates_after_an_import_do_not_collide` / `calibration_consumes_nothing_and_is_repeatable` / `an_empty_imported_table_calibrates_to_its_start_value`）——**未并 main**（main 无 `tests/calibration.rs`），合并须择一并处理该差口。
 
 ### BW-10 世界资源、碰撞和导航
 
