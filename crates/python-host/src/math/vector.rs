@@ -15,7 +15,7 @@
 //! plus the read-only flag (`script_math.hpp:340-360`).
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::binding::{self, TypeSpec};
 use crate::capi;
@@ -36,11 +36,14 @@ pub(super) struct VectorBody {
 /// Which dimension each created vector type serves, keyed on the type
 /// object's address: the `self`-shaped handlers are shared between the
 /// dimensions and recover theirs from the instance's type.
-static DIMS: OnceLock<Mutex<BTreeMap<usize, usize>>> = OnceLock::new();
-
-fn dims() -> &'static Mutex<BTreeMap<usize, usize>> {
-    DIMS.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
+///
+/// Published as a copy-on-write snapshot behind an `AtomicPtr`, the same
+/// shape as `TYPES` in the module root: `dim_of` runs on every subscript,
+/// operator and provider read, and its lookup was a global mutex take per
+/// call. Writes happen only while the types are being installed; the
+/// superseded snapshots are deliberately leaked (a reader may still hold
+/// one, and there are at most a handful per process).
+static DIMS: AtomicPtr<BTreeMap<usize, usize>> = AtomicPtr::new(std::ptr::null_mut());
 
 /// The Python name of one dimension's type.
 fn vector_name(dim: usize) -> &'static str {
@@ -58,11 +61,36 @@ fn vector_name(dim: usize) -> &'static str {
 /// `object` must be an instance of a vector type this module created.
 unsafe fn dim_of(object: *mut capi::PyObject) -> Option<usize> {
     let address = unsafe { capi::Py_TYPE(object) } as usize;
-    dims()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(&address)
-        .copied()
+    let pointer = DIMS.load(Ordering::Acquire);
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: every pointer the registry stores is a leaked snapshot box,
+    // immutable once published.
+    let dims = unsafe { &*pointer };
+    dims.get(&address).copied()
+}
+
+/// Publish a new dimension snapshot with `address -> dim` added. The
+/// superseded snapshot stays allocated on purpose: a concurrent reader may
+/// still be holding it, and installs are a handful of writes per process.
+fn remember_dim(address: usize, dim: usize) {
+    let previous = DIMS.load(Ordering::Acquire);
+    // SAFETY: as `dim_of` -- the previous snapshot, when present, is a live
+    // leaked box.
+    let mut next = match previous.is_null() {
+        true => BTreeMap::new(),
+        false => unsafe { &*previous }.clone(),
+    };
+    next.insert(address, dim);
+    DIMS.store(Box::into_raw(Box::new(next)), Ordering::Release);
+}
+
+/// Retire the dimension snapshots: the fini-time clear, the twin of the
+/// module root's `TYPES` retirement. Readers then see an empty table; the
+/// superseded snapshots stay allocated, and a later init starts fresh.
+pub(super) fn reset() {
+    DIMS.store(std::ptr::null_mut(), Ordering::Release);
 }
 
 /// The components of a vector instance.
@@ -1601,10 +1629,7 @@ pub(super) unsafe fn install(module: *mut capi::PyObject) {
             Err(_) => panic!("Math: the {} type could not be created", vector_name(dim)),
         };
         // The handlers recover their dimension from the type's address.
-        dims()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(object.as_ptr() as usize, dim);
+        remember_dim(object.as_ptr() as usize, dim);
         remember_type(vector_name(dim), &object);
         // SAFETY: the module is live.
         unsafe { attach(module, bare_name(dim), &object) };

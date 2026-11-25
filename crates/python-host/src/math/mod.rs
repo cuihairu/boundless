@@ -35,6 +35,7 @@ mod provider;
 pub(crate) mod vector;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::binding::TypeSpec;
@@ -44,18 +45,46 @@ use crate::pyref::PyRef;
 /// The type objects this module created, by the Python-visible name: the
 /// `Check` of every class is an exact type-object identity test
 /// (`pyobject_plus.hpp:118-123`), which is this map keyed on the address.
-static TYPES: OnceLock<Mutex<BTreeMap<String, usize>>> = OnceLock::new();
+///
+/// Published as a copy-on-write snapshot behind an `AtomicPtr`: the reads
+/// (`check_type`, `type_address`) sit on the hottest conversion path and
+/// only ever take a shared snapshot, so the global mutex this table held
+/// per lookup is gone. Writes happen only while the module is being
+/// installed, from one thread, before any script runs; the superseded
+/// snapshots are deliberately leaked (the same trade `binding.rs` makes
+/// for its descriptor arrays) rather than reclaimed under an allocation a
+/// reader may hold a reference into.
+static TYPES: AtomicPtr<BTreeMap<&'static str, usize>> = AtomicPtr::new(std::ptr::null_mut());
 
-fn types() -> &'static Mutex<BTreeMap<String, usize>> {
-    TYPES.get_or_init(|| Mutex::new(BTreeMap::new()))
+/// The current snapshot of the table, or `None` before the first type is
+/// recorded. A snapshot is immutable once published; the returned reference
+/// is valid for the rest of the process.
+fn type_snapshot() -> Option<&'static BTreeMap<&'static str, usize>> {
+    let pointer = TYPES.load(Ordering::Acquire);
+    if pointer.is_null() {
+        None
+    } else {
+        // SAFETY: every pointer the registry ever stores was produced by
+        // `Box::into_raw` in `remember_type` and is never freed.
+        Some(unsafe { &*pointer })
+    }
 }
 
-/// Record a created type under its Python name.
-pub(super) fn remember_type(name: &str, object: &crate::pyref::PyRef) {
-    types()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(name.to_owned(), object.as_ptr() as usize);
+/// Record a created type under its Python name. Every call site passes a
+/// name the compiler can prove outlives the program (the module's own
+/// `&'static str` constants and `vector_name`'s), so the snapshot stores
+/// the string's address without allocating an owned copy.
+pub(super) fn remember_type(name: &'static str, object: &crate::pyref::PyRef) {
+    let previous = TYPES.load(Ordering::Acquire);
+    // SAFETY: as `type_snapshot` -- the previous snapshot, when present,
+    // is a live leaked box.
+    let base: BTreeMap<&'static str, usize> = match previous.is_null() {
+        true => BTreeMap::new(),
+        false => unsafe { &*previous }.clone(),
+    };
+    let mut next = base;
+    next.insert(name, object.as_ptr() as usize);
+    TYPES.store(Box::into_raw(Box::new(next)), Ordering::Release);
 }
 
 /// `Class::Check` (`pyobject_plus.hpp:118-123`): the object's type is
@@ -71,12 +100,7 @@ pub(super) unsafe fn check_type(object: *mut capi::PyObject, name: &str) -> bool
     if object.is_null() {
         return false;
     }
-    let registered = types()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(name)
-        .copied();
-    match registered {
+    match type_snapshot().and_then(|types| types.get(name).copied()) {
         Some(address) => (unsafe { capi::Py_TYPE(object) }) as usize == address,
         None => false,
     }
@@ -85,11 +109,7 @@ pub(super) unsafe fn check_type(object: *mut capi::PyObject, name: &str) -> bool
 /// The address of a created type object, for hosts that need to build
 /// instances of it.
 pub(super) fn type_address(name: &str) -> Option<usize> {
-    types()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(name)
-        .copied()
+    type_snapshot().and_then(|types| types.get(name).copied())
 }
 
 /// One instance teardown: drops the Rust body the instance carries, the
@@ -455,10 +475,12 @@ pub fn reset() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clear();
-    types()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+    // The snapshot registries retire by swinging the pointer back to null:
+    // readers then see an empty table, the superseded snapshots stay
+    // allocated (a fini-time reader may still hold one), and a subsequent
+    // init starts from a fresh table.
+    TYPES.store(std::ptr::null_mut(), Ordering::Release);
+    vector::reset();
 }
 
 /// `ProviderStore::tick(dTime)` (`script_math.cpp:5329-5350`), the step the
