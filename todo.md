@@ -1396,7 +1396,7 @@
   - 证据：`ChunkSpace::scan` 复刻 `ChunkManager::scan`（GridComp 平方半径序、maxLoadPath 世界距离断、inWorldBounds 过滤、find-or-create、MAX_WORTHY_CHUNKS=50 截断，同层 tie-break 登记为确定性分歧）；`bind`/`bind_back` 复刻 `bindPortals` + `Chunk::bind(Chunk*)`（heaven 即绑、目标已绑才连、双向对移、centre=transform∘lcentre，extern/invasive 解析登记为 BW-10-02 缺口）。夹具绑定序列 `[00000000o,00000001o,00010000o,00010001o]` 钉死，缺文件块拒载、未装载拒绑、重入幂等均有测。llvm-cov 全 crate 行 98.62%。详见 docs/review/bw10-01-chunk-load.md 的 BW-10-01-03 节。commit `934a268`。
 - [x] **BW-10-01-04 卸载 Chunk 及场景对象**。**验收** 查询结果和资源释放符合基线。
   - 证据: `Chunk::removable`+`ChunkSpace::{unbind,unload_chunk,unload_farthest,unbind_portal,unbind_back}`+`intersects_with_bias`(chunk.cpp:914-984/1292-1458/2083-2136、chunk_boundary.cpp:185-191、chunk_manager.cpp:92-95/2085/2236-2366、boundbox.ipp:313-317);夹具集成两例(最远卸载+资源释放+重载重绑、cut 语义=室内 INVASIVE/室外 Nothing 双侧扁平化+heaven 室外保持)+lib 单测五例(尾插序/internal 逐出 joints/滞回+偏置+覆盖+可移除+单趟 1 上限/半开偏置/未覆盖壳);space.rs 99.54%(强制 cut 腿 BW-10-02 前不可达,登记),全 crate ≥98.75%,chunk 29+11 绿,workspace 4729/0;证据与登记见 docs/review/bw10-01-chunk-load.md BW-10-01-04 节,commit b57e4b9
-- [ ] **BW-10-01-05 实现空间索引**。**验收** 跨 Chunk 与空白区查询返回正确集合。
+- [x] **BW-10-01-05 实现空间索引**。**验收** 跨 Chunk 与空白区查询返回正确集合。（bw19-docs 席 6fa79e7 独立落地，lane/bw19-docs 未并 main——合并须带入并核四候选 overlap：本席 6fa79e7/地形 2801186/bw16-18 d6e8192/bw02-mercury af6b43d，主席择一；本席 2026-11-26 临时 worktree 挂 6fa79e7 真机复测：`cargo test -p chunk` 52 lib+11 集成全绿，space.rs focus 面 49 处在档，与彼席验收计数逐项同）
 
 #### BW-10-02 编译空间和场景查询
 
