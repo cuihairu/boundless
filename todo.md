@@ -1384,9 +1384,9 @@
   - 证据：`crates/db-postgres/src/upgrade.rs`（9aacde0）schema 差量更新；验收 `tests/upgrade.rs` `an_old_sample_upgrades_and_stays_readable`（旧样本升级后可读）+`a_missing_table_plans_a_create`+`an_unchanged_table_plans_nothing`。
 - [x] **BW-09-07-04 导出并恢复备份**。**验收** 空目标库恢复相同记录。（commit e4d24e5）
   - 证据：`crates/db-postgres/src/backup.rs`（e4d24e5）导出与恢复；验收 `tests/backup.rs` `an_empty_target_restores_identical_records`（空目标库恢复相同记录）+`a_re_restore_replaces_the_rows_without_duplicating`+缺失目标表失败臂。
-- [ ] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。
-- [ ] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。
-- [ ] **BW-09-07-07 验证迁移失败与重跑**。**验收** 下次执行不重复导入。
+- [x] **BW-09-07-05 导入 MySQL 实体及账号**。**验收** ID、关系和二进制字段对照。结果：`import_entities`/`import_accounts` + `MySqlEntityRow`/`ImportReport`（落点=显式 id 写 insertExplicit put_entity_task.cpp:89-97，源 DBID 逐字存活）；缺席槽创建、同值槽跳过计档、异值槽报错并点名两形（存行不动）、账号同名异密文报 DuplicateAccount（唯一 log-on 键不静默迁移）；源布局=参照写盘形 tbl_<TypeName> id 键+sm_<prop> 列 与 bigworldLogOnMapping 二进制列（decoded-row 契约，驱动侧解码）；套件 tests/import_mysql.rs 5 例——ID/二进制字段逐行对照（NUL/高位/非 UTF-8 负载 sm_data 逐字节）、账号关系解析到在场实体且字节往返、重跑 written=0/skipped=all 无重复、冲突槽两形点名存行不动无第二行、异密文 DuplicateAccount 立足行不动；db-postgres 2322/2325=99.87%（import_mysql.rs 100%）。（commit 9d2ebde）
+- [x] **BW-09-07-06 校准导入后的 DBID 分配**。**验收** 新建实体不冲突。结果：`PostgresStorage::calibrate_dbid_allocation(schema)→DatabaseId`——`setval(pg_get_serial_sequence($1,'id'), (SELECT COALESCE(MAX("id"),0)+1 FROM tbl), false)`（表名带引号进参=pg_get_serial_sequence 按标识符解析故大小写不折；is_called=false 故下一 nextval 恰返回 max+1 不烧号；空表校准回起始值 1）；参照无需此步（AUTO_INCREMENT 态随数据走、其唯一行合并路是往活 primary 重放 consolidate_entity_task.cpp:27-34）故此为移植自有缝；套件 tests/calibration.rs 3 例——导入 5/900/40000 后校准=40001、连创 3 个恰 40001..40003 不撞导入 id、未校准的导入后首创=AlreadyExists（缝存在所防的失败实证）、空表校准=1 首创恰取之、再校准=2；单元测钉语句字面量。（commit 0fc140a）
+- [x] **BW-09-07-07 验证迁移失败与重跑**。**验收** 下次执行不重复导入。结果：套件 tests/import_rerun.rs 2 例——实体批中途坏行（1 值对 3 列）中断：已落地行 7 原封、8/9 未落、修正后重跑 written=2/skipped=1（落地行既不重复也不覆写）、三行各按源值、第三遍纯 skipped=3 且行数仍 3；账号批被同名异实体绊中断（DuplicateAccount）：立足映射不动（entity 7 非 99）、fresh 行已落、整集重跑 written=0/skipped=2、bigworldLogOnMapping 行数恒 2 每名一行；批次逐行落地语义与参照 buffered_entity_tasks 一致（调用方未包事务则已完成的写保留）。（commit 50f2de1）
 
 ### BW-10 世界资源、碰撞和导航
 
