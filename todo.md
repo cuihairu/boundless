@@ -1730,8 +1730,9 @@
 - 落账（2026-11-25，本席零代码同步）：main 已勾，活面在 `asset-pipeline/src/res_packer.rs`。
 - [x] **BW-13-02-04 移植 resourcechecker**。**验收** 同一坏资源得到对应诊断。
 - 落账（2026-11-25，本席零代码同步）：main 已勾（8678b06+16eda65 已推 lane/bw15-platform 席，main 行证据 `resource_checker.rs` 活面在树）。
-- [ ] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。
-  - 落账（2026-11-25 本席核）：**仍真卡点，不勾**——前置 BW-10-05-02（flood）已交付 `e572b23`（main 活树 `waypoint-gen/src/flood.rs`），但 BW-10-05-03（Recast 移植范围）由地形席登记「挂起待用户拍板，不得自行选范围」（见其档）；原版入口 `tools/navgen` 是 Windows MFC `wWinMain`（`navgen.cpp:5230`，`bwWinMain:4720` 读 `--settings`，`/s`+`/g`+`/overwrite` 命令行臂 `:4920-5045` 最终走 `doGenerateAll:2257`，单块 `doGenerate:1819` 按 girth 调 `ChunkWaypointGenerator::{flood,generate,output}`），**EL7 树无 navgen 二进制**，本机无 MSVC，故「可调用 BW-10 的导航生成」的入口回归在当前平台不可执行；可调用的库级等价面已由 bw16-18 席 05-04 `977f555`（`workflow.rs` per-girth 环）承载，待主席并 lane 且 05-03 拍板后复验。
+- [x] **BW-13-02-05 回归 NavGen 入口**。**验收** 可调用 BW-10 的导航生成。（bw16-18 席 79f47c4/1f671cc，origin/lane/bw16-18）
+  - 落账（2026-11-25 本席核）：bw16-18 席交付 `79f47c4`+勾 `1f671cc`——`crates/asset-pipeline/src/navmesh_processor.rs`（2738 行/55 测）在 `lib.rs:115` 已声明；`LockedChunks` 引用计数、`ChunkProcessorManagerFace` 室外网格环+overlappers/室内四邻接递归+portal visited 去重、`ScopedLockedChunkHolder` 双插幂等、`ChunkProcessorTask` 三分支 process/cancel/doMain/cleanup（监听器自注销重放被抹槽位语义）、`NavmeshProcessor` 逐 girth abort→flood→`generate_from_flood`→`as_binary` 追加、`NavmeshCache` load/save/recalc/ready/扇出全端口。原版 Windows MFC `wWinMain` 入口仍不可执行，库级等价面满足「可调用 BW-10 的导航生成」。真机复测（临时 worktree 挂 origin/lane/bw16-18 1f671cc）：`cargo test -p asset-pipeline` **322/322 绿**（含 55 新测）。main 活树无该模块，待主席并 lane；BW-10-05-03 Recast 范围仍挂起不因此解锁。
+  - 旧注记（已作废）：前置 BW-10-05-02（flood）已交付 `e572b23`（main 活树 `waypoint-gen/src/flood.rs`），但 BW-10-05-03（Recast 移植范围）由地形席登记「挂起待用户拍板，不得自行选范围」（见其档）；原版入口 `tools/navgen` 是 Windows MFC `wWinMain`（`navgen.cpp:5230`，`bwWinMain:4720` 读 `--settings`，`/s`+`/g`+`/overwrite` 命令行臂 `:4920-5045` 最终走 `doGenerateAll:2257`，单块 `doGenerate:1819` 按 girth 调 `ChunkWaypointGenerator::{flood,generate,output}`），**EL7 树无 navgen 二进制**，本机无 MSVC，故「可调用 BW-10 的导航生成」的入口回归在当前平台不可执行；可调用的库级等价面已由 bw16-18 席 05-04 `977f555`（`workflow.rs` per-girth 环）承载，待主席并 lane 且 05-03 拍板后复验。
 
 #### BW-13-03 WorldEditor
 
