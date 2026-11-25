@@ -2877,7 +2877,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -4458,7 +4458,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -6000,7 +6000,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -7542,7 +7542,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -9123,7 +9123,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
@@ -10665,7 +10665,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 基于实测评估 AOI 索引、Witness 调度及安全的空间并行，衡量密集区 tick、广播量和跨边界迁移时长。复核可见集和事件顺序。
 
-- [ ] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。
+- [x] **OPT-08-01-01 记录密集 AOI 基线**。**验收** 保存 Tick、广播量和迁移耗时。已交付 eee8fde：crates/server-runtime/src/aoi_baseline.rs 全 shipped 栈逐 tick 接线（cross 范围列表 move_entity shuffle ±0.75m 确定步/AoI trigger 跨界喂 witness add_to_aoi→flush→EnterAoI→request_entity_update 回应→CreateEntity/vision trigger 喂 vision_update 1.2rad 锥 28m 每 tick 清晰地形/Witness::update 预算调度 setWitnessCapacity(64000,10)=772B/tick 密集下绑定）。120 实体 10×12 格 4m 间距单观察者：账本=48+16 tick、tick0 创建爆发 289 消息 2704B（120 EnterAoI+120 CreateEntity）、tick1 首见爆发 44 starts、稳态窗(8..48) 4654B ≈116B/tick 预算绑死、总广播 5708 消息 9188B、AoI 跨界 120 进 0 出、seeing churn 77/31；迁移腿=handover 46 可见→目的地静默种子 46→真新 id 重公告 12、重复公告 0(diff 契约)、2 tick 收敛到 native 观察者集合(42)。断言全结构性（爆发一次性/稳态不超预算且恒发/种子无声/start 永不命中已持有 id/收敛 native/全账本逐 tick 复跑恒等）；墙钟探针(seeing 4.0ms/scheduling 392ms over 64 tick)只打印。面发现：目的地 vision trigger 必须由 vision_start_real 新建——预建 trigger 令 restore 的 set_vision(None→Some) 走清空路径、entities_in_vision_range 留空种子盲走；迁移实体 startReal 重建 trigger 正是 range 填充正确的机理。docs/review/opt-08-01-01-dense-aoi-baseline.md。门禁 server-runtime lib 1748 绿/fmt/clippy 净。
 - [ ] **OPT-08-01-02 评估 AOI 索引与 Witness 调度**。**验收** 报告候选收益。
 - [ ] **OPT-08-01-03 评估空间并行**。**验收** 报告跨边界时序及耗时。
 - [ ] **OPT-08-01-04 复跑可见集、事件顺序和迁移**。**验收** 状态正确。
