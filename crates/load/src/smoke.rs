@@ -343,8 +343,8 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/load/scenarios")
             .join(format!("{name}.xml"));
-        let raw = std::fs::read(&path).expect(&format!("saved scenario {name} missing"));
-        Scenario::load_xml(&raw).expect(&format!("saved {name}.xml failed to load"))
+        let raw = std::fs::read(&path).unwrap_or_else(|_| panic!("saved scenario {name} missing"));
+        Scenario::load_xml(&raw).unwrap_or_else(|_| panic!("saved {name}.xml failed to load"))
     }
 
     fn caps() -> SmokeCaps {
@@ -368,7 +368,7 @@ mod tests {
         &metrics
             .iter()
             .find(|(k, _)| k == key)
-            .expect(&format!("no {key} metric"))
+            .unwrap_or_else(|| panic!("no {key} metric"))
             .1
     }
 
