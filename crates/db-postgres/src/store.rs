@@ -351,6 +351,20 @@ fn row_exists_sql(schema: &EntitySchema) -> String {
     )
 }
 
+/// The calibration statement (see [`PostgresStorage::calibrate_dbid_allocation`]):
+/// moves the table's sequence to `max(id) + 1` and leaves it un-consumed,
+/// so the next allocation is exactly that value. The table name goes in as
+/// a parameter — `pg_get_serial_sequence` parses its arguments like
+/// identifiers, so the name arrives already quoted.
+fn calibrate_dbid_sql(schema: &EntitySchema) -> String {
+    format!(
+        "SELECT setval(pg_get_serial_sequence($1, 'id'), \
+         (SELECT COALESCE(MAX({}), 0) + 1 FROM {}), false)",
+        quote_ident(ID_COLUMN),
+        schema.quoted_table()
+    )
+}
+
 /// The logon-record statements. `bigworldLogOns` is a fixed table — the
 /// database initialisation creates it — and `entity_type_mapping.cpp`
 /// carries the reference's queries. A relogon overwrites: `addLogOnQuery`
@@ -725,6 +739,34 @@ impl PostgresStorage {
             Some(_) => {}
         }
         Ok(())
+    }
+
+    /// Recalibrates the table's identity sequence after explicit ids were
+    /// written (the import and the restore): an identity column does not
+    /// advance for a value given outright, so the first create after the
+    /// pass would hand back an id an imported row already holds — the
+    /// duplicate-primary-key outcome of `insertExplicit`
+    /// (put_entity_task.cpp:93-97). The reference never needs the step:
+    /// its `AUTO_INCREMENT` state lives in the table itself and travels
+    /// with the copied data, and its only row-merge path replays rows
+    /// into a live primary (consolidate_entity_task.cpp:27-34), so this
+    /// is the port's own seam. `setval` runs with `is_called` false, so
+    /// the next `nextval` returns exactly `max(id) + 1` rather than
+    /// skipping a value; an empty table recalibrates to its start value.
+    /// Returns the next allocatable DBID.
+    pub fn calibrate_dbid_allocation(
+        &mut self,
+        schema: &EntitySchema,
+    ) -> Result<DatabaseId, DbError> {
+        let row = self
+            .client
+            .borrow_mut()
+            .query_one(
+                calibrate_dbid_sql(schema).as_str(),
+                &[&schema.quoted_table()],
+            )
+            .map_err(map_db_error)?;
+        Ok(row.get::<_, i64>(0))
     }
 
     /// Sets the auto-load status of an entity's logon record
@@ -1284,6 +1326,17 @@ mod tests {
         assert_eq!(
             row_exists_sql(&schema()),
             "SELECT 1 FROM \"tbl_Account\" WHERE \"id\" = $1"
+        );
+    }
+
+    #[test]
+    fn the_calibration_moves_the_sequence_past_the_last_explicit_id() {
+        assert_eq!(
+            calibrate_dbid_sql(&schema()),
+            concat!(
+                "SELECT setval(pg_get_serial_sequence($1, 'id'), ",
+                "(SELECT COALESCE(MAX(\"id\"), 0) + 1 FROM \"tbl_Account\"), false)"
+            )
         );
     }
 
