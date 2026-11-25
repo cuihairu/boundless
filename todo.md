@@ -2860,7 +2860,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`4c19ee7`：shared_data_baseline/tuning.rs 96 变更真实双 mgr 链 shipped 575 vs 抑制 no-op 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席择一，未决前行保持本勾态。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -2876,8 +2876,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
 - [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。他席已交付并勾行未进 main：bw14-script-host `9dda748`+勾 `426ca21`（pool_merge_eval.rs 同一 48 写+48 读种子三形状过真 PG：shipped 96 语句 48 提交 vs unpooled 96 次连接 ≈4×墙钟 vs merged 单事务 1 提交+ANY 读 ≈6×吞吐 75ms，落盘 48→1；结构计数断言=后端无关，MySQL 半=语句形状恒等）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。他席已交付并勾行未进 main：bw14-script-host `01d391c`+勾 `fb43644`（archive_batch_eval.rs 同一 64 行种子三写形过真 PG：autocommit ~540ms vs 事务批 ~165ms(≈3.3×) vs 单条多行 INSERT ~4-5ms(≈100×)，rows_ok=64 逐行相等；归档整合 export_backup→restore_backup→重导出逐记录相等；墙钟只打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -4421,7 +4421,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`4c19ee7`：shared_data_baseline/tuning.rs 96 变更真实双 mgr 链 shipped 575 vs 抑制 no-op 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席择一，未决前行保持本勾态。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -4437,8 +4437,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
 - [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。他席已交付并勾行未进 main：bw14-script-host `9dda748`+勾 `426ca21`（pool_merge_eval.rs 同一 48 写+48 读种子三形状过真 PG：shipped 96 语句 48 提交 vs unpooled 96 次连接 ≈4×墙钟 vs merged 单事务 1 提交+ANY 读 ≈6×吞吐 75ms，落盘 48→1；结构计数断言=后端无关，MySQL 半=语句形状恒等）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。他席已交付并勾行未进 main：bw14-script-host `01d391c`+勾 `fb43644`（archive_batch_eval.rs 同一 64 行种子三写形过真 PG：autocommit ~540ms vs 事务批 ~165ms(≈3.3×) vs 单条多行 INSERT ~4-5ms(≈100×)，rows_ok=64 逐行相等；归档整合 export_backup→restore_backup→重导出逐记录相等；墙钟只打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -5943,7 +5943,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`4c19ee7`：shared_data_baseline/tuning.rs 96 变更真实双 mgr 链 shipped 575 vs 抑制 no-op 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席择一，未决前行保持本勾态。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -5959,8 +5959,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
 - [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。他席已交付并勾行未进 main：bw14-script-host `9dda748`+勾 `426ca21`（pool_merge_eval.rs 同一 48 写+48 读种子三形状过真 PG：shipped 96 语句 48 提交 vs unpooled 96 次连接 ≈4×墙钟 vs merged 单事务 1 提交+ANY 读 ≈6×吞吐 75ms，落盘 48→1；结构计数断言=后端无关，MySQL 半=语句形状恒等）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。他席已交付并勾行未进 main：bw14-script-host `01d391c`+勾 `fb43644`（archive_batch_eval.rs 同一 64 行种子三写形过真 PG：autocommit ~540ms vs 事务批 ~165ms(≈3.3×) vs 单条多行 INSERT ~4-5ms(≈100×)，rows_ok=64 逐行相等；归档整合 export_backup→restore_backup→重导出逐记录相等；墙钟只打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -7465,7 +7465,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`4c19ee7`：shared_data_baseline/tuning.rs 96 变更真实双 mgr 链 shipped 575 vs 抑制 no-op 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席择一，未决前行保持本勾态。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -7481,8 +7481,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
 - [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。他席已交付并勾行未进 main：bw14-script-host `9dda748`+勾 `426ca21`（pool_merge_eval.rs 同一 48 写+48 读种子三形状过真 PG：shipped 96 语句 48 提交 vs unpooled 96 次连接 ≈4×墙钟 vs merged 单事务 1 提交+ANY 读 ≈6×吞吐 75ms，落盘 48→1；结构计数断言=后端无关，MySQL 半=语句形状恒等）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。他席已交付并勾行未进 main：bw14-script-host `01d391c`+勾 `fb43644`（archive_batch_eval.rs 同一 64 行种子三写形过真 PG：autocommit ~540ms vs 事务批 ~165ms(≈3.3×) vs 单条多行 INSERT ~4-5ms(≈100×)，rows_ok=64 逐行相等；归档整合 export_backup→restore_backup→重导出逐记录相等；墙钟只打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -9026,7 +9026,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`4c19ee7`：shared_data_baseline/tuning.rs 96 变更真实双 mgr 链 shipped 575 vs 抑制 no-op 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席择一，未决前行保持本勾态。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -9042,8 +9042,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
 - [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。他席已交付并勾行未进 main：bw14-script-host `9dda748`+勾 `426ca21`（pool_merge_eval.rs 同一 48 写+48 读种子三形状过真 PG：shipped 96 语句 48 提交 vs unpooled 96 次连接 ≈4×墙钟 vs merged 单事务 1 提交+ANY 读 ≈6×吞吐 75ms，落盘 48→1；结构计数断言=后端无关，MySQL 半=语句形状恒等）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。他席已交付并勾行未进 main：bw14-script-host `01d391c`+勾 `fb43644`（archive_batch_eval.rs 同一 64 行种子三写形过真 PG：autocommit ~540ms vs 事务批 ~165ms(≈3.3×) vs 单条多行 INSERT ~4-5ms(≈100×)，rows_ok=64 逐行相等；归档整合 export_backup→restore_backup→重导出逐记录相等；墙钟只打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -10548,7 +10548,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
-- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)
+- [x] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。(3d94054)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`4c19ee7`：shared_data_baseline/tuning.rs 96 变更真实双 mgr 链 shipped 575 vs 抑制 no-op 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席择一，未决前行保持本勾态。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -10564,8 +10564,8 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
 - [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
-- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。他席已交付并勾行未进 main：bw14-script-host `9dda748`+勾 `426ca21`（pool_merge_eval.rs 同一 48 写+48 读种子三形状过真 PG：shipped 96 语句 48 提交 vs unpooled 96 次连接 ≈4×墙钟 vs merged 单事务 1 提交+ANY 读 ≈6×吞吐 75ms，落盘 48→1；结构计数断言=后端无关，MySQL 半=语句形状恒等）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。他席已交付并勾行未进 main：bw14-script-host `01d391c`+勾 `fb43644`（archive_batch_eval.rs 同一 64 行种子三写形过真 PG：autocommit ~540ms vs 事务批 ~165ms(≈3.3×) vs 单条多行 INSERT ~4-5ms(≈100×)，rows_ok=64 逐行相等；归档整合 export_backup→restore_backup→重导出逐记录相等；墙钟只打印不断言）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
