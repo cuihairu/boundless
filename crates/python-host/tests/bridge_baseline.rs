@@ -260,7 +260,70 @@ fn temp_resource_root() -> PathBuf {
     root
 }
 
-/// `Script::init`'s config with the fixture root in the path list.
+/// Leg 4: the server timer fire path — the native→Python conversion a
+/// running cell pays on every fire of every repeating timer. `K`
+/// repeating timers are registered from script and driven by the
+/// engine tick; each fire carries `(id, userArg)` across the bridge,
+/// so the aggregate per-fire cost includes the conversion block the
+/// fire path builds. The fired count is asserted; the per-fire
+/// nanoseconds are recorded.
+fn timer_fire_leg(record: &mut Record, interpreter: &Interpreter) {
+    const TIMERS: usize = 32;
+    const TICKS: usize = 64;
+    const FIRES: usize = TIMERS * TICKS;
+
+    assert!(
+        interpreter.run_simple_string(
+            "import BigWorld\n\
+             fire_count = [0]\n\
+             def on_fire(id, userArg):\n\
+             \x20   fire_count[0] += 1\n\
+             for _ in range(32):\n\
+             \x20   BigWorld.addTimer(on_fire, 0.1, 0.1, 9)\n\
+             ",
+        ),
+        "registering the timers failed"
+    );
+
+    // One tick of 0.1s at the 10 Hz server clock advances the queue one
+    // step, so each timer fires once per tick.
+    let started = Instant::now();
+    for _ in 0..TICKS {
+        python_host::timers::tick(0.1);
+    }
+    let elapsed = started.elapsed();
+
+    // Read the fired count back out of __main__ through the probe the
+    // interpreter scenarios use.
+    assert!(
+        interpreter.run_simple_string("__probe = fire_count[0]\n"),
+        "probing the fired count failed"
+    );
+    let module = unsafe { capi::PyImport_AddModule(c"__main__".as_ptr()) };
+    assert!(!module.is_null(), "fetching __main__ failed");
+    let holder = PyRef::borrowed(module);
+    let probe = unsafe { capi::PyObject_GetAttrString(holder.as_ptr(), c"__probe".as_ptr()) };
+    let probe = PyRef::from_owned(probe).expect("fetching __probe failed");
+    let fired = unsafe { capi::PyLong_AsLongLong(probe.as_ptr()) };
+    assert_eq!(
+        fired, FIRES as i64,
+        "every timer must fire exactly once per tick"
+    );
+
+    record.put("timer_fire_count", FIRES);
+    record.put(
+        "timer_fire_ns_per_fire",
+        format!("{:.1}", elapsed.as_nanos() as f64 / FIRES as f64),
+    );
+    record.put(
+        "timer_fire_ticks_s",
+        format!("{:.3}", elapsed.as_secs_f64()),
+    );
+}
+
+/// `Script::init`'s config with the fixture root in the path list and
+/// the `cell` component, which carries the server timer table the fire
+/// leg drives.
 fn baseline_config() -> InitConfig {
     let root = temp_resource_root();
     let root_path = root.to_str().expect("a UTF-8 root").to_owned();
@@ -268,6 +331,7 @@ fn baseline_config() -> InitConfig {
     paths.add_res_path(&[&root_path], import_paths::COMMON_PATH);
     InitConfig {
         import_paths: paths,
+        component: "cell".to_owned(),
         ..InitConfig::default()
     }
 }
@@ -283,6 +347,7 @@ fn the_python_bridge_baseline_runs_all_legs() {
 
     conversion_leg(&mut record);
     callback_leg(&mut record, &interpreter);
+    timer_fire_leg(&mut record, &interpreter);
     gil_leg(&mut record);
 
     assert_eq!(
