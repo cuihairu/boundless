@@ -12,6 +12,7 @@ pub mod cell_data;
 pub mod cellapp_ghost;
 pub mod cellapp_movement;
 pub mod cellapp_navigate;
+pub mod cellapp_noise;
 pub mod cellapp_passenger;
 pub mod cellapp_range_list;
 pub mod cellapp_real_entity;

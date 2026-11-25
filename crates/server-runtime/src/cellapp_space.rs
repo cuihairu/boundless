@@ -1853,6 +1853,11 @@ pub struct CellApp {
     /// `EntityVision`'s diff callbacks: one entry per
     /// `onStartSeeing`/`onStopSeeing`.
     pub vision_calls: Vec<crate::cellapp_vision::VisionCall>,
+    /// `Entity::heardNoise`'s deliveries: one entry per `onNoise` the
+    /// noise dispatch ran (the payload tuple
+    /// `(who, propRange, distance, event, info)` the script call alone
+    /// cannot carry).
+    pub noise_calls: Vec<crate::cellapp_noise::NoiseCall>,
     /// The live traps, by controller id: the trigger, the trap range
     /// and the recorder sink the range-list crossings land in.
     pub trap_triggers:
@@ -1987,6 +1992,7 @@ impl Default for CellApp {
             dead_apps: BTreeSet::new(),
             trap_calls: Vec::new(),
             vision_calls: Vec::new(),
+            noise_calls: Vec::new(),
             trap_triggers: BTreeMap::new(),
             trap_members: BTreeMap::new(),
             vision_triggers: BTreeMap::new(),

@@ -1485,6 +1485,10 @@ impl CellApp {
         // the pass shuffled dispatch here (the reference fires them
         // synchronously inside the shuffles).
         self.dispatch_sensor_events();
+        // The witnesses' stealth noises pump here too —
+        // `Witness::newPosition`'s synchronous `makeNoise`
+        // (`witness.cpp:2398`).
+        self.dispatch_witness_noises();
         self.time_queue.process(self.time);
         let events = std::mem::take(&mut *self.router_events.borrow_mut());
         for event in events {
