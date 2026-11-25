@@ -411,6 +411,7 @@ pub fn run(role: &str, config: &BwConfig) -> Result<(), AppError> {
             let external_config = crate::loginapp_interface::LoginAppConfig::from_config(config);
             let external = crate::loginapp_interface::open(
                 &external_config,
+                crate::loginapp_login::LoginFacesConfig::from_config(config),
                 std::rc::Rc::clone(&mercury_dispatcher),
             );
             Some(external)

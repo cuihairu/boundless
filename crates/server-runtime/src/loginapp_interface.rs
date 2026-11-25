@@ -55,6 +55,9 @@ use platform::socket;
 use resources::bwresource::current_uid;
 
 use crate::config::BwConfig;
+use crate::loginapp_login::{
+    ChallengeResponseHandler, LoginFaces, LoginFacesConfig, LoginRequestHandler, NoLogOnForward,
+};
 
 /// `PORT_LOGIN` (`lib/network/portmap.hpp:7`), the login interface's
 /// default external port.
@@ -157,6 +160,9 @@ pub struct LoginAppInterface {
     /// `gNumLogins` (loginapp.cpp:70): incremented by the login chain
     /// (loginapp.cpp:1329), reported by the probe (loginapp.cpp:1185).
     users_count: Rc<Cell<u32>>,
+    /// The `login` / `challengeResponse` faces served over the same
+    /// interface, sharing `gNumLogins` with the probe.
+    faces: Rc<LoginFaces>,
 }
 
 impl LoginAppInterface {
@@ -170,10 +176,10 @@ impl LoginAppInterface {
         self.users_count.get()
     }
 
-    /// Bump `gNumLogins` -- the login chain's `++gNumLogins`
-    /// (loginapp.cpp:1329), wired when the login face lands.
-    pub fn count_login(&self) {
-        self.users_count.set(self.users_count.get() + 1);
+    /// The login faces, for the DBApp registration faces and the tests
+    /// that drive them.
+    pub fn faces(&self) -> &Rc<LoginFaces> {
+        &self.faces
     }
 }
 
@@ -182,7 +188,15 @@ impl LoginAppInterface {
 /// its dispatch table. A failed bind leaves the interface not-good,
 /// exactly as the reference member initialisation leaves `extInterface_`;
 /// [`check`] reports it at the `init` position.
-pub fn open(config: &LoginAppConfig, dispatcher: Rc<EventDispatcher>) -> Rc<LoginAppInterface> {
+///
+/// `faces_config` is the `loginApp` section read twice by the reference:
+/// once by the probe and the interface options, once more by the login
+/// chain's gates (`LoginApp`'s `Config::` reads).
+pub fn open(
+    config: &LoginAppConfig,
+    faces_config: LoginFacesConfig,
+    dispatcher: Rc<EventDispatcher>,
+) -> Rc<LoginAppInterface> {
     let (interface, _receiver) = NetworkInterface::new_on_dispatcher(
         InterfaceType::External,
         dispatcher,
@@ -192,13 +206,23 @@ pub fn open(config: &LoginAppConfig, dispatcher: Rc<EventDispatcher>) -> Rc<Logi
 
     let table = Rc::new(InterfaceTable::new());
     let users_count = Rc::new(Cell::new(0));
+    let faces = Rc::new(LoginFaces::new(
+        faces_config,
+        Rc::downgrade(&interface),
+        Rc::clone(&users_count),
+        Rc::new(NoLogOnForward),
+    ));
     let probe = Rc::new(ProbeHandler {
         log_probes: config.log_probes,
         allow_probe: config.allow_probe,
         users_count: Rc::clone(&users_count),
         interface: Rc::downgrade(&interface),
     });
-    let minder = login_minder(Some(probe));
+    let minder = login_minder(
+        Some(Rc::new(LoginRequestHandler(Rc::clone(&faces)))),
+        Some(probe),
+        Some(Rc::new(ChallengeResponseHandler(Rc::clone(&faces)))),
+    );
     minder.register_with_interface(&table);
 
     // The off-channel datagrams reach the table through this sink; the
@@ -210,6 +234,7 @@ pub fn open(config: &LoginAppConfig, dispatcher: Rc<EventDispatcher>) -> Rc<Logi
     Rc::new(LoginAppInterface {
         interface,
         users_count,
+        faces,
     })
 }
 
@@ -240,14 +265,18 @@ fn check_interface(is_good: bool, ip: u32) -> Result<(), BindError> {
 }
 
 /// The `LoginInterface` elements (`login_interface.hpp`), in declaration
-/// order -- which is the id order. `login` and `challengeResponse` are
-/// served with no handler until the login-chain faces land; `probe` gets
-/// the handler that answers it.
-fn login_minder(probe: Option<Rc<dyn InputMessageHandler>>) -> InterfaceMinder {
+/// order -- which is the id order: `login` gets `LoginApp::login`'s face,
+/// `probe` the handler that answers it, `challengeResponse` the face that
+/// verifies the client's challenge answer.
+fn login_minder(
+    login: Option<Rc<dyn InputMessageHandler>>,
+    probe: Option<Rc<dyn InputMessageHandler>>,
+    challenge: Option<Rc<dyn InputMessageHandler>>,
+) -> InterfaceMinder {
     let minder = InterfaceMinder::new("LoginInterface");
-    minder.add("login", VARIABLE_LENGTH_MESSAGE, 2, None);
+    minder.add("login", VARIABLE_LENGTH_MESSAGE, 2, login);
     minder.add("probe", FIXED_LENGTH_MESSAGE, 0, probe);
-    minder.add("challengeResponse", VARIABLE_LENGTH_MESSAGE, 2, None);
+    minder.add("challengeResponse", VARIABLE_LENGTH_MESSAGE, 2, challenge);
     minder
 }
 
@@ -460,6 +489,21 @@ mod tests {
         pairs
     }
 
+    /// The reply frame's body: `[flags 2][reply id byte][4-byte length]
+    /// [4-byte reply id][body]`, the length counting the reply id with
+    /// the body. Answers `(reply id, body)`, the body copied out.
+    fn reply_frame(reply: &[u8]) -> (i32, Vec<u8>) {
+        assert_eq!(
+            u16::from_le_bytes(reply[0..2].try_into().unwrap()),
+            0,
+            "an off-channel reply carries no flags"
+        );
+        assert_eq!(reply[2], REPLY_MESSAGE_IDENTIFIER, "the reply id byte");
+        let length = u32::from_le_bytes(reply[3..7].try_into().unwrap()) as usize;
+        let reply_id = i32::from_le_bytes(reply[7..11].try_into().unwrap());
+        (reply_id, reply[11..11 + length - 4].to_vec())
+    }
+
     // -- config --------------------------------------------------------
 
     /// The defaults are the reference's `BW_OPTION` defaults
@@ -540,9 +584,9 @@ mod tests {
     // -- elements ------------------------------------------------------
 
     /// The three elements take ids 0, 1, 2 in declaration order, with
-    /// the styles the reference declares (`login_interface.hpp`): probe
-    /// served with the handler, the two login-chain faces unserved
-    /// until their items land.
+    /// the styles the reference declares (`login_interface.hpp`); a
+    /// minder built without the login-chain handlers serves only the
+    /// probe.
     #[test]
     fn the_login_interface_elements_match_the_reference() {
         let probe: Rc<dyn InputMessageHandler> = Rc::new(ProbeHandler {
@@ -551,14 +595,14 @@ mod tests {
             users_count: Rc::new(Cell::new(0)),
             interface: Weak::new(),
         });
-        let minder = login_minder(Some(probe));
+        let minder = login_minder(None, Some(probe), None);
         assert_eq!(minder.len(), 3, "login, probe, challengeResponse");
 
         let login = minder.interface_element(0);
         assert_eq!(login.name(), "login");
         assert_eq!(login.length_style(), VARIABLE_LENGTH_MESSAGE);
         assert_eq!(login.length_param(), 2);
-        assert!(login.handler().is_none(), "the login face is unported");
+        assert!(login.handler().is_none(), "no handler was supplied");
 
         let probe_element = minder.interface_element(1);
         assert_eq!(probe_element.name(), "probe");
@@ -636,7 +680,11 @@ mod tests {
             should_offset_external_port_by_uid: false,
         };
         assert_ne!(bound_ip, 0);
-        let login = open(&config, Rc::new(EventDispatcher::new()));
+        let login = open(
+            &config,
+            crate::loginapp_login::LoginFacesConfig::new(),
+            Rc::new(EventDispatcher::new()),
+        );
         assert!(!login.interface().is_good(), "the bind failed");
         assert_eq!(check(&login), Err(BindError::ExternalInterface));
     }
@@ -790,7 +838,7 @@ mod tests {
     /// `REASON_NONEXISTENT_ENTRY` the way it does for any unserved id.
     #[test]
     fn an_unserved_login_id_takes_the_discard_arm() {
-        let minder = login_minder(None);
+        let minder = login_minder(None, None, None);
         let table = Rc::new(InterfaceTable::new());
         minder.register_with_interface(&table);
         let sink = LoginInterfaceDispatch {
@@ -815,7 +863,7 @@ mod tests {
     /// check, udp_channel.rs:1104-1112).
     #[test]
     fn a_request_footer_that_does_not_fit_is_corrupted() {
-        let minder = login_minder(None);
+        let minder = login_minder(None, None, None);
         let table = Rc::new(InterfaceTable::new());
         minder.register_with_interface(&table);
         let sink = LoginInterfaceDispatch {
@@ -864,7 +912,11 @@ mod tests {
             should_offset_external_port_by_uid: false,
         };
         let dispatcher = Rc::new(EventDispatcher::new());
-        let login = open(&config, Rc::clone(&dispatcher));
+        let login = open(
+            &config,
+            crate::loginapp_login::LoginFacesConfig::new(),
+            Rc::clone(&dispatcher),
+        );
         check(&login).expect("the interface binds on an ephemeral port");
 
         let host_port = socket::ntohs(login.interface().address().port);
@@ -889,8 +941,154 @@ mod tests {
         assert_eq!(pairs[2].0, PROBE_KEY_USERS_COUNT);
         assert_eq!(pairs[2].1, "0", "gNumLogins before any login");
 
-        // The counter the login chain will bump is the probe's answer.
-        login.count_login();
-        assert_eq!(login.users_count(), 1);
+        // The counter the login chain bumps is the probe's answer: the
+        // faces share the cell with the probe handler.
+        assert_eq!(login.users_count(), login.faces().users_count());
+    }
+
+    /// A variable-length request datagram: the flags word with
+    /// `HAS_REQUESTS`, the element's id byte and two-byte length field,
+    /// the request preamble the walk reads right after the header
+    /// (`bundle_dispatch.rs:253-270`), the body, and the first-request
+    /// footer the receiver strips off the packet's tail.
+    fn login_request_datagram(element_id: u8, payload: &[u8]) -> Vec<u8> {
+        let mut datagram = Vec::new();
+        datagram.extend_from_slice(&flags::HAS_REQUESTS.to_le_bytes());
+        datagram.push(element_id);
+        datagram.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        datagram.extend_from_slice(&7i32.to_le_bytes()); // the reply id
+        datagram.extend_from_slice(&0u16.to_le_bytes()); // no next request
+        datagram.extend_from_slice(payload);
+        datagram.extend_from_slice(&(HEADER_SIZE as u16).to_le_bytes());
+        datagram
+    }
+
+    /// The `login` element reaches its face over the real datagram path:
+    /// the sink strips the request footer, the walk delivers to the login
+    /// handler, and the refusal carries the request's reply id back
+    /// (`allowLogin` defaults false, so the reply is the bare 82).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_login_element_reaches_its_face_over_the_datagram_path() {
+        let config = LoginAppConfig {
+            external_port: 0,
+            external_interface: "127.0.0.1".to_string(),
+            allow_probe: false,
+            log_probes: true,
+            should_offset_external_port_by_uid: false,
+        };
+        let mut faces_config = crate::loginapp_login::LoginFacesConfig::new();
+        faces_config.gate.verbose_login_failures = true;
+        let dispatcher = Rc::new(EventDispatcher::new());
+        let login = open(&config, faces_config, Rc::clone(&dispatcher));
+        check(&login).expect("the interface binds on an ephemeral port");
+
+        let host_port = socket::ntohs(login.interface().address().port);
+        let client = client_socket();
+        client
+            .send_to(
+                &login_request_datagram(0, &[1, 2, 3, 4]),
+                ("127.0.0.1", host_port),
+            )
+            .expect("send the login");
+
+        assert!(
+            dispatcher.poller().process_pending_events(0.1) >= 1,
+            "the login surfaced through the poller"
+        );
+        let reply = recv(&client).expect("the refusal replies");
+        let (reply_id, body) = reply_frame(&reply);
+        assert_eq!(reply_id, 7, "the request's reply id");
+        assert_eq!(
+            body[0],
+            crate::loginapp::LogOnStatus::LoginRejectedLoginsNotAllowed as u8,
+            "`allowLogin` false refuses with the bare status"
+        );
+        assert_eq!(login.faces().num_login_failures(), 1);
+        assert_eq!(
+            login.faces().num_login_attempts(),
+            0,
+            "refused at the gate, before the version read"
+        );
+    }
+
+    /// The `challengeResponse` element reaches its face the same way: an
+    /// answer to an outstanding delay challenge clears it and stays
+    /// silent -- the reference drains on every arm of
+    /// `challengeResponse` (loginapp.cpp:1195-1243). The cleared state is
+    /// the discriminator: a corrupted or unserved datagram would leave
+    /// the challenge standing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_challenge_response_element_reaches_its_face_over_the_datagram_path() {
+        let config = LoginAppConfig {
+            external_port: 0,
+            external_interface: "127.0.0.1".to_string(),
+            allow_probe: false,
+            log_probes: true,
+            should_offset_external_port_by_uid: false,
+        };
+        let dispatcher = Rc::new(EventDispatcher::new());
+        let login = open(
+            &config,
+            crate::loginapp_login::LoginFacesConfig::new(),
+            Rc::clone(&dispatcher),
+        );
+        check(&login).expect("the interface binds on an ephemeral port");
+
+        let host_port = socket::ntohs(login.interface().address().port);
+        let client = client_socket();
+        let addr = client_address(&client);
+        // An outstanding delay challenge for this client, issued the way
+        // the login face would have issued it.
+        login.faces().with_requests(|requests| {
+            let entry = requests.entry(crate::login_request::ServerAddress {
+                ip: addr.ip,
+                port: addr.port,
+                salt: 0,
+            });
+            entry
+                .challenge_state_mut()
+                .get_or_insert_with(Default::default)
+                .set_login_challenge(
+                    crate::login_challenge::CHALLENGE_DELAY.to_string(),
+                    Box::new(crate::login_challenge::DelayChallenge::new(0.001)),
+                );
+        });
+
+        // The calculation duration then the echoed duration, the answer
+        // `DelayChallenge::read_response_from_stream` accepts.
+        let mut body = BinaryStream::new();
+        body.write_f32(0.001);
+        body.write_f32(0.001);
+        client
+            .send_to(
+                &login_request_datagram(2, body.as_bytes()),
+                ("127.0.0.1", host_port),
+            )
+            .expect("send the challenge response");
+
+        assert!(
+            dispatcher.poller().process_pending_events(0.1) >= 1,
+            "the answer surfaced through the poller"
+        );
+        assert!(recv(&client).is_none(), "a verified answer draws no reply");
+        login.faces().with_requests(|requests| {
+            let entry = requests
+                .find_mut(crate::login_request::ServerAddress {
+                    ip: addr.ip,
+                    port: addr.port,
+                    salt: 0,
+                })
+                .expect("the request stays cached");
+            let state = entry
+                .challenge_state()
+                .as_ref()
+                .expect("the challenge state stays");
+            assert!(state.pending().is_none(), "the challenge cleared");
+            assert!(!state.did_fail_challenge());
+        });
+        assert_eq!(login.faces().num_login_failures(), 0);
+        assert_eq!(login.faces().users_count(), 0);
     }
 }
