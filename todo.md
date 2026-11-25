@@ -2878,7 +2878,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
 - [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
@@ -4442,7 +4442,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
 - [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
@@ -5967,7 +5967,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
 - [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
@@ -7492,7 +7492,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
 - [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
@@ -9056,7 +9056,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
 - [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
@@ -10581,7 +10581,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 优化连接池、查询合并、写入批次和二级库整合。MySQL 与 PostgreSQL 各自使用同一数据集比较优化前后的时延和吞吐，复跑事务、重试与恢复。
 
-- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。
+- [ ] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。他席已交付并勾行未进 main：bw14-script-host `7024fb1`+勾 `112d81a`（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 4/4+PostgreSQL 18.6 2/2 同语句同受影响行数同重读和；24 实体+4 账户 CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0；Rust 腿 db-postgres tests/baseline_dataset.rs 逐行读回相等）；主席并入后按勾行态处理，本行保持开。
 - [ ] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。
 - [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
