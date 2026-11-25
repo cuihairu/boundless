@@ -15,6 +15,7 @@ pub mod fleet;
 pub mod hurricane;
 pub mod metrics;
 pub mod patrol;
+pub mod reconnect;
 pub mod report;
 pub mod resource;
 pub mod scenario;
@@ -33,6 +34,7 @@ pub use fleet::{ControllerRegistry, Fleet, FleetSettings, MINI_TICK_PERIOD, TICK
 pub use hurricane::{HurricaneLedger, run_login_hurricane};
 pub use metrics::{LoginAggregate, OnlineSummary, online_report_entries, online_summary};
 pub use patrol::{Graph, GraphTraverser, Graphs, PatrolFactory, PatrolRandom};
+pub use reconnect::{ReconnectLedger, RecoveryTrack, run_reconnect};
 pub use report::{REPORT_SCHEMA, ReportEntry, ReportValue, ScenarioReport};
 pub use resource::{ResourceSample, ResourceTracker};
 pub use scenario::{AccountPool, Scenario, ScenarioError};
