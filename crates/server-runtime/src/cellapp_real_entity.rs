@@ -1428,6 +1428,10 @@ impl CellApp {
                 RouterEvent::Release { entity, id } => self.handle_release_event(entity, id),
             }
         }
+        // `CellApp::handleTrimHistoriesTimeSlice` → `EntityPopulation::
+        // expireRealChannels` (cellapp.cpp:1502): the previous
+        // generation's cached real channels roll off once per tick.
+        self.expire_real_channels();
     }
 
     /// `TimerController::handleTimeout`: `start_ += interval_`, then the
@@ -1554,6 +1558,16 @@ impl CellApp {
         // (the base's entities let the base take care of it).
         if !has_base {
             self.returned_entity_ids.push(entity);
+        }
+
+        // `Entity::destroy` (entity.cpp:2952/2962): a real's destroy
+        // forgets the cached channel; a ghost's destroy remembers where
+        // it thought the real was, so a later message for the id still
+        // finds its way during the switch.
+        if entity_rc.borrow().is_real {
+            self.forget_real_channel(entity);
+        } else if let Some(real_addr) = entity_rc.borrow().real_addr {
+            self.remember_real_channel(entity, real_addr);
         }
     }
 }

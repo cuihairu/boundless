@@ -2367,6 +2367,185 @@ impl GhostMaintainer {
     }
 }
 
+/// The `callCellMethod` / entity-message body that crossed to a
+/// CellApp during a real/ghost switch. The port carries an entity id
+/// and a method name where the reference carries the message id and
+/// an argument stream.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RealCallWire {
+    /// Where the call was sent — the app that has to route it.
+    pub dest: u32,
+    /// The sender (`srcAddr`).
+    pub src: u32,
+    /// The entity the call names.
+    pub entity: u32,
+    /// The method the call invokes on the real.
+    pub method: &'static str,
+    /// `header.replyID`: who to answer, and under which id. The sender
+    /// address is already in [`Self::src`].
+    pub reply_id: Option<u32>,
+}
+
+/// What a CellApp did with a real-domain call wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliverRealCall {
+    /// The call ran on the local real; the name and reply id are the
+    /// ones the caller supplied.
+    Dispatched {
+        /// The method the local real ran.
+        method: &'static str,
+        /// The reply id the local real answered under.
+        reply_id: Option<u32>,
+    },
+    /// The call was forwarded to the cached real — exactly one wire,
+    /// with the original reply id riding along for the destination.
+    Forwarded,
+    /// No local real and no cached channel: one failure reply went to
+    /// the original sender.
+    Failed,
+}
+
+impl CellApp {
+    /// `CellApp::processMessage`'s real face: a `callCellMethod`
+    /// (`callBaseMethod` is the base cluster's) delivered here runs the
+    /// routing ladder, and — when the entity is not the local real —
+    /// forwards it to the real with the cached channel. A reply id makes
+    /// the destination answer the original sender directly
+    /// (`ReplyForwarder`); the port's single answer is the
+    /// dispatched-or-failed outcome the caller records.
+    pub fn deliver_real_call(
+        &mut self,
+        spaces: &mut BTreeMap<SpaceId, Space>,
+        wire: &RealCallWire,
+    ) -> DeliverRealCall {
+        let message = "callCellMethod";
+        let reply_id = wire.reply_id;
+        // `EntityMessageRoutingState` over this app, this wire.
+        let state = EntityMessageRoutingState {
+            reality: Some(EntityReality::RealOnly),
+            entity_exists: self.entity_population.contains_key(&wire.entity),
+            entity_is_real: self
+                .entity_population
+                .get(&wire.entity)
+                .is_some_and(|entity| entity.borrow().is_real),
+            entity_is_offloading_to_sender: self.entity_is_offloading_to(wire.entity, wire.src),
+            entity_has_witness: self
+                .entity_population
+                .get(&wire.entity)
+                .is_some_and(|entity| entity.borrow().has_witness),
+            should_buffer_from_sender: self.should_buffer_messages_from(wire.entity, wire.src),
+            delaying_for_sender: self.is_delaying_messages_for(wire.entity, wire.src),
+            has_messages_for_sender: self.has_ghost_messages_for(wire.entity, wire.src),
+            is_subsequence_start: false,
+            should_buffer_if_tick_pending: false,
+            next_tick_pending: false,
+        };
+        match classify_entity_message(&state) {
+            EntityMessageDisposition::Dispatch => {
+                // The message's handler invokes the named method; the
+                // script fixture records the call, and its return
+                // values are the one answer on `reply_id` (the
+                // reference's `sendReturnValues`).
+                let _ = spaces;
+                self.entity_callback(wire.entity, wire.method, true, None);
+                DeliverRealCall::Dispatched {
+                    method: message,
+                    reply_id,
+                }
+            }
+            EntityMessageDisposition::ForwardToReal => {
+                if self.forward_message_to_real(wire) {
+                    DeliverRealCall::Forwarded
+                } else {
+                    DeliverRealCall::Failed
+                }
+            }
+            // The failure arms (`sendFailure`): a destroyed ghost, a
+            // ghost-domain buffer, a witness message with no witness,
+            // or a tick-deferred call whose budget ran out. A REAL_ONLY
+            // message cannot reach the first two — the ladder pins it —
+            // and the others are other clusters' wires, so this face
+            // is the answer for all of them.
+            EntityMessageDisposition::BufferIfTickPending
+            | EntityMessageDisposition::DropDestroyedGhost
+            | EntityMessageDisposition::BufferGhostMessage
+            | EntityMessageDisposition::DropNoWitness => DeliverRealCall::Failed,
+        }
+    }
+
+    /// `Entity::pRealChannel`'s address (the ghost's real), or the
+    /// population's cached channel once the entity is gone
+    /// (`Entity::population().findRealChannel`).
+    fn real_channel_for(&self, entity: u32) -> Option<u32> {
+        self.entity_population
+            .get(&entity)
+            .and_then(|entity_rc| entity_rc.borrow().real_addr)
+            .or_else(|| self.find_real_channel(entity))
+    }
+
+    /// `Entity::forwardMessageToReal` over the port's seam: one wire to
+    /// the real the cached channel names, the reply id riding along so
+    /// the destination answers the original sender once.
+    fn forward_message_to_real(&mut self, wire: &RealCallWire) -> bool {
+        let Some(dest) = self.real_channel_for(wire.entity) else {
+            // ERROR "Dropped real message for unknown entity" +
+            // `sendFailure`: one failure answer to the original sender.
+            self.ghost_property_notes.push(format!(
+                "EntityMessageHandler: dropped real message for {}",
+                wire.entity
+            ));
+            return false;
+        };
+        self.real_call_outbox.push(RealCallWire {
+            dest,
+            src: wire.src,
+            entity: wire.entity,
+            method: wire.method,
+            reply_id: wire.reply_id,
+        });
+        true
+    }
+
+    /// `EntityPopulation::rememberRealChannel` — a ghost with a real
+    /// channel caches it where a later message for the same id (whose
+    /// entity is gone) can still find the real.
+    pub fn remember_real_channel(&mut self, entity: u32, addr: u32) {
+        self.curr_real_channels.insert(entity, addr);
+    }
+
+    /// `EntityPopulation::forgetRealChannel` — the real is gone (or the
+    /// id came back as a real), so the cache drops it.
+    pub fn forget_real_channel(&mut self, entity: u32) {
+        self.curr_real_channels.remove(&entity);
+        self.prev_real_channels.remove(&entity);
+    }
+
+    /// `EntityPopulation::findRealChannel`: the current cache, then the
+    /// previous generation's.
+    pub fn find_real_channel(&self, entity: u32) -> Option<u32> {
+        self.curr_real_channels
+            .get(&entity)
+            .copied()
+            .or_else(|| self.prev_real_channels.get(&entity).copied())
+    }
+
+    /// `EntityPopulation::expireRealChannels`: the previous
+    /// generation is freed first, then the two swap — so an entry
+    /// survives one trim (in the previous) and drops on the next.
+    /// Driven by `handleTrimHistoriesTimeSlice`.
+    pub fn expire_real_channels(&mut self) {
+        self.prev_real_channels.clear();
+        std::mem::swap(&mut self.curr_real_channels, &mut self.prev_real_channels);
+    }
+
+    /// `handleCellAppDeath`'s cache face: a dead channel's entry goes,
+    /// from whichever generation held it.
+    pub fn forget_dead_real_channel(&mut self, addr: u32) {
+        self.curr_real_channels.retain(|_, cached| *cached != addr);
+        self.prev_real_channels.retain(|_, cached| *cached != addr);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Section: tests
 // ---------------------------------------------------------------------------
@@ -2374,6 +2553,8 @@ impl GhostMaintainer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
     use crate::cellapp_real_entity::{
         ADD_ENTITY_DATA_IS_ON_GROUND, Controller, ControllerKind, EntityScript,
     };
@@ -5048,6 +5229,271 @@ mod tests {
         assert_eq!(
             app_a.deliver_ghost(&mut spaces_a, &wire(position, C_ADDR)),
             DeliverGhost::Dropped
+        );
+    }
+
+    /// BW-08-05-04: a `callCellMethod` arriving while the real is
+    /// migrating lands on the migration target and answers once.
+    #[test]
+    fn a_real_call_during_switch_reaches_the_target_and_answers_once() {
+        let (mut app_a, mut spaces_a, _app_b, _spaces_b) = two_cell_fixture();
+        // The real on A is mid-offload to B: its `nextRealAddr_` is B
+        // and the ghost half has not signed on yet.
+        app_a.offload_entity(&mut spaces_a, 2, B_ADDR, false);
+        assert_eq!(
+            app_a.entity_population[&2].borrow().next_real_addr,
+            Some(B_ADDR)
+        );
+
+        let call = RealCallWire {
+            dest: A_ADDR,
+            src: C_ADDR,
+            entity: 2,
+            method: "callCellMethod",
+            reply_id: Some(77),
+        };
+
+        // The stranger's call rides the switch period: A forwards it to
+        // the very app the real is moving to, exactly once, carrying the
+        // reply id so the destination answers the stranger directly.
+        assert_eq!(
+            app_a.deliver_real_call(&mut spaces_a, &call),
+            DeliverRealCall::Forwarded
+        );
+        let forwarded = app_a.real_call_outbox.remove(0);
+        assert_eq!(
+            forwarded,
+            RealCallWire {
+                dest: B_ADDR,
+                src: C_ADDR,
+                entity: 2,
+                method: "callCellMethod",
+                reply_id: Some(77),
+            }
+        );
+        assert!(app_a.real_call_outbox.is_empty());
+
+        // Delivering the forwarded wire on B — where the real has
+        // landed by now — runs the script and answers once.
+        let mut app_b = CellApp::with_address(B_ADDR);
+        app_b.start();
+        app_b.entity_scripts.insert(
+            TYPE,
+            EntityScript::with_methods(BTreeSet::from(["callCellMethod"]), BTreeMap::new()),
+        );
+        let mut b_spaces = BTreeMap::new();
+        let cells = cell_infos(&[(A_ADDR, 0.0, 50.0), (B_ADDR, 50.0, 100.0)]);
+        let own_b = cells
+            .iter()
+            .find(|info| info.app_addr == B_ADDR)
+            .cloned()
+            .unwrap();
+        let cell_b = Rc::new(RefCell::new(Cell {
+            info: own_b,
+            space_gone_count: 0,
+            reuse_count: 0,
+            should_offload: true,
+            is_removed: false,
+        }));
+        let space_b = b_spaces.entry(SID).or_insert_with(|| Space::new(SID));
+        space_b.update_geometry(&mut app_b, cells.clone());
+        space_b.set_cell(cell_b.clone());
+        app_b.cells.push(cell_b);
+        assert!(matches!(
+            app_b.create_real_entity(&mut b_spaces, SID, &create_stream(2, [70.0, 0.0, 25.0])),
+            crate::cellapp_real_entity::CreateRealOutcome::Created(2)
+        ));
+        assert!(app_b.entity_population[&2].borrow().is_real);
+
+        // B answers the stranger's reply id — one answer only, no
+        // duplicate for the forwarded hop.
+        assert_eq!(
+            app_b.deliver_real_call(&mut b_spaces, &forwarded),
+            DeliverRealCall::Dispatched {
+                method: "callCellMethod",
+                reply_id: Some(77),
+            }
+        );
+    }
+
+    /// A call that arrives after the ghost's own destroy: the cached
+    /// channel still routes it, so the migration target gets it.
+    #[test]
+    fn a_call_for_a_destroyed_ghost_follows_the_cached_channel() {
+        let (mut app_a, mut spaces_a, mut app_b, mut spaces_b) = two_cell_fixture();
+        // A's maintenance puts the ghost on B, then the real moves to
+        // B: A is now a ghost whose real is B.
+        app_a.check_offloads_and_ghosts(&mut spaces_a, SID);
+        for wire in app_a.ghost_outbox.drain(..) {
+            if wire.dest == B_ADDR {
+                deliver(&mut app_b, &mut spaces_b, &wire);
+            }
+        }
+        {
+            let mut borrowed = app_a.entity_population[&2].borrow_mut();
+            borrowed.position = [60.0, 0.0, 25.0];
+        }
+        let mut checker = OffloadChecker::new(SID);
+        checker.run(&mut app_a, &mut spaces_a);
+        let onload = app_a.onload_outbox.remove(0);
+        assert!(app_b.onload_entity(&mut spaces_b, &onload, None));
+        assert_eq!(app_a.entity_real_addr(2), B_ADDR);
+
+        // A's ghost is destroyed (its real moved away for good). The
+        // destroy leaves a cache entry for the id.
+        app_a.del_ghost(&mut spaces_a, 2);
+        assert!(app_a.entity_population[&2].borrow().destroyed);
+        assert_eq!(app_a.find_real_channel(2), Some(B_ADDR));
+
+        // A late call for the id follows the cached channel to B.
+        let call = RealCallWire {
+            dest: A_ADDR,
+            src: C_ADDR,
+            entity: 2,
+            method: "callCellMethod",
+            reply_id: Some(9),
+        };
+        assert_eq!(
+            app_a.deliver_real_call(&mut spaces_a, &call),
+            DeliverRealCall::Forwarded
+        );
+        assert_eq!(app_a.real_call_outbox[0].dest, B_ADDR);
+        assert_eq!(app_a.real_call_outbox[0].reply_id, Some(9));
+    }
+
+    /// A call for an entity the app has no route to fails exactly once.
+    #[test]
+    fn a_call_for_an_unknown_entity_fails_once() {
+        let (mut app_a, mut spaces_a) = app_at(A_ADDR, &cell_infos(&[(A_ADDR, 0.0, 50.0)]));
+        let call = RealCallWire {
+            dest: A_ADDR,
+            src: B_ADDR,
+            entity: 99,
+            method: "callCellMethod",
+            reply_id: Some(5),
+        };
+        assert_eq!(
+            app_a.deliver_real_call(&mut spaces_a, &call),
+            DeliverRealCall::Failed
+        );
+        assert!(
+            app_a
+                .ghost_property_notes
+                .iter()
+                .any(|note| note.contains("dropped real message for 99")),
+            "the ERROR note is recorded"
+        );
+        // No wire went anywhere; the one failure answer is the
+        // disposition itself.
+        assert!(app_a.real_call_outbox.is_empty());
+    }
+
+    /// A call delivered to the app that still holds the real runs it
+    /// locally instead of forwarding.
+    #[test]
+    fn a_call_for_the_local_real_runs_it_in_place() {
+        let (mut app_a, mut spaces_a) = app_at(A_ADDR, &cell_infos(&[(A_ADDR, 0.0, 50.0)]));
+        app_a.entity_scripts.insert(
+            TYPE,
+            EntityScript::with_methods(BTreeSet::from(["callCellMethod"]), BTreeMap::new()),
+        );
+        app_a.create_real_entity(&mut spaces_a, SID, &create_stream(2, [10.0, 0.0, 25.0]));
+        assert!(app_a.entity_population[&2].borrow().is_real);
+
+        let call = RealCallWire {
+            dest: A_ADDR,
+            src: B_ADDR,
+            entity: 2,
+            method: "callCellMethod",
+            reply_id: Some(11),
+        };
+        assert_eq!(
+            app_a.deliver_real_call(&mut spaces_a, &call),
+            DeliverRealCall::Dispatched {
+                method: "callCellMethod",
+                reply_id: Some(11),
+            }
+        );
+        assert!(
+            app_a
+                .script_calls
+                .iter()
+                .any(|call| call.name == "callCellMethod"),
+            "the script ran on the local real"
+        );
+        assert!(app_a.real_call_outbox.is_empty());
+    }
+
+    /// The cached channel's generation: the trim rolls one tick's
+    /// cache into the previous generation, and the next trim drops it.
+    #[test]
+    fn the_real_channel_cache_rolls_through_generations() {
+        let (mut app_a, _spaces) = app_at(A_ADDR, &cell_infos(&[(A_ADDR, 0.0, 50.0)]));
+        app_a.remember_real_channel(2, B_ADDR);
+        assert_eq!(app_a.find_real_channel(2), Some(B_ADDR));
+        app_a.forget_real_channel(99);
+
+        // One tick: current becomes previous.
+        app_a.advance_tick();
+        assert_eq!(app_a.find_real_channel(2), Some(B_ADDR));
+
+        // The next tick drops the previous generation.
+        app_a.advance_tick();
+        assert_eq!(app_a.find_real_channel(2), None);
+    }
+
+    /// `handleCellAppDeath`'s cache face: a dead channel's entry goes,
+    /// from whichever generation held it.
+    #[test]
+    fn a_dead_real_channel_is_forgotten() {
+        let (mut app_a, _spaces) = app_at(A_ADDR, &cell_infos(&[(A_ADDR, 0.0, 50.0)]));
+        app_a.remember_real_channel(2, B_ADDR);
+        app_a.advance_tick();
+        assert_eq!(app_a.find_real_channel(2), Some(B_ADDR));
+        app_a.forget_dead_real_channel(B_ADDR);
+        assert_eq!(app_a.find_real_channel(2), None);
+    }
+
+    /// The real's destroy forgets its cached channel; the ghost's
+    /// destroy remembers where its real was.
+    #[test]
+    fn the_destroy_hook_forgets_or_remembers_the_channel() {
+        let (mut app_a, mut spaces_a) = app_at(A_ADDR, &cell_infos(&[(A_ADDR, 0.0, 50.0)]));
+        app_a
+            .entity_scripts
+            .insert(TYPE, EntityScript::with_init(vec![]));
+        app_a.create_real_entity(&mut spaces_a, SID, &create_stream(2, [10.0, 0.0, 25.0]));
+        app_a.remember_real_channel(2, B_ADDR);
+        app_a.entity_population[&2].borrow_mut().real_addr = None;
+
+        // The real's destroy clears the cache.
+        app_a.destroy_entity(&mut spaces_a, 2);
+        assert_eq!(app_a.find_real_channel(2), None);
+
+        // The ghost's destroy leaves a cache entry for a late message.
+        let (mut app_a, mut spaces_a) = app_at(A_ADDR, &cell_infos(&[(A_ADDR, 0.0, 50.0)]));
+        app_a
+            .entity_scripts
+            .insert(TYPE, EntityScript::with_init(vec![]));
+        app_a.create_real_entity(&mut spaces_a, SID, &create_stream(3, [10.0, 0.0, 25.0]));
+        {
+            let mut entity = app_a.entity_population.get_mut(&3).unwrap().borrow_mut();
+            entity.is_real = false;
+            entity.real_addr = Some(B_ADDR);
+        }
+        app_a.del_ghost(&mut spaces_a, 3);
+        assert_eq!(app_a.find_real_channel(3), Some(B_ADDR));
+
+        let call = RealCallWire {
+            dest: A_ADDR,
+            src: B_ADDR,
+            entity: 3,
+            method: "callCellMethod",
+            reply_id: Some(1),
+        };
+        assert_eq!(
+            app_a.deliver_real_call(&mut spaces_a, &call),
+            DeliverRealCall::Forwarded
         );
     }
 }

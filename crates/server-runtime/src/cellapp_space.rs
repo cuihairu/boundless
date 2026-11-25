@@ -1797,6 +1797,15 @@ pub struct CellApp {
     /// ghost, keyed by entity id.
     pub buffered_ghost_messages:
         BTreeMap<u32, crate::cellapp_ghost::BufferedGhostMessagesForEntity>,
+    /// `EntityPopulation::currChannels_`: the real channel address
+    /// cached for an entity id this app has seen as a ghost.
+    pub curr_real_channels: BTreeMap<u32, u32>,
+    /// `EntityPopulation::prevChannels_`: the previous generation of
+    /// cached real channels, still good until the trim rolls it over.
+    pub prev_real_channels: BTreeMap<u32, u32>,
+    /// `Entity::forwardMessageToReal` bundles: real-domain calls
+    /// forwarded to the cached real, with their original reply id.
+    pub real_call_outbox: Vec<crate::cellapp_ghost::RealCallWire>,
 }
 
 impl Default for CellApp {
@@ -1878,6 +1887,9 @@ impl Default for CellApp {
             ghost_property_descriptions: BTreeMap::new(),
             ghost_property_notes: Vec::new(),
             buffered_ghost_messages: BTreeMap::new(),
+            curr_real_channels: BTreeMap::new(),
+            prev_real_channels: BTreeMap::new(),
+            real_call_outbox: Vec::new(),
             max_time_between_player_updates: 0,
         }
     }
