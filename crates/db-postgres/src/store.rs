@@ -7,26 +7,22 @@
 //! The PostgreSQL port keeps the same shape: `INSERT ... ON CONFLICT
 //! ("id") DO UPDATE` replaces the row, and `get_entity` reads the columns
 //! back in the schema's visit order, one [`PropertyValue`] per column.
-//!
-//! The DBID allocation follows the reference's `putEntity` create leg:
-//! `PutEntityTask` takes `insertNew` when the key carries no id
-//! (`tasks/put_entity_task.cpp:60-98`), the generated statement lists
-//! the property columns only (`utils.cpp:48-76`), and the caller reads
-//! the DB's own choice back with `LAST_INSERT_ID` (`wrapper.hpp:75`).
-//! The id column is the table's `AUTO_INCREMENT` (`column_type.hpp:144-146`,
-//! `mysql_table_initialiser.cpp:366-369`), which is this backend's
-//! identity column: the reference has no DBID watermark table of its own,
-//! so the guarantee is the DBMS sequence's.
 
-use db::{DbError, EntityKey, EntityRecord};
+use std::cell::{Cell, RefCell, RefMut};
+use std::collections::HashMap;
+
+use db::{BaseMailbox, CheckOut, DbError, EntityKey, EntityRecord, EntityStorage};
 use entitydef::value::PropertyValue;
-use foundation::ids::DatabaseId;
+use foundation::ids::{DatabaseId, EntityTypeId, PENDING_DATABASE_ID};
+use mercury::endpoint::Address;
 use postgres::Client;
 use postgres::error::SqlState;
 use postgres::types::ToSql;
 
 use crate::json;
-use crate::schema::{ColumnKind, EntitySchema, ID_COLUMN, column_name, quote_ident};
+use crate::schema::{
+    ColumnKind, EntitySchema, ID_COLUMN, column_name, entity_table_name, quote_ident,
+};
 
 /// Maps a backend error to the storage contract. A unique-key violation is
 /// the contract's duplicate outcome (BW-09-06-03: the accounts table's
@@ -45,25 +41,46 @@ fn error_message(error: &postgres::Error) -> String {
 }
 
 pub fn map_db_error(error: postgres::Error) -> DbError {
-    map_unique_violation(error, DbError::DuplicateAccount)
-}
-
-/// Maps the error of an entity write: an entity table's only unique
-/// constraint is its id, so a unique violation there is a duplicate
-/// DBID — the contract's `AlreadyExists`, not the accounts table's
-/// duplicate-name outcome.
-pub fn map_write_error(error: postgres::Error) -> DbError {
-    map_unique_violation(error, DbError::AlreadyExists)
-}
-
-fn map_unique_violation(error: postgres::Error, duplicate: DbError) -> DbError {
+    // The lock conditions are the retryable ones
+    // (`database_exception.cpp:35-40`: `ER_LOCK_DEADLOCK` and
+    // `ER_LOCK_WAIT_TIMEOUT`; retry.rs:96-98). PostgreSQL spells them
+    // 40P01 `deadlock_detected` and 55P03 `lock_not_available`.
+    let is_retryable_lock = error.code().is_some_and(|code| {
+        *code == SqlState::T_R_DEADLOCK_DETECTED || *code == SqlState::LOCK_NOT_AVAILABLE
+    });
     let is_duplicate = error
         .code()
         .is_some_and(|code| *code == SqlState::UNIQUE_VIOLATION);
+    if is_retryable_lock {
+        return DbError::Retry;
+    }
     if is_duplicate {
-        duplicate
+        return DbError::DuplicateAccount;
+    }
+    // The connection-level family — `DatabaseException::isLostConnection`
+    // (`database_exception.cpp:43-53`, the four `CR_*` codes): a closed
+    // client or a bare I/O failure, neither of which carries a server
+    // error. `DbError::LostConnection` is what the reconnect leg of
+    // BW-09-06-09 answers to.
+    if error.is_closed() || error.as_db_error().is_none() {
+        return DbError::LostConnection;
+    }
+    DbError::Storage(error_message(&error))
+}
+
+/// Maps a backend error on an *entity* table. Entity tables carry no other
+/// unique key than the primary id, so a unique violation there is the
+/// duplicate-id outcome of `insertExplicit`
+/// (`put_entity_task.cpp:93-97`) — [`DbError::AlreadyExists`]. The
+/// account tables keep [`DbError::DuplicateAccount`].
+fn map_entity_db_error(error: postgres::Error) -> DbError {
+    if error
+        .code()
+        .is_some_and(|code| *code == SqlState::UNIQUE_VIOLATION)
+    {
+        DbError::AlreadyExists
     } else {
-        DbError::Storage(error_message(&error))
+        map_db_error(error)
     }
 }
 
@@ -73,29 +90,35 @@ fn uint_to_bigint(value: u64) -> Result<i64, DbError> {
         .map_err(|_| DbError::Storage(format!("uint64 value {value} exceeds BIGINT")))
 }
 
-/// Validates a record against its schema before any SQL runs: the values
-/// must be the schema's columns in visit order, and the DBID must be
-/// assigned — a pending id is not a row key, the create leg takes one.
-fn validate_put(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
-    validate_values(schema, &record.values)?;
-    if record.db_id < 0 {
+/// Validates a record's values against its schema before any SQL runs:
+/// the values must be the schema's columns in visit order and every `Uint`
+/// must fit `BIGINT`.
+fn validate_put_values(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
+    if record.values.len() != schema.columns.len() {
         return Err(DbError::Storage(format!(
-            "record for {} still has a pending database id",
-            schema.type_name
+            "record for {} carries {} values but the schema lists {} columns",
+            schema.type_name,
+            record.values.len(),
+            schema.columns.len()
         )));
+    }
+    for value in &record.values {
+        if let PropertyValue::Uint(n) = value {
+            uint_to_bigint(*n)?;
+        }
     }
     Ok(())
 }
 
-/// Validates a value run against its schema's arity: one value per column,
-/// in visit order.
-fn validate_values(schema: &EntitySchema, values: &[PropertyValue]) -> Result<(), DbError> {
-    if values.len() != schema.columns.len() {
+/// `validate_put_values` plus the rule for a row that already has a
+/// DatabaseID: a pending one (the reference's `PENDING_DATABASE_ID`,
+/// `-1`) means the table has not handed the entity a DBID out yet.
+fn validate_put(schema: &EntitySchema, record: &EntityRecord) -> Result<(), DbError> {
+    validate_put_values(schema, record)?;
+    if record.db_id < 0 {
         return Err(DbError::Storage(format!(
-            "record for {} carries {} values but the schema lists {} columns",
-            schema.type_name,
-            values.len(),
-            schema.columns.len()
+            "record for {} still has a pending database id",
+            schema.type_name
         )));
     }
     Ok(())
@@ -106,16 +129,7 @@ fn validate_values(schema: &EntitySchema, values: &[PropertyValue]) -> Result<()
 /// `ON CONFLICT ("id") DO UPDATE` clause is the reference `REPLACE INTO`.
 fn put_entity_sql(schema: &EntitySchema) -> String {
     let mut placeholders = vec!["$1".to_string()];
-    for (index, (_, kind)) in schema.columns.iter().enumerate() {
-        let placeholder = format!("${}", index + 2);
-        placeholders.push(match kind {
-            // The param binds as text and casts server-side: an un-annotated
-            // CAST would type-infer the parameter itself as jsonb, which the
-            // text binding then cannot serialize.
-            ColumnKind::Nested => format!("CAST({placeholder}::text AS JSONB)"),
-            _ => placeholder,
-        });
-    }
+    placeholders.extend(placeholders_from(schema, 2));
     let assignments = schema
         .columns
         .iter()
@@ -129,13 +143,210 @@ fn put_entity_sql(schema: &EntitySchema) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
+        "INSERT INTO {} ({}) OVERRIDING SYSTEM VALUE VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
         schema.quoted_table(),
         schema.quoted_columns().join(", "),
         placeholders.join(", "),
         quote_ident(ID_COLUMN),
         assignments
     )
+}
+
+/// One placeholder per property column, numbered from `first`.
+fn placeholders_from(schema: &EntitySchema, first: usize) -> Vec<String> {
+    schema
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(index, (_, kind))| nested_placeholder(first + index, kind))
+        .collect()
+}
+
+/// The explicit-id insert: the reference's `insertExplicit`
+/// (`put_entity_task.cpp:89-97`) is a plain INSERT, so a duplicate primary
+/// key fails the statement ([`DbError::AlreadyExists`]) and the original
+/// row survives — the upsert ([`put_entity_sql`]) would overwrite instead.
+fn insert_explicit_entity_sql(schema: &EntitySchema) -> String {
+    let mut placeholders = vec!["$1".to_string()];
+    placeholders.extend(placeholders_from(schema, 2));
+    format!(
+        "INSERT INTO {} ({}) OVERRIDING SYSTEM VALUE VALUES ({})",
+        schema.quoted_table(),
+        schema.quoted_columns().join(", "),
+        placeholders.join(", ")
+    )
+}
+
+/// The same write for an entity the table has not given a DBID to: the
+/// id column is left out so the identity column allocates one, and the
+/// statement reads it back. This is the reference's shape — the buffered
+/// task path turns a `PENDING_DATABASE_ID` into `0` before the insert, so
+/// the table's `AUTO_INCREMENT` key column is what supplies the value.
+fn put_new_entity_sql(schema: &EntitySchema) -> String {
+    format!(
+        "INSERT INTO {} ({}) VALUES ({}) RETURNING {}",
+        schema.quoted_table(),
+        schema.quoted_property_columns().join(", "),
+        placeholders_from(schema, 1).join(", "),
+        quote_ident(ID_COLUMN)
+    )
+}
+
+/// The logon-record statements. `bigworldLogOns` is a fixed table — the
+/// database initialisation creates it — and `entity_type_mapping.cpp`
+/// carries the reference's queries. A relogon overwrites: `addLogOnQuery`
+/// is `INSERT ... ON DUPLICATE KEY UPDATE`
+/// (entity_type_mapping.cpp:749-758), so the port is an `ON CONFLICT`
+/// upsert on the same two-column key.
+fn add_logon_sql() -> String {
+    "INSERT INTO \"bigworldLogOns\" (\"databaseID\", \"typeID\", \"objectID\", \"ip\", \"port\", \"salt\") \
+     VALUES ($1, $2, $3, $4, $5, $6) \
+     ON CONFLICT (\"typeID\", \"databaseID\") DO UPDATE SET \
+     \"objectID\" = EXCLUDED.\"objectID\", \"ip\" = EXCLUDED.\"ip\", \
+     \"port\" = EXCLUDED.\"port\", \"salt\" = EXCLUDED.\"salt\""
+        .to_string()
+}
+
+/// `getLogOnQuery` (entity_type_mapping.cpp:764-766): the holder of an
+/// entity, if any.
+fn get_logon_sql() -> String {
+    "SELECT \"objectID\", \"ip\", \"port\", \"salt\" \
+     FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2"
+        .to_string()
+}
+
+/// `removeLogOnQuery` (entity_type_mapping.cpp:527-529): the reference
+/// deletes unconditionally, so releasing nothing held is fine.
+fn remove_logon_sql() -> String {
+    "DELETE FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2".to_string()
+}
+
+/// `updateLogOnAutoLoadQuery` (entity_type_mapping.cpp:793-795): the
+/// auto-load status of an entity's log-on mapping. A row-less entity
+/// matches nothing and the update stays silent (MySQL UPDATE semantics).
+fn update_auto_load_sql() -> String {
+    "UPDATE \"bigworldLogOns\" SET \"shouldAutoLoad\" = $1 \
+     WHERE \"databaseID\" = $2 AND \"typeID\" = $3"
+        .to_string()
+}
+
+/// `autoLoadEntities`' cleanup leg (mysql_database.cpp:674-675): the
+/// sessions of the entities that must not auto-load are stale at a
+/// restart and go first.
+fn clear_non_autoload_sql() -> String {
+    "DELETE FROM \"bigworldLogOns\" WHERE NOT \"shouldAutoLoad\"".to_string()
+}
+
+/// `autoLoadEntities`' listing leg (mysql_database.cpp:677-683): the
+/// flagged entities joined with the meta table for the running-server
+/// type id (`typeID` is the id used internally by the database,
+/// `bigworldID` the one used by a running server).
+fn auto_load_list_sql() -> String {
+    "SELECT logOn.\"databaseID\", entityType.\"bigworldID\" \
+     FROM \"bigworldLogOns\" logOn, \"bigworldEntityTypes\" entityType \
+     WHERE logOn.\"typeID\" = entityType.\"typeID\" AND logOn.\"shouldAutoLoad\""
+        .to_string()
+}
+
+/// `autoLoadEntities`' holder leg (mysql_database.cpp:702): the restart
+/// hands every loaded entity to a fresh base, so the stored addresses
+/// are stale — they zero, while `objectID` and `salt` stay.
+fn clear_holders_sql() -> String {
+    "UPDATE \"bigworldLogOns\" SET \"ip\" = 0, \"port\" = 0".to_string()
+}
+
+/// `addEntityTypeQuery`/`setEntityTypeIDQuery`/`getEntityTypeIDQuery`
+/// (bw_meta_data.cpp:13-21): the `bigworldEntityTypes` row the auto-load
+/// join resolves through. The reference inserts with `typeID` `NULL` and
+/// lets the database assign its internal id; the port keeps one type-id
+/// space (`EntityTypeId`), so both columns carry the caller's value.
+fn add_entity_type_sql() -> String {
+    "INSERT INTO \"bigworldEntityTypes\" (\"typeID\", \"bigworldID\", \"name\") \
+     VALUES ($1, $1, $2)"
+        .to_string()
+}
+
+fn set_entity_type_id_sql() -> String {
+    // The reference's `setEntityTypeIDQuery` updates `bigworldID` alone:
+    // its internal `typeID` is stable, so old log-on records keep
+    // joining after a re-point. The port's one type-id space carries the
+    // running-server id in both columns, so both move together — the
+    // join keeps resolving through the new id.
+    "UPDATE \"bigworldEntityTypes\" SET \"typeID\" = $1, \"bigworldID\" = $1 \
+     WHERE \"name\" = $2"
+        .to_string()
+}
+
+fn get_entity_type_id_sql() -> &'static str {
+    "SELECT \"bigworldID\" FROM \"bigworldEntityTypes\" WHERE \"name\" = $1"
+}
+
+/// The reference stores the base address in network byte order:
+/// `htonl(mailbox.addr.ip)` and `htons(mailbox.addr.port)` go in
+/// (`addLogOnRecord`, entity_type_mapping.cpp:779-781) and `ntohl`/`ntohs`
+/// come back (`getLogOnRecord`, :815-816) — a byte swap on both legs,
+/// which the port keeps.
+fn stored_ip(ip: u32) -> i64 {
+    i64::from(ip.swap_bytes())
+}
+
+fn stored_port(port: u16) -> i32 {
+    i32::from(port.swap_bytes())
+}
+
+fn read_ip(raw: i64) -> u32 {
+    (raw as u32).swap_bytes()
+}
+
+fn read_port(raw: i32) -> u16 {
+    (raw as u16).swap_bytes()
+}
+
+/// The reference's `salt` column is `SMALLINT UNSIGNED`, and the ported
+/// address type carries a `u16` salt — the INTEGER column holds it whole.
+fn stored_salt(salt: u16) -> i32 {
+    i32::from(salt)
+}
+
+fn read_salt(raw: i32) -> u16 {
+    raw as u16
+}
+
+/// MySQL's `AUTO_INCREMENT` counter climbs past explicit ids — after an
+/// `insertExplicit` of 5 the next created entity gets 6 — while a
+/// PostgreSQL identity sequence does not move for `OVERRIDING SYSTEM
+/// VALUE` inserts and would later collide with the explicit row. The port
+/// re-seats the sequence past the explicit id before the insert.
+/// `nextval` first means the call never lowers the sequence, and the
+/// reference's counter moves on refused inserts too, so the bump runs
+/// before the insert's outcome is known.
+fn bump_identity_sql() -> String {
+    "SELECT setval(pg_get_serial_sequence($1, 'id')::regclass, \
+     GREATEST($2, nextval(pg_get_serial_sequence($1, 'id')::regclass)), true)"
+        .to_string()
+}
+
+/// The row-existence check the update leg and the checkout run first: the
+/// upsert would create a missing row instead of failing it, and no
+/// log-on record ever points at a missing entity
+/// (`put_entity_task.cpp:103-108` checks existence first).
+fn row_exists_sql(schema: &EntitySchema) -> String {
+    format!(
+        "SELECT 1 FROM {} WHERE {} = $1",
+        schema.quoted_table(),
+        quote_ident(ID_COLUMN)
+    )
+}
+
+/// One placeholder for a property column. Nested values bind as text and
+/// cast server-side: an un-annotated `CAST` would type-infer the parameter
+/// itself as `jsonb`, which the text binding then cannot serialize.
+fn nested_placeholder(number: usize, kind: &ColumnKind) -> String {
+    let placeholder = format!("${number}");
+    match kind {
+        ColumnKind::Nested => format!("CAST({placeholder}::text AS JSONB)"),
+        _ => placeholder,
+    }
 }
 
 /// A bound parameter (the id first, then one per column).
@@ -147,33 +358,20 @@ type PutParam = Box<dyn ToSql + Sync>;
 fn put_entity_params(
     schema: &EntitySchema,
     record: &EntityRecord,
+    include_db_id: bool,
 ) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
-    validate_put(schema, record)?;
-    let (values, nested_texts) = value_params(&record.values)?;
-    let mut params: Vec<PutParam> = Vec::with_capacity(values.len() + 1);
-    params.push(Box::new(record.db_id));
-    params.extend(values);
-    Ok((params, nested_texts))
-}
-
-/// Builds the parameter list for a create: one placeholder per property,
-/// in the schema's visit order, and no id parameter — the statement leaves
-/// the column out for the identity to fill in.
-fn create_entity_params(
-    schema: &EntitySchema,
-    values: &[PropertyValue],
-) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
-    validate_values(schema, values)?;
-    value_params(values)
-}
-
-/// The bound parameters for one run of property values. A `Uint` must fit
-/// `BIGINT`, and nested values bind as their JSON text — the returned texts
-/// keep that text alive for the borrow.
-fn value_params(values: &[PropertyValue]) -> Result<(Vec<PutParam>, Vec<String>), DbError> {
-    let mut params: Vec<PutParam> = Vec::with_capacity(values.len());
+    if include_db_id {
+        validate_put(schema, record)?;
+    } else {
+        validate_put_values(schema, record)?;
+    }
+    let mut params: Vec<PutParam> = if include_db_id {
+        vec![Box::new(record.db_id)]
+    } else {
+        Vec::new()
+    };
     let mut nested_texts: Vec<String> = Vec::new();
-    for value in values {
+    for value in &record.values {
         match value {
             PropertyValue::Int(n) => params.push(Box::new(*n)),
             PropertyValue::Uint(n) => params.push(Box::new(uint_to_bigint(*n)?)),
@@ -191,58 +389,39 @@ fn value_params(values: &[PropertyValue]) -> Result<(Vec<PutParam>, Vec<String>)
     Ok((params, nested_texts))
 }
 
-/// The create statement (`insertNew`, `utils.cpp:48-76`): the property
-/// columns only, the id column left out of the column list, and the
-/// server's allocation read back. A table with no properties inserts
-/// nothing but still asks for its id.
-fn create_entity_sql(schema: &EntitySchema) -> String {
-    let returning = format!("RETURNING {}", quote_ident(ID_COLUMN));
-    if schema.columns.is_empty() {
-        return format!(
-            "INSERT INTO {} DEFAULT VALUES {}",
-            schema.quoted_table(),
-            returning
-        );
-    }
-    let mut columns = Vec::with_capacity(schema.columns.len());
-    let mut placeholders = Vec::with_capacity(schema.columns.len());
-    for (index, (prop, kind)) in schema.columns.iter().enumerate() {
-        columns.push(quote_ident(&column_name(prop)));
-        let placeholder = format!("${}", index + 1);
-        placeholders.push(match kind {
-            // The param binds as text and casts server-side: an un-annotated
-            // CAST would type-infer the parameter itself as jsonb, which the
-            // text binding then cannot serialize.
-            ColumnKind::Nested => format!("CAST({placeholder}::text AS JSONB)"),
-            _ => placeholder,
-        });
-    }
-    format!(
-        "INSERT INTO {} ({}) VALUES ({}) {}",
-        schema.quoted_table(),
-        columns.join(", "),
-        placeholders.join(", "),
-        returning
-    )
-}
-
-/// Builds the select statement for a schema: the id column first, then one
+/// The select column list for a schema: the id column first, then one
 /// quoted column per property in visit order, JSONB columns cast to their
 /// canonical JSON text.
-fn get_entity_sql(schema: &EntitySchema) -> String {
-    let mut select_columns = vec![quote_ident(ID_COLUMN)];
-    select_columns.extend(schema.columns.iter().map(|(prop, kind)| {
+fn select_columns(schema: &EntitySchema) -> Vec<String> {
+    let mut columns = vec![quote_ident(ID_COLUMN)];
+    columns.extend(schema.columns.iter().map(|(prop, kind)| {
         let name = quote_ident(&column_name(prop));
         match kind {
             ColumnKind::Nested => format!("({name})::text"),
             _ => name,
         }
     }));
+    columns
+}
+
+/// Builds the select statement for a schema: the id column first, then one
+/// quoted column per property in visit order, JSONB columns cast to their
+/// canonical JSON text.
+fn get_entity_sql(schema: &EntitySchema) -> String {
     format!(
         "SELECT {} FROM {} WHERE {} = $1",
-        select_columns.join(", "),
+        select_columns(schema).join(", "),
         schema.quoted_table(),
         quote_ident(ID_COLUMN)
+    )
+}
+
+/// The whole-table select `all_entities` runs per registered type.
+fn select_all_entity_sql(schema: &EntitySchema) -> String {
+    format!(
+        "SELECT {} FROM {}",
+        select_columns(schema).join(", "),
+        schema.quoted_table()
     )
 }
 
@@ -295,8 +474,34 @@ fn decode_row(
 }
 
 /// The PostgreSQL backend: one client connection to the storage database.
+///
+/// The client sits in a `RefCell` because the storage contract
+/// (`EntityStorage`) reads through `&self` — the shared shape of the
+/// in-memory and XML backends — while `postgres::Client` runs its
+/// statements through `&mut self`. The two state flags are `Cell`s for
+/// the same reason: the reconnect leg of a statement that died on a lost
+/// connection replaces the client and clears the flags from a `&self`
+/// read path, the way the reference's `MySql` carries all of this on one
+/// shared object (`wrapper.hpp:89-111`).
 pub struct PostgresStorage {
-    client: Client,
+    client: RefCell<Client>,
+    /// The entity types this connection knows: `EntityTypeId -> table
+    /// shape`. The reference keeps one `EntityTypeMapping` per type and
+    /// indexes them by id (`entityTypeMappings_`); the contract
+    /// operations resolve the table shape through the same map.
+    schemas: HashMap<EntityTypeId, EntitySchema>,
+    /// Whether this connection is inside a transaction the reference
+    /// would be holding as an open `MySqlTransaction`
+    /// (`transaction.cpp:15-23` keeps `inTransaction` on the connection).
+    in_transaction: Cell<bool>,
+    /// Whether this connection was flagged as lost, the reference's
+    /// `sql_.hasLostConnection( true )` — set whenever a statement fails
+    /// at the connection level (`MySql::throwError`,
+    /// wrapper.cpp:294-299).
+    connection_lost: Cell<bool>,
+    /// The stored connection string, `connectInfo_`
+    /// (`wrapper.hpp:111`) — [`PostgresStorage::reconnect`] re-runs it.
+    conninfo: String,
 }
 
 impl std::fmt::Debug for PostgresStorage {
@@ -309,20 +514,313 @@ impl PostgresStorage {
     /// Connects to the storage database (`libpq` connection string).
     pub fn connect(conninfo: &str) -> Result<Self, DbError> {
         let client = Client::connect(conninfo, postgres::NoTls).map_err(map_db_error)?;
-        Ok(Self { client })
+        Ok(Self {
+            client: RefCell::new(client),
+            schemas: HashMap::new(),
+            in_transaction: Cell::new(false),
+            connection_lost: Cell::new(false),
+            conninfo: conninfo.to_string(),
+        })
+    }
+
+    /// Opens a server-side transaction on this connection: the reference's
+    /// `MySqlTransaction` constructor issues `START TRANSACTION` and only
+    /// then marks the connection as being inside one
+    /// (`transaction.cpp:15-23` — the flag is last because the execute can
+    /// fail). Every statement this connection runs afterwards belongs to
+    /// the transaction, so the contract operations send nothing else.
+    pub fn begin_transaction(&mut self) -> Result<(), DbError> {
+        // The reference only ever has one transaction per connection
+        // (the constructor sets `inTransaction`), so a second begin is
+        // refused rather than left to PostgreSQL's warning-and-no-op.
+        if self.in_transaction.get() {
+            return Err(DbError::Storage(
+                "the connection already has a transaction open".into(),
+            ));
+        }
+        self.run_with_reconnect(|client| client.execute("START TRANSACTION", &[]))
+            .map_err(map_db_error)?;
+        // `inTransaction(true)` is set last in the reference: a failing
+        // execute leaves the connection outside any transaction
+        // (transaction.cpp:19-22).
+        self.in_transaction.set(true);
+        Ok(())
+    }
+
+    /// Commits the open transaction (`transaction.cpp:66-71`): the writes
+    /// this connection has made are visible from the other connections.
+    pub fn commit_transaction(&mut self) -> Result<(), DbError> {
+        if !self.in_transaction.get() {
+            return Err(DbError::Storage("there is no transaction to commit".into()));
+        }
+        self.run_with_reconnect(|client| client.execute("COMMIT", &[]))
+            .map_err(map_db_error)?;
+        self.in_transaction.set(false);
+        Ok(())
+    }
+
+    /// Whether a transaction is open on this connection.
+    pub fn in_transaction(&self) -> bool {
+        self.in_transaction.get()
+    }
+
+    /// Rolls the open transaction back (`transaction.cpp:29-51`), the
+    /// reference's destructor doing the work: nothing it made is visible to
+    /// the other connections, which keep reading the values that stood
+    /// there. The connection stops being inside a transaction whatever
+    /// happens (`inTransaction( false )` runs after the rollback, so it
+    /// clears even when the rollback itself failed).
+    ///
+    /// When the rollback finds the connection already gone the failure is
+    /// swallowed and the connection is flagged instead
+    /// (`transaction.cpp:41-47`).
+    pub fn rollback_transaction(&mut self) -> Result<(), DbError> {
+        if !self.in_transaction.get() {
+            // The reference's destructor rolls back only a transaction it
+            // is inside (`if (!committed_ …)`), so there is nothing to
+            // roll back.
+            return Err(DbError::Storage(
+                "there is no transaction to roll back".into(),
+            ));
+        }
+        match self.client.borrow_mut().execute("ROLLBACK", &[]) {
+            Ok(_) => {}
+            // `catch (DatabaseException & e) { if (e.isLostConnection())
+            // sql_.hasLostConnection( true ); }` (transaction.cpp:41-47).
+            // A closed client and an I/O failure are both connection-level
+            // (the reference's `CR_*` codes); a `ROLLBACK` carries no
+            // parameters, so any server-reported error is a real SQL
+            // failure and the other arm reports it.
+            Err(error) if error.is_closed() || error.as_db_error().is_none() => {
+                self.connection_lost.set(true);
+            }
+            Err(error) => {
+                // Every other rollback failure escapes the reference's
+                // destructor as a DatabaseException, which terminate()
+                // would turn into an abort — so the port reports it.
+                self.in_transaction.set(false);
+                return Err(map_db_error(error));
+            }
+        }
+        self.in_transaction.set(false);
+        Ok(())
+    }
+
+    /// Whether this connection was flagged as lost, the reference's
+    /// `sql_.hasLostConnection( true )`.
+    pub fn connection_lost(&self) -> bool {
+        self.connection_lost.get()
+    }
+
+    /// Re-establishes the connection with the stored connection string —
+    /// the reference's `MySql::reconnect()`/`reconnectTo`
+    /// (`wrapper.hpp:64-67`, wrapper.cpp:74-91): close, connect again,
+    /// and report whether the new connection answers (the port's
+    /// `Client::connect` performs the whole handshake, which is what the
+    /// reference's final `ping()` checks). `MySql::connect` clears
+    /// `hasLostConnection` on every new connection (wrapper.cpp:94-97),
+    /// and the old connection's transaction — if any was still open —
+    /// died with it, so the fresh connection starts clean.
+    pub fn reconnect(&self) -> bool {
+        match Client::connect(&self.conninfo, postgres::NoTls) {
+            Ok(client) => {
+                drop(self.client.replace(client));
+                self.connection_lost.set(false);
+                self.in_transaction.set(false);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// The underlying client, for the schema tools (BW-09-07).
-    pub fn client_mut(&mut self) -> &mut Client {
-        &mut self.client
+    pub fn client_mut(&mut self) -> RefMut<'_, Client> {
+        self.client.borrow_mut()
+    }
+
+    /// Runs one statement with the reference's reconnect leg
+    /// (`MySql::realQuery`, wrapper.cpp:306-332): when the statement dies
+    /// because the connection dropped — the port's connection-level
+    /// family — and this connection is outside a transaction, the
+    /// connection is re-established and the very same statement runs
+    /// once more. Inside a transaction the loss is terminal: the aborted
+    /// work cannot be re-sent on the new connection, so the error
+    /// propagates (`MySqlTransaction`'s destructor skips its `ROLLBACK`
+    /// for the same reason, transaction.cpp:41-47). A failed reconnect
+    /// leaves the original error standing (`wrapper.cpp:327-330`).
+    fn run_with_reconnect<T>(
+        &self,
+        mut op: impl FnMut(&mut Client) -> Result<T, postgres::Error>,
+    ) -> Result<T, postgres::Error> {
+        let first = op(&mut self.client.borrow_mut());
+        // `MySql::throwError` flags the connection whenever the failure
+        // is connection-level, whatever runs next (wrapper.cpp:294-299).
+        let at_connection_level = match &first {
+            Err(error) => error.is_closed() || error.as_db_error().is_none(),
+            Ok(_) => false,
+        };
+        if at_connection_level {
+            self.connection_lost.set(true);
+        }
+        match first {
+            Err(error)
+                if (error.is_closed() || error.as_db_error().is_none())
+                    && !self.in_transaction.get() =>
+            {
+                if self.reconnect() {
+                    op(&mut self.client.borrow_mut())
+                } else {
+                    Err(error)
+                }
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Registers an entity type with this connection: the contract
+    /// operations (`EntityStorage`) resolve the table shape by
+    /// `EntityTypeId`, the way the reference's `entityTypeMappings_`
+    /// vector indexes each type's mapping. Registration is in-memory —
+    /// the table itself is [`PostgresStorage::create_entity_table`]'s face.
+    pub fn register_entity_type(&mut self, type_id: EntityTypeId, schema: &EntitySchema) {
+        self.schemas.insert(type_id, schema.clone());
+    }
+
+    /// The registered shape of `type_id`, if this connection knows it.
+    /// The reference indexes `entityTypeMappings_` unguarded; the port
+    /// checks and lets each operation pick its own outcome for the
+    /// unknown type (a get answers "no row", a put fails, a delete and a
+    /// checkout report "not found").
+    pub fn schema_of(&self, type_id: EntityTypeId) -> Option<&EntitySchema> {
+        self.schemas.get(&type_id)
+    }
+
+    /// Re-seats the identity sequence past `id` — see
+    /// [`bump_identity_sql`]. The table name travels quoted:
+    /// `pg_get_serial_sequence` parses its argument as an identifier, so
+    /// the mixed-case reference names would fold without the quotes.
+    fn bump_identity(&mut self, schema: &EntitySchema, id: DatabaseId) -> Result<(), DbError> {
+        let table = quote_ident(&entity_table_name(&schema.type_name));
+        self.run_with_reconnect(|client| {
+            client.execute(bump_identity_sql().as_str(), &[&table, &id])
+        })
+        .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    /// Writes the log-on record for `key` (`addLogOnRecord`,
+    /// entity_type_mapping.cpp:773-783): the reference's statement is
+    /// `INSERT ... ON DUPLICATE KEY UPDATE`, so a relogon overwrites the
+    /// record instead of failing on the duplicate key. This is the raw
+    /// face — the contract's [`EntityStorage::check_out`] wraps it with
+    /// the occupancy grant.
+    pub fn put_logon_record(
+        &mut self,
+        key: &EntityKey,
+        mailbox: &BaseMailbox,
+    ) -> Result<(), DbError> {
+        self.run_with_reconnect(|client| {
+            client.execute(
+                add_logon_sql().as_str(),
+                &[
+                    &key.db_id,
+                    &(key.type_id as i32),
+                    &mailbox.entity_id,
+                    &stored_ip(mailbox.addr.ip),
+                    &stored_port(mailbox.addr.port),
+                    &stored_salt(mailbox.addr.salt),
+                ],
+            )
+        })
+        .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    /// Writes the `bigworldEntityTypes` row the auto-load join resolves
+    /// through — the sync pass's `TypesCollector::addType`
+    /// (table_inspector.cpp:250-272) driving `BigWorldMetaData`
+    /// (bw_meta_data.cpp:42-70): absent by name the row is added, a
+    /// different id re-points it, the same id is a no-op. The reference's
+    /// two type-id spaces — the database-internal `typeID` and the
+    /// `entities.xml` `bigworldID` — collapse into the port's one
+    /// [`EntityTypeId`] space, so both columns carry the same value and
+    /// a re-point moves both together (the reference's stable internal
+    /// id lets `setEntityTypeID` move `bigworldID` alone).
+    pub fn add_entity_type(&mut self, type_id: EntityTypeId, name: &str) -> Result<(), DbError> {
+        let current = self
+            .run_with_reconnect(|client| client.query_opt(get_entity_type_id_sql(), &[&name]))
+            .map_err(map_db_error)?;
+        let id = type_id as i64;
+        match current.map(|row| row.get::<_, i64>(0)) {
+            None => {
+                self.run_with_reconnect(|client| {
+                    client.execute(add_entity_type_sql().as_str(), &[&id, &name])
+                })
+                .map_err(map_db_error)?;
+            }
+            Some(stored) if stored != id => {
+                self.run_with_reconnect(|client| {
+                    client.execute(set_entity_type_id_sql().as_str(), &[&id, &name])
+                })
+                .map_err(map_db_error)?;
+            }
+            Some(_) => {}
+        }
+        Ok(())
+    }
+
+    /// Sets the auto-load status of an entity's log-on mapping
+    /// (`EntityTypeMapping::updateAutoLoad`, entity_type_mapping.cpp:792-800
+    /// — `updateLogOnAutoLoadQuery`). An entity without a log-on record
+    /// matches no rows and the update stays silent, the reference's MySQL
+    /// UPDATE semantics — the task that carries the flag writes it right
+    /// after the record itself (put_entity_task.cpp:117-121).
+    pub fn set_auto_load(
+        &mut self,
+        key: &EntityKey,
+        should_auto_load: bool,
+    ) -> Result<(), DbError> {
+        self.run_with_reconnect(|client| {
+            client.execute(
+                update_auto_load_sql().as_str(),
+                &[&should_auto_load, &key.db_id, &(key.type_id as i32)],
+            )
+        })
+        .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    /// The restart face (`MySqlDatabase::autoLoadEntities`,
+    /// mysql_database.cpp:669-715): the sessions of the entities that
+    /// must not auto-load are stale and go first, the flagged entities
+    /// are listed for the auto-loader — running-server type id first,
+    /// then `databaseID`, the `autoLoader.addEntity` order — and when the
+    /// list is non-empty the stored holders zero (`ip = 0, port = 0`;
+    /// `objectID` and `salt` stay). The caller feeds the list to the
+    /// loader's `reserve`/`addEntity` and drives `start` — the
+    /// auto-load recovery seam.
+    pub fn auto_load_entities(&self) -> Result<Vec<(EntityTypeId, DatabaseId)>, DbError> {
+        self.run_with_reconnect(|client| client.execute(clear_non_autoload_sql().as_str(), &[]))
+            .map_err(map_db_error)?;
+        let rows = self
+            .run_with_reconnect(|client| client.query(auto_load_list_sql().as_str(), &[]))
+            .map_err(map_db_error)?;
+        let mut list: Vec<(EntityTypeId, DatabaseId)> = Vec::with_capacity(rows.len());
+        for row in rows {
+            list.push((row.get::<_, i64>(1) as EntityTypeId, row.get::<_, i64>(0)));
+        }
+        if !list.is_empty() {
+            self.run_with_reconnect(|client| client.execute(clear_holders_sql().as_str(), &[]))
+                .map_err(map_db_error)?;
+        }
+        Ok(list)
     }
 
     /// Creates this schema's table if it is missing (the entity-mapping
     /// part of a `sync_db` run; the fixed tables and the dry-run report
     /// join with the BW-09-07 items).
     pub fn create_entity_table(&mut self, schema: &EntitySchema) -> Result<(), DbError> {
-        self.client
-            .execute(schema.create_table_ddl().as_str(), &[])
+        self.run_with_reconnect(|client| client.execute(schema.create_table_ddl().as_str(), &[]))
             .map_err(map_db_error)?;
         Ok(())
     }
@@ -336,41 +834,30 @@ impl PostgresStorage {
         record: &EntityRecord,
     ) -> Result<(), DbError> {
         let sql = put_entity_sql(schema);
-        let (params, nested_texts) = put_entity_params(schema, record)?;
+        let (params, nested_texts) = put_entity_params(schema, record, true)?;
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
-        self.client
-            .execute(sql.as_str(), &refs)
+        self.run_with_reconnect(|client| client.execute(sql.as_str(), &refs))
             .map_err(map_db_error)?;
         drop(nested_texts);
         Ok(())
     }
 
-    /// Writes a new entity row and allocates its DBID: the reference's
-    /// `putEntity` create leg, where the key carries no id yet
-    /// (`put_entity_task.cpp:60-98` → `insertNew`). The statement lists
-    /// the property columns only, so the table's own sequence assigns the
-    /// id; `RETURNING "id"` is this port's `LAST_INSERT_ID` read-back
-    /// (`wrapper.hpp:75`).
-    ///
-    /// The allocation is safe under concurrency and across a restart
-    /// because the sequence is the table's own catalog state: `nextval`
-    /// advances it atomically, and it is not in-process state, so a
-    /// reopened connection continues where the table left off. An id
-    /// inserted explicitly does not advance it (the reference is the same:
-    /// MySQL does not move `AUTO_INCREMENT` for an explicit value), so
-    /// importing rows must recalibrate it afterwards.
-    pub fn create_entity(
+    /// Writes an entity the table has not given a DatabaseID to and
+    /// returns the DatabaseID the table allocated. This is the
+    /// reference's buffered-task path: a `PENDING_DATABASE_ID` becomes
+    /// `0` before the insert, so the key column's `AUTO_INCREMENT`
+    /// supplies the value — in PostgreSQL, the identity column.
+    pub fn put_new_entity(
         &mut self,
         schema: &EntitySchema,
-        values: &[PropertyValue],
-    ) -> Result<DatabaseId, DbError> {
-        let sql = create_entity_sql(schema);
-        let (params, nested_texts) = create_entity_params(schema, values)?;
+        record: &EntityRecord,
+    ) -> Result<i64, DbError> {
+        let sql = put_new_entity_sql(schema);
+        let (params, nested_texts) = put_entity_params(schema, record, false)?;
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
         let row = self
-            .client
-            .query_one(sql.as_str(), &refs)
-            .map_err(map_write_error)?;
+            .run_with_reconnect(|client| client.query_one(sql.as_str(), &refs))
+            .map_err(map_db_error)?;
         drop(nested_texts);
         Ok(row.get::<_, i64>(0))
     }
@@ -378,7 +865,7 @@ impl PostgresStorage {
     /// Reads an entity row back: `Ok(None)` is the reference's "row
     /// missing" outcome, not a failure.
     pub fn get_entity(
-        &mut self,
+        &self,
         schema: &EntitySchema,
         key: &EntityKey,
     ) -> Result<Option<EntityRecord>, DbError> {
@@ -386,13 +873,197 @@ impl PostgresStorage {
             return Ok(None);
         }
         let row = self
-            .client
-            .query_opt(get_entity_sql(schema).as_str(), &[&key.db_id])
+            .run_with_reconnect(|client| {
+                client.query_opt(get_entity_sql(schema).as_str(), &[&key.db_id])
+            })
             .map_err(map_db_error)?;
         let Some(row) = row else {
             return Ok(None);
         };
         decode_row(schema, key, &row).map(Some)
+    }
+}
+
+/// The shared storage contract (`IDatabase`) on PostgreSQL. The schema-
+/// shaped inherent methods keep their BW-09-06-02/03 names, so the
+/// contract methods are reached through the trait — callers write
+/// `EntityStorage::put_entity(&mut storage, …)`.
+impl EntityStorage for PostgresStorage {
+    fn get_entity(&self, key: &EntityKey) -> Result<Option<EntityRecord>, DbError> {
+        // An unknown type has no table: the "no row" outcome. The shape is
+        // cloned out of the registry so the operation runs without the
+        // borrow.
+        let Some(schema) = self.schema_of(key.type_id).cloned() else {
+            return Ok(None);
+        };
+        PostgresStorage::get_entity(self, &schema, key)
+    }
+
+    fn put_entity(
+        &mut self,
+        key: &EntityKey,
+        values: &[PropertyValue],
+        put_explicit_id: bool,
+    ) -> Result<DatabaseId, DbError> {
+        let Some(schema) = self.schema_of(key.type_id).cloned() else {
+            // The XML backend's unknown-type rejection.
+            return Err(DbError::Storage(format!(
+                "entity type {} is invalid",
+                key.type_id
+            )));
+        };
+        let record = EntityRecord {
+            type_id: key.type_id,
+            db_id: key.db_id,
+            values: values.to_vec(),
+        };
+
+        if key.db_id == PENDING_DATABASE_ID {
+            // The create leg: the reference turns the pending id into 0
+            // and the table's key column hands the id out
+            // (buffered_entity_tasks.cpp:316-320, put_entity_task.cpp:85-88).
+            return PostgresStorage::put_new_entity(self, &schema, &record);
+        }
+
+        if put_explicit_id {
+            // insertExplicit: a plain INSERT, so a duplicate id fails and
+            // the original row survives (put_entity_task.cpp:89-97).
+            let sql = insert_explicit_entity_sql(&schema);
+            let (params, nested_texts) = put_entity_params(&schema, &record, true)?;
+            self.bump_identity(&schema, key.db_id)?;
+            let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
+            self.run_with_reconnect(|client| client.execute(sql.as_str(), &refs))
+                .map_err(map_entity_db_error)?;
+            drop(nested_texts);
+            return Ok(key.db_id);
+        }
+
+        // The update leg: a missing row is the XML backend's `isOK=false`
+        // (xml_database.cpp:617-620) — the upsert would create the row
+        // instead, so the existence check runs first.
+        let exists_sql = row_exists_sql(&schema);
+        let found = self
+            .run_with_reconnect(|client| client.query_opt(exists_sql.as_str(), &[&key.db_id]))
+            .map_err(map_db_error)?;
+        if found.is_none() {
+            return Err(DbError::NotFound);
+        }
+        PostgresStorage::put_entity(self, &schema, &record)?;
+        Ok(key.db_id)
+    }
+
+    fn del_entity(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        let Some(schema) = self.schema_of(key.type_id).cloned() else {
+            return Err(DbError::NotFound);
+        };
+        let sql = format!(
+            "DELETE FROM {} WHERE {} = $1",
+            schema.quoted_table(),
+            quote_ident(ID_COLUMN)
+        );
+        let deleted = self
+            .run_with_reconnect(|client| client.execute(sql.as_str(), &[&key.db_id]))
+            .map_err(map_db_error)?;
+        if deleted == 0 {
+            // `deleteWithID` fails without touching the log-on record
+            // (del_entity_task.cpp:69-74).
+            return Err(DbError::NotFound);
+        }
+        // On success the log-on record goes with the row
+        // (del_entity_task.cpp:76).
+        self.run_with_reconnect(|client| {
+            client.execute(
+                remove_logon_sql().as_str(),
+                &[&key.db_id, &(key.type_id as i32)],
+            )
+        })
+        .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    fn logon_of(&self, key: &EntityKey) -> Result<Option<BaseMailbox>, DbError> {
+        let row = self
+            .run_with_reconnect(|client| {
+                client.query_opt(
+                    get_logon_sql().as_str(),
+                    &[&key.db_id, &(key.type_id as i32)],
+                )
+            })
+            .map_err(map_db_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        // `getResult(...)` then the ntohl/ntohs back-conversion
+        // (entity_type_mapping.cpp:811-816).
+        Ok(Some(BaseMailbox {
+            addr: Address {
+                ip: read_ip(row.get::<_, i64>(1)),
+                port: read_port(row.get::<_, i32>(2)),
+                salt: read_salt(row.get::<_, i32>(3)),
+            },
+            entity_id: row.get::<_, i32>(0),
+        }))
+    }
+
+    fn check_out(&mut self, key: &EntityKey, mailbox: BaseMailbox) -> Result<CheckOut, DbError> {
+        // No log-on record ever points at a missing row
+        // (put_entity_task.cpp:103-108 checks existence first).
+        let Some(schema) = self.schema_of(key.type_id).cloned() else {
+            return Err(DbError::NotFound);
+        };
+        let exists_sql = row_exists_sql(&schema);
+        let found = self
+            .run_with_reconnect(|client| client.query_opt(exists_sql.as_str(), &[&key.db_id]))
+            .map_err(map_db_error)?;
+        if found.is_none() {
+            return Err(DbError::NotFound);
+        }
+        if let Some(holder) = self.logon_of(key)? {
+            return Ok(CheckOut::Elsewhere(holder));
+        }
+        // The grant records the holder with the reference's own upsert.
+        self.put_logon_record(key, &mailbox)?;
+        Ok(CheckOut::Granted)
+    }
+
+    fn check_in(&mut self, key: &EntityKey) -> Result<(), DbError> {
+        // removeLogOnRecord deletes unconditionally
+        // (entity_type_mapping.cpp:533-535).
+        self.run_with_reconnect(|client| {
+            client.execute(
+                remove_logon_sql().as_str(),
+                &[&key.db_id, &(key.type_id as i32)],
+            )
+        })
+        .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    fn all_entities(&self) -> Result<Vec<EntityRecord>, DbError> {
+        // The reference queries per type (each `EntityTypeMapping` builds
+        // its own SELECT); the registry is the type list.
+        let mut entries: Vec<(EntityTypeId, EntitySchema)> = self
+            .schemas
+            .iter()
+            .map(|(type_id, schema)| (*type_id, schema.clone()))
+            .collect();
+        entries.sort_by_key(|(type_id, _)| *type_id);
+        let mut records = Vec::new();
+        for (type_id, schema) in &entries {
+            let sql = select_all_entity_sql(schema);
+            let rows = self
+                .run_with_reconnect(|client| client.query(sql.as_str(), &[]))
+                .map_err(map_db_error)?;
+            for row in &rows {
+                let key = EntityKey {
+                    type_id: *type_id,
+                    db_id: row.get::<_, i64>(0),
+                };
+                records.push(decode_row(schema, &key, row)?);
+            }
+        }
+        records.sort_by_key(|record| (record.type_id, record.db_id));
+        Ok(records)
     }
 }
 
@@ -440,11 +1111,10 @@ mod tests {
         let err = validate_put(&schema(), &record(-1)).unwrap_err();
         assert!(err.to_string().contains("pending database id"));
 
-        // A uint64 over BIGINT cannot bind; that check lives where the
-        // parameters are built, and the create leg runs it the same way.
+        // A uint64 over BIGINT cannot bind.
         let mut huge = record(1);
         huge.values[1] = PropertyValue::Uint(u64::MAX);
-        let err = put_entity_params(&schema(), &huge).unwrap_err();
+        let err = validate_put(&schema(), &huge).unwrap_err();
         assert!(err.to_string().contains("exceeds BIGINT"));
     }
 
@@ -471,59 +1141,8 @@ mod tests {
     }
 
     #[test]
-    fn create_sql_leaves_the_id_column_out() {
-        // `insertNew`: the property columns only, and the id read back.
-        let sql = create_entity_sql(&schema());
-        assert_eq!(
-            sql,
-            concat!(
-                "INSERT INTO \"tbl_Account\" ",
-                "(\"sm_name\", \"sm_level\", \"sm_secret\") ",
-                "VALUES ($1, $2, $3) RETURNING \"id\""
-            )
-        );
-    }
-
-    #[test]
-    fn create_sql_casts_nested_placeholders_to_jsonb() {
-        let values = vec![
-            PropertyValue::String("cui".into()),
-            PropertyValue::Sequence(vec![PropertyValue::Int(2)]),
-        ];
-        let schema = EntitySchema::for_record("Monster", &["name", "loot"], &values).unwrap();
-        assert_eq!(
-            create_entity_sql(&schema),
-            "INSERT INTO \"tbl_Monster\" (\"sm_name\", \"sm_loot\") \
-             VALUES ($1, CAST($2::text AS JSONB)) RETURNING \"id\""
-        );
-    }
-
-    #[test]
-    fn a_propertyless_table_inserts_a_default_row() {
-        let schema = EntitySchema::for_record("Empty", &[], &[]).unwrap();
-        assert_eq!(
-            create_entity_sql(&schema),
-            "INSERT INTO \"tbl_Empty\" DEFAULT VALUES RETURNING \"id\""
-        );
-    }
-
-    #[test]
-    fn create_params_carry_the_values_without_an_id() {
-        // One parameter per column: the statement has no id placeholder, so
-        // the numbering starts where the put statement's properties begin.
-        let (params, nested) = create_entity_params(&schema(), &record(0).values).unwrap();
-        assert_eq!(params.len(), 3);
-        assert!(nested.is_empty());
-
-        let mut short = record(0);
-        short.values.truncate(1);
-        let err = create_entity_params(&schema(), &short.values).unwrap_err();
-        assert!(err.to_string().contains("carries 1 values"));
-    }
-
-    #[test]
     fn put_params_bind_the_id_then_each_value() {
-        let (params, nested) = put_entity_params(&schema(), &record(41)).unwrap();
+        let (params, nested) = put_entity_params(&schema(), &record(41), true).unwrap();
         assert_eq!(params.len(), 4);
         assert!(nested.is_empty());
         // A schema with a nested column proves the nested-text leg.
@@ -532,7 +1151,7 @@ mod tests {
         let mut nested_record = EntityRecord::new(0);
         nested_record.db_id = 2;
         nested_record.values = values.clone();
-        let (params, nested) = put_entity_params(&schema, &nested_record).unwrap();
+        let (params, nested) = put_entity_params(&schema, &nested_record, true).unwrap();
         assert_eq!(params.len(), 2);
         assert_eq!(nested, vec!["{\"d\":null}".to_string()]);
     }
@@ -559,5 +1178,124 @@ mod tests {
         let schema = EntitySchema::for_record("Monster", &["extra"], &values).unwrap();
         let sql = get_entity_sql(&schema);
         assert!(sql.contains("(\"sm_extra\")::text"));
+    }
+
+    #[test]
+    fn an_explicit_dbid_overrides_the_identity_column() {
+        let sql = put_entity_sql(&schema());
+        assert!(sql.starts_with(concat!(
+            "INSERT INTO \"tbl_Account\" ",
+            "(\"id\", \"sm_name\", \"sm_level\", \"sm_secret\") OVERRIDING SYSTEM VALUE"
+        )));
+        assert!(sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
+    }
+
+    #[test]
+    fn a_new_entity_leaves_the_id_to_the_table_and_reads_it_back() {
+        assert_eq!(
+            put_new_entity_sql(&schema()),
+            concat!(
+                "INSERT INTO \"tbl_Account\" ",
+                "(\"sm_name\", \"sm_level\", \"sm_secret\") VALUES ($1, $2, $3) ",
+                "RETURNING \"id\""
+            )
+        );
+    }
+
+    #[test]
+    fn new_entity_params_skip_the_dbid_but_keep_the_values() {
+        // The pending dbid is exactly what makes the row a new one, so it
+        // must not be rejected on this path.
+        let (params, nested) = put_entity_params(&schema(), &record(-1), false).unwrap();
+        assert_eq!(params.len(), 3);
+        assert!(nested.is_empty());
+    }
+
+    #[test]
+    fn a_pending_dbid_is_rejected_for_an_explicit_write() {
+        let err = put_entity_params(&schema(), &record(-1), true).unwrap_err();
+        assert!(err.to_string().contains("pending database id"));
+    }
+
+    #[test]
+    fn the_explicit_insert_is_a_plain_insert_that_keeps_the_original_row() {
+        assert_eq!(
+            insert_explicit_entity_sql(&schema()),
+            concat!(
+                "INSERT INTO \"tbl_Account\" ",
+                "(\"id\", \"sm_name\", \"sm_level\", \"sm_secret\") ",
+                "OVERRIDING SYSTEM VALUE VALUES ($1, $2, $3, $4)"
+            )
+        );
+    }
+
+    #[test]
+    fn the_logon_statements_match_the_reference_queries() {
+        // addLogOnQuery is INSERT ... ON DUPLICATE KEY UPDATE
+        // (entity_type_mapping.cpp:749-758).
+        assert_eq!(
+            add_logon_sql(),
+            concat!(
+                "INSERT INTO \"bigworldLogOns\" (\"databaseID\", \"typeID\", \"objectID\", ",
+                "\"ip\", \"port\", \"salt\") VALUES ($1, $2, $3, $4, $5, $6) ",
+                "ON CONFLICT (\"typeID\", \"databaseID\") DO UPDATE SET ",
+                "\"objectID\" = EXCLUDED.\"objectID\", \"ip\" = EXCLUDED.\"ip\", ",
+                "\"port\" = EXCLUDED.\"port\", \"salt\" = EXCLUDED.\"salt\""
+            )
+        );
+        // getLogOnQuery (entity_type_mapping.cpp:764-766).
+        assert_eq!(
+            get_logon_sql(),
+            concat!(
+                "SELECT \"objectID\", \"ip\", \"port\", \"salt\" ",
+                "FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2"
+            )
+        );
+        // removeLogOnQuery (entity_type_mapping.cpp:527-529).
+        assert_eq!(
+            remove_logon_sql(),
+            "DELETE FROM \"bigworldLogOns\" WHERE \"databaseID\" = $1 AND \"typeID\" = $2"
+        );
+    }
+
+    #[test]
+    fn the_address_travels_in_network_byte_order() {
+        // htonl/htons on the way in (entity_type_mapping.cpp:779-781),
+        // ntohl/ntohs on the way out (:815-816).
+        assert_eq!(stored_ip(0x0A00_0001), 0x0100_000A);
+        assert_eq!(read_ip(stored_ip(0x0A00_0001)), 0x0A00_0001);
+        assert_eq!(stored_port(30000), 0x3075);
+        assert_eq!(read_port(stored_port(30000)), 30000);
+        // The salt keeps its whole width: the ported address carries a
+        // u16 salt and the INTEGER column holds it whole.
+        assert_eq!(stored_salt(u16::MAX), 65535);
+        assert_eq!(read_salt(stored_salt(u16::MAX)), u16::MAX);
+        assert_eq!(read_salt(stored_salt(7)), 7);
+    }
+
+    #[test]
+    fn the_identity_bump_reseats_the_sequence_past_explicit_ids() {
+        assert_eq!(
+            bump_identity_sql(),
+            concat!(
+                "SELECT setval(pg_get_serial_sequence($1, 'id')::regclass, ",
+                "GREATEST($2, nextval(pg_get_serial_sequence($1, 'id')::regclass)), true)"
+            )
+        );
+    }
+
+    #[test]
+    fn the_existence_check_and_the_full_scan_select_the_stored_columns() {
+        assert_eq!(
+            row_exists_sql(&schema()),
+            "SELECT 1 FROM \"tbl_Account\" WHERE \"id\" = $1"
+        );
+        assert_eq!(
+            select_all_entity_sql(&schema()),
+            concat!(
+                "SELECT \"id\", \"sm_name\", \"sm_level\", \"sm_secret\" ",
+                "FROM \"tbl_Account\""
+            )
+        );
     }
 }
