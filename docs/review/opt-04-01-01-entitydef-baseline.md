@@ -104,6 +104,42 @@ are a snapshot, not a contract. OPT-04-01-02 uses this same harness;
 the other side of the comparison lives in the commit cited in its
 tick.
 
+## OPT-04-01-04 — rerun of the digests and byte fixtures
+
+After the whole OPT-04-01 optimization section (the parse cache and
+the codec evaluation), the artifacts the definition load produces
+must be identical to the captured ones:
+
+- **Digests** — the four in-repo definition trees (`full_def`,
+  `fantasydemo_def`, `service_def`, `entity_index`) reload through
+  `EntityDescriptionMapFactory::create` and every digest equals its
+  oracle in `docs/review/reference/*_entitydef.json`; the fifth tree
+  (`client_integration`) rides an env path exactly as `differential.rs`
+  reads it and is recorded as skipped when unset.
+- **Entity snapshot bytes** — the capture's Avatar entity
+  (`docs/review/fixtures/artifacts/entity-Avatar.snapshot.hex`, 15
+  bytes), serialized from the capture's fixed input section through
+  the reference's four-pass `addSectionToStream` order (the
+  `shouldConsiderData` filter of `entity_description.cpp`: base-not-
+  client, base-and-client, cell-and-client, cell-not-client, each
+  walking the properties in declaration order), reproduces the
+  captured hex byte for byte — including the reference's INT8
+  truncation of the input 300 to `0x2c`.
+- **Database row bytes** — the same entity through
+  `BASE_DATA|CELL_DATA|ONLY_PERSISTENT_DATA` (persistence from the
+  explicit `<Persistent>` tag, default false as in the reference)
+  plus the `canBeOnCell` spatial suffix (`position`, `direction`,
+  `spaceID` — the `XMLDatabase::getEntity` row formula), reproduces
+  the captured 38 bytes (`database-Avatar.row.hex`).
+
+The rerun harness lives at
+`crates/entitydef/tests/entitydef_rerun.rs`; its record
+(`docs/review/fixtures/entitydef-baseline/def-rerun.tsv`, 14 rows)
+pins all digests, both hex lines, both byte counts and the match
+flags. The acceptance is the byte equality itself, asserted on every
+run; the row formula's persistence default and pass order are copied
+from the reference source cited above.
+
 ## OPT-04-01-03 — pre-generated codec evaluation
 
 The interpretive codec walks the `Kind` tree on every call: the
