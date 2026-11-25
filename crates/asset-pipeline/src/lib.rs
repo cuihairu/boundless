@@ -98,7 +98,12 @@
 //!   traversal produces, the mesh save chain into a `.visual` plus its
 //!   `.primitives`, the hierarchy/world-space handling, and the custom
 //!   hull and boundary faces
-//!   (`tools/mayavisualexporter/`).
+//!   (`tools/mayavisualexporter/`);
+//! - [`world_machine_import`] — the World Machine height importer: the
+//!   `SpaceHelper` space.settings reader, the chunk `.cdata` height-map
+//!   decode and the `BWHeightImport` resample into a World Machine
+//!   height field, with the framework seam documented
+//!   (`tools/bw_world_machine_import/`).
 
 pub mod animation_exporter;
 pub mod asset_compiler;
@@ -140,3 +145,4 @@ pub mod texture_converter;
 pub mod texture_detail_level;
 pub mod vertex_format;
 pub mod visual_processor;
+pub mod world_machine_import;
