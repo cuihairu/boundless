@@ -1736,6 +1736,226 @@ mod tests {
         let _ = dir;
     }
 
+    // -------------------------------------------------------------------------
+    // BW-07-05-03: the tick-chunk face — schemes, accessors, flush timing.
+    // -------------------------------------------------------------------------
+
+    /// `SHAChecksumScheme` writes the file too: 32-byte signatures, and the
+    /// reference reader parses the chunks back with the same length.
+    #[test]
+    fn the_sha256_scheme_signs_thirty_two_byte_signatures() {
+        let (dir, path) = temp_file("sha.replay");
+
+        let mut writer = ReplayDataFileWriter::new(
+            &path,
+            Box::new(Sha256Checksum::new()),
+            compression::ZIP_MAX,
+            fixture_digest(),
+            2,
+            &ReplayMetaData::new(),
+            fixture_nonce(),
+        );
+        writer.add_tick_data(1, 1, &[0x11; 64]);
+        writer.add_tick_data(2, 1, &[0x22; 64]);
+        writer.finalise();
+
+        let file = std::fs::read(&path).expect("file");
+        let (header, pos) = parse_header(&file, None).expect("header");
+        assert_eq!(header.signature_length, 32);
+        let (_, used) = parse_metadata(&file[pos..], 32, None).expect("metadata");
+        let (chunks, consumed) =
+            parse_tick_chunks(&file[pos + used..], 32, header.num_ticks).expect("chunks");
+        assert_eq!(pos + used + consumed, file.len());
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].entries.len(), 2);
+        let first = &chunks[0].entries[0];
+        assert_eq!(first.game_time, 1);
+        assert_eq!(first.blob[0], compression::ZIP_MAX, "the payload is zip-9");
+        assert_eq!(
+            decompress_tick(&first.blob).expect("decompress"),
+            vec![0x11u8; 64],
+            "the zip-9 payload reads back losslessly"
+        );
+        assert_eq!(
+            decompress_tick(&chunks[0].entries[1].blob).expect("decompress"),
+            vec![0x22u8; 64],
+        );
+        let _ = dir;
+    }
+
+    /// The metadata collection reports and resets its state.
+    #[test]
+    fn the_metadata_accessors_report_and_reset() {
+        let mut metadata = ReplayMetaData::new();
+        assert!(!metadata.has_key("key"));
+        metadata.add("key", "value");
+        metadata.add("other", "2");
+        assert!(metadata.has_key("key"));
+        assert_eq!(metadata.size(), 2);
+        let packed = metadata.stream_size() as usize;
+        assert_eq!(
+            packed,
+            string_packed_size("key")
+                + string_packed_size("value")
+                + string_packed_size("other")
+                + string_packed_size("2")
+        );
+
+        metadata.clear();
+        assert!(!metadata.has_key("key"));
+        assert_eq!(metadata.size(), 0);
+        assert_eq!(metadata.stream_size(), 0);
+    }
+
+    /// The writer reports its construction state, and a fresh header has
+    /// no ticks yet.
+    #[test]
+    fn the_writer_accessors_report_the_construction_state() {
+        let (dir, path) = temp_file("state.replay");
+        let metadata = ReplayMetaData::new();
+
+        let header = ReplayHeader::new(16, fixture_digest(), 30, fixture_nonce());
+        assert_eq!(header.num_ticks(), 0, "unfinalised header");
+        let (_, header_signature) = header.signed_block(&mut Md5Checksum::new());
+
+        // The writer primes the scheme with the header's signature before
+        // signing the metadata block, so the block it seeds off is
+        // reproducible here.
+        let mut primed = Md5Checksum::new();
+        primed.reset();
+        primed.read_blob(&header_signature);
+        let (metadata_block, metadata_signature) = metadata.signed_block(&mut primed);
+
+        let writer = ReplayDataFileWriter::new(
+            &path,
+            Box::new(Md5Checksum::new()),
+            compression::ZIP_MIN,
+            fixture_digest(),
+            7,
+            &metadata,
+            fixture_nonce(),
+        );
+        assert_eq!(writer.path(), path.as_path());
+        assert_eq!(writer.compression_type(), compression::ZIP_MIN);
+        assert_eq!(writer.num_ticks_to_sign(), 7);
+        assert_eq!(
+            writer.last_chunk_position() as usize,
+            header_stream_size(16) + metadata_block.len(),
+            "the header and metadata blocks precede the first chunk"
+        );
+        assert_eq!(writer.last_chunk_length(), 0);
+        assert_eq!(writer.last_signature(), &metadata_signature[..]);
+        let _ = dir;
+    }
+
+    /// Raising a tick's expected count extends the outstanding count by
+    /// the same delta, and the tick reports its number.
+    #[test]
+    fn a_raise_extends_the_outstanding_count() {
+        let mut tick_data = TickReplayData::init(9, 1);
+        assert_eq!(tick_data.tick(), 9);
+        tick_data.raise_expected_cells(3);
+        assert_eq!(tick_data.num_cells_left(), 3, "1 outstanding + 2 more");
+        tick_data.raise_expected_cells(2);
+        assert_eq!(tick_data.num_cells_left(), 3, "a lower count is refused");
+        tick_data.transfer_from_cell(b"a");
+        tick_data.transfer_from_cell(b"b");
+        tick_data.transfer_from_cell(b"c");
+        assert_eq!(tick_data.num_cells_left(), 0);
+    }
+
+    /// A chunk flush leaves later buffered ticks in place, so the
+    /// completing write must not close a writer that still owes tick
+    /// data (`onBackgroundFileWritingComplete`'s drain test).
+    #[test]
+    fn a_chunk_flush_defers_the_close_while_ticks_remain_buffered() {
+        let (dir, path) = temp_file("defer.replay");
+        let mut writer = ReplayDataFileWriter::new(
+            &path,
+            Box::new(Md5Checksum::new()),
+            compression::NONE,
+            fixture_digest(),
+            2,
+            &ReplayMetaData::new(),
+            fixture_nonce(),
+        );
+
+        // Tick 3 completes before 1 and 2 do, so the chunk covering 1-2
+        // flushes with tick 3 still buffered.
+        writer.add_tick_data(1, 2, &[0xaa; 8]);
+        writer.add_tick_data(2, 2, &[0xbb; 8]);
+        writer.add_tick_data(3, 1, &[0xcc; 8]);
+        assert_eq!(writer.num_ticks_written(), 2, "ticks 1-2 landed");
+        assert_eq!(writer.last_tick_written(), 2);
+        assert!(!writer.is_closed(), "tick 3 is still buffered");
+
+        writer.add_tick_data(4, 1, &[0xdd; 8]);
+        assert_eq!(writer.num_ticks_written(), 4);
+        writer.close(true);
+
+        assert!(writer.is_closed());
+        let _ = dir;
+    }
+
+    /// Finalising after a releasing close is inert — the file is gone,
+    /// the remaining buffered ticks are dropped without a panic
+    /// (`writeFile` on a released writer).
+    #[test]
+    fn finalising_after_a_releasing_close_is_inert() {
+        let (dir, path) = temp_file("inert.replay");
+        let mut writer = ReplayDataFileWriter::new(
+            &path,
+            Box::new(Md5Checksum::new()),
+            compression::NONE,
+            fixture_digest(),
+            2,
+            &ReplayMetaData::new(),
+            fixture_nonce(),
+        );
+        writer.add_tick_data(1, 1, &[1; 8]);
+        writer.close(false);
+        assert!(writer.is_closed());
+
+        let size_before = std::fs::metadata(&path).expect("metadata").len();
+        writer.finalise();
+        assert!(writer.is_closed());
+        assert_eq!(
+            std::fs::metadata(&path).expect("metadata").len(),
+            size_before,
+            "nothing reached the released file"
+        );
+        let _ = dir;
+    }
+
+    /// A write that the device refuses mid-file — `/dev/full` — lands in
+    /// the error path once and stays there (`onBackgroundFileWritingError`).
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_write_reports_one_error() {
+        if !std::path::Path::new("/dev/full").exists() {
+            return;
+        }
+        let (listener, destroyed) = CountingListener::new();
+        let mut writer = ReplayDataFileWriter::new(
+            std::path::Path::new("/dev/full"),
+            Box::new(Md5Checksum::new()),
+            compression::NONE,
+            fixture_digest(),
+            2,
+            &ReplayMetaData::new(),
+            fixture_nonce(),
+        );
+        writer.add_listener(Box::new(listener));
+        assert!(writer.has_error(), "the first write was refused");
+        assert!(writer.error_string().contains("No space left"));
+        assert_eq!(writer.errors_after_construction(), 1);
+
+        writer.add_tick_data(1, 1, &[1; 8]);
+        writer.finalise();
+        drop(writer);
+        assert_eq!(destroyed.get(), 1);
+    }
+
     // Small helpers the tests above lean on.
     impl ReplayDataFileWriter {
         fn has_listeners_after_drop_pending(&self) -> bool {
