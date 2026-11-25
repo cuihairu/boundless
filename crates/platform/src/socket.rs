@@ -188,6 +188,160 @@ pub fn recv(fd: RawFd, buf: &mut [u8]) -> i32 {
     unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut _, buf.len(), 0) as i32 }
 }
 
+/// The retained scratch `::sendmmsg` needs: the iovec and message
+/// arrays, sized once for the batch width and refilled per call, so a
+/// steady-state loop allocates nothing.
+#[cfg(target_os = "linux")]
+pub struct SendScratch {
+    iovecs: Vec<libc::iovec>,
+    msgs: Vec<libc::mmsghdr>,
+    dest: libc::sockaddr_in,
+}
+
+#[cfg(target_os = "linux")]
+impl SendScratch {
+    /// Scratch for batches of up to `width` buffers.
+    pub fn new(width: usize) -> Self {
+        Self {
+            iovecs: Vec::with_capacity(width),
+            msgs: Vec::with_capacity(width),
+            dest: sockaddr_in(0, 0),
+        }
+    }
+}
+
+/// `::sendmmsg` (Linux): push up to one datagram per buffer to the
+/// fixed destination in a single syscall, amortizing the per-call trap
+/// across the batch. Returns the number of datagrams accepted; a
+/// negative return is `-errno`, same as `sendto`. The scratch is
+/// refilled per call and never reallocated once the batch width
+/// stabilizes.
+#[cfg(target_os = "linux")]
+pub fn sendmmsg(
+    fd: RawFd,
+    buffers: &[&[u8]],
+    port: u16,
+    ip: u32,
+    scratch: &mut SendScratch,
+) -> i32 {
+    scratch.dest = sockaddr_in(port, ip);
+    scratch.iovecs.clear();
+    scratch.iovecs.extend(buffers.iter().map(|b| libc::iovec {
+        iov_base: b.as_ptr() as *mut _,
+        iov_len: b.len(),
+    }));
+    scratch.msgs.clear();
+    scratch
+        .msgs
+        .extend((0..buffers.len()).map(|i| libc::mmsghdr {
+            msg_hdr: libc::msghdr {
+                msg_name: &mut scratch.dest as *mut _ as *mut _,
+                msg_namelen: std::mem::size_of::<libc::sockaddr_in>() as u32,
+                msg_iov: &mut scratch.iovecs[i] as *mut _,
+                msg_iovlen: 1,
+                msg_control: std::ptr::null_mut(),
+                msg_controllen: 0,
+                msg_flags: 0,
+            },
+            msg_len: 0,
+        }));
+    unsafe {
+        libc::sendmmsg(
+            fd,
+            scratch.msgs.as_mut_ptr(),
+            scratch.msgs.len() as u32,
+            MSG_NOSIGNAL,
+        )
+    }
+}
+
+/// The retained scratch `::recvmmsg` needs: one iovec and one source
+/// slot per batch slot plus the message array, sized once for the batch
+/// width and refilled per call, so a steady-state drain allocates
+/// nothing per datagram.
+#[cfg(target_os = "linux")]
+pub struct RecvScratch {
+    iovecs: Vec<libc::iovec>,
+    addrs: Vec<libc::sockaddr_in>,
+    msgs: Vec<libc::mmsghdr>,
+}
+
+#[cfg(target_os = "linux")]
+impl RecvScratch {
+    /// Scratch for batches of up to `width` buffers.
+    pub fn new(width: usize) -> Self {
+        Self {
+            iovecs: Vec::with_capacity(width),
+            addrs: Vec::with_capacity(width),
+            msgs: Vec::with_capacity(width),
+        }
+    }
+}
+
+/// `::recvmmsg` (Linux): receive up to one datagram per buffer in a
+/// single syscall. Returns the number of datagrams read (a negative
+/// return is `-errno`), and fills `out` -- reused, not reallocated, so a
+/// steady-state drain with pooled buffers allocates nothing per
+/// datagram -- with `(length, source port, source ip)` triples in batch
+/// order; the address parts are in network byte order, matching
+/// `recvfrom`. With flags at zero the socket's own blocking mode
+/// governs: on a nonblocking socket the call returns the datagrams
+/// available now.
+#[cfg(target_os = "linux")]
+pub fn recvmmsg(
+    fd: RawFd,
+    bufs: &mut [&mut [u8]],
+    out: &mut Vec<(usize, u16, u32)>,
+    scratch: &mut RecvScratch,
+) -> i32 {
+    out.clear();
+    if bufs.is_empty() {
+        return 0;
+    }
+    scratch.iovecs.clear();
+    scratch.iovecs.extend(bufs.iter_mut().map(|b| libc::iovec {
+        iov_base: b.as_mut_ptr() as *mut _,
+        iov_len: b.len(),
+    }));
+    scratch.addrs.clear();
+    scratch
+        .addrs
+        .extend((0..bufs.len()).map(|_| sockaddr_in(0, 0)));
+    scratch.msgs.clear();
+    scratch.msgs.extend((0..bufs.len()).map(|i| libc::mmsghdr {
+        msg_hdr: libc::msghdr {
+            msg_name: &mut scratch.addrs[i] as *mut _ as *mut _,
+            msg_namelen: std::mem::size_of::<libc::sockaddr_in>() as u32,
+            msg_iov: &mut scratch.iovecs[i] as *mut _,
+            msg_iovlen: 1,
+            msg_control: std::ptr::null_mut(),
+            msg_controllen: 0,
+            msg_flags: 0,
+        },
+        msg_len: 0,
+    }));
+    let count = unsafe {
+        libc::recvmmsg(
+            fd,
+            scratch.msgs.as_mut_ptr(),
+            scratch.msgs.len() as u32,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if count <= 0 {
+        return count;
+    }
+    for i in 0..count as usize {
+        out.push((
+            scratch.msgs[i].msg_len as usize,
+            scratch.addrs[i].sin_port,
+            scratch.addrs[i].sin_addr.s_addr,
+        ));
+    }
+    count
+}
+
 /// `::shutdown` -- the `TCPChannel::doShutDown` half-close.
 pub fn shutdown(fd: RawFd, how: i32) -> i32 {
     unsafe { libc::shutdown(fd, how) as i32 }
