@@ -22,13 +22,18 @@
 //!
 //! This module models the sender side (choosing the destination), the backup
 //! payload (its stream format) and the receiver (storing backups and restoring
-//! them after a death). The body is written uncompressed — compression is the
-//! reference's transport concern, not the backup's content.
+//! them after a death). The shipped payload writes the body uncompressed; the
+//! wrapped face (`write_backup_data_wrapped` / `read_backup_data_wrapped`)
+//! carries the body through the reference's `CompressionOStream` frame — the
+//! plaintext header, then the type byte and, for a zip type, the zlib
+//! payload. That is the transport the reference picks per entity type
+//! (`internalNetworkCompressionType`, default `NONE`).
 
 use crate::backup_hash::{BackupHash, BackupHashChain};
 use crate::baseappmgr::Addr;
 use crate::cell_data::BaseAddr;
 use crate::entity_creator::{BaseEntity, EntityId, EntityType, PropValue};
+use crate::replay_recording::{CompressError, compress_frame, decompress_frame};
 use foundation::stream::{BinaryStream, StreamError};
 
 /// A `backupBaseEntity` message (`BaseAppIntInterface::backupBaseEntity`,
@@ -72,11 +77,20 @@ pub enum BackupError {
         /// The tag byte.
         tag: u8,
     },
+    /// The compression frame around the body failed (`CompressionIStream`
+    /// reading a broken frame).
+    Compression(CompressError),
 }
 
 impl From<StreamError> for BackupError {
     fn from(err: StreamError) -> Self {
         BackupError::Stream(err)
+    }
+}
+
+impl From<CompressError> for BackupError {
+    fn from(err: CompressError) -> Self {
+        BackupError::Compression(err)
     }
 }
 
@@ -109,12 +123,45 @@ pub fn backup_destination(
 /// reads first (`id`, `type id`, `templateID`, `databaseID`) and then the body
 /// `writeBackupDataInternal` (`base.cpp:2349`).
 pub fn write_backup_data(base: &BaseEntity, stream: &mut BinaryStream) {
+    write_backup_header(stream, base);
+    write_backup_body(stream, base);
+}
+
+/// `Base::writeBackupData` with the body behind the `CompressionOStream`
+/// frame (`base.cpp:2322-2327`): the plaintext header, then the body as the
+/// compression frame — the type byte first, and for a zip type a packed
+/// uncompressed length, a packed compressed length and the zlib payload
+/// (`zip_stream.cpp:261-286`). `compression_type` is the entity type's
+/// `internalNetworkCompressionType` (`base.cpp:2325`): the `DEFAULT_*`
+/// sentinels resolve to `NONE` (`compression_stream.cpp:53-58`), which
+/// passes the body through behind the type byte.
+pub fn write_backup_data_wrapped(
+    base: &BaseEntity,
+    stream: &mut BinaryStream,
+    compression_type: u8,
+) -> Result<(), CompressError> {
+    write_backup_header(stream, base);
+
+    let mut body = BinaryStream::new();
+    write_backup_body(&mut body, base);
+    let frame = compress_frame(compression_type, body.as_bytes())?;
+    stream.write_bytes(&frame);
+    Ok(())
+}
+
+/// The `writeBackupData` header (`base.cpp:2320`), written plaintext — the
+/// restore and the `peek_type_name` probe read it before any decompression.
+pub fn write_backup_header(stream: &mut BinaryStream, base: &BaseEntity) {
     stream.write_u32(base.id);
     stream.write_u32(base.type_id);
     let _ = stream.write_string(&base.type_name);
     stream.write_u64(base.db_id);
+}
 
-    // The body.
+/// `Base::writeBackupDataInternal` (`base.cpp:2349`): the body — the cell
+/// address, the pending flags, the space id, the base attributes and the
+/// cell data.
+fn write_backup_body(stream: &mut BinaryStream, base: &BaseEntity) {
     write_opt_addr(stream, base.cell_entity_addr);
     stream.write_bool(base.is_create_cell_pending);
     stream.write_bool(base.is_get_cell_pending);
@@ -130,36 +177,104 @@ pub fn read_backup_data(
     stream: &mut BinaryStream,
     ty: &EntityType,
 ) -> Result<BaseBackupData, BackupError> {
+    let (id, type_id, type_name, db_id) = read_backup_header(stream)?;
+    check_backup_type(type_id, &type_name, ty)?;
+
+    let body = read_backup_body(stream)?;
+    Ok(assemble_backup_data(
+        id, type_id, type_name, db_id, ty, body,
+    ))
+}
+
+/// `read_backup_data` for bytes stored in the wrapped form
+/// (`write_backup_data_wrapped`): the same plaintext header, then the body
+/// out of the `CompressionIStream` frame (`base.cpp:2521`).
+pub fn read_backup_data_wrapped(
+    stream: &mut BinaryStream,
+    ty: &EntityType,
+) -> Result<BaseBackupData, BackupError> {
+    let (id, type_id, type_name, db_id) = read_backup_header(stream)?;
+    check_backup_type(type_id, &type_name, ty)?;
+
+    let body_bytes = decompress_frame(stream.unread_bytes())?;
+    let mut body_stream = BinaryStream::from_slice(&body_bytes);
+    let body = read_backup_body(&mut body_stream)?;
+    Ok(assemble_backup_data(
+        id, type_id, type_name, db_id, ty, body,
+    ))
+}
+
+/// The `createBaseFromStream` header read (`baseapp.cpp:2604`).
+fn read_backup_header(stream: &mut BinaryStream) -> Result<(u32, u32, String, u64), StreamError> {
     let id = stream.read_u32()?;
     let type_id = stream.read_u32()?;
     let type_name = stream.read_string()?;
     let db_id = stream.read_u64()?;
+    Ok((id, type_id, type_name, db_id))
+}
+
+/// The registered-type check the header read feeds (`baseapp.cpp:2604`).
+fn check_backup_type(type_id: u32, type_name: &str, ty: &EntityType) -> Result<(), BackupError> {
     if type_id != ty.id || type_name != ty.name {
         return Err(BackupError::TypeMismatch {
             type_name: ty.name.clone(),
         });
     }
+    Ok(())
+}
 
-    let cell_entity_addr = read_opt_addr(stream)?;
-    let is_create_cell_pending = stream.read_bool()?;
-    let is_get_cell_pending = stream.read_bool()?;
-    let cell_space_id = stream.read_u32()?;
-    let base_props = read_props(stream)?;
-    let cell_props = read_props(stream)?;
+/// The `readBackupDataInternal` body minus the header.
+struct BackupBody {
+    cell_entity_addr: Option<BaseAddr>,
+    is_create_cell_pending: bool,
+    is_get_cell_pending: bool,
+    cell_space_id: u32,
+    base_props: std::collections::HashMap<String, PropValue>,
+    cell_props: std::collections::HashMap<String, PropValue>,
+}
 
-    Ok(BaseBackupData {
+/// The `readBackupDataInternal` body read (`base.cpp:2530`).
+fn read_backup_body(stream: &mut BinaryStream) -> Result<BackupBody, BackupError> {
+    Ok(BackupBody {
+        cell_entity_addr: read_opt_addr(stream)?,
+        is_create_cell_pending: stream.read_bool()?,
+        is_get_cell_pending: stream.read_bool()?,
+        cell_space_id: stream.read_u32()?,
+        base_props: read_props(stream)?,
+        cell_props: read_props(stream)?,
+    })
+}
+
+/// The parsed contents of a backup, assembled from the header and the body.
+fn assemble_backup_data(
+    id: EntityId,
+    type_id: u32,
+    type_name: String,
+    db_id: u64,
+    ty: &EntityType,
+    body: BackupBody,
+) -> BaseBackupData {
+    BaseBackupData {
         id,
         type_id,
         type_name,
         db_id,
         is_proxy: ty.is_proxy,
-        is_create_cell_pending,
-        is_get_cell_pending,
-        cell_entity_addr,
-        cell_space_id,
-        base_props,
-        cell_props,
-    })
+        is_create_cell_pending: body.is_create_cell_pending,
+        is_get_cell_pending: body.is_get_cell_pending,
+        cell_entity_addr: body.cell_entity_addr,
+        cell_space_id: body.cell_space_id,
+        base_props: body.base_props,
+        cell_props: body.cell_props,
+    }
+}
+
+/// The plaintext header length of a `writeBackupData` payload — the split
+/// the wrapped writers and readers frame the compression around.
+pub fn header_len(base: &BaseEntity) -> usize {
+    let mut stream = BinaryStream::new();
+    write_backup_header(&mut stream, base);
+    stream.length()
 }
 
 /// The parsed contents of a backup: the `createBaseFromStream` header
@@ -253,6 +368,28 @@ impl BackupReceiver {
         dead_addr: Addr,
         lookup: &impl Fn(&str) -> Option<EntityType>,
     ) -> Vec<Result<BaseEntity, BackupError>> {
+        self.restore_inner(dead_addr, lookup, false)
+    }
+
+    /// `restore` for backups stored in the wrapped form
+    /// (`write_backup_data_wrapped`): the header reads the same way, then the
+    /// body comes out of the `CompressionIStream` frame (`base.cpp:2521`).
+    pub fn restore_wrapped(
+        &self,
+        dead_addr: Addr,
+        lookup: &impl Fn(&str) -> Option<EntityType>,
+    ) -> Vec<Result<BaseEntity, BackupError>> {
+        self.restore_inner(dead_addr, lookup, true)
+    }
+
+    /// The restore loop over the dead app's stored backups, in either the
+    /// shipped or the wrapped payload form.
+    fn restore_inner(
+        &self,
+        dead_addr: Addr,
+        lookup: &impl Fn(&str) -> Option<EntityType>,
+        wrapped: bool,
+    ) -> Vec<Result<BaseEntity, BackupError>> {
         let Some(stored) = self.backups.get(&dead_addr) else {
             return Vec::new();
         };
@@ -262,7 +399,11 @@ impl BackupReceiver {
                 let type_name = peek_type_name(data)?;
                 let ty = lookup(&type_name).ok_or(BackupError::UnknownType { type_name })?;
                 let mut stream = stream_of(data);
-                let parsed = read_backup_data(&mut stream, &ty)?;
+                let parsed = if wrapped {
+                    read_backup_data_wrapped(&mut stream, &ty)?
+                } else {
+                    read_backup_data(&mut stream, &ty)?
+                };
                 restore_base(&parsed, &ty)
             })
             .collect()
@@ -387,6 +528,10 @@ fn read_prop(stream: &mut BinaryStream) -> Result<PropValue, BackupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::replay_recording::{
+        COMPRESSION_DEFAULT_EXTERNAL, COMPRESSION_DEFAULT_INTERNAL, COMPRESSION_NONE,
+        COMPRESSION_ZIP_BEST_COMPRESSION, COMPRESSION_ZIP_MAX, COMPRESSION_ZIP_MIN,
+    };
     use std::collections::HashMap;
 
     fn account_type() -> EntityType {
@@ -636,5 +781,139 @@ mod tests {
                 type_name: "Ghost".to_string()
             }
         );
+    }
+
+    /// The wrapped `NONE` frame is the shipped payload with one byte added:
+    /// the same plaintext header, then the `BW_COMPRESSION_NONE` type byte,
+    /// then the identical uncompressed body (`compression_stream.cpp:73-76`).
+    #[test]
+    fn the_wrapped_none_frame_is_the_shipped_bytes_plus_the_type_byte() {
+        let base = backed_up_base();
+        let mut raw = BinaryStream::new();
+        write_backup_data(&base, &mut raw);
+        let mut wrapped = BinaryStream::new();
+        write_backup_data_wrapped(&base, &mut wrapped, COMPRESSION_NONE).unwrap();
+
+        let raw = raw.as_bytes();
+        let wrapped = wrapped.as_bytes();
+        let mut header = BinaryStream::new();
+        write_backup_header(&mut header, &base);
+        let header_len = header.length();
+
+        assert_eq!(&wrapped[..header_len], &raw[..header_len]);
+        assert_eq!(wrapped[header_len], COMPRESSION_NONE);
+        assert_eq!(&wrapped[header_len + 1..], &raw[header_len..]);
+    }
+
+    /// Every zip level writes a distinct frame whose body inflates back to
+    /// the shipped body, and every level parses to the same backup data.
+    #[test]
+    fn the_wrapped_zip_frames_round_trip_the_body() {
+        let base = backed_up_base();
+        let ty = account_type();
+
+        let mut raw = BinaryStream::new();
+        write_backup_data(&base, &mut raw);
+        let raw_body = raw.as_bytes()[header_len(&base)..].to_vec();
+
+        let mut none = BinaryStream::new();
+        write_backup_data_wrapped(&base, &mut none, COMPRESSION_NONE).unwrap();
+        let mut raw_stream = BinaryStream::from_slice(raw.as_bytes());
+        let expected = read_backup_data(&mut raw_stream, &ty).unwrap();
+        let mut none_stream = BinaryStream::from_slice(none.as_bytes());
+        assert_eq!(
+            read_backup_data_wrapped(&mut none_stream, &ty).unwrap(),
+            expected,
+            "the NONE frame parses like the shipped payload"
+        );
+
+        for level in COMPRESSION_ZIP_MIN..=COMPRESSION_ZIP_MAX {
+            let mut stream = BinaryStream::new();
+            write_backup_data_wrapped(&base, &mut stream, level).unwrap();
+            let frame = stream.as_bytes();
+
+            // The frame inflates to the body the shipped payload wrote.
+            let body = decompress_frame(&frame[header_len(&base)..]).unwrap();
+            assert_eq!(body, raw_body, "level {level} inflates to the body");
+            assert_ne!(
+                &frame[header_len(&base)..],
+                &raw_body[..],
+                "level {level} is a real frame, not a pass-through"
+            );
+
+            let mut stream = BinaryStream::from_slice(frame);
+            let parsed = read_backup_data_wrapped(&mut stream, &ty).unwrap();
+            assert_eq!(parsed, expected, "level {level} parses like NONE");
+            assert_eq!(
+                restore_base(&parsed, &ty).unwrap().base_props,
+                base.base_props,
+                "level {level} restores the same properties"
+            );
+        }
+    }
+
+    /// The `DEFAULT_INTERNAL` / `DEFAULT_EXTERNAL` sentinels resolve to
+    /// `NONE` (`compression_stream.cpp:53-58`): their frames are byte-equal.
+    #[test]
+    fn the_default_sentinels_resolve_to_none() {
+        let base = backed_up_base();
+        for sentinel in [COMPRESSION_DEFAULT_INTERNAL, COMPRESSION_DEFAULT_EXTERNAL] {
+            let mut stream = BinaryStream::new();
+            write_backup_data_wrapped(&base, &mut stream, sentinel).unwrap();
+            let mut none = BinaryStream::new();
+            write_backup_data_wrapped(&base, &mut none, COMPRESSION_NONE).unwrap();
+            assert_eq!(stream.as_bytes(), none.as_bytes());
+        }
+    }
+
+    /// A broken compression frame is reported, not mis-parsed: an unknown
+    /// type byte after the header fails the wrapped read, and the wrapped
+    /// writer rejects a type outside the `BWCompressionType` range.
+    #[test]
+    fn a_broken_frame_is_reported() {
+        let base = backed_up_base();
+        let ty = account_type();
+
+        let mut header = BinaryStream::new();
+        write_backup_header(&mut header, &base);
+        let mut stream = BinaryStream::from_slice(header.as_bytes());
+        stream.write_u8(13);
+        assert_eq!(
+            read_backup_data_wrapped(&mut stream, &ty).unwrap_err(),
+            BackupError::Compression(CompressError::InvalidCompressionType(13))
+        );
+
+        let mut stream = BinaryStream::new();
+        assert_eq!(
+            write_backup_data_wrapped(&base, &mut stream, 13).unwrap_err(),
+            CompressError::InvalidCompressionType(13)
+        );
+    }
+
+    /// A wrapped backup taken by the receiver restores through the wrapped
+    /// path with the same properties, and the restore finds the type by the
+    /// plaintext header exactly as the shipped path does.
+    #[test]
+    fn a_wrapped_backup_restores_through_the_receiver() {
+        let base = backed_up_base();
+        let mut stream = BinaryStream::new();
+        write_backup_data_wrapped(&base, &mut stream, COMPRESSION_ZIP_BEST_COMPRESSION).unwrap();
+        let message = BackupMessage {
+            dest: (1, 1000),
+            is_offload: false,
+            entity_id: base.id,
+            data: stream.as_bytes().to_vec(),
+        };
+        let mut receiver = BackupReceiver::new();
+        receiver.back_up_entity((1, 1000), &message);
+
+        let ty = account_type();
+        let restored = receiver
+            .restore_wrapped((1, 1000), &lookup_of(ty))
+            .remove(0)
+            .unwrap();
+        assert_eq!(restored.id, 42);
+        assert_eq!(restored.base_props, props());
+        assert_eq!(restored.cell_props, props());
     }
 }
