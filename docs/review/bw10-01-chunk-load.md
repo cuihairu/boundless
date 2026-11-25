@@ -231,10 +231,17 @@
   室内壳世界盒 (140,−5,240)–(160,5,260) 落网格 z=2 **越界于映射界**（0..17 × 0..1）→ 无柱持有，
   其上查询恒 None（`chunk_space.cpp:783-786` 出界 NULL）；解绑 `00000001o` 后该格查询停答、
   focus_count 归零。
-- 覆盖率（llvm-cov 0.9.1，`cargo clean -p chunk` 后逐行 max 合并）：`column.rs` 444/444=100.00%、
+- 覆盖率（llvm-cov 0.9.1，`cargo clean -p chunk` 后逐行 max 合并，2026-11-25 于 main
+  f1c9f06 基座重验）：`column.rs` 442/442=100.00%（原交付 444/444，rebase 后 DA 行
+  数随 main 侧 workspace 特性组合漂移 −2，百分比不变）、
   `hulltree.rs` 211/213=99.06%、`space.rs` 1044/1054=99.05%、`chunk.rs` 249/252=98.81%、
   `boundary.rs` 99.56%、`mapping.rs` 99.16%、`identifier.rs` 100%；foundation
-  `lineeq.rs` 100%、`plane.rs` 197/198=99.49%、`vector.rs` 100%——全 ≥98%。
-- `cargo test -p chunk` 47 lib + 12 集成全绿；`cargo test --workspace` 0 failed（exit 0）；
-  fmt 叶子文件 0 漂移；clippy `-p chunk --lib --tests` 与 `-p foundation --lib --tests`
-  0 自身告警。
+  `lineeq.rs` 60/60=100%、`plane.rs` 197/198=99.49%、`vector.rs` 380/380=100%——全 ≥98%。
+  （main 并入的 `boundbox.rs`/`portal2d.rs` 为地形席面，非本项 delta，不设本席门。）
+- `cargo test -p chunk` 47 lib + 12 集成全绿（两席测试同套共存：地形席
+  streaming/bind 系 + 本席 focus/unbind/unload 系）；`cargo test --workspace`
+  **6462/0（exit 0）**；源树 `#[test]` 计数 7294 ≥ main 7287（+7 = 本项
+  chunk +11、foundation −4 的净差），无一测试丢失；fmt 叶子文件 0 漂移；
+  clippy `-p chunk --lib --tests` 与 `-p foundation --lib --tests` 0 自身告警。
+  夹具内嵌 id 按主席并账后的现行约定改名 `001xx000xx`→`001x000x`
+  （目录 0 字节变化，仅测试字面与 `identifier.rs` 现行约定对齐）。
