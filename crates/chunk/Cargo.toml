@@ -9,6 +9,9 @@ repository.workspace = true
 
 [dependencies]
 foundation = { workspace = true }
+# The obstacle sweep runs on the physics faces (BW-10-03): BSP trees, the
+# quad tree and the sweep parameter/state plumbing.
+physics = { workspace = true }
 # Chunk files are XML DataSections on a resource search path (BW-01-03), so the
 # section reader is needed here.
 resources = { workspace = true }

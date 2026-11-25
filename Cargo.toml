@@ -67,6 +67,10 @@ db = { path = "crates/db" }
 db-postgres = { path = "crates/db-postgres" }
 scene = { path = "crates/scene" }
 # chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
+# The collision faces (world triangles, BSP trees, portal pass-through,
+# quad trees); the chunk space obstacle sweep (BW-10-07-04) is the first
+# consumer.
+physics = { path = "crates/physics" }
 python-host = { path = "crates/python-host" }
 # The watcher path tree (BW-12-01); load's bots command callables are its
 # first consumer (BW-17-01-06).
