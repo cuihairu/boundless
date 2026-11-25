@@ -2853,7 +2853,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席双交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（三腿 hurricane 峰值/拒绝率 0.2614/下载 tick 地板，155+1 绿）与 bw14-script-host `cc648b5`+勾 `f75f4bf`（种子洪泛 96 到达/64 会话/32 拒=0.3333/延迟 p50=1，9 测 99.30%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席双交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）与 bw14-script-host `3ced450`+勾 `6a0cc3e`（login_tuning.rs LoginTuning 缝：尾延迟峰 2→1 tick、p95 2→1、误拒 24→0、接受 64→88/96，6 测 tuning 100%/baseline 99.33%）；主席择一后按勾行态处理，本行保持开。
-- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席已交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席双交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）与 bw14-script-host `3e4839c`+勾 `e75297c`（download_tuning.rs 64 资源语料过真实 DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182，5 测 100%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。他席已交付并勾行未进 main：bw15-platform `832247e`（零代码复跑全绿=行为一致：duplicate_auth 5/5+relogon/relogin 28/28+load 158+旧客户端版本面 9/9，证据 `838a54a` opt-06-01-04-duplicate-login-reconnect-old-client-rerun.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-07-01 备份和归档基线
@@ -4417,7 +4417,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席双交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（三腿 hurricane 峰值/拒绝率 0.2614/下载 tick 地板，155+1 绿）与 bw14-script-host `cc648b5`+勾 `f75f4bf`（种子洪泛 96 到达/64 会话/32 拒=0.3333/延迟 p50=1，9 测 99.30%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席双交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）与 bw14-script-host `3ced450`+勾 `6a0cc3e`（login_tuning.rs LoginTuning 缝：尾延迟峰 2→1 tick、p95 2→1、误拒 24→0、接受 64→88/96，6 测 tuning 100%/baseline 99.33%）；主席择一后按勾行态处理，本行保持开。
-- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席已交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席双交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）与 bw14-script-host `3e4839c`+勾 `e75297c`（download_tuning.rs 64 资源语料过真实 DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182，5 测 100%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。他席已交付并勾行未进 main：bw15-platform `832247e`（零代码复跑全绿=行为一致：duplicate_auth 5/5+relogon/relogin 28/28+load 158+旧客户端版本面 9/9，证据 `838a54a` opt-06-01-04-duplicate-login-reconnect-old-client-rerun.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-07-01 备份和归档基线
@@ -5942,7 +5942,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席双交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（三腿 hurricane 峰值/拒绝率 0.2614/下载 tick 地板，155+1 绿）与 bw14-script-host `cc648b5`+勾 `f75f4bf`（种子洪泛 96 到达/64 会话/32 拒=0.3333/延迟 p50=1，9 测 99.30%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席双交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）与 bw14-script-host `3ced450`+勾 `6a0cc3e`（login_tuning.rs LoginTuning 缝：尾延迟峰 2→1 tick、p95 2→1、误拒 24→0、接受 64→88/96，6 测 tuning 100%/baseline 99.33%）；主席择一后按勾行态处理，本行保持开。
-- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席已交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席双交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）与 bw14-script-host `3e4839c`+勾 `e75297c`（download_tuning.rs 64 资源语料过真实 DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182，5 测 100%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。他席已交付并勾行未进 main：bw15-platform `832247e`（零代码复跑全绿=行为一致：duplicate_auth 5/5+relogon/relogin 28/28+load 158+旧客户端版本面 9/9，证据 `838a54a` opt-06-01-04-duplicate-login-reconnect-old-client-rerun.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-07-01 备份和归档基线
@@ -7467,7 +7467,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席双交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（三腿 hurricane 峰值/拒绝率 0.2614/下载 tick 地板，155+1 绿）与 bw14-script-host `cc648b5`+勾 `f75f4bf`（种子洪泛 96 到达/64 会话/32 拒=0.3333/延迟 p50=1，9 测 99.30%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席双交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）与 bw14-script-host `3ced450`+勾 `6a0cc3e`（login_tuning.rs LoginTuning 缝：尾延迟峰 2→1 tick、p95 2→1、误拒 24→0、接受 64→88/96，6 测 tuning 100%/baseline 99.33%）；主席择一后按勾行态处理，本行保持开。
-- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席已交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席双交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）与 bw14-script-host `3e4839c`+勾 `e75297c`（download_tuning.rs 64 资源语料过真实 DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182，5 测 100%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。他席已交付并勾行未进 main：bw15-platform `832247e`（零代码复跑全绿=行为一致：duplicate_auth 5/5+relogon/relogin 28/28+load 158+旧客户端版本面 9/9，证据 `838a54a` opt-06-01-04-duplicate-login-reconnect-old-client-rerun.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-07-01 备份和归档基线
@@ -9031,7 +9031,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席双交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（三腿 hurricane 峰值/拒绝率 0.2614/下载 tick 地板，155+1 绿）与 bw14-script-host `cc648b5`+勾 `f75f4bf`（种子洪泛 96 到达/64 会话/32 拒=0.3333/延迟 p50=1，9 测 99.30%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席双交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）与 bw14-script-host `3ced450`+勾 `6a0cc3e`（login_tuning.rs LoginTuning 缝：尾延迟峰 2→1 tick、p95 2→1、误拒 24→0、接受 64→88/96，6 测 tuning 100%/baseline 99.33%）；主席择一后按勾行态处理，本行保持开。
-- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席已交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席双交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）与 bw14-script-host `3e4839c`+勾 `e75297c`（download_tuning.rs 64 资源语料过真实 DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182，5 测 100%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。他席已交付并勾行未进 main：bw15-platform `832247e`（零代码复跑全绿=行为一致：duplicate_auth 5/5+relogon/relogin 28/28+load 158+旧客户端版本面 9/9，证据 `838a54a` opt-06-01-04-duplicate-login-reconnect-old-client-rerun.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-07-01 备份和归档基线
@@ -10556,7 +10556,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [ ] **OPT-06-01-01 记录登录与资源下载基线**。**验收** 保存峰值、拒绝率和延迟。他席双交付未进 main：bw15-platform `5ec0620`+勾 `2a62048`（三腿 hurricane 峰值/拒绝率 0.2614/下载 tick 地板，155+1 绿）与 bw14-script-host `cc648b5`+勾 `f75f4bf`（种子洪泛 96 到达/64 会话/32 拒=0.3333/延迟 p50=1，9 测 99.30%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-02 优化登录排队及会话接续**。**验收** 在登录洪峰场景比较尾延迟。他席双交付未进 main：bw15-platform `083c598`+勾 `abaaf0b`（retry 队列 O(n²)→O(n) 单遍排水+login_surge criterion 基准，drain_512 中位 776→80µs）与 bw14-script-host `3ced450`+勾 `6a0cc3e`（login_tuning.rs LoginTuning 缝：尾延迟峰 2→1 tick、p95 2→1、误拒 24→0、接受 64→88/96，6 测 tuning 100%/baseline 99.33%）；主席择一后按勾行态处理，本行保持开。
-- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席已交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-06-01-03 优化下载**。**验收** 比较传输时长及内存。他席双交付未进 main：bw15-platform `efabd67`+bench `6318f61`+勾 `4b71a4f`（data_download 装配 concat→assemble 预分配按值消费，装配峰值活数据 2×→1×，complete_512 中位 48.5→40.9µs 轮间交叉=噪声内诚实记录）与 bw14-script-host `3e4839c`+勾 `e75297c`（download_tuning.rs 64 资源语料过真实 DataDownloads 双预算：时长 186→45 tick(4.1×)换每 tick 线束峰 68→252 字节，字节逐流核等 10182/10182，5 测 100%）；主席择一后按勾行态处理，本行保持开。
 - [ ] **OPT-06-01-04 复跑重复登录、重连及旧客户端**。**验收** 行为一致。他席已交付并勾行未进 main：bw15-platform `832247e`（零代码复跑全绿=行为一致：duplicate_auth 5/5+relogon/relogin 28/28+load 158+旧客户端版本面 9/9，证据 `838a54a` opt-06-01-04-duplicate-login-reconnect-old-client-rerun.md）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-07-01 备份和归档基线
