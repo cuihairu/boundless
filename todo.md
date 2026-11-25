@@ -2831,7 +2831,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [ ] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
 - [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
@@ -4410,7 +4410,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [ ] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
 - [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
@@ -5950,7 +5950,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [ ] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
 - [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
@@ -7490,7 +7490,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [ ] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
 - [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
@@ -9069,7 +9069,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [ ] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
 - [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
@@ -10609,7 +10609,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 减少 Python/native 转换和跨语言回调开销，衡量 GIL 占用与回调耗时，复跑引用生命周期、异常及热重载。
 
-- [ ] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。
+- [x] **OPT-03-01-01 测量 Python 桥接基线**。**验收** 保存转换、GIL 和回调耗时。（本席 `90649d8`：crates/python-host/tests/bridge_baseline.rs 三腿=转换 2 万轮×int/float/str 逐值恒等断言+`noop()` 5000 次 PyObject_CallNoArgs+GIL 队列 2000 posted 跨线程 post→run 端到端延迟与排水吞吐（pending 归零+clear 0 断言）；记录 TSV docs/review/fixtures/python-bridge-baseline/bridge-baseline.tsv 29 行，证据页 docs/review/opt-03-01-01-python-bridge-baseline.md；int p50 88ns/float 96ns/str 273ns/callback 134ns/drain 1193ns 每回调，墙钟只记录不设带（网络基线同纪律），双跑 metric 名恒等；python-host 155 绿，全仓 6943 绿）
 - [ ] **OPT-03-01-02 优化 Python/native 转换**。**验收** 以前后对照验证耗时变化。
 - [ ] **OPT-03-01-03 优化跨语言回调**。**验收** 报告 GIL 占用与尾延迟。
 - [ ] **OPT-03-01-04 复跑引用、异常及重载用例**。**验收** 行为一致。
