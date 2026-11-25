@@ -12,10 +12,9 @@ pub mod interface;
 pub mod socket;
 
 /// Subprocess control and exit-status decoding (BW-15-01-03,
-/// `lib/server/process.hpp`). Unix only: the reference's `Process` is
-/// `fork`/`execvp`/`waitpid`/`kill`; Windows `CreateProcess` is a
-/// separate BW-15-03 item.
-#[cfg(unix)]
+/// `lib/server/process.hpp`). `fork`/`execvp`/`waitpid`/`kill` on unix,
+/// `CreateProcessW`/`WaitForSingleObject`/`TerminateProcess` on
+/// Windows, behind one API.
 pub mod process;
 
 /// Path casing, encoding and system directories (BW-15-01-06). Unix
