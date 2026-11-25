@@ -8,6 +8,7 @@ pub mod baseapp_continuation;
 pub mod baseapp_relogon;
 pub mod baseappmgr;
 pub mod billing;
+pub mod bot_crossing;
 pub mod cell_data;
 pub mod cell_viewer;
 pub mod cellappmgr;
