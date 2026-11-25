@@ -71,7 +71,10 @@ entitydef = { path = "crates/entitydef" }
 db = { path = "crates/db" }
 db-postgres = { path = "crates/db-postgres" }
 scene = { path = "crates/scene" }
-# chunk = { path = "crates/chunk" }  # re-add when a role runtime consumes it
+# The chunk space faces: test-support's unified-resource-entry proof
+# (BW-16-04-02) drives the editor family's space publishing through the
+# same BwResource the tool and app faces take.
+chunk = { path = "crates/chunk" }
 python-host = { path = "crates/python-host" }
 # The profiler frame and counter compatibility layer (BW-12-03-01); the
 # `_bw_profile` module (BW-12-03-02) records through its `g_profiler`

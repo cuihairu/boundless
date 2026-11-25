@@ -26,3 +26,11 @@ python-host = { workspace = true }
 # clock anchors that shift process-local stamps onto the unified timebase
 # (BW-23-01-03).
 foundation = { workspace = true }
+
+[dev-dependencies]
+# The unified resource entry proof (BW-16-04-02): one BwResource over one
+# root drives the editor family's space publishing (chunk), the tool
+# family's res_packer (asset-pipeline) and the app family's BwConfig
+# (server-runtime, above) over the same published artifact.
+chunk = { workspace = true }
+asset-pipeline = { workspace = true }
