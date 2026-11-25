@@ -747,6 +747,15 @@ fn an_empty_space_answers_nothing_and_resizes_with_its_mappings() {
         space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
         None
     );
+    // `column(point, canCreate)`: the reading face answers nothing for a cell
+    // that has no column yet, and the same cell comes into being when the
+    // caller asks for it.
+    assert!(space.column_at(&Vector3::new(50.0, 0.0, 50.0)).is_none());
+    let column = space
+        .column(&Vector3::new(50.0, 0.0, 50.0), true)
+        .expect("the cell is in the resized span");
+    assert!(column.holdings().is_empty(), "a fresh column holds nothing");
+    assert!(space.column_at(&Vector3::new(50.0, 0.0, 50.0)).is_some());
     // A chunk entering now lands in the resized index.
     let mapping = space.mappings[0].clone();
     let mut chunk = Chunk::new("00000000o", &mapping, &Matrix::identity());
@@ -781,6 +790,22 @@ fn see_chunk_focusses_directly_and_pumps_skip_it() {
             .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
             .is_some()
     );
+    // The chunk is not in the queue: the pump over an empty blurred queue
+    // (the loader face already pulled it out) is a no-op.
+    assert!(
+        space.blurred().is_empty(),
+        "the loader face consumed the blur"
+    );
+    space.focus();
+    assert!(
+        space
+            .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
+            .is_some()
+    );
+    // A chunk the map never saw focusses nothing: the face skips the
+    // unknown identifier and the queue stays empty.
+    space.focus_chunk("00090009o");
+    assert!(space.blurred().is_empty());
 
     // The pump ignores an identifier that left the map: it is dropped from
     // the queue, not crashed on (`removeFromBlurred` returns false, the
@@ -832,4 +857,84 @@ fn negative_grid_cells_index_like_the_reference_truncation() {
         space.find_chunk_from_point(&Vector3::new(50.0, 0.0, -50.0)),
         None
     );
+}
+
+/// BW-10-01-05: the focus window is a window. When the mappings' grid bounds
+/// shrink, `ColumnGrid::rect` deletes the columns that fall out of the new
+/// span — the reference destroys them, and destroying a column smudges the
+/// chunks it held, so they must wait for the next focus rather than vanish
+/// from the queue. The port has no obstacle face yet (the scene surface), so
+/// it reports the deleted columns' holdings and blurs them.
+#[test]
+fn shrinking_the_space_blurs_the_displaced_columns() {
+    let mapping = load_mapping();
+    let mut space = ChunkSpace::new(0, vec![mapping]);
+    let camera = Vector3::new(50.0, 0.0, 50.0);
+    let candidates = space.scan(&camera, 200.0);
+    space.load_and_bind(&candidates, &resource_resolver);
+    assert!(space.blurred().is_empty(), "the batch's pump already ran");
+
+    // The cell east of the origin holds its own outside chunk.
+    let displaced = space
+        .focus_grid()
+        .get(1, 0)
+        .and_then(|c| c.outside_chunk())
+        .map(str::to_string);
+    assert_eq!(displaced.as_deref(), Some("00010000o"));
+
+    // The space shrinks to the origin cell: every other column is deleted.
+    space.mappings[0].bounds = GridBounds {
+        min_l_grid_x: 0,
+        min_l_grid_y: 0,
+        max_l_grid_x: 0,
+        max_l_grid_y: 0,
+        min_grid_x: 0,
+        min_grid_y: 0,
+        max_grid_x: 0,
+        max_grid_y: 0,
+    };
+    space.recalc_grid_bounds();
+    assert_eq!(space.focus_grid().span(), (0, 0, 1, 1));
+    assert!(
+        space
+            .blurred()
+            .iter()
+            .any(|id| Some(id.as_str()) == displaced.as_deref()),
+        "the displaced chunk waits for a refocus: {:?}",
+        space.blurred()
+    );
+    // The deleted columns are gone from the index, so a query past the new
+    // span answers nothing instead of returning a dead hull.
+    assert_eq!(
+        space.find_chunk_from_point(&Vector3::new(150.0, 0.0, 50.0)),
+        None
+    );
+}
+
+/// BW-10-01-05: the pump over a queue entry whose chunk left the map. A bound
+/// chunk waits for `focus`; if the map entry goes away without clearing the
+/// queue, the pump must not reach for the gone chunk — it drops the entry,
+/// the way the reference's loop moves on when the identifier does not
+/// resolve.
+#[test]
+fn the_pump_drops_a_blurred_chunk_that_left_the_map() {
+    let mapping = load_mapping();
+    let mut space = ChunkSpace::new(0, vec![mapping]);
+    assert!(space.load_chunk("00000000o", &resource_resolver));
+    assert!(space.bind("00000000o"));
+    // A bound chunk waits in the blurred queue for the focus pump.
+    assert_eq!(space.blurred(), &["00000000o".to_string()]);
+
+    // The map entry leaves behind the queue: the pump must not resolve it.
+    space.remove_chunk("00000000o");
+    space.focus();
+    assert!(
+        space.blurred().is_empty(),
+        "the dangling entry is dropped: {:?}",
+        space.blurred()
+    );
+
+    // Ignoring an identifier the map never held refuses and leaves the index
+    // alone.
+    assert!(!space.ignore_chunk("00090009o"));
 }

@@ -514,4 +514,24 @@ mod tests {
             vec!["box".to_string()]
         );
     }
+
+    /// A deep split: the second hull's planes reach past the installed
+    /// divider, so the descent both recurses into the existing child and
+    /// grows a new one — the parallel `marked`/`in_chain` arrays are grown
+    /// for the new node.
+    #[test]
+    fn a_split_grows_the_marks_arrays_for_the_new_nodes() {
+        let mut tree = HullTree::new();
+        tree.add(
+            &box_border(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 10.0, 10.0)),
+            "root".to_string(),
+        );
+        tree.add(
+            &box_border(Vector3::new(4.0, 0.0, 0.0), Vector3::new(14.0, 10.0, 10.0)),
+            "split".to_string(),
+        );
+        let mut tags = tree.test_point(&Vector3::new(7.0, 5.0, 5.0));
+        tags.sort();
+        assert_eq!(tags, vec!["root".to_string(), "split".to_string()]);
+    }
 }

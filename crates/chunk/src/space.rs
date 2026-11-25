@@ -244,13 +244,17 @@ impl ChunkSpace {
             if self.focus.get_mut(x, z).is_none() {
                 self.focus.set(x, z, Some(Column::new()));
             }
-            let Some(column) = self.focus.get_mut(x, z) else {
-                continue;
-            };
-            let Some(chunk) = self.chunks.get(identifier) else {
-                continue;
-            };
-            column.add_chunk(&border, chunk);
+            // The two `let else` arms are borrow fences, not failure paths:
+            // the cells are all in span (`focus_cells` filtered them) and
+            // the chunk is still in the map (the early return above), so
+            // both acquisitions succeed — but the reference hands the raw
+            // pointers straight to `addChunk` and the port's field split
+            // cannot prove it.
+            if let (Some(column), Some(chunk)) =
+                (self.focus.get_mut(x, z), self.chunks.get(identifier))
+            {
+                column.add_chunk(&border, chunk);
+            }
         }
         if let Some(chunk) = self.chunks.get_mut(identifier) {
             chunk.focus_count = 1;
@@ -314,17 +318,12 @@ impl ChunkSpace {
         }
     }
 
-    /// `ChunkSpace::noticeChunk` (`chunk_space.cpp:1359-1372`) +
-    /// `BaseChunkSpace::blurredChunk` (`base_chunk_space.cpp:720-728`): a
-    /// just-bound chunk waits for the focus pump, but only when it is bound.
+    /// `ChunkSpace::noticeChunk` (`chunk_space.cpp:1359-1372`): tell the
+    /// space that a chunk is now bound and may be focussed. The reference
+    /// does nothing but hand the chunk to `blurredChunk`, which carries the
+    /// bound test (`base_chunk_space.cpp:720-728`), so the guard stays there.
     fn notice_chunk(&mut self, identifier: &str) {
-        let is_bound = self
-            .chunks
-            .get(identifier)
-            .is_some_and(|chunk| chunk.is_bound);
-        if is_bound {
-            self.blur_chunk(identifier);
-        }
+        self.blur_chunk(identifier);
     }
 
     /// `BaseChunkSpace::blurredChunk` (`base_chunk_space.cpp:720-728`): the
@@ -908,6 +907,21 @@ mod tests {
             vec![(4, vec!["00000000i".to_string()])]
         );
     }
+    #[test]
+    fn group_by_joint_dedupes_a_repeated_heaven_decision() {
+        // Two heaven decisions on one joint open a single group.
+        assert_eq!(
+            group_by_joint(vec![(3, 0), (3, 1)], Vec::new()),
+            vec![(3, Vec::new())]
+        );
+        // A repeated heaven decision does not displace the connections already
+        // gathered for that joint.
+        assert_eq!(
+            group_by_joint(vec![(3, 0), (3, 1)], vec![(3, 0, "00010000o".to_string())]),
+            vec![(3, vec!["00010000o".to_string()])]
+        );
+    }
+
     #[test]
     fn inside_chunks_take_the_column_by_smallest_volume() {
         // no outside chunk is loaded: the smallest containing inside chunk
