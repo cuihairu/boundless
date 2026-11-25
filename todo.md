@@ -2822,7 +2822,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [ ] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [ ] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。
 - [ ] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。
 - [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
@@ -4401,7 +4401,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [ ] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [ ] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。
 - [ ] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。
 - [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
@@ -5941,7 +5941,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [ ] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [ ] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。
 - [ ] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。
 - [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
@@ -7481,7 +7481,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [ ] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [ ] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。
 - [ ] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。
 - [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
@@ -9060,7 +9060,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [ ] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [ ] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。
 - [ ] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。
 - [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
@@ -10600,7 +10600,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 评估缓冲复用、批量收发与减少复制。比较 RPC RTT、网络吞吐、丢包恢复和内存占用，混跑旧线协议。
 
-- [ ] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。
+- [x] **OPT-02-01-01 测量网络基线**。**验收** 保存 RTT、吞吐和丢包恢复记录。（bw15 席 `2ba686b`，lane/bw15-platform，main=`841315b`：crates/mercury/tests/network_baseline.rs 7 测=UDP/TCP 真回环 RTT p50/p90/p99+4MiB 吞吐+钉死钟丢包恢复两臂（16/16 恰一次重发+越序 ack 穿越）；记录 TSV docs/review/fixtures/network-baseline/net-baseline.tsv；mercury 377 lib+7 集成全绿（本席 main 复测 384 绿），回环墙钟数字机器相关只记录不设带）
 - [ ] **OPT-02-01-02 评估缓冲复用**。**验收** 报告分配与峰值内存。
 - [ ] **OPT-02-01-03 评估批量收发和消除复制**。**验收** 报告吞吐与尾延迟。
 - [ ] **OPT-02-01-04 复跑版本混部**。**验收** 原版和新版 UDP/TCP 请求均通过。
