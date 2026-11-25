@@ -2044,7 +2044,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
-- [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
+- [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
 - [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
@@ -3618,7 +3618,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
-- [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
+- [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
 - [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
@@ -5153,7 +5153,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
-- [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
+- [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
 - [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
@@ -6688,7 +6688,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
-- [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
+- [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
 - [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
@@ -8262,7 +8262,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
-- [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
+- [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
 - [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
@@ -9797,7 +9797,7 @@ OS 调用进 `platform`，图形后端进 `rendering`，数据库驱动进 `stor
   - 证据：`crates/load/src/dense.rs`——`run_dense_aoi` ⌈√n⌉ 见方网格密排（列主序 (x,z)），`DenseAoiLedger{spacing,aoi_radius,density,positions,visible_counts}` 记录密度（目标数/延展面积）与每 bot 半径内可见数（平方距离 ≤ r² 自排除）；可见性是活跑对照用的**记录期望**（AOI 仲裁归 cell 席 BW-08），布局是 (数量,间距) 纯函数逐位可复现。4 单测（3×3 密度 1.0、r=1.5 可见数 [3,5,3,5,8,5,3,5,3]、稀疏化全 0 密度四分、5 目标同网格）；dense.rs 75/75=100.00%。详见 docs/review/bw17-02-05-dense-aoi.md。
 - [x] **BW-17-02-06 实现跨 Cell 场景**。**验收** 报告穿越成功率。（f1b79e5：cross_cell.rs+smoke CrossCell 分派，`cross-cell.sh` 4/4 场景绿；固定种子 161803 双跑 md5 全等，60s 窗 4/4 穿越率 1.0、15s 预算 0.0 钉短窗行为；证据 docs/review/bw17-02-06-cross-cell-load.md；cargo test -p load 155 绿）
   - 卡点（无 cell 运行时）：穿越成功率需跨 Cell 交接——compiled space 侧已落地（BW-10-02-01..05 全勾）；依赖 BW-08-01 cell 管理 + BW-17-01；场景文件已备。
-- [ ] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。
+- [x] **BW-17-02-07 实现断线重连场景**。**验收** 统计恢复时长。（b7e66d1：reconnect.rs 掉线事件→logOn 重发→回复精确建模，mean_recovery_ticks 离线地板 2；seed 141421 双跑 md5 全等；ci/load.sh 5/5 绿；cargo test -p load 161 绿）
   - 卡点（活服务端）：恢复时长需真实断线/重连——Bot 运行时已在 `lane/bw12-perf-bots`（104 提交，`crates/bots` client_app/main_app/movement，未并 main）出现，仍缺 BW-17-01 客户端连接层与活服务端（`app::run` tick-loop 任何 lane 未交付）；场景文件已备。
   - 复测（2026-11-25，lane/bw19-docs）：「`app::run` tick-loop 任何 lane 未交付」已过时——已在 lane/bw19-docs 交付（750be59，BW-15-02-01 已勾，未并 main）；其余卡点（BW-17-01 客户端连接层、真实断线重连）不变。
 - [ ] **BW-17-02-08 实现长稳场景**。**验收** 保存压测进程资源使用。
