@@ -1505,6 +1505,13 @@ impl CellApp {
         // expireRealChannels` (cellapp.cpp:1502): the previous
         // generation's cached real channels roll off once per tick.
         self.expire_real_channels();
+        // `CellApp::updateLoad` (cellapp.cpp:1405): the load face the
+        // CellAppMgr reads back — the throttle state machine, the
+        // smoothed loads and the tick warnings ride this pump. A frame
+        // without profiler samples holds the throttle.
+        if let Some(sample) = self.load_sample.take() {
+            self.update_load(sample);
+        }
     }
 
     /// `TimerController::handleTimeout`: `start_ += interval_`, then the

@@ -1835,6 +1835,22 @@ pub struct CellApp {
     pub witness_errors: Vec<crate::cellapp_witness::WitnessNote>,
     /// `CellApp::emergencyThrottle()`: the load throttle (1.0 is none).
     pub emergency_throttle: f32,
+    /// `CellApp::throttle_`: the emergency-throttle state machine the
+    /// load update drives.
+    pub throttle: crate::cellapp_throttle::EmergencyThrottle,
+    /// `CellApp::persistentLoad_`: the smoothed persistent load.
+    pub persistent_load: f32,
+    /// `CellApp::transientLoad_`: the smoothed transient load.
+    pub transient_load: f32,
+    /// `CellApp::totalLoad_`: the smoothed total load.
+    pub total_load: f32,
+    /// `CellApp::totalAddedLoad_`: the artificial load, in ticks.
+    pub total_added_load: f32,
+    /// The tick-warning WARNING faces, in delivery order.
+    pub tick_warnings: Vec<String>,
+    /// The frame samples `update_load` reads at the tick tail. `None`
+    /// means no profiled frame was measured — the throttle holds.
+    pub load_sample: Option<crate::cellapp_throttle::LoadSample>,
     /// `CellAppConfig::witnessUpdateMaxPriorityDelta()` (default 5.0).
     pub witness_max_priority_delta: f32,
     /// The fixed per-send bundle growth while the update writer is
@@ -2021,6 +2037,13 @@ impl Default for CellApp {
             witness_warnings: Vec::new(),
             witness_errors: Vec::new(),
             emergency_throttle: 1.0,
+            throttle: crate::cellapp_throttle::EmergencyThrottle::default(),
+            persistent_load: 0.0,
+            transient_load: 0.0,
+            total_load: 0.0,
+            total_added_load: 0.0,
+            tick_warnings: Vec::new(),
+            load_sample: None,
             witness_max_priority_delta: 5.0,
             witness_spam_size: 200,
             all_spaces_data_change_seq: 0,

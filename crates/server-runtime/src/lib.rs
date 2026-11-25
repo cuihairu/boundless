@@ -17,6 +17,7 @@ pub mod cellapp_passenger;
 pub mod cellapp_range_list;
 pub mod cellapp_real_entity;
 pub mod cellapp_space;
+pub mod cellapp_throttle;
 pub mod cellapp_viewer;
 pub mod cellapp_vision;
 pub mod cellapp_witness;
