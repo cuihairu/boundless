@@ -2861,9 +2861,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）**FLAG 三交付未决**：bw15-platform `4ff69c3`（`7b56146`+`13b3257`+证据 `4da6b50`：新 bench backup_archive 四面 backup_write/backup_restore/archive_tick/archive_restore+钉测标准五属性实体=181 wire 字节地板，读数 0.78-0.88µs 写/4.2-4.9µs 恢复/archive_restore512 1.90ms≈269K/s，1702 lib 绿）与 bw14-script-host `19c4d4d`+勾 `8395247`（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复属性全等、归档恢复 8 tick 重持久化 24/24 逐实体核等，4 测 98.31% 行）；主席择一，未决前行保持本勾态。
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
-- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`9abf58e`：backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑 slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，每 tick 带宽峰翻倍(1412→2824)字节总恒等 8454，4 测 100% 行）；主席择一，未决前行保持本勾态。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。他席已交付并勾行未进 main：bw14-script-host `4c19ee7`+勾 `5916fb0`（shared_data_baseline/tuning.rs 96 变更过真实双 mgr 链：shipped 575 消息 vs 抑制 no-op 写 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。他席已交付并勾行未进 main：bw14-script-host `2fbfcf8`+勾 `2080f46`（takeover_rerun.rs 12 实体种子舰队源亡接管 restore 12/12 属性全等+16 变更权威图经真实 recover_shared_data_from_stream 读回四图逐位等，4 测 99.65% 行 100% 区域）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -4425,9 +4425,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）**FLAG 三交付未决**：bw15-platform `4ff69c3`（`7b56146`+`13b3257`+证据 `4da6b50`：新 bench backup_archive 四面 backup_write/backup_restore/archive_tick/archive_restore+钉测标准五属性实体=181 wire 字节地板，读数 0.78-0.88µs 写/4.2-4.9µs 恢复/archive_restore512 1.90ms≈269K/s，1702 lib 绿）与 bw14-script-host `19c4d4d`+勾 `8395247`（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复属性全等、归档恢复 8 tick 重持久化 24/24 逐实体核等，4 测 98.31% 行）；主席择一，未决前行保持本勾态。
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
-- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`9abf58e`：backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑 slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，每 tick 带宽峰翻倍(1412→2824)字节总恒等 8454，4 测 100% 行）；主席择一，未决前行保持本勾态。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。他席已交付并勾行未进 main：bw14-script-host `4c19ee7`+勾 `5916fb0`（shared_data_baseline/tuning.rs 96 变更过真实双 mgr 链：shipped 575 消息 vs 抑制 no-op 写 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。他席已交付并勾行未进 main：bw14-script-host `2fbfcf8`+勾 `2080f46`（takeover_rerun.rs 12 实体种子舰队源亡接管 restore 12/12 属性全等+16 变更权威图经真实 recover_shared_data_from_stream 读回四图逐位等，4 测 99.65% 行 100% 区域）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -5950,9 +5950,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）**FLAG 三交付未决**：bw15-platform `4ff69c3`（`7b56146`+`13b3257`+证据 `4da6b50`：新 bench backup_archive 四面 backup_write/backup_restore/archive_tick/archive_restore+钉测标准五属性实体=181 wire 字节地板，读数 0.78-0.88µs 写/4.2-4.9µs 恢复/archive_restore512 1.90ms≈269K/s，1702 lib 绿）与 bw14-script-host `19c4d4d`+勾 `8395247`（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复属性全等、归档恢复 8 tick 重持久化 24/24 逐实体核等，4 测 98.31% 行）；主席择一，未决前行保持本勾态。
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
-- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`9abf58e`：backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑 slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，每 tick 带宽峰翻倍(1412→2824)字节总恒等 8454，4 测 100% 行）；主席择一，未决前行保持本勾态。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。他席已交付并勾行未进 main：bw14-script-host `4c19ee7`+勾 `5916fb0`（shared_data_baseline/tuning.rs 96 变更过真实双 mgr 链：shipped 575 消息 vs 抑制 no-op 写 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。他席已交付并勾行未进 main：bw14-script-host `2fbfcf8`+勾 `2080f46`（takeover_rerun.rs 12 实体种子舰队源亡接管 restore 12/12 属性全等+16 变更权威图经真实 recover_shared_data_from_stream 读回四图逐位等，4 测 99.65% 行 100% 区域）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -7475,9 +7475,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）**FLAG 三交付未决**：bw15-platform `4ff69c3`（`7b56146`+`13b3257`+证据 `4da6b50`：新 bench backup_archive 四面 backup_write/backup_restore/archive_tick/archive_restore+钉测标准五属性实体=181 wire 字节地板，读数 0.78-0.88µs 写/4.2-4.9µs 恢复/archive_restore512 1.90ms≈269K/s，1702 lib 绿）与 bw14-script-host `19c4d4d`+勾 `8395247`（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复属性全等、归档恢复 8 tick 重持久化 24/24 逐实体核等，4 测 98.31% 行）；主席择一，未决前行保持本勾态。
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
-- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`9abf58e`：backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑 slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，每 tick 带宽峰翻倍(1412→2824)字节总恒等 8454，4 测 100% 行）；主席择一，未决前行保持本勾态。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。他席已交付并勾行未进 main：bw14-script-host `4c19ee7`+勾 `5916fb0`（shared_data_baseline/tuning.rs 96 变更过真实双 mgr 链：shipped 575 消息 vs 抑制 no-op 写 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。他席已交付并勾行未进 main：bw14-script-host `2fbfcf8`+勾 `2080f46`（takeover_rerun.rs 12 实体种子舰队源亡接管 restore 12/12 属性全等+16 变更权威图经真实 recover_shared_data_from_stream 读回四图逐位等，4 测 99.65% 行 100% 区域）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -9039,9 +9039,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）**FLAG 三交付未决**：bw15-platform `4ff69c3`（`7b56146`+`13b3257`+证据 `4da6b50`：新 bench backup_archive 四面 backup_write/backup_restore/archive_tick/archive_restore+钉测标准五属性实体=181 wire 字节地板，读数 0.78-0.88µs 写/4.2-4.9µs 恢复/archive_restore512 1.90ms≈269K/s，1702 lib 绿）与 bw14-script-host `19c4d4d`+勾 `8395247`（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复属性全等、归档恢复 8 tick 重持久化 24/24 逐实体核等，4 测 98.31% 行）；主席择一，未决前行保持本勾态。
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
-- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`9abf58e`：backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑 slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，每 tick 带宽峰翻倍(1412→2824)字节总恒等 8454，4 测 100% 行）；主席择一，未决前行保持本勾态。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。他席已交付并勾行未进 main：bw14-script-host `4c19ee7`+勾 `5916fb0`（shared_data_baseline/tuning.rs 96 变更过真实双 mgr 链：shipped 575 消息 vs 抑制 no-op 写 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。他席已交付并勾行未进 main：bw14-script-host `2fbfcf8`+勾 `2080f46`（takeover_rerun.rs 12 实体种子舰队源亡接管 restore 12/12 属性全等+16 变更权威图经真实 recover_shared_data_from_stream 读回四图逐位等，4 测 99.65% 行 100% 区域）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-08-01 密集 AOI 基线
 
@@ -10564,9 +10564,9 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 优化备份序列化、归档和共享数据传播。比较带宽、队列峰值、恢复时长及恢复后的实体状态。
 
 - [x] **OPT-07-01-01 记录备份和归档基线**。**验收** 保存带宽、队列及恢复耗时。（commit fbc3db2：crates/server-runtime/tests/backup_baseline.rs 集成测试（备份面 API 全 pub），夹具=4 BaseApp×96 实体（Account/Mailbox 交替、5/3 属性、全持久化），harness 按 BackupSender::tick 参照切法（size/period+浮点余数循环队列）驱动出货模块——①带宽：一周期 9600 字节/96 消息、每 tick 884–1000、载荷 84/116/116（按类型线性），按目的地 BundleSendingMap 面拆分 2452/2464/2336/2348（哈希均匀 ±5%），断言周期覆盖=每实体恰一次；②队列峰值：发送端循环队列峰值 96（期内排空）、接收端持有 9600（按源 app 2784/2016/2784/2016=24 实体×类型载荷）、归档 store 9600 字节 96 条（12/tick×8 精确切片断言）；③恢复：app1 死→holder 从备份恢复全部 24 实体（2784 字节，属性逐一等于活实体=write_backup_data 往返无损，wall ms 只记不 assertion），归档 secondary db 死后周期即刻重启+informOfArchiveComplete 一个 period 后到达（period 8→9 tick，重启归零 index 故下个 gate 落）、NEXT_ONLY 两周期恰写一次断言；证据页 docs/review/opt-07-01-01-backup-archive-baseline.md+TSV 49 行 fixtures/backup-baseline/backup-baseline.tsv；clippy/fmt 绿、server-runtime 1703 绿、全仓 6951 passed/0 failed）**FLAG 三交付未决**：bw15-platform `4ff69c3`（`7b56146`+`13b3257`+证据 `4da6b50`：新 bench backup_archive 四面 backup_write/backup_restore/archive_tick/archive_restore+钉测标准五属性实体=181 wire 字节地板，读数 0.78-0.88µs 写/4.2-4.9µs 恢复/archive_restore512 1.90ms≈269K/s，1702 lib 绿）与 bw14-script-host `19c4d4d`+勾 `8395247`（backup_baseline.rs 48 实体种子舰队过真实备份面：带宽逐 tick 8454 字节 6 tick 清队列、收发队列峰各 48、接管 48/48 恢复属性全等、归档恢复 8 tick 重持久化 24/24 逐实体核等，4 测 98.31% 行）；主席择一，未决前行保持本勾态。
-- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)
-- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。
-- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。
+- [x] **OPT-07-01-02 优化备份序列化和归档**。**验收** 按同负载比较队列与恢复。(600fb02)**FLAG 双交付未决**：bw14-script-host 平行交付并勾 `5916fb0`（`9abf58e`：backup_tuning.rs BackupTuning seam(Default=逐位复现由测钉)同种子同负载双跑 slice 8→16+period 8→4，队列 6→3 tick、恢复 8→4 tick，每 tick 带宽峰翻倍(1412→2824)字节总恒等 8454，4 测 100% 行）；主席择一，未决前行保持本勾态。
+- [ ] **OPT-07-01-03 优化 SharedData 传播**。**验收** 量化消息量变化。他席已交付并勾行未进 main：bw14-script-host `4c19ee7`+勾 `5916fb0`（shared_data_baseline/tuning.rs 96 变更过真实双 mgr 链：shipped 575 消息 vs 抑制 no-op 写 444=省 131(−22.8%)，终态三权威图逐位相等，9 测 baseline 98.58%+tuning 100%）；主席并入后按勾行态处理，本行保持开。
+- [ ] **OPT-07-01-04 复跑接管**。**验收** 恢复实体和共享状态正确。他席已交付并勾行未进 main：bw14-script-host `2fbfcf8`+勾 `2080f46`（takeover_rerun.rs 12 实体种子舰队源亡接管 restore 12/12 属性全等+16 变更权威图经真实 recover_shared_data_from_stream 读回四图逐位等，4 测 99.65% 行 100% 区域）；主席并入后按勾行态处理，本行保持开。
 
 ### OPT-08-01 密集 AOI 基线
 
