@@ -1463,8 +1463,17 @@
     原版 flood+generator+view 三件全链路 harness 逐字节对照
     （gen_generate.log：slope 终流 136B、shell 终流 152B fnv 全等），
     generator.rs 99.31%（9 行收尾括号 DA:0 已档）。
-    余片 = 门户两臂（determineEdgesAdjacentToOtherChunks /
-    extendThroughUnboundPortals）+ readTGA + per-girth 工作流环。
+    门户两臂 + readTGA 已交付（e9e9cf5，lane/bw02-mercury）：
+    `readTGA`（waypoint_generator.cpp:252-332，重载
+    `WaypointFlood::writeTGA` 转储的调色板 TGA=18 头+16 扩展+768 调色
+    板+16 adj 层+16 hgt 层）+ `extendThroughUnboundPortals`
+    （:2370-2619，裙边多边形七步）逐行移植，portals.rs 12 测
+    （round-trip/头校验各拒绝臂/裙边/拒绝臂全链）；
+    `determineEdgesAdjacentToOtherChunks`（:2628-2726）与 navgen_map
+    重放/夹具系地形席 c3b005a 同面嫁接（合并择一）。登记分歧：越界
+    网格坐标顶点参照是 UB 读、移植 panic（测试限界内）；parity 警告
+    循环为死码（地形席已档）。余片 = per-girth 工作流环
+    （navmesh_processor.cpp，工具侧后台任务）。
 - [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。→ bbfb5ef（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory/readWaypointSet/NavLoc/AStar 脸，资产=原版生成器终流（slope 136B md5 30bd31c2…、shell 152B md5 d8b63279…，经 gen_generate 尾部无 stdout 的 fwrite 落盘，cmp 证 log 逐字节不变）；truth 85 行：LOAD 1+2 记录、24 对 CONTAINS/FIND、7 路径全吻合含 S1 两步穿越态收尾与 shell 跨层 X1 真 PATHNONE；测试 gen_navmesh_paths.rs 3 条逐点重放 1e-6；waypoint 104/104、workspace 4419/0、fmt/clippy 绿、crate 覆盖全 ≥98.32%；证据 docs/review/bw10-05-05-old-navmesh-reading.md）
 - [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。→ 0684f78（端口终流写盘 <tmp>/bw10-05-06/*.navmesh，fnv 钉住 slope 136B 3a23247435af66a6 / shell 152B e01640188f0c6115，md5 与 05-05 原版资产逐字节同（30bd31c2…/d8b63279…）；未改动已提交 gen_navpaths.cpp 重编译后在产物目录跑原版目标，stdout 对照 gen_navpaths.log 逐字节全等（LOG-IDENTICAL，1+2 记录 + 24 层探针 + 7 路径含 X1 PATHNONE + RESULT OK）；waypoint-gen 68/68、workspace 4420/0、fmt/clippy 绿、roundtrip.rs 63 行 100%；证据 docs/review/bw10-05-06-new-artifact-roundtrip.md）
 
@@ -3041,8 +3050,17 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
     原版 flood+generator+view 三件全链路 harness 逐字节对照
     （gen_generate.log：slope 终流 136B、shell 终流 152B fnv 全等），
     generator.rs 99.31%（9 行收尾括号 DA:0 已档）。
-    余片 = 门户两臂（determineEdgesAdjacentToOtherChunks /
-    extendThroughUnboundPortals）+ readTGA + per-girth 工作流环。
+    门户两臂 + readTGA 已交付（e9e9cf5，lane/bw02-mercury）：
+    `readTGA`（waypoint_generator.cpp:252-332，重载
+    `WaypointFlood::writeTGA` 转储的调色板 TGA=18 头+16 扩展+768 调色
+    板+16 adj 层+16 hgt 层）+ `extendThroughUnboundPortals`
+    （:2370-2619，裙边多边形七步）逐行移植，portals.rs 12 测
+    （round-trip/头校验各拒绝臂/裙边/拒绝臂全链）；
+    `determineEdgesAdjacentToOtherChunks`（:2628-2726）与 navgen_map
+    重放/夹具系地形席 c3b005a 同面嫁接（合并择一）。登记分歧：越界
+    网格坐标顶点参照是 UB 读、移植 panic（测试限界内）；parity 警告
+    循环为死码（地形席已档）。余片 = per-girth 工作流环
+    （navmesh_processor.cpp，工具侧后台任务）。
 - [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。→ bbfb5ef（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory/readWaypointSet/NavLoc/AStar 脸，资产=原版生成器终流（slope 136B md5 30bd31c2…、shell 152B md5 d8b63279…，经 gen_generate 尾部无 stdout 的 fwrite 落盘，cmp 证 log 逐字节不变）；truth 85 行：LOAD 1+2 记录、24 对 CONTAINS/FIND、7 路径全吻合含 S1 两步穿越态收尾与 shell 跨层 X1 真 PATHNONE；测试 gen_navmesh_paths.rs 3 条逐点重放 1e-6；waypoint 104/104、workspace 4419/0、fmt/clippy 绿、crate 覆盖全 ≥98.32%；证据 docs/review/bw10-05-05-old-navmesh-reading.md）
 - [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。→ 0684f78（端口终流写盘 <tmp>/bw10-05-06/*.navmesh，fnv 钉住 slope 136B 3a23247435af66a6 / shell 152B e01640188f0c6115，md5 与 05-05 原版资产逐字节同（30bd31c2…/d8b63279…）；未改动已提交 gen_navpaths.cpp 重编译后在产物目录跑原版目标，stdout 对照 gen_navpaths.log 逐字节全等（LOG-IDENTICAL，1+2 记录 + 24 层探针 + 7 路径含 X1 PATHNONE + RESULT OK）；waypoint-gen 68/68、workspace 4420/0、fmt/clippy 绿、roundtrip.rs 63 行 100%；证据 docs/review/bw10-05-06-new-artifact-roundtrip.md）
 
@@ -4580,8 +4598,17 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
     原版 flood+generator+view 三件全链路 harness 逐字节对照
     （gen_generate.log：slope 终流 136B、shell 终流 152B fnv 全等），
     generator.rs 99.31%（9 行收尾括号 DA:0 已档）。
-    余片 = 门户两臂（determineEdgesAdjacentToOtherChunks /
-    extendThroughUnboundPortals）+ readTGA + per-girth 工作流环。
+    门户两臂 + readTGA 已交付（e9e9cf5，lane/bw02-mercury）：
+    `readTGA`（waypoint_generator.cpp:252-332，重载
+    `WaypointFlood::writeTGA` 转储的调色板 TGA=18 头+16 扩展+768 调色
+    板+16 adj 层+16 hgt 层）+ `extendThroughUnboundPortals`
+    （:2370-2619，裙边多边形七步）逐行移植，portals.rs 12 测
+    （round-trip/头校验各拒绝臂/裙边/拒绝臂全链）；
+    `determineEdgesAdjacentToOtherChunks`（:2628-2726）与 navgen_map
+    重放/夹具系地形席 c3b005a 同面嫁接（合并择一）。登记分歧：越界
+    网格坐标顶点参照是 UB 读、移植 panic（测试限界内）；parity 警告
+    循环为死码（地形席已档）。余片 = per-girth 工作流环
+    （navmesh_processor.cpp，工具侧后台任务）。
 - [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。→ bbfb5ef（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory/readWaypointSet/NavLoc/AStar 脸，资产=原版生成器终流（slope 136B md5 30bd31c2…、shell 152B md5 d8b63279…，经 gen_generate 尾部无 stdout 的 fwrite 落盘，cmp 证 log 逐字节不变）；truth 85 行：LOAD 1+2 记录、24 对 CONTAINS/FIND、7 路径全吻合含 S1 两步穿越态收尾与 shell 跨层 X1 真 PATHNONE；测试 gen_navmesh_paths.rs 3 条逐点重放 1e-6；waypoint 104/104、workspace 4419/0、fmt/clippy 绿、crate 覆盖全 ≥98.32%；证据 docs/review/bw10-05-05-old-navmesh-reading.md）
 - [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。→ 0684f78（端口终流写盘 <tmp>/bw10-05-06/*.navmesh，fnv 钉住 slope 136B 3a23247435af66a6 / shell 152B e01640188f0c6115，md5 与 05-05 原版资产逐字节同（30bd31c2…/d8b63279…）；未改动已提交 gen_navpaths.cpp 重编译后在产物目录跑原版目标，stdout 对照 gen_navpaths.log 逐字节全等（LOG-IDENTICAL，1+2 记录 + 24 层探针 + 7 路径含 X1 PATHNONE + RESULT OK）；waypoint-gen 68/68、workspace 4420/0、fmt/clippy 绿、roundtrip.rs 63 行 100%；证据 docs/review/bw10-05-06-new-artifact-roundtrip.md）
 
@@ -6119,8 +6146,17 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
     原版 flood+generator+view 三件全链路 harness 逐字节对照
     （gen_generate.log：slope 终流 136B、shell 终流 152B fnv 全等），
     generator.rs 99.31%（9 行收尾括号 DA:0 已档）。
-    余片 = 门户两臂（determineEdgesAdjacentToOtherChunks /
-    extendThroughUnboundPortals）+ readTGA + per-girth 工作流环。
+    门户两臂 + readTGA 已交付（e9e9cf5，lane/bw02-mercury）：
+    `readTGA`（waypoint_generator.cpp:252-332，重载
+    `WaypointFlood::writeTGA` 转储的调色板 TGA=18 头+16 扩展+768 调色
+    板+16 adj 层+16 hgt 层）+ `extendThroughUnboundPortals`
+    （:2370-2619，裙边多边形七步）逐行移植，portals.rs 12 测
+    （round-trip/头校验各拒绝臂/裙边/拒绝臂全链）；
+    `determineEdgesAdjacentToOtherChunks`（:2628-2726）与 navgen_map
+    重放/夹具系地形席 c3b005a 同面嫁接（合并择一）。登记分歧：越界
+    网格坐标顶点参照是 UB 读、移植 panic（测试限界内）；parity 警告
+    循环为死码（地形席已档）。余片 = per-girth 工作流环
+    （navmesh_processor.cpp，工具侧后台任务）。
 - [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。→ bbfb5ef（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory/readWaypointSet/NavLoc/AStar 脸，资产=原版生成器终流（slope 136B md5 30bd31c2…、shell 152B md5 d8b63279…，经 gen_generate 尾部无 stdout 的 fwrite 落盘，cmp 证 log 逐字节不变）；truth 85 行：LOAD 1+2 记录、24 对 CONTAINS/FIND、7 路径全吻合含 S1 两步穿越态收尾与 shell 跨层 X1 真 PATHNONE；测试 gen_navmesh_paths.rs 3 条逐点重放 1e-6；waypoint 104/104、workspace 4419/0、fmt/clippy 绿、crate 覆盖全 ≥98.32%；证据 docs/review/bw10-05-05-old-navmesh-reading.md）
 - [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。→ 0684f78（端口终流写盘 <tmp>/bw10-05-06/*.navmesh，fnv 钉住 slope 136B 3a23247435af66a6 / shell 152B e01640188f0c6115，md5 与 05-05 原版资产逐字节同（30bd31c2…/d8b63279…）；未改动已提交 gen_navpaths.cpp 重编译后在产物目录跑原版目标，stdout 对照 gen_navpaths.log 逐字节全等（LOG-IDENTICAL，1+2 记录 + 24 层探针 + 7 路径含 X1 PATHNONE + RESULT OK）；waypoint-gen 68/68、workspace 4420/0、fmt/clippy 绿、roundtrip.rs 63 行 100%；证据 docs/review/bw10-05-06-new-artifact-roundtrip.md）
 
@@ -7697,8 +7733,17 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
     原版 flood+generator+view 三件全链路 harness 逐字节对照
     （gen_generate.log：slope 终流 136B、shell 终流 152B fnv 全等），
     generator.rs 99.31%（9 行收尾括号 DA:0 已档）。
-    余片 = 门户两臂（determineEdgesAdjacentToOtherChunks /
-    extendThroughUnboundPortals）+ readTGA + per-girth 工作流环。
+    门户两臂 + readTGA 已交付（e9e9cf5，lane/bw02-mercury）：
+    `readTGA`（waypoint_generator.cpp:252-332，重载
+    `WaypointFlood::writeTGA` 转储的调色板 TGA=18 头+16 扩展+768 调色
+    板+16 adj 层+16 hgt 层）+ `extendThroughUnboundPortals`
+    （:2370-2619，裙边多边形七步）逐行移植，portals.rs 12 测
+    （round-trip/头校验各拒绝臂/裙边/拒绝臂全链）；
+    `determineEdgesAdjacentToOtherChunks`（:2628-2726）与 navgen_map
+    重放/夹具系地形席 c3b005a 同面嫁接（合并择一）。登记分歧：越界
+    网格坐标顶点参照是 UB 读、移植 panic（测试限界内）；parity 警告
+    循环为死码（地形席已档）。余片 = per-girth 工作流环
+    （navmesh_processor.cpp，工具侧后台任务）。
 - [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。→ bbfb5ef（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory/readWaypointSet/NavLoc/AStar 脸，资产=原版生成器终流（slope 136B md5 30bd31c2…、shell 152B md5 d8b63279…，经 gen_generate 尾部无 stdout 的 fwrite 落盘，cmp 证 log 逐字节不变）；truth 85 行：LOAD 1+2 记录、24 对 CONTAINS/FIND、7 路径全吻合含 S1 两步穿越态收尾与 shell 跨层 X1 真 PATHNONE；测试 gen_navmesh_paths.rs 3 条逐点重放 1e-6；waypoint 104/104、workspace 4419/0、fmt/clippy 绿、crate 覆盖全 ≥98.32%；证据 docs/review/bw10-05-05-old-navmesh-reading.md）
 - [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。→ 0684f78（端口终流写盘 <tmp>/bw10-05-06/*.navmesh，fnv 钉住 slope 136B 3a23247435af66a6 / shell 152B e01640188f0c6115，md5 与 05-05 原版资产逐字节同（30bd31c2…/d8b63279…）；未改动已提交 gen_navpaths.cpp 重编译后在产物目录跑原版目标，stdout 对照 gen_navpaths.log 逐字节全等（LOG-IDENTICAL，1+2 记录 + 24 层探针 + 7 路径含 X1 PATHNONE + RESULT OK）；waypoint-gen 68/68、workspace 4420/0、fmt/clippy 绿、roundtrip.rs 63 行 100%；证据 docs/review/bw10-05-06-new-artifact-roundtrip.md）
 
@@ -9236,8 +9281,17 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
     原版 flood+generator+view 三件全链路 harness 逐字节对照
     （gen_generate.log：slope 终流 136B、shell 终流 152B fnv 全等），
     generator.rs 99.31%（9 行收尾括号 DA:0 已档）。
-    余片 = 门户两臂（determineEdgesAdjacentToOtherChunks /
-    extendThroughUnboundPortals）+ readTGA + per-girth 工作流环。
+    门户两臂 + readTGA 已交付（e9e9cf5，lane/bw02-mercury）：
+    `readTGA`（waypoint_generator.cpp:252-332，重载
+    `WaypointFlood::writeTGA` 转储的调色板 TGA=18 头+16 扩展+768 调色
+    板+16 adj 层+16 hgt 层）+ `extendThroughUnboundPortals`
+    （:2370-2619，裙边多边形七步）逐行移植，portals.rs 12 测
+    （round-trip/头校验各拒绝臂/裙边/拒绝臂全链）；
+    `determineEdgesAdjacentToOtherChunks`（:2628-2726）与 navgen_map
+    重放/夹具系地形席 c3b005a 同面嫁接（合并择一）。登记分歧：越界
+    网格坐标顶点参照是 UB 读、移植 panic（测试限界内）；parity 警告
+    循环为死码（地形席已档）。余片 = per-girth 工作流环
+    （navmesh_processor.cpp，工具侧后台任务）。
 - [x] **BW-10-05-05 验证旧导航资产读取**。**验收** 固定地图可寻路。→ bbfb5ef（读侧 harness `gen_navpaths.cpp` 走原版 navmeshFactory/readWaypointSet/NavLoc/AStar 脸，资产=原版生成器终流（slope 136B md5 30bd31c2…、shell 152B md5 d8b63279…，经 gen_generate 尾部无 stdout 的 fwrite 落盘，cmp 证 log 逐字节不变）；truth 85 行：LOAD 1+2 记录、24 对 CONTAINS/FIND、7 路径全吻合含 S1 两步穿越态收尾与 shell 跨层 X1 真 PATHNONE；测试 gen_navmesh_paths.rs 3 条逐点重放 1e-6；waypoint 104/104、workspace 4419/0、fmt/clippy 绿、crate 覆盖全 ≥98.32%；证据 docs/review/bw10-05-05-old-navmesh-reading.md）
 - [x] **BW-10-05-06 验证新产物往返**。**验收** 由支持该格式的原版目标重载。→ 0684f78（端口终流写盘 <tmp>/bw10-05-06/*.navmesh，fnv 钉住 slope 136B 3a23247435af66a6 / shell 152B e01640188f0c6115，md5 与 05-05 原版资产逐字节同（30bd31c2…/d8b63279…）；未改动已提交 gen_navpaths.cpp 重编译后在产物目录跑原版目标，stdout 对照 gen_navpaths.log 逐字节全等（LOG-IDENTICAL，1+2 记录 + 24 层探针 + 7 路径含 X1 PATHNONE + RESULT OK）；waypoint-gen 68/68、workspace 4420/0、fmt/clippy 绿、roundtrip.rs 63 行 100%；证据 docs/review/bw10-05-06-new-artifact-roundtrip.md）
 
