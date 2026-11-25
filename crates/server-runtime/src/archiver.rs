@@ -24,7 +24,7 @@
 //! entity. The archive payload is the same `writeBackupData` stream the backup
 //! path uses.
 
-use crate::base_backup::{BackupError, read_backup_data, restore_base, write_backup_data};
+use crate::base_backup::{BackupError, restore_from_stream, write_backup_data};
 use crate::baseappmgr::Addr;
 use crate::entity_creator::{BaseEntity, DatabaseId, EntityId, EntityType};
 use foundation::stream::BinaryStream;
@@ -258,35 +258,21 @@ pub fn restore_archived(
     Some(restore_bytes(data, lookup))
 }
 
-/// Rebuild an entity from persisted archive bytes.
+/// Rebuild an entity from persisted archive bytes: one pass, the header
+/// read once and the body off the same stream (`restore_from_stream`).
 fn restore_bytes(
     data: &[u8],
     lookup: &impl Fn(&str) -> Option<EntityType>,
 ) -> Result<BaseEntity, BackupError> {
-    let type_name = type_name_of(data)?;
-    let ty = lookup(&type_name).ok_or(BackupError::UnknownType {
-        type_name: type_name.clone(),
-    })?;
-    let mut stream = BinaryStream::new();
-    stream.write_bytes(data);
-    let parsed = read_backup_data(&mut stream, &ty)?;
-    restore_base(&parsed, &ty)
+    restore_from_stream(&mut BinaryStream::from_slice(data), lookup)
 }
 
 /// The archive payload: the same `writeBackupData` stream as the backup path.
+/// The written buffer moves out of the stream instead of being copied out.
 fn encode(base: &BaseEntity) -> Vec<u8> {
     let mut stream = BinaryStream::new();
     write_backup_data(base, &mut stream);
-    stream.as_bytes().to_vec()
-}
-
-/// Peek the type name in the header of persisted bytes.
-fn type_name_of(data: &[u8]) -> Result<String, BackupError> {
-    let mut stream = BinaryStream::new();
-    stream.write_bytes(data);
-    let _id = stream.read_u32()?;
-    let _type_id = stream.read_u32()?;
-    Ok(stream.read_string()?)
+    stream.into_bytes()
 }
 
 /// A deterministic Fisher–Yates shuffle from a linear congruential generator

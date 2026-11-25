@@ -130,16 +130,35 @@ pub fn read_backup_data(
     stream: &mut BinaryStream,
     ty: &EntityType,
 ) -> Result<BaseBackupData, BackupError> {
-    let id = stream.read_u32()?;
-    let type_id = stream.read_u32()?;
-    let type_name = stream.read_string()?;
-    let db_id = stream.read_u64()?;
+    let (id, type_id, type_name, db_id) = read_backup_header(stream)?;
     if type_id != ty.id || type_name != ty.name {
         return Err(BackupError::TypeMismatch {
             type_name: ty.name.clone(),
         });
     }
+    read_backup_body(stream, ty, id, type_id, type_name, db_id)
+}
 
+/// The backup header: id, type id, type name, database id.
+fn read_backup_header(
+    stream: &mut BinaryStream,
+) -> Result<(EntityId, u32, String, u64), StreamError> {
+    let id = stream.read_u32()?;
+    let type_id = stream.read_u32()?;
+    let type_name = stream.read_string()?;
+    let db_id = stream.read_u64()?;
+    Ok((id, type_id, type_name, db_id))
+}
+
+/// The body after the header: the cell state and the two property maps.
+fn read_backup_body(
+    stream: &mut BinaryStream,
+    ty: &EntityType,
+    id: EntityId,
+    type_id: u32,
+    type_name: String,
+    db_id: u64,
+) -> Result<BaseBackupData, BackupError> {
     let cell_entity_addr = read_opt_addr(stream)?;
     let is_create_cell_pending = stream.read_bool()?;
     let is_get_cell_pending = stream.read_bool()?;
@@ -160,6 +179,27 @@ pub fn read_backup_data(
         base_props,
         cell_props,
     })
+}
+
+/// One rebuild pass over a stream holding a full backup: read the header,
+/// look the type up, then read the body off the same stream. The recovery
+/// paths used to peek the type name on one stream and re-read everything
+/// from a second copy of the bytes; this reads each byte once.
+pub(crate) fn restore_from_stream(
+    stream: &mut BinaryStream,
+    lookup: &impl Fn(&str) -> Option<EntityType>,
+) -> Result<BaseEntity, BackupError> {
+    let (id, type_id, type_name, db_id) = read_backup_header(stream)?;
+    let ty = lookup(&type_name).ok_or(BackupError::UnknownType {
+        type_name: type_name.clone(),
+    })?;
+    if type_id != ty.id || type_name != ty.name {
+        return Err(BackupError::TypeMismatch {
+            type_name: ty.name.clone(),
+        });
+    }
+    let data = read_backup_body(stream, &ty, id, type_id, type_name, db_id)?;
+    restore_base(&data, &ty)
 }
 
 /// The parsed contents of a backup: the `createBaseFromStream` header
@@ -208,8 +248,8 @@ pub fn restore_base(data: &BaseBackupData, ty: &EntityType) -> Result<BaseEntity
         is_proxy: ty.is_proxy,
         destroyed: false,
         in_destroy: false,
-        base_props: data.base_props.clone().into_iter().collect(),
-        cell_props: data.cell_props.clone().into_iter().collect(),
+        base_props: data.base_props.clone(),
+        cell_props: data.cell_props.clone(),
         is_create_cell_pending: data.is_create_cell_pending,
         is_get_cell_pending: data.is_get_cell_pending,
         cell_entity_addr: data.cell_entity_addr,
@@ -258,13 +298,7 @@ impl BackupReceiver {
         };
         stored
             .values()
-            .map(|data| {
-                let type_name = peek_type_name(data)?;
-                let ty = lookup(&type_name).ok_or(BackupError::UnknownType { type_name })?;
-                let mut stream = stream_of(data);
-                let parsed = read_backup_data(&mut stream, &ty)?;
-                restore_base(&parsed, &ty)
-            })
+            .map(|data| restore_from_stream(&mut stream_of(data), lookup))
             .collect()
     }
 
@@ -281,15 +315,6 @@ fn stream_of(data: &[u8]) -> BinaryStream {
     let mut stream = BinaryStream::new();
     stream.write_bytes(data);
     stream
-}
-
-/// Peek at the type name in the header of stored backup bytes so the caller
-/// can look up the `EntityType` before parsing.
-fn peek_type_name(data: &[u8]) -> Result<String, BackupError> {
-    let mut stream = stream_of(data);
-    let _id = stream.read_u32()?;
-    let _type_id = stream.read_u32()?;
-    Ok(stream.read_string()?)
 }
 
 /// Write an optional address: a presence byte then the packed address.
