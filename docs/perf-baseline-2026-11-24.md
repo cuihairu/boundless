@@ -236,12 +236,113 @@ tests green):
   (512 on the internal 4096 window); the next scan takes the remainder.
   Recovery of 600 stale packets therefore completes in two scans.
 
+Fixture correction (same commit as OPT-02-01-02): the bench's RPC face
+was mis-shaped and only passed because `cargo bench` compiles with
+debug assertions off. A fixed-length request's reply id and its
+next-request link ride the request preamble, which the unpack consumes
+before the payload — not the body stream — and the declared fixed
+length counts only the payload bytes (`expand_length` answers
+`lengthParam`). The `Echo` handler now reads the reply id from
+`UnpackedMessageHeader::reply_id()`, the request writes eight payload
+bytes, and the receive recipe first grows the prepared packet to its
+full datagram length (`msg_end_offset` stops at the body end; the
+packed footers trail it) before stripping the first-request footer, the
+way `UdpChannel::process_ordered_packet` strips a received datagram.
+`udp/protocol_rpc_roundtrip` re-measured after the fix: ~0.8 µs per RPC
+(quiet machine; the loaded-run floor 1.1-2.3 µs above still stands for
+the table's conditions). The other faces are unaffected.
+
+## Buffer reuse evaluation (2026-11-26, OPT-02-01-02)
+
+Allocation counts and peak live memory for the network hot surfaces,
+measured by the counting allocator in
+`crates/mercury/tests/network_alloc_counts.rs` (thread-local tracking,
+every fixture asserts two runs allocate identically, so the numbers are
+exactly reproducible; debug profile, quiet machine, load ~5). Peak live
+is the high-water mark of allocated-minus-freed inside the fixture
+window; the wire layer's process-level record is
+`crates/mercury/tests/network_peak_rss.rs`.
+
+| fixture | allocations | bytes allocated | peak live |
+|---|---|---|---|
+| `rpc_roundtrip` (one full RPC) | 10 | 4,040 | 3,976 B |
+| `fragment_64k/build` (1024×64 B bundle) | 52 | 80,096 | 74,816 B |
+| `fragment_64k/prepare` (unreliable footers) | 0 | 0 | 0 |
+| `fragment_64k_reliable/prepare` (reliable window leg) | 94 | 74,072 | 74,072 B |
+| `reparse_64k` (1024 dispatches, stream excluded) | 1,025 | 132,096 | 66,624 B |
+| `tcp_frame_stream/send` (1 MiB framed, drained) | 513 | 2,099,200 | ~1.0 MiB |
+| `tcp_frame_stream/stalled` (sink refuses everything) | 522 | 3,146,750 | ~1.5 MiB |
+
+Reading notes:
+
+- Fragmentation itself pays 52 allocations (~1 per packet, the 1472 B
+  `Packet` boxes, plus the message stream walk), and `prepare_packets`
+  on an unreliable bundle is allocation-free. The reliable window leg
+  adds 94 allocations (~2 per packet: the `Rc<Packet>` clone into the
+  resend window plus window bookkeeping) — see the reuse verdict below.
+- The reparse face pays 1 allocation per message (the handler
+  `BinaryStream` copy), ~128 B of overhead per 64 B message.
+- The TCP drained path allocates once per `framed()` fixture buffer
+  (512 frame Vecs + the wire Vec); `TcpSendBuffer` itself holds nothing
+  back — the stalled path shows the buffer holding the full ~1 MiB
+  backlog as a single `Vec` growth (peak ~1.5 MiB live), and
+  `clear()` keeps that capacity for the next stall, so the buffer is
+  already reuse-shaped.
+
+Process-level peak: the 16 MiB sustained wire transfer (256 bursts ×
+1024 reliable 64-byte messages over one loopback channel pair, each
+burst drained to the last ack) peaks at **6,408 KiB RSS** — the
+per-burst drain keeps the working set at one burst's window (the
+internal window is 4096 packets and the burst uses 1024 of them), not
+the transfer's total size.
+
+Reuse verdict against the reference (`lib/network`): the reference
+Mercury has **no packet pool** — `UDPBundle::clear(false)` disposes the
+packet chain and `new`s a fresh first `Packet` per send cycle, exactly
+the port's per-bundle allocation profile; its `RESERVED_FOOTER_SIZE`
+hole in every packet is the same. Its reuse happens at the *packet
+object* level: `Packet` is reference-counted (`PacketPtr`), so the
+window's `UnackedPacket`, the socket send path and the receive window
+all *share* one packet instead of copying it. The port's `Packet` is
+`Clone` + owned `Box<[u8; 1472]>`, so every handoff pays a full
+1472 B copy plus allocation where the reference pays none:
+
+- `packet_sender.rs` (`Rc::new(bundle.packet(index).clone())`): every
+  outgoing datagram, once per packet;
+- `udp_bundle.rs` `prepare_packets` reliable window leg
+  (`Rc::new(packet.clone())`): once per reliable packet — this is the
+  94-allocation window leg above;
+- `udp_channel.rs` resend path (`unacked.packet().as_ref().clone()`):
+  once per resent packet;
+- `udp_channel.rs` receive window (`Rc::new(p.clone())`): once per
+  received reliable packet.
+
+The structural reuse fix is making the bundle own `Rc<Packet>` (the
+reference's shape), which removes all four copies in one change; it is
+bookkeeping for the copy-elimination row (OPT-02-01-03), not a change
+this row made.
+
+The evaluation also caught a real bug (TDD red first, fixed in the
+same commit): `Packet::free_space()` computed
+`PACKET_MAX_SIZE - RESERVED_FOOTER_SIZE - msg_end_offset - footer_size
+- extra_filter_size` in `usize`. The reference's `freeSpace` is a
+signed int and *runs negative in normal operation* — a full
+multi-datagram reliable bundle reserves the fragment and sequence
+footers over an exactly-full packet (1472 − 27 − 1445 − 8 = −8), and
+callers only compare it against footer sizes, reading "no room". The
+port's `usize` arithmetic panicked on that exact state (and wrapped to
+garbage in release): any 64 KiB-class reliable send through a channel
+hit it. `free_space()` now clamps at zero
+(`saturating_sub`), pinned by `free_space_clamps_at_zero_on_a_full_packet`.
+
 ## CI
 
 No CI wiring yet for the benches (per batch ticket): they stay out of
 the test gate. The allocation harness is a test, not a bench — it runs
 as part of `cargo test -p foundation -p server-runtime` (and, since
-OPT-01-01-03, `cargo test -p resources` for the cache hot path). When a
+OPT-01-01-03, `cargo test -p resources` for the cache hot path; and,
+since OPT-02-01-02, `cargo test -p mercury` for the network faces —
+`network_alloc_counts.rs` plus the peak-RSS record). When a
 perf gate lands, compare timings against `target/criterion` baselines
 via `--save-baseline` / `--baseline`, not absolute numbers from this
 page.
