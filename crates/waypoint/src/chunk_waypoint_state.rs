@@ -366,7 +366,7 @@ pub struct ChunkWaypointStateSearchData {
 
 impl ChunkWaypointStateSearchData {
     /// `setConnection` (`chunk_waypoint_state.cpp:194-210`).
-    fn set_connection(
+    pub(crate) fn set_connection(
         &mut self,
         from_set: Option<&Rc<ChunkWaypointSetData>>,
         from: WaypointIndex,

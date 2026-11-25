@@ -19,8 +19,22 @@ use std::collections::BTreeSet;
 
 use foundation::math::vector::Vector3;
 
-use crate::flood::{AdjGridElt, MAX_HEIGHTS};
+use crate::flood::{AdjGridElt, FloodPhysics, MAX_HEIGHTS};
 use crate::view::{NavVertex, NavView};
+
+/// The generator-side chunk seam: `owns` is `Chunk::owns` for an
+/// outside chunk without overlappers (`chunk.cpp:3474`) and `local_bb`
+/// is the chunk's local bounding box
+/// (`WaypointGenerator::determineEdgesAdjacentToOtherChunks`,
+/// `waypoint_generator.cpp:2652,2705`). The navgen workflow runs on
+/// outside chunks whose transform is the mapping grid's identity, so
+/// the reference's `transform()`/`transformInverse()` applications are
+/// no-ops and the port omits them.
+pub trait GenChunk {
+    fn owns(&self, point: &Vector3) -> bool;
+    /// `(min, max)` of the chunk's local bounding box.
+    fn local_bb(&self) -> (Vector3, Vector3);
+}
 
 /// `GENERATOR_FLOAT_FUDGE` (`waypoint_generator.cpp:24`).
 pub const GENERATOR_FLOAT_FUDGE: f32 = 0.001;
@@ -1844,6 +1858,121 @@ impl WaypointGenerator {
         }
     }
 
+    /// `toVector3` (`waypoint_generator.cpp:2343-2360`): a vertex's
+    /// world position, height taken from the first height grid whose
+    /// cell height falls inside the polygon's band, else the band top
+    /// lifted by 0.01. The reference ends with
+    /// `pChunk->transformInverse().applyPoint(p)`; the navgen workflow
+    /// runs on outside chunks whose transform is the mapping grid's
+    /// identity, so the port omits the two applications
+    /// (`transform()`/`transformInverse()`, `:2688-2689`).
+    fn to_vector3(&self, v: (f32, f32), polygon: &PolygonDef) -> Vector3 {
+        let mut p = Vector3::new(
+            v.0 * self.grid_resolution + self.grid_min.x,
+            0.0,
+            v.1 * self.grid_resolution + self.grid_min.z,
+        );
+        let mut g = 0usize;
+        while g < MAX_HEIGHTS {
+            let idx = v.0 as i32 as usize + self.grid_x as usize * v.1 as i32 as usize;
+            p.y = self.hgt_grids[g][idx];
+            if p.y >= polygon.min_height && p.y <= polygon.max_height {
+                break;
+            }
+            g += 1;
+        }
+        if g == MAX_HEIGHTS {
+            p.y = polygon.max_height + 0.01;
+        }
+        p
+    }
+
+    /// `determineEdgesAdjacentToOtherChunks`
+    /// (`waypoint_generator.cpp:2628-2718`): marks edges that lie
+    /// entirely outside the chunk's ownership box as belonging to the
+    /// neighbouring chunk — `asBinary` writes those as 65535
+    /// (`waypoint_view.cpp:363`) and the loader wires them through the
+    /// chunk portals. The trailing polygon-portal parity warning loop
+    /// is dead in the reference too: `polygonPortalParity` is never
+    /// incremented (`:2640`), so no message can ever fire and the port
+    /// keeps only the live part.
+    pub fn determine_edges_adjacent_to_other_chunks(
+        &mut self,
+        chunk: &dyn GenChunk,
+        physics: &mut dyn FloodPhysics,
+    ) {
+        // initially assume edges are internal to the current chunk.
+        // do this first as some vertices shared.
+        for polygon in &mut self.polygons {
+            for vertex in &mut polygon.vertices {
+                vertex.adj_to_another_chunk = false;
+            }
+        }
+
+        let (bb_min, bb_max) = chunk.local_bb();
+        for p in 0..self.polygons.len() {
+            let vertex_count = self.polygons[p].vertices.len();
+
+            // first check if it is a huge polygon covering the entire
+            // chunk: one vertex in each of the four outer corners
+            let mut outsides = 0;
+            for vertex in &self.polygons[p].vertices {
+                let p1 = self.to_vector3(vertex.pos, &self.polygons[p]);
+                if p1.x < bb_min.x && p1.z < bb_min.z {
+                    outsides |= 1;
+                }
+                if p1.x < bb_min.x && p1.z > bb_max.z {
+                    outsides |= 2;
+                }
+                if p1.x > bb_max.x && p1.z < bb_min.z {
+                    outsides |= 4;
+                }
+                if p1.x > bb_max.x && p1.z > bb_max.z {
+                    outsides |= 8;
+                }
+            }
+            if outsides == 1 + 2 + 4 + 8 {
+                for vertex in &mut self.polygons[p].vertices {
+                    vertex.adj_to_another_chunk = true;
+                }
+                // no point checking portal crossings below then
+                continue;
+            }
+
+            for v in 0..vertex_count {
+                if self.polygons[p].vertices[v].adj_nav_poly > 0 {
+                    // we have connected to another nav poly, skip
+                    continue;
+                }
+
+                let v1 = self.polygons[p].vertices[v].pos;
+                let v2 = self.polygons[p].vertices[(v + 1) % vertex_count].pos;
+
+                let mut p1 = self.to_vector3(v1, &self.polygons[p]);
+                let mut p2 = self.to_vector3(v2, &self.polygons[p]);
+
+                p1.y = self.polygons[p].max_height + 1.0;
+                p2.y = self.polygons[p].max_height + 1.0;
+
+                let mut y = 0f32;
+                if physics.find_drop_point(&p1, &mut y) {
+                    p1.y = y;
+                }
+                if physics.find_drop_point(&p2, &mut y) {
+                    p2.y = y;
+                }
+
+                if !chunk.owns(&p1) && !chunk.owns(&p2) {
+                    let mid = (p1 + p2) / 2.0;
+
+                    if !chunk.owns(&mid) {
+                        self.polygons[p].vertices[v].adj_to_another_chunk = true;
+                    }
+                }
+            }
+        }
+    }
+
     /// `calculateSetMembership`
     /// (`waypoint_generator.cpp:2824-3040`): determines what set each
     /// polygon is in, and removes isolated polygons. Assumes all
@@ -2083,5 +2212,7 @@ impl WaypointGenerator {
 
 #[cfg(test)]
 mod artifacts;
+#[cfg(test)]
+mod navgen_map;
 #[cfg(test)]
 mod roundtrip;

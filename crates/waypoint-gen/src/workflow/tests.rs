@@ -2,7 +2,7 @@
 //!
 //! * `read_tga` round-trips against the crate's own `write_tga`
 //!   (`flood.rs:974`), byte for byte;
-//! * `to_vector3` reproduces the reference's height lookup;
+//! * `navgen_to_vector3` reproduces the reference's height lookup;
 //! * the two portal arms are driven on a hand-built polygon set with a
 //!   synthetic chunk probe — the same shape the truth harness uses.
 
@@ -134,7 +134,7 @@ fn a_broken_flood_file_is_rejected_at_the_first_lie() {
 }
 
 // ---------------------------------------------------------------------------
-// to_vector3
+// navgen_to_vector3
 // ---------------------------------------------------------------------------
 
 /// The height lookup keeps the first layer inside the polygon's range
@@ -153,7 +153,7 @@ fn to_vector3_walks_the_height_layers_in_order() {
         max_height: 2.0,
         set: 0,
     };
-    let p = gener.to_vector3((1.0, 1.0), &polygon);
+    let p = gener.navgen_to_vector3((1.0, 1.0), &polygon);
     assert_eq!(p, Vector3::new(12.0, 1.0, 22.0));
 
     // cell (0,0) sits at height 0 in every layer; a range that
@@ -164,7 +164,7 @@ fn to_vector3_walks_the_height_layers_in_order() {
         max_height: 0.5,
         set: 0,
     };
-    let p = gener.to_vector3((0.0, 0.0), &polygon);
+    let p = gener.navgen_to_vector3((0.0, 0.0), &polygon);
     assert_eq!(p, Vector3::new(10.0, 0.51, 20.0));
 }
 
@@ -222,7 +222,7 @@ fn edges_landing_outside_the_chunk_become_chunk_borders() {
         max_step: 0.6,
     };
 
-    gener.determine_edges_adjacent_to_other_chunks(
+    gener.navgen_determine_edges_adjacent_to_other_chunks(
         &chunk,
         &mut DropPhysicsOf(std::cell::RefCell::new(physics)),
     );
@@ -284,7 +284,7 @@ fn a_polygon_wrapping_the_whole_chunk_flags_every_edge() {
         max_step: 0.6,
     };
 
-    gener.determine_edges_adjacent_to_other_chunks(
+    gener.navgen_determine_edges_adjacent_to_other_chunks(
         &chunk,
         &mut DropPhysicsOf(std::cell::RefCell::new(physics)),
     );
@@ -999,7 +999,7 @@ fn a_vertex_already_wired_to_a_nav_poly_is_skipped() {
         max_step: 0.6,
     };
 
-    gener.determine_edges_adjacent_to_other_chunks(
+    gener.navgen_determine_edges_adjacent_to_other_chunks(
         &chunk,
         &mut DropPhysicsOf(std::cell::RefCell::new(physics)),
     );

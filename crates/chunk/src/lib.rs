@@ -12,16 +12,18 @@
 //! WorldEditor resource browsing (the `IChunkWalker` family) and space
 //! publishing faces (`SpaceRecreator`/`SpaceSettings`). The column grid
 //! ([`column`]) and the hull tree ([`hulltree`]) carry the terrain
-//! description faces and the space index.
+//! description faces.
 
 pub mod boundary;
 pub mod chunk;
 pub mod chunk_editor;
 pub mod chunk_placer;
 pub mod column;
+pub mod grid_traversal;
 pub mod hulltree;
 pub mod identifier;
 pub mod mapping;
+pub mod obstacle;
 pub mod snaps;
 pub mod space;
 pub mod space_publish;
@@ -38,12 +40,12 @@ pub use chunk_placer::{
     ItemFactory, PlacementOptions, PlacementPresets, SectionItemFactory,
     chunk_item_position_property_length,
 };
-pub use column::{Column, ColumnChunk, ColumnGrid};
-pub use hulltree::{HullBorder, HullTree};
+pub use column::{Column, ColumnGrid};
 pub use identifier::{
     grid_from_chunk_name, is_outside_chunk, outside_chunk_id_to_grid, outside_chunk_identifier,
 };
 pub use mapping::{DEFAULT_GRID_SIZE, GeometryMapping, GridBounds};
+pub use obstacle::{ChunkObstacle, calculate_qt_range};
 pub use space::ChunkSpace;
 pub use space_publish::{
     BoundedChunkWalker, CacheChunkWalker, ChunkWalker, FileChunkWalker, LinearChunkWalker,

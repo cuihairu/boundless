@@ -378,12 +378,6 @@ pub fn almost_zero(value: f32, epsilon: f32) -> bool {
     -epsilon < value && value < epsilon
 }
 
-/// `almostEqual(f1, f2)`: `fabsf(f1 - f2) < 0.0004` (`stdmf.hpp:606-609`),
-/// the buffer `PlaneEq::isInFrontOf` allows around its plane.
-pub fn almost_equal(f1: f32, f2: f32) -> bool {
-    (f1 - f2).abs() < 0.0004
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,15 +569,6 @@ mod tests {
         assert!(almost_zero(9e-9, 1e-8));
         assert!(!almost_zero(1e-8, 1e-8), "boundary is exclusive both ends");
         assert!(!almost_zero(-1e-8, 1e-8));
-    }
-
-    /// `almostEqual` (`stdmf.hpp:606-609`): `fabsf(f1-f2) < 0.0004`.
-    #[test]
-    fn almost_equal_uses_the_reference_epsilon() {
-        assert!(almost_equal(1.0, 1.0 + 3e-4));
-        assert!(!almost_equal(1.0, 1.0 + 5e-4), "boundary is exclusive");
-        assert!(!almost_equal(1.0, 2.0));
-        assert!(almost_equal(-2.0, -2.0));
     }
 
     #[test]
