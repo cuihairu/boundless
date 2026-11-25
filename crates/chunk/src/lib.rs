@@ -19,9 +19,11 @@ pub mod chunk;
 pub mod chunk_editor;
 pub mod chunk_placer;
 pub mod column;
+pub mod grid_traversal;
 pub mod hulltree;
 pub mod identifier;
 pub mod mapping;
+pub mod obstacle;
 pub mod snaps;
 pub mod space;
 pub mod space_publish;
@@ -43,6 +45,7 @@ pub use identifier::{
     grid_from_chunk_name, is_outside_chunk, outside_chunk_id_to_grid, outside_chunk_identifier,
 };
 pub use mapping::{DEFAULT_GRID_SIZE, GeometryMapping, GridBounds};
+pub use obstacle::{ChunkObstacle, calculate_qt_range};
 pub use space::ChunkSpace;
 pub use space_publish::{
     BoundedChunkWalker, CacheChunkWalker, ChunkWalker, FileChunkWalker, LinearChunkWalker,
