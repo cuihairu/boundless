@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "scenario": "long-stability",
+  "generator": "load 0.1.0",
+  "topology": "linux-offline-harness",
+  "seed": 173205,
+  "values": {
+    "bots_online": 4,
+    "ticks": 600,
+    "sampling_period_secs": 7.5,
+    "resource_sample_count": 8,
+    "min_online_ratio": 1,
+    "sampling_period_secs": 7.5,
+    "resource_sample_count": 8,
+    "cpu_user_secs_series": [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+    "cpu_system_secs_series": [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05],
+    "rss_kib_series": [3436, 3500, 3504, 3504, 3508, 3508, 3512, 3512],
+    "peak_rss_kib": 3512,
+    "cpu_metric_def": "utime+stime from /proc/self/stat, clock ticks scaled by _SC_CLK_TCK",
+    "rss_metric_def": "VmRSS from /proc/self/status, KiB"
+  }
+}
