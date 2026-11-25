@@ -93,8 +93,13 @@
 //!   and the `VisualMesh::save` pipeline (dedup, sorting, primitive
 //!   groups, the `xyznuv`/`xyznuvi`/`xyznuvtb` vertex streams and the
 //!   `.visual` XML) with the Max-plugin host seams documented
-//!   (`tools/visualexporter/`).
+//!   (`tools/visualexporter/`);
+//! - [`animation_exporter`] — the Max animation exporter's portable
+//!   core: the settings read chain, the `preProcess` classification, the
+//!   `MFXNode` relative-transform keys and the `.animation` binary with
+//!   its cue channel (`tools/animationexporter/`).
 
+pub mod animation_exporter;
 pub mod asset_compiler;
 pub mod asset_compiler_options;
 pub mod asset_processor;
