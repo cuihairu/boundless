@@ -1,6 +1,6 @@
 # BW-10-01 Chunk 加载与空间索引 — 复核证据
 
-- **任务编号**: BW-10-01-01..05（lane `lane/bw10-terrain`，todo.md 行 1428-1435）
+- **任务编号**: BW-10-01-01..03（lane `lane/bw10-space`，todo.md 行 867-869）
 - **原版构建目标/源码**:
   - 标识/坐标: `programming/bigworld/lib/chunk/chunk_format.hpp`（`ChunkFormat::outsideChunkIdentifier`）、`programming/bigworld/lib/chunk/chunk_terrain.cpp`（`outsideChunkIDToGrid`、`charToHex`）、`programming/bigworld/lib/chunk/geometry_mapping.cpp`（`gridFromChunkName`、`HexLookup`、`gatherChunks`、`GeometryMapping`）、`programming/bigworld/lib/chunk/chunk.cpp`（`isOutsideChunk`、`Chunk::load`、`loadInclude`、`readMooMatrix`）、`programming/bigworld/lib/chunk/base_chunk_space.hpp`（`DEFAULT_GRID_RESOLUTION`、`MIN/MAX_CHUNK_HEIGHT`）。
   - 边界/Portal: `programming/bigworld/lib/chunk/chunk_boundary.cpp` / `chunk_boundary.hpp`、`programming/bigworld/lib/chunk/portal.cpp`。
@@ -11,21 +11,20 @@
   - `docs/review/fixtures/chunk_space/res/space_00010001/`（最小手造样本，见下节「夹具来源登记」）。
 - **原版结果**（源码核对 + 参考格式文档）:
   - 室外块标识 = 8 位小写 hex 坐标 + 尾 `o`；室内块 = 8 位任意 hex + 尾 `i`；特殊目标 heaven/earth/invasive/extern。
-  - 宽空间前缀：`|x|` 或 `|z|` 触发 4/8/12 位三级哈希子目录（`001xx001xx/sep/…`），`singleDir` 关闭。
+  - 宽空间前缀：`|x|` 或 `|z|` 触发 4/8/12 位三级哈希子目录（`001x001x/sep/…`，勘误 2026-11-24：原记 `001xx001xx` 多一 x——参考 `%03xx%03xx/sep/` 实为 1 个字面 x，见 `chunk_format.hpp:35-47`），`singleDir` 关闭。
   - 网格↔坐标：`outsideChunkIDToGrid` 对 bit15 符号扩展；`gridFromChunkName` 只取末 9 字符；`outsideChunkIdentifier` 用 u16 回绕算术。
   - 室外块 transform/包围盒由网格坐标 × gridSize 派生；室内块读 `<transform>`/`<boundingBox>`，首个 `<model>` 在无 `<shell>` 时作 shell。
   - 对象集合 = 逐子节点 tag（shell/transform/boundingBox 不计入），`<include>` 递归展开。
 - **新版结果**:
-  - `cargo test --workspace` 全绿（chunk 33 lib + 9 集成；layering 注册通过）。
+  - `cargo test --workspace` 全绿（chunk 23 lib + 9 集成；layering 注册通过）。
   - 标识↔坐标往返扫掠覆盖全 i16 双轴（2048 点）；前缀三级、单目录、回绕、大小写分歧各成一测。
   - `GeometryMapping::from_settings` 读 `chunkSize`/`bounds`/`singleDir`；`gather_chunks` 枚举 18×2 室外格 + 1 室内块 = 37。
   - 夹具文件解析：原点格 4 对象（2 model + light + sound）、前缀远格 (17,0)、室内块 transform/bbox/3 对象，逐项断言。
   - 流式装载：scan 候选序（半径序 + 越界剔除 + 幂等）、绑定序列 `[00000000o,00000001o,00010000o,00010001o]`、双向对移、拒载/拒绑/重入幂等。
-  - 卸载面：`unload_chunk` 三卫兵（removable/loaded/bound）、双向 `unbind` 的 cut 语义（INVASIVE vs NULL、恒 cut 的 exit portal、internal joint 擦除、回臂只动首个匹配 portal）、卸载后重绑复原基线。
-  - llvm-cov 0.9.1：全 crate 行覆盖 99.29%、`space.rs` 99.15%、`chunk.rs` 98.81%、`mapping.rs` 99.16%、`boundary.rs` 99.56%、`identifier.rs` 100%。
+  - llvm-cov 0.9.1：全 crate 行覆盖 98.62%、`space.rs` 97.85%、`boundary.rs` 98.48%、`identifier.rs` 100%。
   - clippy `-D warnings`（scoped `-p chunk --all-targets`）0 findings；`cargo fmt -p chunk --check` 0 漂移。
 - **证据链接**: `crates/chunk/src/{identifier,mapping,chunk,boundary,space}.rs`、`crates/chunk/tests/space.rs`、`docs/review/fixtures/chunk_space/`。
-- **状态**: 01-01..03 已交付；01-04 卸载面已交付；01-05 空间索引已交付（见末节）。
+- **状态**: 待 push 复核。
 
 ## 夹具来源登记（BW-10-01-01）
 
@@ -33,24 +32,24 @@
 
 - **坐标系**: 与参考一致，x 右 z 下（`z` 即网格 y），gridSize=100（`base_chunk_space.hpp` `DEFAULT_GRID_RESOLUTION`）。
 - **settings.xml**: `chunkSize=100`、`bounds` 矩形 0..17 × 0..1、`singleDir=false`。bounds 语义按 `GeometryMapping`（`geometry_mapping.cpp:156-236`）——本地格矩形含两端点。
-- **标识/前缀**: 格 (17,0) 触发 4 位前缀级（`001xx000xx/sep/00110000o`），与 `ChunkFormat::outsideChunkIdentifier` 输出一致；其余格平铺（`00000000o`..`00010001o`）。
+- **标识/前缀**: 格 (17,0) 触发 4 位前缀级（`001x000x/sep/00110000o`，勘误 2026-11-24 按 `chunk_format.hpp:35-47` 的 `%03xx%03xx/sep/` 修正 x 数），与 `ChunkFormat::outsideChunkIdentifier` 输出一致；其余格平铺（`00000000o`..`00010001o`）。
 - **对象集**: 每室外格 1-2 个 `<model>`/`<entity>`；原点格另含 `<light>`/`<sound>`。室内格 `00000000i.chunk` 采用编辑器形态（`editor_chunk_cache.cpp:1167-1179`）：`<transform>` row3=150 0 250、`<boundingBox>` −10..10、`<shell>` + model + entity + light。
 - **内容字段**: `<resource>`、`<position>`、`<transform>`、`<id>`/`<type>`/`<instantiate>` 均按 `chunk format.txt` 与 `chunk.cpp` 的解析路径填写，取值任意但合法（解析器只关心结构，不解释资源本体）。
 
 ## BW-10-01-01 派生痕迹
 
-- `outside_chunk_identifier(x,z,single_dir)`（`identifier.rs`）复刻 `chunk_format.hpp:21-54`：u16 回绕判三级前缀；测试钉死 (17,0)→`001xx000xx/sep/00110000o`、(4096,4096)→三级、(−4097,−4097)→`exxxexxx/…/efffefffo`、(−32768,32767)→`8xxx7xxx/…/80007fffo`。
+- `outside_chunk_identifier(x,z,single_dir)`（`identifier.rs`）复刻 `chunk_format.hpp:21-54`：u16 回绕判三级前缀；测试钉死 (17,0)→`001x000x/sep/00110000o`、(4096,4096)→三级 `1xxx1xxx/sep/10xx10xx/sep/100x100x/sep/…`（勘误 2026-11-24：三级分别 3/2/1 个字面 x，对齐 `chunk_format.hpp:35-47` 与 `asset_processor_script.cpp:916-926`）、(−4097,−4097)→`exxxexxx/sep/efxxefxx/sep/effxeffx/sep/efffefffo`、(−32768,32767)→`8xxx7xxx/sep/80xx7fxx/sep/800x7ffx/sep/80007fffo`。
 - `grid_from_chunk_name`（`identifier.rs`）复刻 `geometry_mapping.cpp:404-419`：只取末 9 字符 + `HexLookup`（双大小写、失败→None）；拒绝 `i` 尾/短名/非法 hex。
 - `outside_chunk_id_to_grid`（`identifier.rs`）复刻 `chunk_terrain.cpp:567-591`：8 字符、bit15 符号扩展、`charToHex` 仅数字+小写（大写→0）。
 - `GeometryMapping::from_settings`/`in_local_bounds`/`in_world_bounds`/`gather_chunks`（`mapping.rs`）复刻 `geometry_mapping.cpp:63-101/294-309/470-484`；`gather_internal_chunks` 复刻 `Util::gatherInternalChunks`（`geometry_mapping.cpp:422-447`），深度扫 `*i.chunk`（15 字符名）。
-- `Chunk::new`/`Chunk::load`/`load_include`（`chunk.rs`）复刻 `chunk.cpp:158-250/359-499/550-647`：室外块从网格派生 transform+bbox（含 `MIN/MAX_CHUNK_HEIGHT` ±10000）；室内块读 `<transform>`/`<boundingBox>`；`<include>` 经 resolver 递归展开；shell/首 model（无 shell 时）不计入对象集。
+- `Chunk::new`/`Chunk::load`/`load_include`（`chunk.rs`）复刻 `chunk.cpp:157-247/370-537/555-640`：室外块从网格派生 transform+bbox（含 `MIN/MAX_CHUNK_HEIGHT` ±10000）；室内块读 `<transform>`/`<boundingBox>`；`<include>` 经 resolver 递归展开；shell/首 model（无 shell 时）不计入对象集。
 
 ## BW-10-01-02 派生痕迹
 
 - `Portal::from_section`/`from_plane_points`/`from_parts`（`boundary.rs`）复刻 `chunk_boundary.cpp:358-595` 两个构造器：label/internal/permissive/chunk/point/uAxis 读取、`vAxis = normal × uAxis`、`origin = normal*d/|n|²`、`lcentre = uAxis*avg.x + vAxis*avg.y + origin`，以及 winding 检查（`testPlane` 法向与边界法向反向时就地 `reverse`）。
 - `PortalTarget` 复刻 `pChunk` 的特殊指针编码（`Portal::NOTHING/HEAVEN/EARTH/INVASIVE/EXTERN` = 0..4，`chunk_boundary.hpp:247-255`）；`has_chunk`/`is_connecting_to_special` 对应 `hasChunk`/`isConnectingToSpecial`。
 - `ChunkBoundary::from_section`（`chunk_boundary.cpp:59-104`）复刻 normal/d 读取（非单位法向归一化并把 d 同步缩放）与 portal 列表（earth→boundPortals_，其余→unboundPortals_）。
-- `create_boundaries`（`boundary.rs`）复刻 `createBoundaries` 的室外分支（`chunk.cpp:675-807`）：right/left/bottom/top/back/front 六个边界，plane/uAxis/points/邻居目标逐字转写（right=x=0→(x−1,z)，min 边→extern；left=x=gridSize→(x+1,z)，max 边→extern；back z=0→(x,z−1)；front z=gridSize→(x,z+1)；bottom→earth；top→heaven）。
+- `create_boundaries`（`boundary.rs`）复刻 `createBoundaries` 的室外分支（`chunk.cpp:695-806`）：right/left/bottom/top/back/front 六个边界，plane/uAxis/points/邻居目标逐字转写（right=x=0→(x−1,z)，min 边→extern；left=x=gridSize→(x+1,z)，max 边→extern；back z=0→(x,z−1)；front z=gridSize→(x,z+1)；bottom→earth；top→heaven）。
 - `create_boundaries_from_shell` 复刻室内分支（`chunk.cpp:808-850`）：shell（或旧式首个 `<model>`）的 `.visual`（后备 `.static.visual`）资源取 `<boundary>` 段；`createBoundarySections`（由三角形生成边界）属 visual 管线，未移植——登记。
 - `form_boundaries`（`chunk.cpp:856-908`）：`good = len ≥ 4`、零法向退化、`bounds_`/`joints_` 分类（unbound 非 internal→bound；仅 bound（earth/heaven）→joint+bound；无 portal→bound）。
 - 集成测试 `outside_chunk_boundaries_match_the_reference_grid` 钉死 (0,0)/(17,0)/(17,1) 的邻居目标、六个 plane/uAxis/vAxis/lcentre/points；`inside_chunk_boundaries_come_from_the_shell_visual` 经 `hut_shell.visual` 夹具验证室内边界、winding 反序修正、`inside` 投影语义与 joints/bounds 分类。
@@ -67,51 +66,63 @@
 - lib 单测补 `bind_back` 双 portal 只移首个、混合 joint 保留 extern 未绑定、`MAX_WORTHY_CHUNKS` 截断（>50 格扫描）。
 - 覆盖率（llvm-cov 0.9.1，`cargo llvm-cov -p chunk --summary-only`）: `space.rs` 行 97.85%、全 crate 行 98.62%（≥98% 纪律通过；剩余未覆盖行为控制流闭括号记录条目）。
 
-## BW-10-01-04 派生痕迹
+## BW-10-01-04 派生痕迹（卸载 Chunk 及场景对象）
 
-卸载面的参照是 `Chunk::unload` 与双向 `unbind` 三件套，源码行号以本版为准：
-
-| 移植 | 参照（`lib/chunk/`） | 行 |
-| --- | --- | --- |
-| `Chunk::unload` | `chunk.cpp` `Chunk::unload` | 914-980 |
-| `Chunk::unbind(bool)` 主体 | `chunk.cpp` | 1305-1458 |
-| `Chunk::unbind(Chunk*, bool)` 回臂 | `chunk.cpp` | 2083-2138 |
-| `ChunkSpace::unloadChunk` | `chunk_space.cpp` | 1262-1296 |
-| `ChunkSpace::unloadChunks`（全量/集合） | `chunk_space.cpp` | 1204-1222 / 1235-1246 |
-| `ChunkSpace::unloadChunkBeforeBinding` | `chunk_space.cpp` | 1145-1193 |
-| `removable_` 默认值 | `chunk.cpp` 构造器 | 190 |
-
-### 语义逐条
-
-- **`Chunk::unload`（914-980）**：bound 卫兵 ERROR_MSG + return；`!loaded_` 即 no-op；否则释放对象（dyno→homeless 商店、static 走 `delStaticItem`）、清 `bounds_`/`joints_`（顺带释放 `ChunkBoundaryPtr`）、删缓存、`loaded_ = false`。移植侧对象集是单一 `items` 列表（BW-10-01-01），释放即 `clear`；`bounds_`/`joints_`/`boundaries` 三者清空，`removable` 不动（参考里 `removable_` 由 `setRemovable` 独立管理，卸载不改它）。
-- **`Chunk::unbind(bool)`（1305-1458）** 逐句：
-  - 先删 `ChunkExitPortal` 静态对象（1319-1330）、`pSpace_->ignoreChunk(this)` + `focusCount_ = 0` + `updateCompleted()`（1332-1337）、清 `borrowers_`/`lenders_` 并逐个 `releaseItems`（1341-1406）——**这四步移植侧无对应对象，登记**。
-  - 边界主循环（1408-1452）：室内块的 heaven portal 自解绑（1420-1426）；`!hasChunk()` 跳过（1428-1429）；`cut` 时清目标——**室内块指向室外块 → `INVASIVE`，否则 `NULL`**（1434-1441）；`unbindPortal(i--)` 移回未绑列表（1443-1444）；然后通知邻居：`isOutsideChunk() && !pOnlineChunk->isOutsideChunk()` 时**恒 cut**（1447-1448，注释原文 "always cut off an exit portal"），否则透传 `cut`（1450）。
-  - 收尾 `notifyCachesOfBind(true)`（1455，移植侧登记）、`isBound_ = false`（1457）。
-- **回臂 `unbind(Chunk*, bool)`（2083-2138）**：在 `owner` 的 joints 里找**首个** `pChunk == requester` 的 bound portal（2091-2098）；`cut` 时清目标（室内 owner + 室外 requester → `INVASIVE`，2102-2103；否则 `NULL`，2105，注释 "note: bounds_ not updated"）、若 `pit->internal` 则 `joints_.erase` 并**直接 return**（2107-2121，portal 留在 bound 列表不动）；非 cut 或无 internal 则 `unbindPortal(index)` 移回未绑（2124-2126）后 return。**两条路都只动第一个匹配 portal**。找不到时 `ERROR_MSG("Chunk %s didn't find reverse portal to %s")`（2136-2137）——移植侧保持静默 no-op（登记，见下）。
-- **`ChunkSpace::unloadChunk`（1262-1296）**：`!removable()` → false（1269-1273）；`!loaded() || loading()` → false（1275-1282，同步装载器无 `loading` 态，登记）；`isBound()` 则 `unbind(false)`（1284-1290）；再 `unload()`（1292-1293）；return true。**块仍留在 map 里**（appointed but unloaded）——这是「查询结果符合基线」的关键：卸载不删映射条目。
-- **`unloadChunks`（1204-1222 / 1235-1246）**：逐块调 `unloadChunk`，忽略卸载失败，移植侧返回成功的标识列表（`Vec<String>`，map 序）。
-
-### 测试
-
-lib 侧（`space.rs`）新增 8 项，集成侧不动：
-
-1. `unload_chunk_unbinds_then_releases_and_a_rebind_restores_the_baseline` — 卸载后 items/joints/bounds/boundaries 全空、`is_loaded`/`is_bound` 双假、块仍在 map；重新 `load`+`bind` 恢复原基线（双向 portal 各自归位）。
-2. `a_cut_unbind_clears_the_targets_so_nothing_rebinds` — cut 后两侧目标皆 `Nothing`，故「重绑连不上」；同时钉死回臂**只清目标不移 portal**（2099-2105 vs 2124-2126）。
-3. `an_inside_chunk_cutting_free_goes_invasive_the_outside_goes_null` — 室内解绑指向室外邻居：自己那侧 `INVASIVE`（1437-1438），邻居回链仍 bound 但目标清空（2105）。
-4. `an_outside_chunk_always_cuts_an_exit_portal_into_an_inside_neighbour` — 室外块非 cut 解绑也强制 cut 回臂（1447-1450），室内 owner 的 bound 回链目标变 `INVASIVE`（2102-2103）；室外自己那侧非 cut，目标保名。
-5. `a_heavenly_portal_unbinds_only_from_an_inside_chunk` — heaven 自解绑（1420-1426）；室外块的 heaven 无 chunk、保持 bound。
-6. `a_joint_keeps_the_portals_unbind_does_not_release` — 同一 joint 的 earth portal 生而绑定、unbind 不动它，只 heaven 那支移回（1414-1451 的「只动决定释放的 portal」语义）。
-7. `a_cut_internal_back_link_erases_the_joint` — 回臂 internal 分支：joint 从 `joints` 消失而 portal 留在 bound（2107-2121）。
-8. `a_missing_neighbour_is_a_silent_no_op_on_both_arms` — 未知块/无回链 portal 两条路静默返回。
-
-### 登记边界（本项）
-
-- **四个无对应对象的前置步骤**（`Chunk::unbind` 1319-1406）：exit portal 静态对象删除、`ignoreChunk` 焦点网格逐出、`borrowers_`/`lenders_` 归还。移植侧无这些对象，只登记不移植；`unloadChunkBeforeBinding` 的 stub chunk 删除（1160-1186）同理。
-- **`ERROR_MSG` 降级为静默**：回臂找不到 reverse portal 时参考打 ERROR_MSG（2136-2137），移植侧返回前无声——测试 8 钉死两条路不 panic、不改状态。
-- **`notifyCachesOfBind` / `updateCompleted`**（1455、1337）无移植侧缓存与完成态，登记。
-- **`loading()` 卫兵**（1279）：同步装载器没有装载中状态，`unload_chunk` 只判 `removable`/`is_loaded`。
-- `removable` 字段为移植侧新增（对应 `chunk.cpp:190` 的 `removable_(true)` 默认值与 `chunk_space.cpp:1269` 的卫兵）。
+- **验收**: 查询结果和资源释放符合基线（todo.md 行 1462）。
+- `Chunk::removable`（`chunk.rs`，`removable_` 默认 true，`chunk.cpp:190`）：
+  上闸/锁定块对卸载趟拒绝（`chunk_manager.cpp:2241`）；`Chunk::new` 默认置 true。
+- `ChunkSpace::unbind`（`chunk.cpp:1292-1458` `Chunk::unbind(bool cut)`）：
+  逐 joint 边界的 **bound** portal 活下标遍历（摘除后同下标继续，幸存 portal 才前移）：
+  ① 室内块 heaven → 自解绑；② 其余非 chunk 目标（室外 heaven/earth/extern/invasive）
+  一律 `!p.hasChunk()` continue **保持绑定**——室外块 heaven 在 unbind 后仍 bound
+  是基线怪癖，测试钉死；③ chunk 连接：cut 时目标重写（`!isOutside && pChunk->isOutside`
+  → INVASIVE 壳提示，否则 NULL/Nothing），`unbindPortal` 摘除，再递归
+  `pOnlineChunk->unbind(this, cut)`，且 **室外块切室内邻居时强制 cut=true**；
+  终置 `is_bound=false`。缺失块返 false。
+- `unbind_portal`（`chunk_boundary.cpp:185-191`）：摘除的 portal **压到 unbound 列表尾部**
+  ——位置即后续 bind 的首配位，lib 单测钉死 `[extern, …]` 尾插序。
+- `unbind_back`（`chunk.cpp:2083-2136` `Chunk::unbind(Chunk*, bool)`）：反向链只找
+  joints 边界里**首个**指向 requester 的 bound portal；cut 时目标重写同上 + **internal 特例**
+  ——`if (pit->internal)` 整条边界**逐出 joints**（`joints_.erase(bit)`）而 portal
+  原地保持 bound（边界成孤儿但列表不动），lib 单测钉死两腿分岔；
+  找不到/缺 owner 静默（参照为 ERROR——port 经公共面链接恒对称，同 01-03 bind_back 缺 owner 先例，登记）。
+- `unload_chunk`（`chunk.cpp:914-984` `Chunk::unload`）：**先查 bound**（照旧拒绝，
+  参照 ERROR→端口返 false）、`!loaded` 静默无操作；释放=清 items/`bounds_`/`joints_`，
+  **boundaries_ 不清**（块仍被空间任命，重载经 `form_boundaries` 重形边界）；
+  `loaded_=false`。绑定中卸载与未装载卸载两拒绝腿集成测试钉死。
+- `unload_farthest`（`chunk_manager.cpp:2236-2366` scan() 的卸载切片）：
+  相机**格角** `(gridToPoint(cameraGridX), 0, gridToPoint(cameraGridY))`（非相机点）；
+  每趟至多 `MAX_UNLOAD_CHUNKS=1`（非编辑器档，`chunk_manager.cpp:92-95`）；
+  候选门序：bound+removable → 原点平面距离² `≤ minUnloadPath²` 跳过（滞回）→
+  室内块被**已装载**覆盖室外块罩住则跳过（`outsideChunkIdentifier(pos)` checkBounds=true 腿）→
+  `AABB::intersects(cameraGridPos, CAMERA_NEARBY_WIRED_BIAS=20)`（`boundbox.ipp:313-317`
+  逐轴 `v ≥ min−bias && v < max+bias` 半开）跳过；中选者 `unbind(false)+unload`，
+  **块留在 map**（仍由 chunk space 任命）。室内壳被未装载覆盖块罩住时不拦——独立单测钉死。
+  - **登记分歧**: ① 参考 load 与 unload 同在 `scan()` 一趟，port 保持 01-03 的同步双面
+  （`scan` 管装载候选、`unload_farthest` 管卸载候选），测试分别驱动；
+  ② 参考 `ChunkMap` 迭代桶内逆序，port 钉 BTreeMap 标识序（同 01-03 tie-break 类）；
+  ③ 重叠壳在装检查（`ChunkOverlappers`，BW-10-02 场景适配面）trivially 通过；
+  ④ 参照 `Chunk::unbind` 找不到反向 portal 走 ERROR，port 静默（见上）。
+  ⑤ 强制 cut 递归腿（室外→室内 `(true, Some(false)) => true`）在当前公共面不可达
+  （室外块边界永不指向室内块——invasive 解析归 BW-10-02），space.rs 该行未覆盖，
+  余 644/647=99.54%。
+- 集成测试 `unloading_farthest_releases_chunks_and_a_reload_rebinds`：
+  四绑定块 + 相机 (50,0,50)/滞回 50 → 首趟卸 `00000001o`（资源清空、boundaries 六条
+  与 heaven 绑定保留、留 map、`find_chunk_by_grid` 仍命中）、邻居 `00000000o` b5/
+  `00010001o` b0 双向退回 unbound 且目标原样；次趟卸 `00010000o`；滞回放宽 200 后空趟；
+  重载+重绑恢复双向连接、对象集回归、`bind_order` 追加至 5。
+  `unbind_cut_marks_inside_shells_invasive_and_flattens_outside_links`：室内块 cut=true
+  → +x 出口 INVASIVE、heaven 退绑、earth 保持；室外块 cut=true → 两侧 chunk portal
+  扁平化 Nothing（heaven/earth 保持 bound）、未绑定 portal 不改写、邻居仍 bound。
+- lib 单测：`unbind_portal` 尾插序、`unbind_back` internal/normal/invasive 三腿 +
+  静默无操作、滞回/偏置/覆盖/可移除/单趟上限、`intersects_with_bias` 半开边界、
+  未覆盖室内壳随趟卸载。
+- 覆盖率（llvm-cov 0.9.1，`cargo clean -p chunk` 后逐行 max 合并）: `space.rs`
+  644/647=99.54%、`chunk.rs` 237/240=98.75%、`boundary.rs` 454/456=99.56%、
+  `identifier.rs` 100%、`mapping.rs` 118/119=99.16%——≥98% 纪律全过。
+  `cargo test -p chunk` 29 lib + 11 集成全绿；`cargo test --workspace`
+  **4729 passed / 0 failed（exit 0）**；fmt 包级 `--check` 0 漂移；clippy
+  `-p chunk --lib --tests` 0 chunk 侧告警。
 
 ## BW-10-01-05 派生痕迹
 

@@ -466,6 +466,18 @@ impl WorldTriangle {
         self.flags = new_flags;
     }
 
+    /// `WorldTriangle::bounce` (`worldtri.cpp:504-512`): reflect the
+    /// velocity off the triangle's plane with the given restitution — the
+    /// normal component is scaled by `-(1 + elasticity)`, the tangential
+    /// component is kept.
+    pub fn bounce(&self, v: &mut Vector3, elasticity: f32) {
+        let mut normal = self.normal();
+        normal.normalise();
+        let proj = normal.dot_product(v);
+        let scale = (1.0 + elasticity) * proj;
+        *v = *v - normal * scale;
+    }
+
     /// `collisionFlags(flags)` — the low byte (`worldtri.hpp:81-82`).
     pub fn collision_flags(&self) -> u16 {
         self.flags & TRIANGLE_COLLISIONFLAG_MASK
@@ -845,5 +857,28 @@ mod tests {
         let a = WorldTriangle::new(v(0.0, 0.0, 0.0), v(10.0, 0.0, 0.0), v(0.0, 10.0, 0.0), 0);
         let b = WorldTriangle::new(v(-2.0, -1.0, 1.0), v(-4.0, -3.0, 1.0), v(1.0, -4.0, 1.0), 0);
         assert!(!a.intersects_swept(&b, v(0.0, 0.0, -1.5)));
+    }
+
+    /// `bounce` (`worldtri.cpp:504-512`): restitution 1 reflects the
+    /// normal component exactly; restitution 0.3 keeps 30% of the
+    /// reflected normal component; the tangential component is untouched.
+    #[test]
+    fn bounce_reflects_the_velocity_about_the_plane() {
+        // An upward-facing floor: normal() = (v2-v0) x (v2-v1) = +y.
+        let floor = WorldTriangle::new(v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 0.0, -1.0), 0);
+        assert!((floor.normal().y - 1.0).abs() < 1e-5, "upward winding");
+
+        // Falling straight down, perfectly elastic: straight back up.
+        let mut velocity = v(0.0, -2.0, 0.0);
+        floor.bounce(&mut velocity, 1.0);
+        assert!(velocity.x.abs() < 1e-6 && velocity.z.abs() < 1e-6);
+        assert!((velocity.y - 2.0).abs() < 1e-5, "y = {}", velocity.y);
+
+        // A skew approach: the tangential part survives, the normal part
+        // is reflected and damped: (1, -2, 0) -> (1, 2*0.3, 0).
+        let mut velocity = v(1.0, -2.0, 0.0);
+        floor.bounce(&mut velocity, 0.3);
+        assert!((velocity.x - 1.0).abs() < 1e-6);
+        assert!((velocity.y - 0.6).abs() < 1e-5, "y = {}", velocity.y);
     }
 }

@@ -1,0 +1,81 @@
+name: Load smoke
+
+# BW-17-03-05 — the PR smoke gate: the saved load scenarios run at a low
+# load, on every pull request.
+#
+# The contract is `ci/load.sh`'s: a scenario is an executable under
+# `tests/load/scenarios/`, it runs under `LOAD_DURATION` (wall budget) and
+# `LOAD_CLIENTS` (concurrency) and prints `metric<TAB>value` lines. The
+# knobs the harness is given here are the low ones, so the nightly-scale
+# saved scenarios (thousands of bots, minutes long) run at a scale a PR
+# runner affords.
+#
+# A failure re-runs the same way: the runs are driven by fixed seeds and
+# `run_smoke` refuses to report a scenario whose two passes disagree, so a
+# red run reproduces its own numbers; `workflow_dispatch` re-runs it on
+# demand without a push, and the records are uploaded even when the lane is
+# red, so a failed run is diagnosable and comparable to its retry.
+#
+# This workflow publishes nothing and tags nothing — results are run
+# artifacts. Versioned reports and releases stay user-triggered.
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      clients:
+        description: Concurrent scenario clients (LOAD_CLIENTS)
+        type: string
+        default: '2'
+      duration:
+        description: Wall budget per scenario in seconds (LOAD_DURATION)
+        type: string
+        default: '20'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: load-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  load-smoke:
+    name: PR short load scenarios
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      # The driver the scenarios exec, built once: the scenarios are cheap
+      # to repeat and only the first pays the build.
+      - name: Build the load driver
+        run: cargo build -p bots
+
+      # Before any scenario runs, prove the harness records a result, bounds
+      # a runaway and does not pass a bare tree: a planted scenario that
+      # never lights up would make this gate vacuous.
+      - name: Check the harness behaves
+        run: ci/load.sh self-test
+
+      - name: Run the low-load scenarios
+        env:
+          CI_LOAD_CLIENTS: ${{ inputs.clients || '2' }}
+          CI_LOAD_DURATION: ${{ inputs.duration || '20' }}
+        run: ci/load.sh
+
+      # Uploaded whether or not the lane is green: the records are what a
+      # retry compares against.
+      - name: Bundle results
+        if: always()
+        run: ci/archive-results.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ci-results-load-smoke-${{ github.run_id }}
+          path: ci-results/
+          retention-days: 30
+          if-no-files-found: warn

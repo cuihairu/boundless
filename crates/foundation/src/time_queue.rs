@@ -317,6 +317,12 @@ fn make_heap<TS: Stamp>(queue: &mut [Rc<RefCell<Node<TS>>>]) {
 // Section: the queue
 // ---------------------------------------------------------------------------
 
+impl<TS> fmt::Debug for TimeQueueT<TS> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("TimeQueueT").finish_non_exhaustive()
+    }
+}
+
 impl<TS: Stamp> Default for TimeQueueT<TS> {
     fn default() -> Self {
         Self::new()

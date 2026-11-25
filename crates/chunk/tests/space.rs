@@ -91,7 +91,7 @@ fn gather_chunks_enumerates_every_cell_plus_inside_chunks() {
     assert!(chunks.contains("00000000o"));
     assert!(chunks.contains("00010001o"));
     // The cell at grid (17, 0) trips the 4-bit prefix level.
-    assert!(chunks.contains("001xx000xx/sep/00110000o"));
+    assert!(chunks.contains("001x000x/sep/00110000o"));
     // The inside chunk is discovered by the directory scan.
     assert!(chunks.contains("00000000i"));
 
@@ -121,9 +121,9 @@ fn chunk_files_load_into_the_same_objects() {
 
     // The prefixed far cell resolves to grid (17, 0) with its own objects.
     let far = load_chunk_file(
-        &root.join("001xx000xx/sep/00110000o.chunk"),
+        &root.join("001x000x/sep/00110000o.chunk"),
         &mapping,
-        "001xx000xx/sep/00110000o",
+        "001x000x/sep/00110000o",
     );
     assert_eq!((far.x, far.z), (17, 0));
     assert_eq!(far.items.len(), 2);
@@ -216,24 +216,24 @@ fn outside_chunk_boundaries_match_the_reference_grid() {
 
     // Grid (17, 0): the far edge and the min-z edge; the prefixed cells name
     // their neighbours with the hashed subdirectory prefix.
-    let far = chunk::create_boundaries("001xx000xx/sep/00110000o", &mapping);
+    let far = chunk::create_boundaries("001x000x/sep/00110000o", &mapping);
     let far_targets: Vec<PortalTarget> =
         far.iter().map(|b| sole_portal(b).target.clone()).collect();
     assert_eq!(
         far_targets,
         vec![
             // Grid 16 also trips the 4-bit prefix level (16 >= 16).
-            PortalTarget::Chunk("001xx000xx/sep/00100000o".into()),
+            PortalTarget::Chunk("001x000x/sep/00100000o".into()),
             PortalTarget::Extern,
             PortalTarget::Earth,
             PortalTarget::Heaven,
             PortalTarget::Extern,
-            PortalTarget::Chunk("001xx000xx/sep/00110001o".into()),
+            PortalTarget::Chunk("001x000x/sep/00110001o".into()),
         ]
     );
 
     // Grid (17, 1): the max-z edge is extern on the front face.
-    let corner = chunk::create_boundaries("001xx001xx/sep/00110001o", &mapping);
+    let corner = chunk::create_boundaries("001x001x/sep/00110001o", &mapping);
     let corner_targets: Vec<PortalTarget> = corner
         .iter()
         .map(|b| sole_portal(b).target.clone())
@@ -242,11 +242,11 @@ fn outside_chunk_boundaries_match_the_reference_grid() {
         corner_targets,
         vec![
             // right -> grid (16, 1), back -> grid (17, 0).
-            PortalTarget::Chunk("001xx000xx/sep/00100001o".into()),
+            PortalTarget::Chunk("001x000x/sep/00100001o".into()),
             PortalTarget::Extern,
             PortalTarget::Earth,
             PortalTarget::Heaven,
-            PortalTarget::Chunk("001xx000xx/sep/00110000o".into()),
+            PortalTarget::Chunk("001x000x/sep/00110000o".into()),
             PortalTarget::Extern,
         ]
     );

@@ -666,4 +666,86 @@ mod tests {
         assert!(!controllers.find(id).unwrap().is_running());
         assert!(controllers.events().is_empty());
     }
+
+    /// The controller's own accessors (`controller.hpp`): the id it was
+    /// given, its type, name, user arg and domain; and the domain bits.
+    #[test]
+    fn a_controller_reports_its_own_identity() {
+        let types = ControllerTypes::new();
+        let mut controllers = Controllers::new(100);
+        let mut c = Controller::new(9, "Probe", Some("ProbeClass"), Domain::GHOST_AND_REAL);
+        assert_eq!(c.id(), 0, "0 until added");
+        let id = controllers.add_controller(&mut c, 77, &types);
+
+        let found = controllers.find(id).unwrap();
+        assert_eq!(found.id(), id);
+        assert_eq!(found.controller_type(), 9);
+        assert_eq!(found.name(), "Probe");
+        assert_eq!(found.user_arg(), 77);
+        assert_eq!(found.domain(), Domain::GHOST_AND_REAL);
+        assert!(found.domain().has_ghost() && found.domain().has_real());
+        assert_eq!(
+            Controller::new(1, "Real", None, Domain::REAL).domain(),
+            Domain::REAL
+        );
+        assert!(!Domain::REAL.has_ghost());
+        assert!(!Domain::GHOST.has_real());
+    }
+
+    /// The length predicates on every container: empty when empty, and
+    /// non-empty after a registration (`controller.hpp`,
+    /// `entity_extra.hpp`).
+    #[test]
+    fn the_length_predicates_track_the_containers() {
+        let mut types = ControllerTypes::new();
+        let mut controllers = Controllers::new(100);
+        let mut registry = ExtraRegistry::new();
+        let mut extras = EntityExtras::with_count(1);
+
+        assert!(types.is_empty());
+        assert!(controllers.is_empty());
+        assert!(registry.is_empty());
+        assert!(extras.is_empty());
+
+        types.register_exclusive("Movement");
+        let mut c = plain();
+        controllers.add_controller(&mut c, 0, &types);
+        registry.register("Passenger");
+        extras.touch(0);
+
+        assert!(!types.is_empty());
+        assert!(!controllers.is_empty());
+        assert!(!registry.is_empty());
+        assert!(!extras.is_empty());
+        assert_eq!(types.len(), 1);
+        assert_eq!(controllers.len(), 1);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(extras.len(), 1);
+    }
+
+    /// `Instance::clear` on a slot index that has no registered type
+    /// reports nothing released (`entity_extra.hpp`).
+    #[test]
+    fn clearing_an_unregistered_extra_slot_releases_nothing() {
+        let mut extras = EntityExtras::with_count(1);
+        assert!(!extras.clear(5), "out of range");
+        assert!(!extras.exists(5));
+    }
+
+    /// `clear_all` releases every attached instance at once (the entity
+    /// destructor's `extras_` teardown).
+    #[test]
+    fn clear_all_releases_every_instance() {
+        let mut registry = ExtraRegistry::new();
+        let a = registry.register("Passenger");
+        let b = registry.register("Combat");
+        let mut extras = EntityExtras::with_count(registry.len());
+        extras.touch(a);
+        extras.touch(b);
+        assert_eq!(extras.len(), 2);
+
+        extras.clear_all();
+        assert!(extras.is_empty());
+        assert!(!extras.exists(a) && !extras.exists(b));
+    }
 }

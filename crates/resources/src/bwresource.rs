@@ -15,6 +15,7 @@
 //! - `resolveToAbsolutePath` appends `'/'` to resolved directories.
 
 use std::cell::RefCell;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
 
@@ -894,10 +895,20 @@ pub fn current_uid() -> u32 {
 fn current_uid_from(env_uid: Option<&str>) -> u32 {
     match env_uid {
         Some(raw) => atoi_or_zero(raw) as u32,
-        None => std::fs::metadata("/proc/self")
-            .map(|meta| meta.uid())
-            .unwrap_or(0),
+        None => proc_self_uid().unwrap_or(0),
     }
+}
+
+/// The `/proc/self` owner probe. Ends without a procfs have no entry to
+/// read, which lands in the same `unwrap_or(0)` the reference tolerates.
+#[cfg(unix)]
+fn proc_self_uid() -> Option<u32> {
+    std::fs::metadata("/proc/self").map(|meta| meta.uid()).ok()
+}
+
+#[cfg(not(unix))]
+fn proc_self_uid() -> Option<u32> {
+    None
 }
 
 /// The home directory `/etc/passwd` lists for `uid` (the reference asks

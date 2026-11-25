@@ -39,6 +39,8 @@ const TAG_RULE: &str = "rule";
 /// One compiled `<rule>`: its full-match pattern and its merged content.
 struct RuleEntry {
     pattern: regex::Regex,
+    /// The uncompiled pattern text, kept for [`HierarchicalConfig::root_section`].
+    pattern_str: String,
     content: DataSection,
 }
 
@@ -114,6 +116,35 @@ impl HierarchicalConfig {
         populate_configuration(&mut config, &self.root, path);
         config
     }
+
+    /// `getRoot()`: the whole tree as a section — `<rule>` children (their
+    /// merged content plus the pattern re-attached as an attribute, exactly
+    /// where the reference's `newSection("pattern")` + `isAttribute(true)`
+    /// puts it) and `<directory path="...">` children.
+    pub fn root_section(&self) -> DataSection {
+        let mut root = DataSection::new("");
+        node_to_section(&self.root, &mut root);
+        root
+    }
+}
+
+/// The reference's populated `pRootSection_`: rules in walk order, then
+/// directories.
+fn node_to_section(node: &ConfigNode, out: &mut DataSection) {
+    for rule in &node.rules {
+        let section = out.add_child(TAG_RULE);
+        *section = rule.content.clone();
+        let pattern = section.add_child(TAG_PATTERN);
+        pattern.set_attribute(true);
+        pattern.set_string(&rule.pattern_str);
+    }
+    for child in &node.children {
+        let directory = out.add_child(TAG_DIRECTORY);
+        let path = directory.add_child(TAG_PATH);
+        path.set_attribute(true);
+        path.set_string(&child.directory);
+        node_to_section(child, directory);
+    }
 }
 
 /// `populateChildren`: scan `directory` for `filename`, add its `<rule>`
@@ -188,6 +219,7 @@ fn populate_children(
             };
             node.rules.push(RuleEntry {
                 pattern: compiled,
+                pattern_str: pattern_str.to_string(),
                 content,
             });
         }
@@ -249,6 +281,7 @@ fn populate_node_from_section(node: &mut ConfigNode, section: &DataSection) {
                 if let Ok(compiled) = compile_full_match(pattern_str) {
                     node.rules.push(RuleEntry {
                         pattern: compiled,
+                        pattern_str: pattern_str.to_string(),
                         content,
                     });
                 }

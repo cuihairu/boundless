@@ -25,7 +25,7 @@ use crate::record::EntityRecord;
 /// `lib/db_storage/entity_key.hpp` `EntityKey`. The reference resolves by
 /// `name` when `dbID == 0`; the name leg is `getDatabaseIDFromName`, which
 /// joins with the lookup item (BW-09-01-04).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntityKey {
     /// `EntityKey::typeID`.
     pub type_id: EntityTypeId,

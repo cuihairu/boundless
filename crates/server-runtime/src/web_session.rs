@@ -140,6 +140,13 @@ impl WebSession {
     pub fn take_flash(&mut self, key: &str) -> Option<Vec<String>> {
         self.flash.remove(key)
     }
+
+    /// PHP's `$_SESSION[key][] = message` append idiom
+    /// (`Page.php:160`, `Characters.php:38`): a message joins whatever
+    /// the variable already carries.
+    pub fn append_flash(&mut self, key: &str, message: String) {
+        self.flash.entry(key.to_string()).or_default().push(message);
+    }
 }
 
 /// The `Authenticator` / `BWAuthenticator` method surface. Stateless -
@@ -170,14 +177,14 @@ impl WebAuthenticator {
             .log_on(username, pass)
             .map_err(|err| AuthError::DbLogOn(err.to_string()))?;
 
-        let entity_path = format!("entities_by_id/{entity_type}/{entity_id}");
         session.set_session_token(SessionToken {
             ip_address: remote_addr.to_string(),
             last_activity: now,
             username: username.to_string(),
-            entity_type: Some(entity_type),
-            entity_path: Some(entity_path),
+            entity_type: None,
+            entity_path: None,
         });
+        Self::set_entity_details(session, &entity_type, entity_id);
         Ok(())
     }
 
@@ -233,6 +240,18 @@ impl WebAuthenticator {
             .token
             .as_ref()
             .and_then(|token| token.entity_path.as_deref())
+    }
+
+    /// `BWAuthenticator::setEntityDetails`
+    /// (`BWAuthenticator.php:15-20`): stamp the token with the entity
+    /// type and its `entities_by_id` path. Without a token there is
+    /// nothing to stamp - the same no-op [`WebAuthenticator::update_last_activity`]
+    /// takes.
+    pub fn set_entity_details(session: &mut WebSession, entity_type: &str, entity_id: u32) {
+        if let Some(token) = session.token.as_mut() {
+            token.entity_type = Some(entity_type.to_string());
+            token.entity_path = Some(format!("entities_by_id/{entity_type}/{entity_id}"));
+        }
     }
 
     /// `AuthenticatedPage::backToLogin`: invalidate and build the login
@@ -457,5 +476,36 @@ mod tests {
         );
         assert_eq!(session.take_flash("errorMsgs"), None, "cleared after read");
         assert_eq!(session.take_flash("statusMsgs"), None);
+    }
+
+    #[test]
+    fn appended_flash_joins_what_the_variable_already_carries() {
+        // PHP's `$_SESSION['err_msgs'][] = …` appends; a fresh variable
+        // grows from empty.
+        let mut session = WebSession::new();
+        session.append_flash("err_msgs", "first".to_string());
+        session.append_flash("err_msgs", "second".to_string());
+        assert_eq!(
+            session.take_flash("err_msgs"),
+            Some(vec!["first".to_string(), "second".to_string()])
+        );
+    }
+
+    #[test]
+    fn set_entity_details_restamps_the_token() {
+        // Characters.php's choose path re-points the session at the
+        // chosen avatar (BWAuthenticator::setEntityDetails).
+        let (mut session, _) = logged_in_session();
+        WebAuthenticator::set_entity_details(&mut session, "Avatar", 42);
+        assert_eq!(WebAuthenticator::entity_type(&session), Some("Avatar"));
+        assert_eq!(
+            WebAuthenticator::entity_path(&session),
+            Some("entities_by_id/Avatar/42")
+        );
+
+        // Without a token there is nothing to stamp: no panic, no state.
+        let mut session = WebSession::new();
+        WebAuthenticator::set_entity_details(&mut session, "Avatar", 42);
+        assert!(!session.does_auth_token_exist());
     }
 }

@@ -25,6 +25,10 @@ use crate::packet::Packet;
 use crate::packet::flags;
 use crate::packet_filter::PacketFilter;
 use crate::packet_receiver::{ErrorReporter, PacketReceiver, PacketSink, strerror};
+use crate::packet_sender::{
+    PacketLossParameters, RandStream, Reschedule, SendingStats, UDP_OVERHEAD, reschedule_decision,
+    schedule_rescheduled_packet,
+};
 use crate::poller::EventPoller;
 use crate::rate_limiter::RateLimiter;
 use crate::request_manager::RequestManager;
@@ -107,6 +111,19 @@ pub struct NetworkInterface {
     /// packet_receiver.cpp:493). `None` until one is installed; the BaseApp
     /// installs its `InitialConnectionFilter` here (BW-02-04-03).
     off_channel_filter: RefCell<Option<Rc<dyn PacketFilter>>>,
+    /// `sendingStats_` (network_interface.hpp): the outbound counters the
+    /// inline send path keeps.
+    sending_stats: RefCell<SendingStats>,
+    /// `pPacketLossParameters_` (network_interface.hpp:288): the
+    /// artificial-loss and latency knobs the send path consults
+    /// (BW-12-03-04).
+    loss: RefCell<PacketLossParameters>,
+    /// The interface's own `isDroppingNextSend_`, the one-shot the
+    /// `dropNextSend` entries set.
+    is_dropping_next_send: Cell<bool>,
+    /// The interface's own draw of the reference's `rand()` stream, for
+    /// the loss and latency decisions.
+    rand: RandStream,
 }
 
 impl NetworkInterface {
@@ -159,6 +176,10 @@ impl NetworkInterface {
             should_use_checksums: Cell::new(false),
             rate_limiter,
             off_channel_filter: RefCell::new(None),
+            sending_stats: RefCell::new(SendingStats::default()),
+            loss: RefCell::new(PacketLossParameters::new()),
+            is_dropping_next_send: Cell::new(false),
+            rand: RandStream::new(),
         };
         let shared = Rc::new(interface);
         *shared.self_weak.borrow_mut() = Rc::downgrade(&shared);
@@ -566,8 +587,6 @@ impl NetworkInterface {
         }
     }
 
-    /// The `PacketReceiver::processPacket` routing target: on-channel
-    /// packets with a live channel go to that channel's receive dispatch,
     /// `rateLimitPeriod()` (network_interface.cpp:929): the configured
     /// rate-limiting period in seconds. Zero means no rate limiting.
     pub fn rate_limit_period(&self) -> f32 {
@@ -685,9 +704,10 @@ impl NetworkInterface {
     /// (network_interface.cpp:809, packet_sender.cpp:61): finalise the
     /// bundle, fill the footers, and hand each packet to the socket. The
     /// channel is the bundle's owner (reliable, on-channel); off-channel
-    /// bundles pass `None`. The once-off resend timer, artificial-loss
-    /// knobs and retries of the reference sender are out of scope: the
-    /// port sends each datagram once.
+    /// bundles pass `None`. Each packet runs the reference's
+    /// `rescheduleSend` decision first (BW-12-03-04): artificial loss
+    /// drops it, artificial latency holds it for a once-off timer, and
+    /// only a clear packet reaches the filter and the socket.
     pub fn send(&self, addr: &Address, bundle: &mut UdpBundle, channel: Option<&ChannelPtr>) {
         if !bundle.is_finalised() {
             bundle.finalise();
@@ -712,6 +732,9 @@ impl NetworkInterface {
             if Some(index) == first_overflow {
                 break;
             }
+            if self.reschedule_packet(addr, bundle.packet(index), channel) {
+                continue;
+            }
             match filter.as_ref() {
                 Some(filter) => filter.send(addr, bundle.packet_mut(index), &|addr, packet| {
                     self.send_packet(addr, packet)
@@ -721,13 +744,125 @@ impl NetworkInterface {
         }
     }
 
+    /// `PacketSender::rescheduleSend` (packet_sender.cpp:158) on the
+    /// interface's own knobs: `true` when the packet was dropped (counted
+    /// as sent) or held for the once-off delay timer, `false` when it may
+    /// go out now.
+    fn reschedule_packet(
+        &self,
+        addr: &Address,
+        packet: &Packet,
+        channel: Option<&ChannelPtr>,
+    ) -> bool {
+        let loss = self.loss.borrow();
+        let forced = self.is_dropping_next_send.replace(false);
+        let decision = reschedule_decision(&loss, &self.rand, forced);
+        drop(loss);
+
+        match decision {
+            Reschedule::Dropped => {
+                // The reference counts a dropped packet as sent
+                // (packet_sender.cpp:194).
+                let mut stats = self.sending_stats.borrow_mut();
+                stats.num_bytes_sent += packet.total_size() as u64 + UDP_OVERHEAD as u64;
+                stats.num_packets_sent += 1;
+                true
+            }
+            Reschedule::Delayed { latency_millis } => match self.self_rc() {
+                Some(me) => {
+                    schedule_rescheduled_packet(
+                        &me,
+                        *addr,
+                        Rc::new(packet.clone()),
+                        channel.cloned(),
+                        latency_millis,
+                    );
+                    true
+                }
+                // The reference's timer holds a plain reference to its
+                // interface; the port needs an owning handle, so without
+                // one the packet goes out now rather than never.
+                None => false,
+            },
+            Reschedule::Now => false,
+        }
+    }
+
+    /// `NetworkInterface::setLossRatio` (network_interface.cpp:866): the
+    /// artificial-drop ratio, 0..1.
+    pub fn set_loss_ratio(&self, loss_ratio: f32) {
+        self.loss.borrow_mut().set_loss_ratio(loss_ratio);
+    }
+
+    /// `NetworkInterface::setLatency` (network_interface.cpp:854): the
+    /// artificial-latency window, in seconds.
+    pub fn set_latency(&self, latency_min: f32, latency_max: f32) {
+        let mut loss = self.loss.borrow_mut();
+        loss.set_min_latency(latency_min);
+        loss.set_max_latency(latency_max);
+    }
+
+    /// `NetworkInterface::dropNextSend` (network_interface.cpp:875): the
+    /// next packet this interface would send is counted and dropped,
+    /// exactly once.
+    pub fn drop_next_send(&self) {
+        self.is_dropping_next_send.set(true);
+    }
+
+    /// `NetworkInterface::hasArtificialLossOrLatency`
+    /// (network_interface.cpp:1046): whether any knob is live.
+    pub fn has_artificial_loss_or_latency(&self) -> bool {
+        self.loss.borrow().has_artificial_loss_or_latency()
+    }
+
+    /// `pPacketLossParameters_`, read-only: what
+    /// `PacketLossParameters::apply` pushed and the send path consults.
+    pub fn packet_loss_parameters(&self) -> std::cell::Ref<'_, PacketLossParameters> {
+        self.loss.borrow()
+    }
+
+    /// `sendingStats_`, read-only: the inline send path's counters.
+    pub fn sending_stats(&self) -> std::cell::Ref<'_, SendingStats> {
+        self.sending_stats.borrow()
+    }
+
+    /// `PacketSender::sendRescheduledPacket` (packet_sender.cpp:241) on
+    /// the interface: the owning channel's filter, when fitted, gets the
+    /// packet before the physical send; without one it goes straight out.
+    /// The [`RescheduledSender`] timer lands here.
+    pub(crate) fn send_rescheduled_packet(
+        &self,
+        addr: &Address,
+        packet: &std::rc::Rc<Packet>,
+        channel: Option<&ChannelPtr>,
+    ) {
+        let filter = channel.and_then(|c| c.borrow().p_filter());
+        match filter {
+            Some(filter) => {
+                let mut owned = packet.as_ref().clone();
+                filter.send(addr, &mut owned, &|addr, packet| {
+                    self.send_packet(addr, packet)
+                });
+            }
+            None => self.send_packet(addr, packet),
+        }
+    }
+
     /// `PacketSender::sendPacket`'s physical arm: the datagram goes out on
-    /// this interface's socket. No result is trusted, as the reference's
-    /// -- the packet may never arrive.
+    /// this interface's socket, counted into this interface's stats the
+    /// way `basicSendSingleTry` counts (packet_sender.cpp:347-390). No
+    /// result is trusted beyond the counters -- the packet may never
+    /// arrive.
     pub fn send_packet(&self, addr: &Address, packet: &Packet) {
         let socket = self.udp_socket.borrow();
         let len = socket.sendto_address(packet.wire(), *addr);
-        if len != packet.wire().len() as i32 {
+        drop(socket);
+        if len == packet.total_size() as i32 {
+            let mut stats = self.sending_stats.borrow_mut();
+            stats.num_bytes_sent += len as u64 + UDP_OVERHEAD as u64;
+            stats.num_packets_sent += 1;
+        } else {
+            self.sending_stats.borrow_mut().num_failed_packet_send += 1;
             eprintln!(
                 "PacketSender::sendPacket( {} ): failed to send {} bytes to {} (sent {})",
                 self.c_str(),
@@ -1802,5 +1937,153 @@ mod tests {
             Reason::GeneralNetwork,
             "the second is refused before the channel is found"
         );
+    }
+
+    /// BW-12-03-04 at the interface level: the knobs are entries a
+    /// fixture calls, a dropped packet never reaches the wire, and a held
+    /// packet rides the once-off timer of a pinned clock. Two internal
+    /// interfaces share one dispatcher so the peer's sink observes the
+    /// wire truth.
+    #[test]
+    fn the_interface_knobs_drop_delay_and_clear_for_fixtures() {
+        let clock = Rc::new(std::cell::Cell::new(1_000_000u64));
+        let handle = Rc::clone(&clock);
+        let dispatcher = Rc::new(EventDispatcher::with_clock(Box::new(move || handle.get())));
+
+        // The peer: a sink watching what arrives.
+        let peer =
+            NetworkInterface::new_with_dispatcher(InterfaceType::Internal, Rc::clone(&dispatcher));
+        let peer_receiver = PacketReceiver::new();
+        assert!(peer.recreate_listening_socket(&peer_receiver, 0, "127.0.0.1"));
+        peer_receiver.attach_interface(&peer);
+        let sink = Rc::new(RecordingSink::default());
+        peer.set_packet_sink(Some(sink.clone()));
+
+        // The sender, on the same pinned clock so the delay timer is
+        // driven by the fixture, not by wall time.
+        let sender =
+            NetworkInterface::new_with_dispatcher(InterfaceType::Internal, Rc::clone(&dispatcher));
+        let sender_receiver = PacketReceiver::new();
+        assert!(sender.recreate_listening_socket(&sender_receiver, 0, "127.0.0.1"));
+        sender_receiver.attach_interface(&sender);
+        let peer_addr = peer.address();
+
+        // One fixed-length message, one datagram.
+        let send_one = || {
+            let mut bundle = UdpBundle::new(0);
+            let element = crate::interface_element::InterfaceElement::new(
+                "m",
+                1,
+                crate::interface_element::FIXED_LENGTH_MESSAGE,
+                4,
+                None,
+            );
+            bundle.start_message(&element, crate::udp_bundle::ReliableType::Driver);
+            bundle.write_bytes(&7u32.to_le_bytes());
+            sender.send(&peer_addr, &mut bundle, None);
+        };
+
+        // A plain send lands on the next pump.
+        send_one();
+        assert_eq!(sender.sending_stats().num_packets_sent, 1);
+        dispatcher.process_once(false);
+        assert_eq!(sink.packets.borrow().len(), 1, "the packet arrived");
+
+        // A full loss ratio counts every packet on the sender and puts
+        // nothing on the wire.
+        sender.set_loss_ratio(1.0);
+        send_one();
+        send_one();
+        dispatcher.process_once(false);
+        assert_eq!(
+            sender.sending_stats().num_packets_sent,
+            3,
+            "drops count as sends"
+        );
+        assert_eq!(sink.packets.borrow().len(), 1, "the wire saw nothing");
+
+        // Back to clean; the one-shot drops exactly the next packet.
+        sender.set_loss_ratio(0.0);
+        sender.drop_next_send();
+        send_one();
+        send_one();
+        send_one();
+        dispatcher.process_once(false);
+        assert_eq!(
+            sender.sending_stats().num_packets_sent,
+            6,
+            "three sent, one forced drop counted, two resent... no: two more sent"
+        );
+        assert_eq!(
+            sink.packets.borrow().len(),
+            3,
+            "the second and third bundle arrived"
+        );
+
+        // A latency window holds the packet on a once-off timer; the
+        // pinned clock fires it exactly when the fixture says so.
+        sender.set_latency(0.5, 0.5);
+        send_one();
+        dispatcher.process_once(false);
+        assert_eq!(
+            sink.packets.borrow().len(),
+            3,
+            "held before the clock moved"
+        );
+        clock.set(clock.get() + 600_000);
+        dispatcher.process_once(false);
+        assert_eq!(
+            sink.packets.borrow().len(),
+            4,
+            "delivered when the clock did"
+        );
+        assert!(sender.has_artificial_loss_or_latency());
+        sender.set_latency(0.0, 0.0);
+        assert!(!sender.has_artificial_loss_or_latency());
+    }
+
+    /// The channel one-shot forwards to the interface exactly once
+    /// (udp_channel.cpp:774-778): the first bundle after
+    /// [`UdpChannel::drop_next_send`] vanishes, the next goes out.
+    #[test]
+    fn the_channel_one_shot_forces_the_interface_drop_once() {
+        let (interface, _receiver) = loopback_interface(InterfaceType::Internal);
+
+        // The peer's socket, so the datagrams have somewhere to land.
+        // Non-blocking: the drop assertions below read an empty socket.
+        let mut listener = Endpoint::new();
+        listener.socket(socket::SOCK_DGRAM);
+        listener.bind(0, LOOPBACK);
+        listener.set_nonblocking(true);
+        let port = listener.local().port;
+
+        let channel = UdpChannel::new(
+            &interface,
+            Address::new(LOOPBACK, port),
+            ChannelTraits::Internal,
+            DEFAULT_INACTIVITY_RESEND_DELAY,
+            CHANNEL_ID_NULL,
+        );
+
+        channel.borrow().drop_next_send();
+        UdpChannel::send_bundle(&channel, &mut UdpBundle::new(0));
+        let mut seen = [0u8; 16];
+        assert!(
+            listener.recvfrom_address(&mut seen, &mut Address::default()) <= 0,
+            "the forced drop kept the bundle off the wire"
+        );
+        assert_eq!(
+            interface.sending_stats().num_packets_sent,
+            1,
+            "the drop counted as a send"
+        );
+
+        // The one-shot cleared: the next bundle goes out untouched.
+        UdpChannel::send_bundle(&channel, &mut UdpBundle::new(0));
+        assert!(
+            listener.recvfrom_address(&mut seen, &mut Address::default()) > 0,
+            "the second bundle went out"
+        );
+        assert_eq!(interface.sending_stats().num_packets_sent, 2);
     }
 }

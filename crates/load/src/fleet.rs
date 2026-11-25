@@ -61,7 +61,7 @@ impl ControllerRegistry {
         &self,
         kind: &str,
         data: &str,
-        speed: f32,
+        speed: &mut f32,
         start_pos: &mut foundation::math::vector::Vector3,
     ) -> Result<Option<Box<dyn MovementController>>, UnknownControllerType> {
         if kind == "None" {
@@ -155,6 +155,28 @@ impl Default for FleetSettings {
     }
 }
 
+impl FleetSettings {
+    /// The fleet face of a read `BotsConfig` (`bots_config.{hpp,cpp}`): the
+    /// `MainApp` builds its fleet from exactly those options, and this is
+    /// where the reference's option list meets the port's fleet.
+    pub fn from_bots_config(config: &crate::bots_config::BotsConfig) -> Self {
+        Self {
+            username: config.username(),
+            password: config.password(),
+            tag: config.tag(),
+            transport: match config.transport() {
+                1 => Transport::Tcp,
+                2 => Transport::WebSockets,
+                _ => Transport::Udp,
+            },
+            should_use_random_name: config.should_use_random_name(),
+            controller_type: config.controller_type(),
+            controller_data: config.controller_data(),
+            log_on_retry_period: config.log_on_retry_period(),
+        }
+    }
+}
+
 /// The `MainApp` fleet: the bots list, the log-on retry queue and the
 /// round-robin tick cursor.
 pub struct Fleet {
@@ -215,6 +237,22 @@ impl Fleet {
             registry: ControllerRegistry::new(),
             speed_draw: SpeedDraw::new(seed),
         }
+    }
+
+    /// A fleet whose settings come from a read `BotsConfig` — the
+    /// composition the load driver uses: the option list of
+    /// `bots_config.{hpp,cpp}` decides the fleet face
+    /// (`FleetSettings::from_bots_config`), while `appID_`, the seeded
+    /// speed draw and the empty lists stay `with_seed`'s.
+    pub fn with_bots_config(
+        config: &crate::bots_config::BotsConfig,
+        app_id: &str,
+        fd_limit: i32,
+        seed: u64,
+    ) -> Self {
+        let mut fleet = Self::with_seed(app_id, fd_limit, seed);
+        fleet.settings = FleetSettings::from_bots_config(config);
+        fleet
     }
 
     /// The movement-controller registry the settings' controller type
@@ -480,7 +518,7 @@ mod tests {
         fn create(
             &self,
             _data: &str,
-            _speed: f32,
+            _speed: &mut f32,
             _start_pos: &mut Vector3,
         ) -> Option<Box<dyn MovementController>> {
             Some(Box::new(StubController))
@@ -759,11 +797,11 @@ mod tests {
 
         let mut pos = Vector3::new(0.0, 0.0, 0.0);
         assert!(matches!(
-            registry.create("None", "", 6.0, &mut pos),
+            registry.create("None", "", &mut 6.0, &mut pos),
             Ok(None)
         ));
-        assert!(registry.create("Ghost", "", 6.0, &mut pos).is_err());
-        assert!(registry.create("Stub", "", 6.0, &mut pos).is_ok());
+        assert!(registry.create("Ghost", "", &mut 6.0, &mut pos).is_err());
+        assert!(registry.create("Stub", "", &mut 6.0, &mut pos).is_ok());
     }
 
     /// client_app.cpp:387 — every added bot draws a speed in [6, 8) off
@@ -784,5 +822,195 @@ mod tests {
         other.add_bots(8);
         let other_speeds: Vec<f32> = other.bots().iter().map(|bot| bot.speed()).collect();
         assert_ne!(speeds, other_speeds);
+    }
+
+    /// A read `BotsConfig` feeds the fleet: the defaults agree with the
+    /// defaults the reference's options carry, and a configured chain wins.
+    #[test]
+    fn a_bots_config_feeds_the_fleet_settings() {
+        assert_eq!(
+            FleetSettings::from_bots_config(&crate::bots_config::BotsConfig::new()),
+            FleetSettings::default()
+        );
+
+        let section = resources::datasection::parse(
+            "root",
+            b"<root><bots><username>LoadBot</username><password>secret</password>\
+              <tag>Load</tag><shouldUseTCP>true</shouldUseTCP>\
+              <shouldUseWebSockets>true</shouldUseWebSockets>\
+              <shouldUseRandomName>false</shouldUseRandomName>\
+              <controllerType>Beeline</controllerType>\
+              <controllerData>server/bots/other.bwp</controllerData>\
+              <logOnRetryPeriod>2.5</logOnRetryPeriod></bots></root>",
+        )
+        .unwrap();
+        let mut config = crate::bots_config::BotsConfig::new();
+        config.init(&[section], &mut Vec::new());
+
+        let settings = FleetSettings::from_bots_config(&config);
+        assert_eq!(settings.username, "LoadBot");
+        assert_eq!(settings.password, "secret");
+        assert_eq!(settings.tag, "Load");
+        assert_eq!(settings.transport, Transport::WebSockets);
+        assert!(!settings.should_use_random_name);
+        assert_eq!(settings.controller_type, "Beeline");
+        assert_eq!(settings.controller_data, "server/bots/other.bwp");
+        assert_eq!(settings.log_on_retry_period, 2.5);
+
+        // TCP without websockets derives the plain TCP transport.
+        let section = resources::datasection::parse(
+            "root",
+            b"<root><bots><shouldUseTCP>true</shouldUseTCP></bots></root>",
+        )
+        .unwrap();
+        let mut config = crate::bots_config::BotsConfig::new();
+        config.init(&[section], &mut Vec::new());
+        assert_eq!(
+            FleetSettings::from_bots_config(&config).transport,
+            Transport::Tcp
+        );
+    }
+
+    /// The batch add/remove acceptance (BW-12-04-02): the same command
+    /// script against two identically configured, identically seeded
+    /// fleets leaves the same active set — same names in the same order,
+    /// same tags, same speeds — including across adds, named adds,
+    /// front removals, tagged removals and out-of-range counts.
+    #[test]
+    fn the_same_commands_produce_the_same_active_set() {
+        let config = crate::bots_config::BotsConfig::new();
+
+        // add three (Bot_1..Bot_3), a Load-tagged named and random batch
+        // (Alice, Bot_4), remove the two front bots, drop every Default
+        // tag (Bot_3), then top up (Bot_5, Bot_6). Out-of-range and
+        // negative counts are the reference's no-ops.
+        let script = |fleet: &mut Fleet| {
+            fleet.add_bots(3);
+            fleet.settings_mut().tag = "Load".to_string();
+            fleet.add_bots_with_name(&[("Alice", "pw")]);
+            fleet.add_bots(1);
+            fleet.settings_mut().tag = "Default".to_string();
+            fleet.del_bots(2);
+            fleet.del_tagged_entities("Default");
+            fleet.add_bots(2);
+            fleet.add_bots(-2);
+            fleet.del_bots(-7);
+            fleet.del_bots(0);
+        };
+
+        let mut left = Fleet::with_bots_config(&config, "0", 1024, 777);
+        script(&mut left);
+        let mut right = Fleet::with_bots_config(&config, "0", 1024, 777);
+        script(&mut right);
+
+        let active = |fleet: &Fleet| -> Vec<(String, String, f32)> {
+            fleet
+                .bots()
+                .iter()
+                .map(|bot| {
+                    (
+                        bot.user_name().to_string(),
+                        bot.tag().to_string(),
+                        bot.speed(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(active(&left), active(&right));
+        // The script's expected shape: the named and random Load bots
+        // survive their slots, the Default tags only exist on the top-up.
+        let names: Vec<&str> = left.bots().iter().map(|bot| bot.user_name()).collect();
+        assert_eq!(names, vec!["Alice", "Bot_4_0", "Bot_5_0", "Bot_6_0"]);
+        assert_eq!(left.bots()[0].tag(), "Load");
+        assert_eq!(left.bots()[1].tag(), "Load");
+        assert_eq!(left.bots()[2].tag(), "Default");
+    }
+
+    /// The file-descriptor budget refuses the same bots on both fleets:
+    /// with room for exactly two, `addBots 5` stops both fleets after the
+    /// same two bots and the active sets stay identical
+    /// (`add_bot_with_name`, main_app.cpp:382-389).
+    #[test]
+    fn the_fd_budget_refuses_the_same_bots_on_both_fleets() {
+        let config = crate::bots_config::BotsConfig::new();
+
+        let mut left = Fleet::with_bots_config(&config, "0", 1024, 99);
+        let mut right = Fleet::with_bots_config(&config, "0", 1024, 99);
+
+        // The port's documented seam: the FD sample is the caller's to
+        // keep fresh, so the test models the environment growing by
+        // FD_PER_BOT per accepted bot the way `numFileDescriptorsOpen()`
+        // would.
+        for fleet in [&mut left, &mut right] {
+            let mut fd_open = 1024 - 2 * FD_PER_BOT;
+            for _ in 0..5 {
+                fleet.set_fd_open(fd_open);
+                fleet.add_bots(1);
+                fd_open += FD_PER_BOT;
+            }
+        }
+
+        assert_eq!(left.len(), 2);
+        assert_eq!(right.len(), 2);
+        fn names(fleet: &Fleet) -> Vec<&str> {
+            fleet.bots().iter().map(|bot| bot.user_name()).collect()
+        }
+        assert_eq!(names(&left), names(&right));
+        assert_eq!(names(&left), vec!["Bot_1_0", "Bot_2_0"]);
+    }
+
+    /// The restart baseline (BW-12-04-04): an in-place cluster restart —
+    /// tear the fleet down, rebuild it — reproduces the same shaped fleet
+    /// every time, with the random-name counter continuing where it left
+    /// off (`nextBotID_` is a `MainApp` field, not a per-batch one,
+    /// main_app.cpp:413), and a fresh-process restart from the same seed
+    /// reproduces the original build exactly.
+    #[test]
+    fn the_restart_rebuilds_the_same_fleet() {
+        let config = crate::bots_config::BotsConfig::new();
+        let build = |fleet: &mut Fleet| {
+            fleet.add_bots(7);
+        };
+        let active = |fleet: &Fleet| -> Vec<(String, f32)> {
+            fleet
+                .bots()
+                .iter()
+                .map(|bot| (bot.user_name().to_string(), bot.speed()))
+                .collect()
+        };
+
+        // The original run and the fresh-process restart agree exactly.
+        let mut original = Fleet::with_bots_config(&config, "0", 1024, 31337);
+        build(&mut original);
+        let mut fresh = Fleet::with_bots_config(&config, "0", 1024, 31337);
+        build(&mut fresh);
+        assert_eq!(active(&original), active(&fresh));
+        let first_names: Vec<&str> = original.bots().iter().map(|bot| bot.user_name()).collect();
+        assert_eq!(
+            first_names,
+            (1..=7).map(|n| format!("Bot_{n}_0")).collect::<Vec<_>>()
+        );
+
+        // The in-place restart keeps the name counter going and redraws
+        // the speeds from the same stream, and a second fleet running the
+        // identical restart lands on the identical second generation.
+        let mut restarted = Fleet::with_bots_config(&config, "0", 1024, 31337);
+        build(&mut restarted);
+        restarted.del_bots(restarted.len() as i32);
+        assert!(restarted.is_empty());
+        build(&mut restarted);
+
+        let mut replay = Fleet::with_bots_config(&config, "0", 1024, 31337);
+        build(&mut replay);
+        replay.del_bots(replay.len() as i32);
+        build(&mut replay);
+
+        assert_eq!(active(&restarted), active(&replay));
+        assert_eq!(restarted.len(), 7);
+        let second_names: Vec<&str> = restarted.bots().iter().map(|bot| bot.user_name()).collect();
+        assert_eq!(
+            second_names,
+            (8..=14).map(|n| format!("Bot_{n}_0")).collect::<Vec<_>>()
+        );
     }
 }

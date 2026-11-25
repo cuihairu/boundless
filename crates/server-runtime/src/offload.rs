@@ -38,7 +38,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ghost::CellRect;
+use crate::cellappmgr::Rect as CellRect;
 use crate::ghost_data::Address;
 
 /// A leaf of the space's cell BSP (`CellInfo`).
@@ -310,11 +310,11 @@ mod tests {
                     horizontal: true,
                     left: Box::new(SpaceNode::Cell(Cell::new(
                         left_addr,
-                        CellRect::new(x_split - 100.0, 0.0, x_split, 50.0),
+                        CellRect::new((x_split - 100.0) as f32, 0.0, x_split as f32, 50.0),
                     ))),
                     right: Box::new(SpaceNode::Cell(Cell::new(
                         Address(0),
-                        CellRect::new(x_split - 100.0, 50.0, x_split, 100.0),
+                        CellRect::new((x_split - 100.0) as f32, 50.0, x_split as f32, 100.0),
                     ))),
                 })),
                 right: Box::new(SpaceNode::Branch(Branch {
@@ -322,11 +322,11 @@ mod tests {
                     horizontal: true,
                     left: Box::new(SpaceNode::Cell(Cell::new(
                         right_addr,
-                        CellRect::new(x_split, 0.0, x_split + 100.0, 50.0),
+                        CellRect::new(x_split as f32, 0.0, (x_split + 100.0) as f32, 50.0),
                     ))),
                     right: Box::new(SpaceNode::Cell(Cell::new(
                         Address(0),
-                        CellRect::new(x_split, 50.0, x_split + 100.0, 100.0),
+                        CellRect::new(x_split as f32, 50.0, (x_split + 100.0) as f32, 100.0),
                     ))),
                 })),
             })

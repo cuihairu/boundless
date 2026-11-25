@@ -347,4 +347,24 @@ mod tests {
         assert!(!plane.is_in_front_of_exact(&Vector3::new(0.0, 0.0, 4.0)));
         assert!(plane.is_in_front_of_exact(&Vector3::new(0.0, 0.0, 6.0)));
     }
+
+    #[test]
+    fn basis_is_two_orthonormal_in_plane_directions() {
+        // The z-normal plane through the origin: the largest axis is z, so
+        // xdir solves -nz/nz * nz = -1 on z with x at 1 — xdir = (1, 0, -1)
+        // before the normalise, ydir = normal × xdir.
+        let plane = PlaneEq::new(Vector3::new(0.0, 0.0, 1.0), 0.0);
+        let (xdir, ydir) = plane.basis();
+        assert_almost_eq(xdir.length(), 1.0);
+        assert_almost_eq(ydir.length(), 1.0);
+        assert_almost_eq(xdir.dot_product(&ydir), 0.0);
+        assert_almost_eq(xdir.dot_product(plane.normal()), 0.0);
+        assert_almost_eq(ydir.dot_product(plane.normal()), 0.0);
+
+        // The x-normal plane: biMoreL[0] puts the 1 on y and the zero on z.
+        let x_plane = PlaneEq::new(Vector3::new(1.0, 0.0, 0.0), 3.0);
+        let (xdir, _ydir) = x_plane.basis();
+        assert_almost_eq(xdir.z, 0.0);
+        assert_almost_eq(xdir.dot_product(&Vector3::new(1.0, 0.0, 0.0)), 0.0);
+    }
 }

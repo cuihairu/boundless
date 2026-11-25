@@ -942,7 +942,13 @@ impl ChunkSpace {
 
     /// `ChunkSpace::findChunkFromPoint` (`chunk_space.cpp:736-755`): the
     /// column-level query — outside chunk first, then larger hull volumes.
-    pub fn find_chunk_from_point(&self, point: &Vector3) -> Option<String> {
+    ///
+    /// The `_column` suffix separates this focus-grid column walk from
+    /// [`find_chunk_from_point`] (the map-scan form of the same reference
+    /// face, ported for the WorldEditor placement path that has no focus
+    /// pump). Same-face double delivery, chairman adjudication pending —
+    /// the two forms coexist under distinct names.
+    pub fn find_chunk_column_from_point(&self, point: &Vector3) -> Option<String> {
         let mut pt = *point;
         pt.y += 0.0001;
         let column = self.column_at(&pt)?;
@@ -952,12 +958,62 @@ impl ChunkSpace {
     /// `ChunkSpace::findChunkFromPointExact` (`chunk_space.cpp:757-768`):
     /// the query result only counts when the chunk is completed — loaded,
     /// bound and still focussed (`chunk.hpp:183,186`).
-    pub fn find_chunk_from_point_exact(&self, point: &Vector3) -> Option<String> {
-        let result = self.find_chunk_from_point(point)?;
+    pub fn find_chunk_column_from_point_exact(&self, point: &Vector3) -> Option<String> {
+        let result = self.find_chunk_column_from_point(point)?;
         match self.chunk(&result) {
             Some(chunk) if chunk.completed() => Some(result),
             _ => None,
         }
+    }
+
+    /// `ChunkSpace::findChunkFromPoint` (`chunk_space.cpp:731-751`) plus
+    /// `BaseChunkSpace::Column::findChunk` (`base_chunk_space.cpp:570-595`):
+    /// the outside chunk of the point's grid cell, displaced by any
+    /// smaller-volume inside chunk whose bounding box contains the point
+    /// (equal volume keeps the first chunk in map order). Like the reference
+    /// a tiny fudge is added to y so points sitting exactly on a chunk face
+    /// still resolve.
+    ///
+    /// This is the map-scan form of the reference face whose column-walk
+    /// form is [`find_chunk_column_from_point`]: the WorldEditor placement
+    /// path drops chunks and has no focus pump, so the map walk stands in
+    /// for the column walk.
+    pub fn find_chunk_from_point(&self, point: &Vector3) -> Option<&Chunk> {
+        let mut pt = *point;
+        pt.y += 0.0001;
+        let grid_x = self.point_to_grid(pt.x);
+        let grid_z = self.point_to_grid(pt.z);
+        let mut winner = self.find_chunk_by_grid(grid_x, grid_z);
+        for chunk in self.chunks.values() {
+            if chunk.is_outside || !chunk.bounding_box.contains(&pt) {
+                continue;
+            }
+            let smaller = match winner {
+                // any containing inside chunk beats the column's outside chunk
+                None => true,
+                Some(w) if w.is_outside => true,
+                Some(w) => chunk_volume(w) > chunk_volume(chunk),
+            };
+            if smaller {
+                winner = Some(chunk);
+            }
+        }
+        winner
+    }
+
+    /// `ChunkSpace::findChunkFromPointExact` (`chunk_space.cpp:757-770`):
+    /// [`find_chunk_from_point`] plus the `completed()` check — a chunk that
+    /// has not finished loading is not a valid drop target.
+    pub fn find_chunk_from_point_exact(&self, point: &Vector3) -> Option<&Chunk> {
+        match self.find_chunk_from_point(point) {
+            Some(chunk) if chunk.is_loaded => Some(chunk),
+            _ => None,
+        }
+    }
+
+    /// Drop a chunk from the map (`ChunkSpace::removeChunk`).
+    pub fn remove_chunk(&mut self, identifier: &str) {
+        self.chunks.remove(identifier);
     }
 
     /// `column(pt, false)` (`chunk_space.cpp:788-802`): the read-only
@@ -991,6 +1047,12 @@ impl ChunkSpace {
     }
 }
 
+/// `Chunk::volume` (`chunk.cpp:3506-3511`): the bounding box extents product.
+fn chunk_volume(chunk: &Chunk) -> f32 {
+    let v = chunk.bounding_box.max - chunk.bounding_box.min;
+    v.x * v.y * v.z
+}
+
 /// Group the `(joint, portal, neighbour)` connections and the heaven decisions
 /// by joint index, returning `(joint, set of neighbour names to bind)`.
 fn group_by_joint(
@@ -1020,7 +1082,7 @@ mod tests {
     use crate::chunk::ChunkItem;
     use crate::mapping::{GeometryMapping, GridBounds};
     use crate::obstacle::test_bsp::slab_obstacle;
-    use foundation::math::PlaneEq;
+    use foundation::math::{BoundBox, PlaneEq};
     use physics::{COLLIDE_STOP, ClosestTriangle, CollisionObstacle, WorldTriangle};
 
     /// `COLLIDE_STOP` on every visit — the sweep stops at the first answer.
@@ -1683,11 +1745,11 @@ mod tests {
 
         // nothing is findable before the blurred list is focussed
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(50.0, 0.0, 50.0)),
             None
         );
         assert_eq!(
-            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
             None
         );
 
@@ -1696,11 +1758,11 @@ mod tests {
 
         // cross-chunk: one answer per outside chunk's own column
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(50.0, 0.0, 50.0)),
             Some("00000000o".to_string())
         );
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(150.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(150.0, 0.0, 50.0)),
             Some("00010000o".to_string())
         );
         assert_eq!(
@@ -1710,16 +1772,16 @@ mod tests {
         // inside the shell the hull result wins over the column's outside
         // chunk; elsewhere in the same column it does not
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(15.0, 5.0, 15.0)),
+            space.find_chunk_column_from_point(&Vector3::new(15.0, 5.0, 15.0)),
             Some("00000000i".to_string())
         );
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(90.0, 0.0, 90.0)),
+            space.find_chunk_column_from_point(&Vector3::new(90.0, 0.0, 90.0)),
             Some("00000000o".to_string())
         );
         // an in-span column no chunk was focussed into: the empty region
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(150.0, 0.0, 150.0)),
+            space.find_chunk_column_from_point(&Vector3::new(150.0, 0.0, 150.0)),
             None
         );
         assert_eq!(
@@ -1728,16 +1790,16 @@ mod tests {
         );
         // beyond the mappings' grid bounds there is not even a column
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(250.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(250.0, 0.0, 50.0)),
             None
         );
         // completed gating: focussed chunks answer the exact query
         assert_eq!(
-            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
             Some("00000000o".to_string())
         );
         assert_eq!(
-            space.find_chunk_from_point_exact(&Vector3::new(15.0, 5.0, 15.0)),
+            space.find_chunk_column_from_point_exact(&Vector3::new(15.0, 5.0, 15.0)),
             Some("00000000i".to_string())
         );
     }
@@ -1754,7 +1816,7 @@ mod tests {
         assert!(space.bind("00010000o"));
         space.focus();
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(50.0, 0.0, 50.0)),
             Some("00000000o".to_string())
         );
 
@@ -1767,7 +1829,7 @@ mod tests {
         );
         // and the ignored chunk's own column is gone
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(50.0, 0.0, 50.0)),
             None
         );
 
@@ -1776,7 +1838,7 @@ mod tests {
         assert!(space.blurred_chunks().is_empty());
         assert!(space.chunk("00010000o").unwrap().completed());
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(150.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(150.0, 0.0, 50.0)),
             Some("00010000o".to_string())
         );
     }
@@ -1792,17 +1854,17 @@ mod tests {
         assert!(space.bind("00000000o"));
         space.focus();
         assert_eq!(
-            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
             Some("00000000o".to_string())
         );
 
         space.smudge_chunk("00000000o");
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(50.0, 0.0, 50.0)),
             Some("00000000o".to_string())
         );
         assert_eq!(
-            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
             None
         );
         // a second smudge of an already-unfocussed chunk does nothing
@@ -1819,7 +1881,7 @@ mod tests {
 
         space.focus();
         assert_eq!(
-            space.find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point_exact(&Vector3::new(50.0, 0.0, 50.0)),
             Some("00000000o".to_string())
         );
     }
@@ -1842,7 +1904,7 @@ mod tests {
 
         // the chunk centred at (-50, ·, 50) lives in cell (-1, 0)
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(-50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(-50.0, 0.0, 50.0)),
             Some(id.clone())
         );
 
@@ -1856,7 +1918,7 @@ mod tests {
             Some(id.as_str())
         );
         assert_eq!(
-            space.find_chunk_from_point(&Vector3::new(-50.0, 0.0, 50.0)),
+            space.find_chunk_column_from_point(&Vector3::new(-50.0, 0.0, 50.0)),
             None
         );
     }
@@ -1972,5 +2034,45 @@ mod tests {
             &mut fdpt,
         );
         assert_eq!(dist, -1.0);
+    }
+
+    /// The map-walk query family (the WorldEditor placement face) resolves
+    /// points without a focus pump: the containing inside chunk of the
+    /// point's grid cell wins by smallest volume, and an unloaded chunk is
+    /// not a valid drop target.
+    #[test]
+    fn map_walk_query_uses_the_smallest_inside_chunk_and_the_loaded_gate() {
+        let mapping = identity_mapping();
+        let mut space = ChunkSpace::new(0, vec![mapping.clone()]);
+        for (id, volume) in [
+            ("a0000000i", 8000.0_f32),
+            ("b0000000i", 1000.0),
+            ("c0000000i", 4000.0),
+        ] {
+            let mut chunk = Chunk::new(id, &mapping, &Matrix::identity());
+            let edge = volume.cbrt();
+            chunk.bounding_box = BoundBox::new(
+                Vector3::new(50.0 - edge / 2.0, -edge / 2.0, 50.0 - edge / 2.0),
+                Vector3::new(50.0 + edge / 2.0, edge / 2.0, 50.0 + edge / 2.0),
+            );
+            chunk.is_loaded = true;
+            space.add_chunk(chunk);
+        }
+        let winner = space
+            .find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0))
+            .map(|c| c.identifier.clone());
+        assert_eq!(winner.as_deref(), Some("b0000000i"));
+        space.chunk_mut("b0000000i").unwrap().is_loaded = false;
+        assert!(
+            space
+                .find_chunk_from_point_exact(&Vector3::new(50.0, 0.0, 50.0))
+                .is_none()
+        );
+        space.remove_chunk("b0000000i");
+        assert!(
+            space
+                .find_chunk_from_point(&Vector3::new(50.0, 0.0, 50.0))
+                .is_none_or(|c| c.identifier != "b0000000i")
+        );
     }
 }

@@ -94,7 +94,6 @@ mod tests {
         assert_eq!(
             DbError::Storage("disk full".into()).to_string(),
             "storage error: disk full"
-
         );
     }
 }

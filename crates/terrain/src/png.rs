@@ -15,7 +15,7 @@
 //! full filter set libpng's adaptive encoder may pick. Ancillary chunks
 //! (`pHYs` and friends) are skipped like libpng skips them.
 
-use std::io::Read;
+use std::io::{Read, Write as _};
 
 /// Decoded image: rows in PNG order, `data.len() == width * height * bpp / 8`.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +58,13 @@ impl PngImage {
         let off = (y * self.width + x) as usize * 2;
         u16::from_le_bytes([self.data[off], self.data[off + 1]])
     }
+
+    /// Read one raw byte of the image (`data_[index]`), the generic face the
+    /// terrain faces use when walking a row themselves (the texture blends
+    /// walk `Image<uint8>` rows byte by byte through `getRow`).
+    pub fn byte_at(&self, index: usize) -> u8 {
+        self.data[index]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +89,11 @@ impl core::fmt::Display for PngError {
 }
 
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// `PNG_COLOR_TYPE_GRAY` on the wire.
+const COLOR_TYPE_GRAY: u8 = 0;
+/// `PNG_COLOR_TYPE_RGBA` on the wire.
+const COLOR_TYPE_RGBA: u8 = 6;
 
 fn crc32(chunk_type: &[u8], data: &[u8]) -> u32 {
     let mut table = crc32fast::Hasher::new();
@@ -160,11 +172,12 @@ pub fn decompress_png(bytes: &[u8]) -> Result<PngImage, PngError> {
         return Err(PngError::Corrupt("empty image"));
     }
 
-    // The two shapes the terrain faces produce (`png.cpp:261-267` keeps
+    // The shapes the terrain faces produce (`png.cpp:261-267` keeps
     // `PNG_COLOR_TYPE_GRAY` for anything that is not 32bpp; `compressImage`
-    // stores 16-bit heights as gray16).
+    // stores 16-bit heights as gray16 and 8-bit texture blends as gray8).
     let channels: u8 = match (color_type, bit_depth) {
         (6, 8) => 4,  // RGBA8: quantised height map
+        (0, 8) => 1,  // gray8: texture blends (`compressImage(Image<uint8>)`)
         (0, 16) => 1, // gray16: relative uint16 height map
         _ => return Err(PngError::Unsupported("colour type or bit depth")),
     };
@@ -197,6 +210,68 @@ pub fn decompress_png(bytes: &[u8]) -> Result<PngImage, PngError> {
         bpp,
         data: out,
     })
+}
+
+/// `Moo::compressPNG` (`lib/moo/png.cpp:226-320`) for the shapes the
+/// terrain editor saves: `bpp == 32` writes `PNG_COLOR_TYPE_RGBA` with
+/// 8 bits per channel, everything else stays `PNG_COLOR_TYPE_GRAY` with
+/// `bpp` bits per sample (`png.cpp:258-267`).
+///
+/// Rows are written with filter type 0 (`png_write_image` through libpng's
+/// default adaptive selection picks per-row filters; any filter set is a
+/// valid PNG and the readers accept all of them — registered divergence in
+/// the compressed bytes, never in the decoded image). The compression level
+/// mirrors `png_set_compression_level(pngPtr, 3)` (`png.cpp:289`). The
+/// `pHYs` chunk mirrors the reference's `png_set_pHYs` with the same
+/// unknown-resolution semantics.
+pub fn compress_png(width: u32, height: u32, bpp: u32, data: &[u8]) -> Vec<u8> {
+    assert!(bpp.is_power_of_two() && bpp <= 32, "reference asserts bpp");
+    assert!(width > 0 && height > 0, "reference returns NULL on empty");
+    let (bit_depth, color_type) = if bpp == 32 {
+        (8u8, COLOR_TYPE_RGBA)
+    } else {
+        (bpp as u8, COLOR_TYPE_GRAY)
+    };
+    let bytes_pp = (bpp / 8) as usize;
+    let stride = width as usize * bytes_pp;
+    assert_eq!(data.len(), stride * height as usize, "image size mismatch");
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&SIGNATURE);
+
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[bit_depth, color_type, 0, 0, 0]);
+    write_chunk(&mut out, b"IHDR", &ihdr);
+
+    // `png_set_pHYs(pngPtr, pngInfo, width, height, PNG_RESOLUTION_UNKNOWN)`.
+    let mut phys = Vec::with_capacity(9);
+    phys.extend_from_slice(&width.to_be_bytes());
+    phys.extend_from_slice(&height.to_be_bytes());
+    phys.push(0); // unit: unknown
+    write_chunk(&mut out, b"pHYs", &phys);
+
+    // zlib level 3, filter type 0 rows, exactly like the decoder reads.
+    let mut idat = Vec::new();
+    let mut z = flate2::write::ZlibEncoder::new(&mut idat, flate2::Compression::new(3));
+    for y in 0..height as usize {
+        let _ = z.write_all(&[0u8]); // filter type 0
+        let row = &data[y * stride..(y + 1) * stride];
+        let _ = z.write_all(row);
+    }
+    drop(z);
+    write_chunk(&mut out, b"IDAT", &idat);
+    write_chunk(&mut out, b"IEND", &[]);
+
+    out
+}
+
+fn write_chunk(out: &mut Vec<u8>, typ: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(typ);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&crc32(typ, data).to_be_bytes());
 }
 
 fn inflate_zlib(idat: &[u8]) -> Result<Vec<u8>, PngError> {
@@ -274,7 +349,6 @@ fn unfilter_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     /// Build a valid single-IDAT PNG with libpng's writer configuration
     /// (RGBA8 or gray16, adaptive filter types per row) so the decoder is

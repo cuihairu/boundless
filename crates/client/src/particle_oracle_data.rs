@@ -1,0 +1,326 @@
+#![allow(clippy::excessive_precision)]
+//! BW-13-04-04 oracle snapshots: an independent Python
+//! re-implementation of the reference particle maths
+//! (bwrandom.cpp, particle.ipp, particle_system.cpp,
+//! source/sink/force/tint_shader_psa.cpp) run over the
+//! authored fire fixture with a fixed seed, recorded after
+//! frames 1, 2, 3, 5, 8, 16 and 32 of the 1/30 s preview.
+
+/// The seed the oracle run used.
+pub const ORACLE_SEED: u32 = 0x5EED0007;
+
+/// The preview frames the snapshots were taken after.
+pub const SNAP_FRAMES: [u32; 7] = [1, 2, 3, 5, 8, 16, 32];
+/// Live particles per snapshot frame.
+pub const SNAP_COUNTS: [usize; 7] = [0, 0, 1, 2, 3, 6, 12];
+pub const SNAP_TOTAL: usize = 24;
+/// Positions, xyz, in snapshot order.
+pub const SNAP_POS: [[f32; 3]; 24] = [
+    [
+        f32::from_bits(0x3E8897EB),
+        f32::from_bits(0x3E00594E),
+        f32::from_bits(0x3E8F2DD7),
+    ],
+    [
+        f32::from_bits(0x3E90FE51),
+        f32::from_bits(0x3DFE07F1),
+        f32::from_bits(0x3EF14FF9),
+    ],
+    [
+        f32::from_bits(0xBE969D4A),
+        f32::from_bits(0xBCD1B8F2),
+        f32::from_bits(0xBE8A1163),
+    ],
+    [
+        f32::from_bits(0x3E9D97EA),
+        f32::from_bits(0x3DE207F1),
+        f32::from_bits(0x3F424197),
+    ],
+    [
+        f32::from_bits(0xBE909D4A),
+        f32::from_bits(0xBD5A7614),
+        f32::from_bits(0xBCA11628),
+    ],
+    [
+        f32::from_bits(0x3E63A52A),
+        f32::from_bits(0x3EC720A6),
+        f32::from_bits(0x3DAEDD16),
+    ],
+    [
+        f32::from_bits(0x3EBF3182),
+        f32::from_bits(0x3BA90794),
+        f32::from_bits(0x3FC342ED),
+    ],
+    [
+        f32::from_bits(0xBE809D4A),
+        f32::from_bits(0xBE48BFA8),
+        f32::from_bits(0x3F25A1FA),
+    ],
+    [
+        f32::from_bits(0x3E8A5B1D),
+        f32::from_bits(0x3EB031B7),
+        f32::from_bits(0x3F2FB982),
+    ],
+    [
+        f32::from_bits(0xBDDD71CD),
+        f32::from_bits(0xBE1CC998),
+        f32::from_bits(0x3F0EABDF),
+    ],
+    [
+        f32::from_bits(0xBE410E80),
+        f32::from_bits(0xBD6205BA),
+        f32::from_bits(0x3E9611DC),
+    ],
+    [
+        f32::from_bits(0xBE0E772C),
+        f32::from_bits(0x3E794FCF),
+        f32::from_bits(0x3E8D87B1),
+    ],
+    [
+        f32::from_bits(0x3F013259),
+        f32::from_bits(0xBF01589C),
+        f32::from_bits(0x4043C397),
+    ],
+    [
+        f32::from_bits(0xBE413A94),
+        f32::from_bits(0xBF480DC8),
+        f32::from_bits(0x3FFD7BAB),
+    ],
+    [
+        f32::from_bits(0x3EBB6C2D),
+        f32::from_bits(0xBD3A2E04),
+        f32::from_bits(0x3FF1BAA1),
+    ],
+    [
+        f32::from_bits(0x3CCE7D0E),
+        f32::from_bits(0xBF1598CD),
+        f32::from_bits(0x3FDB55F0),
+    ],
+    [
+        f32::from_bits(0xBE0330A0),
+        f32::from_bits(0xBEC4C941),
+        f32::from_bits(0x3FD76257),
+    ],
+    [
+        f32::from_bits(0x3C766B36),
+        f32::from_bits(0xBD9E7176),
+        f32::from_bits(0x40107DC5),
+    ],
+    [
+        f32::from_bits(0xBDA6EF2C),
+        f32::from_bits(0xBD1CECD2),
+        f32::from_bits(0x3FEEA89F),
+    ],
+    [
+        f32::from_bits(0xBE9F4B5F),
+        f32::from_bits(0x3E53372A),
+        f32::from_bits(0x3FD528FB),
+    ],
+    [
+        f32::from_bits(0xBD90DA54),
+        f32::from_bits(0xBEEB500A),
+        f32::from_bits(0x3FB987C8),
+    ],
+    [
+        f32::from_bits(0xBCF232F1),
+        f32::from_bits(0x3D63EC90),
+        f32::from_bits(0x3F5F7700),
+    ],
+    [
+        f32::from_bits(0xBE6F9CFA),
+        f32::from_bits(0x3E98ACB2),
+        f32::from_bits(0x3F1EA4BF),
+    ],
+    [
+        f32::from_bits(0xBE8D27C5),
+        f32::from_bits(0xBDE5A6FB),
+        f32::from_bits(0x3F2EB878),
+    ],
+];
+/// Velocities, xyz, in snapshot order.
+pub const SNAP_VEL: [[f32; 3]; 24] = [
+    [
+        f32::from_bits(0x3E7C0000),
+        f32::from_bits(0x3D600000),
+        f32::from_bits(0x40380000),
+    ],
+    [
+        f32::from_bits(0x3E7C0000),
+        f32::from_bits(0xBD300000),
+        f32::from_bits(0x40380000),
+    ],
+    [
+        f32::from_bits(0x3DF00000),
+        f32::from_bits(0xBE3C0000),
+        f32::from_bits(0x40200000),
+    ],
+    [
+        f32::from_bits(0x3E7C0000),
+        f32::from_bits(0xBE3C0000),
+        f32::from_bits(0x40380000),
+    ],
+    [
+        f32::from_bits(0x3DF00000),
+        f32::from_bits(0xBEA60000),
+        f32::from_bits(0x40200000),
+    ],
+    [
+        f32::from_bits(0x3E380000),
+        f32::from_bits(0x3D300000),
+        f32::from_bits(0x40104000),
+    ],
+    [
+        f32::from_bits(0x3E7C0000),
+        f32::from_bits(0xBF0F0000),
+        f32::from_bits(0x40380000),
+    ],
+    [
+        f32::from_bits(0x3DF00000),
+        f32::from_bits(0xBF330000),
+        f32::from_bits(0x40200000),
+    ],
+    [
+        f32::from_bits(0x3E380000),
+        f32::from_bits(0xBEAA0000),
+        f32::from_bits(0x40104000),
+    ],
+    [
+        f32::from_bits(0x3E800000),
+        f32::from_bits(0xBED20000),
+        f32::from_bits(0x400AC000),
+    ],
+    [
+        f32::from_bits(0x3DE80000),
+        f32::from_bits(0xBE600000),
+        f32::from_bits(0x4026C000),
+    ],
+    [
+        f32::from_bits(0x3E940000),
+        f32::from_bits(0xBE500000),
+        f32::from_bits(0x406DC000),
+    ],
+    [
+        f32::from_bits(0x3E7C0000),
+        f32::from_bits(0xBFA78000),
+        f32::from_bits(0x40380000),
+    ],
+    [
+        f32::from_bits(0x3DF00000),
+        f32::from_bits(0xBFB98000),
+        f32::from_bits(0x40200000),
+    ],
+    [
+        f32::from_bits(0x3E380000),
+        f32::from_bits(0xBF8A8000),
+        f32::from_bits(0x40104000),
+    ],
+    [
+        f32::from_bits(0x3E800000),
+        f32::from_bits(0xBF948000),
+        f32::from_bits(0x400AC000),
+    ],
+    [
+        f32::from_bits(0x3DE80000),
+        f32::from_bits(0xBF780000),
+        f32::from_bits(0x4026C000),
+    ],
+    [
+        f32::from_bits(0x3E940000),
+        f32::from_bits(0xBF740000),
+        f32::from_bits(0x406DC000),
+    ],
+    [
+        f32::from_bits(0x3E3C0000),
+        f32::from_bits(0xBF310000),
+        f32::from_bits(0x4066C000),
+    ],
+    [
+        f32::from_bits(0x3E240000),
+        f32::from_bits(0xBF430000),
+        f32::from_bits(0x402E0000),
+    ],
+    [
+        f32::from_bits(0x3E1C0000),
+        f32::from_bits(0xBF1E0000),
+        f32::from_bits(0x40498000),
+    ],
+    [
+        f32::from_bits(0x3DE80000),
+        f32::from_bits(0xBEE20000),
+        f32::from_bits(0x40394000),
+    ],
+    [
+        f32::from_bits(0x3DF80000),
+        f32::from_bits(0xBEBC0000),
+        f32::from_bits(0x401B8000),
+    ],
+    [
+        f32::from_bits(0x3E6C0000),
+        f32::from_bits(0xBB800000),
+        f32::from_bits(0x4070C000),
+    ],
+];
+/// Packed ABGR colours, in snapshot order.
+pub const SNAP_COLOUR: [u32; 24] = [
+    0xFFFF9933, 0xFFFFA64A, 0xFFFF9933, 0xFFFFBB6E, 0xFFFFAD56, 0xFFFF9933, 0xFFFFF1CD, 0xFFFFE3B5,
+    0xFFFFCF92, 0xFFFFC17A, 0xFFFFAD56, 0xFFFF9F3E, 0x1070281B, 0x32844738, 0x65A37563, 0x87B79380,
+    0xBAD6C1AB, 0xDCEAE0C8, 0xFFFFF8D9, 0xFFFFEAC1, 0xFFFFD69E, 0xFFFFC886, 0xFFFFB462, 0xFFFFA64A,
+];
+/// Sizes, in snapshot order.
+pub const SNAP_SIZE: [f32; 24] = [
+    f32::from_bits(0x3DF3C0F4),
+    f32::from_bits(0x3DF3C0F4),
+    f32::from_bits(0x3D6100E1),
+    f32::from_bits(0x3DF3C0F4),
+    f32::from_bits(0x3D6100E1),
+    f32::from_bits(0x3DCB20CB),
+    f32::from_bits(0x3DF3C0F4),
+    f32::from_bits(0x3D6100E1),
+    f32::from_bits(0x3DCB20CB),
+    f32::from_bits(0x3E147094),
+    f32::from_bits(0x3D960096),
+    f32::from_bits(0x3E034083),
+    f32::from_bits(0x3DF3C0F4),
+    f32::from_bits(0x3D6100E1),
+    f32::from_bits(0x3DCB20CB),
+    f32::from_bits(0x3E147094),
+    f32::from_bits(0x3D960096),
+    f32::from_bits(0x3E034083),
+    f32::from_bits(0x3DCE40CE),
+    f32::from_bits(0x3DD160D1),
+    f32::from_bits(0x3D834083),
+    f32::from_bits(0x3D89808A),
+    f32::from_bits(0x3DFD20FD),
+    f32::from_bits(0x3DDDE0DE),
+];
+/// Ages in seconds, in snapshot order.
+pub const SNAP_AGE: [f32; 24] = [
+    f32::from_bits(0x00000000),
+    f32::from_bits(0x3D888889),
+    f32::from_bits(0x00000000),
+    f32::from_bits(0x3E2AAAAB),
+    f32::from_bits(0x3DCCCCCE),
+    f32::from_bits(0x00000000),
+    f32::from_bits(0x3EDDDDDF),
+    f32::from_bits(0x3EBBBBBC),
+    f32::from_bits(0x3E888889),
+    f32::from_bits(0x3E4CCCCE),
+    f32::from_bits(0x3DCCCCCE),
+    f32::from_bits(0x3D088889),
+    f32::from_bits(0x3F777778),
+    f32::from_bits(0x3F666667),
+    f32::from_bits(0x3F4CCCCE),
+    f32::from_bits(0x3F3BBBBC),
+    f32::from_bits(0x3F222223),
+    f32::from_bits(0x3F111112),
+    f32::from_bits(0x3EEEEEF0),
+    f32::from_bits(0x3ECCCCCE),
+    f32::from_bits(0x3E99999A),
+    f32::from_bits(0x3E6EEEF0),
+    f32::from_bits(0x3E088889),
+    f32::from_bits(0x3D888889),
+];
+/// Ages in 1/120 s ticks, in snapshot order.
+pub const SNAP_AGE_RAW: [u16; 24] = [
+    0, 8, 0, 20, 12, 0, 52, 44, 32, 24, 12, 4, 116, 108, 96, 88, 76, 68, 56, 48, 36, 28, 16, 8,
+];

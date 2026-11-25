@@ -28,15 +28,28 @@ flate2 = { version = "1.1.11", default-features = false, features = ["rust_backe
 # (BW-02-01-05); a legal downward edge into the domain layer.
 mercury = { workspace = true }
 resources = { workspace = true }
+# The Controller/Extra sample's grenade simulation reflects off a
+# `WorldTriangle` (BW-14-02-04, `worldtri.cpp:504-512`); a downward edge
+# into the domain layer like mercury/db above.
+physics = { path = "../physics" }
+
 # The navigation mesh: `MeshNavigator` (BW-10-06-01) implements the
 # navigation controller's `Navigator` boundary over waypoint's two-level
 # search — the same downward-edge pattern as db/mercury.
 waypoint = { workspace = true }
 
+# The auction pages' `eregi` criteria matching (BW-14-03-04) is POSIX
+# ERE; the regex crate covers the same common forms.
+regex = { workspace = true }
+
 [dev-dependencies]
 # BW-16-02-03 backend-isolation proof: the postgresql driver is exercised
 # from outside its own crate.
 db-postgres = { workspace = true }
+
+# The fantasydemo login acceptance (BW-14-01-02) parses the fixture's
+# entity defs; the DBApp storage def face is built from the parsed map.
+entitydef = { workspace = true }
 
 # Performance baselines (perf-bench batch 1): the update-loop dispatch bench.
 criterion = "0.8"

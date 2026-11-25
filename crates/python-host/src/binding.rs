@@ -744,6 +744,37 @@ pub unsafe fn instantiate(type_object: &PyRef) -> Option<PyRef> {
     PyRef::from_owned(instance)
 }
 
+/// The instance teardown every `dealloc` handler ends with: untrack the
+/// object when the type collects garbage, free through the type's own
+/// `tp_free`, and drop the type reference the allocation took. Freeing a
+/// tracked instance with the raw allocator leaves the collector's list
+/// pointing into released memory, and the next collection walks it.
+///
+/// # Safety
+///
+/// `object` must be an instance this module's `create_type` built, and the
+/// handler's own teardown of the state block must have run first.
+pub unsafe fn free_instance(object: *mut capi::PyObject) {
+    // SAFETY: the caller holds a live instance of this module's type.
+    let type_ = unsafe { capi::Py_TYPE(object) };
+    // SAFETY: the flags read is a C API call on the live type.
+    if unsafe { capi::PyType_GetFlags(type_) } & capi::Py_TPFLAGS_HAVE_GC != 0 {
+        // Untracking an untracked object is a no-op, so this stays correct
+        // for either allocator the type ended up with.
+        // SAFETY: the object is live and tracked.
+        unsafe { capi::PyObject_GC_UnTrack(object) };
+    }
+    // SAFETY: `tp_free` is the teardown paired with the allocation.
+    let free = unsafe { capi::PyType_GetSlot(type_, capi::Py_tp_free) };
+    // SAFETY: the slot holds the type's free function.
+    let free: unsafe extern "C" fn(*mut capi::PyObject) =
+        unsafe { std::mem::transmute::<*mut std::os::raw::c_void, _>(free) };
+    // SAFETY: the object is live and its state is already released.
+    unsafe { free(object) };
+    // SAFETY: the type reference `PyType_GenericAlloc` took.
+    unsafe { capi::dec_ref(type_.cast()) };
+}
+
 /// `Interpreter::fini`'s step for this module: release the registry's
 /// reference of every type object while the allocator is still alive, and
 /// start the next interpreter with an empty registry. The leaked descriptor
