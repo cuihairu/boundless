@@ -59,9 +59,10 @@ fn fixed(id: u8, size: i32) -> InterfaceElement {
 
 // -- protocol layer: the RPC round trip ----------------------------------
 
-/// The far leg of the RPC: read the reply id every Mercury request
-/// carries in its body, and pack the answer back into a shared outbox
-/// the bench dispatches at the sender's table.
+/// The far leg of the RPC: read the reply id the request preamble
+/// carries (it reaches handlers through the unpacked header, not the
+/// body stream), and pack the answer back into a shared outbox the
+/// bench dispatches at the sender's table.
 #[derive(Default)]
 struct Echo {
     outbox: RefCell<Vec<Vec<u8>>>,
@@ -71,10 +72,10 @@ impl InputMessageHandler for Echo {
     fn handle_message(
         &self,
         _source: &Address,
-        _header: &mut UnpackedMessageHeader,
+        header: &mut UnpackedMessageHeader,
         data: &mut BinaryStream,
     ) {
-        let reply_id = data.read_i32().expect("request reply id");
+        let reply_id = header.reply_id();
         let payload = data.unread_bytes().to_vec();
         data.finish();
 
@@ -153,8 +154,9 @@ impl RpcFace {
             echo,
             recorder,
             peer_addr,
-            // 8 fixed bytes: the four reply id bytes the request carries
-            // plus the four payload bytes.
+            // A fixed-length request: the eight body bytes are payload;
+            // the reply id and its link ride the preamble the unpack
+            // skips, so the declared length counts only the payload.
             element: fixed(3, 8),
         }
     }
@@ -170,15 +172,18 @@ impl RpcFace {
             DEFAULT_REQUEST_TIMEOUT,
             ReliableType::No,
         );
-        request.write_bytes(b"ping");
+        request.write_bytes(b"pingpong");
         request.finalise();
         request.add_reply_orders_to(&self.manager, Some(self.peer_addr));
         request.prepare_packets(&mut SeqNumAllocator::new(2), false, None);
 
-        // The peer's receive recipe: peel the request footer, then walk
-        // the body the way the packet receiver does.
-        let first_request = request.packet_mut(0).strip_footer_u16().map(usize::from);
-        let packet = request.packet(0);
+        // The peer's receive recipe: the datagram arrives with its
+        // footers on, so the walk's cursor starts at the full length
+        // and the footer strip peels the first-request offset off the
+        // end, exactly the way packet_receiver's ordered walk does.
+        let packet = request.packet_mut(0);
+        packet.grow(packet.footer_size());
+        let first_request = packet.strip_footer_u16().map(usize::from);
         let end = packet.msg_end_offset();
         let mut body = packet.buffer()[HEADER_SIZE..end].to_vec();
         let reason = dispatch_messages(&self.peer_table, &self.peer_addr, &mut body, first_request);
