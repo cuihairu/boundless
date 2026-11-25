@@ -1528,7 +1528,7 @@
 以带地形高低差、障碍、Portal 和两个 Chunk 的固定地图，覆盖编辑与生成、服务端加载、客户端查询、Bots 穿越和导航调试显示。对照服务端坐标、路径、地形洞与碰撞结果。绑定已启用的原版目标逐平台验收。
 
 - [x] **BW-10-07-01 固定测试地图和期望值**。**验收** 含坡、洞、障碍和两个相邻 Chunk。 → （gen_fixed_map.cpp 原版 el7 库自建双 Chunk 世界：A 洞+坡带相触、B 环+障碍带隙隔离；真值 139 行 = 解码/bind 非对称（B1 西边无标签）/NAVLOC 平手首迭代者胜/XPATH/SETHOP/FP；FPOK y 差异=saveWayPath 的 smoothPath 经 guess 构造器 +0.01 抬升，端口登记暂缓漏斗面；findFullPath 参照全 FFPNONE=夹具 chunk 未注册进空间非算法面；回放 9 测，waypoint 114/workspace 4476，navigator.rs 99.58%）
-- [ ] **BW-10-07-02 执行地图编辑和生成**。**验收** 新版导出后可被基准目标消费。
+- [x] **BW-10-07-02 执行地图编辑和生成**。**验收** 新版导出后可被基准目标消费。 → （×10 固定图（地面 4.0+孔洞 x∈[2,3) z∈[0,5)、0.5 步坡 4.5→9.5、障碍 slab h13、接缝 x=5）按 navgen 每-chunk 面跑原版 gen_navgen_map.cpp（3710 行真值）+原版读入端 gen_navgen_paths.cpp（162 行真值）；端口新增 GenChunk trait+to_vector3+determineEdgesAdjacentToOtherChunks（参照结尾 parity 警告循环是死代码从不递增），navgen_map.rs 逐行回放 3710 行+导出 fnv 3f4c4a26e9865b1f/c9b5fe1853f86a48 等于参照写出字节；验收腿：原版 el7 读入端吃端口导出字节 stdout LOG-IDENTICAL，waypoint/tests/genmap.rs 重放 LHDR/LWP/LEDGE 34 条 FFFF/FIND/NAVLOC/3 组路径逐步+SEAM PATHNONE；登记：extendThroughUnboundPortals 未移植（两 chunk 皆 bound，参照调用 no-op）、NavLoc 的 girth-grid 环形搜索未建模（2 探针按记录的环答案断言）；waypoint-gen 69/waypoint 11/workspace 4479 全绿，generator.rs 98.55%/navgen_map.rs 99.55%/TOTAL 99.31%）
 - [ ] **BW-10-07-03 从服务端加载该地图**。**验收** 坐标、地形和 Portal 状态吻合。
 - [ ] **BW-10-07-04 从客户端查询该地图**。**验收** 固定射线及导航显示吻合。
 - [ ] **BW-10-07-05 执行 Bot 穿越**。**验收** 记录两 Cell 的移动和进入离开事件。
