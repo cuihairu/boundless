@@ -61,7 +61,7 @@ fn a_written_flood_result_reads_back_byte_for_byte() {
     let count = flood.fill(&seed(0.5, 10.0, 0.5), &mut physics, &chunk, None);
     assert!(count > 0);
 
-    let dir = std::env::temp_dir().join("waypoint-gen-tga");
+    let dir = std::env::temp_dir().join("waypoint-gen-tga-roundtrip");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("roundtrip.tga");
     let path_str = path.to_str().unwrap();
@@ -92,7 +92,7 @@ fn a_broken_flood_file_is_rejected_at_the_first_lie() {
     let err = gener.read_tga("no/such/file.tga").unwrap_err();
     assert_eq!(err, TgaError::Open("file"));
 
-    let dir = std::env::temp_dir().join("waypoint-gen-tga");
+    let dir = std::env::temp_dir().join("waypoint-gen-tga-header");
     std::fs::create_dir_all(&dir).unwrap();
 
     // header cut short
@@ -558,7 +558,7 @@ fn the_identifier_keeps_a_bare_filename() {
     for _ in 0..2 * MAX_HEIGHTS * 4 {
         bytes.extend_from_slice(&0u32.to_le_bytes());
     }
-    let dir = std::env::temp_dir().join("waypoint-gen-tga");
+    let dir = std::env::temp_dir().join("waypoint-gen-tga-identifier");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("bare.tga");
     std::fs::write(&path, bytes).unwrap();
@@ -584,7 +584,7 @@ fn a_truncated_payload_fails_at_its_layer() {
     bytes.extend_from_slice(&[0u8; 768]);
     bytes.extend_from_slice(&[0u8; 8]); // two entries of the 4 needed
 
-    let dir = std::env::temp_dir().join("waypoint-gen-tga");
+    let dir = std::env::temp_dir().join("waypoint-gen-tga-truncated-adj");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("truncated.tga");
     std::fs::write(&path, bytes).unwrap();
@@ -894,7 +894,7 @@ fn a_truncation_in_the_height_layers_fails_there() {
     bytes.extend_from_slice(&[0u8; 16 * 4 * 4]);
     bytes.extend_from_slice(&0.0f32.to_le_bytes());
 
-    let dir = std::env::temp_dir().join("waypoint-gen-tga");
+    let dir = std::env::temp_dir().join("waypoint-gen-tga-truncated-height");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("truncated-heights.tga");
     std::fs::write(&path, bytes).unwrap();
