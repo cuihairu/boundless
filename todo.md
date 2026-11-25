@@ -2888,7 +2888,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。7024fb1（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 私有 socket 4/4+PostgreSQL 18.6 私有 run 2/2 同语句同受影响行数同重读和；24 实体(tbl/sm 布局 i 号=id1000+i/health 100+i/speed (i%4)*0.5 精确二进制浮点/alive i%3)+4 账户映射，CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0/更新移 12/删余 23 和 2565——错手排 alive 周期被双机 guard 同时抓出；Rust 腿 crates/db-postgres/tests/baseline_dataset.rs 同 24+4 数据集过 import_entities/import_accounts 逐行读回相等+同统计+复采 28 行全 skip(0 写)；db-postgres 133 测全绿，store 四 lane 零残留）
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -4469,7 +4469,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。7024fb1（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 私有 socket 4/4+PostgreSQL 18.6 私有 run 2/2 同语句同受影响行数同重读和；24 实体(tbl/sm 布局 i 号=id1000+i/health 100+i/speed (i%4)*0.5 精确二进制浮点/alive i%3)+4 账户映射，CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0/更新移 12/删余 23 和 2565——错手排 alive 周期被双机 guard 同时抓出；Rust 腿 crates/db-postgres/tests/baseline_dataset.rs 同 24+4 数据集过 import_entities/import_accounts 逐行读回相等+同统计+复采 28 行全 skip(0 写)；db-postgres 133 测全绿，store 四 lane 零残留）
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -6011,7 +6011,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。7024fb1（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 私有 socket 4/4+PostgreSQL 18.6 私有 run 2/2 同语句同受影响行数同重读和；24 实体(tbl/sm 布局 i 号=id1000+i/health 100+i/speed (i%4)*0.5 精确二进制浮点/alive i%3)+4 账户映射，CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0/更新移 12/删余 23 和 2565——错手排 alive 周期被双机 guard 同时抓出；Rust 腿 crates/db-postgres/tests/baseline_dataset.rs 同 24+4 数据集过 import_entities/import_accounts 逐行读回相等+同统计+复采 28 行全 skip(0 写)；db-postgres 133 测全绿，store 四 lane 零残留）
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -7553,7 +7553,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。7024fb1（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 私有 socket 4/4+PostgreSQL 18.6 私有 run 2/2 同语句同受影响行数同重读和；24 实体(tbl/sm 布局 i 号=id1000+i/health 100+i/speed (i%4)*0.5 精确二进制浮点/alive i%3)+4 账户映射，CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0/更新移 12/删余 23 和 2565——错手排 alive 周期被双机 guard 同时抓出；Rust 腿 crates/db-postgres/tests/baseline_dataset.rs 同 24+4 数据集过 import_entities/import_accounts 逐行读回相等+同统计+复采 28 行全 skip(0 写)；db-postgres 133 测全绿，store 四 lane 零残留）
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -9134,7 +9134,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。7024fb1（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 私有 socket 4/4+PostgreSQL 18.6 私有 run 2/2 同语句同受影响行数同重读和；24 实体(tbl/sm 布局 i 号=id1000+i/health 100+i/speed (i%4)*0.5 精确二进制浮点/alive i%3)+4 账户映射，CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0/更新移 12/删余 23 和 2565——错手排 alive 周期被双机 guard 同时抓出；Rust 腿 crates/db-postgres/tests/baseline_dataset.rs 同 24+4 数据集过 import_entities/import_accounts 逐行读回相等+同统计+复采 28 行全 skip(0 写)；db-postgres 133 测全绿，store 四 lane 零残留）
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
@@ -10676,7 +10676,7 @@ PR 跑短 smoke，定时或手动任务跑容量、稳定性和故障场景。�
 
 - [x] **OPT-09-01-01 分别采集 MySQL 与 PostgreSQL 基线**。**验收** 使用同一数据集。7024fb1（tests/store/common/baseline_dataset.sql 同一 fixture 经 ci/store.sh 双真机采集：MariaDB 11.8 私有 socket 4/4+PostgreSQL 18.6 私有 run 2/2 同语句同受影响行数同重读和；24 实体(tbl/sm 布局 i 号=id1000+i/health 100+i/speed (i%4)*0.5 精确二进制浮点/alive i%3)+4 账户映射，CHECK(v=0) 正向断言钉 24 行/和 2676/活 8/速和 18.0/更新移 12/删余 23 和 2565——错手排 alive 周期被双机 guard 同时抓出；Rust 腿 crates/db-postgres/tests/baseline_dataset.rs 同 24+4 数据集过 import_entities/import_accounts 逐行读回相等+同统计+复采 28 行全 skip(0 写)；db-postgres 133 测全绿，store 四 lane 零残留）
 - [x] **OPT-09-01-02 评估连接池及查询合并**。**验收** 报告各后端延迟和吞吐。9dda748（pool_merge_eval.rs 同一 48 行+48 读种子负载三种执行形状过真 PG：shipped 1 连接 96 语句 48 提交 vs unpooled 96 次连接(纯多付连接 ≈4×墙钟 1.8s vs 450ms) vs merged 单事务 48 写并 1 提交+ANY 单语句读(50 语句 1 提交 ≈6×吞吐 75ms vs 450ms，fsync 类落盘 48→1)；结构计数断言=后端无关，MySQL 半=语句形状恒等且 OPT-09-01-01 同形状 store.sh 真机绿(无 Rust mysql 驱动不采样墙钟如实声明)；墙钟只打印不断言(BW-17-02-08 门)；4 跑数字留档 docs/review）
-- [ ] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。
+- [x] **OPT-09-01-03 评估写批次与归档整合**。**验收** 报告提交和恢复时长。01d391c（archive_batch_eval.rs 同一 64 行种子负载三写形过真 PG：autocommit 64 语句 64 提交 ~540ms vs 事务批 66 语句 1 提交 ~165ms(≈3.3×,落盘 64→1) vs 单条多行 INSERT(按 schema 自身列构建) 1 语句 ~4-5ms(≈100×)；三形 rows_ok=64 逐行相等=改的是成本不是内容；归档整合=export_backup 12 表 193 行 ~30-50ms → restore_backup 空库 ~145ms → 目标库重导出逐记录相等(restored==dump)=恢复正确性；墙钟只打印不断言；db-postgres 135 测全绿）
 - [ ] **OPT-09-01-04 复跑事务、重试与恢复**。**验收** 数据一致。
 
 ### OPT-10-01 地图加载和查询基线
